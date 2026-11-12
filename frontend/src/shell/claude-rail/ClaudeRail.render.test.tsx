@@ -36,6 +36,9 @@ const { DoorCard } = await import("./DoorCard");
 const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
+const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("@shell/task-head-flag");
+const { resetFlagsForTests: resetClaudeFlagsForTests } = await import("@apps/claude/feature-flag");
+const { TaskHead: TaskHeadC } = await import("@shell/TaskHead");
 
 const DIR = "/home/me/apps/demo";
 
@@ -160,6 +163,13 @@ afterEach(() => {
   resetCanvasRailPeekFlagForTests();
   setBotsAvailableForTests(null);
   (globalThis as { fetch: unknown }).fetch = realFetch;
+  // The never-settling fetch above pins the shared prefs read (platform/lib/api)
+  // for every later suite in the process once a mounted flag has joined it.
+  dropSharedPrefsRead();
+  resetClaudeFlagsForTests();
+  // …and the unified-head flag keeps a read of its OWN (task-head-flag `read`):
+  // a card mounted here leaves it pending under the same stub.
+  resetTaskHeadUnifiedFlagForTests();
   for (const [name, was] of saved) {
     if (was === MISSING) delete g[name];
     else g[name] = was;
@@ -398,6 +408,44 @@ describe("ClaudeRail's card beside the pane", () => {
     expect(peek).toHaveLength(1);
     expect(peek[0]!.props.pinned).toBe(true);
     expect(peek[0]!.props.shown.pulse.key).toBe(chat("a").key);
+  });
+
+  // THE SHARED TASK HEAD (shell/TaskHead; design.md "One task head,
+  // everywhere"), behind its flag: the card's two-row head becomes the one
+  // every task view draws — its own rename row gone, TaskPeekWho's in its place.
+  const cls = (n: ReactTestInstance) => String(n.props?.className ?? "").split(" ");
+  test("flag on: the card wears the shared head — the ×, the identity, the ⋮ — and no title row of its own", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    try {
+      const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });
+      await press(r, "a");
+      const peek = r.root.findByType(RailPeek);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(1);
+      expect(peek.findAll((n) => cls(n).includes("claude-rail-peek-titlerow"))).toHaveLength(0);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-side-peek-who")).length).toBeGreaterThan(0);
+      const lead = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-lead"));
+      expect(lead.props["aria-label"]).toBe("Close the preview");
+      // The card's OWN star (toggleStar: tells the rail, dismisses on unstar),
+      // not the identity's plain TaskStar — and its archive over the ring.
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-star"))).toHaveLength(0);
+      const ring = peek.find((n) => typeof n.type === "string" && n.props.className === "task-side-peek-status");
+      expect(ring.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(1);
+      // Keyed per chat, so a half-typed rename cannot follow a swap.
+      expect(peek.findByType(TaskHeadC).props.task.key).toBe(chat("a").key);
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag off: the card's own two-row head, title row and all", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });
+    await press(r, "a");
+    const peek = r.root.findByType(RailPeek);
+    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(0);
+    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-titlerow"))).toHaveLength(1);
   });
 
 });

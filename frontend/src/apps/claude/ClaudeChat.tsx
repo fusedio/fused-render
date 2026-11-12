@@ -117,6 +117,7 @@ import {
   AttachTray,
   BreakoutContextChip,
   Kebab,
+  knownTaskId,
   CardPolicyProvider,
   Composer,
   createCardPolicy,
@@ -173,6 +174,16 @@ import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { isLanHost } from "@platform/lib/host";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { PlaceTags } from "@shell/claude-rail/PlaceTags";
+// THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"),
+// behind its flag: with it on, the strip and the identity line below are one
+// head — the same one every other task view draws.
+import { TaskHead } from "@shell/TaskHead";
+import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { TaskPeekProject } from "@shell/TaskPeekWho";
+import { StatusIcon } from "@shell/ScheduleTaskViews";
+import { shortTaskId } from "@shell/tasks-lib";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { queueCaption } from "@platform/lib/queue";
 import { ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
@@ -283,6 +294,12 @@ export interface ClaudeChatProps {
   headerInPeek?: boolean;
   /** Host-supplied node for the slim header's right-hand seat (a PR chip). */
   headerExtra?: ReactNode;
+  /** The host head's chip seat (ChatMount `headChipsHost`): the worktree menu
+   *  or hint and `headerExtra` portal there, and no Topbar is drawn. */
+  headChipsHost?: HTMLElement | null;
+  /** The host head's status seat (ChatMount `headStatusHost`): the usage-limit
+   *  word portals there instead of into the chips. */
+  headStatusHost?: HTMLElement | null;
   /** Draw `TaskPrChip` for the open task in the header, ahead of any
    *  `headerExtra` (the explorer's pane; TaskPeek passes its own chip). */
   prChip?: boolean;
@@ -669,6 +686,9 @@ interface ChatBodyProps extends ClaudeChatProps {
 function ChatBody(props: ChatBodyProps) {
   const { params, file, chatOnly, compact, peek } = props;
   const showHead = !compact && (!peek || !!props.headerInPeek);
+  // THE SHARED HEAD replaces the strip and the identity line wherever the chat
+  // draws its own head (not compact, not a host's peek).
+  const headUnified = useTaskHeadUnified() && !compact && !peek;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const columnRef = useRef<HTMLDivElement | null>(null);
   const ownBox = useRef<HTMLTextAreaElement | null>(null);
@@ -5572,7 +5592,11 @@ function ChatBody(props: ChatBodyProps) {
    *  comeback's own POST rings), floored at five seconds. */
   // Only where the header is drawn, and only under the flag: the read is one
   // listing per hook instance, and a cards wall mounts a dozen.
-  const limitWord = useLimitWord(queueOn && showHead ? taskKey : "");
+  // …or where a host's head seats it (`headChipsHost`): the paused word rides
+  // the chips there, as it rode the slim line.
+  const limitWord = useLimitWord(
+    queueOn && (showHead || !!props.headChipsHost || !!props.headStatusHost) ? taskKey : "",
+  );
   /**
    * THE LISTING'S ROW FOR THE CONVERSATION ON SCREEN, for the header
    * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
@@ -5779,9 +5803,11 @@ function ChatBody(props: ChatBodyProps) {
     take();
     return subscribeSideMaximizedRequest(take);
   }, [inSidePane, paneSessionId]);
-  const kebabEl = (
+  // The ⋮'s seat in three pieces — the canvas camera, the exit-full-screen
+  // button and the menu itself — because the shared head seats the first two
+  // with the host's tools and the menu at the row's end (`unifiedHead`).
+  const exitFsBtn = (
     <>
-      {canvasShotSeat}
       {/* EXIT FULL SCREEN, ON THE BAR (Akshil, 2026-11-09: "in full screen on
           top left have a exit fullscreen button outside kebab menu"): the
           menu's item stays, this is the one-press way back beside it. Only
@@ -5797,6 +5823,9 @@ function ChatBody(props: ChatBodyProps) {
           {TASK_ICON_EXIT_FULL_SCREEN}
         </button>
       ) : null}
+    </>
+  );
+  const kebabMenu = (
       <Kebab
         {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
         file={file}
@@ -5839,8 +5868,166 @@ function ChatBody(props: ChatBodyProps) {
             : undefined
         }
       />
+  );
+  const kebabEl = (
+    <>
+      {canvasShotSeat}
+      {exitFsBtn}
+      {kebabMenu}
     </>
   );
+  /**
+   * THE SHARED HEAD (flag on; shell/TaskHead): the strip and the identity line
+   * as ONE row, in every task view's order —
+   *
+   *   [× hide pane][← Back to chats] │ ring ★ TASK-nnn title [queue][paused]
+   *   [place] │ [worktree · PR][seats: picker · toggle · camera · exit-fs][⋮]
+   *
+   * The lead is the hide-pane × on the landing (when the host gives one) and
+   * ← in a chat; a pane that has no other close keeps its × BEFORE the ← there.
+   * The identity is the full block — ring, star, number — in the explorer's
+   * pane too (`bare` is the old head's). Every seat is the node the strip
+   * draws, under the strip's own conditions; full screen portals the whole
+   * head into the pane header's `.side-header-lead`, as it did the strip.
+   */
+  const hidePaneBtn = props.onHidePane ? (
+    <button
+      type="button"
+      className="task-head-btn c-hide-pane"
+      aria-label="Hide the Claude panel"
+      data-hint="Hide the Claude panel"
+      onClick={props.onHidePane}
+    >
+      <X size={14} aria-hidden="true" />
+    </button>
+  ) : null;
+  // The queue facts the identity reads (Topbar's `queue`), and their line.
+  const headQueue =
+    inChat && queueOn
+      ? headerQueue(sched.row, waitFacts, waitCount, running || sched.row?.status === "in_progress")
+      : null;
+  const headLine = headQueue ? queueCaption(headQueue) : null;
+  /**
+   * A CHAT WITH NO TASK ROW YET still says what it is (Topbar's fallback line,
+   * same words): the agent's mark — or, waiting in a line, the queued ring —
+   * its name, the target's name, and the task number or the session hash
+   * until the number lands; "running" while a turn is live and no pause word
+   * is said. Not while nobody has answered (`pending`, the skeleton) — unless
+   * a queued line is the answer.
+   */
+  const fallbackSid = state.sessionId ?? "";
+  const fallbackLabel =
+    shortTaskId(taskId || knownTaskId(fallbackSid) || "") || (fallbackSid ? fallbackSid.slice(0, 8) : "");
+  const fallbackTitle =
+    inChat && !head.task && (!head.pending || headLine) ? (
+      <span className="c-tb-fallback" title={fallbackSid || undefined}>
+        {headLine ? (
+          <span className="task-side-peek-status" title="Queued">
+            <StatusIcon status="queued" />
+          </span>
+        ) : (
+          <AgentMark backend={chatBackend} className="c-spark" />
+        )}
+        <span className="c-tb-title">{agentLabel(chatBackend)}</span>
+        {props.mergedHead ? null : (
+          <span className="c-tb-file" title={name || undefined}>
+            {name}
+          </span>
+        )}
+        {fallbackLabel ? (
+          <span className="c-session" title={fallbackSid || undefined}>
+            {fallbackLabel}
+          </span>
+        ) : null}
+        {!limitWord && running ? (
+          <span className="c-tb-run" aria-live="polite">
+            running
+          </span>
+        ) : null}
+      </span>
+    ) : null;
+  const unifiedHead = headUnified ? (
+    <TaskHead
+      className="c-task-head"
+      {...(inChat && hidePaneBtn ? { preLead: hidePaneBtn } : {})}
+      lead={
+        inChat
+          ? {
+              kind: "back",
+              label: "Back to chats",
+              hint: "Back to chats",
+              onPress: onBack,
+              disabled: ann.locked,
+              reason: NAV_LOCKED_REASON,
+            }
+          : props.onHidePane
+            ? { kind: "close", label: "Hide the Claude panel", onPress: props.onHidePane }
+            : null
+      }
+      task={inChat ? head.task : null}
+      {...(fallbackTitle ? { title: fallbackTitle } : {})}
+      pending={inChat && head.pending && !headLine}
+      running={running}
+      queue={headQueue}
+      status={inChat ? limitWord : ""}
+      place={
+        inChat && head.task
+          ? (placeTag ?? (props.mergedHead ? null : <TaskPeekProject task={head.task} />))
+          : null
+      }
+      chips={
+        inChat ? (
+          <>
+            {shownHint ? null : worktreeMenu}
+            <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
+            {headerExtra}
+          </>
+        ) : null
+      }
+      seats={
+        <>
+          <AnnStrip
+            paneNoun={pane.paneNoun}
+            shown={annTarget && !props.noAnnTools}
+            commentShown={!(paneShown && narrowView.narrow && narrowView.view === "chat")}
+            capable={ann.capable}
+            mode={ann.mode}
+            armed={ann.armed}
+            capturing={attach.capturing}
+            blocked={sched.blocked}
+            onScreenshot={() => void attach.capture()}
+            onComment={ann.onCommentSeat}
+            recSeat={
+              <RecControls
+                rec={recSnap}
+                shown={micShown}
+                commentArmed={ann.mode === "comment"}
+                blocked={sched.blocked}
+                discardable={false}
+                onBegin={() => void recorder.begin()}
+                onEnd={() => void recorder.end()}
+                onDiscard={() => void recorder.discard()}
+              />
+            }
+          />
+          {host === "anntools" ? (
+            <LeftModePicker modes={pane.decision?.leftModes ?? []} params={params} leftMode={leftMode} />
+          ) : null}
+          {narrowView.narrow && !props.noAnnTools ? <ViewToggle narrowView={narrowView} /> : null}
+          {canvasShotSeat}
+          {exitFsBtn}
+        </>
+      }
+      kebab={kebabMenu}
+      // The ring's Archive leaves through the ⋮'s door (`onBack`, the
+      // landing); an Unarchive stays on the chat.
+      onFiled={(kind) => {
+        if (kind === "archive") onBack();
+      }}
+      // The seat labels fold the way they did on the strip (`.tight`).
+      seatsRef={stripRef}
+    />
+  ) : null;
   return (
    <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
@@ -5908,7 +6095,7 @@ function ChatBody(props: ChatBodyProps) {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        {!compact && !peek && !mergedHeadRow ? inLead(
+        {unifiedHead ? inLead(unifiedHead) : !compact && !peek && !mergedHeadRow ? inLead(
           // ONE HEADER ROW, WHICH IS WHAT T HAS (T:3934-4010, P2-1). `#anntools`
           // is a real layout row above both views and it carries FIVE things:
           // `← Chats` at its left end, then the picker, the three preview seats,
@@ -6040,7 +6227,7 @@ function ChatBody(props: ChatBodyProps) {
             {/* Taken away by the compact and peek cuts: the card's own head and
                 the popup's own head already say which task this is
                 (T:1412-1438). */}
-            {showHead ? (
+            {headUnified ? null : showHead ? (
               <Topbar
                 slim={peek}
                 {...(inSidePane ? { bare: true } : {})}
@@ -6090,6 +6277,42 @@ function ChatBody(props: ChatBodyProps) {
                     : null
                 }
               />
+            ) : props.headChipsHost || props.headStatusHost ? (
+              // THE HOST'S HEAD IS THE ONE LINE (ChatMount `headChipsHost`):
+              // the worktree pieces the slim line used to seat — the same
+              // menu-or-hint rule — and the host's extra, portaled into the
+              // host's chip seat, and no top bar of the chat's own.
+              <>
+                {props.headChipsHost
+                  ? createPortal(
+                      <>
+                        {shownHint ? null : worktreeMenu}
+                        <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
+                        {/* THE PLAN'S PAUSE, the slim line's own span — here only
+                            when the host gave it no seat of its own (below). */}
+                        {limitWord && !props.headStatusHost ? (
+                          <span className="c-tb-paused" aria-live="polite">
+                            {limitWord}
+                          </span>
+                        ) : null}
+                        {props.headerExtra}
+                      </>,
+                      props.headChipsHost,
+                    )
+                  : null}
+                {/* …AND IN ITS OWN SEAT when the host has one (ChatMount
+                    `headStatusHost`): beside the identity, on no rung of the
+                    head's ladder — the chips fold first, and "paused · resumes
+                    4:00 AM" is the one fact the ring cannot carry. */}
+                {props.headStatusHost && limitWord
+                  ? createPortal(
+                      <span className="c-tb-paused" aria-live="polite">
+                        {limitWord}
+                      </span>,
+                      props.headStatusHost,
+                    )
+                  : null}
+              </>
             ) : null}
             <TasksContext.Provider value={tasksById}>
             <Transcript

@@ -11,6 +11,7 @@ import {
   putCanvasesEnabled,
   putCanvasRailPeekEnabled,
   putTaskFavouritesEnabled,
+  putTaskHeadUnifiedEnabled,
   putTaskIconsEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
@@ -27,6 +28,7 @@ import {
 } from "@platform/lib/api";
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
+import { publishTaskHeadUnified } from "../task-head-flag";
 import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { publishFavouritesParent, publishTaskFavourites } from "@platform/lib/favourites-flag";
 import { publishTaskIcons } from "@platform/lib/task-icons-flag";
@@ -316,6 +318,24 @@ export function TaskFavouritesControl({ prefs, onChange }: PrefControlProps) {
           : on
             ? "On — a star on the preview card keeps a chat in a Favourites section at the rail's foot, its own card open beside it on every page."
             : "Off — no star, no Favourites section."
+      }
+      onChange={onChange}
+    />
+  );
+}
+
+export function TaskHeadUnifiedControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.task_head_unified?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="tasks-unified-head"
+      checked={on}
+      put={putTaskHeadUnifiedEnabled}
+      after={(next) => publishTaskHeadUnified(next.task_head_unified)}
+      status={
+        on
+          ? "On — every task view shows the same header: close or back, prev/next, status, star, number, title, Open and ⋮."
+          : "Off — each view keeps its own header."
       }
       onChange={onChange}
     />

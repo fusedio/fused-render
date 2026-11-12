@@ -1595,6 +1595,10 @@ export interface Prefs {
   // favourite's own card, the rail beside the open pane, the star beside the
   // id in every task list. Optional: absent (older server) reads as off.
   task_favourites?: { enabled: boolean };
+  // One shared task header in every task view: the Tasks page side panel, the
+  // rail Tasks card, the New task card, the Cards popup (`task_head_unified_enabled`,
+  // shell/prefs.py; off by default). Optional: absent (older server) reads as off.
+  task_head_unified?: { enabled: boolean };
   // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
   // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
   // its status ring. Optional: absent (older server) reads as off.
@@ -2179,6 +2183,10 @@ export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskFavouritesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_favourites_enabled: enabled });
+}
+
+export function putTaskHeadUnifiedEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_head_unified_enabled: enabled });
 }
 
 export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {

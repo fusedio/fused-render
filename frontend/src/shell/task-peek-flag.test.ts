@@ -241,7 +241,9 @@ describe("the peek header", () => {
     expect(head).not.toContain("tabIndex");
     // RING · NUMBER · TITLE inside that block, and nothing between them that
     // could take a tab stop.
-    const who = WHO.slice(WHO.indexOf('<div className="task-side-peek-who">'));
+    // The block's box (its class list grew a `part` and a host class; the
+    // literal is the first thing in it).
+    const who = WHO.slice(WHO.indexOf('"task-side-peek-who"'));
     const inner = ["<StatusIcon", "task-side-peek-id", "task-side-peek-title"].map((n) => {
       const i = who.indexOf(n);
       expect(i).toBeGreaterThan(-1);

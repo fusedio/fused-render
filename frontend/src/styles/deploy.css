@@ -182,6 +182,12 @@
    head, so `justify-content: space-between` still reads `[ title | ✕ ]` and the
    caption cannot drift into the middle of the bar. The h2 keeps its
    `overflow: hidden` ellipsis and gives way; the caption never shrinks. */
+/* A CALLER'S OWN HEAD (Modal `head`, the shared task head): in place of
+   `.modal-head`, laid out as the dialog's own first row. */
+.modal-head-slot {
+  display: contents;
+}
+
 .modal-head-title {
   display: flex;
   align-items: center;

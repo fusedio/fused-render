@@ -1,0 +1,594 @@
+/* ONE TASK HEAD, EVERYWHERE (shell/TaskHead.tsx; design.md, "One task head,
+   everywhere"). The side panel's head (task-peek.css `.task-side-peek-head`)
+   under its own names, so every task view — the Tasks page's panel, the rail's
+   Tasks card, the New task card's chat, the Cards popup — draws the same row
+   at the same height. The old `.task-side-peek-*` rules stay in task-peek.css
+   while the flag keeps the old heads alive (PR 4 deletes them).
+
+   One 44px line: [lead][↑][↓] · who · [queue][status][place] · [chips][seats]
+   [↗ Open][⋮]. Only the title flexes; everything else is a mark or a control.
+   The lead, the place, ↗ Open and the ⋮ never move and never hide. A head
+   whose ladder has reached rung 4 (or that pins `stacked`) is two rows:
+   [lead][place] … [↗ Open][⋮], then the whole identity on a row of its own. */
+:root {
+  --task-head-h: 44px;
+}
+
+.task-head {
+  flex: 0 0 auto;
+  min-height: var(--task-head-h);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.task-head-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--task-head-h);
+  min-width: 0;
+}
+
+/* Holds the middle open while there is no task yet, so the two clusters do not
+   slide together and back as one lands. */
+.task-head-idle {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.task-head-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* The static title (the card's list head: "Tasks") — the identity block's
+   title type, one line, ellipsised. */
+.task-head-title-static {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The paused word — a fact, muted, never shimmering (it is the one state whose
+   whole content is that nothing is moving). */
+.task-head-status {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.task-head .tasks-row-queue {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.task-head-place {
+  display: inline-flex;
+  align-items: center;
+  /* FIXED, not shrinking (QA, 2026-11-10): a seat that shrinks is measured
+     at its squeezed width (row-fit `rowNeed`, `min(width, 72)`), so the row
+     "fit" with the folder name cut to "Fus" and the ladder never saw the
+     overflow. Held at its own width it overflows honestly and the ladder
+     folds the seats that may go. On NO rung itself: where the task lives is
+     never hidden, and stacked it stands beside the lead. */
+  flex: 0 0 auto;
+  max-width: 180px;
+  overflow: hidden;
+}
+
+/* Everything that can be DONE, pushed to the row's end — so a short static
+   title and a missing task never pull the controls into the middle. */
+.task-head-marks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* NEVER SHRINKS (QA, 2026-11-10): every seat in here is a fixed control
+     or a capped chip, so a cluster that gave width while its children could
+     not simply pushed the ⋮ past the panel's edge — and the fit engine, which
+     models the children, never saw an overflow to fold. The title is the one
+     thing that gives; the ladder folds the rest. */
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+/* Only the chips (pinned stacked, below) and the host's seats give way inside
+   it; every control keeps its size. */
+.task-head-marks > :not(.task-head-chips):not(.task-head-seats) {
+  flex-shrink: 0;
+}
+
+/* THE HOST'S SEATS (the chat's AnnStrip, picker, view toggle, camera,
+   exit-full-screen). A box of their own so the chat can measure them and fold
+   their WORDS (`useFitStrip` stamps `.tight`, as it did on the strip): it is
+   allowed to shrink, which is what makes that measurement see an overflow. */
+.task-head-seats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-root .task-head-seats.tight .c-anncta,
+.task-head-seats.tight .c-anncta {
+  --c-annlbl: none;
+}
+
+/* A HEAD PINNED STACKED (`stacked: true`) keeps its chips on row 1 until rung
+   1 folds them; at the card's floor that row can still be tight, so the chip
+   seat may shrink there and the pill ellipsise inside it. */
+.task-head.is-stacked .task-head-chips {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.task-head.is-stacked .task-head-chips > *,
+.task-head.is-stacked .task-head-chips .chat-worktree-btn {
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* The reply line after the title (TaskHead `subtitle`; the rail card's last
+   reply): muted, italic, one line — the List row's way. */
+.task-head-subtitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+/* The identity's silhouette while nobody has answered (TaskHead `pending`):
+   composer.css's `.c-tb-skel`, held to the identity's seat. */
+.task-head-skel {
+  flex: 1 1 auto;
+}
+
+/* A chat with no task row yet names the tool and the file (ClaudeChat's
+   fallback title, Topbar's line): the mark at the identity line's colour. */
+.task-head .c-tb-fallback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 400;
+}
+.task-head .c-tb-fallback .c-spark {
+  color: var(--c-accent);
+  font-size: 15px;
+}
+
+/* THE CHIPS — the chat's worktree pill (portaled in from the chat, ChatMount
+   `headChipsHost`) and the task's PR chip — the way the slim peek line drew
+   them (chat.css `.chat-peek-head .c-topbar`): one line. The ladder's FIRST
+   rung (Akshil, 2026-11-10): they are the first thing a narrow head gives up.
+   An empty seat takes no gap. */
+.task-head-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* Same rule as `.task-head-place`: held at its width (capped below) so the
+     ladder sees the overflow and folds chips → seats → chevrons → stacks the
+     identity → the number, rather than the count/when chips being clipped
+     out of the seat. */
+  flex: 0 0 auto;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.task-head-chips:not(:has(> :not(.task-head-chips-host))):not(:has(> .task-head-chips-host > *)) {
+  display: none;
+}
+.task-head-chips-host {
+  display: contents;
+}
+.task-head-chips .chat-worktree-menu {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: 0;
+}
+.task-head-chips .chat-worktree-btn {
+  min-width: 0;
+  max-width: 100%;
+}
+.task-head-chips .chat-worktree-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: 0;
+  overflow: hidden;
+  color: var(--c-fg);
+  border-color: var(--c-border-strong);
+}
+/* The usage limit's word ("paused · resumes 4:00 AM"), portaled in by the chat
+   after its worktree pieces — the slim line's own `.c-tb-paused`, kept whole. */
+.task-head-chips .c-tb-paused {
+  flex: 0 0 auto;
+}
+.task-head-chips .task-pr-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.task-head-chips .task-pr-chip,
+.task-head-chips .task-pr-more {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  white-space: nowrap;
+  background: none;
+  border: 1px solid var(--c-border, var(--border));
+  border-radius: 999px;
+  color: var(--c-dim, var(--fg-muted));
+  text-decoration: none;
+  cursor: pointer;
+}
+.task-head-chips .task-pr-chip:hover,
+.task-head-chips .task-pr-more:hover {
+  color: var(--c-fg, var(--fg));
+  border-color: var(--c-border-strong, var(--fg-faint));
+}
+
+/* ↗ OPEN — a word behind a mark, a quiet ghost link: nothing at rest, a wash
+   and full ink on hover (task-peek.css `.task-side-peek-open`). Sized off the
+   icon button so it sits on the row's baseline beside the ⋮. */
+.task-head-open {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--peek-icon-w);
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.task-head-open:hover {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+
+/* THE ONE ICON BUTTON — lead (× or ←) and the chevrons alike. */
+.task-head-btn {
+  width: var(--peek-icon-w);
+  height: var(--peek-icon-w);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.task-head-btn:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+.task-head-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* The chat's own ⋮ (apps/claude/ui/Kebab), at the head's icon size and wash —
+   level with the lead and the chevrons. */
+.task-head-kebab {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.task-head-kebab .c-kebabbtn {
+  width: var(--peek-icon-w);
+  height: var(--peek-icon-w);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.task-head-kebab .c-kebabbtn:hover {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+
+/* THE IDENTITY'S OWN ROW (rung 4, or `stacked` pinned): the whole block —
+   ring, ★, number, title, reply — with its queue caption and paused word,
+   under the doors. Only the title ellipsises here; rung 5 takes the number. */
+.task-head-titlerow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 22px;
+  padding: 0 2px 6px 6px;
+}
+.task-head-titlerow .task-side-peek-who {
+  flex: 1 1 auto;
+}
+
+/* THE LADDER (shell/row-fit.ts `TASK_HEAD_DROPS`), cumulative: each rung keeps
+   every fold below it. Measured, never a breakpoint. Rung 4 is drawn by the
+   component (the identity moves rows, the place moves up beside the lead), so
+   it has no rule of its own here. The lead, the place, ↗ Open and the ⋮ are on
+   no rung. */
+.task-head-nav {
+  display: contents;
+}
+.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"]) .task-head-chips {
+  display: none;
+}
+.task-head:is([data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"]) .task-head-seats {
+  display: none;
+}
+.task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"]) .task-head-nav {
+  display: none;
+}
+.task-head[data-fit="5"] .task-side-peek-id {
+  display: none;
+}
+
+/* IN A MODAL (Modal `head`): the head is the dialog's first row, in place of
+   `.modal-head`, and keeps the dialog's own corner radius clear. */
+.modal-dialog > .modal-head-slot > .task-head {
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+}
+
+/* THE TITLE KEEPS ITS FLOOR (row-fit.ts `FIT_TEXT_FLOOR`, 72px). The fit engine
+   charges a shrinking text seat `min(width, 72)`, so a title that siblings had
+   already crushed to 0 counted as 0 and the row "fit" with no title in it
+   (QA, 2026-11-10: a worktree pill and a PR chip ate the whole line). With the
+   floor stated in CSS the row overflows instead, the ladder sees it and folds;
+   the chips cap below so a long branch name shares the line rather than
+   taking it. */
+.task-head .task-side-peek-who .task-side-peek-title {
+  min-width: 72px;
+}
+.task-head-chips {
+  max-width: 220px;
+}
+/* …and the pill keeps a readable stub ("wor…") rather than collapsing to its
+   outline; the PR chips are short and never shrink. */
+.task-head-chips .chat-worktree-btn {
+  min-width: 56px;
+}
+.task-head-chips .task-pr-chips {
+  flex: 0 0 auto;
+}
+
+/* -- in the chat's own column (apps/claude ClaudeChat, flag on) ---------------
+   The side pane, the canvas pane and the app page's pane draw the shared head
+   in place of the `.c-anntools` strip and the identity line. The column's
+   panel shows through, as it did through the strip. */
+.chat-root .c-task-head {
+  background: none;
+}
+/* THE NARROW PREVIEW VIEW hides every child of the chat column but the strip
+   (chat.css `.c-chat > *:not(.c-anntools)`), because the strip carries the view
+   toggle — the one way back to the chat. The head carries it now, so it stays;
+   and ← goes, as the strip's did: the list it returns to is off screen. */
+.chat-root.narrow.view-preview .c-chat > .task-head.c-task-head {
+  display: flex;
+}
+.chat-root.narrow.view-preview .c-task-head .task-head-lead.is-back {
+  display: none;
+}
+/* FULL SCREEN portals the whole head into the pane header's
+   `.side-header-lead` (preview.css), as it did the strip: there it is a bare
+   flex item — no border, no padding, no height of its own — so the header
+   does not grow. */
+.side-header-lead .task-head {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border-bottom: 0;
+  background: none;
+}
+.side-header-lead .task-head-row {
+  min-height: 0;
+}
+
+/* -- the rail's hover / favourite card (shell/claude-rail RailPeek) ----------
+   The old head's box stays as a wrapper that lays out as NOTHING, so its
+   Escape handler and its hover-archive rules still reach the shared head
+   inside. The pulse (count, when, archive) rides the chips seat. */
+.claude-rail-peek-head.is-unified {
+  display: contents;
+}
+.claude-rail-peek-task-head .claude-rail-peek-pulse {
+  flex: 0 0 auto;
+}
+
+/* -- the New task card's FORM head (NewJobModal, flag on) --------------------
+   The chassis' head pieces on the shared chassis: the agent crumb, the name
+   (an input inside the heading, as before) and the source chip as the title,
+   Folder and When as the chips. The title takes the squeeze (the dialog's own
+   `.modal-head-title` rule, 1000 shrink weight); nothing here clips, because
+   the agent, Folder and When popovers hang off their pills. */
+.nt-form-head .task-head-title-static {
+  display: flex;
+  align-items: center;
+  flex: 1 1000 auto;
+  min-width: 0;
+  overflow: visible;
+  font-size: inherit;
+  font-weight: inherit;
+}
+.nt-form-head .modal-head-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.nt-form-head .modal-head-title h2 {
+  margin: 0;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+}
+.nt-form-head .task-head-chips {
+  flex: 0 1 auto;
+  overflow: visible;
+}
+
+/* THE ARMED ✕ (a dirty form's first close): `.deploy-close.is-armed`'s warm
+   wash, held on hover so the mouse cannot cool a state that is still live. */
+.nt-form-head .task-head-lead.is-armed,
+.nt-form-head .task-head-lead.is-armed:hover:not(:disabled) {
+  background: rgba(var(--warning-rgb), 0.16);
+  color: var(--warning);
+}
+
+/* THE RING FILES THE TASK (shell/TaskFileSeat). One box, two occupants: the
+   status ring at rest, Archive / Unarchive while the pointer is ON THE STATUS
+   ICON ITSELF or the button holds the keyboard — out of flow and centred on
+   the 16px ring, so nothing in the row moves. 22px to aim at.
+
+   THE STATUS ICON, NOT THE HEADER (Akshil, 2026-11-12: "we show archive icon
+   on task status icon only when we hover over the task status"). The first cut
+   swapped on `.task-head:hover`, the Tasks row's rule — but a header is under
+   the pointer most of the time a reader is in the view (the title, the ⋮, the
+   chips are all there), so the status was almost never shown as a status. The
+   seat is the trigger: the pointer over the ring is the reader reaching for it.
+
+   The rail card's own archive (`.claude-rail-peek-archive`, its
+   `statusOverlay`) takes the same seat and the same rule. With task icons on
+   the glyph is drawn INSIDE `.schedule-ring`, so it steps aside with it. */
+.task-head .task-side-peek-status {
+  position: relative;
+}
+.task-head .task-side-peek-status :is(.task-head-file, .claude-rail-peek-archive) {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  /* Invisible means intangible: a hidden control sitting over the ring must
+     not eat the press, nor widen the seat's own hover box past the ring. */
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+}
+.task-head .task-side-peek-status:hover :is(.task-head-file, .claude-rail-peek-archive),
+.task-head .task-side-peek-status :is(.task-head-file, .claude-rail-peek-archive):focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* …and the ring steps aside — only where there IS a button: a task whose
+   filing cannot change (a run in flight) keeps its ring under the pointer. */
+.task-head .task-side-peek-status:hover:has(.task-head-file, .claude-rail-peek-archive) .schedule-ring,
+.task-head .task-side-peek-status:has(.task-head-file:focus-visible, .claude-rail-peek-archive:focus-visible) .schedule-ring {
+  opacity: 0;
+  pointer-events: none;
+}
+.task-head .task-side-peek-status .schedule-ring {
+  transition: opacity 0.08s ease;
+}
+.task-head .task-side-peek-status :is(.task-head-file, .claude-rail-peek-archive):hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+/* A SPENT PRESS HANDS THE SLOT BACK (the row's `.is-refiled`): the ring — now
+   drawing the new state, which is the receipt — returns until the pointer
+   leaves the status icon; the keyboard's own focus still shows the button. */
+.task-head.is-refiled .task-side-peek-status:hover .task-head-file:not(:focus-visible) {
+  opacity: 0;
+  pointer-events: none;
+}
+.task-head.is-refiled .task-side-peek-status:hover:not(:has(.task-head-file:focus-visible)) .schedule-ring {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* The reply line keeps its own face inside the subtitle seat. */
+.claude-rail-peek-task-head .task-head-subtitle {
+  flex: 1 1 0;
+  font-style: normal;
+}
+.claude-rail-peek-task-head .task-head-subtitle .claude-rail-peek-reply {
+  margin-left: 0;
+}
+
+/* THE HEAD IS CHROME: it never follows the chat text zoom (chat.css, "Chat
+   CHROME never follows the text zoom", #2233). Inside a chat pane the head
+   stands in `.chat-root`, whose `--c-zoom` scales every `calc(Npx * zoom)`
+   size — so at 150% the worktree pill, the PR chip and the pane seats grew
+   inside a 44px row whose title stayed 13px. One factor of 1 for the whole
+   head; the `:where()` base re-seats anything that names no size of its own
+   (it would otherwise inherit the zoomed `.chat-root` size). */
+.task-head,
+.task-head .task-head-chips {
+  /* …the chip seat by name too: it wears `.c-tokens` (the chat's colour
+     block), which re-reads the zoom for itself. */
+  --c-zoom: 1;
+}
+.chat-root :where(.task-head) {
+  font-size: var(--c-fs-read);
+}
+
+/* THE PAUSE WORD'S SEAT (TaskHead `statusRef`; ChatMount `headStatusHost`):
+   the chat portals "paused · resumes 4:00 AM" here, beside the identity — on
+   no rung, so a narrow panel still says when the session comes back, and onto
+   row 2 with the identity when stacked. Lays out as nothing of its own. */
+.task-head-status-host {
+  display: contents;
+}
+.task-head-status-host .c-tb-paused {
+  flex: 0 0 auto;
+}
+
+/* …and so is the menu its ⋮ opens (Kebab adds `c-kebabpop--head` when the
+   trigger stands in a task head): portaled out of the head, it would read the
+   page's chat zoom for itself. Two classes, to outrank `.c-overlay`'s own
+   `--c-zoom`. */
+.c-kebabpop.c-kebabpop--head {
+  --c-zoom: 1;
+}

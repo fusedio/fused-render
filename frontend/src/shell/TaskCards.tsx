@@ -36,6 +36,7 @@ import { notify } from "@platform/lib/notifications";
 import { ChatFramePlaceholder, ChatMount } from "@apps/claude";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { Modal } from "@platform/ui/modal/Modal";
+import type { ModalHeadContext } from "@platform/ui/modal/Modal";
 import { TaskStar } from "@platform/ui/TaskStar";
 import { folderHref } from "./schedule-lib";
 import {
@@ -52,6 +53,14 @@ import {
   StopJobButton,
 } from "./ScheduleTaskViews";
 import { EraseTaskModal } from "./EraseTaskModal";
+// THE SHARED TASK HEAD on the popup (design.md, "One task head, everywhere"),
+// behind its flag; off, the popup's head below is unchanged.
+import { TaskHead } from "./TaskHead";
+import type { BreakoutControl } from "@apps/claude/ClaudeChat";
+import { useTaskHeadUnified } from "./task-head-flag";
+import { Kebab } from "@apps/claude/ui/Kebab";
+import { AgentProvider } from "@apps/claude/ui/agent-context";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 import {
   CARD_PAGE,
   basename,
@@ -1000,6 +1009,16 @@ function TaskPeek({
   // the honest trigger: bumped once the transcript paints, it tells the Modal
   // to take the focus it could not take at mount.
   const [chatReady, setChatReady] = useState(0);
+  const unified = useTaskHeadUnified();
+  /** The shared head, for a task the chat's ⋮ can act on (see `head=`). */
+  const sharedHead = unified && !!task.session_id;
+  /** The shared head's chip seat (ChatMount `headChipsHost`). */
+  const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  /** …and its status seat, for the chat's pause word (ChatMount
+   *  `headStatusHost`) — on no rung of the head's ladder. */
+  const [statusHost, setStatusHost] = useState<HTMLElement | null>(null);
+  /** The chat's Breakout, as it reports it — so the shared ⋮ carries it. */
+  const [breakoutCtl, setBreakoutCtl] = useState<BreakoutControl | null>(null);
 
   const archiveAsk = useArchiveConfirm();
   const refile = (): void => {
@@ -1127,6 +1146,87 @@ function TaskPeek({
           )}
         </>
       }
+      // THE SHARED HEAD, with the flag on: × to close (the chassis' own guarded
+      // close), the identity, the PR chip, ↗ Open and the chat's own ⋮ — which
+      // is where Archive and Delete live now, offered the way every other task
+      // menu offers them. ONLY FOR A TASK WITH A SESSION: without one there is
+      // no ⋮, and the old head's doors (Archive, Delete, the folder-deleted
+      // door) are the only place those acts live — TaskPeek's rule.
+      {...(sharedHead ? {
+        head: ({ titleId, close }: ModalHeadContext) => (
+          <TaskHead
+            className="task-peek-head"
+            lead={{ kind: "close", label: "Close", onPress: close }}
+            task={task}
+            titleId={titleId}
+            chips={<TaskPrChip task={task} />}
+            chipsRef={setChipsHost}
+            statusRef={setStatusHost}
+            // The ring's Archive closes the popup, as the ⋮'s; an Unarchive
+            // re-reads and stays.
+            onFiled={(kind) => {
+              onReload?.();
+              if (kind === "archive") onClose();
+            }}
+            open={explorer ? {
+              href: explorer,
+              label: pageDoorLabel(task),
+              onOpen: (h) => {
+                onClose();
+                void navigateUrl(h);
+              },
+            } : null}
+            kebab={task.session_id ? (
+              <AgentProvider backend={task.backend ?? ""}>
+                <Kebab
+                  file={taskChatTarget(task)}
+                  sessionId={task.session_id}
+                  running={taskColumn(task) === "in_progress" || taskColumn(task) === "queued"}
+                  asking={taskColumn(task) === "needs_attention"}
+                  queued={taskColumn(task) === "queued"}
+                  // A filed task is a closed matter (the refile above).
+                  onArchived={() => {
+                    onReload?.();
+                    onClose();
+                  }}
+                  onErased={() => {
+                    notify({ title: `Deleted ${shortTaskId(task.task_id)}`, tone: "info" });
+                    onReload?.();
+                    onClose();
+                  }}
+                  {...(!gone && taskHref(task) && opensInSidePane(taskHref(task)!) ? {
+                    fullScreen: {
+                      on: false,
+                      onToggle: () => {
+                        const href = taskHref(task);
+                        const sid = task.session_id;
+                        if (!href || !sid) return;
+                        onClose();
+                        void navigateUrl(href).then((went) => {
+                          if (went !== false) requestSideMaximized(sid);
+                        });
+                      },
+                    },
+                  } : {})}
+                  // BREAKOUT, from the chat's own report (TasksPeek's route).
+                  {...(breakoutCtl?.available ? {
+                    breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle },
+                  } : {})}
+                  extraItems={[
+                    ...(gone ? [{
+                      label: `${pageDoorLabel(task)} — folder deleted`,
+                      icon: ICON_FOLDER,
+                      disabled: true,
+                      title: MISSING_FOLDER_TOAST,
+                      onClick: toastMissingFolder,
+                    }] : []),
+                  ]}
+                />
+              </AgentProvider>
+            ) : null}
+          />
+        ),
+      } : {})}
       // The footer exists only while there is a sentence for it: a refused
       // archive, in the List row's quiet voice.
       footer={
@@ -1152,8 +1252,11 @@ function TaskPeek({
           backend={task.backend}
           chatOnly
           peek
-          headerInPeek
-          headerExtra={<TaskPrChip task={task} />}
+          // The shared head seats the worktree pieces (`headChipsHost`); the
+          // old head keeps the chat's slim line.
+          {...(sharedHead
+            ? { headChipsHost: chipsHost, headStatusHost: statusHost, onBreakoutControl: setBreakoutCtl }
+            : { headerInPeek: true, headerExtra: <TaskPrChip task={task} /> })}
           paramsSource="memory"
           onEscape={onClose}
           focusRef={boxRef}

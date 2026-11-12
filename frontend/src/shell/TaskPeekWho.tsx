@@ -18,14 +18,15 @@
 // hosts `@apps/claude`'s `ChatMount`, so a chat importing it would close an
 // import cycle — and the boundary check (scripts/check-boundaries.mjs) opens a
 // hole for named shell modules one file at a time for the same reason.
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Pencil } from "lucide-react";
 import { renameTask, type Task } from "@platform/lib/api";
 import { TaskStar } from "@platform/ui/TaskStar";
 import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { columnLabel } from "./schedule-lib";
 import { pokeTasks } from "./tasksPulse";
-import { StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
+import { QueueCaptionText, StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
+import type { QueueCaption } from "@platform/lib/queue";
 import { TaskIconPick } from "./TaskIconPick";
 import {
   BACKGROUND_LABEL,
@@ -90,8 +91,51 @@ function renamable(task: Task): boolean {
  * automatic title back. Same draft / busy / error shape as the Current apps
  * rename. `rename` is injectable so a test needs no network.
  */
-export function TaskPeekWho({ task, running = false, bare = false, rename = renameTask, star = false }: {
+export function TaskPeekWho({
+  task,
+  running = false,
+  bare = false,
+  rename = renameTask,
+  star = false,
+  part = "all",
+  className,
+  titleId,
+  starNode,
+  statusOverlay,
+  ring,
+  subtitle,
+  onRenamed,
+}: {
   task: Task;
+  /** RING FACTS ONLY THE HOST KNOWS (the rail card: RailPeek): the unread
+   *  mark, the unsent-draft dot, and a failure the merged row carries. The
+   *  listing row this block reads has none of them. */
+  ring?: { unread?: boolean; draftHeld?: boolean; failed?: boolean };
+  /**
+   * WHICH HALF OF THE BLOCK, for a head that has folded its title onto a row of
+   * its own (shell/TaskHead `stacked`): `"marks"` is the ring, the agent mark,
+   * the star and the number with no title; `"title"` is the title and its
+   * rename pencil with none of the marks. `"all"` — the default — is the block
+   * every caller has always drawn, byte for byte.
+   */
+  part?: "all" | "marks" | "title";
+  /** Extra class on the block's own box (TaskHead marks the seat its ladder
+   *  folds away). Absent: the class list every caller has always had. */
+  className?: string;
+  /** An `id` on the title's own span — the shared head's `titleId`, which a
+   *  `Modal` names its dialog by (`aria-labelledby`). On the TITLE and not the
+   *  block, so the dialog's name is the task's title and not "Rename task". */
+  titleId?: string;
+  /** A host's own star control in the star's seat, instead of `TaskStar` (the
+   *  rail card's, which tells its rail and dismisses on unstar). */
+  starNode?: ReactNode;
+  /** Drawn INSIDE the ring's seat, over it (the rail card's hover-archive). */
+  statusOverlay?: ReactNode;
+  /** A muted line after the title, in the title's row (the rail card's last
+   *  reply). */
+  subtitle?: ReactNode;
+  /** After a rename the server took (and `pokeTasks`): the host re-reads. */
+  onRenamed?: () => void;
   /** Title only: no ring, agent mark or task number (the chat in a side pane,
    *  where the width is the title's). */
   bare?: boolean;
@@ -116,6 +160,8 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
   const title = useTaskHeadline(task);
   const canRename = renamable(task);
   const [draft, setDraft] = useState<string | null>(null);
+  // The icon picker is open (TaskIconPick): the host's overlay stays away.
+  const [iconPicking, setIconPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Enter saves and the unmount-time blur must not save twice; Escape must not
@@ -147,6 +193,7 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
       setDraft(null);
       setError("");
       pokeTasks();
+      onRenamed?.();
     } catch (e) {
       setError((e as Error).message || "Could not rename");
     } finally {
@@ -162,32 +209,57 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
   // …and a finished turn whose chat still holds a live background job wears the
   // List row's blue "Background" ring (tasks-lib.liveJobRow).
   const background = !running && liveJobRow(task);
+  const showMarks = !bare && part !== "title";
+  const showTitle = part !== "marks";
   return (
-    <div className="task-side-peek-who">
-      {bare ? null : (
+    <div
+      className={
+        "task-side-peek-who" +
+        (part === "all" ? "" : ` is-${part}`) +
+        (className ? ` ${className}` : "")
+      }
+    >
+      {!showMarks ? null : (
         <>
       <span
         className="task-side-peek-status"
         title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
       >
-        <TaskIconPick task={task} editing={draft !== null}>
+        <TaskIconPick
+          task={task}
+          editing={draft !== null}
+          onOpenChange={setIconPicking}
+          {...(onRenamed ? { onDone: onRenamed } : {})}
+        >
           <StatusIcon
             status={status}
-            failed={running ? false : ringFailed(task)}
+            failed={running ? false : ring?.failed || ringFailed(task)}
             background={background}
             icon={task.icon_slot}
+            {...(ring?.unread ? { unread: true } : {})}
+            {...(ring?.draftHeld ? { draftHeld: true } : {})}
           />
         </TaskIconPick>
+        {/* Not while the title is being edited: the host's overlay (the rail
+            card's Archive) stands OVER the ring, and during a rename the ring
+            is the icon picker's button — a press there must open the picker,
+            not archive (RailPeek's own rule, #2238). Nor while that picker is
+            open: its filter box takes the focus, the rename ends, and the
+            overlay would be back under the pointer that pressed the glyph. */}
+        {draft === null && !iconPicking ? statusOverlay : null}
       </span>
       <TaskAgentMark backend={task.backend} />
-      {star && <TaskStar task={task} />}
+      {starNode ?? (star && <TaskStar task={task} />)}
       <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
         </>
       )}
-      {draft === null ? (
+      {!showTitle ? null : draft === null ? (
         <>
           <span
             className="task-side-peek-title"
+            // …and the heading role the dialog's `h2` carried before the
+            // shared head replaced it (Modal `head`).
+            {...(titleId ? { id: titleId, role: "heading", "aria-level": 2 } : {})}
             title={title}
             onDoubleClick={canRename ? startRename : undefined}
           >
@@ -209,6 +281,11 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
         <>
           <input
             className="task-side-peek-title-input"
+            // THE DIALOG KEEPS ITS NAME while the title is being edited: a
+            // Modal's `aria-labelledby` points at `titleId`, which lived only on
+            // the title span this input replaces. The input carries it for as
+            // long as it stands (no heading role — it is a field).
+            {...(titleId ? { id: titleId } : {})}
             value={draft}
             maxLength={TITLE_MAX_LENGTH}
             disabled={busy}
@@ -235,6 +312,7 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
           {error && <span className="task-side-peek-rename-error">{error}</span>}
         </>
       )}
+      {showTitle && subtitle ? <span className="task-head-subtitle">{subtitle}</span> : null}
     </div>
   );
 }
@@ -267,6 +345,49 @@ export function TaskPeekProject({ task, home = "" }: { task: Task; home?: string
   return (
     <span className="task-side-peek-project" title={tildePath(task.project, home)}>
       {basename(task.project)}
+    </span>
+  );
+}
+
+/**
+ * WHERE THIS CHAT STANDS IN ITS FOLDER'S LINE — "after TASK-046 | 2nd".
+ *
+ * THE TASKS ROW'S OWN MARKUP, classes and all (`tasks-row-queue` /
+ * `tasks-queue-text`, styles/tasks.css, which `shell.css` loads for every page —
+ * the chat draws inside that document). The words are `queueCaption`'s, the
+ * pointer's title is the row's, and the ink is the row's muted register: one
+ * fact, one sentence, one look, wherever a reader meets it.
+ *
+ * NO ⤒ AND NO SECOND COLOUR, for the reason the row and the card dropped them
+ * (Akshil, 2026-09-19): a skip changes the ORDER, which this sentence prints,
+ * and nothing about it is a highlight.
+ *
+ * THE HEADER IS NOT A ROW, so there is nothing for a press on the words to open
+ * — only the id is a door, and it is the same `<a>` the list draws.
+ *
+ * IT IS NOT THE USAGE LIMIT'S SEAT any more (`.c-tb-paused`, which keeps its one
+ * job): that span is Blocked's red at the right end of the line, and a queued
+ * chat is neither blocked nor at the end of anything — it is a task with a place
+ * in a line, and the place belongs beside the name it is a place for.
+ *
+ * `aria-live="polite"`: an ambient state, mentioned when the reader next comes up
+ * for air. The ring beside it already says "Queued" out loud.
+ *
+ * LIVES HERE, beside the identity block it trails, since 2026-11-10: the chat's
+ * Topbar and the shared task head (shell/TaskHead) both draw it, and the chat
+ * may import this module (scripts/check-boundaries.mjs) where the head may not
+ * import the chat's.
+ */
+export function QueuedCaption({ line }: { line: QueueCaption }) {
+  return (
+    <span
+      className="tasks-row-queue"
+      data-hint={line.aheadTitle || line.text}
+      aria-live="polite"
+    >
+      <span className="tasks-queue-text">
+        <QueueCaptionText queue={line} />
+      </span>
     </span>
   );
 }

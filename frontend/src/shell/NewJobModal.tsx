@@ -26,6 +26,10 @@ import { ChatMount } from "@apps/claude";
 import { homePlaceholderFor, type TargetNoun } from "@apps/claude/pane/paneUrl";
 import { runAppEntry } from "@apps/claude/protocol/agent";
 import { TaskPeekWho } from "./TaskPeekWho";
+// THE SHARED TASK HEAD on the open chat (design.md, "One task head,
+// everywhere"), behind its flag; off, the chat's head below is unchanged.
+import { TaskHead } from "./TaskHead";
+import { useTaskHeadUnified } from "./task-head-flag";
 import { usePlusCardHidden } from "./claude-rail/plus-card-store";
 import { useAutoReadOpenTasks, useDocumentVisible } from "./task-open-read";
 import { useTasksPulseRows } from "./tasksPulse";
@@ -56,7 +60,7 @@ import {
   isUnlistedEffort,
   useAgentBackends,
 } from "@platform/lib/agent-backends";
-import { Modal, type ModalProps } from "@platform/ui/modal/Modal";
+import { Modal, type ModalHeadContext, type ModalProps } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
   getClaudeSessionFolders,
@@ -5248,6 +5252,13 @@ export default function NewJobModal({
   const chatFile = liveChat ? taskChatTarget(liveChat) : landingTarget;
   const chatTitle = liveChat ? (cardTitleLine(liveChat).text || liveChat.title || "Chat") : "";
   const chatHref = liveChat ? taskHref(liveChat) : null;
+  const unified = useTaskHeadUnified();
+  /** The shared head's chip seat (ChatMount `headChipsHost`): the chat's
+   *  worktree pill shows there, as in every other task view. */
+  const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  /** …and its status seat, for the chat's pause word (ChatMount
+   *  `headStatusHost`) — on no rung of the head's ladder. */
+  const [statusHost, setStatusHost] = useState<HTMLElement | null>(null);
   // MARKED READ LIKE THE TASKS CARD DOES (TasksPeek, task-open-read): the open
   // chat, while the card shows it and the window is in view.
   const chatPulse = useTasksPulseRows(landing);
@@ -5266,6 +5277,36 @@ export default function NewJobModal({
     if (onOpenChat) return onOpenChat(href);
     window.location.assign(href);
   };
+  /** THE OPEN CHAT'S ⋮ on the shared head — the same `Kebab`, with the same
+   *  props, the old head below renders inline. */
+  const chatKebab = liveChat?.session_id ? (
+    <AgentProvider backend={liveChat.backend ?? ""}>
+      <Kebab
+        key={liveChat.key}
+        file={taskChatTarget(liveChat)}
+        sessionId={liveChat.session_id}
+        running={taskColumn(liveChat) === "in_progress" || taskColumn(liveChat) === "queued"}
+        asking={taskColumn(liveChat) === "needs_attention"}
+        queued={taskColumn(liveChat) === "queued"}
+        onErased={leaveChat}
+        onArchived={leaveChat}
+        {...(chatHref && opensInSidePane(chatHref) ? {
+          fullScreen: {
+            on: false,
+            onToggle: () => {
+              const sid = liveChat.session_id;
+              void Promise.resolve(openFromLanding(chatHref)).then((went) => {
+                if (went !== false && sid) requestSideMaximized(sid);
+              });
+            },
+          },
+        } : {})}
+        {...(chatBreakout?.available ? {
+          breakout: { picking: chatBreakout.picking, onToggle: chatBreakout.toggle },
+        } : {})}
+      />
+    </AgentProvider>
+  ) : null;
 
   return (
     <Modal
@@ -6040,6 +6081,59 @@ export default function NewJobModal({
           </>
         ),
       } : {})}
+      // THE FORM'S OWN HEAD, with the shared head on (design.md "One task
+      // head, everywhere"): the same pieces the chassis' head is given above —
+      // the agent crumb, the name, the source chip, Folder and When — on the
+      // shared chassis, × in the lead corner. The ✕'s two states carry over:
+      // gone while busy, armed after a dirty close (the chassis' `ctx`).
+      {...(!chatOpen && unified ? {
+        head: ({ titleId, close, busy: closing, armed, parts }: ModalHeadContext) => (
+          <TaskHead
+            className="nt-form-head"
+            lead={closing ? null : {
+              kind: "close",
+              label: armed ? "Close and discard changes" : "Close",
+              hint: armed ? "Press again to discard" : "Close",
+              armed,
+              onPress: close,
+            }}
+            task={null}
+            title={
+              <div className="modal-head-title">
+                {parts.titleLead}
+                <h2 id={titleId}>{parts.title}</h2>
+                {parts.titleAside}
+              </div>
+            }
+            // In the chassis' own `.modal-head-actions` box, so its row rules
+            // (deploy.css, new-task.css) still lay the pills out.
+            chips={<div className="modal-head-actions">{parts.headActions}</div>}
+            fitEnabled={false}
+          />
+        ),
+      } : {})}
+      // …AND WITH THE SHARED HEAD ON, that whole swap is one `TaskHead` in
+      // place of the chassis' head (Modal `head`): Back, the identity, ↗ Open
+      // and the ⋮, at every task view's height.
+      {...(chatOpen && unified ? {
+        head: ({ titleId }: ModalHeadContext) => (
+          <TaskHead
+            className="nt-chat-head"
+            lead={{ kind: "back", label: "Back", onPress: leaveChat }}
+            task={liveChat}
+            title={liveChat ? undefined : (name || fields.title || "New task")}
+            titleId={titleId}
+            open={chatHref ? { href: chatHref, label: "Open this chat", onOpen: (h) => openFromLanding(h) } : null}
+            chipsRef={setChipsHost}
+            statusRef={setStatusHost}
+            kebab={chatKebab}
+            // The ring's Archive goes back to the form, as the ⋮'s.
+            onFiled={(kind) => {
+              if (kind === "archive") leaveChat();
+            }}
+          />
+        ),
+      } : {})}
     >
       {chatOpen && !chatSession && (
         <div className="nt-landing-chat nt-landing-wait">
@@ -6070,6 +6164,7 @@ export default function NewJobModal({
             onNavigate={(href) => openFromLanding(href)}
             smallCard
             smallCardShown
+            {...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}
           />
         </div>
       )}

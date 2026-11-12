@@ -562,6 +562,18 @@ const ENTRIES = [
     keywords: "icon glyph picture emoji animal face ring task rail avatar favourite favorite star",
     renderOnly: true,
   },
+  // ONE HEADER FOR EVERY TASK VIEW (shell/TaskHead, task-head-flag). After the
+  // rail preview's two children, not between them: a row set there read as
+  // the parent of "Favourite chats".
+  {
+    id: "tasks-unified-head",
+    group: "features",
+    section: "Sidebar",
+    label: "Unified task header",
+    description: "One header for every task view: the Tasks page panel, the chat panes, the rail cards and the New task card.",
+    keywords: "task header unified head close back prev next status star open kebab card panel rail",
+    renderOnly: true,
+  },
   {
     id: "monitor",
     group: "general",

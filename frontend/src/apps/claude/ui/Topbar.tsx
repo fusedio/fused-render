@@ -29,11 +29,7 @@ import type { Task } from "@platform/lib/api";
 // THE QUEUE'S WORDS, from the one builder four surfaces share — "after TASK-046
 // | 2nd" (platform/lib/queue). The header says the same sentence the Tasks row
 // says, because it is the same fact about the same task.
-import {
-  type QueueCaption,
-  queueCaption,
-  type QueueFacts,
-} from "@platform/lib/queue";
+import { queueCaption, type QueueFacts } from "@platform/lib/queue";
 // THE TASK PANEL'S OWN IDENTITY BLOCK (shell/TaskPeekWho.tsx). Imported rather
 // than restated: the side peek and this header are two windows onto one
 // conversation, and a reader who moves between them must not have to pair up
@@ -51,8 +47,10 @@ import {
 // RIGHT end of the header, in the usage limit's red seat — which made one state
 // look like two different objects on two surfaces three pixels apart, and made
 // waiting look like failing.
-import { QueueCaptionText, StatusIcon } from "@shell/ScheduleTaskViews";
-import { TaskPeekAgent, TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
+import { StatusIcon } from "@shell/ScheduleTaskViews";
+// `QueuedCaption` (the row's "after TASK-046 | 2nd") lives beside the identity
+// block now, so the shared task head (shell/TaskHead) draws the same one.
+import { QueuedCaption, TaskPeekAgent, TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
 import { shortTaskId } from "@shell/tasks-lib";
 import "../styles/composer.css";
 // The skeleton below wears the landing list's own placeholder bar
@@ -365,43 +363,5 @@ export function Topbar({
       {worktreeHint}
       {tail ? <span className="c-tb-tail">{tail}</span> : null}
     </div>
-  );
-}
-
-/**
- * WHERE THIS CHAT STANDS IN ITS FOLDER'S LINE — "after TASK-046 | 2nd".
- *
- * THE TASKS ROW'S OWN MARKUP, classes and all (`tasks-row-queue` /
- * `tasks-queue-text`, styles/tasks.css, which `shell.css` loads for every page —
- * the chat draws inside that document). The words are `queueCaption`'s, the
- * pointer's title is the row's, and the ink is the row's muted register: one
- * fact, one sentence, one look, wherever a reader meets it.
- *
- * NO ⤒ AND NO SECOND COLOUR, for the reason the row and the card dropped them
- * (Akshil, 2026-09-19): a skip changes the ORDER, which this sentence prints,
- * and nothing about it is a highlight.
- *
- * THE HEADER IS NOT A ROW, so there is nothing for a press on the words to open
- * — only the id is a door, and it is the same `<a>` the list draws.
- *
- * IT IS NOT THE USAGE LIMIT'S SEAT any more (`.c-tb-paused`, which keeps its one
- * job): that span is Blocked's red at the right end of the line, and a queued
- * chat is neither blocked nor at the end of anything — it is a task with a place
- * in a line, and the place belongs beside the name it is a place for.
- *
- * `aria-live="polite"`: an ambient state, mentioned when the reader next comes up
- * for air. The ring beside it already says "Queued" out loud.
- */
-function QueuedCaption({ line }: { line: QueueCaption }) {
-  return (
-    <span
-      className="tasks-row-queue"
-      data-hint={line.aheadTitle || line.text}
-      aria-live="polite"
-    >
-      <span className="tasks-queue-text">
-        <QueueCaptionText queue={line} />
-      </span>
-    </span>
   );
 }

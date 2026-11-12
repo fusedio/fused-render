@@ -135,6 +135,7 @@ describe("visibility", () => {
     // The rail stands on the app page and in the explorer too (2026-11-01).
     const ids = visibleSettings(ctx({}, { canvases: { enabled: false } } as Partial<Prefs>)).map((s) => s.id);
     expect(ids).toContain("canvases-rail-peek");
+    expect(ids).toContain("tasks-unified-head");
   });
 
   test("the default-agent picker appears only with two or more agents on", () => {

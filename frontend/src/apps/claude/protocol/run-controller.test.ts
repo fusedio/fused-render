@@ -4,7 +4,7 @@
 // refusals, and a thrown poll that keeps `?run=`.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 const {
   PERM_CARD_MAX,
@@ -21,6 +21,26 @@ const {
 const { AgentError } = await import("./agent");
 const { createMemoryParamsStore } = await import("../params/store");
 const { MARKER_VIEW } = await import("./wire");
+const { resetFlagsForTests, setPrefsDeadlineForTests } = await import("../feature-flag");
+
+// THE CLAUDE FLAGS ARE PROCESS-WIDE, and this file reads them (`decide` awaits
+// `queueFlagReady`). `bun test` runs every suite in one process: a chat or a
+// task view mounted by an EARLIER file under a fetch stub that never answers
+// leaves the shared prefs read pinned, and the first decide here then sat out
+// the whole 8 s gate — "a decide writes back what LANDED on disk" timed out,
+// on CI's file order only. Start from "not asked" and give the read a budget
+// of one tick: nothing here answers `/api/prefs`, the defaults are what these
+// tests assume. (ClaudeChat.boot.test.tsx: "Reset before, not only after".)
+beforeAll(() => {
+  resetFlagsForTests();
+  setPrefsDeadlineForTests(1);
+});
+// The budget goes back; the flags stay SETTLED (not reset): a later file that
+// reads them — run-controller.cards.test.ts guards itself the same way — must
+// not be the one to meet an unasked flag over a pinned read.
+afterAll(() => {
+  setPrefsDeadlineForTests();
+});
 
 import type { runAgent } from "./agent";
 import type {
