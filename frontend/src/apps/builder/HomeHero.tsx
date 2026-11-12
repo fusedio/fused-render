@@ -44,7 +44,7 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import { effortLabel, modelDescription } from "@platform/lib/model-vocab";
 import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import { startersFor } from "./starterPrompts";
-import { suggestAppName } from "./app-name";
+import { suggestAppName, type ClaudeGap } from "./app-name";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { TextArea, TextInput } from "@platform/ui/field/fields";
@@ -71,6 +71,18 @@ function userNameError(name: string): string | null {
 // (onNameNeeded). A constant so the clear-on-edit effect can tell it apart
 // from every other message `error` carries.
 const NAME_ABOVE_MSG = "Couldn't name it automatically — type a name above.";
+
+// Why the composer is asking for a name. Claude Code missing or signed out is
+// said outright: auto-naming is Claude's (haiku) whichever agent builds the
+// app, and "couldn't name it" would send the user looking for a bug.
+const NAME_WHY: Record<ClaudeGap | "none", string> = {
+  none: "Couldn't name it automatically",
+  install: "Auto-naming needs Claude Code, which isn't installed",
+  login: "Auto-naming needs Claude Code, which isn't signed in",
+};
+const nameAboveMsg = (why: ClaudeGap | "none") =>
+  why === "none" ? NAME_ABOVE_MSG : `${NAME_WHY[why]} — type a name above.`;
+const NAME_ABOVE_MSGS = new Set((["none", "install", "login"] as const).map(nameAboveMsg));
 
 // The prefill offered when naming failed: "my-app-<n>", n one past the highest
 // my-app-N already on the home row. Cosmetic only — createAppUnderFreeName
@@ -457,6 +469,8 @@ export function HeroComposer({
   // The name the user is typing while phase === "askName" — only reached when
   // no rung of the naming ladder produced a name; see app-name.ts.
   const [nameDraft, setNameDraft] = useState("");
+  // Why it is asking (NAME_WHY) — set on the way into "askName".
+  const [nameWhy, setNameWhy] = useState<ClaudeGap | "none">("none");
   const nameRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   // Claude would not start for an app that WAS created — see the submit path.
@@ -705,24 +719,28 @@ export function HeroComposer({
       return;
     }
     setPhase("naming");
-    const name = await suggestAppName(prompt.trim());
+    const named = await suggestAppName(prompt.trim());
     if (!alive.current) return;
-    if (name) {
-      await createNamed(name, "idle");
+    if (named.name) {
+      await createNamed(named.name, "idle");
       return;
     }
+    const why = named.claude ?? "none";
     // A host with a name field takes it from here: its field goes red and
     // takes focus, the prompt stays put, and the next Build arrives with
     // `givenName` set. No ask row — the modal would then have two name inputs.
     if (onNameNeeded) {
-      setError(NAME_ABOVE_MSG);
+      setError(nameAboveMsg(why));
       setPhase("idle");
       onNameNeeded();
       return;
     }
-    const generic = await genericAppName();
+    // Offer the prompt's own subject words when there are any (Claude Code
+    // unavailable), else "my-app-<n>".
+    const offered = named.suggestion || (await genericAppName());
     if (!alive.current) return;
-    setNameDraft(generic);
+    setNameWhy(why);
+    setNameDraft(offered);
     setPhase("askName");
     requestAnimationFrame(() => nameRef.current?.select());
   };
@@ -734,7 +752,7 @@ export function HeroComposer({
   // THAT message when the host's name changes, and only that one — an
   // attachment failure in `error` is still news.
   useEffect(() => {
-    setError((e) => (e === NAME_ABOVE_MSG ? null : e));
+    setError((e) => (e !== null && NAME_ABOVE_MSGS.has(e) ? null : e));
   }, [givenName]);
 
   const nameOk = userNameError(nameDraft) === null;
@@ -875,7 +893,7 @@ export function HeroComposer({
               aria-label="Name your app"
             >
               <span className="home-composer-name-why">
-                Couldn't name it automatically — pick a name:
+                {NAME_WHY[nameWhy]} — pick a name:
               </span>
               <TextInput
                 ref={nameRef}

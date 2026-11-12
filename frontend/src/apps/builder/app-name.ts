@@ -3,8 +3,10 @@
 // Two rungs, so that a broken model call never leaves the user without a name:
 //   1. haiku on the Claude tier of /api/ai — about a second, the best names;
 //   2. the prompt's own subject words, picked here with no model — what a
-//      machine with no Claude, a signed-out CLI, a busy relay or an unusable
-//      reply falls to.
+//      busy relay or an unusable reply falls to.
+// Claude Code missing or signed out is NOT papered over by rung 2: the result
+// says so (`claude`), and the composer tells the user that auto-naming needs
+// Claude Code and asks for a name, with the subject words as the suggestion.
 // The model rung has a deadline, and its failure is logged with the reason:
 // the old single call swallowed every error, so "naming keeps failing" could
 // not be told apart from "Claude is signed out" or "the relay is busy".
@@ -15,6 +17,7 @@
 // Only a prompt with no subject word at all ("make me an app") ends with no
 // name; the composer then asks for one.
 import { aiComplete } from "@platform/lib/api";
+import { troubleKind } from "@platform/lib/trouble";
 
 // What a model's answer must look like once cleaned: lowercase kebab-case,
 // letters and digits only, no leading/trailing/double hyphens.
@@ -155,8 +158,35 @@ export function nameFromPrompt(prompt: string): string {
   return kebabName(pick(prompt));
 }
 
+// Why Claude Code could not be asked at all, when that is the reason: not
+// installed, or installed and signed out. The relay answers the first as
+// `ai_unavailable` ("claude binary not found…") and the second in the CLI's
+// own words, which `troubleKind` already reads for the chat's trouble cards.
+export type ClaudeGap = "install" | "login";
+
+export function claudeGap(err: unknown): ClaudeGap | null {
+  const body = (err as { body?: { error?: { message?: string } } } | null)?.body;
+  const message = body?.error?.message ?? "";
+  if (/binary not found/i.test(message)) return "install";
+  const kind = troubleKind(message);
+  if (kind === "notfound") return "install";
+  if (kind === "login") return "login";
+  return null;
+}
+
+export interface NameResult {
+  /** The name to create under, or null: ask the user. */
+  name: string | null;
+  /** A name to OFFER when `name` is null (the prompt's subject words), or "". */
+  suggestion: string;
+  /** Set when no name was made because Claude Code is unavailable. */
+  claude: ClaudeGap | null;
+}
+
 // The model rung: ask haiku, give up at the deadline.
-async function askModel(prompt: string): Promise<string | "none" | null> {
+async function askModel(
+  prompt: string,
+): Promise<{ name: string | "none" | null; claude: ClaudeGap | null }> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), MODEL_DEADLINE_MS);
   try {
@@ -166,26 +196,29 @@ async function askModel(prompt: string): Promise<string | "none" | null> {
     const name = parseModelName(text);
     if (name === null)
       console.warn("[app-name] unusable reply:", JSON.stringify(text.slice(0, 200)));
-    return name;
+    return { name, claude: null };
   } catch (e) {
-    // Logged, never thrown: the subject words answer instead. The reason is
-    // what a "naming keeps failing" report needs (signed out, binary missing,
-    // the model id refused, timed out).
+    // Logged, never thrown. The reason is what a "naming keeps failing"
+    // report needs (signed out, binary missing, the model id refused, timed
+    // out).
     console.warn(
       "[app-name] naming call failed:",
       ctl.signal.aborted ? `no answer within ${MODEL_DEADLINE_MS}ms` : e,
     );
-    return null;
+    return { name: null, claude: ctl.signal.aborted ? null : claudeGap(e) };
   } finally {
     clearTimeout(timer);
   }
 }
 
-// A kebab-case folder name for an app described by `prompt`. null only when
-// neither rung produced one — the prompt names no subject — and the caller
-// then asks the user.
-export async function suggestAppName(prompt: string): Promise<string | null> {
-  const name = await askModel(prompt.length > PROMPT_CAP ? prompt.slice(0, PROMPT_CAP) : prompt);
-  if (name && name !== "none") return name;
-  return nameFromPrompt(prompt) || null;
+// A kebab-case folder name for an app described by `prompt`. `name` is null
+// when the user must be asked: Claude Code is unavailable (`claude` says
+// which way), or the prompt names no subject.
+export async function suggestAppName(prompt: string): Promise<NameResult> {
+  const asked = await askModel(prompt.length > PROMPT_CAP ? prompt.slice(0, PROMPT_CAP) : prompt);
+  if (asked.name && asked.name !== "none")
+    return { name: asked.name, suggestion: "", claude: null };
+  const words = nameFromPrompt(prompt);
+  if (asked.claude) return { name: null, suggestion: words, claude: asked.claude };
+  return { name: words || null, suggestion: "", claude: null };
 }
