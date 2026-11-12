@@ -6749,16 +6749,23 @@ export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
 // `model` is a full id or a short alias ("haiku"); omitted, the relay uses its
 // own default, haiku — the right size for these utility calls. It never follows
 // the user's chat model.
+//
+// `opts.signal` lets a caller with a deadline stop waiting for the answer.
 export function aiComplete(
   prompt: string,
   systemPrompt?: string,
   model?: string,
+  opts?: { signal?: AbortSignal },
 ): Promise<string> {
-  return postJson<{ ok: boolean; result: { text: string } }>("/api/ai", {
-    prompt,
-    ...(systemPrompt ? { systemPrompt } : {}),
-    ...(model ? { model } : {}),
-  }).then((r) => r.result.text);
+  return postJson<{ ok: boolean; result: { text: string } }>(
+    "/api/ai",
+    {
+      prompt,
+      ...(systemPrompt ? { systemPrompt } : {}),
+      ...(model ? { model } : {}),
+    },
+    opts?.signal ? { signal: opts.signal } : undefined,
+  ).then((r) => r.result.text);
 }
 
 // -- Scheduled Claude messages (/api/schedule) --------------------------------
