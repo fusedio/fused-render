@@ -132,20 +132,12 @@ def test_allowed_ids_mark_the_segment(agent, tmp_path):
 
 # -------------------------------------------------------------- allow action
 
-def _live(agent, monkeypatch):
-    sent = []
-    monkeypatch.setattr(agent, "_send", lambda run_id, msg, **kw:
-                        sent.append((run_id, msg)) or {"queued": True})
-    return sent
-
-
-def test_allow_denied_reads_the_call_server_side_and_sends(agent, tmp_path,
-                                                          monkeypatch):
+def test_allow_denied_reads_the_call_server_side_and_answers_the_message(
+        agent, tmp_path):
     run_dir = _write_run(agent, tmp_path, [
         _call("t1", "Bash", {"command": "git push --force origin main",
                              "description": "push", "timeout": 5}),
         _result("t1", DENIAL % "[Git Destructive]")])
-    sent = _live(agent, monkeypatch)
     res = agent._allow_denied("run", "t1")
     assert res["allowed"] == "t1"
     (entry,) = json.loads((run_dir / agent.ALLOW_ONCE_FILE).read_text())
@@ -153,17 +145,25 @@ def test_allow_denied_reads_the_call_server_side_and_sends(agent, tmp_path,
     assert entry["match_input"] == {"command": "git push --force origin main"}
     assert abs(entry["created"] - time.time()) < 60
     assert json.loads((run_dir / agent.ALLOWED_DENIED_FILE).read_text()) == ["t1"]
-    ((rid, msg),) = sent
-    assert rid == "run" and "Bash" in msg and "git push --force origin main" in msg
+    msg = res["message"]
+    assert "Bash" in msg and "git push --force origin main" in msg
     assert "exactly the same input" in msg
 
 
+def test_allow_denied_twice_keeps_one_grant(agent, tmp_path):
+    run_dir = _write_run(agent, tmp_path, [
+        _call("t1", "Bash", {"command": "ls"}), _result("t1", DENIAL % "[X]")])
+    agent._allow_denied("run", "t1")
+    agent._allow_denied("run", "t1")
+    assert len(json.loads((run_dir / agent.ALLOW_ONCE_FILE).read_text())) == 1
+    assert json.loads((run_dir / agent.ALLOWED_DENIED_FILE).read_text()) == ["t1"]
+
+
 def test_allow_denied_non_bash_matches_the_whole_input_minus_description(
-        agent, tmp_path, monkeypatch):
+        agent, tmp_path):
     run_dir = _write_run(agent, tmp_path, [
         _call("t1", "WebFetch", {"url": "http://x", "prompt": "p", "description": "d"}),
         _result("t1", DENIAL % "[Exfil]")])
-    _live(agent, monkeypatch)
     agent._allow_denied("run", "t1")
     (entry,) = json.loads((run_dir / agent.ALLOW_ONCE_FILE).read_text())
     assert entry["match_input"] == {"url": "http://x", "prompt": "p"}
@@ -177,12 +177,10 @@ def test_allow_denied_non_bash_matches_the_whole_input_minus_description(
     [],
 ])
 def test_allow_denied_refuses_what_the_classifier_did_not_refuse(
-        agent, tmp_path, monkeypatch, rows):
+        agent, tmp_path, rows):
     run_dir = _write_run(agent, tmp_path, rows)
-    sent = _live(agent, monkeypatch)
     assert "error" in agent._allow_denied("run", "t1")
     assert "error" in agent._allow_denied("run", "nope")
-    assert not sent
     assert not (run_dir / agent.ALLOW_ONCE_FILE).exists()
 
 
@@ -192,22 +190,12 @@ def test_allow_denied_unknown_run_and_empty_id(agent, tmp_path):
     assert "error" in agent._allow_denied("../x", "t1")
 
 
-def test_allow_denied_refuses_a_non_claude_run(agent, tmp_path, monkeypatch):
+def test_allow_denied_refuses_a_non_claude_run(agent, tmp_path):
     run_dir = _write_run(agent, tmp_path, [
         _call("t1", "Bash", {"command": "ls"}), _result("t1", DENIAL % "[X]")])
     (run_dir / "meta.json").write_text(json.dumps({"backend": "codex"}))
-    sent = _live(agent, monkeypatch)
     assert "error" in agent._allow_denied("run", "t1")
-    assert not sent
-
-
-def test_allow_denied_rolls_back_when_the_send_fails(agent, tmp_path, monkeypatch):
-    run_dir = _write_run(agent, tmp_path, [
-        _call("t1", "Bash", {"command": "ls"}), _result("t1", DENIAL % "[X]")])
-    monkeypatch.setattr(agent, "_send", lambda *a, **k: {"error": "no live session"})
-    assert agent._allow_denied("run", "t1") == {"error": "no live session"}
     assert not (run_dir / agent.ALLOW_ONCE_FILE).exists()
-    assert not (run_dir / agent.ALLOWED_DENIED_FILE).exists()
 
 
 def test_allow_denied_route_is_registered(agent):

@@ -3407,8 +3407,10 @@ def _locked_json_update(path: str, update) -> None:
 
 def _allow_denied(run_id: str, tool_use_id: str) -> dict:
     """Approve the one tool call the auto-mode classifier refused: record a
-    one-shot grant the PreToolUse hook honours, then ask the agent to run the
-    call again. The call's name and input are read from the run's own stream
+    one-shot grant the PreToolUse hook honours and answer the message that asks
+    the agent to run the call again. The PAGE sends that message, through its
+    ordinary send road, so the reply is drawn and followed like any other turn.
+    The call's name and input are read from the run's own stream
     (`_denied_call`), and only a classifier refusal qualifies."""
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
@@ -3430,35 +3432,20 @@ def _allow_denied(run_id: str, tool_use_id: str) -> dict:
                 and now - float(e.get("created") or 0) < ALLOW_ONCE_TTL]
         return kept + [entry]
 
-    def revoke(old):
-        kept = [e for e in old or [] if isinstance(e, dict)
-                and e.get("tool_use_id") != tool_use_id]
-        return kept or None
-
-    grants = os.path.join(run_dir, ALLOW_ONCE_FILE)
     try:
-        _locked_json_update(grants, grant)
+        _locked_json_update(os.path.join(run_dir, ALLOW_ONCE_FILE), grant)
+        _locked_json_update(
+            os.path.join(run_dir, ALLOWED_DENIED_FILE),
+            lambda old: [i for i in old or [] if i != tool_use_id] + [tool_use_id])
     except OSError:
         return {"error": "could not record the approval", "retry": True}
     shown = match.get("command") if name == "Bash" else json.dumps(match)
     shown = " ".join(str(shown).split())
     if len(shown) > 120:
         shown = shown[:117] + "..."
-    res = _send(run_id, "I've approved the %s call that auto mode blocked (`%s`). "
-                "Run it again with exactly the same input." % (name, shown))
-    if "error" in res:
-        try:
-            _locked_json_update(grants, revoke)
-        except OSError:
-            pass
-        return res
-    try:
-        _locked_json_update(
-            os.path.join(run_dir, ALLOWED_DENIED_FILE),
-            lambda old: [i for i in old or [] if i != tool_use_id] + [tool_use_id])
-    except OSError:
-        pass
-    return {**res, "allowed": tool_use_id}
+    return {"allowed": tool_use_id,
+            "message": "I've approved the %s call that auto mode blocked (`%s`). "
+                       "Run it again with exactly the same input." % (name, shown)}
 
 
 def _decide(run_id: str, request_id: str, decision: str, scope: str,
