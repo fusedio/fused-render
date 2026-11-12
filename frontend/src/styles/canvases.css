@@ -105,11 +105,12 @@
    turns the "selected" border colour on hover, lifting 2px with a shadow. */
 .canvases-grid {
   display: grid;
-  /* The hosted home's 280px card, allowed to give up to 40px so one more
-     column fits (4 across at the page's usual width rather than 3 with a gap
-     at the end); never wider than 280. What a row leaves over is split both
-     sides, so the grid sits centred. */
-  grid-template-columns: repeat(auto-fill, minmax(240px, 280px));
+  /* The hosted home's card at 260px rather than its 280: 4 across fit the
+     page's usual ~1140px column (4 × 280 + gaps does not, and leaves 3 with a
+     hole at the end). Fixed, not minmax — auto-fill counts columns at a
+     minmax's MAX, so a 240–280 range still laid out 3. What a row leaves over
+     is split both sides, so the grid sits centred. */
+  grid-template-columns: repeat(auto-fill, 260px);
   justify-content: center;
   gap: 16px;
 }
