@@ -117,7 +117,7 @@ import tomllib
 import urllib.parse
 import zipfile
 import zlib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -213,6 +213,12 @@ LEASE_RELEASE_QUIT_S = 2.0
 # a final push, lease released, watcher stopped and forgotten — never under
 # a live Claude run. Opening the canvas restarts it through sync/start.
 IDLE_STOP_S = 60.0
+# A held server move or unpublished edits left after the idle stop's merge and
+# push: tried again this many times, IDLE_RETRY_S apart, before it stops anyway
+# (a reopened manager picks both up: the clone reads dirty, the saved base
+# revision re-detects the move).
+IDLE_STOP_RETRIES = 3
+IDLE_RETRY_S = 10.0
 # How long sync/state shows `server_to_disk: merged` after an auto-merge.
 MERGED_SHOW_S = 10.0
 # `.sync/<name>.log` (the persistent sync journal) rotates to `.log.1` here.
@@ -2663,6 +2669,11 @@ class _SyncManager:
         # cleared by a None rotation: a stale one costs a 412 and a merge,
         # never a lost write. `_server_revision` is the latest probe's.
         self._base_revision: int | None = None
+        # The collection the sync point belongs to (`_adopt_revision`; None
+        # leaves it standing, like the revision): a canvas deleted and
+        # re-created restarts at revision 1 under a new id, so a first look
+        # whose id differs is a move even at the same revision.
+        self._base_collection_id: str | None = None
         self._server_revision: int | None = None
         # An old fused CLI without `push --if-match`: CAS off for this manager.
         self._cas_unsupported = False
@@ -2690,6 +2701,10 @@ class _SyncManager:
         self._started_at = time.time()
         self._idle_stop_at: float | None = None
         self._idle_deferred_for = ""
+        # Idle stops put off because a held move or unpublished edits remained
+        # (IDLE_STOP_RETRIES), and when the next one may run.
+        self._idle_retries = 0
+        self._idle_retry_at = 0.0
         # The compact rows of canvas.toml at the sync point (merge_toml's base).
         self._base_toml: dict | None = None
         self.merge_rollback_seq = 0
@@ -2784,6 +2799,11 @@ class _SyncManager:
         self._journal_seq = 0
         self._hook_cursors: dict[str, int] = {}
         self._hook_denied: set[tuple[str, str]] = set()
+        # session → its tool hooks (pre/post) so far. The Stop route captures
+        # it and `turn_end` publishes only while it is unchanged: a newer turn
+        # of that session has started calling tools, and its own Stop
+        # publishes the change set it is in the middle of.
+        self._tool_hooks: dict[str, int] = {}
         # TOMBSTONES: nodes the user deleted on the canvas, by name →
         # {file, at}, persisted beside the merge base (a restart must not
         # forget them). The user's delete wins (owner, 2026-11-10): a file of
@@ -3107,6 +3127,11 @@ class _SyncManager:
         base_revision = data.get("base_revision")
         if isinstance(base_revision, int) and not isinstance(base_revision, bool):
             self._base_revision = base_revision
+        # Saved beside the revision; a base from before that keeps it only
+        # in its manifest.
+        collection_id = data.get("collection_id") or (self._remote or {}).get("id")
+        if isinstance(collection_id, str) and collection_id:
+            self._base_collection_id = collection_id
 
     def _save_base(self) -> None:
         payload = json.dumps(
@@ -3119,7 +3144,7 @@ class _SyncManager:
                 # and the collection it belongs to (a re-created canvas starts
                 # over at revision 1 under a new id).
                 "base_revision": self._base_revision,
-                "collection_id": (self._remote or {}).get("id"),
+                "collection_id": self._base_collection_id,
             }
         )
         tmp = self._base_path + ".tmp"
@@ -3168,6 +3193,9 @@ class _SyncManager:
         rev = (manifest or {}).get("revision")
         if isinstance(rev, int) and not isinstance(rev, bool):
             self._base_revision = rev
+        cid = (manifest or {}).get("id")
+        if isinstance(cid, str) and cid:
+            self._base_collection_id = cid
 
     def _reconcile_rows(self, leg: str, directory: str, **kw) -> list[str]:
         try:
@@ -3767,14 +3795,21 @@ class _SyncManager:
         move with no `bundle` (not fetched yet) answers "moved"."""
         if self._remote is None:
             rev = probe.get("revision")
+            cid = probe.get("id")
+            recreated = (self._base_collection_id is not None and isinstance(cid, str)
+                         and cid != self._base_collection_id)
             if (self._base_files is not None and self._base_revision is not None
-                    and isinstance(rev, int) and rev != self._base_revision):
+                    and isinstance(rev, int)
+                    and (rev != self._base_revision or recreated)):
                 # No manifest baseline (the post-push probe failed, a restart,
                 # a resume) but the sync point KNOWS its revision: a live one
                 # past it is a server MOVE since our files, to merge — never a
                 # new baseline (adopting it would If-Match the newer revision
-                # with the older files and skip the 412 that merges it).
-                self._remote = {**probe, "revision": self._base_revision}
+                # with the older files and skip the 412 that merges it). So is
+                # the same revision under another id (re-created canvas): the
+                # stand-in keeps OUR id so `_remote_moved` reads the move.
+                self._remote = {**probe, "revision": self._base_revision,
+                                "id": self._base_collection_id or cid}
                 self._note_disk()
                 self._save_base()
                 return "moved"
@@ -4220,7 +4255,8 @@ class _SyncManager:
                        detail="Fused Render is quitting")
         return True
 
-    def _push(self, *, lock_wait: float | None = None) -> str:
+    def _push(self, *, lock_wait: float | None = None,
+              fence: Callable[[], bool] | None = None) -> str:
         """Publish the clone. The caller holds `_flight_lock` and NOT
         `_op_lock`, and has checked the pause count under the flight lock.
 
@@ -4237,8 +4273,9 @@ class _SyncManager:
              next tick pushes again.
 
         Returns "done" (push_state says how it went) or "busy" when _op_lock
-        could not be had within `lock_wait` (default MANUAL_PUSH_LOCK_WAIT_S)
-        — nothing changed then, the clone stays as dirty as it was."""
+        could not be had within `lock_wait` (default MANUAL_PUSH_LOCK_WAIT_S),
+        or `fence()` answered True at the freeze — nothing changed then, the
+        clone stays as dirty as it was."""
         wait = MANUAL_PUSH_LOCK_WAIT_S if lock_wait is None else lock_wait
         prev_state, prev_dirty = self.push_state, self._dirty_since
         cli = fused_cli()
@@ -4331,6 +4368,9 @@ class _SyncManager:
             # merge base on success.
             if not self._op_lock.acquire(timeout=wait):
                 return deferred("another sync step held the clone")
+            if fence is not None and fence():
+                self._op_lock.release()
+                return deferred("a newer turn started in this folder")
             try:
                 served = {os.path.splitext(f)[0] for f in self._base_files or ()
                           if f.endswith(canvas_snapshot.BODY_SUFFIXES)}
@@ -4696,11 +4736,16 @@ class _SyncManager:
         if count > 0:
             self._idle_stop_at = None
             self._idle_deferred_for = ""
+            self._idle_retries = 0
+            self._idle_retry_at = 0.0
             return False
-        due = max(at or 0.0, self._started_at) + IDLE_STOP_S
+        due = max(at or 0.0, self._started_at, self._idle_retry_at - IDLE_STOP_S) + IDLE_STOP_S
         self._idle_stop_at = due
         if time.time() < due:
             return False
+        # The cached answer can be AGENT_LIVE_CACHE_S old: a run that started
+        # since would lose its Stop hook's publish with this manager.
+        live = live or self.agent_run_id(fresh=True)
         if live:
             # Never under a live run: its Stop hook still needs this manager.
             if live != self._idle_deferred_for:
@@ -4731,14 +4776,28 @@ class _SyncManager:
             dirty = (self._dirty_since is not None
                      or self._take_fingerprint() != self._fingerprint)
             if dirty:
-                if self.server_stale is None:
+                if self.server_stale is not None:
+                    done.append("push held: " + _stale_reason(self.server_stale))
+                elif self._leased_elsewhere():
+                    done.append("push held: " + self._lease_reason())
+                else:
                     before = self.push_seq
                     self._push()
                     done.append("pushed" if self.push_seq > before
                                 else f"push did not land ({self.push_state}"
                                      + (f": {self.last_error}" if self.last_error else "") + ")")
-                else:
-                    done.append("push held: " + _stale_reason(self.server_stale))
+            left = (self.server_stale is not None or self._dirty_since is not None
+                    or self._take_fingerprint() != self._fingerprint)
+            if left and self._idle_retries < IDLE_STOP_RETRIES:
+                # A held move or unpublished edits remain: give the legs
+                # another window before dropping them with the manager.
+                self._idle_retries += 1
+                self._idle_retry_at = time.time() + IDLE_RETRY_S
+                self.log_event("server_to_disk", "idle stop deferred",
+                               detail=f"try {self._idle_retries} of {IDLE_STOP_RETRIES}: "
+                                      + ("; ".join(done) or "a held server move or "
+                                         "unpublished edits remain"))
+                return False
             self.log_event("server_to_disk", "idle stop",
                            detail=f"no canvas page open for {int(IDLE_STOP_S)}s"
                                   + (f"; {'; '.join(done)}" if done else "; nothing to publish"))
@@ -4889,12 +4948,31 @@ class _SyncManager:
 
     # -- the turn end ----------------------------------------------------------
 
-    def turn_end(self) -> str:
+    def tool_hook(self, session_id: str) -> None:
+        """A tool hook (pre/post) of `session_id` arrived: its current turn
+        is calling tools (see `_tool_hooks`)."""
+        if session_id:
+            self._tool_hooks[session_id] = self._tool_hooks.get(session_id, 0) + 1
+
+    def turn_end(self, session_id: str = "", hooks_at_stop: int | None = None) -> str:
         """A Claude session in this clone ended its turn (the Stop hook): run
         a held server merge, then publish the folder if it is dirty — the
         session's change set is complete NOW, no need to wait for the run to
-        end or the debounce. Synchronous; the hook route runs it on a thread.
-        Returns what happened: "pushed", "merged", "idle", "busy", "held"."""
+        end or the debounce. Synchronous; the hook route runs it on a thread,
+        passing the session's tool-hook count when the Stop arrived: once
+        it moves, that session's next turn is under way, and neither the
+        merge nor the push may land in the middle of it (its own Stop
+        publishes). Returns what happened: "pushed", "merged", "idle", "busy",
+        "held", "superseded"."""
+        def superseded() -> bool:
+            return (hooks_at_stop is not None
+                    and self._tool_hooks.get(session_id, 0) != hooks_at_stop)
+
+        def gave_way() -> str:
+            self.log_event("disk_to_server", "turn end", ok=False,
+                           detail="a newer turn started in this folder; its own turn end publishes")
+            return "superseded"
+
         self.agent_run_id(fresh=True)
         if not self._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
             self.log_event("disk_to_server", "turn end", ok=False,
@@ -4903,6 +4981,8 @@ class _SyncManager:
         try:
             if self._paused() or self.stop_event.is_set():
                 return "busy"
+            if superseded():
+                return gave_way()
             what = "idle"
             if self.server_stale is not None:
                 cli = fused_cli()
@@ -4918,8 +4998,11 @@ class _SyncManager:
             dirty = (self._dirty_since is not None
                      or self._take_fingerprint() != self._fingerprint)
             if dirty:
+                if superseded():
+                    return gave_way()
                 self.log_event("disk_to_server", "turn end", detail="publishing the folder")
-                self._push()
+                if self._push(fence=superseded) == "busy" and superseded():
+                    return gave_way()
                 return "pushed"
             return what
         finally:
@@ -5565,11 +5648,19 @@ class _SyncManager:
                 acked = view
                 view = self._adopt(self._delta_views[base_rev])
                 # …except for names the frame SKIPPED (`_skip_hold`): it
-                # still shows the acked view's picture of them.
-                if self._skip_hold:
+                # still shows the acked view's picture of them — node and the
+                # edges touching it (as `ack_delta` keeps them), or a cut
+                # would find no edge change and never re-send the removal.
+                hold = set(self._skip_hold)
+                if hold:
                     view = {**view, **{t: dict(view.get(t) or {})
                                        for t in ("nodes", "files", "bodies", "ids")}}
-                for name in self._skip_hold:
+                    view["edges"] = (
+                        [list(e) for e in view.get("edges") or []
+                         if e[0] not in hold and e[1] not in hold]
+                        + [list(e) for e in acked.get("edges") or []
+                           if e[0] in hold or e[1] in hold])
+                for name in hold:
                     for table in ("nodes", "files", "bodies", "ids"):
                         if name in (acked.get(table) or {}):
                             view[table][name] = acked[table][name]
@@ -7210,13 +7301,16 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
     if manager is None:
         return {}
     try:
+        if event in ("pre", "post"):
+            manager.tool_hook(session_id)
         if event == "pre":
             return manager.hook_pre(session_id, tool, tool_input)
         if event == "post":
             return manager.hook_post(session_id)
         if event == "stop":
-            threading.Thread(target=_turn_end_quietly, args=(manager,), daemon=True,
-                             name=f"fused-canvas-turn-end-{name}").start()
+            hooks = manager._tool_hooks.get(session_id, 0) if session_id else None
+            threading.Thread(target=_turn_end_quietly, args=(manager, session_id, hooks),
+                             daemon=True, name=f"fused-canvas-turn-end-{name}").start()
             return {}
     except Exception:  # noqa: BLE001 — a hook answer is advice, never a failure
         logger.warning("canvas %s: agent hook failed", _sync_key(env, name), exc_info=True)
@@ -7250,9 +7344,10 @@ def _release_lease_quietly(manager: "_SyncManager") -> None:
                      _sync_key(manager.env, manager.name), exc_info=True)
 
 
-def _turn_end_quietly(manager: "_SyncManager") -> None:
+def _turn_end_quietly(manager: "_SyncManager", session_id: str = "",
+                      hooks_at_stop: int | None = None) -> None:
     try:
-        manager.turn_end()
+        manager.turn_end(session_id, hooks_at_stop)
     except Exception:  # noqa: BLE001 — the debounce backstop still publishes
         logger.warning("canvas %s: turn-end publish failed",
                        _sync_key(manager.env, manager.name), exc_info=True)

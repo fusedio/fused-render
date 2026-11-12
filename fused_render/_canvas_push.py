@@ -292,7 +292,9 @@ def parse_pull(args: list[str]) -> dict | None:
         matched = False
         for opt in _PULL_OUTPUT_OPTS:
             if token.startswith(opt + "=") or (opt == "-o" and token.startswith("-o") and len(token) > 2):
-                output = token.split("=", 1)[1] if "=" in token else token[2:]
+                # `-o` takes the rest of the token as is (a path may hold
+                # `=`); only `--output=` splits.
+                output = token[len(opt) + 1:] if opt == "--output" else token[2:]
                 matched = True
                 break
         if not matched and not token.startswith("-"):

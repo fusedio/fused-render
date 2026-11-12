@@ -928,7 +928,7 @@ class World:
                     out.append(f"{f}:{n} frame {fr.nodes[n].get(f)!r} != disk {rows[n].get(f)!r}")
             if n in files and n not in fr.bodies:
                 out.append(f"body:{n} the frame shows the node without its source text")
-            elif n in fr.bodies and token_of(fr.bodies[n]) != token_of(files[n][1]):
+            elif n in fr.bodies and norm_text(files[n][0], fr.bodies[n]) != norm_text(*files[n]):
                 out.append(f"body:{n} frame {token_of(fr.bodies[n])} != disk {token_of(files[n][1])}")
         if fr.outbox:
             out.append(f"frame still holds {len(fr.outbox)} unsent post(s)")

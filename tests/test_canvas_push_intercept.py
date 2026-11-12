@@ -669,3 +669,17 @@ def test_a_pull_outside_any_clone_falls_through(root, monkeypatch, tmp_path):
     assert _canvas_push.maybe_intercept(
         ["workbench", "canvas", "pull", "beta", "-o", str(tmp_path / "beta")],
         out, err) is None
+
+
+@pytest.mark.parametrize("tail, output", [
+    (["-o", "/tmp/canvas=dev/alpha"], "/tmp/canvas=dev/alpha"),
+    (["-o/tmp/canvas=dev/alpha"], "/tmp/canvas=dev/alpha"),
+    (["--output=/tmp/canvas=dev/alpha"], "/tmp/canvas=dev/alpha"),
+    (["--output", "/tmp/canvas=dev/alpha"], "/tmp/canvas=dev/alpha"),
+    ([], None),
+])
+def test_parse_pull_keeps_an_equals_sign_inside_the_output_path(tail, output):
+    """An attached `-o` value is the rest of the token, `=` and all: only
+    `--output=` splits (a clone under a path holding `=` must still be seen)."""
+    parsed = _canvas_push.parse_pull(["workbench", "canvas", "pull", "alpha", *tail])
+    assert parsed == {"canvas_ref": "alpha", "output": output}

@@ -641,17 +641,19 @@ def stage_workbench_plugin(source: str) -> str | None:
     parent = workbench_staged_dir()
     staging = None
     try:
-        gen = os.path.join(parent, "g-" + _tree_stamp(source)[:24])
+        os.makedirs(parent, exist_ok=True)
+        staging = tempfile.mkdtemp(prefix=".new-", dir=parent)
+        dest = os.path.join(staging, "root")
+        shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
+        # Stamped from the COPY, so the name describes the bytes published
+        # even when the source is edited mid-copy (a local skills folder).
+        gen = os.path.join(parent, "g-" + _tree_stamp(dest)[:24])
         # Kept through this switch: the generation sessions were handed last.
         live = os.environ.get(WORKBENCH_PLUGIN_DIR_ENV) or ""
         keep = {gen} | ({live} if os.path.dirname(live) == parent else set())
         if _is_loadable(gen, WORKBENCH_SKILLS):
             _prune_generations(parent, keep)
             return gen
-        os.makedirs(parent, exist_ok=True)
-        staging = tempfile.mkdtemp(prefix=".new-", dir=parent)
-        dest = os.path.join(staging, "root")
-        shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
         skills = os.path.join(dest, SKILLS_SUBDIR)
         marked = False
         for name in sorted(os.listdir(skills)) if os.path.isdir(skills) else ():

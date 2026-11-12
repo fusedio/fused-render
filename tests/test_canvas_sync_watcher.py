@@ -1985,3 +1985,129 @@ def test_reopening_an_idle_stopped_canvas_reloads_its_base_and_leases_again(
     assert acquired == [("acquire", "c1")] and again._lease_mine is not None
     # The frame's hello gets a full state from the new watcher.
     assert harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()["full"]
+
+
+def test_a_first_look_at_a_recreated_canvas_on_the_same_revision_is_a_move(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """No manifest baseline (the post-push probe failed) and the canvas was
+    deleted and re-created: the live one sits at the base's revision under a
+    new id. A move to merge, never a baseline to adopt (its revision as the
+    If-Match would replace the new canvas with this clone's files)."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    assert m._base_collection_id == "c1"      # from the saved manifest (an older base)
+    with m._op_lock:
+        m._rotate_remote(None)               # the post-push probe failed
+        m._save_base()
+    assert _sync_json(harness)["collection_id"] == "c1"   # kept without a manifest
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b-recreated\n"})
+    shims.set_manifest("t2", revision=1, id="c2")
+    _poll(m)
+    assert (harness.root / "alpha" / "b.py").read_text() == "b-recreated\n"
+    assert m.merge_seq == 1 and m._base_collection_id == "c2"
+
+
+def test_a_cut_behind_an_unacked_delta_keeps_the_edges_of_a_skipped_node(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """The frame skipped `b` in an acked delta (it kept its own b, and the
+    a-b edge with it) while a later delta was in flight: a cut diffed against
+    that in-flight view must still carry the edge removal the frame never
+    took, or the frame keeps the edge and its next snapshot writes it back."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    clone = harness.root / "alpha"
+
+    def write(xa, edges):
+        rows = [{"udfName": "a", "x": xa, "y": 0}, {"udfName": "b", "x": 0, "y": 400}]
+        (clone / "canvas.toml").write_text(
+            rtoml.dumps({"type": "canvas", "canvas": {"nodes": rows, "edges": edges}}))
+
+    write(0, [["a", "b"]])
+    first = m.cut_delta(full=True)
+    m.ack_delta(first["rev"], True)
+    write(0, [])
+    one = m.cut_delta(full=False)            # removes the edge
+    assert {"op": "edges", "set": []} in one["ops"], one
+    write(50, [])
+    two = m.cut_delta(full=False)            # in flight, diffed against `one`
+    assert two["base_rev"] == one["rev"]
+    m.ack_delta(one["rev"], True, skipped=["b"])
+    write(600, [])
+    three = m.cut_delta(full=False)          # cut before `two` is acked
+    assert three["base_rev"] == two["rev"]
+    assert {"op": "edges", "set": []} in three["ops"], three
+
+
+def test_a_stop_overtaken_by_the_sessions_next_turn_does_not_publish(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """The Stop route runs `turn_end` on a thread: when the same session has
+    called a tool since its Stop (its next turn is under way), the stale
+    turn end neither merges nor publishes; the next turn's Stop does."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    fake_agent.live = "run-1"
+    m.agent_run_id(fresh=True)
+    m._lease_next_at = time.time() + 3600
+    m.tool_hook("s1")
+    at_stop = m._tool_hooks["s1"]
+    (harness.root / "alpha" / "a.py").write_text("a-half-done\n")
+    m.tool_hook("s2")                        # another session: no bearing on s1's turn
+    m.tool_hook("s1")                        # s1's next turn calls a tool
+    assert m.turn_end("s1", at_stop) == "superseded"
+    assert not _push_argvs(harness)
+    assert "a newer turn started in this folder" in m._log.since(0)["events"][-1]["detail"]
+    # Overtaken mid-push (the pre-push probe is the window): the freeze stands down.
+    at_stop = m._tool_hooks["s1"]
+    probe = m._probe_remote
+
+    def probe_then_next_turn():
+        m.tool_hook("s1")
+        return probe()
+
+    monkeypatch.setattr(m, "_probe_remote", probe_then_next_turn)
+    assert m.turn_end("s1", at_stop) == "superseded"
+    assert not _push_argvs(harness)
+    monkeypatch.setattr(m, "_probe_remote", probe)
+    assert m.turn_end("s1", m._tool_hooks["s1"]) == "pushed"
+    assert len(_push_argvs(harness)) == 1
+
+
+def test_an_idle_stop_holds_the_push_for_another_lease_and_retries_before_stopping(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """Another editor holds the lease: the idle stop does not publish over
+    it. Unpublished edits remain, so it tries again IDLE_STOP_RETRIES times
+    before it stops anyway (a reopen reads the clone as dirty)."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
+    monkeypatch.setattr(canvases_mod, "IDLE_RETRY_S", 0.0)
+    m._lease_next_at = time.time() + 3600
+    m._lease_held_by = {"owner": "bob", "lease_until": "2999-01-01T00:00:00Z"}
+    (harness.root / "alpha" / "a.py").write_text("a-unpublished\n")
+    m._dirty_since = time.time()
+    for _ in range(canvases_mod.IDLE_STOP_RETRIES):
+        m._tick()
+        assert canvases_mod._syncs.get((ENV, "alpha")) is m and not m.stop_event.is_set()
+    m._tick()
+    assert _wait_for(lambda: _gone(m))
+    assert not _push_argvs(harness)
+    events = m._log.since(0)["events"]
+    deferred = [e for e in events if e["action"] == "idle stop deferred"]
+    assert len(deferred) == canvases_mod.IDLE_STOP_RETRIES
+    assert "push held: checked out by bob" in deferred[0]["detail"]
+    assert any("push held: checked out by bob" in e["detail"] for e in events
+               if e["action"] == "idle stop")
+
+
+def test_an_idle_stop_rereads_a_cached_no_run_answer(harness, tmp_path, monkeypatch, fake_agent):
+    """The tick's live-run answer is cached (AGENT_LIVE_CACHE_S): a run that
+    started since is read fresh before the stop, which waits it out."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
+    monkeypatch.setattr(canvases_mod, "AGENT_LIVE_CACHE_S", 3600.0)
+    fake_agent.live = ""
+    assert m.agent_run_id(fresh=True) == ""
+    fake_agent.live = "run-new"              # started after the cached scan
+    assert m.agent_run_id() == ""
+    assert m._idle_check("") is False
+    assert not m.stop_event.is_set() and "idle stop deferred" in _actions(harness)

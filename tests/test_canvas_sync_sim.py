@@ -142,6 +142,15 @@ def test_convergence_fails_when_the_frame_shows_a_node_without_its_text(sim):
     assert "body:a the frame shows the node without its source text" in w.check_convergence()
 
 
+def test_convergence_compares_the_frames_whole_text_not_just_its_token(sim):
+    """Same token, different text (CodeRabbit on `check_convergence`): the
+    frame does not show what disk holds, so the run has not converged."""
+    w = sim.world()
+    assert w.quiesce() and w.check_convergence() == []
+    w.frame.bodies["a"] += "# a trailing line only the frame has\n"
+    assert any(p.startswith("body:a frame") for p in w.check_convergence())
+
+
 # -- the eight ledger traces (design page §2) -----------------------------------
 
 
