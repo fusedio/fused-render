@@ -200,6 +200,10 @@ export interface CanvasEntry {
   preview_pending?: boolean;
   /** Control-plane last_updated (epoch seconds); null on the external-CLI fallback. */
   updated_at: number | null;
+  /** The canvas's public share token, when it has one — the card's share-link
+   *  button opens `<workbench origin>/canvas/<token>`. Optional: a disk
+   *  baseline written before the field existed lacks it. */
+  share_token?: string | null;
 }
 
 /** The watcher's status as sync/start and sync/pull answer it, cut to what
@@ -272,6 +276,19 @@ export const getCanvasPreviews = (env: WorkbenchEnv, ids: string[]) =>
   postJson<{ previews: Record<string, string | null> }>("/api/canvases/previews", {
     ids,
     env,
+  });
+
+/** The account's favourite canvas ids — the hosted workbench home's star,
+ *  same control-plane list, so a canvas starred on either side is starred on
+ *  both. */
+export const getCanvasFavourites = (env: WorkbenchEnv) =>
+  getJson<{ collection_ids: string[] }>(`/api/canvases/favourites?env=${env}`, GUARD);
+
+export const setCanvasFavourite = (env: WorkbenchEnv, id: string, on: boolean) =>
+  postJson<{ ok: boolean; id: string; on: boolean }>("/api/canvases/favourite", {
+    env,
+    id,
+    on,
   });
 
 export const createCanvas = (env: WorkbenchEnv, name: string) =>
