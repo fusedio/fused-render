@@ -229,6 +229,10 @@ def test_copilot_account_text_names_copilots_fix_and_claudes_is_unchanged(agent)
     assert agent._account_error("premium request quota hit", "copilot") == (
         "Your GitHub Copilot plan's request budget was reached. Wait for it to "
         "reset, or upgrade the plan, then try again. (premium request quota hit)")
+    # The headless CLI's expired-login line names no `/login`; still a sign-in fix.
+    assert agent._account_error(
+        "Failed to authenticate: OAuth session expired and could not be refreshed"
+    ).startswith("Claude Code isn't logged in.")
     # Claude's, byte for byte.
     assert agent._account_error("/login") == (
         "Claude Code isn't logged in. Open a terminal, run `claude`, type /login "

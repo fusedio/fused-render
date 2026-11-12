@@ -36,6 +36,8 @@ test("a signed-out claude is NOT reported as a missing one", () => {
   // The CLI's own text names itself, so it needs no help.
   expect(troubleKind("Invalid API key · Please run /login")).toBe("login");
   expect(troubleKind("Claude Code is not signed in")).toBe("login");
+  // Headless wording of an expired login: names neither Claude nor /login.
+  expect(troubleKind("Failed to authenticate: OAuth session expired and could not be refreshed")).toBe("login");
 });
 
 test("a sign-in problem with no subject is not assumed to be Claude's", () => {

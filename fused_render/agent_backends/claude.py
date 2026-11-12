@@ -60,6 +60,9 @@ CLAUDE = Backend(
     account_error_markers=(
         "invalid api key", "/login", "oauth token", "not logged in",
         "authentication_error",
+        # Headless (`claude -p`) wording of a dead refresh token: it names no
+        # `/login`, unlike the TUI's "Login expired · Please run /login".
+        "oauth session expired", "failed to authenticate",
     ),
     limit_error_markers=("usage limit reached", "session limit"),
     terminal_resume=_terminal_resume,

@@ -332,7 +332,10 @@ _COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
 # the package, and a test pins the tuples equal so the two cannot drift.
 _ACCOUNT_ERROR_MARKERS = {
     "claude": ("invalid api key", "/login", "oauth token", "not logged in",
-               "authentication_error"),
+               "authentication_error",
+               # Headless (`claude -p`) wording of a dead refresh token: it
+               # names no `/login`, unlike the TUI's "Login expired".
+               "oauth session expired", "failed to authenticate"),
     "copilot": ("not logged in", "auth_required", "authentication required",
                 "copilot login", "no copilot access", "not authorized"),
     "codex": ("not logged in", "requiresopenaiauth", "codex login",

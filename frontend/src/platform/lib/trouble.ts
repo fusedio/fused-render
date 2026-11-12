@@ -70,7 +70,9 @@ const ABOUT_OPENCODE = /opencode|open code|provider|api key/i;
 
 // Unconditional: these name Claude Code or quote the CLI's own vocabulary.
 const NAMED: [TroubleKind, RegExp][] = [
-  ["login", /please run \/login|invalid api key/i],
+  // "oauth session expired" / "failed to authenticate": the headless CLI's
+  // words for a dead refresh token, which name neither Claude nor /login.
+  ["login", /please run \/login|invalid api key|oauth session expired|failed to authenticate/i],
   ["limit", /usage limit|session limit/i],
   ["notfound", /claude code isn'?t installed|claude cli not found|claude not found/i],
 ];
