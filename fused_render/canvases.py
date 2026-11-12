@@ -211,7 +211,9 @@ LEASE_RELEASE_QUIT_S = 2.0
 # Owner (live testing, 2026-11-12): a canvas nobody has open stops syncing
 # IDLE_STOP_S after its last page socket (sync/events) closed — held merge,
 # a final push, lease released, watcher stopped and forgotten — never under
-# a live Claude run. Opening the canvas restarts it through sync/start.
+# a live Claude run, nor while a Claude session is open on the folder.
+# Opening the canvas restarts it through sync/start; a session's hooks
+# restart it too (`_revive_for_session`).
 IDLE_STOP_S = 60.0
 # A held server move or unpublished edits left after the idle stop's merge and
 # push: tried again this many times, IDLE_RETRY_S apart, before it stops anyway
@@ -2718,6 +2720,10 @@ class _SyncManager:
         # the plain-attribute rule the class docstring states still holds.
         self._agent_run_id = ""
         self._agent_checked_at = 0.0
+        # The same for "is a Claude SESSION open on this clone, turn or no
+        # turn?" (`agent_session_id`): the idle stop's question.
+        self._agent_session_id = ""
+        self._agent_session_checked_at = 0.0
         # Embed v3 snapshots (canvas_snapshot.py): the last compact state this
         # manager applied from the embedded workbench, per hydration
         # generation, and the (gen, seq) pairs already applied so a replayed
@@ -3066,6 +3072,25 @@ class _SyncManager:
                 logger.debug("live-run lookup failed for %s", self.dir, exc_info=True)
         self._agent_run_id = run_id
         self._agent_checked_at = now
+        return run_id
+
+    def agent_session_id(self, *, fresh: bool = False) -> str:
+        """The id of a run whose Claude SESSION is still up in this clone —
+        between turns too — or "" — cached like `agent_run_id`. "" as well
+        for an agent module without the lookup."""
+        now = time.time()
+        if not fresh and now - self._agent_session_checked_at < AGENT_LIVE_CACHE_S:
+            return self._agent_session_id
+        agent = _agent_module()
+        run_id = ""
+        live_in = getattr(agent, "_live_session_in", None) if agent is not None else None
+        if live_in is not None:
+            try:
+                run_id = str(live_in(self.dir).get("run_id") or "")
+            except Exception:  # noqa: BLE001 — "cannot tell" reads as "none"
+                logger.debug("live-session lookup failed for %s", self.dir, exc_info=True)
+        self._agent_session_id = run_id
+        self._agent_session_checked_at = now
         return run_id
 
     def _take_fingerprint(self) -> dict[str, tuple[float, int]]:
@@ -4743,15 +4768,26 @@ class _SyncManager:
         self._idle_stop_at = due
         if time.time() < due:
             return False
-        # The cached answer can be AGENT_LIVE_CACHE_S old: a run that started
-        # since would lose its Stop hook's publish with this manager.
-        live = live or self.agent_run_id(fresh=True)
+        # Never under a live run (its Stop hook still needs this manager), nor
+        # while a Claude session is open on the folder, between turns too
+        # (owner 2026-11-12): its next turn's edits need the whole engine. A
+        # cached "yes" is enough (one RUNS scan per AGENT_LIVE_CACHE_S while
+        # the session sits idle); a "no" is re-read fresh — a run or session
+        # that started since would lose its publish with this manager.
+        session = ""
+        if not live:
+            session = self.agent_session_id()
+            if not session:
+                live = self.agent_run_id(fresh=True)
+                if not live:
+                    session = self.agent_session_id(fresh=True)
+        what = "run is live" if live else "session is open"
+        live = live or session
         if live:
-            # Never under a live run: its Stop hook still needs this manager.
             if live != self._idle_deferred_for:
                 self._idle_deferred_for = live
                 self.log_event("server_to_disk", "idle stop deferred",
-                               detail=f"a Claude run is live in this folder ({live})")
+                               detail=f"a Claude {what} in this folder ({live})")
             return False
         return self._idle_stop()
 
@@ -7298,6 +7334,11 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
         return {}
     env, name, _dir = found
     manager = _sync_manager(env, name, create=False)
+    if manager is None and event in ("start", "pre", "post", "stop"):
+        # No canvas page is open (never opened, or the idle stop ran): a
+        # session at work in the clone starts the watcher itself, and
+        # `agent_session_id` keeps it running for as long as the session is up.
+        manager = _revive_for_session(env, name, event)
     if manager is None:
         return {}
     try:
@@ -7315,6 +7356,23 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
     except Exception:  # noqa: BLE001 — a hook answer is advice, never a failure
         logger.warning("canvas %s: agent hook failed", _sync_key(env, name), exc_info=True)
     return {}
+
+
+def _revive_for_session(env: str, name: str, event: str) -> "_SyncManager | None":
+    """Start the watcher of a cloned canvas for a Claude session's hook, as
+    sync/start does for a page — or None: not a clone any more, owned by
+    another fused-render, being deleted or handed over, quitting. Never an
+    error: a hook's answer is advice."""
+    if not os.path.isfile(os.path.join(_canvas_dir(env, name), "canvas.toml")):
+        return None
+    try:
+        manager = _sync_manager(env, name, create=True)
+    except (_CanvasDeleting, _CanvasHandingOver, _CanvasOwned, OSError):
+        return None
+    if manager is not None:
+        manager.log_event("watcher", "started for a Claude session",
+                          detail=f"no canvas page open ({event} hook)")
+    return manager
 
 
 def _file_list(files: list[str], cap: int = 12) -> str:

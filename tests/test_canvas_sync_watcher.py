@@ -2111,3 +2111,55 @@ def test_an_idle_stop_rereads_a_cached_no_run_answer(harness, tmp_path, monkeypa
     assert m.agent_run_id() == ""
     assert m._idle_check("") is False
     assert not m.stop_event.is_set() and "idle stop deferred" in _actions(harness)
+
+
+# -- a Claude session keeps the engine up, and starts it (owner 2026-11-12) --
+
+def test_an_idle_stop_waits_out_an_open_session_between_turns(harness, tmp_path, monkeypatch,
+                                                             fake_agent):
+    """No page open and no turn in flight, but the session is still up: the
+    watcher stays, and stops once the session is gone."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
+    session = {"run_id": "run-7"}
+    fake_agent._live_session_in = lambda folder: dict(session)
+    m._tick()
+    m._tick()
+    assert canvases_mod._syncs.get((ENV, "alpha")) is m and not m.stop_event.is_set()
+    deferred = [e for e in harness.client.get(
+        "/api/canvases/sync/log", params={"env": ENV, "name": "alpha"},
+        headers=GUARD).json()["events"] if e["action"] == "idle stop deferred"]
+    assert len(deferred) == 1 and "session is open" in deferred[0]["detail"], deferred
+    session["run_id"] = ""
+    m._tick()
+    assert _wait_for(lambda: _gone(m))
+
+
+def test_a_session_hook_starts_the_watcher_of_a_canvas_no_page_has_open(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """The idle stop ran (or the page was never opened): a session's hook in
+    the clone starts the watcher again, and its Stop hook publishes the turn."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
+    m._tick()
+    assert _wait_for(lambda: _gone(m))
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 60.0)
+    hook = lambda event: harness.client.post(  # noqa: E731
+        "/api/canvases/agent/hook", headers=GUARD,
+        json={"event": event, "session_id": "s1", "cwd": str(harness.root / "alpha")})
+    assert hook("start").json() == {}
+    revived = canvases_mod._syncs.get((ENV, "alpha"))
+    assert revived is not None and revived is not m
+    assert "started for a Claude session" in _actions(harness)
+    (harness.root / "alpha" / "a.py").write_text("a-from-claude\n")
+    assert hook("stop").json() == {}
+    assert _wait_for(lambda: revived.push_seq == 1), _actions(harness)
+
+
+def test_a_session_hook_outside_a_clone_starts_nothing(harness, tmp_path, monkeypatch,
+                                                       fake_agent):
+    res = harness.client.post("/api/canvases/agent/hook", headers=GUARD, json={
+        "event": "start", "session_id": "s1", "cwd": str(tmp_path / "elsewhere")})
+    assert res.json() == {} and not canvases_mod._syncs

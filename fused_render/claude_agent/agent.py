@@ -4448,6 +4448,12 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
             # publishes the folder (the session has no sync verbs, Q7).
             "Stop": [{
                 "hooks": [{"type": "command", "command": canvas_hook("stop"),
+                           "timeout": 5}]}],
+            # A turn begins: the server starts the clone's watcher when none
+            # runs (no canvas page open), so this turn's edits have the
+            # engine that merges and publishes them.
+            "UserPromptSubmit": [{
+                "hooks": [{"type": "command", "command": canvas_hook("start"),
                            "timeout": 5}]}]}})]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
@@ -7053,6 +7059,34 @@ def _live_run_in(folder: str) -> dict:
         turn_open, _tasks_pending = _turn_state_fold(run_dir, {}, partial=True)
         if turn_open:
             return {"run_id": name, "backend": _meta_backend(meta)}
+    return {"run_id": ""}
+
+
+def _live_session_in(folder: str) -> dict:
+    """The id of a run whose SESSION is still up anywhere in `folder` — on
+    the folder itself or on a file directly inside it — or "" if there is
+    none: `_live_run_in`'s match, with "the session's process exists" (its
+    host, or the CLI itself) in place of "a turn is open". The canvas sync
+    keeps a clone's watcher running on this answer: a session sits idle
+    between turns, and the next turn's edits need the watcher that publishes
+    them."""
+    workdir = os.path.abspath(folder)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return {"run_id": ""}
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        target = meta.get("file", "") if isinstance(meta, dict) else ""
+        if not target or os.path.abspath(_workdir(target)) != workdir:
+            continue
+        if _host_alive(run_dir) or _alive(run_dir):
+            return {"run_id": name}
     return {"run_id": ""}
 
 
