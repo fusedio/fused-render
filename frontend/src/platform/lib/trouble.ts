@@ -70,7 +70,11 @@ const ABOUT_OPENCODE = /opencode|open code|provider|api key/i;
 
 // Unconditional: these name Claude Code or quote the CLI's own vocabulary.
 const NAMED: [TroubleKind, RegExp][] = [
-  ["login", /please run \/login|invalid api key/i],
+  // "oauth session expired" / "login reached its time limit": the headless
+  // CLI's own phrases for a dead refresh token and an aged-out login, which
+  // name neither Claude nor /login. NOT the bare "failed to authenticate"
+  // they open with: a mount or a tool says that about its own credentials.
+  ["login", /please run \/login|invalid api key|oauth session expired|login reached its time limit/i],
   ["limit", /usage limit|session limit/i],
   ["notfound", /claude code isn'?t installed|claude cli not found|claude not found/i],
 ];
@@ -429,7 +433,7 @@ export function troubleInstructions(ctx: TroubleContext): string {
       ]
       : [
         "Confirm the CLI runs: `claude --version`.",
-        "Sign in: run `claude`, then `/login`, and complete it in the browser.",
+        "Sign in: run `claude auth login` and complete it in the browser.",
         `Confirm the session works, then tell me to retry in ${displayName()}.`,
       ],
     limit: [

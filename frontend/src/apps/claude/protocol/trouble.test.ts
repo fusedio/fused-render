@@ -100,7 +100,7 @@ describe("rendering + copy blocks", () => {
 
   test("the agent brief carries the per-case steps and the where-to-look block", () => {
     const brief = troubleInstructionsText(troubleFromMessage("please run /login"), ctx);
-    expect(brief).toContain("Sign in: run `claude`, then `/login`");
+    expect(brief).toContain("Sign in: run `claude auth login`");
     expect(brief).toContain("Where to look on this machine:");
     expect(brief).toContain("~/.fused-render");
     expect(brief).toContain("find ~/Library/Logs/fused-render ~/.fused-render/logs/app -name 'fused-render-*.log' 2>/dev/null | xargs ls -t 2>/dev/null | head -3");

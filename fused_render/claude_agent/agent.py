@@ -332,7 +332,11 @@ _COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
 # the package, and a test pins the tuples equal so the two cannot drift.
 _ACCOUNT_ERROR_MARKERS = {
     "claude": ("invalid api key", "/login", "oauth token", "not logged in",
-               "authentication_error"),
+               "authentication_error",
+               # Headless (`claude -p`) wording of a dead refresh token and
+               # of a login past its time limit: neither names `/login`. The
+               # CLI's whole phrases, not a bare "failed to authenticate".
+               "oauth session expired", "login reached its time limit"),
     "copilot": ("not logged in", "auth_required", "authentication required",
                 "copilot login", "no copilot access", "not authorized"),
     "codex": ("not logged in", "requiresopenaiauth", "codex login",
@@ -8377,9 +8381,12 @@ def _account_error(error: str, backend: str = "") -> str:
                     "from Preferences → Agents (or run `opencode auth login` "
                     "in a terminal), or pick a local model, then start a new "
                     "chat here. (%s)" % error)
-        return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
-                "type /login and finish the sign-in, then start a new chat "
-                "here. Help: %s-login (%s)" % (GUIDE_URL, error))
+        # `claude auth login`, not "run `claude`, type /login": the
+        # subcommand opens the browser itself, and Preferences → Agents has
+        # the same sign-in as a button (claude_login.py).
+        return ("Claude Code isn't logged in. Sign in from Preferences → "
+                "Agents (or run `claude auth login` in a terminal), then "
+                "start a new chat here. Help: %s-login (%s)" % (GUIDE_URL, error))
     if any(m in low for m in _LIMIT_ERROR_MARKERS.get(backend, ())):
         if backend == "copilot":
             return ("Your GitHub Copilot plan's request budget was reached. "

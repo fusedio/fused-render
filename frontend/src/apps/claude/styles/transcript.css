@@ -637,6 +637,21 @@
 .chat-root .turn.error .err-action {
   font-weight: 600;
 }
+/* The row's one action (signed out -> Sign in): the plate's own colour, filled,
+   so it reads as the thing to press rather than as more red text. */
+.chat-root .turn.error .err-cta {
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: 6px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+.chat-root .turn.error .err-cta:hover {
+  background: color-mix(in srgb, currentColor 24%, transparent);
+}
 /* The verbatim tail: still there, no longer competing with the instruction. */
 .chat-root .turn.error .err-raw {
   font-size: calc(12px * var(--c-zoom, 1));

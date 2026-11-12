@@ -182,8 +182,8 @@ export function troubleLink(t: Trouble): string {
 // sentence that says what to DO about it, and then rides the help link and the
 // original text along in the same string:
 //
-//   "Claude Code isn't logged in. Open a terminal, run `claude`, type /login
-//    and finish the sign-in, then start a new chat here.
+//   "Claude Code isn't logged in. Sign in from Preferences → Agents (or run
+//    `claude auth login` in a terminal), then start a new chat here.
 //    Help: https://render.fused.io/#troubleshooting-login (Invalid API key …)"
 //
 // As ONE run-on line — which is how both surfaces drew it — the instruction is

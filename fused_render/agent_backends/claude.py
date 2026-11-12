@@ -60,6 +60,12 @@ CLAUDE = Backend(
     account_error_markers=(
         "invalid api key", "/login", "oauth token", "not logged in",
         "authentication_error",
+        # Headless (`claude -p`) wording of a dead refresh token and of a
+        # login past its time limit: neither names `/login`, unlike the TUI's
+        # "Login expired · Please run /login". The CLI's whole phrases, not
+        # the bare "failed to authenticate" they open with: a tool or mount
+        # says that about its own credentials.
+        "oauth session expired", "login reached its time limit",
     ),
     limit_error_markers=("usage limit reached", "session limit"),
     terminal_resume=_terminal_resume,

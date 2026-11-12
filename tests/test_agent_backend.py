@@ -229,10 +229,19 @@ def test_copilot_account_text_names_copilots_fix_and_claudes_is_unchanged(agent)
     assert agent._account_error("premium request quota hit", "copilot") == (
         "Your GitHub Copilot plan's request budget was reached. Wait for it to "
         "reset, or upgrade the plan, then try again. (premium request quota hit)")
+    # The headless CLI's expired-login line names no `/login`; still a sign-in fix.
+    # One marker per input, so neither can be dropped unnoticed.
+    assert agent._account_error("OAuth session expired and could not be refreshed"
+                                ).startswith("Claude Code isn't logged in.")
+    assert agent._account_error("this login reached its time limit and cannot be renewed"
+                                ).startswith("Claude Code isn't logged in.")
+    # Not the bare opener: a tool says that about its own credentials.
+    assert agent._account_error("failed to authenticate to s3://bucket") == (
+        "failed to authenticate to s3://bucket")
     # Claude's, byte for byte.
     assert agent._account_error("/login") == (
-        "Claude Code isn't logged in. Open a terminal, run `claude`, type /login "
-        "and finish the sign-in, then start a new chat here. Help: "
+        "Claude Code isn't logged in. Sign in from Preferences → Agents (or "
+        "run `claude auth login` in a terminal), then start a new chat here. Help: "
         "https://render.fused.io/#troubleshooting-login (/login)")
     assert agent._account_error("usage limit reached") == (
         "Your Claude plan's usage limit was reached. Wait for it to reset, or "
