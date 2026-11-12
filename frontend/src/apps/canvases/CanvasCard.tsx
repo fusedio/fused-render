@@ -235,7 +235,21 @@ export function CanvasCard({
     >
       <a
         className="canvas-card-link"
-        href={href}
+        // Only a cloned canvas gets a real href: anything that follows one
+        // without this page's JS (the context menu's "Open in New Window",
+        // a drag to the tab bar) lands on the workspace directly, and an
+        // uncloned canvas's workspace cannot open — it has no folder yet.
+        // The uncloned card stays a keyboard-reachable link (role + tabIndex
+        // + Enter) whose every open path clones first.
+        href={canvas.cloned ? href : undefined}
+        role={canvas.cloned ? undefined : "link"}
+        tabIndex={canvas.cloned ? undefined : 0}
+        onKeyDown={(e) => {
+          if (canvas.cloned || e.key !== "Enter" || inert) return;
+          e.preventDefault();
+          if (e.metaKey || e.ctrlKey || e.shiftKey) onOpenInNewTab();
+          else onOpen();
+        }}
         aria-label={`Open ${title}`}
         onClick={(e) => {
           if (inert) {
@@ -246,7 +260,7 @@ export function CanvasCard({
           if (modified) {
             // A cloned canvas's workspace opens as-is: let the browser (or
             // the native shell's new-window policy) take the link. An
-            // uncloned one has no folder for that page to open yet.
+            // uncloned one (no href) is cloned first.
             if (!canvas.cloned) {
               e.preventDefault();
               onOpenInNewTab();

@@ -147,6 +147,8 @@
   z-index: 1;
   display: block;
   border-radius: 10px;
+  /* An uncloned card's link has no href, so no default pointer. */
+  cursor: pointer;
 }
 
 .canvas-card.is-inert .canvas-card-link {
@@ -275,8 +277,11 @@
   visibility: hidden;
 }
 
+/* Focus anywhere in the card shows them too: `visibility: hidden` takes a
+   button out of the tab order, so a keyboard user tabbing onto the card's
+   link must already see (and be able to reach) its actions. */
 .canvas-card.is-hovered:not(.is-inert) .canvas-card-action.is-hover-only,
-.canvas-card-action.is-hover-only:focus-visible {
+.canvas-card:focus-within:not(.is-inert) .canvas-card-action.is-hover-only {
   opacity: 1;
   visibility: visible;
 }

@@ -116,6 +116,12 @@ export default function Canvases() {
   // control-plane list). Null until read — or when the read failed — and the
   // cards hide their star rather than show every canvas as unstarred.
   const [favourites, setFavourites] = useState<Set<string> | null>(null);
+  // Bumped when a toggle starts: drops favourites reads that left before it.
+  const favSeqRef = useRef(0);
+  // Ids with a star write on the wire: a second press waits it out, so a PUT
+  // and a DELETE for one canvas never race (and a failed first write cannot
+  // roll back a second one).
+  const favInFlightRef = useRef<Set<string>>(new Set());
   // The canvas whose card's trash was pressed: the confirm dialog's target.
   const [deleteTarget, setDeleteTarget] = useState<CanvasEntry | null>(null);
   const [deleteCanvasBusy, setDeleteCanvasBusy] = useState(false);
@@ -192,12 +198,15 @@ export default function Canvases() {
   // control plane has no endpoint) — not worth a banner over the cards.
   const fillFavourites = useCallback(async (env: WorkbenchEnv) => {
     const gen = envGenRef.current;
+    // A read that left before a toggle answers with the list as it was: it
+    // must not land over the toggle (favSeqRef moves on every toggle).
+    const seq = favSeqRef.current;
     try {
       const { collection_ids } = await getCanvasFavourites(env);
-      if (gen !== envGenRef.current) return;
+      if (gen !== envGenRef.current || seq !== favSeqRef.current) return;
       setFavourites(new Set(collection_ids));
     } catch {
-      if (gen !== envGenRef.current) return;
+      if (gen !== envGenRef.current || seq !== favSeqRef.current) return;
       setFavourites(null);
     }
   }, []);
@@ -480,32 +489,48 @@ export default function Canvases() {
   const onOpenInNewTab = async (canvas: CanvasEntry) => {
     if (!env) return;
     const path = canvasWorkspacePath(env, canvas.name);
+    // A blocked window (null) opens the canvas here instead. No "noopener"
+    // feature: with it window.open always returns null and a block could not
+    // be told apart; the opener link is cut on the handle instead.
+    const openWindow = () => {
+      const w = window.open(path, "_blank");
+      if (w) w.opener = null;
+      else navigateUrl(path);
+      return w !== null;
+    };
     if (canvas.cloned) {
-      window.open(path, "_blank");
+      openWindow();
       return;
     }
+    const gen = envGenRef.current;
     setBusy(canvas.name);
     setError(null);
     try {
       await cloneCanvas(env, canvas.name);
       await startSyncForOpen(env, canvas.name);
+      // The env changed while the clone was out: the listing on screen is
+      // another env's, whose same-named canvas this clone says nothing about.
+      if (gen !== envGenRef.current) return;
       setCanvases((prev) =>
         prev ? prev.map((c) => (c.name === canvas.name ? { ...c, cloned: true } : c)) : prev,
       );
-      if (!window.open(path, "_blank")) {
-        navigateUrl(path);
-        return;
-      }
+      if (!openWindow()) return;
     } catch (e) {
+      if (gen !== envGenRef.current) return;
       setError((e as Error).message);
     }
     setBusy(null);
   };
 
-  // Optimistic, rolled back on failure — the hosted star's behaviour.
+  // Optimistic, rolled back on failure — the hosted star's behaviour. One
+  // write per canvas at a time (favInFlightRef); a press while one is out is
+  // ignored, which is also what the user sees (the star already flipped).
   const onToggleFavourite = async (canvas: CanvasEntry) => {
     if (!env || !canvas.id || favourites === null) return;
     const id = canvas.id;
+    if (favInFlightRef.current.has(id)) return;
+    favInFlightRef.current.add(id);
+    favSeqRef.current += 1;
     const gen = envGenRef.current;
     const on = !favourites.has(id);
     const flip = (want: boolean) =>
@@ -523,6 +548,8 @@ export default function Canvases() {
       if (gen !== envGenRef.current) return;
       flip(!on);
       setError(`${on ? "Adding" : "Removing"} favourite failed: ${(e as Error).message}`);
+    } finally {
+      favInFlightRef.current.delete(id);
     }
   };
 
@@ -638,9 +665,12 @@ export default function Canvases() {
 
   const filtered = useMemo(() => {
     if (canvases === null) return null;
-    const q = query.trim().toLowerCase();
+    // Cards print names with spaces for underscores: match in that form, so a
+    // query typed from the title ("map query") and one typed from the folder
+    // name ("map_query") both find the canvas.
+    const q = canvasDisplayName(query.trim().toLowerCase());
     const shown = q
-      ? canvases.filter((c) => c.name.toLowerCase().includes(q))
+      ? canvases.filter((c) => canvasDisplayName(c.name.toLowerCase()).includes(q))
       : canvases.slice();
     // Last-modified first (local clone mtime, else the server's last_updated);
     // canvases we know nothing about last, alphabetically.
