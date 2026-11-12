@@ -56,6 +56,7 @@ ALLOWED = {
     "shell/claude-rail/claude-rail-lib.ts": "cache",  # rail stood last; dropped if the pulse says empty
     "shell/claude-rail/rail-peek-flag.ts": "cache",   # flag's last prefs answer, re-read
     "shell/notifications-seen-store.ts": "import",
+    "shell/task-head-flag.ts": "cache",             # flag's last prefs answer, re-read
     "shell/task-peek-store.ts": "display",          # peek width + per-tab autocollapse marker
     "shell/tasks-lib.ts": "display",                # Tasks "Sort by" choice (per viewer)
     "shell/tasksPulse.ts": "signal",                # chat-activity listener (+ seen import)
