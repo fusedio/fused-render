@@ -2105,6 +2105,53 @@ def test_a_stop_overtaken_by_the_sessions_next_turn_does_not_publish(
     assert len(_push_argvs(harness)) == 1
 
 
+def test_a_stop_overtaken_during_the_merge_download_applies_nothing(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """The next turn starts while a stale turn end downloads the server's
+    bundle: neither the held-move merge nor the pre-push merge lands in that
+    turn's files, and nothing is published."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    fake_agent.live = "run-1"
+    m.agent_run_id(fresh=True)
+    m._lease_next_at = time.time() + 3600
+    m.tool_hook("s1")
+    fetch = m._fetch_bundle
+
+    def fetch_then_next_turn(probe):
+        m.tool_hook("s1")
+        return fetch(probe)
+
+    monkeypatch.setattr(m, "_fetch_bundle", fetch_then_next_turn)
+    # The held move (merged at turn end, before any push).
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b2\n"})
+    shims.set_manifest("t2", revision=2)
+    _poll(m)
+    assert m.server_stale is not None
+    assert m.turn_end("s1", m._tool_hooks["s1"]) == "superseded"
+    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
+    assert m.server_stale is not None and m.merge_seq == 0
+    assert not _push_argvs(harness)
+    # The pre-push merge: a dirty clone, the server moved since the last poll.
+    monkeypatch.setattr(m, "_fetch_bundle", fetch)
+    fake_agent.live = ""
+    m.agent_run_id(fresh=True)
+    m._tick()
+    assert m.server_stale is None and (harness.root / "alpha" / "b.py").read_text() == "b2\n"
+    (harness.root / "alpha" / "a.py").write_text("a-local\n")
+    m._dirty_since = time.time()
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b3\n"})
+    shims.set_manifest("t3", revision=3)
+    monkeypatch.setattr(m, "_fetch_bundle", fetch_then_next_turn)
+    assert m.turn_end("s1", m._tool_hooks["s1"]) == "superseded"
+    assert (harness.root / "alpha" / "b.py").read_text() == "b2\n"
+    assert not _push_argvs(harness)
+    monkeypatch.setattr(m, "_fetch_bundle", fetch)
+    assert m.turn_end("s1", m._tool_hooks["s1"]) == "pushed"
+    assert (harness.root / "alpha" / "b.py").read_text() == "b3\n"
+    assert len(_push_argvs(harness)) == 1
+
+
 def test_an_idle_stop_holds_the_push_for_another_lease_and_retries_before_stopping(
         harness, tmp_path, monkeypatch, fake_agent):
     """Another editor holds the lease: the idle stop does not publish over

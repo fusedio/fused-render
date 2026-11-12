@@ -3910,7 +3910,8 @@ class _SyncManager:
         return out
 
     def _merge_now(self, probe: dict | None = None, bundle: dict[str, bytes] | None = None,
-                   *, wait: float | None = None, manual: bool = False) -> dict:
+                   *, wait: float | None = None, manual: bool = False,
+                   fence: Callable[[], bool] | None = None) -> dict:
         """Bring a server move into the clone: the ONE merge every road runs —
         the poll when no Claude run is live, the first tick after a run ends,
         the turn-end (Stop hook), a 412 push, the page's Pull. Per file
@@ -3924,7 +3925,10 @@ class _SyncManager:
         `wait` when given — a busy clone answers code "busy"). Answers
         `{ok, error?, code?, files}`; ok False leaves the clone untouched
         (download failed, or the merged mix failed `fused canvas validate`
-        and was rolled back — then `server_stale` carries the reason)."""
+        and was rolled back — then `server_stale` carries the reason).
+        `fence()` is asked once the apply holds _op_lock, after the
+        download: True answers code "superseded" with nothing applied (the
+        turn end whose session started its next turn while this ran)."""
         if probe is None:
             probe = self._probe_remote()
             if probe is None:
@@ -3949,6 +3953,9 @@ class _SyncManager:
             return {"ok": False, "code": "busy", "files": [],
                     "error": "a sync operation is in flight for this canvas; try again in a moment"}
         try:
+            if fence is not None and fence():
+                return {"ok": False, "code": "superseded", "files": [],
+                        "error": "a newer turn started in this folder"}
             if self._base_files is not None and self._bundle_matches_sync_point(bundle):
                 self._rotate_remote(probe)
                 self._save_base()
@@ -4346,6 +4353,9 @@ class _SyncManager:
                               if self._base_files is not None or attempt > 0 else None)
                     if not self._op_lock.acquire(timeout=wait):
                         return deferred("another sync step held the clone")
+                    if fence is not None and fence():
+                        self._op_lock.release()
+                        return deferred("a newer turn started in this folder")
                     try:
                         self._last_merge_files = []
                         if (bundle is not None and self._base_files is not None
@@ -5026,7 +5036,10 @@ class _SyncManager:
             if self.server_stale is not None:
                 cli = fused_cli()
                 if cli is not None and _shim_manifest_command(cli) is not None:
-                    if self._merge_now().get("ok"):
+                    merged = self._merge_now(fence=superseded)
+                    if merged.get("code") == "superseded":
+                        return gave_way()
+                    if merged.get("ok"):
                         what = "merged"
             if self.server_stale is not None or self._leased_elsewhere():
                 self.log_event("disk_to_server", "turn end", ok=False,
