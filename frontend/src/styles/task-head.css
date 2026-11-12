@@ -577,3 +577,11 @@
 .task-head-status-host .c-tb-paused {
   flex: 0 0 auto;
 }
+
+/* …and so is the menu its ⋮ opens (Kebab adds `c-kebabpop--head` when the
+   trigger stands in a task head): portaled out of the head, it would read the
+   page's chat zoom for itself. Two classes, to outrank `.c-overlay`'s own
+   `--c-zoom`. */
+.c-kebabpop.c-kebabpop--head {
+  --c-zoom: 1;
+}
