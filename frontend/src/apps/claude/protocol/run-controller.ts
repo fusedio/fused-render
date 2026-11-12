@@ -366,9 +366,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- ownership seats (T:16187-16201) ------------------------------------
   let sending = false;
   let sendSeq = 0;
+  let allowSeq = 0;
   let loopSeq = 0;
   let followupSeq = 0;
   let logGen = 0;
+  /** Sends the controller itself dispatched (`allowDenied`) and wants the
+   *  outcome of, by `SendOptions.sendId`: the server has the line, or the send
+   *  came back refused. */
+  const sendWatch = new Map<string, { delivered: () => void; refused: () => void }>();
   let activeRun: string | null = null;
   let activeSeat = 0;
   let stoppedSeat = 0;
@@ -2712,17 +2717,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // The pill stays; the mode still rides the next send.
     }
   }
-  /** Approve the one call auto mode refused. The server records the grant for
-   *  the run's PreToolUse hook and answers the words that ask for a rerun; they
-   *  go out through `sendMessage`, so the reply is drawn and followed like any
-   *  turn. The chip's "Allowed" is stamped here for the page on screen — a
-   *  reload reads it back from the server (`denied.allowed`). */
+  /** Approve the one call auto mode refused. The server records the grant in
+   *  the chat's store (any run of the chat honours it) and answers the words
+   *  that ask for a rerun; they go out the way the composer sends — a follow-up
+   *  into a live run, a fresh message otherwise — so the reply is drawn and
+   *  followed like any turn. The chip's "Allowed" is stamped here only once the
+   *  server has the retry (a reload reads it back as `denied.allowed`); a retry
+   *  that never went out throws, and the grant simply expires. */
   async function allowDenied(toolUseId: string): Promise<void> {
-    const runId = state.lastRunId || activeRun;
     if (disposed) return;
-    if (!runId) throw new Error("No run to allow this in.");
-    const res = await run("allow_denied", { run_id: runId, tool_use_id: toolUseId });
+    const sessionId = state.sessionId;
+    if (!sessionId) throw new Error("No conversation to allow this in.");
+    const gen = logGen;
+    const res = await run("allow_denied", { session_id: sessionId, tool_use_id: toolUseId });
+    if (disposed || logGen !== gen) return;
     if (!res || "error" in res) throw new Error((res && "error" in res && res.error) || "Could not allow that.");
+    const sendId = `allow-${++allowSeq}-${toolUseId}`;
+    const outcome = new Promise<boolean>((resolve) => {
+      sendWatch.set(sendId, { delivered: () => resolve(true), refused: () => resolve(false) });
+    });
+    const opts: SendOptions = { sendId };
+    const sent = state.status !== "idle" ? sendFollowUp(res.message, { ...opts, orStart: true }) : sendMessage(res.message, opts);
+    const ok = await Promise.race([outcome, sent.then(() => true)]);
+    sendWatch.delete(sendId);
+    if (!ok) throw new Error("Allowed, but the retry could not be sent. Try again.");
+    if (disposed || logGen !== gen) return;
     const stamp = (segs: Segment[]): Segment[] =>
       segs.map((seg) => {
         if (seg.kind !== "tool") return seg;
@@ -2740,7 +2759,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
         t.role === "assistant" && t.segments ? { ...t, segments: stamp(t.segments) } : t,
       ),
     });
-    await sendMessage(res.message);
   }
   /** `"1"` / `"0"` / `""` — see `ChatControllerDeps.hasPane`. The empty string
    *  is not a missing field: agent.py's `main` reads `has_pane == ""` as "the
@@ -2806,6 +2824,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // from a send that got as far as `addUser` — and adoption has already made
     // the two the same row (Bugbot, PR #1074).
     if (opts.optimisticKey) dropOptimisticUser(opts.optimisticKey);
+    // The controller's own send (`allowDenied`): its caller hears the refusal,
+    // and the composer, which never typed these words, must not get them back.
+    const watch = opts.sendId ? sendWatch.get(opts.sendId) : undefined;
+    if (watch) {
+      if (refused) watch.refused();
+      return;
+    }
     deps.onSendReturned?.({
       text,
       // REFUSED means no bubble and no queue entry holds the words, so the
@@ -2825,6 +2850,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
   };
   /** The server has this line (see `ChatControllerDeps.onSendDelivered`). */
   const delivered = (opts: SendOptions): void => {
+    if (opts.sendId) sendWatch.get(opts.sendId)?.delivered();
     if (opts.clientId) deps.onSendDelivered?.(opts.clientId);
   };
 

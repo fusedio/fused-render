@@ -1583,11 +1583,12 @@ function ChatBody(props: ChatBodyProps) {
   );
   // The task registry by id, for the agent / monitor chips (`ui/tasksContext`).
   const tasksById = useMemo(() => taskIndex(state.tasks), [state.tasks]);
-  // The Allow button on a refused call needs a run that can take a message and
-  // an agent whose classifier refused it: Claude, with a run this chat had.
+  // The Allow button on a refused call needs an agent whose classifier refused
+  // it (Claude) and a conversation a send would resume or start: its session id,
+  // which a restored chat has without ever having had a run this page.
   const allowDenied = useMemo(
-    () => ((state.backend || "claude") === "claude" && state.lastRunId ? controller.allowDenied : null),
-    [state.backend, state.lastRunId, controller],
+    () => ((state.backend || "claude") === "claude" && state.sessionId ? controller.allowDenied : null),
+    [state.backend, state.sessionId, controller],
   );
 
   /**

@@ -283,7 +283,7 @@ export interface AgentRequests {
   poll: PollRequest;
   decide: DecideRequest;
   /** Approve the one tool call auto mode refused (agent.py `_allow_denied`). */
-  allow_denied: { run_id: string; tool_use_id: string };
+  allow_denied: { session_id: string; tool_use_id: string };
   app_state: AppStateRequest;
   canvas_shot: CanvasShotRequest;
   canvas_shot_inbox: CanvasShotInboxRequest;

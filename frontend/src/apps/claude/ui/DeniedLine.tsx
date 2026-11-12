@@ -25,7 +25,7 @@ export function DeniedLine({ seg }: { seg: ToolSegment }) {
       <span className="chip-denied-why">
         Blocked by auto mode{denied.reason ? <> · {denied.reason}</> : null}
       </span>
-      {allow && seg.id ? (
+      {(allow || allowed) && seg.id ? (
         <button
           type="button"
           className="chip-denied-btn"

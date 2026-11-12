@@ -109,6 +109,12 @@ test("an approved call reads Allowed and cannot be clicked again", () => {
   expect((b.props as { disabled?: boolean }).disabled).toBe(true);
 });
 
+test("an approved call reads Allowed even where nothing can be sent", () => {
+  const r = mount({ denied: { reason: "X", allowed: true } }, null);
+  expect(text(button(r)!)).toBe("Allowed");
+  expect((button(r)!.props as { disabled?: boolean }).disabled).toBe(true);
+});
+
 test("a failed allow says so and keeps the button", async () => {
   const r = mount({}, async () => {
     throw new Error("no live session");

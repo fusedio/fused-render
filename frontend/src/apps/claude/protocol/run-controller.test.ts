@@ -1342,7 +1342,7 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(modeAfter).toBe("acceptEdits");
   });
 
-  test("allowDenied records the grant on the run, stamps the chip Allowed, and sends the rerun words", async () => {
+  test("allowDenied records the grant on the chat, stamps the chip Allowed, and sends the rerun words", async () => {
     const denied = {
       kind: "tool",
       id: "t1",
@@ -1360,11 +1360,59 @@ describe("follow-ups (T:16024, D687)", () => {
     });
     await made.controller.sendMessage("go");
     await made.controller.allowDenied("t1");
-    expect(made.agent.of("allow_denied")[0]!.fields).toEqual({ run_id: "r1", tool_use_id: "t1" });
+    expect(made.agent.of("allow_denied")[0]!.fields).toEqual({ session_id: "s1", tool_use_id: "t1" });
     const sent = [...made.agent.of("start"), ...made.agent.of("send")].map((c) => String(c.fields.message));
     expect(sent.some((m) => m.includes("run it again"))).toBe(true);
     const segs = made.controller.getState().turns.flatMap((t) => (t.role === "assistant" ? (t.segments ?? []) : []));
     expect(segs.some((x) => x.kind === "tool" && x.denied?.allowed === true)).toBe(true);
+  });
+
+  test("allowDenied into a live run goes out as a follow-up, and the composer never sees the words", async () => {
+    let controller!: ChatController;
+    let allowed: Promise<void> | undefined;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      allow_denied: () => ({ allowed: "t1", message: "run it again" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("hi")] });
+        if (n === 1) {
+          allowed = controller.allowDenied("t1");
+          await allowed;
+        }
+        return poll({ done: true, segments: [text("hi")] });
+      },
+    });
+    controller = made.controller;
+    await made.controller.sendMessage("go");
+    expect(made.agent.of("send").map((c) => String(c.fields.message))).toEqual([expect.stringContaining("run it again")]);
+    expect(made.agent.of("start")).toHaveLength(1);
+    expect(made.returned.filter((r) => r.text.includes("run it again"))).toEqual([]);
+  });
+
+  test("allowDenied whose retry was refused throws, stamps nothing and leaves the words out of the composer", async () => {
+    const denied = {
+      kind: "tool", id: "t1", name: "Bash", input: {}, status: "error", output: "", images: [],
+      denied: { reason: "X" },
+    } as never;
+    let starts = 0;
+    const made = makeController({
+      start: () => (++starts === 1 ? { run_id: "r1" } : { error: "no capacity" }),
+      allow_denied: () => ({ allowed: "t1", message: "run it again" }),
+      poll: () => poll({ done: true, segments: [denied] }),
+    });
+    await made.controller.sendMessage("go");
+    const seg = () =>
+      made.controller.getState().turns.flatMap((t) => (t.role === "assistant" ? (t.segments ?? []) : []));
+    await expect(made.controller.allowDenied("t1")).rejects.toThrow("retry could not be sent");
+    expect(seg().some((x) => x.kind === "tool" && x.denied?.allowed === true)).toBe(false);
+    expect(made.returned.filter((r) => r.text.includes("run it again"))).toEqual([]);
+  });
+
+  test("allowDenied with no session id has nowhere to allow it", async () => {
+    const made = makeController({});
+    await expect(made.controller.allowDenied("t1")).rejects.toThrow("No conversation");
+    expect(made.agent.of("allow_denied")).toHaveLength(0);
   });
 
   test("allowDenied surfaces the server's refusal and sends nothing", async () => {
