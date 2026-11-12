@@ -20,7 +20,7 @@ export const PERMISSION_LABELS: Record<string, string> = {
  *  sentence that only described the picked mode sat at the bottom of every
  *  menu, and the reader weighing the other three got nothing for them. */
 export const PERMISSION_HINTS: Record<string, string> = {
-  auto: "Approves safe actions on its own, holds the rest for you.",
+  auto: "Approves safe actions on its own and refuses risky ones. You can allow a refused action from the chat.",
   acceptEdits: "File edits go through on their own. Other actions wait for you, bar the commands the agent already trusts.",
   plan: "Reads and plans only. Changes nothing until you say so.",
   prompt: "Holds every action for your approval.",

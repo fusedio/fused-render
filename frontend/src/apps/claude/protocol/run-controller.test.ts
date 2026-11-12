@@ -1342,6 +1342,43 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(modeAfter).toBe("acceptEdits");
   });
 
+  test("allowDenied records the grant on the run, stamps the chip Allowed, and sends the rerun words", async () => {
+    const denied = {
+      kind: "tool",
+      id: "t1",
+      name: "Bash",
+      input: { command: "git push --force" },
+      status: "error",
+      output: "refused",
+      images: [],
+      denied: { reason: "Git Destructive" },
+    } as never;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      allow_denied: (f) => ({ allowed: f.tool_use_id, message: "run it again" }),
+      poll: () => poll({ done: true, segments: [denied] }),
+    });
+    await made.controller.sendMessage("go");
+    await made.controller.allowDenied("t1");
+    expect(made.agent.of("allow_denied")[0]!.fields).toEqual({ run_id: "r1", tool_use_id: "t1" });
+    const sent = [...made.agent.of("start"), ...made.agent.of("send")].map((c) => String(c.fields.message));
+    expect(sent.some((m) => m.includes("run it again"))).toBe(true);
+    const segs = made.controller.getState().turns.flatMap((t) => (t.role === "assistant" ? (t.segments ?? []) : []));
+    expect(segs.some((x) => x.kind === "tool" && x.denied?.allowed === true)).toBe(true);
+  });
+
+  test("allowDenied surfaces the server's refusal and sends nothing", async () => {
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      allow_denied: () => ({ error: "that call was not refused by auto mode" }),
+      poll: () => poll({ done: true, segments: [text("hi")] }),
+    });
+    await made.controller.sendMessage("go");
+    const before = made.agent.of("start").length + made.agent.of("send").length;
+    await expect(made.controller.allowDenied("t9")).rejects.toThrow("not refused by auto mode");
+    expect(made.agent.of("start").length + made.agent.of("send").length).toBe(before);
+  });
+
   test("set_mode with no live run is a no-op, and a respawn reply leaves the mode alone", async () => {
     const idle = makeController({});
     await idle.controller.applyPermission("auto");

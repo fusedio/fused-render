@@ -186,7 +186,7 @@ import { AgentMark } from "@platform/ui/AgentMark";
 import { queueCaption } from "@platform/lib/queue";
 import { ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
-import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
+import { AllowDeniedContext, TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
 import { QueuedStrip } from "./ui/QueuedStrip";
@@ -1583,6 +1583,12 @@ function ChatBody(props: ChatBodyProps) {
   );
   // The task registry by id, for the agent / monitor chips (`ui/tasksContext`).
   const tasksById = useMemo(() => taskIndex(state.tasks), [state.tasks]);
+  // The Allow button on a refused call needs a run that can take a message and
+  // an agent whose classifier refused it: Claude, with a run this chat had.
+  const allowDenied = useMemo(
+    () => ((state.backend || "claude") === "claude" && state.lastRunId ? controller.allowDenied : null),
+    [state.backend, state.lastRunId, controller],
+  );
 
   /**
    * THE DOOR OPENS WHEN THE RUN IS LIVE, not when the controller took the
@@ -6315,6 +6321,7 @@ function ChatBody(props: ChatBodyProps) {
               </>
             ) : null}
             <TasksContext.Provider value={tasksById}>
+            <AllowDeniedContext.Provider value={allowDenied}>
             <Transcript
               followRef={transcriptFollow}
               onOpenCardVisible={setOpenCardVisible}
@@ -6390,6 +6397,7 @@ function ChatBody(props: ChatBodyProps) {
                 </>
               }
             />
+            </AllowDeniedContext.Provider>
             </TasksContext.Provider>
             {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
                 the box: one line until opened. Not in the compact cut — a tile

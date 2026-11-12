@@ -13,6 +13,7 @@ export type Action =
   | "start"
   | "poll"
   | "decide"
+  | "allow_denied"
   | "app_state"
   | "canvas_shot"
   | "canvas_shot_inbox"
@@ -281,6 +282,8 @@ export interface AgentRequests {
   start: StartRequest;
   poll: PollRequest;
   decide: DecideRequest;
+  /** Approve the one tool call auto mode refused (agent.py `_allow_denied`). */
+  allow_denied: { run_id: string; tool_use_id: string };
   app_state: AppStateRequest;
   canvas_shot: CanvasShotRequest;
   canvas_shot_inbox: CanvasShotInboxRequest;
@@ -374,6 +377,10 @@ export interface ToolSegment extends SegmentClock {
   orphan?: boolean;
   /** Only on a synthetic orphan parent (always ""). */
   detail?: string;
+  /** Set when auto mode's classifier refused this call (agent.py
+   *  `_classifier_denial`): its `reason`, and `allowed` once the user has
+   *  approved it (`_allow_denied`). */
+  denied?: { reason: string; allowed?: boolean };
 }
 export interface NoticeSegment extends SegmentClock {
   kind: "notice";
@@ -810,6 +817,10 @@ export type StartResponse =
     }
   | ErrorOnly;
 
+/** `allow_denied`'s answer: the grant is recorded, and `message` is what asks
+ *  the agent to run the call again — the page sends it like any other line. */
+export type AllowDeniedResponse = { allowed: string; message: string } | ErrorOnly;
+
 /** agent.py:2971-3038 — exactly one of the three. */
 export type SendResponse = { sent: true } | { respawn: true } | ErrorOnly;
 /** `set_mode`'s answer: `mode` is the page spelling now in force. */
@@ -1178,6 +1189,7 @@ export interface AgentResponses {
   start: StartResponse;
   poll: PollResponse | PollRefused;
   decide: DecideResponse;
+  allow_denied: AllowDeniedResponse;
   app_state: AppStateResponse;
   canvas_shot: AppStateResponse;
   canvas_shot_inbox: CanvasShotInboxResponse;

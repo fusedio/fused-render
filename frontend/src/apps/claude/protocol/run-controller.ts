@@ -2712,6 +2712,36 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // The pill stays; the mode still rides the next send.
     }
   }
+  /** Approve the one call auto mode refused. The server records the grant for
+   *  the run's PreToolUse hook and answers the words that ask for a rerun; they
+   *  go out through `sendMessage`, so the reply is drawn and followed like any
+   *  turn. The chip's "Allowed" is stamped here for the page on screen — a
+   *  reload reads it back from the server (`denied.allowed`). */
+  async function allowDenied(toolUseId: string): Promise<void> {
+    const runId = state.lastRunId || activeRun;
+    if (disposed) return;
+    if (!runId) throw new Error("No run to allow this in.");
+    const res = await run("allow_denied", { run_id: runId, tool_use_id: toolUseId });
+    if (!res || "error" in res) throw new Error((res && "error" in res && res.error) || "Could not allow that.");
+    const stamp = (segs: Segment[]): Segment[] =>
+      segs.map((seg) => {
+        if (seg.kind !== "tool") return seg;
+        const children = seg.children ? stamp(seg.children) : undefined;
+        const mine = seg.id === toolUseId && seg.denied;
+        if (!mine && children === seg.children) return seg;
+        return {
+          ...seg,
+          ...(mine ? { denied: { ...seg.denied!, allowed: true } } : {}),
+          ...(children ? { children } : {}),
+        };
+      });
+    emit({
+      turns: state.turns.map((t) =>
+        t.role === "assistant" && t.segments ? { ...t, segments: stamp(t.segments) } : t,
+      ),
+    });
+    await sendMessage(res.message);
+  }
   /** `"1"` / `"0"` / `""` — see `ChatControllerDeps.hasPane`. The empty string
    *  is not a missing field: agent.py's `main` reads `has_pane == ""` as "the
    *  page has no opinion" and answers with `_has_pane(file)` itself, which is
@@ -5005,6 +5035,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     stopRun,
     sendQueuedNow,
     applyPermission,
+    allowDenied,
     decidePermission,
     answerQuestion,
     decidePlan,
