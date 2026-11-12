@@ -333,9 +333,10 @@ _COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
 _ACCOUNT_ERROR_MARKERS = {
     "claude": ("invalid api key", "/login", "oauth token", "not logged in",
                "authentication_error",
-               # Headless (`claude -p`) wording of a dead refresh token: it
-               # names no `/login`, unlike the TUI's "Login expired".
-               "oauth session expired", "failed to authenticate"),
+               # Headless (`claude -p`) wording of a dead refresh token and
+               # of a login past its time limit: neither names `/login`. The
+               # CLI's whole phrases, not a bare "failed to authenticate".
+               "oauth session expired", "login reached its time limit"),
     "copilot": ("not logged in", "auth_required", "authentication required",
                 "copilot login", "no copilot access", "not authorized"),
     "codex": ("not logged in", "requiresopenaiauth", "codex login",

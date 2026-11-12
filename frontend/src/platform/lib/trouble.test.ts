@@ -38,6 +38,7 @@ test("a signed-out claude is NOT reported as a missing one", () => {
   expect(troubleKind("Claude Code is not signed in")).toBe("login");
   // Headless wording of an expired login: names neither Claude nor /login.
   expect(troubleKind("Failed to authenticate: OAuth session expired and could not be refreshed")).toBe("login");
+  expect(troubleKind("Failed to authenticate: this login reached its time limit and cannot be renewed.")).toBe("login");
 });
 
 test("a sign-in problem with no subject is not assumed to be Claude's", () => {
@@ -66,6 +67,7 @@ test("a failure SHAPE about something else is not about Claude", () => {
     )
   ).toBe("raw");
   expect(troubleKind("mount probe failed: authentication failed for s3://bucket")).toBe("raw");
+  expect(troubleKind("mount probe failed: failed to authenticate to s3://bucket")).toBe("raw");
   expect(troubleKind("ffmpeg: command not found")).toBe("raw");
   expect(troubleKind("rate limit exceeded talking to the tile server")).toBe("raw");
 });
