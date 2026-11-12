@@ -124,6 +124,11 @@ describe("shared helpers", () => {
     expect(stripUnansweredMarker(null)).toBeNull();
   });
 
+  test("stripUnansweredMarker leaves an unmarked output byte-for-byte, trailing newline included", () => {
+    expect(stripUnansweredMarker("line 1\nline 2\n")).toBe("line 1\nline 2\n");
+    expect(stripUnansweredMarker("padded  \n\n")).toBe("padded  \n\n");
+  });
+
   test("a card's unanswered reason and its status line", () => {
     expect(unansweredReasonOf({ decision: "expired" })).toBe("expired");
     expect(unansweredReasonOf({ decision: "deny", reason: "timeout" })).toBe("timeout");

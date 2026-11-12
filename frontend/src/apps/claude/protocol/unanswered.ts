@@ -50,7 +50,10 @@ export function unansweredCardText(reason: UnansweredReason, verb: "decided" | "
  *  unanswered marker, which is plumbing for the notice and not something the
  *  reader should see. */
 export function stripUnansweredMarker(output: string | null | undefined): string | null | undefined {
-  return typeof output === "string" ? output.replace(MARKER, "").trimEnd() : output;
+  // Trim only what the marker leaves behind: an output without one is the
+  // tool's own text, trailing newline included, and Copy must paste it as is.
+  if (typeof output !== "string" || !MARKER.test(output)) return output;
+  return output.replace(MARKER, "").trimEnd();
 }
 
 /** The notice for one segment, or null when it is not an unanswered call. */
