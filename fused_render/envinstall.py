@@ -65,7 +65,7 @@ import threading
 import time
 from typing import Any
 
-from fused_render import _platform
+from fused_render import _platform, jobs
 
 logger = logging.getLogger(__name__)
 
@@ -1207,10 +1207,10 @@ def _recorded_progress(key: str) -> dict | None:
     crash would wedge the key forever, the exact failure `_claim_is_stale` exists
     to prevent. This is the record-only view, so the two cannot become circular.
 
-    A record that is not `done` but whose pid is gone is a crash, and is
-    reported as finished-with-an-error — the same liveness check
-    `templates/docs/docs.py` does, and for the same reason: otherwise the page
-    polls a dead installer forever.
+    A record that is not `done` but whose pid is gone, or whose `ts` heartbeat
+    stopped `jobs.STALE_AFTER_S` ago on a pid we did not spawn (a crash or reboot can
+    hand that pid to an unrelated process), is a crash and is reported as
+    finished-with-an-error: otherwise the page polls a dead installer forever.
 
     An invalid key reads as "never started" rather than raising: no such install
     can exist, and the endpoint rejects the shape separately.
@@ -1220,7 +1220,10 @@ def _recorded_progress(key: str) -> dict | None:
     data = _read_record(key)
     if data is None:
         return None
-    if not data.get("done") and not _pid_alive(data.get("pid", -1)):
+    pid = data.get("pid", -1)
+    live = _pid_alive(pid) and (
+        pid in _SPAWNED or time.time() - data.get("ts", 0) <= jobs.STALE_AFTER_S)
+    if not data.get("done") and not live:
         # Re-read before calling it a crash. A finished worker writes its final
         # record and THEN exits, so "the record I read says not-done" and "the
         # pid is gone" is also what SUCCESS looks like through a stale read —
@@ -1816,7 +1819,7 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     not preparing the project. `downloading_python=True` gives it a title
     that says so.
     """
-    from fused_render import jobs, projectenv
+    from fused_render import projectenv
     from fused_render._view_url_codec import canonical_fs_path
 
     job_id = f"sys:env-install:{key}"
@@ -2216,8 +2219,7 @@ def cancel(key: str) -> bool:
     prog = _recorded_progress(key)
     if not prog or prog.get("done"):
         return False
-    pid = prog.get("pid", -1)
-    killed = _kill(pid) if _pid_alive(pid) else False
+    killed = _kill(prog["pid"])
     prog.update(done=True, error="the install was cancelled", stage="done",
                 pct=100, ts=time.time())
     _write(key, prog)
