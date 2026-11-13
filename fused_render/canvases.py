@@ -122,7 +122,7 @@ from collections.abc import Callable, Iterable
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from fused_render import canvas_snapshot, canvas_sync_state
+from fused_render import canvas_marker, canvas_snapshot, canvas_sync_state
 from fused_render._platform import is_within
 from fused_render.fusedcli import (
     CUSTOM_WORKBENCH_ENV,
@@ -1536,9 +1536,14 @@ def _rmtree_quiet(path: str) -> None:
 # merge base, and listed in .fusedignore so `canvas push` never uploads them.
 # The CLI's `pull --force` deletes them (they're not in the bundle), so every
 # pull path re-seeds afterwards.
+#
+# The folder's ownership marker (`.fused-canvas.json`, canvas_marker.py,
+# D1476) is the third of them, under the same two rules: a dot-file in
+# `canvas_snapshot.IGNORED_BASENAMES`, so no walk sees it and a merge never
+# takes one out of a bundle, and a `.fusedignore` line, so no push ships it.
 _SYNC_IGNORED_BASENAMES = canvas_snapshot.IGNORED_BASENAMES
 
-_CLONE_FUSEDIGNORE = "CLAUDE.md\n.fusedignore\n"
+_CLONE_FUSEDIGNORE = f"CLAUDE.md\n.fusedignore\n{canvas_marker.MARKER_NAME}\n"
 
 _CLONE_CLAUDE_MD = """\
 # Fused canvas clone: {name}
@@ -4187,7 +4192,10 @@ class _SyncManager:
         CLI to read while _op_lock is free: dot-dirs and what `.fusedignore`
         names are left out; `.fusedignore` itself travels; so do top-level
         `exclude` basenames (a node the user deleted whose file came back
-        without a row — `held_tombstones`). Under _op_lock, so no snapshot
+        without a row — `held_tombstones`). The ownership marker never
+        travels, whatever `.fusedignore` says (a clone whose file the user
+        rewrote, or that was never seeded): it is this machine's state
+        (D1476). Under _op_lock, so no snapshot
         write lands half-way through the copy. Raises OSError/shutil.Error
         on failure."""
         exclude = set(exclude)
@@ -4202,7 +4210,7 @@ class _SyncManager:
             out = []
             for n in names:
                 is_dir = os.path.isdir(os.path.join(folder, n))
-                if at_root and n in exclude:
+                if (at_root and n in exclude) or n == canvas_marker.MARKER_NAME:
                     out.append(n)
                     continue
                 if ((is_dir and n.startswith("."))

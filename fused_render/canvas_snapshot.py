@@ -672,7 +672,9 @@ def _read_bytes(path: str) -> bytes | None:
 # Every file kind a node's source may be, as the clone names them.
 _SOURCE_SUFFIXES = (".py", ".json", ".md", ".html")
 
-IGNORED_BASENAMES = frozenset({"CLAUDE.md", ".fusedignore"})
+# `.fused-canvas.json` is the folder's ownership marker (canvas_marker.py,
+# D1476): local state, never a node source and never taken from a bundle.
+IGNORED_BASENAMES = frozenset({"CLAUDE.md", ".fusedignore", ".fused-canvas.json"})
 
 
 def fusedignore_rules(clone_dir: str) -> list[tuple[str, bool, bool, bool]]:
