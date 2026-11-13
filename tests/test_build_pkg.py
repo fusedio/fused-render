@@ -149,7 +149,7 @@ def test_build_pkg_is_macos_bash32_safe():
 def test_workflow_builds_the_pkg_from_the_final_dmg_under_the_published_url():
     wf = _read(_WORKFLOW)
     render_job = wf[wf.index("  build-sign-notarize-release:"):wf.index("  build-sign-notarize-release-intel:")]
-    intel_job = wf[wf.index("  build-sign-notarize-release-intel:"):wf.index("  build-sign-notarize-release-bot:")]
+    intel_job = wf[wf.index("  build-sign-notarize-release-intel:"):wf.index("  build-linux-release:")]
     for job in (render_job, intel_job):
         dmg_step = job.index("Build, sign, notarize, staple DMG")
         pkg_step = job.index("Build, sign, notarize, staple installer pkg")
