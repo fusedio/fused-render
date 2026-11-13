@@ -3923,7 +3923,8 @@ export interface TaskMessage {
   // chat turn whose transcript has gone quiet. `cancelled` is a run the user
   // stopped from the queue card: an ended turn, labelled "Stopped" rather than
   // "Ran" so this page and that card describe one outcome with one word.
-  turn: "done" | "idle" | "unknown" | "cancelled" | "";
+  turn: "done" | "idle" | "unknown" | "cancelled" | "error" | "";
+  limited?: boolean;
   anchor: string; // transcript record uuid, for scroll-to; "" if unknown
   // "Run this now", not "run this at a time I picked": set by the New task form
   // when the card was opened from the List or the Board and nobody touched the

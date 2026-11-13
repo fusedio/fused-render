@@ -649,7 +649,7 @@ class Bot:
             self.meta["imessage_enabled"] = bool(imessage.norm_handle(self.meta.get("imessage")))
             dirty = True
         # A server restart leaves "running" on disk with no thread behind it.
-        if self.meta.get("status") in ("running", "waiting", "paused"):
+        if self.meta.get("status") in store.BUSY_STATUSES:
             self.meta["status"] = "idle"
             self.meta["note"] = "interrupted by worker restart"
             dirty = True
@@ -3751,19 +3751,14 @@ def activity(bid, meta, b=None, now=None) -> dict:
     `b` is the live Bot when this process holds one: its thread beats the status
     word on disk (a crash can leave "running" there), and its browser says whether
     a real window is open. With only `meta`, the card behind `waiting_on` is read
-    off the events file. Returns {status, busy, live, task, origin, blocked: {kind,
+    off the events file. Returns {status, busy, task, origin, blocked: {kind,
     text} | None, control_by, since, headed, note, step, step_cap}."""
     now = now or time.time()
     m = meta or {}
     status = m.get("status") or "idle"
-    live = bool(b.running()) if b is not None else None
-    if live is False and status == "running":
-        status = "ended"  # the status word on disk outlived the thread (a crash, a refused download)
-    elif b is None and status in ("running", "waiting", "paused"):
-        # A task thread needs a Bot in this process; none was built, so the word is a leftover from before a
-        # restart (Bot.__init__ resets it to idle on load, "interrupted by worker restart").
+    busy = b is not None and b.running()
+    if not busy and status in store.BUSY_STATUSES:
         status = "ended"
-    busy = bool(live) or status in ("running", "waiting", "paused")
     blocked = None
     if status == "waiting" and m.get("waiting_on"):
         seq = m["waiting_on"]
@@ -3786,7 +3781,7 @@ def activity(bid, meta, b=None, now=None) -> dict:
             headed = bool(b.browser.headed())
         except Exception:  # noqa: BLE001
             headed = False
-    return {"status": status, "busy": busy, "live": live, "task": " ".join(str(m.get("task") or "").split()),
+    return {"status": status, "busy": busy, "task": " ".join(str(m.get("task") or "").split()),
             "origin": m.get("task_via") or None, "blocked": blocked,
             "control_by": (m.get("control_by") or None) if m.get("control") else None,
             "since": float(m.get("updated") or now), "headed": headed, "note": str(m.get("note") or ""),
@@ -3828,7 +3823,7 @@ def activity_line(name, a, b=None, now=None) -> str:
     now = now or time.time()
     ago = _ago(now - a["since"])
     task = f' on "{_flat_cap(a["task"], 100)}"' if a["task"] else ""
-    frm = f" (from {_origin_words(a['origin'])})" if a["status"] in ("running", "waiting", "paused") and a["busy"] else ""
+    frm = f" (from {_origin_words(a['origin'])})" if a["status"] in store.BUSY_STATUSES else ""
     st, bl = a["status"], a.get("blocked")
     if st == "waiting" and bl:
         if bl["kind"] == "approval":
