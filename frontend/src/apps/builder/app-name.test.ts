@@ -96,6 +96,8 @@ describe("parseModelName", () => {
       "Sure, I can help you name that project today!",
       "Sure!\n\nI'd call it gym-tracker.",
       "Got it",
+      "Sure!",
+      "Okay.",
       "Let me know!",
       "Gym Tracker",
       "",

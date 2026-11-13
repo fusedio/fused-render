@@ -91,6 +91,16 @@ const MODEL_DEADLINE_MS = 6_000;
 // A naming ask does not need the whole of a pasted spec.
 const PROMPT_CAP = 2000;
 
+// A one-word reply that is the model talking, not a name: "Sure!" passes the
+// bare-token test as "sure".
+const CHATTER = new Set(
+  (
+    "sure ok okay yes yep yeah no nope hi hello hey thanks done understood " +
+    "certainly absolutely alright great sorry name null undefined unknown " +
+    "untitled n-a"
+  ).split(" "),
+);
+
 // One model reply -> a name, "none" (the model's refusal), or null (prose,
 // nothing usable). Lenient about the wrapping models add in spite of "ONLY
 // the name" — quotes, backticks, a trailing period, "Name: x", snake_case —
@@ -113,6 +123,7 @@ export function parseModelName(reply: string): string | "none" | null {
     .filter(Boolean);
   if (lines.length === 1) {
     if (lines[0] === NAME_NONE) return "none";
+    if (CHATTER.has(lines[0])) return null;
     return KEBAB_RE.test(lines[0]) ? kebabName(lines[0]) || null : null;
   }
   const hit = lines.find((l) => l.includes("-") && KEBAB_RE.test(l));
