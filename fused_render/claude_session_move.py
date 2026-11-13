@@ -262,6 +262,43 @@ def _candidate_buckets(projects_dir: str, old_root: str) -> list:
             if n == stem or n.startswith(stem + "-")]
 
 
+def held_sessions(old_root: str) -> list:
+    """The ids of the sessions under `old_root` that `relocate` would leave
+    where they are right now: a live CLI holds them, or a turn is open in
+    them. A caller that cannot record a pending move for later (a canvas
+    clone has no `.fused/meta.json`, and must never get one: the push would
+    ship it) asks this first and refuses the move instead. Same criteria as
+    `relocate`, same roots; a racing turn that starts after this answer is
+    still left pending by `relocate` itself."""
+    session_dirs = [r for _b, r in roots.sessions_roots(SESSIONS_DIR)]
+    live: set = set()
+    for sd in session_dirs:
+        live |= _live_session_ids(sd)
+    now = time.time()
+    held = []
+    for _b, projects_dir in roots.projects_roots(PROJECTS_DIR):
+        for bucket in _candidate_buckets(projects_dir, old_root):
+            try:
+                names = sorted(os.listdir(bucket))
+            except OSError:
+                continue
+            for name in names:
+                if not name.endswith(".jsonl"):
+                    continue
+                src = os.path.join(bucket, name)
+                cwd = transcript_cwd(src)
+                if not cwd or _under(cwd, old_root) is None:
+                    continue
+                sid = name[:-len(".jsonl")]
+                try:
+                    if sid in live or session_liveness.transcript_turn_open(
+                            src, now, interrupt_closes=False):
+                        held.append(sid)
+                except OSError:
+                    held.append(sid)
+    return held
+
+
 def relocate(old_root: str, new_root: str, *, projects_dir: str | None = None,
              sessions_dir: str | None = None) -> dict:
     """Move every Claude session recorded under `old_root` to its place under

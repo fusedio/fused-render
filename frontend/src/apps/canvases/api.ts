@@ -305,6 +305,18 @@ export const deleteCanvas = (env: WorkbenchEnv, name: string) =>
     { name, env },
   );
 
+/** Rename the canvas on the server AND this machine (POST
+ *  /api/canvases/rename): sync stopped, CLI rename, clone folder + `.sync`
+ *  leftovers moved, desk row and Claude sessions carried along. 409 `owned`
+ *  while another fused-render syncs the clone, `exists` when the new
+ *  folder is taken, `sessions_live` while Claude is running in the clone.
+ *  The caller moves to the new route; its sync/start re-arms the watcher. */
+export const renameCanvas = (env: WorkbenchEnv, name: string, newName: string) =>
+  postJson<{ ok: boolean; env: WorkbenchEnv; name: string; old_name: string }>(
+    "/api/canvases/rename",
+    { env, name, new_name: newName },
+  );
+
 export const logout = (env?: WorkbenchEnv | null) =>
   postJson<{ ok: boolean }>(env ? `/api/canvases/logout?env=${env}` : "/api/canvases/logout", {});
 

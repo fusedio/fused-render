@@ -6414,7 +6414,8 @@ _CLONE_GATES: dict[tuple[str, str], threading.Lock] = {}
 # manager wakes the page's events socket, which reads "no watcher" and asks
 # sync/start to heal — while canvas.toml still exists. Without this, a new
 # manager (and lock) would start under the delete, and the folder would be
-# removed from under a live watcher.
+# removed from under a live watcher. api_canvases_rename holds BOTH its keys
+# here for the same reason (a watcher on either name mid-move).
 _DELETING: set[tuple[str, str]] = set()
 
 
@@ -6679,6 +6680,256 @@ def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(def
     return {"ok": True, "name": name, "env": env, "removed_local": removed_local}
 
 
+_TOML_NAME_RE = re.compile(r'^name\s*=\s*"([A-Za-z0-9_]*)"[ \t]*$', re.M)
+
+
+def _patch_toml_name(clone: str, old: str, new: str) -> None:
+    """Best-effort: the clone's canvas.toml carries the canvas name as a
+    top-level scalar (`name = "<old>"`, written by the CLI's pull) and every
+    push ships it. Rewritten in the preamble only: a `name` under a table
+    is a node's, never the canvas's."""
+    path = os.path.join(clone, "canvas.toml")
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return
+    table = re.search(r"^\[", text, re.M)
+    head_end = table.start() if table is not None else len(text)
+    match = _TOML_NAME_RE.search(text, 0, head_end)
+    if match is None or match.group(1) != old:
+        return
+    try:
+        canvas_snapshot._write_atomic(
+            path, text[:match.start()] + f'name = "{new}"' + text[match.end():])
+    except OSError:
+        logger.warning("canvas rename: could not patch the name in %s", path, exc_info=True)
+
+
+@router.post("/api/canvases/rename")
+def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Rename canvas (env, name) to `new_name` on the server AND on this
+    machine. The sidebar's "Rename…" and the embedded workbench's canvas
+    title (`fused-embed-canvas-rename`, which only asks the host to open its
+    dialog) both land here: the host is the canvas's one writer.
+
+    The hazard every step guards: the CLI's push resolves a canvas BY NAME
+    and CREATES one when the name is missing, so anything that pushes under
+    the old name after the server rename (this process's watcher, a Claude
+    session's hook, another fused-render) brings the old canvas back as a
+    duplicate.
+
+    Order (delete's, api_canvases_delete): validate; preflight that nothing
+    sits at the new clone path or its `.sync` leftovers and that no canvas
+    of the account has the new name; refuse while a Claude session in the
+    clone is live or mid-turn — a chat's host process outlives its turn by
+    ~30 s (session_host's idle reap), so an idle chat moves, one working or
+    just finished does not (its transcript could not move, and a clone has
+    no `.fused/meta.json` to retry it later — it must never get one, the
+    push would ship it); claim the OLD clone's
+    writer lock for the whole call (refused while another fused-render owns
+    it); hold sync/start off for BOTH keys with `_DELETING` (the stop wakes
+    the page, whose self-heal would otherwise start a watcher on either name
+    mid-move); stop this process's sync; rename on the SERVER first — a CLI
+    failure changes nothing local; then move the clone and its leftovers,
+    patch canvas.toml's name, carry the desk row, stores and Claude sessions
+    along. A folder move that fails after the server rename is rolled back
+    on the server; a failed rollback keeps the old key held in this process
+    and says what to do by hand. The caller navigates to the new route, and
+    that page's sync/start starts the watcher under the new name (and
+    re-seeds the clone's CLAUDE.md, which names the canvas).
+
+    Accepted: another computer's clone under the old name re-creates the old
+    canvas on its next push, and anything calling the canvas by name stops
+    resolving — the dialog says both."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    new = body.get("new_name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    if not isinstance(new, str) or not _NAME_RE.fullmatch(new):
+        return _error("Canvas names may only use letters, digits, and underscores "
+                      "(at most 128)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    if new == name:
+        return {"ok": True, "env": env, "name": name, "old_name": name}
+    if not _logged_in(env):
+        return _error("not signed in to Fused — sign in first", 409)
+    root = os.path.realpath(canvases_root(env))
+    clone = os.path.realpath(_canvas_dir(env, name))
+    target = os.path.join(root, new)
+    if os.path.dirname(clone) != root or os.path.basename(clone) != name:
+        return _error("refusing to rename: the clone folder is not under the canvases root", 500)
+    # A case-only rename (foo -> Foo) is the same folder on a case-insensitive
+    # disk: `lexists` would refuse it, os.rename handles it.
+    case_only = os.path.normcase(target) == os.path.normcase(clone)
+    # The new name's lock FILE is not "taken" (a lock file outlives its
+    # folder): its writer is decided by the claim below, never by existence.
+    taken = [p for p in [target, *_clone_leftovers(env, new)]
+             if p != _lock_path(env, new) and os.path.lexists(p) and not case_only]
+    if taken:
+        return JSONResponse(
+            {"error": f"a canvas folder named {new!r} already exists on this computer "
+                      f"({taken[0]}); pick another name", "code": "exists"},
+            status_code=409)
+    # The account's canvases, uncached: nothing shows the server refuses a
+    # taken name, and two canvases under one name would let the name-resolving
+    # push replace the OTHER canvas's UDF list. Case-insensitive like the
+    # workbench's own check; the canvas itself may change case.
+    entries, err = _list_entries_uncached(env)
+    if err is not None:
+        return err
+    if any(isinstance(e, dict) and isinstance(e.get("name"), str)
+           and e["name"].lower() == new.lower() and e["name"] != name
+           for e in entries or ()):
+        return JSONResponse(
+            {"error": f"a canvas named {new!r} already exists; pick another name",
+             "code": "exists"}, status_code=409)
+    has_clone = os.path.isdir(clone)
+    if has_clone:
+        from fused_render import claude_session_move
+
+        held = claude_session_move.held_sessions(_canvas_dir(env, name))
+        if held:
+            return JSONResponse(
+                {"error": "Claude is working in this canvas, or finished moments "
+                          "ago. Wait for it to finish (or stop it), then rename.",
+                 "code": "sessions_live", "sessions": held}, status_code=409)
+    lock_path = _lock_path(env, name)
+    try:
+        outcome, record = canvas_sync_state.claim_lock(lock_path)
+    except OSError as exc:
+        return _error(f"could not take the canvas sync lock: {exc}", 500)
+    if outcome == "refused":
+        owner = {k: record.get(k) for k in ("pid", "port", "since")}
+        return JSONResponse(
+            {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
+                      f"(pid {owner['pid']}, port {owner['port']}); rename it from there",
+             "code": "owned", "owner": owner}, status_code=409)
+    lock_since = (canvas_sync_state.read_lock(lock_path) or {}).get("since")
+    # The NEW name's writer lock too, for the same span: the folder move makes
+    # `canvas.toml` visible under the new path before the merge base,
+    # tombstones and trash have followed it, and `_DELETING` holds off only
+    # this process — another fused-render's sync/start would claim the new
+    # key and seed sync state the leftover move then overwrites.
+    # A case-only rename is the same lock FILE on a case-insensitive disk: a
+    # second flock on it from this process would refuse itself.
+    new_lock_path = _lock_path(env, new)
+    try:
+        new_outcome, new_record = (("ours", {}) if case_only
+                                   else canvas_sync_state.claim_lock(new_lock_path))
+    except OSError as exc:
+        canvas_sync_state.release_lock(lock_path, lock_since)
+        return _error(f"could not take the canvas sync lock: {exc}", 500)
+    if new_outcome == "refused":
+        canvas_sync_state.release_lock(lock_path, lock_since)
+        owner = {k: new_record.get(k) for k in ("pid", "port", "since")}
+        return JSONResponse(
+            {"error": f"canvas {_sync_key(env, new)!r} is synced by another fused-render "
+                      f"(pid {owner['pid']}, port {owner['port']}); pick another name",
+             "code": "owned", "owner": owner}, status_code=409)
+    new_lock_since = (None if case_only
+                      else (canvas_sync_state.read_lock(new_lock_path) or {}).get("since"))
+    with _SYNC_LOCK:
+        _DELETING.update({(env, name), (env, new)})
+    moved_clone = False
+    keep_held = False
+    # The stopped manager's push/pull locks, held to the end of the local
+    # move: stop() joins the watcher thread, but a MANUAL pull or push already
+    # inside its network leg runs on a route thread and would go on writing
+    # the old clone path mid-move. Same order as pause() (flight, then op).
+    flight_locks: list[threading.Lock] = []
+    try:
+        manager = _stop_manager(env, name)
+        if manager is not None and manager.thread.is_alive():
+            return _error(f"canvas {name!r} is still syncing; retry the rename shortly", 409)
+        if manager is not None:
+            for lk in (manager._flight_lock, manager._op_lock):
+                if not lk.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+                    return _error(f"canvas {name!r} is still syncing; retry the rename "
+                                  "shortly", 409)
+                flight_locks.append(lk)
+        _proc, err = _run_cli(["workbench", "canvas", "rename", name, new], LIST_TIMEOUT, env)
+        _cli_cache_clear()
+        if err is not None:
+            return err  # nothing local moved; the page's self-heal re-arms sync/start
+        if has_clone:
+            try:
+                os.rename(clone, target)
+            except OSError as exc:
+                _rb, rb_err = _run_cli(["workbench", "canvas", "rename", new, name],
+                                       LIST_TIMEOUT, env)
+                _cli_cache_clear()
+                if rb_err is None:
+                    return _error(f"could not rename the canvas folder ({exc}); "
+                                  f"the canvas keeps its name {name!r}", 500)
+                # The server says `new`, the clone says `name`: a watcher on the
+                # old key would push the old name back as a second canvas.
+                # This process keeps sync/start off that key (`_DELETING`) AND
+                # keeps the clone's writer lock, so no OTHER fused-render can
+                # claim it and start that watcher either — until this process
+                # quits (the quit rung's release_all), by when the user has
+                # renamed the folder as the error says.
+                keep_held = True
+                logger.error("canvas %s: rename to %r half done — folder move failed (%s), "
+                             "server rollback failed", _sync_key(env, name), new, exc)
+                return _error(f"the canvas was renamed to {new!r} on the server, but its "
+                              f"folder could not be renamed ({exc}) and the server rename "
+                              f"could not be undone. Rename the folder {clone} to {new} "
+                              "by hand, then reopen the canvas.", 500)
+            moved_clone = True
+            for src, dst in zip(_clone_leftovers(env, name), _clone_leftovers(env, new)):
+                if src == lock_path or not os.path.lexists(src):
+                    continue  # the lock is released below; the new key's is sync/start's
+                try:
+                    os.rename(src, dst)
+                except OSError:
+                    # A merge base that did not move means a fresh first sync
+                    # under the new name: slower, never wrong.
+                    logger.warning("canvas rename: could not move %s -> %s", src, dst,
+                                   exc_info=True)
+            _patch_toml_name(target, name, new)
+    finally:
+        for lk in reversed(flight_locks):
+            lk.release()
+        if not case_only:
+            canvas_sync_state.release_lock(new_lock_path, new_lock_since)
+        if not keep_held:
+            canvas_sync_state.release_lock(lock_path, lock_since)
+        if moved_clone:
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
+        with _SYNC_LOCK:
+            _DELETING.discard((env, new))
+            if not keep_held:
+                _DELETING.discard((env, name))
+    if moved_clone:
+        try:
+            from fused_render import app_state_move, claude_session_move, tasks_watch
+
+            # The CONFIGURED spelling (delete's note): the desk row and the
+            # tasks' project were recorded as `canvases_dir + "/" + name`.
+            old_dir, new_dir = _canvas_dir(env, name), _canvas_dir(env, new)
+            app_state_move.rewrite_stores(old_dir, new_dir)
+            carried = claude_session_move.relocate(old_dir, new_dir)
+            if carried.get("pending"):
+                logger.warning("canvas rename %s -> %s: sessions left behind %s",
+                               _sync_key(env, name), new, carried["pending"])
+            tasks_watch.notify_all()
+        except Exception:  # noqa: BLE001 — the rename itself is done
+            logger.warning("canvas %s: carrying stores/sessions after rename failed",
+                           _sync_key(env, name), exc_info=True)
+    logger.info("canvas %s: renamed to %r (clone moved: %s)", _sync_key(env, name), new,
+                moved_clone)
+    return {"ok": True, "env": env, "name": new, "old_name": name}
+
+
 def _sync_start_response(env: str, name: str):
     """The body of sync/start, shared with sync/takeover: claim the writer
     lock and start this process's watcher on the clone, or say who owns it."""
@@ -6689,7 +6940,8 @@ def _sync_start_response(env: str, name: str):
     try:
         manager = _sync_manager(env, name, create=True)
     except _CanvasDeleting:
-        return JSONResponse({"error": f"canvas {_sync_key(env, name)!r} is being deleted",
+        return JSONResponse({"error": f"canvas {_sync_key(env, name)!r} is being deleted "
+                                      "or renamed",
                              "code": "deleting"}, status_code=409)
     except _CanvasHandingOver:
         # The page retries on `busy`; by then the taker holds the lock and

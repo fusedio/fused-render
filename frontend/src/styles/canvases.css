@@ -569,3 +569,18 @@
     opacity: 0;
   }
 }
+
+/* Rename canvas dialog (apps/canvases/RenameCanvasDialog.tsx). */
+.canvas-rename-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--error);
+}
+
+.canvas-rename-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
