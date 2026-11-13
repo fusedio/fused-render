@@ -19,7 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
-import { Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import {
   generateCanvasName,
   sanitizeCanvasName,
@@ -295,6 +295,39 @@ export default function Canvases() {
       setError(err.message);
     }
   }, [fillPreviews, fillFavourites]);
+
+  // The header's refresh button: straight to the control plane (`fresh`),
+  // the cards on screen stay live under the spinner. Takes a list sequence
+  // like `refresh`, so a background revalidation still out cannot land over
+  // this answer, and a later refresh or env switch drops this one.
+  const onRevalidate = async () => {
+    if (!env || refreshing) return;
+    const gen = envGenRef.current;
+    const seq = ++listSeqRef.current;
+    setRefreshing(true);
+    try {
+      const { canvases: next } = await listCanvases(env, true);
+      if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
+      setCanvases(next);
+      setError(null);
+      void fillPreviews(env, next);
+      void fillFavourites(env);
+    } catch (e) {
+      if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
+      const err = e as Error & { status?: number };
+      // Same as `refresh`: an unrefreshable sign-in shows the sign-in flow.
+      if (err.status === 401) {
+        setStatus((prev) => (prev ? { ...prev, logged_in: false } : prev));
+        setError(`Your Fused sign-in expired — sign in again. (${err.message})`);
+        return;
+      }
+      setError(err.message);
+    } finally {
+      if (gen === envGenRef.current && seq === listSeqRef.current) {
+        setRefreshing(false);
+      }
+    }
+  };
 
   // The dropdown: rewrite the query in place (no history entry — Back leaves
   // the catalog, it doesn't step through environments), drop everything the
@@ -694,7 +727,7 @@ export default function Canvases() {
           {/* The disk baseline is on screen while the fresh listing is in
               flight (stale-while-revalidate): a small non-blocking spinner,
               never a scrim — the stale cards stay usable. */}
-          {refreshing && (
+          {refreshing ? (
             <span
               className="canvases-refreshing"
               role="status"
@@ -703,6 +736,21 @@ export default function Canvases() {
             >
               <Loader2 className="canvases-refreshing-icon" aria-hidden />
             </span>
+          ) : (
+            // Idle: the same spot is the on-demand refetch.
+            status?.logged_in &&
+            !customUnconfigured &&
+            canvases !== null && (
+              <button
+                type="button"
+                className="canvases-refresh"
+                aria-label="Refresh the list"
+                title="Refresh the list"
+                onClick={() => void onRevalidate()}
+              >
+                <RefreshCw className="canvases-refresh-icon" aria-hidden />
+              </button>
+            )
           )}
           {/* The picker shows signed out too: each env can be its own login
               (custom's `[auth]`, D1412), so a signed-out pick must still be
