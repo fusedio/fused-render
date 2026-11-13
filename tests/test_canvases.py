@@ -140,11 +140,37 @@ def main():
             # What the push would have shipped, for tests that check it.
             import shutil
             shutil.copytree(plain[2], capture)
+        codes = scenario.get("push_exit_codes")
+        if codes:
+            # One exit code per push, in order (a counter file beside the
+            # scenario): 3 = the revision spine's 412, 4 = leased elsewhere.
+            counter = path + ".pushcount"
+            n = int(open(counter).read()) if os.path.exists(counter) else 0
+            with open(counter, "w") as f:
+                f.write(str(n + 1))
+            code = codes[n] if n < len(codes) else 0
+            if code == 3:
+                sys.stderr.write("Error: the canvas changed on the server\n")
+                sys.stderr.write(json.dumps({"code": "revision_mismatch",
+                                             "revision": scenario.get("server_revision", 99),
+                                             "last_updated": "t", "udfs": {}}) + "\n")
+                sys.exit(3)
+            if code == 4:
+                sys.stderr.write(json.dumps({"code": "leased", "owner": "fused-render:bob@other",
+                                             "lease_until": "2999-01-01T00:00:00Z"}) + "\n")
+                sys.exit(4)
+            if code:
+                sys.exit(code)
+        if scenario.get("push_no_if_match") and "--if-match" in plain:
+            sys.stderr.write("Error: No such option: --if-match\n")
+            sys.exit(2)
         lines = scenario.get("push_fail_lines")
         if lines:
             for ln in lines:
                 sys.stderr.write(ln + "\n")
             sys.exit(1)
+        if scenario.get("push_revision") is not None:
+            sys.stdout.write("Pushed.\nRevision: %d\n" % scenario["push_revision"])
         return
     if plain[:2] == ["canvas", "validate"]:
         if scenario.get("validate_fail"):
@@ -1241,9 +1267,8 @@ def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
     assert res.status_code == 200
     assert res.json() == {"ok": True, "run_id": "run-77"}
     # Session lands on the clone dir, unattended-capable, primed with the
-    # verbatim transcript plus what to do: validate, then publish. (It used to
-    # be told NOT to push; nothing races it now, and the push is how it
-    # confirms the fix landed — see _fix_prompt.)
+    # verbatim transcript plus what to do: fix and validate; the folder
+    # publishes itself at the session's turn end (no sync verbs, Q7).
     assert seen["target"] == str(harness.root / "alpha")
     assert seen["mode"] == "auto"
     # A canvas fix is a Claude feature: named, never the default agent.
@@ -1251,7 +1276,7 @@ def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
     for line in _VALIDATION_LINES:
         assert line in seen["prompt"]
     assert "fused workbench canvas validate" in seen["prompt"]
-    assert "fused workbench canvas push ." in seen["prompt"]
+    assert "publishes itself when your turn ends" in seen["prompt"]
     _stop_sync("alpha")
 
 
@@ -1620,13 +1645,14 @@ class SyncShims:
         monkeypatch.setenv("FAKE_REMOTE_DIR", str(self.remote_dir))
         self.harness = harness
 
-    def set_manifest(self, last_updated: str, udfs: dict | None = None) -> None:
-        self.manifest_file.write_text(
-            json.dumps(
-                {"id": "c1", "last_updated": last_updated, "udfs": udfs or {}}
-            ),
-            encoding="utf-8",
-        )
+    def set_manifest(self, last_updated: str, udfs: dict | None = None,
+                     revision: int | None = None, **extra) -> None:
+        """`revision` (and lease fields in `extra`) only when given: without
+        one this is an OLD server, exactly what the shim emits for it."""
+        manifest = {"id": "c1", "last_updated": last_updated, "udfs": udfs or {}, **extra}
+        if revision is not None:
+            manifest["revision"] = revision
+        self.manifest_file.write_text(json.dumps(manifest), encoding="utf-8")
 
     def set_remote_files(self, files: dict) -> None:
         for old in self.remote_dir.rglob("*"):
@@ -1649,19 +1675,20 @@ class SyncShims:
         last_updated: str,
         udfs: dict | None = None,
         env: str = ENV,
+        revision: int | None = None,
     ) -> None:
         """The persisted sync-point state a manager loads at construction."""
         sync_dir = self.harness.base / env / ".sync"
         sync_dir.mkdir(parents=True, exist_ok=True)
+        remote = {"id": "c1", "last_updated": last_updated, "udfs": udfs or {}}
+        if revision is not None:
+            remote["revision"] = revision
         (sync_dir / f"{name}.json").write_text(
             json.dumps(
                 {
                     "files": {rel: _md5(content) for rel, content in files.items()},
-                    "remote": {
-                        "id": "c1",
-                        "last_updated": last_updated,
-                        "udfs": udfs or {},
-                    },
+                    "remote": remote,
+                    "base_revision": revision,
                 }
             ),
             encoding="utf-8",
@@ -1814,9 +1841,10 @@ def _wait_sync(predicate, timeout=_WAIT_TIMEOUT_S, name="alpha", env=ENV):
 
 
 def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, fake_agent):
-    # Remote changed b.py while the local clone had an unpushed edit to a.py:
-    # the poll flags it, the Pull merges — b.py applied (local untouched), a.py
-    # kept (local wins) — and the push then publishes the merged state.
+    # Remote changed b.py while the local clone had an unpushed edit to a.py
+    # and no Claude run is live: the poll MERGES it on its own (owner Q8,
+    # 2026-11-11) — b.py applied (local untouched), a.py kept (local wins) —
+    # and the push then publishes the merged state.
     #
     # fake_agent (live="" by default — no session) stands in for the real
     # `_agent_module()`, which every watcher tick calls unconditionally to
@@ -1827,7 +1855,7 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
     # on a call this test has no reason to exercise for real.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
-    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)  # the push waits for the pull
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)  # the push waits for the merge
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
 
@@ -1836,17 +1864,22 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
         shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
         shims.set_manifest("t2")
 
-    assert _wait_sync(lambda s: s["push_state"] == "held")["push_state"] == "held"
-    body = _pull_when_stale(harness)
-    assert body["ok"] is True, body
-    status = _sync_view("alpha")
-    assert status["merge_seq"] >= 1 and status["server_stale"] is None, status
+    status = _wait_sync(lambda s: s["merge_seq"] >= 1)
+    assert status["merge_seq"] >= 1 and status["server_stale"] is None, \
+        f"{status} | {_watcher_diag()}"
+    assert status["pull_seq"] == 0, status  # nobody pressed Pull
     assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
     assert (harness.root / "alpha" / "b.py").read_text() == "b2-remote\n"
     # The sync-point state lives OUTSIDE the clone dir (a CLI `pull --force`
     # removes any in-dir file that isn't in the bundle).
     assert (harness.root / ".sync" / "alpha.json").exists()
-    # No longer held: the merged folder ships.
+    events = harness.client.get("/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]
+    merged = [e for e in events if e["action"] == "server merged"]
+    assert merged and "b.py" in merged[-1]["detail"], events
+    s2d = harness.client.get("/api/canvases/sync/state?env=unstable&name=alpha").json()[
+        "legs"]["server_to_disk"]
+    assert s2d["state"] == "merged" and s2d["files"] == ["b.py"], s2d
+    # The merged folder (still carrying a.py) ships.
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
     pushed = _wait_sync(lambda s: s["push_seq"] >= 1)
     assert pushed["push_seq"] >= 1, f"{pushed} | {_watcher_diag()}"
@@ -1911,8 +1944,9 @@ def test_stamp_only_move_with_a_layout_change_still_reads_stale(
     harness, tmp_path, monkeypatch, fake_agent
 ):
     # Same stamp-only manifest move, but canvas.toml really changed (a layout
-    # save): the chip goes up as before, and the bundle is downloaded once
-    # for that stamp, not on every poll.
+    # save) while a Claude run is live: the move is HELD (the chip goes up,
+    # nothing is written), and the bundle is downloaded once for that stamp,
+    # not on every poll.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
@@ -1927,6 +1961,7 @@ def test_stamp_only_move_with_a_layout_change_still_reads_stale(
     )
 
     with _staged():
+        fake_agent.live = "run-abc"
         shims.set_remote_files({**_BASE_FILES, "canvas.toml": 'type = "canvas"\nx = 1\n'})
         shims.set_manifest("t2")
 
@@ -1935,12 +1970,15 @@ def test_stamp_only_move_with_a_layout_change_still_reads_stale(
     time.sleep(0.5)  # several more polls
     assert fetches == ["t2"], fetches
     assert _manager()._remote["last_updated"] == "t1"
+    assert status["server_stale"]["files"] == [
+        {"path": "canvas.toml", "kind": "changed", "identical": False}], status
     _stop_sync("alpha")
 
 
 def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch, fake_agent):
     # Local deleted b.py; the bundle still carries it. The merge must NOT
-    # recreate it — the push propagates the delete.
+    # recreate it — the push propagates the delete. (A live run holds the
+    # move so the explicit Pull is what merges it.)
     #
     # fake_agent: skip the real (expensive, first-call)
     # `_agent_module()` cold start — see test_sync_merges_remote_changes_
@@ -1952,6 +1990,7 @@ def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch, fake_agen
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
 
     with _staged():
+        fake_agent.live = "run-abc"
         (harness.root / "alpha" / "b.py").unlink()
         shims.set_remote_files({**_BASE_FILES, "a.py": "a2-remote\n"})
         shims.set_manifest("t2")
@@ -1964,6 +2003,7 @@ def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch, fake_agen
     # The overwritten a.py's pre-merge bytes landed in the trash safety net.
     trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/a.py"))
     assert trashed and trashed[0].read_text() == "a1\n"
+    fake_agent.live = ""
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
     assert _wait_sync(lambda s: s["push_seq"] >= 1)["push_seq"] >= 1
     _stop_sync("alpha")
@@ -1989,9 +2029,7 @@ def test_sync_merge_applies_remote_delete_when_untouched(harness, tmp_path, monk
         shims.set_remote_files(remote)
         shims.set_manifest("t2")
 
-    body = _pull_when_stale(harness)
-    assert body["ok"] is True, body
-    assert _sync_view("alpha")["merge_seq"] >= 1
+    assert _wait_sync(lambda s: s["merge_seq"] >= 1)["merge_seq"] >= 1, _watcher_diag()
     assert not (harness.root / "alpha" / "b.py").exists()
     assert (
         harness.root / "alpha" / "canvas.toml"
@@ -2027,12 +2065,15 @@ def test_sync_push_probes_and_merges_first(harness, tmp_path, monkeypatch, fake_
     _stop_sync("alpha")
 
 
-def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch):
+def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch, fake_agent):
     # No seeded base: the first poll adopts the manifest as baseline; the next
-    # manifest change is only FLAGGED, and the Pull of a CLEAN clone goes
-    # through the CLI force pull (wholesale), not the merge.
+    # manifest change on a CLEAN clone is merged by the watcher itself, per
+    # file — never through the CLI `pull --force` (Hard pull's alone) — and
+    # the merge's writes are the new sync point, not a local change: no echo
+    # push.
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
     harness.log_in()
     harness.set_scenario({"pull_files": _BASE_FILES})
     harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
@@ -2043,37 +2084,34 @@ def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch
 
     assert _wait_for(lambda: getattr(_manager(), "_remote", None) is not None)
     remote = {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"}
-    harness.set_scenario({"pull_files": remote})
-    shims.set_remote_files(remote)  # a stamp move over unchanged files is adopted
+    shims.set_remote_files(remote)
     shims.set_manifest("t2")
 
-    body = _pull_when_stale(harness)
-    assert body["ok"] is True, body
-    status = _sync_view("alpha")
-    assert status["pull_seq"] == 1 and status["merge_seq"] == 0, status
+    status = _wait_sync(lambda s: s["merge_seq"] >= 1)
+    assert status["merge_seq"] == 1 and status["pull_seq"] == 0, f"{status} | {_watcher_diag()}"
     assert (harness.root / "alpha" / "remote_udf.py").exists()
-    # The pull's writes are baseline, not local changes — no echo push. This
-    # also pins the seeded-files regression: CLAUDE.md/.fusedignore are
-    # rewritten into the clone right after this force pull, and if that
-    # happened BEFORE the post-pull dry-run recheck (rather than after), the
-    # recheck would see them as an un-bundled diff and push_state would be
-    # stuck "pending".
     time.sleep(0.4)
     status = _sync_view("alpha")
-    assert status["push_state"] == "idle", status
+    assert status["push_state"] == "idle" and status["server_stale"] is None, status
     assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    forces = [c for c in harness.calls()
+              if c[:3] == ["workbench", "canvas", "pull"] and "--force" in c]
+    assert len(forces) == 1, forces  # the clone's only
     _stop_sync("alpha")
 
 
-def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, monkeypatch):
-    """An edit landing DURING the force pull must not be adopted as clean.
+def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, monkeypatch,
+                                                            fake_agent):
+    """An edit landing DURING a HARD pull's CLI force must not be adopted as
+    clean.
 
     The CLI's `--force` writes the clone itself, so the pull's own writes and a
     concurrent local edit both just look like "the file changed" — a window
     fingerprints cannot close. `_force_pull` therefore re-runs a `--dry-run`
     after applying; `pull_dry` makes that recheck report a diff, which is the
     CLI saying "local is not what I just pulled". Local wins: go dirty and
-    push, rather than clean and silent.
+    push, rather than clean and silent. (A live run holds the move, so only
+    the hard pull brings it.)
     """
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
@@ -2089,6 +2127,7 @@ def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, 
     # The first poll must adopt t1 as the baseline before the remote moves, or
     # t2 itself becomes the baseline and nothing is ever flagged.
     assert _wait_for(lambda: getattr(_manager(), "_remote", None) is not None)
+    fake_agent.live = "run-abc"
     harness.set_scenario({
         "pull_files": {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"},
         "pull_dry": "Would write 1 file (local differs from the canvas).",
@@ -2096,14 +2135,17 @@ def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, 
     shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"})
     shims.set_manifest("t2")
 
-    body = _pull_when_stale(harness)
-    assert body["ok"] is True, body
+    assert _wait_sync(lambda s: s["server_stale"] is not None)["server_stale"] is not None
+    res = harness.client.post("/api/canvases/sync/pull",
+                              json={"env": ENV, "name": "alpha", "hard": True}, headers=GUARD)
+    assert res.json()["ok"] is True, res.text
     assert _sync_view("alpha")["pull_seq"] == 1
     # The recheck ran at all — without it there is nothing to notice the edit.
     assert [c for c in harness.calls()
             if c[:3] == ["workbench", "canvas", "pull"] and "--dry-run" in c], \
         "no post-pull --dry-run recheck was issued"
     # Local wins: the clone is dirty and pushes, instead of being adopted clean.
+    fake_agent.live = ""
     pushed = _wait_sync(lambda s: s["push_seq"] >= 1)
     assert pushed and pushed["push_seq"] >= 1, pushed
     _stop_sync("alpha")
@@ -2306,9 +2348,9 @@ def test_sync_start_reseeds_a_stale_claude_md(harness, tmp_path, monkeypatch):
     _stop_sync("alpha")
 
 
-def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch):
-    # The CLI's `pull --force` deletes the seeded files (not in the bundle);
-    # the pull leg puts them back.
+def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch, fake_agent):
+    # A merge puts the seeded helper files back (a CLI `pull --force` or a
+    # stray delete removes them; they are not in the bundle).
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
@@ -2316,18 +2358,10 @@ def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch):
     (harness.root / "alpha" / "CLAUDE.md").unlink()
 
     shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('x')\n"})
-    harness.set_scenario(
-        {"pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"}}
-    )
     shims.set_manifest("t2")
-    body = _pull_when_stale(harness)
-    assert body["ok"] is True, body
-    assert _sync_view("alpha")["pull_seq"] == 1
-    # The reseed follows the post-pull recheck (seeding first makes the
-    # never-bundled helper files look like a permanent diff); the Pull answers
-    # only after both.
+    assert _wait_sync(lambda s: s["merge_seq"] >= 1)["merge_seq"] >= 1, _watcher_diag()
     assert (harness.root / "alpha" / "CLAUDE.md").exists(), \
-        "the pull never re-seeded CLAUDE.md"
+        "the merge never re-seeded CLAUDE.md"
     _stop_sync("alpha")
 
 
@@ -2391,9 +2425,11 @@ def test_opening_an_existing_canvas_fetches_the_workbench_skills(
     assert _wait_for(lambda: skill_plugin.workbench_plugin_root() is not None), (
         "opening an existing canvas never fetched the workbench skills", calls)
     root = skill_plugin.workbench_plugin_root()
-    # Published for the sessions this canvas spawns, which is the whole point.
+    # Published for the sessions this canvas spawns, which is the whole point —
+    # as its spliced, staged copy (skill_plugin.stage_workbench_plugin).
     assert _wait_for(
-        lambda: os.environ.get(skill_plugin.WORKBENCH_PLUGIN_DIR_ENV) == root)
+        lambda: os.path.dirname(os.environ.get(skill_plugin.WORKBENCH_PLUGIN_DIR_ENV) or "")
+        == skill_plugin.workbench_staged_dir())
     assert os.path.isfile(os.path.join(root, skill_plugin.SKILLS_SUBDIR,
                                        "canvas-toml", "SKILL.md"))
     assert [c[0] for c in calls] == ["clone"], calls
@@ -2590,43 +2626,34 @@ def test_manual_push_endpoint_validates_its_inputs(harness, tmp_path, monkeypatc
 
 
 def test_an_out_of_band_cli_push_is_flagged_as_a_server_change(
-        harness, tmp_path, monkeypatch):
-    """The hazard the endpoint exists to remove.
-
-    A raw `fused workbench canvas push` from inside the clone moves the remote
-    and touches no local file, so the watcher cannot tell it from a workbench
-    edit: it flags the canvas server-changed, which holds every push until
-    someone pulls the agent's own push back down. Nothing is pulled by itself.
-    Nothing here asserts that is GOOD — it pins the behaviour so the reason for
-    the endpoint stays visible.
-    """
+        harness, tmp_path, monkeypatch, fake_agent):
+    """A raw `fused workbench canvas push` from inside the clone (the
+    interception now refuses it; a stray one still happens) moves the remote
+    and touches no local file. The watcher reads it as a server move like any
+    other and, no run being live, merges it in: the clone ends up holding
+    what the server holds, nothing is held, and nothing is pushed back."""
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     # Wait for the first poll to adopt t1 as the baseline, with the clone clean.
-    # A blind sleep here would race: if the out-of-band push lands before that
-    # poll, t9 becomes the FIRST baseline and there is no move to react to.
     assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
 
     pushed = {**_BASE_FILES, "a.py": "a-pushed-out-of-band\n"}
     shims.set_remote_files(pushed)
-    harness.set_scenario({"pull_files": pushed})
     shims.set_manifest("t9")
 
-    status = _wait_sync(lambda s: s["server_stale"] is not None)
-    assert status["server_stale"] is not None, (
-        "an out-of-band push did NOT read as a server change — if this ever "
-        "becomes true, re-read the endpoint's rationale", status)
+    status = _wait_sync(lambda s: s["merge_seq"] >= 1)
+    assert status["merge_seq"] >= 1 and status["server_stale"] is None, status
+    assert (harness.root / "alpha" / "a.py").read_text() == "a-pushed-out-of-band\n"
     time.sleep(0.3)
     status = _sync_view("alpha")
-    assert status["pull_seq"] == 0 and status["merge_seq"] == 0, status
+    assert status["push_state"] == "idle" and status["push_seq"] == 0, status
     forces = [c for c in harness.calls()
               if c[:3] == ["workbench", "canvas", "pull"] and "--force" in c]
     assert len(forces) == 1, forces  # the clone's only
     _stop_sync("alpha")
-
-# -- the server's own push must never re-enter the interception -----------------
 
 
 _REAL_SHIM = os.path.join(
@@ -2832,7 +2859,7 @@ def test_the_seeded_claude_md_puts_the_skills_before_everything_else():
     bottom. Pinned as an ordering, not a line number, so the file can grow."""
     text = canvases_mod._CLONE_CLAUDE_MD
     skills_at = text.index("## Skills")
-    for later in ("## How the sync works", "## Publishing your work",
+    for later in ("## How the sync works",
                   "## Running the fused CLI", "## Keeping the canvas valid"):
         assert skills_at < text.index(later), later
 
@@ -2888,34 +2915,36 @@ def test_the_seeded_claude_md_never_hands_the_user_a_shell_command():
 
 
 def test_the_seeded_claude_md_sanctions_the_standard_push():
-    """A1/B3. It used to call a manual push "usually redundant", which
-    understated it in both directions: the raw CLI push can destroy a concurrent
-    workbench edit, and now that the auto-push is held while a session works,
-    NOT pushing leaves the work unpublished until the session ends."""
+    """The revision spine (Q7): the session has no sync verbs. The folder
+    publishes itself at turn end, server changes are merged in and named, and
+    the session is told never to pull or push (both refused) and how to
+    verify instead."""
     text = canvases_mod._CLONE_CLAUDE_MD
-    assert "fused workbench canvas push ." in text
-    assert "usually redundant" not in text
-    assert "--no-validate" in text  # says it is refused
+    assert "Never run `fused workbench canvas pull` or `fused workbench canvas push`" in text
+    assert "refused" in text
+    assert "when your turn ends" in text
+    assert "merged into this folder automatically" in text
+    assert "`canvas_screenshot` tool" in text and "fused workbench canvas validate ." in text
+    assert "Publishing your work" not in text and "600000" not in text
     # And the bundled-CLI rule (A4d).
     assert "pip install fused" in text
     assert "python -m fused" in text
 
 
 def test_the_fix_prompt_tells_the_session_to_push():
-    """B5. The old "Do NOT run canvas push" is now wrong: nothing races it, and
-    the push is what confirms the fix landed."""
+    """The fix session fixes files and validates; the folder publishes itself
+    at its turn end (no sync verbs)."""
     prompt = canvases_mod._fix_prompt("alpha", ["error: node 'x' has no source"],
                                       "validation failed")
     assert "error: node 'x' has no source" in prompt, "verbatim, per D328"
-    assert "fused workbench canvas push ." in prompt
-    assert "Do NOT run" not in prompt
+    assert "publishes itself when your turn ends" in prompt
+    assert "do not run `fused workbench canvas push`" in prompt
     assert "validate" in prompt
 
 
 def test_the_cli_prompt_note_no_longer_forbids_pushing_in_a_clone():
-    """The system-prompt disclosure said "rather than running `canvas push`
-    yourself", i.e. the exact opposite of the new contract. A session that
-    believes that finishes blind."""
+    """The system-prompt disclosure must match the clone's contract: never
+    push or pull in a canvas folder — it publishes itself."""
     import importlib.util
 
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -2923,21 +2952,16 @@ def test_the_cli_prompt_note_no_longer_forbids_pushing_in_a_clone():
     spec = importlib.util.spec_from_file_location("claude_agent_for_cli_note", path)
     agent = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(agent)
-    note = agent._fused_cli_note.__doc__ + (
-        agent._fused_cli_note() if agent._fused_cli_dir() else "")
-    # The docstring keeps the history; the emitted text must not carry the old
-    # instruction. Check the emitted text alone.
     os.environ["FUSED_RENDER_FUSED_CLI_DIR"] = "/tmp/fused-bin"
     try:
         text = agent._fused_cli_note()
     finally:
         os.environ.pop("FUSED_RENDER_FUSED_CLI_DIR", None)
     assert text, "the note must render when a wrapper exists"
-    assert "rather than running `canvas push` yourself" not in text
-    assert "canvas push ." in text
+    assert "publish a coherent change set with that command" not in text
+    assert "never run `fused workbench canvas push` or `pull` there" in text
     assert "pip install fused" in text
     assert "python -m fused" in text
-    _ = note
 
 
 # -- a live Claude session holds the auto-push, and shows up in status ----------
@@ -3000,10 +3024,10 @@ def test_the_auto_push_waits_for_a_live_session_and_then_fires(
 
 def test_the_remote_poll_runs_through_a_session_but_writes_nothing(
         harness, tmp_path, monkeypatch, fake_agent):
-    """The poll leg only DETECTS a remote move (`server_stale`), so it keeps
-    running through a live Claude session — and writes nothing, during the
-    session or after it: a workbench edit reaches the clone only through an
-    explicit Pull, never under a session mid-change-set."""
+    """While a Claude run is live in the clone a server move is HELD (owner
+    Q8): noted (`server_stale`, with its files), nothing written, the push
+    held. The first tick after the run ends merges it — the workbench edit
+    comes in, the session's own edit stays — and the merged folder ships."""
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
@@ -3019,20 +3043,22 @@ def test_the_remote_poll_runs_through_a_session_but_writes_nothing(
     shims.set_manifest("t2", {"b": {"hash": "h2", "last_updated": "t2"}})
     status = _wait_sync(lambda s: s["server_stale"] is not None)
     assert status["server_stale"] is not None, status
+    assert status["server_stale"]["files"] == [
+        {"path": "b.py", "kind": "changed", "identical": False}], status
     # ...and writes nothing.
     assert status["merge_seq"] == 0, status
     assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
     assert (_manager()._remote or {}).get("last_updated") == "t1"
+    time.sleep(0.3)
+    assert _sync_view("alpha")["push_seq"] == 0
 
-    # The session ends: still nothing merges by itself, and the push stays held
-    # behind the server change.
+    # The session ends: the held move merges on the next tick, then ships.
     fake_agent.live = ""
-    time.sleep(0.6)
-    status = _sync_view("alpha")
-    assert status["merge_seq"] == 0 and status["pull_seq"] == 0, status
-    assert status["server_stale"] is not None and status["push_state"] == "held", status
-    assert status["push_seq"] == 0, status
-    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
+    status = _wait_sync(lambda s: s["merge_seq"] >= 1 and s["push_seq"] >= 1)
+    assert status["merge_seq"] >= 1 and status["push_seq"] >= 1, f"{status} | {_watcher_diag()}"
+    assert status["server_stale"] is None and status["pull_seq"] == 0, status
+    assert (harness.root / "alpha" / "b.py").read_text() == "b-from-workbench\n"
+    assert (harness.root / "alpha" / "a.py").read_text() == "a-local-edit\n"
 
 
 def test_the_first_look_baseline_is_adopted_even_while_a_session_is_live(
@@ -3057,9 +3083,10 @@ def test_the_first_look_baseline_is_adopted_even_while_a_session_is_live(
     _stop_sync("alpha")
 
 
-def test_sync_state_reports_pulling_during_a_clean_pull(harness, tmp_path, monkeypatch):
+def test_sync_state_reports_pulling_during_a_clean_pull(harness, tmp_path, monkeypatch,
+                                                        fake_agent):
     """server_to_disk reads "pulling" for the length of an explicit Pull (a
-    slow CLI force pull here), then "idle" once it lands."""
+    slow zip download here), then "idle" once it lands."""
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     harness.log_in()
@@ -3071,14 +3098,12 @@ def test_sync_state_reports_pulling_during_a_clean_pull(harness, tmp_path, monke
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     _wait_for(lambda: getattr(_manager(), "_remote", None) is not None)
 
-    harness.set_scenario({
-        "pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"},
-        "pull_delay": 0.6,
-    })
+    fake_agent.live = "run-abc"  # holds the move for the explicit Pull
     shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('x')\n"})
     shims.set_manifest("t2")
     assert _wait_sync(lambda s: s["server_stale"] is not None)["server_stale"] is not None
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
+    monkeypatch.setenv("FAKE_ZIP_DELAY", "0.6")
 
     def s2d() -> str:
         state = harness.client.get("/api/canvases/sync/state?env=unstable&name=alpha").json()
@@ -3092,7 +3117,7 @@ def test_sync_state_reports_pulling_during_a_clean_pull(harness, tmp_path, monke
         "sync/state never reported pulling during the pull"
     puller.join(10)
     assert results and results[0].json()["ok"] is True, results
-    assert s2d() == "idle"
+    assert s2d() in ("idle", "merged")
     assert _sync_view("alpha")["pull_seq"] == 1
     assert (harness.root / "alpha" / "remote_udf.py").exists()
     _stop_sync("alpha")

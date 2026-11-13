@@ -373,3 +373,40 @@ def test_snapshot_note_body_equal_but_for_line_endings_is_not_rewritten(tmp_path
         {"slug": "a", "file": "a.py", "id": "sid-a"},
         {"slug": "n", "file": "n.md", "id": "sid-n", "file_body": "# n\rbody\r\n"}])
     assert cs.apply_snapshot(d, new, prev)["written"] == []
+
+
+def test_snapshot_never_writes_a_row_key_the_frame_did_not_change(tmp_path):
+    """Sim class 1: the frame skipped a delta that retitled `a` on disk (it was
+    mid-drag) and re-sends its snapshot with the OLD title. A key whose
+    snapshot value equals the host's view (what the frame was last known to
+    hold) is not the frame's edit: never written over disk, reported in
+    `stale_keys`. The drag (x) the frame did make is written."""
+    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
+    view = cs.compact_state_from_disk(d, {"a": "sid-a"})   # title "a"
+    doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
+    doc["canvas"]["nodes"][0]["title"] = "claude"          # Claude retitles on disk
+    open(os.path.join(d, "canvas.toml"), "w").write(rtoml.dumps(doc))
+    new = _snapshot_new([_studio_node("a", x=999, y=20)],
+                        [{"slug": "a", "file": "a.py", "id": "sid-a"}])
+    result = cs.apply_snapshot(d, new, view)
+    row = _rows(d)[0]
+    assert row["title"] == "claude" and row["x"] == 999
+    assert result["stale_keys"] == {"a": {"title": "a"}}
+
+
+def test_snapshot_does_not_recreate_the_row_of_a_node_deleted_on_disk(tmp_path):
+    """Sim class 2: a session deleted `x` (file and row) while the frame held
+    its drag; the frame's snapshot still lists it. A node the server knew (an
+    id) with no source file and no new-file body gets no row back — a ghost
+    no push would publish — and is reported `ignored`. A brand-new frame node
+    (no id yet) still gets its fileless row."""
+    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
+    new = _snapshot_new(
+        [_studio_node("a"), _studio_node("x", x=50, y=900), _studio_node("fresh", x=0, y=1400)],
+        [{"slug": "a", "file": "a.py", "id": "sid-a"},
+         {"slug": "x", "file": "x.py", "id": "sid-x"},
+         {"slug": "fresh", "file": "fresh.py"}],
+        base_nodes=["a", "x"])
+    result = cs.apply_snapshot(d, new, None)
+    assert [r["udfName"] for r in _rows(d)] == ["a", "fresh"]
+    assert result["ignored"] == ["x"] and result["fileless"] == ["fresh"]

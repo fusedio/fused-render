@@ -1,4 +1,12 @@
-"""Route a `fused workbench canvas push` of a CANVAS CLONE through the server.
+"""Answer a `fused workbench canvas push` / `pull` of a CANVAS CLONE itself.
+
+Since the revision spine (2026-11-11, owner Q7) a Claude session in a clone
+has NO sync verbs: the folder publishes itself (the session's turn end — the
+Stop hook — and whenever the folder goes quiet), and the server's changes are
+merged into it automatically. A clone push therefore prints the folder's state
+line (from GET /api/canvases/sync/state) and exits 0; a pull into a clone is
+refused, exit 1. What follows is the history of why the raw commands must
+never run there, which still holds.
 
 Imported by ``_fused_cli.py`` — the in-interpreter `fused` entry point every
 shipping install runs (the DMG bakes the pre-release fused into the app's own
@@ -19,9 +27,9 @@ Why it cannot just run:
     server-changed, which holds every push until someone pulls the agent's
     own push back down.
 
-So a push whose target is a clone is turned into a POST to
-``/api/canvases/sync/push``, which performs the very same push inside the server
-process, under the watcher's `_flight_lock`, with the guard intact.
+So a push whose target is a clone never runs: the watcher publishes the folder
+itself, inside the server process, under its `_flight_lock`, with the guard
+and the revision CAS intact.
 
 Design rules, all of them load-bearing:
 
@@ -97,11 +105,10 @@ _ORIGIN_ENV = "FUSED_RENDER_ORIGIN"
 _GUARD_HEADER = "X-Fused"
 _GUARD_VALUE = "1"
 
-# Flags that change what `canvas push` publishes in ways the endpoint cannot
-# express: it always pushes the whole clone, with validation, honouring
-# .fusedignore. Refused rather than passed through, because falling through
-# would run exactly the unguarded push this module exists to prevent — and
-# refusing puts a readable reason in the session's transcript instead.
+# Flags that change what `canvas push` publishes in ways the watcher does not
+# do: it always publishes the whole clone, with validation, honouring
+# .fusedignore. A clone push carrying them gets the same answer as any other
+# (the folder publishes itself); they never reach the raw CLI there.
 _UNSUPPORTED_FLAGS = ("--no-validate", "--no-ignore")
 
 # Recognised option tokens. Anything else that looks like an option means this
@@ -254,29 +261,81 @@ def parse_push(args: list[str]) -> dict | None:
             "unsupported": unsupported, "env": workbench_opts.get("--env")}
 
 
-def _post_push(origin: str, name: str, env: str) -> tuple[int | None, dict]:
-    """POST the push. `(status, body)`. `env` is the clone path's environment
-    segment: the canvas is (env, name), and the server routes the push to that
-    environment's sync manager.
+# `canvas pull`'s own options (fused workbench/cli/canvas.py): value-taking
+# `-o/--output`, flags `--force/-f`, `--dry-run/-n`, `--show-diff`, and the
+# canvas-ref options. Only `-o` matters to the matcher (where it writes);
+# every other token is accepted as is — a pull INTO a clone is refused
+# whatever its flags.
+_PULL_OUTPUT_OPTS = ("-o", "--output")
 
-    status None        -> could not connect at all (server not around) — safe
-                           to fall through to the real CLI.
-    """
+
+def parse_pull(args: list[str]) -> dict | None:
+    """`{"canvas_ref", "output"}` for a `workbench canvas pull` (output None
+    when no `-o`), else None. Same leading-option rules as parse_push."""
+    skipped = _skip_global_options(args)
+    if skipped[:1] != ["workbench"]:
+        return None
+    skipped = _skip_global_options(skipped[1:], _WORKBENCH_VALUE_OPTS, {})
+    if skipped[:2] != ["canvas", "pull"]:
+        return None
+    rest = skipped[2:]
+    output = None
+    positionals: list[str] = []
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token in _PULL_OUTPUT_OPTS:
+            if i + 1 < len(rest):
+                output = rest[i + 1]
+            i += 2
+            continue
+        matched = False
+        for opt in _PULL_OUTPUT_OPTS:
+            if token.startswith(opt + "=") or (opt == "-o" and token.startswith("-o") and len(token) > 2):
+                # `-o` takes the rest of the token as is (a path may hold
+                # `=`); only `--output=` splits.
+                output = token[len(opt) + 1:] if opt == "--output" else token[2:]
+                matched = True
+                break
+        if not matched and not token.startswith("-"):
+            positionals.append(token)
+        i += 1
+    return {"canvas_ref": positionals[0] if positionals else None, "output": output}
+
+
+def _clone_of(path: str) -> tuple[str, str] | None:
+    """`(name, env)` when `path` is a clone root or anywhere inside one."""
+    base = os.path.realpath(canvases_base())
+    target = os.path.realpath(path)
+    while True:
+        env_dir, name = os.path.split(target)
+        parent, env = os.path.split(env_dir)
+        if parent == base and env in _ENVS and name:
+            return name, env
+        if env_dir == target or not name:
+            return None
+        target = env_dir
+
+
+_PULL_REFUSAL = ("This folder is kept in sync by fused-render; a server change is "
+                 "merged here automatically. Do not pull.\n")
+
+
+def _get_state(origin: str, name: str, env: str) -> tuple[int | None, dict]:
+    """GET the canvas's sync state (with `pending_files`). `(status, body)`;
+    status None = could not connect at all (no server around)."""
     import urllib.error
+    import urllib.parse
     import urllib.request
 
-    payload = json.dumps({"name": name, "env": env}).encode("utf-8")
+    query = urllib.parse.urlencode({"name": name, "env": env, "files": "1"})
     request = urllib.request.Request(
-        origin.rstrip("/") + "/api/canvases/sync/push",
-        data=payload, method="POST",
-        headers={"Content-Type": "application/json", _GUARD_HEADER: _GUARD_VALUE},
-    )
+        origin.rstrip("/") + "/api/canvases/sync/state?" + query,
+        method="GET", headers={_GUARD_HEADER: _GUARD_VALUE})
     try:
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=30) as response:
             return response.status, _decode(response.read())
     except urllib.error.HTTPError as exc:
-        # A 4xx/5xx still carries the server's JSON body, which is the whole
-        # point — the refusal or the failure detail is in there.
         try:
             return exc.code, _decode(exc.read())
         except OSError:
@@ -291,6 +350,34 @@ def _decode(raw: bytes) -> dict:
     except (ValueError, UnicodeDecodeError):
         return {}
     return body if isinstance(body, dict) else {}
+
+
+def _age(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return "%ds" % seconds
+    if seconds < 3600:
+        return "%dm" % (seconds // 60)
+    return "%dh" % (seconds // 3600)
+
+
+def state_line(state: dict) -> str:
+    """"base rev N, server rev M, K pending files, last push 12s ago"."""
+    import time
+
+    def rev(value) -> str:
+        return str(value) if value is not None else "n/a"
+
+    pending = state.get("pending_files")
+    d2s = ((state.get("legs") or {}).get("disk_to_server") or {})
+    last = d2s.get("last_push_at")
+    parts = ["base rev " + rev(state.get("base_revision")),
+             "server rev " + rev(state.get("server_revision"))]
+    if isinstance(pending, int):
+        parts.append("%d pending file%s" % (pending, "" if pending == 1 else "s"))
+    parts.append("last push %s ago" % _age(time.time() - last)
+                 if isinstance(last, (int, float)) else "no push yet")
+    return ", ".join(parts)
 
 
 def _fall_through(name: str, env: str, err, cli_env: str | None = None) -> int | None:
@@ -344,16 +431,39 @@ def _fall_through(name: str, env: str, err, cli_env: str | None = None) -> int |
 
 
 def maybe_intercept(args: list[str], out, err) -> int | None:
-    """Handle a clone push and return its exit code, or None to fall through.
+    """Handle a clone push or pull and return its exit code, or None to fall
+    through.
+
+    The revision spine (2026-11-11, owner Q7): a Claude session in a clone has
+    NO sync verbs. The folder publishes itself — at the end of each turn (the
+    Stop hook) and whenever it goes quiet — and the server's changes are
+    merged into it automatically. So inside a clone:
+
+      * `canvas push` (any flags) prints the folder's state line and exits 0:
+        there is nothing for the session to do, and nothing it ran failed.
+      * `canvas pull` (any flags: --force, --dry-run, ...) is refused, exit 1:
+        a pull would replace or race what the watcher merges.
 
     `args` is argv without the program name; `out`/`err` are the streams to
     write the CLI-shaped output to.
     """
     if os.environ.get(INTERNAL_ENV):
-        # This child IS the sync manager's own push. Routing it back to the
-        # endpoint would deadlock against the push that spawned it — see
+        # This child IS the sync manager's own push or pull. Intercepting it
+        # would refuse the very sync this module defers to — see
         # INTERNAL_ENV. Checked before anything else, including the argv match.
         return None
+    pulled = parse_pull(args)
+    if pulled is not None:
+        target = pulled["output"]
+        if target is None and pulled["canvas_ref"]:
+            # The CLI's default output folder is the canvas name under cwd.
+            target = os.path.join(os.getcwd(), pulled["canvas_ref"])
+        inside = (_clone_of(target) if target else None) or (
+            _clone_of(os.getcwd()) if pulled["output"] is None else None)
+        if inside is None:
+            return None
+        err.write("fused-render: " + _PULL_REFUSAL)
+        return 1
     parsed = parse_push(args)
     if parsed is None:
         return None
@@ -365,87 +475,53 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     if not origin:
         return _fall_through(name, env, err, parsed["env"])  # no server around
     if parsed["canvas"] is not None and parsed["canvas"] != name:
-        # Pushing one clone's contents at a DIFFERENT canvas. The endpoint is
-        # keyed on the watcher for this folder, so it cannot express that; the
-        # real CLI can, and there is no merge base for the named canvas here.
+        # Pushing one clone's contents at a DIFFERENT canvas. The watcher for
+        # this folder cannot express that; the real CLI can, and there is no
+        # merge base for the named canvas here.
         return _fall_through(name, env, err, parsed["env"])
-    if parsed["unsupported"]:
-        err.write(
-            "fused-render: %s cannot be used inside the canvas clone %r.\n"
-            "This folder is two-way synced, and the push runs through "
-            "fused-render's sync manager so it cannot silently replace a "
-            "concurrent workbench edit. Push without that flag; fix validation "
-            "errors rather than skipping them.\n"
-            % (", ".join(parsed["unsupported"]), name))
-        return 2
 
-    status, body = _post_push(origin, name, env)
+    status, body = _get_state(origin, name, env)
     if status is None:
         # Server unreachable — the real CLI is the honest fallback.
         return _fall_through(name, env, err, parsed["env"])
-    if status == 409 and body.get("code") == "no_watcher":
-        # No LIVE manager for this folder right now — but the target was
-        # already positively identified as a canvas clone (_clone_name
-        # matched), and a merge base from a PRIOR sync session may still be
-        # sitting on disk at .sync/<name>.json, invisible to this process (no
-        # heavy imports here) and to the endpoint's `create=False` check
-        # alike. The remote can also have moved since then, through the
-        # hosted workbench, with nothing watching to notice. Falling through
-        # here is exactly the wholesale-replace clobber this whole module
-        # exists to prevent — it is not the "definitely no merge base, so
-        # falling through is inert" case the other fall-throughs are (no
-        # origin, outside the canvases root, server unreachable): those mean
-        # sync was never engaged for this folder at all, this one means sync
-        # merely isn't running RIGHT NOW. So a clone target refuses here
-        # instead of falling through — "when unsure, fall through" is only
-        # safe when falling through is inert, and for a positively-identified
-        # clone it never is. Recorded as part of D350's contract (see
-        # DECISIONS.md).
-        err.write(
-            "fused-render: %s\n"
-            "This folder is a canvas clone, so it is meant to be two-way "
-            "synced, but nothing is watching it right now (the sync manager "
-            "isn't running — often just because the canvas workspace tab "
-            "isn't open). Open this canvas in fused-render to start sync, "
-            "then push again; that also protects against the remote having "
-            "moved in the hosted workbench while nothing was watching.\n"
-            % (body.get("error") or "the canvas is not being synced"))
-        return 1
-    if status == 409 and body.get("code") == "owned":
-        # Another fused-render process holds this clone's writer lock. Same
-        # refusal as no_watcher (the raw push is never inert for a clone), but
-        # the fix is "push from the one that owns it", not "open it here".
-        owner = body.get("owner") if isinstance(body.get("owner"), dict) else {}
-        err.write(
-            "fused-render: %s\n"
-            "Another fused-render (pid %s, port %s) is syncing this canvas "
-            "clone. Push from there, or quit it and open the canvas in this "
-            "fused-render, then push again.\n"
-            % (body.get("error") or "the canvas is synced by another fused-render",
-               owner.get("pid", "?"), owner.get("port", "?")))
-        return 1
-    if status == 409 and body.get("code") == "busy":
-        # Someone else holds the folder this instant (the watcher's own leg,
-        # another session, a pause). Benign and retryable — say so in those
-        # words, so the reader retries instead of hunting for a broken canvas.
-        # Still a non-zero exit: the push did NOT happen.
-        err.write("fused-render: %s\n"
-                  "Nothing is wrong with the canvas — this is a timing "
-                  "conflict. Wait a moment and push again.\n"
-                  % (body.get("error") or "the canvas is busy"))
-        return 1
     if status != 200:
-        err.write("fused-render: %s\n"
-                  % (body.get("error") or "the canvas push was refused"))
+        err.write("fused-render: %s\n" % (body.get("error") or "could not read the canvas's "
+                                                                "sync state"))
         return 1
-    if body.get("ok"):
-        out.write("Pushed canvas %r (via fused-render sync).\n" % name)
-        return 0
-    # A real push failure. Everything the CLI printed is in error_detail, one
-    # entry per line, and it is reproduced verbatim: these lines name the files
-    # and nodes to fix, and rewording them makes them unsearchable (D328).
-    for line in body.get("error_detail") or []:
-        err.write("%s\n" % line)
-    if not body.get("error_detail"):
-        err.write("%s\n" % (body.get("error") or "canvas push failed"))
-    return 1
+    if body.get("watching") is False or body.get("watcher_epoch") is None:
+        others = body.get("other_watchers") or []
+        if others:
+            # Another fused-render process holds this clone's writer lock: the
+            # raw push is never inert for a clone, so refuse, and say where.
+            owner = others[0] if isinstance(others[0], dict) else {}
+            err.write(
+                "fused-render: canvas %r is synced by another fused-render (pid %s, "
+                "port %s).\n"
+                "That one publishes this folder; quit it and open the canvas in this "
+                "fused-render to sync it here.\n"
+                % (name, owner.get("pid", "?"), owner.get("port", "?")))
+            return 1
+        # No LIVE watcher — but the target is a positively-identified clone,
+        # and a merge base from a PRIOR sync session may still be on disk at
+        # .sync/<name>.json while the remote moved through the hosted
+        # workbench with nothing watching. The raw push would be exactly the
+        # wholesale-replace clobber this module exists to prevent, so refuse
+        # rather than fall through (D350).
+        err.write(
+            "fused-render: canvas %r is not being synced (no watcher is running).\n"
+            "This folder is a canvas clone, so it publishes itself while fused-render "
+            "watches it — often it just isn't watched because the canvas tab isn't "
+            "open. Open this canvas in fused-render to start sync; it publishes the "
+            "folder on its own.\n" % name)
+        return 1
+    out.write("This folder publishes itself: %s. Nothing to do.\n" % state_line(body))
+    d2s = ((body.get("legs") or {}).get("disk_to_server") or {})
+    if d2s.get("state") == "error":
+        # Not a failure of this command, but the session must see it: these
+        # lines name the files and nodes to fix, verbatim (D328).
+        out.write("The last publish failed:\n")
+        for line in body.get("error_detail") or [d2s.get("reason") or "unknown error"]:
+            out.write("%s\n" % line)
+    elif d2s.get("state") == "held" and d2s.get("reason"):
+        out.write("Publishing is held: %s.\n" % d2s["reason"])
+    return 0

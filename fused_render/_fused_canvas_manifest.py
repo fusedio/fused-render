@@ -9,6 +9,13 @@ edits). Comparing two manifests taken at different times tells whether the
 REMOTE canvas moved — the hashes are never compared against local files
 (the exported file layout doesn't match ``md5(udf_body)``).
 
+A server with the revision spine (2026-11-11) also sends the collection's
+``revision`` (bumped by every content write), ``lease_owner`` /
+``lease_until`` (who has the canvas checked out) and each UDF's
+``revision``. They are copied ONLY when the server sent them — never
+null-filled — so the manager feature-detects with ``"revision" in
+manifest``: present, a move is a revision change and nothing else.
+
 FUSED_ENV is honored the same way the CLI does it (fused._env), so the
 manifest comes from the same environment the pull/push CLI calls target.
 """
@@ -46,14 +53,17 @@ def main() -> None:
             # delta once the push that created the UDF lands.
             "id": udf.get("id"),
         }
-    json.dump(
-        {
-            "id": collection.get("id"),
-            "last_updated": collection.get("last_updated"),
-            "udfs": udfs,
-        },
-        sys.stdout,
-    )
+        if "revision" in udf:
+            udfs[slug]["revision"] = udf.get("revision")
+    out = {
+        "id": collection.get("id"),
+        "last_updated": collection.get("last_updated"),
+        "udfs": udfs,
+    }
+    for key in ("revision", "lease_owner", "lease_until"):
+        if key in collection:
+            out[key] = collection.get(key)
+    json.dump(out, sys.stdout)
 
 
 if __name__ == "__main__":
