@@ -39,7 +39,7 @@ import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
 import { FusedMark } from "@platform/ui/FusedMark";
-import { displayName, isBot } from "@platform/lib/flavor";
+import { displayName } from "@platform/lib/flavor";
 
 import {
   firstOpenStage,
@@ -47,7 +47,6 @@ import {
   reportStage,
   seedProgress,
   setProgress,
-  stageIds,
   stageStatus,
   useOnboardingState,
   type Stages,
@@ -65,8 +64,8 @@ type StepId = "about" | "tools" | "fda" | "models" | "newsletter" | "app";
 // `tools` is one step over THREE stages (claude, git, chrome — the server's
 // closed set stays; ToolsStep says why). `newsletter` (Updates) is the one
 // step that is NOT a stage: optional, never in the meter (progress.ts
-// STAGE_IDS leaves it out), in both flavors. Before First app because that
-// step leaves the wizard; last under Fused Bot.
+// STAGE_IDS leaves it out). Before First app because that step leaves the
+// wizard.
 const STEPS: { id: StepId; label: string }[] = [
   { id: "about", label: "About" },
   { id: "tools", label: "Tools" },
@@ -95,10 +94,7 @@ function asStepId(v: string | null | undefined): StepId | null {
  *  every one the machine has is complete, partial when any has moved,
  *  pending otherwise. */
 function toolsStatus(stages: Stages | undefined): StageStatus {
-  // `stageIds()` drops what this flavor's server never has (Bot: no git), or
-  // an absent record would read as pending forever.
-  const have = TOOLS_STAGES.filter((id) => stageIds().includes(id))
-    .map((id) => stageStatus(stages, id))
+  const have = TOOLS_STAGES.map((id) => stageStatus(stages, id))
     .filter((s) => s !== "n/a");
   if (have.length === 0) return "pending";
   if (have.every((s) => s === "complete")) return "complete";
@@ -171,23 +167,14 @@ export function OnboardingWizard({ config }: { config: Config }) {
     if (health?.platform && health.platform !== "darwin") reportStage("fda", "n/a", { platform: health.platform });
   }, [health?.platform]);
   useEffect(() => {
-    if (isBot()) return;
     if (picks !== null && picks.length === 0) reportStage("models", "n/a", { offered: 0 });
   }, [picks]);
   // The Git ROW of the Tools step: macOS only (its probe + Install button
   // are built for the Mac's Command Line Tools alone, server git_tools —
-  // elsewhere the server counts the stage `n/a`), and never under Fused Bot,
-  // whose server has no git stage at all (it clones nothing). Chrome is in
-  // BOTH flavors (Render runs the same bots from its Bots page), and always
-  // shown: it is the one place that says what bots need.
-  const showGit = !isBot() && isMac(health?.platform);
+  // elsewhere the server counts the stage `n/a`). Chrome is always shown: it
+  // is the one place that says what bots need.
+  const showGit = isMac(health?.platform);
   const steps = STEPS.filter((s) => {
-    // Fused Bot's server has no models/app steps at all (progress.stageIds):
-    // dropped before the per-machine rules, and never reported `n/a` either —
-    // the server's closed set would not take the write.
-    if (s.id === "models" || s.id === "app") {
-      if (isBot()) return false;
-    }
     // macOS only, both: Full Disk Access is a macOS grant.
     if (s.id === "fda") return isMac(health?.platform);
     // Kept while the answer is UNKNOWN (`null`), unlike the FDA step's
@@ -289,9 +276,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
   };
   const back = () => setIndex(index - 1);
 
-  // THE COMPOSER STEP owns its own keys and its own way out — and it is not
-  // always the last step: under Fused Bot the wizard ends on FDA (no app
-  // step), where Next simply finishes and the keys stay live.
+  // THE COMPOSER STEP owns its own keys and its own way out.
   const composerStep = step.id === "app";
 
   // Escape dismisses; ⌘/Ctrl+Enter advances. Neither on the composer step: it

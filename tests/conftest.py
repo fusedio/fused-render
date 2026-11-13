@@ -135,9 +135,6 @@ def pytest_configure(config):
 # otherwise start a background model call for every parked Bash request it lists. Tests of the read clear this.
 os.environ.setdefault("FUSED_RENDER_PERMISSION_RISK", "0")
 os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
-# Tests describe Fused Render; a stale fused_render/_baked_flavor.py from a
-# local bot DMG build must not flip them (port 1777 assertions, startup set).
-os.environ.setdefault("FUSED_RENDER_FLAVOR", "render")
 # export_app_env() starts a probe that runs the developer's real login shell
 # (login_path.py); no test should ever spawn it. test_login_path.py clears this
 # for the one test that exercises start().
@@ -681,7 +678,7 @@ def _no_bots_threads(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("FUSED_RENDER_APP_HOME", str(tmp_path_factory.mktemp("no-fusedbot")))
     monkeypatch.setattr(bots_registry, "start", lambda: None)
     # The routines wake agent (registry.sync_wake -> schedule_wake.sync): under a venv python there is no app
-    # bundle, so a sync REMOVES ~/Library/LaunchAgents/<flavor>.schedule-wake.plist — the developer's real Tasks
+    # bundle, so a sync REMOVES ~/Library/LaunchAgents/<bundle id>.schedule-wake.plist — the developer's real Tasks
     # wake agent. Tests reach it through every routine add/edit/fire now that they elect the owner lazily.
     monkeypatch.setattr(bots_registry, "sync_wake", lambda: None)
     bots_registry.reset_for_tests()

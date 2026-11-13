@@ -143,12 +143,11 @@ from fused_render.logs import log_dir
 
 logger = logging.getLogger(__name__)
 
-APP_NAME = _flavor.display_name()  # "Fused Render" / "Fused Bot"
+APP_NAME = _flavor.display_name()  # "Fused Render"
 DEFAULT_SIZE = (1280, 840)
 MIN_SIZE = (560, 360)
 # Rides on WebKit's own UA so a page can tell "inside the app" from "a browser".
-# Stays `FusedRender/` under BOTH flavors: router.ts (IS_NATIVE_WINDOW) and
-# lan.py sniff this literal, and Fused Bot is the same shell in another skin.
+# router.ts (IS_NATIVE_WINDOW) and lan.py sniff this literal.
 USER_AGENT_MARKER = f"FusedRender/{__version__}"
 
 # The titlebar paints the app's `--bg` token (frontend/src/styles/tokens.css),
@@ -1194,9 +1193,6 @@ class _MenuTarget(NSObject):
     def showTasks_(self, _s):
         self._m.show_tasks()
 
-    def showPreferences_(self, _s):
-        self._m.show_page("/preferences")
-
     def showLauncher_(self, _s):
         launcher = self._m.show_launcher
         if launcher is not None:
@@ -1705,13 +1701,9 @@ def _build_main_menu(target) -> NSMenu:
     sep = NSMenuItem.separatorItem
     main = NSMenu.alloc().init()
 
-    # Fused Bot has no shell sidebar (App.tsx), so the menu bar is its only
-    # door to Preferences; Render reaches them from the sidebar as always.
-    bot = _flavor.is_bot()
     submenu(APP_NAME, [
         item(f"About {APP_NAME}", b"orderFrontStandardAboutPanel:", tgt=None),
         sep(),
-        *([item("Preferences…", b"showPreferences:", ","), sep()] if bot else []),
         item(f"Hide {APP_NAME}", b"hide:", "h", tgt=None),
         item("Hide Others", b"hideOtherApplications:", "h", CMD | _ALT, tgt=None),
         item("Show All", b"unhideAllApplications:", tgt=None),
@@ -1741,17 +1733,14 @@ def _build_main_menu(target) -> NSMenu:
         item("Select All", b"selectAll:", "a", tgt=None),
     ], main)
 
-    # Fused Bot has no explorer to edit in, so Edit App is not offered; its
-    # launcher lists bots, so the search row says so. Home stays — it goes
-    # to the front door, which is the Bots page there.
     submenu("View", [
         item("Reload Page", b"reload:", "r"),
         item("Back", b"goBack:", "["),
         item("Forward", b"goForward:", "]"),
         item("Home", b"goHome:", "H", CMD | _SHIFT),
-        *([] if bot else [item("Edit App", b"editApp:", "E", CMD | _SHIFT)]),
+        item("Edit App", b"editApp:", "E", CMD | _SHIFT),
         sep(),
-        item("Search Bots…" if bot else "Search Apps…", b"showLauncher:"),
+        item("Search Apps…", b"showLauncher:"),
         sep(),
         item("Open in Browser", b"openInBrowser:", "L", CMD | _SHIFT),
         item("Copy URL", b"copyUrl:", "C", CMD | _SHIFT),

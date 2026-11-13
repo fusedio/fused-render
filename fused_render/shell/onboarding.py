@@ -66,7 +66,7 @@ import urllib.request
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
-from fused_render import _flavor, _platform
+from fused_render import _platform
 from fused_render.shell import prefs, storage
 
 log = logging.getLogger(__name__)
@@ -83,15 +83,10 @@ _KEY = "onboarding"
 #: The STAGE ids (frontend shell/onboarding/progress STAGE_IDS). Not quite
 #: the wizard's steps: it shows claude/git/chrome as ONE step (ToolsStep) and
 #: keeps the three stages apart underneath. A closed set: prefs.json is shared state, and an unknown id is refused
-#: rather than stored. Fused Bot has no local-models step and no first-app
-#: step (it does not build apps), so there the set is four — `_observe`
-#: keys off the same tuple, so neither stage ever enters the meter's count.
-#: `chrome` (a Google Chrome for bots to drive) is in both: Render runs the
-#: same bots from its Bots page. `git` (a usable git — Community installs
-#: and Claude Code's own worktrees need one) is Render's only: Fused Bot
-#: clones nothing.
-STEPS = (("about", "claude", "chrome", "fda") if _flavor.is_bot()
-         else ("about", "claude", "git", "chrome", "fda", "models", "app"))
+#: rather than stored. `chrome` is a Google Chrome for bots to drive; `git`
+#: is a usable git (Community installs and Claude Code's own worktrees need
+#: one).
+STEPS = ("about", "claude", "git", "chrome", "fda", "models", "app")
 
 #: Stage statuses. `n/a` = the machine has no such step; it is not counted.
 STATUSES = ("pending", "partial", "complete", "n/a")
@@ -186,7 +181,7 @@ def _observe(stages: dict) -> None:
     wizard wrote it. Never raises — a meter must not take /api/config down."""
 
     def put(sid: str, status: str, **meta: object) -> None:
-        if sid not in STEPS:  # a step this flavor's wizard does not have
+        if sid not in STEPS:
             return
         rec = stages.get(sid) or {"status": "pending", "meta": {}, "updated_at": None}
         if rec["status"] == status and all(rec["meta"].get(k) == v for k, v in meta.items()):
@@ -219,9 +214,7 @@ def _observe(stages: dict) -> None:
     # Chrome: the bots' own candidate walk (bots/browser.CHROME_CANDIDATES —
     # the list `find_chrome` runs when a bot starts, so this and the bot never
     # disagree), a handful of os.path.exists, conclusive. Found = complete,
-    # with the path for the step's "Found at …" row. Not found = pending in
-    # both flavors: Render's Bots page runs the same bots, so a machine
-    # without a Chrome cannot run one anywhere.
+    # with the path for the step's "Found at …" row. Not found = pending.
     # Windows never runs bots (server/app.py), so there the Chrome step has
     # nothing to be for: `n/a`, which the meter does not count.
     if _platform.IS_WINDOWS:
@@ -261,20 +254,17 @@ def _observe(stages: dict) -> None:
             log.debug("onboarding: git observe failed", exc_info=True)
 
     # First app: any folder under <fused_dir>/local IS an app the user has.
-    # Only where the wizard has the step: /api/config is read on every page
-    # load, so a flavor without it (Fused Bot) must not pay the scandir.
-    if "app" in STEPS:
-        try:
-            from fused_render.shell.seed import fused_dir
+    try:
+        from fused_render.shell.seed import fused_dir
 
-            local = os.path.join(fused_dir(), "local")
-            if os.path.isdir(local):
-                with os.scandir(local) as it:
-                    count = sum(1 for e in it if e.is_dir() and not e.name.startswith("."))
-                if count:
-                    put("app", "complete", app_count=count)
-        except Exception:  # noqa: BLE001
-            log.debug("onboarding: app observe failed", exc_info=True)
+        local = os.path.join(fused_dir(), "local")
+        if os.path.isdir(local):
+            with os.scandir(local) as it:
+                count = sum(1 for e in it if e.is_dir() and not e.name.startswith("."))
+            if count:
+                put("app", "complete", app_count=count)
+    except Exception:  # noqa: BLE001
+        log.debug("onboarding: app observe failed", exc_info=True)
 
     # Claude Code: the health module's DISK CACHE only — a fresh measure spawns
     # processes, and /api/config is read on every page load. No cache, no say.
@@ -457,14 +447,7 @@ def seed_for_existing_users(fused_ws: str) -> None:
     """One-shot at startup: an install that already has apps under
     <fused_dir>/local predates this wizard — mark it completed so an upgrade
     never greets a returning user with a first-run screen. No-op once any
-    flag is set; never raises (a startup chore, not a gate).
-
-    Not under Fused Bot: `~/Fused` is shared with Fused Render, so a Render
-    user's apps would stamp Bot's wizard completed on its first launch and
-    skip the claude + fda steps — and Full Disk Access is per bundle id, so
-    the bot needs its own grant walked through."""
-    if _flavor.is_bot():
-        return
+    flag is set; never raises (a startup chore, not a gate)."""
     try:
         state = _read()
         if state.get("completed_at") is not None or state.get("dismissed_at") is not None:

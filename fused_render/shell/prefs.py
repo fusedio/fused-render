@@ -87,7 +87,6 @@ import time
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render import _flavor
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -1721,10 +1720,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             value = body.get("lan_enabled")
             if not isinstance(value, bool):
                 return JSONResponse({"error": "'lan_enabled' must be a boolean"}, status_code=400)
-            # Fused Bot has no LAN sharing surface (boot never starts the
-            # listener either): known key, nothing stored, `lan.apply` below skipped.
-            if not _flavor.is_bot():
-                prefs["lan_enabled"] = value
+            prefs["lan_enabled"] = value
             changed = True
         if "engines" in body:
             # A MAP, applied key by key onto whatever is stored — the page changes
@@ -1897,18 +1893,14 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if "launcher_hotkey" in body:
             # Canonicalised before storing (`alt+space`, modifiers in display
             # order) and refused whole when malformed — a spec with no modifier
-            # would be a key taken from every app on the system. The wire name
-            # is the same in both apps; it is STORED under the flavor's key
-            # (`launcher.hotkey_key()`: `bot_launcher_hotkey` under Fused Bot),
-            # because both apps share this file and run side by side, and
-            # Carbon refuses a combo another process already holds.
+            # would be a key taken from every app on the system.
             from fused_render import hotkey, launcher
 
             try:
                 value = launcher.canonical_hotkey(body.get("launcher_hotkey"))
             except hotkey.SpecError as exc:
                 return JSONResponse({"error": f"'launcher_hotkey': {exc}"}, status_code=400)
-            prefs[launcher.hotkey_key()] = value
+            prefs["launcher_hotkey"] = value
             launcher_rebind = value
             changed = launcher_changed = True
         if "launcher_row_modifier" in body:
@@ -1918,7 +1910,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 value = launcher.canonical_modifiers(body.get("launcher_row_modifier"))
             except hotkey.SpecError as exc:
                 return JSONResponse({"error": f"'launcher_row_modifier': {exc}"}, status_code=400)
-            prefs[launcher.row_modifier_key()] = value  # flavor's key, as above
+            prefs["launcher_row_modifier"] = value
             changed = launcher_changed = True
         agent_keys = tuple(AGENT_BACKEND_KEYS[b] for b in VALID_DEFAULT_BACKENDS)
         if any(k in body for k in (*agent_keys, "default_backend")):
@@ -2043,7 +2035,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         from fused_render.server import index_owner
 
         index_owner.on_flag_changed(bool(prefs.get("index_low_impact_enabled")))
-    if "lan_enabled" in body and not _flavor.is_bot():
+    if "lan_enabled" in body:
         # AFTER the write, like `engines` below: the listener follows the stored
         # preference, and a failure to bind is reported in the response's
         # `lan.error` rather than failing the PUT.

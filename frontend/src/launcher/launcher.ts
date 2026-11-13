@@ -4,13 +4,11 @@
 // the footer shortcut recorder (PUT /api/prefs + POST /api/launcher/suspend), the keyboard, the size report and the
 // bridge to the native panel (fused_render/launcher_panel.py).
 //
-// What the rows ARE is the server's call, by flavor: under Fused Render apps (app/appfile) and, by typing, bots
-// and — with Canvases on (launcher.py `_canvases_offered`; this page never reads the flag) — cloned canvases
-// (`kind: "canvas"`, opening the canvas's editor), then files and folders, then the bottom rows (the shell home and the Bots page, `home: true`, kinds "home" and
-// "bots"); under Fused Bot bots (`kind: "bot"`, `files` always empty), then its one home row. The bottom rows sit
-// under the list while the query is empty; a typed query ranks them with everything else (launcher.py `results`),
-// so the page keeps the server's `apps` order as it came. The page's copy keys off `settings.kind`
-// ("apps" | "bots"), which arrives with the launcher prefs.
+// What the rows ARE is the server's call: apps (app/appfile) and, by typing, bots and — with Canvases on
+// (launcher.py `_canvases_offered`; this page never reads the flag) — cloned canvases (`kind: "canvas"`, opening the
+// canvas's editor), then files and folders, then the bottom rows (the shell home and the Bots page, `home: true`,
+// kinds "home" and "bots"). The bottom rows sit under the list while the query is empty; a typed query ranks them
+// with everything else (launcher.py `results`), so the page keeps the server's `apps` order as it came.
 import { faceSvg, type DockFace } from "../dock/lib";
 import botHomeImg from "@assets/fusedbot-icon-1024.png";
 import renderHomeImg from "@assets/fusedrender-icon-1024.png";
@@ -32,7 +30,6 @@ interface LauncherRow {
   running?: boolean;
 }
 interface LauncherSettings {
-  kind?: "apps" | "bots";
   hotkey?: string;
   display?: string;
   bound?: boolean;
@@ -70,7 +67,6 @@ const state = {
   lastH: 0, rowMods: ["alt"], rowSym: "⌥",
 };
 const SYM: Record<string, string> = { ctrl: "⌃", alt: "⌥", shift: "⇧", cmd: "⌘" };
-const bots = () => state.settings?.kind === "bots";
 
 // ---------- net ----------
 async function put(body: Record<string, unknown>): Promise<LauncherSettings> {
@@ -97,11 +93,10 @@ async function query(text: string) {
     state.apps = Array.isArray(data.apps) ? data.apps : [];
     state.files = Array.isArray(data.files) ? data.files : [];
     state.filesReason = String(data.files_reason || "");
-    // One list to select from. Empty query: apps (or bots), then files, then the bottom rows — last, so
-    // <modifier>+0 and the footer read the same. Typed query: the server already ranked the bottom rows among
-    // the apps, so its order stands, then files. Under Fused Bot the server sends no files; the section never
-    // draws even if one slips through.
-    const files = bots() ? [] : state.files;
+    // One list to select from. Empty query: apps, then files, then the bottom rows — last, so <modifier>+0 and
+    // the footer read the same. Typed query: the server already ranked the bottom rows among the apps, so its
+    // order stands, then files.
+    const files = state.files;
     state.rows = text.trim()
       ? state.apps.concat(files)
       : state.apps.filter((a) => !a.home).concat(files, state.apps.filter((a) => a.home));
@@ -116,10 +111,7 @@ async function loadSettings() {
   } catch { /* footer keeps its last label */ }
 }
 function setSettings(h: LauncherSettings) {
-  const flavorChanged = (state.settings?.kind === "bots") !== (h.kind === "bots");
   state.settings = h;
-  q.placeholder = bots() ? "Search bots…" : "Search apps, bots and files…";
-  if (flavorChanged) render();
   if (h.row_modifier) {
     state.rowMods = h.row_modifier.split("+");
     state.rowSym = h.row_modifier_display || state.rowMods.map((m) => SYM[m] || m).join("");
@@ -172,11 +164,11 @@ const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 const CANVAS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
   + '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="10" r="3"/><circle cx="9" cy="18" r="3"/>'
   + '<path d="M8.8 7.1 15.2 9M7.9 15.4 6.8 8.9M11.6 16.6l4.2-4.4"/></svg>';
-// A bottom row wears its app's icon, as the Dock's Home tile does (src/dock/dock.ts setHome): Fused Bot's 1024 px
-// artwork (scale 1024/824) for the Bots row and the bot flavor's home, Fused Render's sparkle card (scale 1/0.88)
-// for Render's home, scaled so the card fills the box and the box's radius clips the transparent margin.
+// A bottom row wears an icon, as the Dock's Home tile does (src/dock/dock.ts setHome): the bots artwork (1024 px,
+// scale 1024/824) for the Bots row, Fused Render's sparkle card (scale 1/0.88) for the home, scaled so the card
+// fills the box and the box's radius clips the transparent margin.
 function homeIcon(icon: HTMLElement, row: LauncherRow) {
-  const b = row.kind === "bots" || bots();
+  const b = row.kind === "bots";
   icon.classList.add("home");
   icon.style.setProperty("--home-scale", b ? "124.3%" : "113.7%");
   const img = document.createElement("img");
@@ -190,11 +182,6 @@ function rowModsHeld(e: KeyboardEvent) {
   return Object.keys(held).every((m) => held[m] === state.rowMods.includes(m));
 }
 function emptyCopy(text: string): { line: string; tip: string } {
-  if (bots()) {
-    return text
-      ? { line: `No bot matches “${text}”`, tip: "" }
-      : { line: "No bots yet", tip: "Type to search your bots." };
-  }
   const line = text ? `No app, bot or file matches “${text}”` : "Nothing opened yet";
   let tip = "";
   if (!text) tip = "Type to search every app in your workspace, your bots, and the files and folders in your home.";
@@ -297,7 +284,7 @@ function openHome() {
   if (b) b.postMessage({ type: "home" });
   else location.href = "/";
 }
-// The Bots page row (Fused Render only): the native side opens the page itself on `kind: "bots"`, no key.
+// The Bots page row: the native side opens the page itself on `kind: "bots"`, no key.
 function openBots() {
   const b = bridge();
   if (b) b.postMessage({ type: "open", kind: "bots", key: "" });
@@ -390,6 +377,6 @@ window.launcherShown = () => { reset(); loadSettings(); };
 window.launcherSettings = (h) => setSettings(h || {});
 
 new ResizeObserver(report).observe(panel);
-// Boot: the first prefs read lands before the first rows, so the placeholder and copy are the flavor's from the
-// start (loadSettings swallows its own failures, so the rows come either way).
+// Boot: the first prefs read lands before the first rows, so the row hints use the bound modifier from the start
+// (loadSettings swallows its own failures, so the rows come either way).
 void loadSettings().then(reset);

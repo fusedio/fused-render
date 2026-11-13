@@ -42,8 +42,8 @@ export type GroupId =
 // coding agents and the sessions they run, the apps and files you work on,
 // and the developer tools for when something breaks. A heading never repeats
 // the one page under it, and a page is named for what is on it. A group
-// belongs to exactly one section; a section with no visible group (Fused Bot
-// has no apps or files) is not drawn.
+// belongs to exactly one section; a section with no visible group is not
+// drawn.
 export type NavSectionId = "app" | "agents" | "apps" | "developer";
 
 export interface NavSection {
@@ -119,9 +119,6 @@ export interface SettingEntry {
   /** Extra words a search should find this by: synonyms, the old name, the
    *  thing a reader would type rather than what the label says. */
   keywords: string;
-  /** Fused Bot has none of this (no app git, no index, no LAN, no Fused
-   *  account) — the row is not rendered there and search never offers it. */
-  renderOnly?: true;
   /** Marked with a macOS badge; also hidden off a Mac when `available` does
    *  not already answer for it. */
   macOnly?: true;
@@ -131,9 +128,6 @@ export interface SettingEntry {
   child?: true;
   /** A pointer to another page, not a control. */
   elsewhere?: true;
-  /** Fused Bot's own wording where it differs (its launcher searches bots,
-   *  not apps). Applied by `forFlavor`, so the row and the search agree. */
-  bot?: { label?: string; description?: string };
   /** Whether the running app can honour this at all (a server-reported
    *  capability). Absent = always. */
   available?: (ctx: SettingsContext) => boolean;
@@ -149,7 +143,6 @@ export type DeviceFeature = "index" | "hf" | "fused" | "update" | "native_window
 
 export interface SettingsContext {
   prefs: Prefs;
-  bot: boolean;
   mac: boolean;
   /** GET /api/claude-config/status: ~/.claude exists on this machine; the
    *  model pointer leads to the Claude Code page's settings. */
@@ -194,9 +187,6 @@ const ENTRIES = [
     description: "Global shortcut for the search panel over your apps. Click the key, then press the new combination; Esc cancels.",
     keywords: "hotkey shortcut keyboard spotlight search apps bots launcher option space",
     macOnly: true,
-    bot: {
-      description: "Global shortcut for the search panel over your bots. Click the key, then press the new combination; Esc cancels.",
-    },
     available: ({ prefs }) => !!prefs.launcher?.available,
   },
   {
@@ -207,10 +197,6 @@ const ENTRIES = [
     description: "Hold this and press 1–9 to open a recent app from anywhere. 0 opens the home window.",
     keywords: "shortcut modifier number recent hotkey keyboard digit",
     macOnly: true,
-    bot: {
-      label: "Open the Nth bot",
-      description: "Hold this and press 1–9 to open a bot from anywhere. 0 opens the home window.",
-    },
     available: ({ prefs }) => !!prefs.launcher?.available,
   },
   {
@@ -353,7 +339,6 @@ const ENTRIES = [
     label: "Screen permission",
     description: "Canvas screenshots — yours and your agent's — are taken natively, in under a second. On macOS that needs screen permission. The app photographs only its own workbench frame, only when a screenshot is asked for; the picture is saved to the app's screenshots folder and attached to that chat, nowhere else.",
     keywords: "screenshot screen recording permission canvas capture native fast claude",
-    renderOnly: true,
     macOnly: true,
   },
   {
@@ -363,7 +348,6 @@ const ENTRIES = [
     label: "Fall back to in-canvas capture",
     description: "When the native screenshot cannot be taken, let the workbench draw the canvas itself instead of failing. Slow: 5–30 s with the canvas locked meanwhile. Off by default on macOS, where allowing screen permission is the fix.",
     keywords: "screenshot fallback slow canvas capture html-to-image",
-    renderOnly: true,
     macOnly: true,
   },
   {
@@ -409,7 +393,6 @@ const ENTRIES = [
     label: "Sync app changes with Git",
     description: "Push the commits the app makes itself and fast-forward when you open an app. Default branch only; nothing is merged or forced, and you get a notification if it cannot.",
     keywords: "git push pull commit fast-forward sync github remote auto",
-    renderOnly: true,
   },
   // Owner 2026-10-27: what Share offers — Public link (this row), the
   // GitHub card + install link (always, since 2026-10-29) and Remix. The
@@ -423,7 +406,6 @@ const ENTRIES = [
     label: "Public link",
     description: "Share an app as a public link on your Fused account. The Share button offers it next to the .fused file.",
     keywords: "share export link publish .fused file public download canvas account",
-    renderOnly: true,
   },
   {
     id: "live-previews",
@@ -432,7 +414,6 @@ const ENTRIES = [
     label: "Live previews in thumbnails",
     description: "Cards without a preview.png show the running app, and hovering swaps it in. Each one boots a whole page in the background.",
     keywords: "thumbnail preview iframe cards live hover image",
-    renderOnly: true,
   },
   // Community: Remix on its own switch (docs/CONTRIB_LOOP.md §1), off by
   // default. The Community store and the contribution loop stopped being
@@ -444,7 +425,6 @@ const ENTRIES = [
     label: "Remix",
     description: "Publish your changed version as an app of your own, credited to the original.",
     keywords: "community contribute remix fork publish credit original",
-    renderOnly: true,
     badge: "Beta",
   },
 
@@ -457,7 +437,6 @@ const ENTRIES = [
     label: "File indexing",
     description: "Keep a local index of your files' names, sizes and dates (no contents), so searching a folder is instant. Off, search walks folders live.",
     keywords: "index search scan spotlight files find",
-    renderOnly: true,
   },
   {
     id: "ranked-search",
@@ -467,7 +446,6 @@ const ENTRIES = [
     label: "Rank results by relevance",
     description: "Best matches first. Off, matches are listed shallowest-first, then alphabetically.",
     keywords: "search ranking relevance order sort",
-    renderOnly: true,
   },
   {
     id: "low-impact",
@@ -477,7 +455,6 @@ const ENTRIES = [
     label: "Low-impact indexing",
     description: "Keep the index quiet on a busy machine: longer waits before rescans and one worker at a time. Results may lag a minute or two.",
     keywords: "battery cpu background slow priority fan quiet",
-    renderOnly: true,
   },
   {
     id: "skipped-folders",
@@ -487,7 +464,6 @@ const ENTRIES = [
     label: "Skipped folders",
     description: "Folders the index never looks inside, such as dependency and build caches.",
     keywords: "ignore exclude skip node_modules gitignore rules",
-    renderOnly: true,
   },
   {
     id: "rebuild-index",
@@ -497,7 +473,6 @@ const ENTRIES = [
     label: "Rebuild the index",
     description: "Re-index picks up changes. A full scan starts over. Delete removes the index; search walks folders until the next scan.",
     keywords: "reindex rescan delete rebuild reset full scan",
-    renderOnly: true,
   },
 
   // ── Experimental flags ─────────────────────────────────────────────────────────────
@@ -509,7 +484,6 @@ const ENTRIES = [
     label: "Canvases",
     description: "Your Fused Workbench canvases, opened locally with the live workbench embedded. Appears in the sidebar once you are signed in to Fused.",
     keywords: "canvas workbench udf fused",
-    renderOnly: true,
   },
   {
     id: "canvases-embed-proxy",
@@ -519,7 +493,6 @@ const ENTRIES = [
     label: "Load a custom deployment's workbench through a local proxy",
     description: "For a deployment in ~/.fused/settings.toml whose workbench needs a browser login. The embedded workbench loads through a loopback proxy that adds your Fused token. Prod and Unstable canvases are unaffected. canvases_embed_proxy_enabled under [render] in that file overrides this switch.",
     keywords: "proxy embed custom deployment settings.toml render workbench login gateway bearer token",
-    renderOnly: true,
     child: true,
     // Only means something while Canvases is offered at all.
     available: ({ prefs }) => prefs.canvases?.enabled === true,
@@ -536,7 +509,6 @@ const ENTRIES = [
     label: "Preview chats from the collapsed Claude rail",
     description: "With the Claude panel hidden — on an app page, in the explorer, on a canvas — hovering a chat on the rail at the right edge previews it as a floating card beside it; clicking keeps the card open, ready to type, and lets you resize it from its left corners. Click elsewhere, press Escape, or use its × or Open to close it.",
     keywords: "rail hover click preview peek card chat collapsed claude panel popover canvas app explorer",
-    renderOnly: true,
   },
   // FAVOURITE CHATS (owner, 2026-11-03): the star on that preview card, so
   // a child of it — nothing to star without the card. Always shown, though:
@@ -548,7 +520,6 @@ const ENTRIES = [
     label: "Favourite chats",
     description: "A star beside the id in every list of chats, and on the rail's preview card, keeps a chat in a Favourites section at the foot of the rail, and its own smaller card open at the bottom right — close it with its ×, reopen it from its ring. With favourites on, the rail stands at the right edge of every app page, explorer view and canvas whether the Claude panel is shown or hidden, as long as it has a chat or a favourite to show.",
     keywords: "favourite favorite star pin keep chat rail card bottom always panel",
-    renderOnly: true,
     child: true,
   },
   // TASK ICONS (owner, 2026-11-10): a face per FAVOURITE, in place of the
@@ -560,7 +531,6 @@ const ENTRIES = [
     label: "Task icons",
     description: "A favourite wears its own small picture — an animal, a food, a thing — in place of the status ring, in the ring's colour, on the rail, the Tasks list and the task's head. Star a chat to give it one; remove the star and the ring is back. While editing a favourite's title, click the picture to choose another. Needs Favourite chats on.",
     keywords: "icon glyph picture emoji animal face ring task rail avatar favourite favorite star",
-    renderOnly: true,
   },
   // ONE HEADER FOR EVERY TASK VIEW (shell/TaskHead, task-head-flag). After the
   // rail preview's two children, not between them: a row set there read as
@@ -572,7 +542,6 @@ const ENTRIES = [
     label: "Unified task header",
     description: "One header for every task view: the Tasks page panel, the chat panes, the rail cards and the New task card.",
     keywords: "task header unified head close back prev next status star open kebab card panel rail",
-    renderOnly: true,
   },
   {
     id: "monitor",
@@ -610,7 +579,6 @@ const ENTRIES = [
     label: "Share my apps on this Wi-Fi",
     description: "Open your apps from a phone on the same network. Only devices you pair with the code get in; a paired device can open and run your apps and read or change their files, and nothing else on this computer is reachable.",
     keywords: "lan wifi phone iphone network qr pair mobile local devices revoke",
-    renderOnly: true,
   },
 
 
@@ -636,7 +604,6 @@ const ENTRIES = [
     label: "Fused account",
     description: "Used by the Share sheet and Canvases. Signing in opens fused.io in your browser.",
     keywords: "fused login sign in log out account workbench",
-    renderOnly: true,
   },
   {
     id: "workbench-env",
@@ -646,7 +613,6 @@ const ENTRIES = [
     label: "Default environment",
     description: "The canvas catalog opens on this environment; `fused` in chats outside a canvas clone and share uploads target it. Canvases keep the environment they were cloned from.",
     keywords: "default environment unstable prod production staging workbench canvases fused env",
-    renderOnly: true,
     child: true,
   },
   {
@@ -703,7 +669,6 @@ const ENTRIES = [
     label: "Query the file index",
     description: "Read-only SQL over the index, or ask in plain English. Nothing here can write or read a file outside the index.",
     keywords: "sql query index database duckdb",
-    renderOnly: true,
   },
   {
     id: "diagnostics",
@@ -729,9 +694,8 @@ export function navSectionOf(id: NavSectionId): NavSection {
   return NAV_SECTIONS.find((s) => s.id === id)!;
 }
 
-/** Whether a row is drawn on this machine and flavor. */
+/** Whether a row is drawn on this machine. */
 export function isVisible(entry: SettingEntry, ctx: SettingsContext): boolean {
-  if (ctx.bot && entry.renderOnly) return false;
   if (entry.macOnly && !entry.available && !ctx.mac) return false;
   if (entry.available && !entry.available(ctx)) return false;
   return true;
@@ -746,19 +710,9 @@ export function unavailableReason(
   return ctx?.prefs?.unavailable?.[entry.needs] ?? null;
 }
 
-/** The entry in this flavor's words: Fused Bot's `bot` overrides applied. */
-export function forFlavor<T extends SettingEntry>(entry: T, bot: boolean): T {
-  if (!bot || !entry.bot) return entry;
-  return {
-    ...entry,
-    label: entry.bot.label ?? entry.label,
-    description: entry.bot.description ?? entry.description,
-  };
-}
-
-/** The rows this machine and flavor draw, in this flavor's words. */
+/** The rows this machine draws. */
 export function visibleSettings(ctx: SettingsContext): (SettingEntry & { id: SettingId })[] {
-  return SETTINGS.filter((e) => isVisible(e, ctx)).map((e) => forFlavor(e, ctx.bot));
+  return SETTINGS.filter((e) => isVisible(e, ctx));
 }
 
 /** Groups that have at least one visible row, in page order. */
@@ -793,7 +747,7 @@ export function sectionsOf<T extends SettingEntry>(
 
 /** `?tab=` → the group to show. "render" was the old default tab's name,
  *  "account" the Accounts tab's (Integrations since 2026-10-20); anything
- *  unknown (a dead `?tab=engines` bookmark) or hidden on this flavor falls
+ *  unknown (a dead `?tab=engines` bookmark) or with no visible row falls
  *  back to the first group rather than an empty
  *  panel. */
 export function resolveGroup(tab: string | null, groups: readonly SettingsGroup[]): GroupId {

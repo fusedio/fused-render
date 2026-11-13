@@ -310,11 +310,10 @@ def _run_serve(args: argparse.Namespace) -> None:
     app.state.uvicorn_server = server
     # Local-network sharing of ~/Fused/local (lan.py): a second listener the
     # `lan_enabled` preference controls; this loopback bind is not touched.
-    from fused_render import _flavor, lan
+    from fused_render import lan
 
     lan.attach(app)
-    if not _flavor.is_bot():  # Fused Bot has no LAN sharing surface
-        lan.start_if_enabled()
+    lan.start_if_enabled()
     server.run()
 
 
@@ -332,8 +331,8 @@ def _free_port() -> int:
 
 # The two shapes `open` recognizes as "install this from GitHub" rather than
 # "open this local path": a plain repo URL, and the deep link the desktop
-# app's own `<scheme>://open?git=…` handler accepts (DL-9; the scheme is the
-# flavor's, fused-render:// or fused-bot://). Matched by prefix,
+# app's own `<scheme>://open?git=…` handler accepts (DL-9; the scheme is
+# `_flavor.scheme()`, fused-render://). Matched by prefix,
 # case-insensitively, same as deeplink.git_payload_from.
 _GITHUB_TARGET_PREFIXES = (
     "https://github.com/",

@@ -1,8 +1,8 @@
 """Menu-bar entry point for the packaged macOS app (SPEC DM-3/DM-5/DM-7).
 
 Wraps the existing `create_app()` server with a `rumps` NSStatusItem whose
-surface is the menu-bar Dock (menubar_dock.py: a tray of the user's apps —
-bots under Fused Bot — in a floating panel). The rumps menu is only a fallback
+surface is the menu-bar Dock (menubar_dock.py: a tray of the user's apps and
+bots in a floating panel). The rumps menu is only a fallback
 if the Dock controller fails (PV-8). The CLI (`cli.py`,
 `fused-render`) is unaffected and remains the dev entry point.
 
@@ -329,10 +329,7 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     lan.attach(app)
     # A pairing announces itself in the shell's own status bar (Notifications
     # section polls /api/lan/pairings) — not in macOS notification center.
-    # Fused Bot never opens the LAN listener: the routes stay mounted (attach
-    # above), the preference is simply not honoured at boot.
-    if not _flavor.is_bot():
-        lan.start_if_enabled()
+    lan.start_if_enabled()
     return server, thread
 
 
@@ -890,7 +887,7 @@ def bundle_path() -> str | None:
     """The .app bundle root when running packaged, None otherwise.
 
     sys.executable is …/<app_name><branch_suffix>.app/Contents/MacOS/python
-    under py2app (Fused Render.app / FusedBot.app)
+    under py2app (Fused Render.app)
     (same anatomy fusedcli.setup_cli_hint and installed.installed_version
     rely on).
     """
@@ -994,7 +991,7 @@ RELAUNCH_WINDOWS_FILE = os.path.join(APP_SUPPORT_DIR, "relaunch-windows.json")
 # unrelated launch would be a surprise.
 RELAUNCH_SNAPSHOT_MAX_AGE_S = 2 * RELAUNCH_DEADLINE_S
 
-#: Fallback for where the menu-bar icon is seeded the first time a flavor
+#: Fallback for where the menu-bar icon is seeded the first time the app
 #: launches, in points from the right edge of the screen (see the autosave-name
 #: block in main()). Used only when Control Center's own defaults hold no item
 #: positions to derive from; wide enough to clear a stock cluster (Wi-Fi,
@@ -1013,8 +1010,7 @@ STATUS_ITEM_LEGACY_SEED_PT = 1.0
 
 
 def bundle_executable(bundle: str) -> str:
-    """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender
-    (FusedBot under the bot flavor).
+    """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender.
 
     Not "anything under Contents/MacOS": the bundle also ships
     `Contents/MacOS/python` (the packaged interpreter every engine run, index
@@ -1883,8 +1879,8 @@ def main() -> None:
 
     import rumps  # macOS-only; see module docstring
 
-    # Per flavor (`_flavor.menubar_icon()`): both are black+alpha template
-    # glyphs, so `template=True` below recolors either for the menu bar.
+    # `_flavor.menubar_icon()`: a black+alpha template glyph, so
+    # `template=True` below recolors it for the menu bar.
     icon_path = os.path.join(os.path.dirname(__file__), "assets", _flavor.menubar_icon())
 
     # Startup ordering matters (learned the hard way): the AppKit run loop
@@ -1947,8 +1943,8 @@ def main() -> None:
     rumps.rumps.NSApp.application_openFiles_ = application_openFiles_
 
     # ---- <scheme>:// deep links (SPEC §26, D110) -----------------------------
-    # The scheme is the flavor's (`_flavor.scheme()`: fused-render:// or
-    # fused-bot://); deeplink.py builds the accepted forms from it.
+    # The scheme is `_flavor.scheme()` (fused-render://); deeplink.py builds
+    # the accepted forms from it.
     # AppKit delivers URL-scheme opens (CFBundleURLTypes in the py2app plist)
     # to application:openURLs:. Same delegate-patch mechanism as openFiles
     # above; GET /clone does all parsing and every open link ends on an
@@ -2133,7 +2129,7 @@ def main() -> None:
     # fires after the first run-loop pass.
     from Foundation import NSUserDefaults
 
-    status_item_name = _flavor.app_name()  # FusedRender / FusedBot
+    status_item_name = _flavor.app_name()  # FusedRender
     position_key = f"NSStatusItem Preferred Position {status_item_name}"
     defaults = NSUserDefaults.standardUserDefaults()
     stored = defaults.objectForKey_(position_key)
@@ -2504,11 +2500,8 @@ def main() -> None:
                 _open_page_native(path)
 
         # The launcher (launcher_panel.py): a Spotlight-like panel on a
-        # global shortcut that opens any known app (Fused Render, ⌥Space by
-        # default) or any bot (Fused Bot, ⌥⇧Space by default: the two apps
-        # run side by side and share prefs.json, so each flavor stores its
-        # own shortcut under its own key and defaults to a combination the
-        # other does not register — `launcher.hotkey_key`). NOT behind the
+        # global shortcut (⌥Space by default) that opens any known app or,
+        # by typing, any bot. NOT behind the
         # windows preference: with native windows on its pick
         # focuses-or-opens a window, off it opens a browser tab at the same
         # address. A row opens through `open_row(kind, key)`: a bot to
@@ -2645,7 +2638,7 @@ def main() -> None:
             "quit": _do_quit,
             "open_window": _open_window,
             # Present only when the launcher was built: both surfaces show
-            # "Search Apps…" ("Search Bots…" under Fused Bot) off this key.
+            # "Search Apps…" off this key.
             **({"show_launcher": _show_launcher} if state["launcher"] is not None else {}),
         }
 

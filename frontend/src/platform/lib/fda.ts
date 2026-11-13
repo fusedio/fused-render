@@ -37,15 +37,15 @@ export const POLL_MS = 3000;
 // through the normal teardown and respawns; this tab's poll picks the new
 // server up on its own.
 //
-// A FUNCTION, not a constant: the scheme is the flavor's (`fused-bot://` for
-// Fused Bot, platform/lib/flavor.ts), and the flavor is seeded after this
-// module is evaluated — a constant here would bake in the default.
+// A FUNCTION, not a constant: the scheme comes from platform/lib/flavor.ts,
+// seeded after this module is evaluated — a constant here would bake in the
+// default.
 export function relaunchHref(): string {
   return `${deepLinkScheme()}://relaunch?reason=fda`;
 }
 
 // Shared copy, so the wizard step and the strip say the same thing. The pane
-// lists the app by its BUNDLE name ("Fused Render" / "FusedBot"; "FusedRender"
+// lists the app by its BUNDLE name ("Fused Render"; "FusedRender"
 // on an install from before the rename), so that is the word the steps use. A function for the same reason as the
 // href above.
 export function fdaCopy() {

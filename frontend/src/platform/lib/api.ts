@@ -62,18 +62,15 @@ export interface Config {
   // `dismiss` are distinct writes (reached the end vs "skip for now").
   // Server-side, not localStorage: a port drift is a new origin.
   onboarding?: OnboardingState;
-  /** Which app this build is wearing (fused_render/flavor.py): "render" is
-   *  Fused Render, "bot" is Fused Bot, built from the same repo. Read through
-   *  platform/lib/flavor.ts, seeded before the first render. Absent on an
-   *  older server = render. */
-  flavor?: "render" | "bot";
-  /** The deep-link scheme the running app answers: `fused-render` / `fused-bot`. */
+  /** The deep-link scheme the running app answers: `fused-render`
+   *  (fused_render/_flavor.py). Read through platform/lib/flavor.ts, seeded
+   *  before the first render. */
   scheme?: string;
-  /** "Fused Render" / "Fused Bot" — the brand as copy shows it. */
+  /** "Fused Render" — the brand as copy shows it. */
   display_name?: string;
   /** The .app folder's name as Finder and System Settings list it: "Fused
-   *  Render" / "FusedBot", or "FusedRender" for an install from before the
-   *  rename that no update has moved yet. */
+   *  Render", or "FusedRender" for an install from before the rename that no
+   *  update has moved yet. */
   bundle_name?: string;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge
@@ -1759,9 +1756,6 @@ export interface ChromiumWindowsState {
 
 export interface LauncherPrefs {
   available: boolean;
-  // What the panel's rows are, by flavor: "apps" under Fused Render, "bots"
-  // under Fused Bot (whose hotkey/modifier are the separate bot_launcher_* prefs).
-  kind?: "apps" | "bots";
   hotkey: string;
   display: string;
   row_modifier: string;

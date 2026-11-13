@@ -14,33 +14,12 @@ every bot (`_bot_registry`, ``kind: "bot"``, opened on the Bots page as the
 Dock opens one). Under the app rows, a non-empty query also lists files
 and folders from the file index (``file_results``): the home search box's
 engine, a handful of rows, opened in the explorer. The bottom rows
-(`home_rows`: the shell home, and under Render the Bots page) sit under the
-list when the query is empty and rank with everything else when it is not.
+(`home_rows`: the shell home and the Bots page) sit under the list when the
+query is empty and rank with everything else when it is not.
 
-Under Fused Bot (``_flavor.is_bot()``) the same panel lists BOTS instead:
-the bots page's list, read through ``dock._bot_rows`` (the menu-bar Dock's
-reader, so bot.json is read one way only), pinned bots first by name, then
-the rest most recently updated first, every one in the empty-query list. No
-workspace walk, no desk, no recents store, no files: a bot is not a folder,
-and the Bot app has no explorer to open a file in. A pick selects the bot in
-a Bots window (``app.py``'s ``_open_bot_native``, the Dock's door too).
+Settings live in ``prefs.json`` (shell/prefs.py), two keys::
 
-Settings live in ``prefs.json`` (shell/prefs.py), two keys per flavor::
-
-    Fused Render  {"launcher_hotkey": "alt+space",
-                   "launcher_row_modifier": "alt"}
-    Fused Bot     {"bot_launcher_hotkey": "alt+shift+space",
-                   "bot_launcher_row_modifier": "alt+shift"}
-
-Both apps share ONE prefs.json (one tree, owner's call) and run side by
-side, so the bot launcher stores under its own keys (``hotkey_key()`` /
-``row_modifier_key()``) and defaults to combinations Render does not hold:
-Carbon's ``RegisterEventHotKey`` refuses a combo another process already
-registered, so equal defaults would leave whichever app started second with
-no shortcut. The WIRE names on ``PUT /api/prefs`` stay ``launcher_hotkey`` /
-``launcher_row_modifier`` in both apps (the page never knows the flavor);
-the server maps them to the flavor's key, so the bot keys are stored but
-never surfaced under Render.
+    {"launcher_hotkey": "alt+space", "launcher_row_modifier": "alt"}
 
 The hotkey opens the launcher (``hotkey.py`` spec syntax). The row
 modifier is the modifier (or ``+``-joined modifiers) that,
@@ -49,8 +28,7 @@ shortcuts, resolved at press time — the Nth recently opened app, the desk
 behind them); while the launcher is up, the Nth row shown. The SAME list
 when the query is empty, by design (owner, 2026-10-03). ``<modifier>+0``
 opens the shell home. One knob from the user's point of view. Missing or
-corrupt → the flavor's defaults (``default_hotkey()`` /
-``default_row_modifier()``).
+corrupt → the defaults (``hotkey.DEFAULT_SPEC`` / ``DEFAULT_ROW_MODIFIER``).
 
 ``search`` is pure and ranks by match quality then by registry order: a
 name that starts with the query, then a word inside the name that does,
@@ -83,10 +61,6 @@ logger = logging.getLogger(__name__)
 
 MAX_RESULTS = 9  # one <modifier>-digit each
 DEFAULT_ROW_MODIFIER = "alt"
-#: The bot flavor's defaults: one modifier more than Render's, so both apps'
-#: shortcuts bind when they run side by side (see the module docstring).
-BOT_DEFAULT_HOTKEY = "alt+shift+space"
-BOT_DEFAULT_ROW_MODIFIER = "alt+shift"
 
 #: Filled by app.py on macOS once the panel exists. See the module docstring.
 native_hooks: dict = {}
@@ -100,31 +74,13 @@ def _read_prefs() -> dict:
     return read_prefs()
 
 
-def hotkey_key() -> str:
-    """The prefs.json key THIS flavor's launcher hotkey is stored under."""
-    return "bot_launcher_hotkey" if _flavor.is_bot() else "launcher_hotkey"
-
-
-def row_modifier_key() -> str:
-    """The prefs.json key THIS flavor's row modifier is stored under."""
-    return "bot_launcher_row_modifier" if _flavor.is_bot() else "launcher_row_modifier"
-
-
-def default_hotkey() -> str:
-    return BOT_DEFAULT_HOTKEY if _flavor.is_bot() else hotkey.DEFAULT_SPEC
-
-
-def default_row_modifier() -> str:
-    return BOT_DEFAULT_ROW_MODIFIER if _flavor.is_bot() else DEFAULT_ROW_MODIFIER
-
-
 def get_hotkey() -> str:
     """The stored shortcut spec, canonical; the default when absent or invalid."""
-    raw = _read_prefs().get(hotkey_key())
+    raw = _read_prefs().get("launcher_hotkey")
     try:
-        return hotkey.canonical(raw) if isinstance(raw, str) else default_hotkey()
+        return hotkey.canonical(raw) if isinstance(raw, str) else hotkey.DEFAULT_SPEC
     except hotkey.SpecError:
-        return default_hotkey()
+        return hotkey.DEFAULT_SPEC
 
 
 def canonical_hotkey(spec) -> str:
@@ -147,11 +103,11 @@ def canonical_modifiers(spec) -> str:
 
 
 def get_row_modifier() -> str:
-    raw = _read_prefs().get(row_modifier_key())
+    raw = _read_prefs().get("launcher_row_modifier")
     try:
-        return canonical_modifiers(raw) if isinstance(raw, str) else default_row_modifier()
+        return canonical_modifiers(raw) if isinstance(raw, str) else DEFAULT_ROW_MODIFIER
     except hotkey.SpecError:
-        return default_row_modifier()
+        return DEFAULT_ROW_MODIFIER
 
 
 def pinned_specs(modifier: str) -> list[str]:
@@ -175,15 +131,12 @@ def settings() -> dict:
     panel exists in THIS process (the packaged macOS app installs the
     hooks; a `fused-render serve` on a Mac has no panel, so the Preferences
     section stays hidden there), whether the system accepted the
-    bindings (None = nothing has tried), and ``kind``, what the rows are
-    (``"bots"`` under Fused Bot, else ``"apps"``), so the pages word
-    themselves without knowing the flavor."""
+    bindings (None = nothing has tried)."""
     spec, row = get_hotkey(), get_row_modifier()
     bound = native_hooks.get("hotkey_bound")
     pinned = native_hooks.get("pinned_bound")
     return {
         "available": sys.platform == "darwin" and "rebind" in native_hooks,
-        "kind": "bots" if _flavor.is_bot() else "apps",
         "hotkey": spec,
         "display": hotkey.display(spec),
         "row_modifier": row,
@@ -204,7 +157,7 @@ def notify_settings_changed(hotkey_spec: str | None) -> None:
 
 # ---- registry ------------------------------------------------------------------------
 
-#: The Bots page's row under Fused Render: a second bottom row beside Home
+#: The Bots page's row: a second bottom row beside Home
 #: (`home_rows`). ``kind: "bots"`` is what the native side dispatches on
 #: (app.py ``_open_bots_native``): no key, the page itself.
 BOTS_ROW = {"home": True, "path": "", "url": "/bots", "name": "Fused Bot",
@@ -214,14 +167,11 @@ BOTS_ROW = {"home": True, "path": "", "url": "/bots", "name": "Fused Bot",
 
 def home_rows() -> list[dict]:
     """The bottom rows: the shell home (``kind: "home"``, ``<modifier>+0``)
-    and, under Fused Render, the Bots page (`BOTS_ROW`) after it. Under
-    Fused Bot the home IS the bots page, so only the one row. Computed per
-    call: the display name is the flavor's, and the flavor can change under
-    a test."""
+    and the Bots page (`BOTS_ROW`) after it."""
     name = _flavor.display_name()
     home = {"home": True, "path": "", "url": "/", "name": name, "title": name, "kind": "home",
             "pinned": False, "recent": False, "running": False, "icon": None}
-    return [home] if _flavor.is_bot() else [home, dict(BOTS_ROW)]
+    return [home, dict(BOTS_ROW)]
 
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
@@ -378,15 +328,13 @@ def desk_rows() -> list[dict]:
     return rows
 
 
-def _bot_registry(*, listed: bool = True) -> list[dict]:
+def _bot_registry() -> list[dict]:
     """The bot rows: every listed bot (``dock._bot_rows``, the one bot.json
     reader the Dock uses too), pinned first by name (casefold, the Dock's
-    order), then the rest most recently updated first. Under Fused Bot
-    (``listed``) they are marked ``recent``/``pinned`` so the empty query
-    lists them all (`search`'s one-list rule, so ``nth_pinned`` and the
-    panel agree). Under Fused Render (``listed=False``) neither flag is set:
-    bots are found by TYPING only — the empty list, and so the nine global
-    digit shortcuts, stay the recently opened apps. ``path`` is the bot id:
+    order), then the rest most recently updated first. Neither ``recent``
+    nor ``pinned`` is set: bots are found by TYPING only — the empty list,
+    and so the nine global digit shortcuts, stay the recently opened apps.
+    ``path`` is the bot id:
     the key the open callback receives. Never raises: a bots store that
     cannot be read is zero rows."""
     from fused_render import dock
@@ -399,18 +347,16 @@ def _bot_registry(*, listed: bool = True) -> list[dict]:
     pinned = sorted((b for b in bots if b["pinned"]), key=lambda b: (b["name"].casefold(), b["id"]))
     rest = sorted((b for b in bots if not b["pinned"]), key=lambda b: -b["updated"])
 
-    def row(b: dict, *, pinned: bool) -> dict:
+    def row(b: dict) -> dict:
         return {"kind": "bot", "id": b["id"], "path": b["id"], "url": dock.bot_view_path(b["id"]),
                 "name": b["name"], "title": b["name"], "icon": None, "face": b["face"],
                 "status": b["status"], "running": b["running"],
-                "pinned": pinned and listed, "recent": listed and not pinned}
+                "pinned": False, "recent": False}
 
-    return [row(b, pinned=True) for b in pinned] + [row(b, pinned=False) for b in rest]
+    return [row(b) for b in pinned + rest]
 
 
 def _registry_uncached() -> list[dict]:
-    if _flavor.is_bot():
-        return _bot_registry()
     from fused_render import app_listing, registered_apps
     from fused_render.shell.seed import fused_dir
 
@@ -466,7 +412,7 @@ def _registry_uncached() -> list[dict]:
             rows.append(_canvas_row(env, name, clone_dir, pinned=False))
     # Bots last, search-only (`_bot_registry`): a bot id is not a path, so it
     # is not run through the realpath dedupe above.
-    rows.extend(_bot_registry(listed=False))
+    rows.extend(_bot_registry())
     return rows
 
 
@@ -481,9 +427,9 @@ def registry(running=frozenset()) -> list[dict]:
     never-opened one with the same match.
 
     Rows: ``{path, url, name, title, kind, pinned, recent, running, icon}``.
-    Under Fused Bot the rows are bots (`_bot_registry`, plus ``id``,
-    ``face``, ``status``); their ``running`` is the bot's own status, not a
-    window, so ``running`` (window paths) is not applied to them.
+    Bot rows (`_bot_registry`) add ``id``, ``face``, ``status``; their
+    ``running`` is the bot's own status, not a window, so ``running``
+    (window paths) is not applied to them.
     """
     global _cache
     now = time.monotonic()
@@ -570,7 +516,7 @@ def results(query: str, running=frozenset()) -> list[dict]:
     against the limit — the shell itself on ``<modifier>+0``, the Bots page
     beside it. A typed query: the bottom rows take part in the search like
     any row, ranked by `_score` and counted against the limit, so "fus"
-    finds Fused Bot where it ranks rather than pinning it last; they come
+    finds the Bots row where it ranks rather than pinning it last; they come
     after the registry in the scored list, so an app with the same match
     outranks them on the index tiebreak."""
     if not str(query or "").strip():

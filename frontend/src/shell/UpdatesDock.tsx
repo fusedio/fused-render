@@ -4,13 +4,10 @@
 // show a check for updates button, version number and status for download
 // update restart etc the whole thing."
 //
-// WHY A CHIP AT ALL when the sidebar already carries `UpdateCard` and
-// Preferences › Updates the manual check: Fused Bot (platform/lib/flavor) has
-// NO sidebar — the Bots page is the whole window — so until this chip the only
-// way to learn the version or press "Check for updates" there was the native
-// menu's Preferences item. Both flavors get the chip (owner's call) so the
-// bottom-left reads the same in either app; Render's sidebar card stays, it is
-// the decision surface for a found update and this chip only mirrors it.
+// WHY A CHIP AT ALL when the sidebar already carries `UpdateCard`: the chip
+// shows the version and "Check for updates" in one place at the bottom-left
+// on every route (owner's call); the sidebar card stays, it is the decision
+// surface for a found update and this chip only mirrors it.
 //
 // THE CHIP'S LABEL IS THE STATE, one line: "v0.6.22" at rest, "Update
 // available", "Downloading" over a progress line, "Installing", "Restart to

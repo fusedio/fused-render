@@ -109,7 +109,7 @@ async def _forward_to_owner(request: Request, body: bytes, read_timeout_s: float
     origin = (info or {}).get("origin") or ""
     if not origin:
         return _error(str(registry.NotOwner(info)) + ("; update it" if info and not info.get("known") else
-                                                     ". Open Fused Render (or Fused Bot) to run them."), 503)
+                                                     ". Open Fused Render to run them."), 503)
     import httpx
     headers = {k: v for k, v in request.headers.items() if k.lower() not in routes._SKIP_REQUEST_HEADERS}
     headers["X-Fused-Forwarded"] = "1"

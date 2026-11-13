@@ -119,15 +119,13 @@ def api_config(
     from fused_render.shell import onboarding as shell_onboarding
 
     config["onboarding"] = shell_onboarding.snapshot()
-    # Which app this is (fused_render/_flavor.py): "render" or "bot", with the
-    # deep-link scheme and the name the shell shows for it. Under the bot
-    # flavor `/` lands on /bots instead of /home (shell/App.tsx).
-    config["flavor"] = _flavor.flavor()
+    # The app's deep-link scheme and the name the shell shows for it
+    # (fused_render/_flavor.py).
     config["scheme"] = _flavor.scheme()
     config["display_name"] = _flavor.display_name()
     # The .app folder's name as Finder and System Settings list it: the one
     # this process runs from when packaged (an install from before the
-    # rename may still be "FusedRender"), else the flavor's.
+    # rename may still be "FusedRender"), else `_flavor.bundle_name()`.
     from fused_render import installed
 
     config["bundle_name"] = installed.running_bundle_name() or _flavor.bundle_name()

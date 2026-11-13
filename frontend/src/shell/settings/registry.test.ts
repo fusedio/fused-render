@@ -19,7 +19,6 @@ const searchSettings = (entries: Parameters<typeof searchTokens>[0], q: string) 
 
 function ctx(over: Partial<SettingsContext> = {}, prefs: Partial<Prefs> = {}): SettingsContext {
   return {
-    bot: false,
     mac: true,
     claudeConfig: false,
     prefs: {
@@ -83,36 +82,16 @@ describe("visibility", () => {
     expect(nav).toEqual(["app", "agents", "apps", "developer"]);
   });
 
-  test("Fused Bot drops the Render-only groups and rows, and its nav drops Apps & files", () => {
-    const bot = visibleSettings(ctx({ bot: true }));
-    const groups = visibleGroups(bot).map((g) => g.id);
-    expect(groups).not.toContain("apps");
-    expect(groups).not.toContain("indexing");
-    expect(navSections(visibleGroups(bot)).map((s) => s.section.id)).toEqual(["app", "agents", "developer"]);
-    expect(bot.map((s) => s.id)).not.toContain("canvases");
-    expect(bot.map((s) => s.id)).not.toContain("fused-account");
-    // Tasks and the monitor exist under Bot too.
-    expect(groups).toContain("tasks");
-    expect(bot.map((s) => s.id)).toContain("monitor");
-  });
-
-  test("Community is the Remix row alone under Apps & sharing (the store and the loop are always on), absent on Fused Bot", () => {
+  test("Community is the Remix row alone under Apps & sharing (the store and the loop are always on)", () => {
     const ids = sectionsOf(visibleSettings(ctx()), "apps")
       .find((s) => s.section === "Community")
       ?.entries.map((e) => e.id);
     expect(ids).toEqual(["contrib-remix"]);
     expect(visibleSettings(ctx()).map((s) => s.id as string)).not.toContain("marketplace");
     expect(visibleSettings(ctx()).map((s) => s.id as string)).not.toContain("contrib");
-    expect(visibleSettings(ctx({ bot: true })).some((s) => s.id.startsWith("contrib"))).toBe(false);
   });
 
-  test("Fused Bot's launcher rows speak of bots, in the row and in search", () => {
-    const bot = visibleSettings(ctx({ bot: true }));
-    const row = bot.find((s) => s.id === "launcher-row")!;
-    expect(row.label).toBe("Open the Nth bot");
-    expect(bot.find((s) => s.id === "launcher-hotkey")!.description).toContain("your bots");
-    expect(searchSettings(bot, "open the nth bot").map((s) => s.id)).toEqual(["launcher-row"]);
-    // Render keeps its own words.
+  test("the launcher rows speak of apps", () => {
     expect(visibleSettings(ctx()).find((s) => s.id === "launcher-row")!.label).toBe("Open the Nth app");
   });
 
@@ -122,13 +101,12 @@ describe("visibility", () => {
   });
 
 
-  test("the embed proxy switch appears only while Canvases is on, and never in Fused Bot", () => {
-    const ids = (enabled: boolean, over: Partial<SettingsContext> = {}) =>
-      visibleSettings(ctx(over, { canvases: { enabled } } as Partial<Prefs>)).map((s) => s.id);
+  test("the embed proxy switch appears only while Canvases is on", () => {
+    const ids = (enabled: boolean) =>
+      visibleSettings(ctx({}, { canvases: { enabled } } as Partial<Prefs>)).map((s) => s.id);
     expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("canvases-embed-proxy");
     expect(ids(false)).not.toContain("canvases-embed-proxy");
     expect(ids(true)).toContain("canvases-embed-proxy");
-    expect(ids(true, { bot: true })).not.toContain("canvases-embed-proxy");
   });
 
   test("the rail preview switch stands on its own: Canvases off, no Fused sign-in, still there", () => {
@@ -200,9 +178,8 @@ describe("resolveGroup", () => {
   test("the old Accounts tab reads as Integrations", () => {
     expect(resolveGroup("account", groups)).toBe("integrations");
   });
-  test("a tab hidden on this flavor falls back", () => {
-    const botGroups = visibleGroups(visibleSettings(ctx({ bot: true })));
-    expect(resolveGroup("indexing", botGroups)).toBe("general");
+  test("a tab with no visible group falls back", () => {
+    expect(resolveGroup("indexing", GROUPS.filter((g) => g.id !== "indexing"))).toBe("general");
   });
 });
 

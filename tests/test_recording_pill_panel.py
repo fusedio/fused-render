@@ -98,7 +98,7 @@ def controller(ready=True, page_ready=True):
 
 def info(cid):
     return {"id": cid, "name": cid, "app": "/apps/" + cid, "icon": None,
-            "flavor": "render", "canPause": True, "mode": "audio"}
+            "canPause": True, "mode": "audio"}
 
 
 def test_one_pill_pushes_every_recording_newest_last():

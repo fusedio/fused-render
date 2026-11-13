@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Fused Render.app (or FusedBot.app, FUSED_RENDER_FLAVOR=bot) + a
+# Build Fused Render.app + a
 # distributable DMG via py2app (SPEC §12, D33-D35).
 #
 # Pipeline: pick/bootstrap a FRAMEWORK-build python (py2app needs one to
@@ -53,21 +53,15 @@ trap _build_failed ERR
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REF="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch ref)"
 SUFFIX="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch suffix)"
-# Product flavor (fused_render/_flavor.py): render -> Fused Render, bot ->
-# FusedBot. The env var is pinned to its default when unset so a stale
-# fused_render/_baked_flavor.py left in the tree by an earlier bot build (the
-# wheel build below is what removes it, and that has not run yet) cannot turn a
-# plain `bash scripts/build_dmg.sh` into a bot build. `python3 -c`, not `-m`:
-# the package __init__ already imports _flavor, so -m would warn about runpy.
-FLAVOR="$(FUSED_RENDER_FLAVOR="${FUSED_RENDER_FLAVOR:-render}" PYTHONPATH="$REPO_ROOT" \
-  python3 -c "from fused_render import _flavor; print(_flavor.flavor())")"
-APP_BASE="$(FUSED_RENDER_FLAVOR="$FLAVOR" PYTHONPATH="$REPO_ROOT" \
+# App identity (fused_render/_flavor.py). `python3 -c`, not `-m`: the package
+# __init__ already imports _flavor, so -m would warn about runpy.
+APP_BASE="$(PYTHONPATH="$REPO_ROOT" \
   python3 -c "from fused_render import _flavor; print(_flavor.app_name())")"
 APP_NAME="${APP_BASE}${SUFFIX}"
 # The .app folder, which differs from APP_NAME (the executable and the DMG's
 # file-name token): "Fused Render" vs "FusedRender". It holds a space, so
 # every path built from it stays quoted.
-BUNDLE_BASE="$(FUSED_RENDER_FLAVOR="$FLAVOR" PYTHONPATH="$REPO_ROOT" \
+BUNDLE_BASE="$(PYTHONPATH="$REPO_ROOT" \
   python3 -c "from fused_render import _flavor; print(_flavor.bundle_name())")"
 BUNDLE_NAME="${BUNDLE_BASE}${SUFFIX}"
 
@@ -122,7 +116,7 @@ ICNS_PATH="$BUILD_DIR/${APP_NAME}.icns"
 APP_DIR="$PY2APP_DIST/${BUNDLE_NAME}.app"
 DMG_PATH="$DIST_DIR/${APP_NAME}-${VERSION}${ARCH_SUFFIX}.dmg"
 
-echo "==> fused-render ${VERSION} [${FLAVOR}, ${ARCH}] -> ${BUNDLE_NAME}.app (py2app) -> ${DMG_PATH##*/}"
+echo "==> fused-render ${VERSION} [${ARCH}] -> ${BUNDLE_NAME}.app (py2app) -> ${DMG_PATH##*/}"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 # ---------------------------------------------------------------------------
@@ -239,9 +233,6 @@ fi
 # ---------------------------------------------------------------------------
 
 export FUSED_RENDER_BRANCH="$REF"
-# Baked into the wheel the same way (scripts/hatch_build.py), and seen by
-# setup_py2app.py and every bundled-interpreter smoke below.
-export FUSED_RENDER_FLAVOR="$FLAVOR"
 
 if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
   echo "==> creating build venv"
@@ -344,12 +335,11 @@ FUSED_RENDER_REQUIRE_BUNDLED=1 \
   "$REPO_ROOT/tests/test_bundle_contents.py"
 
 # ---------------------------------------------------------------------------
-# 3. App icon, at the sizes iconutil wants. Render: a fresh, high-res render
-#    of the same four-pointed sparkle used for the menu-bar glyph
+# 3. App icon, at the sizes iconutil wants: a fresh, high-res render of the
+#    same four-pointed sparkle used for the menu-bar glyph
 #    (fused_render/assets/menubar-template.png, 36px, template/monochrome) on
-#    a rounded dark card. Bot: the committed 1024px FusedBot artwork
-#    (fused_render/assets/bot/fusedbot-icon-1024.png) resized. Build artifact
-#    only - never committed (BUILD_DIR is gitignored).
+#    a rounded dark card. Build artifact only - never committed (BUILD_DIR is
+#    gitignored).
 # ---------------------------------------------------------------------------
 
 echo "==> generating app icon"
@@ -357,24 +347,6 @@ ICONSET_DIR="$BUILD_DIR/${APP_NAME}.iconset"
 rm -rf "$ICONSET_DIR" "$ICNS_PATH"
 mkdir -p "$ICONSET_DIR"
 
-if [[ "$FLAVOR" == "bot" ]]; then
-"$BUILD_VENV/bin/python" - "$ICONSET_DIR" "$REPO_ROOT/fused_render/assets/bot/fusedbot-icon-1024.png" <<'PYEOF'
-import sys
-from PIL import Image
-
-iconset_dir, src = sys.argv[1], sys.argv[2]
-bg = Image.open(src).convert("RGBA")
-if bg.size[0] != bg.size[1]:
-    sys.exit(f"bot icon must be square, got {bg.size[0]}x{bg.size[1]}: {src}")
-
-sizes = [16, 32, 128, 256, 512]
-for size in sizes:
-    img = bg.resize((size, size), Image.LANCZOS)
-    img.save(f"{iconset_dir}/icon_{size}x{size}.png")
-    img2x = bg.resize((size * 2, size * 2), Image.LANCZOS)
-    img2x.save(f"{iconset_dir}/icon_{size}x{size}@2x.png")
-PYEOF
-else
 "$BUILD_VENV/bin/python" - "$ICONSET_DIR" <<'PYEOF'
 import math
 import sys
@@ -430,7 +402,6 @@ for size in sizes:
     img2x = bg.resize((size * 2, size * 2), Image.LANCZOS)
     img2x.save(f"{iconset_dir}/icon_{size}x{size}@2x.png")
 PYEOF
-fi
 
 iconutil -c icns "$ICONSET_DIR" -o "$ICNS_PATH"
 test -f "$ICNS_PATH"
@@ -1501,7 +1472,7 @@ fi  # FUSED_RENDER_SKIP_CODESIGN
 echo "==> rendering dmg background"
 DMG_BACKGROUND="$BUILD_DIR/dmg-background.png"
 "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/dmg_background.py" "$DMG_BACKGROUND" \
-  --caption "Drag $(FUSED_RENDER_FLAVOR="$FLAVOR" PYTHONPATH="$REPO_ROOT" \
+  --caption "Drag $(PYTHONPATH="$REPO_ROOT" \
     python3 -c "from fused_render import _flavor; print(_flavor.display_name())") into Applications"
 test -f "$DMG_BACKGROUND" && test -f "${DMG_BACKGROUND%.png}@2x.png"
 
@@ -1610,10 +1581,9 @@ fi
 # ---------------------------------------------------------------------------
 
 rm -rf "$APP_DIR" "$ICONSET_DIR"
-# The wheel build baked the ref/flavor into the SOURCE tree (gitignored files).
-# Leaving them there turns the next editable dev run or pytest into that
-# branch/flavor silently (dev.sh and conftest pin the flavor, but not every
-# entry point does). The wheel already carries its own copies.
-rm -f "$REPO_ROOT/fused_render/_baked_flavor.py" "$REPO_ROOT/fused_render/_baked_branch.py"
+# The wheel build baked the ref into the SOURCE tree (a gitignored file).
+# Leaving it there turns the next editable dev run or pytest into that branch
+# silently. The wheel already carries its own copy.
+rm -f "$REPO_ROOT/fused_render/_baked_branch.py"
 
 echo "==> done: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"

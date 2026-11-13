@@ -50,10 +50,9 @@ else:
     CRYPTO_AVAILABLE = True
 
 PUBLIC_KEY = base64.b64decode("u4eiDvccdWmsVCN0nifCEXqmU+xVGIDPe8LP5KRlDns=")
-# Flavor-bound: "fused-render-update" for Render, exactly as before, and
-# "fused-bot-update" for Bot, so a bot manifest can never verify as a render
-# one (same key, same version, different app). Render's context must never
-# change: every installed app verifies with the context it shipped with.
+# "fused-render-update". Must never change: every installed app verifies with
+# the context it shipped with. (The retired Fused Bot app signed under
+# "fused-bot-update" with the same key, so its manifests never verify here.)
 SIGNING_CONTEXT = f"{_flavor.release_prefix()}-update"
 FETCH_TIMEOUT_S = 15.0
 DOWNLOAD_TIMEOUT_S = 300.0

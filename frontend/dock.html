@@ -4,8 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Dock</title>
-<!-- The menu-bar Dock tray (src/dock/dock.ts): Render App's dock.html as FusedBot ported it, its tiles now the
-     user's apps (Fused Render) or bots (Fused Bot) — fused_render/dock.py decides. Served at /dock by the in-process
+<!-- The menu-bar Dock tray (src/dock/dock.ts): Render App's dock.html, its tiles now the user's apps and bots —
+     fused_render/dock.py decides. Served at /dock by the in-process
      server (routers/dock.py) and hosted in a transparent panel under the status item (menubar_dock.py); a plain
      browser tab works too (dev backdrop, HTML context menu). The tray follows the OS appearance, like the Dock. -->
 <style>
@@ -188,10 +188,9 @@
   .item.bot .tile::after { content: none; }
   .item.bot:focus-visible .tile { box-shadow: 0 0 0 2px var(--focus); }
   .item.bot .tile svg { width: 100%; height: 100%; display: block; flex: none; }
-  /* Home: the app's own icon (the flavor's 1024px artwork, a dark rounded
-     card inside a transparent margin). Scaled by --home-scale (the script
-     sets it per icon: 1024/824 for FusedBot's macOS-grid squircle, 1/0.88
-     for Fused Render's 6 % margin) and centred (an overflowing flex item
+  /* Home: the app's own icon (the 1024px artwork, a dark rounded card
+     inside a transparent margin). Scaled by --home-scale (1/0.88 for Fused
+     Render's 6 % margin) and centred (an overflowing flex item
      centres both ways), the card fills the tile and the tile's radius clips
      the rest. */
   .item.util.home { --home-scale: 113.7%; }

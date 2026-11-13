@@ -29,7 +29,7 @@ import { useEffect, useState, type ReactNode } from "react";
 //                opens Apple's Software Update dialog and returns at once;
 //                the download happens outside this window. `brew install git`
 //                is shown to copy, never run.
-//   Chrome       Both flavors. Bots drive a real Chrome over CDP
+//   Chrome       Bots drive a real Chrome over CDP
 //                (bots/browser.py); the server walks the bots' own candidate
 //                list on every read (Chromium / Edge / Brave count). macOS
 //                has no API to install a browser: a download link is the
@@ -46,7 +46,7 @@ import { Check, Circle, Copy, Download, Minus, RefreshCw } from "lucide-react";
 import { installGit, type ClaudeHealth, type GitInstallResult } from "@platform/lib/api";
 import { claudeIssues, type ClaudeIssue } from "@platform/lib/claude-health";
 import type { ClaudeSetup } from "@platform/lib/claude-setup";
-import { displayName, isBot } from "@platform/lib/flavor";
+import { displayName } from "@platform/lib/flavor";
 import { Button } from "@platform/shadcn/ui/button";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { IssueRow } from "@platform/ui/ClaudeHealthStrip";
@@ -309,7 +309,7 @@ export function ToolsStep({
   // Windows runs no bots, so the server answers `n/a` and the group has nothing
   // to say; any other answer (or none yet) keeps it.
   const chromeApplies = chrome?.status !== "n/a";
-  const chromeNeeded = isBot() || chrome?.status === "pending";
+  const chromeNeeded = chrome?.status === "pending";
 
   // ---- The step -----------------------------------------------------------
   // Tell the wizard whether this step still has a button of its own to
@@ -334,8 +334,8 @@ export function ToolsStep({
   const working = checking || busy;
 
   // The status line names only the rows this machine HAS and the server has
-  // ANSWERED for (bugbot: "Git and Chrome are in place" on a Bot, or before
-  // the chrome record arrived, was a false all-clear).
+  // ANSWERED for (bugbot: "Git and Chrome are in place" before the chrome
+  // record arrived was a false all-clear).
   const otherRows = [showGit && gitFound ? "Git" : null, chromeFound ? "Chrome" : null].filter(Boolean);
   const othersPending = (showGit && !git) || (chromeApplies && !chrome);
   const status = !loaded
@@ -347,8 +347,7 @@ export function ToolsStep({
         : claudeDone && !othersPending
           ? "Everything is in place."
           : "Nothing here will block you — carry on.";
-  // Fused Bot builds no apps and clones nothing: its lead names what it has.
-  const lead = toolsLead({ isBot: isBot(), showGit, chromeApplies, appName: displayName() });
+  const lead = toolsLead({ showGit, chromeApplies, appName: displayName() });
 
   return (
     <div className="flex flex-col gap-6">
@@ -454,9 +453,7 @@ export function ToolsStep({
               ? chromePath
                 ? `Found ${chromeApp(chromePath)}.`
                 : "Already installed."
-              : isBot()
-                ? "Every bot drives a real Chrome window of its own, with its own profile. Chromium, Edge and Brave are found too."
-                : "Bots drive a real Chrome window of their own, with its own profile. Only needed if you turn bots on; Chromium, Edge and Brave are found too."
+              : "Bots drive a real Chrome window of their own, with its own profile. Only needed if you turn bots on; Chromium, Edge and Brave are found too."
           }
         >
           {!chromeFound && chrome && (

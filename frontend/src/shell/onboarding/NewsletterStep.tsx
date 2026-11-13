@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 // The Updates step — an email for the Fused newsletter (new apps, what we
 // ship next). OPTIONAL and NOT A STAGE: it never enters the progress meter
-// (progress.ts counts stageIds() only), Next walks past it like any step, and
-// the pill shows a tick once someone has subscribed. Both flavors.
+// (progress.ts counts STAGE_IDS only), Next walks past it like any step, and
+// the pill shows a tick once someone has subscribed.
 //
 // The server owns the send (shell/onboarding.py `_forward_newsletter`, where
 // the provider URL plugs in) and the record (`newsletter` in the snapshot),

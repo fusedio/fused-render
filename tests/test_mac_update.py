@@ -617,11 +617,10 @@ def test_verify_app_version(tmp_path):
         manager._verify_app_version(str(app), "9.9.9")
 
 
-def test_verify_app_version_rejects_the_other_flavors_bundle_id(tmp_path):
-    """A manifest signed for the wrong app (FusedBot's identity under a
-    FusedRender version, or vice versa) must not be accepted — same key
-    signs both flavors' manifests, so the version check alone cannot catch
-    a swapped file."""
+def test_verify_app_version_rejects_another_apps_bundle_id(tmp_path):
+    """An image carrying another app's identity (the retired FusedBot's,
+    whose manifests the same key signed) under a FusedRender version must not
+    be accepted — the version check alone cannot catch a swapped file."""
     import plistlib
 
     app = tmp_path / "FusedRender.app"
@@ -2035,8 +2034,8 @@ def test_a_staged_python_that_will_not_spawn_is_never_staged(monkeypatch, tmp_pa
     assert manager._disk_version() == "0.4.10"  # nothing staged: the bundle's own
 
 
-def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):
-    """Everything that is not exactly a dead-pid sibling of THIS flavor stays:
+def test_sweep_removes_only_dead_pids_leftovers_of_this_app(tmp_path):
+    """Everything that is not exactly a dead-pid sibling of THIS app stays:
     live pids, our own pid, FusedBot's, a branch build's, the real bundle,
     the staged copy, an unparseable name, a symlink wearing the name."""
     parent = tmp_path / "Applications"
@@ -2052,7 +2051,7 @@ def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):
     dead = app(".FusedRender-old-222.app")
     dead_stamped = app(".FusedRender-old-333-1760000000000000000.app")
     mine = app(f".FusedRender-old-{os.getpid()}.app")
-    other_flavor = app(".FusedBot-old-222.app")
+    other_app = app(".FusedBot-old-222.app")
     branch_build = app(".FusedRender-feature-old-222.app")
     current = app("FusedRender.app")
     staged = app(".FusedRender-update.app")
@@ -2064,7 +2063,7 @@ def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):
 
     assert sorted(removed) == sorted([str(dead), str(dead_stamped)])
     assert not dead.exists() and not dead_stamped.exists()
-    for kept in (live, mine, other_flavor, branch_build, current, staged, not_a_pid):
+    for kept in (live, mine, other_app, branch_build, current, staged, not_a_pid):
         assert kept.is_dir(), kept
     assert link.is_symlink() and current.is_dir()
 

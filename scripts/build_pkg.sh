@@ -67,7 +67,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_SRC="$REPO_ROOT/scripts/pkg"
 
 # <AppName>[-<branch-suffix>]-<version>[-x86_64].dmg -> name, version, arch.
-# The app name part is the flavor's app_name plus an optional lowercase
+# The app name part is `_flavor.app_name()` plus an optional lowercase
 # branch suffix (fused_render/_branch.py), the version always starts with a
 # digit; the greedy match takes the LAST digit-led segment as the version so
 # a branch suffix like `123-fix` cannot be mistaken for one.
@@ -85,22 +85,20 @@ else
   echo "FATAL: cannot parse app name/version from $DMG_BASENAME (expected <App>-<version>[-x86_64].dmg)" >&2
   exit 1
 fi
-APP_BASE="${APP_NAME%%-*}"   # FusedRender / FusedBot, branch suffix dropped
+APP_BASE="${APP_NAME%%-*}"   # FusedRender, branch suffix dropped
 BRANCH_SUFFIX="${APP_NAME#"$APP_BASE"}"   # "" or "-<ref>"
 
-# Bundle id and display name from the flavor table, keyed by the app name the
-# DMG carries (no FUSED_RENDER_FLAVOR guesswork: the DMG already says which
-# app it is). The branch suffix goes into the receipt id the way it goes into
-# CFBundleIdentifier (setup_py2app.py), so a feature build's receipt never
-# collides with the release's.
+# Bundle id and display name from the app identity (fused_render/_flavor.py),
+# checked against the app name the DMG carries. The branch suffix goes into
+# the receipt id the way it goes into CFBundleIdentifier (setup_py2app.py), so
+# a feature build's receipt never collides with the release's.
 # Tab-separated: the display and bundle names hold spaces ("Fused Render").
-IFS=$'\t' read -r BUNDLE_ID DISPLAY_NAME BUNDLE_BASE < <(PYTHONPATH="$REPO_ROOT" python3 -c "
-from fused_render import _flavor
-ids = {v['app_name']: (v['bundle_id'], v['display_name'], v['bundle_name']) for v in _flavor._IDENTITY.values()}
-print('\t'.join(ids['$APP_BASE']))
+IFS=$'\t' read -r APP_EXPECTED BUNDLE_ID DISPLAY_NAME BUNDLE_BASE < <(PYTHONPATH="$REPO_ROOT" python3 -c "
+from fused_render import _flavor as f
+print('\t'.join((f.app_name(), f.bundle_id(), f.display_name(), f.bundle_name())))
 ")
-if [[ -z "${BUNDLE_BASE:-}" ]]; then
-  echo "FATAL: no flavor in fused_render/_flavor.py has app_name $APP_BASE" >&2
+if [[ "$APP_BASE" != "${APP_EXPECTED:-}" || -z "${BUNDLE_BASE:-}" ]]; then
+  echo "FATAL: $DMG_BASENAME is not a ${APP_EXPECTED:-?} DMG (fused_render/_flavor.py)" >&2
   exit 1
 fi
 # The .app folder inside the DMG ("Fused Render[-<ref>].app"), which is not
@@ -108,8 +106,7 @@ fi
 BUNDLE_NAME="${BUNDLE_BASE}${BRANCH_SUFFIX}"
 LEGACY_BUNDLE_NAMES="$(PYTHONPATH="$REPO_ROOT" python3 -c "
 from fused_render import _flavor
-ids = {v['app_name']: v['legacy_bundle_names'] for v in _flavor._IDENTITY.values()}
-print(' '.join(n + '$BRANCH_SUFFIX' for n in ids['$APP_BASE']))
+print(' '.join(n + '$BRANCH_SUFFIX' for n in _flavor.legacy_bundle_names()))
 ")"
 BRANCH_REF="${BRANCH_SUFFIX#-}"
 PKG_ID="${BUNDLE_ID}${BRANCH_REF:+.$BRANCH_REF}.installer"

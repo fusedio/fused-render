@@ -8,7 +8,6 @@ export interface PillInfo {
   /** Absolute path of the app folder that started the recording; "" for none. */
   app: string;
   icon: string | null;
-  flavor: "render" | "bot";
   canPause: boolean;
   mode: string;
 }
@@ -55,10 +54,10 @@ export function formatElapsed(seconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
 
-/** Which artwork the icon slot shows: the app's own icon, else the flavor's home card. */
-export function iconFor(info: Pick<PillInfo, "icon" | "flavor">): { kind: "app" | "home"; src: string | null; scale: string } {
+/** Which artwork the icon slot shows: the app's own icon, else the app's home card. */
+export function iconFor(info: Pick<PillInfo, "icon">): { kind: "app" | "home"; src: string | null; scale: string } {
   if (info.icon) return { kind: "app", src: info.icon, scale: "100%" };
-  return { kind: "home", src: null, scale: info.flavor === "bot" ? "124.3%" : "113.7%" };
+  return { kind: "home", src: null, scale: "113.7%" };
 }
 
 /** Most icons the pill stacks; past this the last slot is a "+N" chip. */

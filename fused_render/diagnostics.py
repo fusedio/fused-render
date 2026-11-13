@@ -118,8 +118,8 @@ def _default_out_dir() -> str:
 
 
 def _bundle_executable() -> str:
-    """`CFBundleExecutable` of the bundle we run from, else the flavor's
-    app name ("FusedRender" / "FusedBot").
+    """`CFBundleExecutable` of the bundle we run from, else
+    `_flavor.app_name()` ("FusedRender").
     Read here rather than via `app.bundle_executable` — app.py imports
     uvicorn and AppKit-adjacent modules, and the CLI path must stay light."""
     exe = os.path.abspath(sys.executable)

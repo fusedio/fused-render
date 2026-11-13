@@ -42,8 +42,7 @@ from xml.sax.saxutils import escape
 
 from fused_render import _flavor
 
-# Per flavor (io.fused.render / io.fused.bot): the two apps keep separate
-# agents, each waking its own bundle.
+# Keyed by the bundle id, so the agent wakes this app's bundle.
 LABEL = f"{_flavor.bundle_id()}.schedule-wake"
 
 # How many distinct due times ride into one plist. launchd takes an array of
@@ -63,7 +62,7 @@ def agent_plist_path() -> str:
 
 
 def app_bundle_path() -> str | None:
-    """The running app bundle (`…/Fused Render.app`, `…/FusedBot.app`), or None when there isn't
+    """The running app bundle (`…/Fused Render.app`), or None when there isn't
     one — a dev-from-source run, a plain wheel, a test.
 
     Nothing to relaunch is a perfectly ordinary state, not an error: `dev.sh`

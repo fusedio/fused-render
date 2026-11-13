@@ -1,147 +1,73 @@
-"""Product flavor: which app this package is running as.
+"""The app's identity: names, bundle id, port, deep-link scheme, update feed.
 
-One package, two macOS apps. ``render`` is Fused Render (the default,
-everything unchanged); ``bot`` is Fused Bot — the same code with the Bots
-page as its only front door, its own bundle id, name, icon, port base,
-deep-link scheme and update feed. User state is ONE tree for both
-(``~/.fused-render``, ``~/Fused``; owner's call 2026-10-06): a bot made in
-either app is the same bot in the other. Only process identity is per app
-(Application Support dir with the pid/port files and update downloads), so
-the two can run side by side without one taking the other's single-instance
-probe. Routines and the iMessage bridge are single-owner across the two via
-flocks in the shared tree (bots/registry.py, bots/channels/imessage.py).
-The flavor is orthogonal to the branch ref in ``_branch.py``: a bot build off
-a feature branch still gets the branch suffix nested inside the bot identity
-(``io.fused.bot.<ref>``).
+Every branded constant in the package comes from here (or is derived from one
+of these) rather than spelling the brand out, so a rename is one edit.
 
-Resolution priority (cached on first access within a process):
-1. ``FUSED_RENDER_FLAVOR`` env var, if set (``render`` or ``bot``).
-2. Baked value written at build time (``fused_render/_baked_flavor.py``,
-   gitignored, written by scripts/hatch_build.py from the same env var).
-3. ``render``.
+The package once built two macOS apps from this table (Fused Render and Fused
+Bot); only Fused Render is built now, so there is one identity and nothing to
+resolve at runtime. The branch ref in ``_branch.py`` still nests inside it
+(``io.fused.render.<ref>``).
 
 Stdlib only, no package imports: ``_branch.py`` imports this for the port
 base.
 """
 import os
-import sys
 
-RENDER = "render"
-BOT = "bot"
-_FLAVORS = (RENDER, BOT)
+_APP_NAME = "FusedRender"          # binary, DMG/PKG/AppImage file names
+_DISPLAY_NAME = "Fused Render"     # window title, copy
+# The .app folder (/Applications/Fused Render.app) and CFBundleName. Matches
+# the display name; the space is what Finder, the Dock and the System Settings
+# privacy lists show.
+_BUNDLE_NAME = "Fused Render"
+# Earlier bundle names. Installs from before the rename still sit at
+# /Applications/FusedRender.app until an in-app update moves them
+# (update/mac.py `apply_staged`).
+_LEGACY_BUNDLE_NAMES = ("FusedRender",)
+_BUNDLE_ID = "io.fused.render"
+_HOME_DIR_NAME = ".fused-render"   # ~/.fused-render
+_APP_SUPPORT_NAME = "fused-render"  # ~/Library/Application Support/<name>
+_PORT_BASE = 1777
+_SCHEME = "fused-render"           # fused-render:// deep links
+_RELEASE_PREFIX = "fused-render"   # S3 keys: <prefix>-dmgs/, <prefix>-macos/
+_CASK = "fused-render"             # Homebrew cask
+_MENUBAR_ICON = "menubar-template.png"
 
-ENV = "FUSED_RENDER_FLAVOR"
-
-# Per-flavor identity. Every branded constant in the package should come from
-# here (or be derived from one of these) rather than spelling the brand out.
-_IDENTITY = {
-    RENDER: {
-        "app_name": "FusedRender",          # binary, DMG/PKG/AppImage file names
-        "display_name": "Fused Render",     # window title, copy
-        # The .app folder (/Applications/Fused Render.app) and CFBundleName.
-        # Matches display_name; the space is what Finder, the Dock and the
-        # System Settings privacy lists show.
-        "bundle_name": "Fused Render",
-        # Earlier bundle names. Installs from before the rename still sit at
-        # /Applications/FusedRender.app until an in-app update moves them
-        # (update/mac.py `apply_staged`).
-        "legacy_bundle_names": ("FusedRender",),
-        "bundle_id": "io.fused.render",
-        "home_dir_name": ".fused-render",   # ~/.fused-render — shared by both
-        "app_support_name": "fused-render",  # ~/Library/Application Support/<name>
-        "port_base": 1777,
-        "scheme": "fused-render",           # fused-render:// deep links
-        "release_prefix": "fused-render",   # S3 keys: <prefix>-dmgs/, <prefix>-macos/
-        "cask": "fused-render",             # Homebrew cask, "" = none
-        "menubar_icon": "menubar-template.png",
-    },
-    BOT: {
-        "app_name": "FusedBot",
-        "display_name": "Fused Bot",
-        "bundle_name": "FusedBot",
-        "legacy_bundle_names": (),
-        "bundle_id": "io.fused.bot",
-        "home_dir_name": ".fused-render",   # one state tree, see module doc
-        "app_support_name": "fused-bot",
-        "port_base": 2777,                  # FusedBot's historical port
-        "scheme": "fused-bot",
-        "release_prefix": "fused-bot",
-        "cask": "",
-        "menubar_icon": "bot/menubar.png",
-    },
-}
-
-
-def _baked() -> str:
-    try:
-        from fused_render import _baked_flavor
-
-        return _baked_flavor._BAKED_FLAVOR
-    except ImportError:
-        return ""
-
-
-def _resolve() -> str:
-    raw = os.environ.get(ENV)
-    if raw is None:
-        raw = _baked()
-    raw = (raw or "").strip().lower()
-    if not raw:
-        return RENDER
-    if raw not in _FLAVORS:
-        raise RuntimeError(f"{ENV} must be one of {_FLAVORS}, got {raw!r}")
-    return raw
-
-
-_CACHED = None
-
-
-def flavor() -> str:
-    global _CACHED
-    if _CACHED is None:
-        _CACHED = _resolve()
-    return _CACHED
-
-
-def is_bot() -> bool:
-    return flavor() == BOT
-
-
-def _get(key: str) -> str:
-    return _IDENTITY[flavor()][key]
+# Ports a branch build must never hash onto: our own baseline, and 2777, the
+# baseline of the retired Fused Bot app, which machines that installed it may
+# still be running.
+RESERVED_PORTS = frozenset({_PORT_BASE, 2777})
 
 
 def app_name() -> str:
-    """``FusedRender`` / ``FusedBot`` — the executable and the release
-    artifacts' file-name token, no branch suffix; callers that want it append
+    """``FusedRender`` — the executable and the release artifacts' file-name
+    token, no branch suffix; callers that want it append
     ``_branch.branch_suffix()``. The .app folder is ``bundle_name()``."""
-    return _get("app_name")
+    return _APP_NAME
 
 
 def display_name() -> str:
-    return _get("display_name")
+    return _DISPLAY_NAME
 
 
 def bundle_name() -> str:
-    """``Fused Render`` / ``FusedBot`` — the .app folder's name and the
-    bundle's CFBundleName, no branch suffix. Not the executable: that stays
-    ``app_name()`` (``Contents/MacOS/FusedRender``), which process probes
-    and log predicates match."""
-    return _get("bundle_name")
+    """``Fused Render`` — the .app folder's name and the bundle's
+    CFBundleName, no branch suffix. Not the executable: that stays
+    ``app_name()`` (``Contents/MacOS/FusedRender``), which process probes and
+    log predicates match."""
+    return _BUNDLE_NAME
 
 
 def legacy_bundle_names() -> tuple[str, ...]:
-    """Names this flavor's bundle shipped under before, no branch suffix
-    (``("FusedRender",)`` for Render)."""
-    return tuple(_IDENTITY[flavor()]["legacy_bundle_names"])
+    """Names the bundle shipped under before, no branch suffix."""
+    return _LEGACY_BUNDLE_NAMES
 
 
 def bundle_id() -> str:
-    return _get("bundle_id")
+    return _BUNDLE_ID
 
 
 def home_dir_name() -> str:
-    return _get("home_dir_name")
+    return _HOME_DIR_NAME
 
 
 def default_home_dir() -> str:
@@ -149,7 +75,7 @@ def default_home_dir() -> str:
 
 
 def app_support_name() -> str:
-    return _get("app_support_name")
+    return _APP_SUPPORT_NAME
 
 
 def app_support_base() -> str:
@@ -157,44 +83,21 @@ def app_support_base() -> str:
 
 
 def port_base() -> int:
-    return _IDENTITY[flavor()]["port_base"]
-
-
-def all_port_bases() -> frozenset[int]:
-    """Every flavor's baseline port, whichever flavor is running — the ports a
-    branch build of any flavor must never hash onto."""
-    return frozenset(v["port_base"] for v in _IDENTITY.values())
+    return _PORT_BASE
 
 
 def scheme() -> str:
-    return _get("scheme")
+    return _SCHEME
 
 
 def release_prefix() -> str:
-    return _get("release_prefix")
+    return _RELEASE_PREFIX
 
 
 def cask() -> str:
-    return _get("cask")
+    return _CASK
 
 
 def menubar_icon() -> str:
     """Path under fused_render/assets/."""
-    return _get("menubar_icon")
-
-
-if __name__ == "__main__":
-    field = sys.argv[1]
-    fields = {
-        "name": flavor,
-        "app_name": app_name,
-        "display_name": display_name,
-        "bundle_id": bundle_id,
-        "scheme": scheme,
-        "release_prefix": release_prefix,
-        "cask": cask,
-        "port_base": lambda: str(port_base()),
-    }
-    if field not in fields:
-        raise SystemExit(f"unknown field: {field}")
-    print(fields[field]())
+    return _MENUBAR_ICON

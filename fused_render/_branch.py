@@ -83,15 +83,12 @@ def branch_port(ref: str | None = None) -> int:
     if not r:
         return base
     digest = hashlib.sha1(r.encode()).hexdigest()
-    # The branch range sits just above the flavor's baseline, so Render stays
-    # exactly where it always was ([1788, 2788)) and Bot branches land in
-    # [2788, 3788): a bot and a render build of the same ref never share a
-    # port. Bot's 2777 baseline sits inside Render's branch range, so a ref
-    # that hashes onto any flavor's baseline steps to the next port (still
-    # inside the range, still deterministic) rather than stealing the
+    # Branch ports live in [1788, 2788), just above the baseline. A ref that
+    # hashes onto a reserved port (ours, or the retired Fused Bot app's 2777)
+    # steps to the next one (still deterministic) rather than stealing an
     # installed app's listener.
-    port = int(digest, 16) % _PORT_RANGE_SIZE + _PORT_OFFSET + (base - 1777)
-    while port in _flavor.all_port_bases():
+    port = int(digest, 16) % _PORT_RANGE_SIZE + _PORT_OFFSET
+    while port in _flavor.RESERVED_PORTS:
         port += 1
     return port
 

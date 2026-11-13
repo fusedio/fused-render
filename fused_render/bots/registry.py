@@ -1,7 +1,8 @@
 """The bot registry and the bots' background threads (docs/bots.md §1, §7).
 
-One MACHINE, one owner (2026-10-13, the owner-process design): Fused Render,
-Fused Bot and a dev checkout on main all share `<home>/bots`, and before this
+One MACHINE, one owner (2026-10-13, the owner-process design): the installed
+app and a dev checkout on main (and, before it was retired, the separate Fused
+Bot app) all share `<home>/bots`, and before this
 each of them built its own `Bot` per bot, ran engines on it and wrote bot.json
 from its own memory — a routine added in one app never fired (the other app
 owned the scheduler and never re-read the file), two engines could land on one

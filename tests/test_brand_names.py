@@ -7,23 +7,15 @@ from fused_render import _flavor
 from fused_render.server import create_app
 
 
-def test_render_names(monkeypatch):
-    monkeypatch.setattr(_flavor, "_CACHED", _flavor.RENDER)
+def test_render_names():
     assert _flavor.display_name() == "Fused Render"
     assert _flavor.bundle_name() == "Fused Render"
     assert _flavor.app_name() == "FusedRender"
     assert _flavor.legacy_bundle_names() == ("FusedRender",)
 
 
-def test_bot_names_are_unchanged(monkeypatch):
-    monkeypatch.setattr(_flavor, "_CACHED", _flavor.BOT)
-    assert _flavor.bundle_name() == "FusedBot"
-    assert _flavor.app_name() == "FusedBot"
-    assert _flavor.legacy_bundle_names() == ()
-
-
 def test_config_carries_the_bundle_name(tmp_path):
-    """Unpackaged there is no running bundle, so it is the flavor's."""
+    """Unpackaged there is no running bundle, so it is `_flavor`'s."""
     body = TestClient(create_app(start_dir=str(tmp_path))).get("/api/config").json()
     assert body["display_name"] == _flavor.display_name()
     assert body["bundle_name"] == _flavor.bundle_name()

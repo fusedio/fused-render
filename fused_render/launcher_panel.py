@@ -18,13 +18,10 @@ Dismissal: ⎋ in the page (a ``close`` message), the panel resigning key
 monitor: a non-activating panel gets no resignKey for clicks in the app
 that IS active), or the shortcut again (toggle).
 
-Both flavors build it: Fused Render's rows are apps, Fused Bot's are bots
-(`launcher._bot_registry`), each on its own stored shortcut and default
-(⌥Space / ⌥⇧Space, `launcher.hotkey_key`) so the two apps side by side do
-not fight over one Carbon registration. A pick reaches the app as
-``open_row(kind, key)``: ``kind`` is the row's (``app``/``appfile``/
-``bot``/``bots``), ``key`` its ``path`` (a folder or ``.fused`` path, a bot
-id, or nothing for ``bots`` — the Bots page row under Fused Render), and
+The rows are apps and, by typing, bots (`launcher._bot_registry`). A pick
+reaches the app as ``open_row(kind, key)``: ``kind`` is the row's
+(``app``/``appfile``/``bot``/``bots``), ``key`` its ``path`` (a folder or
+``.fused`` path, a bot id, or nothing for ``bots`` — the Bots page row), and
 app.py routes a bot to the Bots window and anything else to the app's own
 window. The page posts ``{type: "open", kind, key}``.
 

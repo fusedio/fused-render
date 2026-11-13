@@ -252,7 +252,7 @@ export function troubleReport(ctx: TroubleContext): string {
 }
 
 /** POSIX single-quoting for a word going into a pasted command, left bare
- *  when it needs none (`FusedBot.app`). */
+ *  when it needs none (`FusedRender.app`). */
 function shellQuote(s: string): string {
   if (/^[A-Za-z0-9._\/-]+$/.test(s)) return s;
   return "'" + s.replace(/'/g, `'\\''`) + "'";
@@ -300,8 +300,8 @@ function shellQuote(s: string): string {
  * does not run.
  */
 //
-// A function, not a constant: the bundle is the flavor's (`FusedBot.app` for
-// Fused Bot, platform/lib/flavor.ts), seeded after this module is evaluated.
+// A function, not a constant: the bundle name comes from platform/lib/flavor.ts,
+// seeded after this module is evaluated.
 export function findInstallCommands(): string[] {
   // Quoted: the bundle name holds a space ("Fused Render.app"). The `~` and
   // the `python3.*` glob stay outside the quotes so the shell still expands

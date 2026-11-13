@@ -45,8 +45,8 @@ nothing about what an install does, and nothing in the UI mentions Homebrew.
   The restart signal is unchanged: installed.installed_version() reports the
   staged version (it is what launches next), so it drifts from __version__
   exactly as a manual DMG drag makes it drift, ServerStatusBanner raises the
-  restart card, and <scheme>://relaunch (app.begin_relaunch; fused-render://
-  or fused-bot:// per flavor) quits through the teardown — which applies
+  restart card, and <scheme>://relaunch (app.begin_relaunch;
+  fused-render://) quits through the teardown — which applies
   the staged bundle — and respawns from disk. The bundle renamed away at
   apply time stays on disk as a hidden `.<Bundle>-old-<pid>-<ns>.app`
   sibling until a LATER boot's `sweep_old_bundles` finds its pid dead: the
@@ -114,11 +114,9 @@ _MANIFEST_ARCH_SUFFIX = "-x86_64" if platform.machine() == "x86_64" else ""
 MANIFEST_URL = os.environ.get(
     "FUSED_RENDER_UPDATE_MANIFEST_URL",
     f"https://d2ic19jpchjovp.cloudfront.net/{_flavor.release_prefix()}-macos{_MANIFEST_ARCH_SUFFIX}/latest.json")
-# "" when the flavor has no Homebrew cask (Fused Bot): `detect_method` then
-# never asks brew and every install goes the DMG way.
 CASK_NAME = _flavor.cask()
 # The installed bundle's name, branch suffix included: `Fused Render.app`,
-# `FusedBot-feature.app`. Names the /Applications target and the parked
+# `Fused Render-feature.app`. Names the /Applications target and the parked
 # `-old-` siblings below (the staged `-update` sibling is named from the
 # bundle's own basename instead — `installed.staged_bundle_path`).
 _BUNDLE_NAME = _flavor.bundle_name() + branch_suffix()
@@ -184,8 +182,6 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
     DMG path, not a brew upgrade that replaces a different install."""
     if bundle is None:
         return "none"
-    if not CASK_NAME:
-        return "dmg"
     if brew is None:
         brew = find_brew()
     if brew is None:
@@ -622,8 +618,8 @@ def sweep_old_bundles(parent: str, *, keep: str | None = None,
     it was. So: the process that swapped keeps its bundle, and the NEXT
     process to start sweeps whatever the dead ones left behind.
 
-    Scoped to this flavor's own `_BUNDLE_NAME` and legacy names (Fused
-    Render and FusedBot share /Applications and must never sweep each other's leftovers), to the
+    Scoped to our own `_BUNDLE_NAME` and legacy names (other apps share
+    /Applications and their leftovers are not ours to sweep), to the
     exact hidden-sibling shape the swap writes, and to pids that `alive`
     says are gone. A recycled pid only ever makes the sweep SKIP a bundle
     (deleted on a later boot), never delete one a live process is running
@@ -977,9 +973,9 @@ class UpdateManager(_base.UpdateManager):
         if found != version:
             raise RuntimeError(
                 f"update image contains version {found}, expected {version}")
-        # Same key signs both flavors' manifests, so also pin the app identity:
-        # Fused Render must never swap FusedBot.app into /Applications (or vice
-        # versa) off a mispublished or swapped manifest.
+        # The same key signed the retired FusedBot.app's manifests, so also pin
+        # the app identity: never swap another app into /Applications off a
+        # mispublished or swapped manifest.
         bundle = str(info.get("CFBundleIdentifier") or "")
         want = _flavor.bundle_id()
         if bundle != want and not bundle.startswith(want + "."):
