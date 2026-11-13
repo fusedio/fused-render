@@ -1112,30 +1112,84 @@ def _in_canvases_root(target: str) -> bool:
 # and so a real change of HOME mid-process is honored rather than frozen at
 # whatever HOME happened to be when this module first loaded.
 # The environment segments fused-render clones live under
-# (`<canvases_root>/<env>/<name>`): fusedcli.WORKBENCH_ENV_CHOICES, duplicated
-# because this module does not import the server's (see appenv's own rule).
+# (`<canvases_root>/<env>/user/<name>`): fusedcli.WORKBENCH_ENV_CHOICES,
+# duplicated because this module does not import the server's (see appenv's
+# own rule).
 _CLONE_ENVS = ("unstable", "prod", "custom")
+# The scope folders under an environment (D1476): clones live in `user/` and
+# nowhere else; `team/` and `public/` hold read-only reference copies written
+# by `fused canvas mirror`. canvas_marker.SCOPES and MARKER_NAME, duplicated
+# for the same reason (a test pins the copies together).
+_CLONE_SCOPE = "user"
+_REFERENCE_SCOPES = ("team", "public")
+_CANVAS_MARKER = ".fused-canvas.json"
 
 
-def _in_synced_clone(target: str) -> bool:
-    """Whether `target` is in one of fused-render's own canvas clones, the
-    ones its sync manages: `<canvases_root>/<env>/<name>[/...]`. Not Fused
-    Web's clones (`~/Fused/canvas/<name>`, same base, no env segment), whose
-    sessions the sync has nothing to tell."""
+def _canvas_is_mirror(folder: str) -> bool:
+    """Whether `folder`'s marker says it is a read-only reference copy:
+    `canvas_marker.sync_of(folder) == "mirror"`, duplicated (pinned by a
+    test). Any marker object whose `sync` says "mirror" counts, well-formed
+    in its other fields or not; no marker, or one that cannot be read, does
+    not — that folder is a live clone."""
+    try:
+        with open(os.path.join(folder, _CANVAS_MARKER), "rb") as f:
+            raw = f.read(64 * 1024 + 1)
+        data = json.loads(raw.decode("utf-8")) if len(raw) <= 64 * 1024 else None
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("sync") == "mirror"
+
+
+def _canvas_parts(target: str) -> tuple[str, list] | None:
+    """`(root, parts)` — the resolved canvases root and `target`'s segments
+    under it — or None when `target` is not inside it."""
     # realpath + normcase on both sides, as `_path_is_inside`: on macOS the
     # root and a `pwd -P` target routinely disagree (`/tmp` vs
     # `/private/tmp`, a symlinked home), and a miss here silently leaves a
     # real clone session without its hooks.
-    root = os.path.normcase(os.path.realpath(os.path.abspath(_canvases_root())))
-    path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
+    if not target:
+        return None
     try:
+        root = os.path.normcase(os.path.realpath(os.path.abspath(_canvases_root())))
+        path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
         if os.path.commonpath([root, path]) != root:
-            return False
+            return None
         rel = os.path.relpath(path, root)
-    except ValueError:  # another drive on Windows
+    except (OSError, ValueError):  # ValueError: another drive on Windows
+        return None
+    return root, rel.split(os.sep)
+
+
+def _in_synced_clone(target: str) -> bool:
+    """Whether `target` is in one of fused-render's own canvas clones, the
+    ones its sync manages: `<canvases_root>/<env>/user/<name>[/...]` (D1476).
+    Not Fused Web's clones (`~/Fused/canvas/<name>`, same base, no env
+    segment), whose sessions the sync has nothing to tell; not a reference
+    copy either (`_in_canvas_reference`), which nothing syncs."""
+    found = _canvas_parts(target)
+    if found is None:
         return False
-    parts = rel.split(os.sep)
-    return len(parts) >= 2 and parts[0] in _CLONE_ENVS and parts[1] not in ("", os.pardir)
+    root, parts = found
+    return (len(parts) >= 3 and parts[0] in _CLONE_ENVS and parts[1] == _CLONE_SCOPE
+            and parts[2] not in ("", os.pardir)
+            and not _canvas_is_mirror(os.path.join(root, *parts[:3])))
+
+
+def _in_canvas_reference(target: str) -> bool:
+    """Whether `target` is in a read-only REFERENCE copy of a canvas (D1476):
+    under an environment's `team/` or `public/` folder, or in a `user/<name>`
+    folder whose marker says `mirror` — one `fused canvas mirror` wrote and
+    the user never opened here. A session there has no canvas page, no hooks
+    and no canvas tool, and must not edit or push."""
+    found = _canvas_parts(target)
+    if found is None:
+        return False
+    root, parts = found
+    if len(parts) < 3 or parts[0] not in _CLONE_ENVS:
+        return False
+    if parts[1] in _REFERENCE_SCOPES:
+        return True
+    return parts[1] == _CLONE_SCOPE and _canvas_is_mirror(os.path.join(root, *parts[:3]))
 
 
 # The backends whose session tells the canvas sync nothing by itself: no CLI
@@ -1186,11 +1240,13 @@ def _in_workbench_root(target: str) -> bool:
 
 def _canvas_of(target: str) -> dict | None:
     """The fused-render canvas `target` sits in — `{env, name, clone, node}` —
-    or None. Only a clone at `<canvases root>/<env>/<name>` (canvases.
-    `clone_dir_for`'s rule) has a canvas PAGE that can photograph it, so this,
-    not `_in_workbench_root`, gates the `canvas_screenshot` tool: a Fused Web
-    clone (`~/Fused/canvas/<name>`) gets the skills but not the tool (D1471,
-    F7). `node` is the node file's stem for a node chat, else ""."""
+    or None. Only a clone at `<canvases root>/<env>/user/<name>` (canvases.
+    `clone_dir_for`'s rule, D1476) has a canvas PAGE that can photograph it,
+    so this, not `_in_workbench_root`, gates the `canvas_screenshot` tool: a
+    Fused Web clone (`~/Fused/canvas/<name>`) gets the skills but not the tool
+    (D1471, F7), and so does a reference copy — `team/`, `public/`, or a
+    `user/<name>` whose marker says `mirror`. `node` is the node file's stem
+    for a node chat, else ""."""
     if not target:
         return None
     try:
@@ -1199,14 +1255,16 @@ def _canvas_of(target: str) -> dict | None:
     except (OSError, ValueError):
         return None
     parts = rel.split(os.sep)
-    if (len(parts) < 2 or parts[0] not in _CANVAS_ENVS
-            or not _CANVAS_NAME_RE.match(parts[1])):
+    if (len(parts) < 3 or parts[0] not in _CANVAS_ENVS or parts[1] != _CLONE_SCOPE
+            or not _CANVAS_NAME_RE.match(parts[2])):
+        return None
+    clone = os.path.join(root, parts[0], parts[1], parts[2])
+    if _canvas_is_mirror(clone):
         return None
     node = ""
-    if len(parts) == 3 and _is_canvas_node_file(parts[2]):
-        node = os.path.splitext(parts[2])[0]
-    return {"env": parts[0], "name": parts[1],
-            "clone": os.path.join(root, parts[0], parts[1]), "node": node}
+    if len(parts) == 4 and _is_canvas_node_file(parts[3]):
+        node = os.path.splitext(parts[3])[0]
+    return {"env": parts[0], "name": parts[2], "clone": clone, "node": node}
 
 
 def _plugin_argv(target: str | None = None) -> list:
@@ -1302,7 +1360,7 @@ def _fused_cli_note(backend: str = "") -> str:
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
         "terminal instead. Inside a canvas clone fused-render syncs "
-        "(~/Fused/canvas/<unstable|prod|custom>/<canvas>/), fused-render does "
+        "(~/Fused/canvas/<unstable|prod|custom>/user/<canvas>/), fused-render does "
         "all the syncing: the folder publishes itself when your turn ends and "
         "server changes are merged into it for you, so never run `fused "
         "workbench canvas push` or `pull` there (both are refused); check your "
@@ -4743,13 +4801,38 @@ def _appended_prompt(file: str, pane: bool, backend: str = "",
     (`_fused_cli_note`'s / `_blocked_note`'s `backend`)."""
     if os.path.isdir(file):
         shape = _split_system_prompt(file, pane)
-    elif _in_workbench_root(file) and _is_canvas_node_file(file):
+    elif (_in_workbench_root(file) and _is_canvas_node_file(file)
+          and not _in_canvas_reference(file)):
         shape = _canvas_node_prompt(file)
     else:
+        # A file in a reference copy (D1476) is no node of a live canvas:
+        # the plain file prompt, and the note below says what the folder is.
         shape = _system_prompt(file)
-    return (shape + _canvas_shot_note(file) + _fused_cli_note(backend)
+    return (shape + _canvas_reference_copy_note(file)
+            + _canvas_shot_note(file) + _fused_cli_note(backend)
             + _origin_note() + _blocked_note(backend)
             + (_breakout_note(file) if breakout else ""))
+
+
+def _canvas_reference_copy_note(file: str) -> str:
+    """What a session is told when its target is in a read-only reference
+    copy of a canvas (`_in_canvas_reference`), else "". Without it the
+    session reads a folder that looks exactly like a clone — canvas.toml,
+    node files — and nothing would stop it editing files no sync will ever
+    publish, or pushing them over the user's own canvas of that name (the
+    push interception refuses that, `_canvas_push.py`; this says why)."""
+    if not _in_canvas_reference(file):
+        return ""
+    return (
+        " This folder is a READ-ONLY reference copy of a Fused canvas, kept "
+        "up to date by fused-render (its `.fused-canvas.json` names the "
+        "canvas, its owner and its scope). It is not the user's working "
+        "copy: nothing here is synced or published, and the folder is "
+        "overwritten when the canvas changes. Read it freely, but do not "
+        "edit, create or delete files in it and never run `fused workbench "
+        "canvas push` or `pull` here (both are refused). To change a canvas, "
+        "tell the user to open it from fused-render's Canvases page, which "
+        "gives it an editable folder of its own.")
 
 
 def _canvas_shot_note(file: str) -> str:
@@ -5543,7 +5626,7 @@ def _spawn_env(chat_id: str = "", backend: str = "", run_dir: str = "") -> dict:
     The session must not inherit an ambient FUSED_ENV from the server's own
     process: the `fused` wrapper (fusedcli._wrapper_text) only picks FUSED_ENV
     when unset — from the canvas clone the session runs in
-    (`~/Fused/canvas/<env>/<name>`, the clone's own environment), else the
+    (`~/Fused/canvas/<env>/user/<name>`, the clone's own environment), else the
     default — so a value already present here (say the server itself was
     launched from a shell that exports FUSED_ENV for unrelated reasons) would
     look exactly like a deliberate `FUSED_ENV=x fused ...` from the model and

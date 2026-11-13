@@ -41,7 +41,8 @@ Design rules, all of them load-bearing:
     `fused` invocation, including ones that have nothing to do with canvases.
     Standard library only — no FastAPI, no server state, no `canvases`. The
     canvases-root rule is duplicated here for that reason, the same trade
-    ``templates/shared/appenv.py`` makes.
+    ``templates/shared/appenv.py`` makes. (`canvas_marker`, imported lazily
+    for one check, is itself standard library only.)
   * FALLING THROUGH IS SAFE ONLY WHEN IT IS INERT. No origin, a target outside
     the canvases root, or a request that cannot connect at all: sync was never
     engaged for that folder, so there is genuinely no merge base to protect and
@@ -84,11 +85,18 @@ _CANVASES_DIR_ENV = "FUSED_RENDER_CANVASES_DIR"
 # `fused_dir`): `~/Fused/canvas`, FUSED_RENDER_DIR overriding the workspace.
 _FUSED_DIR_ENV = "FUSED_RENDER_DIR"
 _DEFAULT_FUSED_DIR = "~/Fused"
-# The environment segment between the base and the clone name
-# (`~/Fused/canvas/<env>/<name>`): fusedcli.WORKBENCH_ENV_CHOICES, duplicated
-# for the same no-heavy-imports reason. Anything else in that position is not
-# a clone of ours.
+# The environment segment between the base and the scope folder
+# (`~/Fused/canvas/<env>/user/<name>`): fusedcli.WORKBENCH_ENV_CHOICES,
+# duplicated for the same no-heavy-imports reason. Anything else in that
+# position is not a clone of ours.
 _ENVS = ("unstable", "prod", "custom")
+# The scope folders under an environment (D1476; canvas_marker.SCOPES, and a
+# test pins the copies together). Clones live in `user/` and nowhere else;
+# `team/` and `public/` hold read-only reference copies written by `fused
+# canvas mirror`, and so may a `user/<name>` folder whose marker says so.
+_CLONES_SCOPE = "user"
+_REFERENCE_SCOPES = ("team", "public")
+_SCOPES = (_CLONES_SCOPE, *_REFERENCE_SCOPES)
 # fusedcli.CUSTOM_WORKBENCH_ENV, duplicated likewise: the env whose runs leave
 # FUSED_ENV unset, so the CLI keeps `~/.fused/settings.toml`'s endpoint.
 _CUSTOM_ENV = "custom"
@@ -178,25 +186,85 @@ def canvases_base() -> str:
     return os.path.join(fused_dir, "canvas")
 
 
+def _locate(path: str) -> dict | None:
+    """Where `path` sits in the canvases tree — `{kind, env, name, root}` —
+    or None for anything outside it.
+
+    `kind` is one of:
+
+      * "clone" — at or inside `<base>/<env>/user/<name>` (D1476), the one
+        place a clone lives.
+      * "reference" — at or inside `<base>/<env>/team` or `/public`, or a
+        `user/<name>` folder whose marker says `mirror`: a read-only
+        reference copy. `name` is "" for the scope folder itself.
+      * "legacy" — at or inside a canvas folder at the pre-D1476
+        `<base>/<env>/<name>` (it holds a `canvas.toml`): a clone the layout
+        move has not reached yet. canvas_layout.py defers one exactly while
+        a session is working in it, so this is the folder a session is most
+        likely to type a push in — and nothing syncs it there.
+      * "tree" — anywhere else under `<base>/<env>/`: the clones folder
+        itself, or a folder that is no canvas. Not a push we know anything
+        about; a pull INTO it would plant a canvas folder in a tree
+        fused-render and the mirror command own.
+
+    `root` says whether `path` IS the canvas folder rather than something
+    inside it. Resolved through `realpath` on both sides (the CLI wrapper
+    reaches a clone through `pwd -P`)."""
+    base = os.path.realpath(canvases_base())
+    target = os.path.realpath(path)
+    try:
+        rel = os.path.relpath(target, base)
+    except ValueError:  # another drive on Windows
+        return None
+    parts = rel.split(os.sep)
+    if len(parts) < 2 or parts[0] not in _ENVS or parts[1] in ("", os.pardir):
+        return None
+    env, first = parts[0], parts[1]
+    env_dir = os.path.join(base, env)
+    if first in _SCOPES and not os.path.isfile(os.path.join(env_dir, first, "canvas.toml")):
+        if first in _REFERENCE_SCOPES:
+            return {"kind": "reference", "env": env, "root": len(parts) <= 3,
+                    "name": parts[2] if len(parts) > 2 else ""}
+        if len(parts) < 3:
+            return {"kind": "tree", "env": env, "name": "", "root": False}
+        name = parts[2]
+        mirror = _is_mirror(os.path.join(env_dir, first, name))
+        return {"kind": "reference" if mirror else "clone", "env": env, "name": name,
+                "root": len(parts) == 3}
+    # Pre-D1476: a clone directly under the environment (a scope-named folder
+    # holding a canvas.toml is a legacy clone of that name). Any other folder
+    # there is nothing of ours.
+    if not os.path.isfile(os.path.join(env_dir, first, "canvas.toml")):
+        return {"kind": "tree", "env": env, "name": first, "root": False}
+    return {"kind": "legacy", "env": env, "name": first, "root": len(parts) == 2}
+
+
+def _is_mirror(folder: str) -> bool:
+    """Whether `folder`'s marker says it is a reference copy. The one import
+    of this module beyond the standard library: canvas_marker is stdlib-only
+    itself, and only a command aimed at `user/<name>` ever gets here."""
+    from fused_render import canvas_marker
+
+    return canvas_marker.sync_of(folder) == canvas_marker.SYNC_MIRROR
+
+
 def _clone_name(source_dir: str) -> tuple[str, str] | None:
     """`(name, env)` when `source_dir` IS a clone root, else None.
 
-    A clone lives at exactly ``canvases_base()/<env>/<name>``. Requiring that
-    precise shape — one segment under a known environment folder, not merely
-    somewhere beneath the base — is what keeps a push of some subdirectory
-    from being rewritten into a push of the whole canvas, which is a different
-    operation with different content. EVERY environment's clones match: the
-    `env` segment is sent with the push, and the server routes it to that
-    environment's manager (prod's and unstable's same-named canvases sync at
-    once, each pushing with its own FUSED_ENV).
+    A clone lives at exactly ``canvases_base()/<env>/user/<name>`` (D1476).
+    Requiring that precise shape — one segment under a known environment's
+    `user/` folder, not merely somewhere beneath the base — is what keeps a
+    push of some subdirectory from being rewritten into a push of the whole
+    canvas, which is a different operation with different content. EVERY
+    environment's clones match: the `env` segment is sent with the push, and
+    the server routes it to that environment's manager (prod's and unstable's
+    same-named canvases sync at once, each pushing with its own FUSED_ENV).
+    A reference copy is never a clone (`_reference_of`).
     """
-    base = os.path.realpath(canvases_base())
-    target = os.path.realpath(source_dir)
-    env_dir, name = os.path.split(target)
-    parent, env = os.path.split(env_dir)
-    if parent != base or env not in _ENVS or not name:
+    found = _locate(source_dir)
+    if found is None or found["kind"] != "clone" or not found["root"]:
         return None
-    return name, env
+    return found["name"], found["env"]
 
 
 def parse_push(args: list[str]) -> dict | None:
@@ -305,20 +373,67 @@ def parse_pull(args: list[str]) -> dict | None:
 
 def _clone_of(path: str) -> tuple[str, str] | None:
     """`(name, env)` when `path` is a clone root or anywhere inside one."""
-    base = os.path.realpath(canvases_base())
-    target = os.path.realpath(path)
-    while True:
-        env_dir, name = os.path.split(target)
-        parent, env = os.path.split(env_dir)
-        if parent == base and env in _ENVS and name:
-            return name, env
-        if env_dir == target or not name:
-            return None
-        target = env_dir
+    found = _locate(path)
+    if found is None or found["kind"] != "clone":
+        return None
+    return found["name"], found["env"]
+
+
+def _reference_of(path: str) -> dict | None:
+    """`_locate`'s answer when `path` is, or is inside, a read-only reference
+    copy (`team/`, `public/`, a mirror-marked `user/<name>`), else None."""
+    found = _locate(path)
+    return found if found is not None and found["kind"] == "reference" else None
+
+
+def _legacy_of(path: str) -> dict | None:
+    """`_locate`'s answer when `path` is, or is inside, a clone still at its
+    pre-D1476 folder, else None."""
+    found = _locate(path)
+    return found if found is not None and found["kind"] == "legacy" else None
+
+
+def _pull_refusal(paths: list[str]) -> str | None:
+    """Why a pull writing to any of `paths` is refused, or None (not in the
+    canvases tree at all: fall through). Every folder under an environment
+    is refused, as before D1476; the sentence says which kind it is. A
+    reference copy is named first: of the reasons, it is the one where the
+    pull fights another writer (the mirror command) over the folder."""
+    kinds = {found["kind"] for found in map(_locate, paths) if found is not None}
+    for kind, message in (("reference", _REFERENCE_PULL_REFUSAL),
+                          ("legacy", _LEGACY_REFUSAL),
+                          ("clone", _PULL_REFUSAL),
+                          ("tree", _TREE_PULL_REFUSAL)):
+        if kind in kinds:
+            return message
+    return None
 
 
 _PULL_REFUSAL = ("This folder is kept in sync by fused-render; a server change is "
                  "merged here automatically. Do not pull.\n")
+# A reference copy (D1476). A push from one would REPLACE (or create) the
+# user's own canvas of that name with someone else's files; a pull into one
+# fights the mirror command that owns the folder.
+_REFERENCE_PUSH_REFUSAL = (
+    "This folder is a read-only reference copy of a Fused canvas, kept up to "
+    "date by fused-render. It is never pushed: a push from here would overwrite "
+    "the canvas of that name in your own account. To change a canvas, open it "
+    "from fused-render's Canvases page and edit its folder under user/.\n")
+_REFERENCE_PULL_REFUSAL = (
+    "This folder is a read-only reference copy of a Fused canvas, kept up to "
+    "date by fused-render. Do not pull into it.\n")
+# A clone still at `<env>/<name>` (D1476 moved clones to `<env>/user/<name>`).
+# Nothing syncs it there, and a raw push or pull is the unguarded replace this
+# module exists to stop.
+_TREE_PULL_REFUSAL = (
+    "This folder is inside fused-render's canvases tree, which fused-render "
+    "manages. Do not pull into it: open the canvas from fused-render's "
+    "Canvases page, or pull into a folder elsewhere.\n")
+_LEGACY_REFUSAL = (
+    "This canvas folder is at its old location: fused-render now keeps canvases "
+    "under user/ and moves this one there once no session is working in it. "
+    "Nothing syncs it here, so do not push or pull. Finish this session, then "
+    "open the canvas from fused-render's Canvases page.\n")
 
 
 def _get_state(origin: str, name: str, env: str) -> tuple[int | None, dict]:
@@ -458,15 +573,26 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
         if target is None and pulled["canvas_ref"]:
             # The CLI's default output folder is the canvas name under cwd.
             target = os.path.join(os.getcwd(), pulled["canvas_ref"])
-        inside = (_clone_of(target) if target else None) or (
-            _clone_of(os.getcwd()) if pulled["output"] is None else None)
-        if inside is None:
+        where = [target] if target else []
+        if pulled["output"] is None:
+            where.append(os.getcwd())
+        refusal = _pull_refusal(where)
+        if refusal is None:
             return None
-        err.write("fused-render: " + _PULL_REFUSAL)
+        err.write("fused-render: " + refusal)
         return 1
     parsed = parse_push(args)
     if parsed is None:
         return None
+    if _reference_of(parsed["source_dir"]) is not None:
+        # Before everything else, server or no server: there is no state in
+        # which pushing a reference copy is right.
+        err.write("fused-render: " + _REFERENCE_PUSH_REFUSAL)
+        return 1
+    legacy = _legacy_of(parsed["source_dir"])
+    if legacy is not None and legacy["root"]:
+        err.write("fused-render: " + _LEGACY_REFUSAL)
+        return 1
     clone = _clone_name(parsed["source_dir"])
     if clone is None:
         return None  # not a canvas clone

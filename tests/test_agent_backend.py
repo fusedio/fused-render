@@ -1763,7 +1763,7 @@ def test_a_hookless_backends_turn_in_a_canvas_clone_starts_the_sync(
     say it themselves, and a target outside a clone says nothing."""
     import types
     root = tmp_path / "canvases"
-    clone = root / "unstable" / "alpha"
+    clone = root / "unstable" / "user" / "alpha"
     clone.mkdir(parents=True)
     (clone / "a.py").write_text("x = 1\n")
     monkeypatch.setattr(agent, "_canvases_root", lambda: str(root))
@@ -2331,8 +2331,8 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
     D9, `_NO_PREAPPROVE_BACKENDS`). The context dir spells the pane tool by
     its bare name, since that is how Gemini offers an MCP tool."""
     canvases = tmp_path / "canvases"
-    # `<root>/<env>/<name>`: only a fused-render clone gets the tool (D1471).
-    clone = canvases / "prod" / "c1"
+    # `<root>/<env>/user/<name>`: only a fused-render clone gets the tool (D1471).
+    clone = canvases / "prod" / "user" / "c1"
     clone.mkdir(parents=True)
     (clone / "index.html").write_text("<html></html>")
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
