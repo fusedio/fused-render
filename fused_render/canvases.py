@@ -3998,14 +3998,17 @@ class _SyncManager:
             if files:
                 self._last_merge = {"at": time.time(), "files": files}
                 self._journal_add("merged", "", files=files)
+            # Logged before the lock is released, with the merge it reports:
+            # merge_seq moved under this lock, and a reader that sees it must
+            # also see this event.
+            rev = self._revision_text(probe)
+            self.log_event("server_to_disk", "server merged",
+                           detail=(", ".join(files[:20]) + (f" (+{len(files) - 20} more)"
+                                                            if len(files) > 20 else "")
+                                   if files else "nothing to change here")
+                                  + (f"; {rev}" if rev else ""))
         finally:
             self._op_lock.release()
-        rev = self._revision_text(probe)
-        self.log_event("server_to_disk", "server merged",
-                       detail=(", ".join(files[:20]) + (f" (+{len(files) - 20} more)"
-                                                        if len(files) > 20 else "")
-                               if files else "nothing to change here")
-                              + (f"; {rev}" if rev else ""))
         return {"ok": True, "files": files}
 
     def _converged_deletes(self, probe: dict) -> list[str]:
@@ -4370,11 +4373,10 @@ class _SyncManager:
                         if merged and files:
                             self._last_merge = {"at": time.time(), "files": files}
                             self._journal_add("merged", "", files=files)
+                            self.log_event("server_to_disk", "server merged",
+                                           detail=", ".join(files[:20]) + "; before a push")
                     finally:
                         self._op_lock.release()
-                    if merged and files:
-                        self.log_event("server_to_disk", "server merged",
-                                       detail=", ".join(files[:20]) + "; before a push")
                     if not merged:
                         # The remote moved and could not be reconciled (zip
                         # download failed) — pushing now would wholesale-replace
