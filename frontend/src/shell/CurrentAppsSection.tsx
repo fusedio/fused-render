@@ -66,8 +66,10 @@ import {
   canvasNameFromPath,
   canvasPagePath,
   isWorkbenchEnv,
+  type WorkbenchEnv,
 } from "@apps/canvases/api";
 import { CanvasGlyph } from "@apps/canvases/glyph";
+import { RenameCanvasDialog } from "@apps/canvases/RenameCanvasDialog";
 
 /** Which half of the desk a section draws (owner, 2026-10-20: "add all
  *  options on canvas sidebar as we have on folder sidebar"). ONE store, one
@@ -626,10 +628,18 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
   // the plain `.fused` export with it off. A hook, not the sync getter: this
   // menu is built inside a component, so it follows the flag live.
   const sharing = useAppShareOffered();
+  // The canvas rename dialog (apps/canvases/RenameCanvasDialog): renames the
+  // canvas on the server AND its clone folder, through the host — never the
+  // folder alone (the folder name IS the canvas name the push uses).
+  const [renamingCanvas, setRenamingCanvas] = useState<
+    { env: WorkbenchEnv; name: string } | null
+  >(null);
+
   // A canvas row's verbs: the clone's listing, the canvas editor (the two
-  // panes with Claude), the task verbs, and the cross by name. No Share /
-  // Export / Rename / Uninstall: a canvas is the workbench's to name, share
-  // and delete; the clone is a window onto it.
+  // panes with Claude), Rename (server + clone together, owner 2026-11-13),
+  // the task verbs, and the cross by name. No Share / Export / Uninstall: a
+  // canvas is the workbench's to share and delete; the clone is a window
+  // onto it.
   const canvasMenuItems = (app: CurrentApp): MenuEntry[] => [
     {
       label: "Open in Explorer",
@@ -644,6 +654,16 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
       onClick: () => {
         if (app.canvas && isWorkbenchEnv(app.canvas.env)) {
           navigateUrl(canvasPagePath(app.canvas.env, app.canvas.name));
+        }
+      },
+    },
+    {
+      label: "Rename…",
+      icon: MenuIcons.rename,
+      disabled: !app.canvas || !isWorkbenchEnv(app.canvas.env),
+      onClick: () => {
+        if (app.canvas && isWorkbenchEnv(app.canvas.env)) {
+          setRenamingCanvas({ env: app.canvas.env, name: app.canvas.name });
         }
       },
     },
@@ -923,6 +943,17 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             }}
           />
         </Modal>
+      )}
+      {renamingCanvas && (
+        <RenameCanvasDialog
+          env={renamingCanvas.env}
+          name={renamingCanvas.name}
+          onClose={() => setRenamingCanvas(null)}
+          onRenamed={() => {
+            pokeTasks();
+            refetch();
+          }}
+        />
       )}
       {iconPicker && (
         <IconPicker

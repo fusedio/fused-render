@@ -60,6 +60,17 @@
 //            host whose token message said `caps: [..., "open"]`.
 //   parent → { type: "fused-embed-open-rejected", reason }  the host could
 //            not open it (clone or sync failed): the frame stays and toasts.
+//   iframe → { type: "fused-embed-canvas-rename", id, name }  the canvas
+//            title clicked in the workbench's top bar: the host opens its own
+//            "Rename canvas" dialog (RenameCanvasDialog; POST
+//            /api/canvases/rename renames the server canvas AND the clone)
+//            and on success moves this window to the new name's route — the
+//            frame reloads on the new src. The frame renames nothing itself:
+//            a direct server rename would leave the host pushing the old name,
+//            and the CLI's push CREATES a canvas it cannot find by name. Only
+//            sent to a host whose token message said `caps: [..., "rename"]`;
+//            accepted from the frame's own window, for the name it was framed
+//            under only.
 //   iframe → { type: "fused-embed-open-side" } | { type: "fused-embed-close-side" }
 //            the workbench's right-edge chips (its own right pane never shows
 //            embedded): open or shut the right pane here. Accepted only from
@@ -241,6 +252,7 @@ import {
 } from "./api";
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
+import { RenameCanvasDialog } from "./RenameCanvasDialog";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
 import { CHAT_PARAMS, placeRoot } from "@shell/claude-rail/claude-rail-lib";
@@ -724,6 +736,8 @@ export default function CanvasWorkspace({
   const [dragging, setDragging] = useState(false);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The frame's canvas title asked for a rename (`fused-embed-canvas-rename`).
+  const [renameOpen, setRenameOpen] = useState(false);
   // A "Fix with Claude" run in flight: the editor iframe attaches to it via
   // its ?run= param, so the user watches the fix happen in the chat they
   // already have. Kept after the push recovers — the session may still be
@@ -1614,7 +1628,9 @@ export default function CanvasWorkspace({
           // `gone`: this host answers a body post for a file deleted or
           // renamed on disk with `code: "gone"`; a frame that sees the cap
           // takes a `stale ""` from it as a really empty file, not a missing one.
-          caps: ["body", "ai", "open", "gone"],
+          // `rename`: the canvas title in the frame asks this host to
+          // rename (`fused-embed-canvas-rename`, module doc).
+          caps: ["body", "ai", "open", "gone", "rename"],
           ...(publicOrigin ? { publicOrigin } : {}),
         },
         origin, // exact origin — this message carries a credential
@@ -2716,6 +2732,14 @@ export default function CanvasWorkspace({
           });
         return;
       }
+      if (type === "fused-embed-canvas-rename") {
+        // The workbench's canvas title (header): open the host's rename
+        // dialog. The editor frame's own window only, for this canvas only.
+        if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+        if (event.data?.name !== name) return;
+        setRenameOpen(true);
+        return;
+      }
       if (type === "fused-embed-open-canvas") {
         // A canvas the frame created on the server (a zip upload; header):
         // clone it, arm its sync and move this window to it. The editor
@@ -3698,6 +3722,9 @@ export default function CanvasWorkspace({
         )}
       </div>
       <ShotViewer shot={hostViewing} paneNoun="canvas" onClose={() => setHostViewing(null)} />
+      {renameOpen && (
+        <RenameCanvasDialog env={env} name={name} onClose={() => setRenameOpen(false)} />
+      )}
     </div>
   );
 }
