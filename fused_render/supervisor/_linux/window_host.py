@@ -301,17 +301,21 @@ def pick_unix_signal_add(glib, glib_unix_loader):
     return glib_unix.signal_add
 
 
-def configure_webkit_env() -> None:
-    """Turn WebKitGTK's DMABUF renderer off: with it on, every page
-    navigation flickers. A value the user already set wins. WebKit's web and
-    network processes inherit this process's environment, so setting it here,
-    before WebKit loads, covers them."""
-    os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+def gpu_rendering_active() -> bool:
+    """Whether WebKitGTK uses its DMABUF (GPU) renderer: on unless the user
+    set `WEBKIT_DISABLE_DMABUF_RENDERER` (WebKit reads any value other than
+    "0" as "disable")."""
+    return os.environ.get("WEBKIT_DISABLE_DMABUF_RENDERER", "0") == "0"
+
+
+# Marks the page so its stylesheets can drop the opacity fades WebKitGTK's
+# DMABUF renderer draws wrong: the faded element vanishes for a few frames as
+# the fade lands. frontend/src/styles keys those overrides on this attribute.
+_GPU_RENDERING_MARK = 'document.documentElement.setAttribute("data-gpu-rendering", "")'
 
 
 def load_toolkit() -> SimpleNamespace:
     """Import GTK3 + WebKit2 4.1 through PyGObject or say exactly why not."""
-    configure_webkit_env()
     try:
         import gi
     except ImportError as error:
@@ -368,6 +372,7 @@ class GtkBackend:
         self._context = wk.WebContext.new_with_website_data_manager(manager)
         self._context.connect("download-started", self._on_download_started)
         self._version = __version__
+        self._gpu_rendering = gpu_rendering_active()
 
     # -- threading --
     def run_on_main(self, fn):
@@ -419,6 +424,10 @@ class GtkBackend:
             settings.set_enable_media_stream(True)
         if hasattr(settings, "set_enable_webrtc"):
             settings.set_enable_webrtc(True)
+        if self._gpu_rendering:
+            view.get_user_content_manager().add_script(wk.UserScript(
+                _GPU_RENDERING_MARK, wk.UserContentInjectedFrames.TOP_FRAME,
+                wk.UserScriptInjectionTime.START, None, None))
         window = Gtk.Window()
         window.set_title("Fused Render")
         size = self._frames.get(frame_name)

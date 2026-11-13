@@ -929,6 +929,11 @@
      epoch (an iframe's param write doesn't bump it). */
   animation: content-in 110ms var(--ease-out);
 }
+/* The Linux window host's GPU rendering (`data-gpu-rendering`) draws this fade
+   wrong: the page blanks for a few frames as it lands. No fade there. */
+:root[data-gpu-rendering] #content {
+  animation: none;
+}
 
 @keyframes content-in {
   from {

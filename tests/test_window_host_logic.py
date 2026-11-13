@@ -670,7 +670,7 @@ def test_present_without_a_token_uses_present_with_time():
     assert calls == ["show_all", ("present_with_time", 0)]
 
 
-def test_new_window_enables_media_stream_and_webrtc_when_available(tmp_path):
+def _fake_gtk_backend(tmp_path, gpu_rendering):
     from types import SimpleNamespace
 
     class FakeSettings:
@@ -689,12 +689,23 @@ def test_new_window_enables_media_stream_and_webrtc_when_available(tmp_path):
         def set_enable_webrtc(self, v):
             self.calls.append(("webrtc", v))
 
+    class FakeContentManager:
+        def __init__(self):
+            self.scripts = []
+
+        def add_script(self, script):
+            self.scripts.append(script)
+
     class FakeView:
         def __init__(self):
             self.settings = FakeSettings()
+            self.content = FakeContentManager()
 
         def get_settings(self):
             return self.settings
+
+        def get_user_content_manager(self):
+            return self.content
 
         def connect(self, *a):
             pass
@@ -726,11 +737,28 @@ def test_new_window_enables_media_stream_and_webrtc_when_available(tmp_path):
     backend = wh.GtkBackend.__new__(wh.GtkBackend)
     backend.tk = SimpleNamespace(
         Gtk=SimpleNamespace(Window=FakeWindow),
-        WebKit2=SimpleNamespace(WebView=FakeWebView),
+        WebKit2=SimpleNamespace(
+            WebView=FakeWebView,
+            UserScript=lambda source, frames, when, *_: (source, frames, when),
+            UserContentInjectedFrames=SimpleNamespace(TOP_FRAME="top"),
+            UserScriptInjectionTime=SimpleNamespace(START="start"),
+        ),
     )
     backend._frames = wh.FrameStore(tmp_path / "frames.json")
     backend._version = "0.0.0"
     backend._context = None
-    win = backend.new_window("http://x/", "frame")
+    backend._gpu_rendering = gpu_rendering
+    return backend
+
+
+def test_new_window_enables_media_stream_and_webrtc_when_available(tmp_path):
+    win = _fake_gtk_backend(tmp_path, gpu_rendering=False).new_window("http://x/", "frame")
     assert ("media_stream", True) in win.view.settings.calls
     assert ("webrtc", True) in win.view.settings.calls
+
+
+@pytest.mark.parametrize("gpu_rendering", [True, False])
+def test_new_window_marks_the_page_only_under_gpu_rendering(tmp_path, gpu_rendering):
+    win = _fake_gtk_backend(tmp_path, gpu_rendering).new_window("http://x/", "frame")
+    expected = [(wh._GPU_RENDERING_MARK, "top", "start")] if gpu_rendering else []
+    assert win.view.content.scripts == expected
