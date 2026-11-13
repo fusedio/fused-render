@@ -50,6 +50,27 @@
   height: 16px;
   animation: canvases-refreshing-spin 0.9s linear infinite;
 }
+/* Idle, the spinner's spot is the on-demand refetch: same 16px glyph, so the
+   swap to the spinner never shifts the head. */
+.canvases-refresh {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  margin: -2px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.canvases-refresh:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+.canvases-refresh-icon {
+  width: 16px;
+  height: 16px;
+}
 @keyframes canvases-refreshing-spin {
   to {
     transform: rotate(360deg);

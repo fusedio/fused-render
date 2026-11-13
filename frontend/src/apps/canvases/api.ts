@@ -259,8 +259,8 @@ export function loginOutcome(startedAt: number | null, now = Date.now()): string
   return "Sign-in was not completed — try again.";
 }
 
-/** The account's canvases. Without `fresh`, a server memory-cache miss answers
- *  from the on-disk baseline of the last listing in milliseconds, flagged
+/** The account's canvases. Without `fresh`, the server answers from the
+ *  on-disk baseline of the last listing (when there is one) in milliseconds, flagged
  *  `stale: true` — the caller then asks again with `fresh` for the real one
  *  (a ~3s control-plane round trip on a large account). */
 export const listCanvases = (env: WorkbenchEnv, fresh = false) =>
