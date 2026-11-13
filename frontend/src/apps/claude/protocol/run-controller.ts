@@ -2728,6 +2728,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (disposed) return;
     const sessionId = state.sessionId;
     if (!sessionId) throw new Error("No conversation to allow this in.");
+    // The fork's retry runs under a new chat id whose hook never sees a grant
+    // recorded under this one, and it would consume the pending fork message.
+    if (state.fork) throw new Error("Send or cancel the pending fork before allowing this call.");
     const gen = logGen;
     const res = await run("allow_denied", { session_id: sessionId, tool_use_id: toolUseId });
     if (disposed || logGen !== gen) return;
