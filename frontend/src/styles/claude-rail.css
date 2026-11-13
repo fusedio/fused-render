@@ -746,6 +746,14 @@
 .claude-rail-peek.is-on .claude-rail-peek-card {
   transform: none;
 }
+/* The Linux window host's GPU rendering (`data-gpu-rendering`) draws the
+   card's fade wrong: it vanishes for a few frames as it lands. The card
+   appears and moves without transitions there. */
+:root[data-gpu-rendering] .claude-rail-peek,
+:root[data-gpu-rendering] .claude-rail-peek.is-on,
+:root[data-gpu-rendering] .claude-rail-peek-card {
+  transition: none;
+}
 /* A HELD card with favourites OFF (the pin pressed; RailPeek `.is-held`)
    wears the accent on its edge, the whole way round (owner, 2026-11-02: "in
    pin, we make border accent of the whole preview window"). */
