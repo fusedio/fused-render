@@ -2650,6 +2650,10 @@ class _SyncManager:
         self.pull_seq = 0
         self.last_pull_at: float | None = None
         self.merge_seq = 0
+        # Set by `_merge_remote` when its writes stood; the caller turns it
+        # into a `merge_seq` bump (`_publish_merge`) after logging the event,
+        # so a reader who sees the new merge_seq also finds the event.
+        self._merge_landed = False
         # Sync-point state for the three-way merge: per-file md5s of the
         # clone at the last sync point, and the last-seen remote manifest.
         # Persisted OUTSIDE the clone dir (a CLI `pull --force` removes any
@@ -3619,6 +3623,7 @@ class _SyncManager:
         # (rel, previous file bytes or None if the merge created it,
         #  previous base entry or _MISSING) — enough to undo every write.
         rollback: list[tuple[str, bytes | None, object]] = []
+        self._merge_landed = False
         for rel, data in bundle.items():
             dest = os.path.join(self.dir, rel)
             remote_hash = hashlib.md5(data).hexdigest()
@@ -3807,9 +3812,19 @@ class _SyncManager:
         # explicit Pull there is no loop to avoid.)
         self._save_base()
         if rollback:
-            self.merge_seq += 1
+            # merge_seq moves in `_publish_merge`, once the caller has logged.
+            self._merge_landed = True
             self.last_pull_at = time.time()
         return True
+
+    def _publish_merge(self) -> None:
+        """Bump `merge_seq` for the merge `_merge_remote` just landed, if
+        any. Callers run it under _op_lock AFTER logging that merge's event:
+        sync/state reads merge_seq without the lock, and a reader that sees
+        the new value must find the event in the log too."""
+        if self._merge_landed:
+            self._merge_landed = False
+            self.merge_seq += 1
 
     def _poll_remote(self, probe: dict, bundle: dict[str, bytes] | None = None) -> str:
         """The poll leg's read of a fresh manifest, under _op_lock. Adopts a
@@ -3998,9 +4013,8 @@ class _SyncManager:
             if files:
                 self._last_merge = {"at": time.time(), "files": files}
                 self._journal_add("merged", "", files=files)
-            # Logged before the lock is released, with the merge it reports:
-            # merge_seq moved under this lock, and a reader that sees it must
-            # also see this event.
+            # Logged before merge_seq moves (`_publish_merge` below): a
+            # reader that sees the new merge_seq must also see this event.
             rev = self._revision_text(probe)
             self.log_event("server_to_disk", "server merged",
                            detail=(", ".join(files[:20]) + (f" (+{len(files) - 20} more)"
@@ -4008,6 +4022,7 @@ class _SyncManager:
                                    if files else "nothing to change here")
                                   + (f"; {rev}" if rev else ""))
         finally:
+            self._publish_merge()
             self._op_lock.release()
         return {"ok": True, "files": files}
 
@@ -4062,18 +4077,21 @@ class _SyncManager:
         if bundle is None:
             return False  # transient: retried next poll
         with self._op_lock:
-            gone = self._converged_deletes(probe)  # re-read: disk may have moved
-            if not gone:
-                return False
-            rollbacks = self.merge_rollback_seq
-            if not self._merge_remote(probe, bundle):
-                return False  # transient: retried next poll
-            if self.merge_rollback_seq != rollbacks:
-                self._adopt_failed = key
-                return False
-        self.log_event("server_to_disk", "server delete adopted",
-                       detail=f"{', '.join(gone)}: already deleted here")
-        return True
+            try:
+                gone = self._converged_deletes(probe)  # re-read: disk may have moved
+                if not gone:
+                    return False
+                rollbacks = self.merge_rollback_seq
+                if not self._merge_remote(probe, bundle):
+                    return False  # transient: retried next poll
+                if self.merge_rollback_seq != rollbacks:
+                    self._adopt_failed = key
+                    return False
+                self.log_event("server_to_disk", "server delete adopted",
+                               detail=f"{', '.join(gone)}: already deleted here")
+                return True
+            finally:
+                self._publish_merge()
 
     def _force_pull(self, probe: dict, cli, hard: bool = False) -> str | None:
         """pull()'s shim-backed wholesale branch (clean clone, or a hard
@@ -4376,6 +4394,7 @@ class _SyncManager:
                             self.log_event("server_to_disk", "server merged",
                                            detail=", ".join(files[:20]) + "; before a push")
                     finally:
+                        self._publish_merge()
                         self._op_lock.release()
                     if not merged:
                         # The remote moved and could not be reconciled (zip
