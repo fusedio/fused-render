@@ -136,26 +136,45 @@ const STOP = new Set(
   ).split(" "),
 );
 
+// A clause that opens with one of these asks something; it describes nothing.
+const QUESTION = new Set(
+  "what whats who whos whom whose why where wheres when whens how hows which".split(" "),
+);
+
+// Words for what an app is built WITH. A clause made only of these (and
+// filler) is a stack preface; beside a subject word they stay in the name
+// ("react-dashboard").
+const STACK = new Set(
+  (
+    "react vue svelte angular solid next nextjs nuxt vite tailwind tailwindcss " +
+    "bootstrap shadcn html css js ts javascript typescript python node nodejs " +
+    "bun deno flask django fastapi sql sqlite postgres duckdb"
+  ).split(" "),
+);
+
 // The last rung: the prompt's own subject words, no model. NOT a slug of the
 // prompt — that produced "make-me-a-tool-that" — but its first clause with
 // the ask and the filler removed: "Make me a tool that tracks gym workouts"
 // -> "tracks-gym-workouts", "A habit tracker. Layout: …" -> "habit-tracker".
+// Two kinds of clause are passed over, since their words are not the subject:
+// a question ("What's your name?" must not become "whats-name") and a clause
+// that only names the stack ("Use React and Tailwind. Build a recipe
+// organizer" is a recipe organizer, not "react-tailwind").
 // Returns "" when the prompt has no subject word at all.
 export function nameFromPrompt(prompt: string): string {
-  const pick = (text: string) =>
+  const words = (text: string) =>
     text
       .toLowerCase()
       .replace(/['’]/g, "")
       .split(/[^a-z0-9]+/)
-      .filter((w) => w && !STOP.has(w))
-      .slice(0, 3)
-      .join("-");
-  const clauses = prompt.split(/[.:;!?\n]+|\s[—–-]\s/).filter((c) => c.trim());
-  for (const clause of clauses.slice(0, 3)) {
-    const name = kebabName(pick(clause));
-    if (name) return name;
-  }
-  return kebabName(pick(prompt));
+      .filter(Boolean);
+  const subject = prompt
+    .split(/[.:;!?\n]+|\s[—–-]\s/)
+    .map(words)
+    .filter((ws) => ws.length > 0 && !QUESTION.has(ws[0]))
+    .map((ws) => ws.filter((w) => !STOP.has(w)))
+    .find((ws) => ws.some((w) => !STACK.has(w)));
+  return kebabName((subject ?? []).slice(0, 3).join("-"));
 }
 
 // Why Claude Code could not be asked at all, when that is the reason: not
