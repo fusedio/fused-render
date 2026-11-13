@@ -2171,6 +2171,27 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(assistants(controller).length).toBe(1);
   });
 
+  test("a follow-up a LIVE session refused says the server's reason, not 'ended'", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ error: "stop in progress — try again in a moment" }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("late");
+          return poll({ segments: [text("still going")] });
+        }
+        return poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(controller.getState().queued).toEqual([]);
+    expect(controller.getState().trouble?.message).toBe(
+      "Could not send: stop in progress — try again in a moment",
+    );
+  });
+
   test("`respawn` starts a fresh run and re-points the `run` param", async () => {
     let controller!: ChatController;
     const made = makeController({
