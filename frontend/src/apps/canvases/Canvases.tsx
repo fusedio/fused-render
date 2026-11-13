@@ -213,6 +213,15 @@ export default function Canvases() {
 
   const refresh = useCallback(async () => {
     const gen = envGenRef.current;
+    // Two list reads for the SAME env can overlap (a settings save, a delete,
+    // the header button): the env generation does not move, so the older
+    // one's answers — above all its slow fresh one — must not land over the
+    // newer one's. Only the latest sequence writes. Taken HERE, before the
+    // status read, so an older fresh answer cannot land in that window (a
+    // just-deleted canvas popping back). The spinner goes with it: its owner
+    // is now superseded and may no longer clear it.
+    const seq = ++listSeqRef.current;
+    setRefreshing(false);
     try {
       // The PICKED env's login (custom has its own `[auth]`, D1412); with no
       // pick yet, the default env's — the same env `effectiveEnv` lands on.
@@ -250,11 +259,6 @@ export default function Canvases() {
           setError(null);
           return;
         }
-        // Two refreshes for the SAME env can overlap (a settings save, a
-        // credentials change): the env generation does not move, so the
-        // older one's answers — above all its slow fresh one — must not land
-        // over the newer one's. Only the latest sequence writes.
-        const seq = ++listSeqRef.current;
         const { canvases, stale } = await listCanvases(env);
         if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
         setCanvases(canvases);
