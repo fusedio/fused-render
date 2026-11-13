@@ -1648,7 +1648,7 @@ def _locked_json_update(path: str, update) -> None:
         if new is None:
             try:
                 os.unlink(path)
-            except OSError:
+            except FileNotFoundError:
                 pass
             return
         tmp = "%s.%d.tmp" % (path, os.getpid())

@@ -405,3 +405,35 @@ def test_canvas_clone_keeps_its_hooks_and_gains_the_allow_once_one(
     settings = json.loads(argv[argv.index("--settings") + 1])["hooks"]
     assert len(settings["PreToolUse"]) == 2 and "PostToolUse" in settings
     assert "--allow-once-hook=" in settings["PreToolUse"][-1]["hooks"][0]["command"]
+
+
+def _hook_in_process(tmp_path, monkeypatch, capsys, patches):
+    """Run the hook in this process (so os.* can be broken) and return stdout."""
+    import io
+    path = _grant(tmp_path, _entry(), *patches.get("extra", []))
+    monkeypatch.setattr(sys, "argv", ["permission_server.py"])
+    mod = _load("permission_server")
+    call = {"tool_name": "Bash", "tool_input": {"command": "make deploy"}}
+    monkeypatch.setattr(sys, "stdin", type("S", (), {"buffer": io.BytesIO(json.dumps(call).encode())})())
+    for name, fn in patches.get("os", {}).items():
+        monkeypatch.setattr(mod.os, name, fn)
+    rc = mod._allow_once_hook(str(path))
+    return rc, capsys.readouterr().out, path
+
+
+def test_hook_emits_no_allow_when_the_last_grant_cannot_be_deleted(tmp_path, monkeypatch, capsys):
+    def boom(_p):
+        raise PermissionError("locked")
+    rc, out, path = _hook_in_process(tmp_path, monkeypatch, capsys, {"os": {"unlink": boom}})
+    assert rc == 0 and out == ""
+    assert path.exists()
+
+
+def test_hook_emits_no_allow_when_the_reduced_store_cannot_be_written(tmp_path, monkeypatch, capsys):
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+    extra = [_entry(match={"command": "other"}, tid="t2")]
+    rc, out, path = _hook_in_process(
+        tmp_path, monkeypatch, capsys, {"extra": extra, "os": {"replace": boom}})
+    assert rc == 0 and out == ""
+    assert [e["tool_use_id"] for e in json.loads(path.read_text())] == ["t1", "t2"]
