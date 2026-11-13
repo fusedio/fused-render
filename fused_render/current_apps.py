@@ -163,7 +163,7 @@ def app_dir_for(project: str) -> str | None:
         folder = canonical_fs_path(os.path.abspath(e["path"])).rstrip("/")
         if folder and is_under(project, folder):
             return folder
-    # A canvas CLONE (`~/Fused/canvas/<env>/<name>`), or a node file in it:
+    # A canvas CLONE (`~/Fused/canvas/<env>/user/<name>`), or a node file in it:
     # the clone is the project (the sidebar's Canvases section, 2026-10-20).
     # Before the workspace climb — a clone declares no page, so the climb
     # would answer None, and a clone is under the workspace root.
@@ -439,16 +439,16 @@ def app_icon(folder: str) -> dict | None:
 def _canvas_of(path: str) -> dict | None:
     """`{env, name}` when the desk row IS a canvas clone (the clone dir
     itself, not a file in it), else None (see canvases.clone_dir_for)."""
-    from fused_render.canvases import canvases_root as canvases_root_for, clone_dir_for
+    from fused_render.canvases import clone_dir_for, clones_root
 
     clone = clone_dir_for(path)
     if clone is None:
         return None
     env, name, clone_dir = clone
-    # The row must BE the clone (one level under the root), not a file in
-    # it. Plain and resolved spellings of the root both name the clone;
-    # nothing here resolves `path` (see clone_dir_for).
-    real_root = os.path.realpath(canvases_root_for(env))
+    # The row must BE the clone (one level under the clones folder), not a
+    # file in it. Plain and resolved spellings of that folder both name the
+    # clone; nothing here resolves `path` (see clone_dir_for).
+    real_root = os.path.realpath(clones_root(env))
     if path.rstrip("/") not in (
         canonical_fs_path(clone_dir).rstrip("/"),
         canonical_fs_path(os.path.join(real_root, name)).rstrip("/"),

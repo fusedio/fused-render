@@ -127,6 +127,9 @@ EXPECTED_STARTUP = [
     # `~/Fused/canvas`, if it already exists, so a task created there right
     # after a restart usually finds the clone already on disk.
     "_startup_kick_fused_web_workbench_skills",
+    # Added 2026-11-13 (D1476): moves canvas clones from before the scoped
+    # layout into `<env>/user/`, on a daemon thread.
+    "_startup_canvas_layout",
     # Added 2026-09-17 (PR 2): the project queue's factory is registered here
     # explicitly. Also claims the machine-duties lease (B2) and, only for the
     # process that wins it, starts the scheduler and reconciles once so a

@@ -117,7 +117,7 @@ def workbench_plugin_dir() -> str | None:
 
 def canvases_root() -> str:
     """Where canvas clones live — `~/Fused/canvas`, the BASE above every
-    environment's clone folder (`~/Fused/canvas/<env>/<name>`, owner
+    environment's clone folder (`~/Fused/canvas/<env>/user/<name>`, owner
     2026-10-20) — the fact a template needs to answer "is this target a canvas
     clone?", which is what gates the workbench skills above. The base and not
     one environment's folder on purpose: a clone of either environment is a

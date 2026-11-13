@@ -86,10 +86,26 @@ watchfiles thread turns a file write into a `disk_rev` bump within ~100 ms
 (the 1 s scan stays as the push debounce's backstop).
 
 A canvas is (env, name), never a name alone. Clones live at
-`~/Fused/canvas/<env>/<name>` (D1382), every canvas-scoped endpoint takes a
-required `env`, sync managers are keyed `(env, name)` and pass their own env
-to every CLI run — so a prod canvas and an unstable canvas, even of one name,
-sync side by side (owner, 2026-10-20). See the block above `_ENV_WEB_URLS`.
+`~/Fused/canvas/<env>/user/<name>` (D1476; `<env>/<name>` under D1382), every
+canvas-scoped endpoint takes a required `env`, sync managers are keyed
+`(env, name)` and pass their own env to every CLI run — so a prod canvas and
+an unstable canvas, even of one name, sync side by side (owner, 2026-10-20).
+See the block above `_ENV_WEB_URLS`.
+
+THE SCOPED LAYOUT (D1476). An environment's root `~/Fused/canvas/<env>/`
+(`canvases_root`) holds three scope folders — `user/`, `team/`, `public/` —
+and the `.sync/` bookkeeping, which stays at the root, keyed by canvas name.
+Only `user/<name>` (`clones_root`, `_canvas_dir`) can be a clone. Every
+canvas folder may carry a marker, `.fused-canvas.json` (canvas_marker.py),
+saying who owns it: `sync: "live"` is a clone this module syncs, `sync:
+"mirror"` a read-only reference copy written by `fused canvas mirror`, which
+is NEVER a clone here — not listed as cloned, no manager, no watcher, no
+push (`_is_live_clone`). A `user/<name>` folder with a `canvas.toml` and no
+readable marker is a live clone. This module writes the live marker itself
+(`_mark_live`: at clone, at sync start, after every pull, and whenever the
+sync learns the collection id), only when the id is known and the CLI is not
+an external one. Clones from before the layout are moved by
+canvas_layout.py, once, on first use.
 
 No import of anything under fused_render.server (server includes this router —
 keep it acyclic); the X-Fused guard is duplicated locally, same as other
@@ -259,7 +275,7 @@ STOP_JOIN_S = 5.0
 PUSH_TERMINATE_GRACE_S = 2.0
 
 # The Fused environment is part of a canvas's IDENTITY, not a process-wide
-# knob. The `<env>` segment of `~/Fused/canvas/<env>/<name>` (D1382) is what
+# knob. The `<env>` segment of `~/Fused/canvas/<env>/user/<name>` (D1382) is what
 # binds a clone to the Fused it was pulled from; every canvas-scoped endpoint
 # takes a required, validated `env` (`_require_env`); managers are keyed
 # `(env, name)` and hand THEIR env to every CLI run (`_cli_env(cli, env)`), and
@@ -591,16 +607,98 @@ def canvases_base() -> str:
 
 
 def canvases_root(env: str) -> str:
-    """Where `env`'s clones live: `~/Fused/canvas/<env>/<name>` (D1382). The
+    """`env`'s canvas root, `~/Fused/canvas/<env>` (D1382): the scope folders
+    (`user/`, `team/`, `public/`, D1476) and the `.sync/` tree. The
     environment is a path segment because a clone is bound to the Fused it
     was pulled from: prod's `alpha` and unstable's `alpha` are two canvases,
     two folders, two `.sync/` trees (merge base, trash, writer lock), and so
-    two managers that never share a byte."""
+    two managers that never share a byte. This is also the ROOT a `fused
+    canvas mirror` run is given, and `.sync/` is invisible to it."""
     return os.path.join(canvases_base(), env)
 
 
+# The scope folders under an environment's root (D1476), and the one clones
+# live in. `team/` and `public/` only ever hold reference copies.
+SCOPE_DIRS = canvas_marker.SCOPES
+_CLONES_SCOPE = "user"
+
+
+def clones_root(env: str) -> str:
+    """Where `env`'s clones live: `~/Fused/canvas/<env>/user` (D1476)."""
+    return os.path.join(canvases_root(env), _CLONES_SCOPE)
+
+
 def _canvas_dir(env: str, name: str) -> str:
-    return os.path.join(canvases_root(env), name)
+    return os.path.join(clones_root(env), name)
+
+
+def _is_live_clone(env: str, name: str) -> bool:
+    """Whether `user/<name>` is a clone this process may sync: it holds a
+    `canvas.toml` and its marker does not say `mirror`.
+
+    A missing or unreadable marker counts as live, deliberately: a clone
+    from before the marker existed, the external-CLI path (which writes
+    none), and the instant between a pull that removed the marker and the
+    rewrite. The mirror command extracts into a dot-prefixed sibling and
+    writes the marker last, so a plain folder without one is never a
+    half-written reference copy."""
+    folder = _canvas_dir(env, name)
+    return (os.path.isfile(os.path.join(folder, "canvas.toml"))
+            and canvas_marker.sync_of(folder) != canvas_marker.SYNC_MIRROR)
+
+
+def _ensure_layout(env: str, *, force: bool = False):
+    """Move `env`'s clones from the pre-D1476 path, if any are left
+    (canvas_layout.py; a no-op kept for the life of the process once nothing
+    is). Imported lazily: that module imports this one."""
+    from fused_render import canvas_layout
+
+    return canvas_layout.ensure_layout(env, force=force)
+
+
+def _layout_refusal(env: str, name: str, report, *,
+                    creating: bool = False) -> JSONResponse | None:
+    """The 409 for a canvas whose clone could not be moved to the new layout
+    yet, or None. Cloning or syncing it at the new path meanwhile would make
+    a second clone beside the one still holding the user's work. `creating`:
+    the caller is about to make a folder under `user/` (see
+    `LayoutReport.refusal`)."""
+    why = report.refusal(name, creating=creating)
+    if why is None:
+        return None
+    return JSONResponse(
+        {"error": f"canvas {_sync_key(env, name)!r} is still at its old folder and "
+                  f"could not be moved yet: {why}. Try again shortly.",
+         "code": "layout_pending"}, status_code=409)
+
+
+def _mark_live(env: str, name: str, collection_id: str | None = None,
+               revision: int | None = None) -> bool:
+    """Write the live marker into clone (env, name). True when the folder is
+    marked live afterwards.
+
+    Only a folder that already IS a live clone: this never turns a reference
+    copy into one. Only when the collection id is known — `collection_id`,
+    else what the sync point or the stored listing says
+    (`canvas_layout.known_collection_id`) — because the marker's whole job is
+    to tell the mirror command which canvas the folder holds. And not for an
+    external FUSED_RENDER_FUSED_BIN (the gate `_seed_clone_claude_files`
+    uses): that path detects remote moves with `pull --dry-run`, which
+    reports a local-only file as a diff on every poll. A folder left without
+    a marker is "unmanaged" to the mirror command, which never touches it."""
+    cli = fused_cli()
+    if cli is None or _shim_manifest_command(cli) is None:
+        return False
+    if not _is_live_clone(env, name):
+        return False
+    if not collection_id:
+        from fused_render import canvas_layout
+
+        collection_id = canvas_layout.known_collection_id(env, name)
+    if not collection_id:
+        return False
+    return canvas_marker.write_live(_canvas_dir(env, name), name=name,
+                                    collection_id=collection_id, revision=revision)
 
 
 def _require_env(value) -> tuple[str | None, JSONResponse | None]:
@@ -974,7 +1072,9 @@ def api_canvases_status(env: str = ""):
                 # workbench origin itself, or — custom env, embed proxy on —
                 # the loopback proxy standing in front of it.
                 "embed_url": embed_base_url(env),
-                "canvases_dir": canvases_root(env),
+                # Where clones live (`<env>/user`, D1476): the page builds
+                # a clone's path as `canvases_dir + "/" + name`.
+                "canvases_dir": clones_root(env),
                 "cloned_count": len(_cloned_names(env)),
                 "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_configured(),
             }
@@ -1062,18 +1162,20 @@ def api_canvases_settings_delete(x_fused: str | None = Header(default=None)):
 
 
 def _cloned_names(env: str) -> set[str]:
-    """The clone dirs under canvases_root(env): a dir holding a canvas.toml,
-    the same rule /api/canvases/list uses to mark a card cloned.
+    """The clones under clones_root(env): a folder named like a canvas,
+    holding a canvas.toml, whose marker does not say `mirror`
+    (`_is_live_clone`) — the rule /api/canvases/list marks a card cloned by.
+    A reference copy `fused canvas mirror` left at `user/<name>` is not one.
 
+    Clones still at the pre-D1476 path are moved first (`_ensure_layout`).
     A root that does not exist yet is simply empty, and so is any other
-    listing failure (permissions, an unmounted volume): the count is
-    informational only."""
-    root = canvases_root(env)
+    listing failure (permissions, an unmounted volume)."""
+    _ensure_layout(env)
     try:
-        entries = os.listdir(root)
+        entries = os.listdir(clones_root(env))
     except OSError:
         return set()
-    return {d for d in entries if os.path.isfile(os.path.join(root, d, "canvas.toml"))}
+    return {d for d in entries if _NAME_RE.match(d) and _is_live_clone(env, d)}
 
 
 def cloned_canvases() -> list[tuple[str, str, str]]:
@@ -1095,8 +1197,13 @@ def cloned_canvases() -> list[tuple[str, str, str]]:
 
 def clone_dir_for(path: str) -> tuple[str, str, str] | None:
     """The canvas CLONE `path` is, or sits inside — `(env, name, clone_dir)`
-    — or None. A clone is `<canvases_root(env)>/<name>` (one level under an
-    environment's root, a CLI canvas name). Compared through `realpath` as
+    — or None. A clone is `<clones_root(env)>/<name>` (one level under an
+    environment's `user/` folder, a CLI canvas name; D1476). A path under
+    `team/` or `public/` — reference copies — is in no clone, and neither is
+    one at the pre-D1476 `<env>/<name>`. Decided by the path's SHAPE alone:
+    whether `user/<name>` is live or a reference copy takes a read of its
+    marker, which the callers that act on the answer make
+    (`_is_live_clone`). Compared through `realpath` as
     well as the plain path: the CLI wrapper reaches a clone through `pwd -P`,
     and a task made from inside one may name it either way. No existence
     check — the desk keeps a row for a clone that is gone, as it does for an
@@ -1120,14 +1227,14 @@ def clone_dir_for(path: str) -> tuple[str, str, str] | None:
     # is not a documented way to reach one.
     cand = os.path.normpath(path)
     for env in WORKBENCH_ENV_CHOICES:
-        root = canvases_root(env)
+        root = clones_root(env)
         for base in {os.path.normpath(root), os.path.realpath(root)}:
             if not is_within(cand, base, strict=True):
                 continue
             name = cand[len(base) + 1:].split(os.sep)[0]
             if not _NAME_RE.match(name):
                 continue
-            return env, name, os.path.join(canvases_root(env), name)
+            return env, name, _canvas_dir(env, name)
     return None
 
 
@@ -1671,7 +1778,7 @@ in by fused-render, held until your turn ends.) So:
   the user did since you read it.
 - **A file that vanished was deleted by the user.** If a node's file is gone
   when you go to edit it, the user deleted that node on the canvas (a copy is
-  in `../.sync/trash/<canvas>/<timestamp>/`). Do not recreate it unless the
+  in `../../.sync/trash/<canvas>/<timestamp>/`). Do not recreate it unless the
   user asks; say what you found. A recreated file with no row in
   `canvas.toml` stays off the canvas.
 - **When you and the user change the same property, the user's wins.** If
@@ -1685,7 +1792,7 @@ in by fused-render, held until your turn ends.) So:
 A file that unexpectedly reverted, or a whole folder that changed, can also
 come from a server change merged in, or from the user's Hard pull
 (replacing this folder with the server's copy; a backup is always made under
-`../.sync/trash/<canvas>/<timestamp>/`). Either way: re-read the files you are
+`../../.sync/trash/<canvas>/<timestamp>/`). Either way: re-read the files you are
 about to edit rather than rewriting them from memory, check the state on disk
 and say what you found. Restore from the trash only what the user asks for.
 
@@ -1705,7 +1812,8 @@ def _no_backup_error(root: str) -> str:
 def _seed_clone_claude_files(target: str, name: str) -> None:
     """Best-effort: (re)write CLAUDE.md + .fusedignore into a clone. Runs
     after clone, on every sync/start, and after every pull (the CLI's
-    `--force` deletes them; a merge re-seeds too).
+    `--force` deletes them; a merge re-seeds too). Each of those callers
+    writes the live marker right after (`_mark_live`), for the same reason.
 
     Skipped for an external FUSED_RENDER_FUSED_BIN: that path detects remote
     moves with `pull --dry-run`, which would report the seeded local-only
@@ -2035,14 +2143,7 @@ def api_canvases_list(
     canvases, err, stale = _list_entries(env, allow_stale=not fresh)
     if err is not None:
         return err
-    cloned = set()
-    root = canvases_root(env)
-    try:
-        cloned = {
-            d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "canvas.toml"))
-        }
-    except OSError:
-        pass
+    cloned = _cloned_names(env)
     for canvas in canvases:
         is_cloned = canvas["name"] in cloned
         canvas["cloned"] = is_cloned
@@ -2053,7 +2154,7 @@ def api_canvases_list(
         mtime = None
         if is_cloned:
             n_udfs = 0
-            for dirpath, dirs, files in os.walk(os.path.join(root, canvas["name"])):
+            for dirpath, dirs, files in os.walk(_canvas_dir(env, canvas["name"])):
                 dirs[:] = [d for d in dirs if not d.startswith(".")]
                 for f in files:
                     if f.startswith("."):
@@ -2408,9 +2509,24 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
 
 
 def _clone(env: str, name: str):
+    # A clone of this canvas still at the pre-D1476 path moves first, now
+    # (`force`: the user is asking for this canvas). One that cannot move yet
+    # — a Claude session is in it, another fused-render syncs it — refuses the
+    # clone: pulling a fresh copy to the new path would leave two clones, the
+    # old one holding the user's unpublished work.
+    report = _ensure_layout(env, force=True)
+    refusal = _layout_refusal(env, name, report, creating=True)
+    if refusal is not None:
+        return refusal
     target = _canvas_dir(env, name)
+    if name in report.moved:
+        # The clone arrived from its old path on THIS call, with whatever was
+        # unpublished in it: the page asked because its listing still said
+        # "not cloned". That is the answer; a `pull --force` now would
+        # replace the user's work with the server's copy.
+        return {"ok": True, "dir": target}
     os.makedirs(target, exist_ok=True)
-    # --force: the clone folder is OURS (under ~/Fused/canvas/<env>); a
+    # --force: the clone folder is OURS (under ~/Fused/canvas/<env>/user); a
     # re-clone deliberately resets it to the remote state. The sync watcher is
     # paused around the pull so its writes never echo into a push.
     manager = _sync_manager(env, name, create=False)
@@ -2424,6 +2540,9 @@ def _clone(env: str, name: str):
         # are excluded from the fingerprint) and after the CLI pull, which
         # deletes any previous seed (not in the bundle).
         _seed_clone_claude_files(target, name)
+        # ...and the marker with it (a CLI older than the mirror contract
+        # deletes it too): the folder is this process's live clone.
+        _mark_live(env, name)
     if manager is not None:
         # Only adopt the pulled content as the clean baseline on success — a
         # failed pull leaves the folder as it was, so any local edits pending
@@ -2664,6 +2783,9 @@ class _SyncManager:
         # re-created restarts at revision 1 under a new id, so a first look
         # whose id differs is a move even at the same revision.
         self._base_collection_id: str | None = None
+        # The collection id this manager last wrote into the clone's live
+        # marker (`_mark_live`); a different `_base_collection_id` rewrites it.
+        self._marker_id: str | None = None
         self._server_revision: int | None = None
         # An old fused CLI without `push --if-match`: CAS off for this manager.
         self._cas_unsupported = False
@@ -3212,6 +3334,26 @@ class _SyncManager:
         cid = (manifest or {}).get("id")
         if isinstance(cid, str) and cid:
             self._base_collection_id = cid
+        # The id was just learned, or changed (a canvas deleted and
+        # re-created under its name): the marker must say so before the next
+        # mirror run, which would otherwise pull the "new" canvas in beside
+        # this clone as `<name>-<id8>`.
+        if self._base_collection_id != getattr(self, "_marker_id", None):
+            self._mark_live()
+
+    def _mark_live(self) -> None:
+        """Write this clone's live marker with what the sync point knows
+        (`_mark_live`, the module's). Called wherever a pull may have removed
+        it and wherever the collection id is learned."""
+        if _mark_live(self.env, self.name, self._base_collection_id, self._base_revision):
+            self._marker_id = self._base_collection_id or self._marker_id
+
+    def _reseed(self) -> None:
+        """Put back what a pull removes from the clone and a text change
+        outdates: the seeded CLAUDE.md and .fusedignore, then the live
+        marker. Invisible to the sync in both directions."""
+        _seed_clone_claude_files(self.dir, self.name)
+        self._mark_live()
 
     def _reconcile_rows(self, leg: str, directory: str, **kw) -> list[str]:
         try:
@@ -3967,7 +4109,7 @@ class _SyncManager:
                 return {"ok": False, "files": [], "error": error, "code": "rolled_back"}
             self._merge_failed_key = None
             files = [f.replace(os.sep, "/") for f in self._last_merge_files]
-            _seed_clone_claude_files(self.dir, self.name)
+            self._reseed()
             # Dirty iff the clone still differs from the new sync point: its
             # own unpushed edits (which the push then ships, with the new
             # revision as If-Match), or a canvas.toml the merge normalised.
@@ -4134,7 +4276,10 @@ class _SyncManager:
         )
         # The CLI's --force removed the seeded Claude helper files (they're
         # not in the bundle) — put them back now that the recheck has run.
-        _seed_clone_claude_files(self.dir, self.name)
+        # The live marker goes back with them, for the same reason at the
+        # same point: a marker written before the recheck would be one more
+        # local-only file for it to report.
+        self._reseed()
         still_diff = self._settle_after_force_pull(pulled, still_diff)
         # The remote genuinely IS at `probe` — we just pulled it — so rotate
         # either way; not rotating would make the next poll see the same move
@@ -4643,7 +4788,7 @@ class _SyncManager:
         still_diff = recheck is not None and recheck.returncode == 0 and (
             "already up to date" not in (recheck.stdout or "")
         )
-        _seed_clone_claude_files(self.dir, self.name)
+        self._reseed()
         still_diff = self._settle_after_force_pull(pulled, still_diff)
         self._dirty_since = time.time() if still_diff else None
         if still_diff and self.push_state != "error":
@@ -5514,7 +5659,7 @@ class _SyncManager:
         when = time.strftime("%H:%M:%S", time.localtime(float(tomb.get("at") or time.time())))
         return {"deny": (
             f"The user deleted the node `{stem}` on the canvas at {when}, so {base} is gone "
-            f"on purpose (a copy is under ../.sync/trash/{self.name}/). Do not recreate it "
+            f"on purpose (a copy is under ../../.sync/trash/{self.name}/). Do not recreate it "
             "unless the user asked you to. If they did, write it again and also add its "
             "[[canvas.nodes]] row in canvas.toml: a file without a row stays off the canvas.")}
 
@@ -5570,7 +5715,7 @@ class _SyncManager:
         for e in structural[-20:]:
             if e["kind"] == "deleted":
                 lines.append(f"- deleted node `{e['name']}`"
-                             + (f" ({e['file']} moved to ../.sync/trash/{self.name}/)" if e.get("file") else "")
+                             + (f" ({e['file']} moved to ../../.sync/trash/{self.name}/)" if e.get("file") else "")
                              + " — do not recreate it unless the user asks")
             elif e["kind"] == "added":
                 lines.append(f"- added node `{e['name']}`")
@@ -6613,10 +6758,18 @@ def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(def
         return bad
     if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
-    root = os.path.realpath(canvases_root(env))
+    # A clone still at the pre-D1476 path moves first, so the delete below
+    # removes it with the canvas; one that cannot move yet refuses the delete
+    # (the canvas would be gone and its folder left behind, unlisted).
+    refusal = _layout_refusal(env, name, _ensure_layout(env, force=True))
+    if refusal is not None:
+        return refusal
+    root = os.path.realpath(clones_root(env))
     clone = os.path.realpath(_canvas_dir(env, name))
     # The one folder this may remove is `<root>/<name>` — never the root, never
-    # anything a stray separator or link could point the name at.
+    # anything a stray separator or link could point the name at. A reference
+    # copy of this same canvas at that path (`fused canvas mirror`'s, never
+    # opened here) goes with the canvas like a clone does.
     if os.path.dirname(clone) != root or os.path.basename(clone) != name:
         return _error("refusing to delete: the clone folder is not under the canvases root", 500)
     # The clone's writer lock is THIS request's for the whole delete: claimed
@@ -6767,7 +6920,15 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
         return {"ok": True, "env": env, "name": name, "old_name": name}
     if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
-    root = os.path.realpath(canvases_root(env))
+    # Both names, at their pre-D1476 paths: the clone being renamed moves to
+    # the new layout first, and a leftover legacy clone under the NEW name is
+    # as much "a folder of that name" as one under `user/`.
+    report = _ensure_layout(env, force=True)
+    for pending, creating in ((name, False), (new, True)):
+        refusal = _layout_refusal(env, pending, report, creating=creating)
+        if refusal is not None:
+            return refusal
+    root = os.path.realpath(clones_root(env))
     clone = os.path.realpath(_canvas_dir(env, name))
     target = os.path.join(root, new)
     if os.path.dirname(clone) != root or os.path.basename(clone) != name:
@@ -6797,7 +6958,11 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
         return JSONResponse(
             {"error": f"a canvas named {new!r} already exists; pick another name",
              "code": "exists"}, status_code=409)
-    has_clone = os.path.isdir(clone)
+    # A reference copy at the old name (marker `mirror`) is not a clone:
+    # nothing of ours to move, the server rename alone runs, and the next
+    # mirror run writes the copy under the new name and removes this one.
+    has_clone = (os.path.isdir(clone)
+                 and canvas_marker.sync_of(clone) != canvas_marker.SYNC_MIRROR)
     if has_clone:
         from fused_render import claude_session_move
 
@@ -6901,6 +7066,11 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
                     logger.warning("canvas rename: could not move %s -> %s", src, dst,
                                    exc_info=True)
             _patch_toml_name(target, name, new)
+            # The marker names the canvas too. The collection is the same
+            # one: its id comes from the marker that moved with the folder
+            # (the stored listing was just dropped, and names the old name).
+            moved_marker = canvas_marker.read(target)
+            _mark_live(env, new, moved_marker.id if moved_marker is not None else None)
     finally:
         for lk in reversed(flight_locks):
             lk.release()
@@ -6941,7 +7111,12 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
 def _sync_start_response(env: str, name: str):
     """The body of sync/start, shared with sync/takeover: claim the writer
     lock and start this process's watcher on the clone, or say who owns it."""
-    if not os.path.isfile(os.path.join(_canvas_dir(env, name), "canvas.toml")):
+    refusal = _layout_refusal(env, name, _ensure_layout(env))
+    if refusal is not None:
+        return refusal
+    # A reference copy at `user/<name>` (marker `mirror`) is not a clone: no
+    # manager, no watcher, no push of its content over the user's canvas.
+    if not _is_live_clone(env, name):
         return _error(f"canvas {name!r} is not cloned yet (no canvas.toml)", 409)
     # The writer lock FIRST: a refused start must not touch a folder another
     # process owns (the seeding below writes into it).
@@ -6983,7 +7158,11 @@ def _sync_start_response(env: str, name: str):
     # fingerprint, hash and merge-base walks (_SYNC_IGNORED_BASENAMES) and from
     # every push (.fusedignore) — and shim-gated inside the helper, so the
     # external-CLI leg still cannot churn on it.
-    _seed_clone_claude_files(manager.dir, name)
+    #
+    # The live marker rides the same call (`_reseed`): a clone from before
+    # D1476, or one whose collection id was unknown when it was cloned or
+    # moved, is marked here once the sync point or the listing knows the id.
+    manager._reseed()
     return manager.status()
 
 
@@ -7619,8 +7798,10 @@ def _revive_for_session(env: str, name: str, event: str) -> "_SyncManager | None
     """Start the watcher of a cloned canvas for a Claude session's hook, as
     sync/start does for a page — or None: not a clone any more, owned by
     another fused-render, being deleted or handed over, quitting. Never an
-    error: a hook's answer is advice."""
-    if not os.path.isfile(os.path.join(_canvas_dir(env, name), "canvas.toml")):
+    error: a hook's answer is advice. A reference copy (marker `mirror`) is
+    not a clone and never gets a watcher."""
+    _ensure_layout(env)
+    if not _is_live_clone(env, name):
         return None
     try:
         manager = _sync_manager(env, name, create=True)

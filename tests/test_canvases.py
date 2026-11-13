@@ -177,7 +177,7 @@ def main():
             sys.stderr.write("error: node 'x' has no source file\n")
             sys.exit(1)
         return
-    if plain[:2] in (["canvas", "create"], ["canvas", "delete"]):
+    if plain[:2] in (["canvas", "create"], ["canvas", "delete"], ["canvas", "rename"]):
         return
     if plain[:1] == ["logout"]:
         os.remove(os.environ.get("FUSED_STUB_LOGOUT_FILE")
@@ -231,6 +231,9 @@ class Harness:
         monkeypatch.delenv("FUSED_RENDER_WORKBENCH_URL", raising=False)
         self.base = tmp_path / "canvases"
         self.root = self.base / ENV
+        # Where ENV's clones live (`clones_root(ENV)`, D1476); `.sync/` stays
+        # on `self.root`.
+        self.clones = self.root / "user"
 
         self.log = tmp_path / "stub-log.jsonl"
         monkeypatch.setenv("FUSED_STUB_LOG", str(self.log))
@@ -295,8 +298,8 @@ def test_list_requires_login(harness):
 
 def test_list_normalizes_names_and_marks_cloned(harness):
     harness.log_in()
-    (harness.root / "beta").mkdir(parents=True)
-    (harness.root / "beta" / "canvas.toml").write_text("", encoding="utf-8")
+    (harness.clones / "beta").mkdir(parents=True)
+    (harness.clones / "beta" / "canvas.toml").write_text("", encoding="utf-8")
     res = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
     assert res.status_code == 200
     canvases = {c["name"]: c for c in res.json()["canvases"]}
@@ -308,7 +311,7 @@ def test_list_reports_clone_metadata(harness):
     # Cloned canvases carry n_udfs (*.py files) and mtime from the local
     # folder; un-cloned entries stay null so the client renders no stat line.
     harness.log_in()
-    beta = harness.root / "beta"
+    beta = harness.clones / "beta"
     beta.mkdir(parents=True)
     (beta / "canvas.toml").write_text("", encoding="utf-8")
     (beta / "one.py").write_text("", encoding="utf-8")
@@ -368,7 +371,7 @@ def _wire_list_shim(tmp_path, monkeypatch, body: str) -> None:
 
 def test_list_shim_reports_previews_and_updated_at(harness, tmp_path, monkeypatch):
     harness.log_in()
-    beta = harness.root / "beta"
+    beta = harness.clones / "beta"
     beta.mkdir(parents=True)
     (beta / "canvas.toml").write_text("", encoding="utf-8")
     _wire_list_shim(
@@ -682,7 +685,7 @@ def test_delete_canvas_stops_sync_runs_cli_and_removes_clone(harness):
     assert ["workbench", "canvas", "delete", "alpha"] in harness.calls()
     assert manager.stop_event.is_set()
     assert (ENV, "alpha") not in canvases_mod._syncs
-    assert not (harness.root / "alpha").exists()
+    assert not (harness.clones / "alpha").exists()
     for leftover in ("push/alpha", "trash/alpha", "alpha.json", "alpha.lock"):
         assert not (sync / leftover).exists(), leftover
     # The root itself, and the other clones' state, are untouched.
@@ -718,7 +721,7 @@ def test_delete_canvas_holds_sync_start_off_mid_delete(harness, monkeypatch):
     assert res.status_code == 200, res.text
     assert seen == [409]
     assert (ENV, "alpha") not in canvases_mod._syncs
-    assert not (harness.root / "alpha").exists()
+    assert not (harness.clones / "alpha").exists()
     assert not (harness.root / ".sync" / "alpha.lock").exists()
     # The hold lifts with the delete: a clone of the same name syncs again.
     harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
@@ -739,7 +742,7 @@ def test_delete_canvas_cli_failure_keeps_clone(harness, monkeypatch):
     monkeypatch.setattr(canvases_mod, "_run_cli", failing_cli)
     res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 502
-    assert (harness.root / "alpha" / "canvas.toml").is_file()
+    assert (harness.clones / "alpha" / "canvas.toml").is_file()
 
 
 def test_forget_file_sessions_erases_the_files_chats_and_skips_running_ones(
@@ -813,7 +816,7 @@ def test_delete_canvas_rejects_bad_names(harness):
         res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": bad}, headers=GUARD)
         assert res.status_code == 400, bad
     assert not any(c[:3] == ["workbench", "canvas", "delete"] for c in harness.calls())
-    assert (harness.root / "alpha" / "canvas.toml").is_file()
+    assert (harness.clones / "alpha" / "canvas.toml").is_file()
 
 
 def test_logout_failure_keeps_sync_alive_and_preserves_pending_edit(harness, monkeypatch):
@@ -830,7 +833,7 @@ def test_logout_failure_keeps_sync_alive_and_preserves_pending_edit(harness, mon
     manager = canvases_mod._syncs.get((ENV, "alpha"))
     assert manager is not None
 
-    (harness.root / "alpha" / "udf.py").write_text("print('hi')\n", encoding="utf-8")
+    (harness.clones / "alpha" / "udf.py").write_text("print('hi')\n", encoding="utf-8")
     deadline = time.time() + 5
     while time.time() < deadline and manager._dirty_since is None:
         time.sleep(0.02)
@@ -990,7 +993,7 @@ def test_clone_pulls_into_canvases_dir(harness):
     harness.log_in()
     res = harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200
-    assert os.path.isfile(harness.root / "alpha" / "canvas.toml")
+    assert os.path.isfile(harness.clones / "alpha" / "canvas.toml")
     pulls = [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]]
     assert pulls and "--force" in pulls[0]
 
@@ -1020,7 +1023,7 @@ def test_sync_start_on_stale_clone_pushes_pending_edit(harness, monkeypatch):
     harness.log_in()
     harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     old = time.time() - 120
-    for f in (harness.root / "alpha").iterdir():
+    for f in (harness.clones / "alpha").iterdir():
         os.utime(f, (old, old))
 
     res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
@@ -1064,7 +1067,7 @@ def test_sync_watches_debounces_and_pushes(harness, monkeypatch):
     time.sleep(0.4)
     assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
 
-    (harness.root / "alpha" / "udf.py").write_text("print('hi')\n", encoding="utf-8")
+    (harness.clones / "alpha" / "udf.py").write_text("print('hi')\n", encoding="utf-8")
     deadline = time.time() + 5
     while time.time() < deadline:
         status = _sync_view("alpha")
@@ -1102,7 +1105,7 @@ def test_sync_pulls_remote_changes_when_clean(harness, monkeypatch):
     forces = [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]
               and "--force" in c]
     assert len(forces) == 1, forces  # the clone's only
-    assert not (harness.root / "alpha" / "remote_udf.py").exists()
+    assert not (harness.clones / "alpha" / "remote_udf.py").exists()
 
     # The real CLI's dry-run reports up to date once the files match.
     harness.set_scenario({"pull_files": _REMOTE_PULL_FILES})
@@ -1110,7 +1113,7 @@ def test_sync_pulls_remote_changes_when_clean(harness, monkeypatch):
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
     assert _sync_view("alpha")["pull_seq"] == 1
     assert _sync_view("alpha")["server_stale"] is None
-    assert (harness.root / "alpha" / "remote_udf.py").exists()
+    assert (harness.clones / "alpha" / "remote_udf.py").exists()
     time.sleep(0.4)
     assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
     _stop_sync("alpha")
@@ -1172,7 +1175,7 @@ def test_sync_push_failure_reports_error(harness, monkeypatch):
     harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     harness.set_scenario({"fail": "push exploded"})
-    (harness.root / "alpha" / "udf.py").write_text("x = 1\n", encoding="utf-8")
+    (harness.clones / "alpha" / "udf.py").write_text("x = 1\n", encoding="utf-8")
     deadline = time.time() + 5
     status = None
     while time.time() < deadline:
@@ -1203,7 +1206,7 @@ def _fail_push_with_validation(harness, monkeypatch) -> dict:
     harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     harness.set_scenario({"push_fail_lines": _VALIDATION_LINES})
-    (harness.root / "alpha" / "udf.py").write_text("x = 1\n", encoding="utf-8")
+    (harness.clones / "alpha" / "udf.py").write_text("x = 1\n", encoding="utf-8")
     deadline = time.time() + 5
     status = None
     while time.time() < deadline:
@@ -1224,7 +1227,7 @@ def test_push_validation_failure_keeps_the_full_transcript(harness, monkeypatch)
     assert "Canvas validation failed with 4 error(s)" in status["error"]
 
     harness.set_scenario({})
-    (harness.root / "alpha" / "udf.py").write_text("x = 2\n", encoding="utf-8")
+    (harness.clones / "alpha" / "udf.py").write_text("x = 2\n", encoding="utf-8")
     deadline = time.time() + 5
     while time.time() < deadline:
         status = _sync_view("alpha")
@@ -1273,7 +1276,7 @@ def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
     # Session lands on the clone dir, unattended-capable, primed with the
     # verbatim transcript plus what to do: fix and validate; the folder
     # publishes itself at the session's turn end (no sync verbs, Q7).
-    assert seen["target"] == str(harness.root / "alpha")
+    assert seen["target"] == str(harness.clones / "alpha")
     assert seen["mode"] == "auto"
     # A canvas fix is a Claude feature: named, never the default agent.
     assert seen["backend"] == "claude"
@@ -1864,7 +1867,7 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
 
     with _staged():
-        (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+        (harness.clones / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
         shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
         shims.set_manifest("t2")
 
@@ -1872,8 +1875,8 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
     assert status["merge_seq"] >= 1 and status["server_stale"] is None, \
         f"{status} | {_watcher_diag()}"
     assert status["pull_seq"] == 0, status  # nobody pressed Pull
-    assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
-    assert (harness.root / "alpha" / "b.py").read_text() == "b2-remote\n"
+    assert (harness.clones / "alpha" / "a.py").read_text() == "a-local\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b2-remote\n"
     # The sync-point state lives OUTSIDE the clone dir (a CLI `pull --force`
     # removes any in-dir file that isn't in the bundle).
     assert (harness.root / ".sync" / "alpha.json").exists()
@@ -1942,7 +1945,7 @@ def test_stamp_only_move_is_adopted_over_an_unpushed_layout_edit(
         m._save_base()
 
     with _staged():
-        (harness.root / "alpha" / "canvas.toml").write_text(
+        (harness.clones / "alpha" / "canvas.toml").write_text(
             'type = "canvas"\n\n[canvas]\nx = 1\n', encoding="utf-8")
         shims.set_remote_files({**_BASE_FILES, "canvas.toml": "type = 'canvas'\n"})
         shims.set_manifest("t2")
@@ -2003,15 +2006,15 @@ def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch, fake_agen
 
     with _staged():
         fake_agent.live = "run-abc"
-        (harness.root / "alpha" / "b.py").unlink()
+        (harness.clones / "alpha" / "b.py").unlink()
         shims.set_remote_files({**_BASE_FILES, "a.py": "a2-remote\n"})
         shims.set_manifest("t2")
 
     body = _pull_when_stale(harness)
     assert body["ok"] is True, body
     assert _sync_view("alpha")["merge_seq"] >= 1
-    assert (harness.root / "alpha" / "a.py").read_text() == "a2-remote\n"
-    assert not (harness.root / "alpha" / "b.py").exists()
+    assert (harness.clones / "alpha" / "a.py").read_text() == "a2-remote\n"
+    assert not (harness.clones / "alpha" / "b.py").exists()
     # The overwritten a.py's pre-merge bytes landed in the trash safety net.
     trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/a.py"))
     assert trashed and trashed[0].read_text() == "a1\n"
@@ -2033,7 +2036,7 @@ def test_sync_merge_applies_remote_delete_when_untouched(harness, tmp_path, monk
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
 
     with _staged():
-        (harness.root / "alpha" / "canvas.toml").write_text(
+        (harness.clones / "alpha" / "canvas.toml").write_text(
             'type = "canvas"\nlocal = true\n', encoding="utf-8"
         )
         remote = dict(_BASE_FILES)
@@ -2042,9 +2045,9 @@ def test_sync_merge_applies_remote_delete_when_untouched(harness, tmp_path, monk
         shims.set_manifest("t2")
 
     assert _wait_sync(lambda s: s["merge_seq"] >= 1)["merge_seq"] >= 1, _watcher_diag()
-    assert not (harness.root / "alpha" / "b.py").exists()
+    assert not (harness.clones / "alpha" / "b.py").exists()
     assert (
-        harness.root / "alpha" / "canvas.toml"
+        harness.clones / "alpha" / "canvas.toml"
     ).read_text() == 'type = "canvas"\nlocal = true\n'
     # The remote-deleted file's bytes landed in the trash safety net.
     trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/b.py"))
@@ -2067,13 +2070,13 @@ def test_sync_push_probes_and_merges_first(harness, tmp_path, monkeypatch, fake_
 
     shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
     shims.set_manifest("t2")
-    (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
 
     status = _wait_sync(lambda s: s["push_seq"] >= 1)
     assert status and status["push_seq"] >= 1, status
     assert status["merge_seq"] >= 1, status
-    assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
-    assert (harness.root / "alpha" / "b.py").read_text() == "b2-remote\n"
+    assert (harness.clones / "alpha" / "a.py").read_text() == "a-local\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b2-remote\n"
     _stop_sync("alpha")
 
 
@@ -2101,7 +2104,7 @@ def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch
 
     status = _wait_sync(lambda s: s["merge_seq"] >= 1)
     assert status["merge_seq"] == 1 and status["pull_seq"] == 0, f"{status} | {_watcher_diag()}"
-    assert (harness.root / "alpha" / "remote_udf.py").exists()
+    assert (harness.clones / "alpha" / "remote_udf.py").exists()
     time.sleep(0.4)
     status = _sync_view("alpha")
     assert status["push_state"] == "idle" and status["server_stale"] is None, status
@@ -2178,7 +2181,7 @@ def test_sync_merge_rolls_back_when_it_breaks_validation(harness, tmp_path, monk
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
 
     with _staged():
-        (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+        (harness.clones / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
         shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
         shims.set_manifest("t2")
         harness.set_scenario({"pull_files": _BASE_FILES, "validate_fail": True})
@@ -2192,8 +2195,8 @@ def test_sync_merge_rolls_back_when_it_breaks_validation(harness, tmp_path, monk
     status = _sync_view("alpha")
     assert status["merge_rollback_seq"] == 1 and status["merge_seq"] == 0, status
     # The merge's write to b.py was undone; local edits untouched.
-    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
-    assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b1\n"
+    assert (harness.clones / "alpha" / "a.py").read_text() == "a-local\n"
     # Still server-changed, so the push stays held.
     time.sleep(0.5)
     status = _sync_view("alpha")
@@ -2224,7 +2227,7 @@ def test_push_aborts_when_remote_moved_and_zip_unavailable(harness, tmp_path, mo
 
     shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
     shims.set_manifest("t2")
-    (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
 
     time.sleep(1.0)
     status = _sync_view("alpha")
@@ -2235,7 +2238,7 @@ def test_push_aborts_when_remote_moved_and_zip_unavailable(harness, tmp_path, mo
     monkeypatch.setattr(canvases_mod, "_shim_zip_command", lambda cli: working_zip_cmd)
     status = _wait_sync(lambda s: s["push_seq"] >= 1)
     assert status and status["push_seq"] >= 1 and status["merge_seq"] >= 1, status
-    assert (harness.root / "alpha" / "b.py").read_text() == "b2-remote\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b2-remote\n"
     _stop_sync("alpha")
 
 
@@ -2257,7 +2260,7 @@ def test_merge_abort_clears_a_stale_error_from_an_earlier_failed_push(
 
     # First, a real validation failure: last_error/error_detail get set.
     harness.set_scenario({"push_fail_lines": _VALIDATION_LINES})
-    (harness.root / "alpha" / "a.py").write_text("a-broken\n", encoding="utf-8")
+    (harness.clones / "alpha" / "a.py").write_text("a-broken\n", encoding="utf-8")
     status = _wait_sync(lambda s: s["push_state"] == "error")
     assert status and status["push_state"] == "error", status
     assert status["error_detail"], status
@@ -2272,7 +2275,7 @@ def test_merge_abort_clears_a_stale_error_from_an_earlier_failed_push(
     )
     shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
     shims.set_manifest("t2")
-    (harness.root / "alpha" / "a.py").write_text("a-fixed\n", encoding="utf-8")
+    (harness.clones / "alpha" / "a.py").write_text("a-fixed\n", encoding="utf-8")
 
     status = _wait_sync(lambda s: s["push_state"] == "pending")
     assert status and status["push_state"] == "pending", status
@@ -2288,11 +2291,11 @@ def test_clone_seeds_claude_md_and_fusedignore(harness, tmp_path, monkeypatch):
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    claude_md = harness.root / "alpha" / "CLAUDE.md"
+    claude_md = harness.clones / "alpha" / "CLAUDE.md"
     assert claude_md.exists()
     text = claude_md.read_text()
     assert "workbench:canvas-toml" in text
-    ignore = (harness.root / "alpha" / ".fusedignore").read_text()
+    ignore = (harness.clones / "alpha" / ".fusedignore").read_text()
     assert "CLAUDE.md" in ignore and ".fusedignore" in ignore
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     time.sleep(0.4)
@@ -2347,7 +2350,7 @@ def test_sync_start_reseeds_a_stale_claude_md(harness, tmp_path, monkeypatch):
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    claude_md = harness.root / "alpha" / "CLAUDE.md"
+    claude_md = harness.clones / "alpha" / "CLAUDE.md"
     claude_md.write_text("stale: load fused:canvas-toml\n", encoding="utf-8")
 
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
@@ -2367,12 +2370,12 @@ def test_clean_pull_reseeds_claude_md(harness, tmp_path, monkeypatch, fake_agent
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
-    (harness.root / "alpha" / "CLAUDE.md").unlink()
+    (harness.clones / "alpha" / "CLAUDE.md").unlink()
 
     shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('x')\n"})
     shims.set_manifest("t2")
     assert _wait_sync(lambda s: s["merge_seq"] >= 1)["merge_seq"] >= 1, _watcher_diag()
-    assert (harness.root / "alpha" / "CLAUDE.md").exists(), \
+    assert (harness.clones / "alpha" / "CLAUDE.md").exists(), \
         "the merge never re-seeded CLAUDE.md"
     _stop_sync("alpha")
 
@@ -2425,8 +2428,8 @@ def test_opening_an_existing_canvas_fetches_the_workbench_skills(
     _stub_skills_git(monkeypatch, calls)
 
     # An EXISTING canvas: made by hand, exactly as a pre-branch clone looks.
-    (harness.root / "canvas_1").mkdir(parents=True)
-    (harness.root / "canvas_1" / "canvas.toml").write_text(
+    (harness.clones / "canvas_1").mkdir(parents=True)
+    (harness.clones / "canvas_1" / "canvas.toml").write_text(
         'type = "canvas"\n', encoding="utf-8")
     assert skill_plugin.workbench_plugin_root() is None, "precondition: no clone"
 
@@ -2465,8 +2468,8 @@ def test_the_open_hook_never_blocks_the_request_and_never_fails_it(
         raise OSError("git is not installed")
 
     monkeypatch.setattr(skill_plugin, "_git", slow_and_broken)
-    (harness.root / "canvas_1").mkdir(parents=True)
-    (harness.root / "canvas_1" / "canvas.toml").write_text(
+    (harness.clones / "canvas_1").mkdir(parents=True)
+    (harness.clones / "canvas_1" / "canvas.toml").write_text(
         'type = "canvas"\n', encoding="utf-8")
 
     started = time.time()
@@ -2490,8 +2493,8 @@ def test_repeated_opens_do_not_refetch(harness, tmp_path, monkeypatch):
     monkeypatch.delenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, raising=False)
     calls = []
     _stub_skills_git(monkeypatch, calls)
-    (harness.root / "canvas_1").mkdir(parents=True)
-    (harness.root / "canvas_1" / "canvas.toml").write_text(
+    (harness.clones / "canvas_1").mkdir(parents=True)
+    (harness.clones / "canvas_1" / "canvas.toml").write_text(
         'type = "canvas"\n', encoding="utf-8")
 
     for _ in range(4):
@@ -2528,7 +2531,7 @@ def test_manual_push_endpoint_pushes_and_the_next_poll_stays_quiet(
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
-    (harness.root / "alpha" / "a.py").write_text("a-edited-by-claude\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-edited-by-claude\n")
     _wait_sync(lambda s: s["push_state"] == "pending")
 
     res = harness.client.post("/api/canvases/sync/push",
@@ -2565,7 +2568,7 @@ def test_manual_push_endpoint_returns_the_validation_transcript_verbatim(
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     harness.set_scenario({"pull_files": _BASE_FILES,
                           "push_fail_lines": _VALIDATION_LINES})
-    (harness.root / "alpha" / "a.py").write_text("broken\n")
+    (harness.clones / "alpha" / "a.py").write_text("broken\n")
 
     res = harness.client.post("/api/canvases/sync/push",
                               json={"env": ENV, "name": "alpha"}, headers=GUARD)
@@ -2658,7 +2661,7 @@ def test_an_out_of_band_cli_push_is_flagged_as_a_server_change(
 
     status = _wait_sync(lambda s: s["merge_seq"] >= 1)
     assert status["merge_seq"] >= 1 and status["server_stale"] is None, status
-    assert (harness.root / "alpha" / "a.py").read_text() == "a-pushed-out-of-band\n"
+    assert (harness.clones / "alpha" / "a.py").read_text() == "a-pushed-out-of-band\n"
     time.sleep(0.3)
     status = _sync_view("alpha")
     assert status["push_state"] == "idle" and status["push_seq"] == 0, status
@@ -2749,16 +2752,16 @@ def test_the_managers_own_push_does_not_route_back_through_the_endpoint(
         monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
 
         harness.log_in()
-        (harness.root / "alpha").mkdir(parents=True)
-        (harness.root / "alpha" / "canvas.toml").write_text('type = "canvas"\n')
-        (harness.root / "alpha" / "a.py").write_text("a1\n")
+        (harness.clones / "alpha").mkdir(parents=True)
+        (harness.clones / "alpha" / "canvas.toml").write_text('type = "canvas"\n')
+        (harness.clones / "alpha" / "a.py").write_text("a1\n")
         # Shims present, so this is the manifest-backed path; the manifest probe
         # is irrelevant here (PULL_POLL_S is long) but availability is what
         # gates seeding and the shim path generally.
         SyncShims(harness, tmp_path, monkeypatch)
         harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"},
                             headers=GUARD)
-        (harness.root / "alpha" / "a.py").write_text("a2-edited\n")
+        (harness.clones / "alpha" / "a.py").write_text("a2-edited\n")
 
         # Settled, not just counted: `push_seq` is bumped a beat before
         # `push_state` leaves "pushing", and an edit that landed mid-push
@@ -2799,7 +2802,7 @@ def test_a_busy_refusal_is_not_recorded_as_a_push_failure(
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     manager = _manager()
-    (harness.root / "alpha" / "a.py").write_text("a-edited\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-edited\n")
     _wait_sync(lambda s: s["push_state"] == "pending")
 
     with manager._op_lock:  # someone else owns the folder this instant
@@ -3015,7 +3018,7 @@ def test_the_auto_push_waits_for_a_live_session_and_then_fires(
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     fake_agent.live = "run-abc"
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
-    (harness.root / "alpha" / "a.py").write_text("half of a rename\n")
+    (harness.clones / "alpha" / "a.py").write_text("half of a rename\n")
 
     # Dirty and past the debounce, yet no push — held for the live session.
     status = _wait_sync(lambda s: s["push_state"] == "pending")
@@ -3046,7 +3049,7 @@ def test_the_remote_poll_runs_through_a_session_but_writes_nothing(
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     fake_agent.live = "run-abc"
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
-    (harness.root / "alpha" / "a.py").write_text("a-local-edit\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-local-edit\n")
     _wait_sync(lambda s: s["push_state"] == "pending")
     assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
 
@@ -3059,7 +3062,7 @@ def test_the_remote_poll_runs_through_a_session_but_writes_nothing(
         {"path": "b.py", "kind": "changed", "identical": False}], status
     # ...and writes nothing.
     assert status["merge_seq"] == 0, status
-    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b1\n"
     assert (_manager()._remote or {}).get("last_updated") == "t1"
     time.sleep(0.3)
     assert _sync_view("alpha")["push_seq"] == 0
@@ -3069,8 +3072,8 @@ def test_the_remote_poll_runs_through_a_session_but_writes_nothing(
     status = _wait_sync(lambda s: s["merge_seq"] >= 1 and s["push_seq"] >= 1)
     assert status["merge_seq"] >= 1 and status["push_seq"] >= 1, f"{status} | {_watcher_diag()}"
     assert status["server_stale"] is None and status["pull_seq"] == 0, status
-    assert (harness.root / "alpha" / "b.py").read_text() == "b-from-workbench\n"
-    assert (harness.root / "alpha" / "a.py").read_text() == "a-local-edit\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b-from-workbench\n"
+    assert (harness.clones / "alpha" / "a.py").read_text() == "a-local-edit\n"
 
 
 def test_the_first_look_baseline_is_adopted_even_while_a_session_is_live(
@@ -3131,7 +3134,7 @@ def test_sync_state_reports_pulling_during_a_clean_pull(harness, tmp_path, monke
     assert results and results[0].json()["ok"] is True, results
     assert s2d() in ("idle", "merged")
     assert _sync_view("alpha")["pull_seq"] == 1
-    assert (harness.root / "alpha" / "remote_udf.py").exists()
+    assert (harness.clones / "alpha" / "remote_udf.py").exists()
     _stop_sync("alpha")
 
 
@@ -3150,7 +3153,7 @@ def test_a_liveness_lookup_failure_reads_as_not_live(harness, tmp_path, monkeypa
     monkeypatch.setattr(canvases_mod, "_agent_module", lambda: _Broken())
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
-    (harness.root / "alpha" / "a.py").write_text("edited\n")
+    (harness.clones / "alpha" / "a.py").write_text("edited\n")
     # Not live → the watcher still pushes, i.e. the sync did not seize up.
     status = _wait_sync(lambda s: s["push_seq"] >= 1)
     assert status and status["push_seq"] >= 1, status
@@ -3164,7 +3167,7 @@ def test_no_agent_module_at_all_does_not_stop_the_sync(harness, tmp_path, monkey
     monkeypatch.setattr(canvases_mod, "_agent_module", lambda: None)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
-    (harness.root / "alpha" / "a.py").write_text("edited\n")
+    (harness.clones / "alpha" / "a.py").write_text("edited\n")
     status = _wait_sync(lambda s: s["push_seq"] >= 1)
     assert status and status["push_seq"] >= 1, status
     assert _manager().agent_run_id() == ""
@@ -3196,13 +3199,13 @@ def test_the_real_agent_module_answers_for_a_folder(harness, tmp_path, monkeypat
 
 def test_status_lists_every_environment_and_the_default(harness):
     harness.log_in()
-    (harness.base / OTHER_ENV / "beta").mkdir(parents=True)
-    (harness.base / OTHER_ENV / "beta" / "canvas.toml").write_text("", encoding="utf-8")
+    (harness.base / OTHER_ENV / "user" / "beta").mkdir(parents=True)
+    (harness.base / OTHER_ENV / "user" / "beta" / "canvas.toml").write_text("", encoding="utf-8")
     body = harness.client.get("/api/canvases/status").json()
     assert body["workbench_env"] == fusedcli_mod.DEFAULT_WORKBENCH_ENV == OTHER_ENV
     assert body["locked"] is False
     assert set(body["envs"]) == {"unstable", "prod", "custom"}
-    assert body["envs"][OTHER_ENV]["canvases_dir"] == str(harness.base / OTHER_ENV)
+    assert body["envs"][OTHER_ENV]["canvases_dir"] == str(harness.base / OTHER_ENV / "user")
     assert body["envs"][OTHER_ENV]["cloned_count"] == 1
     assert body["envs"][ENV]["cloned_count"] == 0
     assert body["envs"]["prod"]["base_url"] == "https://www.fused.io"
@@ -3299,8 +3302,8 @@ def test_list_is_per_environment(harness):
     """`env` picks the account listed (FUSED_ENV on the run) AND the folder a
     card's `cloned` is judged against."""
     harness.log_in()
-    (harness.base / OTHER_ENV / "beta").mkdir(parents=True)
-    (harness.base / OTHER_ENV / "beta" / "canvas.toml").write_text("", encoding="utf-8")
+    (harness.base / OTHER_ENV / "user" / "beta").mkdir(parents=True)
+    (harness.base / OTHER_ENV / "user" / "beta" / "canvas.toml").write_text("", encoding="utf-8")
     mine = {c["name"]: c for c in harness.client.get(
         f"/api/canvases/list?env={ENV}", headers=GUARD).json()["canvases"]}
     other = {c["name"]: c for c in harness.client.get(
@@ -3343,7 +3346,7 @@ def test_both_environments_sync_the_same_name_at_once(harness, tmp_path, monkeyp
         res = harness.client.post("/api/canvases/clone", json={"env": env, "name": "alpha"},
                                   headers=GUARD)
         assert res.status_code == 200, res.text
-        assert res.json()["dir"] == str(harness.base / env / "alpha")
+        assert res.json()["dir"] == str(harness.base / env / "user" / "alpha")
         shims.seed_base("alpha", _BASE_FILES, "t1", env=env)
     shims.set_manifest("t1")
     shims.set_remote_files(_BASE_FILES)
@@ -3355,8 +3358,8 @@ def test_both_environments_sync_the_same_name_at_once(harness, tmp_path, monkeyp
     assert set(canvases_mod._syncs) == {(ENV, "alpha"), (OTHER_ENV, "alpha")}
     assert _manager(env=ENV) is not _manager(env=OTHER_ENV)
 
-    (harness.base / OTHER_ENV / "alpha" / "a.py").write_text("a-prod\n")
-    (harness.base / ENV / "alpha" / "b.py").write_text("b-unstable\n")
+    (harness.base / OTHER_ENV / "user" / "alpha" / "a.py").write_text("a-prod\n")
+    (harness.base / ENV / "user" / "alpha" / "b.py").write_text("b-unstable\n")
     for env in (ENV, OTHER_ENV):
         _wait_sync(lambda s: s["push_state"] == "pending", env=env)
         res = harness.client.post("/api/canvases/sync/push",
@@ -3371,8 +3374,8 @@ def test_both_environments_sync_the_same_name_at_once(harness, tmp_path, monkeyp
         (OTHER_ENV, str(harness.base / OTHER_ENV / ".sync" / "push" / "alpha")),
     ]
     # Each clone kept its own edit; each env has its own writer lock.
-    assert (harness.base / OTHER_ENV / "alpha" / "b.py").read_text() == "b1\n"
-    assert (harness.base / ENV / "alpha" / "a.py").read_text() == "a1\n"
+    assert (harness.base / OTHER_ENV / "user" / "alpha" / "b.py").read_text() == "b1\n"
+    assert (harness.base / ENV / "user" / "alpha" / "a.py").read_text() == "a1\n"
     for env in (ENV, OTHER_ENV):
         assert (harness.base / env / ".sync" / "alpha.lock").exists()
         state = harness.client.get(f"/api/canvases/sync/state?name=alpha&env={env}").json()
@@ -3382,7 +3385,7 @@ def test_both_environments_sync_the_same_name_at_once(harness, tmp_path, monkeyp
     # prod's `alpha` touch neither unstable's clone nor its manager.
     mine, other = _manager(env=ENV), _manager(env=OTHER_ENV)
     unstable_files = {p.name: p.read_bytes()
-                      for p in (harness.base / ENV / "alpha").iterdir() if p.is_file()}
+                      for p in (harness.base / ENV / "user" / "alpha").iterdir() if p.is_file()}
     mine_rev, mine_view = mine.disk_rev, mine._view_rev
     snap = {"dashboard_body": {"studioState": {"nodes": []}}, "udfs": []}
     res = harness.client.post("/api/canvases/snapshot",
@@ -3397,7 +3400,7 @@ def test_both_environments_sync_the_same_name_at_once(harness, tmp_path, monkeyp
     assert other._frame_seen is True
     assert mine._frame_seen is False
     assert (mine.disk_rev, mine._view_rev) == (mine_rev, mine_view)
-    assert {p.name: p.read_bytes() for p in (harness.base / ENV / "alpha").iterdir()
+    assert {p.name: p.read_bytes() for p in (harness.base / ENV / "user" / "alpha").iterdir()
             if p.is_file()} == unstable_files
 
     # And the socket notifier: a socket on prod's `alpha` is woken by prod's

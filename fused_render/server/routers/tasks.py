@@ -3416,7 +3416,9 @@ def _canvas_roots(canvases) -> dict[str, set[str]]:
     if roots is None:
         roots = {}
         for env in WORKBENCH_ENV_CHOICES:
-            root = canvases.canvases_root(env)
+            # Where clones live (`<env>/user`, D1476): a task under `team/`
+            # or `public/` — reference copies — is on no canvas page.
+            root = canvases.clones_root(env)
             roots[env] = {os.path.normpath(root), os.path.realpath(root)}
         _CANVAS_ROOTS_MEMO[base] = roots
     return roots
@@ -3434,8 +3436,8 @@ def _is_canvas_node_file(file: str) -> bool:
 def _task_canvas(target: str) -> dict | None:
     """The canvas a task is on — `{env, name, file}` — or None.
 
-    A task whose target is a canvas CLONE (`~/Fused/canvas/<env>/<name>`,
-    canvases.canvases_root) or a NODE in it (a top-level file of the clone,
+    A task whose target is a canvas CLONE (`~/Fused/canvas/<env>/user/<name>`,
+    canvases.clones_root) or a NODE in it (a top-level file of the clone,
     `<udf>.py` / `<widget>.json`) opens on the canvas page, not in the
     explorer: the shell's door (`tasks-lib.taskHref`) lands on `/canvases/
     <env>/<name>` with the node selected and the chat on the task's session

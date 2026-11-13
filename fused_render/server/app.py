@@ -182,7 +182,7 @@ def export_app_env() -> None:
     # (`~/Fused/canvas`), never one `canvases_root(env)`: clones of BOTH
     # environments sync at once and a session in either needs the skills,
     # and `canvases_base()` reads this very var first — exporting one env's
-    # folder would nest every root under it (`<env>/<env>/<name>`).
+    # folder would nest every root under it (`<env>/<env>/user/<name>`).
     os.environ["FUSED_RENDER_CANVASES_DIR"] = canvases.canvases_base()
     canvases.log_url_override_without_pin()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
@@ -606,6 +606,25 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001 — never worth delaying/failing startup
             logger.warning("could not kick the workbench skills fetch for "
                            "~/Fused/canvas", exc_info=True)
+
+    # Canvas clones from before the scoped layout (D1476) move to
+    # `~/Fused/canvas/<env>/user/<name>` here, off-thread: every canvas path
+    # runs the same idempotent pass on first use (canvas_layout.ensure_layout),
+    # so this only makes it happen before the sidebar draws a desk row that
+    # still names the old folder. A clone that cannot move yet (a session in
+    # it, another fused-render syncing it) is retried by those paths.
+    @on_startup
+    async def _startup_canvas_layout():
+        def run() -> None:
+            try:
+                from fused_render import canvas_layout
+
+                canvas_layout.ensure_all()
+            except Exception:  # noqa: BLE001 — never worth failing startup
+                logger.warning("could not check the canvas folders' layout",
+                               exc_info=True)
+
+        threading.Thread(target=run, name="canvas-layout", daemon=True).start()
 
     # The project queue's dispatcher (queue_manager.py), wired EXPLICITLY.
     #

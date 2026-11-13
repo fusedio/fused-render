@@ -1273,7 +1273,7 @@ up-to-date branches): the merging maintainer catches it. GitHub disables
 
 ### 18.3 The backend (WS-CANVAS)
 
-Canvas `~/Fused/canvas/unstable/fused_app_marketplace` — THE one hosted
+Canvas `~/Fused/canvas/unstable/user/fused_app_marketplace` — THE one hosted
 canvas fused-render's backend lives on (owner 2026-10-27: "only have 1
 canvas for all the backend required in fused-render"; unstable for now).
 It is public (owner 2026-10-27) and addressed by name:
@@ -1901,7 +1901,7 @@ What's new) follows the same path. The shared helper block (duplicated byte-for-
 `marketplace_*` / `fused_app_listing` / `fused_app_install` UDFs) carries
 all of it; `fused_app_github` is untouched.
 
-Pushing the canvas: the clone under `~/Fused/canvas/unstable/` is owned by
+Pushing the canvas: the clone under `~/Fused/canvas/unstable/user/` is owned by
 the installed fused-render's watcher (port 1777); a Claude session without
 the app's `fused` wrapper on PATH pushes through it — `POST
 http://127.0.0.1:1777/api/canvases/sync/push {name, env: "unstable"}` with

@@ -216,7 +216,7 @@ def _wrapper_env(wrapper: str, cwd: str, fused_env: str | None = None) -> str:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh wrapper")
 def test_wrapper_takes_fused_env_from_the_clone_it_runs_in(monkeypatch, tmp_path):
-    """A canvas carries its environment in its path (`<base>/<env>/<name>`):
+    """A canvas carries its environment in its path (`<base>/<env>/...`):
     a session's bare `fused` inside an unstable clone must reach unstable
     even when the default is prod, while outside any clone it gets the default and
     an explicit FUSED_ENV still wins. Matched through a symlink too (macOS
@@ -243,6 +243,15 @@ def test_wrapper_takes_fused_env_from_the_clone_it_runs_in(monkeypatch, tmp_path
     assert _wrapper_env(wrapper, str(real_base / "unstable" / "prod")) == "unstable"
     assert _wrapper_env(wrapper, str(tmp_path)) == "prod"
     assert _wrapper_env(wrapper, str(real_base / "prod" / "alpha"), "unstable") == "unstable"
+    # The scoped layout (D1476): a clone is `<env>/user/<name>`, with the
+    # read-only reference copies in `<env>/team` and `<env>/public` beside
+    # it. The environment is still the segment right under the base, for all
+    # three: a `fused` run in a reference folder reaches that folder's Fused.
+    for scope in ("user", "team", "public"):
+        (real_base / "unstable" / scope / "alpha" / "sub").mkdir(parents=True)
+        assert _wrapper_env(wrapper, str(real_base / "unstable" / scope / "alpha")) == "unstable"
+        assert _wrapper_env(
+            wrapper, str(link / "canvas" / "unstable" / scope / "alpha" / "sub")) == "unstable"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh wrapper")
