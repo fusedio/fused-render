@@ -906,12 +906,16 @@ def test_cli_error_is_not_cached(harness):
     assert res.status_code == 200
 
 
-def test_list_cache_returns_independent_copies(harness):
+def test_list_has_no_memory_cache(harness):
+    # The listing is never kept in memory: a hit there answered `stale: false`
+    # and the catalog never revalidated. Without a disk baseline (the harness
+    # token is no JWT, so `_listing_account` misses) every call asks the CLI.
     harness.log_in()
     first = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
     second = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
     assert first.status_code == second.status_code == 200
-    assert len(_spawns(harness, "list")) == 1
+    assert first.json()["stale"] is False and second.json()["stale"] is False
+    assert len(_spawns(harness, "list")) == 2
     # The endpoint mutates its entries (`cloned`); a hit must carry it afresh.
     assert all("cloned" in c for c in first.json()["canvases"])
     assert all("cloned" in c for c in second.json()["canvases"])
