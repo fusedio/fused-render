@@ -45,6 +45,7 @@ import { MarkdownView } from "./MarkdownView";
 import { activateOnKey } from "./planAffordance";
 import { PlanModal } from "./PlanModal";
 import { useFilePreview } from "./filePreview";
+import { DeniedLine } from "./DeniedLine";
 import { useTaskIndex } from "./tasksContext";
 
 import "../styles/tasks.css";
@@ -579,6 +580,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: To
         </span>
       ) : null}
       <ChipHeader seg={seg} raw={raw} linked={linked} parts={parts} full={full} status={status} />
+      {seg.denied ? <DeniedLine seg={seg} /> : null}
       <CollapsibleContent className="chip-body">
         <ChipBody seg={seg} cwd={cwd} {...(nested ? { nested } : {})} />
       </CollapsibleContent>

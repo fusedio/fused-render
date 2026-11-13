@@ -242,7 +242,7 @@ def test_run_hands_the_future_to_on_cancel_and_reraises():
 def test_stop_allow_and_app_state_ride_their_own_lane():
     # `canvas_shot` joined the control lane with #1924: the page's answer to
     # a blocked `canvas_screenshot` tool call must not queue behind polls.
-    control = ("cancel", "decide", "app_state", "canvas_shot", "canvas_shot_claim")
+    control = ("cancel", "decide", "allow_denied", "app_state", "canvas_shot", "canvas_shot_claim")
     assert set(control) == set(pool.CONTROL_ACTIONS)
     for action in control:
         assert pool.pool_for(action) is pool.CONTROL_POOL, action

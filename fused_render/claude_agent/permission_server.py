@@ -77,6 +77,7 @@ The JSON-RPC framing is newline-delimited JSON on stdin/stdout (MCP stdio).
 stdout carries protocol only — diagnostics go to stderr.
 """
 import base64
+import errno
 import json
 import os
 import stat
@@ -176,9 +177,17 @@ CANVAS_SHOT_DIR = next((os.path.abspath(a[len(_CANVAS_FLAG):])
 _HOOK_FLAG = "--breakout-hook="
 BREAKOUT_HOOK_DIR = next((a[len(_HOOK_FLAG):]
                           for a in sys.argv[1:] if a.startswith(_HOOK_FLAG)), None)
+# `--allow-once-hook=<grant file>`: likewise the PreToolUse hook that honours an
+# "Allow" the user gave a call the auto-mode classifier refused
+# (`_allow_once_hook`), run by the CLI for every tool call of every chat.
+_ALLOW_ONCE_FLAG = "--allow-once-hook="
+ALLOW_ONCE_HOOK_DIR = next((a[len(_ALLOW_ONCE_FLAG):]
+                            for a in sys.argv[1:] if a.startswith(_ALLOW_ONCE_FLAG)),
+                           None)
 _POSITIONAL = [a for a in sys.argv[1:]
                if a != "--no-approve" and not a.startswith(_CANVAS_FLAG)
-               and not a.startswith(_HOOK_FLAG)]
+               and not a.startswith(_HOOK_FLAG)
+               and not a.startswith(_ALLOW_ONCE_FLAG)]
 PERM_DIR = os.path.abspath(_POSITIONAL[0]) if len(_POSITIONAL) > 0 else ""
 STATE_DIR = os.path.abspath(_POSITIONAL[1]) if len(_POSITIONAL) > 1 else ""
 
@@ -1580,7 +1589,126 @@ def _breakout_hook(handoff_dir: str) -> int:
     return 0
 
 
+# The grants `agent._allow_denied` writes into the chat's store, and how long
+# one stays good. `agent.py` loads these (and `_locked_json_update`) from here:
+# this file is the one owner, because it is copied somewhere stable and run by
+# path, so it cannot import anything beside it.
+ALLOW_ONCE_TTL = 30 * 60
+
+
+def _allow_once_match_input(tool_name, tool_input):
+    """What a grant matches a call on: a Bash call by its `command` alone (the
+    model rewords `description` and tunes `timeout` between tries), any other
+    tool by its whole input minus the `description`."""
+    if not isinstance(tool_input, dict):
+        return {}
+    if tool_name == "Bash":
+        return {"command": tool_input.get("command")}
+    return {k: v for k, v in tool_input.items() if k != "description"}
+
+
+def _lock_file(fh) -> None:
+    """Exclusive advisory lock on `fh` (flock; `msvcrt.locking` of byte 0 on
+    Windows), held until the handle closes. Raises OSError when it cannot be
+    taken."""
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt
+        while True:
+            fh.seek(0)
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EDEADLK):
+                    raise
+                time.sleep(0.05)
+    fcntl.flock(fh, fcntl.LOCK_EX)
+
+
+_KEEP = object()
+
+
+def _locked_json_update(path: str, update) -> None:
+    """Read-modify-write one JSON file under a lock: `update(old)` -> new
+    (`old` is None when the file is missing or unreadable), a None return
+    deletes the file and `_KEEP` leaves it alone. The rewrite is atomic (tmp + `os.replace`) and `rw-------`."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".lock", "w") as lock:
+        _lock_file(lock)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                old = json.load(fh)
+        except (OSError, ValueError):
+            old = None
+        new = update(old)
+        if new is _KEEP:
+            return
+        if new is None:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            return
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(new, fh)
+        os.replace(tmp, path)
+
+
+def _allow_once_hook(path: str) -> int:
+    """PreToolUse hook mode: answer "allow" for the one call the user approved
+    after the auto-mode classifier refused it, and consume the grant. `path` is
+    the chat's grant store. Exit 0 with no output is "no opinion" — the normal
+    permission flow goes on — and is what every other call, every unreadable
+    input and every error gets: this hook never blocks."""
+    try:
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
+        tool_name = data["tool_name"]
+        wanted = _allow_once_match_input(tool_name, data.get("tool_input"))
+        if not isinstance(tool_name, str):
+            return 0
+        # Nothing pending (the usual case, and the whole check on Windows,
+        # where the command has no shell guard): no lock, no parse.
+        if os.path.getsize(path) == 0:
+            return 0
+    except Exception:
+        return 0
+    hit = []
+
+    def consume(old):
+        if not isinstance(old, list):
+            return _KEEP
+        now = time.time()
+        live = [e for e in old if isinstance(e, dict)
+                and now - float(e.get("created") or 0) < ALLOW_ONCE_TTL]
+        found = next((e for e in live if e.get("tool_name") == tool_name
+                      and e.get("match_input") == wanted), None)
+        if found is None:
+            return _KEEP
+        hit.append(found)
+        live.remove(found)
+        return live or None
+
+    try:
+        _locked_json_update(path, consume)
+        if not hit:
+            return 0
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason":
+                "Approved in fused-render after auto mode blocked it"}}) + "\n")
+        return 0
+    except Exception:
+        return 0
+
+
 def main() -> int:
+    if ALLOW_ONCE_HOOK_DIR is not None:
+        return _allow_once_hook(ALLOW_ONCE_HOOK_DIR)
     if BREAKOUT_HOOK_DIR is not None:
         try:
             return _breakout_hook(BREAKOUT_HOOK_DIR)

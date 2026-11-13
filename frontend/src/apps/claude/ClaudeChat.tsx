@@ -186,7 +186,7 @@ import { AgentMark } from "@platform/ui/AgentMark";
 import { queueCaption } from "@platform/lib/queue";
 import { ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
-import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
+import { AllowDeniedContext, TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
 import { QueuedStrip } from "./ui/QueuedStrip";
@@ -1583,6 +1583,15 @@ function ChatBody(props: ChatBodyProps) {
   );
   // The task registry by id, for the agent / monitor chips (`ui/tasksContext`).
   const tasksById = useMemo(() => taskIndex(state.tasks), [state.tasks]);
+  // The Allow button on a refused call needs an agent whose classifier refused
+  // it (Claude) and a conversation a send would resume or start: its session id,
+  // which a restored chat has without ever having had a run this page. A
+  // `_preview=1` thumbnail is display-only, so it offers no button.
+  const allowDenied = useMemo(
+    () =>
+      !props.preview && (state.backend || "claude") === "claude" && state.sessionId ? controller.allowDenied : null,
+    [props.preview, state.backend, state.sessionId, controller],
+  );
 
   /**
    * THE DOOR OPENS WHEN THE RUN IS LIVE, not when the controller took the
@@ -6315,6 +6324,7 @@ function ChatBody(props: ChatBodyProps) {
               </>
             ) : null}
             <TasksContext.Provider value={tasksById}>
+            <AllowDeniedContext.Provider value={allowDenied}>
             <Transcript
               followRef={transcriptFollow}
               onOpenCardVisible={setOpenCardVisible}
@@ -6390,6 +6400,7 @@ function ChatBody(props: ChatBodyProps) {
                 </>
               }
             />
+            </AllowDeniedContext.Provider>
             </TasksContext.Provider>
             {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
                 the box: one line until opened. Not in the compact cut — a tile

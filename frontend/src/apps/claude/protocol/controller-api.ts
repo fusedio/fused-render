@@ -606,6 +606,9 @@ export interface ChatController {
 
   /** Permission card (T:13899 buildPermCard → decide). */
   decidePermission(id: string, decision: Decision, scope?: DecisionScope, mode?: SwitchableMode): Promise<void>;
+  /** The Allow button on a tool auto mode refused: record the approval of that
+   *  one call on the run, then ask the agent to run it again. */
+  allowDenied(toolUseId: string): Promise<void>;
   /** Question card (T:14056 buildQuestionCard → decide with answers/custom). */
   answerQuestion(id: string, answers: Record<string, string[]>, custom?: Record<string, string>): Promise<void>;
   /** Plan card (T:14476 buildPlanCard). `note` ADDED: the free text beside

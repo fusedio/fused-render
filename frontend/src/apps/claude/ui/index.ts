@@ -219,3 +219,4 @@ export type { WorktreeMenuProps, WorktreeMenuBodyProps, WorktreeRequest } from "
 export { TasksPanel, tasksPanelScope, useTasksOpen } from "./TasksPanel";
 export type { TasksPanelProps, FetchTaskOutput } from "./TasksPanel";
 export { TasksContext, useTaskIndex } from "./tasksContext";
+export { AllowDeniedContext, useAllowDenied } from "./allowDeniedContext";

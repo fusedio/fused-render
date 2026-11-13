@@ -1986,6 +1986,49 @@
 .chat-root .toolchip .chip-status.is-ok {
   color: var(--c-ok);
 }
+/* A call auto mode's classifier refused: why, and the one button that lets it
+   run. Indented to the chip's body column, quieter than a permission card. */
+.chat-root .toolchip .chip-denied {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 2px 0 2px var(--c-chip-gutter);
+  color: var(--c-dim);
+  font-size: calc(12px * var(--c-zoom, 1));
+}
+.chat-root .toolchip .chip-denied-why {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-root .toolchip .chip-denied-btn {
+  font: inherit;
+  font-weight: 500;
+  padding: 1px 11px;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--c-fg);
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.chat-root .toolchip .chip-denied-btn:hover:not(:disabled) {
+  border-color: var(--c-border-strong);
+  background: var(--c-card-bg-2);
+}
+.chat-root .toolchip .chip-denied-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.chat-root .toolchip .chip-denied-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: 2px;
+}
+.chat-root .toolchip .chip-denied-err {
+  color: var(--c-error);
+}
 .chat-root .toolchip .chip-status.is-error {
   color: var(--c-error);
 }

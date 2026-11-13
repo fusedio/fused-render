@@ -296,3 +296,15 @@ describe("breakout posture", () => {
     expect("breakout" in r.of("start")[0]!.fields).toBe(false);
   });
 });
+
+describe("allowDenied with a pending fork", () => {
+  test("refuses before recording a grant, so the fork message is not consumed", async () => {
+    const r = await opened({ allow_denied: () => ({ allowed: "t1", message: "run it again" }) });
+    r.controller.beginFork(keyOf(r, "second"));
+    await expect(r.controller.allowDenied("t1")).rejects.toThrow(
+      "Send or cancel the pending fork before allowing this call.",
+    );
+    expect(r.of("allow_denied")).toHaveLength(0);
+    expect(r.controller.getState().fork?.uuid).toBe("u2");
+  });
+});

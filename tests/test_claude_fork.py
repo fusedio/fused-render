@@ -263,9 +263,10 @@ def test_argv_breakout_hard_denies_shell_and_edit_tools(agent, tmp_path):
 
 
 def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
-    argv = _argv(agent, tmp_path, breakout=True)
+    argv = _argv(agent, tmp_path, breakout=True, session_id="chat1")
     settings = json.loads(argv[argv.index("--settings") + 1])
-    (entry,) = settings["hooks"]["PreToolUse"]
+    entry, allow_once = settings["hooks"]["PreToolUse"]
+    assert "--allow-once-hook=" in allow_once["hooks"][0]["command"]
     assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit|mcp__.*"
     (hook,) = entry["hooks"]
     assert hook["type"] == "command" and "onFailure" not in hook
@@ -280,12 +281,14 @@ def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
     handoff = os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs")
     assert "--breakout-hook=" + handoff in hook["command"]
     plain = _argv(agent, tmp_path / "p")
-    assert "--settings" not in plain
+    assert "permissions" not in json.loads(plain[plain.index("--settings") + 1])
 
 
 def test_argv_plain_run_has_no_deny_settings(agent, tmp_path):
     argv = _argv(agent, tmp_path)
-    assert "--settings" not in argv
+    assert argv.count("--settings") == 1
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert "permissions" not in settings
 
 
 def test_argv_breakout_hands_the_bridge_the_handoff_dir(agent, tmp_path):
