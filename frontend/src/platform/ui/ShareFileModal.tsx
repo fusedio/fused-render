@@ -170,21 +170,21 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
     }
   }, [file.path]);
 
-  useEffect(() => {
-    goneRef.current = false;
-    void refresh();
-    return () => {
-      goneRef.current = true;
-      if (pollRef.current !== null) window.clearInterval(pollRef.current);
-    };
-  }, [refresh]);
-
   const stopPolling = () => {
     if (pollRef.current !== null) {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
     }
   };
+
+  useEffect(() => {
+    goneRef.current = false;
+    void refresh();
+    return () => {
+      goneRef.current = true;
+      stopPolling();
+    };
+  }, [refresh]);
 
   const finishPublish = useCallback(
     async (mode: ShareMode, uploadId?: string) => {
@@ -207,19 +207,22 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
   const pollUpload = useCallback(
     (id: string, mode: ShareMode) => {
       stopPolling();
-      pollRef.current = window.setInterval(() => {
+      const fail = (message: string) => {
+        stopPolling();
+        setErr(message);
+        setBusy(null);
+        setUpload(null);
+      };
+      const timer = window.setInterval(() => {
         void uploadStatus(id)
           .then((s) => {
-            if (goneRef.current) return;
+            if (pollRef.current !== timer) return;
             setUpload(s);
             if (s.state === "done") {
               stopPolling();
               void finishPublish(mode, id);
-            } else if (s.state === "failed" || s.state === "cancelled") {
-              stopPolling();
-              setErr(s.error || `the upload was ${s.state}`);
-              setBusy(null);
-              setUpload(null);
+            } else if (s.state !== "running") {
+              fail(s.error || (s.state === "none" ? "lost track of the upload" : `the upload was ${s.state}`));
             }
           })
           .catch((e: unknown) => {
@@ -231,13 +234,10 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
             // underlying upload had long since finished, failed, or was
             // cancelled. Surface it and stop polling instead of spinning
             // silently.
-            if (goneRef.current) return;
-            stopPolling();
-            setErr((e as Error).message || "lost track of the upload");
-            setBusy(null);
-            setUpload(null);
+            if (pollRef.current === timer) fail((e as Error).message || "lost track of the upload");
           });
       }, UPLOAD_POLL_MS);
+      pollRef.current = timer;
     },
     [finishPublish],
   );

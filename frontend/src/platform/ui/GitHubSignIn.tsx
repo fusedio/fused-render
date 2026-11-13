@@ -108,7 +108,7 @@ export function GitHubSignIn({
   const [copied, setCopied] = useState(false);
   const baseline = useRef<{ install: number | null; login: number | null } | null>(null);
   const pollRef = useRef<number | null>(null);
-  const goneRef = useRef(false);
+  const epochRef = useRef(0);
   const readOnceRef = useRef(false);
   // Kept current so a poll tick's late answer reports to the caller's latest
   // callback, not the one this effect closed over.
@@ -118,6 +118,14 @@ export function GitHubSignIn({
   const stopPolling = () => {
     if (pollRef.current !== null) window.clearInterval(pollRef.current);
     pollRef.current = null;
+  };
+  const halt = () => {
+    epochRef.current++;
+    stopPolling();
+  };
+  const claim = () => {
+    const epoch = epochRef.current;
+    return () => epoch !== epochRef.current;
   };
   // Through a ref so `tick` can start the poll that calls it.
   const tickRef = useRef<() => Promise<void>>(async () => {});
@@ -152,6 +160,7 @@ export function GitHubSignIn({
     // that read is the one `recheck` makes fresh, and the one whose failure
     // must not leave "Checking GitHub…" up forever.
     const opening = !readOnceRef.current;
+    const gone = claim();
     try {
       [status, install, login] = await Promise.all([
         opening && recheck
@@ -161,7 +170,7 @@ export function GitHubSignIn({
         getJson<LoginRecord>("/api/github/login"),
       ]);
     } catch {
-      if (goneRef.current) return;
+      if (gone()) return;
       // A poll hiccup keeps the last step and the next tick tries again; an
       // opening read that failed says so, with Try again.
       if (opening) {
@@ -170,7 +179,7 @@ export function GitHubSignIn({
       }
       return;
     }
-    if (goneRef.current) return;
+    if (gone()) return;
     readOnceRef.current = true;
     if (baseline.current === null) {
       baseline.current = { install: install.started_at, login: login.started_at };
@@ -204,12 +213,12 @@ export function GitHubSignIn({
       stopPolling();
       try {
         const fresh = await postJson<GithubStatus>("/api/github/status/refresh", {});
-        if (goneRef.current) return;
+        if (gone()) return;
         if (fresh.signed_in) return finish(fresh);
       } catch {
         // fall through to the failure sentence
       }
-      if (!goneRef.current) setStep({ kind: "signin", failed: true });
+      if (!gone()) setStep({ kind: "signin", failed: true });
       return;
     }
     stopPolling();
@@ -221,20 +230,17 @@ export function GitHubSignIn({
   tickRef.current = tick;
 
   useEffect(() => {
-    goneRef.current = false;
     // Mount, or `recheck` turning on under a mounted step: either way the
     // next read is an opening one again.
     readOnceRef.current = false;
     void tick();
-    return () => {
-      goneRef.current = true;
-      stopPolling();
-    };
+    return halt;
   }, [tick]);
 
   const install = async () => {
     if (busy) return;
     setBusy(true);
+    const gone = claim();
     try {
       await postJson("/api/github/install", {});
     } catch {
@@ -242,6 +248,7 @@ export function GitHubSignIn({
     } finally {
       setBusy(false);
     }
+    if (gone()) return;
     setStep({ kind: "installing" });
     startPolling();
   };
@@ -249,12 +256,13 @@ export function GitHubSignIn({
   const signIn = async () => {
     if (busy) return;
     setBusy(true);
+    const gone = claim();
     let opened: LoginRecord | null = null;
     try {
       opened = await postJson<LoginRecord>("/api/github/login", {});
     } catch (e) {
       setBusy(false);
-      if (goneRef.current) return;
+      if (gone()) return;
       // A 409 is a sign-in already waiting in the browser — adopt it below.
       // Anything else never started one: say so rather than "waiting".
       if ((e as HttpError).status !== 409) {
@@ -263,22 +271,18 @@ export function GitHubSignIn({
       }
     }
     setBusy(false);
-    if (goneRef.current) return;
+    if (gone()) return;
     setStep({ kind: "waiting", code: opened?.code ?? null, url: opened?.url || DEVICE_URL });
     startPolling();
   };
 
   const cancel = async () => {
-    if (step.kind === "waiting") {
-      stopPolling();
-      try {
-        await postJson("/api/github/login/cancel", {});
-      } catch {
-        // Idempotent server-side; nothing to tell the reader.
-      }
-    }
+    if (step.kind !== "waiting") return onCancel?.();
+    halt();
+    const gone = claim();
+    await postJson("/api/github/login/cancel", {}).catch(() => {});
     onCancel?.();
-    if (!goneRef.current && step.kind === "waiting") setStep({ kind: "signin", failed: false });
+    if (!gone()) setStep({ kind: "signin", failed: false });
   };
 
   const copyCode = async () => {
