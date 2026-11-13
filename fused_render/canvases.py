@@ -6739,10 +6739,13 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
     duplicate.
 
     Order (delete's, api_canvases_delete): validate; preflight that nothing
-    sits at the new clone path or its `.sync` leftovers; refuse while a
-    Claude session in the clone is live or mid-turn (its transcript could
-    not move, and a clone has no `.fused/meta.json` to retry it later — it
-    must never get one, the push would ship it); claim the OLD clone's
+    sits at the new clone path or its `.sync` leftovers and that no canvas
+    of the account has the new name; refuse while a Claude session in the
+    clone is live or mid-turn — a chat's host process outlives its turn by
+    ~30 s (session_host's idle reap), so an idle chat moves, one working or
+    just finished does not (its transcript could not move, and a clone has
+    no `.fused/meta.json` to retry it later — it must never get one, the
+    push would ship it); claim the OLD clone's
     writer lock for the whole call (refused while another fused-render owns
     it); hold sync/start off for BOTH keys with `_DELETING` (the stop wakes
     the page, whose self-heal would otherwise start a watcher on either name
@@ -6790,6 +6793,19 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
             {"error": f"a canvas folder named {new!r} already exists on this computer "
                       f"({taken[0]}); pick another name", "code": "exists"},
             status_code=409)
+    # The account's canvases, uncached: nothing shows the server refuses a
+    # taken name, and two canvases under one name would let the name-resolving
+    # push replace the OTHER canvas's UDF list. Case-insensitive like the
+    # workbench's own check; the canvas itself may change case.
+    entries, err = _list_entries_uncached(env)
+    if err is not None:
+        return err
+    if any(isinstance(e, dict) and isinstance(e.get("name"), str)
+           and e["name"].lower() == new.lower() and e["name"] != name
+           for e in entries or ()):
+        return JSONResponse(
+            {"error": f"a canvas named {new!r} already exists; pick another name",
+             "code": "exists"}, status_code=409)
     has_clone = os.path.isdir(clone)
     if has_clone:
         from fused_render import claude_session_move
@@ -6797,8 +6813,8 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
         held = claude_session_move.held_sessions(_canvas_dir(env, name))
         if held:
             return JSONResponse(
-                {"error": "Claude is still running in this canvas. Stop its "
-                          f"task{'s' if len(held) > 1 else ''} first, then rename.",
+                {"error": "Claude is working in this canvas, or finished moments "
+                          "ago. Wait for it to finish (or stop it), then rename.",
                  "code": "sessions_live", "sessions": held}, status_code=409)
     lock_path = _lock_path(env, name)
     try:
