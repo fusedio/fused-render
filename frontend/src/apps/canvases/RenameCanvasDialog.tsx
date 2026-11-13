@@ -10,7 +10,7 @@
 
 import { useState } from "react";
 import { Modal } from "@platform/ui/modal/Modal";
-import { navigateUrl } from "@platform/lib/router";
+import { confirmLeave, navigateUrl } from "@platform/lib/router";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { canvasWorkspacePath, renameCanvas, type WorkbenchEnv } from "./api";
 import { sanitizeCanvasName, validateCanvasName } from "./canvas-name";
@@ -36,15 +36,21 @@ export function RenameCanvasDialog({
 
   const submit = async () => {
     if (!canSubmit) return;
+    // On this canvas's editor the rename ends in a hop to the new route, so
+    // ask the leave guard (an unsent composer) BEFORE committing: a refusal
+    // after the server and clone moved would strand the page on a dead name.
+    // A guard detaches once answered, so the hop below is not asked again.
+    const onEditor = window.location.pathname === canvasWorkspacePath(env, name);
+    if (onEditor && !(await confirmLeave())) return;
     setBusy(true);
     setError(null);
     try {
       const r = await renameCanvas(env, name, trimmed);
       announceCurrentAppsChanged();
       onRenamed?.(r.name);
-      // On this canvas's editor: follow it, keeping the query (node, chat).
-      if (window.location.pathname === canvasWorkspacePath(env, name)) {
-        navigateUrl(canvasWorkspacePath(env, r.name) + window.location.search, {
+      // Follow it, keeping the query (node, chat).
+      if (onEditor) {
+        await navigateUrl(canvasWorkspacePath(env, r.name) + window.location.search, {
           replace: true,
         });
       }
@@ -90,7 +96,9 @@ export function RenameCanvasDialog({
         autoFocus
         disabled={busy}
         spellCheck={false}
+        aria-label="New canvas name"
         aria-invalid={shown ? "true" : undefined}
+        aria-describedby={shown ? "canvas-rename-error" : undefined}
         onFocus={(e) => e.currentTarget.select()}
         onChange={(e) => {
           setDraft(sanitizeCanvasName(e.target.value));
@@ -103,7 +111,11 @@ export function RenameCanvasDialog({
           }
         }}
       />
-      {shown && <p className="canvas-rename-error">{shown}</p>}
+      {shown && (
+        <p id="canvas-rename-error" className="canvas-rename-error" role="alert">
+          {shown}
+        </p>
+      )}
       <p className="canvas-rename-note">
         Links and code that call this canvas by its name stop working. Other computers that
         have it cloned need to clone it again.

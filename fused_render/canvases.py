@@ -6786,8 +6786,10 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
     # A case-only rename (foo -> Foo) is the same folder on a case-insensitive
     # disk: `lexists` would refuse it, os.rename handles it.
     case_only = os.path.normcase(target) == os.path.normcase(clone)
+    # The new name's lock FILE is not "taken" (a lock file outlives its
+    # folder): its writer is decided by the claim below, never by existence.
     taken = [p for p in [target, *_clone_leftovers(env, new)]
-             if os.path.lexists(p) and not case_only]
+             if p != _lock_path(env, new) and os.path.lexists(p) and not case_only]
     if taken:
         return JSONResponse(
             {"error": f"a canvas folder named {new!r} already exists on this computer "
@@ -6828,14 +6830,48 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
                       f"(pid {owner['pid']}, port {owner['port']}); rename it from there",
              "code": "owned", "owner": owner}, status_code=409)
     lock_since = (canvas_sync_state.read_lock(lock_path) or {}).get("since")
+    # The NEW name's writer lock too, for the same span: the folder move makes
+    # `canvas.toml` visible under the new path before the merge base,
+    # tombstones and trash have followed it, and `_DELETING` holds off only
+    # this process — another fused-render's sync/start would claim the new
+    # key and seed sync state the leftover move then overwrites.
+    # A case-only rename is the same lock FILE on a case-insensitive disk: a
+    # second flock on it from this process would refuse itself.
+    new_lock_path = _lock_path(env, new)
+    try:
+        new_outcome, new_record = (("ours", {}) if case_only
+                                   else canvas_sync_state.claim_lock(new_lock_path))
+    except OSError as exc:
+        canvas_sync_state.release_lock(lock_path, lock_since)
+        return _error(f"could not take the canvas sync lock: {exc}", 500)
+    if new_outcome == "refused":
+        canvas_sync_state.release_lock(lock_path, lock_since)
+        owner = {k: new_record.get(k) for k in ("pid", "port", "since")}
+        return JSONResponse(
+            {"error": f"canvas {_sync_key(env, new)!r} is synced by another fused-render "
+                      f"(pid {owner['pid']}, port {owner['port']}); pick another name",
+             "code": "owned", "owner": owner}, status_code=409)
+    new_lock_since = (None if case_only
+                      else (canvas_sync_state.read_lock(new_lock_path) or {}).get("since"))
     with _SYNC_LOCK:
         _DELETING.update({(env, name), (env, new)})
     moved_clone = False
     keep_held = False
+    # The stopped manager's push/pull locks, held to the end of the local
+    # move: stop() joins the watcher thread, but a MANUAL pull or push already
+    # inside its network leg runs on a route thread and would go on writing
+    # the old clone path mid-move. Same order as pause() (flight, then op).
+    flight_locks: list[threading.Lock] = []
     try:
         manager = _stop_manager(env, name)
         if manager is not None and manager.thread.is_alive():
             return _error(f"canvas {name!r} is still syncing; retry the rename shortly", 409)
+        if manager is not None:
+            for lk in (manager._flight_lock, manager._op_lock):
+                if not lk.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+                    return _error(f"canvas {name!r} is still syncing; retry the rename "
+                                  "shortly", 409)
+                flight_locks.append(lk)
         _proc, err = _run_cli(["workbench", "canvas", "rename", name, new], LIST_TIMEOUT, env)
         _cli_cache_clear()
         if err is not None:
@@ -6877,6 +6913,10 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
                                    exc_info=True)
             _patch_toml_name(target, name, new)
     finally:
+        for lk in reversed(flight_locks):
+            lk.release()
+        if not case_only:
+            canvas_sync_state.release_lock(new_lock_path, new_lock_since)
         if not keep_held:
             canvas_sync_state.release_lock(lock_path, lock_since)
         if moved_clone:
