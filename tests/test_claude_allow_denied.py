@@ -33,6 +33,7 @@ def agent(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     mod = _load("agent")
     mod.MODEL_WINDOWS = str(tmp_path / "model-windows.json")
+    monkeypatch.setattr(mod, "_claude_bin", lambda: "/bin/claude")
     return mod
 
 
