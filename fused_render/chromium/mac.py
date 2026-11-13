@@ -61,6 +61,17 @@ _SIG_POLICY_RESPONSE = b"q@:@@ZZ@"
 # FRNavigationPolicy (FRChromiumView.h)
 POLICY_ALLOW, POLICY_CANCEL, POLICY_DOWNLOAD = 0, 1, 2
 
+# AppKit's NSWindowOcclusionStateVisible, as a literal so the stubbed tests
+# (and a non-macOS import) see the same bit the real framework reports.
+NS_WINDOW_OCCLUSION_STATE_VISIBLE = 1 << 1
+
+
+def occlusion_visible(state: int) -> bool:
+    """Whether an `NSWindow.occlusionState` says the window is on screen at
+    all (its Space is active and something of it shows). Off-Space, fully
+    covered and miniaturized windows all read as not visible."""
+    return bool(state & NS_WINDOW_OCCLUSION_STATE_VISIBLE)
+
 # Chromium's context-menu commands arrive under WebKit's identifiers (the
 # framework translates), so `window_policy.context_menu_item` applies as is.
 
@@ -165,7 +176,127 @@ class _ChromiumDelegate(NSObject):
         self._manager = manager
         self._window = window
         self._crash_reloaded = False
+        # Visibility diagnostics (see `_log_visibility`): a window is born
+        # visible, and every transition from there is logged.
+        self._visible = True
+        self._observing = False
+        self.attachDiagnostics()
         return self
+
+    # ---- visibility diagnostics -----------------------------------------------
+    #
+    # A Chromium window has been seen to stop painting — the window shows its
+    # own near-black background until ⌘R — after a Space (desktop) switch and
+    # after the relaunch placeholder hands off to the real page. It is not a
+    # renderer death (`chromiumViewRenderProcessDidTerminate:` never fires)
+    # and not a load error, and it does not reproduce in isolation: a harness
+    # on the real engine and the real `_Window` class repaints fine after
+    # occlusion, a 60 s hide, display moves between 1x and 2x screens, theme
+    # flips while hidden, a transparent same-app window in front, and the
+    # placeholder handoff (2026-11-03, docs/CHROMIUM_ENGINE.md). Until the
+    # trigger is caught in the wild, every visibility-shaped transition is
+    # logged at INFO — they are rare, so this is cheap — beside the page-side
+    # `/api/health/visibility` reports: occlusion, Space, key window and app
+    # activation, each with where the window is and what macOS says of it.
+
+    def _describe(self) -> str:
+        window = self._window
+        ns = getattr(window, "ns", None) if window is not None else None
+        if ns is None:
+            return "no window"
+        parts = []
+        try:
+            state = int(ns.occlusionState())
+            parts.append("visible" if occlusion_visible(state) else "occluded")
+            parts.append(f"onActiveSpace={bool(ns.isOnActiveSpace())}")
+            parts.append(f"key={bool(ns.isKeyWindow())}")
+            parts.append(f"ordered={bool(ns.isVisible())}")
+            screen = ns.screen()
+            if screen is not None:
+                parts.append(f"screen={screen.localizedName()}@{screen.backingScaleFactor():g}x")
+            f = ns.frame()
+            parts.append(f"frame={int(f.origin.x)},{int(f.origin.y)} {int(f.size.width)}x{int(f.size.height)}")
+        except Exception:  # noqa: BLE001 — diagnostics only; say what we have
+            parts.append("(partial)")
+        try:
+            from AppKit import NSApp
+
+            parts.append(f"appActive={bool(NSApp.isActive())}")
+        except Exception:  # noqa: BLE001 — no AppKit (tests)
+            pass
+        return " ".join(parts)
+
+    def _log_visibility(self, why: str) -> None:
+        window = self._window
+        label = (window.key or "home") if window is not None else "?"
+        logger.info("chromium window %s %s: %s", label, why, self._describe())
+
+    def windowDidChangeOcclusionState_(self, notification):
+        window = self._window
+        ns = getattr(window, "ns", None) if window is not None else None
+        if ns is None:
+            return
+        try:
+            now_visible = occlusion_visible(int(ns.occlusionState()))
+        except Exception:  # noqa: BLE001 — diagnostics-grade; leave the state alone
+            return
+        was_visible, self._visible = self._visible, now_visible
+        if now_visible != was_visible:
+            self._log_visibility("visible again" if now_visible else "occluded")
+
+    def windowDidResignKey_(self, notification):
+        self._log_visibility("resigned key")
+
+    def activeSpaceDidChange_(self, notification):
+        self._log_visibility("active Space changed")
+
+    def appDidBecomeActive_(self, notification):
+        self._log_visibility("app active")
+
+    def appDidResignActive_(self, notification):
+        self._log_visibility("app inactive")
+
+    def attachDiagnostics(self):
+        """Observe the Space / app-activation notifications (window-level
+        ones arrive through NSWindowDelegate). Idempotent; a stubbed AppKit
+        (tests) has none of these and that is fine."""
+        if self._observing:
+            return
+        try:
+            from AppKit import (
+                NSApplicationDidBecomeActiveNotification,
+                NSApplicationDidResignActiveNotification,
+                NSNotificationCenter,
+                NSWorkspace,
+                NSWorkspaceActiveSpaceDidChangeNotification,
+            )
+        except ImportError:
+            return
+        try:
+            NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+                self, b"activeSpaceDidChange:", NSWorkspaceActiveSpaceDidChangeNotification, None)
+            center = NSNotificationCenter.defaultCenter()
+            center.addObserver_selector_name_object_(
+                self, b"appDidBecomeActive:", NSApplicationDidBecomeActiveNotification, None)
+            center.addObserver_selector_name_object_(
+                self, b"appDidResignActive:", NSApplicationDidResignActiveNotification, None)
+        except Exception:  # noqa: BLE001 — diagnostics must never break a window
+            logger.debug("visibility diagnostics not attached", exc_info=True)
+            return
+        self._observing = True
+
+    def detachDiagnostics(self):
+        """Stop observing (window teardown). Idempotent."""
+        if not self._observing:
+            return
+        self._observing = False
+        try:
+            from AppKit import NSNotificationCenter, NSWorkspace
+
+            NSWorkspace.sharedWorkspace().notificationCenter().removeObserver_(self)
+            NSNotificationCenter.defaultCenter().removeObserver_(self)
+        except Exception:  # noqa: BLE001 — going away regardless
+            logger.debug("visibility diagnostics not detached", exc_info=True)
 
     # ---- navigation -----------------------------------------------------------
 
@@ -388,3 +519,4 @@ class _ChromiumDelegate(NSObject):
 
     def windowDidBecomeKey_(self, notification):
         self._manager._touch(self._window)
+        self._log_visibility("became key")
