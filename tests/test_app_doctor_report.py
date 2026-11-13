@@ -944,6 +944,13 @@ def test_auto_sync_does_not_excuse_uncommitted_paths(workspace, monkeypatch):
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
 def test_a_standing_auto_sync_failure_fails_the_git_row(workspace, monkeypatch):
     monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    # report() calls note_app_opened, which dispatches a REAL background
+    # auto-update (a pull against the real bare remote). When that pull
+    # succeeds it clears every failure recorded for the root, so if the
+    # thread finishes before report() reads the failures, the row reads
+    # "pass". This test pins how the row renders a failure that is already
+    # recorded, not the background sync; _warm() fills the cache directly.
+    monkeypatch.setattr(git_upstream, "note_app_opened", lambda *a, **k: None)
     d, repo, _ = _repo_with_remote(workspace)
     _commit_here(repo, sub="demo")
     _warm(d)

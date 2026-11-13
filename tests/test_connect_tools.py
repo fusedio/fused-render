@@ -8,6 +8,7 @@ records go to the file store under a temp home, and every HTTP request goes to a
 import json
 import os
 import shutil
+import threading
 import time
 
 import httpx
@@ -44,8 +45,22 @@ def _pack(root, key, doc, native=None):
     return d
 
 
+def _join_warm_threads():
+    # manager.status() starts a `tools.warm` daemon thread that lists tools in
+    # the background. One left over from an earlier test (here or in another
+    # connect test file on this xdist worker) outlives that test's monkeypatch,
+    # so it builds its McpClient on the REAL httpx transport and parks it in
+    # `tools._clients` after this fixture cleared it. The next call_tool then
+    # reuses that client and fails with ConnectError instead of the mocked
+    # answer. Wait for those threads before clearing the caches.
+    for t in threading.enumerate():
+        if t.name.startswith("connect-tools-"):
+            t.join(timeout=10)
+
+
 @pytest.fixture(autouse=True)
 def _env(monkeypatch, tmp_path):
+    _join_warm_threads()
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FUSED_RENDER_CONNECT_STORE", "file")
     monkeypatch.setenv("FUSED_RENDER_CONNECT_OPEN_BROWSER", "0")
@@ -68,6 +83,7 @@ def _env(monkeypatch, tmp_path):
         d.clear()
     manager._reconnect.clear()
     yield
+    _join_warm_threads()
     for d in (tools._cache, tools._clients, tools._native, manager._flows):
         d.clear()
 

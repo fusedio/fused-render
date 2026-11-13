@@ -1873,8 +1873,16 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
     # The sync-point state lives OUTSIDE the clone dir (a CLI `pull --force`
     # removes any in-dir file that isn't in the bundle).
     assert (harness.root / ".sync" / "alpha.json").exists()
-    events = harness.client.get("/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]
-    merged = [e for e in events if e["action"] == "server merged"]
+    # merge_seq is bumped under _op_lock; the "server merged" log line is
+    # written after the lock is released, so it can land a moment after the
+    # wait above returns. Wait for the line itself.
+    deadline = time.time() + _WAIT_TIMEOUT_S
+    while True:
+        events = harness.client.get("/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]
+        merged = [e for e in events if e["action"] == "server merged"]
+        if merged or time.time() >= deadline:
+            break
+        time.sleep(0.05)
     assert merged and "b.py" in merged[-1]["detail"], events
     s2d = harness.client.get("/api/canvases/sync/state?env=unstable&name=alpha").json()[
         "legs"]["server_to_disk"]

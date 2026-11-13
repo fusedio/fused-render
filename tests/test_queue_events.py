@@ -46,6 +46,25 @@ HEADERS = {"X-Fused": "1"}
 _REAL_ENSURE_DUTIES_WAITER = queue_manager.ensure_duties_waiter
 
 
+@pytest.fixture(autouse=True)
+def _join_event_posts(monkeypatch):
+    """Every `_post_event` / `card_raised` post runs `_send_event` on a daemon
+    thread, and only the `exited` one is joined by the code under test. An
+    unjoined `turn_ended` that outlives its test loses the test's patched
+    `urlopen`, fails against the dead origin, falls back to the server.json
+    in whatever FUSED_RENDER_HOME_DIR is set NOW (the next test's), and lands
+    on the next test's live server as a stray post. Wait for them here.
+    Requesting `monkeypatch` makes this teardown run before the patches are
+    undone, so a thread still in flight finishes against its own test."""
+    before = set(threading.enumerate())
+    yield
+    deadline = time.monotonic() + 10
+    for t in threading.enumerate():
+        if t in before or getattr(getattr(t, "_target", None), "__name__", "") != "_send_event":
+            continue
+        t.join(max(0.0, deadline - time.monotonic()))
+
+
 def _load(name):
     path = os.path.join(AGENT_DIR, name + ".py")
     spec = importlib.util.spec_from_file_location("queue_events_" + name, path)
