@@ -96,6 +96,7 @@ import type {
   SkillRow,
   StartResponse,
   SwitchableMode,
+  TurnBreakUser,
   WorktreeHint,
 } from "./types";
 import { composeBlocks, composeOutgoing, isInterruptMark, isMarkerOnly, stripBlocks } from "./wire";
@@ -369,6 +370,27 @@ export function createChatController(deps: ControllerDeps): ChatController {
   let allowSeq = 0;
   let loopSeq = 0;
   let followupSeq = 0;
+  /**
+   * THE BUBBLE EACH FOLLOW-UP WENT UP AS, in the order `followupSeq` counts
+   * them: entry n-1 is the user turn whose reply a streaming loop files under
+   * slot n (`placeReply`). A ledger rather than "the last user turn" because
+   * two lines typed into one running tool call are two bubbles before either
+   * reply opens, and the first reply belongs between them, not under both.
+   */
+  const followupKeys: string[] = [];
+  /** The ledger in BUBBLE order, not landing order: two follow-ups in flight
+   *  at once can land out of the order they were typed, and the slot a reply
+   *  files under is the typed order (the CLI's queue is FIFO). A key whose
+   *  row is gone (an earlier conversation's) keeps its place. */
+  const recordFollowup = (key: string): void => {
+    followupKeys.push(key);
+    const at = (k: string) => state.turns.findIndex((t) => t.key === k);
+    followupKeys.sort((a, b) => {
+      const ia = at(a);
+      const ib = at(b);
+      return ia < 0 || ib < 0 ? 0 : ia - ib;
+    });
+  };
   let logGen = 0;
   /** Sends the controller itself dispatched (`allowDenied`) and wants the
    *  outcome of, by `SendOptions.sendId`: the server has the line, or the send
@@ -1124,6 +1146,72 @@ export function createChatController(deps: ControllerDeps): ChatController {
   };
 
   const dropTurn = (key: string) => emit({ turns: state.turns.filter((t) => t.key !== key) });
+
+  /**
+   * THE WORDS A SEAM CARRIES, DRAWN ONCE, where this page has no bubble for them.
+   *
+   * A page that did NOT send follow-up `slot` has no bubble for it — the inbox
+   * row left when the CLI took the line, and the transcript has no user row
+   * for a steered line until the turn ends (the CLI persists it only as an
+   * attachment `_history` reads later) — so the words the seam carries
+   * (`TurnBreak.user`, agent.py `_seam`) go up as a user turn here, before the
+   * reply that answers them. Called for EVERY seam, including one whose span
+   * is empty (two lines steered at one tool boundary give two seams at the
+   * same offsets, and the reply after them answers both): the words are not
+   * the reply's to draw, so an empty span must not skip them (Bugbot #2145).
+   *
+   * Never twice: this page's own bubble (`followupKeys[base + slot - 1]`), a
+   * row with the echo's uuid, or a uuid-less row with the same words (a live
+   * bubble — this page's optimistic row, or one drawn here) all count as
+   * drawn. A restored turn carries its record's uuid, so a "yes" typed an
+   * hour ago never stands in for this "yes".
+   */
+  const drawSeamUser = (slot: number, seamUser: TurnBreakUser | undefined, base: number): void => {
+    if (slot <= 0 || !seamUser) return;
+    const own = followupKeys[base + slot - 1];
+    const words = stripBlocks(seamUser.text || "").trim();
+    const uuid = seamUser.uuid || "";
+    if (!words) return;
+    const drawn = state.turns.some(
+      (t) =>
+        t.role === "user" &&
+        (t.key === own ||
+          (!!uuid && t.uuid === uuid) ||
+          (!t.uuid && stripBlocks(t.text).trim() === words)),
+    );
+    if (drawn) return;
+    pushTurn({
+      role: "user",
+      key: nextKey("u"),
+      text: words,
+      // WHEN, off the echo row's own clock where the run stamped one, so the
+      // hover reads as it will after a reload; the wall clock only for a row
+      // that has none (live `out.jsonl` echoes mostly do).
+      ts: typeof seamUser.at === "number" ? seamUser.at : wallClock() / 1000,
+      ...(uuid ? { uuid } : {}),
+    });
+  };
+
+  /**
+   * A REPLY LANDS ABOVE THE NEXT FOLLOW-UP'S BUBBLE (Akshil, 2026-11-05: two
+   * lines typed into a running tool call were answered ABOVE their own
+   * bubbles; and a reply whose first body arrived after a follow-up had gone
+   * up streamed BELOW that follow-up).
+   *
+   * Slot n answers follow-up n (`followupKeys[base + n - 1]`, this page's own
+   * bubble for it) and belongs before follow-up n+1's bubble when that is
+   * already in the log — appending put the first reply under the second
+   * bubble, and slot 0 (the turn's own reply) under a line queued while the
+   * model was still thinking. With no such bubble the reply simply follows
+   * the log, which is where `drawSeamUser` has just put the words it answers
+   * on a page with no bubble of its own.
+   */
+  const placeReply = (slot: number, turn: AssistantTurn, base: number): void => {
+    const next = followupKeys[base + slot];
+    const at = next ? state.turns.findIndex((t) => t.key === next && t.role === "user") : -1;
+    if (at < 0) pushTurn(turn);
+    else emit({ turns: [...state.turns.slice(0, at), turn, ...state.turns.slice(at)] });
+  };
 
   /**
    * PR2 — THE SENT BUBBLE LETS GO OF ITS BLOB URLS.
@@ -2074,6 +2162,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
      *  inference. */
     let prevWindow: number | null = null;
     let seenFollowupSeq = followupSeq;
+    /** Where this loop's follow-ups start in `followupKeys`: slot n of this
+     *  loop is the bubble at `keysBase + n - 1` (`placeReply`). */
+    const keysBase = followupKeys.length;
     /**
      * HOW MANY SEAMS ARE STILL OWED — a COUNT, not a flag (Bugbot PR #1061).
      *
@@ -2378,6 +2469,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           ? reported
               .filter((b) => b.segments > baseSeg || b.text > baseText.length)
               .map((b) => ({
+                ...b,
                 segments: Math.max(0, b.segments - baseSeg),
                 text: Math.max(0, b.text - baseText.length),
               }))
@@ -2409,17 +2501,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // text→segments→text (agent.py replaying without segments) still has
           // a body to restore.
           const pollFlat = body.mode === "text" ? body.text : chunk.flatText;
+          // The seam's words go up whether or not this span has a body yet.
+          if (j > 0) drawSeamUser(slot, breaks[j - 1]?.user, keysBase);
           if (body.mode === "empty") continue;
           if (!chunk.seq) chunk.seq = ++cardSeq;
           if (!chunk.key) {
             chunk.key = nextKey("a");
-            pushTurn({
-              role: "assistant",
-              key: chunk.key,
-              text: "",
-              streaming: true,
-              followup: slot,
-            });
+            placeReply(
+              slot,
+              {
+                role: "assistant",
+                key: chunk.key,
+                text: "",
+                streaming: true,
+                followup: slot,
+              },
+              keysBase,
+            );
             // THE PLAN LIMIT IS OVER THE MOMENT THE RETRY'S REPLY OPENS — a
             // tool call is already the API answering — not at the end of a
             // turn that may run for minutes with the red card still above it.
@@ -2550,15 +2648,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 to ? allText.slice(from.text, to.text) : allText.slice(from.text),
                 ++cardSeq,
               );
+              if (j > 0) drawSeamUser(chunkOffset + j, spans[j - 1]?.user, keysBase);
               if (view.mode === "empty") continue;
-              pushTurn({
-                role: "assistant",
-                key: nextKey("a"),
-                text: view.mode === "segments" ? view.view.tailText || "" : view.text,
-                ...(view.mode === "segments" ? { segments: view.view.rows.map((r) => r.seg) } : {}),
-                followup: chunkOffset + j,
-                endedAt,
-              });
+              placeReply(
+                chunkOffset + j,
+                {
+                  role: "assistant",
+                  key: nextKey("a"),
+                  text: view.mode === "segments" ? view.view.tailText || "" : view.text,
+                  ...(view.mode === "segments" ? { segments: view.view.rows.map((r) => r.seg) } : {}),
+                  followup: chunkOffset + j,
+                  endedAt,
+                },
+                keysBase,
+              );
             }
           }
           // The comeback is gated on ownership like the stop note below: a
@@ -3366,7 +3469,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // the CLI never received it (`stopRun`).
       entry.landed = true;
       delivered(opts);
-      followupSeq++;
+      // A log this send no longer belongs to (a new chat opened meanwhile)
+      // gets neither the ledger row nor the seam: its bubble is gone with it.
+      if (logGen === gen) {
+        recordFollowup(bubble.key);
+        followupSeq++;
+      }
     } catch (err) {
       // A 504 MAY STILL LAND (`SEND_TIMEOUT_PROBES`), so it does not hand the
       // words back for a second send that would say them twice. A run still
@@ -3388,6 +3496,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (entry.handedBack) return;
         if (alive) {
           delivered(opts);
+          recordFollowup(bubble.key);
           followupSeq++;
           return;
         }
@@ -4520,6 +4629,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
             to ? probeText.slice(from.text, to.text) : probeText.slice(from.text),
             ++cardSeq,
           );
+          // The words each seam carries, before the reply that answers them —
+          // a repair has no bubble of its own for a steered line either.
+          if (j > 0) drawSeamUser(j, probeSpans[j - 1]?.user, followupKeys.length);
           if (view.mode === "empty") continue;
           pushTurn({
             role: "assistant",
