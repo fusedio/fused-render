@@ -2738,7 +2738,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     });
     const opts: SendOptions = { sendId };
     const sent = state.status !== "idle" ? sendFollowUp(res.message, { ...opts, orStart: true }) : sendMessage(res.message, opts);
-    const ok = await Promise.race([outcome, sent.then(() => true)]);
+    // A send that finished without settling the watch was delivered; one that
+    // gave the text back settled it as refused first.
+    const ok = await Promise.race([outcome, sent.then(() => Promise.race([outcome, true]))]);
     sendWatch.delete(sendId);
     if (!ok) throw new Error("Allowed, but the retry could not be sent. Try again.");
     if (disposed || logGen !== gen) return;
@@ -2828,7 +2830,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // and the composer, which never typed these words, must not get them back.
     const watch = opts.sendId ? sendWatch.get(opts.sendId) : undefined;
     if (watch) {
-      if (refused) watch.refused();
+      // Every road that hands the text back is an undelivered send, flagged
+      // `refused` or not (a follow-up whose POST failed, a Stop), so the watch
+      // settles as refused and the chip is never stamped Allowed.
+      watch.refused();
       return;
     }
     deps.onSendReturned?.({
