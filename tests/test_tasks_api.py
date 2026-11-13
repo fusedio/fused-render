@@ -682,6 +682,20 @@ def test_a_title_derived_from_the_entrys_own_message_is_not_a_user_name(
     assert task["title_source"] == "message"
 
 
+def test_the_usage_limit_comeback_title_is_not_a_user_name(client, projects_dir):
+    """The chat files its usage-limit continuation under a fixed title; the
+    session keeps the name it already had instead of taking that one."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", T9), _ai_title("News puller"),
+    ])
+    _seed_schedule([_entry("e1", "Your usage limit has reset.", T10,
+                           state=schedule.SENT, fired=T10, turn="ok",
+                           claude_session_id="sess-a",
+                           title=tasks_mod.COMEBACK_TITLE)])
+    task = _tasks(client)[0]
+    assert (task["title"], task["title_source"]) == ("News puller", "ai")
+
+
 _LONG_LINE = ("pull today's news and file it in the shared folder every "
               "morning before standup")
 # What the New task form's shortTitle (TITLE_MAX = 60) makes of it: cut at the

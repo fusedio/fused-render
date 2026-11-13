@@ -2888,6 +2888,11 @@ def _title(task: dict, rec: dict | None, first_prompt: str,
         # forever. Only an EXACT match of that derivation is skipped: a title
         # that merely shares a prefix with the message ("Fix" over "Fix the
         # login redirect") is a name a bot or API caller chose, hence `user`.
+        # The usage-limit comeback's title is the chat's fixed label for that
+        # one entry, not a name for the task: taken as `user`, it would replace
+        # the session's real title and block AI titles from then on.
+        if title == COMEBACK_TITLE:
+            continue
         t = title.rstrip("…").strip()
         if t:
             first = next((ln.strip() for ln in
