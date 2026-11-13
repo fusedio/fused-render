@@ -1,10 +1,11 @@
-"""`fused workbench canvas push` inside a canvas clone goes through the server.
+"""`fused workbench canvas push`/`pull` inside a canvas clone never run.
 
-A Claude session working in a clone is told to publish with the standard
-command. That command is only safe because `_fused_cli.py` — the in-interpreter
-entry point every shipping install runs — recognises a clone push and turns it
-into a POST to `/api/canvases/sync/push`, where the real `_push` runs under the
-watcher's lock with its probe+merge+abort guard intact.
+The revision spine (2026-11-11, owner Q7): a Claude session in a clone has no
+sync verbs — the folder publishes itself (turn end, quiet folder) and server
+changes are merged into it. `_fused_cli.py` — the in-interpreter entry point
+every shipping install runs — recognises a clone push and answers with the
+folder's state line (exit 0, nothing to do), and refuses a pull into a clone
+(exit 1).
 
 Two halves are tested: the matcher (which commands are ours, and the much longer
 list of ones that are NOT), and the request behaviour (what the session sees,
@@ -166,8 +167,17 @@ def test_the_clone_root_must_be_exactly_one_segment_under_the_root(root):
 # -- the request ---------------------------------------------------------------
 
 
+def _watching(**extra):
+    """A sync/state answer for a clone this server watches."""
+    return {"name": "alpha", "watching": True, "watcher_epoch": "e1",
+            "base_revision": 3, "server_revision": 4, "pending_files": 2,
+            "legs": {"disk_to_server": {"state": "idle", "reason": None,
+                                        "last_push_at": None, "push_seq": 0}},
+            "error_detail": [], "other_watchers": [], **extra}
+
+
 class _Server:
-    """Records the POST and replays a canned response."""
+    """Records the state GET and replays a canned response."""
 
     def __init__(self, status=200, body=None):
         self.status, self.body = status, body if body is not None else {}
@@ -184,83 +194,84 @@ def _intercept(args, monkeypatch, server=None, origin="http://127.0.0.1:9999"):
     else:
         monkeypatch.setenv("FUSED_RENDER_ORIGIN", origin)
     if server is not None:
-        monkeypatch.setattr(_canvas_push, "_post_push", server)
+        monkeypatch.setattr(_canvas_push, "_get_state", server)
     out, err = io.StringIO(), io.StringIO()
     code = _canvas_push.maybe_intercept(args, out, err)
     return code, out.getvalue(), err.getvalue()
 
 
 def test_a_clone_push_is_sent_to_the_server(root, monkeypatch):
-    server = _Server(200, {"ok": True, "push_state": "idle", "push_seq": 1})
+    """The folder publishes itself: a clone push answers with its state line,
+    exit 0 — nothing to do, nothing failed."""
+    server = _Server(200, _watching())
     code, out, err = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 0, err
     assert server.calls == [("http://127.0.0.1:9999", "alpha", ENV)]
-    assert "alpha" in out
+    assert out == ("This folder publishes itself: base rev 3, server rev 4, 2 pending "
+                   "files, no push yet. Nothing to do.\n"), out
     assert err == ""
 
 
 def test_a_relative_target_resolves(root, monkeypatch):
     """The session's cwd IS the clone, so `fused workbench canvas push .` is
     the form it will actually type."""
-    server = _Server(200, {"ok": True})
+    server = _Server(200, _watching())
     monkeypatch.chdir(root / "alpha")
-    code, _, err = _intercept(["workbench", "canvas", "push", "."],
-                              monkeypatch, server)
+    code, out, err = _intercept(["workbench", "canvas", "push", "."],
+                                monkeypatch, server)
     assert code == 0, err
     assert server.calls == [("http://127.0.0.1:9999", "alpha", ENV)]
+    assert "publishes itself" in out
 
 
 def test_a_validation_failure_reaches_the_session_verbatim(root, monkeypatch):
-    """The reason for all of this: the lines that name the broken nodes have to
-    land in the agent's own transcript so it can fix them without a human
-    relaying the output."""
+    """The last publish failed: the lines that name the broken nodes still
+    land in the session's transcript, verbatim, so it can fix them — the next
+    publish (its turn end) ships the fix."""
     lines = ["error: node 'buffer' has no source file (buffer.py missing)",
              "error: edge references unknown node 'join'",
              "Error: Canvas validation failed with 2 error(s)."]
-    server = _Server(200, {"ok": False, "push_state": "error",
-                           "error": "Canvas validation failed with 2 error(s).",
-                           "error_detail": lines})
-    code, _, err = _intercept(
+    server = _Server(200, _watching(
+        legs={"disk_to_server": {"state": "error", "reason": lines[-1],
+                                 "last_push_at": None, "push_seq": 0}},
+        error_detail=lines))
+    code, out, _ = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
-    assert code == 1
-    for line in lines:
-        assert line in err
-    assert err.splitlines() == lines, "the transcript must be verbatim, not reworded"
+    assert code == 0
+    assert out.splitlines()[1:] == ["The last publish failed:", *lines], out
 
 
 def test_a_failure_with_no_detail_still_says_something(root, monkeypatch):
-    server = _Server(200, {"ok": False, "push_state": "error",
-                           "error": "the fused CLI is not available",
-                           "error_detail": []})
-    code, _, err = _intercept(
+    server = _Server(200, _watching(
+        legs={"disk_to_server": {"state": "error", "reason": "the fused CLI is not available",
+                                 "last_push_at": None, "push_seq": 0}}))
+    code, out, _ = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
-    assert code == 1
-    assert "the fused CLI is not available" in err
+    assert code == 0
+    assert "the fused CLI is not available" in out
 
 
 def test_a_refusal_is_reported_not_retried_as_a_raw_push(root, monkeypatch):
-    """A paused watcher / a push already running must NOT degrade into the raw
-    CLI push — that is the unguarded path this whole mechanism removes."""
-    server = _Server(409, {"error": "syncing for 'alpha' is paused; try again"})
+    """A state read the server refuses must NOT degrade into the raw CLI push
+    — that is the unguarded path this whole mechanism removes."""
+    server = _Server(400, {"error": "'env' is not a known environment"})
     code, _, err = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 1
-    assert "paused" in err
+    assert "not a known environment" in err
 
 
 def test_unsupported_flags_are_refused_rather_than_passed_through(root, monkeypatch):
-    """--no-validate / --no-ignore change what gets published in ways the
-    endpoint cannot express. Falling through would run exactly the unguarded
-    push this module exists to prevent, so it refuses and says why."""
+    """--no-validate / --no-ignore: the same answer as any push — the folder
+    publishes itself, with validation, honouring .fusedignore."""
     for flag in ("--no-validate", "--no-ignore"):
-        server = _Server(200, {"ok": True})
-        code, _, err = _intercept(
+        server = _Server(200, _watching())
+        code, out, _ = _intercept(
             ["workbench", "canvas", "push", str(root / "alpha"), flag],
             monkeypatch, server)
-        assert code == 2, flag
-        assert flag in err
-        assert server.calls == [], "it must not have pushed"
+        assert code == 0, flag
+        assert "publishes itself" in out
 
 
 # -- every fall-through case --------------------------------------------------
@@ -274,7 +285,7 @@ def test_the_internal_marker_short_circuits_everything(root, monkeypatch):
     refusal is recorded as a CLI failure: canvas sync dead at push_seq 0.
 
     Checked before the argv match, so it costs nothing on unrelated commands."""
-    server = _Server(200, {"ok": True})
+    server = _Server(200, _watching())
     monkeypatch.setenv(_canvas_push.INTERNAL_ENV, "1")
     code, out, err = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
@@ -302,22 +313,22 @@ def test_the_cli_env_carries_the_marker(root):
 
 
 def test_a_busy_refusal_reads_as_retryable_not_as_a_broken_canvas(root, monkeypatch):
-    """A genuine double-push is a timing conflict. The message has to say that,
-    or the reader goes hunting for a validation problem that does not exist."""
-    server = _Server(409, {"error": "a push is already running for this canvas",
-                           "code": "busy"})
-    code, _, err = _intercept(
+    """A held publish (server move held for the turn, or the canvas checked
+    out elsewhere) is shown with its reason — still exit 0: nothing for the
+    session to do."""
+    server = _Server(200, _watching(
+        legs={"disk_to_server": {"state": "held", "reason": "checked out by fused-render:bob@x",
+                                 "last_push_at": None, "push_seq": 0}}))
+    code, out, _ = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
-    assert code == 1, "the push did not happen, so it must not exit 0"
-    assert "already running" in err
-    assert "Nothing is wrong with the canvas" in err
-    assert "again" in err
+    assert code == 0
+    assert "Publishing is held: checked out by fused-render:bob@x." in out
 
 
 def test_no_server_origin_falls_through(root, monkeypatch):
     """Nothing published an origin, so there is no fused-render around. Never a
     guessed port: 1777 is wrong under any --port override."""
-    server = _Server(200, {"ok": True})
+    server = _Server(200, _watching())
     code, _, _ = _intercept(["workbench", "canvas", "push", str(root / "alpha")],
                             monkeypatch, server, origin=None)
     assert code is None
@@ -335,9 +346,9 @@ def test_a_clone_of_the_other_environment_is_refused_on_every_fall_through(root,
     clone.mkdir(parents=True)
     monkeypatch.setenv("FUSED_ENV", env)
     cases = [
-        (["workbench", "canvas", "push", str(clone)], None, _Server(200, {"ok": True})),
+        (["workbench", "canvas", "push", str(clone)], None, _Server(200, _watching())),
         (["workbench", "canvas", "push", str(clone), "--canvas", "zeta"],
-         "http://127.0.0.1:9999", _Server(200, {"ok": True})),
+         "http://127.0.0.1:9999", _Server(200, _watching())),
         (["workbench", "canvas", "push", str(clone)], "http://127.0.0.1:9999",
          _Server(None, {})),
     ]
@@ -357,11 +368,11 @@ def test_a_custom_clone_refuses_a_set_fused_env_and_falls_through_unset(root, mo
     clone.mkdir(parents=True)
     args = ["workbench", "canvas", "push", str(clone)]
     monkeypatch.setenv("FUSED_ENV", "prod")
-    code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    code, _, err = _intercept(args, monkeypatch, _Server(200, _watching()), origin=None)
     assert code == 1
     assert "custom environment" in err and "FUSED_ENV unset" in err
     monkeypatch.delenv("FUSED_ENV")
-    server = _Server(200, {"ok": True})
+    server = _Server(200, _watching())
     code, _, _ = _intercept(args, monkeypatch, server, origin=None)
     assert code is None
     # With a server, the push routes to the custom manager like any env's.
@@ -379,12 +390,12 @@ def test_a_workbench_env_flag_naming_another_env_is_refused_on_fall_through(root
     monkeypatch.delenv("FUSED_ENV", raising=False)
     for clone, flag in ((custom, "prod"), (root / "alpha", OTHER_ENV)):
         args = ["workbench", "--env", flag, "canvas", "push", str(clone)]
-        code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+        code, _, err = _intercept(args, monkeypatch, _Server(200, _watching()), origin=None)
         assert code == 1, clone
         assert "(--env)" in err
     monkeypatch.setenv("FUSED_ENV", ENV)
     args = ["workbench", "--env", ENV, "canvas", "push", str(root / "alpha")]
-    code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    code, _, _ = _intercept(args, monkeypatch, _Server(200, _watching()), origin=None)
     assert code is None
 
 
@@ -394,14 +405,14 @@ def test_an_unset_fused_env_is_bound_to_a_named_clones_env_on_fall_through(root,
     clone's raw push must still reach its own env, so the fall-through binds
     it; a custom clone keeps it unset."""
     args = ["workbench", "canvas", "push", str(root / "alpha")]
-    code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    code, _, _ = _intercept(args, monkeypatch, _Server(200, _watching()), origin=None)
     assert code is None
     assert os.environ["FUSED_ENV"] == ENV
     custom = root.parent / "custom" / "alpha"
     custom.mkdir(parents=True)
     monkeypatch.delenv("FUSED_ENV")
     code, _, _ = _intercept(["workbench", "canvas", "push", str(custom)], monkeypatch,
-                            _Server(200, {"ok": True}), origin=None)
+                            _Server(200, _watching()), origin=None)
     assert code is None
     assert "FUSED_ENV" not in os.environ
 
@@ -413,7 +424,7 @@ def test_a_mismatched_fused_env_still_posts_when_the_server_takes_it(root, monke
     clone = root.parent / OTHER_ENV / "alpha"
     clone.mkdir(parents=True)
     monkeypatch.setenv("FUSED_ENV", ENV)
-    server = _Server(200, {"ok": True})
+    server = _Server(200, _watching())
     code, _, _ = _intercept(["workbench", "canvas", "push", str(clone)], monkeypatch, server)
     assert code == 0
     assert [c[1:] for c in server.calls] == [("alpha", OTHER_ENV)]
@@ -427,7 +438,7 @@ def test_a_clone_of_either_environment_routes_to_the_server_with_its_env(root, m
     other_clone = root.parent / OTHER_ENV / "alpha"
     other_clone.mkdir(parents=True)
     monkeypatch.delenv("FUSED_ENV", raising=False)
-    server = _Server(200, {"ok": True})
+    server = _Server(200, _watching())
     code, _, _ = _intercept(["workbench", "canvas", "push", str(other_clone)], monkeypatch, server)
     assert code == 0
     monkeypatch.setenv("FUSED_ENV", ENV)
@@ -441,7 +452,7 @@ def test_a_push_outside_the_canvases_root_falls_through(root, monkeypatch, tmp_p
     two-way synced, so the real CLI is exactly right for it."""
     other = tmp_path / "myproject" / "mycanvas"
     other.mkdir(parents=True)
-    server = _Server(200, {"ok": True})
+    server = _Server(200, _watching())
     code, _, _ = _intercept(["workbench", "canvas", "push", str(other)],
                             monkeypatch, server)
     assert code is None
@@ -454,12 +465,17 @@ def test_no_watcher_on_a_clone_refuses_rather_than_falls_through(root, monkeypat
     can have moved through the hosted workbench with nothing watching to
     notice. "no watcher right now" is not "sync was never engaged here", so
     this refuses instead of running the raw, unguarded push."""
-    server = _Server(409, {"error": "not being synced", "code": "no_watcher"})
+    server = _Server(200, {"watching": False, "watcher_epoch": None, "other_watchers": []})
     code, _, err = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 1, "must not silently run the raw push"
     assert "not being synced" in err
-    assert "start sync" in err.lower() or "open this canvas" in err.lower()
+    assert "open this canvas" in err.lower()
+    server = _Server(200, {"watching": False, "watcher_epoch": None,
+                           "other_watchers": [{"pid": 42, "port": 1778}]})
+    code, _, err = _intercept(
+        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+    assert code == 1 and "pid 42" in err
 
 
 def test_an_unreachable_server_falls_through(root, monkeypatch):
@@ -472,7 +488,7 @@ def test_an_unreachable_server_falls_through(root, monkeypatch):
     assert err == ""
 
 
-def test_post_push_falls_through_on_a_genuine_connect_failure():
+def test_get_state_falls_through_on_a_genuine_connect_failure():
     """Nothing listens on this port — a real ConnectionRefusedError, which
     must stay in the `status is None` (safe-to-fall-through) bucket."""
     import socket
@@ -481,14 +497,14 @@ def test_post_push_falls_through_on_a_genuine_connect_failure():
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()  # nothing listens here now
-    status, body = _canvas_push._post_push("http://127.0.0.1:%d" % port, "alpha", ENV)
+    status, body = _canvas_push._get_state("http://127.0.0.1:%d" % port, "alpha", ENV)
     assert status is None, (status, body)
 
 
 def test_pushing_a_clone_at_a_different_canvas_falls_through(root, monkeypatch):
     """`--canvas beta` from alpha's folder is a cross-push. The endpoint is
     keyed on the watcher for THIS folder and cannot express it."""
-    server = _Server(200, {"ok": True})
+    server = _Server(200, _watching())
     code, _, _ = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha"), "--canvas", "beta"],
         monkeypatch, server)
@@ -522,12 +538,13 @@ def test_the_shim_intercepts_before_dispatching_to_the_real_cli(root, tmp_path):
     server.write_text(
         "import http.server, json, sys, threading\n"
         "class H(http.server.BaseHTTPRequestHandler):\n"
-        "    def do_POST(self):\n"
-        "        n = int(self.headers['Content-Length'])\n"
-        "        body = json.loads(self.rfile.read(n))\n"
-        "        assert self.headers.get('X-Fused') == '1', 'guard header missing'\n"
-        "        out = json.dumps({'ok': True, 'name': body['name'],\n"
-        "                          'push_state': 'idle'}).encode()\n"
+        "    def do_GET(self):\n"
+        "        assert '/api/canvases/sync/state?' in self.path, self.path\n"
+        "        assert 'files=1' in self.path, self.path\n"
+        "        out = json.dumps({'name': 'alpha', 'watching': True,\n"
+        "                          'watcher_epoch': 'e1', 'base_revision': 1,\n"
+        "                          'server_revision': 1, 'pending_files': 0,\n"
+        "                          'legs': {}}).encode()\n"
         "        self.send_response(200)\n"
         "        self.send_header('Content-Type', 'application/json')\n"
         "        self.send_header('Content-Length', str(len(out)))\n"
@@ -554,7 +571,7 @@ def test_the_shim_intercepts_before_dispatching_to_the_real_cli(root, tmp_path):
             capture_output=True, text=True, env=env, timeout=60)
         assert done.returncode == 0, (done.stdout, done.stderr)
         assert "REAL CLI RAN" not in done.stderr, "the raw CLI push was dispatched"
-        assert "alpha" in done.stdout
+        assert "This folder publishes itself" in done.stdout, done.stdout
 
         # And a command that is NOT a clone push still reaches the real CLI.
         other = subprocess.run(
@@ -616,3 +633,53 @@ def test_the_canvases_root_rule_matches_canvases_py(root):
     assert _canvas_push._ENVS == fusedcli.WORKBENCH_ENV_CHOICES
     assert str(root) == canvases.canvases_root(ENV)
     _ = json
+
+
+@pytest.mark.parametrize("extra", [[], ["--force"], ["--dry-run"], ["-f", "--show-diff"]])
+def test_a_pull_into_a_clone_is_refused(root, monkeypatch, extra):
+    """Any pull whose output is the clone (or inside it) is refused, exit 1,
+    whatever its flags: the watcher merges server changes here itself."""
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    for args in (["workbench", "canvas", "pull", "alpha", "-o", str(root / "alpha")],
+                 ["workbench", "canvas", "pull", "alpha", f"--output={root / 'alpha'}"],
+                 ["--env", "unstable", "workbench", "canvas", "pull", "alpha", "-o", "."]):
+        monkeypatch.chdir(root / "alpha")
+        out, err = io.StringIO(), io.StringIO()
+        code = _canvas_push.maybe_intercept([*args, *extra], out, err)
+        assert code == 1, args
+        assert "Do not pull." in err.getvalue()
+    # From inside the clone with no -o: the default output is a subfolder of
+    # the clone — refused too.
+    out, err = io.StringIO(), io.StringIO()
+    assert _canvas_push.maybe_intercept(["workbench", "canvas", "pull", "alpha", *extra],
+                                        out, err) == 1
+    # From the env folder: `pull alpha` writes INTO the clone.
+    monkeypatch.chdir(root)
+    assert _canvas_push.maybe_intercept(["workbench", "canvas", "pull", "alpha", *extra],
+                                        io.StringIO(), io.StringIO()) == 1
+
+
+def test_a_pull_outside_any_clone_falls_through(root, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    out, err = io.StringIO(), io.StringIO()
+    assert _canvas_push.maybe_intercept(
+        ["workbench", "canvas", "pull", "beta", "-o", str(tmp_path / "beta")], out, err) is None
+    # Pulling ANOTHER canvas out of a clone into a folder elsewhere is fine.
+    monkeypatch.chdir(root / "alpha")
+    assert _canvas_push.maybe_intercept(
+        ["workbench", "canvas", "pull", "beta", "-o", str(tmp_path / "beta")],
+        out, err) is None
+
+
+@pytest.mark.parametrize("tail, output", [
+    (["-o", "/tmp/canvas=dev/alpha"], "/tmp/canvas=dev/alpha"),
+    (["-o/tmp/canvas=dev/alpha"], "/tmp/canvas=dev/alpha"),
+    (["--output=/tmp/canvas=dev/alpha"], "/tmp/canvas=dev/alpha"),
+    (["--output", "/tmp/canvas=dev/alpha"], "/tmp/canvas=dev/alpha"),
+    ([], None),
+])
+def test_parse_pull_keeps_an_equals_sign_inside_the_output_path(tail, output):
+    """An attached `-o` value is the rest of the token, `=` and all: only
+    `--output=` splits (a clone under a path holding `=` must still be seen)."""
+    parsed = _canvas_push.parse_pull(["workbench", "canvas", "pull", "alpha", *tail])
+    assert parsed == {"canvas_ref": "alpha", "output": output}

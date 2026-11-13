@@ -1,10 +1,12 @@
 """Claude Code hook for a session working inside a canvas clone.
 
 agent.py attaches it (through `--settings`) to every Claude session whose
-target is in a canvas clone, as two hooks:
+target is in a canvas clone, as four hooks:
 
+  canvas_hook.py start  UserPromptSubmit (a turn begins)
   canvas_hook.py pre    PreToolUse on Write|Edit|MultiEdit|NotebookEdit
   canvas_hook.py post   PostToolUse on every tool
+  canvas_hook.py stop   Stop (the turn ended)
 
 The clone is shared with the user's live canvas: their adds, deletes, renames
 and drags in the embedded workbench land in canvas.toml and the source files
@@ -12,11 +14,18 @@ while the session works. Both hooks ask the fused-render server
 (`POST $FUSED_RENDER_ORIGIN/api/canvases/agent/hook`), which knows what the
 user did:
 
+  start starts the clone's watcher when none runs (no canvas page is open),
+        as every other event here does. Prints nothing.
   pre   may refuse, once, a write that would recreate the file of a node the
         user deleted on the canvas (the user's delete wins; told why, the
         session can still write it again when the user asked for it).
   post  may add context: what the user changed since the session's previous
-        tool call, so it re-reads canvas.toml instead of editing from memory.
+        tool call, so it re-reads canvas.toml instead of editing from memory,
+        and which files a server change merged into (or will merge into) the
+        folder.
+  stop  tells the server the turn's change set is complete: it merges a held
+        server move and publishes the folder (the session has no sync verbs
+        of its own). Prints nothing; the server answers at once.
 
 FAILS OPEN, always: no origin, no server, a slow or odd answer — print
 nothing, exit 0. A hook that blocks or crashes would stop the session for a
@@ -81,7 +90,7 @@ def _live_origin(failed: str) -> str:
 def main(argv: list[str]) -> int:
     event = argv[1] if len(argv) > 1 else ""
     origin = os.environ.get(_ORIGIN_ENV, "")
-    if event not in ("pre", "post") or not origin:
+    if event not in ("start", "pre", "post", "stop") or not origin:
         return 0
     try:
         data = json.load(sys.stdin)
