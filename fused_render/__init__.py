@@ -1,4 +1,4 @@
-__version__ = "0.7.66"
+__version__ = "0.7.67"
 
 from fused_render._system_trust import use_system_trust  # noqa: E402
 
