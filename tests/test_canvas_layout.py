@@ -436,13 +436,20 @@ def test_a_transcript_held_at_the_move_is_carried_on_a_later_pass(harness, store
     assert _journal(root) == [{"name": "alpha", "src": "alpha",
                                "dst": os.path.join("user", "alpha")}]
     assert (projects / claude_session_move.munge(str(old)) / "sid-late.jsonl").is_file()
+    # The pass that made the move knows it is not finished: the answer is not
+    # remembered as "nothing left", so an ordinary (unforced) call comes back.
+    assert report.carry_owed and report.pending()
 
-    report = canvas_layout.ensure_layout(ENV, force=True)
+    monkeypatch.setattr(canvas_layout, "RETRY_S", 0.0)
+    report = canvas_layout.ensure_layout(ENV)
     assert report.carry_owed and report.pending() and report.moved == []
     (sessions / "1.json").unlink()
-    report = canvas_layout.ensure_layout(ENV, force=True)
+    report = canvas_layout.ensure_layout(ENV)
     assert not report.pending() and _journal(root) is None
     assert (projects / claude_session_move.munge(str(new)) / "sid-late.jsonl").is_file()
+    # ...and now it IS remembered.
+    monkeypatch.setattr(canvas_layout, "_run", lambda *a, **k: 1 / 0)
+    assert not canvas_layout.ensure_layout(ENV).pending()
 
 
 # -- R1: never under another process, never over a folder ----------------------
@@ -851,3 +858,18 @@ def test_a_pass_that_is_asked_about_the_layout_from_inside_does_not_wait_on_itse
     # The guard is the pass's own: a later call on this thread runs normally.
     _legacy(harness.root, "beta")
     assert canvas_layout.ensure_layout(ENV, force=True).moved == ["beta"]
+
+
+def test_a_pending_clone_is_logged_once_not_on_every_pass(harness, stores, monkeypatch, caplog):
+    """A deferred clone is retried every RETRY_S for as long as a status poll
+    runs; the log says why once, and again only when the reason changes."""
+    import logging
+
+    _legacy(harness.root, "alpha")
+    _legacy(harness.clones, "alpha")                  # a conflict that will not go away
+    monkeypatch.setattr(canvas_layout, "RETRY_S", 0.0)
+    with caplog.at_level(logging.INFO, logger="fused_render.canvas_layout"):
+        for _ in range(4):
+            assert "alpha" in canvas_layout.ensure_layout(ENV).conflicts
+    said = [r for r in caplog.records if "left at its old path" in r.getMessage()]
+    assert len(said) == 1

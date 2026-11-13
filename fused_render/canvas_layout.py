@@ -495,6 +495,9 @@ def _run(env: str, root: str, only: str | None = None) -> LayoutReport:
     if outcome == "refused":
         why = "another fused-render is moving this environment's canvases"
         report.deferred = {n: why for n in names}
+        # Whatever the journal holds is that process's to finish; if it does
+        # not, a later pass here will.
+        report.carry_owed = bool(_journal_read(root))
         return report
     lock_since = (canvas_sync_state.read_lock(lock_path) or {}).get("since")
     try:
@@ -518,15 +521,30 @@ def _run(env: str, root: str, only: str | None = None) -> LayoutReport:
             if name == CLONES_SCOPE and kind in ("deferred", "conflict"):
                 report.blocked = (f"canvas {name!r} must move out of "
                                   f"{os.path.join(root, CLONES_SCOPE)} first: {why}")
+        # A move made on THIS pass whose carry left a transcript behind (a
+        # turn opened after the check) is owed a replay as much as one a
+        # crash left: without this the pass reads as finished, the answer
+        # is remembered, and the journal is never looked at again.
+        if _journal_read(root):
+            report.carry_owed = True
     finally:
         canvas_sync_state.release_lock(lock_path, lock_since)
-    for name, why in report.deferred.items():
-        logger.info("canvas %s: clone not moved yet: %s",
-                    canvases._sync_key(env, name), why)
-    for name, why in report.conflicts.items():
-        logger.warning("canvas %s: clone left at its old path: %s",
-                       canvases._sync_key(env, name), why)
     return report
+
+
+def _log_report(env: str, report: LayoutReport, previous: LayoutReport | None) -> None:
+    """Say what a pass left pending, once per reason: the pass repeats every
+    `RETRY_S` under a status poll for as long as something is."""
+    before_deferred = previous.deferred if previous is not None else {}
+    before_conflicts = previous.conflicts if previous is not None else {}
+    for name, why in report.deferred.items():
+        if before_deferred.get(name) != why:
+            logger.info("canvas %s: clone not moved yet: %s",
+                        canvases._sync_key(env, name), why)
+    for name, why in report.conflicts.items():
+        if before_conflicts.get(name) != why:
+            logger.warning("canvas %s: clone left at its old path: %s",
+                           canvases._sync_key(env, name), why)
 
 
 def _blocked_by_user_clone(root: str) -> str:
@@ -570,6 +588,7 @@ def ensure_layout(env: str, *, force: bool = False) -> LayoutReport:
             report = LayoutReport(env=env, error="the canvas folders could not be checked")
         finally:
             _IN_PASS.active = False
+        _log_report(env, report, state.report)
         state.done = not report.pending()
         state.checked_at = time.monotonic()
         state.report = report
