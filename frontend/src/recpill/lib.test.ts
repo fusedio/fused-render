@@ -67,14 +67,13 @@ describe("formatElapsed", () => {
 });
 
 describe("iconFor", () => {
-  test("the app's icon wins, else the flavor's card", () => {
-    expect(iconFor({ icon: "/x.svg", flavor: "bot" })).toEqual({ kind: "app", src: "/x.svg", scale: "100%" });
-    expect(iconFor({ icon: null, flavor: "render" }).scale).toBe("113.7%");
-    expect(iconFor({ icon: null, flavor: "bot" }).scale).toBe("124.3%");
+  test("the app's icon wins, else the home card", () => {
+    expect(iconFor({ icon: "/x.svg" })).toEqual({ kind: "app", src: "/x.svg", scale: "100%" });
+    expect(iconFor({ icon: null }).scale).toBe("113.7%");
   });
 });
 
-const pi = (id: string) => ({ id, name: id, app: "", icon: null, flavor: "render" as const, canPause: true, mode: "audio" });
+const pi = (id: string) => ({ id, name: id, app: "", icon: null, canPause: true, mode: "audio" });
 
 describe("visibleApps", () => {
   test("up to MAX_ICONS show all, newest first", () => {

@@ -18,7 +18,7 @@ export function setupIssues(s: SetupReply | null): string[] {
 export function ownerLine(s: SetupReply | null): { text: string; warn: boolean } | null {
   if (!s || s.owner === undefined) return null;  // an older server: no owner field, nothing to say
   const o = s.owner;
-  if (o === null) return { text: "Nothing is running the bots or their routines: open Fused Render (or Fused Bot).", warn: true };
+  if (o === null) return { text: "Nothing is running the bots or their routines: open Fused Render.", warn: true };
   if (o.this) return null;
   if (!o.known) return { text: "Another Fused app on this Mac runs the bots; update it so this one can reach them.", warn: true };
   const who = `${o.app} ${o.version}`.trim() || "another Fused app";

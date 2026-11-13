@@ -772,29 +772,18 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { justify-content: center;
 .bots-page :is(#bpanel, #apanel, #vpanel) .topbar button { display: inline-flex; align-items: center; gap: 5px; }
 .bots-page :is(#bpanel, #apanel, #vpanel) .topbar button svg { width: 13px; height: 13px; flex: none; }
 /* Every panel's Back arrow wears the icon-button skin (page colour + ring, hover fills) like the rest of the page. */
-.bots-page :is(#bpanel, #apanel, #vpanel, #ppanel) .topbar .backtxt { width: 32px; height: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
-.bots-page :is(#bpanel, #apanel, #vpanel, #ppanel) .topbar .backtxt svg { width: 16px; height: 16px; }
+.bots-page :is(#bpanel, #apanel, #vpanel) .topbar .backtxt { width: 32px; height: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.bots-page :is(#bpanel, #apanel, #vpanel) .topbar .backtxt svg { width: 16px; height: 16px; }
 /* Every top-bar control — the panels' and the live view's Back, Real window, Take over, shrink, the preview pane's
    window actions — is the same secondary skin: page colour + ring, hover fills. */
-.bots-page :is(#bpanel, #apanel, #vpanel, #ppanel, #full) .topbar .backtxt, .bots-page .winacts button, .bots-page .winacts .btnlink { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); }
-.bots-page :is(#bpanel, #apanel, #vpanel, #ppanel, #full) .topbar .backtxt:hover, .bots-page .winacts button:hover, .bots-page .winacts .btnlink:hover { background: var(--raised); }
+.bots-page :is(#bpanel, #apanel, #vpanel, #full) .topbar .backtxt, .bots-page .winacts button, .bots-page .winacts .btnlink { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); }
+.bots-page :is(#bpanel, #apanel, #vpanel, #full) .topbar .backtxt:hover, .bots-page .winacts button:hover, .bots-page .winacts .btnlink:hover { background: var(--raised); }
 .bots-page .winacts .btnlink { border-radius: 999px; padding: 4px 8px; }
 .bots-page .winacts .btnlink:hover { color: var(--text); text-decoration: none; }
 .bots-page #bpanel iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
 .bots-page .bots .botfoot { gap: 4px; }
-/* The Preferences gear (bot flavor only) hugs the footer's right edge; in the collapsed rail the three icons wrap. */
-.bots-page .bots .botfoot #prefs { margin-left: auto; }
 /* The rail stacks the footer in one column (Akshil, 2026-10-08): three icons across 72px wrapped into two-plus-one. */
 div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { flex-direction: column; gap: 6px; }
-div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot #prefs { margin-left: 0; }
-/* #ppanel: Preferences in an iframe, the Builds panel's own chrome (components/PrefsPanel.tsx). */
-.bots-page #ppanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
-.bots-page #ppanel.show { display: flex; }
-.bots-page #ppanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.bots-page #ppanel .topbar .ttl { font-size: 13px; font-weight: 400; }
-.bots-page #ppanel .topbar button { display: inline-flex; align-items: center; gap: 5px; }
-.bots-page #ppanel .topbar button svg { width: 13px; height: 13px; flex: none; }
-.bots-page #ppanel iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
 .bots-page #apanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
 .bots-page #apanel.show { display: flex; }
 .bots-page #apanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }

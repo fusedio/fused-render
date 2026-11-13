@@ -14,8 +14,8 @@ import { hydrateUiState } from "@platform/lib/hydrate-ui-state";
 import { installChatZoom } from "@platform/lib/chat-zoom";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
 import { hydrateNotificationsState } from "@shell/notifications-seen-store";
-import { notifyBookmarksChanged, setDefaultFavicon } from "@platform/lib/hooks";
-import { displayName, isBot, seedFlavor } from "@platform/lib/flavor";
+import { notifyBookmarksChanged } from "@platform/lib/hooks";
+import { displayName, seedFlavor } from "@platform/lib/flavor";
 import { openTerminal, type TerminalRequest } from "@platform/lib/terminalDockStore";
 import App from "@shell/App";
 import "./shell.css";
@@ -133,11 +133,10 @@ const uiState = hydrateUiState(IS_EMBED ? [] : [hydrateNotificationsState]);
 
 Promise.all([getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }), uiState]).then(
   ([config]) => {
-    // Flavor first: the sidebar and the title read it synchronously in this
-    // very render, and a seed a tick later is a flash of the wrong brand.
+    // Names first: the title and copy read them synchronously in this very
+    // render, and a seed a tick later is a flash of the wrong name.
     seedFlavor(config);
     document.title = displayName();
-    if (isBot()) setDefaultFavicon("favicon-bot.png");
     // ⌘+ / ⌘− / ⌘0 in a chat, and the saved chat text size — after the layout
     // hydrate (or its bound), so the first paint is already at that size.
     installChatZoom();

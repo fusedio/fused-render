@@ -1,6 +1,5 @@
 // Preferences page (SPEC §20) — `/preferences`, entered from the sidebar's
-// Settings menu. Framed inside the Bots page under Fused Bot (`?embed=1`,
-// apps/bots/components/PrefsPanel.tsx).
+// Settings menu.
 //
 // A LEFT NAV OF GROUPS UNDER THE SIDEBAR'S OWN HEADINGS, A SEARCH BOX OVER
 // ALL OF THEM, AND ONE ROW PER SETTING. What the sections and groups are,
@@ -43,9 +42,8 @@ import {
 } from "lucide-react";
 import { useClaudeConfigStatus } from "@apps/claude_config/available";
 import { getPrefs, type Prefs } from "@platform/lib/api";
-import { IS_QUERY_EMBED, replaceSearch } from "@platform/lib/router";
+import { replaceSearch } from "@platform/lib/router";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
-import { isBot } from "@platform/lib/flavor";
 import { isMac } from "@platform/lib/platform";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -168,7 +166,6 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const [target, setTarget] = useState<string | null>(() => params.get("s"));
   const pageRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const bot = isBot();
 
   useEffect(() => {
     let alive = true;
@@ -193,9 +190,9 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const loaded = prefs !== null && claudeConfig !== null && claudeReady;
   const entries = useMemo(() => {
     if (!prefs || claudeConfig === null) return [];
-    const base: SettingEntry[] = visibleSettings({ prefs, bot, mac: isMac, claudeConfig });
+    const base: SettingEntry[] = visibleSettings({ prefs, mac: isMac, claudeConfig });
     return [...base, ...claudeRows];
-  }, [prefs, bot, claudeConfig, claudeRows]);
+  }, [prefs, claudeConfig, claudeRows]);
   const groups = useMemo(() => visibleGroups(entries), [entries]);
   const sections = useMemo(() => navSections(groups), [groups]);
   const byId = (id: string) => entries.find((e) => e.id === id);
@@ -270,9 +267,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   return (
     <div className="settings-page" ref={pageRef}>
       <div className="settings-header">
-        {/* Framed inside the Bots page's panel the panel's own bar carries
-            the title; a second heading here read as a repeat. */}
-        {!IS_QUERY_EMBED && <h1 className="settings-title">Preferences</h1>}
+        <h1 className="settings-title">Preferences</h1>
         {prefs && (
           <div className="settings-search" role="search">
             <Search aria-hidden="true" className="settings-search-icon" />
@@ -283,9 +278,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape" && query) {
-                  // Spent here: framed in the Bots page, a document-level Esc
-                  // closes the whole panel (PrefsPanel), and clearing a search
-                  // is not a request to leave.
+                  // Spent here: clearing a search is not a request to leave.
                   e.preventDefault();
                   e.stopPropagation();
                   setQuery("");

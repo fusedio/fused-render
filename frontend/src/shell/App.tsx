@@ -59,7 +59,6 @@ import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
 import { useThemePresetSync, useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
-import { isBot } from "@platform/lib/flavor";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
@@ -712,15 +711,12 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
-  // The FRONT DOOR — "/" lands on Home, or on Bots under the Fused Bot
-  // flavor (platform/lib/flavor, seeded before the first render), which has
-  // no Home page. Render-time write is safe — it changes pathname, so the
+  // The FRONT DOOR — "/" lands on Home. Render-time write is safe — it changes pathname, so the
   // re-render (via fused:urlchange) derives the real route. (Legacy
   // /view/_home, /view/_account, and the whole /view//embed namespaces are
   // rewritten at boot by router.ts.)
-  const frontDoor = isBot() ? "/bots" : "/home";
   if (location.pathname === "/") {
-    history.replaceState(null, "", frontDoor);
+    history.replaceState(null, "", "/home");
   }
   // The server runs no bots on Windows: a bookmarked /bots URL goes Home rather
   // than to a page whose every call answers 503.
@@ -739,7 +735,7 @@ export default function App({ config }: { config: Config }) {
   if (
     !IS_EMBED &&
     !autoShowDecided &&
-    location.pathname === frontDoor &&
+    location.pathname === "/home" &&
     shouldAutoShow(config)
   ) {
     history.replaceState(null, "", onboardingUrl(config.onboarding?.stages));
@@ -1225,13 +1221,8 @@ export default function App({ config }: { config: Config }) {
   // ONE sidebar for every route (it replaced the per-context pair: the
   // explorer's on fs routes, the shell app-switcher elsewhere). The shell no
   // longer picks — GlobalSidebar carries nav, recents, bookmarks and the
-  // bottom Preferences menu itself. Fused Bot has none: the Bots page is the
-  // whole window, as it was in the standalone FusedBot; Tasks and
-  // Preferences open from the native menu bar there (mac_window.py).
-  // Fused Bot has no shell chrome at all (owner's call): Tasks and
-  // Preferences open from the native menu bar (mac_window.py); a plain
-  // browser tab reaches them by URL.
-  const sidebar = isBot() ? null : <GlobalSidebar config={config} />;
+  // bottom Preferences menu itself.
+  const sidebar = <GlobalSidebar config={config} />;
 
   // The setup wizard (shell/onboarding) is the whole window: no sidebar, no
   // status bar, no docks — a pre-app surface, which is why it is not one more

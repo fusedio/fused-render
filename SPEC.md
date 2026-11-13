@@ -2075,7 +2075,7 @@ one gate before anything runs. Three payloads on the one `open` action:
 - **DL-1** Link shape: `fused-render://open?<kind>=<payload>`. The action
   sits in host position (`open`) and payloads are query params; the value is
   taken verbatim to end-of-string (an unencoded URL with `&`/`+` survives).
-  The scheme is the flavor's (`fused-render`, `fused-bot`).
+  The scheme is `_flavor.scheme()` (`fused-render`).
 - **DL-2** OS registration: macOS via `CFBundleURLTypes` in the py2app plist
   (scheme deliberately not branch-suffixed, like the bookmark UTI — every
   build speaks the same links), delivered to `application:openURLs:` in

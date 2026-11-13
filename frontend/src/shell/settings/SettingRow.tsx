@@ -11,8 +11,7 @@ import { Dropdown } from "@shell/Dropdown";
 import { cn } from "@platform/lib/utils";
 import type { Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { isBot } from "@platform/lib/flavor";
-import { forFlavor, groupOf, settingById, unavailableReason, type SettingEntry, type SettingId } from "./registry";
+import { groupOf, settingById, unavailableReason, type SettingEntry, type SettingId } from "./registry";
 import { matchedVia, splitLabel } from "./search";
 
 export interface SettingsView {
@@ -57,7 +56,7 @@ export function SettingRow({
   off?: boolean;
 }) {
   const view = useContext(SettingsViewContext);
-  const entry = given ?? forFlavor(settingById(id)!, isBot());
+  const entry = given ?? settingById(id)!;
   const tokens = view.tokens;
   const label = tokens ? splitLabel(entry.label, tokens) : { pre: entry.label, hit: "", post: "" };
   const via = tokens ? matchedVia(entry, tokens) : [];

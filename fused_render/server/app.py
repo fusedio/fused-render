@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from fused_render import _flavor, _platform
+from fused_render import _platform
 from fused_render import calls as shell_calls
 from fused_render import health
 from fused_render.canvases import router as canvases_router
@@ -468,21 +468,6 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             shutdown_handlers.append(func)
         return func
 
-    # The Fused Bot flavor (`_flavor.is_bot()`) is the same server with the
-    # Bots page as its only front door: nothing it shows needs the file index,
-    # the AI hub catalogs, the local-model prewarm, the resource trail or the
-    # venv/share-rule housekeeping, so those warm-ups are skipped the way
-    # `lean` skips everything — at the REGISTRATION point, never by unmounting
-    # a router (every route keeps answering; a bot's own fused.ai call still
-    # starts a worker on demand). Shutdown partners stay on `on_shutdown`:
-    # each `stop()` is a no-op when nothing started, same as under `lean`.
-    _skip_for_bot = _flavor.is_bot()
-
-    def on_startup_full(func):
-        if not lean and not _skip_for_bot:
-            startup_handlers.append(func)
-        return func
-
     # `lean` only ever skips STARTUP work. A handful of things below start on
     # demand from an ordinary request — regardless of `lean` — rather than
     # from an `@on_startup` hook: an engine (runPython/render spawn a
@@ -519,7 +504,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.state.startup_done = threading.Event()
     app.state.start_dir = start_dir
 
-    @on_startup_full
+    @on_startup
     async def _startup_prewarm_ai():
         # Only when Claude is enabled (Preferences): the resident process IS
         # a `claude` CLI, so a machine with Claude off would pay a spawn for
@@ -793,7 +778,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Event-loop lag gauge (serverstats.py) for the Monitor's Overview: a task
     # on the serving loop, cancelled at shutdown. Skipped in `lean` like the
     # other background gauges: a lean server has no Monitor to read it.
-    @on_startup_full
+    @on_startup
     async def _startup_loop_lag():
         from fused_render.server import dashboard
         lag = serverstats.loop_lag()
@@ -809,7 +794,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # into resources.jsonl, so a diagnostics bundle shows what memory looked
     # like in the hours before an outage. Its own daemon thread; a failure to
     # start is a missing diagnostic, never a reason to refuse to serve.
-    @on_startup_full
+    @on_startup
     async def _startup_resource_trail():
         try:
             health.start_resource_trail()
@@ -867,7 +852,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     #
     # Best-effort like every other startup chore here: a home dir that cannot be
     # listed is a disk problem, not a reason to refuse to serve.
-    @on_startup_full
+    @on_startup
     async def _startup_gc_project_venvs():
         from fused_render import projectenv
 
@@ -1064,7 +1049,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.include_router(app_uninstall_router)
     # The macOS launcher panel's page at /launcher and its search
     # (fused_render/launcher.py): the desk, the workspace, linked and exported
-    # apps ranked by a query; bots under Fused Bot.
+    # apps ranked by a query, and bots by typing.
     app.include_router(launcher_router)
     # An app clicked inside a macOS native window opens in its own window.
     # The Marketplace (TEMPORARY backend, routers/marketplace.py): the
@@ -1198,9 +1183,8 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The contrib inbox-count sweep (contrib/refresh.py): one daemon thread
     # that, only while the inbox phase is on, re-lists every own app's
     # proposals every 10 min so Apps cards carry counts. A startup hook so a
-    # TestClient that never enters the lifespan never gets the thread; full
-    # only — the bot flavor has no Apps grid.
-    @on_startup_full
+    # TestClient that never enters the lifespan never gets the thread.
+    @on_startup
     async def _startup_contrib_sweep():
         from fused_render.contrib import refresh as contrib_refresh
 
@@ -1327,7 +1311,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # must not delay server readiness. Best-effort and silent on failure
     # (no CLI, not signed in, offline) — status/publish already fall back to
     # the built-in `.fused` rule alone when the cache stays empty.
-    @on_startup_full
+    @on_startup
     async def _startup_warm_share_rules():
         from fused_render import share_file
 
@@ -1386,7 +1370,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # of each root, so a reload loop does not queue scan after scan. First boot
     # takes seconds over a whole home; while it runs, the explorer's search
     # falls back to the live walk with no error state (SPEC server-api.md §2).
-    @on_startup_full
+    @on_startup
     async def _startup_index_scan():
         from fused_render import extras
 
@@ -1422,7 +1406,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # time-based freshness check) failed three times. One background thread
     # per configured root; `index_watch.start()` is idempotent, same
     # singleton-start convention as the resource-trail start.
-    @on_startup_full
+    @on_startup
     async def _startup_index_watch():
         from fused_render import extras
         from fused_render.server import index_watch

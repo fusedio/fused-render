@@ -274,15 +274,11 @@ def test_ensure_owner_waiter_is_idempotent_and_stop_waiter_releases(
 
 
 def test_is_preferred_owner_is_the_baseline_render_app(monkeypatch):
-    from fused_render import _branch, _flavor
+    from fused_render import _branch
 
     monkeypatch.setattr(_branch, "branch_ref", lambda ref=None: "")
-    monkeypatch.setattr(_flavor, "is_bot", lambda: False)
     assert index_owner.is_preferred_owner()
     monkeypatch.setattr(_branch, "branch_ref", lambda ref=None: "feature-x")
-    assert not index_owner.is_preferred_owner()
-    monkeypatch.setattr(_branch, "branch_ref", lambda ref=None: "")
-    monkeypatch.setattr(_flavor, "is_bot", lambda: True)
     assert not index_owner.is_preferred_owner()
 
 

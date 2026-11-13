@@ -100,7 +100,7 @@ async def forward_middleware(request: Request, call_next):
         return await call_next(request)
     if not origin:
         return _error(str(registry.NotOwner(info)) + ("; update it" if info and not info.get("known") else
-                                                     ". Open Fused Render (or Fused Bot) to run them."), 503)
+                                                     ". Open Fused Render to run them."), 503)
     body = await request.body()
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _SKIP_REQUEST_HEADERS}
     headers["X-Fused-Forwarded"] = "1"

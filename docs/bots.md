@@ -693,7 +693,7 @@ rule as the FusedBot import, which runs before it and may already carry
 one). `create(kind="super", greet=False)` skips the model-written hello;
 the seed emits `SUPER_GREETING` as a `done` with `source: "seed"`, which
 the page renders with a "Connect your phone" button (Settings > Phone).
-Both flavors seed: the tree is shared. The store selects Super Bot when
+The store selects Super Bot when
 nothing is selected, so a first open lands in its chat. Tests: the bots
 fixture no-ops `registry.start`, so `seed_super()` is called directly.
 
@@ -1096,8 +1096,9 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
 ## 7. Server and shell changes
 
 - **One owner process per machine** (2026-10-13, `registry.py` module
-  docstring; design page "Bots Owner Process"). Fused Render, Fused Bot and a
-  dev checkout on main share `<home>/bots`; before this each built its own
+  docstring; design page "Bots Owner Process"). The installed app and a dev
+  checkout on main (and, until it was retired, the separate Fused Bot app)
+  share `<home>/bots`; before this each built its own
   `Bot` per bot, ran engines on it and wrote bot.json from its own memory,
   so a routine added in one app never fired in the other (which owned the
   scheduler and never re-read the file, and whose next save deleted it), two

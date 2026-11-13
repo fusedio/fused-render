@@ -24,17 +24,14 @@ import { Dialogs } from "./dialogs/Dialogs";
 import { openApps } from "./apps/apps";
 import { getSideApp, sideAppBrowser, sideAppShow } from "./apps/side";
 import { useBotsRoute } from "./hooks/useBotsRoute";
-import { prefsHref, searchSansTask } from "./routes";
 import { navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { UPLOAD_MAX_BYTES, upload } from "./file/botfile";
-import { PrefsPanel } from "./components/PrefsPanel";
 import { useLayout } from "./hooks/useLayout";
 import { handBack, openFull } from "./lib/cdp";
 import { onDragEnd, onStageOpen, onStageShut, setStage } from "./lib/layout";
 import { fitViewport } from "./lib/live-page";
 import { installNotify } from "./lib/notify";
 import { botsRoot, detachPortalHost, portalHost, setBotsRoot } from "./lib/root";
-import { isBot } from "@platform/lib/flavor";
 import { errMsg, getState, goChat, hideBanner, hydrateBotsPrefs, openDialog, openMenu, poll, showBanner, startStore, subscribe, useBotsSelector } from "./state/store";
 
 /** Stage follows the store's `fast` (the live view is open). A store listener, not an effect: it runs inside the commit, so
@@ -157,7 +154,6 @@ export function Bots() {
           onOpenBrowsers={() => openDialog({ kind: "browsers" })}
           onOpenBuilds={() => openBuilds()}
           onOpenApps={openApps}
-          onOpenPrefs={isBot() ? () => navigateUrl(prefsHref(searchSansTask(location.search))) : undefined}
           onContextMenu={(id, x, y) => openMenu({ id, x, y })}
         />
         <div className="gutter l" title="Drag to resize · double-click to reset" {...gutter("l")} />
@@ -168,7 +164,6 @@ export function Bots() {
       {/* The route's page, above the chat (routes.ts). Each mounts only while its path is on screen, so its iframe is fresh per visit. */}
       {route.kind === "tasks" ? <TasksPage task={route.task} /> : null}
       {route.kind === "apps" ? <AppsPanel folder={route.folder} /> : null}
-      {route.kind === "prefs" && isBot() ? <PrefsPanel /> : null}
       <BuildDialog />
       <Dialogs />
       <BotMenu />

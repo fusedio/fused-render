@@ -21,7 +21,7 @@ import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import { botsAvailable, type Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
-import { availableTours, startTour } from "@platform/lib/tours";
+import { TOURS, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import { SetupProgressRing, SetupProgressRow, useSetupMeter } from "@shell/onboarding/SetupProgress";
 import {
@@ -38,7 +38,7 @@ import { AppStar } from "@platform/ui/AppStar";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { appPageUrl, appPathFromPath, type CurrentApp } from "@shell/current-apps-lib";
 import { railExtras } from "@shell/sidebar-rail-lib";
-import { displayName, isBot } from "@platform/lib/flavor";
+import { displayName } from "@platform/lib/flavor";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
@@ -512,20 +512,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the Canvases section appears with the switch; its "+ Canvas" row opens the
   // catalog, which explains a CLI-missing / signed-out state itself and is
   // where sign-in happens. The menu entry below takes the same single gate.
-  // FUSED BOT (platform/lib/flavor): the same shell wearing the bot app's
-  // name shows Bots, Tasks and Preferences, and nothing else — no Canvases,
-  // AI Models, Projects or Bookmarks rows, and a shorter settings menu. The
-  // routes stay reachable (a bot's app frame and its Edit door still land on
-  // the explorer and the app page); only the doors in this column go.
-  const bot = isBot();
-  const canvasesEnabled = useCanvasesFeature() && !bot;
+  const canvasesEnabled = useCanvasesFeature();
   const canvasesInNav = canvasesEnabled;
-  // The Community (apps/marketplace): a row after AI Models, never under
-  // Fused Bot. Always on since 2026-10-29 (it was behind the
+  // The Community (apps/marketplace): a row after AI Models. Always on since
+  // 2026-10-29 (it was behind the
   // `marketplace_enabled` switch while in preview; Beta tag dropped 2026-11-08).
   // PREFIX match: /marketplace/app/<slug> and /marketplace/installed are the
   // same store.
-  const marketplaceInNav = !bot;
   const marketplaceActive = pathname === "/marketplace" || pathname.startsWith("/marketplace/");
   // THE COMMUNITY ROW SAYS WHAT THE INSTALLED PAGE'S "UPDATES" SECTION SAYS
   // (owner, 2026-11-03: "notification dot in the community similar to bots
@@ -537,16 +530,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // colour. Nothing is dismissed by a visit (see the store): the dot holds
   // until the update is applied. WITH A DOT, THE ROW LANDS ON
   // /marketplace/installed — the page the dot is about — instead of Discover.
-  const marketplacePulse = useMarketplacePulse(marketplaceInNav);
+  const marketplacePulse = useMarketplacePulse();
   const marketplaceTip = marketplacePulseTitle(marketplacePulse);
   const marketplaceHref = marketplacePulse.updates > 0 ? "/marketplace/installed" : "/marketplace";
   const marketplaceDot =
     marketplacePulse.updates > 0 ? <span className="sidebar-rail-dot is-update" title={marketplaceTip} /> : undefined;
-  // THE FRONT DOOR: Home, or Bots under the Fused Bot flavor, which has no
-  // Home page. Same answer as App.tsx's "/" redirect, so clicking the title
-  // lands where "/" lands. Bots is always a row of its own on Render, right
-  // under Home (owner's call 2026-10-13: Home → Bots → Tasks → AI Models).
-  const frontDoor = bot ? "/bots" : "/home";
+  // THE FRONT DOOR: Home. Same answer as App.tsx's "/" redirect, so clicking
+  // the title lands where "/" lands. Bots is a row of its own, right under
+  // Home (owner's call 2026-10-13: Home → Bots → Tasks → AI Models).
+  const frontDoor = "/home";
 
   // WHAT THE TASKS ENTRY KNOWS: what is running, and what finished with
   // something unread (shell/tasksPulse — one poll shared with the page, which
@@ -723,11 +715,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // settings pages. Same gates as before — an entry a machine can't use stays
   // hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [];
-  // Templates are the Render app's own concern; Fused Bot's menu skips
-  // straight to Preferences (Canvases is already off above).
-  if (!bot) {
-    menuEntries.push({ href: "/templates", label: "Templates", icon: TEMPLATES_ICON });
-  }
+  menuEntries.push({ href: "/templates", label: "Templates", icon: TEMPLATES_ICON });
   menuEntries.push(
     // No /tasks entry here on purpose: Tasks is primary nav now (see the
     // rail below). Listing the same route in the menu too would light the Tasks
@@ -775,7 +763,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       // The first-run wizard, on demand — its own page (shell/onboarding).
       // Reopening touches neither flag until the user finishes or closes it.
       { href: ONBOARDING_PATH, label: "Setup wizard" },
-      ...availableTours().map((tour) => ({
+      ...TOURS.map((tour) => ({
         href: `/preferences#tour-${tour.id}`,
         label: tour.title,
         // Next frame, not now: driver.js measures its highlight the moment it is
@@ -828,11 +816,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // (the feature on, nothing more).
   const { collapsed: sidebarCollapsed } = useSidebarState();
   useBookmarksVersion();
-  const desk = useDeskAppsOrdered(sidebarCollapsed && !bot);
+  const desk = useDeskAppsOrdered(sidebarCollapsed);
   const extras = railExtras({
     desk,
     pins: pinnedBookmarks(loadBookmarks()),
-    bot,
     canvases: canvasesInNav,
   });
   const onAppPath = appPathFromPath(pathname);
@@ -846,12 +833,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     navigateUrl(href);
   };
   // The Projects section's "+ New app" row, on the rail: same composer, same
-  // place (the head of the apps group). Under Fused Bot the section is gone
-  // and so is this door.
+  // place (the head of the apps group).
   const [railComposing, setRailComposing] = useState(false);
-  const railNewApp: SidebarRailItem[] = bot
-    ? []
-    : [
+  const railNewApp: SidebarRailItem[] = [
         {
           key: "new-app",
           label: "New app",
@@ -946,9 +930,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const rail: SidebarRailItem[] = [
     // Same gate and same order as the expanded rows below.
-    ...(bot
-      ? []
-      : [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }]),
+    { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
     ...(botsRow
       ? [
           {
@@ -975,31 +957,23 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         ]),
     // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
     // the canvases, and its "+ Canvas" row is the door to the catalog.
-    ...(bot
-      ? []
-      : [
-          {
-            key: "ai-models",
-            label: "AI Models",
-            icon: AI_MODELS_ICON,
-            href: AI_MODELS_HOME,
-            active: aiModelsActive,
-            badge: residentDot,
-          },
-        ]),
-    // Same gate and same order as the expanded row below.
-    ...(marketplaceInNav
-      ? [
-          {
-            key: "marketplace",
-            label: marketplaceTip ? `Community — ${marketplaceTip}` : "Community",
-            icon: MARKETPLACE_ICON,
-            href: marketplaceHref,
-            active: marketplaceActive,
-            badge: marketplaceDot,
-          },
-        ]
-      : []),
+    {
+      key: "ai-models",
+      label: "AI Models",
+      icon: AI_MODELS_ICON,
+      href: AI_MODELS_HOME,
+      active: aiModelsActive,
+      badge: residentDot,
+    },
+    // Same order as the expanded row below.
+    {
+      key: "marketplace",
+      label: marketplaceTip ? `Community — ${marketplaceTip}` : "Community",
+      icon: MARKETPLACE_ICON,
+      href: marketplaceHref,
+      active: marketplaceActive,
+      badge: marketplaceDot,
+    },
     ...railNewApp,
     ...railApps,
     ...railNewCanvas,
@@ -1047,23 +1021,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           shell/task-peek-flag.ts. Off, the collapse is the one this sidebar has
           always had. */}
       <SidebarFrame
-        title={bot ? "Bot" : "Render"}
+        title="Render"
         homeHref={frontDoor}
         rail={rail}
         tuckOnCollapse={taskPeekOn}
       >
         <div className="sidebar-section sidebar-group">
-          {/* Home first (Render only — Fused Bot has no Home page), then
-              Bots: the browser-bots sub-app is a destination of its own. */}
-          {!bot && (
-            <NavItem
-              href="/home"
-              id="home-link"
-              label="Home"
-              icon={HOME_ICON}
-              active={homeActive}
-            />
-          )}
+          {/* Home first, then Bots: the browser-bots sub-app is a
+              destination of its own. */}
+          <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} />
           {botsRow && (
             <NavItem
               href="/bots"
@@ -1094,47 +1060,42 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           )}
           {/* No Canvases row (owner, 2026-10-20): the Canvases section below
               is the listing, its "+ Canvas" row the way to the catalog. */}
-          {!bot && (
-            <NavItem
-              href={AI_MODELS_HOME}
-              id="ai-models-link"
-              label="AI Models"
-              icon={AI_MODELS_ICON}
-              active={aiModelsActive}
-              extra={residentDot}
-            />
-          )}
-          {marketplaceInNav && (
-            <NavItem
-              href={marketplaceHref}
-              id="marketplace-link"
-              label="Community"
-              icon={MARKETPLACE_ICON}
-              active={marketplaceActive}
-              extra={marketplaceDot}
-              title={marketplaceTip || undefined}
-              trailing={
-                // The updates count, in the chip the Tasks and Bots rows wear
-                // for theirs.
-                marketplacePulse.updates > 0 ? (
-                  <span className="sidebar-count-chip" title={marketplaceTip}>
-                    {marketplacePulse.updates}
-                  </span>
-                ) : undefined
-              }
-            />
-          )}
+          <NavItem
+            href={AI_MODELS_HOME}
+            id="ai-models-link"
+            label="AI Models"
+            icon={AI_MODELS_ICON}
+            active={aiModelsActive}
+            extra={residentDot}
+          />
+          <NavItem
+            href={marketplaceHref}
+            id="marketplace-link"
+            label="Community"
+            icon={MARKETPLACE_ICON}
+            active={marketplaceActive}
+            extra={marketplaceDot}
+            title={marketplaceTip || undefined}
+            trailing={
+              // The updates count, in the chip the Tasks and Bots rows wear
+              // for theirs.
+              marketplacePulse.updates > 0 ? (
+                <span className="sidebar-count-chip" title={marketplaceTip}>
+                  {marketplacePulse.updates}
+                </span>
+              ) : undefined
+            }
+          />
         </div>
         {/* Projects (D487, "Current apps" until 2026-08-26): the apps on the
             desk, above the permanent Bookmarks tree. Collapsible; always ends
-            in a "+ New app" row. Neither under Fused Bot: a bot's apps are
-            listed by the bot, and there is no file tree to bookmark into. */}
-        {!bot && <CurrentAppsSection />}
+            in a "+ New app" row. */}
+        <CurrentAppsSection />
         {/* Canvases (2026-10-20): the clones on this machine, under Projects,
             behind the feature flag alone (owner, 2026-10-22) — signed out it
             is the "+ Canvas" door into the catalog, which does the sign-in. */}
         {canvasesInNav && <CurrentAppsSection section="canvases" />}
-        {!bot && <BookmarksSection />}
+        <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateCard />
           {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}

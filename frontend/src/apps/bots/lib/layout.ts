@@ -248,7 +248,7 @@ function canViewTransition(): boolean {
   if (!botsMounted() || isLanHost() || ["dragging", "lanim", "stage", "sfull"].some((c) => cl.contains(c))) return false;
   if (document.visibilityState !== "visible") return false;
   if (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
-  if (body().querySelector(":scope > :is(#bpanel, #ppanel, #apanel)")) return false;
+  if (body().querySelector(":scope > :is(#bpanel, #apanel)")) return false;
   // A MODAL only: the rail's cards stay in the DOM as hidden role="dialog" boxes, and would turn this off for good.
   if (document.querySelector('[data-slot="dialog-overlay"], .modal-overlay, [aria-modal="true"]')) return false;
   return true;

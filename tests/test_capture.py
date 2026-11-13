@@ -1630,7 +1630,6 @@ def test_describe_carries_the_apps_icon_url(tmp_path):
     assert info["id"] == "c1" and info["canPause"] is True
     assert info["app"] == str(app) and info["name"] == "My App"
     assert info["icon"].startswith("/api/fs/raw?path=") and "&v=" in info["icon"]
-    assert info["flavor"] in ("render", "bot")
 
     S.page = ""
     info = recording_pill.describe(S())

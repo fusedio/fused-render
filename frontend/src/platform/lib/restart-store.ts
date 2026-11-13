@@ -58,8 +58,8 @@ import {
  *  respawns the SAME version to pick up a Full Disk Access grant, which is a
  *  different action with a different story on screen.
  *
- *  A function, not a constant: the scheme is the flavor's (`fused-bot://` for
- *  Fused Bot, platform/lib/flavor.ts), seeded after this module is evaluated. */
+ *  A function, not a constant: the scheme comes from platform/lib/flavor.ts,
+ *  seeded after this module is evaluated. */
 export function relaunchHref(): string {
   return `${deepLinkScheme()}://relaunch`;
 }

@@ -61,9 +61,9 @@ STOP_CALLBACK_WAIT_S = 30.0
 
 
 def is_preferred_owner() -> bool:
-    """Whether this process is the installed baseline Render app — no branch
-    ref (so it serves on the flavor's port base, 1777) and not the Bot
-    flavor. That process wins the watcher whenever it is running.
+    """Whether this process is the installed baseline app — no branch ref
+    (so it serves on the port base, 1777). That process wins the watcher
+    whenever it is running.
 
     A source checkout run on the baseline ref without FUSED_RENDER_BRANCH
     also counts as preferred: it shares ~/.fused-render and port 1777 with
@@ -71,9 +71,9 @@ def is_preferred_owner() -> bool:
     files live in `tasks_store.STATE_DIR`, which follows FUSED_RENDER_HOME,
     so a server on an isolated home has its own lease and owns its watcher
     outright."""
-    from fused_render import _branch, _flavor
+    from fused_render import _branch
 
-    return _branch.branch_ref() == "" and not _flavor.is_bot()
+    return _branch.branch_ref() == ""
 
 
 def _pid_alive(pid) -> bool:

@@ -24,7 +24,6 @@ import logging
 import os
 
 from fused_render._platform import is_within
-from fused_render import _flavor
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +60,7 @@ def describe(session) -> dict:
     sits above the app folder that actually carries the icon; the name and
     click-to-open folder follow the icon's folder. No icon keeps the root. No
     page, or one that is not an app, falls back to the Fused artwork on the
-    page side (`flavor` picks which)."""
+    page side."""
     app = ""
     icon = None
     try:
@@ -81,7 +80,6 @@ def describe(session) -> dict:
             "name": os.path.basename(app.rstrip("/\\")) if app else "Fused",
             "app": app,
             "icon": icon,
-            "flavor": "bot" if _flavor.is_bot() else "render",
             "canPause": bool(session.can_pause),
             "mode": session.mode}
 

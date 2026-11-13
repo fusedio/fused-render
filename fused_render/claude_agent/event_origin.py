@@ -12,10 +12,10 @@ In Progress (2026-11-08, from a user's diagnostics bundle).
 So when a post to that origin fails, the host asks THIS module for the current
 one: `<FUSED_RENDER_HOME_DIR>/server.json`, the file `server/app.py`
 `write_server_json` publishes at every boot. `FUSED_RENDER_HOME_DIR` is the
-server's own `shell.storage.home_dir()` — already branch- and flavor-resolved,
+server's own `shell.storage.home_dir()` — already branch-resolved,
 exported by `export_app_env` and inherited by every host through
 `_spawn_env` — so it names the SAME install's data folder the dead server
-wrote to, never another branch's, flavor's or dev server's. With no
+wrote to, never another branch's or dev server's. With no
 `FUSED_RENDER_HOME_DIR` there is no such guarantee, and nothing is re-resolved
 (the old behaviour: the event is dropped).
 
