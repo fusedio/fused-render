@@ -6852,7 +6852,11 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
                                   f"the canvas keeps its name {name!r}", 500)
                 # The server says `new`, the clone says `name`: a watcher on the
                 # old key would push the old name back as a second canvas.
-                # This process keeps sync/start off that key until it restarts.
+                # This process keeps sync/start off that key (`_DELETING`) AND
+                # keeps the clone's writer lock, so no OTHER fused-render can
+                # claim it and start that watcher either — until this process
+                # quits (the quit rung's release_all), by when the user has
+                # renamed the folder as the error says.
                 keep_held = True
                 logger.error("canvas %s: rename to %r half done — folder move failed (%s), "
                              "server rollback failed", _sync_key(env, name), new, exc)
@@ -6873,7 +6877,8 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
                                    exc_info=True)
             _patch_toml_name(target, name, new)
     finally:
-        canvas_sync_state.release_lock(lock_path, lock_since)
+        if not keep_held:
+            canvas_sync_state.release_lock(lock_path, lock_since)
         if moved_clone:
             try:
                 os.unlink(lock_path)
