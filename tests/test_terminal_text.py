@@ -232,6 +232,11 @@ def test_text_route_returns_screen_text_and_metadata(client, scratch_registry, t
     sid = client.post("/api/terminal", headers=_HEADERS, json={}).json()["id"]
     s = scratch_registry.get(sid)
     assert _wait_until(lambda: s.shell_is_foreground())
+    # Foreground is not the prompt: typed before dash prints its first `$ `,
+    # the command echoes as type-ahead and the prompt lands on the output's
+    # own line ("$ abc", then `\r` + "XY" -> "XYabc"). Dash prints nothing
+    # but the prompt at startup, so any output at all means it is up.
+    assert _wait_until(lambda: s.scrollback().strip())
     # `$((1+1))` so the marker only exists in the OUTPUT, never in the echoed
     # command line (which would satisfy the wait before the command ran).
     s.write(b"printf 'abc\\rXY\\n'; echo done-$((1+1))\n")

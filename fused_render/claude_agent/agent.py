@@ -1135,6 +1135,33 @@ def _in_synced_clone(target: str) -> bool:
     return len(parts) >= 2 and parts[0] in _CLONE_ENVS and parts[1] not in ("", os.pardir)
 
 
+# The backends whose session tells the canvas sync nothing by itself: no CLI
+# hooks to attach (Claude's canvas_hook.py) and no host that posts the turn's
+# events (Copilot's `_canvas_hook`).
+_NO_CANVAS_HOOK_BACKENDS = ("codex", "gemini", "opencode")
+
+
+def _canvas_turn_start(file: str, backend: str) -> None:
+    """A turn is being handed to a session whose target is in a synced canvas
+    clone, on a backend with no hook to say so: have the sync start that
+    clone's watcher when none runs (no canvas page open, or its idle stop
+    ran). `_fused_cli_note` tells every backend the folder publishes itself
+    at turn end, and that is the watcher's doing (it holds its push while
+    the run is live, publishes when it ends) — without one the edits just
+    stay in the clone. Best-effort, and never in the way of the turn."""
+    if backend not in _NO_CANVAS_HOOK_BACKENDS or not _in_synced_clone(file):
+        return
+    # Looked up in sys.modules, not imported (this file never imports
+    # fused_render): the server has it loaded, a bare script run does not.
+    start = getattr(sys.modules.get("fused_render.canvases"), "session_turn_start", None)
+    if start is None:
+        return
+    try:
+        start(_workdir(file), backend)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _fused_web_canvas_root() -> str:
     """`~/Fused/canvas` — Fused Web's local canvas-clones folder, a SECOND
     gate root alongside `_canvases_root()` (see `_in_workbench_root`)."""
@@ -1231,8 +1258,10 @@ def _fused_cli_note(backend: str = "") -> str:
     never reach for some other fused (a `pip install fused`, a `python -m
     fused`, another venv's copy — those miss the pieces the canvas sync needs
     and bypass the push protection); never run its login flows (they open a
-    browser and a headless session hangs on them); and DO push inside a canvas
-    clone with the standard command.
+    browser and a headless session hangs on them); and NEVER push or pull
+    inside a canvas clone (the revision spine, 2026-11-11: the folder
+    publishes itself at turn end, server changes are merged in, and both
+    commands are refused there).
 
     That last one used to say the opposite — "let the sync push, rather than
     running `canvas push` yourself" — which was right when a hand-push meant an
@@ -1269,11 +1298,12 @@ def _fused_cli_note(backend: str = "") -> str:
         "`fused workbench login` or `fused cloud login` (they wait on a "
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
-        "terminal instead. Inside a canvas folder under ~/Fused/canvas/, "
-        "fused-render holds its own auto-push while you work and "
-        "routes `fused workbench canvas push .` through its sync manager, "
-        "which merges concurrent workbench edits first: publish a coherent "
-        "change set with that command and read the errors it prints back."
+        "terminal instead. Inside a canvas clone fused-render syncs "
+        "(~/Fused/canvas/<unstable|prod|custom>/<canvas>/), fused-render does "
+        "all the syncing: the folder publishes itself when your turn ends and "
+        "server changes are merged into it for you, so never run `fused "
+        "workbench canvas push` or `pull` there (both are refused); check your "
+        "work with `fused workbench canvas validate .`."
         + _CANVAS_CLAUDE_MD
     )
 
@@ -4440,6 +4470,17 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
             "PostToolUse": [{
                 "matcher": "*",
                 "hooks": [{"type": "command", "command": canvas_hook("post"),
+                           "timeout": 5}]}],
+            # The turn ended: the server merges a held server move and
+            # publishes the folder (the session has no sync verbs, Q7).
+            "Stop": [{
+                "hooks": [{"type": "command", "command": canvas_hook("stop"),
+                           "timeout": 5}]}],
+            # A turn begins: the server starts the clone's watcher when none
+            # runs (no canvas page open), so this turn's edits have the
+            # engine that merges and publishes them.
+            "UserPromptSubmit": [{
+                "hooks": [{"type": "command", "command": canvas_hook("start"),
                            "timeout": 5}]}]}})]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
@@ -6071,6 +6112,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     del message_via_stdin
     req = {"agent": os.path.abspath(__file__), "run_dir": run_dir,
            "file": file, "cwd": _workdir(file), "pane": pane,
+           # The target is in a canvas clone the sync manages: a host with no
+           # CLI hooks of its own (Copilot) tells the sync about the turn
+           # itself (copilot_host.py `_canvas_hook`).
+           "canvas_clone": _in_synced_clone(file),
            "cli_mode": cli_mode, "session_id": session_id, "model": model,
            "effort": effort, "extra_read_dirs": list(extra_read_dirs or []),
            # The id minted above, "" for a resume and for every Copilot,
@@ -6164,6 +6209,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     _record_settings(new_session_id or session_id, model, effort,
                      backend if backend in _SELF_MINTED_ID_BACKENDS else "",
                      named_permission)
+    _canvas_turn_start(file, backend)
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
     # the host's, to reach the CLI's whole process group. Written here, to the
@@ -7048,6 +7094,34 @@ def _live_run_in(folder: str) -> dict:
     return {"run_id": ""}
 
 
+def _live_session_in(folder: str) -> dict:
+    """The id of a run whose SESSION is still up anywhere in `folder` — on
+    the folder itself or on a file directly inside it — or "" if there is
+    none: `_live_run_in`'s match, with "the session's process exists" (its
+    host, or the CLI itself) in place of "a turn is open". The canvas sync
+    keeps a clone's watcher running on this answer: a session sits idle
+    between turns, and the next turn's edits need the watcher that publishes
+    them."""
+    workdir = os.path.abspath(folder)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return {"run_id": ""}
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        target = meta.get("file", "") if isinstance(meta, dict) else ""
+        if not target or os.path.abspath(_workdir(target)) != workdir:
+            continue
+        if _host_alive(run_dir) or _alive(run_dir):
+            return {"run_id": name}
+    return {"run_id": ""}
+
+
 def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
     """Every session id under this target's FOLDER that has a run still going.
 
@@ -7446,6 +7520,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     _write_inbox_entry(
         run_dir, _compose_turn(message, terminal_hint), client_uuid,
         typed=typed or message)
+    # A follow-up is a turn too, and the watcher `_start` started may be gone
+    # (the server restarted under a host that lived on).
+    _canvas_turn_start(str(meta.get("file") or ""), backend)
     return {"sent": True}
 
 

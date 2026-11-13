@@ -14,6 +14,7 @@ import {
   legVerdicts,
   mergeEmbedLeg,
   ownedText,
+  pullChangesNothing,
   serverChangesText,
   stripText,
   type EmbedFailure,
@@ -126,6 +127,7 @@ export function SyncStrip({
   const verdicts = legVerdicts(merged);
   const pulling = pull.busy || s2d.state === "pulling";
   const pullFailed = s2d.state === "error" && s2d.changed.length > 0;
+  const nothingChanges = pullChangesNothing(s2d);
   const pushState = merged.legs.disk_to_server.state;
   const inFlight =
     pushState === "pending" || pushState === "pushing" || s2d.state === "pulling" || queue.length > 0;
@@ -221,10 +223,16 @@ export function SyncStrip({
           style={{ display: "flex", alignItems: "center", gap: 8, flex: "none", cursor: "default" }}
           title={
             serverChangesText(s2d) +
-            ". Nothing here is published until you pull. Pull merges them with your local edits " +
-            "where it can; anything it has to overwrite is kept in the canvas trash."
+            ". Held while Claude works in this folder and merged when its turn ends; Pull merges " +
+            "them now, with your local edits kept where it can; anything it has to overwrite is " +
+            "kept in the canvas trash."
           }
         >
+          {nothingChanges && !pullErrorText && (
+            <span style={{ opacity: 0.7, whiteSpace: "nowrap" }} title="Every file the server changed is already what this folder holds">
+              Nothing will change
+            </span>
+          )}
           {pullErrorText && (
             <span
               style={{

@@ -599,7 +599,8 @@ def test_start_leaves_launch_json_for_the_headsup_fork(agent, target, tmp_path,
 def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
                                                           tmp_path, monkeypatch):
     """What copilot_host.py codes against: session_host's keys + argv + backend
-    (`strict_mcp` is session_host's own, the lean-session switch)."""
+    (`strict_mcp` is session_host's own, the lean-session switch;
+    `canvas_clone` tells a host whether to post the canvas sync's hooks)."""
     file, _workdir = target
     _prefs(home, copilot_enabled=True)
     _copilot_bin(tmp_path, monkeypatch)
@@ -608,7 +609,8 @@ def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
     req, _ = _req_of(agent, res)
     assert set(req) == {"agent", "run_dir", "file", "cwd", "pane", "cli_mode",
                         "session_id", "model", "effort", "extra_read_dirs",
-                        "new_session_id", "argv", "backend", "strict_mcp"}
+                        "new_session_id", "argv", "backend", "strict_mcp",
+                        "canvas_clone"}
 
 
 # ------------------------------------------------------- the gate (D17, #10)
@@ -1753,6 +1755,43 @@ def test_the_codex_command_menu_is_its_own(agent, target, tmp_path, monkeypatch)
     assert agent._commands(file) == claude_menu
 
 
+def test_a_hookless_backends_turn_in_a_canvas_clone_starts_the_sync(
+        agent, home, tmp_path, monkeypatch):
+    """Codex, Gemini and OpenCode have no canvas hook (Claude's CLI hooks,
+    Copilot's host): `_start` itself tells the sync a turn begins in the
+    clone, so its watcher runs with no canvas page open. Claude and Copilot
+    say it themselves, and a target outside a clone says nothing."""
+    import types
+    root = tmp_path / "canvases"
+    clone = root / "unstable" / "alpha"
+    clone.mkdir(parents=True)
+    (clone / "a.py").write_text("x = 1\n")
+    monkeypatch.setattr(agent, "_canvases_root", lambda: str(root))
+    told = []
+    monkeypatch.setitem(sys.modules, "fused_render.canvases", types.SimpleNamespace(
+        session_turn_start=lambda path, backend="": told.append((path, backend))))
+    agent._canvas_turn_start(str(clone / "a.py"), "codex")
+    agent._canvas_turn_start(str(clone), "gemini")
+    agent._canvas_turn_start(str(clone), "opencode")
+    agent._canvas_turn_start(str(clone), "claude")
+    agent._canvas_turn_start(str(clone), "copilot")
+    agent._canvas_turn_start(str(tmp_path / "proj" / "index.html"), "codex")
+    assert told == [(str(clone), "codex"), (str(clone), "gemini"), (str(clone), "opencode")]
+    # ...and `_start` is where it is said.
+    _prefs(home, codex_enabled=True)
+    _codex_bin(tmp_path, monkeypatch)
+    monkeypatch.setitem(agent._HOST_FILES, "codex", _stub_host(tmp_path))
+    del told[:]
+    res = agent._start(str(clone / "a.py"), "hi", "", "gpt-6-luna", "high", "acceptEdits",
+                       has_pane=False, backend="codex")
+    assert "error" not in res, res
+    assert told == [(str(clone), "codex")]
+    # A sync that raises never fails the turn.
+    monkeypatch.setitem(sys.modules, "fused_render.canvases", types.SimpleNamespace(
+        session_turn_start=lambda *a, **k: 1 / 0))
+    agent._canvas_turn_start(str(clone), "codex")
+
+
 def test_a_fresh_codex_chat_learns_its_id_from_the_stream(
         agent, target, home, tmp_path, monkeypatch):
     """D2: Codex mints the thread id in `thread/start`, so a fresh chat has
@@ -1777,7 +1816,8 @@ def test_a_fresh_codex_chat_learns_its_id_from_the_stream(
     assert req["cli_mode"] == "acceptEdits"
     assert set(req) == {"agent", "run_dir", "file", "cwd", "pane", "cli_mode",
                         "session_id", "model", "effort", "extra_read_dirs",
-                        "new_session_id", "argv", "backend", "strict_mcp"}
+                        "new_session_id", "argv", "backend", "strict_mcp",
+                        "canvas_clone"}
     with open(os.path.join(run_dir, "launch.json")) as fh:
         assert json.load(fh)["backend"] == "codex"
     with open(os.path.join(run_dir, "meta.json")) as fh:
