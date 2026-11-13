@@ -150,7 +150,7 @@ WHOAMI_TIMEOUT = 40.0
 # …and that answer is kept for an hour rather than 45 s: every reopen of a
 # canvas within the hour frames the workbench without spawning anything.
 _WHOAMI_CACHE_TTL_S = 3600.0
-# whoami / list / token each spawn an interpreter (importing `fused`) for a
+# whoami / token each spawn an interpreter (importing `fused`) for a
 # control-plane answer that rarely changes: the parsed RESULT is reused this
 # long (see `_cached_cli`). Errors are never reused.
 _CLI_CACHE_TTL_S = 45.0
@@ -716,23 +716,19 @@ def _creds_sig(env: str | None = None) -> tuple | None:
     return (st.st_mtime_ns, st.st_size)
 
 
-def _cli_cache_clear(keep_listing: bool = False) -> None:
-    """Drop the memory cache, and (by default) the on-disk listing baselines
-    with it — see `_listing_cache_write`. `keep_listing` is for mutations the
-    page does not act on right away (a push: only `updated_at` moves), where
-    serving the baseline for one more visit beats blocking on the control
-    plane every time a canvas was saved."""
+def _cli_cache_clear() -> None:
+    """Drop the memory cache and the on-disk listing baselines with it — see
+    `_listing_cache_write`."""
     global _cli_cache_gen
     with _CLI_CACHE_LOCK:
         _cli_cache.clear()
         _cli_cache_gen += 1
-    if not keep_listing:
-        _listing_cache_clear()
+    _listing_cache_clear()
 
 
 def _fresh(result):
-    """A result with its payload deep-copied (`api_canvases_list` mutates its
-    entries, so a hit must never hand out the stored object)."""
+    """A result with its payload deep-copied (a caller may mutate it, so a hit
+    must never hand out the stored object)."""
     if result is not None and result[0] == "ok":
         return ("ok", copy.deepcopy(result[1]))
     return result
@@ -1744,13 +1740,11 @@ def _iso_epoch(value) -> float | None:
 # -- listing disk cache (stale-while-revalidate) ---------------------------------
 #
 # The control plane's lite listing costs ~1s fixed (connect + TLS + auth) plus
-# ~17ms per canvas, so a 90-canvas account waits ~3s on every visit once the
-# 45s memory cache lapsed. The hosted workbench hides the same cost with a
-# persisted baseline served instantly while a refresh runs; this is that for
-# the catalog: the last successful listing per env lives on disk, the page
-# gets it in milliseconds flagged `stale`, and asks again with `fresh=1` for
-# the real one (which goes through `_cached_cli`'s single flight, so two tabs
-# share one control-plane hit).
+# ~17ms per canvas, so a 90-canvas account waits ~3s on every visit. The
+# hosted workbench hides the same cost with a persisted baseline served
+# instantly while a refresh runs; this is that for the catalog: the last
+# successful listing per env lives on disk, the page gets it in milliseconds
+# flagged `stale`, and asks again with `fresh=1` for the real one.
 #
 # Keyed by env, NOT by credentials signature: `_creds_sig` changes on every
 # silent token refresh, which would wipe the baseline for no reason. Identity
@@ -1878,41 +1872,30 @@ def _listing_cache_clear() -> None:
 
 
 def _list_entries(env: str, allow_stale: bool = False):
-    """`_list_entries_uncached` behind the CLI result cache (see `_cached_cli`):
-    `(entries, error, stale)`, errors never cached.
+    """`(entries, error, stale)` for `env`'s account.
 
-    `allow_stale`: on a memory miss, hand back the disk baseline (stale=True)
+    `allow_stale`: hand back the disk baseline (stale=True) when there is one
     instead of calling the control plane; the caller is expected to ask again
-    without it."""
-
-    def compute():
-        with _CLI_CACHE_LOCK:
-            gen = _cli_cache_gen
-        entries, err = _list_entries_uncached(env)
-        if err is not None:
-            return _err_of(err)
-        # Same rule `_cached_cli` applies to the memory cache: a login, logout
-        # or mutation that landed while the control plane was answering has
-        # already wiped the baseline, and this answer is the one it wiped.
-        with _CLI_CACHE_LOCK:
-            current = _cli_cache_gen
-        if gen == current:
-            _listing_cache_write(env, entries)
-        return ("ok", entries)
-
+    without it. Without it, always the control plane — no memory cache: a hit
+    there answered `stale: false`, so the page never revalidated and a canvas
+    made elsewhere stayed hidden for the TTL."""
     if allow_stale:
-        key = ("list", env, _creds_sig(env))
-        with _CLI_CACHE_LOCK:
-            hit = _cli_cache.get(key)
-            fresh = hit is not None and hit[0] > time.monotonic()
-        if not fresh:
-            stale = _listing_cache_read(env)
-            if stale is not None:
-                return stale, None, True
-    result = _cached_cli("list", env, compute)
-    if result[0] == "err":
-        return None, _error(result[1], result[2]), False
-    return result[1], None, False
+        stale = _listing_cache_read(env)
+        if stale is not None:
+            return stale, None, True
+    with _CLI_CACHE_LOCK:
+        gen = _cli_cache_gen
+    entries, err = _list_entries_uncached(env)
+    if err is not None:
+        return None, err, False
+    # A login, logout or mutation that landed while the control plane was
+    # answering has already wiped the baseline, and this answer is the one it
+    # wiped.
+    with _CLI_CACHE_LOCK:
+        current = _cli_cache_gen
+    if gen == current:
+        _listing_cache_write(env, entries)
+    return entries, None, False
 
 
 def _list_entries_uncached(env: str):
@@ -4536,11 +4519,9 @@ class _SyncManager:
             if after is not None and "revision" in after:
                 after = {**after, "revision": pushed_rev}
             self._base_revision = pushed_rev
-        # A push changes the account's canvas list (updated_at): drop cached
-        # list answers. Module-level, called with no lock held. The disk
-        # baseline stays: auto-push fires on every save, and wiping it here
-        # would make the catalog block on the control plane every time.
-        _cli_cache_clear(keep_listing=True)
+        # No cache drop: the listing has no memory cache (the catalog always
+        # revalidates), and the disk baseline stays — auto-push fires on every
+        # save, and only `updated_at` moves.
         with self._op_lock:
             self.last_push_at = time.time()
             self.last_error = None
