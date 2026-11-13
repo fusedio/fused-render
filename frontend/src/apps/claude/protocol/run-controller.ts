@@ -3348,9 +3348,21 @@ export function createChatController(deps: ControllerDeps): ChatController {
       }
       if (!res || !("sent" in res) || !res.sent) {
         // Same guard, same reason as the `!runId` road above.
+        //
+        // ONLY A GONE HOST IS "ENDED". `_send` also refuses a follow-up into a
+        // session that is still running — a stop in flight, Remote Control
+        // driving the chat, a mode the backend cannot take — and calling
+        // those "ended" under a reply that is visibly still streaming sends
+        // the reader looking for a crash that never happened. Those say the
+        // server's own words.
         if (logGen === gen) {
           giveBack();
-          addError("Could not send: the session ended before this reached it.");
+          const why = res && "error" in res ? String(res.error || "") : "";
+          addError(
+            !why || why === "no such run" || why === "no live session"
+              ? "Could not send: the session ended before this reached it."
+              : "Could not send: " + why,
+          );
         }
         return;
       }
