@@ -74,7 +74,6 @@ import dataclasses
 import json
 import logging
 import os
-import shutil
 import threading
 import time
 
@@ -98,6 +97,11 @@ _JOURNAL_VERSION = 1
 #: How soon a call may look again while something is still deferred, in
 #: conflict, or owed a replay. The callers include a status poll.
 RETRY_S = 15.0
+#: How long a moved clone's carry is retried before it is given up: a
+#: transcript that is still held then (a session left open for hours, a
+#: store that keeps failing) stays in its old bucket, and the environment —
+#: and its mirror — stop waiting for it.
+CARRY_GIVE_UP_S = 3 * 3600.0
 
 MOVED = "moved"
 ABSENT = "absent"
@@ -131,8 +135,8 @@ class LayoutReport:
                 has_clone: bool = False) -> str | None:
         """Why canvas `name` must not be used at its new path right now, or
         None. Its own clone is still waiting at the old path (`deferred`);
-        or the pass itself failed (`error`), so nothing is known and a clone
-        may be waiting there — fail closed. `creating` — the caller would
+        or the pass itself failed (`error`) and this canvas still has a
+        folder there — fail closed for it. `creating` — the caller would
         make or fill a folder under `user/` — is also refused while the
         environment is `blocked`, and while this canvas is in `conflicts`:
         its clone sits at the old path with something else at the new one,
@@ -140,7 +144,16 @@ class LayoutReport:
         `has_clone`: what is at the new path is a live clone in its own
         right, and using it changes nothing for the old folder."""
         if self.error:
-            return self.error
+            # Fail closed, but only where a clone could actually be waiting:
+            # this canvas still has a folder at the old path, or a clone
+            # named `user` still sits where a new folder would go. One
+            # failing pass must not lock the user out of every canvas.
+            root = canvases.canvases_root(self.env)
+            if _legacy_rel(root, name) is not None:
+                return self.error
+            if creating and _blocked_by_user_clone(root):
+                return self.error
+            return None
         why = self.deferred.get(name)
         if why:
             return why
@@ -288,9 +301,18 @@ def _journal_read(root: str) -> list[dict]:
     moves = data.get("moves") if isinstance(data, dict) else None
     if not isinstance(moves, list):
         return []
-    return [m for m in moves
-            if isinstance(m, dict)
-            and all(isinstance(m.get(k), str) and m[k] for k in ("name", "src", "dst"))]
+    out = []
+    for m in moves:
+        if not (isinstance(m, dict)
+                and all(isinstance(m.get(k), str) and m[k] for k in ("name", "src", "dst"))):
+            continue
+        since = m.get("since")
+        out.append({"name": m["name"], "src": m["src"], "dst": m["dst"],
+                    # When the move was made (a journal from before this field
+                    # counts from now: the wait is bounded either way).
+                    "since": float(since) if isinstance(since, (int, float))
+                    and not isinstance(since, bool) else time.time()})
+    return out
 
 
 def _journal_write(root: str, moves: list[dict]) -> None:
@@ -378,7 +400,7 @@ def _move(root: str, name: str, src: str, dst: str) -> bool:
     """One journaled rename + carry. True when the carry is complete (False:
     the journal keeps the move for a later pass). OSError when the rename did
     not happen (nothing changed, the journal entry is gone again)."""
-    move = {"name": name, "src": src, "dst": dst}
+    move = {"name": name, "src": src, "dst": dst, "since": time.time()}
     _journal_add(root, move)
     try:
         os.rename(os.path.join(root, src), os.path.join(root, dst))
@@ -403,6 +425,15 @@ def _replay(root: str) -> bool:
             _journal_drop(root, move)
             continue
         if _carry(root, move["src"], move["dst"]):
+            _journal_drop(root, move)
+        elif time.time() - move["since"] > CARRY_GIVE_UP_S:
+            # Bounded: what could not be carried in this long is left where
+            # it is (a transcript keeps its old bucket; nothing is lost on
+            # disk), and nothing waits on it any more.
+            logger.warning(
+                "canvas layout: giving up carrying the stores and sessions of %s -> %s "
+                "after %.0f h; a session started under the old path keeps its history "
+                "there", src, dst, CARRY_GIVE_UP_S / 3600)
             _journal_drop(root, move)
         else:
             owed = True
@@ -437,11 +468,9 @@ def _free_target(root: str, target: str) -> str | None:
     scope_dir = os.path.join(root, CLONES_SCOPE)
     if canvas_marker.removable_mirror(target, scope_dir):
         # A reference copy of the canvas this clone is the live one of.
-        try:
-            shutil.rmtree(target)
-        except OSError as exc:
-            return f"the reference copy at {target} could not be removed ({exc})"
-        return None
+        if canvas_marker.remove_mirror(target, scope_dir):
+            return None
+        return f"the reference copy at {target} could not be removed"
     if os.path.isdir(target) and not os.path.islink(target):
         try:
             os.rmdir(target)  # an empty folder holds nothing to lose
@@ -530,6 +559,10 @@ def _migrate(env: str, root: str, name: str) -> str:
     # Seeded files first (the marker's `.fusedignore` line among them), then
     # the marker: both no-ops on the external-CLI path, and the marker also
     # when the collection id is unknown — sync start heals it later.
+    # The folder that arrived IS a clone. An adoption flag left under its
+    # name (an adoption whose folder has since gone) would make it read "not
+    # cloned", and the next open would pull over it.
+    canvases._unlink_quiet(canvas_marker.adopting_path(target))
     canvases._seed_clone_claude_files(target, name)
     canvases._mark_live(env, name)
     with _STATE_LOCK:

@@ -9,10 +9,10 @@ What these pin:
   sync baseline (never adopt without pulling);
 * the lookup by collection id when the copy sits under another folder name;
 * that `team/` and `public/` copies are never adopted;
-* R8 — a mirror run in this process is stopped for the adoption, and one in
+* a mirror run in this process is stopped for the adoption, and one in
   another process loses to the marker;
-* rename and delete under the same hold, and the two gaps stage 1 reported
-  (a reference copy's desk row, the stale "not cloned" card).
+* rename and delete under the same hold; a reference copy's desk row; the
+  stale "not cloned" card.
 """
 import json
 import os
@@ -162,18 +162,19 @@ def test_a_cli_that_preserves_the_marker_on_pull_still_ends_live(harness, tmp_pa
     assert _cloned(harness) is True
 
 
-def test_a_failed_pull_leaves_a_live_marked_folder_the_next_open_pulls_again(
+def test_a_pull_that_failed_after_writing_leaves_a_folder_the_next_open_pulls_again(
         harness, tmp_path, monkeypatch):
-    """Never adopt without pulling: marked live (the mirror command keeps its
-    hands off), but NOT a clone — no sync may take the copy's stale files as
-    its baseline — until a pull lands."""
+    """Never adopt without pulling. The pull wrote some files and failed:
+    the folder is ours now (marked live, the mirror command keeps its hands
+    off) but NOT a clone — no sync may take its mix of files as a baseline —
+    until a pull lands."""
     _shim_harness(harness, tmp_path, monkeypatch)
-    harness.set_scenario({"pull_fail": True})
+    harness.set_scenario({"pull_fail": True, "pull_fail_after": {"a.py": "half a pull\n"}})
     folder = _reference_copy(harness.clones / "alpha")
     res = _clone(harness)
     assert res.status_code == 502, res.text
     assert canvas_marker.sync_of(str(folder)) == "live"
-    assert (folder / "a.py").read_text() == "a-last-week\n"        # still the old copy
+    assert (folder / "gone.py").exists()                           # still the old copy's
     assert _flag(harness).exists()
     assert canvases_mod._is_live_clone(ENV, "alpha") is False
     assert _cloned(harness) is False
@@ -189,6 +190,41 @@ def test_a_failed_pull_leaves_a_live_marked_folder_the_next_open_pulls_again(
     assert (folder / "a.py").read_text() == "a1\n" and not (folder / "gone.py").exists()
     assert not _flag(harness).exists() and _cloned(harness) is True
     assert canvas_marker.read(str(folder)).sync == "live"
+
+
+def test_a_pull_that_failed_without_touching_the_folder_hands_the_copy_back(
+        harness, tmp_path, monkeypatch):
+    """The canvas cannot be pulled (deleted on the server, most of all). A
+    folder left live-marked and flagged would be nobody's for good: never a
+    clone, never removed by the mirror command. Untouched by the failed
+    pull, it is the command's reference copy again, byte for byte."""
+    _shim_harness(harness, tmp_path, monkeypatch)
+    harness.set_scenario({"pull_fail": True})
+    folder = _reference_copy(harness.clones / "alpha")
+    marker = (folder / MARKER).read_bytes()
+    before = sorted(os.listdir(folder))
+    assert _clone(harness).status_code == 502
+    assert (folder / MARKER).read_bytes() == marker
+    assert sorted(os.listdir(folder)) == before
+    assert canvas_marker.removable_mirror(str(folder), str(harness.clones))
+    assert not _flag(harness).exists() and _cloned(harness) is False
+    # ...and the same on the external-CLI path, where adoption had REMOVED
+    # the marker rather than rewritten it.
+    monkeypatch.setattr(canvases_mod, "_shim_manifest_command", lambda cli: None)
+    seen = {}
+    real = canvases_mod._run_cli
+
+    def run_cli(args, timeout, env):
+        seen["marker_during_pull"] = (folder / MARKER).exists()
+        return real(args, timeout, env)
+
+    monkeypatch.setattr(canvases_mod, "_run_cli", run_cli)
+    assert _clone(harness).status_code == 502
+    assert seen == {"marker_during_pull": False}
+    assert (folder / MARKER).read_bytes() == marker and not _flag(harness).exists()
+    # Still openable once the pull works.
+    harness.set_scenario({"pull_files": _BASE_FILES})
+    assert _clone(harness).status_code == 200 and _cloned(harness) is True
 
 
 def test_a_crash_after_the_marker_went_live_is_pulled_on_the_next_open(
@@ -332,7 +368,7 @@ def test_a_clone_is_recloned_as_before_whatever_copies_exist(harness, tmp_path, 
     assert len(_pulls(harness)) == 2 and not _flag(harness).exists()
 
 
-# -- R8: adoption against a mirror run -----------------------------------------
+# -- adoption against a mirror run -----------------------------------------
 
 
 def test_a_clone_stops_this_processs_mirror_run_first(harness, tmp_path, monkeypatch):
@@ -468,7 +504,7 @@ def test_rename_and_delete_run_with_the_mirror_held(harness, tmp_path, monkeypat
 
 def test_delete_removes_a_reference_copy_and_its_adoption_flag(harness, tmp_path, monkeypatch):
     _shim_harness(harness, tmp_path, monkeypatch)
-    harness.set_scenario({"pull_fail": True})
+    harness.set_scenario({"pull_fail": True, "pull_fail_after": {"a.py": "half\n"}})
     folder = _reference_copy(harness.clones / "alpha")
     assert _clone(harness).status_code == 502                # mid-adoption: flag left
     assert _flag(harness).exists()
@@ -481,7 +517,7 @@ def test_delete_removes_a_reference_copy_and_its_adoption_flag(harness, tmp_path
     assert not folder.exists() and not other.exists() and not _flag(harness).exists()
 
 
-# -- the two gaps stage 1 reported ---------------------------------------------
+# -- the desk row, and the stale card -------------------------------------------
 
 
 def test_a_reference_copys_desk_row_is_not_a_canvas_row(harness):
@@ -523,3 +559,173 @@ def test_a_stale_not_cloned_card_does_not_pull_over_a_clone_that_just_moved(
     assert _clone(harness).status_code == 200
     assert len(_pulls(harness)) == 1
     assert canvas_layout.moved_recently(ENV, "never-moved") is False
+
+
+# -- what may and may not be taken over ----------------------------------------
+
+
+def test_a_live_clone_holding_the_id_under_another_name_is_never_moved_into_place(
+        harness, tmp_path, monkeypatch):
+    """The lookup by id finds the canvas's CLONE under its old folder name (a
+    canvas renamed on the server). Only a removable reference copy is ever
+    renamed into place; the clone, and the unpublished work in it, stays."""
+    _shim_harness(harness, tmp_path, monkeypatch)               # listing: alpha -> col-a
+    old = harness.clones / "beta"
+    old.mkdir(parents=True)
+    (old / "canvas.toml").write_text('type = "canvas"\n')
+    (old / "a.py").write_text("unpublished work\n")
+    assert canvas_marker.write_live(str(old), name="beta", collection_id="col-a")
+    assert canvas_marker.find_by_id(str(harness.clones), "col-a") == str(old)
+    assert _clone(harness).status_code == 200
+    assert (old / "a.py").read_text() == "unpublished work\n"
+    assert canvas_marker.read(str(old)).name == "beta"
+    assert (harness.clones / "alpha" / "a.py").read_text() == _BASE_FILES["a.py"]
+
+
+@pytest.mark.parametrize("kind", ["folder", "file"])
+def test_a_path_taken_by_something_that_is_no_canvas_refuses_the_clone_outright(
+        harness, tmp_path, monkeypatch, kind):
+    """No reference copy of the canvas anywhere, and `user/alpha` holds
+    something of the user's: `pull --force` would delete it. Refused."""
+    _shim_harness(harness, tmp_path, monkeypatch)
+    foreign = harness.clones / "alpha"
+    if kind == "folder":
+        foreign.mkdir(parents=True)
+        (foreign / "notes.txt").write_text("mine\n")
+    else:
+        foreign.parent.mkdir(parents=True)
+        foreign.write_text("mine\n")
+    res = _clone(harness)
+    assert res.status_code == 409 and res.json()["code"] == "exists"
+    assert ((foreign / "notes.txt") if kind == "folder" else foreign).read_text() == "mine\n"
+    assert _pulls(harness) == [] and not _flag(harness).exists()
+
+
+def test_an_empty_folder_and_a_folder_we_marked_live_are_ours_to_pull_into(
+        harness, tmp_path, monkeypatch):
+    _shim_harness(harness, tmp_path, monkeypatch, alpha="col-a", beta="col-b")
+    (harness.clones / "alpha").mkdir(parents=True)               # a clone that never pulled
+    half = harness.clones / "beta"                               # marked, pull never landed
+    half.mkdir()
+    (half / "leftover.txt").write_text("x")
+    canvas_marker.write_live(str(half), name="beta", collection_id="col-b")
+    for name in ("alpha", "beta"):
+        assert _clone(harness, name).status_code == 200, name
+        assert (harness.clones / name / "canvas.toml").is_file()
+
+
+def test_a_clone_moved_minutes_ago_and_since_replaced_by_a_copy_is_adopted(
+        harness, tmp_path, monkeypatch):
+    """The "just moved, do not pull" answer holds only while the folder IS
+    that clone. Deleted here since, with a reference copy now at its path,
+    the canvas is opened like any other: adopted and pulled."""
+    _shim_harness(harness, tmp_path, monkeypatch)
+    _no_sessions(monkeypatch)
+    legacy = harness.root / "alpha"
+    legacy.mkdir(parents=True)
+    (legacy / "canvas.toml").write_text('type = "canvas"\n')
+    assert canvas_layout.ensure_layout(ENV).moved == ["alpha"]
+    assert canvas_layout.moved_recently(ENV, "alpha") is True
+    assert harness.client.post("/api/canvases/delete", headers=GUARD,
+                               json={"env": ENV, "name": "alpha"}).status_code == 200
+    copy = _reference_copy(harness.clones / "alpha", cid="col-new")
+    assert _clone(harness).status_code == 200
+    assert len(_pulls(harness)) == 1
+    assert canvas_marker.sync_of(str(copy)) == "live" and (copy / "a.py").read_text() == "a1\n"
+    assert harness.client.post("/api/canvases/sync/start", headers=GUARD,
+                               json={"env": ENV, "name": "alpha"}).status_code == 200
+
+
+# -- rename, again -------------------------------------------------------------
+
+
+def test_rename_rereads_the_target_right_before_it_removes_it(harness, tmp_path, monkeypatch):
+    """Judged a removable reference copy when the rename began; made
+    someone's clone (marked live) while the server rename ran. It is read
+    again before anything is removed: the folder survives, the move fails,
+    and the server rename is rolled back."""
+    _shim_harness(harness, tmp_path, monkeypatch)
+    _no_sessions(monkeypatch)
+    assert _clone(harness).status_code == 200
+    target = _reference_copy(harness.clones / "gamma", cid="col-g")
+    (target / "keep.txt").write_text("keep\n")
+    real = canvases_mod._run_cli
+
+    def run_cli(args, timeout, env):
+        if args[:4] == ["workbench", "canvas", "rename", "alpha"]:
+            canvas_marker.write_live(str(target), name="gamma", collection_id="col-g")
+        return real(args, timeout, env)
+
+    monkeypatch.setattr(canvases_mod, "_run_cli", run_cli)
+    res = harness.client.post("/api/canvases/rename", headers=GUARD,
+                              json={"env": ENV, "name": "alpha", "new_name": "gamma"})
+    assert res.status_code == 500 and "keeps its name" in res.json()["error"]
+    assert (target / "keep.txt").read_text() == "keep\n"
+    assert canvas_marker.read(str(target)).sync == "live"
+    assert (harness.clones / "alpha" / "canvas.toml").is_file()
+    assert ["workbench", "canvas", "rename", "gamma", "alpha"] in harness.calls()
+
+
+def test_rename_clears_an_adoption_flag_left_under_the_new_name(harness, tmp_path, monkeypatch):
+    """A flag with no folder (an adoption whose copy the mirror run has since
+    removed) under the name the clone is renamed TO. Kept, the renamed clone
+    would read "not cloned" and the next open would pull over it."""
+    _shim_harness(harness, tmp_path, monkeypatch)
+    _no_sessions(monkeypatch)
+    assert _clone(harness).status_code == 200
+    (harness.clones / "alpha" / "a.py").write_text("unpublished work\n")
+    _flag(harness, "gamma").parent.mkdir(parents=True, exist_ok=True)
+    _flag(harness, "gamma").write_text("1")
+    res = harness.client.post("/api/canvases/rename", headers=GUARD,
+                              json={"env": ENV, "name": "alpha", "new_name": "gamma"})
+    assert res.status_code == 200, res.text
+    assert not _flag(harness, "gamma").exists()
+    assert canvases_mod._is_live_clone(ENV, "gamma") is True
+    assert (harness.clones / "gamma" / "a.py").read_text() == "unpublished work\n"
+
+
+def test_renaming_a_half_adopted_folder_keeps_it_not_cloned(harness, tmp_path, monkeypatch):
+    """Its own flag follows it: under the new name it still cannot become a
+    sync baseline until a pull lands."""
+    _shim_harness(harness, tmp_path, monkeypatch)
+    _no_sessions(monkeypatch)
+    _reference_copy(harness.clones / "alpha")
+    harness.set_scenario({"pull_fail": True, "pull_fail_after": {"a.py": "half\n"},
+                          "canvases": ["alpha"]})
+    assert _clone(harness).status_code != 200
+    assert _flag(harness).exists()
+    harness.set_scenario({"canvases": ["alpha"], "pull_files": _BASE_FILES})
+    res = harness.client.post("/api/canvases/rename", headers=GUARD,
+                              json={"env": ENV, "name": "alpha", "new_name": "gamma"})
+    assert res.status_code == 200, res.text
+    assert (harness.clones / "gamma" / "gone.py").exists()
+    assert _flag(harness, "gamma").exists() and not _flag(harness).exists()
+    assert not canvases_mod._is_live_clone(ENV, "gamma")
+
+
+def test_a_reference_copy_is_renamed_aside_before_it_is_deleted(harness, tmp_path, monkeypatch):
+    """A delete that fails halfway must not leave `canvas.toml` without its
+    marker at the path — that reads as a live clone. Renamed to a dot-name
+    first, the path is free at once whatever the delete then manages."""
+    import shutil
+
+    scope = harness.clones
+    copy = _reference_copy(scope / "alpha")
+    seen = {}
+
+    def failing_rmtree(path, **kw):
+        seen["path"] = path
+        seen["target_gone"] = not copy.exists()
+        os.remove(os.path.join(path, MARKER))           # got this far, then failed
+
+    monkeypatch.setattr(shutil, "rmtree", failing_rmtree)
+    assert canvas_marker.remove_mirror(str(copy), str(scope)) is True
+    assert seen["target_gone"] and os.path.basename(seen["path"]).startswith(".fused-removing-")
+    assert not copy.exists()
+    assert canvases_mod._cloned_names(ENV) == set()      # what is left is a dot-folder
+    # Never for a folder that is not a removable copy.
+    clone = scope / "beta"
+    clone.mkdir()
+    (clone / "canvas.toml").write_text("")
+    assert canvas_marker.remove_mirror(str(clone), str(scope)) is False
+    assert (clone / "canvas.toml").is_file()

@@ -3,13 +3,13 @@
 A clone lives at `<env>/user/<name>`; `team/` and `public/` beside it hold
 read-only reference copies written by `fused canvas mirror`, and so may a
 `user/<name>` folder whose `.fused-canvas.json` says `sync: "mirror"`. What
-these pin (the plan's risks R2-R4):
+these pin:
 
-* R2 — a reference copy is never treated as a clone: not listed as cloned,
+* a reference copy is never treated as a clone: not listed as cloned,
   no sync manager, no watcher, no hook revival.
-* R3 — the marker never dirties the clone, never enters the merge base and
+* the marker never dirties the clone, never enters the merge base and
   is never uploaded.
-* R4 — the live marker survives every pull, and follows the collection id.
+* the live marker survives every pull, and follows the collection id.
 
 Reuses test_canvases.py's harness (stub CLI, manifest/zip shims). The stub is
 an EXTERNAL CLI, where no marker is written at all; the tests that need one
@@ -156,7 +156,7 @@ def test_the_task_door_the_desk_row_and_the_launcher_follow_the_new_path(harness
     assert launcher.canvas_page_for(str(harness.root / "team" / "alpha")) is None
 
 
-# -- R2: a reference copy is never a clone -------------------------------------
+# -- a reference copy is never a clone -------------------------------------
 
 
 def test_a_mirror_marked_folder_is_not_listed_as_cloned(harness):
@@ -271,7 +271,7 @@ def _pre(harness, cwd, file_path, tool="Edit", key="file_path"):
 
 
 def test_the_pre_hook_refuses_an_edit_of_a_reference_copy(harness):
-    """R11. The session sits in its own live clone and reaches for a file in
+    """The session sits in its own live clone and reaches for a file in
     a reference copy: `team/`, `public/`, or a `user/<name>` the mirror wrote
     and the user never opened. Refused every time, with a reason."""
     harness.log_in()
@@ -431,7 +431,7 @@ def test_delete_runs_on_the_server_and_removes_a_reference_copy_of_that_canvas(h
     assert (harness.root / "team" / "alpha" / "canvas.toml").is_file()
 
 
-# -- R3: the marker is local state ---------------------------------------------
+# -- the marker is local state ---------------------------------------------
 
 
 def test_a_marker_write_does_not_dirty_the_clone(harness, tmp_path, monkeypatch, fake_agent):
@@ -519,7 +519,7 @@ def test_a_marker_in_the_server_bundle_never_replaces_the_local_one(
     assert MARKER not in trashed
 
 
-# -- R4: the live marker survives pulls and follows the collection id ----------
+# -- the live marker survives pulls and follows the collection id ----------
 
 
 def test_clone_marks_the_folder_live_when_the_id_is_known(harness, tmp_path, monkeypatch):

@@ -1,8 +1,7 @@
 """A session editing a canvas reads the reference canvases beside it (D1478).
 
 `<env>/user/`, `<env>/team/` and `<env>/public/` hold every canvas the user
-can reach, as working examples (D1476/D1477). What these pin (the plan's
-risk R11):
+can reach, as working examples (D1476/D1477). What these pin:
 
 * a session whose target is in a LIVE clone reads those three folders
   without a permission prompt, on every backend, each in its own currency
@@ -164,7 +163,7 @@ def claude(agent, monkeypatch):
 
 
 def test_claude_reads_the_reference_folders_in_both_spellings(claude, tmp_path, monkeypatch):
-    """R11. The CLI matches a rule against the path's text, and the session
+    """The CLI matches a rule against the path's text, and the session
     meets these folders under either name: the root as the app spells it
     (here through a symlink, as `/tmp` is one on macOS) and as a tool that
     resolved it does."""
@@ -203,7 +202,7 @@ def test_claude_gets_no_reference_rules_outside_a_live_clone(claude, layout, tmp
 
 
 def test_claude_is_refused_edits_under_team_and_public(claude, layout, tmp_path):
-    """R11: the deny rules ride the same `--settings` as the canvas hooks.
+    """the deny rules ride the same `--settings` as the canvas hooks.
     A deny holds under every permission mode."""
     for mode in (None, "acceptEdits", "auto"):
         settings = _settings(_claude_argv(claude, tmp_path, layout.clone / "udf_1.py",
@@ -274,15 +273,18 @@ def _flag_values(argv, flag):
 
 
 def test_copilot_is_handed_the_folders_that_exist(agent, home, tmp_path, monkeypatch):
-    """R11: `--add-dir` for each scope folder on disk; the CLI exits at
-    startup on one that is not, so a missing one never reaches it."""
+    """`--add-dir` for `team/` and `public/` where they are on disk; the CLI
+    exits at startup on a missing one, so that never reaches it. Never
+    `user/`: the grant is not read-only and nothing refuses a write, and
+    that folder holds the user's other live clones."""
     _copilot_bin(tmp_path, monkeypatch)
     lay = Layout(agent, tmp_path, monkeypatch, scopes=("user", "public"))
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     argv = agent._copilot_argv(str(run_dir), False, None, "", "", "", [],
                                str(lay.clone / "udf_1.py"))
-    assert _flag_values(argv, "--add-dir") == [agent.SHOTS, *lay.dirs("user", "public")]
+    assert _flag_values(argv, "--add-dir") == [agent.SHOTS, *lay.dirs("public")]
+    assert str(lay.env / "user") not in _flag_values(argv, "--add-dir")
     # Outside a live clone: the screenshots dir and nothing else.
     for target in (lay.reference("public", "y"), tmp_path / "a.py"):
         run = tmp_path / ("run-" + target.name)
@@ -293,14 +295,15 @@ def test_copilot_is_handed_the_folders_that_exist(agent, home, tmp_path, monkeyp
 
 def test_gemini_is_handed_the_folders_that_exist_and_hold_no_comma(
         agent, home, tmp_path, monkeypatch):
-    """R11: `--include-directories`, under the flag's two rules."""
+    """`--include-directories`, under the flag's two rules, for `team/` and
+    `public/` only (a workspace directory is writable to Gemini's tools)."""
     _gemini_bin(tmp_path, monkeypatch)
     lay = Layout(agent, tmp_path, monkeypatch, scopes=("user", "team"))
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     argv = agent._gemini_argv(str(run_dir), False, None, "", "", "", [], str(lay.clone))
     included = _flag_values(argv, "--include-directories")
-    assert included == [str(run_dir / "gemini"), agent.SHOTS, *lay.dirs("user", "team")]
+    assert included == [str(run_dir / "gemini"), agent.SHOTS, *lay.dirs("team")]
     run2 = tmp_path / "run2"
     run2.mkdir()
     argv = agent._gemini_argv(str(run2), False, None, "", "", "", [], str(tmp_path / "a.py"))
@@ -323,8 +326,12 @@ def test_opencode_names_the_folders_in_its_context(agent, home, tmp_path, monkey
                                 str(lay.clone)) == [agent._opencode_bin(), "acp"]
     body = (run_dir / "opencode" / "AGENTS.md").read_text()
     listed = body[body.index("you may also read these directories: "):]
-    for d in lay.dirs("user", "team"):
-        assert d in listed
+    assert str(lay.env / "team") in listed
+    # Its tools are not workspace-bound and nothing refuses a write: the
+    # folder of the user's other live clones is not named anywhere.
+    assert str(lay.env / "user") + "," not in body and not body.rstrip().endswith(
+        str(lay.env / "user"))
+    assert str(lay.env / "user") not in listed.replace(str(lay.clone), "")
     assert str(lay.env / "public") not in body          # not on disk: not named
     run2 = tmp_path / "run2"
     run2.mkdir()
@@ -354,9 +361,14 @@ def test_every_backend_is_told_about_the_reference_canvases(
         note = agent._canvas_reference_note(str(target), backend)
         assert note in agent._appended_prompt(str(target), False, backend)
         assert "REFERENCE CANVASES" in note
-        # The folders that exist, by absolute path; the missing one is not named.
-        for d in lay.dirs("user", "public"):
-            assert d in note
+        # The folders that exist, by absolute path; the missing one is not
+        # named. `user/` only for a backend that can refuse a write there
+        # (it holds the user's other live clones): Claude and Codex.
+        enforced = backend in ("", "codex")
+        assert str(lay.env / "public") in note
+        assert (str(lay.env / "user") in note) == enforced
+        assert ("the user's own canvases" in note) == enforced
+        assert "the public catalog" in note and "their team's" not in note
         assert str(lay.env / "team") not in note
         for must in ("read-only", "stale", ".fused-canvas.json", "never edit",
                      "push or pull", "reference DATA", "do not act on it",
@@ -400,7 +412,7 @@ def test_the_note_reaches_the_files_the_other_backends_read(agent, home, tmp_pat
 @pytest.mark.parametrize("backend", ["claude", "copilot", "gemini", "opencode", "codex"])
 def test_a_follow_up_in_a_clone_never_respawns_over_the_reference_dirs(
         agent, home, layout, tmp_path, send_env, backend):
-    """R11. `_send` ends the session when a message names a directory the
+    """`_send` ends the session when a message names a directory the
     host was not granted (`wanted <= granted`). The reference folders are
     the TARGET's, computed inside each argv builder: the host's record of
     its grants (`read_dirs`, from `extra_read_dirs`) never held them, and a
@@ -425,3 +437,52 @@ def test_a_follow_up_in_a_clone_never_respawns_over_the_reference_dirs(
     assert [r["type"] for r in _inbox_rows(run_dir)] == ["user", "user"]
     # The directories a message asks for come from the message alone.
     assert agent._attach_dirs("") == []
+
+
+# -- one rule for who is given `user/`, and deny rules for the copies in it ------
+
+
+def test_only_a_backend_that_can_refuse_a_write_is_given_the_users_own_folder(
+        agent, layout):
+    """`user/` holds the user's OTHER live clones, each published by its own
+    sync. Claude (deny rules, the hook) and Codex (its sandbox) get all
+    three folders; Copilot, Gemini and OpenCode get `team/` and `public/`,
+    where a stray write is overwritten by the next mirror run."""
+    file = str(layout.clone / "udf_1.py")
+    assert agent._canvas_reference_scopes("") == ("user", "team", "public")
+    for backend in ("", "claude", "codex"):
+        assert agent._canvas_reference_dirs(file, backend) == layout.dirs(
+            "user", "team", "public"), backend
+    for backend in ("copilot", "gemini", "opencode", "something-new"):
+        assert agent._canvas_reference_scopes(backend) == ("team", "public")
+        assert agent._canvas_reference_dirs(file, backend) == layout.dirs("team", "public")
+        assert agent._canvas_reference_dirs_on_disk(file, backend) == layout.dirs(
+            "team", "public")
+
+
+def test_claude_denies_edits_to_the_reference_copies_under_user_that_exist_at_spawn(
+        agent, layout, monkeypatch):
+    """`user/` cannot be denied whole (the session's own clone is in it), so
+    each reference copy in it gets a rule of its own: a deny also stops a
+    shell redirect, which the hook does not see. Live clones get none."""
+    mine = layout.reference("user", "mine")
+    other = layout.reference("user", "another")
+    sibling = layout.env / "user" / "sibling_clone"
+    sibling.mkdir()
+    (sibling / "canvas.toml").write_text("")
+    # A copy whose adoption has not been pulled yet is still a copy.
+    half = layout.env / "user" / "half_adopted"
+    half.mkdir()
+    (half / "canvas.toml").write_text("")
+    (layout.env / ".sync").mkdir(exist_ok=True)
+    (layout.env / ".sync" / "half_adopted.adopting").write_text("1")
+    dirs = agent._canvas_readonly_dirs(str(layout.clone / "udf_1.py"))
+    assert dirs == [*layout.dirs("team", "public"), str(other), str(half), str(mine)]
+    assert str(sibling) not in dirs and str(layout.clone) not in dirs
+    # Bounded: by name, at most the cap; the rest keep the hook and the prompt.
+    monkeypatch.setattr(agent, "_REFERENCE_DENY_CAP", 2)
+    assert agent._canvas_readonly_dirs(str(layout.clone)) == [
+        *layout.dirs("team", "public"), str(other), str(half)]
+    # A session started inside a reference copy: its own folder, as before.
+    assert agent._canvas_readonly_dirs(str(mine / "udf_1.py")) == [
+        *layout.dirs("team", "public"), str(mine)]

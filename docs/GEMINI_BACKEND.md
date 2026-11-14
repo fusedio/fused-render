@@ -170,8 +170,8 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   `--include-directories` (directories that exist only); a message naming a
   directory the host was not spawned with is a **respawn** (`_send` →
   `{respawn: True}`), as for Copilot. The reference canvases of a target in a
-  live canvas clone (`<env>/{user,team,public}`, the ones on disk; DECISIONS
-  D1478) are included the same way, computed in `_gemini_argv` and never in
+  live canvas clone (`<env>/{team,public}`, the ones on disk, never
+  `<env>/user`; DECISIONS D1478) are included the same way, computed in `_gemini_argv` and never in
   `extra_read_dirs`, so they cause no respawn; a workspace directory is
   writable, so read-only rests on the prompt. fused CLI → `_fused_cli_dir()` first on
   the spawn's PATH; no allow-list flag exists, so the prompt note's

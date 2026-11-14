@@ -548,12 +548,21 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         # the next launch may read its own push as "server changed", which is
         # accepted), watcher + fs threads stopped with bounded joins, the
         # clone's writer lock (an flock on an open fd) released.
-        from fused_render import canvas_mirror, canvases
+        from fused_render import canvases
 
         canvases.shutdown()
-        # ...and the `fused canvas mirror` child, if one is running: it
-        # would otherwise download on as an orphan, holding its root's lock.
-        canvas_mirror.shutdown()
+
+    def canvas_mirror():
+        # The `fused canvas mirror` child, if one is running, and everything
+        # it started: it would otherwise download on as an orphan, holding
+        # its root's lock (which then reads "busy" for an hour). A killer of
+        # its own, so a sync manager slow to stop never eats the time this
+        # needs, and bounded by the rung's budget: every child is signalled
+        # before any is waited for, and killed with its lock removed when
+        # the budget runs out.
+        from fused_render import canvas_mirror as _canvas_mirror
+
+        _canvas_mirror.shutdown(budget_s=max(0.5, budget_s - 0.5))
 
     def contrib_claude():
         # The contribution loop's `claude` children (a safety review, a draft,
@@ -577,6 +586,7 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
     for name, step in (("engines", engines), ("ai", ai_workers),
                        ("terminals", terminals), ("index", index_runs),
                        ("bots", bots), ("canvas-sync", canvas_sync),
+                       ("canvas-mirror", canvas_mirror),
                        ("contrib-claude", contrib_claude),
                        ("discovery", discovery)):
         def _run(step=step, name=name):

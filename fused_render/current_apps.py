@@ -460,7 +460,7 @@ def _canvas_of(path: str) -> dict | None:
     # gone reads as no marker, so a deleted clone keeps its canvas row.
     from fused_render import canvas_marker
 
-    if canvas_marker.sync_of(clone_dir) == canvas_marker.SYNC_MIRROR:
+    if canvas_marker.is_reference(clone_dir):
         return None
     return {"env": env, "name": name}
 

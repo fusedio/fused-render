@@ -712,7 +712,7 @@ def _mark(folder, sync, scope="user"):
 
 
 def test_a_clone_is_user_name_and_never_the_scope_folder(root):
-    """The plan's R5: the rule must not walk up from `<env>/user/alpha` and
+    """The rule must not walk up from `<env>/user/alpha` and
     call the canvas `user`."""
     clone = root / "user" / "alpha"
     (clone / "sub" / "deeper").mkdir(parents=True)

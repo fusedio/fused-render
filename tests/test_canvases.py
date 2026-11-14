@@ -64,6 +64,11 @@ def main():
         return
     if plain[:2] == ["canvas", "pull"]:
         if scenario.get("pull_fail"):
+            # pull_fail_after: a pull that fails AFTER it wrote these files.
+            for rel, content in scenario.get("pull_fail_after", {}).items():
+                out_dir = plain[plain.index("-o") + 1]
+                with open(os.path.join(out_dir, rel), "w") as f:
+                    f.write(content)
             sys.stderr.write("Error: pull failed\n")
             sys.exit(1)
         delay = scenario.get("pull_delay")
@@ -207,6 +212,23 @@ def main():
                              % (root, os.path.join(root, ".mirror.lock")))
             sys.exit(1)
         lock = os.path.join(root, ".mirror.lock")
+        # mirror_ignore_signals (["INT"], ["INT", "TERM"]): the real command
+        # with downloads in flight does not stop on an interrupt within the
+        # grace it is given. mirror_interrupted_file: touched (and the lock
+        # released) when an interrupt IS taken, as the real one unwinds.
+        import signal as _sig
+        for _name in scenario.get("mirror_ignore_signals", []):
+            _sig.signal(getattr(_sig, "SIG" + _name), _sig.SIG_IGN)
+        if scenario.get("mirror_interrupted_file"):
+            def _interrupted(*_a):
+                try:
+                    os.remove(lock)
+                except OSError:
+                    pass
+                with open(scenario["mirror_interrupted_file"], "w") as f:
+                    f.write("interrupted")
+                os._exit(130)
+            _sig.signal(_sig.SIGINT, _interrupted)
         if scenario.get("mirror_lock"):
             os.makedirs(root, exist_ok=True)
             with open(lock, "w") as f:
@@ -230,9 +252,21 @@ def main():
                 still_mirror = False
             if not still_mirror:
                 continue
+            # Swapped the way the real command does it: the old copy renamed
+            # aside, the new one staged beside it and renamed in. For
+            # mirror_swap_gap seconds the folder is simply not there.
+            import shutil as _sh
+            parent, base = os.path.split(folder)
+            old = os.path.join(parent, ".mirror-old-" + "0" * 31 + str(len(base) % 10))
+            new = os.path.join(parent, ".mirror-tmp-" + "0" * 31 + str(len(base) % 10))
+            os.rename(folder, old)
+            _t.sleep(scenario.get("mirror_swap_gap", 0))
+            _sh.copytree(old, new)
             for rel, content in swap["files"].items():
-                with open(os.path.join(folder, rel), "w") as f:
+                with open(os.path.join(new, rel), "w") as f:
                     f.write(content)
+            os.rename(new, folder)
+            _sh.rmtree(old)
         if scenario.get("mirror_lock"):
             os.remove(lock)
         if "mirror_stdout" in scenario:
@@ -260,6 +294,11 @@ main()
 @pytest.fixture(autouse=True)
 def _reset_module_state():
     canvases_mod._cli_cache_clear()
+    # Before as well as after: a test elsewhere in this worker may have left
+    # the mirror runner latched (the quit rung's tests arm it).
+    from fused_render import canvas_mirror as _canvas_mirror
+
+    _canvas_mirror.reset()
     yield
     canvases_mod._cli_cache_clear()
     login = canvases_mod._active_login

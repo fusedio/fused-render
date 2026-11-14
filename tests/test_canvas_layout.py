@@ -2,14 +2,14 @@
 
 Before D1476 a clone lived at `<env>/<name>`. `ensure_layout` moves each one
 to `<env>/user/<name>` and carries what names it by absolute path: the desk
-row and the Claude transcripts. What these pin (the plan's risks):
+row and the Claude transcripts. What these pin:
 
-* R1 — a clone another fused-render is syncing is deferred, and a folder
+* a clone another fused-render is syncing is deferred, and a folder
   already at the new path is NEVER overwritten.
-* R6 — the desk row and the chat history follow the clone; a session at work
+* the desk row and the chat history follow the clone; a session at work
   in it defers the move and a later pass makes it; a crash between the
   rename and the carry is finished from the journal.
-* R7 — a clone literally named `user`, `team` or `public` ends up at
+* a clone literally named `user`, `team` or `public` ends up at
   `user/<that name>`, with `.sync/` untouched, and a second pass changes
   nothing.
 
@@ -107,7 +107,11 @@ def _desk():
 
 def _journal(root):
     path = root / ".sync" / canvas_layout.JOURNAL_NAME
-    return json.loads(path.read_text())["moves"] if path.exists() else None
+    if not path.exists():
+        return None
+    # Without `since` (when the move was made): the tests compare the moves.
+    return [{k: v for k, v in m.items() if k != "since"}
+            for m in json.loads(path.read_text())["moves"]]
 
 
 # -- detection -----------------------------------------------------------------
@@ -210,7 +214,7 @@ def test_only_the_environment_folders_are_walked(harness, stores):
     assert not (harness.base / "user").exists()
 
 
-# -- R6: what names the clone by path follows it -------------------------------
+# -- what names the clone by path follows it -------------------------------
 
 
 def test_the_desk_row_and_the_chat_history_follow_the_clone(harness, stores):
@@ -441,7 +445,7 @@ def test_a_transcript_held_at_the_move_is_carried_on_a_later_pass(harness, store
     assert not canvas_layout.ensure_layout(ENV).pending()
 
 
-# -- R1: never under another process, never over a folder ----------------------
+# -- never under another process, never over a folder ----------------------
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX")
@@ -590,7 +594,7 @@ def test_a_symlinked_reference_copy_at_the_new_path_is_not_removed(harness, stor
     assert (root / "alpha" / "canvas.toml").is_file()
 
 
-# -- R7: canvases named like the scope folders ---------------------------------
+# -- canvases named like the scope folders ---------------------------------
 
 
 def test_a_clone_named_user_ends_at_user_user(harness, stores):
@@ -865,13 +869,13 @@ def test_a_pending_clone_is_logged_once_not_on_every_pass(harness, stores, monke
     assert len(said) == 1
 
 
-# -- review of D1476 (2026-11-14): findings 1-7 --------------------------------
+# -- what a pass must never do, and what it reports ----------------------------
 
 
 def test_no_reserved_file_under_sync_can_be_a_canvass(harness):
     """`.sync/` holds `<canvas name>.lock`, `.json`, `.log`, ... per clone.
     Every file this code keeps there for ITSELF must have a stem no canvas
-    name can be (finding 1: `layout.lock` was canvas `layout`'s writer lock)."""
+    name can be (`layout.lock` would be canvas `layout`'s writer lock)."""
     from fused_render import canvas_mirror
 
     reserved = [canvas_layout.LOCK_NAME, canvas_layout.JOURNAL_NAME, canvas_mirror.STATUS_NAME]
@@ -889,7 +893,7 @@ def test_no_reserved_file_under_sync_can_be_a_canvass(harness):
 
 
 def test_a_pass_does_not_release_the_writer_lock_of_a_canvas_named_layout(harness, stores):
-    """Finding 1. This process syncs canvas `layout` while a pass runs: the
+    """This process syncs canvas `layout` while a pass runs: the
     pass must leave that clone's writer lock held, or a second fused-render
     could claim the clone under the running watcher."""
     root = harness.root
@@ -916,7 +920,7 @@ def test_a_pass_does_not_release_the_writer_lock_of_a_canvas_named_layout(harnes
 
 
 def test_a_conflict_refuses_a_clone_that_would_strand_the_old_folder(harness, stores):
-    """Finding 2. The clone sits at the old path with unpublished work and
+    """The clone sits at the old path with unpublished work and
     something that is not a clone sits at the new one. The catalog says "not
     cloned"; the card's click must not pull a second copy in beside it."""
     root = harness.root
@@ -952,7 +956,7 @@ def test_a_conflict_refuses_a_clone_that_would_strand_the_old_folder(harness, st
 
 
 def test_a_conflict_with_a_live_clone_at_the_new_path_does_not_refuse_it(harness, stores):
-    """The other half of finding 2: what is at the new path IS a clone. It is
+    """What is at the new path IS a clone. It is
     used as one; the legacy folder stays reported."""
     harness.log_in()
     _legacy(harness.root, "alpha")
@@ -967,7 +971,7 @@ def test_a_conflict_with_a_live_clone_at_the_new_path_does_not_refuse_it(harness
 
 
 def test_a_pass_that_failed_refuses_every_canvas_route(harness, stores, monkeypatch):
-    """Finding 3. Nothing is known about the old paths after a failed pass: a
+    """Nothing is known about the old paths after a failed pass: a
     clone with unpublished work may be waiting there. Fail closed."""
     root = harness.root
     harness.log_in()
@@ -979,16 +983,21 @@ def test_a_pass_that_failed_refuses_every_canvas_route(harness, stores, monkeypa
     real = canvas_layout._run
     monkeypatch.setattr(canvas_layout, "_run", boom)
     report = canvas_layout.ensure_layout(ENV, force=True)
-    assert report.error and report.refusal("anything") == report.error
-    assert report.refusal("anything", creating=True, has_clone=True) == report.error
+    assert report.error and report.refusal("alpha") == report.error
+    assert report.refusal("alpha", creating=True, has_clone=True) == report.error
+    # Only where a clone could be waiting: a canvas with no folder at the
+    # old path is not locked out by a pass that keeps failing.
+    assert report.refusal("beta") is None and report.refusal("beta", creating=True) is None
+    assert harness.client.post("/api/canvases/clone", headers=GUARD,
+                               json={"env": ENV, "name": "beta"}).status_code == 200
     for route, body in (("clone", {}), ("sync/start", {}), ("delete", {}),
                         ("rename", {"new_name": "gamma"})):
         res = harness.client.post(f"/api/canvases/{route}", headers=GUARD,
                                   json={"env": ENV, "name": "alpha", **body})
         assert res.status_code == 409 and res.json()["code"] == "layout_pending", route
-    assert not (root / "user").exists()
+    assert not (root / "user" / "alpha").exists()
     assert (old / "a.py").read_text() == "unpublished work\n"
-    assert [c for c in harness.calls() if "pull" in c or "delete" in c or "rename" in c] == []
+    assert [c for c in harness.calls() if "alpha" in c] == []
     assert harness.client.get("/api/canvases/status").json()["envs"][ENV]["layout"]["error"]
     # A pass that works clears it.
     monkeypatch.setattr(canvas_layout, "_run", real)
@@ -1001,7 +1010,7 @@ def test_a_pass_that_failed_refuses_every_canvas_route(harness, stores, monkeypa
 @pytest.mark.parametrize("relative", [True, False])
 def test_a_legacy_clone_that_is_a_link_is_a_conflict_not_a_move(harness, stores, tmp_path,
                                                                 relative):
-    """Finding 4. Renaming the link one level deeper leaves a relative one
+    """Renaming the link one level deeper leaves a relative one
     dangling; the real folder is not ours to move."""
     root = harness.root
     real = _legacy(tmp_path / "elsewhere", "alpha")
@@ -1016,7 +1025,7 @@ def test_a_legacy_clone_that_is_a_link_is_a_conflict_not_a_move(harness, stores,
 
 def test_a_first_step_carry_left_owed_is_not_dropped_for_a_clone_named_team(
         harness, stores, monkeypatch):
-    """Finding 5. `team` and `public` move in ONE step, so the journal entry
+    """`team` and `public` move in ONE step, so the journal entry
     a held transcript leaves is `team -> user/team` and replays as any other."""
     projects, _sessions = stores
     root = harness.root
@@ -1047,7 +1056,7 @@ def test_a_first_step_carry_left_owed_is_not_dropped_for_a_clone_named_team(
 
 def test_a_clone_named_user_waits_at_its_halfway_house_for_its_first_carry(
         harness, stores, monkeypatch):
-    """Finding 5, for the one name that still takes two steps. Once
+    """The one name that still takes two steps. Once
     `<env>/user` is the clones folder its prefix can never be rewritten
     again, so the second rename waits until the first one's carry is done —
     and the environment stays held meanwhile."""
@@ -1082,7 +1091,7 @@ def test_a_clone_named_user_waits_at_its_halfway_house_for_its_first_carry(
 @pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX")
 def test_a_pass_another_process_is_running_still_holds_the_environment_for_a_clone_named_user(
         harness, stores):
-    """Finding 6. This process could not look (the layout lock is taken), but
+    """This process could not look (the layout lock is taken), but
     a clone named `user` is in the way all the same: no folder is made
     inside it."""
     root = harness.root
@@ -1106,7 +1115,7 @@ def test_a_pass_another_process_is_running_still_holds_the_environment_for_a_clo
 
 
 def test_a_carry_that_threw_is_owed_not_done(harness, stores, monkeypatch):
-    """Finding 7. A store rewrite that raised leaves the move in the journal
+    """A store rewrite that raised leaves the move in the journal
     for the next pass; reporting it complete would drop the desk row and the
     chat history for good."""
     from fused_render import app_state_move
@@ -1132,3 +1141,67 @@ def test_a_carry_that_threw_is_owed_not_done(harness, stores, monkeypatch):
     report = canvas_layout.ensure_layout(ENV, force=True)
     assert not report.pending() and _journal(root) is None
     assert _desk() == [canonical_fs_path(str(root / "user" / "alpha"))]
+
+
+def test_a_clone_that_moves_clears_an_adoption_flag_left_under_its_name(harness, stores):
+    """A flag with no folder under `user/` (an adoption that failed and whose
+    copy is gone) and a clone of that canvas at the old path, with
+    unpublished work. The folder that arrives IS a clone: the flag would
+    make it read "not cloned" and the next open would pull over it."""
+    harness.log_in()
+    flag = harness.root / ".sync" / "alpha.adopting"
+    flag.parent.mkdir(parents=True)
+    flag.write_text("1")
+    _legacy(harness.root, "alpha", {"canvas.toml": 'type = "canvas"\n',
+                                    "a.py": "unpublished work\n"})
+    assert canvas_layout.ensure_layout(ENV).moved == ["alpha"]
+    assert not flag.exists()
+    assert canvases_mod._is_live_clone(ENV, "alpha") is True
+    res = harness.client.post("/api/canvases/sync/start", headers=GUARD,
+                              json={"env": ENV, "name": "alpha"})
+    assert res.status_code == 200, res.text
+    assert (harness.clones / "alpha" / "a.py").read_text() == "unpublished work\n"
+
+
+def test_a_carry_is_given_up_after_a_bounded_wait(harness, stores, monkeypatch, caplog):
+    """A session left open for hours (or a store that keeps failing) must not
+    hold the environment, or its mirror, forever: past the limit the move is
+    dropped from the journal, said once at WARNING, and nothing waits on it.
+    The transcript stays in its old bucket; nothing is lost on disk."""
+    import logging
+
+    projects, sessions = stores
+    root = harness.root
+    old = _legacy(root, "team")
+    _transcript(projects, str(old), "sid-open")
+    (sessions / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "sid-open", "cwd": str(old)}))
+    monkeypatch.setattr(canvas_layout, "_held", lambda root, rel: [])
+    assert canvas_layout.ensure_layout(ENV).carry_owed
+    assert canvas_layout.owed_scope_names(ENV) == ["team"]
+    assert canvas_layout.ensure_layout(ENV, force=True).carry_owed     # still inside the limit
+    monkeypatch.setattr(canvas_layout, "CARRY_GIVE_UP_S", 0.0)
+    with caplog.at_level(logging.WARNING, logger="fused_render.canvas_layout"):
+        report = canvas_layout.ensure_layout(ENV, force=True)
+        canvas_layout.ensure_layout(ENV, force=True)
+    assert not report.pending() and _journal(root) is None
+    assert canvas_layout.owed_scope_names(ENV) == []
+    assert len([r for r in caplog.records if "giving up" in r.getMessage()]) == 1
+    assert (projects / claude_session_move.munge(str(old)) / "sid-open.jsonl").is_file()
+
+
+def test_a_clone_named_user_stops_waiting_for_its_first_carry_after_the_limit(
+        harness, stores, monkeypatch):
+    projects, _sessions = stores
+    root = harness.root
+    old = _legacy(root, "user")
+    _legacy(root, "alpha")
+    _transcript(projects, str(old), "sid1")
+    monkeypatch.setattr(claude_session_move, "relocate", lambda src, dst, **kw: {
+        "moved": [], "pending": ["sid1"], "complete": False})
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert report.blocked and report.moved == []
+    monkeypatch.setattr(canvas_layout, "CARRY_GIVE_UP_S", 0.0)
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert report.moved == ["user", "alpha"] and not report.blocked
+    assert (root / "user" / "user" / "canvas.toml").is_file()

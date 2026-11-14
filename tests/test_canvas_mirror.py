@@ -3,15 +3,15 @@
 `fused workbench canvas mirror` is run as a child, its stderr read for
 progress and its stdout for one JSON document; the outcome is classified from
 the exit. The CLI is test_canvases.py's stub, which speaks the contract's
-output (v1.4). What these pin (the plan's risks):
+output (v1.4). What these pin:
 
-* R9 — a `fused` from before the command: `unsupported`, never spawned
+* a `fused` from before the command: `unsupported`, never spawned
   again, and every status route still answers.
-* R10 — the child never outlives the app, and nothing spawns unless a test
+* the child never outlives the app, and nothing spawns unless a test
   (or the server's startup hook) starts it.
-* R12 — exit 1 with a document is a PARTIAL result, counts kept.
-* R13 — no `fused` at all: the module imports and answers `no_cli`.
-* R8 (the runner's half) — `hold` stops the child and starts one again after.
+* exit 1 with a document is a PARTIAL result, counts kept.
+* no `fused` at all: the module imports and answers `no_cli`.
+* `hold` stops the child and starts one again after.
 """
 import json
 import os
@@ -176,7 +176,7 @@ def test_progress_lines_show_while_the_run_is_in_flight(harness, tmp_path):
 
 
 def test_exit_1_with_a_document_is_a_partial_result_with_its_counts(harness):
-    """R12. A scope whose listing failed is skipped by the command — no pulls
+    """A scope whose listing failed is skipped by the command — no pulls
     and NO removals — and the others ran: not a failed run."""
     harness.log_in()
     harness.set_scenario({"mirror_exit": 1, "mirror_result": _result(
@@ -223,7 +223,7 @@ def test_a_user_with_no_team_is_a_clean_run(harness):
 
 
 def test_a_cli_without_the_command_is_unsupported_and_never_spawned_again(harness):
-    """R9. Exit 2 with click's "No such command": remembered for this CLI,
+    """Exit 2 with click's "No such command": remembered for this CLI,
     and everything else keeps answering."""
     harness.log_in()
     harness.set_scenario({"mirror_unsupported": True})
@@ -381,7 +381,7 @@ def test_a_clone_named_user_in_the_way_stops_the_run_before_it_starts(harness, m
     assert not (harness.root / "team").exists()
 
 
-# -- R13: no CLI at all --------------------------------------------------------
+# -- no CLI at all --------------------------------------------------------
 
 
 def test_no_cli_is_a_state_not_an_error(harness, monkeypatch):
@@ -440,10 +440,17 @@ def test_only_environments_in_use_are_mirrored_on_a_schedule(harness, monkeypatc
     assert canvas_mirror.eligible(OTHER_ENV, scheduled=False) == (True, None)
     assert canvas_mirror.eligible_envs() == [ENV]
     assert canvas_mirror.kick(OTHER_ENV, "timer") == {"started": False, "reason": "not_in_use"}
-    # A folder under its `user/`...
-    (harness.base / OTHER_ENV / "user" / "beta").mkdir(parents=True)
+    # A CLONE under its `user/`. Not any folder: the command itself fills
+    # `user/` with reference copies of the account's own canvases, and one
+    # run would then keep the environment mirrored for good.
+    beta = harness.base / OTHER_ENV / "user" / "beta"
+    beta.mkdir(parents=True)
+    (beta / "canvas.toml").write_text("")
+    (beta / canvas_marker.MARKER_NAME).write_text(json.dumps({"sync": "mirror"}))
+    assert canvas_mirror.eligible(OTHER_ENV) == (False, "not_in_use")
+    (beta / canvas_marker.MARKER_NAME).unlink()
     assert canvas_mirror.eligible(OTHER_ENV) == (True, None)
-    (harness.base / OTHER_ENV / "user" / "beta").rmdir()
+    (beta / "canvas.toml").unlink()
     assert canvas_mirror.eligible(OTHER_ENV) == (False, "not_in_use")
     # ...or its catalog listed this session.
     assert harness.client.get(f"/api/canvases/list?env={OTHER_ENV}",
@@ -514,7 +521,7 @@ def test_the_canvases_status_carries_the_root_and_a_compact_mirror(harness, monk
     assert harness.client.get("/api/canvases/status").json()["envs"][ENV]["mirror"] is None
 
 
-# -- R10: nothing spawns unless started, nothing outlives the app --------------
+# -- nothing spawns unless started, nothing outlives the app --------------
 
 
 def test_nothing_runs_the_command_unless_something_starts_it(harness):
@@ -666,7 +673,7 @@ def test_logout_stops_a_run_on_that_sign_in(harness, tmp_path, monkeypatch):
     assert (harness.root / "user").is_dir()             # the folders stay
 
 
-# -- R8: holds -----------------------------------------------------------------
+# -- holds -----------------------------------------------------------------
 
 
 def test_hold_stops_the_run_and_starts_one_again_afterwards(harness, tmp_path, monkeypatch):
@@ -728,3 +735,267 @@ def test_no_run_starts_while_a_moved_clone_named_like_a_scope_is_owed_its_carry(
     assert _mirror_calls(harness) == [] and not (harness.root / "team").exists()
     monkeypatch.setattr(canvas_layout, "owed_scope_names", lambda env: [])
     assert canvas_mirror.run_once(ENV).state == "ok"
+
+
+# -- a clone still where the reference canvases go ------------------------------
+
+
+@pytest.mark.parametrize("name", ["team", "public"])
+@pytest.mark.parametrize("why", ["deferred", "conflict"])
+def test_no_run_while_a_clone_named_like_a_scope_folder_is_still_at_its_old_path(
+        harness, monkeypatch, name, why):
+    """A clone of a canvas literally named `team` still at `<env>/team` (a
+    session is in it, or something else sits at `user/team`): the command
+    would write every team canvas INTO that clone, and its sync would
+    publish them as the user's edits."""
+    from fused_render import claude_session_move
+
+    harness.log_in()
+    clone = harness.root / name
+    clone.mkdir(parents=True)
+    (clone / "canvas.toml").write_text("")
+    if why == "deferred":
+        monkeypatch.setattr(claude_session_move, "held_sessions", lambda root: ["sid-live"])
+    else:
+        other = harness.clones / name
+        other.mkdir(parents=True)
+        (other / "canvas.toml").write_text("")
+    status = canvas_mirror.run_once(ENV)
+    assert status.state == "failed" and repr(name) in status.error
+    assert str(clone) in status.error and "user/" in status.error
+    assert _mirror_calls(harness) == []
+    assert sorted(os.listdir(clone)) == ["canvas.toml"]
+    key = "deferred" if why == "deferred" else "conflicts"
+    assert name in canvas_layout.pending(ENV)[key]
+    # Once it has moved, the run goes ahead.
+    if why == "deferred":
+        monkeypatch.setattr(claude_session_move, "held_sessions", lambda root: [])
+        canvas_layout.reset()
+        assert canvas_mirror.run_once(ENV).state == "ok"
+        assert (harness.clones / name / "canvas.toml").is_file()
+
+
+# -- a CLI that is a launcher --------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_stopping_a_run_reaches_the_command_behind_a_launcher(harness, tmp_path, monkeypatch):
+    """FUSED_RENDER_FUSED_BIN may be a compound command (`uv run fused`): the
+    child is a launcher and the command is ITS child. A hold must stop the
+    command, not just the launcher, and clear the lock the command held
+    (which names the command's pid, not the launcher's)."""
+    import stat
+
+    harness.log_in()
+    launcher = tmp_path / "launcher.sh"
+    launcher.write_text(f'#!/bin/sh\n"{sys.executable}" "{tmp_path / "fused_stub.py"}" "$@"\n')
+    launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("FUSED_RENDER_FUSED_BIN", f'"{launcher}"')
+    monkeypatch.setattr(canvas_mirror, "STOP_GRACE_S", 0.3)
+    started = _slow(harness, tmp_path, mirror_ignore_signals=["INT", "TERM"])
+    assert canvas_mirror.kick(ENV, "manual", force=True)["started"] is True
+    command = _wait_started(started)
+    assert json.loads((harness.root / ".mirror.lock").read_text())["pid"] == command
+    try:
+        with canvas_mirror.hold(ENV):
+            assert not _alive(command)
+            assert not (harness.root / ".mirror.lock").exists()
+            harness.set_scenario({})
+        assert _wait_for(lambda: canvas_mirror.status(ENV)["state"] == "ok")   # not "busy"
+    finally:
+        if _alive(command):
+            os.kill(command, 9)
+
+
+def test_a_dead_holders_lock_is_cleared_and_a_live_ones_is_not(harness):
+    harness.root.mkdir(parents=True)
+    lock = harness.root / ".mirror.lock"
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    lock.write_text(json.dumps({"pid": gone.pid, "started_at": "t", "refreshed_at": "t"}))
+    canvas_mirror._clear_own_lock(ENV, 1)                # not our child's pid, but dead
+    assert not lock.exists()
+    lock.write_text(json.dumps({"pid": os.getpid(), "started_at": "t", "refreshed_at": "t"}))
+    canvas_mirror._clear_own_lock(ENV, 1)                # alive: someone's run
+    assert lock.exists()
+    lock.write_text(json.dumps({"pid": "12", "started_at": "t"}))
+    canvas_mirror._clear_own_lock(ENV, 12)
+    assert lock.exists()
+
+
+# -- the stop ladder -----------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_an_interrupt_comes_first_so_the_command_can_unwind(harness, tmp_path, monkeypatch):
+    """The command releases its lock and cleans its work folders on an
+    interrupt. A terminate first would never give it the chance."""
+    harness.log_in()
+    monkeypatch.setattr(canvas_mirror, "STOP_GRACE_S", 2.0)
+    interrupted = tmp_path / "interrupted"
+    started = _slow(harness, tmp_path, mirror_interrupted_file=str(interrupted))
+    canvas_mirror.kick(ENV, "manual", force=True)
+    pid = _wait_started(started)
+    began = time.monotonic()
+    with canvas_mirror.hold(ENV):
+        assert not _alive(pid)
+        assert interrupted.read_text() == "interrupted"
+        assert time.monotonic() - began < 2.0            # no escalation was needed
+        harness.set_scenario({})
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("ignored", [["INT"], ["INT", "TERM"]])
+def test_a_command_that_does_not_stop_is_terminated_then_killed(
+        harness, tmp_path, monkeypatch, ignored):
+    """With downloads in flight the real command can sit through the
+    interrupt's grace. Each step that is ignored is followed by the next."""
+    harness.log_in()
+    monkeypatch.setattr(canvas_mirror, "STOP_GRACE_S", 0.4)
+    started = _slow(harness, tmp_path, mirror_ignore_signals=ignored)
+    canvas_mirror.kick(ENV, "manual", force=True)
+    pid = _wait_started(started)
+    began = time.monotonic()
+    with canvas_mirror.hold(ENV):
+        waited = time.monotonic() - began
+        assert not _alive(pid)
+        assert not (harness.root / ".mirror.lock").exists()
+        assert waited >= 0.4 * len(ignored) - 0.1        # it took the escalation
+        harness.set_scenario({})
+
+
+def test_a_hold_that_arrives_before_the_command_is_spawned_prevents_the_spawn(
+        harness, monkeypatch):
+    """The run is still moving old clones (no child yet) when a clone, rename
+    or delete takes the hold. The child must never be started after that:
+    it would run THROUGH the hold."""
+    import threading
+
+    harness.log_in()
+    in_layout, release = threading.Event(), threading.Event()
+    real = canvas_layout.ensure_layout
+
+    def slow_layout(env, **kw):
+        in_layout.set()
+        release.wait(10)
+        return real(env, **kw)
+
+    monkeypatch.setattr(canvas_layout, "ensure_layout", slow_layout)
+    monkeypatch.setattr(canvas_mirror, "HOLD_WAIT_S", 0.3)
+    assert canvas_mirror.kick(ENV, "timer", force=True)["started"] is True
+    assert in_layout.wait(5)
+    with canvas_mirror.hold(ENV):                        # gives up waiting after 0.3 s
+        release.set()                                    # ...and only then the run goes on
+        assert _wait_for(lambda: ENV not in canvas_mirror._runs)
+        assert _mirror_calls(harness) == []
+    # The run that was stopped is made up for after the hold.
+    assert _wait_for(lambda: len(_mirror_calls(harness)) == 1)
+
+
+# -- shutdown ------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_shutdown_signals_every_child_before_waiting_and_keeps_to_its_budget(
+        harness, tmp_path, monkeypatch):
+    """Two environments running, neither stopping on an interrupt or a
+    terminate: the quit rung has a few seconds for everything. Both are dead
+    and both locks gone within the budget — not one ladder per child."""
+    harness.log_in()
+    canvas_mirror.note_listed(OTHER_ENV)
+    monkeypatch.setattr(canvas_mirror, "STOP_GRACE_S", 5.0)
+    harness.set_scenario({"mirror_delay": 60, "mirror_lock": True,
+                          "mirror_ignore_signals": ["INT", "TERM"]})
+    for env in (ENV, OTHER_ENV):
+        assert canvas_mirror.kick(env, "manual", force=True)["started"] is True
+    locks = [harness.base / env / ".mirror.lock" for env in (ENV, OTHER_ENV)]
+    assert _wait_for(lambda: all(lock.exists() for lock in locks))
+    pids = [json.loads(lock.read_text())["pid"] for lock in locks]
+    began = time.monotonic()
+    canvas_mirror.shutdown(budget_s=1.0)
+    assert time.monotonic() - began < 3.0
+    assert not any(_alive(pid) for pid in pids)
+    assert not any(lock.exists() for lock in locks)
+
+
+def test_a_timer_tick_caught_by_shutdown_starts_nothing(harness, monkeypatch):
+    """The lifespan's shutdown does not latch (a later app may start again).
+    A tick that was already past its own stop check must still not register
+    a run after it: the check is made again under the lock shutdown sets
+    the stop flag under."""
+    import threading
+
+    harness.log_in()
+    stop = threading.Event()
+    assert canvas_mirror.kick(ENV, "timer", guard=stop)["started"] is True
+    assert _wait_for(lambda: canvas_mirror.status(ENV)["state"] == "ok")
+    monkeypatch.setattr(canvas_mirror, "INTERVAL_S", 0.0)
+    stop.set()
+    assert canvas_mirror.kick(ENV, "timer", guard=stop) == {
+        "started": False, "reason": "shutting_down"}
+    assert len(_mirror_calls(harness)) == 1
+    # shutdown sets the timer's own flag, and without a latch a later kick works.
+    monkeypatch.setattr(canvas_mirror, "STARTUP_DELAY_S", 3600.0)
+    canvas_mirror.start()
+    timer_stop = canvas_mirror._timer_stop
+    canvas_mirror.shutdown(latch=False)
+    assert timer_stop.is_set()
+    assert canvas_mirror.kick(ENV, "timer", guard=timer_stop)["reason"] == "shutting_down"
+    assert canvas_mirror.kick(ENV, "manual", force=True)["started"] is True
+
+
+# -- smaller rules -------------------------------------------------------------
+
+
+def test_a_sign_in_refreshes_whatever_the_age_of_the_last_result(harness, monkeypatch):
+    """The last result may be the account that just signed out's."""
+    harness.log_in()
+    assert canvas_mirror.run_once(ENV).state == "ok"
+    monkeypatch.setattr(canvas_mirror, "STARTUP_DELAY_S", 3600.0)
+    canvas_mirror.start()
+    assert canvas_mirror.kick(ENV, "timer") == {"started": False, "reason": "fresh"}
+    canvas_mirror.signed_in(str(harness.creds))
+    assert _wait_for(lambda: len(_mirror_calls(harness)) == 2)
+    # Still only the environments in use (prod and unstable share the store).
+    time.sleep(0.2)
+    assert _mirror_calls(harness) == [[*MIRROR_ARGV, str(harness.root)]] * 2
+
+
+def test_a_cli_without_the_command_leaves_no_folders_and_no_status_file(harness):
+    harness.log_in()
+    harness.set_scenario({"mirror_unsupported": True})
+    assert canvas_mirror.run_once(ENV).state == "unsupported"
+    assert not harness.root.exists()
+    assert canvas_mirror.status(ENV)["state"] == "unsupported"
+    # Folders that were there before the run are not removed with the rest.
+    canvas_mirror.reset()
+    (harness.root / "user" / "alpha").mkdir(parents=True)
+    assert canvas_mirror.run_once(ENV).state == "unsupported"
+    assert sorted(p.name for p in harness.root.iterdir()) == ["user"]
+
+
+def test_the_command_swapping_a_folder_is_not_a_listing_error(harness, tmp_path):
+    """The real command replaces a copy by renaming the old one aside and the
+    new one in: for a moment `user/<name>` is not there. Every reader here
+    takes that as "no such folder", never as an error."""
+    harness.log_in()
+    folder = harness.clones / "alpha"
+    folder.mkdir(parents=True)
+    (folder / "canvas.toml").write_text("")
+    (folder / "a.py").write_text("old\n")
+    (folder / canvas_marker.MARKER_NAME).write_text(json.dumps(
+        {"version": 1, "sync": "mirror", "scope": "user", "id": "c", "name": "alpha"}))
+    started = tmp_path / "started"
+    harness.set_scenario({"mirror_started_file": str(started), "mirror_swap_gap": 1.0,
+                          "mirror_swap": [{"path": "user/alpha", "files": {"a.py": "new\n"}}]})
+    canvas_mirror.kick(ENV, "manual", force=True)
+    _wait_started(started)
+    assert _wait_for(lambda: not folder.exists())
+    assert canvases_mod._cloned_names(ENV) == set()
+    assert canvases_mod._is_live_clone(ENV, "alpha") is False
+    assert canvas_marker.folder_state(str(folder)) == "missing"
+    assert harness.client.get("/api/canvases/status").status_code == 200
+    assert harness.client.get("/api/canvases/list?env=unstable", headers=GUARD).status_code == 200
+    assert _wait_for(lambda: canvas_mirror.status(ENV)["state"] == "ok")
+    assert (folder / "a.py").read_text() == "new\n"
+    assert [p.name for p in harness.clones.iterdir()] == ["alpha"]

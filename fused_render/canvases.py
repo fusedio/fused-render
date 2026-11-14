@@ -669,10 +669,7 @@ def _is_live_clone(env: str, name: str) -> bool:
     rewrite. The mirror command extracts into a dot-prefixed sibling and
     writes the marker last, so a plain folder without one is never a
     half-written reference copy."""
-    folder = _canvas_dir(env, name)
-    return (os.path.isfile(os.path.join(folder, "canvas.toml"))
-            and canvas_marker.sync_of(folder) != canvas_marker.SYNC_MIRROR
-            and not os.path.lexists(_adopting_path(env, name)))
+    return canvas_marker.is_clone(_canvas_dir(env, name))
 
 
 def _adopting_path(env: str, name: str) -> str:
@@ -687,8 +684,10 @@ def _adopting_path(env: str, name: str) -> str:
     them as its clean baseline and could later push them over a newer server
     state. While the flag exists the folder is not a clone (`_is_live_clone`):
     the catalog says "not cloned", so opening the canvas clones it again, and
-    only a pull that lands clears the flag."""
-    return os.path.join(canvases_root(env), ".sync", f"{name}.adopting")
+    only a pull that lands clears the flag. The path is
+    `canvas_marker.adopting_path`'s, the one `canvas_marker.folder_state`
+    reads — the single place "is this folder a clone?" is decided."""
+    return canvas_marker.adopting_path(_canvas_dir(env, name))
 
 
 def _ensure_layout(env: str, *, force: bool = False):
@@ -1062,7 +1061,7 @@ def _watch_login(login: _ActiveLogin) -> None:
 
             canvas_mirror.signed_in(login.store)
         except Exception:  # noqa: BLE001 — never out of a helper thread
-            logger.debug("canvas mirror kick after login failed", exc_info=True)
+            logger.warning("canvas mirror kick after login failed", exc_info=True)
 
 
 def _status_auth_env(env: str) -> str:
@@ -1238,6 +1237,9 @@ def _layout_pending(env: str) -> dict:
     return canvas_layout.pending(env)
 
 
+_MIRROR_SUMMARY_WARNED = False
+
+
 def _mirror_summary(env: str) -> dict | None:
     """canvas_mirror.summary(env), or None if it cannot be had: the status
     route must answer whatever state the mirror runner is in. Imported
@@ -1247,7 +1249,12 @@ def _mirror_summary(env: str) -> dict | None:
 
         return canvas_mirror.summary(env)
     except Exception:  # noqa: BLE001 — informational, never a failed status
-        logger.debug("canvas mirror summary failed for %s", env, exc_info=True)
+        # WARNING, with the traceback: a bug here is otherwise invisible (the
+        # page just shows no chip). Once per process, since status is polled.
+        global _MIRROR_SUMMARY_WARNED
+        if not _MIRROR_SUMMARY_WARNED:
+            _MIRROR_SUMMARY_WARNED = True
+            logger.warning("canvas mirror summary failed for %s", env, exc_info=True)
         return None
 
 
@@ -1356,7 +1363,7 @@ def in_reference_copy(path: str) -> bool:
                     if parts[0] != _CLONES_SCOPE:
                         return True
                     folder = os.path.join(base, parts[0], parts[1])
-                    if canvas_marker.sync_of(folder) == canvas_marker.SYNC_MIRROR:
+                    if canvas_marker.is_reference(folder):
                         return True
     except (OSError, ValueError):
         return False
@@ -2707,12 +2714,14 @@ def _clone(env: str, name: str):
     target = _canvas_dir(env, name)
     from fused_render import canvas_layout, canvas_mirror
 
-    if name in report.moved or canvas_layout.moved_recently(env, name):
+    if (name in report.moved or canvas_layout.moved_recently(env, name)) \
+            and _is_live_clone(env, name):
         # The clone arrived from its old path on THIS call — or minutes ago,
         # on another path's pass, with this page's card still saying "not
         # cloned" — with whatever was unpublished in it. That is the answer;
         # a `pull --force` now would replace the user's work with the
-        # server's copy.
+        # server's copy. Only while the folder IS that clone: one deleted
+        # since, with a reference copy now at its path, is opened like any.
         return {"ok": True, "dir": target}
     # No mirror run of ours swaps or deletes a folder under `user/` while
     # this one is adopted and pulled (canvas_mirror.hold; a run in another
@@ -2721,10 +2730,72 @@ def _clone(env: str, name: str):
         return _clone_held(env, name, target)
 
 
-def _adopt_reference_copy(env: str, name: str) -> tuple[str | None, JSONResponse | None]:
+@dataclasses.dataclass
+class _Adoption:
+    """What `_adopt_reference_copy` decided for one clone request."""
+
+    #: The collection id to mark the folder with after the pull, if known.
+    collection_id: str | None = None
+    #: The 409/500 to answer with instead of pulling.
+    refusal: JSONResponse | None = None
+    #: Set when THIS call took a reference copy over: its marker's bytes and
+    #: its files' fingerprint, so a pull that fails without touching the
+    #: folder can hand it back (`_return_reference_copy`).
+    marker: bytes | None = None
+    fingerprint: dict | None = None
+
+
+def _folder_fingerprint(folder: str) -> dict:
+    """{relative path: (size, mtime_ns)} of the non-dot files under `folder`."""
+    out = {}
+    for dirpath, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for f in files:
+            if f.startswith("."):
+                continue
+            path = os.path.join(dirpath, f)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            out[os.path.relpath(path, folder)] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def _return_reference_copy(env: str, name: str, adoption: _Adoption) -> bool:
+    """A pull into a reference copy this call had just taken over FAILED.
+    If it left the folder exactly as it was, give the copy back to the
+    mirror command: its own marker restored, the adoption flag cleared.
+
+    Without this a canvas that can no longer be pulled — deleted on the
+    server, most of all — keeps a live-marked folder and a flag for good:
+    never a clone (the flag), never removed (the command leaves `live`
+    alone). Handed back, the next mirror run refreshes or removes it, and
+    the next open adopts it again. Only when nothing changed: a pull that
+    wrote some files leaves the folder ours and flagged, and the next open
+    pulls again."""
+    target = _canvas_dir(env, name)
+    if adoption.marker is None or _folder_fingerprint(target) != adoption.fingerprint:
+        return False
+    path = canvas_marker.marker_path(target)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(adoption.marker)
+        os.replace(tmp, path)
+    except OSError:
+        _unlink_quiet(tmp)
+        return False
+    _unlink_quiet(_adopting_path(env, name))
+    logger.info("canvas %s: pull failed; %s is a reference copy again",
+                _sync_key(env, name), target)
+    return True
+
+
+def _adopt_reference_copy(env: str, name: str) -> _Adoption:
     """Before a clone's pull: if canvas `name`'s folder is a reference copy
-    (marker `mirror`), make it ours FIRST. `(collection id or None, refusal
-    or None)`; the caller holds the clone gate and `canvas_mirror.hold(env)`.
+    (marker `mirror`), make it ours FIRST. The caller holds the clone gate
+    and `canvas_mirror.hold(env)`.
 
     The order is the crash-safe one. (1) The adoption flag (`_adopting_path`):
     from here the folder is not a clone until a pull lands, so its possibly
@@ -2741,8 +2812,13 @@ def _adopt_reference_copy(env: str, name: str) -> tuple[str | None, JSONResponse
     free, by collection id under another folder name in `user/` (the mirror's
     collision suffix, a canvas renamed since it was mirrored): that folder
     is renamed into place. Only `user/` is ever looked in — `team/` and
-    `public/` copies are never adopted. A path taken by something that is
-    neither a clone nor a reference copy refuses the clone."""
+    `public/` copies are never adopted.
+
+    A path taken by something that is neither a clone nor a reference copy
+    refuses the clone (409 `exists`), whether or not a copy of the canvas
+    sits elsewhere: a non-empty folder with no `canvas.toml` and no live
+    marker, a file, a link to a file. `pull --force` would delete what is in
+    it. An empty folder, and a folder this code marked live, are ours."""
     from fused_render import canvas_layout
 
     scope_dir = clones_root(env)
@@ -2750,40 +2826,53 @@ def _adopt_reference_copy(env: str, name: str) -> tuple[str | None, JSONResponse
     flag = _adopting_path(env, name)
     listed_id = canvas_layout.known_collection_id(env, name)
     is_mirror = canvas_marker.sync_of(target) == canvas_marker.SYNC_MIRROR
+    foreign = JSONResponse(
+        {"error": f"a folder that is not a canvas already exists at {target}; "
+                  "move or remove it, then open the canvas again",
+         "code": "exists"}, status_code=409)
+    original = None
     if not is_mirror:
         current = canvas_marker.read(target)
         if os.path.lexists(flag) or _is_live_clone(env, name):
             # An adoption whose pull has not landed yet (pull again), or a
             # clone (the re-clone this route has always been).
-            return listed_id or (current.id if current is not None else None), None
-        source = canvas_marker.find_by_id(scope_dir, listed_id) if listed_id else None
-        if source is None or not canvas_marker.removable_mirror(source, scope_dir):
-            return listed_id, None  # nothing to adopt: a plain first clone
+            return _Adoption(listed_id or (current.id if current is not None else None))
+        empty = False
         if os.path.lexists(target):
             try:
-                if os.path.islink(target):
-                    raise OSError("a link")
+                empty = (os.path.isdir(target) and not os.path.islink(target)
+                         and not os.listdir(target))
+            except OSError:
+                empty = False
+            if not empty and canvas_marker.folder_state(target) != canvas_marker.STATE_LIVE:
+                return _Adoption(refusal=foreign)
+        source = canvas_marker.find_by_id(scope_dir, listed_id) if listed_id else None
+        if source is None or not canvas_marker.removable_mirror(source, scope_dir):
+            return _Adoption(listed_id)  # nothing to adopt: a plain first clone
+        if os.path.lexists(target):
+            try:
                 os.rmdir(target)  # an empty folder holds nothing to lose
             except OSError:
-                return None, JSONResponse(
-                    {"error": f"a folder that is not a canvas already exists at {target}; "
-                              "move or remove it, then open the canvas again",
-                     "code": "exists"}, status_code=409)
+                return _Adoption(refusal=foreign)
     elif (os.path.islink(target)
           or os.path.dirname(os.path.realpath(target)) != os.path.realpath(scope_dir)):
-        return None, JSONResponse(
+        return _Adoption(refusal=JSONResponse(
             {"error": f"the folder at {target} is a link to somewhere else; "
                       "remove it, then open the canvas again", "code": "exists"},
-            status_code=409)
+            status_code=409))
     try:
         os.makedirs(os.path.dirname(flag), exist_ok=True)
         with open(flag, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
         if not is_mirror:
             os.rename(source, target)
+        with open(canvas_marker.marker_path(target), "rb") as f:
+            original = f.read()
     except OSError as exc:
         _unlink_quiet(flag)
-        return None, _error(f"could not prepare the canvas folder {target}: {exc}", 500)
+        return _Adoption(refusal=_error(
+            f"could not prepare the canvas folder {target}: {exc}", 500))
+    fingerprint = _folder_fingerprint(target)
     marker = canvas_marker.read(target)
     cid = listed_id or (marker.id if marker is not None else None)
     cli = fused_cli()
@@ -2797,9 +2886,10 @@ def _adopt_reference_copy(env: str, name: str) -> tuple[str | None, JSONResponse
         except FileNotFoundError:
             pass
         except OSError as exc:
-            return None, _error(f"could not take over the canvas folder {target}: {exc}", 500)
+            return _Adoption(refusal=_error(
+                f"could not take over the canvas folder {target}: {exc}", 500))
     logger.info("canvas %s: adopting the reference copy at %s", _sync_key(env, name), target)
-    return cid, None
+    return _Adoption(cid, marker=original, fingerprint=fingerprint)
 
 
 def _unlink_quiet(path: str) -> None:
@@ -2810,9 +2900,10 @@ def _unlink_quiet(path: str) -> None:
 
 
 def _clone_held(env: str, name: str, target: str):
-    collection_id, refusal = _adopt_reference_copy(env, name)
-    if refusal is not None:
-        return refusal
+    adoption = _adopt_reference_copy(env, name)
+    if adoption.refusal is not None:
+        return adoption.refusal
+    collection_id = adoption.collection_id
     os.makedirs(target, exist_ok=True)
     # --force: the clone folder is OURS (under ~/Fused/canvas/<env>/user); a
     # re-clone deliberately resets it to the remote state. The sync watcher is
@@ -2834,6 +2925,8 @@ def _clone_held(env: str, name: str, target: str):
         # ...and the marker with it (a CLI older than the mirror contract
         # deletes it too): the folder is this process's live clone.
         _mark_live(env, name, collection_id)
+    else:
+        _return_reference_copy(env, name, adoption)
     if manager is not None:
         # Only adopt the pulled content as the clean baseline on success — a
         # failed pull leaves the folder as it was, so any local edits pending
@@ -7279,8 +7372,8 @@ def _rename_held(env: str, name: str, new: str):
     # A reference copy at the old name (marker `mirror`) is not a clone:
     # nothing of ours to move, the server rename alone runs, and the next
     # mirror run writes the copy under the new name and removes this one.
-    has_clone = (os.path.isdir(clone)
-                 and canvas_marker.sync_of(clone) != canvas_marker.SYNC_MIRROR)
+    has_clone = canvas_marker.folder_state(clone) not in (
+        canvas_marker.STATE_MISSING, canvas_marker.STATE_MIRROR)
     if has_clone:
         from fused_render import claude_session_move
 
@@ -7354,8 +7447,16 @@ def _rename_held(env: str, name: str, new: str):
                 # removable reference copy is removed, never one something
                 # made a clone of in the meantime (then the move fails, and
                 # the server rename is rolled back below).
-                if not case_only and canvas_marker.removable_mirror(target, root):
-                    shutil.rmtree(target)
+                # Renamed aside before it is deleted (`remove_mirror`): a
+                # delete that failed halfway must not leave a folder with a
+                # `canvas.toml` and no marker at the new path.
+                if not case_only:
+                    canvas_marker.remove_mirror(target, root)
+                # A flag left under the NEW name belongs to no folder (the
+                # copy just removed, or one long gone); kept, it would make
+                # the renamed clone read "not cloned".
+                # (The clone's OWN flag, if its adoption is still pending,
+                # follows it with the other `.sync` leftovers below.)
                 _unlink_quiet(_adopting_path(env, new))
                 os.rename(clone, target)
             except OSError as exc:

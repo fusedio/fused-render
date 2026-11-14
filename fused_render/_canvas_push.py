@@ -240,12 +240,14 @@ def _locate(path: str) -> dict | None:
 
 
 def _is_mirror(folder: str) -> bool:
-    """Whether `folder`'s marker says it is a reference copy. The one import
+    """Whether `folder` holds a reference copy's files — the mirror command's
+    own, or one whose adoption has not been pulled yet
+    (`canvas_marker.is_reference`, the reading the server uses). The one import
     of this module beyond the standard library: canvas_marker is stdlib-only
     itself, and only a command aimed at `user/<name>` ever gets here."""
     from fused_render import canvas_marker
 
-    return canvas_marker.sync_of(folder) == canvas_marker.SYNC_MIRROR
+    return canvas_marker.is_reference(folder)
 
 
 def _clone_name(source_dir: str) -> tuple[str, str] | None:

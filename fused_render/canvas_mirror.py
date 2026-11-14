@@ -104,6 +104,7 @@ HOLD_WAIT_S = 10.0
 #: starts with a dot.
 STATUS_NAME = ".mirror.json"
 LOCK_NAME = ".mirror.lock"
+LOCK_PID_FIELD = "pid"
 _STATUS_VERSION = 1
 _STDERR_TAIL = 20
 
@@ -113,7 +114,16 @@ STATES = ("idle", "running", "ok", "partial", "failed", "unsupported", "auth",
 _GOOD_STATES = ("ok", "partial")
 COUNT_KEYS = ("pulled", "updated", "unchanged", "removed", "live", "unmanaged", "failed")
 
+# What this module copies from the CLI, in one place (a test checks each
+# against the installed `fused` when it has the command): the progress line
+# (`[12/340] pulled public/Some_Canvas`), the words of its "another run holds
+# this root" error, click's unknown-command error and exit code, and the exit
+# code of a partial result.
 _PROGRESS_RE = re.compile(r"^\[(\d+)/(\d+)\]\s+(\S+)\s+(.+)$")
+BUSY_NEEDLE = "another canvas mirror run is using"
+NO_COMMAND_NEEDLE = "no such command"
+EXIT_PARTIAL = 1
+EXIT_USAGE = 2
 
 
 def _zero_counts() -> dict:
@@ -266,12 +276,14 @@ def _load(env: str) -> MirrorStatus:
         return _last.setdefault(path, status)
 
 
-def _save(status: MirrorStatus) -> None:
-    """Keep `status` as `env`'s last result, in memory and on disk (atomic;
-    a file that cannot be written leaves the memory copy)."""
+def _save(status: MirrorStatus, *, persist: bool = True) -> None:
+    """Keep `status` as `env`'s last result, in memory and (`persist`) on
+    disk (atomic; a file that cannot be written leaves the memory copy)."""
     path = _status_path(status.env)
     with _LOCK:
         _last[path] = status
+    if not persist:
+        return
     record = {"version": _STATUS_VERSION, **dataclasses.asdict(status)}
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
@@ -292,12 +304,15 @@ def note_listed(env: str) -> None:
         _listed.add(env)
 
 
-def _has_user_folder(env: str) -> bool:
+def _has_clone(env: str) -> bool:
+    """Whether `env` holds at least one CLONE. Not any folder under `user/`:
+    the command itself fills that with reference copies of the account's own
+    canvases, and one run would then keep the environment "in use" for good."""
     try:
-        with os.scandir(canvases.clones_root(env)) as entries:
-            return any(e.is_dir() and not e.name.startswith(".") for e in entries)
+        names = os.listdir(canvases.clones_root(env))
     except OSError:
         return False
+    return any(canvases._NAME_RE.match(n) and canvases._is_live_clone(env, n) for n in names)
 
 
 def eligible(env: str, *, scheduled: bool = True) -> tuple[bool, str | None]:
@@ -306,8 +321,8 @@ def eligible(env: str, *, scheduled: bool = True) -> tuple[bool, str | None]:
     Always: a CLI that has the command, a sign-in for the environment, a
     configured settings file for `custom`, and the environment not locked
     out by a FUSED_RENDER_WORKBENCH_ENV pin. `scheduled` runs also need the
-    environment to be IN USE — it is the default one, or holds a folder
-    under `user/`, or its catalog was listed this session."""
+    environment to be IN USE — it is the default one, or holds a clone, or
+    its catalog was listed this session."""
     cli = canvases.fused_cli()
     if cli is None:
         return False, "no_cli"
@@ -324,7 +339,7 @@ def eligible(env: str, *, scheduled: bool = True) -> tuple[bool, str | None]:
     if scheduled:
         with _LOCK:
             listed = env in _listed
-        if not (env == workbench_env() or listed or _has_user_folder(env)):
+        if not (env == workbench_env() or listed or _has_clone(env)):
             return False, "not_in_use"
     return True, None
 
@@ -377,35 +392,98 @@ def _argv(cli, env: str) -> list[str]:
             "--output", _root(env)]
 
 
+_POSIX = os.name != "nt"
+
+
+def _spawn_kwargs() -> dict:
+    """The child gets a process group of its own (POSIX): the CLI may be a
+    launcher (`uv run fused`, a shell wrapper) whose child is the command,
+    and a signal sent to the launcher alone leaves the command running, with
+    the root's lock. `_signal` then reaches the whole group."""
+    return {"start_new_session": True} if _POSIX else {}
+
+
+def _signal(proc: subprocess.Popen, sig: int | None) -> None:
+    """Send `sig` to the child's whole process group (POSIX), or terminate /
+    kill the child itself (Windows; `sig` None means kill). Never raises."""
+    try:
+        if _POSIX:
+            os.killpg(proc.pid, sig if sig is not None else signal.SIGKILL)
+        elif sig is None:
+            proc.kill()
+        else:
+            proc.terminate()
+    except (OSError, ValueError):
+        pass  # already gone
+
+
+def _stop_steps() -> list:
+    """Interrupt, terminate, kill. An interrupt lets the command unwind and
+    drop its lock; the rest is for one that does not."""
+    if _POSIX:
+        return [signal.SIGINT, signal.SIGTERM, None]
+    return [signal.SIGTERM, None]
+
+
 def _stop_child(proc: subprocess.Popen) -> None:
-    """Interrupt, terminate, kill — each given `STOP_GRACE_S`. An interrupt
-    lets the command unwind and drop its lock; the rest is for one that does
-    not. Never raises."""
-    steps = [proc.terminate, proc.kill]
-    if os.name != "nt":
-        steps.insert(0, lambda: proc.send_signal(signal.SIGINT))
-    for step in steps:
+    """Stop the child and everything it started: each of `_stop_steps` given
+    `STOP_GRACE_S`. Never raises."""
+    for sig in _stop_steps():
         if proc.poll() is not None:
-            return
+            break
+        _signal(proc, sig)
         try:
-            step()
             proc.wait(timeout=STOP_GRACE_S)
         except subprocess.TimeoutExpired:
             continue
-        except OSError:
-            return
+    # The launcher may be gone while the command it started is not.
+    _signal(proc, None)
+
+
+def _pid_alive(pid) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # alive, not ours to signal
+    # A killed process nobody has reaped yet still answers the probe.
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as f:
+            return f.read().rsplit(")", 1)[-1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
 
 
 def _clear_own_lock(env: str, pid: int) -> None:
-    """Remove `<root>/.mirror.lock` when it names `pid` — a child of ours that
-    is gone and could not release it. Anyone else's lock is left alone."""
+    """After a run of OURS on this root was stopped: remove
+    `<root>/.mirror.lock` when it names `pid` (the child), or a process that
+    no longer exists (the command behind a launcher, killed with its group).
+    It could not release the lock itself, and left there it reads `busy` for
+    an hour. A lock whose holder is alive is someone else's run: left alone."""
     path = os.path.join(_root(env), LOCK_NAME)
     try:
         with open(path, encoding="utf-8") as f:
             record = json.load(f)
-        if isinstance(record, dict) and record.get("pid") == pid:
-            os.remove(path)
     except (OSError, ValueError):
+        return
+    holder = record.get(LOCK_PID_FIELD) if isinstance(record, dict) else None
+    if not isinstance(holder, int) or isinstance(holder, bool):
+        return
+    if holder != pid and _POSIX:
+        # The group was killed a moment ago; give the kernel that moment.
+        deadline = time.monotonic() + 1.0
+        while _pid_alive(holder) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if _pid_alive(holder):
+            return
+    elif holder != pid:
+        return
+    try:
+        os.remove(path)
+    except OSError:
         pass
 
 
@@ -500,12 +578,12 @@ def _classify(env: str, run: _Run, cli, returncode: int | None, stdout: str,
             status_.error = _partial_error(status_.scopes, status_.counts)
         return status_
     lowered = stderr.lower()
-    if returncode == 2 and "no such command" in lowered:
+    if returncode == EXIT_USAGE and NO_COMMAND_NEEDLE in lowered:
         with _LOCK:
             _unsupported.add(_cli_key(cli))
         status_.state = "unsupported"
         status_.error = "this version of Fused has no `canvas mirror`; a newer one is needed"
-    elif "another canvas mirror run is using" in lowered:
+    elif BUSY_NEEDLE in lowered:
         status_.state = "busy"
         status_.error = None
     elif _needs_login(stderr):
@@ -542,10 +620,13 @@ def _read_stdout(proc: subprocess.Popen, sink: list[str]) -> None:
         pass
 
 
-def _begin(env: str, trigger: str) -> _Run | str:
-    """Register a run for `env`, or say why none may start right now."""
+def _begin(env: str, trigger: str, guard: threading.Event | None = None) -> _Run | str:
+    """Register a run for `env`, or say why none may start right now.
+    `guard` is the timer's stop event: checked under the same lock
+    `shutdown` sets it under, so a tick that was already past its own check
+    when the server shut down cannot register a run after it."""
     with _LOCK:
-        if _latched:
+        if _latched or (guard is not None and guard.is_set()):
             return "shutting_down"
         current = _runs.get(env)
         if current is not None and not current.finished.is_set():
@@ -573,8 +654,20 @@ def _execute(run: _Run) -> MirrorStatus:
         # that path, which creating the folder would drop; or the pass
         # failed and nothing is known.
         owed = canvas_layout.owed_scope_names(env)
-        in_the_way = report.blocked or report.error or (
-            f"sessions of canvas {owed[0]!r} are still running" if owed else "")
+        # ...or a clone of a canvas literally named `team` or `public` is
+        # still at `<env>/team` (its move deferred, or in conflict): the
+        # command would write every team canvas INTO the user's clone, and
+        # that clone's sync would publish them as edits.
+        legacy = [n for n in canvas_layout.legacy_clones(env)
+                  if n in canvas_layout.RESERVED_NAMES]
+        in_the_way = report.blocked or report.error
+        if not in_the_way and legacy:
+            in_the_way = (f"canvas {legacy[0]!r} is still cloned at "
+                          f"{os.path.join(_root(env), legacy[0])}, where the reference "
+                          "canvases go; it has to move to user/ first")
+        if not in_the_way and owed:
+            in_the_way = (f"the chat history of canvas {owed[0]!r} is still being "
+                          "moved to its new folder; trying again shortly")
         if in_the_way:
             result = MirrorStatus(env=env, state="failed", trigger=run.trigger,
                                   started_at=run.started_at, finished_at=time.time(),
@@ -584,9 +677,14 @@ def _execute(run: _Run) -> MirrorStatus:
             _save(result)
             return result
         # The agent's argv names all three; the command makes only the ones
-        # it writes into.
-        for scope in canvas_marker.SCOPES:
-            os.makedirs(os.path.join(_root(env), scope), exist_ok=True)
+        # it writes into. Remembered, so a CLI that turns out not to have the
+        # command leaves none of them behind.
+        made = []
+        for folder in (_root(env), *(os.path.join(_root(env), scope)
+                                     for scope in canvas_marker.SCOPES)):
+            if not os.path.isdir(folder):
+                os.makedirs(folder, exist_ok=True)
+                made.append(folder)
         stdout: list[str] = []
         tail: list[str] = []
         timed_out = False
@@ -596,7 +694,7 @@ def _execute(run: _Run) -> MirrorStatus:
             proc = subprocess.Popen(
                 _argv(cli, env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                env=canvases._cli_env(cli, env))
+                env=canvases._cli_env(cli, env), **_spawn_kwargs())
             run.proc = proc
         readers = [threading.Thread(target=_read_stderr, args=(proc, run, tail), daemon=True),
                    threading.Thread(target=_read_stdout, args=(proc, stdout), daemon=True)]
@@ -615,7 +713,15 @@ def _execute(run: _Run) -> MirrorStatus:
             logger.info("canvas mirror %s: run stopped (%s)", env, run.cancelled)
             return _load(env)
         result = _classify(env, run, cli, proc.returncode, "".join(stdout), tail, timed_out)
-        _save(result)
+        if result.state == "unsupported":
+            # Nothing of this feature exists for this CLI: no folders, no
+            # status file (the state is the process's own knowledge).
+            for folder in reversed(made):
+                try:
+                    os.rmdir(folder)
+                except OSError:
+                    pass
+        _save(result, persist=result.state != "unsupported")
         level = logging.INFO if result.state in ("ok", "busy") else logging.WARNING
         logger.log(level, "canvas mirror %s: %s%s", env, result.state,
                    f" ({result.error})" if result.error else "")
@@ -662,23 +768,26 @@ def _run_quietly(run: _Run) -> None:
         logger.warning("canvas mirror %s: run failed", run.env, exc_info=True)
 
 
-def kick(env: str, trigger: str, *, force: bool = False) -> dict:
+def kick(env: str, trigger: str, *, force: bool = False, ignore_age: bool = False,
+         guard: threading.Event | None = None) -> dict:
     """Start a mirror run for `env` on a thread, if one may start:
     `{"started": bool, "reason": str | None}`. Never blocks, never raises.
 
     Without `force` the run is a scheduled one: the environment must be in
     use (`eligible`) and its last good run older than `INTERVAL_S`. `force`
-    (the page's refresh, the run after a hold) skips both."""
+    (the page's refresh, the run after a hold) skips both; `ignore_age`
+    skips only the second (a sign-in: the last result may be another
+    account's, however fresh). `guard`: see `_begin`."""
     try:
         ok, why = eligible(env, scheduled=not force)
         if not ok:
             return {"started": False, "reason": why}
-        if not force:
+        if not force and not ignore_age:
             last = _load(env)
             if (last.state in _GOOD_STATES and last.finished_at is not None
                     and time.time() - last.finished_at < INTERVAL_S):
                 return {"started": False, "reason": "fresh"}
-        run = _begin(env, trigger)
+        run = _begin(env, trigger, guard)
         if isinstance(run, str):
             return {"started": False, "reason": run}
         threading.Thread(target=_run_quietly, args=(run,), daemon=True,
@@ -689,14 +798,14 @@ def kick(env: str, trigger: str, *, force: bool = False) -> dict:
         return {"started": False, "reason": "error"}
 
 
-def kick_if_started(env: str, trigger: str) -> dict:
+def kick_if_started(env: str, trigger: str, *, ignore_age: bool = False) -> dict:
     """`kick`, but only in a process whose mirror was started (`start`): the
     hook for code that runs in every process — a completed sign-in — and must
     not make a lean process or a test spawn the command."""
     with _LOCK:
         if not _started:
             return {"started": False, "reason": "not_started"}
-    return kick(env, trigger)
+    return kick(env, trigger, ignore_age=ignore_age)
 
 
 def _cancel(env: str, reason: str, *, wait: float = HOLD_WAIT_S) -> bool:
@@ -760,7 +869,9 @@ def signed_in(store: str) -> None:
     for env in WORKBENCH_ENV_CHOICES:
         try:
             if canvases.credentials_file(env) == store:
-                kick_if_started(env, "login")
+                # Whatever the last result's age: it may be the account that
+                # just signed OUT's.
+                kick_if_started(env, "login", ignore_age=True)
         except Exception:  # noqa: BLE001
             logger.warning("canvas mirror %s: could not start a run", env, exc_info=True)
 
@@ -781,7 +892,9 @@ def _timer_loop(stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             for env in eligible_envs():
-                kick(env, trigger)
+                if stop.is_set():
+                    return
+                kick(env, trigger, guard=stop)
         except Exception:  # noqa: BLE001 — never out of a helper thread
             logger.warning("canvas mirror: scheduled pass failed", exc_info=True)
         trigger = "timer"
@@ -810,26 +923,56 @@ def start() -> None:
                      name="canvas-mirror-timer").start()
 
 
-def shutdown(*, latch: bool = True) -> None:
-    """Stop the timer and every run in flight (their children terminated,
-    not waited out). `latch` (the quit rung) also refuses every later run;
-    the lifespan caller leaves it off, as `canvases.shutdown` does, so a
-    later app in this process may start again."""
+def shutdown(*, latch: bool = True, budget_s: float | None = None) -> None:
+    """Stop the timer and every run in flight, within `budget_s` (default:
+    the full interrupt/terminate/kill ladder). `latch` (the quit rung) also
+    refuses every later run; the lifespan caller leaves it off, as
+    `canvases.shutdown` does, so a later app in this process may start again.
+
+    EVERY child is signalled before any is waited for, so the wait is one
+    ladder long however many environments are running, and each step is cut
+    to what is left of the budget. Whatever the budget, the last act is a
+    kill of every child's process group and the removal of the lock it could
+    not release — done here, not left to the run's own thread, which a
+    quitting process may never schedule again."""
     global _started, _latched, _timer_stop
     with _LOCK:
         _started = False
         if latch:
             _latched = True
         stop, _timer_stop = _timer_stop, None
-        envs = list(_runs)
+        if stop is not None:
+            stop.set()      # under the lock `_begin` checks it under
+        runs = [r for r in _runs.values() if not r.finished.is_set()]
+        for run in runs:
+            run.cancelled = "shutdown"
         _rekick.clear()
-    if stop is not None:
-        stop.set()
-    for env in envs:
+    children = [(run, run.proc) for run in runs if run.proc is not None]
+    deadline = time.monotonic() + (budget_s if budget_s is not None
+                                   else len(_stop_steps()) * STOP_GRACE_S + 1.0)
+    for sig in _stop_steps():
+        alive = [proc for _run, proc in children if proc.poll() is None]
+        if not alive:
+            break
+        for proc in alive:
+            _signal(proc, sig)
+        step_end = min(deadline, time.monotonic() + STOP_GRACE_S)
+        for proc in alive:
+            try:
+                proc.wait(timeout=max(0.0, step_end - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                pass
+        if time.monotonic() >= deadline:
+            break
+    for run, proc in children:
+        _signal(proc, None)
         try:
-            _cancel(env, "shutdown", wait=3 * STOP_GRACE_S + 1.0)
-        except Exception:  # noqa: BLE001 — quitting
-            logger.warning("canvas mirror %s: could not stop the run", env, exc_info=True)
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+        _clear_own_lock(run.env, proc.pid)
+    for run in runs:
+        run.finished.wait(max(0.0, deadline - time.monotonic()))
 
 
 def refuse_new_runs() -> None:

@@ -271,4 +271,5 @@ def test_the_module_is_stdlib_only():
             imported |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom):
             imported.add((node.module or "").split(".")[0])
-    assert imported <= {"__future__", "dataclasses", "datetime", "json", "os", "threading"}
+    assert imported <= {"__future__", "dataclasses", "datetime", "json", "os", "shutil",
+                        "threading", "uuid"}

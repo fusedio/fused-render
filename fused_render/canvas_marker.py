@@ -223,6 +223,86 @@ def find_by_id(scope_dir: str, collection_id: str) -> str | None:
     return mirror
 
 
+# -- what a folder under `user/` is ----------------------------------------------
+
+#: `folder_state`'s answers.
+STATE_MISSING = "missing"      # no such directory
+STATE_MIRROR = "mirror"        # the mirror command's reference copy
+STATE_ADOPTING = "adopting"    # being turned into a clone, not pulled yet
+STATE_LIVE = "live"            # marked live
+STATE_UNMARKED = "unmarked"    # no readable marker
+
+
+def adopting_path(folder: str) -> str:
+    """The adoption flag of canvas folder `<root>/<scope>/<name>`:
+    `<root>/.sync/<name>.adopting`. It exists from the moment a reference
+    copy is taken over until a pull has landed in it (canvases.py
+    `_adopt_reference_copy`); it sits outside the folder so that no pull can
+    delete it."""
+    folder = os.path.abspath(folder)
+    root = os.path.dirname(os.path.dirname(folder))
+    return os.path.join(root, ".sync", os.path.basename(folder) + ".adopting")
+
+
+def folder_state(folder: str) -> str:
+    """What the canvas folder `folder` is, the ONE reading every caller that
+    asks "is this a clone?" goes through.
+
+    A marker that says `mirror` wins (`sync_of`'s lenient reading): the
+    folder is the mirror command's whatever else is true. Otherwise a folder
+    with an adoption flag is "adopting" — out of the command's hands, but
+    still holding a reference copy's possibly stale files, so not a clone
+    yet. Otherwise "live" or "unmarked" by its marker."""
+    if not os.path.isdir(folder):
+        return STATE_MISSING
+    sync = sync_of(folder)
+    if sync == SYNC_MIRROR:
+        return STATE_MIRROR
+    if os.path.lexists(adopting_path(folder)):
+        return STATE_ADOPTING
+    return STATE_LIVE if sync == SYNC_LIVE else STATE_UNMARKED
+
+
+def is_clone(folder: str) -> bool:
+    """Whether `folder` is a clone fused-render may sync: it holds a
+    `canvas.toml`, it is not a reference copy, and no adoption of it is
+    pending. A missing or unreadable marker counts as a clone, deliberately
+    (module docstring)."""
+    return (folder_state(folder) in (STATE_LIVE, STATE_UNMARKED)
+            and os.path.isfile(os.path.join(folder, "canvas.toml")))
+
+
+def is_reference(folder: str) -> bool:
+    """Whether `folder` holds a reference copy's files and must be treated as
+    read-only: the mirror command's own, or one whose adoption has not been
+    pulled yet."""
+    return folder_state(folder) in (STATE_MIRROR, STATE_ADOPTING)
+
+
+def remove_mirror(folder: str, scope_dir: str) -> bool:
+    """Delete `folder` if it is a `removable_mirror`, the way the mirror
+    command does: renamed to a dot-name beside it first, then deleted. True
+    when the path is free afterwards.
+
+    A plain `rmtree` that fails halfway can remove the marker and leave
+    `canvas.toml` — a folder that then reads as a live clone holding half a
+    reference copy. Renamed away first, the path is free at once and what a
+    failed delete leaves is a dot-folder no scan looks at."""
+    import shutil
+    import uuid
+
+    if not removable_mirror(folder, scope_dir):
+        return False
+    aside = os.path.join(os.path.dirname(os.path.abspath(folder)),
+                         f".fused-removing-{uuid.uuid4().hex}")
+    try:
+        os.rename(folder, aside)
+    except OSError:
+        return False
+    shutil.rmtree(aside, ignore_errors=True)
+    return True
+
+
 def removable_mirror(folder: str, scope_dir: str) -> bool:
     """Whether fused-render may delete or replace `folder`: the contract's
     three conditions, all of them — it resolves to a direct child of
