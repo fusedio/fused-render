@@ -23,19 +23,28 @@ ONE CLONE, IN ORDER (`_migrate`):
 2. The clone's writer lock (`.sync/<name>.lock`) is claimed. Another
    fused-render syncing it (an installed app beside a dev server) refuses the
    claim, and the clone is deferred.
-3. `claude_session_move.held_sessions`: a Claude session working in the
-   clone, or one that finished moments ago, defers it, exactly as it refuses
-   a rename. Its transcript could not move and its absolute paths would be
-   left pointing at nothing.
-4. The move is written to the journal (`.sync/.layout-journal.json`), the
-   folder is renamed, and everything that names the clone by absolute path
-   follows it (`_carry`): the desk row, bookmarks, recents, schedule targets
-   and the pin (`app_state_move.rewrite_stores`), and the Claude transcripts
-   bucketed by working directory (`claude_session_move.relocate`). Then the
-   journal entry is dropped.
+3. The move is written to the journal (`.sync/.layout-journal.json`), the
+   folder is renamed, a LINK to its new place is left at the old path, and
+   everything that names the clone by absolute path follows it (`_carry`):
+   the desk row, bookmarks, recents, schedule targets and the pin
+   (`app_state_move.rewrite_stores`), and the Claude transcripts bucketed by
+   working directory (`claude_session_move.relocate`). Then the journal
+   entry is dropped.
 5. The seeded files are refreshed and the folder is marked live when its
    collection id is known (`canvases._mark_live`); with an unknown id or an
    external CLI it keeps no marker, which reads as a live clone all the same.
+
+A CLAUDE SESSION AT WORK IN THE CLONE does not hold the move up (D1479).
+Holding it up locked the user out of the very canvas they were working in,
+with its sync stopped, for as long as the session lasted. The session keeps
+its old absolute paths, so the link (`<env>/<name>` -> `user/<name>`) is what
+it reaches the moved folder through: every read and write it makes lands in
+the clone the sync watches. Its transcript cannot move while it runs; the
+journal keeps that carry owed and a later pass finishes it. The link is
+removed by the first pass that finds no journal entry for it and no session
+under the old path (`_sweep_links`). Where a link cannot be made (a volume
+without symlinks), and for the reserved names below, whose old path becomes
+a scope folder, a session still defers the move, as before.
 
 `.sync/` does not move: the merge base, trash, tombstones and lock are keyed
 by canvas name under `<env>/.sync/`, as before.
@@ -52,11 +61,14 @@ ahead of the rest so the scope folders are free.
 
 A legacy clone that is a SYMLINK is not moved: renaming the link one level
 deeper would leave a relative one dangling. It is reported as a conflict.
+The link a move leaves behind (`_is_forward_link`: exactly `user/<name>`,
+relative) is not a legacy clone at all.
 
 CRASH SAFETY. Every step is one `os.rename`. A journal entry is replayed only
-while its source path does not exist and its destination does, which is the
-one state that says "the rename happened, the carry may not have": the carry
-is a prefix rewrite, idempotent, and cannot touch anything else while nothing
+while its source path does not exist (or is the link the move left there)
+and its destination does, which is the one state that says "the rename
+happened, the carry may not have": the carry is a prefix rewrite,
+idempotent, and cannot touch anything else while nothing but that link
 lives at the source. An entry whose source is back (never renamed, or
 something new is there) is dropped unreplayed. Everything else is found again
 by structure, `.legacy-*` folders included.
@@ -126,10 +138,13 @@ class LayoutReport:
     carry_owed: bool = False
     #: The pass itself failed (logged); nothing is known about this root.
     error: str = ""
+    #: Old paths still forwarding to a moved clone: a session there has not
+    #: ended yet (`_sweep_links` removes each once nothing uses it).
+    forwarding: list[str] = dataclasses.field(default_factory=list)
 
     def pending(self) -> bool:
         return bool(self.deferred or self.conflicts or self.blocked
-                    or self.carry_owed or self.error)
+                    or self.carry_owed or self.error or self.forwarding)
 
     def refusal(self, name: str, *, creating: bool = False,
                 has_clone: bool = False, retiring: bool = False) -> str | None:
@@ -174,14 +189,12 @@ class _RootState:
     done: bool = False
     checked_at: float | None = None
     report: LayoutReport | None = None
+    #: Whether a symlink can be made in this root (`_links_work`), once known.
+    links_work: bool | None = None
 
 
 _STATE_LOCK = threading.Lock()
 _STATE: dict[str, _RootState] = {}
-#: (root, name) -> when this process moved that clone (`moved_recently`).
-_MOVED_AT: dict[tuple[str, str], float] = {}
-#: How long a page's catalog listing may plausibly predate a move.
-MOVED_RECENTLY_S = 10 * 60.0
 # Set on the thread that is inside a pass. The carry calls into the stores,
 # and a store that one day asks "which canvases are cloned?" would re-enter
 # `ensure_layout` on this thread, behind a lock it already holds.
@@ -199,19 +212,6 @@ def reset() -> None:
     caller that knows the disk changed under it)."""
     with _STATE_LOCK:
         _STATE.clear()
-        _MOVED_AT.clear()
-
-
-def moved_recently(env: str, name: str) -> bool:
-    """Whether THIS process moved clone (env, name) into `user/` within
-    `MOVED_RECENTLY_S`. A page that listed the catalog before the move still
-    shows the canvas as "not cloned" and asks for a clone; the clone route
-    answers that with the folder as it is rather than a `pull --force` over
-    the user's unpublished work."""
-    key = (os.path.normcase(os.path.abspath(canvases.canvases_root(env))), name)
-    with _STATE_LOCK:
-        at = _MOVED_AT.get(key)
-    return at is not None and time.monotonic() - at < MOVED_RECENTLY_S
 
 
 # -- what is on disk -----------------------------------------------------------
@@ -223,8 +223,11 @@ def _has_toml(folder: str) -> bool:
 
 def _legacy_rel(root: str, name: str) -> str | None:
     """Where legacy clone `name` sits right now, relative to `root`: its old
-    place, its `.legacy-` halfway house (reserved names), or None."""
+    place, its `.legacy-` halfway house (reserved names), or None. The link a
+    move left at the old place is not a clone there."""
     if not canvases._NAME_RE.match(name):
+        return None
+    if _is_forward_link(root, name):
         return None
     if _has_toml(os.path.join(root, name)):
         return name
@@ -261,6 +264,117 @@ def legacy_clones(env: str) -> list[str]:
     """The names of `env`'s clones still at the pre-D1476 path, in the order
     they would be moved."""
     return _legacy_names(canvases.canvases_root(env))
+
+
+def is_legacy(env: str, name: str) -> bool:
+    """Whether canvas (env, name) still has a clone at the pre-D1476 path."""
+    return _legacy_rel(canvases.canvases_root(env), name) is not None
+
+
+# -- the link a move leaves at the old path ------------------------------------
+
+
+def _link_text(name: str) -> str:
+    """What the link at `<root>/<name>` holds: relative, so it survives the
+    workspace itself moving."""
+    return os.path.join(CLONES_SCOPE, name)
+
+
+def _is_forward_link(root: str, name: str) -> bool:
+    """`<root>/<name>` is the link a move of clone `name` left behind, and
+    nothing else: a symlink holding exactly `user/<name>`. A link of the
+    user's own, pointing anywhere else, is not ours (and stays a conflict)."""
+    path = os.path.join(root, name)
+    try:
+        return os.path.islink(path) and os.readlink(path) == _link_text(name)
+    except OSError:
+        return False
+
+
+def _forward_links(root: str) -> list[str]:
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return []
+    return [e for e in entries if canvases._NAME_RE.match(e) and _is_forward_link(root, e)]
+
+
+def _links_work(root: str) -> bool:
+    """Whether a symlink can be made in `root` (tried once per root and
+    process, on a dot-name in `.sync/`). A volume that cannot hold one
+    gets no link, and a session at work defers the move instead."""
+    state = _state_for(root)
+    if state.links_work is not None:
+        return state.links_work
+    probe = os.path.join(root, ".sync", f".layout-link-probe.{os.getpid()}")
+    works = False
+    try:
+        os.makedirs(os.path.dirname(probe), exist_ok=True)
+        try:
+            os.unlink(probe)
+        except FileNotFoundError:
+            pass
+        os.symlink(CLONES_SCOPE, probe)
+        works = True
+        os.unlink(probe)
+    except (OSError, NotImplementedError):
+        pass
+    state.links_work = works
+    return works
+
+
+def _leave_link(root: str, name: str) -> None:
+    """Put the forwarding link at the old path of clone `name`, just moved.
+    Never raises: the move is done either way."""
+    try:
+        os.symlink(_link_text(name), os.path.join(root, name), target_is_directory=True)
+    except (OSError, NotImplementedError):
+        logger.warning("canvas layout: could not leave a link at %s to the moved clone",
+                       os.path.join(root, name), exc_info=True)
+
+
+def _sweep_links(root: str) -> list[str]:
+    """Remove every forwarding link nothing needs any more: no journal entry
+    still carries from it, and no Claude session is under it. Returns the
+    links that stay."""
+    owed = {m["src"] for m in _journal_read(root)}
+    kept = []
+    for name in _forward_links(root):
+        if name in owed or _held(root, name):
+            kept.append(name)
+            continue
+        try:
+            os.unlink(os.path.join(root, name))
+            logger.info("canvas layout: removed the link left at %s",
+                        os.path.join(root, name))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("canvas layout: could not remove the link at %s",
+                           os.path.join(root, name), exc_info=True)
+            kept.append(name)
+    return kept
+
+
+def forwarded_path(path: str) -> str | None:
+    """`path` as it reads at the clone's new place when it reaches a moved
+    clone through the link left at the old one (a session still at work
+    there), else None. Paths only, plus one `readlink` per environment root
+    the path is under."""
+    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
+
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return None
+    cand = os.path.normpath(path)
+    for env in WORKBENCH_ENV_CHOICES:
+        for root in _spellings(canvases.canvases_root(env)):
+            prefix = root.rstrip(os.sep) + os.sep
+            if not cand.startswith(prefix):
+                continue
+            parts = cand[len(prefix):].split(os.sep)
+            if parts[0] and _is_forward_link(root, parts[0]):
+                return os.path.join(root, CLONES_SCOPE, *parts)
+    return None
 
 
 def known_collection_id(env: str, name: str) -> str | None:
@@ -405,10 +519,11 @@ def _carry(root: str, src: str, dst: str) -> bool:
     return complete
 
 
-def _move(root: str, name: str, src: str, dst: str) -> bool:
+def _move(root: str, name: str, src: str, dst: str, *, link: bool = False) -> bool:
     """One journaled rename + carry. True when the carry is complete (False:
     the journal keeps the move for a later pass). OSError when the rename did
-    not happen (nothing changed, the journal entry is gone again)."""
+    not happen (nothing changed, the journal entry is gone again). `link`:
+    leave the forwarding link at `src` (`_sweep_links` removes it)."""
     move = {"name": name, "src": src, "dst": dst, "since": time.time()}
     _journal_add(root, move)
     try:
@@ -416,6 +531,8 @@ def _move(root: str, name: str, src: str, dst: str) -> bool:
     except OSError:
         _journal_drop(root, move)
         raise
+    if link:
+        _leave_link(root, src)
     if _carry(root, src, dst):
         _journal_drop(root, move)
         return True
@@ -429,8 +546,9 @@ def _replay(root: str) -> bool:
     for move in _journal_read(root):
         src, dst = os.path.join(root, move["src"]), os.path.join(root, move["dst"])
         # Only this state replays (module docstring): renamed, and nothing
-        # has taken the old path since.
-        if os.path.lexists(src) or not os.path.lexists(dst):
+        # but the move's own link has taken the old path since.
+        back = os.path.lexists(src) and not _is_forward_link(root, move["src"])
+        if back or not os.path.lexists(dst):
             _journal_drop(root, move)
             continue
         if _carry(root, move["src"], move["dst"]):
@@ -442,7 +560,7 @@ def _replay(root: str) -> bool:
             logger.warning(
                 "canvas layout: giving up carrying the stores and sessions of %s -> %s "
                 "after %.0f h; a session started under the old path keeps its history "
-                "there", src, dst, CARRY_GIVE_UP_S / 3600)
+                "there (and its link, while it runs)", src, dst, CARRY_GIVE_UP_S / 3600)
             _journal_drop(root, move)
         else:
             owed = True
@@ -545,8 +663,13 @@ def _migrate(env: str, root: str, name: str) -> str:
         return ("deferred:it is synced by another fused-render "
                 f"(pid {record.get('pid')}, port {record.get('port')})")
     lock_since = (canvas_sync_state.read_lock(lock_path) or {}).get("since")
+    # A session at work in the clone moves with it through the link left at
+    # the old path (module docstring). Without one — a reserved name, whose
+    # old path becomes a scope folder, or a volume without symlinks — its
+    # paths would dangle, and it defers the move as it always did.
+    link = name not in RESERVED_NAMES and _links_work(root)
     try:
-        if _held(root, rel):
+        if not link and _held(root, rel):
             return ("deferred:Claude is working in this canvas, or finished "
                     "moments ago")
         if name == CLONES_SCOPE and not staged:
@@ -568,7 +691,7 @@ def _migrate(env: str, root: str, name: str) -> str:
         if blocker is not None:
             return f"conflict:{blocker}"
         try:
-            _move(root, name, rel, new_rel)
+            _move(root, name, rel, new_rel, link=link)
         except OSError as exc:
             return f"deferred:could not move the canvas folder ({exc})"
     finally:
@@ -582,8 +705,6 @@ def _migrate(env: str, root: str, name: str) -> str:
     canvases._unlink_quiet(canvas_marker.adopting_path(target))
     canvases._seed_clone_claude_files(target, name)
     canvases._mark_live(env, name)
-    with _STATE_LOCK:
-        _MOVED_AT[(os.path.normcase(os.path.abspath(root)), name)] = time.monotonic()
     logger.info("canvas %s: clone moved to %s", canvases._sync_key(env, name), target)
     return MOVED
 
@@ -592,7 +713,7 @@ def _run(env: str, root: str) -> LayoutReport:
     """One pass over `root` under the cross-process layout lock."""
     report = LayoutReport(env=env)
     names = _legacy_names(root)
-    if not names and not _journal_read(root):
+    if not names and not _journal_read(root) and not _forward_links(root):
         return report
     lock_path = os.path.join(root, ".sync", LOCK_NAME)
     try:
@@ -632,11 +753,12 @@ def _run(env: str, root: str) -> LayoutReport:
                 report.blocked = (f"canvas {name!r} must move out of "
                                   f"{os.path.join(root, CLONES_SCOPE)} first: {why}")
         # A move made on THIS pass whose carry left a transcript behind (a
-        # turn opened after the check) is owed a replay as much as one a
+        # session at work in the clone) is owed a replay as much as one a
         # crash left: without this the pass reads as finished, the answer
         # is remembered, and the journal is never looked at again.
         if _journal_read(root):
             report.carry_owed = True
+        report.forwarding = _sweep_links(root)
     finally:
         canvas_sync_state.release_lock(lock_path, lock_since)
     return report

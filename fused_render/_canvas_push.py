@@ -199,9 +199,9 @@ def _locate(path: str) -> dict | None:
         reference copy. `name` is "" for the scope folder itself.
       * "legacy" — at or inside a canvas folder at the pre-D1476
         `<base>/<env>/<name>` (it holds a `canvas.toml`): a clone the layout
-        move has not reached yet. canvas_layout.py defers one exactly while
-        a session is working in it, so this is the folder a session is most
-        likely to type a push in — and nothing syncs it there.
+        move has not reached yet, and nothing syncs it there. A clone that
+        HAS moved leaves a link at that path for a session still working
+        there (D1479); `realpath` resolves it to `user/<name>`, a "clone".
       * "tree" — `<base>/<env>` itself, or anywhere else under it: the
         clones folder itself, or a folder that is no canvas. Not a push we know anything
         about; a pull INTO it would plant a canvas folder in a tree

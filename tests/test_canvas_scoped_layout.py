@@ -545,12 +545,12 @@ def test_clone_marks_the_folder_live_when_the_id_is_known(harness, tmp_path, mon
     assert res.status_code == 200, res.text
     marker = _marker(harness)
     assert (marker.sync, marker.scope, marker.id, marker.name) == ("live", "user", "c1", "alpha")
-    # A re-clone runs `pull --force`, which deletes the marker like any file
-    # the bundle does not hold; it is back afterwards.
+    # A second clone request leaves the clone alone (D1479): no pull, the
+    # marker untouched.
     os.utime(harness.clones / "alpha" / MARKER, (1, 1))
     harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert _marker(harness).sync == "live"
-    assert (harness.clones / "alpha" / MARKER).stat().st_mtime > 1   # deleted and rewritten
+    assert (harness.clones / "alpha" / MARKER).stat().st_mtime == 1
 
 
 def test_clone_takes_the_id_from_the_stored_listing(harness, tmp_path, monkeypatch):

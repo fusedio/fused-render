@@ -2755,16 +2755,14 @@ def _clone_in_hold(env: str, name: str):
     if refusal is not None:
         return refusal
     target = _canvas_dir(env, name)
-    from fused_render import canvas_layout
-
-    if (name in report.moved or canvas_layout.moved_recently(env, name)) \
-            and _is_live_clone(env, name):
-        # The clone arrived from its old path on THIS call — or minutes ago,
-        # on another path's pass, with this page's card still saying "not
-        # cloned" — with whatever was unpublished in it. That is the answer;
-        # a `pull --force` now would replace the user's work with the
-        # server's copy. Only while the folder IS that clone: one deleted
-        # since, with a reference copy now at its path, is opened like any.
+    if _is_live_clone(env, name):
+        # Already a clone: that IS the answer, never a `pull --force` over it
+        # (D1479). It may hold work no push has published yet — edits made
+        # while its sync was down, or by a session while the page was shut —
+        # and sync/start, which comes next, reconciles it with the server
+        # against its merge base. A page asks for a clone it already has
+        # whenever its "not cloned" card is older than the folder: the clone
+        # was moved from its pre-D1476 path, or made from another tab.
         return {"ok": True, "dir": target}
     return _clone_held(env, name, target)
 
@@ -2873,8 +2871,8 @@ def _adopt_reference_copy(env: str, name: str) -> _Adoption:
     if not is_mirror:
         current = canvas_marker.read(target)
         if os.path.lexists(flag) or _is_live_clone(env, name):
-            # An adoption whose pull has not landed yet (pull again), or a
-            # clone (the re-clone this route has always been).
+            # An adoption whose pull has not landed yet: pull again. (A live
+            # clone is answered before this is asked, `_clone_in_hold`.)
             return _Adoption(listed_id or (current.id if current is not None else None))
         empty = False
         if os.path.lexists(target):
@@ -7576,10 +7574,24 @@ def _rename_held(env: str, name: str, new: str):
     return {"ok": True, "env": env, "name": new, "old_name": name}
 
 
+def _sync_start_layout(env: str, name: str):
+    """The layout report sync/start acts on. A canvas whose clone is still at
+    its pre-D1476 path is moved NOW (`force`), with this process's mirror run
+    stopped for the pass (`canvas_mirror.hold`, as the clone route does):
+    the page is open on it and retrying, and waiting out a whole mirror run
+    or the 15 s retry window would leave it unsynced all that time."""
+    from fused_render import canvas_layout, canvas_mirror
+
+    if not canvas_layout.is_legacy(env, name):
+        return _ensure_layout(env)
+    with canvas_mirror.hold(env):
+        return _ensure_layout(env, force=True)
+
+
 def _sync_start_response(env: str, name: str):
     """The body of sync/start, shared with sync/takeover: claim the writer
     lock and start this process's watcher on the clone, or say who owns it."""
-    refusal = _layout_refusal(env, name, _ensure_layout(env))
+    refusal = _layout_refusal(env, name, _sync_start_layout(env, name))
     if refusal is not None:
         return refusal
     # A reference copy at `user/<name>` (marker `mirror`) is not a clone: no
@@ -8252,12 +8264,18 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
                 edited = os.path.join(body["cwd"], edited)
             if in_reference_copy(edited):
                 return {"deny": _REFERENCE_COPY_DENY}
-    found = clone_dir_for(where) if isinstance(where, str) else None
-    if found is None and isinstance(body.get("cwd"), str):
-        found = clone_dir_for(body["cwd"])
+    found = _clone_for_session(where)
+    if found is None:
+        found = _clone_for_session(body.get("cwd"))
     if found is None:
         return {}
     env, name, _dir = found
+    for key in ("file_path", "notebook_path"):
+        # A session still at a moved clone's old path names its files there;
+        # the manager knows them by the clone's own path.
+        moved = _forwarded(tool_input.get(key))
+        if moved is not None:
+            tool_input = {**tool_input, key: moved}
     manager = _sync_manager(env, name, create=False)
     if manager is None and event in ("start", "pre", "post", "stop"):
         # No canvas page is open (never opened, or the idle stop ran): a
@@ -8281,6 +8299,27 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
     except Exception:  # noqa: BLE001 — a hook answer is advice, never a failure
         logger.warning("canvas %s: agent hook failed", _sync_key(env, name), exc_info=True)
     return {}
+
+
+def _forwarded(path) -> str | None:
+    """`path` at its clone's new place, when it reaches a moved clone through
+    the link the move left at the old one (`canvas_layout.forwarded_path`)."""
+    from fused_render import canvas_layout
+
+    return canvas_layout.forwarded_path(path) if isinstance(path, str) else None
+
+
+def _clone_for_session(path) -> tuple[str, str, str] | None:
+    """`clone_dir_for` for a path an agent session names, which may still be
+    a moved clone's OLD path: a session at work when the clone moved keeps
+    it, reaching the folder through the link left there (D1479)."""
+    if not isinstance(path, str):
+        return None
+    found = clone_dir_for(path)
+    if found is None:
+        moved = _forwarded(path)
+        found = clone_dir_for(moved) if moved is not None else None
+    return found
 
 
 def _revive_for_session(env: str, name: str, event: str) -> "_SyncManager | None":
@@ -8313,7 +8352,7 @@ def session_turn_start(path: str, backend: str = "") -> bool:
     keeps it running between turns. True when a watcher runs for the clone
     now. Never raises."""
     try:
-        found = clone_dir_for(path)
+        found = _clone_for_session(path)
         if found is None:
             return False
         env, name, _dir = found
