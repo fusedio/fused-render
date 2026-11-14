@@ -55,12 +55,112 @@ export interface CanvasesStatus {
       canvases_dir: string;
       cloned_count: number;
       available: boolean;
+      /** The reference canvases (canvas_mirror.py): the folder they are
+       *  kept under, the runner's compact status (null when the server could
+       *  not read it), and the clones the move to `user/` left behind.
+       *  Optional: a server from before the runner sends none of the three. */
+      mirror_root?: string;
+      mirror?: MirrorSummary | null;
+      layout?: LayoutPending;
     }
   >;
   /** The custom environment's settings file (`~/.fused/settings.toml`,
    *  expanded) — what the settings editor edits. */
   settings_path: string;
 }
+
+/** canvas_mirror.STATES. `unsupported`: the installed Fused predates the
+ *  mirror command. `busy`: another process's run holds the lock. */
+export type MirrorState =
+  | "idle"
+  | "running"
+  | "ok"
+  | "partial"
+  | "failed"
+  | "unsupported"
+  | "auth"
+  | "no_cli"
+  | "busy";
+
+/** Why no scheduled run would start for an environment (canvas_mirror.eligible). */
+export type MirrorSkipReason =
+  | "no_cli"
+  | "unsupported"
+  | "unknown_env"
+  | "env_locked"
+  | "not_configured"
+  | "signed_out"
+  | "not_in_use";
+
+/** canvas_mirror.summary: what /api/canvases/status carries per environment.
+ *  While `state` is "running", `done`/`total` are live and every other field
+ *  describes the last FINISHED run (whose state is `last_state`). */
+export interface MirrorSummary {
+  state: MirrorState;
+  last_state: MirrorState;
+  done: number;
+  total: number;
+  /** Epoch seconds the last run finished, or null before the first. */
+  finished_at: number | null;
+  /** Reference copies on disk after the last finished run. */
+  mirrored: number;
+  error: string | null;
+  /** Whether a scheduled run would start, and why not. */
+  eligible: boolean;
+  skip_reason: MirrorSkipReason | null;
+}
+
+/** canvas_layout.pending: clones the move to `<env>/user/<name>` could not
+ *  make. `conflicts` (name -> why) wait on the user; `deferred` (a canvas
+ *  whose chat is still open) move by themselves; `blocked` / `error` say why
+ *  the whole pass could not run ("" when it could). */
+export interface LayoutPending {
+  deferred: Record<string, string>;
+  conflicts: Record<string, string>;
+  blocked: string;
+  error: string;
+}
+
+/** canvas_mirror.status: GET /api/canvases/mirror/status?env=. */
+export interface MirrorStatus extends MirrorSummary {
+  env: string;
+  /** What started the run: startup | login | timer | manual | hold. */
+  trigger: string | null;
+  started_at: number | null;
+  last_line: string | null;
+  /** The last finished run's counts, per action (canvas_mirror.COUNT_KEYS). */
+  counts: Record<string, number>;
+  /** The last finished run's listings, per scope (user / team / public). */
+  scopes: Record<
+    string,
+    { ok: boolean; unavailable: boolean; listed: number; error: string | null }
+  >;
+  live_orphans: string[];
+  root: string;
+  held: boolean;
+  layout: LayoutPending;
+}
+
+/** Why POST /api/canvases/mirror/run started nothing (canvas_mirror.kick with
+ *  `force`). `running` and `held` are not failures: a run is in flight, or
+ *  one starts by itself once the clone / rename / delete holding it ends. */
+export type MirrorRunReason =
+  | "running"
+  | "held"
+  | "shutting_down"
+  | "error"
+  | Exclude<MirrorSkipReason, "not_in_use">;
+
+export const getMirrorStatus = (env: WorkbenchEnv) =>
+  getJson<MirrorStatus>(`/api/canvases/mirror/status?env=${env}`);
+
+/** Refresh `env`'s reference canvases now, whatever their age. Answers at
+ *  once; the run is followed through the status. */
+export const runMirror = (env: WorkbenchEnv) =>
+  postJson<{ started: boolean; reason: MirrorRunReason | null; status: MirrorStatus }>(
+    "/api/canvases/mirror/run",
+    { env },
+  );
 
 /** The settings editor's read. Creates the file EMPTY when there is none,
  *  so the reader edits a real path from the start; an empty file configures

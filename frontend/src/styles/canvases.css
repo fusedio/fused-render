@@ -77,6 +77,114 @@
   }
 }
 
+/* The reference canvases (apps/canvases/MirrorStatus.tsx): how many read-only
+   copies Claude has to search and when they were last updated. Quiet by
+   design — muted 12px text, no border — and absent altogether for a reader
+   who is not using them. Floated to the right end of the subtitle's line, under
+   the head's actions: the head's own row has no room left at ordinary window
+   widths, and a float leaves the subtitle exactly where it was when there is
+   no chip. In a narrow window the subtitle wraps around it. */
+.canvases-mirror {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  float: right;
+  max-width: 100%;
+  padding: 2px 6px;
+  margin: -1px -6px 0 12px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+button.canvases-mirror {
+  cursor: pointer;
+}
+button.canvases-mirror:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg);
+}
+button.canvases-mirror:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.canvases-mirror-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvases-mirror-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+.canvases-mirror-icon.is-spinning {
+  animation: canvases-refreshing-spin 0.9s linear infinite;
+}
+.canvases-mirror.is-warning .canvases-mirror-icon {
+  color: var(--warning);
+}
+.canvases-mirror.is-error,
+button.canvases-mirror.is-error:hover:not(:disabled) {
+  color: var(--error);
+}
+
+/* Clones the move to <env>/user/<name> left at their old path. One line,
+   the names and reasons under it on demand; never in the way of the grid. */
+.canvases-layout-notice {
+  margin: 0 0 20px;
+  border: 1px solid rgba(var(--warning-rgb), 0.5);
+  border-radius: 6px;
+  background: rgba(var(--warning-rgb), 0.07);
+  font-size: 13px;
+}
+.canvases-layout-notice > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.canvases-layout-notice > summary::-webkit-details-marker {
+  display: none;
+}
+.canvases-layout-notice-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--fg-muted);
+}
+.canvases-layout-notice[open] .canvases-layout-notice-chevron {
+  transform: rotate(90deg);
+}
+.canvases-layout-notice-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--warning);
+}
+.canvases-layout-notice-body {
+  padding: 0 10px 10px 32px;
+  color: var(--fg-muted);
+  word-break: break-word;
+}
+.canvases-layout-notice-body p {
+  margin: 0 0 6px;
+}
+.canvases-layout-notice-body ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.canvases-layout-notice-body code {
+  color: var(--fg);
+}
+
 .canvases-head-actions {
   margin-left: auto;
   display: flex;

@@ -52,6 +52,7 @@ import {
 } from "./api";
 import { CanvasCard, canvasDisplayName } from "./CanvasCard";
 import { FusedSettingsModal } from "./FusedSettingsModal";
+import { LayoutNotice, MirrorChip, useReferenceMirror } from "./MirrorStatus";
 
 /** sync/start before opening a canvas. Another process owning the clone
  *  (409 `owned`) is not a reason to stay on the list: the workspace shows
@@ -153,6 +154,9 @@ export default function Canvases() {
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const env = status ? effectiveEnv(status, picked) : null;
+  // The reference canvases of the env on show: the head's chip, and the
+  // notice for clones the folder-layout move left behind.
+  const referenceMirror = useReferenceMirror(env, status, setError);
 
   // Presigned preview URLs, keyed by collection id — the second, slower half
   // of the listing (D364). Kept beside `canvases` rather than merged into it so
@@ -866,11 +870,19 @@ export default function Canvases() {
             </div>
           )}
         </div>
+        {/* Ahead of the subtitle it floats beside: the head's own row is full
+            at ordinary window widths (the title already wraps there). */}
+        <MirrorChip
+          mirror={referenceMirror.mirror}
+          starting={referenceMirror.starting}
+          onRun={() => void referenceMirror.run()}
+        />
         <p className="canvases-sub">
           Develop workbench canvases locally: pick a canvas, edit its files with
           Claude Code, and every save is pushed back to the hosted workbench.
         </p>
         {error && <ErrorBanner>{error}</ErrorBanner>}
+        <LayoutNotice layout={referenceMirror.layout} />
         {status && !status.cli_found && (
           <p>
             The fused CLI is not available in this server&rsquo;s environment.
