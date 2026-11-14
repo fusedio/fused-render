@@ -292,7 +292,7 @@ STOP_JOIN_S = 5.0
 PUSH_TERMINATE_GRACE_S = 2.0
 
 # The Fused environment is part of a canvas's IDENTITY, not a process-wide
-# knob. The `<env>` segment of `~/Fused/canvas/<env>/user/<name>` (D1382) is what
+# knob. The `<env>` segment of `~/Fused/canvas/<env>/user/<name>` (D1382, D1476) is what
 # binds a clone to the Fused it was pulled from; every canvas-scoped endpoint
 # takes a required, validated `env` (`_require_env`); managers are keyed
 # `(env, name)` and hand THEIR env to every CLI run (`_cli_env(cli, env)`), and
@@ -698,13 +698,20 @@ def _layout_refusal(env: str, name: str, report, *,
     a second clone beside the one still holding the user's work. `creating`:
     the caller is about to make a folder under `user/` (see
     `LayoutReport.refusal`)."""
-    why = report.refusal(name, creating=creating)
+    why = report.refusal(name, creating=creating,
+                         has_clone=creating and _is_live_clone(env, name))
     if why is None:
         return None
-    return JSONResponse(
-        {"error": f"canvas {_sync_key(env, name)!r} is still at its old folder and "
-                  f"could not be moved yet: {why}. Try again shortly.",
-         "code": "layout_pending"}, status_code=409)
+    if why == report.conflicts.get(name):
+        # Not a wait: the user has to clear the way (also on the status
+        # routes' `layout.conflicts`, so the page can show a stranded clone).
+        error = (f"canvas {_sync_key(env, name)!r} is still at its old folder "
+                 f"{os.path.join(canvases_root(env), name)} and cannot be moved: {why}. "
+                 "Move or remove what is in the way, then open the canvas again.")
+    else:
+        error = (f"canvas {_sync_key(env, name)!r} is still at its old folder and "
+                 f"could not be moved yet: {why}. Try again shortly.")
+    return JSONResponse({"error": error, "code": "layout_pending"}, status_code=409)
 
 
 def _mark_live(env: str, name: str, collection_id: str | None = None,
@@ -1126,6 +1133,10 @@ def api_canvases_status(env: str = ""):
                 # full one is GET /api/canvases/mirror/status).
                 "mirror_root": canvases_root(env),
                 "mirror": _mirror_summary(env),
+                # Clones the move to `user/` (D1476) could not make:
+                # `conflicts` name -> why is what a user must resolve (the
+                # clone is stranded at `<env>/<name>` until they do).
+                "layout": _layout_pending(env),
                 "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_configured(),
             }
             for env in WORKBENCH_ENV_CHOICES
@@ -1209,6 +1220,13 @@ def api_canvases_settings_delete(x_fused: str | None = Header(default=None)):
     _cli_cache_clear()
     return {"ok": True, "path": path, "removed": removed,
             "configured": fused_settings_configured()}
+
+
+def _layout_pending(env: str) -> dict:
+    """canvas_layout.pending(env): what the last layout pass left unmoved."""
+    from fused_render import canvas_layout
+
+    return canvas_layout.pending(env)
 
 
 def _mirror_summary(env: str) -> dict | None:
@@ -3516,7 +3534,7 @@ class _SyncManager:
         # re-created under its name): the marker must say so before the next
         # mirror run, which would otherwise pull the "new" canvas in beside
         # this clone as `<name>-<id8>`.
-        if self._base_collection_id != getattr(self, "_marker_id", None):
+        if self._base_collection_id != self._marker_id:
             self._mark_live()
 
     def _mark_live(self) -> None:

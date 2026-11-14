@@ -138,7 +138,8 @@ def test_the_status_has_the_shape_the_page_reads(harness):
     assert set(status) == {
         "env", "state", "last_state", "trigger", "started_at", "finished_at", "done",
         "total", "last_line", "counts", "scopes", "error", "live_orphans", "mirrored",
-        "root", "held", "eligible", "skip_reason"}
+        "root", "held", "eligible", "skip_reason", "layout"}
+    assert status["layout"] == {"deferred": {}, "conflicts": {}, "blocked": "", "error": ""}
     assert status["state"] == "idle" and status["finished_at"] is None
     assert status["counts"] == {k: 0 for k in canvas_mirror.COUNT_KEYS}
     assert status["scopes"] == {} and status["live_orphans"] == []
@@ -712,4 +713,18 @@ def test_a_hold_releases_when_its_block_raises(harness):
         with canvas_mirror.hold(ENV):
             1 / 0
     assert canvas_mirror.status(ENV)["held"] is False
+    assert canvas_mirror.run_once(ENV).state == "ok"
+
+
+def test_no_run_starts_while_a_moved_clone_named_like_a_scope_is_owed_its_carry(
+        harness, monkeypatch):
+    """The run would create `<env>/team`; the carry owed FROM that path
+    replays only while it does not exist, and would be dropped — the
+    clone's chat history with it."""
+    harness.log_in()
+    monkeypatch.setattr(canvas_layout, "owed_scope_names", lambda env: ["team"])
+    status = canvas_mirror.run_once(ENV)
+    assert status.state == "failed" and "'team'" in status.error
+    assert _mirror_calls(harness) == [] and not (harness.root / "team").exists()
+    monkeypatch.setattr(canvas_layout, "owed_scope_names", lambda env: [])
     assert canvas_mirror.run_once(ENV).state == "ok"

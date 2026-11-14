@@ -27,7 +27,7 @@ ONE CLONE, IN ORDER (`_migrate`):
    clone, or one that finished moments ago, defers it, exactly as it refuses
    a rename. Its transcript could not move and its absolute paths would be
    left pointing at nothing.
-4. The move is written to the journal (`.sync/layout-journal.json`), the
+4. The move is written to the journal (`.sync/.layout-journal.json`), the
    folder is renamed, and everything that names the clone by absolute path
    follows it (`_carry`): the desk row, bookmarks, recents, schedule targets
    and the pin (`app_state_move.rewrite_stores`), and the Claude transcripts
@@ -40,11 +40,18 @@ ONE CLONE, IN ORDER (`_migrate`):
 `.sync/` does not move: the merge base, trash, tombstones and lock are keyed
 by canvas name under `<env>/.sync/`, as before.
 
-A RESERVED NAME takes two renames, because its target is inside the folder
-it occupies: `<env>/user` -> `<env>/.legacy-user` -> `<env>/user/user`. Each
-is journaled and carried on its own. A clone named `user` goes first, and
-while it cannot move nothing else does (`LayoutReport.blocked`): every other
-clone's new home is inside its folder.
+A CLONE NAMED `user` takes two renames, because its target is inside the
+folder it occupies: `<env>/user` -> `<env>/.legacy-user` -> `<env>/user/user`.
+Each is journaled and carried on its own, and the second waits until the
+first one's carry is complete: once `<env>/user` is the clones folder, a
+rewrite of that prefix would sweep every other clone's rows along. It goes
+first, and while it cannot move nothing else does (`LayoutReport.blocked`):
+every other clone's new home is inside its folder. Clones named `team` or
+`public` move in one step like any other (their target is not inside them),
+ahead of the rest so the scope folders are free.
+
+A legacy clone that is a SYMLINK is not moved: renaming the link one level
+deeper would leave a relative one dangling. It is reported as a conflict.
 
 CRASH SAFETY. Every step is one `os.rename`. A journal entry is replayed only
 while its source path does not exist and its destination does, which is the
@@ -59,7 +66,7 @@ tried again on a later call (at most every `RETRY_S`, or at once with
 `force=True`, which the clone route passes).
 
 Serialised in the process by a lock per canvas root, and across processes by
-the same flock the writer lock uses, on `.sync/layout.lock`.
+the same flock the writer lock uses, on `.sync/.layout.lock`.
 """
 from __future__ import annotations
 
@@ -79,11 +86,14 @@ logger = logging.getLogger(__name__)
 RESERVED_NAMES = canvas_marker.SCOPES
 #: Where clones live under an environment's root.
 CLONES_SCOPE = "user"
-#: A reserved-name clone between its two renames. Dot-prefixed: no clone
+#: A clone named `user` between its two renames. Dot-prefixed: no clone
 #: scan, no watcher and no `canvas mirror` run looks at it.
 LEGACY_PREFIX = ".legacy-"
-JOURNAL_NAME = "layout-journal.json"
-LOCK_NAME = "layout.lock"
+# Both dot-prefixed, so neither can be a canvas's file: `.sync/` holds
+# `<canvas name>.lock` and `<canvas name>.json` per clone, and a canvas may
+# be named `layout`. No canvas name starts with a dot (`canvases._NAME_RE`).
+JOURNAL_NAME = ".layout-journal.json"
+LOCK_NAME = ".layout.lock"
 _JOURNAL_VERSION = 1
 #: How soon a call may look again while something is still deferred, in
 #: conflict, or owed a replay. The callers include a status poll.
@@ -117,13 +127,26 @@ class LayoutReport:
         return bool(self.deferred or self.conflicts or self.blocked
                     or self.carry_owed or self.error)
 
-    def refusal(self, name: str, *, creating: bool = False) -> str | None:
+    def refusal(self, name: str, *, creating: bool = False,
+                has_clone: bool = False) -> str | None:
         """Why canvas `name` must not be used at its new path right now, or
-        None: its own clone is still waiting at the old path. `creating` —
-        the caller would make a NEW folder under `user/` — is also refused
-        while the environment is `blocked`. A conflict is not a refusal: the
-        folder at the new path is a clone in its own right."""
-        return self.deferred.get(name) or ((self.blocked or None) if creating else None)
+        None. Its own clone is still waiting at the old path (`deferred`);
+        or the pass itself failed (`error`), so nothing is known and a clone
+        may be waiting there — fail closed. `creating` — the caller would
+        make or fill a folder under `user/` — is also refused while the
+        environment is `blocked`, and while this canvas is in `conflicts`:
+        its clone sits at the old path with something else at the new one,
+        and a pull into THAT would strand the old folder for good — unless
+        `has_clone`: what is at the new path is a live clone in its own
+        right, and using it changes nothing for the old folder."""
+        if self.error:
+            return self.error
+        why = self.deferred.get(name)
+        if why:
+            return why
+        if creating:
+            return self.blocked or (None if has_clone else self.conflicts.get(name))
+        return None
 
 
 @dataclasses.dataclass
@@ -186,7 +209,7 @@ def _legacy_rel(root: str, name: str) -> str | None:
         return None
     if _has_toml(os.path.join(root, name)):
         return name
-    if name in RESERVED_NAMES and _has_toml(os.path.join(root, LEGACY_PREFIX + name)):
+    if name == CLONES_SCOPE and _has_toml(os.path.join(root, LEGACY_PREFIX + name)):
         return LEGACY_PREFIX + name
     return None
 
@@ -208,7 +231,7 @@ def _legacy_names(root: str) -> list[str]:
     for entry in entries:
         name = (entry[len(LEGACY_PREFIX):]
                 if entry.startswith(LEGACY_PREFIX) else entry)
-        if entry.startswith(LEGACY_PREFIX) and name not in RESERVED_NAMES:
+        if entry.startswith(LEGACY_PREFIX) and name != CLONES_SCOPE:
             continue
         if _legacy_rel(root, name) is not None:
             found.add(name)
@@ -343,14 +366,18 @@ def _carry(root: str, src: str, dst: str) -> bool:
                                old, new, carried["pending"])
         tasks_watch.notify_all()
     except Exception:  # noqa: BLE001 — the move itself is done
+        # Not complete: the journal keeps the move and a later pass carries
+        # it again (every step is idempotent).
+        complete = False
         logger.warning("canvas layout: carrying stores/sessions %s -> %s failed",
                        src, dst, exc_info=True)
     return complete
 
 
-def _move(root: str, name: str, src: str, dst: str) -> None:
-    """One journaled rename + carry. OSError when the rename did not happen
-    (nothing changed, the journal entry is gone again)."""
+def _move(root: str, name: str, src: str, dst: str) -> bool:
+    """One journaled rename + carry. True when the carry is complete (False:
+    the journal keeps the move for a later pass). OSError when the rename did
+    not happen (nothing changed, the journal entry is gone again)."""
     move = {"name": name, "src": src, "dst": dst}
     _journal_add(root, move)
     try:
@@ -360,6 +387,8 @@ def _move(root: str, name: str, src: str, dst: str) -> None:
         raise
     if _carry(root, src, dst):
         _journal_drop(root, move)
+        return True
+    return False
 
 
 def _replay(root: str) -> bool:
@@ -430,6 +459,16 @@ def _migrate(env: str, root: str, name: str) -> str:
     new_rel = os.path.join(CLONES_SCOPE, name)
     source, target = os.path.join(root, rel), os.path.join(root, new_rel)
     staged = rel != name  # already at `.legacy-<name>`
+    if os.path.islink(source):
+        # Renaming the LINK one level deeper would leave a relative one
+        # pointing at nothing, and its real folder is not ours to move.
+        return (f"conflict:{source} is a link to another folder; move the real "
+                "folder there, or remove the link and open the canvas again")
+    if staged and any(m["dst"] == rel for m in _journal_read(root)):
+        # The first rename's carry is still owed (a transcript was held).
+        # The second must wait for it: after it, `<env>/user` is the clones
+        # folder and that prefix can never be rewritten again.
+        return "deferred:sessions of this canvas are still running"
     if name == CLONES_SCOPE and not staged:
         inside = _foreign_content(source)
         if inside is not None:
@@ -464,14 +503,16 @@ def _migrate(env: str, root: str, name: str) -> str:
         if _held(root, rel):
             return ("deferred:Claude is working in this canvas, or finished "
                     "moments ago")
-        if name in RESERVED_NAMES and not staged:
+        if name == CLONES_SCOPE and not staged:
             via = LEGACY_PREFIX + name
             if os.path.lexists(os.path.join(root, via)):
                 return f"conflict:a folder already exists at {os.path.join(root, via)}"
             try:
-                _move(root, name, rel, via)
+                carried = _move(root, name, rel, via)
             except OSError as exc:
                 return f"deferred:could not move the canvas folder ({exc})"
+            if not carried:
+                return "deferred:sessions of this canvas are still running"
             rel, source = via, os.path.join(root, via)
         try:
             os.makedirs(os.path.join(root, CLONES_SCOPE), exist_ok=True)
@@ -497,12 +538,10 @@ def _migrate(env: str, root: str, name: str) -> str:
     return MOVED
 
 
-def _run(env: str, root: str, only: str | None = None) -> LayoutReport:
+def _run(env: str, root: str) -> LayoutReport:
     """One pass over `root` under the cross-process layout lock."""
     report = LayoutReport(env=env)
     names = _legacy_names(root)
-    if only is not None:
-        names = [n for n in names if n == only]
     if not names and not _journal_read(root):
         return report
     lock_path = os.path.join(root, ".sync", LOCK_NAME)
@@ -517,6 +556,9 @@ def _run(env: str, root: str, only: str | None = None) -> LayoutReport:
         # Whatever the journal holds is that process's to finish; if it does
         # not, a later pass here will.
         report.carry_owed = bool(_journal_read(root))
+        # A clone named `user` in the way holds the environment whoever is
+        # running the pass: nothing may be made under `user/` meanwhile.
+        report.blocked = _blocked_by_user_clone(root)
         return report
     lock_since = (canvas_sync_state.read_lock(lock_path) or {}).get("since")
     try:
@@ -524,8 +566,7 @@ def _run(env: str, root: str, only: str | None = None) -> LayoutReport:
             # A carry is still owed (a held transcript): look again later.
             report.carry_owed = True
         # Re-read under the lock: another process may have just finished.
-        names = [n for n in _legacy_names(root) if only is None or n == only]
-        for name in names:
+        for name in _legacy_names(root):
             if report.blocked:
                 report.deferred[name] = report.blocked
                 continue
@@ -567,8 +608,8 @@ def _log_report(env: str, report: LayoutReport, previous: LayoutReport | None) -
 
 
 def _blocked_by_user_clone(root: str) -> str:
-    """The standing form of `LayoutReport.blocked`, for a pass that found no
-    work of its own (a `migrate_one` of another name)."""
+    """The standing form of `LayoutReport.blocked`, for a pass that could not
+    look for itself (another process holds the layout lock)."""
     if _has_toml(os.path.join(root, CLONES_SCOPE)):
         return (f"canvas {CLONES_SCOPE!r} must move out of "
                 f"{os.path.join(root, CLONES_SCOPE)} first")
@@ -614,37 +655,26 @@ def ensure_layout(env: str, *, force: bool = False) -> LayoutReport:
         return report
 
 
-def migrate_one(env: str, name: str) -> str:
-    """Move legacy clone (env, name) now: "moved", "deferred:<why>",
-    "conflict:<why>", or "absent" when there is no legacy clone of that
-    name. Never raises."""
+def pending(env: str) -> dict:
+    """What the last pass over `env` left unmoved, for the status routes:
+    `{"deferred": {name: why}, "conflicts": {name: why}, "blocked": str,
+    "error": str}` — all empty when nothing is. `conflicts` are the ones a
+    user has to resolve: a clone still at `<env>/<name>` with something else
+    at `<env>/user/<name>`. Reads memory; runs no pass."""
+    report = _state_for(canvases.canvases_root(env)).report
+    if report is None:
+        return {"deferred": {}, "conflicts": {}, "blocked": "", "error": ""}
+    return {"deferred": dict(report.deferred), "conflicts": dict(report.conflicts),
+            "blocked": report.blocked, "error": report.error}
+
+
+def owed_scope_names(env: str) -> list[str]:
+    """Scope-folder names (`team`, `public`, `user`) that a moved clone of
+    that name still owes a carry FROM. While one is owed, nothing may create
+    `<env>/<that name>`: the carry replays only while its source path does
+    not exist, and would be dropped — the clone's chat history with it."""
     root = canvases.canvases_root(env)
-    state = _state_for(root)
-    if getattr(_IN_PASS, "active", False):
-        return "deferred:a layout pass is already running on this thread"
-    with state.lock:
-        _IN_PASS.active = True
-        try:
-            if name != CLONES_SCOPE:
-                blocked = _blocked_by_user_clone(root)
-                if blocked and _legacy_rel(root, name) is not None:
-                    return f"deferred:{blocked}"
-            report = _run(env, root, only=name)
-        except Exception:  # noqa: BLE001 — as ensure_layout
-            logger.warning("canvas layout: moving %s/%s failed", env, name, exc_info=True)
-            return "deferred:the canvas folder could not be checked"
-        finally:
-            _IN_PASS.active = False
-        # What this process remembered about the root is stale now.
-        state.done = False
-        state.checked_at = None
-    if name in report.moved:
-        return MOVED
-    if name in report.deferred:
-        return f"deferred:{report.deferred[name]}"
-    if name in report.conflicts:
-        return f"conflict:{report.conflicts[name]}"
-    return ABSENT
+    return [m["src"] for m in _journal_read(root) if m["src"] in RESERVED_NAMES]
 
 
 def ensure_all() -> None:

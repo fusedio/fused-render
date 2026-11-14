@@ -338,7 +338,9 @@ def status(env: str) -> dict:
     """`env`'s mirror status for the page — see `MirrorStatus`, plus:
     `mirrored` (reference copies on disk after the last run), `last_state`
     (the last FINISHED run's state while one is running), `root`, `held`,
-    and `eligible`/`skip_reason` (whether a scheduled run would start).
+    `eligible`/`skip_reason` (whether a scheduled run would start), and
+    `layout` (`canvas_layout.pending`: clones the move to `user/` could not
+    make — `conflicts` are stranded until the user clears the way).
     Reads memory or one small file; never spawns."""
     last = _load(env)
     out = dataclasses.asdict(last)
@@ -356,7 +358,7 @@ def status(env: str) -> dict:
         out.update(state="running", trigger=run.trigger, started_at=run.started_at,
                    done=run.done, total=run.total, last_line=run.last_line)
     out.update(mirrored=last.mirrored(), root=_root(env), held=held,
-               eligible=ok, skip_reason=why)
+               eligible=ok, skip_reason=why, layout=canvas_layout.pending(env))
     return out
 
 
@@ -565,12 +567,18 @@ def _execute(run: _Run) -> MirrorStatus:
         if cli is None:
             return _load(env)
         report = canvas_layout.ensure_layout(env)
-        if report.blocked:
-            # A clone literally named `user` still sits where the command
-            # would write its `user/` copies.
+        # Not while the layout is in the command's way: a clone literally
+        # named `user` still sits where it would write its `user/` copies; a
+        # moved clone named like a scope folder is still owed a carry from
+        # that path, which creating the folder would drop; or the pass
+        # failed and nothing is known.
+        owed = canvas_layout.owed_scope_names(env)
+        in_the_way = report.blocked or report.error or (
+            f"sessions of canvas {owed[0]!r} are still running" if owed else "")
+        if in_the_way:
             result = MirrorStatus(env=env, state="failed", trigger=run.trigger,
                                   started_at=run.started_at, finished_at=time.time(),
-                                  error=report.blocked)
+                                  error=in_the_way)
             previous = _load(env)
             result.counts, result.scopes = dict(previous.counts), dict(previous.scopes)
             _save(result)
