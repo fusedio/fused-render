@@ -230,7 +230,7 @@ def test_a_canvas_target_is_told_about_the_tool_and_a_plain_one_is_not(
     """An un-announced tool does not get called (D235): the prompt names it,
     and only where the roster carries it."""
     root = tmp_path / "canvas"
-    clone = root / "unstable" / "demo"
+    clone = root / "unstable" / "user" / "demo"
     clone.mkdir(parents=True)
     (clone / "udf_1.py").write_text("def udf(): pass\n", encoding="utf-8")
     monkeypatch.setattr(agent, "_canvases_root", lambda: str(root))
@@ -264,7 +264,7 @@ def test_a_canvas_session_gets_an_mcp_ceiling_above_the_screenshot_wait(
 
 def _canvas_root(tmp_path, monkeypatch, agent, nodes=("udf_1", "udf_2")):
     root = tmp_path / "canvas"
-    clone = root / "unstable" / "demo"
+    clone = root / "unstable" / "user" / "demo"
     clone.mkdir(parents=True)
     for n in nodes:
         (clone / (n + ".py")).write_text("def udf(): pass\n", encoding="utf-8")
@@ -282,7 +282,8 @@ def test_only_a_fused_render_clone_gets_the_tool(agent, tmp_path, monkeypatch):
     (web / "a.py").write_text("", encoding="utf-8")
     got = agent._canvas_of(str(clone / "udf_1.py"))
     assert got == {"env": "unstable", "name": "demo", "node": "udf_1",
-                   "clone": os.path.join(os.path.realpath(str(root)), "unstable", "demo")}
+                   "clone": os.path.join(os.path.realpath(str(root)), "unstable", "user",
+                                         "demo")}
     assert agent._canvas_of(str(clone))["node"] == ""
     assert agent._canvas_of(str(web / "a.py")) is None
     assert agent._in_workbench_root(str(web / "a.py"))     # skills stay
@@ -290,10 +291,122 @@ def test_only_a_fused_render_clone_gets_the_tool(agent, tmp_path, monkeypatch):
     assert agent._canvas_of(str(tmp_path / "elsewhere.py")) is None
 
 
-def test_the_duplicated_canvas_facts_match_their_sources(agent):
-    from fused_render import canvases, fusedcli
+def _marker(folder, sync, scope="user"):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / ".fused-canvas.json").write_text(json.dumps({
+        "version": 1, "sync": sync, "scope": scope, "id": "col-1", "name": folder.name,
+        "owner": None, "revision": 1, "last_updated": None, "pulled_at": "t"}),
+        encoding="utf-8")
+
+
+def test_a_reference_copy_is_no_canvas_of_ours(agent, tmp_path, monkeypatch):
+    """D1476: `team/` and `public/` hold reference copies, and so does a
+    `user/<name>` whose marker says `mirror`. None is a synced clone (no
+    hooks, no turn-start), none has a canvas page (no tool, no note); a live
+    marker, or none at all, leaves a `user/` folder the clone it is."""
+    root, clone = _canvas_root(tmp_path, monkeypatch, agent)
+    env = root / "unstable"
+    team, public, mine = env / "team" / "x", env / "public" / "y", env / "user" / "mine"
+    _marker(team, "mirror", "team")
+    _marker(public, "mirror", "public")
+    _marker(mine, "mirror")
+    for ref in (team, public, mine):
+        (ref / "udf_1.py").write_text("def udf(): pass\n", encoding="utf-8")
+        for target in (ref, ref / "udf_1.py"):
+            assert agent._in_synced_clone(str(target)) is False, target
+            assert agent._canvas_of(str(target)) is None, target
+            assert agent._in_canvas_reference(str(target)) is True, target
+            assert agent._canvas_shot_note(str(target)) == ""
+            assert agent._in_workbench_root(str(target))      # the skills stay
+    # A reference folder with no marker at all is one by its place.
+    (env / "team" / "bare").mkdir()
+    assert agent._in_canvas_reference(str(env / "team" / "bare")) is True
+    # The clone: with no marker, and with a live one.
+    for _round in range(2):
+        assert agent._in_synced_clone(str(clone)) is True
+        assert agent._in_synced_clone(str(clone / "udf_1.py")) is True
+        assert agent._canvas_of(str(clone / "udf_1.py"))["name"] == "demo"
+        assert agent._in_canvas_reference(str(clone / "udf_1.py")) is False
+        _marker(clone, "live")
+    # The scope folders themselves, the env folder and a pre-D1476 path are
+    # neither a clone nor a reference copy.
+    for other in (env, env / "user", env / "team", env / "demo" / "a.py"):
+        assert agent._in_synced_clone(str(other)) is False, other
+        assert agent._canvas_of(str(other)) is None, other
+    assert agent._in_canvas_reference(str(env / "user")) is False
+    assert agent._in_canvas_reference(str(tmp_path / "elsewhere.py")) is False
+
+
+def test_a_file_in_a_reference_copy_is_not_called_a_live_node(agent, tmp_path, monkeypatch):
+    """`_canvas_node_prompt` tells the session its file is a node of the live
+    canvas on screen and that the sync publishes its edits. Neither is true in
+    a reference copy: it gets the plain file prompt and is told the folder is
+    read-only. A clone's node keeps the node prompt."""
+    root, clone = _canvas_root(tmp_path, monkeypatch, agent)
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    monkeypatch.setattr(agent, "_custom_env", lambda origin, file: None)
+    ref = root / "unstable" / "public" / "y"
+    _marker(ref, "mirror", "public")
+    (ref / "udf_1.py").write_text("def udf(): pass\n", encoding="utf-8")
+    mine = root / "unstable" / "user" / "mine"
+    _marker(mine, "mirror")
+    (mine / "udf_1.py").write_text("def udf(): pass\n", encoding="utf-8")
+    live = agent._appended_prompt(str(clone / "udf_1.py"), False)
+    assert "is one node of a Fused workbench canvas" in live
+    assert "READ-ONLY reference copy" not in live
+    for backend in ("", "codex"):
+        for target in (ref / "udf_1.py", mine / "udf_1.py", ref):
+            body = agent._appended_prompt(str(target), False, backend)
+            assert "is one node of a Fused workbench canvas" not in body, target
+            assert "READ-ONLY reference copy" in body, target
+            assert "do not edit" in body and "Canvases page" in body
+    assert agent._canvas_reference_copy_note(str(clone)) == ""
+    assert agent._canvas_reference_copy_note(str(tmp_path / "elsewhere.py")) == ""
+
+
+def test_the_fused_cli_note_names_the_clone_path_of_the_scoped_layout(agent, monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "cli"))
+    for backend in ("", "copilot", "codex"):
+        note = agent._fused_cli_note(backend)
+        assert "~/Fused/canvas/<unstable|prod|custom>/user/<canvas>/" in note, backend
+
+
+def test_the_duplicated_canvas_facts_match_their_sources(agent, tmp_path):
+    from fused_render import canvas_marker, canvases, fusedcli
     ps = _load("permission_server")
     assert agent._CANVAS_ENVS == fusedcli.WORKBENCH_ENV_CHOICES
+    # The scoped layout (D1476): where clones live, which folders are
+    # reference copies, and the marker that says which a `user/` folder is.
+    assert agent._CLONE_ENVS == fusedcli.WORKBENCH_ENV_CHOICES
+    assert (agent._CLONE_SCOPE, *agent._REFERENCE_SCOPES) == canvas_marker.SCOPES
+    assert canvases.clones_root("prod") == os.path.join(
+        canvases.canvases_root("prod"), agent._CLONE_SCOPE)
+    assert agent._CANVAS_MARKER == canvas_marker.MARKER_NAME
+    cases = {
+        "none": None,
+        "empty": "",
+        "junk": "{not json",
+        "list": "[]",
+        "live": json.dumps({"version": 1, "sync": "live", "scope": "user", "id": "c",
+                            "name": "n", "owner": None, "revision": 1,
+                            "last_updated": None, "pulled_at": "t"}),
+        "mirror": json.dumps({"version": 1, "sync": "mirror", "scope": "user", "id": "c",
+                              "name": "n", "owner": None, "revision": 1,
+                              "last_updated": None, "pulled_at": "t"}),
+        "broken_mirror": json.dumps({"sync": "mirror", "scope": 7}),
+        "broken_live": json.dumps({"sync": "live"}),
+        "huge": json.dumps({"sync": "mirror", "pad": "x" * (canvas_marker._MAX_BYTES + 1)}),
+    }
+    for label, content in cases.items():
+        folder = tmp_path / label
+        folder.mkdir()
+        if content is not None:
+            (folder / canvas_marker.MARKER_NAME).write_text(content, encoding="utf-8")
+        assert agent._canvas_is_mirror(str(folder)) == (
+            canvas_marker.sync_of(str(folder)) == canvas_marker.SYNC_MIRROR), label
+    assert agent._canvas_is_mirror(str(tmp_path / "mirror")) is True
+    assert agent._canvas_is_mirror(str(tmp_path / "broken_mirror")) is True
+    assert agent._canvas_is_mirror(str(tmp_path / "live")) is False
     assert agent._CANVAS_NAME_RE.pattern == canvases._NAME_RE.pattern
     assert agent.CANVAS_OPEN_TOOL == ps.CANVAS_OPEN_TOOL
     assert agent.CANVAS_PAGE_FRESH == ps.CANVAS_PAGE_FRESH
@@ -304,13 +417,20 @@ def test_a_canvas_session_names_its_canvas_and_pages_to_the_server(
     agent.RUNS = str(tmp_path / "runs")
     run_dir = tmp_path / "runs" / "r"
     run_dir.mkdir(parents=True)
-    canvas = {"env": "prod", "name": "demo", "clone": "/x/prod/demo", "node": "udf_1"}
+    canvas = {"env": "prod", "name": "demo", "clone": "/x/prod/user/demo", "node": "udf_1"}
     with open(agent._write_mcp_config(str(run_dir), pane=False, canvas=canvas),
               encoding="utf-8") as fh:
         server = json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]
-    assert server["env"]["FUSED_RENDER_CANVAS_CLONE"] == "/x/prod/demo"
+    assert server["env"]["FUSED_RENDER_CANVAS_CLONE"] == "/x/prod/user/demo"
     assert server["env"]["FUSED_RENDER_CANVAS_NODE"] == "udf_1"
     assert server["env"]["FUSED_RENDER_CANVAS_PAGES"] == agent._canvas_pages_dir()
+    # ...and the server reads the canvas's (env, name) back off that path:
+    # the environment is the segment ABOVE `user/` (D1476), never `user`.
+    ps = _load("permission_server")
+    monkeypatch.setattr(ps, "CANVAS_CLONE", "/x/prod/user/demo")
+    assert ps._canvas_key() == ("prod", "demo")
+    monkeypatch.setattr(ps, "CANVAS_CLONE", "")
+    assert ps._canvas_key() == ("", "")
     # The ask, then the page: the ceiling covers both waits.
     assert server["timeout"] >= (2 * agent.CANVAS_SHOT_WAIT + 60) * 1000
 

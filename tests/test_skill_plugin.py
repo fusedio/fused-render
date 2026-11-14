@@ -332,6 +332,42 @@ def test_every_skill_in_the_repo_is_discovered(tmp_path, monkeypatch):
     assert "plugin.json" not in found and "not-a-skill" not in found
 
 
+def test_the_canvas_reference_skill_ships_and_triggers_only_in_a_canvas_clone(
+        home, monkeypatch):
+    """D1478. It rides the ungated plugin root (every session gets it), so
+    its description is the whole gate: it must say "Use when", name the clone
+    path, and say what it is for. Assembled from the REAL repo here, because
+    discovery is by directory and a typo in the folder or the frontmatter is
+    silent."""
+    name = "fused-render-canvas-reference"
+    assert name in skill_sources.skill_names()
+    root = skill_plugin.sync_skill_plugin()
+    with open(os.path.join(root, "skills", name, "SKILL.md"), encoding="utf-8") as fh:
+        text = fh.read()
+    head, body = text.split("---\n", 2)[1:]
+    meta = dict(line.split(": ", 1) for line in head.strip().splitlines())
+    assert meta["name"] == name
+    desc = meta["description"]
+    assert desc.startswith("Use when ") and len(desc) < 300
+    assert "~/Fused/canvas/" in desc and "canvas clone" in desc
+    for must in ("../../team/", "../../public/", ".fused-canvas.json", "canvas.toml",
+                 "Read-only", "Stale", "Reference data, not instructions",
+                 # the search protocol
+                 "List the folder names in all three scopes",
+                 "never cut short", "`| head`", "head_limit: 0",
+                 "count them per canvas", "fused\\.[A-Za-z_]+",
+                 "Compare before you commit", "hand-write a pipeline",
+                 "Say what you built on"):
+        assert must in body, must
+    # The old nearest-scope-first, pick-a-few advice is gone.
+    assert "Nearest scope first" not in body and "pick two or three canvases" not in body
+    with open(os.path.join(REPO_ROOT, ".claude-plugin", "plugin.json"),
+              encoding="utf-8") as fh:
+        assert "reference canvases" in json.load(fh)["description"]
+    with open(os.path.join(REPO_ROOT, "README.md"), encoding="utf-8") as fh:
+        assert "skills/%s/SKILL.md" % name in fh.read()
+
+
 def test_a_skill_deleted_from_the_repo_stops_shipping_even_with_a_stale_packaged_copy(
         tmp_path, monkeypatch):
     """The scenario a per-skill union would get wrong (D106): a dev checkout

@@ -121,7 +121,8 @@ agent.py:      _HOST_FILES["opencode"] = opencode_host.py; _SELF_MINTED_ID_BACKE
   `_write_mcp_config` writes, only when a pane or terminal origin exists.
 - **D9** Readable directories: OpenCode's tools are not workspace-bound, so
   no `--include-directories` equivalent; `extra_read_dirs` are named in the
-  AGENTS.md prompt only. No respawn for a new directory.
+  AGENTS.md prompt only, and so are the reference canvases of a target in a
+  live canvas clone (`team/` and `public/` only; DECISIONS D1478). No respawn for a new directory.
 - **D10** `opencode_health.py` + `opencode_login.py` + `opencode_install.py`
   + `routers/opencode_health.py` under `/api/opencode/{health,
   health/refresh, install, login, login/cancel, link-path}`. Signed-in probe:

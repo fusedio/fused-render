@@ -382,6 +382,13 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
     monkeypatch.setattr(canvases_mod, "refuse_new_managers",
                         lambda: order.append("latch-canvases"))
     monkeypatch.setattr(canvases_mod, "shutdown", lambda: order.append("canvas-sync"))
+    # The reference canvases' child has a killer of its own, handed the
+    # rung's budget: a sync manager slow to stop must not eat its time.
+    from fused_render import canvas_mirror
+    monkeypatch.setattr(canvas_mirror, "refuse_new_runs", lambda: None)
+    mirror_budget = []
+    monkeypatch.setattr(canvas_mirror, "shutdown", lambda budget_s=None: (
+        mirror_budget.append(budget_s), order.append("canvas-mirror")))
     monkeypatch.setattr(bots_registry, "shutdown",
                         lambda budget_s=None: order.append("bots"))
     from fused_render import warm_run
@@ -407,7 +414,8 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
     assert order[:6] == ["latch-engines", "latch-ai", "latch-bots", "latch-canvases",
                          "latch-warm-run", "latch-contrib-claude"]
     assert set(order[6:]) == {"engines", "warm-run", "ai", "terminals", "index", "bots",
-                              "canvas-sync", "contrib-claude", "discovery"}
+                              "canvas-sync", "canvas-mirror", "contrib-claude", "discovery"}
+    assert len(mirror_budget) == 1 and 0 < mirror_budget[0] < 2.0
 
 
 def test_children_rung_is_bounded_by_its_budget(monkeypatch):
@@ -429,6 +437,9 @@ def test_children_rung_is_bounded_by_its_budget(monkeypatch):
     monkeypatch.setattr(bots_registry, "shutdown", lambda budget_s=None: None)
     from fused_render import canvases as canvases_mod
     monkeypatch.setattr(canvases_mod, "refuse_new_managers", lambda: None)
+    from fused_render import canvas_mirror
+    monkeypatch.setattr(canvas_mirror, "refuse_new_runs", lambda: None)
+    monkeypatch.setattr(canvas_mirror, "shutdown", lambda budget_s=None: None)
     monkeypatch.setattr(canvases_mod, "shutdown", lambda: None)
     from fused_render import warm_run
     monkeypatch.setattr(warm_run, "refuse_new", lambda: None)

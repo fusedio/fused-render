@@ -231,7 +231,7 @@ def canvas_page_for(clone_dir: str) -> str | None:
 
 
 def _canvas_row(env: str, name: str, clone_dir: str, *, pinned: bool) -> dict:
-    """A cloned canvas (`~/Fused/canvas/<env>/<name>`): ``kind: "canvas"``,
+    """A cloned canvas (`~/Fused/canvas/<env>/user/<name>`): ``kind: "canvas"``,
     ``path`` the clone dir (the key the open callback receives, and what
     `file_results` dedupes against), ``url`` the canvas editor, ``env`` so
     the panel can say which Fused a same-named prod/unstable pair belongs
