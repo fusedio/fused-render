@@ -136,6 +136,10 @@ class _RootState:
 
 _STATE_LOCK = threading.Lock()
 _STATE: dict[str, _RootState] = {}
+#: (root, name) -> when this process moved that clone (`moved_recently`).
+_MOVED_AT: dict[tuple[str, str], float] = {}
+#: How long a page's catalog listing may plausibly predate a move.
+MOVED_RECENTLY_S = 10 * 60.0
 # Set on the thread that is inside a pass. The carry calls into the stores,
 # and a store that one day asks "which canvases are cloned?" would re-enter
 # `ensure_layout` on this thread, behind a lock it already holds.
@@ -153,6 +157,19 @@ def reset() -> None:
     caller that knows the disk changed under it)."""
     with _STATE_LOCK:
         _STATE.clear()
+        _MOVED_AT.clear()
+
+
+def moved_recently(env: str, name: str) -> bool:
+    """Whether THIS process moved clone (env, name) into `user/` within
+    `MOVED_RECENTLY_S`. A page that listed the catalog before the move still
+    shows the canvas as "not cloned" and asks for a clone; the clone route
+    answers that with the folder as it is rather than a `pull --force` over
+    the user's unpublished work."""
+    key = (os.path.normcase(os.path.abspath(canvases.canvases_root(env))), name)
+    with _STATE_LOCK:
+        at = _MOVED_AT.get(key)
+    return at is not None and time.monotonic() - at < MOVED_RECENTLY_S
 
 
 # -- what is on disk -----------------------------------------------------------
@@ -474,6 +491,8 @@ def _migrate(env: str, root: str, name: str) -> str:
     # when the collection id is unknown — sync start heals it later.
     canvases._seed_clone_claude_files(target, name)
     canvases._mark_live(env, name)
+    with _STATE_LOCK:
+        _MOVED_AT[(os.path.normcase(os.path.abspath(root)), name)] = time.monotonic()
     logger.info("canvas %s: clone moved to %s", canvases._sync_key(env, name), target)
     return MOVED
 

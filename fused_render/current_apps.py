@@ -454,6 +454,14 @@ def _canvas_of(path: str) -> dict | None:
         canonical_fs_path(os.path.join(real_root, name)).rstrip("/"),
     ):
         return None
+    # A reference copy `fused canvas mirror` left at `user/<name>` (D1476)
+    # has the shape of a clone and is not one: it has no canvas page to open
+    # until the user clones it. Only the marker says so. A folder that is
+    # gone reads as no marker, so a deleted clone keeps its canvas row.
+    from fused_render import canvas_marker
+
+    if canvas_marker.sync_of(clone_dir) == canvas_marker.SYNC_MIRROR:
+        return None
     return {"env": env, "name": name}
 
 

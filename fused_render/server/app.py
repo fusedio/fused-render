@@ -626,6 +626,20 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         threading.Thread(target=run, name="canvas-layout", daemon=True).start()
 
+    # The reference canvases (canvas_mirror.py, D1477): `fused canvas mirror`
+    # run in the background — first ~30 s after the bind, then every half
+    # hour — for the environments in use. `@on_startup`, so a lean
+    # `fused-render open` process and a bare create_app() (tests) never
+    # spawn it; `start()` only arms a daemon timer and returns.
+    @on_startup
+    async def _startup_canvas_mirror():
+        try:
+            from fused_render import canvas_mirror
+
+            canvas_mirror.start()
+        except Exception:  # noqa: BLE001 — never worth failing startup
+            logger.warning("could not start the canvas mirror runner", exc_info=True)
+
     # The project queue's dispatcher (queue_manager.py), wired EXPLICITLY.
     #
     # `routers/tasks._wire_manager()` registers the factory, and importing that
@@ -853,6 +867,16 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         from fused_render import canvases as _canvases
 
         await asyncio.to_thread(_canvases.shutdown, latch=False)
+
+    # The mirror runner's timer and any `fused canvas mirror` child in
+    # flight: stopped with the server, never left to outlive it. A no-op in
+    # a process that never started it. `latch=False` for the same reason as
+    # the sync's just above.
+    @on_shutdown_always
+    async def _shutdown_canvas_mirror():
+        from fused_render import canvas_mirror
+
+        await asyncio.to_thread(canvas_mirror.shutdown, latch=False)
 
     # Every managed engine dies with the app: template daemons and
     # background/daemon children alike (stop_all clears both).
@@ -1244,6 +1268,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
     app.include_router(canvases_router)
+    # The reference canvases' background runner (canvas_mirror.py, D1477):
+    # its status and refresh routes. Imported here, not at the top: it
+    # imports canvases, which is already loaded by then.
+    from fused_render.canvas_mirror import router as canvas_mirror_router
+
+    app.include_router(canvas_mirror_router)
     # Bots (fused_render/bots/, docs/bots.md): per-bot Chrome over CDP driven
     # by `claude -p` or the steps engine, `/api/bots/*` + `/api/bot-apps/*`.
     # The router imports only `paths`/`registry`; bot/browser code loads on

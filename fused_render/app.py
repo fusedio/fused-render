@@ -490,13 +490,14 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.bots import browser as bots_browser
         from fused_render.server import engine_host
 
-        from fused_render import canvases, warm_run
+        from fused_render import canvas_mirror, canvases, warm_run
         from fused_render.contrib import ai as contrib_ai
 
         engine_host.refuse_new_children()
         supervisor.refuse_new_workers()
         bots_browser.refuse_launches()
         canvases.refuse_new_managers()
+        canvas_mirror.refuse_new_runs()
         warm_run.refuse_new()
         contrib_ai.refuse_children()
 
@@ -547,9 +548,12 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         # the next launch may read its own push as "server changed", which is
         # accepted), watcher + fs threads stopped with bounded joins, the
         # clone's writer lock (an flock on an open fd) released.
-        from fused_render import canvases
+        from fused_render import canvas_mirror, canvases
 
         canvases.shutdown()
+        # ...and the `fused canvas mirror` child, if one is running: it
+        # would otherwise download on as an orphan, holding its root's lock.
+        canvas_mirror.shutdown()
 
     def contrib_claude():
         # The contribution loop's `claude` children (a safety review, a draft,

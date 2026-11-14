@@ -107,6 +107,23 @@ sync learns the collection id), only when the id is known and the CLI is not
 an external one. Clones from before the layout are moved by
 canvas_layout.py, once, on first use.
 
+REFERENCE CANVASES (D1477). canvas_mirror.py runs `fused canvas mirror` in
+the background to fill and refresh those copies; this module only meets it
+at four points. (1) ADOPTION: opening a canvas whose `user/<name>` is a
+reference copy clones it in place (`_adopt_reference_copy`, from `_clone`):
+an adoption flag outside the folder (`.sync/<name>.adopting`), the marker
+rewritten `live` BEFORE the pull so no mirror run swaps the folder under it,
+`pull --force`, then the marker again. Until a pull lands the folder is not
+a clone — a reference copy's files may be stale, and a sync must never take
+them as its baseline. A copy of the canvas under another folder name in
+`user/` is found by collection id and renamed into place; `team/` and
+`public/` copies are never adopted. (2) HOLDS: clone, rename and delete run
+inside `canvas_mirror.hold(env)`, which stops this process's run for the
+environment and starts one again after. (3) Rename removes a reference copy
+blocking the new name, delete one at the canvas's own. (4) Status carries
+`mirror_root` and the runner's compact `mirror`; a completed sign-in kicks a
+run and a sign-out stops one.
+
 No import of anything under fused_render.server (server includes this router —
 keep it acyclic); the X-Fused guard is duplicated locally, same as other
 shell/* routers.
@@ -636,7 +653,8 @@ def _is_live_clone(env: str, name: str) -> bool:
     """Whether `user/<name>` is a clone this process may sync: it holds a
     `canvas.toml` and its marker does not say `mirror`.
 
-    A missing or unreadable marker counts as live, deliberately: a clone
+    A folder flagged as mid-adoption is not one yet (`_adopting_path`). A
+    missing or unreadable marker counts as live, deliberately: a clone
     from before the marker existed, the external-CLI path (which writes
     none), and the instant between a pull that removed the marker and the
     rewrite. The mirror command extracts into a dot-prefixed sibling and
@@ -644,7 +662,24 @@ def _is_live_clone(env: str, name: str) -> bool:
     half-written reference copy."""
     folder = _canvas_dir(env, name)
     return (os.path.isfile(os.path.join(folder, "canvas.toml"))
-            and canvas_marker.sync_of(folder) != canvas_marker.SYNC_MIRROR)
+            and canvas_marker.sync_of(folder) != canvas_marker.SYNC_MIRROR
+            and not os.path.lexists(_adopting_path(env, name)))
+
+
+def _adopting_path(env: str, name: str) -> str:
+    """The flag that says `user/<name>` is a reference copy being turned into
+    a clone and has NOT been pulled yet (D1477): `.sync/<name>.adopting`,
+    outside the folder, where no pull can delete it.
+
+    Adoption marks the folder live before it pulls (so no mirror run swaps
+    it mid-pull), which leaves a window — and, after a failed pull or a
+    crash, a standing state — in which a live-marked folder still holds the
+    reference copy's possibly stale files. A sync started on that would take
+    them as its clean baseline and could later push them over a newer server
+    state. While the flag exists the folder is not a clone (`_is_live_clone`):
+    the catalog says "not cloned", so opening the canvas clones it again, and
+    only a pull that lands clears the flag."""
+    return os.path.join(canvases_root(env), ".sync", f"{name}.adopting")
 
 
 def _ensure_layout(env: str, *, force: bool = False):
@@ -1003,6 +1038,15 @@ def _watch_login(login: _ActiveLogin) -> None:
         login.proc.wait()
     # Whoever the login now belongs to, earlier whoami/list/token answers are stale.
     _cli_cache_clear()
+    # A sign-in that landed: fetch that account's reference canvases (only in
+    # a process whose mirror runner was started; canvas_mirror.signed_in).
+    if os.path.isfile(login.store):
+        try:
+            from fused_render import canvas_mirror
+
+            canvas_mirror.signed_in(login.store)
+        except Exception:  # noqa: BLE001 — never out of a helper thread
+            logger.debug("canvas mirror kick after login failed", exc_info=True)
 
 
 def _status_auth_env(env: str) -> str:
@@ -1076,6 +1120,12 @@ def api_canvases_status(env: str = ""):
                 # a clone's path as `canvases_dir + "/" + name`.
                 "canvases_dir": clones_root(env),
                 "cloned_count": len(_cloned_names(env)),
+                # The reference canvases (D1477): the root `fused canvas
+                # mirror` fills — `user/`, `team/`, `public/` under it — and
+                # the runner's compact status (canvas_mirror.summary; the
+                # full one is GET /api/canvases/mirror/status).
+                "mirror_root": canvases_root(env),
+                "mirror": _mirror_summary(env),
                 "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_configured(),
             }
             for env in WORKBENCH_ENV_CHOICES
@@ -1159,6 +1209,19 @@ def api_canvases_settings_delete(x_fused: str | None = Header(default=None)):
     _cli_cache_clear()
     return {"ok": True, "path": path, "removed": removed,
             "configured": fused_settings_configured()}
+
+
+def _mirror_summary(env: str) -> dict | None:
+    """canvas_mirror.summary(env), or None if it cannot be had: the status
+    route must answer whatever state the mirror runner is in. Imported
+    lazily: that module imports this one."""
+    try:
+        from fused_render import canvas_mirror
+
+        return canvas_mirror.summary(env)
+    except Exception:  # noqa: BLE001 — informational, never a failed status
+        logger.debug("canvas mirror summary failed for %s", env, exc_info=True)
+        return None
 
 
 def _cloned_names(env: str) -> set[str]:
@@ -2143,6 +2206,11 @@ def api_canvases_list(
     canvases, err, stale = _list_entries(env, allow_stale=not fresh)
     if err is not None:
         return err
+    # The environment is in use: its reference canvases are worth keeping
+    # fresh from here on (canvas_mirror.eligible).
+    from fused_render import canvas_mirror
+
+    canvas_mirror.note_listed(env)
     cloned = _cloned_names(env)
     for canvas in canvases:
         is_cloned = canvas["name"] in cloned
@@ -2457,6 +2525,11 @@ def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None
         managers = [m for _, m in on_store()]
     for manager in managers:
         manager.pause()
+    # A mirror run in flight on this store is listing and downloading with
+    # the credentials about to be cleared: stopped. Its folders stay.
+    from fused_render import canvas_mirror
+
+    canvas_mirror.stop_for_store(store)
     proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT, env)
     if err is not None:
         # Still signed in — resume so sync keeps working until the user
@@ -2519,12 +2592,114 @@ def _clone(env: str, name: str):
     if refusal is not None:
         return refusal
     target = _canvas_dir(env, name)
-    if name in report.moved:
-        # The clone arrived from its old path on THIS call, with whatever was
-        # unpublished in it: the page asked because its listing still said
-        # "not cloned". That is the answer; a `pull --force` now would
-        # replace the user's work with the server's copy.
+    from fused_render import canvas_layout, canvas_mirror
+
+    if name in report.moved or canvas_layout.moved_recently(env, name):
+        # The clone arrived from its old path on THIS call — or minutes ago,
+        # on another path's pass, with this page's card still saying "not
+        # cloned" — with whatever was unpublished in it. That is the answer;
+        # a `pull --force` now would replace the user's work with the
+        # server's copy.
         return {"ok": True, "dir": target}
+    # No mirror run of ours swaps or deletes a folder under `user/` while
+    # this one is adopted and pulled (canvas_mirror.hold; a run in another
+    # process is held off by the marker, written live first).
+    with canvas_mirror.hold(env):
+        return _clone_held(env, name, target)
+
+
+def _adopt_reference_copy(env: str, name: str) -> tuple[str | None, JSONResponse | None]:
+    """Before a clone's pull: if canvas `name`'s folder is a reference copy
+    (marker `mirror`), make it ours FIRST. `(collection id or None, refusal
+    or None)`; the caller holds the clone gate and `canvas_mirror.hold(env)`.
+
+    The order is the crash-safe one. (1) The adoption flag (`_adopting_path`):
+    from here the folder is not a clone until a pull lands, so its possibly
+    stale files can never become a sync baseline. (2) The marker, rewritten
+    `live` — or removed, where no live marker may be written (unknown id,
+    external CLI): either way the mirror command no longer owns the folder,
+    and it re-reads the marker before every destructive step. (3) The
+    caller's `pull --force`, then the seeded files and the live marker
+    again. A CLI that preserves the marker on pull (contract v1.1) would
+    otherwise leave `mirror` standing and the page would loop on "not
+    cloned"; an older one deletes it and it is rewritten.
+
+    The reference copy is looked for at `user/<name>`, and, when that path is
+    free, by collection id under another folder name in `user/` (the mirror's
+    collision suffix, a canvas renamed since it was mirrored): that folder
+    is renamed into place. Only `user/` is ever looked in — `team/` and
+    `public/` copies are never adopted. A path taken by something that is
+    neither a clone nor a reference copy refuses the clone."""
+    from fused_render import canvas_layout
+
+    scope_dir = clones_root(env)
+    target = _canvas_dir(env, name)
+    flag = _adopting_path(env, name)
+    listed_id = canvas_layout.known_collection_id(env, name)
+    is_mirror = canvas_marker.sync_of(target) == canvas_marker.SYNC_MIRROR
+    if not is_mirror:
+        current = canvas_marker.read(target)
+        if os.path.lexists(flag) or _is_live_clone(env, name):
+            # An adoption whose pull has not landed yet (pull again), or a
+            # clone (the re-clone this route has always been).
+            return listed_id or (current.id if current is not None else None), None
+        source = canvas_marker.find_by_id(scope_dir, listed_id) if listed_id else None
+        if source is None or not canvas_marker.removable_mirror(source, scope_dir):
+            return listed_id, None  # nothing to adopt: a plain first clone
+        if os.path.lexists(target):
+            try:
+                if os.path.islink(target):
+                    raise OSError("a link")
+                os.rmdir(target)  # an empty folder holds nothing to lose
+            except OSError:
+                return None, JSONResponse(
+                    {"error": f"a folder that is not a canvas already exists at {target}; "
+                              "move or remove it, then open the canvas again",
+                     "code": "exists"}, status_code=409)
+    elif (os.path.islink(target)
+          or os.path.dirname(os.path.realpath(target)) != os.path.realpath(scope_dir)):
+        return None, JSONResponse(
+            {"error": f"the folder at {target} is a link to somewhere else; "
+                      "remove it, then open the canvas again", "code": "exists"},
+            status_code=409)
+    try:
+        os.makedirs(os.path.dirname(flag), exist_ok=True)
+        with open(flag, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+        if not is_mirror:
+            os.rename(source, target)
+    except OSError as exc:
+        _unlink_quiet(flag)
+        return None, _error(f"could not prepare the canvas folder {target}: {exc}", 500)
+    marker = canvas_marker.read(target)
+    cid = listed_id or (marker.id if marker is not None else None)
+    cli = fused_cli()
+    marked = (cli is not None and _shim_manifest_command(cli) is not None and bool(cid)
+              and canvas_marker.write_live(target, name=name, collection_id=cid))
+    if not marked:
+        # No live marker may be written here: an unmarked folder is as much
+        # out of the mirror command's hands ("unmanaged").
+        try:
+            os.remove(canvas_marker.marker_path(target))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            return None, _error(f"could not take over the canvas folder {target}: {exc}", 500)
+    logger.info("canvas %s: adopting the reference copy at %s", _sync_key(env, name), target)
+    return cid, None
+
+
+def _unlink_quiet(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _clone_held(env: str, name: str, target: str):
+    collection_id, refusal = _adopt_reference_copy(env, name)
+    if refusal is not None:
+        return refusal
     os.makedirs(target, exist_ok=True)
     # --force: the clone folder is OURS (under ~/Fused/canvas/<env>/user); a
     # re-clone deliberately resets it to the remote state. The sync watcher is
@@ -2540,9 +2715,12 @@ def _clone(env: str, name: str):
         # are excluded from the fingerprint) and after the CLI pull, which
         # deletes any previous seed (not in the bundle).
         _seed_clone_claude_files(target, name)
+        # The pull landed: an adopted reference copy now holds the server's
+        # files and is a clone from here on (`_adopting_path`).
+        _unlink_quiet(_adopting_path(env, name))
         # ...and the marker with it (a CLI older than the mirror contract
         # deletes it too): the folder is this process's live clone.
-        _mark_live(env, name)
+        _mark_live(env, name, collection_id)
     if manager is not None:
         # Only adopt the pulled content as the clean baseline on success — a
         # failed pull leaves the folder as it was, so any local edits pending
@@ -6726,6 +6904,7 @@ def _clone_leftovers(env: str, name: str) -> list[str]:
         os.path.join(sync, f"{name}.lock"),
         os.path.join(sync, "push", name),
         os.path.join(sync, "trash", name),
+        _adopting_path(env, name),
     ]
 
 
@@ -6758,6 +6937,15 @@ def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(def
         return bad
     if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
+    # No mirror run of ours writes `user/<name>` back between the server
+    # delete and the folder's removal (canvas_mirror.hold).
+    from fused_render import canvas_mirror
+
+    with canvas_mirror.hold(env):
+        return _delete_held(env, name)
+
+
+def _delete_held(env: str, name: str):
     # A clone still at the pre-D1476 path moves first, so the delete below
     # removes it with the canvas; one that cannot move yet refuses the delete
     # (the canvas would be gone and its folder left behind, unlisted).
@@ -6920,6 +7108,16 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
         return {"ok": True, "env": env, "name": name, "old_name": name}
     if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
+    # The server rename and the folder move run with this process's mirror
+    # run stopped: one in flight would see the canvas under its new name and
+    # write `user/<new>` between the two (canvas_mirror.hold).
+    from fused_render import canvas_mirror
+
+    with canvas_mirror.hold(env):
+        return _rename_held(env, name, new)
+
+
+def _rename_held(env: str, name: str, new: str):
     # Both names, at their pre-D1476 paths: the clone being renamed moves to
     # the new layout first, and a leftover legacy clone under the NEW name is
     # as much "a folder of that name" as one under `user/`.
@@ -6938,8 +7136,15 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
     case_only = os.path.normcase(target) == os.path.normcase(clone)
     # The new name's lock FILE is not "taken" (a lock file outlives its
     # folder): its writer is decided by the claim below, never by existence.
+    # Nor is a reference copy at the new path: it cannot be a canvas the
+    # account still has under that name (the listing check below refuses
+    # that), so it is a stale copy, removed right before the move. An
+    # adoption flag left under the new name is no folder either.
+    target_is_mirror = canvas_marker.removable_mirror(target, root)
     taken = [p for p in [target, *_clone_leftovers(env, new)]
-             if p != _lock_path(env, new) and os.path.lexists(p) and not case_only]
+             if p not in (_lock_path(env, new), _adopting_path(env, new))
+             and os.path.lexists(p) and not case_only
+             and not (p == target and target_is_mirror)]
     if taken:
         return JSONResponse(
             {"error": f"a canvas folder named {new!r} already exists on this computer "
@@ -7032,6 +7237,13 @@ def api_canvases_rename(body: dict = Body(...), x_fused: str | None = Header(def
             return err  # nothing local moved; the page's self-heal re-arms sync/start
         if has_clone:
             try:
+                # Re-read, not remembered: only a folder that is STILL a
+                # removable reference copy is removed, never one something
+                # made a clone of in the meantime (then the move fails, and
+                # the server rename is rolled back below).
+                if not case_only and canvas_marker.removable_mirror(target, root):
+                    shutil.rmtree(target)
+                _unlink_quiet(_adopting_path(env, new))
                 os.rename(clone, target)
             except OSError as exc:
                 _rb, rb_err = _run_cli(["workbench", "canvas", "rename", new, name],

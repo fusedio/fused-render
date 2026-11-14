@@ -72,6 +72,9 @@ def main():
             _t.sleep(delay)
         out = plain[plain.index("-o") + 1]
         files = scenario.get("pull_files", {"canvas.toml": 'type = "canvas"\n'})
+        # pull_keep_marker: a CLI at mirror contract v1.1+, whose pull neither
+        # deletes `.fused-canvas.json` nor counts it as a diff.
+        keep = (".fused-canvas.json",) if scenario.get("pull_keep_marker") else ()
         if "--dry-run" in plain:
             # canvas_pull.py prints this sentinel when local == remote;
             # anything else means the pull would change files. An explicit
@@ -97,7 +100,7 @@ def main():
             if not diff:
                 for root, _dirs, names in os.walk(out):
                     for name in names:
-                        if name == "_shared.fused":
+                        if name == "_shared.fused" or name in keep:
                             continue
                         rel = os.path.relpath(os.path.join(root, name), out)
                         if rel.replace(os.sep, "/") not in files:
@@ -118,7 +121,7 @@ def main():
         if "--force" in plain:
             for root, _dirs, names in os.walk(out):
                 for name in names:
-                    if name == "_shared.fused":
+                    if name == "_shared.fused" or name in keep:
                         continue
                     p = os.path.join(root, name)
                     rel = os.path.relpath(p, out).replace(os.sep, "/")
@@ -179,6 +182,70 @@ def main():
         return
     if plain[:2] in (["canvas", "create"], ["canvas", "delete"], ["canvas", "rename"]):
         return
+    if plain[:2] == ["canvas", "mirror"]:
+        # `fused workbench --format json canvas mirror --output ROOT`, as far
+        # as canvas_mirror.py reads it: progress lines on stderr, one JSON
+        # document on stdout, the exit code. Scenario keys (all optional):
+        # mirror_unsupported (a CLI from before the command), mirror_busy
+        # (another run holds the root), mirror_lock (hold ROOT/.mirror.lock
+        # like the real one: left behind if killed), mirror_started_file
+        # (touched once running), mirror_delay, mirror_progress (stderr
+        # lines), mirror_swap (folders rewritten AFTER the delay, each only
+        # if its marker still says mirror: the real command's re-check),
+        # mirror_stdout (raw text instead of the document), mirror_result,
+        # mirror_exit.
+        import time as _t
+        root = plain[plain.index("--output") + 1]
+        if scenario.get("mirror_unsupported"):
+            sys.stderr.write("Usage: fused workbench canvas [OPTIONS] COMMAND [ARGS]...\n"
+                             "Try 'fused workbench canvas --help' for help.\n\n"
+                             "Error: No such command 'mirror'.\n")
+            sys.exit(2)
+        if scenario.get("mirror_busy"):
+            sys.stderr.write("Error: Another canvas mirror run is using %s. Wait for it "
+                             "to finish; if none is running, delete %s and retry.\n"
+                             % (root, os.path.join(root, ".mirror.lock")))
+            sys.exit(1)
+        lock = os.path.join(root, ".mirror.lock")
+        if scenario.get("mirror_lock"):
+            os.makedirs(root, exist_ok=True)
+            with open(lock, "w") as f:
+                json.dump({"pid": os.getpid(), "started_at": "2026-11-13T10:00:00Z",
+                           "refreshed_at": "2026-11-13T10:00:00Z"}, f)
+        if scenario.get("mirror_started_file"):
+            with open(scenario["mirror_started_file"], "w") as f:
+                f.write(str(os.getpid()))
+        for line in scenario.get("mirror_progress", []):
+            sys.stderr.write(line + "\n")
+            sys.stderr.flush()
+        if scenario.get("mirror_delay"):
+            _t.sleep(scenario["mirror_delay"])
+        for swap in scenario.get("mirror_swap", []):
+            folder = os.path.join(root, swap["path"])
+            marker = os.path.join(folder, ".fused-canvas.json")
+            try:
+                with open(marker) as f:
+                    still_mirror = json.load(f).get("sync") == "mirror"
+            except (OSError, ValueError):
+                still_mirror = False
+            if not still_mirror:
+                continue
+            for rel, content in swap["files"].items():
+                with open(os.path.join(folder, rel), "w") as f:
+                    f.write(content)
+        if scenario.get("mirror_lock"):
+            os.remove(lock)
+        if "mirror_stdout" in scenario:
+            sys.stdout.write(scenario["mirror_stdout"])
+        else:
+            json.dump(scenario.get("mirror_result", {
+                "root": root, "dry_run": False,
+                "scopes": {s: {"ok": True, "unavailable": False, "listed": 0, "error": None}
+                           for s in ("user", "team", "public")},
+                "counts": {"pulled": 0, "updated": 0, "unchanged": 0, "removed": 0,
+                           "live": 0, "unmanaged": 0, "failed": 0},
+                "canvases": []}), sys.stdout)
+        sys.exit(scenario.get("mirror_exit", 0))
     if plain[:1] == ["logout"]:
         os.remove(os.environ.get("FUSED_STUB_LOGOUT_FILE")
                   or os.environ["FUSED_RENDER_FUSED_CREDENTIALS"])
@@ -200,6 +267,11 @@ def _reset_module_state():
         login.proc.kill()
         login.proc.wait()
     canvases_mod._active_login = None
+    # The reference canvases' runner: any child a test started is stopped,
+    # and nothing it learned (an unsupported CLI, a last result) leaks on.
+    from fused_render import canvas_mirror
+
+    canvas_mirror.reset()
     with canvases_mod._SYNC_LOCK:
         managers = list(canvases_mod._syncs.values())
         canvases_mod._syncs.clear()
