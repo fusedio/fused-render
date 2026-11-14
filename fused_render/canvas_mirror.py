@@ -702,57 +702,63 @@ def _execute(run: _Run) -> MirrorStatus:
         if cli is None or run.cancelled:
             return _load(env)
         report = canvas_layout.ensure_layout(env)
-        # Not while the layout is in the command's way: a clone literally
-        # named `user` still sits where it would write its `user/` copies; a
-        # moved clone named like a scope folder is still owed a carry from
-        # that path, which creating the folder would drop; or the pass
-        # failed and nothing is known.
-        owed = canvas_layout.owed_scope_names(env)
-        # ...or a clone of a canvas literally named `team` or `public` is
-        # still at `<env>/team` (its move deferred, or in conflict): the
-        # command would write every team canvas INTO the user's clone, and
-        # that clone's sync would publish them as edits.
-        legacy = [n for n in canvas_layout.legacy_clones(env)
-                  if n in canvas_layout.RESERVED_NAMES]
-        in_the_way = report.blocked or report.error
-        if not in_the_way and legacy:
-            in_the_way = (f"canvas {legacy[0]!r} is still cloned at "
-                          f"{os.path.join(_root(env), legacy[0])}, where the reference "
-                          "canvases go; it has to move to user/ first")
-        if not in_the_way and owed:
-            in_the_way = (f"the chat history of canvas {owed[0]!r} is still being "
-                          "moved to its new folder; trying again shortly")
-        if in_the_way:
-            result = MirrorStatus(env=env, state="failed", trigger=run.trigger,
-                                  started_at=run.started_at, finished_at=time.time(),
-                                  error=in_the_way)
-            previous = _load(env)
-            result.counts, result.scopes = dict(previous.counts), dict(previous.scopes)
-            _save(result)
-            return result
-        # The agent's argv names all three; the command makes only the ones
-        # it writes into. Remembered, so a CLI that turns out not to have the
-        # command leaves none of them behind.
-        made = []
-        for folder in (_root(env), *(os.path.join(_root(env), scope)
-                                     for scope in canvas_marker.SCOPES)):
-            if not os.path.isdir(folder):
-                os.makedirs(folder, exist_ok=True)
-                made.append(folder)
+        # The checks below, the folders made for the command and the spawn all
+        # run under the layout's pass lock (not reentrant, so after
+        # `ensure_layout`): no pass can move a clone named like a scope folder
+        # between reading the layout and creating that folder.
         stdout: list[str] = []
         tail: list[str] = []
         timed_out = False
-        # Spawned under the layout's pass lock: a pass that is moving a clone
-        # into `user/` right now finishes first, and every pass after this
-        # point sees the child and leaves `user/` alone (`child_running`).
-        with canvas_layout.pass_lock(env), _LOCK:
-            if run.cancelled:
-                return _load(env)
-            proc = subprocess.Popen(
-                _argv(cli, env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                env=canvases._cli_env(cli, env), **_spawn_kwargs())
-            run.proc = proc
+        with canvas_layout.pass_lock(env):
+            # Not while the layout is in the command's way: a clone literally
+            # named `user` still sits where it would write its `user/` copies; a
+            # moved clone named like a scope folder is still owed a carry from
+            # that path, which creating the folder would drop; or the pass
+            # failed and nothing is known.
+            owed = canvas_layout.owed_scope_names(env)
+            # ...or a clone of a canvas literally named `team` or `public` is
+            # still at `<env>/team` (its move deferred, or in conflict): the
+            # command would write every team canvas INTO the user's clone, and
+            # that clone's sync would publish them as edits.
+            legacy = [n for n in canvas_layout.legacy_clones(env)
+                      if n in canvas_layout.RESERVED_NAMES]
+            in_the_way = report.blocked or report.error
+            if not in_the_way and legacy:
+                in_the_way = (f"canvas {legacy[0]!r} is still cloned at "
+                              f"{os.path.join(_root(env), legacy[0])}, where the reference "
+                              "canvases go; it has to move to user/ first")
+            if not in_the_way and owed:
+                in_the_way = (f"the chat history of canvas {owed[0]!r} is still being "
+                              "moved to its new folder; trying again shortly")
+            if in_the_way:
+                result = MirrorStatus(env=env, state="failed", trigger=run.trigger,
+                                      started_at=run.started_at, finished_at=time.time(),
+                                      error=in_the_way)
+                previous = _load(env)
+                result.counts, result.scopes = dict(previous.counts), dict(previous.scopes)
+                _save(result)
+                return result
+            # The agent's argv names all three; the command makes only the ones
+            # it writes into. Remembered, so a CLI that turns out not to have the
+            # command leaves none of them behind.
+            made = []
+            for folder in (_root(env), *(os.path.join(_root(env), scope)
+                                         for scope in canvas_marker.SCOPES)):
+                if not os.path.isdir(folder):
+                    os.makedirs(folder, exist_ok=True)
+                    made.append(folder)
+            # The child is spawned under the same lock: a pass that is moving a
+            # clone into `user/` right now finishes first, and every pass after
+            # this point sees the child and leaves `user/` alone
+            # (`child_running`).
+            with _LOCK:
+                if run.cancelled:
+                    return _load(env)
+                proc = subprocess.Popen(
+                    _argv(cli, env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                    env=canvases._cli_env(cli, env), **_spawn_kwargs())
+                run.proc = proc
         readers = [threading.Thread(target=_read_stderr, args=(proc, run, tail), daemon=True),
                    threading.Thread(target=_read_stdout, args=(proc, stdout), daemon=True)]
         for reader in readers:
