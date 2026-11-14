@@ -237,7 +237,11 @@ def test_a_session_hook_in_a_reference_copy_starts_no_watcher(harness, event):
         res = harness.client.post("/api/canvases/agent/hook", headers=GUARD, json={
             "event": event, "session_id": "s1", "cwd": str(folder),
             "tool_name": "Write", "tool_input": {"file_path": str(folder / "a.py")}})
-        assert res.status_code == 200 and res.json() == {}
+        assert res.status_code == 200
+        # The one thing such a hook is ever told: the write is refused
+        # (D1478). Every other event is answered with nothing.
+        assert res.json() == ({"deny": canvases_mod._REFERENCE_COPY_DENY}
+                              if event == "pre" else {})
     assert canvases_mod._syncs == {}
     assert canvases_mod._revive_for_session(ENV, "alpha", "start hook") is None
     assert canvases_mod.session_turn_start(str(mine), "codex") is False
@@ -253,6 +257,154 @@ def test_a_session_hook_in_a_clone_still_starts_its_watcher(harness):
         "event": "start", "session_id": "s1", "cwd": str(clone)})
     assert res.status_code == 200
     assert (ENV, "alpha") in canvases_mod._syncs
+
+
+# -- a session in a clone may read reference copies, never edit them (D1478) ----
+
+
+def _pre(harness, cwd, file_path, tool="Edit", key="file_path"):
+    res = harness.client.post("/api/canvases/agent/hook", headers=GUARD, json={
+        "event": "pre", "session_id": "s1", "cwd": str(cwd), "tool_name": tool,
+        "tool_input": {key: str(file_path)}})
+    assert res.status_code == 200
+    return res.json()
+
+
+def test_the_pre_hook_refuses_an_edit_of_a_reference_copy(harness):
+    """R11. The session sits in its own live clone and reaches for a file in
+    a reference copy: `team/`, `public/`, or a `user/<name>` the mirror wrote
+    and the user never opened. Refused every time, with a reason."""
+    harness.log_in()
+    clone = _canvas_folder(harness.clones / "alpha")
+    team = _canvas_folder(harness.root / "team" / "gamma", "mirror", "team")
+    public = _canvas_folder(harness.root / "public" / "delta", "mirror", "public")
+    mine = _canvas_folder(harness.clones / "beta", "mirror")
+    deny = {"deny": canvases_mod._REFERENCE_COPY_DENY}
+    assert "read-only reference copy" in deny["deny"]
+    for _again in range(2):                       # not a one-time refusal
+        for target in (team / "a.py", public / "a.py", mine / "a.py",
+                       team / "new_node.py", public / "sub" / "x.json",
+                       harness.root / "team" / "loose.py",
+                       harness.root / "public" / "brand_new" / "canvas.toml"):
+            assert _pre(harness, clone, target) == deny, target
+    assert _pre(harness, clone, team / "a.py", tool="Write") == deny
+    assert _pre(harness, clone, team / "nb.ipynb", tool="NotebookEdit",
+                key="notebook_path") == deny
+    # A relative path is the session's cwd's.
+    assert _pre(harness, clone, os.path.join("..", "..", "team", "gamma", "a.py")) == deny
+    assert _pre(harness, clone, os.path.join("..", "beta", "a.py")) == deny
+    # Refusing starts nothing for the reference copy.
+    assert (ENV, "gamma") not in canvases_mod._syncs
+    assert (ENV, "beta") not in canvases_mod._syncs
+    assert not (harness.root / ".sync" / "beta.lock").exists()
+
+
+def test_the_pre_hook_lets_a_session_edit_its_own_clone_and_other_clones(harness):
+    """The control: the session's own files, a new file in its clone, and a
+    file in ANOTHER live clone of the user's are not reference copies. (The
+    last is outside the session's folder, so the CLI's own permission card
+    decides it; this hook has no opinion.)"""
+    harness.log_in()
+    clone = _canvas_folder(harness.clones / "alpha")
+    other = _canvas_folder(harness.clones / "beta", "live")
+    _canvas_folder(harness.root / "team" / "gamma", "mirror", "team")
+    for target in (clone / "a.py", clone / "new_node.py", clone / "canvas.toml",
+                   "a.py", other / "a.py"):
+        assert "deny" not in _pre(harness, clone, target), target
+    assert (ENV, "alpha") in canvases_mod._syncs      # its own hook still revives
+    # No file at all in the call (a tool with no path): nothing to refuse.
+    res = harness.client.post("/api/canvases/agent/hook", headers=GUARD, json={
+        "event": "pre", "session_id": "s1", "cwd": str(clone), "tool_name": "Edit",
+        "tool_input": {}})
+    assert res.json() == {}
+    # Reads are never this hook's business: only `pre` carries a refusal.
+    for event in ("post", "start", "stop"):
+        res = harness.client.post("/api/canvases/agent/hook", headers=GUARD, json={
+            "event": event, "session_id": "s1", "cwd": str(clone), "tool_name": "Read",
+            "tool_input": {"file_path": str(harness.root / "team" / "gamma" / "a.py")}})
+        assert "deny" not in res.json(), event
+
+
+def test_the_refusal_reaches_claude_as_a_pretooluse_deny(harness):
+    """End to end through the script Claude actually runs: canvas_hook.py
+    reads the CLI's hook JSON on stdin, posts it to the route, and prints
+    the PreToolUse decision. A reference file is denied with the reason; a
+    file of the session's own clone prints nothing (the call goes ahead)."""
+    import http.server
+    import subprocess
+    import sys
+    import threading
+
+    harness.log_in()
+    clone = _canvas_folder(harness.clones / "alpha")
+    team = _canvas_folder(harness.root / "team" / "gamma", "mirror", "team")
+
+    class Relay(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            res = harness.client.post(self.path, json=body,
+                                      headers={"X-Fused": self.headers.get("X-Fused", "")})
+            data = res.content
+            self.send_response(res.status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Relay)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    hook = os.path.join(os.path.dirname(canvases_mod.__file__), "claude_agent",
+                        "canvas_hook.py")
+
+    def run(file_path):
+        out = subprocess.run(
+            [sys.executable, "-I", hook, "pre"], capture_output=True, text=True, timeout=30,
+            input=json.dumps({"session_id": "s1", "cwd": str(clone), "tool_name": "Edit",
+                              "hook_event_name": "PreToolUse",
+                              "tool_input": {"file_path": str(file_path)}}),
+            env={**os.environ,
+                 "FUSED_RENDER_ORIGIN": "http://127.0.0.1:%d" % server.server_address[1]})
+        assert out.returncode == 0, out.stderr
+        return out.stdout
+
+    try:
+        denied = json.loads(run(team / "a.py"))["hookSpecificOutput"]
+        assert denied == {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                          "permissionDecisionReason": canvases_mod._REFERENCE_COPY_DENY}
+        assert run(clone / "a.py") == ""
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_in_reference_copy_reads_the_place_and_the_marker(harness, tmp_path):
+    clone = _canvas_folder(harness.clones / "alpha")
+    live = _canvas_folder(harness.clones / "beta", "live")
+    mine = _canvas_folder(harness.clones / "gamma", "mirror")
+    team = harness.root / "team"
+    yes = (mine, mine / "a.py", team / "x", team / "x" / "a.py", team / "loose.py",
+           harness.root / "public" / "y" / "deep" / "f.py",
+           harness.base / OTHER_ENV / "team" / "z" / "a.py")
+    no = (clone, clone / "a.py", live / "a.py", harness.clones, team, harness.root,
+          harness.root / "public", harness.root / ".sync" / "trash" / "alpha" / "a.py",
+          harness.root / "alpha" / "a.py",              # the pre-D1476 path
+          harness.base / "webcanvas" / "a.py",          # Fused Web's clone
+          tmp_path / "elsewhere" / "team" / "x" / "a.py")
+    for path in yes:
+        assert canvases_mod.in_reference_copy(str(path)) is True, path
+    for path in no:
+        assert canvases_mod.in_reference_copy(str(path)) is False, path
+    for bad in ("", "team/x/a.py", None, "/nul\x00byte/team/x"):
+        assert canvases_mod.in_reference_copy(bad) is False
+    # A path some tool already resolved, and one reached through a link.
+    assert canvases_mod.in_reference_copy(os.path.realpath(str(team / "x" / "a.py"))) is True
+    link = tmp_path / "shortcut"
+    os.symlink(team, link, target_is_directory=True)
+    (team / "x").mkdir(parents=True, exist_ok=True)
+    assert canvases_mod.in_reference_copy(str(link / "x" / "a.py")) is True
 
 
 def test_the_live_marker_is_never_written_over_a_mirror_one(harness, tmp_path, monkeypatch):

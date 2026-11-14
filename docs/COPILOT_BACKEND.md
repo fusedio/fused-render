@@ -136,7 +136,10 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   agents/fused.agent.md}` + `--agent fused:fused`; `skills/` symlinked from the
   fused skill plugin (and workbench plugin for canvases). Slash commands from
   `available_commands_update` go into the `system/init` row.
-- **D9** Shots + `extra_read_dirs` → `--add-dir`; fused CLI → `--allow-tool
+- **D9** Shots + `extra_read_dirs` → `--add-dir`; so are the reference
+  canvases of a target in a live canvas clone (`<env>/{user,team,public}`,
+  the ones on disk; DECISIONS D1478), which `--add-dir` cannot grant
+  read-only — that rests on the prompt. fused CLI → `--allow-tool
   'shell(fused:*)'` + PATH prefix. Builtin GitHub MCP stays on. No shell-prefix
   terminal mirror (`claude_cmd_log`) for Copilot.
 - **D10** `copilot_health.py` + `copilot_login.py` + `routers/copilot_health.py`

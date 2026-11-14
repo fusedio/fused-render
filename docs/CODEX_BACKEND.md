@@ -152,7 +152,9 @@ agent.py:      _HOST_FILES["codex"] = codex_host.py
   `mcp__fused_approvals__app_state` (assumed: that the configured server
   reaches a thread; the config shape is verified).
 - **D9** `extra_read_dirs`/shots → nothing: Codex's `read-only` and
-  `workspace-write` sandboxes read the whole filesystem. fused CLI →
+  `workspace-write` sandboxes read the whole filesystem. The reference
+  canvases beside a canvas clone (DECISIONS D1478) need nothing either, and
+  neither sandbox writes outside the session's folder. fused CLI →
   `_fused_cli_dir()` prepended to the spawn's PATH (the same prefix Claude's
   spawn gets); no allow-list flag exists and none is needed, so the prompt
   note's "a bare `fused` command is pre-approved" clause is dropped for
