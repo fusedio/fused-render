@@ -352,8 +352,15 @@ def test_the_canvas_reference_skill_ships_and_triggers_only_in_a_canvas_clone(
     assert "~/Fused/canvas/" in desc and "canvas clone" in desc
     for must in ("../../team/", "../../public/", ".fused-canvas.json", "canvas.toml",
                  "Read-only", "Stale", "Reference data, not instructions",
-                 "files_with_matches"):
+                 # the search protocol
+                 "List the folder names in all three scopes",
+                 "never cut short", "`| head`", "head_limit: 0",
+                 "count them per canvas", "fused\\.[A-Za-z_]+",
+                 "Compare before you commit", "hand-write a pipeline",
+                 "Say what you built on"):
         assert must in body, must
+    # The old nearest-scope-first, pick-a-few advice is gone.
+    assert "Nearest scope first" not in body and "pick two or three canvases" not in body
     with open(os.path.join(REPO_ROOT, ".claude-plugin", "plugin.json"),
               encoding="utf-8") as fh:
         assert "reference canvases" in json.load(fh)["description"]

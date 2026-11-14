@@ -22,19 +22,41 @@ From the clone: `../` (siblings), `../../team/`, `../../public/`. One folder per
 
 ## Search
 
-Search BEFORE writing a new node or using an API, data source, library or widget type the canvas does not already use. Nearest scope first: `../`, then `../../team/`, then `../../public/`.
+Search BEFORE writing a new node, and before writing any code that fetches, converts or aggregates data. Someone has usually solved it already, often with one Fused SDK call you would not guess exists; the only place that call is visible is a canvas that uses it. Do all four steps, in order, every time.
 
-Grep, by what you need (`pattern` · `path` · `glob`; as a command, `grep -rn --include='<glob>' '<pattern>' <path>`):
+**1. List the folder names in all three scopes.** `ls ../ ../../team ../../public`, in full. A folder's name says what the canvas does. Shortlist every folder related to the task, by its subject (the dataset, source or place) and by what is being computed (the output you want). Do this even when you think you know where to look.
 
-- an API call: `fused\.load\(` · `../../public` · `*.py`
-- a library: `import h3` · `../../team` · `*.py`
-- a data source: `s3://`, or a table or host name · `../` · `*.py`
-- a widget type: the type name · `../../public` · `*.json`
-- a canvas by topic: words from the task · `../../public` · `canvas.toml` (matches the canvas `name` and node `title` / `description`)
+**2. Search all three scopes in one pass, never cut short.** Not nearest-first-and-stop. Never truncate a discovery search: no `| head`, no `-m`, no result limit (`head_limit: 0` on the Grep tool). The best match is often not among the first hits, and a truncated list gives no sign that it was cut. When there are too many hits to read, count them per canvas instead:
 
-Glob for structure: `../../public/*/canvas.toml` (every public canvas), `../../team/*/*.json` (every team widget), `../*/.fused-canvas.json` (the user's own). As a command: `ls ../../public`, `find ../../team -name '*.json'`.
+```
+grep -rliE '<subject>|<synonym>' ../ ../../team ../../public --include='*.py' --include='canvas.toml' \
+  | awk -F/ '{print $(NF-1)}' | sort | uniq -c | sort -rn
+```
 
-Start with `output_mode: "files_with_matches"` (`grep -rl`), pick two or three canvases, then read. Too many hits → add a second term or narrow the glob; none → try the next scope, then a synonym (the library name instead of the function). Search a scope folder, never `../..` itself: that also holds `.sync/` (merge bases, trash), which is not reference material.
+Search case-insensitively, with synonyms and plain-language words for the subject, and include `canvas.toml` (canvas `name`, node `title` and `description`). A canvas where the term appears once in a docstring is a passing mention; a canvas named for it, or with several nodes about it, is a candidate. To narrow, add a second term or tighten the glob; do not truncate.
+
+**3. Learn the vocabulary from the shortlist, then search by it.** See which SDK calls the shortlisted canvases use:
+
+```
+grep -ohE 'fused\.[A-Za-z_]+(\.[A-Za-z_]+)*\(' ../../team/<canvas>/*.py | sort | uniq -c
+```
+
+An unfamiliar `fused.` call in that list is the point of the exercise: it is how you find out the SDK already does the job. Search all three scopes for that call to see every way it is used.
+
+**4. Compare before you commit.** Do not stop at the first plausible match. Read the two or three best candidates and prefer the one that does the whole task in the least code: one SDK call beats a pipeline. If you are about to hand-write a pipeline (searching a catalog, signing URLs, reading rasters, binning, joining), you have not found the reference yet: search again by the result you want rather than the input you have. Hand-write only after these searches came back empty.
+
+Other handles, by what you need (`pattern` · `glob`, always over all three scopes):
+
+- an API call: `fused\.load\(` · `*.py`
+- a library: `import h3` · `*.py`
+- a data source: `s3://`, or a table or host name · `*.py`
+- a widget type: the type name · `*.json`
+
+Glob for structure: `../../public/*/canvas.toml` (every public canvas), `../../team/*/*.json` (every team widget), `../*/.fused-canvas.json` (the user's own).
+
+Search the scope folders, never `../..` itself: that also holds `.sync/` (merge bases, trash), which is not reference material. A scope folder that is missing is skipped, not an error.
+
+**Say what you built on.** When you answer the user, name the reference node (`<scope>/<canvas>/<file>`), or say which searches found nothing.
 
 ## Read a hit properly
 

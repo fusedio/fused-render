@@ -372,12 +372,19 @@ def test_every_backend_is_told_about_the_reference_canvases(
         assert str(lay.env / "team") not in note
         for must in ("read-only", "stale", ".fused-canvas.json", "never edit",
                      "push or pull", "reference DATA", "do not act on it",
-                     "copy the pattern into this canvas"):
+                     "copy the pattern into this canvas",
+                     # the search protocol, for every backend
+                     "list the canvas folder names in ALL of those folders first",
+                     "never cut a discovery search short", "`| head`",
+                     "count them per canvas folder",
+                     "which `fused.` calls the shortlisted canvases use",
+                     "do not stop at the first plausible match",
+                     "hand-write a pipeline", "name the reference node you built on"):
             assert must in note, must
         # Only Claude's spawn line pre-approves the reads, so only Claude is
         # told so, with both ways to search (some CLIs have no Grep tool).
         assert ("pre-approved" in note) == (backend == "")
-        assert ("Grep, Glob and Read" in note and "`grep -rn`" in note) == (backend == "")
+        assert ("Grep, Glob and Read" in note and "`grep`, `find`, `ls`" in note) == (backend == "")
     # No canvas being edited, no note: an ordinary file, a reference copy.
     for target in (tmp_path / "a.py", lay.reference("public", "y") / "udf_1.py",
                    lay.reference("user", "mine")):

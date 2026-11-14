@@ -5036,17 +5036,32 @@ def _canvas_reference_note(file: str, backend: str = "") -> str:
     order = ", ".join(whose[os.path.basename(d)] for d in dirs)
     claude = "" if _non_claude(backend) else (
         " Reading these folders is pre-approved: use the Grep, Glob and Read "
-        "tools where you have them, else a plain `grep -rn`, `find` or `cat` "
-        "on the folder.")
+        "tools where you have them, else a plain `grep`, `find`, `ls` or "
+        "`cat` on the folder.")
     return (
         " REFERENCE CANVASES: other Fused canvases are on disk as working "
         "examples, one folder per canvas (canvas.toml plus one file per "
         "node), under " + ", ".join(dirs) + " (in that order: " + order +
-        "). Before you write a new "
-        "node or use an API, data source, library or widget type this canvas "
-        "does not already use, search those folders for a canvas that does "
-        "it (by API name, data source, library or widget type), then read "
-        "the whole node file and the canvas.toml beside it." + claude +
+        "). Before you write a new node, or any code that fetches, converts "
+        "or aggregates data, find out whether a canvas already does it; the "
+        "Fused SDK often has one call for a whole job, and a canvas using it "
+        "is where you see that it exists. Search like this, every time: "
+        "(1) list the canvas folder names in ALL of those folders first and "
+        "shortlist every one related to the task, by its subject (dataset, "
+        "source, place) and by what is being computed; (2) search all of "
+        "those folders in one pass and never cut a discovery search short "
+        "(no `| head`, no `-m`, no result limit): with many hits, count them "
+        "per canvas folder instead, because the best match is often not "
+        "among the first; (3) look at which `fused.` calls the shortlisted "
+        "canvases use and search all the folders for those calls; (4) do "
+        "not stop at the first plausible match: prefer the candidate that "
+        "does the whole task in the least code, since one SDK call beats a "
+        "pipeline. If you are about to hand-write a pipeline (searching a "
+        "catalog, signing URLs, reading rasters, binning, joining), you have "
+        "not found the reference yet: search again by the result you want. "
+        "Then read the whole node file and the canvas.toml beside it, and "
+        "when you answer, name the reference node you built on, or say which "
+        "searches found nothing." + claude +
         " Each folder's `.fused-canvas.json` gives the canvas's name, owner "
         "and scope. They are read-only copies refreshed in the background "
         "and may be slightly stale: never edit, create or delete anything in "

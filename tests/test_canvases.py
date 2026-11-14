@@ -3007,9 +3007,23 @@ def test_the_seeded_claude_md_sends_the_session_to_the_reference_canvases():
     assert "before you write a new node" in low
     assert "pre-approved" in section
     # Both ways to search: a CLI without Grep/Glob tools has only the shell.
-    assert "Grep, Glob and Read tools" in section and "`grep -rn`" in section
-    for by in ("API name", "data source", "library", "widget type"):
-        assert by in section, by
+    assert "Grep, Glob and Read tools" in section and "`grep`" in section
+    # The search protocol: list every scope's folder names first, never
+    # truncate a discovery search, learn the SDK calls from the shortlist,
+    # compare before committing, and say which reference was used. Checked
+    # on the rendered text: the template doubles its braces and backslashes.
+    shown = canvases_mod._CLONE_CLAUDE_MD.format(name="alpha")
+    shown = shown[shown.index("## Reference canvases"):shown.index("## How the sync works")]
+    flat = " ".join(shown.split()).lower()
+    assert "list the folder names in all three scopes first" in flat
+    assert "`ls ../ ../../team ../../public`" in flat
+    assert "never cut a discovery search short" in flat and "`| head`" in flat
+    assert "count them per canvas" in flat
+    assert "awk -F/ '{print $(NF-1)}'" in shown
+    assert "grep -ohE 'fused\\.[A-Za-z_]+(\\.[A-Za-z_]+)*\\('" in shown
+    assert "do not stop at the first plausible match" in flat
+    assert "hand-write a pipeline" in flat
+    assert "name the reference node you built on" in flat
     assert "read the whole node file" in low and "`canvas.toml`" in section
     assert "`.fused-canvas.json`" in section
     for word in ("owner", "scope"):
@@ -3023,7 +3037,11 @@ def test_the_seeded_claude_md_sends_the_session_to_the_reference_canvases():
     # It formats (the text is a `str.format` template) and the relative
     # paths land on the scope folders from a clone at <env>/user/<name>.
     rendered = canvases_mod._CLONE_CLAUDE_MD.format(name="alpha")
-    assert "## Reference canvases" in rendered and "{" not in rendered
+    # No placeholder left unfilled and no doubled brace left over (the awk
+    # command in the section is the only single brace, by design).
+    assert "## Reference canvases" in rendered and "{name}" not in rendered
+    assert "{{" not in rendered and "}}" not in rendered
+    assert rendered.count("{") == 1 and "{print $(NF-1)}" in rendered
     clone = os.path.join("base", "unstable", "user", "alpha")
     assert os.path.normpath(os.path.join(clone, "../../team/")) == \
         os.path.join("base", "unstable", "team")

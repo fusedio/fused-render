@@ -1853,22 +1853,52 @@ file per node. A folder's `.fused-canvas.json` names the canvas, its owner and
 its scope (`user`, `team` or `public`). A scope folder that is missing or
 empty has not been fetched yet; carry on without it.
 
-**Before you write a new node, or use an API, data source, library or widget
-type this canvas does not already use, look for a canvas that already does
-it.** Reading these folders is pre-approved: use the Grep, Glob and Read tools
-where you have them, else a plain `grep -rn`, `find` or `cat` on the folder.
+**Before you write a new node, or any code that fetches, converts or
+aggregates data, find out whether a canvas already does it.** Someone has
+usually solved it, often with one Fused SDK call you would not guess exists;
+a canvas that uses it is where you see that it exists. Reading these folders
+is pre-approved: use the Grep, Glob and Read tools where you have them, else a
+plain `grep`, `find`, `ls` or `cat` on the folder.
 
-- Search by what you need: an API name (a function or method you are about
-  to call), a data source (a bucket, a table, a URL), a library (`import
-  h3`), or a widget type (search the `.json` files). Start with `../` and
-  `../../team/`, then `../../public/`.
-- Then **read the whole node file**, and that canvas's `canvas.toml` for the
-  node's row (`udfName`, title, description) and its neighbours: the
-  `edges` pairs naming it say what feeds it and what reads it. A matching
-  line out of context is not an example.
-- **Copy the pattern into this canvas.** Never import, load or point at a file
-  in another canvas's folder: this canvas is published by itself and those
-  paths do not exist on the server.
+Search in this order, every time:
+
+1. **List the folder names in all three scopes first**, in full (`ls ../
+   ../../team ../../public`). A folder's name says what the canvas does.
+   Shortlist every folder related to the task, by its subject (the dataset,
+   source or place) and by what is being computed (the output you want).
+2. **Search all three scopes in one pass, and never cut a discovery search
+   short.** No `| head`, no `-m`, no result limit: the best match is often not
+   among the first hits, and a cut list gives no sign it was cut. When there
+   are many hits, count them per canvas instead:
+
+       grep -rliE '<term>|<synonym>' ../ ../../team ../../public --include='*.py' --include='canvas.toml' | awk -F/ '{{print $(NF-1)}}' | sort | uniq -c | sort -rn
+
+   Search case-insensitively, with synonyms, and include `canvas.toml`
+   (canvas names, node titles and descriptions). Narrow with a second term or
+   a tighter glob, never by truncating.
+3. **Learn the vocabulary from the shortlist, then search by it.** See which
+   `fused.` calls the shortlisted canvases use:
+
+       grep -ohE 'fused\\.[A-Za-z_]+(\\.[A-Za-z_]+)*\\(' <canvas>/*.py | sort | uniq -c
+
+   An unfamiliar call there is how you find out the SDK already does the job.
+   Search all three scopes for it to see how it is used.
+4. **Do not stop at the first plausible match.** Compare the candidates and
+   prefer the one that does the whole task in the least code: one SDK call
+   beats a pipeline. If you are about to hand-write a pipeline (searching a
+   catalog, signing URLs, reading rasters, binning, joining), you have not
+   found the reference yet: search again by the result you want, not the
+   input you have.
+5. **Read the whole node file**, and that canvas's `canvas.toml` for the
+   node's row (`udfName`, title, description) and its neighbours: the `edges`
+   pairs naming it say what feeds it and what reads it. A matching line out
+   of context is not an example.
+6. **Copy the pattern into this canvas.** Never import, load or point at a
+   file in another canvas's folder: this canvas is published by itself and
+   those paths do not exist on the server.
+
+When you answer the user, name the reference node you built on
+(`<scope>/<canvas>/<file>`), or say which searches found nothing.
 
 Rules, all of them hard:
 
