@@ -184,3 +184,23 @@ export function mirrorPollDelay(mirror: MirrorSummary | null | undefined): numbe
   if (!mirror.eligible) return null;
   return MIRROR_POLL_IDLE_MS;
 }
+
+/** What a status read set out with: the read generation (bumped by a
+ *  refresh the user asked for, when it is sent and when it is answered) and
+ *  the page's status answer it was read after. */
+export interface MirrorReadTicket<Seed> {
+  gen: number;
+  seed: Seed;
+}
+
+/** Whether a status read that set out with `ticket` may still be shown now
+ *  that the generation is `gen` and the page's own status answer is `seed`.
+ *  A read that started before a newer page status, or before a refresh the
+ *  user asked for, is older than what the page already shows: dropped. */
+export function mirrorReadIsCurrent<Seed>(
+  ticket: MirrorReadTicket<Seed>,
+  gen: number,
+  seed: Seed,
+): boolean {
+  return ticket.gen === gen && ticket.seed === seed;
+}

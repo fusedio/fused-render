@@ -3452,11 +3452,14 @@ def _task_canvas(target: str) -> dict | None:
     the plain path because the CLI wrapper reaches a clone through `pwd -P`,
     and a task made from inside one may name it either way. No existence
     check: a task on a deleted clone still names the door that was its own.
+    A reference copy at `user/<name>` (marker `mirror`) is no clone: None.
     """
     target = str(target or "").rstrip("/\\")
     if not target:
         return None
     from fused_render import canvases
+
+    from fused_render import canvas_marker
 
     cands = {os.path.normpath(target), os.path.realpath(target)}
     for env, bases in _canvas_roots(canvases).items():
@@ -3475,6 +3478,12 @@ def _task_canvas(target: str) -> dict | None:
                 # select, and a task on one keeps the explorer door.
                 if file and not _is_canvas_node_file(file):
                     continue
+                # A reference copy at `user/<name>` (marker `mirror`) is
+                # read-only and not opened on the canvas page (D1478). A
+                # folder that is gone keeps its door.
+                if canvas_marker.folder_state(
+                        os.path.join(base, name)) == canvas_marker.STATE_MIRROR:
+                    return None
                 return {"env": env, "name": name, "file": file}
     return None
 

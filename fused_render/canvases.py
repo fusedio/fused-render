@@ -699,14 +699,14 @@ def _ensure_layout(env: str, *, force: bool = False):
     return canvas_layout.ensure_layout(env, force=force)
 
 
-def _layout_refusal(env: str, name: str, report, *,
-                    creating: bool = False) -> JSONResponse | None:
+def _layout_refusal(env: str, name: str, report, *, creating: bool = False,
+                    retiring: bool = False) -> JSONResponse | None:
     """The 409 for a canvas whose clone could not be moved to the new layout
     yet, or None. Cloning or syncing it at the new path meanwhile would make
     a second clone beside the one still holding the user's work. `creating`:
-    the caller is about to make a folder under `user/` (see
-    `LayoutReport.refusal`)."""
-    why = report.refusal(name, creating=creating,
+    the caller is about to make a folder under `user/`; `retiring`: it
+    deletes or renames the canvas (see `LayoutReport.refusal`)."""
+    why = report.refusal(name, creating=creating, retiring=retiring,
                          has_clone=creating and _is_live_clone(env, name))
     if why is None:
         return None
@@ -2737,12 +2737,25 @@ def _clone(env: str, name: str):
     # — a Claude session is in it, another fused-render syncs it — refuses the
     # clone: pulling a fresh copy to the new path would leave two clones, the
     # old one holding the user's unpublished work.
+    #
+    # Inside `canvas_mirror.hold`: no mirror run of ours writes `user/` while
+    # the pass moves a clone there, and none swaps or deletes a folder under
+    # `user/` while this one is adopted and pulled (a run in another process
+    # is held off by the marker, written live first). The forced pass also
+    # waits out one a stopped run may still be in (the layout's own lock).
+    from fused_render import canvas_mirror
+
+    with canvas_mirror.hold(env):
+        return _clone_in_hold(env, name)
+
+
+def _clone_in_hold(env: str, name: str):
     report = _ensure_layout(env, force=True)
     refusal = _layout_refusal(env, name, report, creating=True)
     if refusal is not None:
         return refusal
     target = _canvas_dir(env, name)
-    from fused_render import canvas_layout, canvas_mirror
+    from fused_render import canvas_layout
 
     if (name in report.moved or canvas_layout.moved_recently(env, name)) \
             and _is_live_clone(env, name):
@@ -2753,11 +2766,7 @@ def _clone(env: str, name: str):
         # server's copy. Only while the folder IS that clone: one deleted
         # since, with a reference copy now at its path, is opened like any.
         return {"ok": True, "dir": target}
-    # No mirror run of ours swaps or deletes a folder under `user/` while
-    # this one is adopted and pulled (canvas_mirror.hold; a run in another
-    # process is held off by the marker, written live first).
-    with canvas_mirror.hold(env):
-        return _clone_held(env, name, target)
+    return _clone_held(env, name, target)
 
 
 @dataclasses.dataclass
@@ -7183,9 +7192,11 @@ def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(def
 
 def _delete_held(env: str, name: str):
     # A clone still at the pre-D1476 path moves first, so the delete below
-    # removes it with the canvas; one that cannot move yet refuses the delete
-    # (the canvas would be gone and its folder left behind, unlisted).
-    refusal = _layout_refusal(env, name, _ensure_layout(env, force=True))
+    # removes it with the canvas; one that cannot move yet — deferred, or in
+    # conflict with a clone already at `user/<name>` — refuses the delete (the
+    # canvas would be gone and its old folder left behind, to be moved back
+    # into `user/` by a later pass), as does a blocked environment.
+    refusal = _layout_refusal(env, name, _ensure_layout(env, force=True), retiring=True)
     if refusal is not None:
         return refusal
     root = os.path.realpath(clones_root(env))
@@ -7359,7 +7370,8 @@ def _rename_held(env: str, name: str, new: str):
     # as much "a folder of that name" as one under `user/`.
     report = _ensure_layout(env, force=True)
     for pending, creating in ((name, False), (new, True)):
-        refusal = _layout_refusal(env, pending, report, creating=creating)
+        refusal = _layout_refusal(env, pending, report, creating=creating,
+                                  retiring=not creating)
         if refusal is not None:
             return refusal
     root = os.path.realpath(clones_root(env))

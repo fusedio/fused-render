@@ -10,6 +10,7 @@ import {
   layoutNotice,
   mirrorChip,
   mirrorPollDelay,
+  mirrorReadIsCurrent,
   mirrorRunRefusal,
   mirroredLine,
   referenceCanvasCount,
@@ -280,5 +281,25 @@ describe("mirrorPollDelay", () => {
     expect(
       mirrorPollDelay(summary({ state: "unsupported", eligible: false, skip_reason: "unsupported" })),
     ).toBeNull();
+  });
+});
+
+describe("mirrorReadIsCurrent", () => {
+  const seedA = { name: "page status A" };
+  const seedB = { name: "page status B" };
+
+  test("a read with nothing newer since it was sent is shown", () => {
+    expect(mirrorReadIsCurrent({ gen: 0, seed: seedA }, 0, seedA)).toBe(true);
+    expect(mirrorReadIsCurrent({ gen: 3, seed: null }, 3, null)).toBe(true);
+  });
+
+  test("a read sent before a newer page status is dropped", () => {
+    expect(mirrorReadIsCurrent({ gen: 0, seed: seedA }, 0, seedB)).toBe(false);
+    expect(mirrorReadIsCurrent({ gen: 0, seed: null }, 0, seedA)).toBe(false);
+  });
+
+  test("a read sent before a refresh the user asked for is dropped", () => {
+    expect(mirrorReadIsCurrent({ gen: 0, seed: seedA }, 1, seedA)).toBe(false);
+    expect(mirrorReadIsCurrent({ gen: 1, seed: seedA }, 2, seedA)).toBe(false);
   });
 });

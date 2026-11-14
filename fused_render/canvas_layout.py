@@ -132,7 +132,7 @@ class LayoutReport:
                     or self.carry_owed or self.error)
 
     def refusal(self, name: str, *, creating: bool = False,
-                has_clone: bool = False) -> str | None:
+                has_clone: bool = False, retiring: bool = False) -> str | None:
         """Why canvas `name` must not be used at its new path right now, or
         None. Its own clone is still waiting at the old path (`deferred`);
         or the pass itself failed (`error`) and this canvas still has a
@@ -142,7 +142,11 @@ class LayoutReport:
         its clone sits at the old path with something else at the new one,
         and a pull into THAT would strand the old folder for good — unless
         `has_clone`: what is at the new path is a live clone in its own
-        right, and using it changes nothing for the old folder."""
+        right, and using it changes nothing for the old folder. `retiring` —
+        the caller deletes or renames the canvas — refuses a conflict and a
+        blocked environment whatever is at the new path: the clone left at
+        the old path would outlive the canvas (or keep its old name), and a
+        later pass would move it back into `user/`."""
         if self.error:
             # Fail closed, but only where a clone could actually be waiting:
             # this canvas still has a folder at the old path, or a clone
@@ -151,12 +155,14 @@ class LayoutReport:
             root = canvases.canvases_root(self.env)
             if _legacy_rel(root, name) is not None:
                 return self.error
-            if creating and _blocked_by_user_clone(root):
+            if (creating or retiring) and _blocked_by_user_clone(root):
                 return self.error
             return None
         why = self.deferred.get(name)
         if why:
             return why
+        if retiring:
+            return self.blocked or self.conflicts.get(name)
         if creating:
             return self.blocked or (None if has_clone else self.conflicts.get(name))
         return None
@@ -372,7 +378,8 @@ def _held(root: str, rel: str) -> list:
 
 def _carry(root: str, src: str, dst: str) -> bool:
     """Point everything that names `<root>/<src>` at `<root>/<dst>`. True when
-    nothing is left behind (False: a transcript was held; worth a retry).
+    nothing is left behind (False: a transcript was held, or a store could
+    not be rewritten; worth a retry).
     Idempotent, and never raises: the folder has already moved."""
     complete = True
     try:
@@ -380,7 +387,9 @@ def _carry(root: str, src: str, dst: str) -> bool:
 
         for base in _spellings(root):
             old, new = os.path.join(base, src), os.path.join(base, dst)
-            app_state_move.rewrite_stores(old, new)
+            if not app_state_move.rewrite_stores(old, new):
+                # A store failed (logged there); the rest were rewritten.
+                complete = False
             carried = claude_session_move.relocate(old, new)
             if carried.get("pending"):
                 complete = False
@@ -519,6 +528,14 @@ def _migrate(env: str, root: str, name: str) -> str:
         busy = key in canvases._syncs or key in canvases._DELETING
     if busy:
         return "deferred:it is being synced, renamed or deleted right now"
+    from fused_render import canvas_mirror
+
+    if canvas_mirror.child_running(env):
+        # This process's `canvas mirror` run is writing the scope folders: a
+        # reference copy removed or a clone renamed into `user/` under its
+        # feet could be swapped or deleted by it. A clone, rename or delete
+        # stops the run first (`canvas_mirror.hold`); anything else waits.
+        return "deferred:the reference canvases are being updated"
     lock_path = canvases._lock_path(env, name)
     try:
         outcome, record = canvas_sync_state.claim_lock(lock_path)
@@ -686,6 +703,12 @@ def ensure_layout(env: str, *, force: bool = False) -> LayoutReport:
         state.checked_at = time.monotonic()
         state.report = report
         return report
+
+
+def pass_lock(env: str) -> threading.Lock:
+    """The lock a pass over `env`'s root runs under: held, no pass of this
+    process is moving anything (the mirror runner spawns its child under it)."""
+    return _state_for(canvases.canvases_root(env)).lock
 
 
 def pending(env: str) -> dict:

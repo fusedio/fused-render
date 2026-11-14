@@ -17,8 +17,10 @@ import {
   layoutNotice,
   mirrorChip,
   mirrorPollDelay,
+  mirrorReadIsCurrent,
   mirrorRunRefusal,
   type MirrorChip as Chip,
+  type MirrorReadTicket,
 } from "./mirror-status";
 
 type EnvStatus = CanvasesStatus["envs"][WorkbenchEnv];
@@ -52,6 +54,9 @@ export function useReferenceMirror(
   envRef.current = env;
   const seedRef = useRef(seed);
   seedRef.current = seed;
+  // Bumped by a refresh the user asks for: a status read that set out before
+  // it (or before a newer page status) is dropped when it lands.
+  const genRef = useRef(0);
 
   const delay = mirrorPollDelay(mirror);
   useEffect(() => {
@@ -61,10 +66,16 @@ export function useReferenceMirror(
     const tick = async () => {
       // A hidden tab reads nothing; it catches up on its next tick.
       if (!document.hidden) {
+        const sent: MirrorReadTicket<EnvStatus | null> = {
+          gen: genRef.current,
+          seed: seedRef.current,
+        };
         try {
           const next = await getMirrorStatus(env);
           if (cancelled) return;
-          setLive({ seed: seedRef.current, mirror: next, layout: next.layout });
+          if (mirrorReadIsCurrent(sent, genRef.current, seedRef.current)) {
+            setLive({ seed: sent.seed, mirror: next, layout: next.layout });
+          }
         } catch {
           // The chip keeps what it last knew; the next tick asks again.
         }
@@ -81,11 +92,17 @@ export function useReferenceMirror(
   const run = useCallback(async () => {
     if (!env) return;
     setStarting(true);
+    // A poll already out read the state from before this run: dropped.
+    genRef.current += 1;
+    const sentSeed = seedRef.current;
     try {
       const answer = await runMirror(env);
       // Another environment was picked while this was out.
       if (envRef.current !== env) return;
-      setLive({ seed: seedRef.current, mirror: answer.status, layout: answer.status.layout });
+      // So is one sent while this was out: it may have read the server
+      // before the run began, and this answer is the newer word.
+      genRef.current += 1;
+      setLive({ seed: sentSeed, mirror: answer.status, layout: answer.status.layout });
       const refusal = answer.started ? null : mirrorRunRefusal(answer.reason);
       if (refusal) onError(refusal);
     } catch (e) {

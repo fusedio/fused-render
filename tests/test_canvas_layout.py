@@ -970,6 +970,41 @@ def test_a_conflict_with_a_live_clone_at_the_new_path_does_not_refuse_it(harness
     assert list(canvas_layout.pending(ENV)["conflicts"]) == ["alpha"]
 
 
+@pytest.mark.parametrize("route, body", [("delete", {}), ("rename", {"new_name": "gamma"})])
+def test_a_conflict_refuses_a_delete_or_rename_of_that_canvas(harness, stores, route, body):
+    """A live clone at `user/alpha` AND a clone left at `<env>/alpha`. A
+    delete would remove the canvas and `user/alpha` but leave the old one,
+    which the next pass would move into the freed `user/alpha`: a clone of a
+    deleted canvas. A rename would leave it under the old name the same way.
+    Both refuse until the user clears it; sync of the live clone still runs."""
+    root = harness.root
+    harness.log_in()
+    old = _legacy(root, "alpha", {"canvas.toml": 'name = "alpha"\n', "a.py": "old work\n"})
+    _legacy(harness.clones, "alpha")
+    res = harness.client.post(f"/api/canvases/{route}", headers=GUARD,
+                              json={"env": ENV, "name": "alpha", **body})
+    assert res.status_code == 409 and res.json()["code"] == "layout_pending", res.text
+    assert str(old) in res.json()["error"]
+    assert [c for c in harness.calls() if route in c] == []
+    assert (old / "a.py").read_text() == "old work\n"
+    assert (harness.clones / "alpha" / "canvas.toml").is_file()
+    assert not (harness.clones / "gamma").exists()
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert report.refusal("alpha", retiring=True) == report.conflicts["alpha"]
+    assert report.refusal("alpha") is None
+    res = harness.client.post("/api/canvases/sync/start", headers=GUARD,
+                              json={"env": ENV, "name": "alpha"})
+    assert res.status_code == 200, res.text
+
+
+def test_a_blocked_environment_refuses_a_delete_or_rename(harness, stores):
+    """A clone named `user` still holds `<env>/user`: `user/<name>` is a
+    folder inside that clone, never a canvas's folder to delete or move."""
+    report = canvas_layout.LayoutReport(env=ENV, blocked="canvas 'user' must move first")
+    assert report.refusal("beta", retiring=True) == report.blocked
+    assert report.refusal("beta") is None
+
+
 def test_a_pass_that_failed_refuses_every_canvas_route(harness, stores, monkeypatch):
     """Nothing is known about the old paths after a failed pass: a
     clone with unpublished work may be waiting there. Fail closed."""
@@ -1133,6 +1168,36 @@ def test_a_carry_that_threw_is_owed_not_done(harness, stores, monkeypatch):
         return real(src, dst)
 
     monkeypatch.setattr(app_state_move, "rewrite_stores", rewrite)
+    report = canvas_layout.ensure_layout(ENV)
+    assert report.moved == ["alpha"] and report.carry_owed
+    assert _journal(root) == [{"name": "alpha", "src": "alpha",
+                               "dst": os.path.join("user", "alpha")}]
+    assert canonical_fs_path(str(old)) in _desk()
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert not report.pending() and _journal(root) is None
+    assert _desk() == [canonical_fs_path(str(root / "user" / "alpha"))]
+
+
+def test_a_store_that_failed_inside_rewrite_stores_keeps_the_move_owed(
+        harness, stores, monkeypatch):
+    """`rewrite_stores` swallows a store's failure so the next store still
+    runs, but it says so: the carry is not complete, the journal keeps the
+    move, and a later pass rewrites that store."""
+    from fused_render import app_state_move
+
+    root = harness.root
+    old = _legacy(root, "alpha")
+    current_apps.add(str(old))
+    real = app_state_move._rewrite_current_apps
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(src)
+        if len(calls) == 1:
+            raise OSError("disk said no")
+        return real(src, dst)
+
+    monkeypatch.setattr(app_state_move, "_rewrite_current_apps", flaky)
     report = canvas_layout.ensure_layout(ENV)
     assert report.moved == ["alpha"] and report.carry_owed
     assert _journal(root) == [{"name": "alpha", "src": "alpha",

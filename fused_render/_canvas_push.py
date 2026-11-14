@@ -202,8 +202,8 @@ def _locate(path: str) -> dict | None:
         move has not reached yet. canvas_layout.py defers one exactly while
         a session is working in it, so this is the folder a session is most
         likely to type a push in — and nothing syncs it there.
-      * "tree" — anywhere else under `<base>/<env>/`: the clones folder
-        itself, or a folder that is no canvas. Not a push we know anything
+      * "tree" — `<base>/<env>` itself, or anywhere else under it: the
+        clones folder itself, or a folder that is no canvas. Not a push we know anything
         about; a pull INTO it would plant a canvas folder in a tree
         fused-render and the mirror command own.
 
@@ -217,7 +217,13 @@ def _locate(path: str) -> dict | None:
     except ValueError:  # another drive on Windows
         return None
     parts = rel.split(os.sep)
-    if len(parts) < 2 or parts[0] not in _ENVS or parts[1] in ("", os.pardir):
+    if parts[0] not in _ENVS:
+        return None
+    if len(parts) == 1:
+        # The environment folder itself: every clone, scope folder and
+        # `.sync/` is in it, and a forced pull there would replace them all.
+        return {"kind": "tree", "env": parts[0], "name": "", "root": False}
+    if parts[1] in ("", os.pardir):
         return None
     env, first = parts[0], parts[1]
     env_dir = os.path.join(base, env)

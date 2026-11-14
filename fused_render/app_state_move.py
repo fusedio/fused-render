@@ -29,7 +29,8 @@ holds the transcript half of the migration back, and a second pass over
 already-rewritten state finds nothing left to change.
 
 Best-effort like its caller: `rewrite_stores` never raises, and one store
-failing does not stop the next.
+failing does not stop the next. It says whether every store was rewritten,
+for a caller that retries what failed (canvas_layout's journal).
 """
 import logging
 import os
@@ -42,9 +43,11 @@ from fused_render.shell.seed import fused_dir
 logger = logging.getLogger(__name__)
 
 
-def rewrite_stores(old_root: str, new_root: str) -> None:
+def rewrite_stores(old_root: str, new_root: str) -> bool:
     """Point every store that names `old_root` (or anything under it) at
-    `new_root`. Never raises."""
+    `new_root`. Every store is attempted; True when none of them failed.
+    Never raises."""
+    complete = True
     for label, fn in (
             ("bookmarks/recents/schedule/pin",
              workspace_migration.rewrite_absolute_paths),
@@ -55,7 +58,9 @@ def rewrite_stores(old_root: str, new_root: str) -> None:
         try:
             fn(old_root, new_root)
         except Exception:  # noqa: BLE001 — the render path is behind this
+            complete = False
             logger.exception("could not re-root %s after the app moved", label)
+    return complete
 
 
 def _rewrite_contrib(old_root: str, new_root: str) -> None:

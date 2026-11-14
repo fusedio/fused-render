@@ -171,6 +171,9 @@ class _Run:
     #: Why this run is being stopped ("hold", "logout", "shutdown"), or None.
     cancelled: str | None = None
     finished: threading.Event = dataclasses.field(default_factory=threading.Event)
+    #: Serialises `_clear_run_lock` for this run: its own thread and
+    #: `shutdown` may both clean up after one child.
+    lock_cleanup: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
 
 _LOCK = threading.RLock()
@@ -184,6 +187,10 @@ _unsupported: set[tuple] = set()
 _listed: set[str] = set()
 #: status file path -> last finished result (loaded once, kept current).
 _last: dict[str, MirrorStatus] = {}
+#: status file path -> the file's `_file_sig` when `_last` was last set from
+#: or written to it. A file that changed since was written by ANOTHER process
+#: (its run finished after ours said `busy`): `_load` reads it again.
+_last_sig: dict[str, tuple | None] = {}
 _started = False
 _latched = False
 _timer_stop: threading.Event | None = None
@@ -242,14 +249,25 @@ def _clean_counts(raw) -> dict:
     return counts
 
 
+def _file_sig(path: str) -> tuple | None:
+    """What tells one version of the status file from another, or None."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
 def _load(env: str) -> MirrorStatus:
-    """The last finished result for `env`: memory, else the status file,
-    else a blank "idle". Never raises."""
+    """The last finished result for `env`: memory while the status file is
+    as this process last saw it, else the status file, else a blank "idle".
+    Never raises."""
     path = _status_path(env)
+    sig = _file_sig(path)
     with _LOCK:
         cached = _last.get(path)
-    if cached is not None:
-        return cached
+        if cached is not None and _last_sig.get(path) == sig:
+            return cached
     status = MirrorStatus(env=env)
     try:
         with open(path, encoding="utf-8") as f:
@@ -272,8 +290,16 @@ def _load(env: str) -> MirrorStatus:
         orphans = data.get("live_orphans")
         if isinstance(orphans, list):
             status.live_orphans = [o for o in orphans if isinstance(o, str)]
+    elif cached is not None:
+        # Gone or unreadable since (a status that could not be written, a
+        # torn read): what this process knows stands.
+        status = cached
     with _LOCK:
-        return _last.setdefault(path, status)
+        if _last.get(path) is not cached:
+            return _last[path]  # a run of ours recorded a result meanwhile
+        _last[path] = status
+        _last_sig[path] = sig
+        return status
 
 
 def _save(status: MirrorStatus, *, persist: bool = True) -> None:
@@ -282,6 +308,7 @@ def _save(status: MirrorStatus, *, persist: bool = True) -> None:
     path = _status_path(status.env)
     with _LOCK:
         _last[path] = status
+        _last_sig[path] = _file_sig(path)
     if not persist:
         return
     record = {"version": _STATUS_VERSION, **dataclasses.asdict(status)}
@@ -296,6 +323,9 @@ def _save(status: MirrorStatus, *, persist: bool = True) -> None:
             os.remove(tmp)
         except OSError:
             pass
+    with _LOCK:
+        if _last.get(path) is status:
+            _last_sig[path] = _file_sig(path)
 
 
 def note_listed(env: str) -> None:
@@ -399,7 +429,12 @@ def _spawn_kwargs() -> dict:
     """The child gets a process group of its own (POSIX): the CLI may be a
     launcher (`uv run fused`, a shell wrapper) whose child is the command,
     and a signal sent to the launcher alone leaves the command running, with
-    the root's lock. `_signal` then reaches the whole group."""
+    the root's lock. `_signal` then reaches the whole group.
+
+    Windows has no such group here: a stop reaches the direct child only, so
+    the command behind a FUSED_RENDER_FUSED_BIN launcher runs to its own end
+    (D1477; the packaged CLI is the direct child, and Windows is not a
+    supported desktop platform)."""
     return {"start_new_session": True} if _POSIX else {}
 
 
@@ -457,17 +492,34 @@ def _pid_alive(pid) -> bool:
         return True
 
 
+def _read_lock_record(path: str):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _clear_run_lock(run: _Run, pid: int) -> None:
+    """`_clear_own_lock` for `run`'s child, one call at a time per run: the
+    run's own thread and `shutdown` may both clean up after it, and two
+    cleanups reading the same stale lock could otherwise remove the one a
+    new run took in between."""
+    with run.lock_cleanup:
+        _clear_own_lock(run.env, pid)
+
+
 def _clear_own_lock(env: str, pid: int) -> None:
     """After a run of OURS on this root was stopped: remove
     `<root>/.mirror.lock` when it names `pid` (the child), or a process that
     no longer exists (the command behind a launcher, killed with its group).
     It could not release the lock itself, and left there it reads `busy` for
-    an hour. A lock whose holder is alive is someone else's run: left alone."""
+    an hour. A lock whose holder is alive is someone else's run: left alone.
+    The file is read again right before it is removed: a lock another run
+    took meanwhile is a different record, and stays."""
     path = os.path.join(_root(env), LOCK_NAME)
-    try:
-        with open(path, encoding="utf-8") as f:
-            record = json.load(f)
-    except (OSError, ValueError):
+    record = _read_lock_record(path)
+    if record is None:
         return
     holder = record.get(LOCK_PID_FIELD) if isinstance(record, dict) else None
     if not isinstance(holder, int) or isinstance(holder, bool):
@@ -481,6 +533,8 @@ def _clear_own_lock(env: str, pid: int) -> None:
             return
     elif holder != pid:
         return
+    if _read_lock_record(path) != record:
+        return  # taken over since: not the lock our child left
     try:
         os.remove(path)
     except OSError:
@@ -645,7 +699,7 @@ def _execute(run: _Run) -> MirrorStatus:
     proc = None
     try:
         cli = canvases.fused_cli()
-        if cli is None:
+        if cli is None or run.cancelled:
             return _load(env)
         report = canvas_layout.ensure_layout(env)
         # Not while the layout is in the command's way: a clone literally
@@ -688,7 +742,10 @@ def _execute(run: _Run) -> MirrorStatus:
         stdout: list[str] = []
         tail: list[str] = []
         timed_out = False
-        with _LOCK:
+        # Spawned under the layout's pass lock: a pass that is moving a clone
+        # into `user/` right now finishes first, and every pass after this
+        # point sees the child and leaves `user/` alone (`child_running`).
+        with canvas_layout.pass_lock(env), _LOCK:
             if run.cancelled:
                 return _load(env)
             proc = subprocess.Popen(
@@ -708,7 +765,7 @@ def _execute(run: _Run) -> MirrorStatus:
         for reader in readers:
             reader.join(timeout=5.0)
         if run.cancelled or timed_out:
-            _clear_own_lock(env, proc.pid)
+            _clear_run_lock(run, proc.pid)
         if run.cancelled:
             logger.info("canvas mirror %s: run stopped (%s)", env, run.cancelled)
             return _load(env)
@@ -806,6 +863,17 @@ def kick_if_started(env: str, trigger: str, *, ignore_age: bool = False) -> dict
         if not _started:
             return {"started": False, "reason": "not_started"}
     return kick(env, trigger, ignore_age=ignore_age)
+
+
+def child_running(env: str) -> bool:
+    """Whether a `canvas mirror` child of THIS process may be writing `env`'s
+    scope folders right now. The layout move asks before it touches `user/`;
+    a run that has not spawned its child yet cannot spawn one while a pass
+    holds the layout's lock (`_execute`)."""
+    with _LOCK:
+        run = _runs.get(env)
+        return (run is not None and not run.finished.is_set()
+                and run.proc is not None and run.proc.poll() is None)
 
 
 def _cancel(env: str, reason: str, *, wait: float = HOLD_WAIT_S) -> bool:
@@ -970,7 +1038,7 @@ def shutdown(*, latch: bool = True, budget_s: float | None = None) -> None:
             proc.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
             pass
-        _clear_own_lock(run.env, proc.pid)
+        _clear_run_lock(run, proc.pid)
     for run in runs:
         run.finished.wait(max(0.0, deadline - time.monotonic()))
 
@@ -993,6 +1061,7 @@ def reset() -> None:
         _unsupported.clear()
         _listed.clear()
         _last.clear()
+        _last_sig.clear()
         _started, _latched, _timer_stop = False, False, None
 
 

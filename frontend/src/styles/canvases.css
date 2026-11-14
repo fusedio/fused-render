@@ -101,7 +101,15 @@
   color: var(--fg-muted);
 }
 button.canvases-mirror {
+  position: relative;
   cursor: pointer;
+}
+/* The chip is 20px tall to sit on the subtitle's line; its press target is
+   28px. Out of flow, so neither the flex gap nor the layout sees it. */
+button.canvases-mirror::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
 }
 button.canvases-mirror:hover:not(:disabled) {
   color: var(--fg);

@@ -144,6 +144,14 @@ def test_the_task_door_the_desk_row_and_the_launcher_follow_the_new_path(harness
                       harness.root / "team" / "x", harness.root / "team" / "x" / "a.py",
                       harness.root / "user"):
         assert tasks_router._task_canvas(str(elsewhere)) is None, elsewhere
+    # A reference copy at `user/<name>` is read-only and opens no canvas page;
+    # a live clone beside it, and a folder that is gone (above), still do.
+    mirror = _canvas_folder(harness.clones / "gamma", "mirror")
+    assert tasks_router._task_canvas(str(mirror)) is None
+    assert tasks_router._task_canvas(str(mirror / "a.py")) is None
+    live = _canvas_folder(harness.clones / "beta", "live")
+    assert tasks_router._task_canvas(str(live / "a.py")) == {
+        "env": ENV, "name": "beta", "file": "a.py"}
     tasks_router._CANVAS_ROOTS_MEMO.clear()
 
     assert current_apps._canvas_of(str(clone)) == {"env": ENV, "name": "alpha"}
@@ -399,11 +407,16 @@ def test_in_reference_copy_reads_the_place_and_the_marker(harness, tmp_path):
         assert canvases_mod.in_reference_copy(str(path)) is False, path
     for bad in ("", "team/x/a.py", None, "/nul\x00byte/team/x"):
         assert canvases_mod.in_reference_copy(bad) is False
-    # A path some tool already resolved, and one reached through a link.
+    # A path some tool already resolved.
     assert canvases_mod.in_reference_copy(os.path.realpath(str(team / "x" / "a.py"))) is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_in_reference_copy_follows_a_link_into_a_scope_folder(harness, tmp_path):
+    team = harness.root / "team"
+    (team / "x").mkdir(parents=True, exist_ok=True)
     link = tmp_path / "shortcut"
     os.symlink(team, link, target_is_directory=True)
-    (team / "x").mkdir(parents=True, exist_ok=True)
     assert canvases_mod.in_reference_copy(str(link / "x" / "a.py")) is True
 
 

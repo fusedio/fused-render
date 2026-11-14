@@ -672,6 +672,28 @@ def test_a_pull_into_a_clone_is_refused(root, monkeypatch, extra):
                                         io.StringIO(), io.StringIO()) == 1
 
 
+@pytest.mark.parametrize("extra", [[], ["--force"]])
+def test_a_pull_into_the_environment_folder_itself_is_refused(root, monkeypatch, extra):
+    """`-o <base>/<env>`: the pull would write over every clone, scope folder
+    and `.sync/` at once. The environment folder is part of the tree."""
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    assert _canvas_push._locate(str(root)) == {
+        "kind": "tree", "env": ENV, "name": "", "root": False}
+    for target in (str(root), str(root) + os.sep):
+        out, err = io.StringIO(), io.StringIO()
+        code = _canvas_push.maybe_intercept(
+            ["workbench", "canvas", "pull", "alpha", "-o", target, *extra], out, err)
+        assert code == 1, target
+        assert "canvases tree" in err.getvalue()
+    # A push from it is still nothing this module knows about.
+    assert _canvas_push._clone_name(str(root)) is None
+    assert _canvas_push._reference_of(str(root)) is None
+    assert _canvas_push._legacy_of(str(root)) is None
+    # The base above the environments, and an unknown environment, are not.
+    assert _canvas_push._locate(str(root.parent)) is None
+    assert _canvas_push._locate(str(root.parent / "staging")) is None
+
+
 def test_a_pull_outside_any_clone_falls_through(root, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     out, err = io.StringIO(), io.StringIO()

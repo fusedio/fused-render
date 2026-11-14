@@ -275,6 +275,26 @@ def test_a_root_another_run_holds_is_busy_not_an_error(harness):
     assert canvas_mirror.kick(ENV, "timer")["started"] is True
 
 
+def test_a_result_another_process_writes_after_busy_replaces_it(harness):
+    """Our run said `busy` because another process's run held the root. When
+    that one finishes it writes the status file; this process must show its
+    result, not the `busy` it remembers."""
+    harness.log_in()
+    harness.set_scenario({"mirror_busy": True})
+    assert canvas_mirror.run_once(ENV).state == "busy"
+    assert canvas_mirror.status(ENV)["state"] == "busy"
+    path = harness.root / ".sync" / ".mirror.json"
+    record = json.loads(path.read_text())
+    record.update(state="ok", finished_at=time.time() + 1,
+                  counts={**record["counts"], "unchanged": 11})
+    path.write_text(json.dumps(record) + "\n")
+    status = canvas_mirror.status(ENV)
+    assert status["state"] == "ok" and status["mirrored"] == 11
+    # An unreadable rewrite leaves what this process knew.
+    path.write_text("{torn")
+    assert canvas_mirror.status(ENV)["state"] == "ok"
+
+
 @pytest.mark.parametrize("scenario, state, needle", [
     ({"mirror_stdout": "Traceback (most recent call last):\n  boom"}, "failed", "no result"),
     ({"mirror_stdout": "[1, 2, 3]"}, "failed", "no result"),
@@ -706,6 +726,49 @@ def test_hold_stops_the_run_and_starts_one_again_afterwards(harness, tmp_path, m
     assert len(_mirror_calls(harness)) == 2
 
 
+def test_no_clone_is_moved_into_user_while_our_mirror_child_writes_it(
+        harness, tmp_path, monkeypatch):
+    """A layout pass from a listing or a status poll (no hold) leaves a clone
+    at its old path while this process's `canvas mirror` child is running:
+    the child could swap or delete a folder renamed into `user/` under it.
+    The run is not stopped for it. Opening the canvas does stop it (the
+    clone route holds the mirror) and the clone moves then."""
+    harness.log_in()
+    monkeypatch.setattr(canvas_mirror, "STOP_GRACE_S", 0.5)
+    started = _slow(harness, tmp_path)
+    canvas_mirror.kick(ENV, "timer", force=True)
+    pid = _wait_started(started)
+    legacy = harness.root / "alpha"
+    legacy.mkdir()
+    (legacy / "canvas.toml").write_text('name = "alpha"\n', encoding="utf-8")
+    (legacy / "a.py").write_text("unpublished\n", encoding="utf-8")
+    assert canvas_mirror.child_running(ENV) is True
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert report.moved == [] and "reference canvases" in report.deferred["alpha"]
+    assert legacy.is_dir() and not (harness.clones / "alpha").exists()
+    assert _alive(pid)
+    harness.set_scenario({"mirror_result": _result(counts={"unchanged": 1})})
+    res = harness.client.post("/api/canvases/clone", headers=GUARD,
+                              json={"env": ENV, "name": "alpha"})
+    assert res.status_code == 200, res.text
+    assert not _alive(pid) and not legacy.exists()
+    assert (harness.clones / "alpha" / "a.py").read_text() == "unpublished\n"
+    assert _wait_for(lambda: canvas_mirror.status(ENV)["state"] == "ok")
+
+
+def test_the_child_is_not_spawned_while_a_layout_pass_is_moving_clones(harness):
+    """A pass that started before the run (and so saw no child) finishes
+    before the child exists: the spawn takes the layout's pass lock."""
+    harness.log_in()
+    harness.set_scenario({"mirror_result": _result()})
+    with canvas_layout.pass_lock(ENV):
+        assert canvas_mirror.kick(ENV, "timer", force=True)["started"] is True
+        time.sleep(0.3)
+        assert _mirror_calls(harness) == []
+    assert _wait_for(lambda: canvas_mirror.status(ENV)["state"] == "ok")
+    assert len(_mirror_calls(harness)) == 1
+
+
 def test_a_hold_with_nothing_running_starts_nothing(harness):
     harness.log_in()
     with canvas_mirror.hold(ENV):
@@ -821,6 +884,48 @@ def test_a_dead_holders_lock_is_cleared_and_a_live_ones_is_not(harness):
     lock.write_text(json.dumps({"pid": "12", "started_at": "t"}))
     canvas_mirror._clear_own_lock(ENV, 12)
     assert lock.exists()
+
+
+def test_a_lock_taken_over_while_its_dead_holder_was_checked_stays(harness, monkeypatch):
+    """The stale lock named a dead process; by the time that was settled a
+    new run had taken the root. Its lock is a different record: kept."""
+    harness.root.mkdir(parents=True)
+    lock = harness.root / ".mirror.lock"
+    lock.write_text(json.dumps({"pid": 4_000_000, "started_at": "t"}))
+    taken = json.dumps({"pid": os.getpid(), "started_at": "later"})
+
+    def dead_and_replaced(pid):
+        lock.write_text(taken)
+        return False
+
+    monkeypatch.setattr(canvas_mirror, "_pid_alive", dead_and_replaced)
+    canvas_mirror._clear_own_lock(ENV, 1)
+    assert lock.read_text() == taken
+
+
+def test_two_cleanups_of_one_run_do_not_overlap(harness, monkeypatch):
+    """The run's own thread and `shutdown` both clean up after one child:
+    one at a time, so the second reads whatever the first left."""
+    import threading
+
+    run = canvas_mirror._Run(env=ENV, trigger="manual", started_at=0.0)
+    inside, overlapped = [], []
+
+    def clear(env, pid):
+        if inside:
+            overlapped.append(pid)
+        inside.append(pid)
+        time.sleep(0.05)
+        inside.pop()
+
+    monkeypatch.setattr(canvas_mirror, "_clear_own_lock", clear)
+    threads = [threading.Thread(target=canvas_mirror._clear_run_lock, args=(run, 7))
+               for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert overlapped == []
 
 
 # -- the stop ladder -----------------------------------------------------------
