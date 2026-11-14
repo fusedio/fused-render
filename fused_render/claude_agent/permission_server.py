@@ -962,11 +962,14 @@ def _handle_app_state(args: dict) -> dict:
 
 
 def _canvas_key() -> tuple:
-    """`(env, name)` of CANVAS_CLONE (`<root>/<env>/<name>`), or ("", "")."""
+    """`(env, name)` of CANVAS_CLONE (`<root>/<env>/user/<name>`, D1476:
+    the environment is the segment above the `user/` scope folder), or
+    ("", "")."""
     if not CANVAS_CLONE:
         return "", ""
     clone = os.path.normpath(CANVAS_CLONE)
-    return os.path.basename(os.path.dirname(clone)), os.path.basename(clone)
+    env_dir = os.path.dirname(os.path.dirname(clone))
+    return os.path.basename(env_dir), os.path.basename(clone)
 
 
 def _canvas_nodes() -> list:

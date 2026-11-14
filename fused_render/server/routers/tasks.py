@@ -3416,7 +3416,9 @@ def _canvas_roots(canvases) -> dict[str, set[str]]:
     if roots is None:
         roots = {}
         for env in WORKBENCH_ENV_CHOICES:
-            root = canvases.canvases_root(env)
+            # Where clones live (`<env>/user`, D1476): a task under `team/`
+            # or `public/` — reference copies — is on no canvas page.
+            root = canvases.clones_root(env)
             roots[env] = {os.path.normpath(root), os.path.realpath(root)}
         _CANVAS_ROOTS_MEMO[base] = roots
     return roots
@@ -3434,8 +3436,8 @@ def _is_canvas_node_file(file: str) -> bool:
 def _task_canvas(target: str) -> dict | None:
     """The canvas a task is on — `{env, name, file}` — or None.
 
-    A task whose target is a canvas CLONE (`~/Fused/canvas/<env>/<name>`,
-    canvases.canvases_root) or a NODE in it (a top-level file of the clone,
+    A task whose target is a canvas CLONE (`~/Fused/canvas/<env>/user/<name>`,
+    canvases.clones_root) or a NODE in it (a top-level file of the clone,
     `<udf>.py` / `<widget>.json`) opens on the canvas page, not in the
     explorer: the shell's door (`tasks-lib.taskHref`) lands on `/canvases/
     <env>/<name>` with the node selected and the chat on the task's session
@@ -3450,11 +3452,14 @@ def _task_canvas(target: str) -> dict | None:
     the plain path because the CLI wrapper reaches a clone through `pwd -P`,
     and a task made from inside one may name it either way. No existence
     check: a task on a deleted clone still names the door that was its own.
+    A reference copy at `user/<name>` (marker `mirror`) is no clone: None.
     """
     target = str(target or "").rstrip("/\\")
     if not target:
         return None
     from fused_render import canvases
+
+    from fused_render import canvas_marker
 
     cands = {os.path.normpath(target), os.path.realpath(target)}
     for env, bases in _canvas_roots(canvases).items():
@@ -3473,6 +3478,12 @@ def _task_canvas(target: str) -> dict | None:
                 # select, and a task on one keeps the explorer door.
                 if file and not _is_canvas_node_file(file):
                     continue
+                # A reference copy at `user/<name>` (marker `mirror`) is
+                # read-only and not opened on the canvas page (D1478). A
+                # folder that is gone keeps its door.
+                if canvas_marker.folder_state(
+                        os.path.join(base, name)) == canvas_marker.STATE_MIRROR:
+                    return None
                 return {"env": env, "name": name, "file": file}
     return None
 

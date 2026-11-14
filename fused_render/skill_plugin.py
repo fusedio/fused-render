@@ -281,7 +281,7 @@ def fused_web_canvas_root() -> str:
     """`~/Fused/canvas` — Fused Web's (the sandbox/showcase app, a separate
     codebase) own local canvas-clones folder, `~/Fused/canvas/<name>`. Since
     2026-10-20 this server's own clones live UNDER it too, one folder per
-    environment (`~/Fused/canvas/<env>/<name>`, `canvases.canvases_base()`),
+    environment (`~/Fused/canvas/<env>/user/<name>`, `canvases.canvases_base()`),
     so the two gate roots coincide by default; a Fused Web canvas literally
     named `prod` or `unstable` would collide with those folders — accepted.
     Fused Web's tasks start via `fused.tasks.create` (routers/tasks.py

@@ -199,7 +199,7 @@ def log_cli_provenance() -> str | None:
 # set it wins over the preference and the Preferences row shows as locked.
 WORKBENCH_ENV_VAR = "FUSED_RENDER_WORKBENCH_ENV"
 # The environments a canvas can belong to (the `<env>` segment of
-# `~/Fused/canvas/<env>/<name>`, every canvases endpoint's `env`) and that the
+# `~/Fused/canvas/<env>/user/<name>`, every canvases endpoint's `env`) and that the
 # DEFAULT preference may name. The env var still accepts the CLI's full table
 # (stg, dev, a PR number) — but canvases.py refuses every canvas call under a
 # pin outside this tuple (`_require_env`).
@@ -219,7 +219,7 @@ DEFAULT_WORKBENCH_ENV = "prod"
 
 def workbench_env() -> str:
     """The DEFAULT Fused environment — not "the" environment any more: a
-    canvas carries its own (the `<env>` of `~/Fused/canvas/<env>/<name>`), and
+    canvas carries its own (the `<env>` of `~/Fused/canvas/<env>/user/<name>`), and
     a prod canvas and an unstable one sync at once (owner, 2026-10-20). What
     still follows this default: the canvas catalog's initial environment, the
     `fused` wrapper's FUSED_ENV when a session runs it OUTSIDE a clone (inside

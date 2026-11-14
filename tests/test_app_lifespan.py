@@ -127,6 +127,12 @@ EXPECTED_STARTUP = [
     # `~/Fused/canvas`, if it already exists, so a task created there right
     # after a restart usually finds the clone already on disk.
     "_startup_kick_fused_web_workbench_skills",
+    # Added 2026-11-13 (D1476): moves canvas clones from before the scoped
+    # layout into `<env>/user/`, on a daemon thread.
+    "_startup_canvas_layout",
+    # Added 2026-11-13 (D1477): arms the reference canvases' timer
+    # (canvas_mirror.start); nothing spawns before its first tick.
+    "_startup_canvas_mirror",
     # Added 2026-09-17 (PR 2): the project queue's factory is registered here
     # explicitly. Also claims the machine-duties lease (B2) and, only for the
     # process that wins it, starts the scheduler and reconciles once so a
@@ -178,6 +184,9 @@ EXPECTED_SHUTDOWN = [
     # the rung the Mac quit runs itself (app.py `_stop_children`) and every
     # lifespan exit (Linux supervisor child, pip on Windows) had none of.
     "_shutdown_canvas_sync",
+    # Added 2026-11-13 (D1477): the reference canvases' timer and any
+    # `fused canvas mirror` child in flight.
+    "_shutdown_canvas_mirror",
     "_shutdown_engines",
     # Status-bar terminal (PLAN-status-bar-terminal.md): registered where
     # `terminal_router` is included in `create_app`, well after the handlers
@@ -238,6 +247,9 @@ EXPECTED_SHUTDOWN_LEAN = [
     # the rung the Mac quit runs itself (app.py `_stop_children`) and every
     # lifespan exit (Linux supervisor child, pip on Windows) had none of.
     "_shutdown_canvas_sync",
+    # Added 2026-11-13 (D1477): the reference canvases' timer and any
+    # `fused canvas mirror` child in flight.
+    "_shutdown_canvas_mirror",
     "_shutdown_engines",
     "_shutdown_terminal_sessions",
     # A request can start a bot's Chrome in a lean app too.

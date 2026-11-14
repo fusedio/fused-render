@@ -105,7 +105,7 @@ def shell_bots_page(path: str, shell_path: str = Depends(get_shell_path)):
 
 # The canvas workspace is `/canvases/<env>/<name>` (frontend
 # apps/canvases/api.ts canvasNameFromPath): the environment is a path segment
-# because the clone is one on disk (`~/Fused/canvas/<env>/<name>`), and a prod
+# because the clone is one on disk (`~/Fused/canvas/<env>/user/<name>`), and a prod
 # and an unstable canvas may be open at once. The one-segment form is still
 # served so a stale bookmark lands on the shell's "Unrecognized URL" page
 # (owner: no redirect to the default environment) instead of a bare 404.

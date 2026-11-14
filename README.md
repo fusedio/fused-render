@@ -287,6 +287,10 @@ injected `fused` object gives a page:
 built-in preview template in `fused_render/templates/` is an example on the
 same primitives. Custom templates, theming and app icons have their own
 skills under [`skills/`](https://github.com/fusedio/fused-render/blob/main/skills/).
+An agent editing a Fused canvas also gets
+[fused-render-canvas-reference](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-canvas-reference/SKILL.md):
+how to find a working example in the read-only copies of the user's, their
+team's and the public canvases kept beside the one it is editing.
 
 [docs/usage.md](https://github.com/fusedio/fused-render/blob/main/docs/usage.md) covers the execution engine and dependencies,
 the AI Models page, preferences and export for hosted serving.

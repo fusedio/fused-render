@@ -66,8 +66,8 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
     monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    (harness.root / "alpha" / ".cache").mkdir()
-    (harness.root / "alpha" / ".cache" / "junk.bin").write_text("x")
+    (harness.clones / "alpha" / ".cache").mkdir()
+    (harness.clones / "alpha" / ".cache" / "junk.bin").write_text("x")
 
     started = threading.Event()
     release = threading.Event()
@@ -86,7 +86,7 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
 
     monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", slow_push)
     manager = _start(harness)
-    (harness.root / "alpha" / "a.py").write_text("a2-edited\n")
+    (harness.clones / "alpha" / "a.py").write_text("a2-edited\n")
     assert started.wait(5), "the push never reached the CLI"
     assert manager.push_state == "pushing"
 
@@ -96,7 +96,7 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
         json={"env": ENV, "name": "alpha", "gen": 1, "seq": 1, "body": EMPTY_SNAPSHOT}, headers=GUARD)
     elapsed = time.time() - t0
     # A write the copy cannot contain: lands while the CLI is still running.
-    (harness.root / "alpha" / "b.py").write_text("b2-during-push\n")
+    (harness.clones / "alpha" / "b.py").write_text("b2-during-push\n")
     time.sleep(0.15)
     release.set()
 
@@ -136,7 +136,7 @@ def test_the_manual_push_waits_its_turn_behind_a_running_push(
 
     monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", slow_push)
     _start(harness)
-    (harness.root / "alpha" / "a.py").write_text("a2\n")
+    (harness.clones / "alpha" / "a.py").write_text("a2\n")
     answers: list = []
 
     def push():
@@ -147,7 +147,7 @@ def test_the_manual_push_waits_its_turn_behind_a_running_push(
     first.start()
     assert started.wait(5)
     if write_while_waiting:
-        (harness.root / "alpha" / "b.py").write_text("b2\n")
+        (harness.clones / "alpha" / "b.py").write_text("b2\n")
     second = threading.Thread(target=push)
     monkeypatch.setattr(canvases_mod, "PUSH_TIMEOUT", 0.1)
     second.start()
@@ -390,7 +390,7 @@ def test_a_delta_cut_and_ack_show_on_the_disk_to_embed_leg(harness, tmp_path, mo
     assert m._frame_seen is True and m._view_rev == cut["rev"]
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "idle"
     # Disk moves, the frame has not acked it: pending.
-    (harness.root / "alpha" / "a.py").write_text("a-moved\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-moved\n")
     m._note_disk()
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "pending"
     actions = [e["action"] for e in harness.client.get(
@@ -434,7 +434,7 @@ def test_a_file_write_advances_disk_rev_without_the_scan_tick(harness, tmp_path,
     _quiet_watcher(monkeypatch)  # the 1 s scan cannot be what moved the rev
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     m = _start(harness)
-    clone = harness.root / "alpha"
+    clone = harness.clones / "alpha"
     # FSEvents needs a moment to arm: prime until the watcher demonstrably sees.
     primed = False
     for i in range(30):
@@ -550,7 +550,7 @@ def test_a_push_reconciles_the_clone_rows_with_its_files(
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     seen: dict = {}
     _capture_push(monkeypatch, seen)
-    clone = harness.root / "alpha"
+    clone = harness.clones / "alpha"
     (clone / "canvas.toml").write_text('[[canvas.nodes]]\nudfName = "ghost"\n[[canvas.nodes]]\nudfName = "b"\n')
     (clone / "b.py").unlink()
     m = _start(harness)
@@ -599,7 +599,7 @@ def test_a_push_does_not_wait_for_the_source_of_a_node_the_workbench_just_create
     _snapshot(harness, 2, body)
     assert push().json()["ok"] is True
     assert "x = 900" in seen["tomls"][1]
-    assert canvas_snapshot.compact_state_from_disk(str(harness.root / "alpha"))["edges"] == [
+    assert canvas_snapshot.compact_state_from_disk(str(harness.clones / "alpha"))["edges"] == [
         ["a", "fresh"]]
 
 
@@ -608,7 +608,7 @@ def test_the_body_channel_reads_and_writes_lf_whatever_the_line_endings(
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     m = _start(harness)
-    path = harness.root / "alpha" / "a.py"
+    path = harness.clones / "alpha" / "a.py"
     path.write_bytes(b"a1\r\n")
     with m._op_lock:
         first = m.apply_body("a", "a.py", canvas_snapshot.body_hash("a1\n"), "a2\r\nb\r\n")
@@ -625,7 +625,7 @@ def test_a_body_never_overwrites_without_a_copy_when_a_read_fails(
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     m = _start(harness)
-    path = harness.root / "alpha" / "a.py"
+    path = harness.clones / "alpha" / "a.py"
     path.write_bytes(b"a1\r\n")
     real, reads = canvas_snapshot._read_bytes, []
     monkeypatch.setattr(canvas_snapshot, "_read_bytes", lambda p: None if (
@@ -646,12 +646,12 @@ def test_a_manual_push_that_landed_is_ok_even_if_the_clone_moved_during_it(
     real = canvases_mod._SyncManager._run_push_cli
 
     def push_with_write(self, cli, copy_dir):
-        (harness.root / "alpha" / "a.py").write_text("written-during-push\n")
+        (harness.clones / "alpha" / "a.py").write_text("written-during-push\n")
         return real(self, cli, copy_dir)
 
     monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", push_with_write)
     m = _start(harness)
-    (harness.root / "alpha" / "a.py").write_text("a2\n")
+    (harness.clones / "alpha" / "a.py").write_text("a2\n")
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     body = res.json()
     assert res.status_code == 200, res.text
@@ -673,7 +673,7 @@ def test_fusedignored_files_stay_out_of_the_frozen_copy(
         harness, tmp_path, monkeypatch, fake_agent):
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    clone = harness.root / "alpha"
+    clone = harness.clones / "alpha"
     seen: dict = {}
     _capture_push(monkeypatch, seen)
     mine = "scratch_*.csv\n\n\n# mine"
@@ -733,7 +733,7 @@ def test_the_quit_rung_terminates_a_push_in_flight(harness, tmp_path, monkeypatc
                                                      "import time; time.sleep(60)"])
     monkeypatch.setattr(canvases_mod, "_QUITTING", False)  # restored after the test
     m = _start(harness)
-    (harness.root / "alpha" / "a.py").write_text("a2\n")
+    (harness.clones / "alpha" / "a.py").write_text("a2\n")
     results = []
     pusher = threading.Thread(target=lambda: results.append(harness.client.post(
         "/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)))
@@ -759,7 +759,7 @@ def test_nested_or_slashed_fusedignore_rules_never_drop_a_published_file(
     leading "/" anchors, and a rule with an inner "/" is left to the CLI."""
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    clone = harness.root / "alpha"
+    clone = harness.clones / "alpha"
     seen: dict = {}
     _capture_push(monkeypatch, seen)
     _start(harness)
@@ -842,7 +842,7 @@ def _snapshot(harness, seq, body, gen=1):
 
 
 def _toml(harness):
-    return (harness.root / "alpha" / "canvas.toml").read_text()
+    return (harness.clones / "alpha" / "canvas.toml").read_text()
 
 
 def _actions(harness):
@@ -858,7 +858,7 @@ def test_a_rowless_file_gets_no_row_and_no_delta_op_until_its_node_arrives(
     _capture_push(monkeypatch, seen)
     m = _start(harness)
     _snapshot(harness, 1, ROWLESS_BODY)
-    assert (harness.root / "alpha" / "fresh.py").read_text() == "print(2)\n"
+    assert (harness.clones / "alpha" / "fresh.py").read_text() == "print(2)\n"
     assert "fresh" in m._rowless
     cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     assert "ops" in cut, cut
@@ -883,7 +883,7 @@ def test_a_rowless_file_deleted_in_the_embed_is_trashed_and_not_pushed_back(
     m = _start(harness)
     _snapshot(harness, 1, ROWLESS_BODY)
     _snapshot(harness, 2, EMPTY_SNAPSHOT)
-    assert not (harness.root / "alpha" / "fresh.py").exists()
+    assert not (harness.clones / "alpha" / "fresh.py").exists()
     assert m._rowless == set()
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200, res.text
@@ -905,9 +905,9 @@ def test_a_frame_reload_keeps_a_rowless_file_and_drops_a_fileless_row(
             "edges": [{"source": "n-fresh", "target": "n-1"}]}}})
     assert m._rowless == set() and m._fileless == {"udf_1"}
     assert 'udfName = "udf_1"' in _toml(harness)
-    (harness.root / "alpha" / "late.py").write_text("print(3)\n")
+    (harness.clones / "alpha" / "late.py").write_text("print(3)\n")
     _snapshot(harness, 1, EMPTY_SNAPSHOT, gen=2)
-    assert (harness.root / "alpha" / "fresh.py").read_text() == "print(2)\n"
+    assert (harness.clones / "alpha" / "fresh.py").read_text() == "print(2)\n"
     assert m._rowless == set() and m._fileless == set()
     toml = _toml(harness)
     assert 'udfName = "fresh"' in toml and 'udfName = "udf_1"' not in toml and "edges = []" in toml
@@ -961,7 +961,7 @@ def test_a_write_after_the_pull_recheck_is_not_baselined_as_synced(
         out = real_run(args, *a, **kw)
         if "--dry-run" in args and "pull" in args:
             # Lands after the recheck read the folder.
-            (harness.root / "alpha" / "a.py").write_text("written-after-recheck\n")
+            (harness.clones / "alpha" / "a.py").write_text("written-after-recheck\n")
         return out
 
     monkeypatch.setattr(canvases_mod.subprocess, "run", run)
@@ -969,7 +969,7 @@ def test_a_write_after_the_pull_recheck_is_not_baselined_as_synced(
                               json={"env": ENV, "name": "alpha", "hard": True}, headers=GUARD)
     monkeypatch.setattr(canvases_mod.subprocess, "run", real_run)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert (harness.root / "alpha" / "a.py").read_text() == "written-after-recheck\n"
+    assert (harness.clones / "alpha" / "a.py").read_text() == "written-after-recheck\n"
     assert m._dirty_since is not None and m.push_state == "pending", m.push_state
     # Not part of the sync point: the next merge must read a.py as a local edit.
     assert (m._base_files or {}).get("a.py") != canvases_mod.hashlib.md5(
@@ -996,14 +996,14 @@ def test_a_wholesale_pull_waits_for_a_live_claude_session(
 
     s2d = None
     assert _wait_for(lambda: _state(harness)["legs"]["server_to_disk"]["state"] == "stale")
-    assert not (harness.root / "alpha" / "remote_udf.py").exists()
+    assert not (harness.clones / "alpha" / "remote_udf.py").exists()
     assert "server move held" in _actions(harness)
     body = _pull_when_stale(harness)
     assert body["ok"] is True, body
     forces = [c for c in harness.calls()
               if c[:3] == ["workbench", "canvas", "pull"] and "--force" in c]
     assert len(forces) == 1, forces  # the clone's only
-    assert (harness.root / "alpha" / "remote_udf.py").exists()
+    assert (harness.clones / "alpha" / "remote_udf.py").exists()
     s2d = _state(harness)["legs"]["server_to_disk"]
     assert s2d["state"] == "merged" and s2d["files"] == ["remote_udf.py"], s2d
 
@@ -1399,16 +1399,16 @@ def test_a_row_the_session_adds_inside_a_folder_is_the_only_row_the_push_ships(
     seen: dict = {}
     _capture_push(monkeypatch, seen)
     _start(harness)
-    (harness.root / "alpha" / "foo.md").write_text("# foo\n")
+    (harness.clones / "alpha" / "foo.md").write_text("# foo\n")
     harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1")
-    with open(harness.root / "alpha" / "canvas.toml", "a") as fh:
+    with open(harness.clones / "alpha" / "canvas.toml", "a") as fh:
         fh.write('\n[[canvas.nodes]]\nudfName = "Docs"\nfolderName = "Docs"\ntype = "udf-folder"\n'
                  'x = 0\ny = 0\nchildUdfOrder = ["foo"]\n\n'
                  '[[canvas.nodes]]\nudfName = "foo"\nx = 12\ny = 34\n')
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
                               headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    foo = [r for r in _rows(harness.root / "alpha") if r["udfName"] == "foo"]
+    foo = [r for r in _rows(harness.clones / "alpha") if r["udfName"] == "foo"]
     assert len(foo) == 1 and (foo[0]["x"], foo[0]["y"]) == (12, 34), foo
     assert seen["tomls"][0].count('udfName = "foo"') == 1, seen["tomls"][0]
 
@@ -1468,12 +1468,12 @@ def test_a_revision_move_with_the_same_bytes_rebaselines(harness, tmp_path, monk
 def test_an_idle_clone_merges_a_server_move_by_itself(harness, tmp_path, monkeypatch, fake_agent):
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
     _poll(m)
-    (harness.root / "alpha" / "a.py").write_text("a-local\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n")
     shims.set_remote_files({**_BASE_FILES, "b.py": "b2\n"})
     shims.set_manifest("t2", revision=5)
     _poll(m)
-    assert (harness.root / "alpha" / "b.py").read_text() == "b2\n"
-    assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b2\n"
+    assert (harness.clones / "alpha" / "a.py").read_text() == "a-local\n"
     assert m.server_stale is None and m._base_revision == 5
     assert m._dirty_since is not None and m.push_state == "pending"  # a.py ships next
     s2d = _state(harness)["legs"]["server_to_disk"]
@@ -1495,7 +1495,7 @@ def test_a_move_is_held_while_a_run_is_live_and_merged_after(harness, tmp_path, 
     _poll(m)
     assert m.server_stale is not None and m._held_for_run
     assert m.server_stale["files"] == [{"path": "b.py", "kind": "changed", "identical": False}]
-    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b1\n"
     note = m.hook_post("s1")["context"]
     assert "Server has changes to b.py; they will be merged when your turn ends." in note
     s2d = _state(harness)["legs"]["server_to_disk"]
@@ -1504,7 +1504,7 @@ def test_a_move_is_held_while_a_run_is_live_and_merged_after(harness, tmp_path, 
     fake_agent.live = ""
     m.agent_run_id(fresh=True)
     m._tick()  # the first tick after the run: merges
-    assert (harness.root / "alpha" / "b.py").read_text() == "b2\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b2\n"
     assert m.server_stale is None and m.merge_seq == 1
     note = m.hook_post("s1")["context"]
     assert ("The canvas changed on the server and was merged into this folder: b.py. "
@@ -1516,7 +1516,7 @@ def test_identical_server_files_say_nothing_will_change(harness, tmp_path, monke
     _poll(m)
     fake_agent.live = "run-1"
     m.agent_run_id(fresh=True)
-    (harness.root / "alpha" / "b.py").write_text("b2\n")  # the same edit, made here too
+    (harness.clones / "alpha" / "b.py").write_text("b2\n")  # the same edit, made here too
     shims.set_remote_files({**_BASE_FILES, "b.py": "b2\n"})
     shims.set_manifest("t2", revision=2)
     _poll(m)
@@ -1545,12 +1545,12 @@ def test_a_push_carries_if_match_and_merges_then_retries_on_412(harness, tmp_pat
         return proc
 
     monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", run)
-    (harness.root / "alpha" / "a.py").write_text("a-local\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n")
     with m._flight_lock:
         assert m._push() == "done"
     argvs = _push_argvs(harness)
     assert [a[a.index("--if-match") + 1] for a in argvs] == ["1", "6"], argvs
-    assert (harness.root / "alpha" / "b.py").read_text() == "b2\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b2\n"
     assert m.push_seq == 1 and m.push_state == "idle" and m.last_error is None
     assert m._base_revision == 7 and _sync_json(harness)["base_revision"] == 7
     assert "push conflict" in _actions(harness)
@@ -1561,7 +1561,7 @@ def test_a_second_412_leaves_the_push_pending_not_failed(harness, tmp_path, monk
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
     _poll(m)
     harness.set_scenario({"pull_files": _BASE_FILES, "push_exit_codes": [3, 3]})
-    (harness.root / "alpha" / "a.py").write_text("a-local\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n")
     with m._flight_lock:
         m._push()
     assert len(_push_argvs(harness)) == 2
@@ -1575,7 +1575,7 @@ def test_an_old_cli_without_if_match_pushes_unconditionally(harness, tmp_path, m
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
     _poll(m)
     harness.set_scenario({"pull_files": _BASE_FILES, "push_no_if_match": True})
-    (harness.root / "alpha" / "a.py").write_text("a-local\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n")
     with m._flight_lock:
         m._push()
     argvs = _push_argvs(harness)
@@ -1589,7 +1589,7 @@ def test_a_push_refused_as_leased_is_held_with_the_owner(harness, tmp_path, monk
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
     _poll(m)
     harness.set_scenario({"pull_files": _BASE_FILES, "push_exit_codes": [4]})
-    (harness.root / "alpha" / "a.py").write_text("a-local\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n")
     with m._flight_lock:
         m._push()
     assert m.status()["push_state"] == "held" and m.last_error is None
@@ -1667,16 +1667,16 @@ def test_the_stop_hook_publishes_the_turn(harness, tmp_path, monkeypatch, fake_a
     _poll(m)
     fake_agent.live = "run-1"
     m.agent_run_id(fresh=True)
-    (harness.root / "alpha" / "a.py").write_text("a-from-claude\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-from-claude\n")
     shims.set_remote_files({**_BASE_FILES, "b.py": "b2\n"})
     shims.set_manifest("t2", revision=2)
     _poll(m)
     assert m.server_stale is not None
     res = harness.client.post("/api/canvases/agent/hook", headers=GUARD, json={
-        "event": "stop", "session_id": "s1", "cwd": str(harness.root / "alpha")})
+        "event": "stop", "session_id": "s1", "cwd": str(harness.clones / "alpha")})
     assert res.status_code == 200 and res.json() == {}
     assert _wait_for(lambda: m.push_seq == 1), _actions(harness)
-    assert (harness.root / "alpha" / "b.py").read_text() == "b2\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b2\n"
     argv = _push_argvs(harness)[-1]
     assert argv[argv.index("--if-match") + 1] == "2"
     assert "turn end" in _actions(harness)
@@ -1686,8 +1686,8 @@ def test_sync_state_files_reports_pending_files_and_revisions(harness, tmp_path,
                                                               fake_agent):
     shims, m = _revision_clone(harness, tmp_path, monkeypatch, revision=3)
     _poll(m)
-    (harness.root / "alpha" / "a.py").write_text("a-local\n")
-    (harness.root / "alpha" / "new.py").write_text("n\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n")
+    (harness.clones / "alpha" / "new.py").write_text("n\n")
     s = harness.client.get("/api/canvases/sync/state?env=unstable&name=alpha&files=1").json()
     assert s["pending_files"] == 2 and s["base_revision"] == 3 and s["server_revision"] == 3
     assert "pending_files" not in _state(harness)
@@ -1700,7 +1700,7 @@ def test_a_server_delete_beats_a_local_drag_of_the_same_node(harness, tmp_path, 
     row too — a fileless row would keep disk, server and frame apart for
     good (the push leaves it out of the copy)."""
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
-    clone = harness.root / "alpha"
+    clone = harness.clones / "alpha"
     rows = [{"udfName": "a", "x": 0, "y": 0}, {"udfName": "b", "x": 0, "y": 400}]
     toml = rtoml.dumps({"type": "canvas", "canvas": {"nodes": rows, "edges": []}})
     (clone / "canvas.toml").write_text(toml)
@@ -1730,7 +1730,7 @@ def test_a_server_delete_beats_a_local_body_edit_of_the_same_node(harness, tmp_p
     goes (a trash copy kept, the log names it) and so does its row — never a
     default row resurrecting the node with its layout lost."""
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
-    clone = harness.root / "alpha"
+    clone = harness.clones / "alpha"
     rows = [{"udfName": "a", "x": 0, "y": 0}, {"udfName": "b", "x": 0, "y": 400}]
     toml = rtoml.dumps({"type": "canvas", "canvas": {"nodes": rows, "edges": []}})
     (clone / "canvas.toml").write_text(toml)
@@ -1764,7 +1764,7 @@ def test_a_delta_cut_behind_an_unacked_one_is_diffed_against_it(harness, tmp_pat
     THAT one's reading (sim seed 127: a node an in-flight delta added, then
     deleted on disk, must still get its delete)."""
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
-    clone = harness.root / "alpha"
+    clone = harness.clones / "alpha"
 
     def write_rows(names):
         rows = [{"udfName": n, "x": 0, "y": 400 * i} for i, n in enumerate(names)]
@@ -1817,7 +1817,7 @@ def test_a_lost_post_push_probe_never_adopts_a_newer_revision_as_the_base(
     shims.set_remote_files({**_BASE_FILES, "b.py": "b-someone-else\n"})
     shims.set_manifest("t2", revision=3)
     _poll(m)
-    assert (harness.root / "alpha" / "b.py").read_text() == "b-someone-else\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b-someone-else\n"
     assert m._base_revision == 3 and m.merge_seq == 1
     # Same bytes on the server: a rebaseline, still never a blind adopt.
     with m._op_lock:
@@ -1832,14 +1832,14 @@ def test_a_rolled_back_pre_push_merge_is_not_reported_as_merged(
         harness, tmp_path, monkeypatch, fake_agent):
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
     _poll(m)
-    (harness.root / "alpha" / "a.py").write_text("a-local\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n")
     shims.set_remote_files({**_BASE_FILES, "b.py": "b2\n"})
     shims.set_manifest("t2", revision=2)
     harness.set_scenario({"pull_files": _BASE_FILES, "validate_fail": True})
     m.hook_post("s1")
     with m._flight_lock:
         m._push()
-    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"  # rolled back
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b1\n"  # rolled back
     assert "pull rollback" in _actions(harness)
     assert "server merged" not in _actions(harness)
     assert m._last_merge is None
@@ -1962,7 +1962,7 @@ def test_an_idle_dirty_canvas_publishes_once_then_stops(harness, tmp_path, monke
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
     _poll(m)
     monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
-    (harness.root / "alpha" / "a.py").write_text("a-unpublished\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-unpublished\n")
     m._dirty_since = time.time()
     m._tick()
     assert _wait_for(lambda: _gone(m))
@@ -2027,7 +2027,7 @@ def test_a_first_look_at_a_recreated_canvas_on_the_same_revision_is_a_move(
     shims.set_remote_files({**_BASE_FILES, "b.py": "b-recreated\n"})
     shims.set_manifest("t2", revision=1, id="c2")
     _poll(m)
-    assert (harness.root / "alpha" / "b.py").read_text() == "b-recreated\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b-recreated\n"
     assert m.merge_seq == 1 and m._base_collection_id == "c2"
 
 
@@ -2038,7 +2038,7 @@ def test_a_cut_behind_an_unacked_delta_keeps_the_edges_of_a_skipped_node(
     that in-flight view must still carry the edge removal the frame never
     took, or the frame keeps the edge and its next snapshot writes it back."""
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
-    clone = harness.root / "alpha"
+    clone = harness.clones / "alpha"
 
     def write(xa, edges):
         rows = [{"udfName": "a", "x": xa, "y": 0}, {"udfName": "b", "x": 0, "y": 400}]
@@ -2073,7 +2073,7 @@ def test_a_stop_overtaken_by_the_sessions_next_turn_does_not_publish(
     m._lease_next_at = time.time() + 3600
     m.tool_hook("s1")
     at_stop = m._tool_hooks["s1"]
-    (harness.root / "alpha" / "a.py").write_text("a-half-done\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-half-done\n")
     m.tool_hook("s2")                        # another session: no bearing on s1's turn
     m.tool_hook("s1")                        # s1's next turn calls a tool
     assert m.turn_end("s1", at_stop) == "superseded"
@@ -2098,7 +2098,7 @@ def test_a_stop_overtaken_by_the_sessions_next_turn_does_not_publish(
     assert harness.client.post(
         "/api/canvases/agent/hook", headers=GUARD,
         json={"event": "start", "session_id": "s1",
-              "cwd": str(harness.root / "alpha")}).json() == {}
+              "cwd": str(harness.clones / "alpha")}).json() == {}
     assert m.turn_end("s1", at_stop) == "superseded"
     assert not _push_argvs(harness)
     assert m.turn_end("s1", m._tool_hooks["s1"]) == "pushed"
@@ -2129,7 +2129,7 @@ def test_a_stop_overtaken_during_the_merge_download_applies_nothing(
     _poll(m)
     assert m.server_stale is not None
     assert m.turn_end("s1", m._tool_hooks["s1"]) == "superseded"
-    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b1\n"
     assert m.server_stale is not None and m.merge_seq == 0
     assert not _push_argvs(harness)
     # The pre-push merge: a dirty clone, the server moved since the last poll.
@@ -2137,18 +2137,18 @@ def test_a_stop_overtaken_during_the_merge_download_applies_nothing(
     fake_agent.live = ""
     m.agent_run_id(fresh=True)
     m._tick()
-    assert m.server_stale is None and (harness.root / "alpha" / "b.py").read_text() == "b2\n"
-    (harness.root / "alpha" / "a.py").write_text("a-local\n")
+    assert m.server_stale is None and (harness.clones / "alpha" / "b.py").read_text() == "b2\n"
+    (harness.clones / "alpha" / "a.py").write_text("a-local\n")
     m._dirty_since = time.time()
     shims.set_remote_files({**_BASE_FILES, "b.py": "b3\n"})
     shims.set_manifest("t3", revision=3)
     monkeypatch.setattr(m, "_fetch_bundle", fetch_then_next_turn)
     assert m.turn_end("s1", m._tool_hooks["s1"]) == "superseded"
-    assert (harness.root / "alpha" / "b.py").read_text() == "b2\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b2\n"
     assert not _push_argvs(harness)
     monkeypatch.setattr(m, "_fetch_bundle", fetch)
     assert m.turn_end("s1", m._tool_hooks["s1"]) == "pushed"
-    assert (harness.root / "alpha" / "b.py").read_text() == "b3\n"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b3\n"
     assert len(_push_argvs(harness)) == 1
 
 
@@ -2163,7 +2163,7 @@ def test_an_idle_stop_holds_the_push_for_another_lease_and_retries_before_stoppi
     monkeypatch.setattr(canvases_mod, "IDLE_RETRY_S", 0.0)
     m._lease_next_at = time.time() + 3600
     m._lease_held_by = {"owner": "bob", "lease_until": "2999-01-01T00:00:00Z"}
-    (harness.root / "alpha" / "a.py").write_text("a-unpublished\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-unpublished\n")
     m._dirty_since = time.time()
     for _ in range(canvases_mod.IDLE_STOP_RETRIES):
         m._tick()
@@ -2229,12 +2229,12 @@ def test_a_session_hook_starts_the_watcher_of_a_canvas_no_page_has_open(
     monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 60.0)
     hook = lambda event: harness.client.post(  # noqa: E731
         "/api/canvases/agent/hook", headers=GUARD,
-        json={"event": event, "session_id": "s1", "cwd": str(harness.root / "alpha")})
+        json={"event": event, "session_id": "s1", "cwd": str(harness.clones / "alpha")})
     assert hook("start").json() == {}
     revived = canvases_mod._syncs.get((ENV, "alpha"))
     assert revived is not None and revived is not m
     assert "started for an agent session" in _actions(harness)
-    (harness.root / "alpha" / "a.py").write_text("a-from-claude\n")
+    (harness.clones / "alpha" / "a.py").write_text("a-from-claude\n")
     assert hook("stop").json() == {}
     assert _wait_for(lambda: revived.push_seq == 1), _actions(harness)
 
@@ -2252,11 +2252,11 @@ def test_a_hookless_backends_turn_starts_the_watcher_of_a_canvas_no_page_has_ope
     monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 60.0)
     assert canvases_mod.session_turn_start(str(tmp_path / "elsewhere"), "codex") is False
     assert canvases_mod._syncs.get((ENV, "alpha")) is None
-    assert canvases_mod.session_turn_start(str(harness.root / "alpha"), "codex") is True
+    assert canvases_mod.session_turn_start(str(harness.clones / "alpha"), "codex") is True
     revived = canvases_mod._syncs.get((ENV, "alpha"))
     assert revived is not None and revived is not m
     assert "started for an agent session" in _actions(harness)
-    assert canvases_mod.session_turn_start(str(harness.root / "alpha"), "codex") is True
+    assert canvases_mod.session_turn_start(str(harness.clones / "alpha"), "codex") is True
     assert canvases_mod._syncs.get((ENV, "alpha")) is revived   # the one already running
 
 
