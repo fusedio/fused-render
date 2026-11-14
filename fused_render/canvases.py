@@ -119,7 +119,8 @@ them as its baseline. A copy of the canvas under another folder name in
 `user/` is found by collection id and renamed into place; `team/` and
 `public/` copies are never adopted. (2) HOLDS: clone, rename and delete run
 inside `canvas_mirror.hold(env)`, which stops this process's run for the
-environment and starts one again after. (3) Rename removes a reference copy
+environment and starts one again after; so does sync/start's move of a
+clone still at its old path (D1479). (3) Rename removes a reference copy
 blocking the new name, delete one at the canvas's own. (4) Status carries
 `mirror_root` and the runner's compact `mirror`; a completed sign-in kicks a
 run and a sign-out stops one.
@@ -710,6 +711,12 @@ def _layout_refusal(env: str, name: str, report, *, creating: bool = False,
                          has_clone=creating and _is_live_clone(env, name))
     if why is None:
         return None
+    from fused_render import canvas_layout
+
+    if why == canvas_layout.FORWARDING:
+        error = (f"canvas {_sync_key(env, name)!r} cannot be deleted or renamed yet: {why}. "
+                 "Try again once that session has ended.")
+        return JSONResponse({"error": error, "code": "layout_pending"}, status_code=409)
     if why == report.conflicts.get(name):
         # Not a wait: the user has to clear the way (also on the status
         # routes' `layout.conflicts`, so the page can show a stranded clone).
@@ -2942,8 +2949,9 @@ def _clone_held(env: str, name: str, target: str):
         return adoption.refusal
     collection_id = adoption.collection_id
     os.makedirs(target, exist_ok=True)
-    # --force: the clone folder is OURS (under ~/Fused/canvas/<env>/user); a
-    # re-clone deliberately resets it to the remote state. The sync watcher is
+    # --force: the folder is OURS (under ~/Fused/canvas/<env>/user) and holds
+    # no clone (`_clone_in_hold` answered one without coming here): nothing,
+    # an empty folder, or a reference copy being adopted. The sync watcher is
     # paused around the pull so its writes never echo into a push.
     manager = _sync_manager(env, name, create=False)
     if manager is not None:
@@ -7372,6 +7380,10 @@ def _rename_held(env: str, name: str, new: str):
                                   retiring=not creating)
         if refusal is not None:
             return refusal
+    if new in report.forwarding:
+        # `<env>/<new>` still forwards a running session to `user/<new>`:
+        # this canvas arriving there would take that session's writes.
+        return _layout_refusal(env, new, report, retiring=True)
     root = os.path.realpath(clones_root(env))
     clone = os.path.realpath(_canvas_dir(env, name))
     target = os.path.join(root, new)
@@ -7582,7 +7594,7 @@ def _sync_start_layout(env: str, name: str):
     or the 15 s retry window would leave it unsynced all that time."""
     from fused_render import canvas_layout, canvas_mirror
 
-    if not canvas_layout.is_legacy(env, name):
+    if not canvas_layout.worth_forcing(env, name):
         return _ensure_layout(env)
     with canvas_mirror.hold(env):
         return _ensure_layout(env, force=True)

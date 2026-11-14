@@ -109,9 +109,15 @@ def _journal(root):
     path = root / ".sync" / canvas_layout.JOURNAL_NAME
     if not path.exists():
         return None
-    # Without `since` (when the move was made): the tests compare the moves.
-    return [{k: v for k, v in m.items() if k != "since"}
+    # Without `since` (when the move was made) and `link` (whether it leaves
+    # one; asserted where it matters): the tests compare the moves.
+    return [{k: v for k, v in m.items() if k not in ("since", "link")}
             for m in json.loads(path.read_text())["moves"]]
+
+
+def _journal_links(root):
+    path = root / ".sync" / canvas_layout.JOURNAL_NAME
+    return [m.get("link") for m in json.loads(path.read_text())["moves"]]
 
 
 # -- detection -----------------------------------------------------------------
@@ -321,11 +327,90 @@ def test_a_link_is_left_only_for_a_moved_clone_and_only_while_it_is_needed(harne
     assert "link" in report.conflicts["beta"] and (root / "beta").is_symlink()
 
 
+def test_a_canvas_whose_old_path_still_forwards_cannot_be_deleted_or_renamed(
+        harness, stores):
+    """The link would dangle under the running session, or point it into
+    another canvas that later takes `user/<name>`. Renaming ANOTHER canvas
+    to that name is refused for the same reason."""
+    projects, sessions = stores
+    harness.log_in()
+    root = harness.root
+    old = _legacy(root, "alpha")
+    _transcript(projects, str(old), "sid-live")
+    (sessions / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "sid-live", "cwd": str(old)}))
+    assert canvas_layout.ensure_layout(ENV).forwarding == ["alpha"]
+    for route, body in (("delete", {"name": "alpha"}),
+                        ("rename", {"name": "alpha", "new_name": "gamma"})):
+        res = harness.client.post(f"/api/canvases/{route}", headers=GUARD,
+                                  json={"env": ENV, **body})
+        assert res.status_code == 409, (route, res.text)
+        assert res.json()["code"] == "layout_pending"
+        assert "Claude session" in res.json()["error"]
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert report.refusal("alpha", retiring=True) == canvas_layout.FORWARDING
+    assert report.refusal("alpha") is None and report.refusal("alpha", creating=True,
+                                                               has_clone=True) is None
+    assert old.is_symlink() and (root / "user" / "alpha" / "canvas.toml").is_file()
+    assert [c for c in harness.calls() if "delete" in c or "rename" in c] == []
+    # The session ended: both go through.
+    (sessions / "1.json").unlink()
+    assert not canvas_layout.ensure_layout(ENV, force=True).forwarding
+    assert canvas_layout.ensure_layout(ENV).refusal("alpha", retiring=True) is None
+
+
+def test_a_crash_between_the_folder_and_the_link_is_finished_from_the_journal(
+        harness, stores, monkeypatch):
+    """The folder moved; the staged link never reached the old path. The
+    journal says a link belongs there and the next pass puts it there."""
+    projects, sessions = stores
+    root = harness.root
+    old = _legacy(root, "alpha")
+    _transcript(projects, str(old), "sid-live")
+    (sessions / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "sid-live", "cwd": str(old)}))
+    real_rename = os.rename
+
+    def die(src, dst):
+        if os.path.basename(str(src)).startswith(canvas_layout.STAGED_LINK_PREFIX):
+            raise _Crash()
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(canvas_layout.os, "rename", die)
+    with pytest.raises(_Crash):
+        canvas_layout.ensure_layout(ENV)
+    monkeypatch.setattr(canvas_layout.os, "rename", real_rename)
+    assert not os.path.lexists(old) and (root / "user" / "alpha").is_dir()
+    assert _journal_links(root) == [True]
+    # A process that really died leaves its staged link behind, too.
+    staged = root / (canvas_layout.STAGED_LINK_PREFIX + "alpha")
+    if not os.path.lexists(staged):
+        staged.symlink_to(os.path.join("user", "alpha"))
+    canvas_layout.reset()
+    report = canvas_layout.ensure_layout(ENV)
+    assert old.is_symlink() and report.forwarding == ["alpha"]
+    assert not os.path.lexists(staged)
+    (sessions / "1.json").unlink()
+    assert not canvas_layout.ensure_layout(ENV, force=True).pending()
+    assert not os.path.lexists(old) and _journal(root) is None
+
+
+def test_sync_start_forces_a_pass_only_where_one_could_move_the_clone(harness, stores):
+    root = harness.root
+    _legacy(root, "alpha")
+    assert canvas_layout.worth_forcing(ENV, "alpha") is True        # never looked at
+    (root / "user" / "alpha").mkdir(parents=True)
+    (root / "user" / "alpha" / "mine.txt").write_text("x")
+    assert "alpha" in canvas_layout.ensure_layout(ENV).conflicts
+    assert canvas_layout.worth_forcing(ENV, "alpha") is False       # a conflict
+    assert canvas_layout.worth_forcing(ENV, "beta") is False        # nothing legacy
+
+
 def test_without_links_a_session_at_work_still_defers_the_move(harness, stores, monkeypatch):
     """A volume that cannot hold a symlink: the session's paths would
     dangle, so its clone waits for it, as before D1479."""
     projects, sessions = stores
-    monkeypatch.setattr(canvas_layout, "_links_work", lambda root: False)
+    monkeypatch.setattr(canvas_layout, "_stage_link", lambda root, name: None)
     root = harness.root
     old = _legacy(root, "alpha")
     _legacy(root, "beta")
@@ -370,11 +455,11 @@ def test_a_canvas_with_a_session_at_work_opens_at_once(harness, stores):
 
 def test_the_clone_route_refuses_a_canvas_whose_clone_cannot_move_yet(
         harness, stores, monkeypatch):
-    """Without a link to leave (`_links_work`), a session at work holds its
+    """Without a link to leave (`_stage_link`), a session at work holds its
     clone at the old path. Pulling a fresh copy to the new path meanwhile
     would leave two clones, the old one holding the user's unpublished work."""
     projects, sessions = stores
-    monkeypatch.setattr(canvas_layout, "_links_work", lambda root: False)
+    monkeypatch.setattr(canvas_layout, "_stage_link", lambda root, name: None)
     harness.log_in()
     old = _legacy(harness.root, "alpha", {"canvas.toml": 'name = "alpha"\n',
                                           "a.py": "unpublished work\n"})
