@@ -54,7 +54,7 @@ Other handles, by what you need (`pattern` · `glob`, always over all three scop
 
 Glob for structure: `../../public/*/canvas.toml` (every public canvas), `../../team/*/*.json` (every team widget), `../*/.fused-canvas.json` (the user's own).
 
-Search the scope folders, never `../..` itself: that also holds `.sync/` (merge bases, trash), which is not reference material. A scope folder that is missing is skipped, not an error.
+Search the scope folders, never `../..` itself: that also holds `.sync/` (merge bases, trash), which is not reference material. A scope folder that is missing is skipped, not an error. If your instructions name only some of the scopes (some sessions are given `team/` and `public/` but not `../`, because `../` holds the user's other live canvases), "all three scopes" means the ones you were given: skip the rest.
 
 **Say what you built on.** When you answer the user, name the reference node (`<scope>/<canvas>/<file>`), or say which searches found nothing.
 
