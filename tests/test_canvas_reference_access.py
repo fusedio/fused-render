@@ -430,6 +430,12 @@ def test_gemini_can_read_the_search_skill_it_is_sent_to(agent, home, tmp_path, m
     # ...and only for a target that has reference canvases.
     argv = agent._gemini_argv(str(run_dir), False, None, "", "", "", None, str(tmp_path))
     assert os.path.dirname(skill) not in argv
+    # A skill folder the flag cannot carry (a comma in its path) is not one
+    # Gemini is sent to: it could not read the file.
+    comma = _reference_skill(tmp_path / "a, b", monkeypatch)
+    note = agent._canvas_reference_note(str(lay.clone), "gemini")
+    assert comma not in note and "Search those folders for one" in note
+    assert "Read `%s` first" % comma in agent._canvas_reference_note(str(lay.clone), "codex")
 
 
 def test_the_note_reaches_the_files_the_other_backends_read(agent, home, tmp_path, monkeypatch):

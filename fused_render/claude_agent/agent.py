@@ -5062,6 +5062,10 @@ def _canvas_reference_note(file: str, backend: str = "") -> str:
         "tools where you have them, else a plain `grep`, `find`, `ls` or "
         "`cat` on the folder.")
     skill = _canvas_reference_skill_file()
+    # Gemini is sent to the file, and `_gemini_argv` cannot include a folder
+    # whose path holds a comma: no readable file, so no pointer to it.
+    if backend == "gemini" and "," in os.path.dirname(skill):
+        skill = ""
     if not skill:
         how = " Search those folders for one before you write anything."
     elif backend in _SKILL_BACKENDS:
