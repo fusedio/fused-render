@@ -60,6 +60,9 @@ import type { BreakoutControl } from "@apps/claude/ClaudeChat";
 import { useTaskHeadUnified } from "./task-head-flag";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
+import ContextMenu from "@platform/ui/ContextMenu";
+import { RUN_BLOCKED_HINT, TASK_ACTION_LABELS, blockedActionLabel } from "@platform/lib/task-actions";
+import { TASK_ICON_TRASH } from "@platform/ui/TaskActionIcons";
 import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 import {
   CARD_PAGE,
@@ -1010,8 +1013,10 @@ function TaskPeek({
   // to take the focus it could not take at mount.
   const [chatReady, setChatReady] = useState(0);
   const unified = useTaskHeadUnified();
-  /** The shared head, for a task the chat's ⋮ can act on (see `head=`). */
-  const sharedHead = unified && !!task.session_id;
+  /** The shared head, for every task (see `head=`). */
+  const sharedHead = unified;
+  /** Where the session-less ⋮'s menu opens (`head=`). */
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   /** The shared head's chip seat (ChatMount `headChipsHost`). */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
   /** …and its status seat, for the chat's pause word (ChatMount
@@ -1149,9 +1154,13 @@ function TaskPeek({
       // THE SHARED HEAD, with the flag on: × to close (the chassis' own guarded
       // close), the identity, the PR chip, ↗ Open and the chat's own ⋮ — which
       // is where Archive and Delete live now, offered the way every other task
-      // menu offers them. ONLY FOR A TASK WITH A SESSION: without one there is
-      // no ⋮, and the old head's doors (Archive, Delete, the folder-deleted
-      // door) are the only place those acts live — TaskPeek's rule.
+      // menu offers them.
+      //
+      // A TASK WITH NO SESSION has no chat ⋮, so the old head's doors find
+      // other seats (2026-11-15): Archive is the ring's, as on every head
+      // (TaskFileSeat); the folder is ↗ Open; and with the folder gone, the
+      // greyed door and Delete ride a plain ⋮ of their own — the Tasks page
+      // panel's way for the same task (TaskPeek `unifiedKebab`).
       {...(sharedHead ? {
         head: ({ titleId, close }: ModalHeadContext) => (
           <TaskHead
@@ -1223,6 +1232,22 @@ function TaskPeek({
                   ]}
                 />
               </AgentProvider>
+            ) : gone ? (
+              <button
+                type="button"
+                // The chat ⋮'s own trigger and words (Kebab), so the head reads
+                // the same whichever menu is behind it.
+                className="c-kebabbtn"
+                aria-label="More options"
+                aria-haspopup="menu"
+                title="More options"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setMenuAt({ x: r.right - 200, y: r.bottom + 4 });
+                }}
+              >
+                ⋮
+              </button>
             ) : null}
           />
         ),
@@ -1289,6 +1314,32 @@ function TaskPeek({
             onReload?.();
             onClose();
           }}
+        />
+      )}
+      {menuAt && (
+        // The session-less ⋮ (folder gone): the chat ⋮'s `extraItems` door,
+        // greyed with why, then Delete — the same rows, the same order.
+        <ContextMenu
+          x={menuAt.x}
+          y={menuAt.y}
+          onClose={() => setMenuAt(null)}
+          items={[
+            {
+              label: `${pageDoorLabel(task)} — folder deleted`,
+              icon: ICON_FOLDER,
+              disabled: true,
+              title: MISSING_FOLDER_TOAST,
+              onClick: toastMissingFolder,
+            },
+            "separator",
+            {
+              label: blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null),
+              icon: TASK_ICON_TRASH,
+              danger: true,
+              disabled: blocked,
+              onClick: () => setErasing(true),
+            },
+          ]}
         />
       )}
       {archiveAsk.node}

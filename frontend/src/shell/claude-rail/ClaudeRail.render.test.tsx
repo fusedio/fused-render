@@ -439,6 +439,46 @@ describe("ClaudeRail's card beside the pane", () => {
     }
   });
 
+  test("flag on, favourites off: the archive stands over the ring — one archive, none on the pulse", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    try {
+      const r = await mountRail({
+        paneOpen: true,
+        favourites: false,
+        chats: [chat("a", { unread: 2 }), chat("b")],
+        activeSessionId: chat("b").session_id,
+      });
+      await press(r, "a");
+      const peek = r.root.findByType(RailPeek);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(1);
+      const archives = peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"));
+      expect(archives).toHaveLength(1);
+      const ring = peek.find((n) => typeof n.type === "string" && n.props.className === "task-side-peek-status");
+      expect(ring.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"))).toHaveLength(1);
+      // The pulse still says when — without an archive of its own.
+      const pulse = peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-pulse"));
+      expect(pulse.length).toBeGreaterThan(0);
+      for (const p of pulse) {
+        expect(p.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"))).toHaveLength(0);
+      }
+      // …and the head's own ring seat stays off: the card's archive is the one.
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head-file"))).toHaveLength(0);
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag off, favourites off: the archive still rides the pulse, as it always did", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    const r = await mountRail({ paneOpen: true, favourites: false, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });
+    await press(r, "a");
+    const peek = r.root.findByType(RailPeek);
+    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(0);
+    const pulse = peek.find((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-pulse"));
+    expect(pulse.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"))).toHaveLength(1);
+  });
+
   test("flag off: the card's own two-row head, title row and all", async () => {
     resetTaskHeadUnifiedFlagForTests();
     const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });

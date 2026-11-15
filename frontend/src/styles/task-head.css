@@ -427,7 +427,8 @@
 /* -- the rail's hover / favourite card (shell/claude-rail RailPeek) ----------
    The old head's box stays as a wrapper that lays out as NOTHING, so its
    Escape handler and its hover-archive rules still reach the shared head
-   inside. The pulse (count, when, archive) rides the chips seat. */
+   inside. The pulse (count, when) rides the chips seat; the card's archive
+   stands over the ring, favourites on or off (THE RING FILES THE TASK). */
 .claude-rail-peek-head.is-unified {
   display: contents;
 }
