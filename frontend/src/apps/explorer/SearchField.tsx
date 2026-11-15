@@ -32,6 +32,7 @@ import {
   type RefObject,
 } from "react";
 import { navigate } from "@platform/lib/router";
+import { canonicalRemoteUrl } from "@platform/lib/remote";
 import { basename, formatSize } from "@platform/lib/format";
 import { isMac } from "@platform/lib/platform";
 import { PathCrumbs } from "@apps/explorer/listing/path-crumbs";
@@ -729,6 +730,18 @@ export function SearchField({
               // not two copies of "clear, then remember to also blur."
               clearSearchQuery();
               return;
+            }
+            // An S3 address (s3://…, or an HTTPS link to an object) is a
+            // location, not a search or a path to complete: Enter opens it
+            // (platform/lib/remote.ts), ahead of every dropdown row.
+            if (e.key === "Enter") {
+              const remote = canonicalRemoteUrl(query);
+              if (remote) {
+                e.preventDefault();
+                e.stopPropagation();
+                navigate(remote);
+                return;
+              }
             }
             // `completionKeyAction`/`moveHighlight` stay generic over a row
             // COUNT and an INDEX into it — they don't know or care what a

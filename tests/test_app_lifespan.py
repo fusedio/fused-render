@@ -155,6 +155,10 @@ EXPECTED_STARTUP = [
     # Added 2026-10-26: the Marketplace block list fetched + enforced at
     # launch (docs/CONTRIB_LOOP.md §18.4 B4), a daemon thread.
     "_startup_marketplace_blocks",
+    # Added 2026-11-15: the public `fused-asset` bucket index (remote_index.py)
+    # fetched on a daemon thread when the canvases flag is on at boot,
+    # registered beside the remote routers' include.
+    "_startup_remote_index",
     # Added 2026-10-06: the Bots sub-app's scheduler + iMessage bridge
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",

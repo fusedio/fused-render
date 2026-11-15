@@ -70,13 +70,14 @@ import {
   redirectsToSearch,
   scanStarting,
   stepHighlight,
-  submitRow,
   type HomeAnswer,
   type HomeHit,
   type PendingScan,
   type RowModel,
 } from "@apps/explorer/lib/home-search";
 import { renderHighlight, renderHighlightPath } from "@apps/explorer/listing/bits";
+import { RemoteHitsGroup, useRemoteHits } from "@apps/explorer/RemoteHitsGroup";
+import { canonicalRemoteUrl } from "@platform/lib/remote";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 // How many cards a tab shows before "Show more" — flat count, not a row
@@ -148,6 +149,17 @@ function warnSlowSearchFailed(query: string, elapsedMs: number, error: Error): v
 }
 
 type LaunchTab = "recents" | "sessions" | "repos";
+
+// The row the user explicitly highlighted, by IDENTITY, not position: the list
+// has two halves (local rows, "Fused assets" rows) answering two independent
+// requests, so a bare index would silently re-point at a different row when
+// either half lands. The index is derived from this every render; a row that
+// is gone falls back to the default.
+type RowId =
+  | { kind: "open" }
+  | { kind: "local"; key: string }
+  | { kind: "remote"; key: string }
+  | { kind: "ai" };
 
 // -- The home search bar ------------------------------------------------------
 //
@@ -437,7 +449,7 @@ export function FilesSearch({
 }) {
   const [query, setQuery] = useState(initialQuery);
   const [ai, setAi] = useState<AiPhase>(AI_OFF);
-  const [highlight, setHighlight] = useState<number | null>(null);
+  const [picked, setPicked] = useState<RowId | null>(null);
   // The owner's unranked-search preference (D720) — read here, not threaded
   // as a prop: this box has no other `Prefs` access, and the module-level
   // cache (ranked-search-pref.ts) is exactly the pattern
@@ -468,8 +480,19 @@ export function FilesSearch({
   // spaces ("a ") is exactly that same thin query, not a two-character one,
   // and a whitespace-derived pattern is at least as indiscriminate as a bare
   // substring search (see MIN_QUERY_CHARS's own doc comment, lib/home-search.ts).
-  const searchable = trimmedQ.length >= MIN_QUERY_CHARS;
+  //
+  // A pasted S3 address (`s3://…` or an accepted S3 HTTPS link) is an ADDRESS,
+  // not a query, and is not `searchable` either: no local or bucket request,
+  // no list, no AI row. Enter opens it (`submit`) and the note says so.
+  const remoteAddr = canonicalRemoteUrl(q);
+  const searchable = trimmedQ.length >= MIN_QUERY_CHARS && remoteAddr === null;
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
+  // The "Fused assets" bucket hits (RemoteHitsGroup): their own request, in
+  // parallel with the local one below, flag-gated, silent on failure. Asked
+  // with the RAW query, like the local request: the server ranks the bucket
+  // index with the same engine (remote_index.rank → search_ranked), so a
+  // trailing space means the same thing there (A1, above).
+  const remote = useRemoteHits(q, searchable, ranked);
 
   // -- a query that is really an address --------------------------------------
   //
@@ -919,13 +942,13 @@ export function FilesSearch({
     aiCtl.current?.abort();
     setQuery("");
     setAi(AI_OFF);
-    setHighlight(null);
+    setPicked(null);
     syncQueryParam(null);
   };
 
   const edit = (value: string) => {
     setQuery(value);
-    setHighlight(null);
+    setPicked(null);
     // Typing is a user gesture, so it is also the retry for a failed request —
     // the same way useListingSearch bumps its retry nonce from setQuery.
     // (Editing to a query that was never asked re-runs anyway; this covers
@@ -1113,12 +1136,53 @@ export function FilesSearch({
   // intent for something shaped like a path that already resolved.
   // `aiUsable` gates it too: offering a call that will fail on the same
   // missing index is a dead end, not an offer.
-  const rowModel: RowModel = {
+  //
+  // The bucket rows ("Fused assets", RemoteHitsGroup) ride in `fileCount` as
+  // hit rows AFTER the local ones — one list for ↑/↓, local first — so the
+  // row-model helpers step over them unchanged. Only rendered rows count
+  // (`shown`, not every fetched hit).
+  //
+  // But the DEFAULT row (no explicit highlight — what a bare Enter commits) is
+  // decided on `localModel`, the list WITHOUT bucket rows, so it is exactly
+  // what it was before bucket search existed: a bucket row is never
+  // pre-selected and a bare Enter never opens one (a bucket file can be a
+  // 100 MB download). Bucket rows are reached by arrowing or clicking only.
+  const fileOffset = showOpenRow ? 1 : 0;
+  const remoteOffset = fileOffset + hits.length;
+  const localModel: RowModel = {
     openRow: showOpenRow,
     fileCount: hits.length,
     aiRow: searchable && !showOpenRow && address === null && aiUsable,
   };
-  const current = activeRow(highlight, rowModel, settled);
+  const rowModel: RowModel = { ...localModel, fileCount: hits.length + remote.shown.length };
+  const aiRowIndex = remoteOffset + remote.shown.length;
+  const rowIdAt = (row: number): RowId | null => {
+    if (isOpenRow(row, rowModel)) return { kind: "open" };
+    if (isAiRow(row, rowModel)) return { kind: "ai" };
+    const fi = row - fileOffset;
+    if (fi >= 0 && fi < hits.length) return { kind: "local", key: hits[fi].path };
+    const ri = fi - hits.length;
+    if (ri >= 0 && ri < remote.shown.length) return { kind: "remote", key: remote.shown[ri].url };
+    return null;
+  };
+  const rowOf = (id: RowId): number | null => {
+    if (id.kind === "open") return rowModel.openRow ? 0 : null;
+    if (id.kind === "ai") return rowModel.aiRow ? aiRowIndex : null;
+    if (id.kind === "local") {
+      const i = hits.findIndex((h) => h.path === id.key);
+      return i < 0 ? null : fileOffset + i;
+    }
+    const i = remote.shown.findIndex((h) => h.url === id.key);
+    return i < 0 ? null : remoteOffset + i;
+  };
+  const highlight = picked === null ? null : rowOf(picked);
+  // `localModel`'s indices for the open row and local rows are the same in the
+  // full list; only its AI row moves (past the bucket rows).
+  const localDefault = activeRow(null, localModel, settled);
+  const current =
+    highlight ??
+    (localDefault !== null && isAiRow(localDefault, localModel) ? aiRowIndex : localDefault);
+  const pick = (row: number | null) => setPicked(row === null ? null : rowIdAt(row));
 
   const activateRow = (row: number) => {
     if (isOpenRow(row, rowModel)) {
@@ -1129,7 +1193,12 @@ export function FilesSearch({
       runAi(q);
       return;
     }
-    const fi = row - (rowModel.openRow ? 1 : 0);
+    const fi = row - fileOffset;
+    if (fi >= hits.length) {
+      const hit = remote.shown[fi - hits.length];
+      if (hit) navigate(hit.url, { isDir: hit.is_dir });
+      return;
+    }
     navigate(hits[fi].path, { isDir: hits[fi].is_dir });
   };
 
@@ -1139,6 +1208,11 @@ export function FilesSearch({
   // effect above as the query is typed, so by the time Enter is pressed the
   // row model already reflects it — `activeRow`/`submitRow` do the rest.
   const submit = () => {
+    // A pasted S3 address opens directly — no row, no AI, no local open.
+    if (remoteAddr !== null) {
+      navigate(remoteAddr);
+      return;
+    }
     if (address !== null && (addr.status === "idle" || addr.status === "checking")) {
       // The paste-and-go gesture: Enter fired before the stat came back.
       // Await it instead of dropping the keystroke — the effect above
@@ -1146,8 +1220,9 @@ export function FilesSearch({
       awaitingCommit.current = address;
       return;
     }
-    const row = submitRow(highlight, rowModel, settled);
-    if (row !== null) activateRow(row);
+    // `current`, not `submitRow`: the same row the highlight shows, with the
+    // default taken from the local-only model (see `localModel`).
+    if (current !== null) activateRow(current);
   };
 
   return (
@@ -1183,7 +1258,7 @@ export function FilesSearch({
               // `highlight` still null (activeRow's implicit pre-select), and
               // stepping from null would land the first ArrowDown back on row
               // 0 — the already-visible selection — instead of row 1.
-              setHighlight(stepHighlight(current, rowModel, e.key === "ArrowDown" ? 1 : -1));
+              pick(stepHighlight(current, rowModel, e.key === "ArrowDown" ? 1 : -1));
             } else if (e.key === "Enter") {
               e.preventDefault();
               submit();
@@ -1278,7 +1353,11 @@ export function FilesSearch({
                 below). The count note itself stays owned by the branches
                 below it: once ranking settles it is free to take over, same
                 as it would with no open row at all. */}
-            {showOpenRow && hits.length === 0 ? (
+            {remoteAddr !== null ? (
+              <>
+                Press <kbd>↵</kbd> to open {remoteAddr}
+              </>
+            ) : showOpenRow && hits.length === 0 ? (
               <>
                 <kbd>↵</kbd> to open · <kbd>esc</kbd> to clear
               </>
@@ -1343,7 +1422,14 @@ export function FilesSearch({
               // but reading the rendered array rather than the held answer's
               // is what keeps every branch below honest about what's on
               // screen instead of what a previous request found.
-              `No file name matched “${q}” — AI search can look at dates, types and sizes.`
+              // Bucket rows on screen make this "no LOCAL match", not "no
+              // results": the note says so, and drops the AI pitch that
+              // assumed the AI row was the only thing left to offer.
+              remote.hits.length > 0
+                ? `No local file name matched “${q}”.`
+                : `No file name matched “${q}” — AI search can look at dates, types and sizes.`
+            ) : hits.length === 0 && settled && remote.hits.length > 0 ? (
+              `No local file name matched “${q}”.`
             ) : hits.length === 0 && settled ? (
               // Settled, zero hits, but the AI row is suppressed (address !==
               // null: this query is shaped like a path that did not resolve —
@@ -1426,7 +1512,7 @@ export function FilesSearch({
                 // it, so a file row's position in the list — and the index
                 // `activeRow`/`activateRow` compare against — is offset by
                 // one when an open row occupies row 0.
-                const row = (rowModel.openRow ? 1 : 0) + i;
+                const row = fileOffset + i;
                 return (
                   <FileRow
                     key={hit.path}
@@ -1434,16 +1520,23 @@ export function FilesSearch({
                     home={home}
                     active={current === row}
                     id={"fh-row-" + row}
-                    onHover={() => setHighlight(row)}
+                    onHover={() => pick(row)}
                   />
                 );
               })}
+              <RemoteHitsGroup
+                remote={remote}
+                query={trimmedQ}
+                rowOffset={remoteOffset}
+                current={current}
+                onHover={pick}
+              />
               {rowModel.aiRow && (
                 <AiActionRow
                   query={q}
-                  active={current === hits.length}
+                  active={current === aiRowIndex}
                   running={ai.status === "running"}
-                  id={"fh-row-" + hits.length}
+                  id={"fh-row-" + aiRowIndex}
                   onRun={() => runAi(q)}
                 />
               )}

@@ -1268,6 +1268,34 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
     app.include_router(canvases_router)
+    # Remote (S3) locations: an `s3://bucket/key` address is an explorer
+    # location. `routers/remote.py` stats, lists and downloads an object into
+    # the local cache (remote_access.py is the one seam that knows how a
+    # bucket is reached; remote_fetch.py owns the cache), and
+    # `routers/remote_index.py` ranks over the one-off index of the public
+    # `fused-asset` bucket (remote_index.py, a sibling store beside the main
+    # index). Every route gates on the canvases flag itself.
+    from fused_render.server.routers.remote import router as remote_router
+    from fused_render.server.routers.remote_index import router as remote_index_router
+
+    app.include_router(remote_router)
+    app.include_router(remote_index_router)
+
+    # Fetch the bucket index when the canvases flag is already on at boot
+    # (turning it on later is prefs.put_prefs' side effect). A startup hook,
+    # so lean apps and a TestClient that never enters the lifespan skip it;
+    # it only starts a daemon thread, and never raises.
+    @on_startup
+    async def _startup_remote_index():
+        try:
+            from fused_render import remote_index
+            from fused_render.shell import prefs as _prefs
+
+            if _prefs.canvases_enabled():
+                remote_index.startup_check()
+        except Exception:
+            logger.exception("remote index startup check failed")
+
     # The reference canvases' background runner (canvas_mirror.py, D1477):
     # its status and refresh routes. Imported here, not at the top: it
     # imports canvases, which is already loaded by then.

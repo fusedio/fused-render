@@ -49,6 +49,7 @@ import {
 import { escapesFsPath } from "@apps/explorer/listing/query-base";
 import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
 import { navHintQCommitted, replaceSearch } from "@platform/lib/router";
+import { canonicalRemoteUrl } from "@platform/lib/remote";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
 import { MIN_QUERY_CHARS, willResolveToGlobMode } from "@apps/explorer/lib/home-search";
 import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
@@ -188,7 +189,12 @@ export function useListingSearch(
   // that same thin query, not a two-character one, and a whitespace-derived
   // pattern is at least as indiscriminate as a bare substring search (see
   // MIN_QUERY_CHARS's own doc comment, lib/home-search.ts).
-  const searching = trimmedQ.length >= MIN_QUERY_CHARS;
+  //
+  // An S3 address (platform/lib/remote.ts) is not a search either: it is a
+  // location, which the field's Enter opens. Treating it as one would rank the
+  // folder for "s3://…" on every keystroke and, over a file, hop to the parent
+  // folder (FileSearchField) before Enter ever reached the field.
+  const searching = trimmedQ.length >= MIN_QUERY_CHARS && canonicalRemoteUrl(trimmedQ) === null;
   // `isStale` is completed below, once the request's own pending state is
   // known: the input can have settled while the answer for it is in flight.
   // Compares RAW against RAW (`query` vs. `q`, both untrimmed) — the two are

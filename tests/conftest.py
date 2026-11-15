@@ -862,6 +862,24 @@ def _no_startup_marketplace_blocks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_remote_index_ingest_thread(monkeypatch):
+    """No test may start the `fused-asset` bucket index ingest (remote_index.py).
+
+    Two paths reach it: PUT /api/prefs with `canvases_enabled: True`
+    (prefs.put_prefs' side effect, which test_shell_prefs drives) and the
+    `_startup_remote_index` hook of any lifespan entered with the flag on. Both
+    end in `start_background`, a daemon thread that downloads the real index
+    over `urllib` and writes it under whatever FUSED_RENDER_HOME is current
+    when it gets there — the same leaked-thread hazard as the fixtures above.
+    `startup_check` calls `start_background` by module global, so this one
+    patch covers both. Tests that are ABOUT the ingest call `ingest()`
+    directly, or re-patch this in the test body."""
+    from fused_render import remote_index
+
+    monkeypatch.setattr(remote_index, "start_background", lambda reason: False)
+
+
+@pytest.fixture(autouse=True)
 def _no_contrib_sweep_thread(monkeypatch):
     """Neutralize create_app's contrib sweep (`_startup_contrib_sweep` ->
     `contrib.refresh.start`), the other way the block list leaks out of a
