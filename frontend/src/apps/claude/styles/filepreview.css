@@ -78,11 +78,20 @@
   cursor: pointer;
 }
 .chat-root .toolchip button.chip-label-path.is-link:hover,
-.chat-root code.c-path-link:hover {
+.chat-root code.c-path-link:hover,
+.chat-root span.c-path-link:hover {
   text-decoration: underline;
+  text-decoration-style: solid;
 }
-.chat-root code.c-path-link {
+.chat-root code.c-path-link,
+.chat-root span.c-path-link {
   cursor: pointer;
+}
+.chat-root span.c-path-link {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
 }
 
 /* ── the dock row ────────────────────────────────────────────────────────────
