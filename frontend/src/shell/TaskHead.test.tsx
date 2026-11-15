@@ -640,6 +640,10 @@ test("the stylesheet trades a slot's occupants on the HEAD's hover, and only whe
   expect(css).toContain(`${trigger} .task-head-slot > .task-head-slot-b { opacity: 1;`);
   // At rest the control is invisible AND intangible.
   expect(css).toContain(".task-head-slot-b { display: inline-flex; align-items: center; opacity: 0; pointer-events: none; }");
+  // A slot with no fact holds no box at rest (Bugbot, #2285).
+  expect(css).toContain(
+    ".task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) { width: 0;",
+  );
   // Where there is no hover, the acts stand.
   expect(css).toContain("@media (hover: none) {");
   // The status icon trades with nothing any more.

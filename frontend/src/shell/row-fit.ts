@@ -718,7 +718,7 @@ export function taskHeadNeed(head: HTMLElement): number {
     if (!cls.includes("task-head-row") && !cls.includes("task-head-titlerow")) continue;
     let rowWants = rowNeed(row);
     if (cls.includes("task-head-row") && typeof row.querySelector === "function") {
-      rowWants += level === 0 ? titleWants(row) : factSlotsDelta(row);
+      rowWants += level === 0 ? titleWants(row) + factSlotsDelta(row, true) : factSlotsDelta(row, false);
     }
     need = Math.max(need, rowWants);
   }
@@ -748,12 +748,15 @@ function titleWants(row: HTMLElement): number {
  * rung 1), so a read that lands mid-hover would see a wider row than one at
  * rest and the level could flap. Charged the same either way: whatever they
  * measure now comes off, and a glyph per slot that has a b control goes on.
+ * At rung 0 that is true only of a slot with no fact (`bareOnly`: a task that
+ * has not run), which holds no box at rest at any width.
  */
-function factSlotsDelta(row: HTMLElement): number {
+function factSlotsDelta(row: HTMLElement, bareOnly: boolean): number {
   const marks = row.querySelector<HTMLElement>(".task-head-marks");
   const gap = marks ? Number.parseFloat(getComputedStyle(marks).columnGap) || 0 : 0;
   let delta = 0;
   for (const slot of Array.from(row.querySelectorAll<HTMLElement>(".task-head-countslot, .task-head-timeslot"))) {
+    if (bareOnly && slot.querySelector(".task-head-slot-a")) continue;
     const width = slot.getBoundingClientRect().width;
     if (width > 0) delta -= width + gap;
     if (slot.querySelector(".task-head-slot-b > :is(a, button, [role='button'])")) delta += TASK_HEAD_GLYPH + gap;

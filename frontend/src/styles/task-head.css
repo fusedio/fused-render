@@ -595,8 +595,28 @@
   opacity: 1;
   pointer-events: auto;
 }
+/* A SLOT WITH NO FACT (a task that has not run: no count, no time) holds no
+   box at rest — its act alone would be a blank 22px before the ⋮ (Bugbot,
+   #2285). It opens under the pointer like any other, and the fit ladder
+   charges it the same either way (row-fit `factSlotsDelta`). */
+.task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
+  width: 0;
+  overflow: hidden;
+  margin-left: -6px;
+}
+.task-head:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
+  .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
+  width: auto;
+  overflow: visible;
+  margin-left: 0;
+}
 /* NO HOVER TO WAIT FOR (touch): the acts stand, as a phone's row shows them. */
 @media (hover: none) {
+  .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
+    width: auto;
+    overflow: visible;
+    margin-left: 0;
+  }
   .task-head-slot:has(> .task-head-slot-b > :is(a, button, [role="button"])) > .task-head-slot-a {
     opacity: 0;
     pointer-events: none;
