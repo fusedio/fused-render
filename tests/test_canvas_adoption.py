@@ -355,17 +355,21 @@ def test_team_and_public_copies_are_never_adopted(harness, tmp_path, monkeypatch
     assert canvases_mod._cloned_names(ENV) == {"alpha"}
 
 
-def test_a_clone_is_recloned_as_before_whatever_copies_exist(harness, tmp_path, monkeypatch):
-    """An existing clone at `user/alpha` and a duplicate copy of its id
-    beside it: the clone is pulled as a re-clone always was, and the copy is
-    the mirror command's to remove ("a mirror duplicated by a live folder")."""
+def test_an_existing_clone_is_never_pulled_over(harness, tmp_path, monkeypatch):
+    """D1479. A clone request for a canvas that already has a clone answers
+    with the folder as it is — unpublished work and all; sync/start
+    reconciles it — whatever copies of its id sit beside it (those are the
+    mirror command's to remove, "a mirror duplicated by a live folder")."""
     _shim_harness(harness, tmp_path, monkeypatch)
     assert _clone(harness).status_code == 200
+    (harness.clones / "alpha" / "a.py").write_text("unpublished work\n")
     duplicate = _reference_copy(harness.clones / "alpha-12345678", name="alpha")
-    assert _clone(harness).status_code == 200
+    res = _clone(harness)
+    assert res.json() == {"ok": True, "dir": str(harness.clones / "alpha")}
+    assert (harness.clones / "alpha" / "a.py").read_text() == "unpublished work\n"
     assert canvas_marker.sync_of(str(duplicate)) == "mirror"
     assert canvas_marker.read(str(harness.clones / "alpha")).sync == "live"
-    assert len(_pulls(harness)) == 2 and not _flag(harness).exists()
+    assert len(_pulls(harness)) == 1 and not _flag(harness).exists()
 
 
 # -- adoption against a mirror run -----------------------------------------
@@ -392,6 +396,28 @@ def test_a_clone_stops_this_processs_mirror_run_first(harness, tmp_path, monkeyp
     assert _wait_for(lambda: canvas_mirror.status(ENV)["state"] == "ok", timeout=15)
     assert (folder / "a.py").read_text() == "a1\n"
     assert len([c for c in harness.calls() if c[:6] == MIRROR_ARGV]) == 2
+
+
+def test_sync_start_on_a_clone_still_at_its_old_path_stops_the_mirror_run_and_moves_it(
+        harness, tmp_path, monkeypatch):
+    """The canvas page is open on a clone the layout has not moved yet, and
+    a mirror run is in flight: the run is stopped, not waited out, and the
+    clone moves at once with what was in it."""
+    _shim_harness(harness, tmp_path, monkeypatch)
+    _no_sessions(monkeypatch)
+    started = _slow(harness, tmp_path, mirror_delay=3, pull_files=_BASE_FILES)
+    assert canvas_mirror.kick(ENV, "timer", force=True)["started"] is True
+    pid = _wait_started(started)
+    legacy = harness.root / "alpha"                    # after the run's own pass
+    legacy.mkdir()
+    (legacy / "canvas.toml").write_text('type = "canvas"\n')
+    (legacy / "a.py").write_text("unpublished work\n")
+    res = harness.client.post("/api/canvases/sync/start", headers=GUARD,
+                              json={"env": ENV, "name": "alpha"})
+    assert res.status_code == 200, res.text
+    assert not _alive(pid)
+    assert (harness.clones / "alpha" / "a.py").read_text() == "unpublished work\n"
+    assert canvas_layout.legacy_clones(ENV) == [] and _pulls(harness) == []
 
 
 def test_a_mirror_run_in_another_process_loses_to_the_marker(harness, tmp_path, monkeypatch):
@@ -554,11 +580,12 @@ def test_a_stale_not_cloned_card_does_not_pull_over_a_clone_that_just_moved(
     assert res.status_code == 200 and res.json()["dir"] == str(harness.clones / "alpha")
     assert (harness.clones / "alpha" / "a.py").read_text() == "unpublished work\n"
     assert _pulls(harness) == []
-    # Past the window a clone request is the re-clone it always was.
-    monkeypatch.setattr(canvas_layout, "MOVED_RECENTLY_S", 0.0)
+    # However long after, and in a process that did not make the move (the
+    # page outlived a restart): still the folder as it is.
+    canvas_layout.reset()
     assert _clone(harness).status_code == 200
-    assert len(_pulls(harness)) == 1
-    assert canvas_layout.moved_recently(ENV, "never-moved") is False
+    assert (harness.clones / "alpha" / "a.py").read_text() == "unpublished work\n"
+    assert _pulls(harness) == []
 
 
 # -- what may and may not be taken over ----------------------------------------
@@ -616,7 +643,7 @@ def test_an_empty_folder_and_a_folder_we_marked_live_are_ours_to_pull_into(
 
 def test_a_clone_moved_minutes_ago_and_since_replaced_by_a_copy_is_adopted(
         harness, tmp_path, monkeypatch):
-    """The "just moved, do not pull" answer holds only while the folder IS
+    """The "a clone, do not pull" answer holds only while the folder IS
     that clone. Deleted here since, with a reference copy now at its path,
     the canvas is opened like any other: adopted and pulled."""
     _shim_harness(harness, tmp_path, monkeypatch)
@@ -625,7 +652,6 @@ def test_a_clone_moved_minutes_ago_and_since_replaced_by_a_copy_is_adopted(
     legacy.mkdir(parents=True)
     (legacy / "canvas.toml").write_text('type = "canvas"\n')
     assert canvas_layout.ensure_layout(ENV).moved == ["alpha"]
-    assert canvas_layout.moved_recently(ENV, "alpha") is True
     assert harness.client.post("/api/canvases/delete", headers=GUARD,
                                json={"env": ENV, "name": "alpha"}).status_code == 200
     copy = _reference_copy(harness.clones / "alpha", cid="col-new")

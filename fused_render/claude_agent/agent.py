@@ -7596,6 +7596,21 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
     return {"run_id": ""}
 
 
+def _same_workdir(target: str, workdir: str, real: str) -> bool:
+    """Whether run target `target` works in folder `workdir` (resolved:
+    `real`). Lexical first; through `realpath` only for a target whose folder
+    has the same NAME, the one way two spellings of a folder differ here: a
+    canvas clone moved to `<env>/user/<name>` while a session ran keeps that
+    session's target at `<env>/<name>`, a link to the new place (D1479). The
+    name check keeps the scan, which reads every run, free of syscalls for
+    the runs of other folders."""
+    w = os.path.abspath(_workdir(target))
+    if w == workdir:
+        return True
+    return (os.path.basename(w) == os.path.basename(workdir)
+            and os.path.realpath(w) == real)
+
+
 def _live_run_in(folder: str) -> dict:
     """The id of a run STILL GOING anywhere in `folder` — on the folder
     itself or on a file directly inside it — or "" if there is none.
@@ -7611,6 +7626,7 @@ def _live_run_in(folder: str) -> dict:
     open). Unbounded on purpose — see `_live_run`'s `limit`; the sync caches
     the answer across its poll."""
     workdir = os.path.abspath(folder)
+    real = os.path.realpath(folder)
     try:
         names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
@@ -7623,7 +7639,7 @@ def _live_run_in(folder: str) -> dict:
         except (OSError, ValueError):
             continue
         target = meta.get("file", "") if isinstance(meta, dict) else ""
-        if not target or os.path.abspath(_workdir(target)) != workdir:
+        if not target or not _same_workdir(target, workdir, real):
             continue
         if not _alive(run_dir):
             continue
@@ -7642,6 +7658,7 @@ def _live_session_in(folder: str) -> dict:
     between turns, and the next turn's edits need the watcher that publishes
     them."""
     workdir = os.path.abspath(folder)
+    real = os.path.realpath(folder)
     try:
         names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
@@ -7654,7 +7671,7 @@ def _live_session_in(folder: str) -> dict:
         except (OSError, ValueError):
             continue
         target = meta.get("file", "") if isinstance(meta, dict) else ""
-        if not target or os.path.abspath(_workdir(target)) != workdir:
+        if not target or not _same_workdir(target, workdir, real):
             continue
         if _host_alive(run_dir) or _alive(run_dir):
             return {"run_id": name}

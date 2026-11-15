@@ -109,9 +109,15 @@ def _journal(root):
     path = root / ".sync" / canvas_layout.JOURNAL_NAME
     if not path.exists():
         return None
-    # Without `since` (when the move was made): the tests compare the moves.
-    return [{k: v for k, v in m.items() if k != "since"}
+    # Without `since` (when the move was made) and `link` (whether it leaves
+    # one; asserted where it matters): the tests compare the moves.
+    return [{k: v for k, v in m.items() if k not in ("since", "link")}
             for m in json.loads(path.read_text())["moves"]]
+
+
+def _journal_links(root):
+    path = root / ".sync" / canvas_layout.JOURNAL_NAME
+    return [m.get("link") for m in json.loads(path.read_text())["moves"]]
 
 
 # -- detection -----------------------------------------------------------------
@@ -252,7 +258,12 @@ def test_the_desk_row_and_the_chat_history_follow_the_clone(harness, stores):
     assert _journal(root) is None
 
 
-def test_a_session_at_work_defers_the_move_and_a_later_pass_makes_it(harness, stores):
+def test_a_session_at_work_moves_with_its_clone_through_a_link_at_the_old_path(
+        harness, stores):
+    """D1479. The session keeps its old absolute paths; the link left there
+    takes every read and write it makes into the moved clone, which the
+    sync watches. Its transcript cannot move while it runs, so that carry
+    stays owed, and the link with it, until the session ends."""
     projects, sessions = stores
     root = harness.root
     old = _legacy(root, "alpha")
@@ -265,34 +276,246 @@ def test_a_session_at_work_defers_the_move_and_a_later_pass_makes_it(harness, st
         {"pid": os.getpid(), "sessionId": "sid-live", "cwd": str(old)}))
 
     report = canvas_layout.ensure_layout(ENV)
-    assert report.moved == ["beta"]                      # the others are not held up
-    assert "Claude is working in this canvas" in report.deferred["alpha"]
-    assert report.refusal("alpha") == report.deferred["alpha"]
-    assert report.refusal("beta") is None
-    assert _tree(old) == before and not (root / "user" / "alpha").exists()
-    assert canonical_fs_path(str(old)) in _desk()
+    new = root / "user" / "alpha"
+    assert report.moved == ["alpha", "beta"] and not report.deferred
+    assert report.refusal("alpha") is None
+    assert report.forwarding == ["alpha"] and report.carry_owed and report.pending()
+    assert _tree(new) == before
+    assert old.is_symlink() and os.readlink(old) == os.path.join("user", "alpha")
+    # What the session writes at its old path lands in the clone.
+    (old / "b.py").write_text("written by the session\n")
+    assert (new / "b.py").read_text() == "written by the session\n"
+    assert canvas_layout.forwarded_path(str(old / "b.py")) == str(new / "b.py")
+    assert canvases_mod._clone_for_session(str(old / "b.py")) == (ENV, "alpha", str(new))
+    # The link is no legacy clone, and the canvas is cloned where it belongs.
+    assert canvas_layout.legacy_clones(ENV) == []
+    assert canvases_mod._cloned_names(ENV) == {"alpha", "beta"}
+    # The desk row followed; the running session's transcript could not.
+    assert canonical_fs_path(str(new)) in _desk()
     assert (projects / claude_session_move.munge(str(old)) / "sid-live.jsonl").is_file()
-    # Nothing was left half-claimed for the retry to trip on.
+    assert _journal(root) == [{"name": "alpha", "src": "alpha",
+                               "dst": os.path.join("user", "alpha")}]
     assert not (root / ".sync" / "alpha.lock").exists()
     assert canvas_sync_state.lock_holder(str(root / ".sync" / canvas_layout.LOCK_NAME)) is None
-    assert _journal(root) is None
 
     # Throttled: a poll-driven call moments later answers from the last pass.
     assert canvas_layout.ensure_layout(ENV) is report
-    # The session ended.
+    # The session ended: the carry is finished and the link removed.
+    (sessions / "1.json").unlink()
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert not report.pending() and report.forwarding == []
+    assert not os.path.lexists(old) and _journal(root) is None
+    assert (projects / claude_session_move.munge(str(new)) / "sid-live.jsonl").is_file()
+    assert canvas_layout.forwarded_path(str(old / "b.py")) is None
+
+
+def test_a_link_is_left_only_for_a_moved_clone_and_only_while_it_is_needed(harness, stores):
+    """No session: the link is gone by the end of the pass that made it. A
+    link of the user's own at a canvas's old path is not one of ours."""
+    root = harness.root
+    old = _legacy(root, "alpha")
+    report = canvas_layout.ensure_layout(ENV)
+    assert report.moved == ["alpha"] and not report.pending()
+    assert not os.path.lexists(old)
+    elsewhere = root.parent / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "canvas.toml").write_text('name = "beta"\n')
+    (root / "beta").symlink_to(elsewhere)
+    assert not canvas_layout._is_forward_link(str(root), "beta")
+    assert canvas_layout.forwarded_path(str(root / "beta" / "a.py")) is None
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert "link" in report.conflicts["beta"] and (root / "beta").is_symlink()
+
+
+def test_a_canvas_whose_old_path_still_forwards_cannot_be_deleted_or_renamed(
+        harness, stores):
+    """The link would dangle under the running session, or point it into
+    another canvas that later takes `user/<name>`. Renaming ANOTHER canvas
+    to that name is refused for the same reason."""
+    projects, sessions = stores
+    harness.log_in()
+    root = harness.root
+    old = _legacy(root, "alpha")
+    _transcript(projects, str(old), "sid-live")
+    (sessions / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "sid-live", "cwd": str(old)}))
+    assert canvas_layout.ensure_layout(ENV).forwarding == ["alpha"]
+    for route, body in (("delete", {"name": "alpha"}),
+                        ("rename", {"name": "alpha", "new_name": "gamma"})):
+        res = harness.client.post(f"/api/canvases/{route}", headers=GUARD,
+                                  json={"env": ENV, **body})
+        assert res.status_code == 409, (route, res.text)
+        assert res.json()["code"] == "layout_pending"
+        assert "Claude session" in res.json()["error"]
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert report.refusal("alpha", retiring=True) == canvas_layout.FORWARDING
+    assert report.refusal("alpha") is None and report.refusal("alpha", creating=True,
+                                                               has_clone=True) is None
+    assert old.is_symlink() and (root / "user" / "alpha" / "canvas.toml").is_file()
+    assert [c for c in harness.calls() if "delete" in c or "rename" in c] == []
+    # The session ended: both go through.
+    (sessions / "1.json").unlink()
+    assert not canvas_layout.ensure_layout(ENV, force=True).forwarding
+    assert canvas_layout.ensure_layout(ENV).refusal("alpha", retiring=True) is None
+
+
+def test_a_crash_between_the_folder_and_the_link_is_finished_from_the_journal(
+        harness, stores, monkeypatch):
+    """The folder moved; the staged link never reached the old path. The
+    journal says a link belongs there and the next pass puts it there."""
+    projects, sessions = stores
+    root = harness.root
+    old = _legacy(root, "alpha")
+    _transcript(projects, str(old), "sid-live")
+    (sessions / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "sid-live", "cwd": str(old)}))
+    real_rename = os.rename
+
+    def die(src, dst):
+        if os.path.basename(str(src)).startswith(canvas_layout.STAGED_LINK_PREFIX):
+            raise _Crash()
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(canvas_layout.os, "rename", die)
+    with pytest.raises(_Crash):
+        canvas_layout.ensure_layout(ENV)
+    monkeypatch.setattr(canvas_layout.os, "rename", real_rename)
+    assert not os.path.lexists(old) and (root / "user" / "alpha").is_dir()
+    assert _journal_links(root) == [True]
+    # A process that really died leaves its staged link behind, too.
+    staged = root / (canvas_layout.STAGED_LINK_PREFIX + "alpha")
+    if not os.path.lexists(staged):
+        staged.symlink_to(os.path.join("user", "alpha"))
+    canvas_layout.reset()
+    report = canvas_layout.ensure_layout(ENV)
+    assert old.is_symlink() and report.forwarding == ["alpha"]
+    assert not os.path.lexists(staged)
+    (sessions / "1.json").unlink()
+    assert not canvas_layout.ensure_layout(ENV, force=True).pending()
+    assert not os.path.lexists(old) and _journal(root) is None
+
+
+def test_sync_start_forces_a_pass_only_where_one_could_move_the_clone(harness, stores):
+    root = harness.root
+    _legacy(root, "alpha")
+    assert canvas_layout.worth_forcing(ENV, "alpha") is True        # never looked at
+    (root / "user" / "alpha").mkdir(parents=True)
+    (root / "user" / "alpha" / "mine.txt").write_text("x")
+    assert "alpha" in canvas_layout.ensure_layout(ENV).conflicts
+    assert canvas_layout.worth_forcing(ENV, "alpha") is False       # a conflict
+    assert canvas_layout.worth_forcing(ENV, "beta") is False        # nothing legacy
+
+
+def test_a_pass_refused_the_layout_lock_still_reports_every_standing_link(
+        harness, stores):
+    """Another process holds the layout lock, so this pass cannot ask whether
+    a session still uses the link: it counts every standing one, and the
+    canvas is not deleted or renamed meanwhile."""
+    root = harness.root
+    (root / "user" / "alpha").mkdir(parents=True)
+    (root / "user" / "alpha" / "canvas.toml").write_text('name = "alpha"\n')
+    (root / "alpha").symlink_to(os.path.join("user", "alpha"))
+    lock = str(root / ".sync" / canvas_layout.LOCK_NAME)
+    (root / ".sync").mkdir(exist_ok=True)
+    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, lock],
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "ready"
+        report = canvas_layout.ensure_layout(ENV, force=True)
+        assert report.forwarding == ["alpha"]
+        assert report.refusal("alpha", retiring=True) == canvas_layout.FORWARDING
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_failed_pass_refuses_retiring_a_canvas_whose_old_path_forwards(harness):
+    root = harness.root
+    (root / "user" / "alpha").mkdir(parents=True)
+    (root / "user" / "alpha" / "canvas.toml").write_text('name = "alpha"\n')
+    (root / "alpha").symlink_to(os.path.join("user", "alpha"))
+    report = canvas_layout.LayoutReport(env=ENV, error="the canvas folders could not be checked")
+    assert report.refusal("alpha", retiring=True) == report.error
+    assert report.refusal("alpha") is None
+    assert report.refusal("beta", retiring=True) is None
+
+
+def test_a_session_deferral_wins_over_a_mirror_run(harness, stores, monkeypatch):
+    """Without a link, a session holds its clone whatever the mirror does:
+    the deferral says so, and sync/start does not stop the mirror run for a
+    clone it could not move anyway (`worth_forcing`)."""
+    from fused_render import canvas_mirror
+
+    projects, sessions = stores
+    monkeypatch.setattr(canvas_layout, "_stage_link", lambda root, name: None)
+    monkeypatch.setattr(canvas_mirror, "child_running", lambda env: True)
+    old = _legacy(harness.root, "alpha")
+    _transcript(projects, str(old), "sid-live")
+    (sessions / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "sid-live", "cwd": str(old)}))
+    report = canvas_layout.ensure_layout(ENV)
+    assert "Claude is working in this canvas" in report.deferred["alpha"]
+    assert canvas_layout.worth_forcing(ENV, "alpha") is False
+    (sessions / "1.json").unlink()
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert report.deferred["alpha"] == canvas_layout.MIRROR_BUSY
+    assert canvas_layout.worth_forcing(ENV, "alpha") is True
+
+
+def test_without_links_a_session_at_work_still_defers_the_move(harness, stores, monkeypatch):
+    """A volume that cannot hold a symlink: the session's paths would
+    dangle, so its clone waits for it, as before D1479."""
+    projects, sessions = stores
+    monkeypatch.setattr(canvas_layout, "_stage_link", lambda root, name: None)
+    root = harness.root
+    old = _legacy(root, "alpha")
+    _legacy(root, "beta")
+    before = _tree(old)
+    _transcript(projects, str(old), "sid-live")
+    (sessions / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "sid-live", "cwd": str(old)}))
+    report = canvas_layout.ensure_layout(ENV)
+    assert report.moved == ["beta"]
+    assert "Claude is working in this canvas" in report.deferred["alpha"]
+    assert _tree(old) == before and not (root / "user" / "alpha").exists()
+    assert _journal(root) is None
     (sessions / "1.json").unlink()
     report = canvas_layout.ensure_layout(ENV, force=True)
     assert report.moved == ["alpha"] and not report.pending()
-    new = root / "user" / "alpha"
-    assert _tree(new) == before and not old.exists()
-    assert canonical_fs_path(str(new)) in _desk()
-    assert (projects / claude_session_move.munge(str(new)) / "sid-live.jsonl").is_file()
+    assert not os.path.lexists(old)
 
 
-def test_the_clone_route_refuses_a_canvas_whose_clone_cannot_move_yet(harness, stores):
-    """Pulling a fresh copy to the new path would leave two clones, the old
-    one holding the user's unpublished work."""
+def test_a_canvas_with_a_session_at_work_opens_at_once(harness, stores):
+    """The canvas the user was working in when the app updated: listed as
+    cloned, opened with its unpublished work, no pull over it, synced."""
     projects, sessions = stores
+    harness.log_in()
+    old = _legacy(harness.root, "alpha", {"canvas.toml": 'name = "alpha"\n',
+                                          "a.py": "unpublished work\n"})
+    _transcript(projects, str(old), "sid-live")
+    (sessions / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "sid-live", "cwd": str(old)}))
+    listed = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD).json()
+    assert {c["name"]: c["cloned"] for c in listed["canvases"]}["alpha"] is True
+    res = harness.client.post("/api/canvases/clone", headers=GUARD,
+                              json={"env": ENV, "name": "alpha"})
+    assert res.json() == {"ok": True, "dir": str(harness.clones / "alpha")}
+    res = harness.client.post("/api/canvases/sync/start", headers=GUARD,
+                              json={"env": ENV, "name": "alpha"})
+    assert res.status_code == 200, res.text
+    assert (harness.clones / "alpha" / "a.py").read_text() == "unpublished work\n"
+    assert (old / "a.py").read_text() == "unpublished work\n"     # through the link
+    assert [c for c in harness.calls() if "pull" in c and "alpha" in c
+            and "--force" in c] == []
+
+
+def test_the_clone_route_refuses_a_canvas_whose_clone_cannot_move_yet(
+        harness, stores, monkeypatch):
+    """Without a link to leave (`_stage_link`), a session at work holds its
+    clone at the old path. Pulling a fresh copy to the new path meanwhile
+    would leave two clones, the old one holding the user's unpublished work."""
+    projects, sessions = stores
+    monkeypatch.setattr(canvas_layout, "_stage_link", lambda root, name: None)
     harness.log_in()
     old = _legacy(harness.root, "alpha", {"canvas.toml": 'name = "alpha"\n',
                                           "a.py": "unpublished work\n"})
@@ -353,8 +576,9 @@ def test_a_crash_between_the_rename_and_the_carry_is_finished_from_the_journal(
     monkeypatch.setattr(canvas_layout, "_carry", die)
     with pytest.raises(_Crash):
         canvas_layout.ensure_layout(ENV)
-    # The folder moved; nothing that names it did; the journal says so.
-    assert (new / "canvas.toml").is_file() and not old.exists()
+    # The folder moved, with its link left behind; nothing that names it
+    # did; the journal says so.
+    assert (new / "canvas.toml").is_file() and old.is_symlink()
     assert canonical_fs_path(str(old)) in _desk()
     assert _journal(root) == [{"name": "alpha", "src": "alpha",
                                "dst": os.path.join("user", "alpha")}]
@@ -369,7 +593,7 @@ def test_a_crash_between_the_rename_and_the_carry_is_finished_from_the_journal(
     assert not report.pending()
     assert canonical_fs_path(str(new)) in _desk() and canonical_fs_path(str(old)) not in _desk()
     assert (projects / claude_session_move.munge(str(new)) / "sid-1.jsonl").is_file()
-    assert _journal(root) is None
+    assert _journal(root) is None and not os.path.lexists(old)
     assert canvases_mod._cloned_names(ENV) == {"alpha"}
 
 
