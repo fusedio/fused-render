@@ -78,6 +78,34 @@ export function pathCandidate(text: string): PathCandidate | null {
   return m?.[2] ? { path, line: Number(m[2]) } : { path };
 }
 
+export interface ProsePathMatch {
+  start: number;
+  end: number;
+  path: string;
+  line?: number;
+}
+
+/** Bare ABSOLUTE paths (`/x/y.md`, `~/x/y.md`) in a prose string, for the
+ *  linkifier's text pass. A match starts at the string start or after
+ *  whitespace or an opening bracket/quote, so a `/` inside a URL or a relative
+ *  path never starts one; trailing sentence punctuation is not part of it; and
+ *  it needs two segments, so `/clear` or a lone `/tmp` is never even statted.
+ *  `start`/`end` cover the trimmed text, `:line` suffix included. */
+export function prosePathMatches(text: string): ProsePathMatch[] {
+  const out: ProsePathMatch[] = [];
+  const re = /(?:^|[\s(["'\u201c\u2018])(~\/|\/)([^\s<>"'`()[\]{}]*)/g;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const start = m.index + m[0].length - m[1]!.length - m[2]!.length;
+    const trimmed = (m[1]! + m[2]!).replace(/[.,;:!?\u201d\u2019]+$/, "");
+    const cand = pathCandidate(trimmed);
+    if (!cand) continue;
+    const body = cand.path.startsWith("~/") ? cand.path.slice(2) : cand.path.slice(1);
+    if (!body.includes("/")) continue;
+    out.push({ start, end: start + trimmed.length, path: cand.path, ...(cand.line ? { line: cand.line } : {}) });
+  }
+  return out;
+}
+
 /** A markdown link whose href names a LOCAL file rather than a web address:
  *  `file:///x` (and `file://localhost/x`), an absolute POSIX or drive path, or
  *  `~/x`. Returns the filesystem path, percent-decoded (marked encodes the
