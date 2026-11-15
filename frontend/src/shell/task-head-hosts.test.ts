@@ -24,7 +24,10 @@ test("the rail's Tasks card: both heads on the shared chassis, the old ones kept
   // The chat head: ← Back where the × stood, focus seat and all; the chevrons
   // walk the card's own list; ↗ Open names where it goes; the chat's own ⋮.
   expect(shared).toContain('lead={{ kind: "back", label: "Back to tasks", onPress: () => setChat(null), ref: api.backRef }}');
-  expect(shared).toContain("nav={{ prev: chatEnds.prev, next: chatEnds.next, step: stepChat }}");
+  // × then ← in the corner, and no ↑↓ (Akshil, 2026-11-16).
+  expect(shared).toContain('aria-label="Close Tasks"');
+  expect(shared).toContain("onClick={api.close}");
+  expect(shared).not.toContain("nav={{");
   expect(shared).toContain("label: pageDoorLabel(task)");
   expect(shared).toContain("<Kebab");
   expect(shared).toContain("chipsRef={setChipsHost}");
@@ -68,9 +71,8 @@ test("the New task card's chat: the shared head in place of the dialog's, named 
 test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips in its seat", () => {
   const src = read("TaskCards.tsx");
   expect(src).toContain("const unified = useTaskHeadUnified();");
-  // Only for a task with a session: without one there is no ⋮, and the old
-  // head's Archive / Delete / folder-deleted door are where those acts live.
-  expect(src).toContain("const sharedHead = unified && !!task.session_id;");
+  // For EVERY task, a session-less one too (its ring files it, TaskHead).
+  expect(src).toContain("const sharedHead = unified;");
   const shared = between(src, "{...(sharedHead ? {", "// The footer exists only while");
   // The × is the chassis' guarded close, not the raw prop.
   expect(shared).toContain("head: ({ titleId, close }: ModalHeadContext) => (");
@@ -81,6 +83,17 @@ test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips i
   expect(shared).not.toContain("foldedOpen");
   // The disabled "folder deleted" door stays in the ⋮.
   expect(shared).toContain("...(gone ? [{");
+  // No session: no chat ⋮ — with the folder gone, a plain ⋮ carries the
+  // greyed door and Delete (the old head's doors), so neither is lost.
+  expect(shared).toContain(") : gone ? (");
+  const bare = between(shared, ") : gone ? (", ") : null}");
+  // The chat ⋮'s own trigger and keyboard-operable menu (Kebab's), not a
+  // pointer-only ContextMenu.
+  expect(bare).toContain('className="c-kebabbtn"');
+  expect(bare).toContain("<DropdownMenuTrigger");
+  expect(bare).toContain("{`${pageDoorLabel(task)} — folder deleted`}");
+  expect(bare).toContain("blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null)");
+  expect(bare).toContain("onClick={() => setErasing(true)}");
   expect(shared).toContain("breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle }");
   // The ChatMount: the shared head's seat and Breakout report, or the old
   // slim line.
@@ -142,4 +155,29 @@ test("every chat host hands the chat both seats: the chips and the pause word's 
     expect(src).toContain("statusRef={setStatusHost}");
     expect(src).toContain("headStatusHost: statusHost");
   }
+});
+
+test("the folder seat: hosts with no place of their own take the head's chip; the chat pane over its own folder says none", () => {
+  // No `place=` in the four hosts that had none: the head draws the folder
+  // chip itself (TaskHead, `place === undefined`).
+  for (const f of ["TaskPeek.tsx", "claude-rail/TasksPeek.tsx", "NewJobModal.tsx", "TaskCards.tsx"]) {
+    expect(/^\s*place=/m.test(read(f))).toBe(false);
+  }
+  // The pane states its own — and `null`, never an omission, over the folder
+  // it is already scoped to (`mergedHead`), so no chip is drawn there.
+  const chat = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
+  expect(chat).toContain("? (placeTag ?? (props.mergedHead ? null : <TaskPeekProject task={head.task} />))\n          : null");
+});
+
+test("the rail card: its pulse's facts ride the head's own slots, its star and archive the slots' other seats", () => {
+  const src = read("claude-rail/RailPeek.tsx");
+  const shared = between(src, "{head && unified ? (", ") : head && (");
+  expect(shared).toContain("? { n: head.count, unread: head.unread }");
+  expect(shared).toContain("? { text: head.when, ...(head.whenFull ? { title: head.whenFull } : {}) }");
+  expect(shared).not.toContain("pulseEl(");
+  expect(shared).toContain("starNode: starButton(head)");
+  expect(shared).toContain("statusOverlay: archiveButton(head)");
+  // The old head keeps its picker gate: a button only during a rename.
+  const legacy = src.slice(src.indexOf(") : head && ("));
+  expect(legacy).toContain("onlyWhileEditing");
 });

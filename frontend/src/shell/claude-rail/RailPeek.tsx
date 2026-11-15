@@ -1028,7 +1028,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const askedKey = useRef<string | null>(null);
   const [filing, setFiling] = useState(false);
   /** THE ARCHIVE SEAT: over the pulse's right end (favourites off), or over
-   *  the second row's status ring (favourites on; owner, 2026-11-06). */
+   *  the second row's status ring (favourites on; owner, 2026-11-06). The
+   *  shared head (flag on) seats it over its ring either way. */
   const archiveButton = (facts: SeatFacts) => (
     <button
       type="button"
@@ -1594,14 +1595,15 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       <div className="claude-rail-peek-card">
         {head && unified ? (
           // THE SHARED HEAD (flag on; shell/TaskHead): the × (or, favourites
-          // off, the pin that pressed IS the ×), the identity — ring, star,
-          // number, title with its own rename — the place, the pulse with its
-          // archive, ↗ Open and the ⋮, and the title on its own row once the
-          // card is too narrow for one (`stacked: "auto"`). The wrapper keeps
-          // the old head's class for its Escape and its hover-archive rules
-          // and lays out as nothing (`is-unified`, task-head.css).
+          // off, the pin that pressed IS the ×), the ring, the place, then the
+          // row's a/b slots (2026-11-15) — the number ↔ the card's archive,
+          // the count ↔ the card's star, the time ↔ Open — the ⋮, and the
+          // title on its own row once the card is too narrow for one
+          // (`stacked: "auto"`). The wrapper keeps the old head's class for
+          // its Escape and lays out as nothing (`is-unified`, task-head.css).
           <div className="claude-rail-peek-head is-unified" onKeyDown={onHeadKeyDown}>
             <TaskHead
+              reveal="window"
               // KEYED ON THE CHAT: a rename half-typed on one chat must not
               // survive a swap to another and save there (the old head
               // dropped its draft on every change of shown chat).
@@ -1626,10 +1628,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // identity's plain TaskStar does none of that.
               star={false}
               {...(favsOn && head.t.session_id ? { starNode: starButton(head) } : {})}
-              // …and its archive over the ring, on hover (favourites on; off,
-              // it rides the pulse as it did — and the head's own ring seat
-              // stays off, so there is one archive, not two).
-              {...(favsOn && head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
+              // …and its archive in the id slot, on hover — favourites on or
+              // off. The card's own `fileTask`, which tells the rail to let go
+              // of the chat, so the head's own seat stays off: one archive,
+              // not two.
+              {...(head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
               fileSeat={false}
               // The ring's own facts, as the old head passed them to its
               // StatusIcon: the unread mark, the unsent-draft dot, a failure.
@@ -1658,9 +1661,17 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // Measured only while the card is up.
               fitEnabled={!!shownKey}
               place={placeEl(head)}
-              chips={
-                head.t.session_id && !head.draft && (!favsOn || head.when || head.count > 0)
-                  ? pulseEl(head, !favsOn)
+              // The pulse's facts in the head's own slots: how many messages
+              // (the unread ones turn it to ink) and when it last moved — none
+              // for a draft or a chat with no session, as the pulse had none.
+              count={
+                head.t.session_id && !head.draft && head.count > 0
+                  ? { n: head.count, unread: head.unread }
+                  : null
+              }
+              when={
+                head.t.session_id && !head.draft && head.when
+                  ? { text: head.when, ...(head.whenFull ? { title: head.whenFull } : {}) }
                   : null
               }
               open={
@@ -1764,6 +1775,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     <TaskIconPick
                       task={{ key: head.t.key, icon_slot: headIcon }}
                       editing={draft !== null}
+                      onlyWhileEditing
                       onDone={onReload}
                       onOpenChange={setIconPicking}
                     >
