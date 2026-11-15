@@ -406,6 +406,51 @@ def test_sync_start_forces_a_pass_only_where_one_could_move_the_clone(harness, s
     assert canvas_layout.worth_forcing(ENV, "beta") is False        # nothing legacy
 
 
+def test_a_pass_refused_the_layout_lock_still_reports_every_standing_link(
+        harness, stores):
+    """Another process holds the layout lock, so this pass cannot ask whether
+    a session still uses the link: it counts every standing one, and the
+    canvas is not deleted or renamed meanwhile."""
+    root = harness.root
+    (root / "user" / "alpha").mkdir(parents=True)
+    (root / "user" / "alpha" / "canvas.toml").write_text('name = "alpha"\n')
+    (root / "alpha").symlink_to(os.path.join("user", "alpha"))
+    lock = str(root / ".sync" / canvas_layout.LOCK_NAME)
+    (root / ".sync").mkdir(exist_ok=True)
+    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, lock],
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "ready"
+        report = canvas_layout.ensure_layout(ENV, force=True)
+        assert report.forwarding == ["alpha"]
+        assert report.refusal("alpha", retiring=True) == canvas_layout.FORWARDING
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_session_deferral_wins_over_a_mirror_run(harness, stores, monkeypatch):
+    """Without a link, a session holds its clone whatever the mirror does:
+    the deferral says so, and sync/start does not stop the mirror run for a
+    clone it could not move anyway (`worth_forcing`)."""
+    from fused_render import canvas_mirror
+
+    projects, sessions = stores
+    monkeypatch.setattr(canvas_layout, "_stage_link", lambda root, name: None)
+    monkeypatch.setattr(canvas_mirror, "child_running", lambda env: True)
+    old = _legacy(harness.root, "alpha")
+    _transcript(projects, str(old), "sid-live")
+    (sessions / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "sid-live", "cwd": str(old)}))
+    report = canvas_layout.ensure_layout(ENV)
+    assert "Claude is working in this canvas" in report.deferred["alpha"]
+    assert canvas_layout.worth_forcing(ENV, "alpha") is False
+    (sessions / "1.json").unlink()
+    report = canvas_layout.ensure_layout(ENV, force=True)
+    assert report.deferred["alpha"] == canvas_layout.MIRROR_BUSY
+    assert canvas_layout.worth_forcing(ENV, "alpha") is True
+
+
 def test_without_links_a_session_at_work_still_defers_the_move(harness, stores, monkeypatch):
     """A volume that cannot hold a symlink: the session's paths would
     dangle, so its clone waits for it, as before D1479."""

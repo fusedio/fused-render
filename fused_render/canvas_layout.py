@@ -696,12 +696,6 @@ def _migrate(env: str, root: str, name: str) -> str:
         return "deferred:it is being synced, renamed or deleted right now"
     from fused_render import canvas_mirror
 
-    if canvas_mirror.child_running(env):
-        # This process's `canvas mirror` run is writing the scope folders: a
-        # reference copy removed or a clone renamed into `user/` under its
-        # feet could be swapped or deleted by it. A clone, rename or delete
-        # stops the run first (`canvas_mirror.hold`); anything else waits.
-        return f"deferred:{MIRROR_BUSY}"
     lock_path = canvases._lock_path(env, name)
     try:
         outcome, record = canvas_sync_state.claim_lock(lock_path)
@@ -720,6 +714,16 @@ def _migrate(env: str, root: str, name: str) -> str:
         if staged_link is None and _held(root, rel):
             return ("deferred:Claude is working in this canvas, or finished "
                     "moments ago")
+        if canvas_mirror.child_running(env):
+            # This process's `canvas mirror` run is writing the scope folders:
+            # a reference copy removed or a clone renamed into `user/` under
+            # its feet could be swapped or deleted by it. A clone, rename or
+            # delete stops the run first (`canvas_mirror.hold`); anything else
+            # waits. Asked AFTER every reason that outlasts the run, so this
+            # deferral means "stopping the run would let it move"
+            # (`worth_forcing`). No child can spawn meanwhile: it spawns under
+            # the pass lock this pass holds.
+            return f"deferred:{MIRROR_BUSY}"
         if name == CLONES_SCOPE and not staged:
             via = LEGACY_PREFIX + name
             if os.path.lexists(os.path.join(root, via)):
@@ -783,6 +787,10 @@ def _run(env: str, root: str) -> LayoutReport:
         # A clone named `user` in the way holds the environment whoever is
         # running the pass: nothing may be made under `user/` meanwhile.
         report.blocked = _blocked_by_user_clone(root)
+        # Every link standing at an old path may still carry a session: no
+        # delete or rename of its canvas until a pass that holds the lock
+        # has looked (`refusal(retiring=True)`).
+        report.forwarding = _forward_links(root)
         return report
     lock_since = (canvas_sync_state.read_lock(lock_path) or {}).get("since")
     try:
