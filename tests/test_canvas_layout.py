@@ -429,6 +429,17 @@ def test_a_pass_refused_the_layout_lock_still_reports_every_standing_link(
         holder.wait()
 
 
+def test_a_failed_pass_refuses_retiring_a_canvas_whose_old_path_forwards(harness):
+    root = harness.root
+    (root / "user" / "alpha").mkdir(parents=True)
+    (root / "user" / "alpha" / "canvas.toml").write_text('name = "alpha"\n')
+    (root / "alpha").symlink_to(os.path.join("user", "alpha"))
+    report = canvas_layout.LayoutReport(env=ENV, error="the canvas folders could not be checked")
+    assert report.refusal("alpha", retiring=True) == report.error
+    assert report.refusal("alpha") is None
+    assert report.refusal("beta", retiring=True) is None
+
+
 def test_a_session_deferral_wins_over_a_mirror_run(harness, stores, monkeypatch):
     """Without a link, a session holds its clone whatever the mirror does:
     the deferral says so, and sync/start does not stop the mirror run for a

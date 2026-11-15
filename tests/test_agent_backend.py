@@ -483,6 +483,24 @@ def _fresh_copilot_run(agent, file, name="20261016-130000-aaa", rows=()):
     return run_dir
 
 
+def test_a_run_started_at_a_moved_clones_old_path_is_live_in_the_clone(agent, tmp_path):
+    """A canvas clone moved while its session ran (D1479): the run's target
+    still names the old path, now a link to the clone. The canvas sync asks
+    about the clone's own folder and must find the session there."""
+    clone = tmp_path / "unstable" / "user" / "alpha"
+    clone.mkdir(parents=True)
+    (tmp_path / "unstable" / "alpha").symlink_to(os.path.join("user", "alpha"))
+    old_file = str(tmp_path / "unstable" / "alpha" / "udf.py")
+    run_dir = _fresh_copilot_run(agent, old_file, rows=(
+        {"type": "user", "message": {"role": "user", "content": "hi"}},))
+    name = os.path.basename(run_dir)
+    assert agent._live_session_in(str(clone)) == {"run_id": name}
+    assert agent._live_run_in(str(clone))["run_id"] == name
+    other = tmp_path / "unstable" / "user" / "beta"
+    other.mkdir()
+    assert agent._live_session_in(str(other)) == {"run_id": ""}
+
+
 def test_an_errored_first_turn_still_records_before_naming(agent, target):
     """The `recorded` latch skips an errored poll; the settings record does
     not — the id goes out on that poll all the same."""

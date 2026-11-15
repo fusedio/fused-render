@@ -187,6 +187,10 @@ class LayoutReport:
                 return self.error
             if (creating or retiring) and _blocked_by_user_clone(root):
                 return self.error
+            if retiring and _is_forward_link(root, name):
+                # The pass could not say whether a session still uses the
+                # link: fail closed for the canvas it forwards to.
+                return self.error
             return None
         why = self.deferred.get(name)
         if why:
