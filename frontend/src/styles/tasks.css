@@ -3041,6 +3041,12 @@ button.tasks-draft-pill.is-on:focus-visible {
   /* The word goes, the arrow stays: the label is a bare text node. */
   font-size: 0;
 }
+/* ALONE, THE ARROW IS THE STAR'S SIZE (Akshil, 2026-11-16): beside a word it
+   is a 10px mark on a label; on its own it is the whole control. */
+.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door > .tasks-act--page svg {
+  width: 14px;
+  height: 14px;
+}
 @media (hover: none) {
   .tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door {
     flex-basis: 22px;

@@ -444,6 +444,9 @@
 }
 .task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-arrow {
   display: inline;
+  /* Alone, the arrow is the star's size (the narrow row's rule). */
+  width: 15px;
+  height: 15px;
 }
 @media (hover: none) {
   .task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"])
