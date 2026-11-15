@@ -1,26 +1,27 @@
-// THE ICON AS A BUTTON, while a title is being edited (`task_icons_enabled`,
-// owner 2026-11-10: "click edit title and click on icon should … change
-// that"; 2026-11-11: "instead of giving a random one, we let user pick by
-// showing a menu similar to the one we show for project icon selection in
-// the sidebar"): wraps the head's StatusIcon and, only during the rename,
-// makes it open the sidebar's own picker (platform/ui/IconPicker) over the
-// task icon set — filter, shuffle, Recent, and Reset for the face the task's
-// number gives it. The pick is stamped server-side (`setTaskIcon`) and the
-// listing repaints it everywhere.
+// THE ICON AS A BUTTON (`task_icons_enabled`). A favourite's status icon is
+// its face, and pressing it opens the sidebar's own picker
+// (platform/ui/IconPicker) over the task icon set — filter, shuffle, Recent,
+// and Reset for the face the task's number gives it. The pick is stamped
+// server-side (`setTaskIcon`) and the listing repaints it everywhere.
+//
+// AT ANY TIME (Akshil, 2026-11-15: "click on status icon, when it is fav
+// let's use change icon"). It was a button only while the title was being
+// edited (owner, 2026-11-10/11) — a door nobody found. `onlyWhileEditing`
+// keeps that older gate for the heads that still stand behind the unified
+// head's flag.
 //
 // ONLY A FAVOURITE HAS A SLOT (the listing hands a face to starred tasks
-// alone), so outside the rename, or with the experiment off, or on a task
-// that is not starred, the children render as they are: nothing to press,
-// no extra box.
+// alone), so with the experiment off, or on a task that is not starred, the
+// children render as they are: nothing to press, no extra box.
 //
-// THE PICKER OUTLIVES THE RENAME: its filter box takes the keyboard, the
-// title input's blur SAVES the rename and ends the edit, and the button goes
-// with it — the open picker stays (its state lives here, not on the button)
-// until a pick, Escape or a click elsewhere. `onMouseDown` is swallowed so
-// the press itself never blurs the title before the click lands.
+// THE PICKER OUTLIVES A RENAME: its filter box takes the keyboard, the
+// title input's blur SAVES the rename and ends the edit — the open picker
+// stays (its state lives here, not on the button) until a pick, Escape or a
+// click elsewhere. While `editing`, `onMouseDown` is swallowed so the press
+// itself never blurs the title before the click lands.
 //
 // PORTALLED TO THE BODY: the picker is `position: fixed` against the glyph's
-// viewport rect, and both hosts (the Tasks side peek, the rail's card) are
+// viewport rect, and its hosts (the Tasks side peek, the rail's card) are
 // containing blocks for fixed boxes — drawn in place it landed a peek's
 // width off screen. React still bubbles its events to the host, so the
 // card's focus hold sees the filter box, and the picker's own
@@ -49,14 +50,17 @@ function glyph(name: string) {
 
 export function TaskIconPick({
   task,
-  editing,
+  editing = false,
+  onlyWhileEditing = false,
   onDone,
   onOpenChange,
   children,
 }: {
   task: Pick<Task, "key" | "icon_slot">;
-  /** True while the title input stands. */
-  editing: boolean;
+  /** True while the title input stands (the press must not blur it). */
+  editing?: boolean;
+  /** The older gate: a button only during a rename (flag-off heads). */
+  onlyWhileEditing?: boolean;
   /** After the server answered — a host that reloads its own facts. */
   onDone?: () => void;
   /** The picker opened or closed — a host with something of its own on the
@@ -140,7 +144,7 @@ export function TaskIconPick({
       />,
       document.body,
     );
-  if (!editing) {
+  if (onlyWhileEditing && !editing) {
     return (
       <>
         {children}
@@ -157,8 +161,10 @@ export function TaskIconPick({
         title="Choose icon"
         aria-haspopup="dialog"
         aria-expanded={anchor !== null}
-        onMouseDown={(e) => e.preventDefault()}
+        onMouseDown={editing ? (e) => e.preventDefault() : undefined}
         onClick={(e) => {
+          // A control inside a door (a row, a card): the press is its own.
+          e.stopPropagation();
           const rect = e.currentTarget.getBoundingClientRect();
           setAnchor((cur) => (cur && cur.key === key ? null : { key, top: rect.top, left: rect.left }));
         }}

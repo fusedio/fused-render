@@ -197,6 +197,8 @@ interface FakeSeat {
   drop?: string;
   /** A container: its want is the sum of these, not its own used width. */
   kids?: readonly FakeSeat[];
+  /** Carries `data-fit-skip` — the list row's star and door seats. */
+  skip?: boolean;
 }
 
 function fakeNode(seat: FakeSeat, gap: number): unknown {
@@ -206,6 +208,7 @@ function fakeNode(seat: FakeSeat, gap: number): unknown {
     children: seat.kids ? kids : seat.empty ? [] : [1],
     textContent: seat.empty ? "" : "x",
     matches: (sel: string) => (seat.drop ? sel.includes(seat.drop) : false),
+    hasAttribute: (name: string) => name === "data-fit-skip" && !!seat.skip,
     getBoundingClientRect: () => ({ width: seat.width }),
     getClientRects: () => [1],
     offsetParent: {},
@@ -272,6 +275,22 @@ describe("rowNeed", () => {
     expect(need).toBeLessThan(502);
     // …so nothing is folded at all, and certainly not all four marks.
     expect(pickRowLevel(502, need, [46 + 8, 34 + 8, 80 + 8, 0])).toBe(0);
+  });
+
+  it("never charges a seat that opts out — at rest or grown under the pointer", () => {
+    // THE A/B ROW'S STAR AND DOOR SEATS (tasks.css, 2026-11-15): zero-width at
+    // rest, and 18/22px of real flow while a folded row is pointed at. A read
+    // that lands mid-hover must answer with the row's resting need — neither
+    // the box nor the gap it would be charged — or the level flaps on a hover.
+    const base: FakeSeat[] = [
+      { width: 20 }, // the status ring
+      { width: 31, content: 240, shrink: 1 }, // the title
+      { width: 34, content: 34 }, // the message count
+    ];
+    const rest = rowNeed(fakeRow([...base, { width: 0, skip: true }, { width: 0, skip: true }]));
+    const hovered = rowNeed(fakeRow([...base, { width: 18, skip: true }, { width: 22, skip: true }]));
+    expect(rest).toBe(rowNeed(fakeRow(base)));
+    expect(hovered).toBe(rest);
   });
 
   it("folds at most the age once the row is genuinely tight", () => {

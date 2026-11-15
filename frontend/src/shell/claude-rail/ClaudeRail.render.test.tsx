@@ -427,11 +427,16 @@ describe("ClaudeRail's card beside the pane", () => {
       const lead = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-lead"));
       expect(lead.props["aria-label"]).toBe("Close the preview");
       // The card's OWN star (toggleStar: tells the rail, dismisses on unstar),
-      // not the identity's plain TaskStar — and its archive over the ring.
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
+      // not the head's plain TaskStar, as the count slot's other occupant —
+      // and its archive as the id slot's (the a/b slots, 2026-11-15).
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-star"))).toHaveLength(0);
+      const countSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-countslot"));
+      expect(countSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
+      const idSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-idslot"));
+      expect(idSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(1);
+      // The status icon trades with nothing.
       const ring = peek.find((n) => typeof n.type === "string" && n.props.className === "task-side-peek-status");
-      expect(ring.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(1);
+      expect(ring.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(0);
       // Keyed per chat, so a half-typed rename cannot follow a swap.
       expect(peek.findByType(TaskHeadC).props.task.key).toBe(chat("a").key);
     } finally {
@@ -439,7 +444,7 @@ describe("ClaudeRail's card beside the pane", () => {
     }
   });
 
-  test("flag on, favourites off: the archive stands over the ring — one archive, none on the pulse", async () => {
+  test("flag on, favourites off: the archive stands in the id slot — one archive, and no pulse of the card's own", async () => {
     resetTaskHeadUnifiedFlagForTests();
     publishTaskHeadUnified({ enabled: true });
     try {
@@ -454,15 +459,14 @@ describe("ClaudeRail's card beside the pane", () => {
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(1);
       const archives = peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"));
       expect(archives).toHaveLength(1);
-      const ring = peek.find((n) => typeof n.type === "string" && n.props.className === "task-side-peek-status");
-      expect(ring.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"))).toHaveLength(1);
-      // The pulse still says when — without an archive of its own.
-      const pulse = peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-pulse"));
-      expect(pulse.length).toBeGreaterThan(0);
-      for (const p of pulse) {
-        expect(p.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"))).toHaveLength(0);
-      }
-      // …and the head's own ring seat stays off: the card's archive is the one.
+      const idSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-idslot"));
+      expect(idSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"))).toHaveLength(1);
+      // The pulse's facts are the head's own slots now: no pulse seat, the
+      // time in the time slot, and — favourites off — no star to trade with.
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-pulse"))).toHaveLength(0);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head-time")).length).toBe(1);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(0);
+      // …and the head's own filing seat stays off: the card's archive is the one.
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head-file"))).toHaveLength(0);
     } finally {
       resetTaskHeadUnifiedFlagForTests();

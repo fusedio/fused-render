@@ -1,7 +1,8 @@
 // THE SHARED TASK HEAD (TaskHead.tsx; design.md "One task head, everywhere"):
 // one row in one order, one lead corner, chevrons that stop at the ends, a
-// static title for a head with no task, and the measured ladder — Open folds
-// first, the title stacks last.
+// static title for a head with no task, the three a/b slots (number ↔ Archive,
+// count ↔ star, time ↔ Open; 2026-11-15) and the measured ladder — the time
+// folds first, the title stacks, the id slot goes last.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -118,7 +119,7 @@ const byClass = (r: ReactTestRenderer, c: string) => flat(r).filter((n) => cls(n
 const byLabel = (r: ReactTestRenderer, label: string) => flat(r).find((n) => n.props["aria-label"] === label);
 const headNode = (r: ReactTestRenderer) => byClass(r, "task-head")[0]!;
 
-test("one row, in the canonical order: lead, chevrons, identity, place, chips, seats, Open, ⋮", () => {
+test("one row, in the canonical order: lead, chevrons, status, folder, id slot, title, chips, seats, count slot, time slot, ⋮", () => {
   const r = render(
     head({
       nav: { prev: true, next: true, step: () => {} },
@@ -135,21 +136,137 @@ test("one row, in the canonical order: lead, chevrons, identity, place, chips, s
     expect(i).toBeGreaterThan(-1);
     return i;
   };
+  const has = (n: ReactTestRendererJSON, c: string) => cls(n).split(" ").includes(c);
   const order = [
     at((n) => n.props["aria-label"] === "Close the task panel"),
     at((n) => n.props["aria-label"] === "Previous task"),
     at((n) => n.props["aria-label"] === "Next task"),
-    at((n) => cls(n).includes("task-side-peek-who")),
+    at((n) => has(n, "task-side-peek-status")),
     at((n) => cls(n) === "task-head-place"),
+    at((n) => has(n, "task-head-idslot")),
+    at((n) => has(n, "task-side-peek-title")),
     at((n) => cls(n) === "my-chip"),
     at((n) => cls(n) === "my-seat"),
-    at((n) => cls(n) === "task-head-open"),
+    at((n) => has(n, "task-head-countslot")),
+    at((n) => has(n, "task-head-timeslot")),
     at((n) => cls(n) === "my-kebab"),
   ];
   expect(order).toEqual([...order].sort((a, b) => a - b));
-  // The identity is the full block — ring, number, title — with the star seat.
+  // The block is whole — ring, number, title — in two halves on one row.
   expect(JSON.stringify(r.toJSON())).toContain("T042");
   expect(JSON.stringify(r.toJSON())).toContain("Rename the pane noun");
+  const row = byClass(r, "task-head-row")[0]!;
+  expect(((row.children ?? []) as ReactTestRendererJSON[]).map((k) => cls(k).split(" ")[0])).toEqual([
+    "task-head-acts",
+    "task-side-peek-who",
+    "task-side-peek-who",
+    "task-head-marks",
+  ]);
+});
+
+// ---- the a/b slots (Akshil, 2026-11-15) --------------------------------------
+
+/** A slot's two occupants: `a` (the fact, or undefined) and `b`'s children. */
+function slot(r: ReactTestRenderer, name: string) {
+  const box = byClass(r, name)[0];
+  if (!box) return null;
+  const kids = (box.children ?? []) as ReactTestRendererJSON[];
+  const a = kids.find((k) => cls(k).split(" ").includes("task-head-slot-a"));
+  const b = kids.find((k) => cls(k).split(" ").includes("task-head-slot-b"))!;
+  return { box, a, b: (b.children ?? []) as ReactTestRendererJSON[] };
+}
+
+test("the id slot: the number at rest, Archive as its other occupant; nothing to file keeps the number alone", () => {
+  const done = slot(render(head()), "task-head-idslot")!;
+  expect(cls(done.a!)).toContain("task-side-peek-id");
+  expect(done.a!.children).toEqual(["T042"]);
+  expect(done.b.map(cls)).toEqual(["task-head-file tasks-act--archive"]);
+  // A run in flight: the slot stands with the number and an empty `b`.
+  const live = slot(render(head({ task: task({ status: "in_progress" }) })), "task-head-idslot")!;
+  expect(live.a!.children).toEqual(["T042"]);
+  expect(live.b).toEqual([]);
+  // The status icon no longer carries the filing button.
+  expect(JSON.stringify(byClass(render(head()), "task-side-peek-status")[0])).not.toContain("task-head-file");
+});
+
+test("the count slot: the message count at rest (the row's floor of one), the star as its other occupant", () => {
+  const r = render(head({ task: task({ message_count: 4 }) }));
+  const s = slot(r, "task-head-countslot")!;
+  expect(s.a!.props["aria-label"]).toBe("4 messages");
+  expect(s.a!.props["data-hint"]).toBe("4 messages in this task");
+  // The star left the identity for this slot.
+  expect(JSON.stringify(byClass(r, "task-side-peek-who"))).not.toContain("task-star");
+  // No messages counted: one, as the List row prints it.
+  expect(slot(render(head({ task: task({ message_count: 0 }) })), "task-head-countslot")!.a!.props["aria-label"]).toBe(
+    "1 message",
+  );
+  // A host's own count (the rail card's, with its unread ink) and its own star.
+  const own = slot(
+    render(
+      head({
+        count: { n: 7, unread: 2 },
+        star: false,
+        starNode: createElement("button", { className: "host-star" }),
+      }),
+    ),
+    "task-head-countslot",
+  )!;
+  expect(cls(own.a!)).toContain("is-unread");
+  expect(own.a!.props["aria-label"]).toBe("7 messages, 2 unread");
+  expect(own.b.map(cls)).toEqual(["host-star"]);
+  // Favourites off and no host star: the count has nothing to trade with.
+  expect(slot(render(head({ star: false, task: task({ message_count: 4 }) })), "task-head-countslot")!.b).toEqual([]);
+  // Neither a count nor a star: no slot at all.
+  expect(slot(render(head({ star: false, count: null })), "task-head-countslot")).toBeNull();
+});
+
+test("the time slot: the time at rest, ↗ Open as its other occupant with the time in its hint", () => {
+  const when = { text: "16d ago", title: "Last run 10/26/2026, 12:01:08" };
+  const r = render(head({ when, open: { href: "/x", label: "Open in Explorer", onOpen: () => {} } }));
+  const s = slot(r, "task-head-timeslot")!;
+  expect(s.a!.children).toEqual(["16d ago"]);
+  expect(s.a!.props["data-hint"]).toBe("Last run 10/26/2026, 12:01:08");
+  expect(s.b.map(cls)).toEqual(["task-head-open"]);
+  expect(s.b[0]!.props["aria-label"]).toBe("Open in Explorer");
+  expect(s.b[0]!.props["data-hint"]).toBe("Open in Explorer · Last run 10/26/2026, 12:01:08");
+  // The word is its own span, so rung 1 can leave the ↗ alone.
+  expect(byClass(r, "task-head-open-word")[0]!.children).toEqual(["Open"]);
+  // No Open (a pane IS the page): the time stays, with nothing to trade with.
+  const pane = slot(render(head({ when, open: null })), "task-head-timeslot")!;
+  expect(pane.a!.children).toEqual(["16d ago"]);
+  expect(pane.b).toEqual([]);
+  // The task's own clock when the host states none (the List row's cell).
+  const own = slot(render(head({ task: task({ last_active: 1 }) })), "task-head-timeslot")!;
+  expect(String(own.a!.props["data-hint"])).toContain("Active");
+  // No time and no door: no slot.
+  expect(slot(render(head({ when: null, open: null })), "task-head-timeslot")).toBeNull();
+});
+
+test("the folder stands before the number: the host's place, the task's own chip, or — told null — none", () => {
+  const own = render(head());
+  const chip = byClass(own, "task-head-place")[0]!;
+  expect(JSON.stringify(chip)).toContain("app");
+  const marks = byClass(own, "is-marks")[0]!;
+  const kids = ((marks.children ?? []) as ReactTestRendererJSON[]).map((k) => cls(k).split(" ")[0]);
+  expect(kids.indexOf("task-head-place")).toBeGreaterThan(kids.indexOf("task-side-peek-status"));
+  expect(kids.indexOf("task-head-place")).toBeLessThan(kids.indexOf("task-head-slot"));
+  const host = render(head({ place: createElement("span", { className: "my-place" }) }));
+  expect(byClass(host, "my-place")).toHaveLength(1);
+  expect(JSON.stringify(byClass(host, "task-head-place")[0])).not.toContain("schedule-tv-id");
+  expect(byClass(render(head({ place: null })), "task-head-place")).toHaveLength(0);
+});
+
+test("the last reply trails the title; a host's subtitle wins", () => {
+  const r = render(head({ task: task({ last_reply: "Space should now fire." }) }));
+  const title = byClass(r, "is-title")[0]!;
+  expect(JSON.stringify(byClass(r, "task-head-reply")[0])).toContain("Space should now fire.");
+  expect(JSON.stringify(title)).toContain("task-head-subtitle");
+  const host = render(
+    head({ task: task({ last_reply: "theirs" }), subtitle: createElement("span", { className: "host-sub" }) }),
+  );
+  expect(byClass(host, "host-sub")).toHaveLength(1);
+  expect(byClass(host, "task-head-reply")).toHaveLength(0);
+  expect(byClass(render(head()), "task-head-subtitle")).toHaveLength(0);
 });
 
 test("the lead corner: × with its hint, ← whose hint is its label, and a refusal said in both", () => {
@@ -206,6 +323,8 @@ test("no task: a static title carrying the dialog's id, and the Open door's own 
   const open = byClass(r, "task-head-open")[0]!;
   expect(open.props["aria-label"]).toBe("Open the Tasks page");
   expect(JSON.stringify(open.children)).toContain("Open tasks");
+  // A head with no task has no a/b: its door stands in the row itself.
+  expect(byClass(r, "task-head-timeslot")).toHaveLength(0);
   // A task's head puts the id on the TITLE span, not on the whole block.
   const withTask = render(head({ titleId: "dlg-2" }));
   const tt = byClass(withTask, "task-side-peek-title")[0]!;
@@ -231,7 +350,7 @@ test("↗ Open is a real link: a plain press calls the host, a ⌘-press is the 
   expect(prevented).toBe(true);
 });
 
-test("the ladder: wide, nothing folds; narrow, it walks every rung and the identity takes row 2", () => {
+test("the ladder: wide, nothing folds; narrow, it walks every rung and the title takes row 2", () => {
   const seen: number[] = [];
   const kebab = (fit: number) => {
     seen.push(fit);
@@ -249,30 +368,33 @@ test("the ladder: wide, nothing folds; narrow, it walks every rung and the ident
 
   seen.length = 0;
   const narrow = render(head(props), 100);
-  // Chips, seats, chevrons, the identity's row, the number: all five rungs.
-  expect(headNode(narrow).props["data-fit"]).toBe(5);
+  // The time, chips, seats, chevrons, the title's row, the id slot: all six.
+  expect(headNode(narrow).props["data-fit"]).toBe(6);
   expect(cls(headNode(narrow))).toContain("is-stacked");
-  expect(seen[seen.length - 1]).toBe(5);
-  // ↗ Open never folds: it stands beside the ⋮ at every width.
+  expect(seen[seen.length - 1]).toBe(6);
+  // ↗ Open never folds away: it is the time slot's other occupant at every width.
   expect(foldedOpen(0)).toBe(false);
-  expect(foldedOpen(5)).toBe(false);
+  expect(foldedOpen(6)).toBe(false);
   for (const r of [wide, narrow]) expect(byClass(r, "task-head-open")).toHaveLength(1);
-  // Row 1 is [lead][↑↓ seat][place] … [Open][⋮]: no identity on it, and the
-  // place right after the lead's cluster.
+  // Row 1 keeps the marks — status, folder, id slot — and the slots; the
+  // title is not on it.
   const row1 = byClass(narrow, "task-head-row")[0]!;
   const kids = (row1.children ?? []) as ReactTestRendererJSON[];
-  expect(kids.map(cls)).toEqual(["task-head-acts", "task-head-place", "task-head-idle", "task-head-marks"]);
-  expect(JSON.stringify(row1)).not.toContain("task-side-peek-who");
-  // Row 2 is the WHOLE identity: ring, number, title.
+  expect(kids.map((k) => cls(k).split(" ")[0])).toEqual([
+    "task-head-acts",
+    "task-side-peek-who",
+    "task-head-idle",
+    "task-head-marks",
+  ]);
+  expect(JSON.stringify(row1)).toContain("task-side-peek-status");
+  expect(JSON.stringify(row1)).toContain("my-place");
+  expect(JSON.stringify(row1)).toContain("T042");
+  expect(JSON.stringify(row1)).not.toContain("Rename the pane noun");
+  // Row 2 is the title alone.
   const row2 = byClass(narrow, "task-head-titlerow")[0]!;
   expect(JSON.stringify(row2)).toContain("Rename the pane noun");
-  expect(JSON.stringify(row2)).toContain("T042");
-  expect(JSON.stringify(row2)).toContain("task-side-peek-status");
-  // Unstacked, the place trails the identity.
-  const wideKids = ((byClass(wide, "task-head-row")[0]!.children ?? []) as ReactTestRendererJSON[]).map(cls);
-  expect(wideKids.indexOf("task-head-place")).toBeGreaterThan(
-    wideKids.findIndex((c) => c.startsWith("task-side-peek-who")),
-  );
+  expect(JSON.stringify(row2)).not.toContain("task-side-peek-status");
+  expect(JSON.stringify(row2)).not.toContain("T042");
 });
 
 test("the chevrons share one seat, so one rung folds them; the lead is not in it", () => {
@@ -283,14 +405,14 @@ test("the chevrons share one seat, so one rung folds them; the lead is not in it
   expect(JSON.stringify(nav)).not.toContain("Close the task panel");
 });
 
-test("stacked: true pins the identity's row at any width; false never stacks and stops at rung 3", () => {
+test("stacked: true pins the title's row at any width; false never stacks and stops at rung 4", () => {
   const pinned = render(head({ stacked: true }), 2000);
   expect(cls(headNode(pinned))).toContain("is-stacked");
   expect(byClass(pinned, "task-head-titlerow")).toHaveLength(1);
   expect(headNode(pinned).props["data-fit"]).toBe(0);
 
   const never = render(head({ stacked: false }), 100);
-  expect(headNode(never).props["data-fit"]).toBe(3);
+  expect(headNode(never).props["data-fit"]).toBe(4);
   expect(byClass(never, "task-head-titlerow")).toHaveLength(0);
   expect(cls(headNode(never))).not.toContain("is-stacked");
 });
@@ -331,15 +453,32 @@ test("the chip seat hands the chat a node to portal into, at the head of the chi
   expect(got.some((el) => el !== null)).toBe(true);
 });
 
-test("the ladder: chips, seats, chevrons, the identity's row, the number — never Open or the place", async () => {
-  const { TASK_HEAD_DROPS } = await import("./row-fit");
+test("the ladder: the time, chips, seats, chevrons, the title's row, the id slot — never the folder", async () => {
+  const { TASK_HEAD_DROPS, TASK_HEAD_STACK_LEVEL } = await import("./row-fit");
   expect([...TASK_HEAD_DROPS]).toEqual([
+    ".task-head-time",
     ".task-head-chips",
     ".task-head-seats",
     ".task-head-nav",
     ".task-head-title-seat",
-    ".task-side-peek-id",
+    ".task-head-idslot",
   ]);
+  expect(TASK_HEAD_STACK_LEVEL).toBe(5);
+  // The stylesheet folds each seat from its own rung up. At rung 1 the count
+  // and the time leave (the title runs to the ⋮) and their slots fold to
+  // nothing; pointed at, the star and the ↗ alone stand in them.
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  const from = (n: number) =>
+    `.task-head:is(${[1, 2, 3, 4, 5, 6].filter((k) => k >= n).map((k) => `[data-fit="${k}"]`).join(", ")})`;
+  const facts = ":is(.task-head-countslot, .task-head-timeslot)";
+  expect(css).toContain(`${from(1)} ${facts} {\n  width: 0;`);
+  expect(css).toContain(`${from(1)} ${facts} > .task-head-slot-a,`);
+  expect(css).toContain(`${from(1)} .task-head-timeslot .task-head-open-word {`);
+  expect(css).toContain(`${from(1)}:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))`);
+  expect(css).toContain(`${from(2)} .task-head-chips {`);
+  expect(css).toContain(`${from(3)} .task-head-seats {`);
+  expect(css).toContain(`${from(4)} .task-head-nav {`);
+  expect(css).toContain(`.task-head[data-fit="6"] .task-head-idslot {`);
 });
 
 test("a group, not a banner: role=group with its name", () => {
@@ -359,7 +498,9 @@ test("an armed lead says so in its class; a door that stays on the page drops it
     }),
   );
   expect(cls(byLabel(r, "Close and discard changes")!)).toContain("is-armed");
-  expect(JSON.stringify(byClass(r, "task-head-open")[0])).not.toContain("lucide-arrow-up-right");
+  // The ↗ is always drawn; `is-wordy` hides it while the word stands, and
+  // rung 1 wears it alone (task-head.css).
+  expect(cls(byClass(r, "task-head-open")[0]!)).toContain("is-wordy");
   const withArrow = render(head({ open: { href: "/x", label: "Open", onOpen: () => {} } }));
   expect(JSON.stringify(byClass(withArrow, "task-head-open")[0])).toContain("lucide-arrow-up-right");
 });
@@ -380,18 +521,17 @@ test("pending with no task: the identity's skeleton holds the seat", () => {
   expect(byClass(render(head({ task: null })), "c-tb-skel")).toHaveLength(0);
 });
 
-// ---- the ring files the task (TaskFileSeat; the Tasks row's mark slot) ------
+// ---- the id slot files the task (TaskFileSeat; the Tasks row's rules) -------
 
 const seatOf = (r: ReactTestRenderer) => byClass(r, "task-head-file")[0];
 
-test("the ring's Archive is there only when the task can be filed — never while a run is in flight", () => {
+test("the id slot's Archive is there only when the task can be filed — never while a run is in flight", () => {
   const done = render(head());
   const seat = seatOf(done)!;
   expect(seat.props["aria-label"]).toBe("Archive this task");
   expect(seat.props["data-hint"]).toBe("Archive");
-  // It stands INSIDE the ring's seat, over the ring.
-  const ring = byClass(done, "task-side-peek-status")[0]!;
-  expect(JSON.stringify(ring)).toContain("task-head-file");
+  // It stands in the id slot, over the number.
+  expect(JSON.stringify(byClass(done, "task-head-idslot")[0])).toContain("task-head-file");
   // Archived: the other direction.
   expect(seatOf(render(head({ task: task({ status: "archived" }) })))!.props["aria-label"]).toBe(
     "Unarchive this task",
@@ -417,13 +557,14 @@ test("the ring's Archive is there only when the task can be filed — never whil
   expect(seatOf(render(head({ fileSeat: false })))).toBeUndefined();
 });
 
-test("a host's own overlay wins over the ring's Archive", () => {
+test("a host's own overlay wins over the head's Archive, in the same slot", () => {
   const r = render(head({ statusOverlay: createElement("button", { className: "host-archive" }) }));
   expect(seatOf(r)).toBeUndefined();
   expect(byClass(r, "host-archive")).toHaveLength(1);
+  expect(JSON.stringify(byClass(r, "task-head-idslot")[0])).toContain("host-archive");
 });
 
-test("not while the title is being renamed: the ring is the icon's then, not Archive", () => {
+test("not while the title is being renamed: the number stays, no Archive under a half-typed title", () => {
   const r = render(head());
   expect(seatOf(r)).toBeDefined();
   const pencil = flat(r).find((n) => n.props["aria-label"] === "Rename task")!;
@@ -431,7 +572,7 @@ test("not while the title is being renamed: the ring is the icon's then, not Arc
   expect(seatOf(r)).toBeUndefined();
 });
 
-test("a press files it, tells the host, and hands the ring back until the pointer leaves", async () => {
+test("a press files it, tells the host, and hands the number back until the pointer leaves", async () => {
   const realFetch = globalThis.fetch;
   const calls: string[] = [];
   (globalThis as { fetch: unknown }).fetch = async (input: unknown) => {
@@ -447,13 +588,13 @@ test("a press files it, tells the host, and hands the ring back until the pointe
     });
     expect(calls).toContain("/api/tasks/archive");
     expect(filed).toEqual(["archive"]);
-    // The spent press: the ring comes back in front while the pointer stays.
+    // The spent press: the number comes back in front while the pointer stays.
     expect(cls(headNode(r))).toContain("is-refiled");
-    // …still spent while the pointer moves inside the status icon…
-    act(() => headNode(r).props.onMouseOver({ target: { closest: (sel: string) => (sel === ".task-side-peek-status" ? {} : null) } }));
+    // …still spent while the pointer moves inside the id slot…
+    act(() => headNode(r).props.onMouseOver({ target: { closest: (sel: string) => (sel === ".task-head-idslot" ? {} : null) } }));
     expect(cls(headNode(r))).toContain("is-refiled");
-    // …and re-armed the moment it is anywhere else on the head (the icon is
-    // the trigger, not the header), or off the head altogether.
+    // …and re-armed the moment it is anywhere else on the head, or off the
+    // head altogether.
     act(() => headNode(r).props.onMouseOver({ target: { closest: () => null } }));
     expect(cls(headNode(r))).not.toContain("is-refiled");
     expect(headNode(r).props.onMouseLeave).toBeUndefined();
@@ -474,12 +615,12 @@ test("a rename half-typed on one task is dropped when the head walks to another"
   expect(JSON.stringify(r.toJSON())).toContain("Other");
 });
 
-test("the status seat sits beside the identity — on no rung — and moves to row 2 with it", () => {
+test("the status seat sits beside the title — on no rung — and moves to row 2 with it", () => {
   const got: unknown[] = [];
   const wide = render(head({ statusRef: (el) => got.push(el) }), 2000);
   const row1 = byClass(wide, "task-head-row")[0]!;
   expect(JSON.stringify(row1)).toContain("task-head-status-host");
-  // Not inside the chips (rung 1) or the seats (rung 2).
+  // Not inside the chips or the seats, which fold.
   expect(JSON.stringify(byClass(wide, "task-head-marks")[0] ?? null)).not.toContain("task-head-status-host");
   expect(got.some((el) => el !== null)).toBe(true);
   const narrow = render(head({ statusRef: () => {} }), 100);
@@ -487,11 +628,47 @@ test("the status seat sits beside the identity — on no rung — and moves to r
   expect(JSON.stringify(byClass(narrow, "task-head-titlerow")[0])).toContain("task-head-status-host");
 });
 
-test("the stylesheet swaps the ring for Archive on the STATUS ICON's hover, never the header's", async () => {
-  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
-  // The reveal and the ring's step-aside both hang off the seat's own :hover.
-  expect(css).toContain(".task-head .task-side-peek-status:hover :is(.task-head-file, .claude-rail-peek-archive)");
-  expect(css).toContain(".task-head .task-side-peek-status:hover:has(.task-head-file, .claude-rail-peek-archive) .schedule-ring");
-  // No rule reveals it from the head's hover any more.
-  expect(/\.task-head(\.is-refiled)?:hover\s+\.task-side-peek-status/.test(css)).toBe(false);
+test("the stylesheet trades a slot's occupants on the HEAD's hover, and only where there is a `b`", async () => {
+  const css = (await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text()).replace(/\s+/g, " ");
+  // The window under the pointer (`.is-hot`), the head itself, or the keyboard
+  // on a b control.
+  const trigger = ".task-head:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))";
+  const live = '.task-head-slot:has(> .task-head-slot-b > :is(a, button, [role="button"]))';
+  // The fact steps aside only for a slot holding a control…
+  expect(css).toContain(`${trigger} ${live} > .task-head-slot-a { opacity: 0;`);
+  // …and the control shows.
+  expect(css).toContain(`${trigger} .task-head-slot > .task-head-slot-b { opacity: 1;`);
+  // At rest the control is invisible AND intangible.
+  expect(css).toContain(".task-head-slot-b { display: inline-flex; align-items: center; opacity: 0; pointer-events: none; }");
+  // Where there is no hover, the acts stand.
+  expect(css).toContain("@media (hover: none) {");
+  // The status icon trades with nothing any more.
+  expect(css).not.toContain(".task-side-peek-status:hover");
+});
+
+// ---- the favourite's face is a button (TaskIconPick, 2026-11-15) -------------
+
+test("a favourite's status icon opens the icon picker outside a rename; a plain ring is not a button", async () => {
+  const icons = await import("@platform/lib/task-icons-flag");
+  const favs = await import("@platform/lib/favourites-flag");
+  act(() => {
+    icons.publishTaskIcons({ enabled: true });
+    favs.publishTaskFavourites({ enabled: true });
+    favs.publishFavouritesParent({ enabled: true });
+  });
+  try {
+    const fav = render(head({ task: task({ starred: true, icon_slot: 3 } as Partial<Task>) }));
+    const btn = byClass(fav, "task-icon-pick")[0]!;
+    expect(btn.type).toBe("button");
+    expect(btn.props["aria-label"]).toBe("Choose icon");
+    expect(btn.props["aria-expanded"]).toBe(false);
+    // Inside the status seat, and no title input anywhere: this is not a rename.
+    expect(JSON.stringify(byClass(fav, "task-side-peek-status")[0])).toContain("task-icon-pick");
+    expect(flat(fav).some((n) => n.type === "input")).toBe(false);
+    // Not starred: no slot, nothing to press.
+    expect(byClass(render(head()), "task-icon-pick")).toHaveLength(0);
+  } finally {
+    icons.resetTaskIconsFlagForTests();
+    favs.resetTaskFavouritesFlagForTests();
+  }
 });

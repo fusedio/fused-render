@@ -233,6 +233,25 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
   opacity: 1;
   pointer-events: auto;
 }
+/* …and the a/b row's slots stay on their a items (tasks.css, "The a/b row"):
+   the number, the count and the time, at rest and under a tap alike — which
+   also answers that stylesheet's own `hover: none` arm, written for a touch
+   screen with nowhere else to file or star from. The star's and the door's
+   seats are not drawn at all. `.tasks-row--ab.tasks-row--ab` outranks the
+   reveal's own rules. */
+.lan-tasks .tasks-row--ab.tasks-row--ab .tasks-idslot .tasks-act {
+  opacity: 0;
+  pointer-events: none;
+}
+.lan-tasks .tasks-row--ab.tasks-row--ab .tasks-idslot:has(.tasks-act) .tasks-id,
+.lan-tasks .tasks-row--ab.tasks-row--ab > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+.lan-tasks .tasks-row--ab.tasks-row--ab > .tasks-row-time:has(+ .tasks-bseat--door) {
+  opacity: 1;
+  pointer-events: auto;
+}
+.lan-tasks .tasks-row--ab > .tasks-bseat {
+  display: none;
+}
 /* "Open in Explorer" (a row's action and the peek header's) opens the Mac's
    Explorer; there is none on the phone. */
 .lan-tasks .tasks-act--page,

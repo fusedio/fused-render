@@ -264,6 +264,11 @@ export function rowNeed(scope: HTMLElement, restore?: readonly number[]): number
     // its rect is the row's own width — charged as a seat it made every row
     // read as twice too wide and pinned the ladder at its last rung.
     if (style.position === "absolute" || style.position === "fixed") continue;
+    // NOR DOES A SEAT THAT SAYS SO (`data-fit-skip`): the list row's star and
+    // door seats are zero-width at rest and take a box only while the row is
+    // pointed at (tasks.css, "The a/b row"). A read that lands mid-hover must
+    // get the number the row has at rest, or the level would flap on a hover.
+    if (typeof child.hasAttribute === "function" && child.hasAttribute("data-fit-skip")) continue;
     const rect = child.getBoundingClientRect();
     if (style.display === "none") {
       // FOLDED BY THE LADDER ITSELF — put it back, at the width it had when it
@@ -664,33 +669,37 @@ export const PEEK_HEAD_DROPS = [
 
 /**
  * THE SHARED TASK HEAD'S LADDER (shell/TaskHead.tsx; design.md, "One task head,
- * everywhere"; Akshil, 2026-11-10). What NEVER moves and never hides: the lead
- * corner (× / ←), the place chip, ↗ Open right beside the ⋮, and the ⋮ — the
- * way out, where the task lives, and the two doors to everything else. What
- * gives, in order, cumulatively:
+ * everywhere"; the a/b slots, Akshil, 2026-11-15). What NEVER moves and never
+ * hides: the lead corner (× / ←), the folder, and the ⋮ — the way out, where
+ * the task lives, and the door to everything else. ↗ Open is the time slot's
+ * other occupant and stays reachable at every rung. What gives, in order,
+ * cumulatively:
  *
- *   1. the chips (worktree, PR, the rail card's pulse);
- *   2. the host's seats (the pane's tools);
- *   3. the ↑↓ chevrons (the lead stays);
- *   4. the whole identity — ring, ★, number, title — leaves row 1 for a row of
- *      its own, and the place chip moves up beside the lead (`stacked`);
- *   5. the TASK-nnn number, on that second row.
+ *   1. the time — the slot shrinks to a glyph, and Open under the pointer is
+ *      the ↗ alone;
+ *   2. the chips (worktree, PR);
+ *   3. the host's seats (the pane's tools);
+ *   4. the ↑↓ chevrons (the lead stays);
+ *   5. the title, its reply and the trail leave row 1 for a row of their own
+ *      (`stacked`); the status, the folder and the id slot stay up;
+ *   6. the id slot (Archive is still in the ⋮).
  *
  * The selectors document which seat each rung folds; the stylesheet
- * (styles/task-head.css) does the folding off `data-fit`, and rung 4 is the
+ * (styles/task-head.css) does the folding off `data-fit`, and rung 5 is the
  * component's own layout. `taskHeadNeed` below is what the rungs are measured
- * by: both rows, so rung 5 can answer the second row's overflow.
+ * by: both rows, so a rung can answer either row's overflow.
  */
 export const TASK_HEAD_DROPS = [
+  ".task-head-time",
   ".task-head-chips",
   ".task-head-seats",
   ".task-head-nav",
   ".task-head-title-seat",
-  ".task-side-peek-id",
+  ".task-head-idslot",
 ] as const;
 
-/** The rung at which the identity takes its own row (TaskHead `stacked`). */
-export const TASK_HEAD_STACK_LEVEL = 4;
+/** The rung at which the title takes its own row (TaskHead `stacked`). */
+export const TASK_HEAD_STACK_LEVEL = 5;
 
 /**
  * WHAT A TASK HEAD NEEDS — the wider of its rows (`.task-head-row`, and the
@@ -701,13 +710,55 @@ export const TASK_HEAD_STACK_LEVEL = 4;
 export function taskHeadNeed(head: HTMLElement): number {
   const cs = getComputedStyle(head);
   const pad = (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
+  // (A measured stand-in in a test has no attributes; it reads as rung 0.)
+  const level = typeof head.getAttribute === "function" ? Number(head.getAttribute("data-fit")) || 0 : 0;
   let need = 0;
   for (const row of Array.from(head.children) as HTMLElement[]) {
     const cls = typeof row.className === "string" ? row.className.split(" ") : [];
     if (!cls.includes("task-head-row") && !cls.includes("task-head-titlerow")) continue;
-    need = Math.max(need, rowNeed(row));
+    let rowWants = rowNeed(row);
+    if (cls.includes("task-head-row") && typeof row.querySelector === "function") {
+      rowWants += level === 0 ? titleWants(row) : factSlotsDelta(row);
+    }
+    need = Math.max(need, rowWants);
   }
   return need + pad;
+}
+
+/** The b control a fact slot shows while the window is pointed at: one glyph. */
+const TASK_HEAD_GLYPH = 22;
+
+/**
+ * RUNG 0 IS "THE TITLE READS WHOLE BESIDE THE FACTS" (Akshil, 2026-11-15: "let
+ * title occupy full space"). `rowNeed` charges a title its 72px floor, which
+ * is right for every later rung — but it let the count and the time stand
+ * beside a title cut to a word. So at rung 0 the title on row 1 is charged
+ * what its text wants; when that does not fit, rung 1 drops the facts and the
+ * title takes their room. A stacked title (row 2) is not on this row.
+ */
+function titleWants(row: HTMLElement): number {
+  const title = row.querySelector<HTMLElement>(".task-side-peek-title");
+  if (!title) return 0;
+  const charged = Math.min(title.getBoundingClientRect().width, FIT_TEXT_FLOOR);
+  return Math.max(0, title.scrollWidth - charged);
+}
+
+/**
+ * PAST RUNG 0 THE FACT SLOTS ARE ONLY THERE UNDER THE POINTER (task-head.css,
+ * rung 1), so a read that lands mid-hover would see a wider row than one at
+ * rest and the level could flap. Charged the same either way: whatever they
+ * measure now comes off, and a glyph per slot that has a b control goes on.
+ */
+function factSlotsDelta(row: HTMLElement): number {
+  const marks = row.querySelector<HTMLElement>(".task-head-marks");
+  const gap = marks ? Number.parseFloat(getComputedStyle(marks).columnGap) || 0 : 0;
+  let delta = 0;
+  for (const slot of Array.from(row.querySelectorAll<HTMLElement>(".task-head-countslot, .task-head-timeslot"))) {
+    const width = slot.getBoundingClientRect().width;
+    if (width > 0) delta -= width + gap;
+    if (slot.querySelector(".task-head-slot-b > :is(a, button, [role='button'])")) delta += TASK_HEAD_GLYPH + gap;
+  }
+  return delta;
 }
 
 /**

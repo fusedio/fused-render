@@ -18,7 +18,7 @@
 // hosts `@apps/claude`'s `ChatMount`, so a chat importing it would close an
 // import cycle — and the boundary check (scripts/check-boundaries.mjs) opens a
 // hole for named shell modules one file at a time for the same reason.
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Pencil } from "lucide-react";
 import { renameTask, type Task } from "@platform/lib/api";
 import { TaskStar } from "@platform/ui/TaskStar";
@@ -105,6 +105,11 @@ export function TaskPeekWho({
   ring,
   subtitle,
   onRenamed,
+  iconPress = false,
+  place,
+  idOverlay,
+  editing = false,
+  onEditingChange,
 }: {
   task: Task;
   /** RING FACTS ONLY THE HOST KNOWS (the rail card: RailPeek): the unread
@@ -136,6 +141,23 @@ export function TaskPeekWho({
   subtitle?: ReactNode;
   /** After a rename the server took (and `pokeTasks`): the host re-reads. */
   onRenamed?: () => void;
+  /** A favourite's status icon opens the icon picker at ANY time (the shared
+   *  head, 2026-11-15). Off: only during a rename, as the older heads do. */
+  iconPress?: boolean;
+  /** Where the task lives, between the agent mark and the number (the shared
+   *  head's folder seat). */
+  place?: ReactNode;
+  /** THE ID SLOT'S OTHER OCCUPANT (the shared head's Archive / Unarchive):
+   *  given at all — even `null` — the number stands in a two-occupant slot
+   *  (`.task-head-idslot`, task-head.css). Withheld during a rename and while
+   *  the icon picker is open. */
+  idOverlay?: ReactNode;
+  /** The title is being edited in the head's OTHER half (`part="title"`),
+   *  for the half that holds the marks. */
+  editing?: boolean;
+  /** The title input stood up or went away — for a head that splits the
+   *  block in two. Pass a STABLE function (a state setter). */
+  onEditingChange?: (editing: boolean) => void;
   /** Title only: no ring, agent mark or task number (the chat in a side pane,
    *  where the width is the title's). */
   bare?: boolean;
@@ -167,6 +189,12 @@ export function TaskPeekWho({
   // Enter saves and the unmount-time blur must not save twice; Escape must not
   // be undone by the blur it causes.
   const settled = useRef(false);
+  const renaming = draft !== null;
+  useEffect(() => {
+    if (!renaming) return;
+    onEditingChange?.(true);
+    return () => onEditingChange?.(false);
+  }, [renaming, onEditingChange]);
   const startRename = () => {
     if (!canRename || busy) return;
     settled.current = false;
@@ -227,7 +255,8 @@ export function TaskPeekWho({
       >
         <TaskIconPick
           task={task}
-          editing={draft !== null}
+          editing={renaming || editing}
+          {...(iconPress ? {} : { onlyWhileEditing: true })}
           onOpenChange={setIconPicking}
           {...(onRenamed ? { onDone: onRenamed } : {})}
         >
@@ -249,8 +278,20 @@ export function TaskPeekWho({
         {draft === null && !iconPicking ? statusOverlay : null}
       </span>
       <TaskAgentMark backend={task.backend} />
+      {place}
       {starNode ?? (star && <TaskStar task={task} />)}
-      <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
+      {idOverlay === undefined ? (
+        <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
+      ) : (
+        // One box, two occupants: the number at rest, the filing button while
+        // the head is pointed at (task-head.css, "THE A/B SLOTS").
+        <span className="task-head-slot task-head-idslot">
+          <span className="task-side-peek-id task-head-slot-a">{shortTaskId(task.task_id)}</span>
+          <span className="task-head-slot-b">
+            {renaming || editing || iconPicking ? null : idOverlay}
+          </span>
+        </span>
+      )}
         </>
       )}
       {!showTitle ? null : draft === null ? (

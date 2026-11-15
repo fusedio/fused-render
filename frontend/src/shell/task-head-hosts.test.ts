@@ -153,3 +153,28 @@ test("every chat host hands the chat both seats: the chips and the pause word's 
     expect(src).toContain("headStatusHost: statusHost");
   }
 });
+
+test("the folder seat: hosts with no place of their own take the head's chip; the chat pane over its own folder says none", () => {
+  // No `place=` in the four hosts that had none: the head draws the folder
+  // chip itself (TaskHead, `place === undefined`).
+  for (const f of ["TaskPeek.tsx", "claude-rail/TasksPeek.tsx", "NewJobModal.tsx", "TaskCards.tsx"]) {
+    expect(/^\s*place=/m.test(read(f))).toBe(false);
+  }
+  // The pane states its own — and `null`, never an omission, over the folder
+  // it is already scoped to (`mergedHead`), so no chip is drawn there.
+  const chat = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
+  expect(chat).toContain("? (placeTag ?? (props.mergedHead ? null : <TaskPeekProject task={head.task} />))\n          : null");
+});
+
+test("the rail card: its pulse's facts ride the head's own slots, its star and archive the slots' other seats", () => {
+  const src = read("claude-rail/RailPeek.tsx");
+  const shared = between(src, "{head && unified ? (", ") : head && (");
+  expect(shared).toContain("? { n: head.count, unread: head.unread }");
+  expect(shared).toContain("? { text: head.when, ...(head.whenFull ? { title: head.whenFull } : {}) }");
+  expect(shared).not.toContain("pulseEl(");
+  expect(shared).toContain("starNode: starButton(head)");
+  expect(shared).toContain("statusOverlay: archiveButton(head)");
+  // The old head keeps its picker gate: a button only during a rename.
+  const legacy = src.slice(src.indexOf(") : head && ("));
+  expect(legacy).toContain("onlyWhileEditing");
+});

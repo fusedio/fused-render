@@ -1595,13 +1595,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       <div className="claude-rail-peek-card">
         {head && unified ? (
           // THE SHARED HEAD (flag on; shell/TaskHead): the × (or, favourites
-          // off, the pin that pressed IS the ×), the identity — ring, star,
-          // number, title with its own rename, the archive over the ring — the
-          // place, the pulse, ↗ Open and the ⋮, and the title on its own row
-          // once the card is too narrow for one (`stacked: "auto"`). The
-          // wrapper keeps the old head's class for its Escape and its
-          // hover-archive rules and lays out as nothing (`is-unified`,
-          // task-head.css).
+          // off, the pin that pressed IS the ×), the ring, the place, then the
+          // row's a/b slots (2026-11-15) — the number ↔ the card's archive,
+          // the count ↔ the card's star, the time ↔ Open — the ⋮, and the
+          // title on its own row once the card is too narrow for one
+          // (`stacked: "auto"`). The wrapper keeps the old head's class for
+          // its Escape and lays out as nothing (`is-unified`, task-head.css).
           <div className="claude-rail-peek-head is-unified" onKeyDown={onHeadKeyDown}>
             <TaskHead
               // KEYED ON THE CHAT: a rename half-typed on one chat must not
@@ -1628,11 +1627,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // identity's plain TaskStar does none of that.
               star={false}
               {...(favsOn && head.t.session_id ? { starNode: starButton(head) } : {})}
-              // …and its archive over the ring, on hover — favourites on or
-              // off (2026-11-15: every head's ring files the task; the pulse
-              // below no longer carries one). The card's own `fileTask`, which
-              // tells the rail to let go of the chat, so the head's ring seat
-              // stays off: one archive, not two.
+              // …and its archive in the id slot, on hover — favourites on or
+              // off. The card's own `fileTask`, which tells the rail to let go
+              // of the chat, so the head's own seat stays off: one archive,
+              // not two.
               {...(head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
               fileSeat={false}
               // The ring's own facts, as the old head passed them to its
@@ -1662,11 +1660,17 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // Measured only while the card is up.
               fitEnabled={!!shownKey}
               place={placeEl(head)}
-              // The pulse alone (its count and its time): the archive is the
-              // ring's, so a chat that never moved has no pulse to show.
-              chips={
-                head.t.session_id && !head.draft && (head.when || head.count > 0)
-                  ? pulseEl(head, false)
+              // The pulse's facts in the head's own slots: how many messages
+              // (the unread ones turn it to ink) and when it last moved — none
+              // for a draft or a chat with no session, as the pulse had none.
+              count={
+                head.t.session_id && !head.draft && head.count > 0
+                  ? { n: head.count, unread: head.unread }
+                  : null
+              }
+              when={
+                head.t.session_id && !head.draft && head.when
+                  ? { text: head.when, ...(head.whenFull ? { title: head.whenFull } : {}) }
                   : null
               }
               open={
@@ -1770,6 +1774,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     <TaskIconPick
                       task={{ key: head.t.key, icon_slot: headIcon }}
                       editing={draft !== null}
+                      onlyWhileEditing
                       onDone={onReload}
                       onOpenChange={setIconPicking}
                     >
