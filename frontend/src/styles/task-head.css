@@ -386,28 +386,32 @@
 .task-head:is([data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-chips {
   display: none;
 }
-/* 3. THE FACTS, IN A RAIL WINDOW (`.is-window`; Akshil, 2026-11-15: "let
-   title occupy full space"): where the title cannot be read whole beside them
-   (row-fit `taskHeadNeed`), the count and the time leave and the title runs
-   to the row's end. The b items come back while the window is pointed at —
-   the star, and ↗ alone right beside it. Folded to nothing rather than
-   `display: none`, so the b controls stay in the tab order. Once the title
-   has its own row (rung 2, `.is-stacked`) row 1 has the room and the facts
-   stand again. A head that is not a rail window folds nothing here. */
-.task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-countslot, .task-head-timeslot) {
+/* A RAIL WINDOW SHOWS NO FACTS AT REST (`.is-window`; Akshil, 2026-11-16:
+   "show full title when mouse not over window"): no count, no time, at any
+   width — the title has the row. The slots are folded to nothing rather than
+   `display: none`, so their b controls stay in the tab order, and open while
+   the window is pointed at: the star, and the door right beside it. */
+.task-head.is-window :is(.task-head-countslot, .task-head-timeslot) {
   width: 0;
   overflow: hidden;
   margin-left: -6px;
 }
-.task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]):is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
-  :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"])) {
+.task-head.is-window:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible)) :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"])) {
   width: auto;
   overflow: visible;
   margin-left: 0;
 }
-.task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-countslot, .task-head-timeslot) > .task-head-slot-a {
+.task-head.is-window :is(.task-head-countslot, .task-head-timeslot) > .task-head-slot-a {
   display: none;
 }
+@media (hover: none) {
+  .task-head.is-window :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"])) {
+    width: auto;
+    overflow: visible;
+    margin-left: 0;
+  }
+}
+/* 3. THE FACTS */
 /* …AND IN A PANEL OR A PANE, THE TIME ALONE GIVES (Akshil, 2026-11-16: "7d
    ago can hide here, no need if no space"): where the title cannot be read
    whole beside it, the time leaves; the count stays. Its door, where there is
@@ -461,14 +465,6 @@
     overflow: visible;
     margin-left: 0;
   }
-}
-/* STACKED, UNDER THE POINTER: the acts close up — the star right beside the
-   ↗, beside the ⋮ — rather than standing apart in boxes sized to the facts
-   they replaced. Row 1 holds no title here, so nothing else moves. */
-.task-head.is-window.is-stacked:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
-  :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"]))
-  > .task-head-slot-a {
-  display: none;
 }
 /* A RAIL WINDOW'S ⋮ WAITS FOR THE POINTER TOO (Akshil, 2026-11-16), like its
    star and its door — at every width. It stays while its menu is open (the

@@ -24,7 +24,10 @@ test("the rail's Tasks card: both heads on the shared chassis, the old ones kept
   // The chat head: ← Back where the × stood, focus seat and all; the chevrons
   // walk the card's own list; ↗ Open names where it goes; the chat's own ⋮.
   expect(shared).toContain('lead={{ kind: "back", label: "Back to tasks", onPress: () => setChat(null), ref: api.backRef }}');
-  expect(shared).toContain("nav={{ prev: chatEnds.prev, next: chatEnds.next, step: stepChat }}");
+  // × then ← in the corner, and no ↑↓ (Akshil, 2026-11-16).
+  expect(shared).toContain('aria-label="Close Tasks"');
+  expect(shared).toContain("onClick={api.close}");
+  expect(shared).not.toContain("nav={{");
   expect(shared).toContain("label: pageDoorLabel(task)");
   expect(shared).toContain("<Kebab");
   expect(shared).toContain("chipsRef={setChipsHost}");

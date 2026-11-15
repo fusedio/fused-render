@@ -722,11 +722,11 @@ export const PEEK_HEAD_DROPS = [
  *   1. the worktree pill (the chat's portaled seat in the chips);
  *   2. the PR chip — the chips show only while there is width for them, one
  *      at a time, and give before the title is cut;
- *   3. the facts, where the title still cannot be read whole beside them. In
- *      a rail window (`.is-window`: a card off the rail) the count and the
- *      time both leave, and the star and the ↗ come back under the pointer.
- *      In a panel or a pane the time alone leaves; its door comes back as
- *      the ↗ while the head is pointed at;
+ *   3. the time, in a panel or a pane, where the title still cannot be read
+ *      whole beside it; its door comes back as the ↗ while the head is
+ *      pointed at. (A rail window — `.is-window`, a card off the rail —
+ *      shows no facts at rest at any rung, so this one folds nothing there;
+ *      its door goes icon-only from here on.)
  *   4. IN A RAIL WINDOW ONLY: the title, its reply and the trail leave row 1
  *      for a row of their own (`stacked`) once the title would be cut below
  *      `TASK_HEAD_TITLE_ROOM`; the status, the folder and the id slot stay
@@ -789,7 +789,8 @@ export function taskHeadNeed(head: HTMLElement): number {
       if (level < TASK_HEAD_FACTS_LEVEL) rowWants += titleWants(row, Number.POSITIVE_INFINITY);
       else if (level === TASK_HEAD_FACTS_LEVEL && isWindow) rowWants += titleWants(row, TASK_HEAD_TITLE_ROOM);
       if (isWindow) {
-        rowWants += hoverDelta(row, ".task-head-countslot, .task-head-timeslot", level < TASK_HEAD_FACTS_LEVEL, true);
+        // A rail window's fact slots are folded at rest at every rung.
+        rowWants += hoverDelta(row, ".task-head-countslot, .task-head-timeslot", false, true);
       } else if (level >= TASK_HEAD_FACTS_LEVEL) {
         rowWants += hoverDelta(row, ".task-head-timeslot", false, false);
       }
