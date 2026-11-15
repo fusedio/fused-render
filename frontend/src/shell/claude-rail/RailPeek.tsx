@@ -1028,7 +1028,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const askedKey = useRef<string | null>(null);
   const [filing, setFiling] = useState(false);
   /** THE ARCHIVE SEAT: over the pulse's right end (favourites off), or over
-   *  the second row's status ring (favourites on; owner, 2026-11-06). */
+   *  the second row's status ring (favourites on; owner, 2026-11-06). The
+   *  shared head (flag on) seats it over its ring either way. */
   const archiveButton = (facts: SeatFacts) => (
     <button
       type="button"
@@ -1595,11 +1596,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         {head && unified ? (
           // THE SHARED HEAD (flag on; shell/TaskHead): the × (or, favourites
           // off, the pin that pressed IS the ×), the identity — ring, star,
-          // number, title with its own rename — the place, the pulse with its
-          // archive, ↗ Open and the ⋮, and the title on its own row once the
-          // card is too narrow for one (`stacked: "auto"`). The wrapper keeps
-          // the old head's class for its Escape and its hover-archive rules
-          // and lays out as nothing (`is-unified`, task-head.css).
+          // number, title with its own rename, the archive over the ring — the
+          // place, the pulse, ↗ Open and the ⋮, and the title on its own row
+          // once the card is too narrow for one (`stacked: "auto"`). The
+          // wrapper keeps the old head's class for its Escape and its
+          // hover-archive rules and lays out as nothing (`is-unified`,
+          // task-head.css).
           <div className="claude-rail-peek-head is-unified" onKeyDown={onHeadKeyDown}>
             <TaskHead
               // KEYED ON THE CHAT: a rename half-typed on one chat must not
@@ -1626,10 +1628,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // identity's plain TaskStar does none of that.
               star={false}
               {...(favsOn && head.t.session_id ? { starNode: starButton(head) } : {})}
-              // …and its archive over the ring, on hover (favourites on; off,
-              // it rides the pulse as it did — and the head's own ring seat
-              // stays off, so there is one archive, not two).
-              {...(favsOn && head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
+              // …and its archive over the ring, on hover — favourites on or
+              // off (2026-11-15: every head's ring files the task; the pulse
+              // below no longer carries one). The card's own `fileTask`, which
+              // tells the rail to let go of the chat, so the head's ring seat
+              // stays off: one archive, not two.
+              {...(head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
               fileSeat={false}
               // The ring's own facts, as the old head passed them to its
               // StatusIcon: the unread mark, the unsent-draft dot, a failure.
@@ -1658,9 +1662,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // Measured only while the card is up.
               fitEnabled={!!shownKey}
               place={placeEl(head)}
+              // The pulse alone (its count and its time): the archive is the
+              // ring's, so a chat that never moved has no pulse to show.
               chips={
-                head.t.session_id && !head.draft && (!favsOn || head.when || head.count > 0)
-                  ? pulseEl(head, !favsOn)
+                head.t.session_id && !head.draft && (head.when || head.count > 0)
+                  ? pulseEl(head, false)
                   : null
               }
               open={

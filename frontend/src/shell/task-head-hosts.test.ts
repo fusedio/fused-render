@@ -68,9 +68,8 @@ test("the New task card's chat: the shared head in place of the dialog's, named 
 test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips in its seat", () => {
   const src = read("TaskCards.tsx");
   expect(src).toContain("const unified = useTaskHeadUnified();");
-  // Only for a task with a session: without one there is no ⋮, and the old
-  // head's Archive / Delete / folder-deleted door are where those acts live.
-  expect(src).toContain("const sharedHead = unified && !!task.session_id;");
+  // For EVERY task, a session-less one too (its ring files it, TaskHead).
+  expect(src).toContain("const sharedHead = unified;");
   const shared = between(src, "{...(sharedHead ? {", "// The footer exists only while");
   // The × is the chassis' guarded close, not the raw prop.
   expect(shared).toContain("head: ({ titleId, close }: ModalHeadContext) => (");
@@ -81,6 +80,17 @@ test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips i
   expect(shared).not.toContain("foldedOpen");
   // The disabled "folder deleted" door stays in the ⋮.
   expect(shared).toContain("...(gone ? [{");
+  // No session: no chat ⋮ — with the folder gone, a plain ⋮ carries the
+  // greyed door and Delete (the old head's doors), so neither is lost.
+  expect(shared).toContain(") : gone ? (");
+  const bare = between(shared, ") : gone ? (", ") : null}");
+  // The chat ⋮'s own trigger and keyboard-operable menu (Kebab's), not a
+  // pointer-only ContextMenu.
+  expect(bare).toContain('className="c-kebabbtn"');
+  expect(bare).toContain("<DropdownMenuTrigger");
+  expect(bare).toContain("{`${pageDoorLabel(task)} — folder deleted`}");
+  expect(bare).toContain("blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null)");
+  expect(bare).toContain("onClick={() => setErasing(true)}");
   expect(shared).toContain("breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle }");
   // The ChatMount: the shared head's seat and Breakout report, or the old
   // slim line.

@@ -123,8 +123,8 @@ export interface TaskHeadProps {
   /** The node the host's seats sit in (`.task-head-seats`) — the chat
    *  measures it to fold its seat labels (`useFitStrip`). */
   seatsRef?: (el: HTMLElement | null) => void;
-  /** THE RING FILES THE TASK (TaskFileSeat): on by default for a task with a
-   *  session — hovering the STATUS ICON turns the ring into Archive /
+  /** THE RING FILES THE TASK (TaskFileSeat): on by default for any task
+   *  `filingIntent` can file — hovering the STATUS ICON turns the ring into Archive /
    *  Unarchive (the icon itself, not the header: task-head.css says why). A host's own `statusOverlay` wins; `false` turns it
    *  off (a host whose archive lives elsewhere). */
   fileSeat?: boolean;
@@ -259,12 +259,16 @@ export function TaskHead({
   // (`needs_attention`) keeps its confirmed Archive, a queued line its own.
   const liveTurn = !line && running && !!who && taskColumn(who) !== "needs_attention";
   const seatTask = who && liveTurn ? ({ ...who, status: "in_progress" } as Task) : who;
+  // NO SESSION ASKED FOR (2026-11-15): filing goes by the task's key, and the
+  // list row offers Archive on a task that never ran (an upcoming scheduled
+  // one, `session_id: ""`). `filingIntent` alone decides — a draft, a queued
+  // line and a run in flight still get no button.
   const whoExtras = {
     ...(starNode ? { starNode } : {}),
     ...(ring ? { ring } : {}),
     ...(statusOverlay
       ? { statusOverlay }
-      : fileSeat && seatTask?.session_id
+      : fileSeat && seatTask
         ? {
             statusOverlay: (
               <TaskFileSeat

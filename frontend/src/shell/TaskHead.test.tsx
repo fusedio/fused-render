@@ -403,8 +403,16 @@ test("the ring's Archive is there only when the task can be filed — never whil
   // the press would stop it. A card being answered keeps its (confirmed) one.
   expect(seatOf(render(head({ running: true })))).toBeUndefined();
   expect(seatOf(render(head({ running: true, task: task({ status: "needs_attention" }) })))).toBeDefined();
-  // No session yet: nothing to file.
-  expect(seatOf(render(head({ task: task({ session_id: undefined } as Partial<Task>) })))).toBeUndefined();
+  // NO SESSION ASKED FOR: a task that never ran (an upcoming scheduled one,
+  // `session_id: ""`) files by its key, as its list row does…
+  const neverRan = seatOf(render(head({ task: task({ session_id: "", status: "upcoming" }) })));
+  expect(neverRan!.props["aria-label"]).toBe("Archive this task");
+  expect(seatOf(render(head({ task: task({ session_id: undefined } as Partial<Task>) })))).toBeDefined();
+  // …but a draft (nothing filed yet), a queued line and a session-less run in
+  // flight still get none.
+  expect(seatOf(render(head({ task: task({ session_id: "", kind: "draft", status: "upcoming" } as Partial<Task>) })))).toBeUndefined();
+  expect(seatOf(render(head({ task: task({ session_id: "", status: "queued" }) })))).toBeUndefined();
+  expect(seatOf(render(head({ task: task({ session_id: "", status: "in_progress" }) })))).toBeUndefined();
   // A host that keeps its archive elsewhere turns it off.
   expect(seatOf(render(head({ fileSeat: false })))).toBeUndefined();
 });
