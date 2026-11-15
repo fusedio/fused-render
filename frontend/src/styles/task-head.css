@@ -376,58 +376,124 @@
 .task-head-nav {
   display: contents;
 }
-/* 1. THE FACTS (Akshil, 2026-11-15: "let title occupy full space"): where the
-   title cannot be read whole beside them (row-fit `taskHeadNeed` charges the
-   title its natural width at rung 0), the count and the time leave and the
-   title runs to the ⋮. The b items come back while the window is pointed at
-   — the star, and ↗ alone (no word) right beside it — and the title gives
-   them their two glyphs of room. A slot with nothing to press stays away. */
-/* Folded to nothing rather than `display: none`, so the b controls stay in
-   the tab order and a keyboard that lands on one opens the slots. */
-.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"]) :is(.task-head-countslot, .task-head-timeslot) {
+/* 1, 2. THE CHIPS, ONE AT A TIME (Akshil, 2026-11-16: "worktree and pr show
+   when there is width available, incrementally"): the first things to give,
+   before the title is cut by a letter — the worktree pill (the chat's
+   portaled seat), then the PR chip. */
+.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-chips-host {
+  display: none;
+}
+.task-head:is([data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-chips {
+  display: none;
+}
+/* 3. THE FACTS, IN A RAIL WINDOW (`.is-window`; Akshil, 2026-11-15: "let
+   title occupy full space"): where the title cannot be read whole beside them
+   (row-fit `taskHeadNeed`), the count and the time leave and the title runs
+   to the row's end. The b items come back while the window is pointed at —
+   the star, and ↗ alone right beside it. Folded to nothing rather than
+   `display: none`, so the b controls stay in the tab order. Once the title
+   has its own row (rung 2, `.is-stacked`) row 1 has the room and the facts
+   stand again. A head that is not a rail window folds nothing here. */
+.task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-countslot, .task-head-timeslot) {
   width: 0;
   overflow: hidden;
   margin-left: -6px;
 }
-.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"]):is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
+.task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]):is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
   :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"])) {
   width: auto;
   overflow: visible;
   margin-left: 0;
 }
-.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"]) :is(.task-head-countslot, .task-head-timeslot) > .task-head-slot-a,
-.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"]) .task-head-timeslot .task-head-open-word {
+.task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-countslot, .task-head-timeslot) > .task-head-slot-a {
   display: none;
 }
-.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"]) .task-head-timeslot .task-head-open {
+/* …AND IN A PANEL OR A PANE, THE TIME ALONE GIVES (Akshil, 2026-11-16: "7d
+   ago can hide here, no need if no space"): where the title cannot be read
+   whole beside it, the time leaves; the count stays. Its door, where there is
+   one, comes back as the ↗ while the head is pointed at. */
+.task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot {
+  width: 0;
+  overflow: hidden;
+  margin-left: -6px;
+}
+.task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]):is(:hover, :has(.task-head-slot-b :focus-visible))
+  .task-head-timeslot:has(> .task-head-slot-b > :is(a, button, [role="button"])) {
+  width: auto;
+  overflow: visible;
+  margin-left: 0;
+}
+.task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot > .task-head-slot-a {
+  display: none;
+}
+@media (hover: none) {
+  .task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot:has(> .task-head-slot-b > :is(a, button, [role="button"])) {
+    width: auto;
+    overflow: visible;
+    margin-left: 0;
+  }
+}
+/* SHORT ON WIDTH, THE DOOR IS ITS ↗ ALONE (the narrow list row's rule). */
+.task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-word {
+  display: none;
+}
+.task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open {
   padding: 0;
   width: 22px;
   justify-content: center;
 }
-.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"]) .task-head-timeslot .task-head-open-arrow {
+.task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-arrow {
   display: inline;
 }
 @media (hover: none) {
-  .task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"])
+  .task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"])
     :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"])) {
     width: auto;
     overflow: visible;
     margin-left: 0;
   }
 }
-.task-head:is([data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"]) .task-head-chips {
+/* STACKED, UNDER THE POINTER: the acts close up — the star right beside the
+   ↗, beside the ⋮ — rather than standing apart in boxes sized to the facts
+   they replaced. Row 1 holds no title here, so nothing else moves. */
+.task-head.is-window.is-stacked:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
+  :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"]))
+  > .task-head-slot-a {
   display: none;
 }
-.task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"]) .task-head-seats {
+/* A RAIL WINDOW'S ⋮ WAITS FOR THE POINTER TOO (Akshil, 2026-11-16), like its
+   star and its door — at every width. It stays while its menu is open (the
+   menu is outside the window) and for a keyboard that lands on it. */
+.task-head.is-window .task-head-kebab {
+  width: 0;
+  overflow: hidden;
+  margin-left: -6px;
+}
+.task-head.is-window:is(.is-hot, :hover, :has(.task-head-kebab :is(:focus-visible, [aria-expanded="true"], [data-popup-open])))
+  .task-head-kebab {
+  width: auto;
+  overflow: visible;
+  margin-left: 0;
+}
+@media (hover: none) {
+  .task-head.is-window .task-head-kebab {
+    width: auto;
+    overflow: visible;
+    margin-left: 0;
+  }
+}
+/* 4 is the component's (a rail window's title takes row 2). 5–7: */
+.task-head:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-seats {
   display: none;
 }
-.task-head:is([data-fit="4"], [data-fit="5"], [data-fit="6"]) .task-head-nav {
+.task-head:is([data-fit="6"], [data-fit="7"]) .task-head-nav {
   display: none;
 }
-/* 6. THE ID SLOT, whole: a box kept for the Archive alone would save nothing,
-   and the ⋮ still files the task. */
-.task-head[data-fit="6"] .task-head-idslot {
-  display: none;
+/* 7. THE PLACE GIVES WIDTH, never the id slot (Akshil, 2026-11-16: at the
+   card's narrowest the number and its Archive must still be there). The tags
+   are cut at the seat's edge; their hint still says the whole path. */
+.task-head[data-fit="7"] .task-head-place {
+  max-width: 96px;
 }
 
 /* IN A MODAL (Modal `head`): the head is the dialog's first row, in place of
@@ -445,7 +511,10 @@
    the chips cap below so a long branch name shares the line rather than
    taking it. */
 .task-head .task-side-peek-who .task-side-peek-title {
-  min-width: 72px;
+  /* …but never wider than the title itself: a two-letter title held 72px of
+     blank that the ladder then paid for with the time and a pane's seats.
+     `--title-ch` is the title's length in characters, capped (TaskPeekWho). */
+  min-width: min(72px, calc(var(--title-ch, 12) * 1ch));
 }
 .task-head-chips {
   max-width: 220px;
@@ -553,8 +622,10 @@
      COUNT  the message count ↔ the favourite star
      TIME   when it last ran  ↔ ↗ Open
 
-   THE WHOLE WINDOW IS THE TRIGGER (`.is-hot`, TaskHead: the card, panel or
-   pane the head tops), and the keyboard anywhere on the head. (From 2026-11-12 the
+   WHAT TRIGGERS IT (TaskHead `reveal`; Akshil, 2026-11-16). In a rail window
+   (`.is-window`) the pointer anywhere on the card (`.is-hot`). In a panel or
+   a pane, the pointer on the head itself. Every slot trades at once, and the
+   keyboard on a b control shows them either way. (From 2026-11-12 the
    Archive stood over the status ring and only the ring revealed it, so the
    status stayed readable under a pointer that lives on the head; with the
    number as the thing it trades with, that argument is gone.)
@@ -585,9 +656,7 @@
 .task-head-slot-b:empty {
   display: none;
 }
-.task-head:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
-  .task-head-slot:has(> .task-head-slot-b > :is(a, button, [role="button"]))
-  > .task-head-slot-a {
+.task-head:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible)) .task-head-slot:has(> .task-head-slot-b > :is(a, button, [role="button"])) > .task-head-slot-a {
   opacity: 0;
   pointer-events: none;
 }
@@ -595,24 +664,28 @@
   opacity: 1;
   pointer-events: auto;
 }
-/* A SLOT WITH NO FACT (a task that has not run: no count, no time) holds no
-   box at rest — its act alone would be a blank 22px before the ⋮ (Bugbot,
-   #2285). It opens under the pointer like any other, and the fit ladder
-   charges it the same either way (row-fit `factSlotsDelta`). */
-.task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
+/* A SLOT WITH NO FACT (a task that has not run: no count, no time). In a rail
+   window it holds no box at rest — its act alone would be a blank 22px
+   (Bugbot, #2285) — and opens under the pointer like any other; the fit
+   ladder charges it the same either way (row-fit `windowDelta`). Elsewhere
+   there is no fact to point at, so its act simply stands. */
+.task-head.is-window .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
   width: 0;
   overflow: hidden;
   margin-left: -6px;
 }
-.task-head:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
-  .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
+.task-head.is-window:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible)) .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
   width: auto;
   overflow: visible;
   margin-left: 0;
 }
+.task-head:not(.is-window) .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) > .task-head-slot-b {
+  opacity: 1;
+  pointer-events: auto;
+}
 /* NO HOVER TO WAIT FOR (touch): the acts stand, as a phone's row shows them. */
 @media (hover: none) {
-  .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
+  .task-head.is-window .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
     width: auto;
     overflow: visible;
     margin-left: 0;
@@ -673,13 +746,13 @@
 /* A SPENT PRESS HANDS THE SLOT BACK (the row's `.is-refiled`): the number
    returns until the pointer leaves the id slot; the keyboard's own focus
    still shows the button. */
-.task-head.is-refiled:hover .task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) {
+.task-head.task-head.is-refiled .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) {
   opacity: 0;
   pointer-events: none;
 }
 /* (`.task-head` twice, the slot by both names: this has to outrank the swap
    rule above, which carries two `:has()` arguments.) */
-.task-head.task-head.is-refiled:hover .task-head-slot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a {
+.task-head.task-head.task-head.is-refiled .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a {
   opacity: 1;
   pointer-events: auto;
 }

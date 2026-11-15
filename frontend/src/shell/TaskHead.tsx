@@ -198,6 +198,13 @@ export interface TaskHeadProps {
   /** The node the chat portals its worktree menu into (ChatMount
    *  `headChipsHost`) — a seat at the head of the chips. */
   chipsRef?: (el: HTMLElement | null) => void;
+  /** WHAT BRINGS THE b ITEMS (Akshil, 2026-11-16). `"window"` — a card off
+   *  the rail: the pointer anywhere on the card shows all of them, and at
+   *  rest the title has the row (no facts where it would be cut, no ⋮), on
+   *  a second line when the card is narrow. `"slot"` (default) — a panel or
+   *  a pane: the pointer on the head shows them, the facts and the ⋮ stand
+   *  at rest, and the head stays one row. */
+  reveal?: "window" | "slot";
   /** ↗ Open — the time slot's `b` on a task's head; always shown on a head
    *  with no task (the card's list head). Null where the head IS the page:
    *  the time stays under the pointer. */
@@ -224,8 +231,9 @@ export function foldedOpen(_fit: number): boolean {
 // Module constants, because `useStripFit` re-arms its observers whenever the
 // ladder's identity changes.
 const DROPS_ALL: readonly string[] = TASK_HEAD_DROPS;
-/** `stacked: false`: time, chips, seats, chevrons — never the title's rungs. */
-const DROPS_NO_STACK: readonly string[] = TASK_HEAD_DROPS.slice(0, TASK_HEAD_STACK_LEVEL - 1);
+/** `stacked: false`: the same rungs less the id slot's; the title's rung
+ *  folds nothing (the component never stacks), so the ladder walks past it. */
+const DROPS_NO_STACK: readonly string[] = TASK_HEAD_DROPS.slice(0, TASK_HEAD_DROPS.length - 1);
 
 export function TaskHead({
   lead,
@@ -261,6 +269,7 @@ export function TaskHead({
   statusRef,
   count,
   when,
+  reveal = "slot",
 }: TaskHeadProps) {
   // A SPENT PRESS HANDS THE RING BACK (the Tasks row's `.is-refiled`): up on
   // the filing press, down when the pointer leaves the head — no selector can
@@ -270,7 +279,14 @@ export function TaskHead({
   // holds the icon button and the id slot).
   const [renaming, setRenaming] = useState(false);
   // Measured on the whole head — both rows — so a rung can answer either.
-  const [fit, headRef] = useStripFit(stacked === false ? DROPS_NO_STACK : DROPS_ALL, fitEnabled, taskHeadNeed);
+  const [fit, headRef] = useStripFit(
+    stacked === false ? DROPS_NO_STACK : DROPS_ALL,
+    fitEnabled,
+    taskHeadNeed,
+    // A new title (or another task) is a new row to measure from rung 0.
+    `${task?.key ?? ""}\n${queue?.title ?? task?.title ?? ""}`,
+  );
+  const isWindow = reveal === "window";
   // THE WHOLE WINDOW IS THE TRIGGER (Akshil, 2026-11-15): the b items show
   // while the pointer is anywhere on the card, panel or pane the head tops —
   // not only on the 44px line.
@@ -285,6 +301,7 @@ export function TaskHead({
   const [hot, setHot] = useState(false);
   useEffect(() => {
     // (A test's stand-in node has no tree to walk and no events to hear.)
+    if (!isWindow) return;
     if (!headEl || typeof headEl.closest !== "function" || typeof headEl.addEventListener !== "function") return;
     // The host's `data-task-window`, or the nearest box that holds MORE than
     // the head — a wrapper that is only the head's own line (the rail card's
@@ -298,7 +315,11 @@ export function TaskHead({
     }
     if (!win || typeof win.addEventListener !== "function") return;
     const on = () => setHot(true);
-    const off = () => setHot(false);
+    // Leaving the window also re-arms a spent filing press (below).
+    const off = () => {
+      setHot(false);
+      setRefiled(false);
+    };
     win.addEventListener("pointerenter", on);
     win.addEventListener("pointerleave", off);
     // Mounted under a pointer that is already there (a card opened by a press).
@@ -308,10 +329,12 @@ export function TaskHead({
       win.removeEventListener("pointerleave", off);
       setHot(false);
     };
-  }, [headEl]);
+  }, [headEl, isWindow]);
   // THE TITLE MOVES ROWS HERE, which remounts it: a rename half-typed when
   // the ladder crosses the stack rung loses its draft (an accepted edge case).
-  const stackedNow = stacked === true || (stacked === "auto" && fit >= TASK_HEAD_STACK_LEVEL);
+  // ONLY A RAIL WINDOW STACKS ON ITS OWN (Akshil, 2026-11-16: "2nd line thing
+  // is only for small windows, not for expanded sidebar").
+  const stackedNow = stacked === true || (stacked === "auto" && isWindow && fit >= TASK_HEAD_STACK_LEVEL);
   /** The heading the dialog is named by, when there is a dialog (`titleId`). */
   const headingAttrs = titleId ? { id: titleId, role: "heading", "aria-level": 2 } : {};
   // A QUEUED LINE NAMES THE QUEUED ROW (Topbar's rule, Bugbot PR #1194): its
@@ -510,6 +533,7 @@ export function TaskHead({
       className={
         "task-head" +
         (stackedNow ? " is-stacked" : "") +
+        (isWindow ? " is-window" : "") +
         (hot ? " is-hot" : "") +
         (refiled ? " is-refiled" : "") +
         (className ? ` ${className}` : "")
@@ -517,9 +541,9 @@ export function TaskHead({
       // The press is spent until the pointer leaves the ID SLOT (the seat it
       // was made in, task-head.css) — leaving the head covers a pointer that
       // left the window through it.
-      onMouseLeave={refiled ? () => setRefiled(false) : undefined}
+      onMouseLeave={refiled && !isWindow ? () => setRefiled(false) : undefined}
       onMouseOver={
-        refiled
+        refiled && !isWindow
           ? (e) => {
               const at = e.target as Element | null;
               if (!at?.closest?.(".task-head-idslot")) setRefiled(false);

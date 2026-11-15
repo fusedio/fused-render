@@ -1603,6 +1603,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           // its Escape and lays out as nothing (`is-unified`, task-head.css).
           <div className="claude-rail-peek-head is-unified" onKeyDown={onHeadKeyDown}>
             <TaskHead
+              reveal="window"
               // KEYED ON THE CHAT: a rename half-typed on one chat must not
               // survive a swap to another and save there (the old head
               // dropped its draft on every change of shown chat).

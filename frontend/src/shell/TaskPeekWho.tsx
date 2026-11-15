@@ -18,7 +18,7 @@
 // hosts `@apps/claude`'s `ChatMount`, so a chat importing it would close an
 // import cycle — and the boundary check (scripts/check-boundaries.mjs) opens a
 // hole for named shell modules one file at a time for the same reason.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Pencil } from "lucide-react";
 import { renameTask, type Task } from "@platform/lib/api";
 import { TaskStar } from "@platform/ui/TaskStar";
@@ -302,6 +302,9 @@ export function TaskPeekWho({
             // shared head replaced it (Modal `head`).
             {...(titleId ? { id: titleId, role: "heading", "aria-level": 2 } : {})}
             title={title}
+            // The floor's cap: a short title's floor is its own width
+            // (task-head.css `min-width`).
+            style={{ "--title-ch": Math.min(Array.from(title).length, 12) } as CSSProperties}
             onDoubleClick={canRename ? startRename : undefined}
           >
             {title}
@@ -353,7 +356,14 @@ export function TaskPeekWho({
           {error && <span className="task-side-peek-rename-error">{error}</span>}
         </>
       )}
-      {showTitle && subtitle ? <span className="task-head-subtitle">{subtitle}</span> : null}
+      {showTitle && subtitle ? (
+        // `data-fit-skip`: the reply is the first thing to give and asks the
+        // fit ladder for nothing — charged a text floor, it pushed the time
+        // and a pane's seats off a head that had the room (row-fit `rowNeed`).
+        <span className="task-head-subtitle" data-fit-skip="">
+          {subtitle}
+        </span>
+      ) : null}
     </div>
   );
 }

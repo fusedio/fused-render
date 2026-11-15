@@ -204,6 +204,7 @@ export function TasksPeek() {
             chat ? (
               <TaskHead
                 key="chat"
+                reveal="window"
                 className="claude-rail-tasks-chat-head"
                 lead={{ kind: "back", label: "Back to tasks", onPress: () => setChat(null), ref: api.backRef }}
                 nav={{ prev: chatEnds.prev, next: chatEnds.next, step: stepChat }}

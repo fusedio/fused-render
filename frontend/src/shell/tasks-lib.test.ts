@@ -4761,28 +4761,100 @@ describe("the archive action", () => {
   });
 
   it("a/b: keeps the star and the door when the fit ladder folds the count and the time", () => {
-    const door = block(
-      TASKS_CSS,
-      '.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab:hover > .tasks-bseat--door',
-    );
-    expect(door).toContain("flex-basis: 22px");
-    expect(door).toContain("margin-left: 0");
+    // Folded or not, a pointer seats them in flow ("Under a pointer"); the door
+    // is the arrow alone, in the word's own 3px skin — no 22px square, whose
+    // centred arrow left dead space before the row's edge (owner, 2026-11-16).
     const glyph = block(
       TASKS_CSS,
       '.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door > .tasks-act--page',
     );
     expect(glyph).toContain("font-size: 0");
-    expect(glyph).toContain("width: 22px");
-    // (`rules` splits a selector list on commas, which `:is(a, b)` also holds,
-    // so this one is read off the text.)
-    const favAt = TASKS_CSS.indexOf(
-      '.tasks-list:is([data-fit="2"], [data-fit="3"], [data-fit="4"]) .tasks-row--ab:hover > .tasks-bseat--fav',
+    expect(glyph).not.toMatch(/width|padding/);
+    expect(TASKS_CSS).not.toContain('.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab:hover');
+    expect(TASKS_CSS).not.toContain('[data-fit="4"]) .tasks-row--ab:hover');
+    // A touch screen has no pointer, so there the folded seats keep their boxes at rest.
+    const from = TASKS_CSS.indexOf("@media (hover: none)", TASKS_CSS.indexOf("A FOLDED A ITEM"));
+    const touch = TASKS_CSS.slice(from, TASKS_CSS.indexOf("\n}\n", from));
+    expect(block(touch, '.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door')).toContain(
+      "flex-basis: 22px",
     );
-    expect(favAt).toBeGreaterThan(-1);
-    expect(TASKS_CSS.slice(favAt, TASKS_CSS.indexOf("}", favAt))).toContain("flex-basis: 18px");
     expect(readFileSync(join(SHELL, "row-fit.ts"), "utf8")).toContain(
       'child.hasAttribute("data-fit-skip")',
     );
+  });
+
+  it("a/b: under a pointer seats the star and the door in flow — title, star and door 10px of ink apart", () => {
+    // Owner, 2026-11-16: the star sat on "↗ Open", and the title stopped short
+    // of the star. The a items leave the flow (out of it, not `display: none`,
+    // so lan.css can put them back), the b seats take boxes, and the title runs
+    // up to the star.
+    const at = TASKS_CSS.indexOf("@media (hover: hover) {");
+    expect(at).toBeGreaterThan(-1);
+    const arm = TASKS_CSS.slice(at, TASKS_CSS.indexOf("\n}\n", at));
+    const P = [":hover", ":has(.tasks-act:focus-visible)", ":has(.task-star:focus-visible)"];
+    for (const p of P) {
+      expect(block(arm, `.tasks-row--ab${p} > .tasks-row-msgs:has(+ .tasks-bseat > .task-star)`)).toContain(
+        "position: absolute",
+      );
+      expect(block(arm, `.tasks-row--ab${p} > .tasks-row-time:has(+ .tasks-bseat--door)`)).not.toContain(
+        "display",
+      );
+      const seat = block(arm, `.tasks-row--ab${p} > .tasks-bseat:not(:empty)`);
+      expect(seat).toContain("flex: 0 0 auto");
+      expect(seat).toContain("width: auto");
+      // The seam's 6px less the star's 2px inset: 4 + 4 + 2 = 10px of ink.
+      expect(seat).toContain("margin-left: 4px");
+      expect(block(arm, `.tasks-row--ab${p} > .tasks-bseat > .task-star`)).toContain("position: relative");
+      expect(block(arm, `.tasks-row--ab${p} > .tasks-bseat > .tasks-act`)).toContain("transform: none");
+      // The door's ink ends where the time's did: 3px side + hairline into the padding.
+      expect(block(arm, `.tasks-row--ab${p} > .tasks-bseat--door`)).toContain("margin-right: -4px");
+    }
+    // No star: the door stands a whole seam off the count.
+    expect(block(arm, ".tasks-row--ab:hover > .tasks-bseat--fav:empty ~ .tasks-bseat--door")).toContain(
+      "margin-left: 6px",
+    );
+    // The empty strip still draws no wash over the title's tail.
+    expect(block(TASKS_CSS, ".tasks-row--ab > .tasks-acts > .tasks-acts-inner:empty")).toContain("display: none");
+    // The ladder reads a pointed-at row as it was at rest.
+    expect(readFileSync(join(SHELL, "row-fit.ts"), "utf8")).toContain(
+      "rowRestNeed(row, costs.current, rest.current)",
+    );
+  });
+
+  it("a/b: never folds the folder chip — the title gives instead", () => {
+    // Owner, 2026-11-16: "it hides folder tag why, don't hide that". The rung
+    // keeps its number for the legacy row and folds nothing on the a/b row.
+    const fold = TASKS_CSS.indexOf('.tasks-list:is([data-fit="3"], [data-fit="4"])\n  .tasks-row');
+    expect(fold).toBeGreaterThan(-1);
+    expect(TASKS_CSS.slice(fold, TASKS_CSS.indexOf("{", fold))).toContain(
+      ".tasks-row:not(.tasks-row--ab)\n  .schedule-tv-id-shield:has(.schedule-tv-id)",
+    );
+  });
+
+  it("a/b: the phone takes Archive out of the tab order, and keeps the count and the time in flow", () => {
+    // CodeRabbit, PR #2285: invisible-but-focusable is a control a keyboard presses blind.
+    const LAN_CSS = readFileSync(join(SHELL, "../lan/lan.css"), "utf8");
+    const archive = block(LAN_CSS, ".lan-tasks .tasks-row--ab.tasks-row--ab .tasks-idslot .tasks-act");
+    expect(archive).toContain("display: none");
+    expect(archive).not.toContain("opacity");
+    const kept = rules(LAN_CSS).filter((r) =>
+      r.selectors.includes(".lan-tasks .tasks-row--ab.tasks-row--ab > .tasks-row-time:has(+ .tasks-bseat--door)"),
+    );
+    expect(kept.map((r) => r.body).join("")).toContain("position: relative");
+  });
+
+  it("a/b: the narrow Home tile reserves the star's seat on a touch screen", () => {
+    // CodeRabbit, PR #2285: at ≤360px the count is gone, and on `hover: none`
+    // the star shows at rest — without a seat it sat on the title's tail.
+    const HOME = readFileSync(join(SHELL, "../styles/home.css"), "utf8");
+    const at = HOME.indexOf("@container (max-width: 360px)");
+    const query = HOME.slice(at, HOME.indexOf("\n}\n", at));
+    const touch = query.slice(query.indexOf("@media (hover: none)"));
+    expect(touch.length).toBeGreaterThan(0);
+    const seat = block(touch, ".hw-task-rows .tasks-row--ab > .tasks-bseat--fav");
+    expect(seat).toContain("flex-basis: 18px");
+    expect(seat).toContain("width: 18px");
+    expect(seat).toContain("margin-left: 0");
   });
 
   it("a/b: makes the favourite's status icon the icon picker's button, above the row link", () => {

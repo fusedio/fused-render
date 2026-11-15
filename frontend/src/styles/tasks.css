@@ -1635,9 +1635,10 @@ button.tasks-caret,
 
    NOTHING MOVES at rest: every b item is out of flow, over its a item's own
    box, and the count, the time and the gaps between them are the legacy
-   row's. Where the fit ladder has folded an a item away (`data-fit`, further
-   down) its b item takes a box of its own while the row is pointed at, and
-   the title is what gives. */
+   row's. Under a pointer the star and the door take the row's end in flow
+   and the title runs up to the star ("Under a pointer", below) — whether or
+   not the fit ladder has folded their a items away (`data-fit`, further
+   down). */
 
 /* THE FAVOURITE'S FACE IS A BUTTON (TaskIconPick — it opens the icon picker):
    lifted above the stretched link, or the link would take the press and open
@@ -1787,16 +1788,80 @@ button.tasks-caret,
   pointer-events: none;
 }
 
+/* UNDER A POINTER THE B ITEMS TAKE THE ROW'S END, IN FLOW (owner, 2026-11-16:
+   the star sat on "↗ Open", and the title stopped short of the star with room
+   to spare). The count and the time leave the flow, the star and the door
+   take boxes of their own, and the title runs up to the star. Each seat stands
+   the seam's 6px ("Two seams keep the old room", below) less the star's 2px
+   inset after what is before it, so title → star and star → door are the 10px
+   of ink title → count and count → time are at rest. The door's ink — the
+   arrow, the word — ends where the time's did: its 3px side and its hairline
+   hang into the row's padding.
+
+   Out of flow rather than `display: none`, so the phone's host can put its a
+   items back (lan.css) and the fit ladder can still read their widths; the
+   ladder measures a pointed-at row as it was at rest (row-fit.ts
+   `useRowFit`). A touch screen keeps the overlay below (`hover: none`). */
+@media (hover: hover) {
+  .tasks-row--ab:hover > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+  .tasks-row--ab:hover > .tasks-row-time:has(+ .tasks-bseat--door),
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-row-time:has(+ .tasks-bseat--door),
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-row-time:has(+ .tasks-bseat--door) {
+    position: absolute;
+    /* GONE AT ONCE, not faded: out of flow it lands at the row's start, and
+       an 80ms fade drew a ghost of the time over the status icon (Akshil,
+       2026-11-16). */
+    visibility: hidden;
+    transition: none;
+  }
+  .tasks-row--ab:hover > .tasks-bseat:not(:empty),
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat:not(:empty),
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat:not(:empty) {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    width: auto;
+    margin-left: 4px;
+  }
+  .tasks-row--ab:hover > .tasks-bseat > .task-star,
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat > .task-star,
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat > .task-star,
+  .tasks-row--ab:hover > .tasks-bseat > .tasks-act,
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat > .tasks-act,
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat > .tasks-act {
+    position: relative;
+    top: auto;
+    right: auto;
+    transform: none;
+    /* IN FLOW, BUT NOT TALLER THAN THE ROW'S LINE: a 22px control on an 18px
+       line grew every hovered row by 4px (Akshil, 2026-11-16). The overhang
+       goes into the row's own padding instead. */
+    margin-block: -2px;
+  }
+  .tasks-row--ab:hover > .tasks-bseat--door,
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat--door,
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat--door {
+    margin-right: -4px;
+  }
+  /* No star to stand after: the door takes the whole seam off the count. */
+  .tasks-row--ab:hover > .tasks-bseat--fav:empty ~ .tasks-bseat--door,
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat--fav:empty ~ .tasks-bseat--door {
+    margin-left: 6px;
+  }
+}
+
 /* THE TIME KEEPS THE LEGACY ROW'S COLUMN (owner, 2026-11-15): the count, the
    time and the 10px between their inks (`--tasks-row-gap` + the seams' 6px,
    "Two seams keep the old room" below) are exactly the legacy row's at rest —
-   the cell is NOT widened to the door. So the door, right-aligned on the
-   time's ink, is the one that gives: a tighter skin than the strip's (3px
-   sides, 2px gap — about 52px against the strip's 57px), and where that is
-   still wider than the time ("5h ago" is ~36px) it overhangs LEFTWARDS over
-   the gap and the count's tail, while hovered only. It carries the row's own
-   hover fill so the ink it covers does not show through it (the strip's wash,
-   one colour), and the star above it stays whole. */
+   the cell is NOT widened to the door. The door wears a tighter skin than the
+   strip's (3px sides, 2px gap — about 52px against the strip's 57px). On a
+   touch screen it stands over the time at rest, and where it is wider than
+   the time ("5h ago" is ~36px) it overhangs LEFTWARDS over the gap and the
+   count's tail — so it carries the row's own hover fill, and the ink it
+   covers does not show through it (the strip's wash, one colour); the star
+   above it stays whole. */
 .tasks-row--ab > .tasks-bseat--door > .tasks-act--page,
 .prefs-section .tasks-row--ab > .tasks-bseat--door > .tasks-act--page {
   padding: 0 3px;
@@ -2945,8 +3010,11 @@ button.tasks-draft-pill.is-on:focus-visible {
   display: none;
 }
 
+/* NOT ON THE A/B ROW (owner, 2026-11-16: "it hides folder tag why, don't hide
+   that"): there the folder never folds, and the title gives instead
+   (row-fit.ts `ROW_DROP_SELECTOR.project`). */
 .tasks-list:is([data-fit="3"], [data-fit="4"])
-  .tasks-row
+  .tasks-row:not(.tasks-row--ab)
   .schedule-tv-id-shield:has(.schedule-tv-id) {
   display: none;
 }
@@ -2959,32 +3027,19 @@ button.tasks-draft-pill.is-on:focus-visible {
 /* A FOLDED A ITEM DOES NOT TAKE ITS B ITEM WITH IT (the a/b row, 2026-11-15).
    The time goes first and the count second, but the door and the star are
    controls, and "a control that disappears because a folder name got longer is
-   a control nobody can rely on" (the door's own note, below). So while the row
-   is pointed at, the seat of a folded slot takes a box of its own at the row's
-   end — the door as the arrow alone, 22px; the star, 18px — and the title gives
-   way for it. At rest the seat is zero-width again and the row is the folded
-   row. The seats carry `data-fit-skip`, so none of this reaches the ladder's
-   own measurement and the level cannot flap on a hover. */
+   a control nobody can rely on" (the door's own note, below). Under a pointer
+   they take the row's end in flow as they do on any a/b row ("Under a
+   pointer", the a/b row's section) — the door as the arrow alone, in the
+   word's own 3px skin, so the arrow ends on the row's edge with nothing after
+   it — and the title gives way for them. At rest the seats are zero-width
+   again and the row is the folded row. The seats carry `data-fit-skip`, so
+   none of this reaches the ladder's own measurement and the level cannot flap
+   on a hover. A touch screen, with no pointer, gives the seats their boxes at
+   rest. */
 .tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door > .tasks-act--page {
-  width: 22px;
-  padding: 0;
   gap: 0;
   /* The word goes, the arrow stays: the label is a bare text node. */
   font-size: 0;
-}
-.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab:hover > .tasks-bseat--door,
-.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat--door,
-.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat--door {
-  flex-basis: 22px;
-  width: 22px;
-  margin-left: 0;
-}
-.tasks-list:is([data-fit="2"], [data-fit="3"], [data-fit="4"]) .tasks-row--ab:hover > .tasks-bseat--fav,
-.tasks-list:is([data-fit="2"], [data-fit="3"], [data-fit="4"]) .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat--fav,
-.tasks-list:is([data-fit="2"], [data-fit="3"], [data-fit="4"]) .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat--fav {
-  flex-basis: 18px;
-  width: 18px;
-  margin-left: 0;
 }
 @media (hover: none) {
   .tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door {
