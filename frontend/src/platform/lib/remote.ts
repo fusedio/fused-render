@@ -120,7 +120,10 @@ function safeDecode(s: string): string {
  * (a prefix) is kept. Does not decide file vs folder — the server's stat does.
  */
 export function canonicalRemoteUrl(input: string): string | null {
-  const text = input.trim();
+  // Leading whitespace only, for an s3:// address: a key may legally END in a
+  // space, and trimming it would make that object unaddressable. A pasted
+  // HTTPS link has its key percent-encoded, so trimming both ends is safe.
+  let text = input.replace(/^\s+/, "");
   if (!text) return null;
   if (/^s3:\/\//i.test(text)) {
     const rest = text.slice(5);
@@ -129,6 +132,7 @@ export function canonicalRemoteUrl(input: string): string | null {
     const key = slash < 0 ? "" : rest.slice(slash + 1);
     return BUCKET_RE.test(bucket) ? `s3://${bucket}/${key}` : null;
   }
+  text = text.trim();
   if (!/^https:\/\//i.test(text)) return null;
   let url: URL;
   try {

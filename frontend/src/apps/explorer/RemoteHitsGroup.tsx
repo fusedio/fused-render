@@ -11,8 +11,8 @@
 // the result note, which stay about the local index alone. A failed or
 // `ready:false` answer renders nothing: the group is a bonus, not a verdict.
 //
-// Gated on the canvases flag (platform/lib/canvases-flag): off → no request,
-// no rows.
+// Gated on the canvases flag (platform/lib/canvases-flag, read by FilesSearch
+// and passed in): off → no request, no rows.
 import { useEffect, useRef, useState } from "react";
 import { Cloud } from "lucide-react";
 import { spaLinkProps } from "@platform/lib/router";
@@ -20,7 +20,6 @@ import { formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { substringMatch } from "@platform/lib/fuzzy";
 import { INSTANT_DEBOUNCE_MS, QueryMemo } from "@platform/lib/instant-search";
 import { REMOTE_WARN_BYTES, remoteRank, type RemoteRankHit } from "@platform/lib/remote";
-import { useCanvasesFlag } from "@platform/lib/canvases-flag";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import {
   HOME_RESULT_CAP,
@@ -56,9 +55,20 @@ export interface RemoteHits {
  * does not vanish and reappear on every keystroke. A failure or `ready:false`
  * replaces the held rows with nothing.
  */
-export function useRemoteHits(query: string, searchable: boolean, ranked: boolean): RemoteHits {
-  const enabled = useCanvasesFlag();
-  const [answer, setAnswer] = useState<{ query: string; hits: RemoteRankHit[] } | null>(null);
+export function useRemoteHits(
+  query: string,
+  searchable: boolean,
+  ranked: boolean,
+  /** The canvases flag (platform/lib/canvases-flag), read by the caller. */
+  enabled: boolean,
+): RemoteHits {
+  // `ranked` too: an answer in the other order is held (dimmed, never a
+  // default) until the re-asked one lands.
+  const [answer, setAnswer] = useState<{
+    query: string;
+    ranked: boolean;
+    hits: RemoteRankHit[];
+  } | null>(null);
   // Which answered query "Show more" was pressed for — the next answer
   // collapses again without an effect to reset it.
   const [expandedFor, setExpandedFor] = useState<string | null>(null);
@@ -74,10 +84,15 @@ export function useRemoteHits(query: string, searchable: boolean, ranked: boolea
 
   useEffect(() => {
     inflight.current?.abort();
-    if (!enabled || !searchable) return;
+    if (!enabled || !searchable) {
+      // Nothing held across a Clear or a too-short query: the next query must
+      // not open on the previous one's rows.
+      setAnswer(null);
+      return;
+    }
     const remembered = memo.current.get(query);
     if (remembered) {
-      setAnswer({ query, hits: remembered });
+      setAnswer({ query, ranked, hits: remembered });
       return;
     }
     const run = () => {
@@ -90,12 +105,12 @@ export function useRemoteHits(query: string, searchable: boolean, ranked: boolea
           // `ready:false` (no store yet, still ingesting) is not remembered:
           // the next keystroke should ask again once the index lands.
           if (res.ready) memo.current.put(query, res.hits);
-          setAnswer({ query, hits: res.ready ? res.hits : NO_HITS });
+          setAnswer({ query, ranked, hits: res.ready ? res.hits : NO_HITS });
         },
         (err: Error) => {
           if (ctl.signal.aborted || err.name === "AbortError") return;
           // Silent: a bucket outage must never put an error over local results.
-          setAnswer({ query, hits: NO_HITS });
+          setAnswer({ query, ranked, hits: NO_HITS });
         },
       );
     };
@@ -110,7 +125,7 @@ export function useRemoteHits(query: string, searchable: boolean, ranked: boolea
   return {
     hits,
     shown,
-    held: live && answer.query !== query,
+    held: live && (answer.query !== query || answer.ranked !== ranked),
     showMore: () => setExpandedFor(answered),
   };
 }

@@ -103,26 +103,14 @@ def _not_ready() -> RemoteError:
     return RemoteError("index_not_ready", message)
 
 
-def _index_has_dir(prefix: str) -> bool | None:
-    """True/False from the index, or None (not ready)."""
+def _index_answer(name: str, arg: str) -> bool | None:
+    """`remote_index.<name>(arg)`: True/False, or None (not ready). Only a
+    missing extra (ImportError) reads as None; a broken store is a real error."""
     from fused_render import remote_index
 
     try:
-        answer = remote_index.has_dir(prefix)
-    except ImportError:
-        return None
-    return None if answer is None else bool(answer)
-
-
-def _index_answer(name: str, arg: str) -> bool | None:
-    """`remote_index.<name>(arg)` for the file-or-folder question; ANY failure
-    reads as None (unknown) — the live HEAD decides then."""
-    try:
-        from fused_render import remote_index
-
         answer = getattr(remote_index, name)(arg)
-    except Exception:  # noqa: BLE001
-        logger.debug("remote index %s failed", name, exc_info=True)
+    except ImportError:
         return None
     return None if answer is None else bool(answer)
 
@@ -155,7 +143,7 @@ def _missing(bucket: str, key: str) -> RemoteError:
 def _stat(url) -> dict:
     bucket, key = _parse(url)
     if not key or key.endswith("/"):
-        known = _index_has_dir(key)
+        known = _index_answer("has_dir", key)
         if known is None:
             raise _not_ready()
         if not known:
@@ -171,7 +159,7 @@ def _stat(url) -> dict:
     except RemoteError as e:
         if d is None and e.code == "not_found":
             raise _not_ready() from None  # may be a folder the index cannot show yet
-        if d is True and e.code == "network":
+        if d is True and e.code in ("not_found", "network"):
             return _dir_payload(bucket, key + "/")
         raise
     # An object that is also a prefix resolves to the file here; the folder is
@@ -193,7 +181,7 @@ def _list(url, cursor) -> dict:
         raise _not_ready()
     raw = page.get("entries") or []
     next_cursor = page.get("cursor") or None
-    if not raw and not next_cursor and prefix and _index_has_dir(prefix) is False:
+    if not raw and not next_cursor and prefix and _index_answer("has_dir", prefix) is False:
         raise _missing(bucket, prefix)
     # The index already orders dirs first, then files, by name.
     entries = [{"url": canonical_url(bucket, e["key"]), "name": e["name"],
@@ -221,7 +209,7 @@ async def _body(request: Request) -> dict | None:
     non-object body is the contract's 400 `bad_url`, not FastAPI's 422."""
     try:
         body = json.loads(await request.body() or b"null")
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return body if isinstance(body, dict) else None
 

@@ -20,7 +20,8 @@ stitches bytes of two versions of the object together.
 
 **Download.** Streams to `.partial`, verifies, renames atomically, and leaves
 the file read-only (an editable cached copy would let a save silently diverge
-from the bucket). A `.partial` of the same etag is resumed with `Range` +
+from the bucket) and its hash dir read-only too (a template's write action
+must not drop files beside it, invisible from the s3 view). A `.partial` of the same etag is resumed with `Range` +
 `If-Range`; a 200 restarts it. When the ETag is a single-part MD5 the bytes
 are hashed while streaming (a resumed prefix is hashed first) and a mismatch
 discards the download; a multipart ETag gets a size check only. The `.partial`
@@ -111,14 +112,29 @@ def cache_root() -> str:
 
 
 def in_cache(path: str) -> bool:
-    """Whether `path` resolves inside the remote cache. Bucket content is
-    untrusted: the file routes use this to never run it as a same-origin page."""
+    """Whether `path` lies inside the remote cache. Bucket content is
+    untrusted: the file routes use this to never run it as a same-origin page.
+
+    By identity, not by string: a case-insensitive filesystem (APFS) accepts
+    `.../CACHE/Remote/...` for the same directory, and `realpath` keeps the
+    spelling it was given. So each ancestor of the resolved path (starting at
+    the first that exists) is compared with the cache root by `samestat`. The
+    root is stat'ed per call — one syscall — so a root created later counts."""
     try:
-        real = os.path.realpath(path)
-        root = os.path.realpath(cache_root())
+        root_st = os.stat(cache_root())
+        p = os.path.realpath(path)
     except (OSError, ValueError):
-        return False
-    return real == root or real.startswith(root + os.sep)
+        return False  # no cache root yet: nothing can be inside it
+    while True:
+        try:
+            if os.path.samestat(os.stat(p), root_st):
+                return True
+        except (OSError, ValueError):
+            pass  # not there (yet): keep walking up
+        parent = os.path.dirname(p)
+        if parent == p:
+            return False
+        p = parent
 
 
 def _safe_name(key: str) -> str:
@@ -270,8 +286,8 @@ def job_id(bucket: str, key: str) -> str:
 
 
 def _live(rec: _Fetch | None) -> bool:
-    """Running and not asked to stop: a start joins it."""
-    return rec is not None and rec.state == "running" and not rec.cancel.is_set()
+    """Its thread is still alive and it was not asked to stop: a start joins it."""
+    return rec is not None and not rec.exited.is_set() and not rec.cancel.is_set()
 
 
 def _prune(now: float) -> None:
@@ -301,13 +317,15 @@ def start(bucket: str, key: str) -> dict:
             return {"id": fid, "state": "running", "path": None}
         hit = cached_path(bucket, key, info)
         if hit:
-            _fetches[fid] = _Fetch(id=fid, bucket=bucket, key=key, path=path, state="done",
-                                   done=info.size or 0, total=info.size, finished_at=now)
+            done = _Fetch(id=fid, bucket=bucket, key=key, path=path, state="done",
+                          done=info.size or 0, total=info.size, finished_at=now)
+            done.exited.set()  # no thread ever ran for a cache hit
+            _fetches[fid] = done
             return {"id": fid, "state": "done", "path": hit}
         # A cancelled attempt still winding down (cancel is noticed per chunk,
         # not while connecting) is replaced, not joined; the new attempt waits
         # for it to exit so there is never a second writer on the partial.
-        prev = cur if cur is not None and cur.state == "running" else None
+        prev = cur if cur is not None and not cur.exited.is_set() else None
         rec = _Fetch(id=fid, bucket=bucket, key=key, path=path, total=info.size)
         _fetches[fid] = rec
 
@@ -329,7 +347,13 @@ def start(bucket: str, key: str) -> dict:
         finally:
             rec.exited.set()
 
-    threading.Thread(target=_guarded, daemon=True, name=f"remote-fetch-{fid[-8:]}").start()
+    try:
+        threading.Thread(target=_guarded, daemon=True, name=f"remote-fetch-{fid[-8:]}").start()
+    except Exception:  # noqa: BLE001 - e.g. "can't start new thread"
+        logger.exception("could not start the download of %s", canonical_url(bucket, key))
+        _finish(rec, "error", error="the download could not be started", code="internal")
+        rec.exited.set()
+        return {"id": fid, "state": "running", "path": None}
     return {"id": fid, "state": "running", "path": None}
 
 
@@ -425,16 +449,33 @@ def _discard(rec: _Fetch, partial: str) -> None:
 
 
 def _run(rec: _Fetch, info: ObjectInfo) -> None:
+    """The hash dir is read-only (0o555) except while this runs: a template's
+    write action ("Extract", "Convert to …") must not drop files beside a
+    cached object, where the s3 view would never show them. Every write into
+    the dir (partial, rename, discard) happens inside `_download`."""
+    d = os.path.dirname(rec.path)
+    try:
+        os.makedirs(d, exist_ok=True)
+        os.chmod(d, 0o755)
+    except OSError:
+        logger.warning("could not create the cache folder for %s",
+                       canonical_url(rec.bucket, rec.key), exc_info=True)
+        _finish(rec, "error", error="could not create the local cache folder", code="internal")
+        return
+    try:
+        _download(rec, info)
+    finally:
+        try:
+            os.chmod(d, 0o555)
+        except OSError:
+            pass
+
+
+def _download(rec: _Fetch, info: ObjectInfo) -> None:
     bucket, key, path = rec.bucket, rec.key, rec.path
     partial = os.path.join(os.path.dirname(path), _PARTIAL)
     what = canonical_url(bucket, key)
     url = remote_access.read_url(bucket, key)
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-    except OSError:
-        logger.warning("could not create the cache folder for %s", what, exc_info=True)
-        _finish(rec, "error", error="could not create the local cache folder", code="internal")
-        return
 
     # Resume only a .partial of the same object version.
     offset = 0

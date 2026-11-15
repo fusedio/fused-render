@@ -62,7 +62,7 @@ def parse_url(s) -> tuple[str, str]:
     """
     if not isinstance(s, str) or not s.strip():
         raise RemoteError("bad_url", "no S3 address given")
-    s = s.strip()
+    s = s.lstrip()  # only before the scheme: a key may end in whitespace
     try:
         s.encode("utf-8")
     except UnicodeEncodeError:  # a lone surrogate from a JSON body

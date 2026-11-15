@@ -17,18 +17,15 @@ Output contract (fused_render/remote_index.py validates it):
 - file-level key-value metadata: ``schema_version=1``, ``bucket``,
   ``region``, ``built_at`` (ISO UTC), ``excluded_prefixes`` (JSON list)
 
-Two entry points, one core (``build_table``):
+Run by a human::
 
-- CLI, run by a human::
+    python scripts/fused_asset_index.py --out /tmp/fused-asset.parquet
+    python scripts/fused_asset_index.py --out /tmp/census.parquet --prefix census/
 
-      python scripts/fused_asset_index.py --out /tmp/fused-asset.parquet
-      python scripts/fused_asset_index.py --out /tmp/census.parquet --prefix census/
-
-- Fused UDF: paste this whole file into a canvas node and run ``udf``. It
-  builds the same table and uploads it to OUTPUT_URL with
-  ``fused.api.upload`` (the pattern the marketplace canvas uses to write
-  into this bucket). ``fused`` is only touched inside ``udf``; the CLI
-  never needs it installed.
+The published object (OUTPUT_URL) is built by the `fused_asset_index`
+canvas, which holds the same walk and contract and uploads the result; this
+script is the in-repo reference for the contract and builds a local copy
+for testing (``FUSED_RENDER_REMOTE_INDEX_URL=<path>``).
 
 The walk is split two folder levels deep and the pieces are listed
 concurrently, so a full run takes ~4 minutes instead of the ~15 minutes a
@@ -263,53 +260,6 @@ def write_parquet(table, out_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fused UDF entry point (UNTESTED from the fused-render side)
-# ---------------------------------------------------------------------------
-
-
-class _NoFused:
-    """Stand-in so ``@fused.udf`` below is a no-op when the CLI runs
-    without the fused SDK installed."""
-
-    @staticmethod
-    def udf(fn=None, **_kw):
-        return fn if fn is not None else (lambda f: f)
-
-
-try:  # the Fused runtime injects `fused` (canvas code never imports it)
-    fused  # type: ignore  # noqa: B018
-except NameError:  # CLI: never import the SDK here
-    fused = _NoFused()  # type: ignore
-
-
-@fused.udf
-def udf(output_url: str = OUTPUT_URL, prefix: str = ""):
-    """Build the index and upload it to `output_url`. Returns a one-row
-    summary. A full-bucket walk takes ~4 minutes, longer than a realtime
-    UDF call is allowed: run it as a batch job."""
-    import pandas as pd
-    import fused as _fused  # the real SDK; only ever imported here
-
-    table = build_table(prefix)
-    with tempfile.TemporaryDirectory() as d:
-        local = os.path.join(d, "fused-asset.parquet")
-        write_parquet(table, local)
-        size = os.path.getsize(local)
-        with open(local, "rb") as f:
-            _fused.api.upload(f.read(), output_url, timeout=600)
-    return pd.DataFrame(
-        [
-            {
-                "output_url": output_url,
-                "rows": table.num_rows,
-                "bytes": size,
-                "built_at": table.schema.metadata[b"built_at"].decode(),
-            }
-        ]
-    )
-
-
-# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -333,7 +283,5 @@ def main(argv=None) -> int:
     return 0
 
 
-# The stand-in check keeps a Fused runtime that execs this file as __main__
-# from running the CLI (and argparse exiting) instead of exposing `udf`.
-if __name__ == "__main__" and isinstance(fused, _NoFused):
+if __name__ == "__main__":
     sys.exit(main())

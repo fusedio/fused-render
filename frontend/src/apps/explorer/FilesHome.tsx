@@ -78,6 +78,7 @@ import {
 import { renderHighlight, renderHighlightPath } from "@apps/explorer/listing/bits";
 import { RemoteHitsGroup, useRemoteHits } from "@apps/explorer/RemoteHitsGroup";
 import { canonicalRemoteUrl } from "@platform/lib/remote";
+import { useCanvasesFlag } from "@platform/lib/canvases-flag";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 // How many cards a tab shows before "Show more" — flat count, not a row
@@ -160,6 +161,12 @@ type RowId =
   | { kind: "local"; key: string }
   | { kind: "remote"; key: string }
   | { kind: "ai" };
+
+function sameRow(a: RowId | null, b: RowId | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.kind !== b.kind) return false;
+  return !("key" in a) || !("key" in b) || a.key === b.key;
+}
 
 // -- The home search bar ------------------------------------------------------
 //
@@ -484,7 +491,10 @@ export function FilesSearch({
   // A pasted S3 address (`s3://…` or an accepted S3 HTTPS link) is an ADDRESS,
   // not a query, and is not `searchable` either: no local or bucket request,
   // no list, no AI row. Enter opens it (`submit`) and the note says so.
-  const remoteAddr = canonicalRemoteUrl(q);
+  // Flag OFF: an `s3://…` string is an ordinary local query, exactly as before
+  // the remote integration existed.
+  const canvasesOn = useCanvasesFlag();
+  const remoteAddr = canvasesOn ? canonicalRemoteUrl(q) : null;
   const searchable = trimmedQ.length >= MIN_QUERY_CHARS && remoteAddr === null;
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
   // The "Fused assets" bucket hits (RemoteHitsGroup): their own request, in
@@ -492,7 +502,7 @@ export function FilesSearch({
   // with the RAW query, like the local request: the server ranks the bucket
   // index with the same engine (remote_index.rank → search_ranked), so a
   // trailing space means the same thing there (A1, above).
-  const remote = useRemoteHits(q, searchable, ranked);
+  const remote = useRemoteHits(q, searchable, ranked, canvasesOn);
 
   // -- a query that is really an address --------------------------------------
   //
@@ -1182,7 +1192,13 @@ export function FilesSearch({
   const current =
     highlight ??
     (localDefault !== null && isAiRow(localDefault, localModel) ? aiRowIndex : localDefault);
-  const pick = (row: number | null) => setPicked(row === null ? null : rowIdAt(row));
+  // Rows call this from onMouseMove, on every pixel: hand React back the SAME
+  // object when the row is unchanged so it bails out of the re-render, the way
+  // `setHighlight(sameNumber)` used to.
+  const pick = (row: number | null) => {
+    const next = row === null ? null : rowIdAt(row);
+    setPicked((prev) => (sameRow(prev, next) ? prev : next));
+  };
 
   const activateRow = (row: number) => {
     if (isOpenRow(row, rowModel)) {
