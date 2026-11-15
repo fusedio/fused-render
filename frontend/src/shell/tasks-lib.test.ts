@@ -4841,6 +4841,8 @@ describe("the archive action", () => {
       r.selectors.includes(".lan-tasks .tasks-row--ab.tasks-row--ab > .tasks-row-time:has(+ .tasks-bseat--door)"),
     );
     expect(kept.map((r) => r.body).join("")).toContain("position: relative");
+    // …and drawn: tasks.css hides them outright under a pointer (CodeRabbit, #2285).
+    expect(kept.map((r) => r.body).join("")).toContain("visibility: visible");
   });
 
   it("a/b: the narrow Home tile reserves the star's seat on a touch screen", () => {

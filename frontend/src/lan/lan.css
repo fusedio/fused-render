@@ -254,6 +254,8 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
 .lan-tasks .tasks-row--ab.tasks-row--ab > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
 .lan-tasks .tasks-row--ab.tasks-row--ab > .tasks-row-time:has(+ .tasks-bseat--door) {
   position: relative;
+  /* …and still drawn: under a pointer tasks.css hides them outright. */
+  visibility: visible;
 }
 .lan-tasks .tasks-row--ab > .tasks-bseat {
   display: none;

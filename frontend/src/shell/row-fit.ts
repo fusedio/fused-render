@@ -518,9 +518,13 @@ export function useRowFit(
   // it can see a scroller that was not there the last time (Bugbot, #1524:
   // TaskList returns the empty state until rows arrive, so a binding made
   // once on mount observed nothing, ever).
-  const bound = useRef<{ el: HTMLElement; ro: ResizeObserver } | null>(null);
+  const bound = useRef<{ el: HTMLElement; ro: ResizeObserver; leave: () => void } | null>(null);
   const unbind = () => {
     bound.current?.ro.disconnect();
+    if (bound.current && typeof bound.current.el.removeEventListener === "function") {
+      bound.current.el.removeEventListener("pointerout", bound.current.leave, true);
+      bound.current.el.removeEventListener("focusout", bound.current.leave, true);
+    }
     bound.current = null;
     readRef.current = () => {};
   };
@@ -576,7 +580,15 @@ export function useRowFit(
     // whose box did not change.
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
-    bound.current = { el, ro };
+    // A POINTED ROW ANSWERS WITH ITS LAST AT-REST NEED (`rowRestNeed`), so a
+    // listing update that lands while it is pointed at is not measured. Read
+    // again when the pointer or the focus leaves a row (CodeRabbit, #2285).
+    const leave = () => readRef.current();
+    if (typeof el.addEventListener === "function") {
+      el.addEventListener("pointerout", leave, true);
+      el.addEventListener("focusout", leave, true);
+    }
+    bound.current = { el, ro, leave };
     // NO MutationObserver ANY MORE (2026-10-09, Tasks latency design D5). It
     // watched the content for width changes — a poll landing new rows, a
     // folder chip appearing — and re-measured thirty rows' computed styles,
