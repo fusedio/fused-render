@@ -60,7 +60,13 @@ import type { BreakoutControl } from "@apps/claude/ClaudeChat";
 import { useTaskHeadUnified } from "./task-head-flag";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
-import ContextMenu from "@platform/ui/ContextMenu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@platform/shadcn/ui/dropdown-menu";
 import { RUN_BLOCKED_HINT, TASK_ACTION_LABELS, blockedActionLabel } from "@platform/lib/task-actions";
 import { TASK_ICON_TRASH } from "@platform/ui/TaskActionIcons";
 import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
@@ -1015,8 +1021,6 @@ function TaskPeek({
   const unified = useTaskHeadUnified();
   /** The shared head, for every task (see `head=`). */
   const sharedHead = unified;
-  /** Where the session-less ⋮'s menu opens (`head=`). */
-  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   /** The shared head's chip seat (ChatMount `headChipsHost`). */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
   /** …and its status seat, for the chat's pause word (ChatMount
@@ -1233,21 +1237,45 @@ function TaskPeek({
                 />
               </AgentProvider>
             ) : gone ? (
-              <button
-                type="button"
-                // The chat ⋮'s own trigger and words (Kebab), so the head reads
-                // the same whichever menu is behind it.
-                className="c-kebabbtn"
-                aria-label="More options"
-                aria-haspopup="menu"
-                title="More options"
-                onClick={(e) => {
-                  const r = e.currentTarget.getBoundingClientRect();
-                  setMenuAt({ x: r.right - 200, y: r.bottom + 4 });
-                }}
-              >
-                ⋮
-              </button>
+              // THE SESSION-LESS ⋮ (folder gone): the chat ⋮'s own trigger,
+              // menu and rows (Kebab) — its `extraItems` door greyed with why,
+              // then Delete — so the head reads the same whichever menu is
+              // behind it, and the keyboard reaches Delete as it did the old
+              // head's button.
+              <div className="c-kebab">
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <button type="button" className="c-kebabbtn" aria-label="More options" title="More options">
+                        ⋮
+                      </button>
+                    }
+                  />
+                  <DropdownMenuContent
+                    side="bottom"
+                    align="end"
+                    sideOffset={6}
+                    aria-label="More options"
+                    className="c-overlay c-kebabpop c-kebabpop--head w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0"
+                  >
+                    <DropdownMenuItem className="c-kebab-opt" disabled title={MISSING_FOLDER_TOAST}>
+                      <span className="c-kebab-icon">{ICON_FOLDER}</span>
+                      {`${pageDoorLabel(task)} — folder deleted`}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator className="c-kebab-sep" />
+                    <DropdownMenuItem
+                      className="c-kebab-opt is-danger"
+                      variant="destructive"
+                      disabled={blocked}
+                      title={blocked ? ERASE_BLOCKED_HINT : undefined}
+                      onClick={() => setErasing(true)}
+                    >
+                      <span className="c-kebab-icon">{TASK_ICON_TRASH}</span>
+                      {blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null)}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             ) : null}
           />
         ),
@@ -1314,32 +1342,6 @@ function TaskPeek({
             onReload?.();
             onClose();
           }}
-        />
-      )}
-      {menuAt && (
-        // The session-less ⋮ (folder gone): the chat ⋮'s `extraItems` door,
-        // greyed with why, then Delete — the same rows, the same order.
-        <ContextMenu
-          x={menuAt.x}
-          y={menuAt.y}
-          onClose={() => setMenuAt(null)}
-          items={[
-            {
-              label: `${pageDoorLabel(task)} — folder deleted`,
-              icon: ICON_FOLDER,
-              disabled: true,
-              title: MISSING_FOLDER_TOAST,
-              onClick: toastMissingFolder,
-            },
-            "separator",
-            {
-              label: blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null),
-              icon: TASK_ICON_TRASH,
-              danger: true,
-              disabled: blocked,
-              onClick: () => setErasing(true),
-            },
-          ]}
         />
       )}
       {archiveAsk.node}

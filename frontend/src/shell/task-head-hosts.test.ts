@@ -83,11 +83,14 @@ test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips i
   // No session: no chat ⋮ — with the folder gone, a plain ⋮ carries the
   // greyed door and Delete (the old head's doors), so neither is lost.
   expect(shared).toContain(") : gone ? (");
-  expect(shared).toContain('className="c-kebabbtn"');
-  const bare = between(src, "{menuAt && (", "{archiveAsk.node}");
-  expect(bare).toContain("label: `${pageDoorLabel(task)} — folder deleted`");
+  const bare = between(shared, ") : gone ? (", ") : null}");
+  // The chat ⋮'s own trigger and keyboard-operable menu (Kebab's), not a
+  // pointer-only ContextMenu.
+  expect(bare).toContain('className="c-kebabbtn"');
+  expect(bare).toContain("<DropdownMenuTrigger");
+  expect(bare).toContain("{`${pageDoorLabel(task)} — folder deleted`}");
   expect(bare).toContain("blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null)");
-  expect(bare).toContain("onClick: () => setErasing(true)");
+  expect(bare).toContain("onClick={() => setErasing(true)}");
   expect(shared).toContain("breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle }");
   // The ChatMount: the shared head's seat and Breakout report, or the old
   // slim line.
