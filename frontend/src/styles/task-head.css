@@ -433,6 +433,12 @@
     margin-left: 0;
   }
 }
+/* THE WORD, THEN THE ARROW (Akshil, 2026-11-16): "Open ↗", the row's order —
+   on every head's door ("Open tasks ↗" too), in the native window and the
+   browser alike. */
+.task-head-open {
+  flex-direction: row-reverse;
+}
 /* SHORT ON WIDTH, THE DOOR IS ITS ↗ ALONE (the narrow list row's rule). */
 .task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-word {
   display: none;
