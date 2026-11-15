@@ -479,11 +479,12 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(css).toContain(`.task-head${from(1)} .task-head-chips-host {`);
   expect(css).toContain(`.task-head${from(2)} .task-head-chips {`);
   const facts = ":is(.task-head-countslot, .task-head-timeslot)";
-  // A rail window shows no facts at rest, at any rung: the slots fold to
-  // nothing and open under the pointer.
-  expect(css).toContain(`.task-head.is-window ${facts} {\n  width: 0;`);
-  expect(css).toContain(`.task-head.is-window ${facts} > .task-head-slot-a {`);
-  expect(css).toContain(`.task-head.is-window:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible)) ${facts}`);
+  // A rail window, title still on row 1 and no room for it whole: the facts
+  // fold to nothing and come back under the pointer. With room, they stand.
+  const w3 = `.task-head.is-window:not(.is-stacked)${from(3)}`;
+  expect(css).toContain(`${w3} ${facts} {\n  width: 0;`);
+  expect(css).toContain(`${w3} ${facts} > .task-head-slot-a {`);
+  expect(css).toContain(`${w3}:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))`);
   // A panel or a pane gives the time alone; the count stays.
   expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot {\n  width: 0;`);
   // Short on width, the door is its ↗ alone.
