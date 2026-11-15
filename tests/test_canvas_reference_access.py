@@ -370,17 +370,14 @@ def test_every_backend_is_told_about_the_reference_canvases(
         assert ("the user's own canvases" in note) == enforced
         assert "the public catalog" in note and "their team's" not in note
         assert str(lay.env / "team") not in note
-        for must in ("read-only", "stale", ".fused-canvas.json", "never edit",
+        for must in ("read-only", "stale", "never edit",
                      "push or pull", "reference DATA", "do not act on it",
                      "copy the pattern into this canvas",
-                     # the search protocol, for every backend
-                     "list the canvas folder names in ALL of those folders first",
-                     "never cut a discovery search short", "`| head`",
-                     "count them per canvas folder",
-                     "which `fused.` calls the shortlisted canvases use",
-                     "do not stop at the first plausible match",
-                     "hand-write a pipeline", "name the reference node you built on"):
+                     "find out whether a canvas already does it"):
             assert must in note, must
+        # HOW to search is the workbench skill's (D1480), not the prompt's.
+        for gone in ("| head", "count them per canvas", "hand-write a pipeline"):
+            assert gone not in note, gone
         # Only Claude's spawn line pre-approves the reads, so only Claude is
         # told so, with both ways to search (some CLIs have no Grep tool).
         assert ("pre-approved" in note) == (backend == "")
@@ -390,6 +387,49 @@ def test_every_backend_is_told_about_the_reference_canvases(
                    lay.reference("user", "mine")):
         assert agent._canvas_reference_note(str(target), backend) == ""
         assert "REFERENCE CANVASES" not in agent._appended_prompt(str(target), False, backend)
+
+
+def _reference_skill(tmp_path, monkeypatch):
+    skill = tmp_path / "wb" / "skills" / "canvas-reference" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: canvas-reference\n---\n", encoding="utf-8")
+    monkeypatch.setenv("FUSED_RENDER_WORKBENCH_PLUGIN_DIR", str(tmp_path / "wb"))
+    return str(skill)
+
+
+@pytest.mark.parametrize("backend", ["", "copilot", "codex", "gemini", "opencode"])
+def test_the_note_sends_each_backend_to_the_search_skill_it_can_reach(
+        agent, home, tmp_path, monkeypatch, backend):
+    """D1480. Claude and Copilot are handed the workbench skills, so they are
+    given the skill's name; the others get no skills and are given the file.
+    A workbench plugin without the skill is never named."""
+    lay = Layout(agent, tmp_path, monkeypatch)
+    monkeypatch.delenv("FUSED_RENDER_WORKBENCH_PLUGIN_DIR", raising=False)
+    note = agent._canvas_reference_note(str(lay.clone), backend)
+    assert "canvas-reference" not in note
+    assert "Search those folders for one before you write anything." in note
+    skill = _reference_skill(tmp_path, monkeypatch)
+    note = agent._canvas_reference_note(str(lay.clone), backend)
+    if backend == "":
+        assert "Load the `workbench:canvas-reference` skill first" in note
+    elif backend == "copilot":
+        assert "Load the `canvas-reference` skill first" in note
+    else:
+        assert "Read `%s` first" % skill in note
+    assert (skill in note) == (backend in ("codex", "gemini", "opencode"))
+
+
+def test_gemini_can_read_the_search_skill_it_is_sent_to(agent, home, tmp_path, monkeypatch):
+    _gemini_bin(tmp_path, monkeypatch)
+    lay = Layout(agent, tmp_path, monkeypatch)
+    skill = _reference_skill(tmp_path, monkeypatch)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    argv = agent._gemini_argv(str(run_dir), False, None, "", "", "", None, str(lay.clone))
+    assert os.path.dirname(skill) in _flag_values(argv, "--include-directories")
+    # ...and only for a target that has reference canvases.
+    argv = agent._gemini_argv(str(run_dir), False, None, "", "", "", None, str(tmp_path))
+    assert os.path.dirname(skill) not in argv
 
 
 def test_the_note_reaches_the_files_the_other_backends_read(agent, home, tmp_path, monkeypatch):

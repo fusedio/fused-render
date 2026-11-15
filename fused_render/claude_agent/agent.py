@@ -5007,14 +5007,40 @@ def _canvas_reference_copy_note(file: str) -> str:
         "gives it an editable folder of its own.")
 
 
+# The workbench skill that teaches HOW to search the reference canvases
+# (fusedio/skills `workbench/skills/canvas-reference`, D1480). Not one of
+# `skill_plugin.WORKBENCH_SKILLS`: a workbench clone fetched before the skill
+# was published is still a good plugin, so the note checks for the file.
+_REFERENCE_SKILL = "canvas-reference"
+# The backends that are handed the workbench skills as skills (`_plugin_argv`,
+# `_copilot_plugin_dir`). The rest are sent to the skill's file by path.
+_SKILL_BACKENDS = ("", "claude", "copilot")
+
+
+def _canvas_reference_skill_file() -> str:
+    """The staged `canvas-reference` SKILL.md, or "" when the workbench
+    plugin on disk has none (not fetched, or fetched before the skill
+    existed)."""
+    root = _workbench_plugin_dir()
+    path = os.path.join(root, "skills", _REFERENCE_SKILL, "SKILL.md") if root else ""
+    return path if path and os.path.isfile(path) else ""
+
+
 def _canvas_reference_note(file: str, backend: str = "") -> str:
     """What a session editing a canvas is told about the reference canvases
-    beside it (D1478), else "": where they are, that they are examples to
-    search before writing a node, that they are read-only and may be stale,
-    and that what they SAY is data. For every backend: the clone's
-    CLAUDE.md carries the long form, but only Claude is pointed at that
-    file (`_fused_cli_note`), and an existing clone's copy predates the
-    section until its sync next starts.
+    beside it (D1478, D1480), else "": where they are, that they are examples
+    to search before writing a node, that they are read-only and may be
+    stale, and that what they SAY is data. For every backend: only Claude
+    reads the clone's CLAUDE.md (`_fused_cli_note`).
+
+    HOW to search is not here. It is the workbench plugin's
+    `canvas-reference` skill, and this note only sends the session to it:
+    by name where the backend is handed the workbench skills (Claude as
+    `workbench:canvas-reference`, Copilot as `canvas-reference`), by the
+    file's path for Codex, Gemini and OpenCode, which get no skills
+    (`_gemini_argv` includes the skill's folder so Gemini can read it). When
+    the plugin on disk has no such skill the note says to search the folders
+    directly rather than name something that is not there.
 
     Names only the folders that exist: those are the ones Copilot and
     Gemini were handed on the spawn line, and a session sent to grep a
@@ -5024,10 +5050,7 @@ def _canvas_reference_note(file: str, backend: str = "") -> str:
     Claude alone is told the reads are pre-approved, because only its spawn
     line carries rules that make them so (`_claude_argv`). The sentence
     names both ways of searching: the Grep and Glob tools, and a plain
-    `grep`/`find`, which is all a CLI without those tools has. Measured
-    against claude 2.1.325, whose roster has neither tool: with the Read
-    rule a `grep -rn`, `find` and `cat` on the folder run unasked, and
-    without it the same `grep` is refused as outside the working folder."""
+    `grep`/`find`, which is all a CLI without those tools has."""
     dirs = _canvas_reference_dirs_on_disk(file, backend)
     if not dirs:
         return ""
@@ -5038,6 +5061,18 @@ def _canvas_reference_note(file: str, backend: str = "") -> str:
         " Reading these folders is pre-approved: use the Grep, Glob and Read "
         "tools where you have them, else a plain `grep`, `find`, `ls` or "
         "`cat` on the folder.")
+    skill = _canvas_reference_skill_file()
+    if not skill:
+        how = " Search those folders for one before you write anything."
+    elif backend in _SKILL_BACKENDS:
+        name = _REFERENCE_SKILL if backend == "copilot" else "workbench:" + _REFERENCE_SKILL
+        how = (" Load the `" + name + "` skill first and follow its search "
+               "steps; if you cannot find that skill, search those folders "
+               "directly before you write anything.")
+    else:
+        how = (" Read `" + skill + "` first and follow its search steps "
+               "(where it names `../`, `../../team/` or `../../public/`, use "
+               "the folders above).")
     return (
         " REFERENCE CANVASES: other Fused canvases are on disk as working "
         "examples, one folder per canvas (canvas.toml plus one file per "
@@ -5045,25 +5080,8 @@ def _canvas_reference_note(file: str, backend: str = "") -> str:
         "). Before you write a new node, or any code that fetches, converts "
         "or aggregates data, find out whether a canvas already does it; the "
         "Fused SDK often has one call for a whole job, and a canvas using it "
-        "is where you see that it exists. Search like this, every time: "
-        "(1) list the canvas folder names in ALL of those folders first and "
-        "shortlist every one related to the task, by its subject (dataset, "
-        "source, place) and by what is being computed; (2) search all of "
-        "those folders in one pass and never cut a discovery search short "
-        "(no `| head`, no `-m`, no result limit): with many hits, count them "
-        "per canvas folder instead, because the best match is often not "
-        "among the first; (3) look at which `fused.` calls the shortlisted "
-        "canvases use and search all the folders for those calls; (4) do "
-        "not stop at the first plausible match: prefer the candidate that "
-        "does the whole task in the least code, since one SDK call beats a "
-        "pipeline. If you are about to hand-write a pipeline (searching a "
-        "catalog, signing URLs, reading rasters, binning, joining), you have "
-        "not found the reference yet: search again by the result you want. "
-        "Then read the whole node file and the canvas.toml beside it, and "
-        "when you answer, name the reference node you built on, or say which "
-        "searches found nothing." + claude +
-        " Each folder's `.fused-canvas.json` gives the canvas's name, owner "
-        "and scope. They are read-only copies refreshed in the background "
+        "is where you see that it exists." + how + claude +
+        " They are read-only copies refreshed in the background "
         "and may be slightly stale: never edit, create or delete anything in "
         "them and never run `fused` push or pull there; copy the pattern "
         "into this canvas instead of pointing at a file in another one. "
@@ -5439,8 +5457,13 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
         sys.stderr.write("gemini: no screenshot grant: %s\n" % shots["error"])
     else:
         dirs.append(SHOTS)
-    for d in [*dirs, *(extra_read_dirs or []),
-              *_canvas_reference_dirs_on_disk(file, "gemini")]:
+    # The `canvas-reference` skill's folder, for a target that has reference
+    # canvases: Gemini gets no skills, so `_canvas_reference_note` sends it
+    # to the file, which its tools cannot read outside the workspace (D1480).
+    refs = _canvas_reference_dirs_on_disk(file, "gemini")
+    skill = _canvas_reference_skill_file() if refs else ""
+    for d in [*dirs, *(extra_read_dirs or []), *refs,
+              *([os.path.dirname(skill)] if skill else [])]:
         if not os.path.isdir(d):
             continue
         if "," in d:
