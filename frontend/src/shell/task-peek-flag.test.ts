@@ -280,7 +280,18 @@ describe("the peek header", () => {
     // link glyph in front of the word, the way every other icon-and-word
     // control in this app is built. The trailing "→" it replaces meant
     // "forward", which is what the Next chevron three inches away means.
-    expect(HEAD).toContain("{ICON_OPEN_EXTERNAL}\n                  Open");
+    //
+    // …AND NO MARK BESIDE THE WORD (2026-11-16: "in some places we have the
+    // arrow icon next to Open, let's remove it from everywhere"): the peek's
+    // door is its word; the row's and the card's keep the glyph in the
+    // markup, hidden, because a narrow a/b row folds the word and the door
+    // must still show something.
+    expect(HEAD).not.toContain("ICON_OPEN_EXTERNAL");
+    expect(HEAD).toMatch(/className="task-side-peek-open"[\s\S]*?>\n\s*Open\n\s*<\/a>/);
+    expect(TASKS_CSS).toContain(".tasks-act--page svg {\n  display: none;\n}");
+    expect(TASKS_CSS).toMatch(
+      /\.tasks-list\[data-fit\]:not\(\[data-fit="0"\]\) \.tasks-row--ab > \.tasks-bseat--door > \.tasks-act--page svg \{\n  display: inline;/,
+    );
     expect(HEAD).not.toContain("ICON_ARROW_RIGHT");
     expect(VIEWS).not.toContain("ICON_ARROW_RIGHT");
     expect(VIEWS).toContain("const OPEN_DOOR_LABEL = (");

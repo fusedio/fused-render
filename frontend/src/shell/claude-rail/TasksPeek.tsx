@@ -45,7 +45,7 @@
 // beside it while a chat is open, the small title ("Tasks", or the chat's),
 // and Open — the /tasks page itself — on the right.
 import { Component, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronUp, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp, X } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { navigateUrl } from "@platform/lib/router";
@@ -348,7 +348,6 @@ export function TasksPeek() {
                         if (href) api.openPage(href);
                       }}
                     >
-                      <ArrowUpRight size={13} strokeWidth={1.6} aria-hidden="true" />
                       Open
                     </a>
                   )}

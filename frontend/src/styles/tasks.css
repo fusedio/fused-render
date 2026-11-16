@@ -3132,6 +3132,7 @@ button.tasks-draft-pill.is-on:focus-visible {
 /* ALONE, THE ARROW IS THE STAR'S SIZE (Akshil, 2026-11-16): beside a word it
    is a 10px mark on a label; on its own it is the whole control. */
 .tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door > .tasks-act--page svg {
+  display: inline;
   width: 14px;
   height: 14px;
 }
@@ -3176,6 +3177,12 @@ button.tasks-draft-pill.is-on:focus-visible {
    a bare word in a row of ink does not, and this is the one door on the row.
    `.tasks-act` already draws a 1px transparent border and fills it on hover, so
    this is a colour and not a box — the strip's geometry does not move. */
+/* NO ARROW BESIDE THE WORD (Akshil, 2026-11-16: "remove it from everywhere"):
+   the door reads "Open". The ↗ is drawn only where the word has folded away
+   (the narrow a/b row, further down). */
+.tasks-act--page svg {
+  display: none;
+}
 .tasks-act--page,
 .prefs-section .tasks-act--page {
   width: auto;

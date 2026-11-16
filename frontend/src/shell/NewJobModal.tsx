@@ -39,7 +39,7 @@ import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import type { BreakoutControl } from "@apps/claude/ClaudeChat";
 import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
-import { ArrowLeft, ArrowUpRight } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { useRecentTasks } from "@apps/claude/ui/useRecentTasks";
 import { useLandingReads } from "@apps/claude/ui/useLandingReads";
@@ -6056,7 +6056,6 @@ export default function NewJobModal({
               openFromLanding(chatHref);
             }}
           >
-            <ArrowUpRight size={13} strokeWidth={1.6} aria-hidden="true" />
             Open
           </a>
           )}

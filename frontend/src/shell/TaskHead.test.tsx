@@ -629,11 +629,58 @@ test("an armed lead says so in its class; a door that stays on the page drops it
     }),
   );
   expect(cls(byLabel(r, "Close and discard changes")!)).toContain("is-armed");
-  // The ↗ is always drawn; `is-wordy` hides it while the word stands, and
-  // rung 1 wears it alone (task-head.css).
+  // The ↗ is always in the markup — hidden while the word stands, on every
+  // door (below), and worn alone where the word has folded (task-head.css).
   expect(cls(byClass(r, "task-head-open")[0]!)).toContain("is-wordy");
   const withArrow = render(head({ open: { href: "/x", label: "Open", onOpen: () => {} } }));
   expect(JSON.stringify(byClass(withArrow, "task-head-open")[0])).toContain("lucide-arrow-up-right");
+});
+
+test("no arrow beside the word Open: the ↗ shows only where the word has folded away (2026-11-16)", async () => {
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  // Every door, not only a wordy one: the arrow is hidden by default…
+  expect(css).toContain(".task-head-open .task-head-open-arrow {\n  display: none;\n}");
+  expect(css).not.toContain(".task-head-open.is-wordy .task-head-open-arrow");
+  // …and drawn, alone and star-sized, by the ladder's fold of the word — a
+  // panel's or a pane's from the facts' rung, a window head with no task's
+  // from rung 5. A two-line rail head never folds the word, so never draws it.
+  const fold = css.slice(css.indexOf(".task-head-timeslot .task-head-open-arrow,"));
+  expect(fold.slice(0, fold.indexOf("}"))).toMatch(/\.task-head-open-arrow \{\s*display: inline;/);
+  expect(css).toContain(
+    '.task-head.is-window:not(.is-two-line):is([data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-facts, .task-head-timeslot) .task-head-open-arrow {\n  display: inline;',
+  );
+  // The fold's rule must outrank the default that hides it.
+  expect(css.indexOf(".task-head-open .task-head-open-arrow {")).toBeLessThan(css.indexOf(".task-head-timeslot .task-head-open-arrow,"));
+});
+
+test("a rail window's unread count is the same muted ink as every other count (2026-11-16)", async () => {
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  // The class still says unread (the hint and the label read it)…
+  const r = render(head({ reveal: "window", count: { n: 5, unread: 2 } }));
+  expect(cls(byClass(r, "task-head-count")[0]!)).toContain("is-unread");
+  // …a panel's or a pane's count turns to ink; a rail window's does not.
+  expect(css).toContain(".task-head-count.is-unread {\n  color: var(--fg);\n}");
+  expect(css).toContain(".task-head.is-window .task-head-count.is-unread {\n  color: var(--fg-muted);\n}");
+  expect(css.indexOf(".task-head-count.is-unread {")).toBeLessThan(css.indexOf(".task-head.is-window .task-head-count.is-unread {"));
+});
+
+test("the rename pencil takes no room: next to the title where there is space, over its end only with `is-rename-over` (2026-11-16)", async () => {
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  const who = ".task-head .task-side-peek-who.is-title";
+  // At rest it stands after the title and hands its 16px + the 8px gap back.
+  expect(css).toMatch(
+    new RegExp(`${who.replace(/\./g, "\\.")} \\.task-side-peek-rename \\{\\s*position: relative;\\s*z-index: 1;[^}]*margin-right: -24px;\\s*pointer-events: none;`),
+  );
+  // No room after the title: pulled back over its end.
+  expect(css).toContain(`${who}.is-rename-over .task-side-peek-rename {\n  margin-left: -24px;\n  margin-right: 0;\n}`);
+  // The title's end fades only under an overlaid pencil.
+  expect(css).toContain(`${who}.is-rename-over:hover:has(.task-side-peek-rename) .task-side-peek-title,`);
+  expect(css).toContain(`${who}.is-rename-over:has(.task-side-peek-rename:focus-visible) .task-side-peek-title {`);
+  expect(css).not.toContain(`${who}:hover:has(.task-side-peek-rename) .task-side-peek-title`);
+  // Touch has no pointer to measure by: always over the end, always faded.
+  const touch = css.slice(css.lastIndexOf("@media (hover: none) {"));
+  expect(touch).toMatch(/\.task-side-peek-rename \{[^}]*pointer-events: auto;\s*margin-left: -24px;\s*margin-right: 0;/);
+  expect(touch).toContain(`${who}:has(.task-side-peek-rename) .task-side-peek-title {`);
 });
 
 test("the host's seats sit in their own measurable box", () => {
