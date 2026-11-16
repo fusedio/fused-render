@@ -155,7 +155,7 @@ import {
   taskChatTarget,
 } from "@shell/tasks-lib";
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
-import { chipDoor, chipLabel, chipPath, chipPlace, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { chipDoor, chipLabel, chipPath, chipPlace, hasWhereTag, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
 import { queueCaption } from "@platform/lib/queue";
 import { PlaceTags } from "./PlaceTags";
 // THE ONE TASK HEAD (design.md "One task head, everywhere"), behind its flag.
@@ -427,6 +427,12 @@ export interface RailPeekProps {
    *  passing hover. Only a pinned card wears the corner grips
    *  and takes the remembered size (header). */
   pinned: boolean;
+  /** THE HEAD NAMES THE PLACE (Akshil, 2026-11-16: "canvas_name will only
+   *  appear for fav window b"): the canvas's or the folder's own name, at the
+   *  head's left — the favourite's window, whose chat may live anywhere. The
+   *  rail's own card leaves it off (the page IS the place); the where-tag at
+   *  the head's right end stands in both. Unified head only. */
+  placeName?: boolean;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -513,6 +519,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     openIcon,
     onBox,
     pinned,
+    placeName = false,
   },
   ref,
 ) {
@@ -1290,7 +1297,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       {held ? <X size={14} aria-hidden="true" /> : <PinAngleFill size={14} />}
     </button>
   );
-  const placeEl = (head: SeatFacts) =>
+  const placeEl = (head: SeatFacts, part?: "place" | "where") =>
     favsOn ? (
       // THE PLACE TAGS (PlaceTags; owner, 2026-11-06: "in the first
       // line we have the × and then the tag"): the place, then
@@ -1306,6 +1313,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         at={head.at}
         pageRoot={pageRoot ?? null}
         sessionId={head.t.session_id ?? null}
+        {...(part ? { part } : {})}
         {...(here?.()?.tag
           ? {
               onSelectNode: (udfName: string | null, sessionId?: string | null) => {
@@ -1660,7 +1668,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               stacked="auto"
               // Measured only while the card is up.
               fitEnabled={!!shownKey}
-              place={placeEl(head)}
+              // THE TAGS, APART (Akshil, 2026-11-16): the place's name at the
+              // left in the favourite's window alone (`placeName`); where in
+              // it — Canvas, the node, the file — at the right end, before
+              // the count slot, in every card. Favourites off: the where-chip
+              // as it was.
+              place={favsOn ? (placeName ? placeEl(head, "place") : null) : placeEl(head)}
+              {...(favsOn && hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}
               // The pulse's facts in the head's own slots: how many messages
               // (the unread ones turn it to ink) and when it last moved — none
               // for a draft or a chat with no session, as the pulse had none.

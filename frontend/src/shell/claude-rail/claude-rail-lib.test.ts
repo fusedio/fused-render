@@ -10,6 +10,7 @@ import {
   activeRing,
   chipDoor,
   chipPath,
+  hasWhereTag,
   dragging,
   placeTags,
   chipLabel,
@@ -1014,6 +1015,21 @@ describe("placeTags (the place as one or two tags, 2026-11-06)", () => {
     expect(file).toHaveLength(1);
     expect(file[0].label).toBe("x.py");
     expect(file[0].door).toBeNull();
+  });
+  it("the where-tag names its file for the icon; the place and the Canvas tag name none (2026-11-16)", () => {
+    const node = placeTags({ kind: "node", name: "hex", file: "hex.py" }, canvas, { pageRoot: null, here: false });
+    expect(node.map((t) => t.file)).toEqual([undefined, "hex.py"]);
+    const whole = placeTags({ kind: "whole", word: "Canvas" }, canvas, { pageRoot: null, here: false });
+    expect(whole.map((t) => t.file)).toEqual([undefined, undefined]);
+    const ff = placeTags({ kind: "file", name: "src/app.py", file: "/a/app/src/app.py" }, folder, { pageRoot: null, here: false });
+    expect(ff[1].file).toBe("/a/app/src/app.py");
+  });
+  it("hasWhereTag: a canvas always, a folder only for a file under it, a file never (2026-11-16)", () => {
+    expect(hasWhereTag({ kind: "whole", word: "Canvas" }, canvas)).toBe(true);
+    expect(hasWhereTag({ kind: "node", name: "hex", file: "hex.py" }, canvas)).toBe(true);
+    expect(hasWhereTag({ kind: "file", name: "index.html", file: "/a/app/index.html" }, folder)).toBe(true);
+    expect(hasWhereTag({ kind: "whole", word: "Folder" }, folder)).toBe(false);
+    expect(hasWhereTag({ kind: "whole", word: "File" }, { kind: "file", file: "/a/app/x.py" })).toBe(false);
   });
 });
 

@@ -731,7 +731,9 @@ export const PEEK_HEAD_DROPS = [
  * other occupant and stays reachable at every rung. What gives, in order,
  * cumulatively:
  *
- *   1. the worktree pill (the chat's portaled seat in the chips);
+ *   1. the where-tag's word (TaskHead `where`: Canvas, the node, the file —
+ *      its icon stays; Akshil, 2026-11-16) and the worktree pill (the chat's
+ *      portaled seat in the chips);
  *   2. the PR chip — the chips show only while there is width for them, one
  *      at a time, and give before the title is cut;
  *   3. the facts, where the title still cannot be read whole beside them. In
@@ -754,7 +756,7 @@ export const PEEK_HEAD_DROPS = [
  * by: both rows, so a rung can answer either row's overflow.
  */
 export const TASK_HEAD_DROPS = [
-  ".task-head-chips-host",
+  ".task-head-where .place-tag-word, .task-head-chips-host",
   ".task-head-chips",
   ".task-head-time",
   ".task-head-title-seat",

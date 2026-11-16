@@ -126,6 +126,7 @@ test("one row, in the canonical order: lead, chevrons, status, folder, id slot, 
       place: createElement("span", { className: "my-place" }, "app"),
       chips: createElement("span", { className: "my-chip" }, "#12"),
       seats: createElement("span", { className: "my-seat" }, "cam"),
+      where: createElement("span", { className: "my-where" }, "hex"),
       open: { href: "/x", label: "Open in Explorer", onOpen: () => {} },
       kebab: createElement("button", { className: "my-kebab" }, "⋮"),
     }),
@@ -147,6 +148,8 @@ test("one row, in the canonical order: lead, chevrons, status, folder, id slot, 
     at((n) => has(n, "task-side-peek-title")),
     at((n) => cls(n) === "my-chip"),
     at((n) => cls(n) === "my-seat"),
+    // WHERE IN THE PLACE (2026-11-16): after the seats, before the count slot.
+    at((n) => cls(n) === "task-head-where"),
     at((n) => has(n, "task-head-countslot")),
     at((n) => has(n, "task-head-timeslot")),
     at((n) => cls(n) === "my-kebab"),
@@ -461,7 +464,8 @@ test("the chip seat hands the chat a node to portal into, at the head of the chi
 test("the ladder: the chips one at a time, the facts, a rail window's title row, seats, chevrons, the place's cap — never the id slot", async () => {
   const { TASK_HEAD_DROPS, TASK_HEAD_FACTS_LEVEL, TASK_HEAD_STACK_LEVEL, TASK_HEAD_TITLE_ROOM } = await import("./row-fit");
   expect([...TASK_HEAD_DROPS]).toEqual([
-    ".task-head-chips-host",
+    // Rung 1 also folds the where-tag's word to its icon (2026-11-16).
+    ".task-head-where .place-tag-word, .task-head-chips-host",
     ".task-head-chips",
     ".task-head-time",
     ".task-head-title-seat",
@@ -473,6 +477,10 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(TASK_HEAD_STACK_LEVEL).toBe(4);
   expect(TASK_HEAD_TITLE_ROOM).toBe(180);
   const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  // The where-tag's word: gone on every rung past 0 while the head is one
+  // row; a stacked rail window has it back until row 1 itself is short.
+  expect(css).toContain('.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where .place-tag-word');
+  expect(css).toContain('.task-head.is-stacked:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-where .place-tag-word');
   const from = (n: number) =>
     `:is(${[1, 2, 3, 4, 5, 6, 7].filter((k) => k >= n).map((k) => `[data-fit="${k}"]`).join(", ")})`;
   // The chips give first, one at a time: the worktree pill, then the PR chip.
@@ -698,4 +706,9 @@ test("a favourite's status icon opens the icon picker outside a rename; a plain 
     icons.resetTaskIconsFlagForTests();
     favs.resetTaskFavouritesFlagForTests();
   }
+});
+
+test("no where-tag, no seat for it (a whole folder, a file: the place alone)", () => {
+  const r = render(head());
+  expect(byClass(r, "task-head-where")).toHaveLength(0);
 });

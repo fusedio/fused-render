@@ -18,8 +18,8 @@
 // Tasks row's own line with a lead and a ⋮ (Akshil, 2026-11-15, "a/b slots"):
 //
 //   [lead] [↑][↓] │ status · agent · [folder] · ID SLOT · title ✎ · reply
-//                 │ [queue] [status word] … [chips…] [seats…] COUNT SLOT
-//                 │ TIME SLOT [⋮]
+//                 │ [queue] [status word] … [chips…] [seats…] [where]
+//                 │ COUNT SLOT TIME SLOT [⋮]
 //
 //   * LEAD — exactly one corner control, the same 28px icon button either way:
 //     × closes the container the reader opened (panel, card, dialog); ← goes
@@ -29,6 +29,9 @@
 //   * STATUS — the ring; on a favourite its face, which pressed opens the icon
 //     picker (TaskIconPick). It no longer swaps with anything.
 //   * FOLDER — where the task lives: the host's `place`, or the folder chip.
+//   * WHERE — where IN the place (2026-11-16): Canvas, the node, the file, as
+//     an icon and its word, right before the count slot; the icon alone as
+//     soon as the row is short (rung 1).
 //   * THREE A/B SLOTS, one box and two occupants each, so nothing moves: `a`
 //     at rest, `b` while the pointer is on the head (or the keyboard is on a
 //     `b` control; always, where there is no hover):
@@ -189,6 +192,13 @@ export interface TaskHeadProps {
    *  chip. `null`: none — a head inside a view already scoped to that folder
    *  (the Explorer pane over the same folder). */
   place?: ReactNode;
+  /** WHERE IN THE PLACE (Akshil, 2026-11-16): the canvas chat's Canvas or
+   *  node tag, a folder chat's file tag (PlaceTags `part="where"`) — at the
+   *  row's right end, just before the count slot. An icon and its word; the
+   *  icon alone as soon as the row is short (the ladder's first rung,
+   *  task-head.css). Not an a/b slot: it stands at rest and under the
+   *  pointer. */
+  where?: ReactNode;
   chips?: ReactNode;
   seats?: ReactNode;
   /** The node the chat portals its usage-limit word into (ChatMount
@@ -246,6 +256,7 @@ export function TaskHead({
   queue = null,
   status = "",
   place,
+  where,
   chips,
   seats,
   chipsRef,
@@ -629,6 +640,7 @@ export function TaskHead({
               {seats}
             </span>
           ) : null}
+          {where ? <span className="task-head-where">{where}</span> : null}
           {countSlot}
           {timeSlot}
           {kebabNode ? <span className="task-head-kebab">{kebabNode}</span> : null}

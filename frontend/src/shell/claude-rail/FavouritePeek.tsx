@@ -409,6 +409,8 @@ export function FavouritePeek() {
       place={place}
       size={FAV_SIZE}
       resizeKey="canvasRailFav"
+      // This window's chat may live anywhere: its head names the place.
+      placeName
       onBox={onBox}
       onReload={refreshListing}
       onPointerEnter={hovering ? () => favHoverIntent().enterCard() : noop}

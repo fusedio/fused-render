@@ -100,6 +100,19 @@
   padding-inline: 8px;
 }
 
+/* WHERE IN THE PLACE (TaskHead `where`; Akshil, 2026-11-16): the Canvas,
+   node or file tag, at the row's right end before the count slot. Held at
+   its own width like the place (the ladder folds its word, never squeezes
+   it); a host whose tag draws nothing leaves no seat. */
+.task-head-where {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.task-head-where:empty {
+  display: none;
+}
+
 /* Everything that can be DONE, pushed to the row's end — so a short static
    title and a missing task never pull the controls into the middle. */
 .task-head-marks {
@@ -375,6 +388,22 @@
    lead, the folder and the ⋮ are on no rung. */
 .task-head-nav {
   display: contents;
+}
+/* THE WHERE-TAG IS ITS ICON ALONE (Akshil, 2026-11-16: "if less width we
+   show icon instead of icon + name") — the FIRST thing to give, with the
+   worktree pill on rung 1: its word leaves before a chip or a fact does, since
+   the icon still says what kind of place it is and the hint its name. A rail
+   window whose title took row 2 has row 1's room back and the word with it —
+   until row 1 itself runs short (5+). */
+.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where .place-tag-word,
+.task-head.is-stacked:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-where .place-tag-word {
+  display: none;
+}
+.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where .place-tag.has-icon,
+.task-head.is-stacked:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-where .place-tag.has-icon {
+  padding: 0;
+  width: 20px;
+  justify-content: center;
 }
 /* 1, 2. THE CHIPS, ONE AT A TIME (Akshil, 2026-11-16: "worktree and pr show
    when there is width available, incrementally"): the first things to give,

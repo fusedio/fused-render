@@ -1208,6 +1208,26 @@ a.place-tag.is-door {
 a.place-tag.is-door:hover {
   background: rgba(var(--tint), 0.14);
 }
+/* THE WHERE-TAG WEARS ITS ICON (PlaceTags `part="where"`; Akshil,
+   2026-11-16): the canvas mark, the node's type, the file's — then the word.
+   The icon never shrinks; the word is what a narrow head folds
+   (task-head.css), leaving a round icon button. */
+.place-tag.has-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 140px;
+}
+.place-tag.has-icon > svg {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+}
+.place-tag-word {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* The head's facts (RailPeek, owner 2026-10-30): the task number in the
    Tasks page's register, and WHERE the chat lives — "Canvas", or the node's
    name — as a quiet chip. The "Open" door is a word, not a glyph. */

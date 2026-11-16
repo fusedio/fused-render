@@ -270,6 +270,9 @@ export interface PlaceTag {
   kind: "place" | "canvas" | "node" | "file";
   /** The full place in words, for the hover. */
   path: string;
+  /** The node's or the file's own file (`hex.py`, `/…/src/app.py`): what the
+   *  where-tag's icon is read off (PlaceTags `part="where"`). */
+  file?: string;
   door: {
     href: string;
     isDir?: boolean;
@@ -310,6 +313,7 @@ export function placeTags(
           label: scope.name,
           kind: "node",
           path: `${scope.name} on ${at.name}`,
+          file: scope.file,
           // The href carries the ask either way: in place a plain press
           // selects through `select`, a modified press opens the tab
           // selected (CodeRabbit on #2167).
@@ -355,9 +359,18 @@ export function placeTags(
       label: scope.name,
       kind: "file",
       path: scope.file,
+      file: scope.file,
       door: `file:${scope.file}` === opts.pageRoot ? null : { href: urlForFsPath(scope.file), title: `Open ${scope.file}` },
     },
   ];
+}
+
+/** DOES THE PLACE HAVE A WHERE-TAG (Akshil, 2026-11-16)? The second of
+ *  `placeTags` — Canvas, the node, the file under the folder — which the
+ *  unified head seats at its right end, before the count slot (TaskHead
+ *  `where`). A whole folder or a file has the place tag alone. */
+export function hasWhereTag(scope: RailScope, at: RailPlace): boolean {
+  return at.kind === "canvas" || (at.kind === "folder" && scope.kind === "file");
 }
 
 /** THE FULL PLACE A WHERE-CHIP NAMES, as words: the plain-text chip's
