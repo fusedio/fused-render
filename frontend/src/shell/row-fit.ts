@@ -776,6 +776,12 @@ export const TASK_HEAD_STACK_LEVEL = 4;
  *  (Akshil, 2026-11-16: "if space is less just move it to second line"). */
 export const TASK_HEAD_TITLE_ROOM = 180;
 
+/** THE WIDEST A TITLE IS DRAWN (Akshil, 2026-11-16: "for title let's have max
+ *  400px"; task-head.css caps `.task-side-peek-title` at the same number). The
+ *  ladder charges a title "whole" only up to here: past it the title is cut
+ *  whatever folds, so nothing gives for width it could not use. */
+export const TASK_HEAD_TITLE_MAX = 400;
+
 /**
  * WHAT A TASK HEAD NEEDS — the wider of its rows (`.task-head-row`, and the
  * stacked `.task-head-titlerow` once it exists), each measured the row's way
@@ -800,7 +806,7 @@ export function taskHeadNeed(head: HTMLElement): number {
       // every head. Past that a rail window keeps `TASK_HEAD_TITLE_ROOM` or
       // takes row 2; a panel or a pane keeps the floor: one row, ellipsised.
       // What opens only under the pointer is charged the same either way.
-      if (level < TASK_HEAD_FACTS_LEVEL) rowWants += titleWants(row, Number.POSITIVE_INFINITY);
+      if (level < TASK_HEAD_FACTS_LEVEL) rowWants += titleWants(row, TASK_HEAD_TITLE_MAX);
       else if (level === TASK_HEAD_FACTS_LEVEL && isWindow) rowWants += titleWants(row, TASK_HEAD_TITLE_ROOM);
       if (isWindow) {
         rowWants += hoverDelta(row, ".task-head-countslot, .task-head-timeslot", level < TASK_HEAD_FACTS_LEVEL, true);

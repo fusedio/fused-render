@@ -176,6 +176,10 @@
    narrow head loses. */
 .task-head .task-side-peek-who.is-title .task-side-peek-title {
   flex: 0 1 auto;
+  /* NEVER WIDER THAN 400px (Akshil, 2026-11-16), on either row: past that a
+     title is cut and the row's slack stays with its seat. The ladder charges
+     it no more than this (row-fit `TASK_HEAD_TITLE_MAX`). */
+  max-width: 400px;
 }
 .task-head-subtitle {
   flex: 1 1 0;
