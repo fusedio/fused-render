@@ -2041,6 +2041,76 @@ button.tasks-caret,
   pointer-events: none;
 }
 
+/* -- The a/b Board card (owner, 2026-11-16; `tasks-card-wrap--ab`) ------------
+   "In card view we are missing the archive button thing on task id": the List
+   a/b row's id slot (`.tasks-row--ab .tasks-idslot`, above), on the card's
+   head — TASK-nnn at rest, Archive / Unarchive over it while the card is
+   pointed at, in the same box. Behind the same switch, and every rule here is
+   scoped to the modifier: off, the card is today's.
+
+   NOTHING MOVES: the button is out of flow over the number (absolute, the
+   slot's own width, 22px tall over a 16px head line), so neither the head nor
+   the card changes size under the pointer. The button is a span-button
+   (FileAct `nested`) because the card is a <button>; it takes the row's
+   `.tasks-act` skin and its `opacity` handover — the card's `:hover`, or the
+   button's own `:focus-visible`, never `:focus-within` (the card itself is the
+   focus target a click leaves behind). */
+.tasks-card-wrap--ab .tasks-idslot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.tasks-card-wrap--ab .tasks-idslot:has(.tasks-act) {
+  min-width: 22px;
+}
+.tasks-card-wrap--ab .tasks-idslot .tasks-act,
+.prefs-section .tasks-card-wrap--ab .tasks-idslot .tasks-act {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  width: auto;
+  transform: translateY(-50%);
+}
+.tasks-card-wrap--ab .tasks-idslot .tasks-id {
+  transition: opacity 0.08s ease;
+}
+.tasks-card-wrap--ab:hover .tasks-idslot .tasks-act,
+.tasks-card-wrap--ab .tasks-idslot .tasks-act:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Only where there IS a button to hand over to: a card whose filing cannot
+   change keeps its number under the pointer. */
+.tasks-card-wrap--ab:hover .tasks-idslot:has(.tasks-act) .tasks-id,
+.tasks-card-wrap--ab .tasks-idslot:has(.tasks-act:focus-visible) .tasks-id {
+  opacity: 0;
+}
+/* Mid-write (the card's `busy`): the span cannot be `:disabled`. */
+.tasks-card-wrap--ab:hover .tasks-idslot .tasks-act[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+/* In the air: the number, not a button over a ghost (the strip's rule). */
+.tasks-card-wrap--ab.is-dragging .tasks-idslot .tasks-act {
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-card-wrap--ab.is-dragging .tasks-idslot:has(.tasks-act) .tasks-id {
+  opacity: 1;
+}
+@media (hover: none) {
+  .tasks-card-wrap--ab .tasks-idslot .tasks-act {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .tasks-card-wrap--ab .tasks-idslot:has(.tasks-act) .tasks-id {
+    opacity: 0;
+  }
+}
+
 /* What the server said when it would not run it. Under the row it is about,
    indented to the rail, and QUIET — `.schedule-tv-note` is the same muted line
    the board's drag refusal already uses, and it is muted on purpose: the common
