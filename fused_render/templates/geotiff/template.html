@@ -204,10 +204,13 @@ async function signFor(file){
   if (!isRemote(file)) return null;
   const fresh = signed && signed.address === file && (!signed.expires_at
     || Date.parse(signed.expires_at) - Date.now() > 60000);
-  if (!fresh){
-    signed = { address: file, ...(await fused.s3.sign(file)) };
-    scheduleResign();
-  }
+  if (fresh) return signed;
+  const next = { address: file, ...(await fused.s3.sign(file)) };
+  // The viewer may have moved to another file while this was in flight:
+  // only the open file's answer replaces the URL and its refresh timer.
+  if (P.file() !== file) return next;
+  signed = next;
+  scheduleResign();
   return signed;
 }
 // A URL that expires (private buckets; today's public URLs never do) is
@@ -224,7 +227,10 @@ function scheduleResign(retryMs){
   resignTimer = setTimeout(async () => {
     if (P.file() !== file) return;
     try { await signFor(file); }
-    catch (e) { scheduleResign(15000); return; }
+    catch (e) {
+      if (P.file() === file && signed && signed.address === file) scheduleResign(15000);
+      return;
+    }
     if (tileMode && P.file() === file){ setRasterTiles(); loadedQuery = renderQuery(); }
   }, due);
 }
