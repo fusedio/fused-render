@@ -1630,8 +1630,8 @@ button.tasks-caret,
    invisible means intangible.
 
    The status slot swaps nothing on this row (the mark slot's rules above find
-   no `.tasks-act` in it and leave the ring be); on a favourite its glyph is
-   the icon picker's button (TaskIconPick), lifted below.
+   no `.tasks-act` in it and leave the ring be); with the icons experiment on,
+   its ring or glyph is the icon picker's button (TaskIconPick), lifted below.
 
    NOTHING MOVES at rest: every b item is out of flow, over its a item's own
    box, and the count, the time and the gaps between them are the legacy
@@ -1640,9 +1640,11 @@ button.tasks-caret,
    not the fit ladder has folded their a items away (`data-fit`, further
    down). */
 
-/* THE FAVOURITE'S FACE IS A BUTTON (TaskIconPick — it opens the icon picker):
-   lifted above the stretched link, or the link would take the press and open
-   the task. A row that is not a favourite has no button here. */
+/* THE RING IS A BUTTON (TaskIconPick — it opens the icon picker; any
+   numbered task since 2026-11-16, not only a favourite): lifted above the
+   stretched link, or the link would take the press and open the task. Only
+   the ring's own box is lifted — a press anywhere else on the row still
+   opens it. With the icons experiment off there is no button here. */
 .tasks-row--ab > .tasks-rowmark .task-icon-pick {
   position: relative;
   z-index: 2;

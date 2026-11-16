@@ -141,8 +141,9 @@ export function TaskPeekWho({
   subtitle?: ReactNode;
   /** After a rename the server took (and `pokeTasks`): the host re-reads. */
   onRenamed?: () => void;
-  /** A favourite's status icon opens the icon picker at ANY time (the shared
-   *  head, 2026-11-15). Off: only during a rename, as the older heads do. */
+  /** The status ring or icon opens the icon picker at ANY time (the shared
+   *  head, 2026-11-15; any task, not only a favourite, 2026-11-16). Off:
+   *  only during a rename, as the older heads do. */
   iconPress?: boolean;
   /** Where the task lives, between the agent mark and the number (the shared
    *  head's folder seat). */
@@ -265,6 +266,7 @@ export function TaskPeekWho({
             failed={running ? false : ring?.failed || ringFailed(task)}
             background={background}
             icon={task.icon_slot}
+            iconPicked={task.icon_picked}
             {...(ring?.unread ? { unread: true } : {})}
             {...(ring?.draftHeld ? { draftHeld: true } : {})}
           />

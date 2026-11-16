@@ -540,6 +540,12 @@ def _record(store: dict, key: str) -> dict | None:
     slot = rec.get("icon_slot")
     if isinstance(slot, int) and not isinstance(slot, bool) and 0 <= slot < ICON_COUNT:
         out["icon_slot"] = slot
+    # ...and the user's own WORD on the icon (`icon`, 2026-11-16): "on" (a
+    # pick), "off" (Remove). Anything else reads as absent — follow the star.
+    # Carried here so a rekey moves it with the number (`_apply_rekey`).
+    word = rec.get("icon")
+    if word in (ICON_ON, ICON_OFF):
+        out["icon"] = word
     return out
 
 
@@ -690,6 +696,11 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
             _moved, this_changed = _apply_rekey(store, old, new)
             changed = changed or this_changed
 
+        # A draft's icon WORD and pick travel to the number it is re-minted
+        # under (2026-11-16: any task can be given an icon, a draft too): a
+        # new number is the store's bookkeeping, not the user taking back
+        # what they picked or removed.
+        carried: dict[str, dict] = {}
         if reproject:
             for key, project, _order in items:
                 # Never a booked row: `pending:<entry-id>` is a scheduled task
@@ -707,6 +718,9 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
                 rec = _record(store, key)
                 if rec is None or _counter(rec["project"]) == _counter(project):
                     continue
+                icon = {f: rec[f] for f in ("icon_slot", "icon") if f in rec}
+                if icon:
+                    carried[key] = icon
                 _spend(store, rec)
                 store.pop(key, None)
                 changed = True
@@ -721,7 +735,7 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
             counter = _counter(project)
             n = high.get(counter, 0) + 1
             high[counter] = n
-            store[key] = {"project": project, "n": n}
+            store[key] = {"project": project, "n": n, **carried.get(key, {})}
             changed = True
 
         out = {}
@@ -736,14 +750,30 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
 
 # ----------------------------------------------------------------- task icons
 #
-# A FAVOURITE wears one of ICON_COUNT glyphs (frontend/public/task-icons.svg;
+# A task can wear one of ICON_COUNT glyphs (frontend/public/task-icons.svg;
 # the slot order is frontend/src/shell/task-icons.ts), shown in place of the
 # status ring under the `task_icons_enabled` experiment (shell/prefs.py).
-# ONLY A STARRED TASK (owner, 2026-11-11: "we will show these icons only for
+#
+# THE ICON AND THE STAR ARE TWO THINGS (owner, 2026-11-16). Until then only
+# a starred task wore one (2026-11-11: "we will show these icons only for
 # special tasks — when we click fav, and when it is unfav we remove the
-# icon"): every task HAS a face, the listing hands it out only while the star
-# stands (routers/tasks.py `_icon_slots`), so a task starred again wears the
-# face it wore before.
+# icon"); now any task can be given one through the picker, and a favourite
+# can have its icon removed and wear the ring. The record keeps the user's
+# own WORD next to the picked slot:
+#
+#     icon_slot: N      the face picked (absent: the number's own, below)
+#     icon: "on"        picked by hand — worn starred or not
+#     icon: "off"       removed by hand — the ring, starred or not
+#     (no `icon`)       FOLLOW THE STAR: worn while starred, the ring
+#                       otherwise — today's rule, so a task nobody touched
+#                       since 2026-11-11 keeps its face (no migration)
+#
+# pick -> `icon_slot = N, icon = "on"`; Remove -> `icon = "off"`, the slot
+# dropped; a STAR drops an "off" (`clear_icon_off`: starring gives the icon
+# back); an UNSTAR writes nothing — an icon that only came with the star
+# leaves with it, a picked one ("on") stays (owner's choice, 2026-11-16).
+# Which tasks wear a face is `worn_icons`; a legacy record with a slot and
+# no word stays a ring unstarred and shows that slot starred, as it did.
 #
 # THE SLOT IS ARITHMETIC ON THE TASK NUMBER, not a hash of the id and not a
 # probe over the project's live tasks: `slot = (n * STRIDE + seed) mod COUNT`,
@@ -755,13 +785,16 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
 # nobody else's icon (owner, 2026-11-10). The seed makes two projects start
 # at different places in the set so their TASK-001s differ.
 #
-# One exception, persisted: a PICK (`set_icon`, the icon pressed while a title
-# is being edited opens a picker — owner, 2026-11-11: "instead of giving a
-# random one, we let user pick") stamps `icon_slot` on the task's record in
-# task_ids.json, and that override wins until the picker's Reset drops it.
+# One exception, persisted: a PICK (`set_icon` — owner, 2026-11-11: "instead
+# of giving a random one, we let user pick") stamps `icon_slot` on the
+# task's record in task_ids.json, and that override wins until the picker's
+# Remove drops it (a star after that gives the number's own face).
 
 ICON_COUNT = 299
 _ICON_STRIDE = 173  # coprime with 299 (= 13 * 23)
+# The user's word on a task's icon (`icon` on its number record, above).
+ICON_ON = "on"
+ICON_OFF = "off"
 
 
 def _fnv1a(text: str) -> int:
@@ -796,8 +829,8 @@ def icon_slot(number: str, project: str, override: int | None = None) -> int | N
 
 
 def icon_slots() -> dict[str, int]:
-    """`{key: slot}` for every numbered task — read once per listing and
-    handed to each row (`routers/tasks.py::_row`). THE RECORD DECIDES, not
+    """`{key: slot}` for every numbered task, worn or not — the face each
+    one HAS (`worn_icons` narrows it to the faces shown). THE RECORD DECIDES, not
     the row: the slot is computed from the number and the project the number
     was allocated in (plus a pick's override), so a task whose project the
     listing spells differently on a later pass — a `pending:` row rekeyed
@@ -812,6 +845,26 @@ def icon_slots() -> dict[str, int]:
     return out
 
 
+def worn_icons(starred) -> dict[str, tuple[int, bool]]:
+    """`{key: (slot, picked)}` for every task that WEARS a face now — the
+    one rule (module note above, 2026-11-16): picked by hand (`icon: "on"`),
+    or starred and not removed by hand (`icon` absent, or anything but
+    "off"). `starred` is a container of the starred keys (`in` is all that is
+    asked of it). `picked` is whether the user's own word holds it there —
+    the shell shows a picked face even with the favourites switch off, a
+    starred one only with it on (ScheduleTaskViews `StatusIcon`). Read once
+    per listing; computed off the number record like `icon_slots`."""
+    out: dict[str, tuple[int, bool]] = {}
+    for key, rec in task_ids().items():
+        if rec.get("spent"):
+            continue
+        word = rec.get("icon")
+        if word == ICON_ON or (word != ICON_OFF and key in starred):
+            out[key] = (icon_slot_for(rec["n"], rec["project"], rec.get("icon_slot")),
+                        word == ICON_ON)
+    return out
+
+
 def icon_overrides() -> dict[str, int]:
     """`{key: slot}` for every task whose icon was picked (tests, and the
     one question "was this one picked?")."""
@@ -823,27 +876,52 @@ def icon_overrides() -> dict[str, int]:
     return out
 
 
-def set_icon(key: str, slot: int | None) -> int | None:
-    """Give one task the face the user PICKED (`slot`), or take the pick back
-    (`slot=None`: the number's own face again). Persisted on the task's
-    number record, so it survives listings, restarts and a rekey. Answers the
-    slot the task wears now; None when the task has no number yet. A slot out
-    of range is the caller's to refuse (routers/tasks.py `api_task_icon`) —
-    here it would read back as no override (`_record`)."""
+def set_icon(key: str, slot: int | None) -> dict | None:
+    """The picker's two answers on one task (2026-11-16): a PICK (`slot`)
+    gives it that face, starred or not (`icon_slot = slot, icon = "on"`);
+    REMOVE (`slot=None`) takes the face away, starred or not — the ring
+    again (`icon = "off"`, the slot dropped). Persisted on the task's number
+    record, so it survives listings, restarts and a rekey.
+
+    Answers what the task wears now, `{"icon_slot": int | None, "picked":
+    bool}` — None after a Remove — or None when the task has no number yet
+    (nothing to stamp it on). A slot out of range is the caller's to refuse
+    (routers/tasks.py `api_task_icon`) — here it would read back as no
+    override (`_record`)."""
     def mutate(store: dict):
         rec = _record(store, key)
         raw = store.get(key)
         if rec is None or rec.get("spent") or not isinstance(raw, dict):
             return None, False
-        before = raw.get("icon_slot")
+        before = (raw.get("icon_slot"), raw.get("icon"))
         if slot is None:
             raw.pop("icon_slot", None)
+            raw["icon"] = ICON_OFF
+            worn = None
         else:
             raw["icon_slot"] = slot
-        return (icon_slot_for(rec["n"], rec["project"], slot),
-                raw.get("icon_slot") != before)
+            raw["icon"] = ICON_ON
+            worn = icon_slot_for(rec["n"], rec["project"], slot)
+        return ({"icon_slot": worn, "picked": slot is not None},
+                (raw.get("icon_slot"), raw.get("icon")) != before)
 
     return _update(TASK_IDS_FILE, mutate)
+
+
+def clear_icon_off(key: str) -> bool:
+    """A STAR GIVES THE ICON BACK (owner, 2026-11-16): drop a Remove's "off"
+    so the task follows the star again — the number's own face, or the one
+    picked before. Called by the star route when a task BECOMES starred
+    (routers/tasks.py `api_task_favourite`). A pick ("on") and an untouched
+    record are left as they are. True when the record changed."""
+    def mutate(store: dict):
+        raw = store.get(key)
+        if not isinstance(raw, dict) or raw.get("icon") != ICON_OFF:
+            return False, False
+        raw.pop("icon", None)
+        return True, True
+
+    return bool(_update(TASK_IDS_FILE, mutate))
 
 
 def stored_number(store: dict, key: str) -> str:

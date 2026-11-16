@@ -1109,11 +1109,11 @@ test("A/B ROW: a Recent row wears the star in its count slot — filled when sta
   }
 });
 
-test("A/B ROW, ICONS ON: a favourite's status icon is the icon picker's button; any other row's is not", async () => {
+test("A/B ROW, ICONS ON: every numbered row's status icon is the icon picker's button, ring or face", async () => {
   const { publishTaskHeadUnified } = await import("@shell/task-head-flag");
-  // Akshil, 2026-11-15: "click on status icon, when it is fav … change icon".
-  // The listing hands a face (`icon_slot`) to starred tasks only, and
-  // TaskIconPick draws its button only for a task wearing one.
+  // Akshil, 2026-11-15: "click on status icon, when it is fav … change icon";
+  // 2026-11-16: the icon is not the star's — the plain ring of any task opens
+  // the picker too. A row with no number yet has nothing to stamp a pick on.
   const { publishTaskFavourites, publishFavouritesParent } = await import(
     "@platform/lib/favourites-flag"
   );
@@ -1128,17 +1128,23 @@ test("A/B ROW, ICONS ON: a favourite's status icon is the icon picker's button; 
     const r = mount(
       <Lists
         file="/repo/x.py"
-        recent={[chat("s1"), chat("fav1", { starred: true, icon_slot: 3 })]}
+        recent={[chat("s1"), chat("fav1", { starred: true, icon_slot: 3 }), chat("s3", { task_id: "" })]}
         artifacts={[]}
         onOpen={() => {}}
       />,
     );
     const rows = all(r.toJSON() as Json, "tasks-row");
-    expect(rows.length).toBe(2);
+    expect(rows.length).toBe(3);
     const picks = rows.map((row) => all(all(row, "tasks-rowmark")[0], "task-icon-pick"));
-    expect(picks[0].length).toBe(0);
+    expect(picks[0].length).toBe(1);
     expect(picks[1].length).toBe(1);
-    expect((picks[1][0].props as { "aria-label"?: string })["aria-label"]).toBe("Choose icon");
+    expect(picks[2].length).toBe(0);
+    for (const pick of picks.slice(0, 2)) {
+      expect((pick[0].props as { "aria-label"?: string })["aria-label"]).toBe("Choose icon");
+    }
+    // The ring is drawn inside the button on s1, the glyph on fav1.
+    expect(JSON.stringify(picks[0][0])).not.toContain("schedule-ring--glyph");
+    expect(JSON.stringify(picks[1][0])).toContain("schedule-ring--glyph");
     // The ring's slot holds no filing button on either: Archive is the id's.
     for (const row of rows) expect(all(all(row, "tasks-rowmark")[0], "tasks-act").length).toBe(0);
   } finally {

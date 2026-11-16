@@ -2717,6 +2717,9 @@ export function ClaudeRail({
   const ringOf = ({ pulse: t, row, off }: RailRow, foot = false) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
+              // The face was given BY HAND (`icon_picked`): worn whatever the
+              // star says (the ring below).
+              const picked = merged.icon_picked ?? t.icon_picked ?? false;
               // Hollow since the press, until the pulse agrees (header).
               const unread = t.unread > 0 && !dotCleared(marks.get(t.key), t);
               const line = cardTitleLine(merged);
@@ -2959,10 +2962,13 @@ export function ClaudeRail({
                     // settled row holding unsent words (tasks-lib.draftRing).
                     draftHeld={!!row && draftRing(merged as Task)}
                     {...(row?.failed ? { failed: true } : {})}
-                    // Only while starred, by the PULSE's word — the row the
-                    // star itself is read from: the listing row lags it, and
-                    // its old slot would keep the glyph on an unstarred ring.
-                    icon={t.starred ? (merged.icon_slot ?? t.icon_slot) : null}
+                    // A face PICKED by hand whatever the star (2026-11-16);
+                    // one that came with the star only while starred, by the
+                    // PULSE's word — the row the star itself is read from:
+                    // the listing row lags it, and its old slot would keep
+                    // the glyph on an unstarred ring.
+                    icon={picked || t.starred ? (merged.icon_slot ?? t.icon_slot) : null}
+                    iconPicked={picked}
                   />
                 </a>
                 </div>

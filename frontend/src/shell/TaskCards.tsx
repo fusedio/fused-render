@@ -704,6 +704,7 @@ function TaskCard({
             draftHeld={draftRing(task) && !heldInPeek}
             background={liveJobRow(task)}
             icon={task.icon_slot}
+            iconPicked={task.icon_picked}
           />
           {/* The id keeps the List row's muted skin whatever the title row below
               shows. It was lifted to bold + full fg while that row was the
@@ -1058,7 +1059,7 @@ function TaskPeek({
     <Modal
       title={
         <span className="task-peek-title">
-          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} background={liveJobRow(task)} icon={task.icon_slot} />
+          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} background={liveJobRow(task)} icon={task.icon_slot} iconPicked={task.icon_picked} />
           <TaskAgentMark backend={task.backend} />
           <TaskStar task={task} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>

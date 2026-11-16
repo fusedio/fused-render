@@ -78,7 +78,10 @@ interface IconPickerProps {
    *  from here: shuffle applies without closing. Not asked of a host that
    *  passes its own `set`. */
   onPick?: (pick: IconPick) => void;
-  onRemove: () => void;
+  /** The reset button's action. Omitted, there is no button: a host with
+   *  nothing to remove (a task wearing the plain ring — shell/TaskIconPick,
+   *  2026-11-16) offers none. */
+  onRemove?: () => void;
   onClose: () => void;
   /** CSS selector for the glyphs that toggle this picker. A mousedown on
    *  one of them is left to the host's click handler (the toggle), everything
@@ -627,18 +630,20 @@ export default function IconPicker({
           // that isn't there.
           <div className="px-2 text-[13px] font-medium">{heading}</div>
         )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-muted-foreground"
-          title={set?.removeTitle ?? "Reset to the default glyph"}
-          onClick={() => {
-            onRemove();
-            onClose();
-          }}
-        >
-          {set?.removeLabel ?? "Remove"}
-        </Button>
+        {onRemove && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            title={set?.removeTitle ?? "Reset to the default glyph"}
+            onClick={() => {
+              onRemove();
+              onClose();
+            }}
+          >
+            {set?.removeLabel ?? "Remove"}
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-1.5">

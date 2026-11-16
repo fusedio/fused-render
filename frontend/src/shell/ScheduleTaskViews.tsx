@@ -26,7 +26,7 @@
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useTaskIcons } from "@platform/lib/task-icons-flag";
-import { taskIconHref } from "./task-icons";
+import { taskFaceShown, taskIconHref } from "./task-icons";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
 import {
@@ -764,14 +764,19 @@ export function StatusIcon({
   draftHeld,
   background,
   icon,
+  iconPicked,
 }: {
   status: BoardColumn;
-  /** THE FAVOURITE'S FACE (`task_icons_enabled`, 2026-11-10): the task's
-   *  `icon_slot`, null unless it is starred. With the experiment on, the ring becomes that glyph —
+  /** THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): the task's
+   *  `icon_slot` — null on a task that wears the ring (never given one and
+   *  not starred, or its icon removed; 2026-11-16). With the experiment on, the ring becomes that glyph —
    *  same box, same hue, every mark (unread dot, draft dot, "!") in its
    *  top-right corner (schedule.css `.schedule-ring--glyph`). Omitted on a container (a lane header, the
    *  queue chip) and the ring is drawn as always. */
   icon?: number | null;
+  /** The task's `icon_picked`: the face was given BY HAND, so it is drawn
+   *  with the favourites switch off too (task-icons `taskFaceShown`). */
+  iconPicked?: boolean;
   failed?: boolean;
   label?: string;
   /** Fill the centre — there is something in here nobody has looked at. */
@@ -814,13 +819,15 @@ export function StatusIcon({
   // the one a person can still do something about.
   const marks = [draftHeld ? "unsent draft" : null, said]
     .filter(Boolean).join(", ");
-  // The glyph, when the experiment is on and this is a FAVOURITE's own ring
-  // (the listing sends a slot for starred tasks only). Favourites switched
-  // off is no star to press, so no mark of one either — read live here, not
-  // server-side, where a cached listing would outlast the flip.
+  // The glyph, when the experiment is on and the listing sent this task a
+  // face (picked by hand, or starred and not removed — 2026-11-16). One that
+  // came with the STAR needs the favourites switch too: switched off there
+  // is no star to press, so no mark of one either. One PICKED by hand is the
+  // user's own and stays. Read live here, not server-side, where a cached
+  // listing would outlast the flip.
   const iconsOn = useTaskIcons();
   const favsOn = useTaskFavourites();
-  const glyph = iconsOn && favsOn ? taskIconHref(icon) : null;
+  const glyph = taskFaceShown(icon, iconPicked, iconsOn, favsOn) ? taskIconHref(icon) : null;
   return (
     <span
       className={
@@ -3415,8 +3422,10 @@ function FoldedNode({
   );
 }
 
-/** THE A/B ROW'S RING (TaskNode, `ab`): on a favourite wearing a face it is
- *  the icon picker's button (TaskIconPick); on the legacy row, the bare ring. */
+/** THE A/B ROW'S RING (TaskNode, `ab`): the icon picker's button
+ *  (TaskIconPick) — on ANY numbered task, ring or face, icons experiment on
+ *  (2026-11-16: the icon is not the star's); on the legacy row, the bare
+ *  ring. */
 function RingSeat({ pick, task, onDone, children }: {
   pick: boolean;
   task: Task;
@@ -4561,11 +4570,13 @@ function TaskNode({
             caret's hit zone to its left are all untouched.
 
             THE A/B ROW (Akshil, 2026-11-15) swaps nothing here: Archive stands
-            over the id instead (`.tasks-idslot` below), and a favourite's glyph
-            is a button — `TaskIconPick` wraps it whenever the task wears a face
-            (`icon_slot`, starred tasks only, icons experiment on) and the press
-            opens the icon picker. On every other row the slot holds no control
-            and the press falls through to the link as before. */}
+            over the id instead (`.tasks-idslot` below), and the status ring or
+            glyph is a button — `TaskIconPick` wraps it on any numbered task
+            with the icons experiment on (2026-11-16: any task can be given an
+            icon, not only a favourite) and the press opens the icon picker.
+            With the experiment off, on the legacy row, or on a task with no
+            number yet, the slot holds no control and the press falls through
+            to the link as before. */}
         <span className="tasks-rowmark">
           <RingSeat pick={ab} task={task} {...(onReload ? { onDone: onReload } : {})}>
             <StatusIcon
@@ -4577,6 +4588,7 @@ function TaskNode({
               draftHeld={draftRing(task) && !heldInPeek}
               background={liveJobRow(task)}
               icon={task.icon_slot}
+              iconPicked={task.icon_picked}
             />
           </RingSeat>
           {!ab && fileButton}
