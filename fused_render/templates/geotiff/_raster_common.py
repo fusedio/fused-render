@@ -29,10 +29,11 @@ def lonlat_bounds(bounds, epsg):
         return None
     try:
         from pyproj import Transformer
-        if int(epsg) == 4326:
+        crs = int(epsg) if str(epsg).isdigit() else epsg   # an EPSG code, or a WKT
+        if crs == 4326:
             return {"west": bounds["left"], "south": bounds["bottom"],
                     "east": bounds["right"], "north": bounds["top"]}
-        tr = Transformer.from_crs(int(epsg), 4326, always_xy=True)
+        tr = Transformer.from_crs(crs, 4326, always_xy=True)
         xs = [bounds["left"], bounds["right"], bounds["right"], bounds["left"]]
         ys = [bounds["top"], bounds["top"], bounds["bottom"], bounds["bottom"]]
         lon, lat = tr.transform(xs, ys)

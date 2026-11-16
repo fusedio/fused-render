@@ -67,6 +67,19 @@ write("classic.tif", ramp)
 write("big.tif", ramp, BIGTIFF="YES")
 write("pal.tif", ramp, cmap={i: (i, 255 - i, (7 * i) % 256, 255) for i in range(256)})
 write("flat.tif", np.full((4500, 4500), 7, "uint8"), overviews=False, res=0.0001)
+# a CRS with no EPSG code (custom Lambert conformal conic, metres)
+from rasterio.crs import CRS
+lcc = CRS.from_proj4("+proj=lcc +lat_1=41 +lat_2=47 +lat_0=44 +lon_0=11 +x_0=0 +y_0=0 "
+                     "+ellps=GRS80 +units=m +no_defs")
+assert lcc.to_epsg() is None
+with rasterio.open(f"{d}/lcc.tif", "w", driver="GTiff", width=1024, height=1024, count=1,
+                   dtype="uint8", crs=lcc, transform=from_origin(-50000, 50000, 100, 100),
+                   tiled=True, blockxsize=256, blockysize=256) as ds:
+    ds.write(ramp[:1024, :1024], 1)
+# overviews in an external .ovr sidecar, not in the file
+write("side.tif", ramp, overviews=False)
+with rasterio.Env(TIFF_USE_OVR=True), rasterio.open(f"{d}/side.tif", "r+") as ds:
+    ds.build_overviews([2, 4], Resampling.nearest)
 """
 
 
@@ -190,3 +203,38 @@ def test_an_unreachable_url_fails_meta_not_the_daemon(daemon):
     code, _ = daemon("/meta", file="http://127.0.0.1:9/nothing.tif")
     assert code == 500
     assert daemon("/ping")[0] in (200, 403)
+
+
+def test_a_crs_without_an_epsg_code_draws(daemon, tiffs):
+    m = _meta(daemon, tiffs["lcc"])
+    assert m["supported"] and m["crs"].get("wkt") and m["crs_name"]
+    lb = m["lonlat_bounds"]
+    assert 10 < (lb["west"] + lb["east"]) / 2 < 12      # near lon_0 = 11
+    z, (x, y) = 10, _tile_xy(11.0, 44.0, 10)
+    code, tile = daemon(f"/tile/{z}/{x}/{y}.png", file=tiffs["lcc"])
+    assert code == 200 and tile != _empty(daemon, tiffs["lcc"])
+
+
+def test_a_local_file_reads_its_ovr_sidecar(daemon, tiffs):
+    assert os.path.exists(tiffs["side"] + ".ovr")
+    assert len(_meta(daemon, tiffs["side"])["levels"]) == 3
+
+
+def test_a_local_file_without_overviews_draws_zoomed_out(daemon, tiffs):
+    """No zoom-in-only rule for a local file: a zoomed-out tile is read
+    decimated (bounded memory) and has pixels."""
+    code, tile = daemon("/tile/6/33/21.png", file=tiffs["flat"])
+    assert code == 200 and tile != _empty(daemon, tiffs["flat"])
+    assert json.loads(daemon("/hist", file=tiffs["flat"])[1])["channels"][0]["count"] > 0
+
+
+def _tile_xy(lon, lat, z):
+    import math
+    n = 2 ** z
+    r = math.radians(lat)
+    return int((lon + 180) / 360 * n), int((1 - math.log(math.tan(r) + 1 / math.cos(r)) / math.pi) / 2 * n)
+
+
+def _empty(daemon, file):
+    """A tile far from the raster: fully transparent."""
+    return daemon("/tile/6/0/0.png", file=file)[1]

@@ -215,13 +215,11 @@ def _serve():
     VERSION = _version()
     last_hit = [time.time()]
 
-    # GDAL's HTTP reader (/vsicurl/) for streamed files: no sibling-file
-    # probing (each probe is a request), consecutive ranges merged into one
-    # request (S3 has no multi-range GET, so GDAL's default of parallel
-    # single-range requests stays), a bigger block cache, a few retries. Set
-    # before the first open; an explicit environment value wins.
-    for k, v in {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
-                 "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
+    # GDAL's HTTP reader (/vsicurl/) for streamed files: consecutive ranges
+    # merged into one request (S3 has no multi-range GET, so GDAL's default
+    # of parallel single-range requests stays), a bigger block cache, a few
+    # retries. Set before the first open; an explicit environment value wins.
+    for k, v in {"GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
                  "GDAL_HTTP_MAX_RETRY": "3", "GDAL_HTTP_RETRY_DELAY": "0.5",
                  "CPL_VSIL_CURL_CACHE_SIZE": str(256 << 20),
                  "GDAL_CACHEMAX": "512"}.items():
@@ -241,6 +239,21 @@ def _serve():
 
     def is_url(p):
         return isinstance(p, str) and p.startswith(("https://", "http://"))
+
+    def gdal_open(f_or_name, **kw):
+        """rasterio.open; a URL opens without listing its "directory" (each
+        sibling-file probe would be a request). Only URLs: a local file
+        keeps its .ovr / .aux.xml / .tfw sidecars."""
+        import rasterio
+        name = f_or_name
+        if name.startswith("/vsicurl/"):
+            with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"):
+                return rasterio.open(name, **kw)
+        return rasterio.open(name, **kw)
+
+    def crs_arg(c):
+        """A file's CRS for pyproj: its EPSG code, or its WKT when it has none."""
+        return int(c) if isinstance(c, int) or (isinstance(c, str) and c.isdigit()) else c
 
     # ---------------- file cache: parsed pyramid per path ----------------
     files = {}          # path -> dict(levels, meta, lock, stretch cache)
@@ -282,14 +295,23 @@ def _serve():
         except Exception:  # noqa: BLE001 - size is informational
             return None
 
+    def _crs_label(wkt):
+        try:
+            from pyproj import CRS
+            return CRS.from_user_input(wkt).name
+        except Exception:  # noqa: BLE001
+            return None
+
     def _gdal_meta(ds, path, levels):
         """header_meta's shape, from GDAL instead of parsed tags."""
-        epsg = None
+        epsg = wkt = None
         if ds.crs:
             try:
                 epsg = ds.crs.to_epsg()
             except Exception:  # noqa: BLE001
                 epsg = None
+            if not epsg:
+                wkt = ds.crs.to_wkt()
         georef = ds.crs is not None and not ds.transform.is_identity
         b = ds.bounds
         tags = ds.tags()
@@ -302,13 +324,13 @@ def _serve():
                 gm[f"band {i + 1}: {k}"] = v
         comp = ds.compression.value.lower() if ds.compression else "none"
         return {
-            "crs": {"epsg": int(epsg)} if epsg else None,
+            "crs": ({"epsg": int(epsg)} if epsg else {"wkt": wkt} if wkt else None),
             "transform": list(ds.transform)[:6] if georef else None,
             "bounds": ({"left": b.left, "right": b.right,
                         "top": b.top, "bottom": b.bottom} if georef else None),
             "area_or_point": {"area": "Area", "point": "Point"}.get(
                 (tags.get("AREA_OR_POINT") or "").lower()),
-            "citation": None,
+            "citation": _crs_label(wkt) if wkt else None,
             "width": ds.width, "height": ds.height, "count": ds.count,
             "dtype": ds.dtypes[0], "nodata": ds.nodata,
             "file_size": (_remote_size(path) if is_url(path)
@@ -344,10 +366,10 @@ def _serve():
             sizer = threading.Thread(
                 target=lambda: size.update(n=_remote_size(path)), daemon=True)
             sizer.start()
-        with rasterio.open(name) as ds:
+        with gdal_open(name) as ds:
             levels = [_gdal_level(ds)]
             for i in range(len(ds.overviews(1)) if ds.count else 0):
-                with rasterio.open(name, overview_level=i) as o:
+                with gdal_open(name, overview_level=i) as o:
                     levels.append(_gdal_level(o))
             levels.sort(key=lambda l: -l["W"])
             meta = _gdal_meta(ds, path, levels)
@@ -364,7 +386,8 @@ def _serve():
         if sizer is not None:
             sizer.join(15)
             meta["file_size"] = size.get("n")
-        epsg = (meta.get("crs") or {}).get("epsg")
+        crs = meta.get("crs") or {}
+        epsg = crs.get("epsg") or crs.get("wkt")   # what pyproj gets (crs_arg)
         f = {"path": path, "gdal_name": name,
              "levels": levels, "meta": meta, "epsg": epsg, "palette": palette,
              "transform": meta["transform"], "bounds": meta["bounds"],
@@ -407,7 +430,7 @@ def _serve():
     _ds_pool_lock = threading.Lock()
 
     def _gdal_read_window(f, li, x0, y0, x1, y1, band_idx, out):
-        import rasterio
+        from rasterio.enums import Resampling
         from rasterio.windows import Window
         key = (f["gdal_name"], li)
         with _ds_pool_lock:
@@ -415,25 +438,34 @@ def _serve():
             ds = free.pop() if free else None
         if ds is None:
             kw = {} if li == 0 else {"overview_level": li - 1}
-            ds = rasterio.open(f["gdal_name"], **kw)
+            ds = gdal_open(f["gdal_name"], **kw)
         try:
+            # out may be smaller than the window: GDAL then reads it
+            # decimated (nearest), never holding the full-size window
             out[:] = ds.read([b + 1 for b in band_idx],
-                             window=Window(x0, y0, x1 - x0, y1 - y0))
+                             window=Window(x0, y0, x1 - x0, y1 - y0),
+                             out_shape=out.shape, resampling=Resampling.nearest)
         except Exception:
             ds.close()
             raise
         with _ds_pool_lock:
             _ds_pool[key].append(ds)
 
-    def read_window(f, li, x0, y0, x1, y1, band_idx):
-        """(len(band_idx), y1-y0, x1-x0) float32 from level li, NaN nodata."""
+    def read_window(f, li, x0, y0, x1, y1, band_idx, max_px=None):
+        """(len(band_idx), h, w) float32 from level li, NaN nodata: the
+        window at full size, or, when it holds more than max_px pixels, a
+        nearest-neighbour sample of it about max_px big (a zoomed-out view of
+        a local file with no overviews stays bounded in memory)."""
         lv = f["levels"][li]
         x0, y0 = max(0, x0), max(0, y0)
         x1, y1 = min(lv["W"], x1), min(lv["H"], y1)
-        if f.get("min_zoom") is not None and \
-                max(0, x1 - x0) * max(0, y1 - y0) > ZOOM_WINDOW_MAX:
+        w, h = max(0, x1 - x0), max(0, y1 - y0)
+        if f.get("min_zoom") is not None and w * h > ZOOM_WINDOW_MAX:
             raise ZoomIn(f"zoom in to z{f['min_zoom']} to read this TIFF")
-        out = np.full((len(band_idx), y1 - y0, x1 - x0), np.nan, dtype="float32")
+        if max_px and w * h > max_px:
+            k = math.sqrt(max_px / float(w * h))
+            w, h = max(1, int(w * k)), max(1, int(h * k))
+        out = np.full((len(band_idx), h, w), np.nan, dtype="float32")
         if x1 <= x0 or y1 <= y0:
             return out
         _gdal_read_window(f, li, x0, y0, x1, y1, band_idx, out)
@@ -447,11 +479,11 @@ def _serve():
     _tr_cache = {}
 
     def merc_to_native(epsg):
-        if int(epsg) == 3857:
+        if crs_arg(epsg) == 3857:
             return None
         tr = _tr_cache.get(epsg)
         if tr is None:
-            tr = Transformer.from_crs(3857, int(epsg), always_xy=True)
+            tr = Transformer.from_crs(3857, crs_arg(epsg), always_xy=True)
             _tr_cache[epsg] = tr
         return tr
 
@@ -509,9 +541,13 @@ def _serve():
         lpy = np.clip(py * sy, 0, lv["H"] - 1)
         x0 = int(np.floor(lpx[inside].min())); x1 = int(np.ceil(lpx[inside].max())) + 1
         y0 = int(np.floor(lpy[inside].min())); y1 = int(np.ceil(lpy[inside].max())) + 1
-        win = read_window(f, li, x0, y0, x1, y1, band_idx)
-        ix = np.clip(lpx.astype(np.int32) - x0, 0, win.shape[2] - 1)
-        iy = np.clip(lpy.astype(np.int32) - y0, 0, win.shape[1] - 1)
+        # at most ~4 file pixels per output pixel: a level finer than that
+        # (no overview coarse enough) is read decimated
+        win = read_window(f, li, x0, y0, x1, y1, band_idx, max_px=4 * ow * oh)
+        kx = win.shape[2] / float(x1 - x0)
+        ky = win.shape[1] / float(y1 - y0)
+        ix = np.clip(((lpx - x0) * kx).astype(np.int32), 0, win.shape[2] - 1)
+        iy = np.clip(((lpy - y0) * ky).astype(np.int32), 0, win.shape[1] - 1)
         out = win[:, iy, ix]
         out[:, ~inside] = np.nan
         return out
@@ -530,11 +566,9 @@ def _serve():
             arr = read_window(f, li, cx - 512, cy - 512, cx + 512, cy + 512,
                               band_idx)
         else:
-            # smallest overview capped at ~1M cells for the estimate
-            step = 1
-            while (lv["W"] // step) * (lv["H"] // step) > 1_000_000 and step < 64:
-                step += 1
-            arr = read_window(f, li, 0, 0, lv["W"], lv["H"], band_idx)[:, ::step, ::step]
+            # smallest overview, sampled down to ~1M cells for the estimate
+            arr = read_window(f, li, 0, 0, lv["W"], lv["H"], band_idx,
+                              max_px=1_000_000)
         st = []
         for k in range(arr.shape[0]):
             fin = arr[k][np.isfinite(arr[k])]
@@ -650,7 +684,7 @@ def _serve():
         # full CRS description
         if epsg:
             try:
-                crs = CRS.from_epsg(int(epsg))
+                crs = CRS.from_user_input(crs_arg(epsg))
                 m["crs_wkt"] = crs.to_wkt(pretty=True)
                 m["crs_units"] = (crs.axis_info[0].unit_name
                                   if crs.axis_info else None)
@@ -671,9 +705,9 @@ def _serve():
                   "Upper Right": (W, 0), "Lower Right": (W, H),
                   "Center": (W / 2.0, H / 2.0)}
             t2ll = None
-            if epsg and int(epsg) != 4326:
+            if epsg and crs_arg(epsg) != 4326:
                 try:
-                    t2ll = Transformer.from_crs(int(epsg), 4326, always_xy=True)
+                    t2ll = Transformer.from_crs(crs_arg(epsg), 4326, always_xy=True)
                 except Exception:
                     pass
             corners = []
@@ -740,7 +774,7 @@ def _serve():
         m["stream_error"] = f.get("stream_error")
         m["has_palette"] = f.get("palette") is not None
         m["min_zoom"] = f.get("min_zoom")
-        m["crs_name"] = T._crs_name(m.get("crs"))
+        m["crs_name"] = T._crs_name(m.get("crs")) or m.get("citation")
         import _raster_common as C
         m["lonlat_bounds"] = C.lonlat_bounds(m.get("bounds"), f["epsg"])
         try:
