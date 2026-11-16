@@ -214,14 +214,17 @@ async function signFor(file){
 // re-signed a minute before it lapses, and the map's tile URLs swap to the
 // new one: MapLibre fetches tiles itself, so they can't be re-signed per
 // request. Hist and value read src() and pick it up on their next call.
-function scheduleResign(){
+// A failed re-sign (the server briefly unreachable) retries every 15 s for
+// as long as this file stays open.
+function scheduleResign(retryMs){
   clearTimeout(resignTimer);
   if (!signed || !signed.expires_at) return;
   const file = signed.address;
-  const due = Math.max(5000, Date.parse(signed.expires_at) - Date.now() - 60000);
+  const due = retryMs || Math.max(5000, Date.parse(signed.expires_at) - Date.now() - 60000);
   resignTimer = setTimeout(async () => {
     if (P.file() !== file) return;
-    try { await signFor(file); } catch (e) { return; }
+    try { await signFor(file); }
+    catch (e) { scheduleResign(15000); return; }
     if (tileMode && P.file() === file){ setRasterTiles(); loadedQuery = renderQuery(); }
   }, due);
 }
