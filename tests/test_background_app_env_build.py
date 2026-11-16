@@ -300,3 +300,57 @@ def test_resurrect_autostart_builds_then_starts(tmp_path, workspace, monkeypatch
     env.finish()
     assert _wait(lambda: started)
     assert started == [env.venv_python]
+
+
+# ------------------------------------------- failed fallback still builds (D1481)
+
+
+def _failing_spawn(*a, **k):
+    raise engine_host.EngineError("no module named pypdf")
+
+
+@pytest.mark.parametrize("route", ["start", "restart"])
+def test_failed_fallback_spawn_still_starts_build_and_reports_installing(
+        client, tmp_path, monkeypatch, route):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    env = FakeEnv(monkeypatch, _venv_python(tmp_path))
+    monkeypatch.setattr(engine_host, "ensure_background", _failing_spawn)
+    monkeypatch.setattr(engine_host, "current", lambda eid: None)
+    flags = []
+    real = background_apps.build_env_then_respawn
+    monkeypatch.setattr(
+        background_apps, "build_env_then_respawn",
+        lambda folder, start_if_stopped=False:
+        (flags.append(start_if_stopped), real(folder, start_if_stopped))[1])
+
+    resp = client.post(f"/api/apps/background/{route}",
+                       json={"html": str(folder / "index.html")}, headers=HDRS)
+    assert resp.status_code == 502, resp.text
+    body = resp.json()
+    assert "being installed" in body["error"]
+    assert body["installing"] is True
+    assert body["install"]["stage"] == "spawn"
+    assert env.starts == [f]
+    assert flags == [True]
+    env.error = "stop"
+
+
+def test_later_start_if_stopped_call_upgrades_an_existing_watcher(
+        tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    eid = background_apps.engine_id_for(f)
+    env = FakeEnv(monkeypatch, _venv_python(tmp_path))
+    monkeypatch.setattr(engine_host, "current", lambda e: None)
+    started = []
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: started.append(a[0]))
+
+    background_apps.build_env_then_respawn(f)  # False watcher
+    background_apps.build_env_then_respawn(f, start_if_stopped=True)
+    background_apps.build_env_then_respawn(f)  # must not downgrade
+    env.finish()
+    assert _wait(lambda: started)
+    assert started == [eid]
+    assert _wait(lambda: f not in background_apps._env_watchers)

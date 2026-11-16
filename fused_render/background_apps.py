@@ -417,8 +417,10 @@ def cache_dir_for(engine_id: str) -> str:
 # ------------------------------------------- build the venv, then move onto it
 
 # Folders with a watcher thread alive right now: one build-then-respawn watcher
-# per folder no matter how many start/restart calls arrive meanwhile.
-_env_watchers: set[str] = set()
+# per folder no matter how many start/restart calls arrive meanwhile. The value
+# is the folder's start_if_stopped flag: later calls OR theirs in (False never
+# downgrades True) and the watcher reads it at completion time.
+_env_watchers: dict[str, bool] = {}
 _env_watchers_lock = threading.Lock()
 _ENV_POLL_S = 1.0
 _ENV_MAX_WAIT_S = 30 * 60.0
@@ -445,10 +447,12 @@ def build_env_then_respawn(folder: str, start_if_stopped: bool = False) -> dict 
             return None
         progress = envinstall.start(folder)
         with _env_watchers_lock:
-            if folder not in _env_watchers:
-                _env_watchers.add(folder)
+            if folder in _env_watchers:
+                _env_watchers[folder] = _env_watchers[folder] or start_if_stopped
+            else:
+                _env_watchers[folder] = start_if_stopped
                 threading.Thread(
-                    target=_watch_env, args=(folder, start_if_stopped),
+                    target=_watch_env, args=(folder,),
                     name=f"bg-env-{os.path.basename(folder)}",
                     daemon=True).start()
         return progress
@@ -457,7 +461,7 @@ def build_env_then_respawn(folder: str, start_if_stopped: bool = False) -> dict 
         return None
 
 
-def _watch_env(folder: str, start_if_stopped: bool) -> None:
+def _watch_env(folder: str) -> None:
     from fused_render import envinstall
 
     try:
@@ -465,6 +469,8 @@ def _watch_env(folder: str, start_if_stopped: bool) -> None:
         key = envinstall.venv_key_for(folder)
         while time.monotonic() < deadline:
             if envinstall.is_installed(folder):
+                with _env_watchers_lock:
+                    start_if_stopped = _env_watchers.get(folder, False)
                 _move_onto_venv(folder, start_if_stopped)
                 return
             prog = envinstall.progress(key)
@@ -491,7 +497,7 @@ def _watch_env(folder: str, start_if_stopped: bool) -> None:
         logger.exception("background app %s: env watcher failed", folder)
     finally:
         with _env_watchers_lock:
-            _env_watchers.discard(folder)
+            _env_watchers.pop(folder, None)
 
 
 def _move_onto_venv(folder: str, start_if_stopped: bool) -> None:

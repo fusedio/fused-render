@@ -131,6 +131,20 @@ def _with_install(response: dict, folder: str, unbuilt_reason: str | None) -> di
     return response
 
 
+def _failed_unbuilt(folder: str) -> JSONResponse:
+    """502 for a failed D631 fallback spawn: nothing is running, so kick off
+    the venv build too (D1481) and have the daemon start once it lands. The
+    message says so rather than telling the user to retry by hand."""
+    body = {"error": f"{os.path.basename(folder)} declares a project "
+                     "environment that is not built yet. It is being "
+                     "installed now and the app will start once it is ready."}
+    install = background_apps.build_env_then_respawn(folder, start_if_stopped=True)
+    if install is not None:
+        body["installing"] = True
+        body["install"] = install
+    return JSONResponse(body, status_code=502)
+
+
 @router.get("/api/apps/background/status")
 async def api_background_status(html: str = ""):
     # Read-only, same posture as every other GET here — no X-Fused guard.
@@ -185,9 +199,10 @@ async def api_background_start(body: dict = Body(...),
         # then fails, the folder's own unbuilt venv is the known, actionable
         # cause — report that instead of ensure_background's generic spawn
         # failure, which names no fix.
-        detail = unbuilt_reason if unbuilt_reason is not None else str(e)
-        return _error(f"could not start {os.path.basename(folder)}'s "
-                      f"background app: {detail}", status=502)
+        if unbuilt_reason is None:
+            return _error(f"could not start {os.path.basename(folder)}'s "
+                          f"background app: {e}", status=502)
+        return _failed_unbuilt(folder)
     response = {"ok": True, "engine_id": engine_id, "pid": child.pid,
                 "version": child.version, "protocol": _protocol_for(manifest)}
     return _with_install(response, folder, unbuilt_reason)
@@ -270,8 +285,9 @@ async def api_background_restart(body: dict = Body(...),
         # Same reasoning as `start`'s except-clause above: the fallback
         # interpreter already tried, so a failure here is best explained by
         # the folder's own unbuilt venv when that's what triggered it.
-        return _error(unbuilt_reason if unbuilt_reason is not None else str(e),
-                      status=502)
+        if unbuilt_reason is None:
+            return _error(str(e), status=502)
+        return _failed_unbuilt(folder)
     response = {"ok": True, "pid": child.pid, "version": child.version,
                 "protocol": _protocol_for(manifest)}
     return _with_install(response, folder, unbuilt_reason)
