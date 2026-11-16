@@ -511,10 +511,11 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {\n  width: 0;");
   // A panel or a pane gives the time alone; the count stays.
   expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot {\n  width: 0;`);
-  // Short on width, the door is its ↗ alone; a stacked rail window keeps the
-  // word until row 1 itself is short (5+), one rung before the where-tag's.
-  expect(css).toContain(`.task-head:not(.is-stacked)${from(3)} .task-head-timeslot .task-head-open-word,`);
-  expect(css).toContain(`.task-head.is-stacked${from(5)} .task-head-timeslot .task-head-open-word {`);
+  // Short on width, a panel's or a pane's door is its ↗ alone; a rail window
+  // keeps the word (its time slot holds the word's box) until the row is
+  // short even stacked (5+), one rung before the where-tag's word.
+  expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot .task-head-open-word,`);
+  expect(css).toContain(`.task-head.is-window${from(5)} .task-head-timeslot .task-head-open-word {`);
   // A rail window's ⋮ always stands (2026-11-16): no rule hides it or holds
   // its seat open, and nothing is moved over it at rest.
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {");

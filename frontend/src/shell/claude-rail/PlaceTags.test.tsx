@@ -57,6 +57,11 @@ test('part="where": the node tag alone — its icon, then its word; the door as 
   expect(rest).toHaveLength(0);
   expect(cls(tag!)).toContain("has-icon");
   expect(tag!.props.href).toBe("/canvases/prod/HLS_Data?node=hex&node_file=hex.py&session_id=s1&focus=node");
+  // Its name in the app's instant hint (it may be folded to the icon); the
+  // press in the accessible name; no slow browser title on top.
+  expect(tag!.props["data-hint"]).toBe("hex");
+  expect(tag!.props["aria-label"]).toBe("Open hex on HLS_Data");
+  expect(tag!.props.title).toBeUndefined();
   const kids = (tag!.children ?? []) as ReactTestRendererJSON[];
   expect(kids[0]!.type).toBe("svg");
   expect(cls(kids[1]!)).toContain("place-tag-word");
