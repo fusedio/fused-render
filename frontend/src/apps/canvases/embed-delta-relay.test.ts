@@ -589,3 +589,42 @@ describe("connectSyncFeed", () => {
     h.close();
   });
 });
+
+describe("review round", () => {
+  test("NV-9's grace starts on the first APPLIED ack, not on a booting refusal", () => {
+    const t = fakeTransport();
+    const seen: string[] = [];
+    const r = createEmbedDeltaRelay(t, { node: "udf_1", onPresence: (p) => seen.push(p) });
+    r.handleMessage({ type: "fused-embed-auth-ready" });
+    r.handleMessage({ type: "fused-embed-node-state", udfName: "udf_1", present: false, kind: null, status: null });
+    r.handleMessage({ type: "fused-embed-delta-rejected", rev: 1, reason: BOOTING_REFUSAL });
+    r.handleMessage({ type: "fused-embed-delta-rejected", rev: 2, reason: "bad op" });
+    t.advance(NODE_ABSENT_GRACE_MS * 3);
+    expect(seen).toEqual(["pending"]);
+    r.handleMessage({ type: "fused-embed-delta-applied", rev: 3 });
+    t.advance(NODE_ABSENT_GRACE_MS);
+    expect(seen).toEqual(["pending", "absent"]);
+  });
+
+  test("acks still queued when the relay is disposed are not posted", async () => {
+    const t = fakeTransport();
+    let release!: () => void;
+    const gate = new Promise<void>((res) => (release = res));
+    let n = 0;
+    t.ackDelta = async (rev) => {
+      n += 1;
+      if (n === 1) await gate;
+      t.acks.push({ rev, ok: true });
+    };
+    const r = createEmbedDeltaRelay(t);
+    r.handleMessage({ type: "fused-embed-delta-applied", rev: 1 });
+    r.handleMessage({ type: "fused-embed-delta-applied", rev: 2 });
+    r.handleMessage({ type: "fused-embed-delta-applied", rev: 3 });
+    await Promise.resolve();
+    r.dispose();
+    release();
+    await r.idle();
+    // The one in flight lands; the two behind it never leave.
+    expect(t.acks.map((a) => a.rev)).toEqual([1]);
+  });
+});

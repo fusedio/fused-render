@@ -682,6 +682,11 @@ function NodeStrip({
   const showPull = !owned && (s2d === "stale" || pull.busy);
   return (
     <div className="node-view-head">
+      {/* Two rows, so the strip holds at the column's narrowest (380px): the
+          node — its title, which takes the room and ellipsises last — its
+          status and the way to the canvas; under it the canvas, the
+          environment and the sync chip, which wrap. The kind badge and the
+          environment chip drop first (canvases.css container queries). */}
       <div className="node-view-strip">
         <span className="node-view-kind" title={`${KIND_LABEL[info.kind]} node`}>
           {KIND_LABEL[info.kind]}
@@ -689,15 +694,24 @@ function NodeStrip({
         <span className="node-view-title" title={info.title === info.node ? info.node : `${info.title} (${info.node})`}>
           {info.title}
         </span>
+        {nodeState?.status && <NodeStatus status={nodeState.status} />}
+        <button type="button" className="btn node-view-small-btn" onClick={onOpenCanvas}>
+          Open in canvas
+        </button>
+      </div>
+      <div className="node-view-substrip">
         <span className="node-view-canvas" title={`On canvas ${info.name}`}>
           {info.name}
         </span>
-        <span className="canvases-env-chip" title={`${info.name} syncs with ${ENV_NAMES[info.env].label}`}>
+        <span
+          className="canvases-env-chip node-view-env"
+          title={`${info.name} syncs with ${ENV_NAMES[info.env].label}`}
+        >
           {ENV_NAMES[info.env].tag}
         </span>
-        <span className="node-view-fill" />
-        {nodeState?.status && <NodeStatus status={nodeState.status} />}
-        <SyncChip name={info.name} sync={sync} owned={owned} live={live} />
+        {/* Signed out there is nothing to sync, and "Connecting…" by a green
+            dot would say otherwise. */}
+        {info.signed_in && <SyncChip name={info.name} sync={sync} owned={owned} live={live} />}
         {showPull && (
           <button
             type="button"
@@ -709,9 +723,6 @@ function NodeStrip({
             {pull.busy || s2d === "pulling" ? "Pulling…" : "Pull"}
           </button>
         )}
-        <button type="button" className="btn node-view-small-btn" onClick={onOpenCanvas}>
-          Open in canvas
-        </button>
       </div>
       {pull.error && (
         <p role="alert" className="node-view-error-line node-view-error-text">

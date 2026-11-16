@@ -19,7 +19,11 @@ type Reply = { status?: number; body: unknown } | (() => Promise<{ status?: numb
 const realFetch = globalThis.fetch;
 const realWebSocket = globalThis.WebSocket;
 // The events socket never opens here: the feed falls back to its poll.
+const sockets: string[] = [];
 class DeadSocket {
+  constructor(url: string) {
+    sockets.push(url);
+  }
   onopen: (() => void) | null = null;
   onmessage: (() => void) | null = null;
   onerror: (() => void) | null = null;
@@ -29,6 +33,8 @@ class DeadSocket {
 const SYNC = { ...emptySyncState("demo"), disk_rev: 1, watcher_epoch: "e1", watching: true };
 let routes: Record<string, Reply> = {};
 let calls: string[] = [];
+// Every request in full: the query string and the JSON body.
+let requests: Array<{ method: string; url: URL; body: Record<string, unknown> | null }> = [];
 
 function route(method: string, path: string, reply: Reply) {
   routes[`${method} ${path}`] = reply;
@@ -40,11 +46,14 @@ beforeEach(() => {
   (globalThis as { WebSocket: unknown }).WebSocket = DeadSocket;
   routes = {};
   calls = [];
+  requests = [];
+  sockets.length = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://127.0.0.1:1777");
     const method = (init?.method ?? "GET").toUpperCase();
     const key = `${method} ${url.pathname}`;
     calls.push(key);
+    requests.push({ method, url, body: typeof init?.body === "string" ? JSON.parse(init.body) : null });
     const hit = routes[key];
     if (!hit) return new Response(JSON.stringify({ error: `no route ${key}` }), { status: 404 });
     const r = typeof hit === "function" ? await hit() : hit;
@@ -211,6 +220,107 @@ describe("NodeView start (NV-5)", () => {
     expect(text(r)).toContain("Take over here");
     expect(text(r)).toContain("pid 42");
     expect(r.root.findAllByType("iframe")).toEqual([]);
+    r.unmount();
+  });
+});
+
+describe("NodeView's frame and relay (NV-6, NV-7)", () => {
+  const ORIGIN = "https://www.fused.io";
+
+  test("frame id and scope on every embed call, origin + source checked, nothing written", async () => {
+    route("GET", "/api/canvases/node", { body: NODE });
+    route("POST", "/api/canvases/sync/start", { body: { name: "demo", dir: "/x", error: null } });
+    route("GET", "/api/canvases/status", { body: STATUS });
+    route("GET", "/api/canvases/sync/state", { body: SYNC });
+    route("GET", "/api/canvases/token", { body: { access_token: "tok" } });
+    route("GET", "/api/canvases/delta", { body: { rev: 1, base_rev: null, full: true, ops: [{ op: "upsert", name: "udf_1" }], gen: null, seq: null } });
+    route("POST", "/api/canvases/delta/ack", { body: { ok: true, rev: 1 } });
+
+    // The page's message listener, caught from the shim's window.
+    const listeners: Array<(e: unknown) => void> = [];
+    const win = window as unknown as { addEventListener: unknown; removeEventListener: unknown };
+    const realAdd = win.addEventListener;
+    const realRemove = win.removeEventListener;
+    win.addEventListener = (type: string, fn: (e: unknown) => void) => {
+      if (type === "message") listeners.push(fn);
+    };
+    win.removeEventListener = (type: string, fn: (e: unknown) => void) => {
+      const i = listeners.indexOf(fn);
+      if (type === "message" && i >= 0) listeners.splice(i, 1);
+    };
+    // The frame's window, as the iframe ref sees it.
+    const posted: Array<{ msg: Record<string, unknown>; origin: string }> = [];
+    const frameWin = { postMessage: (msg: Record<string, unknown>, origin: string) => posted.push({ msg, origin }) };
+    const other = { postMessage() {} };
+    const send = async (data: unknown, source: unknown, origin = ORIGIN) => {
+      await act(async () => {
+        for (const fn of [...listeners]) fn({ data, source, origin });
+      });
+      await settle(4);
+    };
+
+    try {
+      let r!: ReactTestRenderer;
+      await act(async () => {
+        r = create(
+          createElement(NodeView, { path: "/Users/me/Fused/canvas/prod/user/demo/udf_1.py", placement: "side" }),
+          { createNodeMock: (el) => (el.type === "iframe" ? { contentWindow: frameWin } : null) },
+        );
+      });
+      await settle();
+      const frame = r.root.findByType("iframe");
+      const name = String(frame.props.name);
+      const frameId = name.replace(/^fused-node-/, "");
+      expect(frameId).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+      expect(frame.props.src).toBe(`${ORIGIN}/workbench/ada/demo?fused_embed_auth=1&fused_embed_v=3&fused_embed_node=udf_1`);
+
+      // The events socket and the sync/state poll name this frame.
+      expect(new URL(sockets[0]).searchParams.get("frame")).toBe(frameId);
+      const state = requests.find((q) => q.url.pathname === "/api/canvases/sync/state")!;
+      expect(state.url.searchParams.get("frame")).toBe(frameId);
+      expect(state.url.searchParams.get("env")).toBe("prod");
+
+      // A hello from another window, or from the frame on another origin: ignored.
+      await send({ type: "fused-embed-hello" }, other);
+      await send({ type: "fused-embed-hello" }, frameWin, "https://evil.example");
+      await send({ type: "fused-embed-auth-ready" }, other);
+      expect(calls).not.toContain("GET /api/canvases/delta");
+      expect(calls).not.toContain("GET /api/canvases/token");
+
+      // From the frame: the token (no caps, exact origin), then a full cut.
+      await send({ type: "fused-embed-auth-ready" }, frameWin);
+      const token = posted.find((p) => p.msg.type === "fused-embed-auth-token")!;
+      expect(token.origin).toBe(ORIGIN);
+      expect(token.msg.caps).toEqual([]);
+      expect(token.msg.accessToken).toBe("tok");
+      await send({ type: "fused-embed-hello" }, frameWin);
+      const cut = requests.find((q) => q.url.pathname === "/api/canvases/delta")!;
+      expect(cut.url.searchParams.get("frame")).toBe(frameId);
+      expect(cut.url.searchParams.get("frame_scope")).toBe("udf_1");
+      expect(cut.url.searchParams.get("full")).toBe("1");
+      expect(posted.some((p) => p.msg.type === "fused-embed-delta" && p.msg.rev === 1 && p.origin === ORIGIN)).toBe(true);
+
+      // Its ack: frame and scope in the body.
+      await send({ type: "fused-embed-delta-applied", rev: 1 }, frameWin);
+      const ack = requests.find((q) => q.url.pathname === "/api/canvases/delta/ack")!;
+      expect(ack.body).toMatchObject({ name: "demo", env: "prod", frame: frameId, frame_scope: "udf_1", rev: 1, ok: true });
+
+      // A reading frame's writes are never relayed.
+      await send({ type: "fused-embed-snapshot", gen: 1, seq: 1, body: {} }, frameWin);
+      await send({ type: "fused-embed-body", seq: 1, name: "udf_1", file: "udf_1.py", base_hash: "x", text: "y" }, frameWin);
+      expect(calls.filter((c) => /snapshot|\/body$|rename/.test(c))).toEqual([]);
+      r.unmount();
+    } finally {
+      win.addEventListener = realAdd;
+      win.removeEventListener = realRemove;
+    }
+  });
+
+  test("signed out: no sync chip", async () => {
+    route("GET", "/api/canvases/node", { body: { ...NODE, signed_in: false, live: false } });
+    const r = await mount();
+    expect(text(r)).not.toContain("Connecting");
+    expect(r.root.findAll((n) => n.props?.className === "node-view-sync")).toEqual([]);
     r.unmount();
   });
 });

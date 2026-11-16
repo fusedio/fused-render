@@ -30,7 +30,7 @@
 //   iframe → { type: "fused-embed-node-state", udfName, present, kind, status, error? }
 //            drives the header strip, and NV-9 through `nodePresence`: a
 //            `present: false` counts only once it still holds
-//            NODE_ABSENT_GRACE_MS after the frame's FIRST delta ack (a node
+//            NODE_ABSENT_GRACE_MS after the frame's FIRST APPLIED delta ack (a node
 //            not pushed yet is missing from the server's copy until the first
 //            full delta brings it); before that ack it is "pending".
 //
@@ -51,7 +51,7 @@ import type { SyncState } from "./sync-state";
  *  `NODE_READY_WAIT_S`). */
 export const NODE_READY_WAIT_MS = 10_000;
 /** A `present: false` is believed only once it still holds this long after
- *  the frame's first delta ack (NV-9). */
+ *  the frame's first applied delta ack (NV-9). */
 export const NODE_ABSENT_GRACE_MS = 2_000;
 /** A held cut (the clone mid-write) or a 409 is asked again this far apart,
  *  for up to this long (CanvasWorkspace's DELTA_RETRY_*). */
@@ -172,7 +172,7 @@ export function parseNodeState(data: unknown): NodeState | null {
 export type NodePresence = "pending" | "present" | "absent";
 
 /** NV-9: `present: false` is believed only once it still holds
- *  NODE_ABSENT_GRACE_MS after the frame's first delta ack (`firstAckAt`, null
+ *  NODE_ABSENT_GRACE_MS after the frame's first applied delta ack (`firstAckAt`, null
  *  until then). Returns the reading and, for "pending" with an ack in, the
  *  time at which to ask again. */
 export function nodePresence(
@@ -383,7 +383,9 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
       const rev = d.rev;
       if (typeof rev !== "number") return;
       const ok = type === "fused-embed-delta-applied";
-      if (firstAckAt === null) {
+      // NV-9's grace runs from the first APPLIED ack: a "not hydrated yet"
+      // refusal comes before the frame holds anything at all.
+      if (ok && firstAckAt === null) {
         firstAckAt = now();
         reportPresence();
       }
@@ -394,10 +396,13 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
         ? d.skipped.filter((n: unknown): n is string => typeof n === "string")
         : undefined;
       ackChain = ackChain.then(() =>
-        t.ackDelta(rev, ok, reason, skipped).then(
-          () => undefined,
-          () => undefined,
-        ),
+        // Torn down while queued: the page's frame is gone, so is its ack.
+        disposed
+          ? undefined
+          : t.ackDelta(rev, ok, reason, skipped).then(
+              () => undefined,
+              () => undefined,
+            ),
       );
       // A REAL refusal: the server dropped its picture of the frame. One
       // full state, once, after the ack — a full state refused again stays

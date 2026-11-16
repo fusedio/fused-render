@@ -720,6 +720,10 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   flex: none;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
+  /* The strip answers to its own width (the `_side` column is 380px at
+     its narrowest), not the window's. */
+  container-type: inline-size;
+  container-name: node-view-head;
 }
 
 .node-view-strip {
@@ -727,9 +731,20 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  height: 36px;
-  padding: 0 10px;
+  min-height: 36px;
+  padding: 4px 12px 0;
   font-size: 12px;
+}
+
+.node-view-substrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 0 12px 6px;
+  color: var(--fg-muted);
+  font-size: 11px;
 }
 
 .node-view-kind {
@@ -744,26 +759,29 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   text-transform: uppercase;
 }
 
+/* The title takes the room and is the last thing to ellipsise. */
 .node-view-title {
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 48px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .node-view-canvas {
-  flex: 0 2 auto;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--fg-muted);
 }
 
-.node-view-fill {
-  flex: 1 1 auto;
+.node-view-env {
+  font-size: 10px;
+  line-height: 14px;
 }
 
 .node-view-status,
@@ -781,7 +799,7 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
 }
 
 .node-view-sync {
-  flex: 0 3 auto;
+  flex: 1 1 140px;
 }
 
 .node-view-sync-text {
@@ -794,6 +812,18 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   flex: none;
   padding: 1px 10px;
   font-size: 12px;
+}
+
+/* Narrow: the badges go before the title has to give anything up. */
+@container node-view-head (max-width: 460px) {
+  .node-view-kind {
+    display: none;
+  }
+}
+@container node-view-head (max-width: 360px) {
+  .node-view-env {
+    display: none;
+  }
 }
 
 /* The node's error under the strip: one line, the whole text on a click. */
