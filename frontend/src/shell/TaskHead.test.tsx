@@ -519,7 +519,7 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   // keeps the word (its time slot holds the word's box) until the row is
   // short even stacked (5+), one rung before the where-tag's word.
   expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot .task-head-open-word,`);
-  expect(css).toContain(`.task-head.is-window${from(5)} .task-head-facts .task-head-open-word {`);
+  expect(css).toContain(`.task-head.is-window${from(5)} :is(.task-head-facts, .task-head-timeslot) .task-head-open-word {`);
   // A rail window's ⋮ always stands (2026-11-16): no rule hides it or holds
   // its seat open, and nothing is moved over it at rest.
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {");
@@ -777,11 +777,20 @@ test("a rail window's facts and acts are two layers of one box; a panel keeps th
   expect(JSON.stringify(a)).toContain("task-head-time");
   expect(cls(b!)).toContain("is-b");
   expect(JSON.stringify(b)).toContain("task-head-open");
-  // A fact with no act to trade with is repeated, muted, in the acts' layer.
+  // ONE ACT ALONE (favourites off: no star): the count STAYS under the
+  // pointer, so the head keeps one slot per fact — the stayer is one node
+  // that cannot jump between two layers (Bugbot on #2297).
   const noStar = render(head({ ...props, reveal: "window", star: false }));
-  const acts = byClass(noStar, "task-head-facts-layer")[1]!;
-  expect(JSON.stringify(acts)).toContain("task-head-count");
-  expect(JSON.stringify(acts)).toContain('"aria-hidden":true');
+  expect(byClass(noStar, "task-head-facts")).toHaveLength(0);
+  const cs = byClass(noStar, "task-head-countslot")[0]!;
+  expect(JSON.stringify(cs)).toContain("task-head-count");
+  expect(JSON.stringify(cs)).not.toContain("task-star");
+  expect(JSON.stringify(byClass(noStar, "task-head-timeslot")[0])).toContain("task-head-open");
+  expect(byClass(noStar, "task-head-count")).toHaveLength(1);
+  // …and the same with a star but no door.
+  const noDoor = render(head({ task: task({ message_count: 6 }), reveal: "window" }));
+  expect(byClass(noDoor, "task-head-facts")).toHaveLength(0);
+  expect(byClass(noDoor, "task-head-time")).toHaveLength(1);
   // No acts at all: the facts alone, and they stay under the pointer.
   const bare = render(head({ task: task({ message_count: 6 }), reveal: "window", star: false }));
   expect(cls(byClass(bare, "task-head-facts")[0]!)).not.toContain("has-acts");

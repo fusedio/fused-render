@@ -505,9 +505,8 @@ export function TaskHead({
   const starEl = who ? (starNode ?? (star ? <TaskStar task={who} /> : null)) : null;
   const unread = countFact?.unread ?? 0;
   const countWords = countFact ? `${countFact.n} message${countFact.n === 1 ? "" : "s"}` : "";
-  /** The count as a fact: `cls` says which seat holds it; `mute` for a copy
-   *  that stands in the acts' layer where there is no star to trade with. */
-  const countEl = (cls: string, mute = false) =>
+  /** The count as a fact: `cls` says which seat holds it. */
+  const countEl = (cls: string) =>
     countFact ? (
       <span
         className={cls + " task-head-count" + (unread > 0 ? " is-unread" : "")}
@@ -515,7 +514,6 @@ export function TaskHead({
         role="img"
         aria-label={countWords + (unread > 0 ? `, ${unread} unread` : "")}
         data-hint={`${countWords} in this task` + (unread > 0 ? ` — ${unread} unread` : "")}
-        {...(mute ? { "aria-hidden": true } : {})}
       >
         {countFact.n}
         <MessageSquare size={12} aria-hidden="true" />
@@ -553,12 +551,11 @@ export function TaskHead({
       <span className="task-head-open-word">{open.word ?? "Open"}</span>
     </a>
   ) : null;
-  const timeEl = (cls: string, mute = false) =>
+  const timeEl = (cls: string) =>
     whenFact ? (
       <span
         className={cls + " task-head-time"}
         {...(whenFact.title ? { "data-hint": whenFact.title } : {})}
-        {...(mute ? { "aria-hidden": true } : {})}
       >
         {whenFact.text}
       </span>
@@ -580,11 +577,18 @@ export function TaskHead({
   // pair had a hole in it. Here the count and the time sit side by side in
   // one layer, the star and the door in another, both against the box's right
   // edge; the box is the wider LAYER, so nothing outside it moves and nothing
-  // inside it is spread. A fact with no act to trade with (favourites off: no
-  // star; a pane that is the page: no door) is repeated in the acts' layer.
+  // inside it is spread.
+  //
+  // ONLY WHERE BOTH FACTS TRADE (or neither does). With one act alone
+  // (favourites off: no star; a pane that is the page: no door) one fact
+  // STAYS under the pointer, and a stayer drawn in two independently aligned
+  // layers jumped by the difference of their widths (Bugbot on #2297). Those
+  // heads keep one slot per fact: the stayer is one node that never moves,
+  // and the other trades in a box of its own.
   const hasActs = !!(starEl || openLink);
+  const clustered = isWindow && !!who && (!hasActs || (!!starEl && !!openLink));
   const factsCluster =
-    isWindow && who && (countFact || whenFact || hasActs) ? (
+    clustered && (countFact || whenFact || hasActs) ? (
       <span className={"task-head-facts" + (hasActs ? " has-acts" : "")}>
         {countFact || whenFact ? (
           <span className="task-head-facts-layer is-a">
@@ -594,8 +598,8 @@ export function TaskHead({
         ) : null}
         {hasActs ? (
           <span className="task-head-facts-layer is-b">
-            {starEl ?? countEl("task-head-fact", true)}
-            {openLink ?? timeEl("task-head-fact", true)}
+            {starEl}
+            {openLink}
           </span>
         ) : null}
       </span>
@@ -728,7 +732,7 @@ export function TaskHead({
             </span>
           ) : null}
           {where ? <span className="task-head-where">{where}</span> : null}
-          {isWindow && who ? (
+          {clustered ? (
             factsCluster
           ) : (
             <>
