@@ -12565,10 +12565,15 @@ today; one node fills the frame.
 
 ### 53.3 The node view (fused-render)
 
-- **NV-1 Template.** `fused_render/templates/udf_node/`: `template.html`,
-  `condition.py`, `icon.svg`. Registry: `udf_node` is added after the first
-  entry of `.py`, `.json`, `.*.json`, `.html` and `.md`. It is conditional,
-  so the file's default mode is unchanged (PT-8).
+- **NV-1 A native template.** `fused_render/templates/udf/` holds `native`,
+  `condition.py` and `icon.svg`, and no `template.html`: like `claude` (PT-6
+  amendment), the folder is only the registry name, the gate and the icon,
+  and the view is drawn by the React shell in the file view itself, with no
+  page of its own between the shell and the workbench frame. Registry: `udf`
+  is added after the first entry of `.py`, `.json`, `.*.json`, `.html` and
+  `.md`. It is conditional, so the file's default mode is unchanged (PT-8).
+  Not a `_` sentinel (PT-12): a sentinel has no folder, so it can carry no
+  gate, and this mode must be offered for node files only.
 - **NV-2 Gate (`condition.py`).** True only when all hold, cheapest first:
   the `canvases_enabled` preference is on; the path is
   `<canvases root>/<env>/user/<canvas>/<stem><ext>` by shape
@@ -12577,7 +12582,7 @@ today; one node fills the frame.
   most 2 MB; it parses with a node whose name is the stem and whose file
   kind matches `ext`. Any exception is False. A reference copy under
   `user/` passes (NV-5); `team/` and `public/` never do.
-- **NV-3 Where it shows.** `udf_node` joins `SIDEBAR_MODES`, so the file
+- **NV-3 Where it shows.** `udf` joins `SIDEBAR_MODES`, so the file
   view pairs it with the content mode: the file's editor on the left, the
   node on the right, the seam draggable (`_side`). It is also an ordinary
   mode in the switcher (the node alone) and a pane in layout mode (§14).
@@ -12628,15 +12633,15 @@ today; one node fills the frame.
 
 ### 53.4 Where the view's code lives
 
-`template.html` is a plain page (templates have no build step and cannot
-import from `frontend/src`), and the relay belongs beside the workspace's,
-in TypeScript, under the same tests. So the template is a shell: it resolves
-`env`, `name` and the node from `_file` and frames a bare same-origin shell
-route, `/canvases/<env>/<name>/node/<udfName>` (`apps/canvases/NodeView.tsx`,
-no shell chrome), which holds the header strip, the relay and the workbench
-frame. The delta leg is extracted from `CanvasWorkspace.tsx` into one module
-both pages use (`apps/canvases/embed-delta-relay.ts`); the workspace keeps
-its snapshot, body and AI legs.
+`frontend/src/apps/canvases/NodeView.tsx`, mounted by the explorer's preview
+wherever it mounts a native mode (the content pane, the `_side` pane, a
+layout pane), given the file's path. It resolves `env`, `name` and the node
+from the path and holds the header strip, the relay and the workbench frame.
+It is loaded lazily, with the rest of the canvases app, so the main bundle
+does not grow. The delta leg is extracted from `CanvasWorkspace.tsx` into
+one module both use (`apps/canvases/embed-delta-relay.ts`); the workspace
+keeps its snapshot, body and AI legs. `/render` refuses the name, as it does
+every native template.
 
 ### 53.5 Out of scope
 
