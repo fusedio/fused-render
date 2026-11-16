@@ -20,9 +20,14 @@ Endpoints (all GET, CORS *):
   /ltile/{z}/{x}/{y}.png?file=&level=N -> PNG tile rendered ONLY from pyramid
         level N (0 = full res) via rasterio — used by the pyramid template
 
-/tile tries the native pure-python engine first (uncompressed/deflate TIFFs);
-local files it can't read (BigTIFF, user-defined CRS, exotic compression)
-fall back to a rasterio WarpedVRT render instead of the runPython image path.
+Two engines sit behind one file interface (`open_file` + `read_window`), so
+/meta, /tile, /hist and /value work the same on either:
+  * native — the pure-python decoder over an mmap (uncompressed/deflate, and
+    more with imagecodecs); the fast path for local files;
+  * GDAL (rasterio) — everything else: an `https://` URL (a streamed bucket
+    object, D1488; GDAL reads it with HTTP range requests through /vsicurl/,
+    caching and merging them itself), and local files the native engine
+    can't read (BigTIFF, LZW without imagecodecs, …).
 Idle shutdown after 30 min. The state file embeds this file's mtime, so
 editing the module auto-respawns a fresh daemon on the next ensure().
 """
@@ -71,14 +76,8 @@ from platutil import venv_python  # noqa: E402
 
 
 def _version():
-    # The decoder and the range reader are imported by the daemon too, so an
-    # edit to either respawns it like an edit to this file does.
-    here = os.path.dirname(_me())
     try:
-        stamps = [os.path.getmtime(os.path.join(here, n))
-                  for n in ("tile_server.py", "_tiff_core.py",
-                            os.path.join("..", "shared", "remote_range.py"))]
-        return "|".join(str(t) for t in stamps) + "|" + _daemon_python()
+        return str(os.path.getmtime(_me())) + "|" + _daemon_python()
     except OSError:
         return "0"
 
@@ -142,25 +141,6 @@ def _alive(port, version):
         return False
 
 
-def _tell_origin(port, token):
-    """Point a reused daemon at the fused-render server that asked for it.
-    The daemon signs `s3://` reads through that server (`fused_s3`), and a
-    daemon outlives a server restart on another port — so every ensure()
-    says where the server is now, instead of the daemon trusting the address
-    it was started with."""
-    import urllib.parse
-    import urllib.request
-    origin = os.environ.get("FUSED_RENDER_ORIGIN") or ""
-    if not origin:
-        return
-    try:
-        urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/origin?t={urllib.parse.quote(token)}"
-            f"&o={urllib.parse.quote(origin)}", timeout=2).read()
-    except Exception:  # noqa: BLE001 - an old daemon without /origin: its env is used
-        pass
-
-
 def main(action: str = "ensure"):
     """runPython entrypoint: make sure the daemon is running, return {port}."""
     import subprocess
@@ -169,7 +149,6 @@ def main(action: str = "ensure"):
         with open(STATE) as f:
             st = json.load(f)
         if _alive(st.get("port"), version):
-            _tell_origin(st["port"], st.get("token", ""))
             return {"port": st["port"], "token": st.get("token"),
                     "reused": True, "version": version}
         # stale daemon (old version or dead) — ask it to quit, then respawn
@@ -249,6 +228,33 @@ def _serve():
     VERSION = _version()
     last_hit = [time.time()]
 
+    # GDAL's HTTP reader (/vsicurl/) for streamed files: no sibling-file
+    # probing (each probe is a request), consecutive ranges merged into one
+    # request (S3 has no multi-range GET, so GDAL's default of parallel
+    # single-range requests stays), a bigger block cache, a few retries. Set
+    # before the first open; an explicit environment value wins.
+    for k, v in {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+                 "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
+                 "GDAL_HTTP_MAX_RETRY": "3", "GDAL_HTTP_RETRY_DELAY": "0.5",
+                 "CPL_VSIL_CURL_CACHE_SIZE": str(256 << 20),
+                 "GDAL_CACHEMAX": "512"}.items():
+        os.environ.setdefault(k, v)
+    if not (os.environ.get("CURL_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE")):
+        try:
+            import certifi
+            os.environ["CURL_CA_BUNDLE"] = certifi.where()
+        except ImportError:
+            pass
+
+    # A streamed file is drawn from its pyramid: the stretch and the
+    # zoomed-out tiles read the smallest level whole. A file whose smallest
+    # level is bigger than this (no overviews) would read most of the
+    # object for one view, so it is refused with a pointer to Download.
+    STREAM_MAX_PX = 4096 * 4096
+
+    def is_url(p):
+        return isinstance(p, str) and p.startswith(("https://", "http://"))
+
     # ---------------- file cache: parsed pyramid per path ----------------
     files = {}          # path -> dict(levels, meta, lock, stretch cache)
     files_lock = threading.Lock()
@@ -278,23 +284,37 @@ def _serve():
         return lv
 
     def open_file(path):
-        remote = T.is_remote(path)
-        if not remote:
-            path = os.path.abspath(os.path.expanduser(path))
+        """The file's engine-neutral handle, cached: native for a local file
+        it can draw, else GDAL (always GDAL for a URL)."""
+        url = is_url(path)
+        key = path if url else os.path.abspath(os.path.expanduser(path))
         with files_lock:
-            f = files.get(path)
-            if f is not None and remote and f["buf"].changed:
-                # The object was replaced since it was opened: start over on
-                # the new version rather than mixing the two.
-                files.pop(path, None)
-                f = None
+            f = files.get(key)
         if f is not None:
             return f
-        if remote:
-            buf = T.remote_range().RemoteBuffer(path)
-        else:
-            buf = path
-        buf, en, t0, next_off = T.parse_header(buf)
+        f = native_err = None
+        if not url:
+            try:
+                f = _open_native(key)
+            except Exception as e:  # noqa: BLE001 - GDAL may still read it
+                native_err = e
+        if f is None or not f["supported"]:
+            try:
+                g = _open_gdal(key)
+            except Exception:
+                if f is None and native_err is not None:
+                    raise native_err
+                if f is None:
+                    raise
+                g = None
+            if g is not None and (g["supported"] or f is None):
+                f = g
+        with files_lock:
+            files[key] = f
+        return f
+
+    def _open_native(path):
+        buf, en, t0, next_off = T.parse_header(path)
         meta = T.header_meta(path, buf, en, t0, next_off)
         levels = [_parse_level(buf, en, t0)]
         off, hops = next_off, 0
@@ -312,26 +332,189 @@ def _serve():
         levels.sort(key=lambda l: -l["W"])
         supported = all(l["comp"] in SUPPORTED_COMPS for l in levels)
         epsg = (meta.get("crs") or {}).get("epsg")
-        stream_error = None
-        if remote:
-            # The stretch reads the whole smallest level and a zoomed-out tile
-            # reads most of it: over the budget, streaming would be a slow
-            # download in disguise (a 3 GB file with no overviews).
-            small = levels[-1]
-            stream_error = (T.stream_refusal(T.level_bytes(small["counts"]))
-                            # read_window decodes it as float32 per band
-                            or T.decode_refusal(small["W"] * small["H"] * small["spp"] * 4))
-        f = {"path": path, "buf": buf, "en": en, "levels": levels,
-             "meta": meta, "epsg": epsg,
-             "transform": meta.get("transform"), "bounds": meta.get("bounds"),
-             "supported": bool(supported and epsg and meta.get("transform")
-                               and not stream_error),
-             "remote": remote, "stream_error": stream_error,
-             "lock": threading.Lock(),
-             "chunks": {}, "chunk_order": [], "stretch": {}}
-        with files_lock:
-            files[path] = f
+        palette = None
+        # ColorMap: all reds, then greens, then blues. GDAL honours it on a
+        # single-band file whatever the photometric tag says, and so do we.
+        cm = T._v(t0, 320)
+        if levels[0]["spp"] == 1 and isinstance(cm, list) and cm \
+                and len(cm) % 3 == 0:
+            n = len(cm) // 3
+            rgb = (np.asarray(cm, dtype="uint32").reshape(3, n).T >> 8)
+            palette = np.concatenate(
+                [rgb, np.full((n, 1), 255)], axis=1).astype("uint8")
+        return {"engine": "native", "path": path, "buf": buf, "en": en,
+                "levels": levels, "meta": meta, "epsg": epsg,
+                "palette": palette,
+                "transform": meta.get("transform"), "bounds": meta.get("bounds"),
+                "supported": bool(supported and epsg and meta.get("transform")),
+                "lock": threading.Lock(),
+                "chunks": {}, "chunk_order": [], "stretch": {}}
+
+    # ---------------- GDAL engine ----------------
+    def _gdal_level(ds):
+        from rasterio.enums import ColorInterp as CI
+        th, tw = ds.block_shapes[0]
+        ci = ds.colorinterp
+        photometric = (2 if tuple(ci[:3]) == (CI.red, CI.green, CI.blue)
+                       else 3 if ci and ci[0] == CI.palette else 1)
+        return {"W": ds.width, "H": ds.height, "spp": ds.count,
+                "dtype": np.dtype(ds.dtypes[0]), "planar": 1,
+                "tiled": tw < ds.width, "tw": tw, "th": th, "rps": th,
+                "photometric": photometric}
+
+    def _remote_size(url):
+        """Content-Length of a URL (one HEAD), or None."""
+        import urllib.request
+        try:
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                n = r.headers.get("Content-Length")
+            return int(n) if n else None
+        except Exception:  # noqa: BLE001 - size is informational
+            return None
+
+    def _gdal_meta(ds, path, levels):
+        """header_meta's shape, from GDAL instead of parsed tags."""
+        epsg = None
+        if ds.crs:
+            try:
+                epsg = ds.crs.to_epsg()
+            except Exception:  # noqa: BLE001
+                epsg = None
+        georef = ds.crs is not None and not ds.transform.is_identity
+        b = ds.bounds
+        tags = ds.tags()
+        ims = ds.tags(ns="IMAGE_STRUCTURE")
+        lv0 = levels[0]
+        gm = {k: v for k, v in tags.items()
+              if not k.startswith("TIFFTAG_") and k != "AREA_OR_POINT"}
+        for i in range(ds.count):
+            for k, v in ds.tags(i + 1).items():
+                gm[f"band {i + 1}: {k}"] = v
+        comp = ds.compression.value.lower() if ds.compression else "none"
+        return {
+            "crs": {"epsg": int(epsg)} if epsg else None,
+            "transform": list(ds.transform)[:6] if georef else None,
+            "bounds": ({"left": b.left, "right": b.right,
+                        "top": b.top, "bottom": b.bottom} if georef else None),
+            "area_or_point": {"area": "Area", "point": "Point"}.get(
+                (tags.get("AREA_OR_POINT") or "").lower()),
+            "citation": None,
+            "width": ds.width, "height": ds.height, "count": ds.count,
+            "dtype": ds.dtypes[0], "nodata": ds.nodata,
+            "file_size": (_remote_size(path) if is_url(path)
+                          else os.path.getsize(path)),
+            "tiff": {
+                "compression": comp,
+                "layout": (f"tiled {lv0['tw']}×{lv0['th']}" if lv0["tiled"]
+                           else f"stripped ({lv0['rps']} rows/strip)"),
+                "photometric": {1: "minisblack", 2: "rgb", 3: "palette"}.get(
+                    lv0["photometric"]),
+                "predictor": {"2": "horizontal", "3": "float"}.get(
+                    ims.get("PREDICTOR")),
+                "byte_order": None,
+                "overviews": [[l["W"], l["H"]] for l in levels[1:]],
+            },
+            "tags": {k: tags[t] for k, t in (
+                ("description", "TIFFTAG_IMAGEDESCRIPTION"),
+                ("software", "TIFFTAG_SOFTWARE"), ("datetime", "TIFFTAG_DATETIME"),
+                ("artist", "TIFFTAG_ARTIST"), ("copyright", "TIFFTAG_COPYRIGHT"))
+                if tags.get(t)},
+            "gdal_metadata": gm,
+            "descriptions": [d or f"band {i + 1}"
+                             for i, d in enumerate(ds.descriptions)],
+        }
+
+    def _open_gdal(path):
+        import rasterio
+        from rasterio.enums import ColorInterp as CI
+        name = "/vsicurl/" + path if is_url(path) else path
+        size = {}
+        sizer = None
+        if is_url(path):  # the HEAD for the size runs beside GDAL's open
+            sizer = threading.Thread(
+                target=lambda: size.update(n=_remote_size(path)), daemon=True)
+            sizer.start()
+        with rasterio.open(name) as ds:
+            levels = [_gdal_level(ds)]
+            for i in range(len(ds.overviews(1)) if ds.count else 0):
+                with rasterio.open(name, overview_level=i) as o:
+                    levels.append(_gdal_level(o))
+            levels.sort(key=lambda l: -l["W"])
+            meta = _gdal_meta(ds, path, levels)
+            palette = None
+            if ds.count and ds.colorinterp[0] == CI.palette:
+                try:
+                    cm = ds.colormap(1)
+                except ValueError:
+                    cm = None
+                if cm:
+                    palette = np.zeros((max(cm) + 1, 4), "uint8")
+                    for k, v in cm.items():
+                        palette[k] = v
+        if sizer is not None:
+            sizer.join(15)
+            meta["file_size"] = size.get("n")
+        epsg = (meta.get("crs") or {}).get("epsg")
+        f = {"engine": "gdal", "path": path, "gdal_name": name,
+             "levels": levels, "meta": meta, "epsg": epsg, "palette": palette,
+             "transform": meta["transform"], "bounds": meta["bounds"],
+             "supported": bool(epsg and meta["transform"]),
+             "lock": threading.Lock(), "stretch": {}, "stream_error": None,
+             "min_zoom": None}
+        small = levels[-1]
+        if is_url(path) and not f["supported"]:
+            f["stream_error"] = ("This TIFF has no map position GDAL can "
+                                 "use, so it can't be streamed onto the map. "
+                                 "Download it to view it.")
+        elif is_url(path) and small["W"] * small["H"] > STREAM_MAX_PX:
+            # No overview small enough for a whole view: stream it zoomed in
+            # only, from the zoom where a map tile covers ~1024 file pixels.
+            try:
+                x0, _, x1, _ = R._merc_bbox(f["bounds"], epsg)
+                res0 = (x1 - x0) / levels[0]["W"]
+                z = math.log2(2 * MERC_MAX / (TILE * 4 * res0))
+                f["min_zoom"] = max(0, min(22, math.ceil(z)))
+            except Exception:  # noqa: BLE001
+                f["supported"] = False
+                f["stream_error"] = (
+                    f"Too large to stream: this TIFF is {small['W']:,} × "
+                    f"{small['H']:,} px with no overviews. Download it to view it.")
         return f
+
+    class ZoomIn(Exception):
+        """A read of a zoom-only file (no overviews) wider than one zoomed-in
+        view: the page shows the footprint and asks to zoom in instead."""
+
+    # A zoom-only file reads at most this many file pixels per request (a
+    # tile at min_zoom covers about 1024 x 1024; reprojection widens it).
+    ZOOM_WINDOW_MAX = 3072 * 3072
+
+    # Open GDAL datasets, pooled per (file, level): a rasterio handle is not
+    # thread-safe, and each request runs on its own short-lived thread, so a
+    # read borrows a handle and returns it. Reads of different tiles run in
+    # parallel; GDAL's HTTP cache is process-wide, so they share fetched bytes.
+    _ds_pool = {}
+    _ds_pool_lock = threading.Lock()
+
+    def _gdal_read_window(f, li, x0, y0, x1, y1, band_idx, out):
+        import rasterio
+        from rasterio.windows import Window
+        key = (f["gdal_name"], li)
+        with _ds_pool_lock:
+            free = _ds_pool.setdefault(key, [])
+            ds = free.pop() if free else None
+        if ds is None:
+            kw = {} if li == 0 else {"overview_level": li - 1}
+            ds = rasterio.open(f["gdal_name"], **kw)
+        try:
+            out[:] = ds.read([b + 1 for b in band_idx],
+                             window=Window(x0, y0, x1 - x0, y1 - y0))
+        except Exception:
+            ds.close()
+            raise
+        with _ds_pool_lock:
+            _ds_pool[key].append(ds)
 
     # ---------------- chunk-granular decode with LRU ----------------
     MAX_CACHE_CHUNKS = 4096
@@ -402,55 +585,25 @@ def _serve():
             return (lv["H"] + lv["th"] - 1) // lv["th"]
         return (lv["H"] + lv["rps"] - 1) // lv["rps"]
 
-    def window_chunks(lv, x0, y0, x1, y1, band_idx):
-        """The chunk indices `read_window` will decode for this window (the
-        same arithmetic as its loops)."""
-        W, H, planar = lv["W"], lv["H"], lv["planar"]
-        if lv["tiled"]:
-            tw, th = lv["tw"], lv["th"]
-            across = (W + tw - 1) // tw
-            per_plane = across * ((H + th - 1) // th)
-            return [(bk * per_plane if planar == 2 else 0) + ty * across + tx
-                    for ty in range(y0 // th, (y1 - 1) // th + 1)
-                    for tx in range(x0 // tw, (x1 - 1) // tw + 1)
-                    for bk in (band_idx if planar == 2 else [0])]
-        rps, nsy = lv["rps"], _nchunks_y(lv)
-        return [(bk * nsy if planar == 2 else 0) + si
-                for si in range(y0 // rps, (y1 - 1) // rps + 1)
-                for bk in (band_idx if planar == 2 else [0])]
-
-    def prefetch(f, li, cis):
-        """Fetch every not-yet-decoded chunk of `cis` in one coalesced,
-        concurrent `read_many` and decode them, so a remote window costs a
-        few ranged GETs instead of one per tile or strip (a 1-row-per-strip
-        BigTIFF would otherwise be hundreds per map tile)."""
-        lv = f["levels"][li]
-        with f["lock"]:
-            missing = sorted({ci for ci in cis if (li, ci) not in f["chunks"]})
-        # The open-time check covers the smallest level; this one covers the
-        # window actually asked for (a max-zoom tile over full-width
-        # uncompressed strips can be far bigger than any overview).
-        refusal = T.stream_refusal(sum(lv["counts"][ci] for ci in missing))
-        if refusal:
-            raise T.TooLargeToStream(refusal)
-        if len(missing) < 2:
-            return
-        ranges = [(lv["offs"][ci], lv["offs"][ci] + lv["counts"][ci]) for ci in missing]
-        for ci, raw in zip(missing, f["buf"].read_many(ranges, max_transfer=T.STREAM_BUDGET)):
-            _decode_chunk(f, li, ci, raw)
-
     def read_window(f, li, x0, y0, x1, y1, band_idx):
         """(len(band_idx), y1-y0, x1-x0) float32 from level li, NaN nodata."""
         lv = f["levels"][li]
         W, H, spp = lv["W"], lv["H"], lv["spp"]
         x0, y0 = max(0, x0), max(0, y0)
         x1, y1 = min(W, x1), min(H, y1)
+        if f.get("min_zoom") is not None and \
+                max(0, x1 - x0) * max(0, y1 - y0) > ZOOM_WINDOW_MAX:
+            raise ZoomIn(f"zoom in to z{f['min_zoom']} to read this TIFF")
         out = np.full((len(band_idx), y1 - y0, x1 - x0), np.nan, dtype="float32")
         if x1 <= x0 or y1 <= y0:
             return out
+        if f["engine"] == "gdal":
+            _gdal_read_window(f, li, x0, y0, x1, y1, band_idx, out)
+            nod = f["meta"].get("nodata")
+            if nod is not None:
+                out[out == nod] = np.nan
+            return out
         planar = lv["planar"]
-        if f.get("remote"):
-            prefetch(f, li, window_chunks(lv, x0, y0, x1, y1, band_idx))
         if lv["tiled"]:
             tw, th = lv["tw"], lv["th"]
             across = (W + tw - 1) // tw
@@ -565,11 +718,17 @@ def _serve():
             return st
         li = len(f["levels"]) - 1
         lv = f["levels"][li]
-        # smallest overview capped at ~1M cells for the estimate
-        step = 1
-        while (lv["W"] // step) * (lv["H"] // step) > 1_000_000 and step < 64:
-            step += 1
-        arr = read_window(f, li, 0, 0, lv["W"], lv["H"], band_idx)[:, ::step, ::step]
+        if f.get("min_zoom") is not None:
+            # no overview to read whole: estimate from a central 1024² window
+            cx, cy = lv["W"] // 2, lv["H"] // 2
+            arr = read_window(f, li, cx - 512, cy - 512, cx + 512, cy + 512,
+                              band_idx)
+        else:
+            # smallest overview capped at ~1M cells for the estimate
+            step = 1
+            while (lv["W"] // step) * (lv["H"] // step) > 1_000_000 and step < 64:
+                step += 1
+            arr = read_window(f, li, 0, 0, lv["W"], lv["H"], band_idx)[:, ::step, ::step]
         st = []
         for k in range(arr.shape[0]):
             fin = arr[k][np.isfinite(arr[k])]
@@ -614,24 +773,25 @@ def _serve():
             pass
         return get_stretch(f, idx, robust)
 
+    _EMPTY_TILE = []
+
+    def empty_tile():
+        if not _EMPTY_TILE:
+            _EMPTY_TILE.append(R.encode_png(np.zeros((TILE, TILE, 4), "uint8")))
+        return 200, _EMPTY_TILE[0], "image/png"
+
     def do_tile(q, z, x, y):
         # native pure-python engine first; files it can't read (BigTIFF,
         # user-defined CRS, exotic compression) fall back to rasterio below.
         try:
             return _tile_native(q, z, x, y)
+        except ZoomIn:
+            return empty_tile()
         except Exception as e:
-            if T.is_remote(q1(q, "file") or ""):
-                # No rasterio fallback for a streamed file: /meta already
-                # said whether the native engine can draw it. Say WHY a tile
-                # failed: a network or changed-object error is transient
-                # (502; the next request reopens a changed object), a window
-                # over the budget is 413, and only an engine gap is "no tile".
-                RR = T.remote_range()
-                if isinstance(e, T.TooLargeToStream):
-                    return 413, str(e).encode(), "text/plain"
-                if isinstance(e, (RR.RemoteError, OSError)):
-                    return 502, str(e).encode(), "text/plain"
-                return 404, b"unsupported", "text/plain"
+            if is_url(q1(q, "file")):
+                # A streamed file has one engine; say why the tile failed
+                # (a network error is worth a retry, the next pan does one).
+                return 502, str(e).encode(), "text/plain"
             f = os.path.abspath(os.path.expanduser(q1(q, "file") or ""))
             if not os.path.exists(f):
                 return 404, b"unsupported", "text/plain"
@@ -653,6 +813,16 @@ def _serve():
                 v = np.clip((arr[k] - lo) / max(hi - lo, 1e-12), 0, 1)
                 rgba[:, :, k] = np.where(np.isfinite(v), v * 255, 0).astype("uint8")
             rgba[:, :, 3] = np.where(valid, 255, 0)
+        elif q1(q, "cmap") == "palette" and f.get("palette") is not None:
+            # the file's own colour table (classification rasters)
+            pal = f["palette"]
+            vals = arr[0]
+            ok = np.isfinite(vals) & (vals >= 0) & (vals < len(pal))
+            vlo, vhi = q1(q, "vlo", ""), q1(q, "vhi", "")
+            if vlo not in ("", None) and vhi not in ("", None):
+                ok = ok & (vals >= float(vlo)) & (vals <= float(vhi))
+            rgba = pal[np.where(ok, vals, 0).astype("int64")]
+            rgba[:, :, 3] = np.where(ok, rgba[:, :, 3], 0)
         else:
             vals = arr[0].astype("float64")
             lo, hi = st[0]
@@ -716,12 +886,13 @@ def _serve():
                                            else None)})
             m["corners"] = corners
         # sidecar files
-        files = [f["path"]]
+        # sidecar files (local only: a streamed file's path is its URL,
+        # which never goes back to the page)
+        files = [] if is_url(f["path"]) else [f["path"]]
         base = f["path"].rsplit(".", 1)[0]
-        for ext in (() if f.get("remote") else
-                    (".aux.xml", ".ovr", ".msk", ".tfw", ".wld", ".prj")):
+        for ext in (".aux.xml", ".ovr", ".msk", ".tfw", ".wld", ".prj"):
             for cand in (f["path"] + ext, base + ext):
-                if os.path.isfile(cand) and cand not in files:
+                if files and os.path.isfile(cand) and cand not in files:
                     files.append(cand)
         m["files"] = files
         # per-band info: dtype, colorinterp, approx min/max, block, overviews
@@ -765,9 +936,11 @@ def _serve():
         f = open_file(q1(q, "file"))
         m = dict(f["meta"])
         m["supported"] = f["supported"]
-        if f.get("remote"):
-            m["remote"] = True
-            m["stream_error"] = f["stream_error"]
+        m["engine"] = ("GDAL, streamed" if is_url(f["path"]) else
+                       "GDAL" if f["engine"] == "gdal" else "pure python")
+        m["stream_error"] = f.get("stream_error")
+        m["has_palette"] = f.get("palette") is not None
+        m["min_zoom"] = f.get("min_zoom")
         m["crs_name"] = T._crs_name(m.get("crs"))
         import _raster_common as C
         m["lonlat_bounds"] = C.lonlat_bounds(m.get("bounds"), f["epsg"])
@@ -791,8 +964,6 @@ def _serve():
             m = _deep_meta(f, m)
         except Exception:
             pass
-        if f.get("remote"):
-            m["stream"] = f["buf"].stats()
         return 200, json.dumps(m, default=str).encode(), "application/json"
 
     def do_hist(q):
@@ -810,7 +981,11 @@ def _serve():
         aspect = max((e - w) / max(n - s, 1e-9), 1e-6)
         oh = max(8, int((90000 / aspect) ** 0.5))
         ow = max(8, int(oh * aspect))
-        arr = sample_merc_grid(f, idx, w, s, e, n, ow, oh)
+        try:
+            arr = sample_merc_grid(f, idx, w, s, e, n, ow, oh)
+        except ZoomIn:
+            return 200, json.dumps({"channels": [], "zoom_in": True}).encode(), \
+                "application/json"
         out = {"channels": []}
         for k in range(arr.shape[0]):
             fin = arr[k][np.isfinite(arr[k])]
@@ -933,8 +1108,8 @@ def _serve():
         return 200, R.encode_png(np.ascontiguousarray(rgba)), "image/png"
 
     def do_ltile(q, z, x, y):
-        if T.is_remote(q1(q, "file") or ""):
-            return 404, b"forced-level tiles are not streamed", "text/plain"
+        if is_url(q1(q, "file")):
+            return 404, b"forced-level tiles are local only", "text/plain"
         file = os.path.abspath(os.path.expanduser(q1(q, "file")))
         # global stretch (sampled once, coarsest level) — a per-tile stretch
         # gives every tile its own contrast and the map shows seams
@@ -1009,13 +1184,6 @@ def _serve():
                 if u.path == "/ping":
                     code, body, ct = 200, json.dumps(
                         {"ok": True, "version": VERSION}).encode(), "application/json"
-                elif u.path == "/origin":
-                    # ensure()'s word on where the fused-render server is now
-                    # (fused_s3 reads FUSED_RENDER_ORIGIN per call).
-                    o = q.get("o", [""])[0]
-                    if o.startswith("http://"):  # app.set_server_origin_env's shape
-                        os.environ["FUSED_RENDER_ORIGIN"] = o
-                    code, body, ct = 200, b"ok", "text/plain"
                 elif u.path == "/quit":
                     self._send(200, b"bye", "text/plain")
                     threading.Thread(target=srv.shutdown, daemon=True).start()

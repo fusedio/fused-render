@@ -142,7 +142,8 @@ const P = {
   r:     () => fused.params.get('r') || '1',
   g:     () => fused.params.get('g') || '2',
   b:     () => fused.params.get('b') || '3',
-  cmap:  () => fused.params.get('cmap') || 'viridis',
+  // a classification raster with its own colour table starts in it
+  cmap:  () => fused.params.get('cmap') || (meta && meta.has_palette ? 'palette' : 'viridis'),
   stretch: () => fused.params.get('stretch') || '',
   // off by default: re-stretching to every viewport shifts colors on each
   // pan/zoom, which reads as flicker; opt in via the checkbox / autostretch=1
@@ -191,10 +192,22 @@ async function styleReady(){
   map.resize();
 }
 
-// An s3:// address (the explorer streams it, D1484): the daemon and
-// tiff_reader.py read it by HTTP ranges themselves, so the page only has to
-// keep it out of local-only paths (the folder browser).
+// ---------------- streamed files ----------------
+// An s3:// `_file` streams (D1488): the page signs it with fused.s3.sign and
+// hands the daemon the HTTPS URL, which GDAL reads by range requests. P.file()
+// stays the s3:// address (what the page shows and keys on); src() is what
+// the daemon reads.
 const isRemote = f => /^s3:\/\//i.test(f || '');
+let signed = null;       // {address, url, expires_at} for the current s3:// file
+async function signFor(file){
+  if (!isRemote(file)) return null;
+  const fresh = signed && signed.address === file && (!signed.expires_at
+    || Date.parse(signed.expires_at) - Date.now() > 60000);
+  if (!fresh) signed = { address: file, ...(await fused.s3.sign(file)) };
+  return signed;
+}
+const src = () => (isRemote(P.file()) && signed && signed.address === P.file())
+  ? signed.url : P.file();
 
 // ---------------- daemon + state ----------------
 let daemon = null;       // {port}
@@ -215,7 +228,7 @@ const dURL = p => `http://127.0.0.1:${daemon.port}${p}${p.includes('?') ? '&' : 
 const daemonQuery = params => new URLSearchParams(params).toString();
 
 function renderQuery(){
-  const params = { file: P.file(), mode: P.mode(), band: P.band(),
+  const params = { file: src(), mode: P.mode(), band: P.band(),
     r: P.r(), g: P.g(), b: P.b(), cmap: P.cmap() };
   if (P.stretch()) params.stretch = P.stretch();
   if (P.vlo() !== '' && P.vhi() !== ''){ params.vlo = P.vlo(); params.vhi = P.vhi(); }
@@ -230,11 +243,30 @@ function setRasterTiles(){
   const lb = meta.lonlat_bounds;
   const res = (meta.merc_bbox[2] - meta.merc_bbox[0]) / meta.width;
   const maxzoom = Math.min(24, Math.ceil(Math.log2(2 * Math.PI * 6378137 / (256 * res))) + 1);
-  map.addSource('raster', { type: 'raster', tiles: [url], tileSize: 256, minzoom: 0,
+  map.addSource('raster', { type: 'raster', tiles: [url], tileSize: 256,
+    minzoom: meta.min_zoom || 0,
     maxzoom, bounds: [lb.west, lb.south, lb.east, lb.north], volatile: false });
+  if (meta.min_zoom) showFootprint(lb);
   map.addLayer({ id: 'raster', type: 'raster', source: 'raster',
     paint: { 'raster-opacity': +els.opacity.value / 100, 'raster-fade-duration': 80,
              'raster-resampling': 'nearest' } });
+}
+
+// A streamed TIFF with no overviews draws only zoomed in (meta.min_zoom):
+// outline where it is, and say why it is empty until then.
+function showFootprint(lb){
+  const ring = [[lb.west, lb.south], [lb.east, lb.south], [lb.east, lb.north],
+                [lb.west, lb.north], [lb.west, lb.south]];
+  map.addSource('footprint', {type: 'geojson', data: {type: 'Feature',
+    geometry: {type: 'LineString', coordinates: ring}}});
+  map.addLayer({id: 'footprint', type: 'line', source: 'footprint',
+    paint: {'line-color': '#7dd3fc', 'line-width': 1.5, 'line-dasharray': [3, 2]}});
+}
+function zoomHint(){
+  if (!tileMode || !meta || !meta.min_zoom) return;
+  if (map.getZoom() < meta.min_zoom - 0.5)
+    status(`This TIFF has no overviews, so it streams only zoomed in. Zoom in to see its pixels (zoom ${meta.min_zoom}+).`);
+  else if (els.status.textContent.startsWith('This TIFF has no overviews')) status('');
 }
 
 function fitToRaster(instant){
@@ -334,7 +366,7 @@ function viewportMercBbox(){
 async function refreshHist(){
   if (!tileMode || !daemon) return;
   const bbox = viewportMercBbox().join(',');
-  const q = daemonQuery({file: P.file(), mode: P.mode(), band: P.band(),
+  const q = daemonQuery({file: src(), mode: P.mode(), band: P.band(),
     r: P.r(), g: P.g(), b: P.b(), bins: '60', bbox});
   try {
     if (histAbort) histAbort.abort();
@@ -349,6 +381,7 @@ async function refreshHist(){
 function drawHist(){
   const c = els.histCanvas, ctx = c.getContext('2d');
   ctx.clearRect(0, 0, c.width, c.height);
+  if (lastHist && lastHist.zoom_in){ els.histStats.textContent = 'zoom in for viewport stats'; return; }
   if (!lastHist || !lastHist.channels || !lastHist.channels.length) return;
   const chans = lastHist.channels.filter(ch => ch.counts);
   if (!chans.length){ els.histStats.textContent = 'no data in viewport'; return; }
@@ -486,7 +519,7 @@ map.on('mousemove', async e => {
   const now = performance.now();
   if (!tileMode || !daemon || now - hoverT < 120) return;
   hoverT = now;
-  const q = daemonQuery({file: P.file(), lon: e.lngLat.lng, lat: e.lngLat.lat});
+  const q = daemonQuery({file: src(), lon: e.lngLat.lng, lat: e.lngLat.lat});
   try {
     const r = await (await fetch(dURL('/value?' + q))).json();
     const vs = r.values || [];
@@ -517,7 +550,7 @@ function renderMeta(){
     ['size on disk', meta.file_size ? human(meta.file_size) : '—'],
     ['raster size', `${meta.width} × ${meta.height} px, ${meta.count} band(s)`],
     ['dtype', meta.dtype], ['nodata', meta.nodata ?? 'none'],
-    ['engine', tileMode ? 'tile daemon (pure)' : (meta.engine || 'fallback')],
+    ['engine', tileMode ? `tile daemon (${meta.engine || 'pure python'})` : (meta.engine || 'fallback')],
   ]);
   if ((meta.files || []).length > 1)
     h += kvTable([['sidecars', meta.files.slice(1).map(f => f.split('/').pop()).join(', ')]]);
@@ -611,6 +644,10 @@ function syncControls(){
   els.bandRow.style.display = isRgb ? 'none' : '';
   els.rgbRow.style.display = isRgb ? '' : 'none';
   els.cmapRow.style.display = isRgb ? 'none' : '';
+  const palOpt = els.cmap.querySelector('option[value="palette"]');
+  if (meta && meta.has_palette && !palOpt)
+    els.cmap.insertAdjacentHTML('afterbegin', '<option value="palette">file palette</option>');
+  else if (!(meta && meta.has_palette) && palOpt) palOpt.remove();
   els.cmap.value = P.cmap();
   els.path.value = P.file();
   if (els.autoStretch) els.autoStretch.checked = P.autoStretch();
@@ -644,7 +681,7 @@ els.opacity.oninput = () => {
 els.basemap.onchange = () => {
   const show = els.basemap.checked ? 'visible' : 'none';
   for (const l of map.getStyle().layers)
-    if (!['raster', 'rimg', 'rimg2'].includes(l.id)) map.setLayoutProperty(l.id, 'visibility', show);
+    if (!['raster', 'rimg', 'rimg2', 'footprint'].includes(l.id)) map.setLayoutProperty(l.id, 'visibility', show);
 };
 
 // ---------------- explorer (browse) ----------------
@@ -685,23 +722,27 @@ async function loadFile(){
     const d = await ensureDaemon().catch(() => null);
     meta = null; tileMode = false;
     els.imgFallback.style.display = 'none';
-    for (const id of ['raster', 'rimg', 'rimg2']){
+    for (const id of ['raster', 'rimg', 'rimg2', 'footprint']){
       if (map.getLayer(id)) map.removeLayer(id);
       if (map.getSource(id)) map.removeSource(id);
     }
+    const remote = isRemote(file);
+    els.browse.style.display = remote ? 'none' : '';
+    if (remote){
+      try { await signFor(file); }
+      catch (e) { status(`Can't open this file from S3: ${e.message || e}`, true); return; }
+    }
     if (d && d.port){
       try {
-        meta = await (await fetch(dURL('/meta?' + daemonQuery({file})))).json();
+        meta = await (await fetch(dURL('/meta?' + daemonQuery({file: src()})))).json();
         tileMode = !!meta.supported;
       } catch (e) { meta = null; }
     }
-    // A streamed s3:// file the daemon will not stream (no overview small
-    // enough — a full view would read GBs): say so instead of handing it to
-    // the fallback engine, which would refuse the same read more slowly.
-    els.browse.style.display = isRemote(file) ? 'none' : '';
     syncControls();
-    if (meta && meta.stream_error){
-      status(meta.stream_error, true);
+    if (remote && !tileMode){
+      // A streamed file has no fallback engine: the daemon said why it
+      // won't draw it (too large without overviews, no georeference).
+      status((meta && meta.stream_error) || "Can't stream this TIFF. Download it to view it.", true);
       renderMeta();
       loadedFile = file;
       loadedQuery = renderQuery();
@@ -711,6 +752,7 @@ async function loadFile(){
       setRasterTiles();
       fitToRaster();
       status('');
+      zoomHint();
       refreshHist();
     } else {
       await loadFallback();
@@ -732,7 +774,7 @@ function onParamsChanged(){
   if (q !== loadedQuery){
     loadedQuery = q;
     if (tileMode){ setRasterTiles(); refreshHist(); }
-    else { loadFallback(); }
+    else if (!isRemote(file)) { loadFallback(); }
   }
   drawHist();
 }
@@ -740,8 +782,9 @@ fused.params.onChange(onParamsChanged);
 
 let histTimer = null;
 map.on('moveend', () => {
+  zoomHint();
   if (tileMode){ clearTimeout(histTimer); histTimer = setTimeout(refreshHist, 150); }
-  else scheduleFallbackRefine();
+  else if (!isRemote(P.file())) scheduleFallbackRefine();
 });
 
 loadFile();
