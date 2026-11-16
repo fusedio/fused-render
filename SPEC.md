@@ -12647,10 +12647,10 @@ wherever it mounts a native mode (the content pane, the `_side` pane, a
 layout pane), given the file's path. It resolves `env`, `name` and the node
 from the path and holds the header strip, the relay and the workbench frame.
 It is loaded lazily, with the rest of the canvases app, so the main bundle
-does not grow. The delta leg is extracted from `CanvasWorkspace.tsx` into
-one module both use (`apps/canvases/embed-delta-relay.ts`); the workspace
-keeps its snapshot, body and AI legs. `/render` refuses the name, as it does
-every native template.
+does not grow. The read leg of the relay is its own module
+(`apps/canvases/embed-delta-relay.ts`), written so the workspace can move
+onto it later; in this pass `CanvasWorkspace.tsx` keeps its own relay
+untouched. `/render` refuses the name, as it does every native template.
 
 ### 53.5 Out of scope
 
