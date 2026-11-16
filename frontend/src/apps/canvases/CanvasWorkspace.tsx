@@ -215,7 +215,7 @@ import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   CanvasOwnedError,
@@ -1969,7 +1969,10 @@ export default function CanvasWorkspace({
               disk_hash: ack.disk_hash,
             });
           } else {
-            if (ack.code === "gone" && ack.kept) notify(keptEditNotice(body.file, ack.kept));
+            if (ack.code === "gone" && ack.kept) {
+              const kept = ack.kept;
+              notify(keptEditNotice(body.file, () => void navigateUrl(viewUrlForFsPath(kept))));
+            }
             post({
               type: "fused-embed-body-rejected",
               seq,

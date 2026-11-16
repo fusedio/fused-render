@@ -32,39 +32,31 @@ export function fileDeletedRemovals(ops: readonly DeltaOp[]): Removal[] {
   return out;
 }
 
-const LISTED = 5;
-
-/** "a.py, b.py and 3 more". */
-function listed(items: readonly string[]): string {
-  if (items.length <= LISTED) {
-    return items.length === 1 ? items[0] : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
-  }
-  return `${items.slice(0, LISTED).join(", ")} and ${items.length - LISTED} more`;
-}
+// The card draws the title and the detail on ONE line each, ellipsized
+// (notifications.css `.dl-title`), so the words that matter come first and
+// every line stays short: the node's name leads the title, and the path of a
+// kept edit is behind an action rather than in the text.
 
 /** The notice for nodes removed because their files were deleted; null for none. */
 export function removalNotice(removed: readonly Removal[]): NotificationInput | null {
   if (removed.length === 0) return null;
   if (removed.length === 1) {
-    const { name, file } = removed[0];
-    return {
-      title: `Removed "${name}" from the canvas`,
-      detail: `Its file${file ? ` ${file}` : ""} was deleted on disk.`,
-    };
+    return { title: `Removed ${removed[0].name}`, detail: "Its file was deleted on disk." };
   }
   return {
     title: `Removed ${removed.length} nodes from the canvas`,
-    detail: `Their files were deleted on disk: ${listed(removed.map((r) => r.file ?? r.name))}.`,
+    detail: "Their files were deleted on disk.",
   };
 }
 
 /** The notice for an edit kept in the trash because its file was deleted.
- *  Retained ("attention"): the path is what the user needs to get the text
- *  back, so it must outlive the popup. */
-export function keptEditNotice(file: string, path: string): NotificationInput {
+ *  Retained ("attention"): the kept text is what the user needs, so it must
+ *  outlive the popup; `open` shows the kept file. */
+export function keptEditNotice(file: string, open: () => void): NotificationInput {
   return {
-    title: `Kept your unsaved edits to ${file}`,
-    detail: `The file was deleted on disk while you were editing it. Your text was saved to ${path}`,
+    title: "Kept your unsaved edits",
+    detail: `${file} was deleted on disk.`,
     tier: "attention",
+    action: { label: "Open", onClick: open, title: "Open the kept text" },
   };
 }

@@ -23,34 +23,32 @@ describe("removalNotice", () => {
     expect(removalNotice([])).toBeNull();
   });
 
-  test("one, with and without its file", () => {
+  test("one: the node's name leads the title", () => {
     expect(removalNotice([{ name: "chunks_parquet_6", file: "chunks_parquet_6.py" }])).toEqual({
-      title: 'Removed "chunks_parquet_6" from the canvas',
-      detail: "Its file chunks_parquet_6.py was deleted on disk.",
+      title: "Removed chunks_parquet_6",
+      detail: "Its file was deleted on disk.",
     });
-    expect(removalNotice([{ name: "x", file: null }])?.detail).toBe("Its file was deleted on disk.");
   });
 
-  test("several, listed with a cap", () => {
+  test("several", () => {
     expect(
       removalNotice([
         { name: "a", file: "a.py" },
         { name: "b", file: null },
       ]),
-    ).toEqual({ title: "Removed 2 nodes from the canvas", detail: "Their files were deleted on disk: a.py and b." });
-    const many = Array.from({ length: 7 }, (_, i) => ({ name: `n${i}`, file: `n${i}.py` }));
-    expect(removalNotice(many)?.detail).toBe(
-      "Their files were deleted on disk: n0.py, n1.py, n2.py, n3.py, n4.py and 2 more.",
-    );
+    ).toEqual({ title: "Removed 2 nodes from the canvas", detail: "Their files were deleted on disk." });
   });
 });
 
 describe("keptEditNotice", () => {
-  test("names the file and where the text went, and stays in the panel", () => {
-    expect(keptEditNotice("a.py", "/trash/1/a.py")).toEqual({
-      title: "Kept your unsaved edits to a.py",
-      detail: "The file was deleted on disk while you were editing it. Your text was saved to /trash/1/a.py",
-      tier: "attention",
-    });
+  test("names the file, stays in the panel, and opens the kept text", () => {
+    let opened = 0;
+    const n = keptEditNotice("a.py", () => opened++);
+    expect(n.title).toBe("Kept your unsaved edits");
+    expect(n.detail).toBe("a.py was deleted on disk.");
+    expect(n.tier).toBe("attention");
+    expect(n.action?.label).toBe("Open");
+    n.action?.onClick();
+    expect(opened).toBe(1);
   });
 });
