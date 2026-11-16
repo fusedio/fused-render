@@ -519,7 +519,7 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   // keeps the word (its time slot holds the word's box) until the row is
   // short even stacked (5+), one rung before the where-tag's word.
   expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot .task-head-open-word,`);
-  expect(css).toContain(`.task-head.is-window${from(5)} .task-head-timeslot .task-head-open-word {`);
+  expect(css).toContain(`.task-head.is-window${from(5)} .task-head-facts .task-head-open-word {`);
   // A rail window's ⋮ always stands (2026-11-16): no rule hides it or holds
   // its seat open, and nothing is moved over it at rest.
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {");
@@ -758,4 +758,37 @@ test("the status icon opens the icon picker outside a rename — a favourite's f
 test("no where-tag, no seat for it (a whole folder, a file: the place alone)", () => {
   const r = render(head());
   expect(byClass(r, "task-head-where")).toHaveLength(0);
+});
+
+test("a rail window's facts and acts are two layers of one box; a panel keeps the two slots (2026-11-16)", () => {
+  const props = {
+    task: task({ message_count: 6 }),
+    open: { href: "/x", label: "Open in Explorer", onOpen: () => {} },
+  };
+  const win = render(head({ ...props, reveal: "window" }));
+  // One box, two layers: count + time, then star + door. No per-fact slots.
+  expect(byClass(win, "task-head-facts")).toHaveLength(1);
+  expect(cls(byClass(win, "task-head-facts")[0]!)).toContain("has-acts");
+  expect(byClass(win, "task-head-countslot")).toHaveLength(0);
+  expect(byClass(win, "task-head-timeslot")).toHaveLength(0);
+  const [a, b] = byClass(win, "task-head-facts-layer");
+  expect(cls(a!)).toContain("is-a");
+  expect(JSON.stringify(a)).toContain("task-head-count");
+  expect(JSON.stringify(a)).toContain("task-head-time");
+  expect(cls(b!)).toContain("is-b");
+  expect(JSON.stringify(b)).toContain("task-head-open");
+  // A fact with no act to trade with is repeated, muted, in the acts' layer.
+  const noStar = render(head({ ...props, reveal: "window", star: false }));
+  const acts = byClass(noStar, "task-head-facts-layer")[1]!;
+  expect(JSON.stringify(acts)).toContain("task-head-count");
+  expect(JSON.stringify(acts)).toContain('"aria-hidden":true');
+  // No acts at all: the facts alone, and they stay under the pointer.
+  const bare = render(head({ task: task({ message_count: 6 }), reveal: "window", star: false }));
+  expect(cls(byClass(bare, "task-head-facts")[0]!)).not.toContain("has-acts");
+  expect(byClass(bare, "task-head-facts-layer")).toHaveLength(1);
+  // A panel or a pane keeps one slot per fact.
+  const pane = render(head(props));
+  expect(byClass(pane, "task-head-facts")).toHaveLength(0);
+  expect(byClass(pane, "task-head-countslot")).toHaveLength(1);
+  expect(byClass(pane, "task-head-timeslot")).toHaveLength(1);
 });

@@ -430,8 +430,10 @@ describe("ClaudeRail's card beside the pane", () => {
       // not the head's plain TaskStar, as the count slot's other occupant —
       // and its archive as the id slot's (the a/b slots, 2026-11-15).
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-star"))).toHaveLength(0);
-      const countSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-countslot"));
-      expect(countSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
+      // A rail window seats it in the acts' layer of its facts box (the count
+      // and the time are the other layer; 2026-11-16).
+      const acts = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-facts-layer") && cls(n).includes("is-b"));
+      expect(acts.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
       const idSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-idslot"));
       expect(idSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(1);
       // The status icon trades with nothing.

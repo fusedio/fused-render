@@ -513,17 +513,17 @@
    title pays the few px. Only a row that is short even with the title on
    row 2 (5+) folds it — one rung before the where-tag's word (6+). */
 .task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-word,
-.task-head.is-window:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-word {
+.task-head.is-window:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-facts .task-head-open-word {
   display: none;
 }
 .task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open,
-.task-head.is-window:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open {
+.task-head.is-window:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-facts .task-head-open {
   padding: 0;
   width: 22px;
   justify-content: center;
 }
 .task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-arrow,
-.task-head.is-window:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-arrow {
+.task-head.is-window:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-facts .task-head-open-arrow {
   display: inline;
   /* Alone, the arrow is the star's size (the narrow row's rule). */
   width: 15px;
@@ -759,6 +759,48 @@
   justify-items: end;
 }
 
+/* A RAIL WINDOW'S FACTS AND ACTS: TWO LAYERS OF ONE BOX (TaskHead
+   `factsCluster`; Akshil, 2026-11-16: "too much space between message count
+   and time … star and Open do have a weird gap, keep them closer"). The box
+   is as wide as the wider layer, so the where-tag and the title never move;
+   each layer keeps its own two items side by side against the right edge,
+   so neither pair is spread to fill a box sized for the other. */
+.task-head-facts {
+  display: inline-grid;
+  align-items: center;
+  justify-items: end;
+  flex: 0 0 auto;
+}
+.task-head-facts-layer {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 0.08s ease;
+}
+.task-head-facts-layer.is-b {
+  opacity: 0;
+  pointer-events: none;
+}
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible)) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+  opacity: 0;
+  pointer-events: none;
+}
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible)) .task-head-facts > .task-head-facts-layer.is-b {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .task-head-facts > .task-head-facts-layer.is-b {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 /* THE ID SLOT'S BUTTON (shell/TaskFileSeat; the rail card's
    `.claude-rail-peek-archive`): 22px to aim at, a quiet wash on hover. */
 .task-head-idslot :is(.task-head-file, .claude-rail-peek-archive) {
@@ -811,7 +853,8 @@
   }
 }
 /* The rail card's own star, at the slot's size. */
-.task-head-countslot .claude-rail-peek-star {
+.task-head-countslot .claude-rail-peek-star,
+.task-head-facts .claude-rail-peek-star {
   width: 22px;
   height: 22px;
 }
