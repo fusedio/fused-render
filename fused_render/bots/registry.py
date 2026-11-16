@@ -234,9 +234,9 @@ def loaded() -> list:
         return list(_bots.values())
 
 
-def create(name="", model="", effort="", instructions="", preset="", kind="", browser=""):
+def create(name="", model="", effort="", instructions="", preset="", kind="", browser="", expert=None):
     require_owner()
-    b = _botmod().create(name, model, effort, instructions, preset=preset, kind=kind, browser=browser)
+    b = _botmod().create(name, model, effort, instructions, preset=preset, kind=kind, browser=browser, expert=expert)
     sync_wake()
     return b
 
@@ -470,6 +470,7 @@ def _become_owner() -> None:
              ("FusedBot import", _import_fusedbot),
              ("v3 folder migration", _migrate_v3),
              ("Super Bot seed", _seed_super),
+             ("experts seed", _seed_experts),
              ("channels router", _start_router),
              ("takeover walk", _reconcile),
              ("browser sweep", _sweep_browsers),
@@ -477,7 +478,7 @@ def _become_owner() -> None:
     _run_steps([x for x in steps if claimed or x[0] not in _WS_STEPS])
 
 
-_WS_STEPS = ("v3 folder migration", "Super Bot seed", "takeover walk", "browser sweep")
+_WS_STEPS = ("v3 folder migration", "Super Bot seed", "experts seed", "takeover walk", "browser sweep")
 
 
 def _run_steps(steps) -> None:
@@ -496,7 +497,7 @@ def _workspace_steps() -> None:
         if _OWNER["ws_ready"] or not _claim_workspace():
             return
         _OWNER["ws_ready"] = True
-    _run_steps((("v3 folder migration", _migrate_v3), ("Super Bot seed", _seed_super),
+    _run_steps((("v3 folder migration", _migrate_v3), ("Super Bot seed", _seed_super), ("experts seed", _seed_experts),
                 ("takeover walk", _reconcile), ("browser sweep", _sweep_browsers)))
 
 
@@ -692,6 +693,20 @@ def _seed_super() -> None:
         logger.info("Super Bot seed skipped: legacy bots are still waiting to be migrated")
         return
     seed_super()
+
+
+def _seed_experts() -> None:
+    """The shipped experts (experts/seed.py), right after the Super Bot seed and under the same gates: until the
+    v3 migration has stamped, a legacy expert would be invisible and seeded twice. A failure logs, never blocks."""
+    from fused_render.bots import migrate_v3
+    if not os.path.exists(migrate_v3.stamp_path()) or _legacy_bots_remain():
+        logger.info("experts seed skipped: the v3 folder migration has not completed")
+        return
+    try:
+        from fused_render.experts import seed
+        seed.seed()
+    except Exception:  # noqa: BLE001 — startup goes on without the shipped experts
+        logger.warning("experts seed failed", exc_info=True)
 
 
 def _legacy_bots_remain() -> bool:

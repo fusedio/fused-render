@@ -477,6 +477,8 @@ function ExpertSection({ bot, confirm }: { bot: Bot; confirm: (title: string, te
   const [engine, setEngine] = useState<string>(bot.expert?.engine || "auto");
   const [model, setModel] = useState<string>(bot.expert?.model || "");
   const [saving, setSaving] = useState(false);
+  // The LAN door serves the panels but not …/settings (lan.py): on the phone the two menus show, read-only.
+  const lan = isLanHost(), locked = saving || lan;
   useEffect(() => {
     let live = true;
     void act(() => expertApi.engines(bot.id), true).then((r) => { if (live && Array.isArray(r)) setRows(r); });
@@ -495,14 +497,15 @@ function ExpertSection({ bot, confirm }: { bot: Bot; confirm: (title: string, te
   };
   return (
     <Rows>
-      <Row title="Engine" text={bot.expert_available === false ? bot.expert_reason || "No engine is switched on." : "Who answers for this expert. Auto follows your default when it is Claude, Codex or Copilot. Saved at once."} htmlFor="bmxengine">
-        <NativeSelect className="w-full" id="bmxengine" value={engine} disabled={saving}
+      <Row title="Engine" text={bot.expert_available === false ? bot.expert_reason || "No engine is switched on."
+        : lan ? "Who answers for this expert. Change it on the Mac." : "Who answers for this expert. Auto follows your default when it is Claude, Codex or Copilot. Saved at once."} htmlFor="bmxengine">
+        <NativeSelect className="w-full" id="bmxengine" value={engine} disabled={locked}
           onChange={(e) => { void save({ engine: e.target.value, model: "" }); }}>
           {engineOptions(rows, engine).map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
         </NativeSelect>
       </Row>
       <Row title="Model" text="The engine's model for this expert's answers. Saved at once." htmlFor="bmxmodel">
-        <NativeSelect className="w-full" id="bmxmodel" value={model} disabled={saving || engine === "auto"}
+        <NativeSelect className="w-full" id="bmxmodel" value={model} disabled={locked || engine === "auto"}
           onChange={(e) => { void save({ model: e.target.value }); }}>
           {modelOptions(rows, engine, model).map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
         </NativeSelect>

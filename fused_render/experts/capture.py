@@ -274,7 +274,8 @@ def build_prompt(bot, session: dict, transcript: str, consults: list) -> str:
     items = sorted(memory.items(bot), key=lambda i: -int(i.get("count") or 0))[:LESSONS_IN_PROMPT]
     lessons = "\n".join("- " + " ".join(str(i.get("claim") or "").split()) for i in items) or "(none yet)"
     rows = []
-    for r in consults[-CONSULTS_IN_PROMPT:]:
+    # `consult.log` is newest first: the newest few, oldest of them first.
+    for r in reversed(consults[:CONSULTS_IN_PROMPT]):
         q = " ".join(str(r.get("question") or "").split())[:500]
         a = " ".join(str(r.get("answer") or "").split())[:800]
         rows.append(f"- Q: {q}\n  A{' (unsure)' if r.get('unsure') else ''}: {a}")
