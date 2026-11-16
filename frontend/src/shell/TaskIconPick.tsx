@@ -59,6 +59,7 @@ export function TaskIconPick({
   task,
   editing = false,
   onlyWhileEditing = false,
+  nested = false,
   onDone,
   onOpenChange,
   children,
@@ -68,6 +69,11 @@ export function TaskIconPick({
   editing?: boolean;
   /** The older gate: a button only during a rename (flag-off heads). */
   onlyWhileEditing?: boolean;
+  /** Draw a `<span role="button">` — for a host that is itself a `<button>`
+   *  (the Board card, TaskStar's `nested`). That host is a DRAG SOURCE, so the
+   *  span swallows its own mousedown: a press on the ring must not lift the
+   *  card (owner, 2026-11-16: the ring is the picker on the Board too). */
+  nested?: boolean;
   /** After the server answered — a host that reloads its own facts. */
   onDone?: () => void;
   /** The picker opened or closed — a host with something of its own on the
@@ -173,29 +179,69 @@ export function TaskIconPick({
       </>
     );
   }
+  const toggle = (el: HTMLElement) => {
+    const rect = el.getBoundingClientRect();
+    setAnchor((cur) => (cur && cur.key === key ? null : { key, top: rect.top, left: rect.left }));
+  };
+  // `display: contents` (schedule.css): the ring stays the button's own grid
+  // item, so nothing moves.
+  const face = (
+    <span id={faceId} className="task-icon-pick-face">
+      {children}
+    </span>
+  );
+  const common = {
+    className: "task-icon-pick",
+    "aria-label": "Choose icon",
+    title: "Choose icon",
+    "aria-haspopup": "dialog" as const,
+    "aria-expanded": anchor !== null,
+    "aria-describedby": faceId,
+  };
+  if (nested) {
+    return (
+      <>
+        <span
+          {...common}
+          role="button"
+          tabIndex={0}
+          onMouseDown={(e) => {
+            // No drag, no focus moving to the card under it.
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            // Inside a door that is a <button>: the press is the ring's alone.
+            e.preventDefault();
+            e.stopPropagation();
+            toggle(e.currentTarget);
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            e.stopPropagation();
+            toggle(e.currentTarget);
+          }}
+        >
+          {face}
+        </span>
+        {picker}
+      </>
+    );
+  }
   return (
     <>
       <button
         type="button"
-        className="task-icon-pick"
-        aria-label="Choose icon"
-        title="Choose icon"
-        aria-haspopup="dialog"
-        aria-expanded={anchor !== null}
-        aria-describedby={faceId}
+        {...common}
         onMouseDown={editing ? (e) => e.preventDefault() : undefined}
         onClick={(e) => {
           // A control inside a door (a row, a card): the press is its own.
           e.stopPropagation();
-          const rect = e.currentTarget.getBoundingClientRect();
-          setAnchor((cur) => (cur && cur.key === key ? null : { key, top: rect.top, left: rect.left }));
+          toggle(e.currentTarget);
         }}
       >
-        {/* `display: contents` (schedule.css): the ring stays the button's
-            own grid item, so nothing moves. */}
-        <span id={faceId} className="task-icon-pick-face">
-          {children}
-        </span>
+        {face}
       </button>
       {picker}
     </>

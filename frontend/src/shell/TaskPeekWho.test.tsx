@@ -344,3 +344,32 @@ test("a host's ring facts reach the ring: the unread mark, the held draft, a fai
   // A live turn still outranks a stale failure, the block's own rule.
   expect(ringOf({ ring: { failed: true }, running: true }).failed).toBe(false);
 });
+
+test("idAt: a stacked head's number leads the title half; the marks half draws none (2026-11-16)", () => {
+  const overlay = createElement("button", { className: "host-archive" });
+  // One row: the marks hold the id slot, the title half none.
+  const marks = render({ task: task(), part: "marks", idOverlay: overlay });
+  expect(marks.text()).toContain("task-head-idslot");
+  expect(render({ task: task(), part: "title", idOverlay: overlay }).text()).not.toContain("T042");
+  // Stacked: the other way round, the number before the title.
+  expect(render({ task: task(), part: "marks", idOverlay: overlay, idAt: "title" }).text()).not.toContain("T042");
+  const title = render({ task: task(), part: "title", idOverlay: overlay, idAt: "title" }).text();
+  expect(title).toContain("host-archive");
+  expect(title.indexOf("T042")).toBeGreaterThan(-1);
+  expect(title.indexOf("T042")).toBeLessThan(title.indexOf("Rename the pane noun"));
+});
+
+test("picking: the icon picker open in the other half keeps the stacked id slot's Archive away", () => {
+  const overlay = createElement("button", { className: "host-archive" });
+  const v = render({ task: task(), part: "title", idOverlay: overlay, idAt: "title", picking: true });
+  expect(v.text()).toContain("T042");
+  expect(v.text()).not.toContain("host-archive");
+});
+
+test("the pencil in the shared head's title half is skipped by the fit ladder (it overlays the title's end)", () => {
+  const started = task({ renamed: false } as Partial<Task>);
+  const title = render({ task: started, part: "title" }).text();
+  if (title.includes("task-side-peek-rename")) expect(title).toContain("data-fit-skip");
+  // The block every older caller draws charges its pencil as before.
+  expect(render({ task: started }).text()).not.toContain("data-fit-skip");
+});

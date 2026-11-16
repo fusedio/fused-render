@@ -108,8 +108,11 @@ export function TaskPeekWho({
   iconPress = false,
   place,
   idOverlay,
+  idAt = "marks",
   editing = false,
   onEditingChange,
+  picking = false,
+  onPickingChange,
 }: {
   task: Task;
   /** RING FACTS ONLY THE HOST KNOWS (the rail card: RailPeek): the unread
@@ -153,9 +156,23 @@ export function TaskPeekWho({
    *  (`.task-head-idslot`, task-head.css). Withheld during a rename and while
    *  the icon picker is open. */
   idOverlay?: ReactNode;
+  /** WHICH HALF HOLDS THE NUMBER (Akshil, 2026-11-16: "when title goes to
+   *  second line have task id go to second line as well"): `"marks"` — the
+   *  default — after the marks; `"title"` — a stacked head's row 2, the
+   *  number leading the title it names. A half asked for the other's seat
+   *  draws no number. */
+  idAt?: "marks" | "title";
   /** The title is being edited in the head's OTHER half (`part="title"`),
    *  for the half that holds the marks. */
   editing?: boolean;
+  /** The icon picker is open in the head's OTHER half (`part="marks"`), for
+   *  the half that holds the number when the head is stacked (`idAt`): its
+   *  Archive stays away meanwhile, as it does in one row (CodeRabbit on
+   *  #2287). */
+  picking?: boolean;
+  /** The icon picker opened or closed — for a head that splits the block in
+   *  two. Pass a STABLE function (a state setter). */
+  onPickingChange?: (picking: boolean) => void;
   /** The title input stood up or went away — for a head that splits the
    *  block in two. Pass a STABLE function (a state setter). */
   onEditingChange?: (editing: boolean) => void;
@@ -185,6 +202,11 @@ export function TaskPeekWho({
   const [draft, setDraft] = useState<string | null>(null);
   // The icon picker is open (TaskIconPick): the host's overlay stays away.
   const [iconPicking, setIconPicking] = useState(false);
+  useEffect(() => {
+    if (!iconPicking) return;
+    onPickingChange?.(true);
+    return () => onPickingChange?.(false);
+  }, [iconPicking, onPickingChange]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Enter saves and the unmount-time blur must not save twice; Escape must not
@@ -240,6 +262,20 @@ export function TaskPeekWho({
   const background = !running && liveJobRow(task);
   const showMarks = !bare && part !== "title";
   const showTitle = part !== "marks";
+  // THE NUMBER'S SEAT, drawn by whichever half holds it (`idAt`).
+  const idSeat =
+    idOverlay === undefined ? (
+      <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
+    ) : (
+      // One box, two occupants: the number at rest, the filing button while
+      // the head is pointed at (task-head.css, "THE A/B SLOTS").
+      <span className="task-head-slot task-head-idslot">
+        <span className="task-side-peek-id task-head-slot-a">{shortTaskId(task.task_id)}</span>
+        <span className="task-head-slot-b">
+          {renaming || editing || iconPicking || picking ? null : idOverlay}
+        </span>
+      </span>
+    );
   return (
     <div
       className={
@@ -282,20 +318,11 @@ export function TaskPeekWho({
       <TaskAgentMark backend={task.backend} />
       {place}
       {starNode ?? (star && <TaskStar task={task} />)}
-      {idOverlay === undefined ? (
-        <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
-      ) : (
-        // One box, two occupants: the number at rest, the filing button while
-        // the head is pointed at (task-head.css, "THE A/B SLOTS").
-        <span className="task-head-slot task-head-idslot">
-          <span className="task-side-peek-id task-head-slot-a">{shortTaskId(task.task_id)}</span>
-          <span className="task-head-slot-b">
-            {renaming || editing || iconPicking ? null : idOverlay}
-          </span>
-        </span>
-      )}
+      {idAt === "marks" ? idSeat : null}
         </>
       )}
+      {/* A stacked head's number leads its title on row 2 (`idAt`). */}
+      {showTitle && part === "title" && idAt === "title" ? idSeat : null}
       {!showTitle ? null : draft === null ? (
         <>
           <span
@@ -315,6 +342,11 @@ export function TaskPeekWho({
             <button
               type="button"
               className="icon-btn task-side-peek-rename"
+              // In the shared head the pencil stands OVER the title's end and
+              // takes no room (task-head.css): the fit ladder must not charge
+              // it a seat and a gap it does not hold (row-fit `rowNeed`) — it
+              // folded the where-tag's word 24px before the row was full.
+              {...(part === "title" ? { "data-fit-skip": "" } : {})}
               aria-label="Rename task"
               title="Rename task"
               onClick={startRename}

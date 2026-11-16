@@ -731,14 +731,17 @@ export const PEEK_HEAD_DROPS = [
  * other occupant and stays reachable at every rung. What gives, in order,
  * cumulatively:
  *
- *   1. the worktree pill (the chat's portaled seat in the chips);
+ *   1. the where-tag's word (TaskHead `where`: Canvas, the node, the file —
+ *      its icon stays; Akshil, 2026-11-16) and the worktree pill (the chat's
+ *      portaled seat in the chips);
  *   2. the PR chip — the chips show only while there is width for them, one
  *      at a time, and give before the title is cut;
- *   3. the facts, where the title still cannot be read whole beside them. In
- *      a rail window (`.is-window`: a card off the rail) the count and the
- *      time both leave, and the star and the ↗ come back under the pointer.
- *      In a panel or a pane the time alone leaves; its door comes back as
- *      the ↗ while the head is pointed at;
+ *   3. the facts, where the title still cannot be read whole beside them.
+ *      In a panel or a pane the time leaves; its door comes back as the ↗
+ *      while the head is pointed at. In a rail window (`.is-window`: a card
+ *      off the rail) the facts STAY — every seat there holds its box so
+ *      nothing shifts under the pointer (2026-11-16), and the acts need the
+ *      facts' room anyway — and only the door's word folds to its ↗;
  *   4. IN A RAIL WINDOW ONLY: the title, its reply and the trail leave row 1
  *      for a row of their own (`stacked`) once the title would be cut below
  *      `TASK_HEAD_TITLE_ROOM`; the status, the folder and the id slot stay
@@ -754,7 +757,7 @@ export const PEEK_HEAD_DROPS = [
  * by: both rows, so a rung can answer either row's overflow.
  */
 export const TASK_HEAD_DROPS = [
-  ".task-head-chips-host",
+  ".task-head-where .place-tag-word, .task-head-chips-host",
   ".task-head-chips",
   ".task-head-time",
   ".task-head-title-seat",
@@ -773,6 +776,14 @@ export const TASK_HEAD_STACK_LEVEL = 4;
 /** What a title must keep on row 1 before it is given a row of its own
  *  (Akshil, 2026-11-16: "if space is less just move it to second line"). */
 export const TASK_HEAD_TITLE_ROOM = 180;
+
+/** THE TITLE'S CLAIM ON THE ROW (Akshil, 2026-11-16: "give title max 400px
+ *  width, then show PR and worktree, and then if there is space left we can
+ *  show more of title"; task-head.css gives `.task-side-peek-title` the same
+ *  number as its flex basis). The ladder charges a title "whole" only up to
+ *  here, so the chips and the facts give only when the title cannot have
+ *  this much; width left over once they stand goes back to the title. */
+export const TASK_HEAD_TITLE_MAX = 400;
 
 /**
  * WHAT A TASK HEAD NEEDS — the wider of its rows (`.task-head-row`, and the
@@ -798,23 +809,21 @@ export function taskHeadNeed(head: HTMLElement): number {
       // every head. Past that a rail window keeps `TASK_HEAD_TITLE_ROOM` or
       // takes row 2; a panel or a pane keeps the floor: one row, ellipsised.
       // What opens only under the pointer is charged the same either way.
-      if (level < TASK_HEAD_FACTS_LEVEL) rowWants += titleWants(row, Number.POSITIVE_INFINITY);
+      if (level < TASK_HEAD_FACTS_LEVEL) rowWants += titleWants(row, TASK_HEAD_TITLE_MAX);
       else if (level === TASK_HEAD_FACTS_LEVEL && isWindow) rowWants += titleWants(row, TASK_HEAD_TITLE_ROOM);
-      if (isWindow) {
-        rowWants += hoverDelta(row, ".task-head-countslot, .task-head-timeslot", level < TASK_HEAD_FACTS_LEVEL, true);
-      } else if (level >= TASK_HEAD_FACTS_LEVEL) {
-        rowWants += hoverDelta(row, ".task-head-timeslot", false, false);
-      }
+      // A RAIL WINDOW IS THE SAME WIDTH AT REST AND UNDER THE POINTER
+      // (task-head.css, "IN A RAIL WINDOW NOTHING MOVES", 2026-11-16): every
+      // seat holds its box, so what is measured is what it needs. A panel's
+      // folded time slot still opens under the pointer and is charged for it.
+      if (!isWindow && level >= TASK_HEAD_FACTS_LEVEL) rowWants += hoverDelta(row, ".task-head-timeslot");
     }
     need = Math.max(need, rowWants);
   }
   return need + pad;
 }
 
-/** The b control a fact slot shows while the window is pointed at: one glyph. */
+/** The b control a folded fact slot shows while the head is pointed at: one glyph. */
 const TASK_HEAD_GLYPH = 22;
-/** The ⋮, which a rail window shows only under the pointer. */
-const TASK_HEAD_KEBAB = 28;
 
 /** What the title on this row wants past the floor `rowNeed` charged it, up
  *  to `cap`. A stacked title (row 2) is not on this row. */
@@ -827,26 +836,20 @@ function titleWants(row: HTMLElement, cap: number): number {
 
 /**
  * WHAT OPENS ONLY UNDER THE POINTER IS CHARGED THE SAME EITHER WAY
- * (task-head.css): a rail window's fact slots and its ⋮, a panel's folded
- * time slot. A read that lands mid-hover would otherwise see a wider row than
- * one at rest and the level could flap. Whatever the slots measure now comes
- * off; a glyph per slot that has a b control (and the ⋮, `kebab`) goes on.
- * `bareOnly`: only a slot with no fact (a task that has not run) changes
- * width at this rung.
+ * (task-head.css): a panel's folded time slot. A read that lands mid-hover
+ * would otherwise see a wider row than one at rest and the level could flap.
+ * Whatever the slots measure now comes off; a glyph per slot that has a b
+ * control goes on. (A rail window holds every seat at all times and needs
+ * none of this.)
  */
-function hoverDelta(row: HTMLElement, slots: string, bareOnly: boolean, kebab: boolean): number {
+function hoverDelta(row: HTMLElement, slots: string): number {
   const marks = row.querySelector<HTMLElement>(".task-head-marks");
   const gap = marks ? Number.parseFloat(getComputedStyle(marks).columnGap) || 0 : 0;
   let delta = 0;
   for (const slot of Array.from(row.querySelectorAll<HTMLElement>(slots))) {
-    if (bareOnly && slot.querySelector(".task-head-slot-a")) continue;
     const width = slot.getBoundingClientRect().width;
     if (width > 0) delta -= width + gap;
     if (slot.querySelector(".task-head-slot-b > :is(a, button, [role='button'])")) delta += TASK_HEAD_GLYPH + gap;
-  }
-  if (kebab) {
-    const seat = row.querySelector<HTMLElement>(".task-head-kebab");
-    if (seat && seat.getBoundingClientRect().width === 0) delta += TASK_HEAD_KEBAB + gap;
   }
   return delta;
 }
