@@ -86,7 +86,11 @@ export function NativeView({
           </div>
         }
       >
-        <View {...props} />
+        {/* Keyed by the file: a native view is a view of ONE file, and what
+            it holds for it (the node view's frame id, whose server record is
+            scoped to that file's node; its start flow) must not carry over
+            when the same pane moves to another file. */}
+        <View key={props.path} {...props} />
       </Suspense>
     </NativeViewBoundary>
   );
