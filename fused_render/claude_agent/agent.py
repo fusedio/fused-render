@@ -2636,10 +2636,12 @@ def _terminal_tools_supported() -> bool:
 
 # The two S3 tools (permission_server.S3_*): read-only, so pre-allowed.
 S3_TOOLS = ("s3_search", "s3_read")
-# The longest one S3 call should be allowed to take, on the backends whose
-# own MCP call ceiling is lower (Codex 60 s, OpenCode): a whole-object read
-# waits at most `permission_server.S3_FETCH_WAIT` (45 s) for its download,
-# and a 64 MiB range on a slow link can take longer than that.
+# Codex's per-server MCP call ceiling for `fused_approvals` when the S3 tools
+# are on. Its default is 60 s. A whole-object read stays under that by itself
+# (`permission_server.S3_FETCH_WAIT`, 40 s for the whole call), but a range
+# read is not time-boxed: 64 MiB needs more than 60 s below ~1.1 MB/s. The
+# raise is scoped to this one server (no other MCP server of the session sees
+# it). OpenCode has only a GLOBAL ceiling, so it is not raised there.
 S3_CALL_CEILING = 180.0
 
 
@@ -2662,8 +2664,12 @@ def _s3_tools_supported() -> bool:
     server's `/api/remote*` routes answer 403 `disabled` without it. One
     predicate for the places that must agree: the origin stamped into
     mcp.json (the server's roster), the pre-allowance, the read grant on the
-    remote cache, and the prompt note. Off, every one of them is absent and
-    the spawn is byte-identical to a run before these tools existed."""
+    remote cache, and the prompt note. Each spawn evaluates it ONCE and hands
+    the answer down (`s3=`), so a pref flipped mid-spawn cannot split them.
+    Off, every one of them is absent and the spawn is byte-identical to a run
+    before these tools existed. Implies `_terminal_tools_supported` (both
+    need the origin), so the backends' "hand over the MCP config" conditions
+    need no S3 clause."""
     return bool(_origin()) and _canvases_pref()
 
 
@@ -2683,14 +2689,27 @@ def _s3_scratch_dir(run_dir: str) -> str:
     return os.path.join(_s3_cache_root(), ".ranges", os.path.basename(run_dir))
 
 
-def _s3_read_dirs() -> list:
+def _s3_stamped(run_dir: str) -> bool:
+    """Whether a run's spawn turned the S3 tools on: its mcp.json carries
+    `FUSED_RENDER_S3_ORIGIN`. For a reader in another process after the
+    spawn (codex_host's developer instructions), so it agrees with the
+    roster instead of re-reading the pref."""
+    try:
+        with open(os.path.join(run_dir, "mcp.json"), encoding="utf-8") as fh:
+            env = json.load(fh)["mcpServers"][PERMISSION_SERVER]["env"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return isinstance(env, dict) and bool(env.get("FUSED_RENDER_S3_ORIGIN"))
+
+
+def _s3_read_dirs(s3: bool) -> list:
     """The remote cache root as a directory grant for a backend that is
     handed directories on its spawn line (Copilot's `--add-dir`, Gemini's
     `--include-directories`) or by name (OpenCode): made here when missing,
     since those CLIs drop or refuse a directory that is not there and the
     first download happens after the spawn. `[]` when the tools are off or
     the folder cannot be made."""
-    if not _s3_tools_supported():
+    if not s3:
         return []
     root = _s3_cache_root()
     try:
@@ -2704,7 +2723,7 @@ def _s3_read_dirs() -> list:
 def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
                       strict: bool = False, chat_id: str = "",
                       canvas: "dict | bool | None" = None,
-                      handoff_dir: str = "") -> str:
+                      handoff_dir: str = "", s3: bool = False) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
@@ -2787,7 +2806,7 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
         # must be in THIS dict to reach the server — and absent otherwise,
         # which is what keeps the tools out of the roster.
         server_env["FUSED_RENDER_TERMINAL_ORIGIN"] = _origin()
-    if _s3_tools_supported():
+    if s3:
         # The switch for the S3 tools (permission_server.S3_*), same
         # shape as the terminal one, plus where this run's saved ranges go.
         server_env["FUSED_RENDER_S3_ORIGIN"] = _origin()
@@ -4765,6 +4784,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     holds the pipe open for the life of the process — there is no longer an
     argv-embedded-message form to choose between (the retired
     `message_via_stdin=False` branch)."""
+    s3 = _s3_tools_supported()
     cmd = [_claude_bin(), "-p", "--input-format", "stream-json",
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
@@ -4778,7 +4798,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                handoff_dir=_breakout_handoff_dir(file) if breakout else "",
                # The chat's stable id: a resume's own session, or the id a
                # fresh chat / fork was minted (the same key `_decide` writes).
-               chat_id=new_session_id or session_id),
+               chat_id=new_session_id or session_id, s3=s3),
            *(["--strict-mcp-config"] if strict_mcp else []),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
@@ -4858,7 +4878,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                     #     spellings: the CLI matches the rule's text.
                     + ([f"mcp__{PERMISSION_SERVER}__{t}" for t in S3_TOOLS]
                        + [_read_rule(d) for d in _both_spellings([_s3_cache_root()])]
-                       if _s3_tools_supported() else [])
+                       if s3 else [])
                     + [_read_rule(SHOTS)]
                     + [_read_rule(d) for d in (extra_read_dirs or [])]
                     + [_read_rule(d) for d in
@@ -4886,7 +4906,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # folder) because it is a fact about the machine, not the target — and
     # only when the wrapper actually exists (see _fused_cli_note).
     cmd += ["--append-system-prompt",
-            _appended_prompt(file, pane, breakout=breakout)]
+            _appended_prompt(file, pane, breakout=breakout, s3=s3)]
     settings: dict = {}
     if breakout:
         # Forced, whatever the page asked for: `acceptEdits`/`auto`/`bypass`
@@ -5041,7 +5061,7 @@ def _breakout_note(file: str) -> str:
 
 
 def _appended_prompt(file: str, pane: bool, backend: str = "",
-                     breakout: bool = False) -> str:
+                     breakout: bool = False, s3: bool = False) -> str:
     """The prompt EVERY backend gets appended for this target — the shape
     `_claude_argv`'s comment above picks (file / app folder / ordinary
     folder) plus the machine-wide notes. One function so Claude's
@@ -5062,7 +5082,8 @@ def _appended_prompt(file: str, pane: bool, backend: str = "",
     return (shape + _canvas_reference_copy_note(file)
             + _canvas_reference_note(file, backend)
             + _canvas_shot_note(file) + _fused_cli_note(backend)
-            + _origin_note() + _s3_note(file, backend) + _blocked_note(backend)
+            + _origin_note() + (_s3_note(file, backend) if s3 else "")
+            + _blocked_note(backend)
             + (_breakout_note(file) if breakout else ""))
 
 
@@ -5181,13 +5202,11 @@ _S3_SKILL = "s3-files"
 
 
 def _s3_note(file: str, backend: str = "") -> str:
-    """The S3-tools disclosure, only when they are in the roster
-    (`_s3_tools_supported`; an un-announced tool does not get called, D235).
+    """The S3-tools disclosure, appended only when the spawn put them in the
+    roster (`s3=`; an un-announced tool does not get called, D235).
     Spelled in Claude's MCP names, so each backend's prefix rewrite applies.
     The skill is named only where this backend is handed the workbench skills
     for this target and the staged plugin has it."""
-    if not _s3_tools_supported():
-        return ""
     tool = "mcp__%s__%%s" % PERMISSION_SERVER
     note = (
         " You can find and read S3 files available through fused-render "
@@ -5268,7 +5287,7 @@ def _link_or_copy(src: str, dst: str) -> None:
         shutil.copytree(src, dst)
 
 
-def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
+def _copilot_plugin_dir(run_dir: str, file: str, pane: bool, s3: bool = False) -> str:
     """Write `<run_dir>/plugin` and return it.
 
     * `plugin.json` — the manifest, by the name `--agent fused:fused` resolves.
@@ -5293,7 +5312,7 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
     # `<server>-<tool>` (docs/COPILOT_BACKEND.md §10, verified), and a prompt
     # announcing a name the roster does not carry is the exact failure D235
     # exists to prevent.
-    body = _appended_prompt(file, pane, "copilot").replace(
+    body = _appended_prompt(file, pane, "copilot", s3=s3).replace(
         f"mcp__{PERMISSION_SERVER}__", f"{PERMISSION_SERVER}-")
     with _private_open(os.path.join(agents, "fused.agent.md")) as fh:
         fh.write("---\nname: fused\ndescription: fused-render chat context "
@@ -5375,12 +5394,13 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
                         else spawn_model not in _COPILOT_NO_EFFORT_MODELS)
         if takes_effort:
             cmd += ["--reasoning-effort", effort]
-    cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane),
+    s3 = _s3_tools_supported()
+    cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane, s3),
             "--agent", "fused:fused"]
-    if pane or _terminal_tools_supported() or _s3_tools_supported() or _canvas_of(file):
+    if pane or _terminal_tools_supported() or _canvas_of(file):
         cmd += ["--additional-mcp-config",
                 "@" + _write_mcp_config(run_dir, pane, approve=False,
-                                        canvas=_canvas_of(file))]
+                                        canvas=_canvas_of(file), s3=s3)]
     # SHOTS is made HERE, not left to the first screenshot: `--add-dir` is the
     # session's only read grant on it, the CLI exits at startup on a directory
     # that does not exist, and there is no post-start grant over ACP. A refusal
@@ -5399,7 +5419,7 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
     else:
         dirs = [SHOTS]
     for d in [*dirs, *(extra_read_dirs or []),
-              *_canvas_reference_dirs_on_disk(file, "copilot"), *_s3_read_dirs()]:
+              *_canvas_reference_dirs_on_disk(file, "copilot"), *_s3_read_dirs(s3)]:
         if os.path.isdir(d):
             cmd += ["--add-dir", d]
     if _fused_cli_dir():
@@ -5457,21 +5477,24 @@ def _codex_argv(run_dir: str, pane: bool, cli_mode: str | None,
     the two agents can never be handed different servers."""
     cmd = [_codex_bin(), "app-server"]
     canvas = _canvas_of(file)
-    if pane or _terminal_tools_supported() or _s3_tools_supported() or canvas:
+    # Once per spawn; the host's developer instructions read the answer back
+    # off this run's mcp.json (`_s3_stamped`), never the pref again.
+    s3 = _s3_tools_supported()
+    if pane or _terminal_tools_supported() or canvas:
         with open(_write_mcp_config(run_dir, pane, approve=False,
-                                    canvas=canvas),
+                                    canvas=canvas, s3=s3),
                   encoding="utf-8") as fh:
             server = json.load(fh)["mcpServers"][PERMISSION_SERVER]
         prefix = f"mcp_servers.{PERMISSION_SERVER}."
         for key in ("command", "args", "env"):
             cmd += ["-c", prefix + key + "=" + _toml_inline(server[key])]
         ceiling = max(_canvas_shot_ceiling() + 60 if canvas else 0,
-                      S3_CALL_CEILING if _s3_tools_supported() else 0)
+                      S3_CALL_CEILING if s3 else 0)
         if ceiling:
             # Codex's own per-call ceiling is 60 s, under the screenshot's
             # wait: without this the model reads an MCP timeout, not our
-            # sentence (D1471, F8). An S3 read (a 64 MiB range, or the
-            # bounded whole-object wait) gets the same room.
+            # sentence (D1471, F8). A large S3 range read on a slow link gets
+            # room too (`S3_CALL_CEILING`).
             cmd += ["-c", prefix + "tool_timeout_sec=%.1f" % ceiling]
     return cmd
 
@@ -5488,7 +5511,7 @@ _GEMINI_MODES = {"default": "default", "acceptEdits": "autoEdit", "auto": "yolo"
 _GEMINI_ARGV_MODES = {"default": "default", "autoEdit": "auto_edit", "yolo": "yolo"}
 
 
-def _gemini_context_dir(run_dir: str, file: str, pane: bool) -> str:
+def _gemini_context_dir(run_dir: str, file: str, pane: bool, s3: bool = False) -> str:
     """Write `<run_dir>/gemini/GEMINI.md` and return the dir.
 
     The body IS the appended prompt (`_appended_prompt`): Gemini has no
@@ -5506,7 +5529,7 @@ def _gemini_context_dir(run_dir: str, file: str, pane: bool) -> str:
     or `<tool>(key: value, …)` with arguments — `gemini_host._map_tool`)."""
     ctx = os.path.join(run_dir, "gemini")
     os.makedirs(ctx, exist_ok=True)
-    body = _appended_prompt(file, pane, "gemini").replace(
+    body = _appended_prompt(file, pane, "gemini", s3=s3).replace(
         f"mcp__{PERMISSION_SERVER}__", f"mcp_{PERMISSION_SERVER}_")
     with _private_open(os.path.join(ctx, "GEMINI.md")) as fh:
         fh.write(body + "\n")
@@ -5565,7 +5588,8 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
     gemini_mode = _GEMINI_MODES.get(cli_mode or "default")
     if gemini_mode and gemini_mode != "default":
         cmd += ["--approval-mode", _GEMINI_ARGV_MODES[gemini_mode]]
-    dirs = [_gemini_context_dir(run_dir, file, pane)]
+    s3 = _s3_tools_supported()
+    dirs = [_gemini_context_dir(run_dir, file, pane, s3)]
     try:
         shots = _shots_dir()
     except Exception as exc:  # noqa: BLE001
@@ -5580,7 +5604,7 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
     refs = _canvas_reference_dirs_on_disk(file, "gemini")
     skill = _canvas_reference_skill_file() if refs else ""
     for d in [*dirs, *(extra_read_dirs or []), *refs,
-              *([os.path.dirname(skill)] if skill else []), *_s3_read_dirs()]:
+              *([os.path.dirname(skill)] if skill else []), *_s3_read_dirs(s3)]:
         if not os.path.isdir(d):
             continue
         if "," in d:
@@ -5589,8 +5613,8 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
             continue
         cmd += ["--include-directories", d]
     canvas = _canvas_of(file)
-    if pane or _terminal_tools_supported() or _s3_tools_supported() or canvas:
-        _write_mcp_config(run_dir, pane, approve=False, canvas=canvas)
+    if pane or _terminal_tools_supported() or canvas:
+        _write_mcp_config(run_dir, pane, approve=False, canvas=canvas, s3=s3)
     return cmd
 
 
@@ -5627,7 +5651,8 @@ def _opencode_config():
 
 
 def _opencode_context_dir(run_dir: str, file: str, pane: bool,
-                          extra_read_dirs: list | None = None) -> str:
+                          extra_read_dirs: list | None = None,
+                          s3: bool = False) -> str:
     """Write `<run_dir>/opencode/AGENTS.md` and return the dir.
 
     The body IS the appended prompt (`_appended_prompt`): OpenCode has no
@@ -5644,7 +5669,7 @@ def _opencode_context_dir(run_dir: str, file: str, pane: bool,
     never Claude's `mcp__<server>__<tool>`."""
     ctx = os.path.join(run_dir, "opencode")
     os.makedirs(ctx, exist_ok=True)
-    body = _appended_prompt(file, pane, "opencode").replace(
+    body = _appended_prompt(file, pane, "opencode", s3=s3).replace(
         f"mcp__{PERMISSION_SERVER}__", f"{PERMISSION_SERVER}_")
     dirs = []
     try:
@@ -5657,7 +5682,7 @@ def _opencode_context_dir(run_dir: str, file: str, pane: bool,
         dirs.append(SHOTS)
     dirs += [d for d in (extra_read_dirs or []) if os.path.isdir(d)]
     dirs += [d for d in _canvas_reference_dirs_on_disk(file, "opencode") if d not in dirs]
-    dirs += [d for d in _s3_read_dirs() if d not in dirs]
+    dirs += [d for d in _s3_read_dirs(s3) if d not in dirs]
     if dirs:
         body += (" Besides the working folder, you may also read these "
                  "directories: " + ", ".join(dirs) + ".")
@@ -5693,22 +5718,22 @@ def _opencode_argv(run_dir: str, pane: bool, cli_mode: str | None,
         (the `canvas_screenshot` channel), with `--no-approve`, and the
         HOST hands it to `session/new` as the request's `mcpServers`."""
     cmd = [_opencode_bin(), "acp"]
-    ctx = _opencode_context_dir(run_dir, file, pane, extra_read_dirs)
+    s3 = _s3_tools_supported()
+    ctx = _opencode_context_dir(run_dir, file, pane, extra_read_dirs, s3)
     mode = _OPENCODE_MODES.get(cli_mode or "default", "default")
     with _private_open(os.path.join(ctx, _OPENCODE_SPAWN_FILE)) as fh:
         json.dump({"model": model or "", "mode": mode,
                    "instructions": os.path.join(ctx, "AGENTS.md"),
                    # A canvas session's screenshot outlasts OpenCode's own MCP
                    # call ceiling: the config's global one is raised above it
-                   # (`_opencode_env`; D1471).
-                   # An S3 read gets the same room (`S3_CALL_CEILING`).
-                   **({"mcp_timeout_ms": int(max(
-                       _canvas_shot_ceiling() + 60 if _canvas_of(file) else 0,
-                       S3_CALL_CEILING if _s3_tools_supported() else 0) * 1000)}
-                      if _canvas_of(file) or _s3_tools_supported() else {})}, fh)
+                   # (`_opencode_env`; D1471). Never raised for the S3
+                   # tools: this ceiling is GLOBAL (every MCP server of the
+                   # session), and their whole-object wait fits the default.
+                   **({"mcp_timeout_ms": int((_canvas_shot_ceiling() + 60) * 1000)}
+                      if _canvas_of(file) else {})}, fh)
     canvas = _canvas_of(file)
-    if pane or _terminal_tools_supported() or _s3_tools_supported() or canvas:
-        _write_mcp_config(run_dir, pane, approve=False, canvas=canvas)
+    if pane or _terminal_tools_supported() or canvas:
+        _write_mcp_config(run_dir, pane, approve=False, canvas=canvas, s3=s3)
     return cmd
 
 

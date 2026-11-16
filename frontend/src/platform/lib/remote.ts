@@ -27,6 +27,8 @@ type RemoteErrorCode =
   | "network"
   | "unsupported_bucket"
   | "index_not_ready"
+  | "no_space"
+  | "unknown_download"
   | "internal";
 
 const KNOWN_CODES: ReadonlySet<string> = new Set([
@@ -37,6 +39,8 @@ const KNOWN_CODES: ReadonlySet<string> = new Set([
   "network",
   "unsupported_bucket",
   "index_not_ready",
+  "no_space",
+  "unknown_download",
   "internal",
 ]);
 

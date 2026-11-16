@@ -4,7 +4,7 @@
   GET  /api/remote/list?url=&cursor=   one level of a folder, one page
   GET  /api/remote/read?url=&offset=&length=
                                        a byte range of an object, streamed
-                                       (the agent tool `s3_read`)
+                                       (the agent tool `s3_read`; X-Fused)
   POST /api/remote/fetch               download an object into the local cache
   GET  /api/remote/fetch/status?id=    where that download is up to
   POST /api/remote/fetch/cancel        stop it
@@ -37,7 +37,8 @@ router = APIRouter()
 
 _STATUS = {"disabled": 403, "forbidden": 403, "bad_url": 400, "unsupported_bucket": 400,
            "not_found": 404, "not_public": 403, "network": 502, "index_not_ready": 503,
-           "range_not_satisfiable": 416, "internal": 500}
+           "range_not_satisfiable": 416, "no_space": 507, "unknown_download": 404,
+           "internal": 500}
 
 
 def _fail(code: str, message: str) -> JSONResponse:
@@ -282,14 +283,24 @@ def _open_read(url, offset, length) -> remote_access.RangeBody:
     if not key or key.endswith("/"):
         raise RemoteError("bad_url", "a folder has no bytes to read — list it instead")
     what = canonical_url(bucket, key)
+    # The tool server saves a range to the cache volume: below the floor, no
+    # network either. Re-checked with the real window size once it is known.
+    remote_fetch.require_space(0)
+    body = None
     cached = remote_fetch.cached_copy(bucket, key)
     if cached is not None:
         try:
-            return _file_range(cached[0], cached[1], start, max_bytes, what)
+            body = _file_range(cached[0], cached[1], start, max_bytes, what)
         except OSError:
             logger.warning("cached copy of %s unreadable; reading from S3", what,
                            exc_info=True)
-    body, _ = remote_access.read_range(bucket, key, start, max_bytes=max_bytes)
+    if body is None:
+        body, _ = remote_access.read_range(bucket, key, start, max_bytes=max_bytes)
+    try:
+        remote_fetch.require_space(body.end - body.start)
+    except BaseException:
+        body.close()
+        raise
     return body
 
 
@@ -312,10 +323,14 @@ def _read_headers(body: remote_access.RangeBody) -> dict:
 
 @router.get("/api/remote/read")
 async def api_remote_read(url: str | None = None, offset: str | None = None,
-                          length: str | None = None):
-    gate = _gate()
-    if gate is not None:
-        return gate
+                          length: str | None = None,
+                          x_fused: str | None = Header(default=None)):
+    # Only fused-render's own tool server calls this (it sends X-Fused): a web
+    # page cannot drive outbound bucket reads, nor (later) reach private-bucket
+    # bytes by DNS rebinding.
+    refused = _guard(x_fused) or _gate()
+    if refused is not None:
+        return refused
     opened = await run_in_threadpool(_handle, _open_read, url, offset, length)
     if isinstance(opened, JSONResponse):
         return opened
@@ -339,7 +354,8 @@ def api_remote_fetch_status(id: str | None = None):  # noqa: A002 - contract nam
         return gate
     record = remote_fetch.status(id or "")
     if record is None:
-        return _fail("not_found", f"no such download: {id}")
+        return _fail("unknown_download",
+                     "that download is no longer tracked (the app restarted); start it again")
     return record
 
 

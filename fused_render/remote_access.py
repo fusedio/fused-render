@@ -120,7 +120,8 @@ def error_for_status(status: int, what: str) -> RemoteError:
     return RemoteError("network", f"S3 answered HTTP {status} for {what}")
 
 
-def _http_date(value: str | None) -> float | None:
+def http_date(value: str | None) -> float | None:
+    """An HTTP date header as an epoch time, or None."""
     if not value:
         return None
     try:
@@ -288,7 +289,7 @@ def read_range(bucket: str, key: str, start: int, end: int | None = None, *,
             served_from, size = 0, int(length)
         else:
             raise error_for_status(r.status_code, what)
-        info = ObjectInfo(size=size, mtime=_http_date(r.headers.get("last-modified")),
+        info = ObjectInfo(size=size, mtime=http_date(r.headers.get("last-modified")),
                           etag=clean_etag(r.headers.get("etag")))
         first, stop = resolve_range(start, end, size, max_bytes)
         if first < served_from:
@@ -333,5 +334,5 @@ def head(bucket: str, key: str) -> ObjectInfo:
         raise error_for_status(r.status_code, what)
     size = r.headers.get("content-length")
     return ObjectInfo(size=int(size) if size and size.isdigit() else None,
-                      mtime=_http_date(r.headers.get("last-modified")),
+                      mtime=http_date(r.headers.get("last-modified")),
                       etag=clean_etag(r.headers.get("etag")))

@@ -20,12 +20,13 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from fused_render import remote_access, remote_index
 from fused_render.index.cancel import Cancelled, cancellable
 from fused_render.remote_access import RemoteError, canonical_url
+from fused_render.server.common import _require_fused
 from fused_render.shell.prefs import canvases_enabled
 
 logger = logging.getLogger(__name__)
@@ -87,9 +88,10 @@ async def api_remote_index_rank(request: Request, q: str = Query(default=""),
 #
 # Exactly one of q / path (a blank value counts as absent); `cursor` only with
 # path. Unlike /rank this one is for a tool, so every condition is an error:
-# flag off 403 `disabled`, store not ready 503 `index_not_ready` (after
+# no `X-Fused: 1` 403 `forbidden`, flag off 403 `disabled`, store not ready 503 `index_not_ready` (after
 # `retry_if_needed()`), bad input 400 `bad_url`, another bucket 400
-# `unsupported_bucket`, a missing folder 404 `not_found`. Answer:
+# `unsupported_bucket`, a missing folder 404 `not_found`, a FILE given as
+# `path` 400 `bad_url`. Answer:
 # `{bucket, mode: "search"|"list", hits: [{url, is_dir, size, modified}],
 #   truncated, cursor}` — `modified` ISO-8601 UTC or null, folders size null.
 # In list mode `truncated` is "more pages follow" (cursor is not null).
@@ -117,8 +119,8 @@ def _hit(url: str, is_dir: bool, size, mtime) -> dict:
             "modified": None if is_dir else remote_access.iso_utc(mtime)}
 
 
-def _search_list(bucket: str, prefix: str, cursor: str | None,
-                 limit: int) -> dict | JSONResponse:
+def _search_list(bucket: str, prefix: str, cursor: str | None, limit: int,
+                 file_key: str | None) -> dict | JSONResponse:
     try:
         page = remote_index.list_dir(prefix, cursor, limit)
     except ValueError:
@@ -128,6 +130,9 @@ def _search_list(bucket: str, prefix: str, cursor: str | None,
     entries = page.get("entries") or []
     nxt = page.get("cursor") or None
     if not entries and not nxt and prefix and remote_index.has_dir(prefix) is False:
+        if file_key and remote_index.has_file(file_key):
+            return _error("that is a file, not a folder: read it with s3_read, "
+                          "or list its parent folder", "bad_url", 400)
         return _error(f"{canonical_url(bucket, prefix)} does not exist", "not_found", 404)
     return {"bucket": bucket, "mode": "list",
             "hits": [_hit(canonical_url(bucket, e["key"]), bool(e["is_dir"]),
@@ -139,7 +144,11 @@ def _search_list(bucket: str, prefix: str, cursor: str | None,
 async def api_remote_index_search(request: Request, q: str = Query(default=""),
                                   path: str = Query(default=""),
                                   limit: str = Query(default=""),
-                                  cursor: str = Query(default="")):
+                                  cursor: str = Query(default=""),
+                                  x_fused: str | None = Header(default=None)):
+    # Only fused-render's own tool server calls this (it sends X-Fused).
+    if _require_fused(x_fused) is not None:
+        return _error("missing or invalid X-Fused header", "forbidden", 403)
     if not canvases_enabled():
         return _error("the Fused integration is off — turn on Canvases in Preferences",
                       "disabled", 403)
@@ -168,7 +177,7 @@ async def api_remote_index_search(request: Request, q: str = Query(default=""),
         prefix = key if (not key or key.endswith("/")) else key + "/"
         try:
             return await asyncio.to_thread(_search_list, bucket, prefix, cursor or None,
-                                           limit_n)
+                                           limit_n, prefix[:-1] if prefix != key else None)
         except Exception:  # noqa: BLE001 - details (local paths) stay in the log
             logger.exception("remote index listing failed for %r", prefix)
             return _error("listing the S3 folder failed", "internal", 500)

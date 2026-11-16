@@ -8,15 +8,28 @@ This module owns that cache and the download.
 per key, so an object that is also a prefix (`a.zip` and `a.zip/x`), keys that
 differ only by case or Unicode normalisation, and a key ending `.part` beside
 its sibling never collide. The file keeps the object's basename (templates are
-chosen by suffix), made safe for the local filesystem. The in-flight download
-is `<hashdir>/.partial`, outside the object namespace.
+chosen by suffix), reduced to a conservative shell-safe name (`_safe_name`).
+The in-flight download is `<hashdir>/.partial`, outside the object namespace
+(a cached name never starts with ".").
 
-**What "cached" means.** One `manifest.json` under the cache root records, per
-`bucket/key`, the `etag` and `size` of the object the file was downloaded
-from, plus the file's own `mtime_ns` at completion. A file is cached only when
-it exists and matches the CURRENT HEAD's size and etag (`cached_path`). The
-same entry carries `part_etag` while a `.partial` exists, so a resume never
-stitches bytes of two versions of the object together.
+**What "cached" means.** One manifest (`manifest_path()`) records, per
+`bucket/key`, the `etag`, `size` and Last-Modified (`modified`) of the object
+the file was downloaded from, plus the file's own identity at completion
+(`mtime_ns`, `ctime_ns`, `ino`). A file is cached only when the entry is
+complete and the file on disk still has that size and identity, and (for
+`cached_path`) the CURRENT HEAD's size and etag. The manifest lives BESIDE the
+cache root, never inside it: agent sessions are granted the cache root (some
+backends' grants are writable), so nothing that decides what is trusted may
+live there. A rewritten file changes its ctime (which no process can set back),
+a swapped one its inode, so planted bytes never pass as the object. The same
+entry carries `part_etag` and `part_seal` (the `.partial`'s identity when its
+writer stopped) while a `.partial` exists, so a resume never stitches bytes of
+two versions of the object together, nor bytes someone else wrote.
+
+**Disk floor.** Nothing here may leave the cache volume with less than
+`RESERVE_BYTES` free (`require_space`): a download is refused up front (and
+re-checked once the size is certain) with code `no_space`. Agents start
+downloads unattended, so this is the only brake.
 
 **Download.** Streams to `.partial`, verifies, renames atomically, and leaves
 the file read-only (an editable cached copy would let a save silently diverge
@@ -72,6 +85,9 @@ WARN_BYTES = 100 * 1024 * 1024
 #: Most bytes one `/api/remote/read` call serves; a longer window is clamped.
 RANGE_MAX_BYTES = 64 * 1024 * 1024
 
+#: Free space a download or a range read must leave on the cache volume.
+RESERVE_BYTES = 5 * 1024 * 1024 * 1024
+
 #: Downloads streaming at once; later starts wait their turn.
 MAX_ACTIVE = 3
 
@@ -79,7 +95,10 @@ MAX_ACTIVE = 3
 #: the rest is a hash, since an S3 key holds characters a job id may not.
 JOB_PREFIX = "sys:remote-fetch:"
 
-_MANIFEST = "manifest.json"
+#: The manifest, in `<home>/cache/` beside the cache root (see the docstring).
+_MANIFEST = "remote-manifest.json"
+#: Where it lived before: inside the cache root. Migrated once, then removed.
+_OLD_MANIFEST = "manifest.json"
 _PARTIAL = ".partial"
 
 #: Open the download-manager row only once a download has streamed this long.
@@ -96,7 +115,6 @@ _CHUNK = 1 << 20
 _NAME_MAX = 200
 
 _MD5_ETAG = re.compile(r"^[0-9a-f]{32}$")
-_WIN_BAD_CHARS = set('<>:"|?*')
 
 _slots = threading.BoundedSemaphore(MAX_ACTIVE)
 
@@ -140,15 +158,26 @@ def in_cache(path: str) -> bool:
         p = parent
 
 
+_NAME_KEEP = set("._-=+,@")
+
+
 def _safe_name(key: str) -> str:
-    """The key's basename, made safe as one local filename. Keeps the suffix."""
+    """The key's basename as one conservative local filename. Whoever writes
+    to the bucket picks the key, and agents may paste this path into a shell
+    command, so only letters and digits (any script) and `._-=+,@` survive;
+    every other character (whitespace, controls, quotes, `$`, backtick,
+    `;&|<>(){}[]*?!\\#%~:`) becomes `_`. Never starts with `-` or `.`; at most
+    `_NAME_MAX` UTF-8 bytes, keeping the suffix (templates are chosen by it).
+    The hash directory keeps paths unique, so two keys sanitising to the same
+    name cannot collide."""
     name = key.rsplit("/", 1)[-1]
-    bad = {"\0", "/", "\\"} | (_WIN_BAD_CHARS if sys.platform == "win32" else set())
-    name = "".join("_" if ch in bad else ch for ch in name)
+    name = "".join(ch if (ch.isalnum() or ch in _NAME_KEEP) else "_" for ch in name)
     if sys.platform == "win32":
-        name = name.rstrip(". ")
-    if name in ("", ".", "..", _PARTIAL):
-        name = "_" + name if name else "object"
+        name = name.rstrip(".")
+    if not name:
+        name = "object"
+    if name[0] in "-.":
+        name = "_" + name
     if len(name.encode("utf-8")) > _NAME_MAX:
         stem, ext = os.path.splitext(name)
         ext = ext if len(ext.encode("utf-8")) <= 32 else ""
@@ -182,21 +211,63 @@ def _entry_key(bucket: str, key: str) -> str:
 _manifest_lock = threading.Lock()
 
 
-def _manifest_path() -> str:
-    return os.path.join(cache_root(), _MANIFEST)
+def manifest_path() -> str:
+    """`<home>/cache/remote-manifest.json`: beside the cache root, outside
+    every directory an agent session is granted."""
+    return os.path.join(os.path.dirname(cache_root()), _MANIFEST)
+
+
+def _load(path: str) -> dict | None:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _migrate_locked() -> None:
+    """Move a manifest from inside the cache root (where it used to live) to
+    `manifest_path()`, once; caller holds `_manifest_lock`. Only complete
+    entries whose file still matches them come across, stamped with the
+    file's identity now; partial-download state is dropped (those restart).
+    The old file is removed either way."""
+    old = os.path.join(cache_root(), _OLD_MANIFEST)
+    if not os.path.isfile(old):
+        return
+    if not os.path.exists(manifest_path()):
+        kept = {}
+        for k, entry in (_load(old) or {}).items():
+            bucket, _, key = k.partition("/")
+            if not isinstance(entry, dict):
+                continue
+            size, etag, mtime_ns = entry.get("size"), entry.get("etag"), entry.get("mtime_ns")
+            if not (isinstance(size, int) and isinstance(etag, str) and isinstance(mtime_ns, int)):
+                continue
+            try:
+                st = os.stat(cache_path(bucket, key))
+            except (OSError, RemoteError):
+                continue
+            if st.st_size == size and st.st_mtime_ns == mtime_ns:
+                kept[k] = {"etag": etag, "size": size, **_identity(st)}
+        try:
+            _write_manifest(kept)
+        except OSError:
+            logger.warning("could not migrate the remote cache manifest", exc_info=True)
+            return
+    try:
+        os.remove(old)
+    except OSError:
+        pass
 
 
 def _read_manifest() -> dict:
-    try:
-        with open(_manifest_path(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    _migrate_locked()
+    return _load(manifest_path()) or {}
 
 
 def _write_manifest(data: dict) -> None:
-    path = _manifest_path()
+    path = manifest_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -229,42 +300,103 @@ def _entry(bucket: str, key: str) -> dict:
     return entry if isinstance(entry, dict) else {}
 
 
-def cached_path(bucket: str, key: str, info: ObjectInfo) -> str | None:
-    """The cached file for this object, if it holds exactly the object `info`
-    describes; else None. Never raises for an uncachable key (answers None)."""
+def _identity(st: os.stat_result) -> dict:
+    """What a manifest entry pins a file on disk to. `ctime_ns` moves on any
+    write, rename, chmod or utime and cannot be set back, so a file rewritten
+    in place (even with its mtime restored) no longer matches."""
+    return {"mtime_ns": st.st_mtime_ns, "ctime_ns": st.st_ctime_ns, "ino": st.st_ino}
+
+
+def _matches(entry: dict, st: os.stat_result) -> bool:
+    return (st.st_size == entry.get("size")
+            and all(entry.get(k) == v for k, v in _identity(st).items()))
+
+
+def _valid_entry(bucket: str, key: str) -> tuple[str, dict] | None:
+    """`(path, entry)` when the manifest entry is complete (etag, size and
+    the file identity all present) and the file on disk still matches it."""
     try:
         path = cache_path(bucket, key)
     except RemoteError:
         return None
     entry = _entry(bucket, key)
-    if "etag" not in entry or "size" not in entry:
+    if not (isinstance(entry.get("etag"), str) and isinstance(entry.get("size"), int)
+            and all(isinstance(entry.get(k), int) for k in ("mtime_ns", "ctime_ns", "ino"))):
         return None
     try:
         st = os.stat(path)
     except OSError:
         return None
-    if info.size is not None and (entry["size"] != info.size or st.st_size != info.size):
+    return (path, entry) if _matches(entry, st) else None
+
+
+def cached_path(bucket: str, key: str, info: ObjectInfo) -> str | None:
+    """The cached file for this object, if it holds exactly the object `info`
+    describes; else None. Never raises for an uncachable key (answers None)."""
+    hit = _valid_entry(bucket, key)
+    if hit is None:
         return None
-    if st.st_size != entry["size"] or entry["etag"] != info.etag:
+    path, entry = hit
+    if info.size is not None and entry["size"] != info.size:
         return None
-    if entry.get("mtime_ns") is not None and entry["mtime_ns"] != st.st_mtime_ns:
+    if entry["etag"] != info.etag:
         return None
     return canonical_fs_path(os.path.abspath(path))
 
 
 def cached_copy(bucket: str, key: str) -> tuple[str, ObjectInfo] | None:
     """`(path, info)` of the cached copy of `s3://bucket/key` judged from the
-    manifest alone — no network: the file is intact and is the version the
-    manifest recorded (`cached_path` against that record). `info.mtime` is
-    None (the manifest keeps no object time). An object changed in the
-    bucket since the download is still answered from the old copy."""
-    entry = _entry(bucket, key)
-    size, etag = entry.get("size"), entry.get("etag")
-    if not isinstance(size, int) or not isinstance(etag, str):
+    manifest alone — no network: the entry is complete and the file is still
+    the one it recorded. `info` is the object as downloaded (size, etag,
+    Last-Modified when recorded). An object changed in the bucket since the
+    download is still answered from the old copy."""
+    hit = _valid_entry(bucket, key)
+    if hit is None:
         return None
-    info = ObjectInfo(size=size, mtime=None, etag=etag)
-    path = cached_path(bucket, key, info)
-    return (path, info) if path else None
+    path, entry = hit
+    modified = entry.get("modified")
+    info = ObjectInfo(size=entry["size"],
+                      mtime=float(modified) if isinstance(modified, (int, float)) else None,
+                      etag=entry["etag"])
+    return canonical_fs_path(os.path.abspath(path)), info
+
+
+def _fmt_bytes(n: float) -> str:
+    """`5.0 GB`, `812.3 MB`, `999 bytes`."""
+    if n < 1024:
+        return f"{int(n)} bytes"
+    for unit in ("KB", "MB", "GB", "TB"):
+        n /= 1024
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}"
+    return f"{n:.1f} TB"
+
+
+def free_bytes() -> int:
+    """Free bytes on the cache volume (the nearest existing ancestor of the
+    cache root, so it answers before the first download)."""
+    p = cache_root()
+    while not os.path.exists(p) and os.path.dirname(p) != p:
+        p = os.path.dirname(p)
+    return shutil.disk_usage(p).free
+
+
+def require_space(needed: int) -> None:
+    """`RemoteError("no_space")` unless writing `needed` more bytes to the
+    cache volume leaves at least `RESERVE_BYTES` free. The one disk-floor
+    rule: whole downloads (`start`, `_download`) and range reads (the route,
+    since the agent's tool server saves ranges to this volume) all use it."""
+    try:
+        free = free_bytes()
+    except OSError:
+        return  # cannot tell: do not block on a failed statvfs
+    if free - max(0, needed) < RESERVE_BYTES:
+        raise RemoteError(
+            "no_space",
+            f"Not enough free disk space: {_fmt_bytes(free)} free, and fused-render "
+            f"keeps {_fmt_bytes(RESERVE_BYTES)} free"
+            + (f" after the {_fmt_bytes(needed)} this needs" if needed > 0 else "")
+            + ". Free up space and try again.")
 
 
 # ---------------------------------------------------------------- the registry
@@ -340,6 +472,7 @@ def start(bucket: str, key: str) -> dict:
             done.exited.set()  # no thread ever ran for a cache hit
             _fetches[fid] = done
             return {"id": fid, "state": "done", "path": hit}
+        require_space(info.size or 0)
         # A cancelled attempt still winding down (cancel is noticed per chunk,
         # not while connecting) is replaced, not joined; the new attempt waits
         # for it to exit so there is never a second writer on the partial.
@@ -463,7 +596,21 @@ def _hash_prefix(path: str) -> "hashlib._Hash":
 
 def _discard(rec: _Fetch, partial: str) -> None:
     _remove(partial)
-    _update_entry(rec.bucket, rec.key, part_etag=None)
+    _update_entry(rec.bucket, rec.key, part_etag=None, part_seal=None)
+
+
+def _seal_of(st: os.stat_result) -> list:
+    return [st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns]
+
+
+def _seal(rec: _Fetch, partial: str) -> None:
+    """Record the kept `.partial`'s identity as its writer leaves it, so a
+    resume appends only to bytes this module wrote (see `_download`)."""
+    try:
+        st = os.stat(partial)
+    except OSError:
+        return
+    _update_entry(rec.bucket, rec.key, part_seal=_seal_of(st))
 
 
 def _run(rec: _Fetch, info: ObjectInfo) -> None:
@@ -495,16 +642,23 @@ def _download(rec: _Fetch, info: ObjectInfo) -> None:
     what = canonical_url(bucket, key)
     url = remote_access.read_url(bucket, key)
 
-    # Resume only a .partial of the same object version.
+    # Resume only a .partial of the same object version, and only the very
+    # file this module sealed when it stopped writing it: the hash dir is in
+    # a tree agents can write, and a multipart ETag gets no content check.
     offset = 0
     if os.path.exists(partial):
-        size = os.path.getsize(partial)
-        if (info.etag and _entry(bucket, key).get("part_etag") == info.etag and size > 0
-                and (info.size is None or size < info.size)):
-            offset = size
+        entry = _entry(bucket, key)
+        try:
+            st = os.stat(partial)
+        except OSError:
+            st = None
+        if (st is not None and info.etag and entry.get("part_etag") == info.etag
+                and entry.get("part_seal") == _seal_of(st) and st.st_size > 0
+                and (info.size is None or st.st_size < info.size)):
+            offset = st.st_size
         else:
             _remove(partial)
-    _update_entry(bucket, key, part_etag=info.etag)
+    _update_entry(bucket, key, part_etag=info.etag, part_seal=None)
 
     started = time.monotonic()
     last_tick = 0.0
@@ -549,13 +703,8 @@ def _download(rec: _Fetch, info: ObjectInfo) -> None:
                         rec.total = total
                         rec.done = offset
                     if total is not None:
-                        free = shutil.disk_usage(os.path.dirname(path)).free
-                        if free < total - offset:
-                            # Raised before a byte is written: a partial is kept.
-                            raise RemoteError(
-                                "internal",
-                                f"not enough disk space: {what} needs {total - offset} bytes, "
-                                f"{free} are free")
+                        # Raised before a byte is written: a partial is kept.
+                        require_space(total - offset)
                     with open(partial, mode) as f:
                         for chunk in r.iter_raw(_CHUNK):
                             if rec.cancel.is_set():
@@ -586,16 +735,21 @@ def _download(rec: _Fetch, info: ObjectInfo) -> None:
                     except OSError:
                         pass
                     st = os.stat(path)
+                    modified = remote_access.http_date(r.headers.get("last-modified"))
                     _update_entry(bucket, key, etag=etag, size=st.st_size,
-                                  mtime_ns=st.st_mtime_ns, part_etag=None)
+                                  modified=modified if modified is not None else info.mtime,
+                                  part_etag=None, part_seal=None, **_identity(st))
                     _finish(rec, "done")
                     return
     except _Cancelled:
+        _seal(rec, partial)
         _finish(rec, "cancelled", error="the download was cancelled")
     except RemoteError as e:
+        _seal(rec, partial)  # when one is kept (e.g. no_space before writing)
         _finish(rec, "error", error=e.message, code=e.code)
     except httpx.TransportError:
         # A network drop: the .partial is kept, so the next start resumes.
+        _seal(rec, partial)
         logger.info("remote fetch of %s interrupted", what, exc_info=True)
         _finish(rec, "error", error=f"the download of {what} was interrupted; try again",
                 code="network")

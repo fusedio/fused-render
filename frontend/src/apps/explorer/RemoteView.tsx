@@ -369,9 +369,14 @@ function RemoteDownload({
         (err) => {
           if (!alive.current || watching.current !== watch) return;
           const e = asRemoteError(err);
-          // `not_found` from the STATUS route means the job id is unknown — the
-          // object was there when the download started.
-          setPhase(e.code === "not_found" ? { kind: "interrupted" } : { kind: "failed", error: e });
+          // `unknown_download` from the STATUS route means the job id is
+          // unknown (the app restarted) — the object was there when the
+          // download started. `not_found` is the older server's spelling.
+          setPhase(
+            e.code === "unknown_download" || e.code === "not_found"
+              ? { kind: "interrupted" }
+              : { kind: "failed", error: e },
+          );
         },
       );
     }, POLL_MS);

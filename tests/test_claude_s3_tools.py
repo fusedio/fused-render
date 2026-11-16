@@ -28,6 +28,8 @@ from test_claude_app_state import SERVER, _load, _spawn
 URL = "s3://fused-asset/data/a.csv"
 CSV = b"id,name\n1,alpha\n2,beta\n"
 PARQUET = b"PAR1" + bytes(range(256)) * 300 + b"M#\x02\x00PAR1"
+UNICODE = ("naïve,café,日本\n" * 400).encode("utf-8")
+LONG_NAME = "s3://fused-asset/data/" + "日本語のデータ" * 20 + ".parquet"
 HITS = {"bucket": "fused-asset", "mode": "search",
         "hits": [{"url": "s3://fused-asset/data/", "is_dir": True, "size": None,
                   "modified": None}], "truncated": False, "cursor": None}
@@ -37,13 +39,16 @@ class _Stub:
     def __init__(self):
         self.requests = []
         self.objects = {URL: CSV, "s3://fused-asset/data/b.parquet": PARQUET,
-                        "s3://fused-asset/data/big.txt": b"x" * 40000}
+                        "s3://fused-asset/data/big.txt": b"x" * 40000,
+                        "s3://fused-asset/data/u.csv": UNICODE, LONG_NAME: PARQUET}
         self.search_status = 200
         self.short = False  # declare more bytes than are sent, then hang up
         self.stat = {"kind": "file", "size": 500 * 1024 * 1024, "cached": False,
                      "path": None, "mtime": 1700000000.0, "etag": "e1",
                      "warn_bytes": 100 * 1024 * 1024}
         self.polls = 0
+        self.cap = None  # a server-side clamp, like RANGE_MAX_BYTES
+        self.status_reply = None  # (status, body) for /fetch/status, else the default
         stub = self
 
         class H(BaseHTTPRequestHandler):
@@ -77,6 +82,8 @@ class _Stub:
                         return self._json(416, {"error": "offset outside the %d-byte object"
                                                 % len(data), "code": "range_not_satisfiable"})
                     end = len(data) if "length" not in q else min(len(data), start + int(q["length"]))
+                    if stub.cap:
+                        end = min(end, start + stub.cap)
                     body = data[start:end]
                     self.send_response(200)
                     self.send_header("Content-Length", str(len(body)))
@@ -93,6 +100,8 @@ class _Stub:
                 if url.path == "/api/remote/stat":
                     return self._json(200, dict(stub.stat, url=q.get("url")))
                 if url.path == "/api/remote/fetch/status":
+                    if stub.status_reply:
+                        return self._json(*stub.status_reply)
                     stub.polls += 1
                     if stub.polls < 2:
                         return self._json(200, {"state": "running", "done": 1, "total": 2})
@@ -304,7 +313,9 @@ def test_a_cancelled_download_wait_ends_at_once(tmp_path, stub):
     try:
         import time
         pending = s.send_async("tools/call", {"name": "s3_read", "arguments": {"url": URL}})
+        give_up = time.monotonic() + 10
         while not [r for r in stub.requests if r[1] == "/api/remote/fetch/status"]:
+            assert time.monotonic() < give_up, "the download was never polled"
             time.sleep(0.05)
         t0 = time.monotonic()
         s.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
@@ -489,8 +500,9 @@ def test_every_other_backend_gets_the_server_and_the_read_grant(
     body = open(os.path.join(rd, "opencode", "AGENTS.md")).read()
     assert (root in body) is on and ("fused_approvals_s3_read" in body) is on
 
+    # OpenCode's MCP ceiling is GLOBAL: never raised for the S3 tools.
     facts = json.load(open(os.path.join(rd, "opencode", "spawn.json")))
-    assert facts.get("mcp_timeout_ms") == (int(agent.S3_CALL_CEILING * 1000) if on else None)
+    assert "mcp_timeout_ms" not in facts
 
     argv, rd = run("codex")
     env_arg = [a for a in argv if a.startswith("mcp_servers.fused_approvals.env=")]
@@ -510,3 +522,180 @@ def test_hosts_know_the_tool_names():
     for host in ("gemini_host", "opencode_host"):
         mod = _load(host)
         assert {"s3_search", "s3_read"} <= mod._FUSED_TOOLS
+
+
+def test_a_range_that_splits_a_character_is_trimmed_and_inline(tmp_path, stub):
+    s = _server(tmp_path, _env(tmp_path, stub))
+    u = "s3://fused-asset/data/u.csv"
+    try:
+        # "naïve": byte 3 is the 2nd byte of "ï", so a window from 3 starts
+        # mid-character; 4096 also ends mid-character somewhere in "日本".
+        for offset in (0, 3):
+            payload, is_error = _call(s, "s3_read", {"url": u, "offset": offset,
+                                                     "length": 4096})
+            assert not is_error and "path" not in payload, payload
+            r = payload["range"]
+            assert payload["content"] == UNICODE[r["start"]:r["end"]].decode("utf-8")
+            assert payload["bytes"] == r["end"] - r["start"]
+            assert offset <= r["start"] <= offset + 3 and offset + 4093 <= r["end"] <= offset + 4096
+            if (r["start"], r["end"]) != (offset, offset + 4096):
+                assert "Trimmed" in payload["note"]
+        # Otherwise-invalid UTF-8 stays binary.
+        payload, _ = _call(s, "s3_read", {"url": "s3://fused-asset/data/b.parquet",
+                                          "offset": 4, "length": 300})
+        assert "content" not in payload and payload["path"]
+    finally:
+        s.close()
+
+
+def test_a_long_non_ascii_name_is_saved_under_a_short_ascii_basename(tmp_path, stub):
+    s = _server(tmp_path, _env(tmp_path, stub))
+    try:
+        payload, is_error = _call(s, "s3_read", {"url": LONG_NAME, "offset": -100})
+        assert not is_error, payload
+        base = os.path.basename(payload["path"])
+        assert base.isascii() and base.endswith(".parquet")
+        assert len(base.encode("utf-8")) <= 160  # <sha>-<start>-<end>- + 100
+    finally:
+        s.close()
+
+
+def test_the_clamp_note_only_when_bytes_were_left_behind(tmp_path, stub):
+    s = _server(tmp_path, _env(tmp_path, stub))
+    try:
+        # A length past the end is not a clamp: no "read the rest" note.
+        payload, _ = _call(s, "s3_read", {"url": "s3://fused-asset/data/big.txt",
+                                          "offset": 1000, "length": 10**9})
+        assert payload["range"] == {"start": 1000, "end": 40000}
+        assert "Clamped" not in payload["note"]
+        stub.cap = 35000  # the server clamped the window
+        payload, _ = _call(s, "s3_read", {"url": "s3://fused-asset/data/big.txt",
+                                          "offset": 0})
+        assert payload["range"] == {"start": 0, "end": 35000}
+        assert "Clamped" in payload["note"] and "offset 35000" in payload["note"]
+    finally:
+        s.close()
+
+
+def test_boolean_arguments_accept_strings_and_refuse_junk(tmp_path, stub):
+    s = _server(tmp_path, _env(tmp_path, stub))
+    try:
+        payload, _ = _call(s, "s3_read", {"url": URL, "offset": 0, "save": "TRUE"})
+        assert payload.get("path") and "content" not in payload
+        payload, _ = _call(s, "s3_read", {"url": URL, "offset": 0, "save": "false"})
+        assert payload["content"] == CSV.decode()
+        payload, is_error = _call(s, "s3_read", {"url": URL, "offset": 0, "save": "yes"})
+        assert is_error and "`save` must be true or false" in payload["error"]
+        payload, is_error = _call(s, "s3_read", {"url": URL, "allow_large": "true"})
+        assert not is_error and payload["path"] == "/cache/x.bin"
+        payload, is_error = _call(s, "s3_read", {"url": URL, "allow_large": 1})
+        assert is_error and "allow_large" in payload["error"]
+    finally:
+        s.close()
+
+
+def test_an_interrupted_or_failed_download_is_named_as_such(tmp_path, stub):
+    stub.stat.update(size=10)
+    s = _server(tmp_path, _env(tmp_path, stub))
+    try:
+        for reply in ((404, {"error": "no such download", "code": "unknown_download"}),
+                      (404, {"error": "?"})):
+            stub.status_reply = reply
+            payload, is_error = _call(s, "s3_read", {"url": URL})
+            assert is_error and payload["code"] == "unknown_download"
+            assert "interrupted" in payload["error"] and "call s3_read again" in payload["error"]
+            assert "s3_search" not in payload["error"]
+        for state, code in (("cancelled", "download_cancelled"), ("error", "download_error")):
+            stub.status_reply = (200, {"state": state, "error": None, "code": None})
+            payload, is_error = _call(s, "s3_read", {"url": URL})
+            assert is_error and payload["code"] == code
+        stub.status_reply = (200, {"state": "error", "error": "disk full", "code": "no_space"})
+        payload, is_error = _call(s, "s3_read", {"url": URL})
+        assert is_error and payload["code"] == "no_space" and "free disk space" in payload["error"]
+    finally:
+        s.close()
+
+
+def test_the_scratch_folder_is_touched_and_a_live_one_never_swept(tmp_path, stub):
+    import time
+    env = _env(tmp_path, stub)
+    ranges = os.path.dirname(env["FUSED_RENDER_S3_SCRATCH"])
+    old, fresh = os.path.join(ranges, "old-run"), os.path.join(ranges, "live-run")
+    for d in (old, fresh):
+        os.makedirs(d)
+        open(os.path.join(d, "f"), "w").close()
+    day_ago = time.time() - 2 * 24 * 3600
+    os.utime(old, (day_ago, day_ago))
+    mine = env["FUSED_RENDER_S3_SCRATCH"]
+    s = _server(tmp_path, env)
+    try:
+        assert os.path.isdir(mine)  # made and touched at server start
+        os.utime(mine, (day_ago, day_ago))
+        _call(s, "s3_search", {"query": "x"})
+        assert time.time() - os.stat(mine).st_mtime < 60  # every call touches it
+        _call(s, "s3_read", {"url": "s3://fused-asset/data/b.parquet", "offset": -100})
+        assert not os.path.exists(old) and os.path.isdir(fresh)
+    finally:
+        s.close()
+
+
+def test_codex_developer_instructions_follow_the_spawned_roster(agent, tmp_path, monkeypatch):
+    rd = tmp_path / "runs" / "r"
+    rd.mkdir(parents=True)
+    _canvases(True)
+    agent._write_mcp_config(str(rd), False, approve=False, s3=True)
+    assert agent._s3_stamped(str(rd))
+    _canvases(False)  # the pref flips after the spawn: the stamp still rules
+    assert agent._s3_stamped(str(rd))
+    agent._write_mcp_config(str(rd), False, approve=False, s3=False)
+    assert not agent._s3_stamped(str(rd)) and not agent._s3_stamped(str(tmp_path / "none"))
+
+
+def test_a_range_through_the_real_route(tmp_path, monkeypatch):
+    """The stub above re-implements the routes; this drives the REAL
+    `/api/remote/read` in-process (uvicorn on a free port) from a cached
+    copy, so no network: the headers and the window are the server's own."""
+    uvicorn = pytest.importorskip("uvicorn")
+    from fastapi import FastAPI
+
+    from fused_render import remote_access, remote_fetch
+    from fused_render.server.routers import remote as remote_router
+    from fused_render.shell import prefs
+
+    data = UNICODE + PARQUET
+    cached = tmp_path / "cached.bin"
+    cached.write_bytes(data)
+    monkeypatch.setattr(prefs, "canvases_enabled", lambda: True)
+    monkeypatch.setattr(remote_fetch, "cached_copy", lambda bucket, key: (
+        str(cached), remote_access.ObjectInfo(size=len(data), mtime=None, etag="e9")))
+    app = FastAPI()
+    app.include_router(remote_router.router)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    import time
+    give_up = time.monotonic() + 10
+    while not server.started:
+        assert time.monotonic() < give_up
+        time.sleep(0.02)
+    port = server.servers[0].sockets[0].getsockname()[1]
+    env = {"FUSED_RENDER_S3_ORIGIN": "http://127.0.0.1:%d" % port,
+           "FUSED_RENDER_S3_SCRATCH": str(tmp_path / "scratch" / "run"),
+           "FUSED_RENDER_TERMINAL_ORIGIN": ""}
+    s = _server(tmp_path, env)
+    try:
+        payload, is_error = _call(s, "s3_read", {"url": "s3://fused-asset/x/y.parquet",
+                                                 "offset": -8})
+        assert not is_error, payload
+        assert payload["range"] == {"start": len(data) - 8, "end": len(data)}
+        assert payload["hex"] == data[-8:].hex() and payload["etag"] == "e9"
+        assert payload["modified"] is None and payload["size"] == len(data)
+        payload, is_error = _call(s, "s3_read", {"url": "s3://fused-asset/x/y.parquet",
+                                                 "offset": 3, "length": 2000})
+        assert not is_error and "content" in payload, payload
+        r = payload["range"]
+        assert payload["content"].encode("utf-8") == data[r["start"]:r["end"]]
+    finally:
+        s.close()
+        server.should_exit = True
+        thread.join(timeout=5)

@@ -1445,17 +1445,17 @@ _TERMINAL_HANDLERS = {
 # server (`fused_render/remote_access.py` is the one module that knows how a
 # bucket is reached, and which buckets are served — another one is the
 # server's `unsupported_bucket`, relayed here), so these tools never name an
-# S3 endpoint or a bucket themselves.
+# S3 endpoint or a bucket themselves. Every call carries `X-Fused: 1`.
 #
 # The roster follows ONE signal, as the terminals' does:
 # `FUSED_RENDER_S3_ORIGIN`, which agent.py stamps into this server's env only
 # when it has an origin AND the Canvases flag is on (`_s3_tools_supported`).
-# `FUSED_RENDER_S3_SCRATCH` (also stamped) is where a saved range lands: a
+# `FUSED_RENDER_S3_SCRATCH` (stamped with it) is where a saved range lands: a
 # per-run folder under the server's remote cache, so the bytes stay inside the
 # area fused-render treats as untrusted (never rendered as a same-origin page)
 # and inside the one folder the session is granted to read.
 
-#: A range is returned inline only when it is valid UTF-8 and at most this.
+#: A range is returned inline only when it is UTF-8 text and at most this.
 S3_INLINE_MAX_BYTES = 32 * 1024
 #: A saved range this small also comes back as `hex`, so a few binary bytes
 #: (a magic number, a Parquet footer length) need no shell to read.
@@ -1466,17 +1466,24 @@ S3_RANGE_MAX_BYTES = 64 * 1024 * 1024
 #: A whole-object download above this needs `allow_large`. The server's
 #: `warn_bytes` (on every stat) wins; this is the fallback when it is absent.
 S3_LARGE_BYTES = 100 * 1024 * 1024
-#: How long one whole-object call waits for its download. Under the 60 s MCP
-#: call ceiling the strictest backend (Codex) applies by default, so the model
-#: reads OUR sentence ("still downloading, call again") rather than a timeout.
-S3_FETCH_WAIT = float(os.environ.get("FUSED_RENDER_S3_FETCH_WAIT", "45"))
+#: The whole budget of one whole-object call (stat, start, and the wait for
+#: the download), so the model reads OUR sentence ("still downloading, call
+#: again") rather than a client timeout. The lowest default MCP call ceiling
+#: among the backends is 60 s (Codex's `tool_timeout_sec`, and the MCP SDK
+#: request default OpenCode falls back to when `experimental.mcp_timeout` is
+#: unset); 40 s plus one poll interval leaves 15+ s of margin.
+S3_FETCH_WAIT = float(os.environ.get("FUSED_RENDER_S3_FETCH_WAIT", "40"))
 _S3_POLL = 0.5
 #: One socket operation's timeout (connect, or a gap between chunks).
 _S3_TIMEOUT = 30.0
-#: Saved ranges of runs untouched for this long are swept (a run's own
-#: folder never is).
+#: Other runs' saved ranges untouched for this long are swept. Every S3 call
+#: (and the server's start) touches this run's own folder, so a live session's
+#: folder never ages out from under it.
 _S3_SCRATCH_TTL = 24 * 3600
 _S3_CHUNK = 1 << 20
+#: Longest basename of a saved range, in UTF-8 bytes (filesystems cap a name
+#: at 255; the `<sha>-<start>-<end>-` prefix rides in front of this).
+_S3_NAME_MAX = 100
 
 # What the model is told after the server's own message, per error code.
 _S3_HINTS = {
@@ -1488,7 +1495,12 @@ _S3_HINTS = {
     "not_found": "Check the path with s3_search (`path` lists a folder).",
     "range_not_satisfiable": "The offset is outside the object; check its size.",
     "network": "S3 could not be reached just now; try again shortly.",
-    "bad_url": "Use an s3://<bucket>/<key> address, e.g. one s3_search returned.",
+    "bad_url": "Use an s3://<bucket>/<key> address (for `path`, a folder), "
+               "e.g. one s3_search returned.",
+    "no_space": "This machine is short of free disk space; tell the user, or "
+                "read a smaller range.",
+    "unknown_download": "The download was interrupted (fused-render may have "
+                        "restarted); call s3_read again with the same url.",
 }
 
 # JSON-RPC id -> Event, for every s3_read still waiting on a download. A
@@ -1505,12 +1517,24 @@ def _s3_origin() -> str:
 
 
 def _s3_scratch() -> str:
-    """Where saved ranges go: the stamped per-run folder, else a sibling of
-    the perm dir (a run started by an older agent.py)."""
+    """This run's folder for saved ranges (agent.py stamps it with the
+    origin), or "" — then nothing is saved: a range never lands outside the
+    remote cache."""
     stamped = os.environ.get("FUSED_RENDER_S3_SCRATCH") or ""
-    if stamped:
-        return os.path.abspath(stamped)
-    return os.path.join(os.path.dirname(PERM_DIR), "s3") if PERM_DIR else ""
+    return os.path.abspath(stamped) if stamped else ""
+
+
+def _s3_touch() -> None:
+    """Mark this run's scratch folder as in use (made when missing), so
+    another session's sweep never takes it. Best-effort."""
+    scratch = _s3_scratch()
+    if not scratch:
+        return
+    try:
+        os.makedirs(scratch, mode=0o700, exist_ok=True)
+        os.utime(scratch)
+    except OSError:
+        pass
 
 
 def _s3_error(payload, status: int, what: str) -> dict:
@@ -1542,6 +1566,18 @@ def _s3_int(args: dict, name: str):
             return int(value), None
         return None, _error_result("`%s` must be an integer" % name)
     return value, None
+
+
+def _s3_bool(args: dict, name: str):
+    """`(value, error)`: a boolean argument, False when absent. A client that
+    sends `"true"`/`"false"` (any case) means the boolean; anything else is
+    an argument error rather than a silent false."""
+    value = args.get(name)
+    if value is None or isinstance(value, bool):
+        return bool(value), None
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true", None
+    return False, _error_result("`%s` must be true or false" % name)
 
 
 def _iso(value):
@@ -1594,14 +1630,23 @@ def _handle_s3_search(args: dict) -> dict:
 
 
 def _s3_name(url: str) -> str:
-    """A filesystem-safe basename for a saved range of `url`."""
-    base = url.rstrip("/").rsplit("/", 1)[-1] or "object"
-    safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in base)
-    return safe.lstrip(".")[-120:] or "object"
+    """A filesystem-safe basename for a saved range of `url`: ASCII letters,
+    digits and `._-` only, at most `_S3_NAME_MAX` bytes, keeping a short
+    extension (templates and tools go by it)."""
+    base = url.rstrip("/").rsplit("/", 1)[-1]
+    safe = "".join(c if (c.isascii() and (c.isalnum() or c in "._-")) else "_"
+                   for c in base).lstrip(".") or "object"
+    stem, dot, ext = safe.rpartition(".")
+    if not dot or not stem or len(ext) > 16:
+        stem, ext = safe, ""
+    ext = "." + ext if ext else ""
+    return stem[:_S3_NAME_MAX - len(ext)] + ext
 
 
 def _s3_sweep(base: str, keep: str) -> None:
-    """Once per process: drop other runs' saved ranges untouched for a day."""
+    """Once per process: drop other runs' saved ranges untouched for a day.
+    A folder another session is using was touched by its last call, so it is
+    never this old; one removed under us meanwhile is simply gone."""
     if _S3_SWEPT:
         return
     _S3_SWEPT.append(True)
@@ -1631,7 +1676,7 @@ def _s3_save(url: str, start: int, end: int, head: bytes, rest) -> str:
     import hashlib
     scratch = _s3_scratch()
     if not scratch:
-        raise OSError("no scratch directory for saved ranges")
+        raise OSError("this session has no folder for saved ranges")
     os.makedirs(scratch, mode=0o700, exist_ok=True)
     _s3_sweep(os.path.dirname(scratch), scratch)
     digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
@@ -1659,6 +1704,52 @@ def _s3_save(url: str, start: int, end: int, head: bytes, rest) -> str:
             pass
         raise
     return path
+
+
+def _utf8_edges(data: bytes, at_start: bool, at_end: bool):
+    """`(lead, tail)`: how many bytes to drop at each edge so a window cut out
+    of a text file mid-character decodes — at most 3 at either end, and only
+    at an edge that is not the object's own (`at_start`/`at_end`), where a
+    broken character is the file's, not the window's."""
+    lead = 0
+    if not at_start:
+        while lead < min(3, len(data)) and 0x80 <= data[lead] <= 0xBF:
+            lead += 1
+    tail = 0
+    if not at_end:
+        n = len(data)
+        for back in range(1, min(4, n - lead + 1)):
+            b = data[n - back]
+            if b < 0x80:
+                break  # ASCII: nothing dangling
+            if b >= 0xC0:  # a lead byte: is its sequence complete?
+                need = 2 if b < 0xE0 else 3 if b < 0xF0 else 4
+                if need > back:
+                    tail = back
+                break
+    return lead, tail
+
+
+def _s3_text(head: bytes, start: int, end: int, size):
+    """`(text, start, end)` when `head` (the whole window) is UTF-8 text —
+    allowing a character split at either edge, which is trimmed and the range
+    narrowed to the bytes returned — else None. A NUL anywhere is binary (the
+    usual sniff: text never carries one)."""
+    if b"\0" in head:
+        return None
+    try:
+        return head.decode("utf-8"), start, end
+    except UnicodeDecodeError:
+        pass
+    lead, tail = _utf8_edges(head, start == 0,
+                             isinstance(size, int) and end >= size)
+    if not lead and not tail:
+        return None
+    try:
+        text = head[lead:len(head) - tail].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text, start + lead, end - tail
 
 
 def _s3_range(url: str, offset, length, save: bool) -> dict:
@@ -1705,20 +1796,19 @@ def _s3_range(url: str, offset, length, save: bool) -> dict:
         result = {"url": url, "size": size, "etag": headers.get("X-Remote-Etag") or None,
                   "modified": _iso(headers.get("X-Remote-Modified")),
                   "range": None}
-        text = None
-        # Binary = not valid UTF-8, or holding a NUL (the usual sniff: text
-        # never carries one, and `\u0000` in JSON reads as text when it is not).
-        if not save and len(head) <= S3_INLINE_MAX_BYTES and b"\0" not in head:
-            try:
-                text = head.decode("utf-8")
-            except UnicodeDecodeError:
-                text = None
-        if text is not None and len(head) != end - start:
+        small = len(head) <= S3_INLINE_MAX_BYTES
+        if small and len(head) != end - start:
             return _error_result("the read was cut short: %d of %d bytes arrived; "
                                  "try again" % (len(head), end - start))
-        if text is not None:
-            result.update(range={"start": start, "end": start + len(head)},
-                          content=text, bytes=len(head))
+        inline = _s3_text(head, start, end, size) if small and not save else None
+        if inline is not None:
+            text, t_start, t_end = inline
+            result.update(range={"start": t_start, "end": t_end}, content=text,
+                          bytes=t_end - t_start)
+            if (t_start, t_end) != (start, end):
+                result["note"] = (
+                    "Trimmed %d byte(s) at the edges that split a UTF-8 character; "
+                    "`range` names the bytes returned." % ((t_start - start) + (end - t_end)))
             return _text(result)
         chunks = iter(lambda: resp.read(_S3_CHUNK), b"")
         try:
@@ -1728,21 +1818,24 @@ def _s3_range(url: str, offset, length, save: bool) -> dict:
         except OSError as exc:
             return _error_result("could not save the range to a local file: %s" % exc)
     got = end - start
-    wanted = length if length is not None else (
-        size - start if isinstance(size, int) else None)
-    if wanted is not None and got < wanted and got >= S3_RANGE_MAX_BYTES:
+    # Where the window asked for ends, inside the object: a clamp (the
+    # per-call cap) left bytes before it only when `end` falls short of it.
+    asked_end = None
+    if isinstance(size, int):
+        asked_end = size if length is None else min(size, start + length)
+    if asked_end is not None and end < asked_end:
         note = ("Clamped to the first %d MiB of the window asked for (the per-call "
                 "cap); saved to a local file. Read the rest with another call "
                 "starting at offset %d." % (S3_RANGE_MAX_BYTES >> 20, end))
     elif save:
         note = "Saved to a local file as asked; read it with your file tools."
-    elif len(head) > S3_INLINE_MAX_BYTES:
+    elif not small:
         note = ("Over the %d KiB inline limit, so saved to a local file; read "
                 "it with your file tools, or ask for a smaller range."
                 % (S3_INLINE_MAX_BYTES // 1024))
     else:
-        note = ("Binary (not UTF-8 text, or a range that cuts a character), so "
-                "saved to a local file; read it with your file tools.")
+        note = ("Binary (not UTF-8 text), so saved to a local file; read it "
+                "with your file tools.")
     result.update(range={"start": start, "end": end}, path=path, bytes=got, note=note)
     if got <= S3_HEX_MAX_BYTES:
         with open(path, "rb") as fh:
@@ -1781,13 +1874,18 @@ def _s3_size_text(n) -> str:
 
 def _s3_whole(url: str, allow_large: bool) -> dict:
     """The whole object: `stat` for size and a cached copy, then the server's
-    own download into its cache, polled until done. The result is the cached
-    file's path, read-only."""
+    own download into its cache, polled until done — all inside
+    `S3_FETCH_WAIT`. The result is the cached file's path, read-only."""
     origin = _s3_origin()
+    deadline = time.monotonic() + S3_FETCH_WAIT
+
+    def budget() -> float:
+        return max(1.0, min(_S3_TIMEOUT, deadline - time.monotonic()))
+
     try:
         status, stat_ = _server_http(
             origin, "GET", "/api/remote/stat?" + urllib.parse.urlencode({"url": url}),
-            timeout=_S3_TIMEOUT)
+            timeout=budget())
     except OSError as exc:
         return _s3_unreachable(exc)
     if status != 200 or not isinstance(stat_, dict):
@@ -1801,6 +1899,7 @@ def _s3_whole(url: str, allow_large: bool) -> dict:
               "modified": _iso(stat_.get("mtime")), "range": None}
     note = "The whole object, in fused-render's cache (read-only); read it with your file tools."
     if stat_.get("cached") and stat_.get("path"):
+        # Already on disk: no download to protect against, whatever its size.
         result.update(path=stat_["path"], bytes=size, note=note)
         return _text(result)
     limit = stat_.get("warn_bytes")
@@ -1814,14 +1913,13 @@ def _s3_whole(url: str, allow_large: bool) -> dict:
             % (canonical, _s3_size_text(size), _s3_size_text(limit)))
     try:
         status, rec = _server_http(origin, "POST", "/api/remote/fetch",
-                                   {"url": canonical}, timeout=_S3_TIMEOUT)
+                                   {"url": canonical}, timeout=budget())
     except OSError as exc:
         return _s3_unreachable(exc)
     if status != 200 or not isinstance(rec, dict):
         return _s3_error(rec, status, "download the object")
     fid = rec.get("id")
     event, key = _s3_wait_event()
-    deadline = time.monotonic() + S3_FETCH_WAIT
     try:
         while rec.get("state") == "running":
             if event.wait(_S3_POLL):
@@ -1837,9 +1935,15 @@ def _s3_whole(url: str, allow_large: bool) -> dict:
                 status, rec = _server_http(
                     origin, "GET",
                     "/api/remote/fetch/status?" + urllib.parse.urlencode({"id": fid or ""}),
-                    timeout=_S3_TIMEOUT)
+                    timeout=budget())
             except OSError as exc:
                 return _s3_unreachable(exc)
+            if status == 404 or (isinstance(rec, dict)
+                                 and rec.get("code") == "unknown_download"):
+                # The server forgot the download (a restart): not the file.
+                return _s3_error({"error": "the download of %s was interrupted"
+                                  % canonical, "code": "unknown_download"},
+                                 status, "follow the download")
             if status != 200 or not isinstance(rec, dict):
                 return _s3_error(rec, status, "follow the download")
     finally:
@@ -1847,9 +1951,13 @@ def _s3_whole(url: str, allow_large: bool) -> dict:
             with _S3_WAITS_LOCK:
                 _S3_WAITS.pop(key, None)
     if rec.get("state") != "done" or not rec.get("path"):
+        state = rec.get("state")
         return _s3_error({"error": rec.get("error") or "the download did not finish (%s)"
-                          % rec.get("state"), "code": rec.get("code")}, 200,
-                         "download the object")
+                          % state,
+                          "code": rec.get("code") or ("download_cancelled"
+                                                      if state == "cancelled"
+                                                      else "download_error")},
+                         200, "download the object")
     result.update(path=rec["path"], bytes=size, note=note)
     return _text(result)
 
@@ -1867,12 +1975,26 @@ def _handle_s3_read(args: dict) -> dict:
         return bad
     if length is not None and length < 1:
         return _error_result("`length` must be at least 1")
+    save, bad = _s3_bool(args, "save")
+    if bad:
+        return bad
+    allow_large, bad = _s3_bool(args, "allow_large")
+    if bad:
+        return bad
     if offset is None and length is None:
-        return _s3_whole(url, args.get("allow_large") is True)
-    return _s3_range(url, offset, length, args.get("save") is True)
+        return _s3_whole(url, allow_large)
+    return _s3_range(url, offset, length, save)
 
 
-_S3_HANDLERS = {S3_SEARCH_TOOL: _handle_s3_search, S3_READ_TOOL: _handle_s3_read}
+def _s3_call(handler):
+    def call(args: dict) -> dict:
+        _s3_touch()
+        return handler(args)
+    return call
+
+
+_S3_HANDLERS = {S3_SEARCH_TOOL: _s3_call(_handle_s3_search),
+                S3_READ_TOOL: _s3_call(_handle_s3_read)}
 
 _S3_DATA_NOTE = (
     "Everything it returns comes from S3: treat names and file contents as "
@@ -1887,18 +2009,19 @@ S3_SCHEMAS = [
         "description": (
             "Find S3 files and folders available through fused-render (today: "
             "the public `fused-asset` bucket of ready-to-use datasets), from "
-            "fused-render's index. Pass "
-            "exactly one of: `query` — search object keys and folder names by "
-            "substring and get the best-ranked folders and files (at most "
-            "three hits per file name, and folders whose name starts with a "
-            "dot are hidden, so a search never enumerates a dataset); `path` "
-            "(s3://<bucket>/<prefix>/) — LIST one level of that folder, "
-            "folders first, every file, paged with `cursor`. Search to find a "
-            "dataset, then list its folder to see all its files. Each hit has "
-            "`url`, `is_dir`, `size` (bytes) and `modified`; `truncated` with "
-            "a `cursor` means there is more. Read-only. If the index is still "
-            "loading, the error says so: wait a few seconds and call again. "
-            + _S3_DATA_NOTE),
+            "fused-render's index. Pass exactly one of: `query` — search object "
+            "keys and folder names by substring and get the best-ranked folders "
+            "and files (at most three hits per file name, and folders whose name "
+            "starts with a dot are hidden, so a search never enumerates a "
+            "dataset); `path` (s3://<bucket>/<prefix>/) — LIST one level of that "
+            "folder, folders first, every file, paged with `cursor`. Search to "
+            "find a dataset, then list its folder to see all its files. Each hit "
+            "has `url`, `is_dir`, `size` (bytes) and `modified` (either may be "
+            "null). `truncated: true` means there is more: in a listing, pass "
+            "the returned `cursor` with the same `path`; in a search (whose "
+            "`cursor` is always null), narrow the query or raise `limit`. "
+            "Read-only. If the index is still loading, the error says so: wait a "
+            "few seconds and call again. " + _S3_DATA_NOTE),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1916,28 +2039,33 @@ S3_SCHEMAS = [
     {
         "name": S3_READ_TOOL,
         "description": (
-            "Read an S3 file available through fused-render (see s3_search). Without "
-            "`offset`/`length` it downloads the WHOLE object into fused-render's "
-            "local cache and returns its read-only local `path` (open it with "
-            "your file tools); an object over 100 MiB is refused unless "
-            "`allow_large` is true, so read a range of it instead. With `offset` "
-            "and/or `length` it reads only those bytes, at most 64 MiB per call: "
-            "`offset` is the first byte, NEGATIVE counts from the end (`offset: "
-            "-65536` is the last 64 KiB; a negative offset past the start "
-            "begins at byte 0), and `length` omitted reads to the end. For a "
-            "Parquet footer read the tail with `offset: -65536`: its last 8 bytes "
-            "are the footer length L (4 bytes, little-endian) and \"PAR1\"; if L + "
-            "8 is more than the tail, read again with `offset: -(L+8)`. A range "
-            "that is valid UTF-8 text (no NUL byte) of at "
-            "most 32 KiB comes back inline as `content`; a binary or larger "
-            "range (or any range with `save: true`) is written to a local file "
-            "and returned as `path`, with a `note` saying why (a tiny one, at "
-            "most 256 bytes, also comes back as `hex`). For a first look "
-            "at a big file prefer a small range (a CSV's first lines, a Parquet "
+            "Read an S3 file available through fused-render (see s3_search). "
+            "Without `offset`/`length` it downloads the WHOLE object into "
+            "fused-render's local cache and returns its read-only local `path` "
+            "(open it with your file tools); an object over 100 MiB that is not "
+            "already downloaded is refused unless `allow_large` is true, so read "
+            "a range of it instead (one already in the cache comes back at any "
+            "size). A download that is still running after about 40 s returns an "
+            "error saying so: call again with the same `url` later. With "
+            "`offset` and/or `length` it reads only those bytes, at most 64 MiB "
+            "per call: `offset` is the first byte, NEGATIVE counts from the end "
+            "(`offset: -65536` is the last 64 KiB; a negative offset past the "
+            "start begins at byte 0), and `length` omitted reads to the end. For "
+            "a Parquet footer read the tail with `offset: -65536`: its last 8 "
+            "bytes are the footer length L (4 bytes, little-endian) and \"PAR1\"; "
+            "if L + 8 is more than the tail, read again with `offset: -(L+8)`. A "
+            "range of at most 32 KiB that is UTF-8 text (no NUL byte) comes back "
+            "inline as `content` — a character split at the range's edges is "
+            "trimmed, and `range` then names the bytes returned; a binary or "
+            "larger range (or any range with `save: true`) is written to a local "
+            "file and returned as `path`, with a `note` saying why (a tiny one, "
+            "at most 256 bytes, also comes back as `hex`). For a first look at a "
+            "big file prefer a small range (a CSV's first lines, a Parquet "
             "footer, a GeoTIFF header) to the whole file. The result also gives "
-            "the object's `size`, `etag` and `modified`, and `range` (start "
-            "inclusive, end exclusive; null for the whole object). Read-only. "
-            + _S3_DATA_NOTE),
+            "the object's `size`, `etag` and `modified` (either of the last two "
+            "may be null), and `range` (start inclusive, end exclusive; null for "
+            "the whole object). Refused when this machine is short of free disk "
+            "space. Read-only. " + _S3_DATA_NOTE),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2276,6 +2404,8 @@ def main() -> int:
         except OSError as exc:
             _log("permission_server.py: cannot use %s (%s)" % (path, exc))
             return 2
+    if _s3_origin():
+        _s3_touch()  # this session's saved ranges are in use from now on
 
     for line in sys.stdin:
         line = line.strip()
