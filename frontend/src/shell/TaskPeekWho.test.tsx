@@ -401,6 +401,12 @@ test("the pencil stands over the title's end only where no room is left after it
   expect(whoOf(v.r).props.className).toContain("is-rename-over");
   // Only the shared head's title half measures: the marks half and the
   // block every older caller draws hear no pointer.
+  // The keyboard measures too: a Tab onto the pencil reads the same room.
+  act(() => whoOf(v.r).props.onFocus(pointerOn(26)));
+  expect(whoOf(v.r).props.className).not.toContain("is-rename-over");
+  act(() => whoOf(v.r).props.onFocus(pointerOn(10)));
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  expect(whoOf(render({ task: task(), part: "marks" }).r).props.onFocus).toBeUndefined();
   expect(whoOf(render({ task: task(), part: "marks" }).r).props.onMouseEnter).toBeUndefined();
   expect(whoOf(render({ task: task() }).r).props.onMouseEnter).toBeUndefined();
 });

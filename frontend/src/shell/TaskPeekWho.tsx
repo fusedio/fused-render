@@ -299,7 +299,10 @@ export function TaskPeekWho({
         (renameOver ? " is-rename-over" : "") +
         (className ? ` ${className}` : "")
       }
-      {...(part === "title" ? { onMouseEnter: measureRename } : {})}
+      // …and when the keyboard comes onto it: a Tab to the pencil never
+      // passed the pointer over the title, so on a long title the pencil
+      // stood past the seat's edge and was clipped (Bugbot on #2307).
+      {...(part === "title" ? { onMouseEnter: measureRename, onFocus: measureRename } : {})}
     >
       {!showMarks ? null : (
         <>
