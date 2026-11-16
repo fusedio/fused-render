@@ -199,12 +199,31 @@ async function styleReady(){
 // the daemon reads.
 const isRemote = f => /^s3:\/\//i.test(f || '');
 let signed = null;       // {address, url, expires_at} for the current s3:// file
+let resignTimer = null;
 async function signFor(file){
   if (!isRemote(file)) return null;
   const fresh = signed && signed.address === file && (!signed.expires_at
     || Date.parse(signed.expires_at) - Date.now() > 60000);
-  if (!fresh) signed = { address: file, ...(await fused.s3.sign(file)) };
+  if (!fresh){
+    signed = { address: file, ...(await fused.s3.sign(file)) };
+    scheduleResign();
+  }
   return signed;
+}
+// A URL that expires (private buckets; today's public URLs never do) is
+// re-signed a minute before it lapses, and the map's tile URLs swap to the
+// new one: MapLibre fetches tiles itself, so they can't be re-signed per
+// request. Hist and value read src() and pick it up on their next call.
+function scheduleResign(){
+  clearTimeout(resignTimer);
+  if (!signed || !signed.expires_at) return;
+  const file = signed.address;
+  const due = Math.max(5000, Date.parse(signed.expires_at) - Date.now() - 60000);
+  resignTimer = setTimeout(async () => {
+    if (P.file() !== file) return;
+    try { await signFor(file); } catch (e) { return; }
+    if (tileMode && P.file() === file){ setRasterTiles(); loadedQuery = renderQuery(); }
+  }, due);
 }
 const src = () => (isRemote(P.file()) && signed && signed.address === P.file())
   ? signed.url : P.file();
