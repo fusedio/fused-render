@@ -28,6 +28,7 @@ export const TASK_ACTION_LABELS = {
   delete: "Delete task",
   fullScreen: "Full screen",
   exitFullScreen: "Exit full screen",
+  openInTasks: "Open in Tasks",
 } as const;
 
 /** The refusal a running task's Archive/Delete wear, in the words the server
@@ -47,4 +48,31 @@ export function terminalActionLabel(agent: string | null, hasSession: boolean): 
 export function blockedActionLabel(label: string, reason?: string | null): string {
   if (!reason) return label;
   return `${label} — ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`;
+}
+
+/** THE TASKS PAGE'S ROUTE, and the query param that opens one task's side
+ *  panel there (`shell/task-peek-store` `PEEK_PARAM`, written by every press on
+ *  that page and read back from a deep link). Restated here because platform
+ *  may not import shell; `task-actions.test.ts` pins the pair. */
+export const TASKS_PATH = "/tasks";
+export const TASKS_PEEK_PARAM = "peek";
+
+/** Whether `pathname` is the Tasks page itself (embedded `?embed=1` and scoped
+ *  `?project=` views share the pathname). */
+export function isTasksPath(pathname: string): boolean {
+  return pathname === TASKS_PATH;
+}
+
+/**
+ * WHERE "Open in Tasks" goes, or null when the row must not be offered: the
+ * flag is off, the task has no row key yet (a landing form, nothing to open),
+ * or we are already on the Tasks page.
+ */
+export function openInTasksHref(opts: {
+  on: boolean;
+  taskKey: string | null | undefined;
+  pathname: string;
+}): string | null {
+  if (!opts.on || !opts.taskKey || isTasksPath(opts.pathname)) return null;
+  return `${TASKS_PATH}?${TASKS_PEEK_PARAM}=${encodeURIComponent(opts.taskKey)}`;
 }

@@ -18,8 +18,8 @@
 // Tasks row's own line with a lead and a ⋮ (Akshil, 2026-11-15, "a/b slots"):
 //
 //   [lead] [↑][↓] │ status · agent · [folder] · ID SLOT · title ✎ · reply
-//                 │ [queue] [status word] … [chips…] [seats…] COUNT SLOT
-//                 │ TIME SLOT [⋮]
+//                 │ [queue] [status word] … [chips…] [seats…] [where]
+//                 │ COUNT SLOT TIME SLOT [⋮]
 //
 //   * LEAD — exactly one corner control, the same 28px icon button either way:
 //     × closes the container the reader opened (panel, card, dialog); ← goes
@@ -29,6 +29,9 @@
 //   * STATUS — the ring, or the face it wears; pressed, it opens the icon
 //     picker (TaskIconPick — any task, 2026-11-16). It swaps with nothing.
 //   * FOLDER — where the task lives: the host's `place`, or the folder chip.
+//   * WHERE — where IN the place (2026-11-16): Canvas, the node, the file, as
+//     an icon and its word, right before the count slot; the icon alone as
+//     soon as the row is short (rung 1).
 //   * THREE A/B SLOTS, one box and two occupants each, so nothing moves: `a`
 //     at rest, `b` while the pointer is on the head (or the keyboard is on a
 //     `b` control; always, where there is no hover):
@@ -37,8 +40,9 @@
 //       TIME   when it last ran  ↔ ↗ Open
 //     A slot with no `b` (a run in flight has nothing to file; a pane IS the
 //     page, so it has no Open; favourites off) keeps its `a` under the pointer.
-//   * the last reply trails the title, muted, and gives way before it; the
-//     queue caption and the paused word after them.
+//   * a host's `subtitle` (the rail card's hover preview: the last reply)
+//     trails the title, muted, and gives way before it; the queue caption and
+//     the paused word after them. The head prints no reply of its own.
 //   * CHIPS (worktree, PR), host SEATS, and the ⋮ at the end.
 //
 // NEVER MOVED, NEVER HIDDEN: the lead, the folder, and the ⋮. (↗ Open stood
@@ -50,16 +54,33 @@
 //
 //   1. the time: the slot shrinks to a glyph, and Open under the pointer is
 //      the ↗ alone; 2. the chips; 3. the host's seats; 4. the ↑↓ chevrons;
-//   5. the title, its reply and the trail take row 2 — row 1 keeps the lead,
-//      status, folder, id slot … count slot, time slot, ⋮ (`stacked: "auto"`);
+//   5. the id slot, the title, its line and the trail take row 2 — row 1
+//      keeps the lead, status, folder … where, count slot, time slot, ⋮
+//      (`stacked: "auto"`; the number goes down with the title it names,
+//      Akshil, 2026-11-16);
 //   6. the id slot (Archive stays in the ⋮).
+//
+// A RAIL WINDOW IS TWO LINES, ALWAYS (`reveal="window"` with a task; Akshil,
+// 2026-11-16: "in rail every task layout is a simple two-liner") — the hover
+// / favourite card, the Tasks card's chat, the New task card's chat, at every
+// width, not only when the ladder runs short:
+//
+//   [pin][←]  folder › file ………… [chips] COUNT · TIME  [⋮]
+//   status · ID SLOT · title ✎ · reply · [queue][status word]
+//
+// Row 1 is where the task lives (the place, a chevron, where in it) and its
+// facts; row 2 is the task. The three slots trade as everywhere, and nothing
+// folds to an icon: the where-tag and the door keep their words, and a long
+// place gives width instead (task-head.css `.is-two-line`). The ⋮ is the
+// host's to withhold — the rail card hands it over only once the card has
+// been pressed (RailPeek). A panel or a pane keeps the one row above.
 //
 // WHAT THE HOST OWNS. The ⋮ is the host's `<Kebab …/>` handed in whole, because
 // what it does on Archive and Delete (advance to the next task, go back to the
 // list, close the dialog) is the host's business; the head only seats it. The
 // same for `chips` and `seats`.
 import { useCallback, useEffect, useState, type ReactNode, type Ref } from "react";
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronUp, MessageSquare, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, ChevronUp, MessageSquare, X } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 import { queueCaption, type QueueFacts } from "@platform/lib/queue";
 import { TaskStar } from "@platform/ui/TaskStar";
@@ -135,6 +156,11 @@ export interface TaskHeadProps {
    *  panes' hide-the-panel × while a chat's ← holds the lead — those panes
    *  have no other close. Order: [preLead][lead][↑][↓]. */
   preLead?: ReactNode;
+  /** THE RAIL CARD'S PIN (claude-rail RailPinButton; owner, 2026-11-16): a
+   *  rail card's head only. Seated first, where the × was — before a ← — so the
+   *  corner reads `[pin] [←] [↑][↓]`; in the acts cluster, which no rung
+   *  of the ladder folds. */
+  pinNode?: ReactNode;
   /** The favourite star, the count slot's `b` (default on). Off where the
    *  favourites switch is off (the rail card's legacy rule): the count stays. */
   star?: boolean;
@@ -153,8 +179,9 @@ export interface TaskHeadProps {
   /** Ring facts only the host knows (TaskPeekWho `ring`): unread, held
    *  draft, failed. */
   ring?: { unread?: boolean; draftHeld?: boolean; failed?: boolean };
-  /** A muted line after the title, in the title's row (TaskPeekWho), in
-   *  place of the task's own last reply. */
+  /** A muted line after the title, in the title's row (TaskPeekWho). None
+   *  unless the host passes one: the head never prints the task's last reply
+   *  itself (2026-11-16). */
   subtitle?: ReactNode;
   /** After a rename the server took (TaskPeekWho `onRenamed`). */
   onRenamed?: () => void;
@@ -189,6 +216,13 @@ export interface TaskHeadProps {
    *  chip. `null`: none — a head inside a view already scoped to that folder
    *  (the Explorer pane over the same folder). */
   place?: ReactNode;
+  /** WHERE IN THE PLACE (Akshil, 2026-11-16): the canvas chat's Canvas or
+   *  node tag, a folder chat's file tag (PlaceTags `part="where"`) — at the
+   *  row's right end, just before the count slot. An icon and its word; the
+   *  icon alone as soon as the row is short (the ladder's first rung,
+   *  task-head.css). Not an a/b slot: it stands at rest and under the
+   *  pointer. */
+  where?: ReactNode;
   chips?: ReactNode;
   seats?: ReactNode;
   /** The node the chat portals its usage-limit word into (ChatMount
@@ -199,9 +233,10 @@ export interface TaskHeadProps {
    *  `headChipsHost`) — a seat at the head of the chips. */
   chipsRef?: (el: HTMLElement | null) => void;
   /** WHAT BRINGS THE b ITEMS (Akshil, 2026-11-16). `"window"` — a card off
-   *  the rail: the pointer anywhere on the card shows all of them, and at
-   *  rest the title has the row (no facts where it would be cut, no ⋮), on
-   *  a second line when the card is narrow. `"slot"` (default) — a panel or
+   *  the rail: the pointer anywhere on the card (or the keyboard inside it)
+   *  shows them, except the Archive, which waits for the pointer on the
+   *  head; the facts and the ⋮ stand at rest, and a head with a task is two
+   *  lines at every width (where it lives and its facts, then the task). `"slot"` (default) — a panel or
    *  a pane: the pointer on the head shows them, the facts and the ⋮ stand
    *  at rest, and the head stays one row. */
   reveal?: "window" | "slot";
@@ -214,7 +249,8 @@ export interface TaskHeadProps {
   kebab?: ReactNode | ((fit: number) => ReactNode);
   /** The title on a row of its own: `"auto"` (default) lets the ladder
    *  decide at rung 5; `true` pins that layout (the other rungs still
-   *  measured); `false` never stacks and caps the ladder at rung 4. */
+   *  measured); `false` never stacks and caps the ladder at rung 4. A rail
+   *  window's head with a task is two lines whatever this says. */
   stacked?: boolean | "auto";
   /** Arm the fit ladder (the peek: only while the panel is up). */
   fitEnabled?: boolean;
@@ -246,6 +282,7 @@ export function TaskHead({
   queue = null,
   status = "",
   place,
+  where,
   chips,
   seats,
   chipsRef,
@@ -256,6 +293,7 @@ export function TaskHead({
   className,
   leadNode,
   preLead,
+  pinNode,
   star = true,
   starNode,
   statusOverlay,
@@ -278,6 +316,9 @@ export function TaskHead({
   // The title is being edited (the title half tells the marks half, which
   // holds the icon button and the id slot).
   const [renaming, setRenaming] = useState(false);
+  // The icon picker is open (the marks half tells the title half, which holds
+  // the id slot once the head is stacked).
+  const [picking, setPicking] = useState(false);
   // Measured on the whole head — both rows — so a rung can answer either.
   const [fit, headRef] = useStripFit(
     stacked === false ? DROPS_NO_STACK : DROPS_ALL,
@@ -288,8 +329,8 @@ export function TaskHead({
   );
   const isWindow = reveal === "window";
   // THE WHOLE WINDOW IS THE TRIGGER (Akshil, 2026-11-15): the b items show
-  // while the pointer is anywhere on the card, panel or pane the head tops —
-  // not only on the 44px line.
+  // while the pointer is anywhere on the card the head tops — not only on the
+  // 44px line — or the keyboard is inside it (2026-11-16).
   const [headEl, setHeadEl] = useState<HTMLElement | null>(null);
   const setHead = useCallback(
     (el: HTMLElement | null) => {
@@ -314,19 +355,50 @@ export function TaskHead({
       win = up && up !== document.body ? up : headEl.parentElement;
     }
     if (!win || typeof win.addEventListener !== "function") return;
-    const on = () => setHot(true);
+    // …OR WHILE THE CARD HAS THE KEYBOARD (Akshil, 2026-11-16: "show fav and
+    // open when card is in focus as well, not just mouse in that area"): a
+    // card the reader is typing in keeps its star, its door and its ⋮ up
+    // wherever the pointer went. The Archive still waits for the pointer on
+    // the head itself (task-head.css).
+    let pointerIn = false;
+    let focusIn = false;
+    const sync = () => setHot(pointerIn || focusIn);
+    const on = () => {
+      pointerIn = true;
+      sync();
+    };
     // Leaving the window also re-arms a spent filing press (below).
     const off = () => {
-      setHot(false);
+      pointerIn = false;
+      sync();
       setRefiled(false);
+    };
+    const focusOn = () => {
+      focusIn = true;
+      sync();
+    };
+    const focusOff = (e: FocusEvent) => {
+      // A move between two things inside the card is not a leave.
+      const to = e.relatedTarget as Node | null;
+      focusIn = !!to && win.contains(to);
+      sync();
     };
     win.addEventListener("pointerenter", on);
     win.addEventListener("pointerleave", off);
-    // Mounted under a pointer that is already there (a card opened by a press).
-    if (typeof win.matches === "function" && win.matches(":hover")) setHot(true);
+    win.addEventListener("focusin", focusOn);
+    win.addEventListener("focusout", focusOff);
+    // Mounted under a pointer that is already there (a card opened by a
+    // press), or around the focus (its composer took the keyboard first).
+    if (typeof win.matches === "function" && win.matches(":hover")) pointerIn = true;
+    if (typeof win.contains === "function" && typeof document !== "undefined" && document.activeElement && win.contains(document.activeElement)) {
+      focusIn = true;
+    }
+    sync();
     return () => {
       win.removeEventListener("pointerenter", on);
       win.removeEventListener("pointerleave", off);
+      win.removeEventListener("focusin", focusOn);
+      win.removeEventListener("focusout", focusOff);
       setHot(false);
     };
   }, [headEl, isWindow]);
@@ -334,7 +406,19 @@ export function TaskHead({
   // the ladder crosses the stack rung loses its draft (an accepted edge case).
   // ONLY A RAIL WINDOW STACKS ON ITS OWN (Akshil, 2026-11-16: "2nd line thing
   // is only for small windows, not for expanded sidebar").
-  const stackedNow = stacked === true || (stacked === "auto" && isWindow && fit >= TASK_HEAD_STACK_LEVEL);
+  //
+  // A RAIL WINDOW'S TASK HEAD IS ALWAYS TWO LINES (Akshil, 2026-11-16: "in
+  // rail every task layout is a simple two-liner"), at every width:
+  //
+  //   [pin][←]  folder › file ……………… [chips] count · time  [⋮]
+  //   status · id · title · reply
+  //
+  // Row 1 says where the task lives and its facts; row 2 is the task itself.
+  // Nothing in it folds to an icon: the where-tag and the door keep their
+  // words (task-head.css `.is-two-line`).
+  const twoLine = isWindow && !!task;
+  const stackedNow =
+    twoLine || stacked === true || (stacked === "auto" && isWindow && fit >= TASK_HEAD_STACK_LEVEL);
   /** The heading the dialog is named by, when there is a dialog (`titleId`). */
   const headingAttrs = titleId ? { id: titleId, role: "heading", "aria-level": 2 } : {};
   // A QUEUED LINE NAMES THE QUEUED ROW (Topbar's rule, Bugbot PR #1194): its
@@ -385,29 +469,31 @@ export function TaskHead({
   // THE MARKS HALF: status, agent mark, folder, id slot. Always on row 1.
   const marks = who ? (
     <TaskPeekWho
-      key={who.key}
+      // Keyed on the task, under its own name: in a two-line head this half
+      // and the title half are siblings on row 2.
+      key={`marks:${who.key}`}
       task={who}
       running={line ? false : running}
       part="marks"
       className="task-head-marks-seat"
       iconPress
-      place={placeEl}
+      // Two lines: the place stands on row 1, the ring goes down to row 2.
+      place={twoLine ? null : placeEl}
       idOverlay={idOverlay}
+      // STACKED, THE NUMBER GOES DOWN WITH THE TITLE (Akshil, 2026-11-16):
+      // row 2 reads "T012 title", and its Archive trades there.
+      idAt={stackedNow ? "title" : "marks"}
       editing={renaming}
+      onPickingChange={setPicking}
       {...(ring ? { ring } : {})}
       {...(onRenamed ? { onRenamed } : {})}
     />
   ) : null;
-  // THE LAST REPLY trails the title (the List row's line); a host's own
-  // subtitle wins.
-  const reply = who?.last_reply?.trim() ?? "";
-  const subtitleNode: ReactNode =
-    subtitle ??
-    (reply ? (
-      <span className="task-head-reply" data-hint={reply}>
-        {reply}
-      </span>
-    ) : null);
+  // NO REPLY LINE OF ITS OWN (Akshil, 2026-11-16): the head drew the task's
+  // last reply after every title, which the heads it replaced never did —
+  // only the Tasks row and the rail card's hover preview print it. A host
+  // that wants a line after the title passes `subtitle` (RailPeek).
+  const subtitleNode: ReactNode = subtitle ?? null;
   // THE TITLE HALF, wherever it stands: on row 1 after the marks, or —
   // stacked — on row 2 with the trail. A static title or the skeleton for a
   // head with no task.
@@ -419,6 +505,9 @@ export function TaskHead({
       task={who}
       part="title"
       className="task-head-title-seat"
+      idOverlay={idOverlay}
+      idAt={stackedNow ? "title" : "marks"}
+      picking={picking}
       onEditingChange={setRenaming}
       {...(titleId ? { titleId } : {})}
       {...(subtitleNode ? { subtitle: subtitleNode } : {})}
@@ -453,21 +542,24 @@ export function TaskHead({
   const starEl = who ? (starNode ?? (star ? <TaskStar task={who} /> : null)) : null;
   const unread = countFact?.unread ?? 0;
   const countWords = countFact ? `${countFact.n} message${countFact.n === 1 ? "" : "s"}` : "";
+  /** The count as a fact: `cls` says which seat holds it. */
+  const countEl = (cls: string) =>
+    countFact ? (
+      <span
+        className={cls + " task-head-count" + (unread > 0 ? " is-unread" : "")}
+        // `role="img"` so the label is read (the rail card's rule).
+        role="img"
+        aria-label={countWords + (unread > 0 ? `, ${unread} unread` : "")}
+        data-hint={`${countWords} in this task` + (unread > 0 ? ` — ${unread} unread` : "")}
+      >
+        {countFact.n}
+        <MessageSquare size={12} aria-hidden="true" />
+      </span>
+    ) : null;
   const countSlot =
     who && (countFact || starEl) ? (
       <span className="task-head-slot task-head-countslot">
-        {countFact ? (
-          <span
-            className={"task-head-slot-a task-head-count" + (unread > 0 ? " is-unread" : "")}
-            // `role="img"` so the label is read (the rail card's rule).
-            role="img"
-            aria-label={countWords + (unread > 0 ? `, ${unread} unread` : "")}
-            data-hint={`${countWords} in this task` + (unread > 0 ? ` — ${unread} unread` : "")}
-          >
-            {countFact.n}
-            <MessageSquare size={12} aria-hidden="true" />
-          </span>
-        ) : null}
+        {countEl("task-head-slot-a")}
         <span className="task-head-slot-b">{starEl}</span>
       </span>
     ) : null;
@@ -496,19 +588,59 @@ export function TaskHead({
       <span className="task-head-open-word">{open.word ?? "Open"}</span>
     </a>
   ) : null;
+  const timeEl = (cls: string) =>
+    whenFact ? (
+      <span
+        className={cls + " task-head-time"}
+        {...(whenFact.title ? { "data-hint": whenFact.title } : {})}
+      >
+        {whenFact.text}
+      </span>
+    ) : null;
   const timeSlot = !who ? (
     // A HEAD WITH NO TASK has no a/b: its door stands as it always did.
     openLink
   ) : whenFact || openLink ? (
     <span className="task-head-slot task-head-timeslot">
-      {whenFact ? (
-        <span className="task-head-slot-a task-head-time" {...(whenFact.title ? { "data-hint": whenFact.title } : {})}>
-          {whenFact.text}
-        </span>
-      ) : null}
+      {timeEl("task-head-slot-a")}
       <span className="task-head-slot-b">{openLink}</span>
     </span>
   ) : null;
+  // A RAIL WINDOW'S FACTS AND ACTS ARE TWO LAYERS OF ONE BOX (Akshil,
+  // 2026-11-16: "too much space between message count and time", "star and
+  // Open have a weird gap, keep them closer"). Two slots, each as wide as its
+  // wider occupant, kept the row from shifting — but "1d ago" then stood in a
+  // box sized for "Open ↗" and the star in one sized for the count, so each
+  // pair had a hole in it. Here the count and the time sit side by side in
+  // one layer, the star and the door in another, both against the box's right
+  // edge; the box is the wider LAYER, so nothing outside it moves and nothing
+  // inside it is spread.
+  //
+  // ONLY WHERE BOTH FACTS TRADE (or neither does). With one act alone
+  // (favourites off: no star; a pane that is the page: no door) one fact
+  // STAYS under the pointer, and a stayer drawn in two independently aligned
+  // layers jumped by the difference of their widths (Bugbot on #2297). Those
+  // heads keep one slot per fact: the stayer is one node that never moves,
+  // and the other trades in a box of its own.
+  const hasActs = !!(starEl || openLink);
+  const clustered = isWindow && !!who && (!hasActs || (!!starEl && !!openLink));
+  const factsCluster =
+    clustered && (countFact || whenFact || hasActs) ? (
+      <span className={"task-head-facts" + (hasActs ? " has-acts" : "")}>
+        {countFact || whenFact ? (
+          <span className="task-head-facts-layer is-a">
+            {countEl("task-head-fact")}
+            {timeEl("task-head-fact")}
+          </span>
+        ) : null}
+        {hasActs ? (
+          <span className="task-head-facts-layer is-b">
+            {starEl}
+            {openLink}
+          </span>
+        ) : null}
+      </span>
+    ) : null;
   // The queue caption and the paused word trail the title, on its row — and
   // the host's status seat (`statusRef`, the chat's portaled pause word) with
   // them: on NO rung, and onto row 2 with the title when stacked.
@@ -534,6 +666,7 @@ export function TaskHead({
         "task-head" +
         (stackedNow ? " is-stacked" : "") +
         (isWindow ? " is-window" : "") +
+        (twoLine ? " is-two-line" : "") +
         (hot ? " is-hot" : "") +
         (refiled ? " is-refiled" : "") +
         (className ? ` ${className}` : "")
@@ -555,9 +688,11 @@ export function TaskHead({
       data-fit={fit}
     >
       <div className="task-head-row">
-        {preLead || leadNode || lead || nav ? (
+        {preLead || leadNode || lead || nav || pinNode ? (
           <div className="task-head-acts">
             {preLead}
+            {/* A ← lead: the pin before it, after any × (`pinNode`). */}
+            {lead?.kind === "back" && !leadNode ? pinNode : null}
             {leadNode ? (
               leadNode
             ) : lead ? (
@@ -573,6 +708,8 @@ export function TaskHead({
                 {leadIcon}
               </button>
             ) : null}
+            {/* A × lead (or none): the pin after it (`pinNode`). */}
+            {lead?.kind === "back" && !leadNode ? null : pinNode}
             {nav ? (
               // One seat for both chevrons, so one rung folds them (3).
               <span className="task-head-nav">
@@ -600,14 +737,35 @@ export function TaskHead({
             ) : null}
           </div>
         ) : null}
-        {marks}
+        {twoLine ? (
+          // WHERE IT LIVES, on row 1's left: `folder › file` (the place, then
+          // where in it), a chevron between when both stand.
+          placeEl || where ? (
+            <span className="task-head-crumb">
+              {placeEl}
+              {placeEl && where ? (
+                <ChevronRight className="task-head-crumb-sep" size={11} aria-hidden="true" data-fit-skip="" />
+              ) : null}
+              {where ? <span className="task-head-where">{where}</span> : null}
+            </span>
+          ) : null
+        ) : (
+          marks
+        )}
         {stackedNow ? (
-          // STACKED: the title has row 2, and the gap holds the slots and the
-          // ⋮ at the row's end. A head with no task keeps its place up here.
-          <>
-            {who ? null : placeEl}
-            <span className="task-head-idle" aria-hidden />
-          </>
+          // STACKED: the title has row 2; the marks' own seat takes the
+          // slack and the slots stand at the row's end (their `margin-left:
+          // auto`). No spacer between them: it held nothing but cost the row
+          // a gap, and the door's word folded a few px before it had to
+          // (Akshil, 2026-11-16: "there is still space but Open word not
+          // visible"). A head with no task keeps its place — and the spacer
+          // that holds its two clusters apart — up here.
+          who ? null : (
+            <>
+              {placeEl}
+              <span className="task-head-idle" aria-hidden />
+            </>
+          )
         ) : (
           <>
             {identity ?? (who ? null : <span className="task-head-idle" aria-hidden />)}
@@ -629,13 +787,21 @@ export function TaskHead({
               {seats}
             </span>
           ) : null}
-          {countSlot}
-          {timeSlot}
+          {where && !twoLine ? <span className="task-head-where">{where}</span> : null}
+          {clustered ? (
+            factsCluster
+          ) : (
+            <>
+              {countSlot}
+              {timeSlot}
+            </>
+          )}
           {kebabNode ? <span className="task-head-kebab">{kebabNode}</span> : null}
         </div>
       </div>
       {stackedNow && (identity || line || status || statusRef) ? (
         <div className="task-head-titlerow">
+          {twoLine ? marks : null}
           {identity}
           {trail}
         </div>

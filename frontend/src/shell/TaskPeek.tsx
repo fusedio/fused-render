@@ -386,18 +386,6 @@ const ICON = {
 const ICON_CLOSE = (
   <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
 );
-/** OPEN IN EXPLORER — the PREFIX on a word (Akshil, 2026-09-14 — design.md,
- *  Polish batch 5). An arrow out of a box, pointing to the upper right: the
- *  mark the whole web uses for "this leaves the page you are on", which is
- *  exactly what the press does. It leads the label rather than trailing it, the
- *  way every other icon-and-word control in this app is built; the "→" that
- *  used to follow the word said "forward", which is what a Next control says. */
-const ICON_OPEN_EXTERNAL = (
-  <svg {...ICON} width={13} height={13}>
-    <path d="M7 17 17 7" />
-    <path d="M8 7h9v9" />
-  </svg>
-);
 /** CHEVRONS, not arrows (design.md, Header + list state v2). Prev/next step
  *  through a list that is on screen; an arrow would promise travel. */
 const ICON_UP = (
@@ -1413,15 +1401,14 @@ export function TaskPeek({
             <div className="task-side-peek-marks">
               {/* The project and agent labels were dropped from the peek header to
                   declutter it; the chat's own Topbar still shows them. */}
-              {/* "↗ OPEN" — a WORD behind a MARK (design.md, Polish batches 4
-                  and 5). The folder glyph it replaced was the page's one door
-                  picture, which is a good rule everywhere except beside a
-                  folder NAME, where it read as "open that folder" and did not;
-                  the label says the act, and the external-link arrow in front
-                  of it says the press leaves this page. The icon LEADS, the way
-                  every other icon-and-word control in this app is built. It is
-                  a quiet ghost button: no outline at rest, a wash and full ink
-                  on hover.
+              {/* "OPEN" — A WORD (design.md, Polish batches 4 and 5; the mark
+                  that led it went on 2026-11-16, Akshil: no arrow beside
+                  "Open", anywhere). The folder glyph it replaced was the
+                  page's one door picture, which is a good rule everywhere
+                  except beside a folder NAME, where it read as "open that
+                  folder" and did not; the label says the act. It is a quiet
+                  ghost button: no outline at rest, a wash and full ink on
+                  hover.
 
                   A real link with a real href, so ⌘-click opens a tab, exactly
                   like the row's own door. */}
@@ -1437,7 +1424,6 @@ export function TaskPeek({
                     openAsPage();
                   }}
                 >
-                  {ICON_OPEN_EXTERNAL}
                   Open
                 </a>
               )}

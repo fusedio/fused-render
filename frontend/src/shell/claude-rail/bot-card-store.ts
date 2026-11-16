@@ -53,6 +53,21 @@ export function setBotCardHoldsOnPin(on: boolean): void {
   holdOnPin = on;
 }
 
+/** HOVER / TEMP / PIN (rail-pin-lib; the unified-head switch on — the rail
+ *  says): a press makes the card TEMP (pinned, not held), only the pin icon
+ *  or a double-click holds it, a swap to another bot is temp again, and the
+ *  window's mark (`botOpen`, what a reload pins back) follows the HOLD — a
+ *  temp card does not come back after a reload. */
+let pinModel = false;
+export function setBotCardPinModel(on: boolean): void {
+  pinModel = on;
+}
+
+/** The window's mark for a reload (header of `pinModel`). */
+function markOpen(): void {
+  if (pinModel) setBotOpen(state.key && state.pinned && state.held ? state.key : null);
+}
+
 let warm: () => void = () => {};
 /** What a ring's arrival warms (BotPeek `preloadBotChat`): set by the host. */
 export function setBotCardWarm(fn: () => void): void {
@@ -69,6 +84,12 @@ export function botCardIntent(): PeekIntent {
       {
         // The machine pins before it shows (`showNow`): the mark follows both.
         show: (key) => {
+          if (pinModel) {
+            // Another bot's card is a new card: temp (the pin is per card).
+            write(key === null ? { key, pinned: false, held: false } : key !== state.key ? { key, held: false } : { key });
+            markOpen();
+            return;
+          }
           // A card that went has nothing to hold. Only a close says so: the
           // machine pins BEFORE it shows a new card (`showNow`), so a pin's
           // hold lands while the key is still the old one (or none).
@@ -76,6 +97,11 @@ export function botCardIntent(): PeekIntent {
           if (state.pinned) setBotOpen(key);
         },
         pin: (on) => {
+          if (pinModel) {
+            write(on ? { pinned: true } : { pinned: false, held: false });
+            markOpen();
+            return;
+          }
           write({ pinned: on, ...(on && holdOnPin ? { held: true } : {}) });
           setBotOpen(on ? state.key : null);
         },
@@ -104,6 +130,7 @@ export function useBotCardState(): BotCardState {
 
 export function setBotCardHeld(held: boolean): void {
   write({ held });
+  markOpen();
 }
 
 export function setBotCardNoRoom(noRoom: boolean): void {
@@ -163,6 +190,7 @@ export function resetBotCardForTests(timers?: Timers): void {
   rings.clear();
   handle = null;
   holdOnPin = true;
+  pinModel = false;
   botPress.inside = false;
   botPressed.href = null;
   setBotCard(null);

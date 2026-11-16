@@ -11,7 +11,7 @@
 // rethrown as a `RemoteApiError` carrying the server's `code` — the view page
 // picks its message by code, not by parsing text.
 import { getJson, postJson } from "./api";
-import type { HttpError } from "./api";
+import type { HttpError, TemplateEntry } from "./api";
 import { isRemoteLocation } from "./path-url";
 
 /** The server's size threshold above which an uncached file asks first
@@ -186,6 +186,11 @@ export interface RemoteStat {
   /** The cached local copy — only when `cached`. */
   path: string | null;
   warn_bytes: number;
+  /** The file's templates that read the `s3://` address themselves (a
+   *  `stream-s3` marker in the template folder, D1484): the explorer opens
+   *  the object in the first of these with no download. Absent from a server
+   *  that predates streaming; empty for a folder. */
+  stream_templates?: TemplateEntry[];
 }
 
 export interface RemoteEntry {

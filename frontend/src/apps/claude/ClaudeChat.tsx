@@ -179,12 +179,13 @@ import { PlaceTags } from "@shell/claude-rail/PlaceTags";
 // head — the same one every other task view draws.
 import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
 import { TaskPeekProject } from "@shell/TaskPeekWho";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
 import { shortTaskId } from "@shell/tasks-lib";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { queueCaption } from "@platform/lib/queue";
-import { ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
+import { hasWhereTag, ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { AllowDeniedContext, TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
@@ -5653,6 +5654,25 @@ function ChatBody(props: ChatBodyProps) {
         secondaryOnly
       />
     ) : null;
+  // THE UNIFIED HEAD SEATS THE TAGS APART (Akshil, 2026-11-16): a pane IS
+  // its place, so the place's own name is not drawn; where in it — Canvas,
+  // the node, the file — stands at the head's right end, before the count
+  // slot, with its icon (TaskHead `where`). A place with no where-tag (a
+  // whole folder, a file) draws none.
+  const whereTag =
+    placeTag && head.task && hasWhereTag(railScope(head.task, ownPlace(head.task)), ownPlace(head.task)) ? (
+      <PlaceTags
+        scope={railScope(head.task, ownPlace(head.task))}
+        at={ownPlace(head.task)}
+        pageRoot={props.pageRoot ?? null}
+        sessionId={head.task.session_id ?? null}
+        {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
+        // No `onlyDoor` here: that rule keeps the folder's own name off the
+        // merged head, and the where-tag never carries it — one with no door
+        // is plain text, as on every other head (CodeRabbit on #2287).
+        part="where"
+      />
+    ) : null;
   const headerExtra =
     props.prChip && head.task ? (
       <>
@@ -5837,6 +5857,15 @@ function ChatBody(props: ChatBodyProps) {
   const kebabMenu = (
       <Kebab
         {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
+        // OPEN IN TASKS (flag on, off the Tasks page): only a chat with a task
+        // row — the landing and a never-run chat have none to open.
+        {...openInTasksProps(
+          openInTasksItem({
+            on: headUnified,
+            taskKey: inChat ? (head.task?.key ?? null) : null,
+            onOpen: (href) => void navigateUrl(href),
+          }),
+        )}
         file={file}
         sessionId={inChat ? (state.sessionId ?? "") : ""}
         btnRef={kebabBtn}
@@ -5981,9 +6010,10 @@ function ChatBody(props: ChatBodyProps) {
       status={inChat ? limitWord : ""}
       place={
         inChat && head.task
-          ? (placeTag ?? (props.mergedHead ? null : <TaskPeekProject task={head.task} />))
+          ? (placeTag || props.mergedHead ? null : <TaskPeekProject task={head.task} />)
           : null
       }
+      {...(inChat && whereTag ? { where: whereTag } : {})}
       chips={
         inChat ? (
           <>

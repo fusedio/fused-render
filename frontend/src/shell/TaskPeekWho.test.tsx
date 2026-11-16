@@ -344,3 +344,71 @@ test("a host's ring facts reach the ring: the unread mark, the held draft, a fai
   // A live turn still outranks a stale failure, the block's own rule.
   expect(ringOf({ ring: { failed: true }, running: true }).failed).toBe(false);
 });
+
+test("idAt: a stacked head's number leads the title half; the marks half draws none (2026-11-16)", () => {
+  const overlay = createElement("button", { className: "host-archive" });
+  // One row: the marks hold the id slot, the title half none.
+  const marks = render({ task: task(), part: "marks", idOverlay: overlay });
+  expect(marks.text()).toContain("task-head-idslot");
+  expect(render({ task: task(), part: "title", idOverlay: overlay }).text()).not.toContain("T042");
+  // Stacked: the other way round, the number before the title.
+  expect(render({ task: task(), part: "marks", idOverlay: overlay, idAt: "title" }).text()).not.toContain("T042");
+  const title = render({ task: task(), part: "title", idOverlay: overlay, idAt: "title" }).text();
+  expect(title).toContain("host-archive");
+  expect(title.indexOf("T042")).toBeGreaterThan(-1);
+  expect(title.indexOf("T042")).toBeLessThan(title.indexOf("Rename the pane noun"));
+});
+
+test("picking: the icon picker open in the other half keeps the stacked id slot's Archive away", () => {
+  const overlay = createElement("button", { className: "host-archive" });
+  const v = render({ task: task(), part: "title", idOverlay: overlay, idAt: "title", picking: true });
+  expect(v.text()).toContain("T042");
+  expect(v.text()).not.toContain("host-archive");
+});
+
+test("the pencil stands over the title's end only where no room is left after it (`is-rename-over`, 2026-11-16)", () => {
+  const whoOf = (r: ReactTestRenderer) =>
+    r.root.findAll(
+      (n) => n.type === "div" && String(n.props.className ?? "").split(" ").includes("task-side-peek-who"),
+    )[0]!;
+  // The seat's right edge at 300px, the title ending `free` px before it.
+  const pointerOn = (free: number) => ({
+    currentTarget: {
+      getBoundingClientRect: () => ({ right: 300 }),
+      querySelector: () => ({ getBoundingClientRect: () => ({ right: 300 - free }) }),
+    },
+  });
+  const v = render({ task: task(), part: "title" });
+  // Read when the pointer comes onto the title half — never before.
+  expect(whoOf(v.r).props.className).not.toContain("is-rename-over");
+  // Under 26px (the 8px gap, the 16px pencil, a hair): over the title's end.
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(10)));
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(25)));
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  // Room for it: next to the title.
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(26)));
+  expect(whoOf(v.r).props.className).not.toContain("is-rename-over");
+  // A node with nothing to measure (a test's stand-in) or no title on
+  // screen (mid-rename) changes nothing.
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(0)));
+  act(() => whoOf(v.r).props.onMouseEnter({ currentTarget: {} }));
+  act(() =>
+    whoOf(v.r).props.onMouseEnter({
+      currentTarget: { getBoundingClientRect: () => ({ right: 300 }), querySelector: () => null },
+    }),
+  );
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  // Only the shared head's title half measures: the marks half and the
+  // block every older caller draws hear no pointer.
+  expect(whoOf(render({ task: task(), part: "marks" }).r).props.onMouseEnter).toBeUndefined();
+  expect(whoOf(render({ task: task() }).r).props.onMouseEnter).toBeUndefined();
+});
+
+test("the pencil in the shared head's title half is skipped by the fit ladder (it overlays the title's end)", () => {
+  const started = task({ renamed: false } as Partial<Task>);
+  const title = render({ task: started, part: "title" }).text();
+  if (title.includes("task-side-peek-rename")) expect(title).toContain("data-fit-skip");
+  // The block every older caller draws charges its pencil as before.
+  expect(render({ task: started }).text()).not.toContain("data-fit-skip");
+});

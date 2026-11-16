@@ -42,11 +42,15 @@ def state(tmp_path, monkeypatch):
     folder = tmp_path / "state"
     folder.mkdir()
     monkeypatch.setattr(tasks_store, "STATE_DIR", str(folder))
+    # The process-wide factory is registered once, at import of the tasks
+    # router; put back whatever was there, or every later test in this xdist
+    # worker that reaches queue_manager.get() fails with "no factory".
+    before = qm._factory
     qm.reset_for_tests(None)
     qm.set_factory(None)
     yield folder
     qm.reset_for_tests(None)
-    qm.set_factory(None)
+    qm.set_factory(before)
 
 
 class World:

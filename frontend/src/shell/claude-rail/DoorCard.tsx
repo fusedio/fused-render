@@ -55,6 +55,7 @@ import type { DoorCardStore } from "./door-card-store";
 import { useFavPeekState } from "./fav-peek-store";
 import { publishWindowABox, setSnapGuide } from "./card-snap";
 import { useCanvasRailPeek } from "./rail-peek-flag";
+import { useTaskHeadUnified } from "@shell/task-head-flag";
 import {
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
@@ -94,6 +95,10 @@ export interface DoorCardApi {
   backRef: RefObject<HTMLButtonElement>;
   /** A chat's own Escape, let through: closes a preview, never a pinned card. */
   onSubEscape(): void;
+  /** THE PIN ICON (rail-pin-lib; the unified-head switch on): the card's pin
+   *  (`held`) and its toggle, for the content's head (RailPinButton). Null
+   *  with the switch off. */
+  pin: { pinned: boolean; onToggle: () => void } | null;
 }
 
 export interface DoorCardProps {
@@ -136,6 +141,9 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const rail = railProp === undefined ? fav.rail : railProp;
   const railGiven = railProp !== undefined;
   const intent = store.intent();
+  // HOVER / TEMP / PIN (rail-pin-lib): with the unified-head switch on, a
+  // press makes the card temp and only its pin holds it.
+  const pinModel = useTaskHeadUnified();
 
   // A card stands behind every rail's door while the flag is on (the store's
   // `ready`); off, nothing shows.
@@ -169,12 +177,16 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     setNoRoom(false);
   }, [favBox]);
   // A PREVIEW NEVER OUTLIVES ITS RAIL; a pinned card follows the reader to the
-  // next page's rail (header).
+  // next page's rail (header). With the pin (rail-pin-lib `hopKeeps`), only a
+  // HELD card follows: a temp one goes with the hop too.
   const railWas = useRef(rail);
+  const pinModelRef = useRef(pinModel);
+  pinModelRef.current = pinModel;
   useEffect(() => {
     if (railWas.current === rail) return;
     railWas.current = rail;
-    if (!railGiven && !store.state().pinned) store.close();
+    const s = store.state();
+    if (!railGiven && !(pinModelRef.current ? s.held : s.pinned)) store.close();
   }, [rail, store, railGiven]);
 
   const up = on && card.up;
@@ -431,8 +443,11 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   };
   // ESCAPE closes a PREVIEW (a pinned card closes by its ×, the door or Open
   // only); never from a popup inside the card, whose Escape is its own.
+  // WITH THE PIN (owner, 2026-11-16: "a consistent behaviour"): a hover and a
+  // TEMP card close on Escape, only a pinned (held) one ignores it.
+  const escapeKeeps = pinModel ? card.held : card.pinned;
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "Escape" || e.defaultPrevented || card.pinned) return;
+    if (e.key !== "Escape" || e.defaultPrevented || escapeKeeps) return;
     const t = e.target as HTMLElement;
     const pop = t.closest("[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']");
     if (pop && pop !== cardRef.current) return;
@@ -441,7 +456,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   };
   // …and with the focus nowhere (a hover's preview: the pointer brought it,
   // the keyboard is on the body), the document's Escape does the same.
-  const previewing = visible && !card.pinned;
+  const previewing = visible && !escapeKeeps;
   useEffect(() => {
     if (!previewing) return;
     const onKey = (e: KeyboardEvent) => {
@@ -454,7 +469,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     return () => document.removeEventListener("keydown", onKey);
   }, [previewing, store]);
   const onSubEscape = useCallback(() => {
-    if (!store.state().pinned) close();
+    const s = store.state();
+    if (!(pinModelRef.current ? s.held : s.pinned)) close();
   }, [close, store]);
   // OPEN: the page itself; the card goes once the hop went (a leave guard
   // may refuse it — FavouritePeek's rule).
@@ -469,9 +485,20 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     [close, href],
   );
 
+  const held = card.held;
+  const togglePin = useCallback(() => store.setHeld(!store.state().held), [store]);
   const api = useMemo<DoorCardApi>(
-    () => ({ visible, pinned: card.pinned, close, openPage, closeRef, backRef, onSubEscape }),
-    [visible, card.pinned, close, openPage, onSubEscape],
+    () => ({
+      visible,
+      pinned: card.pinned,
+      close,
+      openPage,
+      closeRef,
+      backRef,
+      onSubEscape,
+      pin: pinModel ? { pinned: held, onToggle: togglePin } : null,
+    }),
+    [visible, card.pinned, close, openPage, onSubEscape, pinModel, held, togglePin],
   );
 
   if (!on) return null;
@@ -502,6 +529,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
         onPointerLeave={() => intent.leaveCard()}
         onPointerDownCapture={() => {
           claim();
+          // The rail's outside-press watcher reads it (rail-pin-lib).
+          store.press.inside = true;
           intent.pressStart();
         }}
         onClickCapture={claim}

@@ -37,13 +37,17 @@ test("the rail's Tasks card: both heads on the shared chassis, the old ones kept
   // The list head: × closing the card, a static "Tasks", "Open tasks" — and
   // no ladder: it has nothing that folds.
   expect(shared).toContain("fitEnabled={false}");
-  expect(shared).toContain('lead={{ kind: "close", label: "Close Tasks", hint: "Close", onPress: api.close, ref: api.closeRef }}');
+  // The × only without the rail's pin (`api.pin`): with it no card has one.
+  expect(shared).toContain('lead={api.pin ? null : { kind: "close", label: "Close Tasks", hint: "Close", onPress: api.close, ref: api.closeRef }}');
   expect(shared).toContain('title="Tasks"');
   expect(shared).toContain('word: "Open tasks"');
   // The old heads are still there, as they were.
   expect(src).toContain('<header className="task-side-peek-head claude-rail-tasks-chat-head">');
   expect(src).toContain('aria-label="Open this task"');
   expect(src).toContain('className="btn claude-rail-peek-open"');
+  // No arrow beside "Open" on the old chat head's door either (2026-11-16).
+  expect(src).not.toContain("ArrowUpRight");
+  expect(between(src, 'className="task-side-peek-open"', "</a>")).toMatch(/>\n\s*Open\n\s*$/);
   expect(src).toMatch(/onClick=\{\(\) => api\.openPage\(\)\}>\s*Open tasks\s*<\/button>/);
   // The card's chat hands its worktree pill to the shared head's seat.
   expect(src).toContain("{...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}");
@@ -63,9 +67,12 @@ test("the New task card's chat: the shared head in place of the dialog's, named 
   // The chat's pill in the head's seat; no folded ↗ Open in the ⋮.
   expect(src).not.toContain("foldedOpen");
   expect(src).toContain("{...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}");
-  // The old head's swap is untouched.
+  // The old head's swap is untouched — but for its door's arrow (2026-11-16:
+  // no arrow beside "Open", anywhere): the word alone.
   expect(src).toContain('className="nt-chat-back"');
   expect(src).toContain('className="nt-chat-open"');
+  expect(src).not.toContain("ArrowUpRight");
+  expect(between(src, 'className="nt-chat-open"', "</a>")).toMatch(/>\n\s*Open\n\s*$/);
 });
 
 test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips in its seat", () => {
@@ -121,7 +128,8 @@ test("the New task card's FORM: the chassis' own head pieces on the shared head,
   const form = between(src, "{...(!chatOpen && unified ? {", "// …AND WITH THE SHARED HEAD ON");
   expect(form).toContain("head: ({ titleId, close, busy: closing, armed, parts }: ModalHeadContext) => (");
   // The ✕'s two states carry over: gone while busy, armed after a dirty close.
-  expect(form).toContain("lead={closing ? null : {");
+  // …and none in the rail's popover with the pin (`pinNode`).
+  expect(form).toContain("lead={closing || pinNode ? null : {");
   expect(form).toContain('label: armed ? "Close and discard changes" : "Close"');
   expect(form).toContain("onPress: close,");
   // The same nodes the chassis' head is given: crumb, name, source chip, pills.
@@ -166,7 +174,11 @@ test("the folder seat: hosts with no place of their own take the head's chip; th
   // The pane states its own — and `null`, never an omission, over the folder
   // it is already scoped to (`mergedHead`), so no chip is drawn there.
   const chat = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
-  expect(chat).toContain("? (placeTag ?? (props.mergedHead ? null : <TaskPeekProject task={head.task} />))\n          : null");
+  // …and none where it knows its place (`placeTag`): a pane IS its place, so
+  // the name is not drawn; where in it rides the head's `where` seat
+  // (2026-11-16).
+  expect(chat).toContain("? (placeTag || props.mergedHead ? null : <TaskPeekProject task={head.task} />)\n          : null");
+  expect(chat).toContain("{...(inChat && whereTag ? { where: whereTag } : {})}");
 });
 
 test("the rail card: its pulse's facts ride the head's own slots, its star and archive the slots' other seats", () => {
@@ -175,9 +187,40 @@ test("the rail card: its pulse's facts ride the head's own slots, its star and a
   expect(shared).toContain("? { n: head.count, unread: head.unread }");
   expect(shared).toContain("? { text: head.when, ...(head.whenFull ? { title: head.whenFull } : {}) }");
   expect(shared).not.toContain("pulseEl(");
+  // The reply line: a hover preview's only — a pressed card shows none.
+  expect(shared).toContain("{...(head.reply && !pinned && !held");
+  // TWO LINES (2026-11-16): row 1 reads `folder › file` in every card — the
+  // place's name is no longer the favourite window's alone — and the ⋮ comes
+  // with the click: a hover preview has none, a pressed card (temp, pinned,
+  // the favourite's window opened by a press) has it.
+  expect(shared).toContain('place={favsOn ? placeEl(head, "place") : placeEl(head)}');
+  expect(shared).not.toContain("placeName ? placeEl");
+  expect(shared).toContain('{...(favsOn && hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}');
+  expect(shared).toContain("kebab={head.t.session_id && shownKey && (pinned || held) ? kebabFor(head) : null}");
+  expect(shared).toContain('reveal="window"');
   expect(shared).toContain("starNode: starButton(head)");
   expect(shared).toContain("statusOverlay: archiveButton(head)");
   // The old head keeps its picker gate: a button only during a rename.
   const legacy = src.slice(src.indexOf(") : head && ("));
   expect(legacy).toContain("onlyWhileEditing");
+  // …and its door is the word alone (2026-11-16: no arrow beside "Open").
+  expect(src).not.toContain("ArrowUpRight");
+  expect(legacy).toContain('className="btn claude-rail-peek-open"');
+  expect(legacy).not.toContain("has-icon");
+  expect(read("../styles/claude-rail.css")).not.toContain(".claude-rail-peek-open.has-icon");
+});
+
+test("a pinned rail card wears a half-pixel accent hairline, not the full 1px border (2026-11-16)", () => {
+  const css = read("../styles/claude-rail.css");
+  const rule = between(
+    css,
+    ".claude-rail-peek:has(.rail-pin-btn.is-pinned) .claude-rail-peek-card,\n.modal-popover .modal-dialog:has(.rail-pin-btn.is-pinned) {",
+    "}",
+  );
+  // The 1px border box stays (nothing moves on pin) but goes clear; the line
+  // is a half-pixel outline drawn on its outer half.
+  expect(rule).toContain("border-color: transparent;");
+  expect(rule).toContain("outline: 0.5px solid var(--accent);");
+  expect(rule).toContain("outline-offset: -0.5px;");
+  expect(rule).not.toContain("border-color: var(--accent)");
 });

@@ -123,7 +123,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, ArrowUpRight, MessageSquare, Pencil, Star, X } from "lucide-react";
+import { Archive, ArchiveRestore, MessageSquare, Pencil, Star, X } from "lucide-react";
 import { notify } from "@platform/lib/notifications";
 import { archiveTask, renameTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
@@ -155,12 +155,14 @@ import {
   taskChatTarget,
 } from "@shell/tasks-lib";
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
-import { chipDoor, chipLabel, chipPath, chipPlace, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { chipDoor, chipLabel, chipPath, chipPlace, hasWhereTag, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
 import { queueCaption } from "@platform/lib/queue";
 import { PlaceTags } from "./PlaceTags";
 // THE ONE TASK HEAD (design.md "One task head, everywhere"), behind its flag.
 import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { openInTasksItem } from "@platform/ui/openInTasks";
 import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
 import { TaskIconPick } from "@shell/TaskIconPick";
@@ -195,6 +197,7 @@ import {
   type StarMark,
 } from "./rail-peek-lib";
 import { publishWindowABox, setSnapGuide, windowABox } from "./card-snap";
+import { PinAngle, RailPinButton } from "./RailPin";
 
 /** Where a card's dragged size is kept in the ui-layout document: the
  *  rail's pinned card, or the favourite's (RailPeekProps `resizeKey`). */
@@ -203,7 +206,7 @@ export type RailSizeKey = "canvasRailPeek" | "canvasRailFav";
 /** The size the reader last dragged a card to (ui-layout `key`, by default
  *  the rail's pinned card's `canvasRailPeek`), floored at the grips'
  *  minimums; null for "never". */
-function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; height: number } | null {
+export function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; height: number } | null {
   const s = getUiLayout()[key];
   if (!s) return null;
   return {
@@ -215,18 +218,6 @@ function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; h
 /** Every grip, corners last so they paint (and hit) over the edges' ends —
  *  the favourite's card's too (header). */
 const ALL_GRIPS: readonly ResizeEdge[] = ["l", "t", "b", "tl", "bl"];
-
-/** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this") —
- *  Bootstrap Icons' `pin-angle-fill` (MIT), inlined: react-icons is not a
- *  dependency and one path does not earn one. Filled, angled, 16-unit box.
- *  The head's first seat while favourites are OFF (favourites-flag). */
-function PinAngleFill({ size = 14 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 0-.335-.018-.46-.039l-3.134 3.134a6 6 0 0 1 .16 1.013c.046.702-.032 1.687-.72 2.375a.5.5 0 0 1-.707 0l-2.829-2.828-3.182 3.182c-.195.195-1.219.902-1.414.707s.512-1.22.707-1.414l3.182-3.182-2.828-2.829a.5.5 0 0 1 0-.707c.688-.688 1.673-.767 2.375-.72a6 6 0 0 1 1.013.16l3.134-3.133a3 3 0 0 1-.04-.461c0-.43.108-1.022.589-1.503a.5.5 0 0 1 .353-.146" />
-    </svg>
-  );
-}
 
 /** The server's cap on a task's name (TaskPeekWho's). */
 const TITLE_MAX_LENGTH = 200;
@@ -429,6 +420,11 @@ export interface RailPeekProps {
    *  passing hover. Only a pinned card wears the corner grips
    *  and takes the remembered size (header). */
   pinned: boolean;
+  /** HOVER / TEMP / PIN (rail-pin-lib; the unified-head switch on): the
+   *  head's pin icon, its first button (no × with it) — `pinned` the card's pin (not a press's),
+   *  `onToggle` its press. Given, Escape closes a hover and a temp card and only
+   *  a pinned one ignores it. Absent: the card as it was. */
+  pinCtl?: { pinned: boolean; onToggle: () => void } | null;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -515,6 +511,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     openIcon,
     onBox,
     pinned,
+    pinCtl = null,
   },
   ref,
 ) {
@@ -1119,6 +1116,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the pulse.
   const favsOn = useTaskFavourites();
   const unified = useTaskHeadUnified();
+  // "Open in Tasks" reads the page's path: a card kept across a hop re-reads it.
+  useUrlVersion();
   const [starMark, setStarMark] = useState<StarMark | null>(null);
   const starSeq = useRef(0);
   const starOf = (t: RailRow["pulse"]): boolean =>
@@ -1168,7 +1167,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // A HELD card ignores Escape (header): the head's and the chat's Escape
   // both read the flag off a ref, so the chat's handler need not re-mount.
   const heldRef = useRef(held);
-  heldRef.current = held;
+  // …and with the pin (`pinCtl`) Escape has one rule (owner, 2026-11-16: "a
+  // consistent behaviour"): a hover and a temp card close on it, only a
+  // PINNED one ignores it — a favourite's open card included, which is
+  // `held` for every other purpose.
+  heldRef.current = pinCtl ? pinCtl.pinned : held;
   const onChatEscape = useCallback(() => {
     if (!heldRef.current) onDismiss();
   }, [onDismiss]);
@@ -1292,10 +1295,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         }
       }}
     >
-      {held ? <X size={14} aria-hidden="true" /> : <PinAngleFill size={14} />}
+      {held ? <X size={14} aria-hidden="true" /> : <PinAngle size={14} filled />}
     </button>
   );
-  const placeEl = (head: SeatFacts) =>
+  const placeEl = (head: SeatFacts, part?: "place" | "where") =>
     favsOn ? (
       // THE PLACE TAGS (PlaceTags; owner, 2026-11-06: "in the first
       // line we have the × and then the tag"): the place, then
@@ -1311,6 +1314,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         at={head.at}
         pageRoot={pageRoot ?? null}
         sessionId={head.t.session_id ?? null}
+        {...(part ? { part } : {})}
         {...(here?.()?.tag
           ? {
               onSelectNode: (udfName: string | null, sessionId?: string | null) => {
@@ -1496,7 +1500,20 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       <Star size={14} fill={starOf(head.t) ? "currentColor" : "none"} aria-hidden="true" />
     </button>
   );
-  const kebabFor = (head: SeatFacts, extraItems?: KebabExtraItem[]) => (
+  const kebabFor = (head: SeatFacts, hostItems?: KebabExtraItem[]) => {
+    // OPEN IN TASKS (flag on, off the Tasks page): the Open door's close,
+    // after a hop to the Tasks page with this task's panel up.
+    const inTasks = openInTasksItem({
+      on: unified,
+      taskKey: head.t.session_id ? head.t.key : null,
+      onOpen: (href) => {
+        void navigateUrl(href);
+        onHeld(false);
+        onDismiss("door");
+      },
+    });
+    const extraItems = inTasks ? [...(hostItems ?? []), inTasks] : hostItems;
+    return (
     <AgentProvider backend={head.row?.backend ?? head.t.backend ?? ""}>
       <Kebab
         // Keyed per chat: the menu caches its labels per session.
@@ -1536,7 +1553,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         {...(extraItems ? { extraItems } : {})}
       />
     </AgentProvider>
-  );
+    );
+  };
 
   return createPortal(
     <>
@@ -1599,13 +1617,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       {gripsOn && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
       <div className="claude-rail-peek-card">
         {head && unified ? (
-          // THE SHARED HEAD (flag on; shell/TaskHead): the × (or, favourites
-          // off, the pin that pressed IS the ×), the ring, the place, then the
-          // row's a/b slots (2026-11-15) — the number ↔ the card's archive,
-          // the count ↔ the card's star, the time ↔ Open — the ⋮, and the
-          // title on its own row once the card is too narrow for one
-          // (`stacked: "auto"`). The wrapper keeps the old head's class for
-          // its Escape and lays out as nothing (`is-unified`, task-head.css).
+          // THE SHARED HEAD (flag on; shell/TaskHead), TWO LINES AT EVERY
+          // WIDTH (a rail window's rule, 2026-11-16): row 1 is the pin (or,
+          // favourites off, the pin that pressed IS the ×), `folder › file`,
+          // then the count ↔ the card's star, the time ↔ Open, and the ⋮
+          // once the card has been pressed; row 2 is the ring, the number ↔
+          // the card's archive, and the title. The wrapper keeps the old
+          // head's class for its Escape and lays out as nothing
+          // (`is-unified`, task-head.css).
           <div className="claude-rail-peek-head is-unified" onKeyDown={onHeadKeyDown}>
             <TaskHead
               reveal="window"
@@ -1614,9 +1633,15 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // dropped its draft on every change of shown chat).
               key={head.t.key}
               className="claude-rail-peek-task-head"
-              {...(favsOn ? {} : { leadNode: pinButton })}
+              {...(favsOn || pinCtl ? {} : { leadNode: pinButton })}
+              {...(pinCtl ? { pinNode: <RailPinButton pinned={pinCtl.pinned} onToggle={pinCtl.onToggle} /> } : {})}
+              // WITH THE PIN no card has a × (owner, 2026-11-16: "we don't need
+              // a × button"): a click outside closes a temp card, and a
+              // pinned one is unpinned first. The pin is the head's first seat.
               lead={
-                favsOn
+                pinCtl
+                  ? null
+                  : favsOn
                   ? {
                       kind: "close",
                       label: "Close the preview",
@@ -1646,8 +1671,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 draftHeld: !!head.row && draftRing(head.merged as Task),
                 ...(head.row?.failed ? { failed: true } : {}),
               }}
-              // The last reply after the title, as the old title row drew it.
-              {...(head.reply
+              // The last reply after the title, as the old title row drew it
+              // — WHILE THE CARD IS A HOVER PREVIEW ONLY (Akshil, 2026-11-16):
+              // a preview says what the chat last said; a card the reader
+              // pressed (pinned, held: a ring press, a press inside, the
+              // favourite's window opened by a press) is the chat itself, and
+              // its last reply is on screen below.
+              {...(head.reply && !pinned && !held
                 ? {
                     subtitle: (
                       <span
@@ -1665,7 +1695,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               stacked="auto"
               // Measured only while the card is up.
               fitEnabled={!!shownKey}
-              place={placeEl(head)}
+              // TWO LINES (Akshil, 2026-11-16): row 1 reads `folder › file`
+              // in every card, window A and B alike — the place's name (the
+              // canvas's or the folder's), then where in it (Canvas, the
+              // node, the file), which the head joins with a chevron. The
+              // name was the favourite window's alone while the head was one
+              // row. Favourites off: the where-chip as it was.
+              place={favsOn ? placeEl(head, "place") : placeEl(head)}
+              {...(favsOn && hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}
               // The pulse's facts in the head's own slots: how many messages
               // (the unread ones turn it to ink) and when it last moved — none
               // for a draft or a chat with no session, as the pulse had none.
@@ -1694,7 +1731,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     }
                   : null
               }
-              kebab={head.t.session_id && shownKey ? kebabFor(head) : null}
+              // THE ⋮ COMES WITH THE CLICK (Akshil, 2026-11-16: "kebab menu not
+              // shown on hover, only when we click"): a hover preview has
+              // none; a card the reader pressed (temp, pinned, the favourite's
+              // window opened by a press) has it.
+              kebab={head.t.session_id && shownKey && (pinned || held) ? kebabFor(head) : null}
             />
             {askedKey.current === head.t.key && archiveAsk.node}
           </div>
@@ -1743,7 +1784,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               {head.href && (
                 <button
                   type="button"
-                  className={openArrow ? "btn claude-rail-peek-open has-icon" : "btn claude-rail-peek-open"}
+                  // The word alone (Akshil, 2026-11-16: no arrow beside
+                  // "Open", anywhere).
+                  className="btn claude-rail-peek-open"
                   title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
                   onClick={() => {
                     onOpenChat(head.href!);
@@ -1755,7 +1798,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   }}
                 >
                   Open
-                  {openArrow ? <ArrowUpRight size={13} aria-hidden="true" /> : null}
                 </button>
               )}
               {head.t.session_id && shownKey && (

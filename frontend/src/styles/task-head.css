@@ -11,7 +11,11 @@
    Only the title flexes; everything else is a mark or a control. The lead,
    the folder and the ⋮ never move and never hide. A head whose ladder has
    reached rung 5 (or that pins `stacked`) is two rows: everything but the
-   title on row 1, then the title, its reply and the trail on row 2. */
+   title on row 1, then the title, its reply and the trail on row 2.
+
+   A RAIL WINDOW'S HEAD WITH A TASK IS TWO LINES AT EVERY WIDTH (`.is-two-line`,
+   2026-11-16; the last block of this file): [pin][←] folder › file …
+   [chips] COUNT · TIME [⋮], then status · ID SLOT · title · reply. */
 :root {
   --task-head-h: 44px;
 }
@@ -100,6 +104,19 @@
   padding-inline: 8px;
 }
 
+/* WHERE IN THE PLACE (TaskHead `where`; Akshil, 2026-11-16): the Canvas,
+   node or file tag, at the row's right end before the count slot. Held at
+   its own width like the place (the ladder folds its word, never squeezes
+   it); a host whose tag draws nothing leaves no seat. */
+.task-head-where {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.task-head-where:empty {
+  display: none;
+}
+
 /* Everything that can be DONE, pushed to the row's end — so a short static
    title and a missing task never pull the controls into the middle. */
 .task-head-marks {
@@ -149,12 +166,30 @@
   min-width: 0;
 }
 
-/* The reply line after the title (the task's last reply, or a host's
-   `subtitle`): muted, italic, one line — the List row's way. IT GIVES WAY
-   BEFORE THE TITLE (the row's rule): no width of its own to defend (basis 0),
-   it takes what the title leaves and is the first thing a narrow head loses. */
-.task-head .task-side-peek-who.is-title:has(.task-head-subtitle) .task-side-peek-title {
-  flex: 0 1 auto;
+/* THE TITLE IS AS WIDE AS ITS WORDS, never stretched (2026-11-16): its seat
+   (`.task-side-peek-who`) takes the row's slack, not the title. A title that
+   grew to fill the row reported the row's width as its own (`scrollWidth`),
+   and the ladder (row-fit `titleWants`) then folded the facts and stacked a
+   rail window for a two-word title with room to spare — every head without a
+   line after the title, which since the reply left the head is most of them.
+
+   The line after the title (a host's `subtitle`: the rail card's hover
+   preview prints the last reply): muted, italic, one line — the List row's
+   way. IT GIVES WAY BEFORE THE TITLE (the row's rule): no width of its own to
+   defend (basis 0), it takes what the title leaves and is the first thing a
+   narrow head loses. */
+.task-head .task-side-peek-who.is-title .task-side-peek-title {
+  /* 400px FIRST, THEN THE CHIPS, THEN MORE TITLE (Akshil, 2026-11-16: "give
+     title max 400px width, then show PR and worktree, and then if there is
+     space left we can show more of title — incrementally"). The title's
+     claim on the row is 400px (or its own words, if shorter): the ladder
+     charges it no more than that (row-fit `TASK_HEAD_TITLE_MAX`), so the
+     worktree pill and the PR chip stand whenever the title can have its
+     400px beside them, and give one at a time when it cannot. Width left
+     over after that goes back to the title, up to its full words — never
+     past them (`max-content`), so its seat keeps the row's slack. */
+  flex: 1 1 400px;
+  max-width: max-content;
 }
 .task-head-subtitle {
   flex: 1 1 0;
@@ -286,7 +321,11 @@
     background-color var(--dur-fast) var(--ease-out),
     color var(--dur-fast) var(--ease-out);
 }
-.task-head-open.is-wordy .task-head-open-arrow {
+/* NO ARROW BESIDE THE WORD (Akshil, 2026-11-16: "in some places we have the
+   arrow icon next to Open, let's remove it from everywhere"): the door is its
+   word. The ↗ is drawn only where the word has folded away (the ladder's
+   rules below), since a door must show something. */
+.task-head-open .task-head-open-arrow {
   display: none;
 }
 .task-head-open:hover {
@@ -362,7 +401,14 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  min-height: 22px;
+  /* THE ROW IS AS TALL AS ITS ARCHIVE BUTTON, WITH OR WITHOUT IT (22px, plus
+     the 6px below). The id slot rides this row when the head is stacked, and
+     its button is withheld while the icon picker or a rename is up; the row
+     then fell back to the title's 16px, the head lost 6px, the chat under it
+     scrolled — and the picker, which closes on any scroll outside it, shut
+     the moment it opened (Akshil, 2026-11-16: the status icon "glitches" in
+     a small two-line window). */
+  min-height: 28px;
   padding: 0 2px 6px 6px;
 }
 .task-head-titlerow .task-side-peek-who {
@@ -376,6 +422,42 @@
 .task-head-nav {
   display: contents;
 }
+/* THE WHERE-TAG IS ITS ICON ALONE (Akshil, 2026-11-16: "if less width we
+   show icon instead of icon + name") — the FIRST thing to give, with the
+   worktree pill on rung 1: its word leaves before a chip or a fact does, since
+   the icon still says what kind of place it is and the hint its name. A rail
+   window whose title took row 2 has row 1's room back and the word with it —
+   until row 1 itself runs short: the door's word goes first (5), then this
+   one (6+), since a node's name says more than "Open". */
+.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where .place-tag-word,
+.task-head.is-stacked:not(.is-two-line):is([data-fit="6"], [data-fit="7"]) .task-head-where .place-tag-word {
+  display: none;
+}
+.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where .place-tag.has-icon,
+.task-head.is-stacked:not(.is-two-line):is([data-fit="6"], [data-fit="7"]) .task-head-where .place-tag.has-icon {
+  /* Alone, it is the star's box: 22px, the 14px glyph centred — and a bare
+     glyph like the star beside it, no pill (Akshil, 2026-11-16: "when it is
+     just an icon I don't think we need that weird bg"). */
+  padding: 0;
+  width: 22px;
+  justify-content: center;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 6px;
+}
+/* …AND IT SAYS IT CAN BE PRESSED (Akshil, 2026-11-16: "have some hover ui
+   indicator to know this is clickable"): the archive button's own wash under
+   the pointer, where the tag is a door. Its name comes up at once in the
+   hint panel (`data-hint`, PlaceTags). */
+.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where a.place-tag.has-icon:is(:hover, :focus-visible),
+.task-head.is-stacked:not(.is-two-line):is([data-fit="6"], [data-fit="7"]) .task-head-where a.place-tag.has-icon:is(:hover, :focus-visible) {
+  /* The pill's own hover tint — `--bg-alt` alone was one shade off a rail
+     card's background and read as nothing (Akshil, 2026-11-16: "hover over
+     this canvas or file icon doesn't show a visual cue"). */
+  color: var(--fg);
+  background: rgba(var(--tint), 0.16);
+  border-color: var(--border);
+}
 /* 1, 2. THE CHIPS, ONE AT A TIME (Akshil, 2026-11-16: "worktree and pr show
    when there is width available, incrementally"): the first things to give,
    before the title is cut by a letter — the worktree pill (the chat's
@@ -386,44 +468,16 @@
 .task-head:is([data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-chips {
   display: none;
 }
-/* 3. THE FACTS. IN A RAIL WINDOW (`.is-window`; Akshil, 2026-11-16: "when
-   there is no space hide time, when there is show time and count"): they
-   stand while the title reads whole beside them; where it cannot (row-fit
-   `taskHeadNeed`), the count and the time leave and the title has the row.
-   The b items come back while the window is pointed at — the star, and the
-   door right beside it. Folded to nothing rather than `display: none`, so the
-   b controls stay in the tab order. Once the title has its own row (rung 4,
-   `.is-stacked`) row 1 has the room and the facts stand again. */
-.task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-countslot, .task-head-timeslot) {
-  width: 0;
-  overflow: hidden;
-  margin-left: -6px;
-}
-.task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]):is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
-  :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"])) {
-  width: auto;
-  overflow: visible;
-  margin-left: 0;
-}
-.task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-countslot, .task-head-timeslot) > .task-head-slot-a {
-  display: none;
-}
-@media (hover: none) {
-  .task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"])
-    :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"])) {
-    width: auto;
-    overflow: visible;
-    margin-left: 0;
-  }
-}
-/* STACKED, UNDER THE POINTER: the acts close up — the star right beside the
-   door, beside the ⋮ — rather than standing apart in boxes sized to the facts
-   they replaced. Row 1 holds no title here, so nothing else moves. */
-.task-head.is-window.is-stacked:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))
-  :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"]))
-  > .task-head-slot-a {
-  display: none;
-}
+/* 3. THE FACTS. IN A RAIL WINDOW NOTHING MOVES (Akshil, 2026-11-16: "it is
+   shifting when we hover in and out, looks a bit misaligned … the html thing
+   shifts a lot as well, let's minimise this shifting"). The count and the
+   time used to fold away here and the acts opened in their place, so the
+   where-tag and the title jumped with every pass of the pointer. Now every
+   seat holds one box at all times — each slot the wider of its two
+   occupants, the ⋮ always standing — and only what is IN the boxes trades. The
+   facts stay at every rung: the acts that replace them need the same room,
+   so hiding them bought the title nothing. The one fold left on this rung is
+   the door's word (below). */
 /* …AND IN A PANEL OR A PANE, THE TIME ALONE GIVES (Akshil, 2026-11-16: "7d
    ago can hide here, no need if no space"): where the title cannot be read
    whole beside it, the time leaves; the count stays. Its door, where there is
@@ -455,50 +509,40 @@
 .task-head-open {
   flex-direction: row-reverse;
 }
-/* SHORT ON WIDTH, THE DOOR IS ITS ↗ ALONE (the narrow list row's rule). */
-.task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-word {
+/* SHORT ON WIDTH, THE DOOR IS ITS ↗ ALONE (the narrow list row's rule) — in
+   a panel or a pane, from the facts' rung on.
+
+   A RAIL WINDOW KEEPS THE WORD (Akshil, 2026-11-16: "arrow icon with Open
+   should be shown when there is space"; then, of the ↗ alone in the time's
+   box: "after fav icon and before arrow icon there is odd space, so we
+   should have the Open button in this case"). Its time slot always holds a
+   box as wide as the wider occupant, so a bare ↗ left a hole beside the star
+   that the word nearly filled; the slot now holds the word's width and the
+   title pays the few px. Only a row that is short even with the title on
+   row 2 (5+) folds it — one rung before the where-tag's word (6+). */
+.task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-word,
+.task-head.is-window:not(.is-two-line):is([data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-facts, .task-head-timeslot) .task-head-open-word {
   display: none;
 }
-.task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open {
+.task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open,
+.task-head.is-window:not(.is-two-line):is([data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-facts, .task-head-timeslot) .task-head-open {
   padding: 0;
   width: 22px;
   justify-content: center;
 }
-.task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-arrow {
+.task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-arrow,
+.task-head.is-window:not(.is-two-line):is([data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-facts, .task-head-timeslot) .task-head-open-arrow {
   display: inline;
   /* Alone, the arrow is the star's size (the narrow row's rule). */
   width: 15px;
   height: 15px;
 }
-@media (hover: none) {
-  .task-head.is-window:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"])
-    :is(.task-head-countslot, .task-head-timeslot):has(> .task-head-slot-b > :is(a, button, [role="button"])) {
-    width: auto;
-    overflow: visible;
-    margin-left: 0;
-  }
-}
-/* A RAIL WINDOW'S ⋮ WAITS FOR THE POINTER TOO (Akshil, 2026-11-16), like its
-   star and its door — at every width. It stays while its menu is open (the
-   menu is outside the window) and for a keyboard that lands on it. */
-.task-head.is-window .task-head-kebab {
-  width: 0;
-  overflow: hidden;
-  margin-left: -6px;
-}
-.task-head.is-window:is(.is-hot, :hover, :has(.task-head-kebab :is(:focus-visible, [aria-expanded="true"], [data-popup-open])))
-  .task-head-kebab {
-  width: auto;
-  overflow: visible;
-  margin-left: 0;
-}
-@media (hover: none) {
-  .task-head.is-window .task-head-kebab {
-    width: auto;
-    overflow: visible;
-    margin-left: 0;
-  }
-}
+/* A RAIL WINDOW'S ⋮ ALWAYS STANDS (Akshil, 2026-11-16: "let's show the more
+   icon regardless of hover or click, next to 6d ago — that would stop the
+   shifting"). It waited for the pointer (2026-11-16, earlier the same day),
+   which either opened a seat under the pointer or left a hole at the row's
+   end at rest. Standing, it is the row's fixed end: the facts sit beside it
+   and the acts trade with them in place. */
 /* 4 is the component's (a rail window's title takes row 2). 5–7: */
 .task-head:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-seats {
   display: none;
@@ -682,31 +726,15 @@
   pointer-events: auto;
 }
 /* A SLOT WITH NO FACT (a task that has not run: no count, no time). In a rail
-   window it holds no box at rest — its act alone would be a blank 22px
-   (Bugbot, #2285) — and opens under the pointer like any other; the fit
-   ladder charges it the same either way (row-fit `windowDelta`). Elsewhere
-   there is no fact to point at, so its act simply stands. */
-.task-head.is-window .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
-  width: 0;
-  overflow: hidden;
-  margin-left: -6px;
-}
-.task-head.is-window:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible)) .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
-  width: auto;
-  overflow: visible;
-  margin-left: 0;
-}
+   window its box is held like every other (the no-shift rule): empty at
+   rest, its act under the pointer. Elsewhere there is no fact to point at,
+   so its act simply stands. */
 .task-head:not(.is-window) .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) > .task-head-slot-b {
   opacity: 1;
   pointer-events: auto;
 }
 /* NO HOVER TO WAIT FOR (touch): the acts stand, as a phone's row shows them. */
 @media (hover: none) {
-  .task-head.is-window .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) {
-    width: auto;
-    overflow: visible;
-    margin-left: 0;
-  }
   .task-head-slot:has(> .task-head-slot-b > :is(a, button, [role="button"])) > .task-head-slot-a {
     opacity: 0;
     pointer-events: none;
@@ -734,9 +762,70 @@
 .task-head-count.is-unread {
   color: var(--fg);
 }
+/* …but in a rail window every count is the same ink (Akshil, 2026-11-16:
+   "for some chats the message count is a different colour, bright white —
+   all of them should be the same colour"): the ring already says unread. */
+.task-head.is-window .task-head-count.is-unread {
+  color: var(--fg-muted);
+}
 /* The time reads from the slot's right edge, where a row's time column ends. */
 .task-head-timeslot {
   justify-items: end;
+}
+
+/* A RAIL WINDOW'S FACTS AND ACTS: TWO LAYERS OF ONE BOX (TaskHead
+   `factsCluster`; Akshil, 2026-11-16: "too much space between message count
+   and time … star and Open do have a weird gap, keep them closer"). The box
+   is as wide as the wider layer, so the where-tag and the title never move;
+   each layer keeps its own two items side by side against the right edge,
+   so neither pair is spread to fill a box sized for the other. Only where
+   both facts trade (or neither): a head with one act alone keeps the two
+   slots, so the fact that stays is one node that never moves. */
+.task-head-facts {
+  display: inline-grid;
+  align-items: center;
+  justify-items: end;
+  flex: 0 0 auto;
+}
+.task-head-facts-layer {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 0.08s ease;
+}
+.task-head-facts-layer.is-b {
+  opacity: 0;
+  pointer-events: none;
+  /* THE STAR AND THE DOOR STAND AS CLOSE AS THE COUNT AND THE TIME (Akshil,
+     2026-11-16: "same padding should be between star and open button"). The
+     facts are bare text 6px apart; the acts are boxes with ink inside them —
+     the star's 14px glyph in a 22px button, the door's word inside its own
+     padding — so the same 6px between BOXES read as 16px between the marks.
+     No gap here, and 2px of padding on the door: 4px + 2px, the facts' 6px. */
+  gap: 0;
+}
+.task-head-facts-layer.is-b .task-head-open {
+  padding: 0 2px;
+}
+
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible)) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+  opacity: 0;
+  pointer-events: none;
+}
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible)) .task-head-facts > .task-head-facts-layer.is-b {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .task-head-facts > .task-head-facts-layer.is-b {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* THE ID SLOT'S BUTTON (shell/TaskFileSeat; the rail card's
@@ -773,10 +862,36 @@
   opacity: 1;
   pointer-events: auto;
 }
+/* IN A RAIL WINDOW THE ARCHIVE WAITS FOR THE HEAD ITSELF (Akshil,
+   2026-11-16: "the archive button should show up when we hover over the
+   header — only the archive button; as of now we show it when we hover the
+   entire window"). The star, the door and the ⋮ still come with the pointer
+   anywhere on the card (`.is-hot`); the number stays until the pointer is on
+   the head — either row of it — or the keyboard is on the button. (Stacked
+   selectors: these have to outrank the swap rules above.) */
+@media (hover: hover) {
+  .task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .task-head.task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
 /* The rail card's own star, at the slot's size. */
-.task-head-countslot .claude-rail-peek-star {
+.task-head-countslot .claude-rail-peek-star,
+.task-head-facts .claude-rail-peek-star {
   width: 22px;
   height: 22px;
+}
+/* THE PREVIEW'S REPLY STEPS ASIDE FOR THE POINTER ON THE HEAD (Akshil,
+   2026-11-16: "when we hover on the header we shouldn't show subtitle when
+   we are in hover preview"): on the head the reader is aiming at its
+   controls, and the line is noise beside them. Hidden, not removed, so the
+   title and the tags do not move. */
+.task-head.is-window:hover .task-head-subtitle {
+  visibility: hidden;
 }
 /* The reply line keeps its own face inside the subtitle seat. */
 .claude-rail-peek-task-head .task-head-subtitle {
@@ -823,16 +938,105 @@
   --c-zoom: 1;
 }
 
-/* THE PENCIL TAKES NO ROOM AT REST (Akshil, 2026-11-15: "let title occupy
-   full space"): it faded in over a seat it always held, 22px the title could
-   not use. It stands only while the pointer is on the title half (where it
-   shows, task-peek.css) or the keyboard is on it. Touch keeps it. */
-@media (hover: hover) {
-  .task-head .task-side-peek-who:not(:hover) .task-side-peek-rename:not(:focus-visible) {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
+/* THE PENCIL TAKES NO ROOM, EVER (Akshil, 2026-11-15: "let title occupy full
+   space"; 2026-11-16: "the title edit icon should overlay on the end of the
+   title on hover, shouldn't occupy space after it"). It stands OVER the
+   title's last 16px — pulled back by its own width and the seat's gap — so
+   nothing after the title moves when it shows. The title's end fades out
+   under it (a mask, so it works on any head's background; the mask's opaque
+   stop is a palette ink, since only its alpha is read and the theme test
+   allows no colour literal here). Shown while the
+   pointer is on the title half or the keyboard is on it; touch keeps it. */
+.task-head .task-side-peek-who.is-title .task-side-peek-rename {
+  position: relative;
+  z-index: 1;
+  /* NEXT TO THE TITLE WHERE THERE IS ROOM (Akshil, 2026-11-16: "this edit
+     icon overlap should only happen if it is at the end of the right side,
+     otherwise it can pop next to it"): it stands in the slack after the
+     title and hands its own 16px + the 8px gap back, so it still takes no
+     room and nothing after it moves. */
+  margin-right: -24px;
+  pointer-events: none;
+}
+/* …AND OVER THE TITLE'S END WHERE THERE IS NONE (TaskPeekWho
+   `is-rename-over`: the title runs to the seat's edge): pulled back by its
+   own width and the gap, the title fading out under it. */
+.task-head .task-side-peek-who.is-title.is-rename-over .task-side-peek-rename {
+  margin-left: -24px;
+  margin-right: 0;
+}
+.task-head .task-side-peek-who.is-title:hover .task-side-peek-rename,
+.task-head .task-side-peek-who.is-title .task-side-peek-rename:focus-visible {
+  pointer-events: auto;
+}
+.task-head .task-side-peek-who.is-title.is-rename-over:hover:has(.task-side-peek-rename) .task-side-peek-title,
+.task-head .task-side-peek-who.is-title.is-rename-over:has(.task-side-peek-rename:focus-visible) .task-side-peek-title {
+  -webkit-mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
+  mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
+}
+@media (hover: none) {
+  /* No pointer to measure by: the pencil stands over the title's end, always. */
+  .task-head .task-side-peek-who.is-title .task-side-peek-rename {
+    pointer-events: auto;
+    margin-left: -24px;
+    margin-right: 0;
   }
+  .task-head .task-side-peek-who.is-title:has(.task-side-peek-rename) .task-side-peek-title {
+    -webkit-mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
+    mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
+  }
+}
+
+/* -- A RAIL WINDOW'S HEAD IS TWO LINES, ALWAYS (TaskHead `twoLine`; Akshil,
+   2026-11-16: "in rail every task layout is a simple two-liner") -------------
+
+     [pin][←]  folder › file …………… [chips] count · time  [⋮]
+     status · id · title · reply
+
+   Row 1 is where the task lives and its facts; row 2 is the task. Nothing
+   folds to an icon here (the where-tag and the door keep their words — the
+   `:not(.is-two-line)` on the ladder's rules above); a long place gives width
+   and ellipsises instead. */
+.task-head-crumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.task-head-crumb-sep {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+}
+.task-head-crumb > .task-head-place,
+.task-head-crumb > .task-head-where {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.task-head .task-head-crumb .place-tags,
+.task-head .task-head-crumb .place-tags-seat,
+.task-head .task-head-crumb .place-tag,
+.task-head .task-head-crumb .place-tag.has-icon {
+  /* Whole while the row has room (the pills' own 120/140px caps are for a
+     one-row head); they give width only when row 1 is short. */
+  min-width: 0;
+  max-width: 100%;
+}
+.task-head .task-head-crumb .place-tags {
+  flex: 0 1 auto;
+}
+.task-head .task-head-crumb > .task-head-place {
+  max-width: none;
+}
+.task-head-crumb .place-tag-word {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Row 2: the ring, the agent's mark, the number and the title, in the one
+   line's own spacing. */
+.task-head.is-two-line .task-head-titlerow {
+  gap: 8px;
+  padding-left: 4px;
 }

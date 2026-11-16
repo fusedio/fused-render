@@ -120,6 +120,7 @@ Auto-created at app root. Convention, no helper API — build paths off `os.path
 | `fused.ai.*` | → `fused-render-ai`. |
 | `fused.fileIndex.search/query` | Machine-wide file index — use instead of walking fs → `fused-render-index`. Full fused-render only (Render App below). |
 | `fused.capture.*` | Native screen/mic/screenshot → `fused-render-capture`. |
+| `await fused.s3.sign("s3://bucket/key")` | `{url, expires_at}`: HTTPS URL that reads that one object (Range works; bucket answers CORS) — stream it (DuckDB `read_parquet(url)`, GDAL `/vsicurl/`, `fetch`) instead of downloading. Server decides what is signed; today only `fused-asset`, public, `expires_at: null`. Keep the `s3://` address as identity (`fused.params`, cache keys). Sign in the page and pass the URL to your `runPython` (it lands in the call log — fine for today's public URLs); a long-lived Python process signs itself with `templates/shared/fused_s3.py` (`fused_s3.sign`, `is_s3`, `expired`). Re-sign on 403 or near `expires_at`. Rejects with `.status/.code` (`disabled` = Canvases off). |
 | `fused.trackJob(spec)` | Report long work to download manager; never rejects → `fused-render-jobs`. |
 | `fused.tasks.*` | List/create/follow up/cancel/watch the app's Claude tasks (headless, returns a handle); `ui()` gives an iframe URL of the shell's Tasks page → `fused-render-tasks`. |
 | `fused.bots.*` | See the Bots on this Mac (Super Bot included) and give one a message with images; the turn handle follows that task to its result → `fused-render-bots`. |

@@ -270,6 +270,8 @@ injected `fused` object gives a page:
   → [fused-render-bots](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-bots/SKILL.md)
 - `fused.connect` — call a connected service's tools; the token never
   reaches the page.
+- `fused.s3.sign` — a read URL for an `s3://` object, so a page or its
+  Python streams it instead of downloading it first.
 - `fused.capture` — record the screen or microphone, or grab a screenshot.
   → [fused-render-capture](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-capture/SKILL.md)
 - `fused.fileIndex` — search and SQL over the machine-wide file index.

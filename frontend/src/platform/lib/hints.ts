@@ -170,7 +170,10 @@ function placeBeside(el: Element): void {
   const r = el.getBoundingClientRect();
   const w = shownW;
   const h = shownH;
-  const left = Math.max(EDGE, r.left - 8 - w);
+  // The row form stands where the column's own windows stand: against the
+  // edge its host names (`data-hint-edge`), not against the one ring.
+  const edge = p.classList.contains("is-row") ? rowEdge(el) : r.left;
+  const left = Math.max(EDGE, edge - 8 - w);
   const top = Math.min(
     window.innerHeight - EDGE - h,
     Math.max(EDGE, r.top + r.height / 2 - h / 2),
@@ -300,10 +303,92 @@ function renderTaskHint(p: HTMLDivElement, el: Element): boolean {
   return true;
 }
 
+/** The x the row form is anchored against: the left edge of the nearest
+ *  ancestor that says it is the column (`data-hint-edge`), else the host's. */
+function rowEdge(el: Element): number {
+  const col = el.closest("[data-hint-edge]") ?? el;
+  return col.getBoundingClientRect().left;
+}
+
+/** The on-screen width of the element a selector names, or 0. */
+function liveWidth(selector: string | null): number {
+  if (!selector) return 0;
+  let box: Element | null = null;
+  try {
+    box = document.querySelector(selector);
+  } catch {
+    return 0;
+  }
+  if (!box || typeof box.getBoundingClientRect !== "function") return 0;
+  return Math.round(box.getBoundingClientRect().width);
+}
+
+/** The message glyph the count wears (lucide `message-square`, 12px). */
+const ROW_COUNT_ICON =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+
+/** THE TASK'S OWN ROW, IN ONE LINE (Akshil, 2026-11-16: "when we hover we
+ *  show a tooltip with the title of the task — instead show this as is … the
+ *  width is the same as window A/B's; the title shrinks, the others are fixed
+ *  width"): the Tasks list's row — status, number, title, reply, message
+ *  count, time — beside a rail ring whose hover opens no card. Opted into
+ *  with `data-hint-row` beside the task form's `data-hint-title` /
+ *  `data-hint-reply`; `data-hint-id`, `data-hint-count`, `data-hint-when` are
+ *  the facts, `data-hint-width` the panel's width in px. The status mark is
+ *  the host's own drawing, cloned, so the row wears the ring the reader is
+ *  pointing at. */
+function renderRowHint(p: HTMLDivElement, el: Element): boolean {
+  if (!el.hasAttribute("data-hint-row")) return false;
+  const title = (el.getAttribute("data-hint-title") || "").trim();
+  if (!title) return false;
+  const span = (cls: string, text: string): HTMLSpanElement => {
+    const s = document.createElement("span");
+    s.className = cls;
+    s.textContent = text;
+    return s;
+  };
+  const row = document.createElement("div");
+  row.className = "hint-row";
+  const mark = document.createElement("span");
+  mark.className = "hint-row-mark";
+  for (const kid of Array.from(el.children)) mark.append(kid.cloneNode(true));
+  row.append(mark);
+  const id = (el.getAttribute("data-hint-id") || "").trim();
+  if (id) row.append(span("hint-row-id", id));
+  row.append(span("hint-row-title", title));
+  // The reply takes what the title leaves, and is the row's slack when there
+  // is none to print: the facts stay at the right end either way.
+  row.append(span("hint-row-reply", (el.getAttribute("data-hint-reply") || "").trim()));
+  const count = (el.getAttribute("data-hint-count") || "").trim();
+  if (count) {
+    const c = span("hint-row-count", count);
+    c.insertAdjacentHTML("beforeend", ROW_COUNT_ICON);
+    row.append(c);
+  }
+  const when = (el.getAttribute("data-hint-when") || "").trim();
+  if (when) row.append(span("hint-row-time", when));
+  p.replaceChildren(row);
+  // As wide as the window the ring opens, inside the room beside the column.
+  // THE WINDOW'S WIDTH NOW, when it is on screen (`data-hint-width-of`, a
+  // selector): the reader may have just dragged it wider, and the width the
+  // host stamped at its last render is then stale (Akshil, 2026-11-16: "we
+  // click a task ring, then resize and hover over another — the hover row's
+  // size doesn't change"). The stamped `data-hint-width` is the fallback for
+  // a window that is not up.
+  const live = liveWidth(el.getAttribute("data-hint-width-of"));
+  const want = live || Number(el.getAttribute("data-hint-width")) || 0;
+  const room = rowEdge(el) - 8 - EDGE;
+  p.style.width = want > 0 ? `${Math.max(120, Math.min(want, room))}px` : "";
+  return true;
+}
+
 function show(el: Element, x: number, y: number): void {
   const p = ensurePanel();
-  const task = renderTaskHint(p, el);
-  if (!task) renderHint(p, el.getAttribute("data-hint") || "");
+  const row = renderRowHint(p, el);
+  p.classList.toggle("is-row", row);
+  if (!row) p.style.width = "";
+  const task = !row && renderTaskHint(p, el);
+  if (!row && !task) renderHint(p, el.getAttribute("data-hint") || "");
   p.classList.toggle("is-task", task);
   if (!task) p.classList.remove("is-reply");
   p.classList.add("is-on");
@@ -324,6 +409,8 @@ export function hideHint(): void {
     // Emptied as well as hidden: stale content in a hidden panel is content
     // that flashes on the next show, before its own text lands.
     panel.replaceChildren();
+    panel.classList.remove("is-row");
+    panel.style.width = "";
   }
 }
 

@@ -29,7 +29,8 @@ import { closedToastText } from "@shell/teardown-notice";
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
 import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey, workspaceOwnsKey } from "@shell/task-peek-store";
 import { useNow } from "@platform/lib/clock";
-import { ICON_ARCHIVE, ICON_UNARCHIVE, IdChip, IdentityChip, PrNumChip, StatusIcon } from "@shell/ScheduleTaskViews";
+import { FileAct, IdChip, IdentityChip, PrNumChip, RingSeat, StatusIcon } from "@shell/ScheduleTaskViews";
+import { useTaskHeadUnified } from "@shell/task-head-flag";
 import {
   type FilingIntent,
   basename,
@@ -291,6 +292,12 @@ function WorkspaceCard({
   onPin: () => void;
 }) {
   const file = filingIntent(task);
+  // THE A/B CARD (owner, 2026-11-16: "detailed view doesn't have archive button
+  // on task id and status thing, so fix that as well"), on the List row's
+  // switch (`task_head_unified_enabled`): the List's a/b row's two — Archive
+  // over the id (`.tasks-idslot`), and the ring as the icon picker's button —
+  // in place of the mark slot's ring/Archive swap. Off, today's card.
+  const ab = useTaskHeadUnified();
   const bg = bgJobBadge(task);
   // The worktree counts collapse to one word badge (dirtyBadge); the exact counts
   // ride in its tooltip. "unknown", "checking" and the rest stay as text.
@@ -322,7 +329,7 @@ function WorkspaceCard({
   return (
     <li
       className={
-        "ws-card" + (selected ? " is-selected" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
+        "ws-card" + (ab ? " ws-card--ab" : "") + (selected ? " is-selected" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
       }
       data-key={task.key}
       data-checked={bulk.selection.has(task.key) ? "1" : undefined}
@@ -332,7 +339,11 @@ function WorkspaceCard({
       data-unread={task.unread > 0 ? "1" : undefined}
       aria-selected={selected}
       {...(peekOn ? peekItemProps(task.key, peekOpenable(task)) : {})}
-      onClick={() => {
+      onClick={(e) => {
+        // A PRESS FROM A PORTAL IS NOT THE CARD'S (Bugbot, PR #2300): the a/b
+        // ring's icon picker is portalled to the body and React bubbles its
+        // clicks up the component tree — a pick must neither select nor open.
+        if (!e.currentTarget.contains(e.target as Node)) return;
         onSelect();
         onOpen();
       }}
@@ -344,34 +355,34 @@ function WorkspaceCard({
         {/* THE MARK SLOT, same as the List row's: the ring at rest, the
             Archive (or Unarchive) button in the same box on hover or keyboard
             focus. Classes and filingIntent are the List's; the press goes
-            through the Workspace's own archive path (Undo toast, rollback). */}
+            through the Workspace's own archive path (Undo toast, rollback).
+            THE A/B CARD swaps nothing here: Archive stands over the id
+            (`.tasks-idslot` below), and the ring is the icon picker's button
+            (RingSeat → TaskIconPick), whose press stops there — it neither
+            selects nor opens the card. */}
         <span className="tasks-rowmark ws-mark">
-          <StatusIcon
-            status={taskColumn(task)}
-            failed={ringFailed(task)}
-            unread={task.unread > 0}
-            count={task.unread}
-            background={liveJobRow(task)}
-            icon={task.icon_slot}
-            iconPicked={task.icon_picked}
-          />
-          {file && (
-            <button
-              type="button"
-              className={"tasks-act tasks-act--" + file.kind}
-              data-hint={file.title}
-              aria-label={file.label}
-              onClick={(e) => {
-                e.stopPropagation();
-                onFile(file);
-              }}
-            >
-              {file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
-            </button>
-          )}
+          <RingSeat pick={ab} task={task}>
+            <StatusIcon
+              status={taskColumn(task)}
+              failed={ringFailed(task)}
+              unread={task.unread > 0}
+              count={task.unread}
+              background={liveJobRow(task)}
+              icon={task.icon_slot}
+              iconPicked={task.icon_picked}
+            />
+          </RingSeat>
+          {file && !ab && <FileAct file={file} onPress={() => onFile(file)} />}
         </span>
         <TaskStar task={task} />
-        <IdChip id={task.task_id} kind="task" />
+        {ab ? (
+          <span className="tasks-idslot">
+            <IdChip id={task.task_id} kind="task" />
+            {file ? <FileAct file={file} onPress={() => onFile(file)} /> : null}
+          </span>
+        ) : (
+          <IdChip id={task.task_id} kind="task" />
+        )}
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
         {task.status !== "archived" && !isDraftTask(task) && (
           <button

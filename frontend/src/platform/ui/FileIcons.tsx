@@ -248,8 +248,14 @@ const RENDER: Record<Variant, () => JSX.Element> = {
 };
 
 // Pick the icon for a listing entry: directories always get the folder icon;
-// files map by extension, falling back to a plain file outline.
+// files map by extension, falling back to a plain file outline. Own keys
+// only: `notes.__proto__` / `notes.constructor` are files, not variants.
 export function iconForEntry(name: string, isDir: boolean): JSX.Element {
-  const variant: Variant = isDir ? "folder" : EXT_VARIANT[extOf(name)] ?? "file";
+  const ext = extOf(name);
+  const variant: Variant = isDir
+    ? "folder"
+    : Object.prototype.hasOwnProperty.call(EXT_VARIANT, ext)
+      ? EXT_VARIANT[ext]
+      : "file";
   return RENDER[variant]();
 }
