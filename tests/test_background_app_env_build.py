@@ -33,6 +33,7 @@ def fast_watcher(monkeypatch):
     monkeypatch.setattr(background_apps, "_ENV_POLL_S", 0.01)
     monkeypatch.setattr(background_apps, "_ENV_MAX_WAIT_S", 5.0)
     background_apps._env_watchers.clear()
+    _join_env_threads()
     yield
     # Drain any watcher a test left polling while the fakes are still in
     # place, so none outlives the test and fires into the next one's fakes.
@@ -42,6 +43,15 @@ def fast_watcher(monkeypatch):
     while background_apps._env_watchers and time.monotonic() < end:
         time.sleep(0.01)
     background_apps._env_watchers.clear()
+    _join_env_threads()
+
+
+def _join_env_threads():
+    """_watch_env pops its registry entry while the thread is still alive, so
+    wait on the threads themselves: no watcher may outlive its test."""
+    for t in list(threading.enumerate()):
+        if t.name.startswith("bg-env-") and t is not threading.current_thread():
+            t.join(timeout=5)
 
 
 def _folder(tmp_path, name="app"):
@@ -252,12 +262,13 @@ def test_two_starts_share_one_watcher(tmp_path, monkeypatch):
     env = FakeEnv(monkeypatch, _venv_python(tmp_path))
     monkeypatch.setattr(engine_host, "current", lambda e: None)
     def watchers():
-        return [t for t in threading.enumerate()
-                if t.name == f"bg-env-{os.path.basename(f)}"]
+        return {t for t in threading.enumerate()
+                if t.name.startswith("bg-env-")}
 
+    before = watchers()
     background_apps.build_env_then_respawn(f)
     background_apps.build_env_then_respawn(f)
-    assert len(watchers()) == 1
+    assert len(watchers() - before) == 1
     assert len(env.starts) == 2  # envinstall.start itself is idempotent
     env.error = "stop"
     assert _wait(lambda: f not in background_apps._env_watchers)
