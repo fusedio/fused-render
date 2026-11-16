@@ -547,7 +547,7 @@ def test_a_fresh_copilot_run_is_found_by_file_then_by_id(agent, target):
     assert found == {"run_id": name, "backend": "copilot"}
 
 
-def test_a_session_is_found_whatever_target_the_page_now_names(agent, tmp_path):
+def test_a_session_is_found_from_its_target_s_folder(agent, tmp_path):
     """One session = one host. The chat page's target moved from the app's
     entry file to its folder while the host (and a background subagent) was
     alive: the probe with the new target and the same session must find that
@@ -561,8 +561,11 @@ def test_a_session_is_found_whatever_target_the_page_now_names(agent, tmp_path):
     assert agent._live_host(str(app), SID_COPILOT) == {"run_id": name}
     found = agent._live_run(str(app), SID_COPILOT)
     assert found["run_id"] == name
-    # An unrelated target is no obstacle either: the session names the host.
-    assert agent._live_host(str(tmp_path / "elsewhere"), SID_COPILOT) == {"run_id": name}
+    # An unrelated target is no match: a fork records its parent session in
+    # `resumed_from`, so the session alone must not adopt another chat's run.
+    assert agent._live_host(str(tmp_path / "elsewhere"), SID_COPILOT) == {"run_id": ""}
+    # Nor is a sibling file: neither is the folder of the other.
+    assert agent._live_host(str(app / "other.html"), SID_COPILOT) == {"run_id": ""}
     # No session id: the target still decides, and a mismatch finds nothing.
     assert agent._live_host(str(app)) == {"run_id": ""}
     assert agent._live_run(str(app))["run_id"] == ""
