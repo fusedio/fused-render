@@ -85,6 +85,7 @@ def listing(bot) -> list:
         if n.endswith(".json"):
             p = store.read_json(os.path.join(_dir(bot), n), None)
             if isinstance(p, dict) and p.get("id"):
+                p.setdefault("error", "")
                 out.append(p)
     out.sort(key=lambda p: float(p.get("ts") or 0), reverse=True)
     return out
@@ -206,7 +207,8 @@ def prepare(bot, items) -> dict:
     if not lessons:
         raise ValueError("no lessons to propose")
     fields = _draft(bot, lessons)
-    p = {"id": store.new_id("p"), "ts": time.time(), "status": "ready", **fields, "card_seq": None}
+    p = {"id": store.new_id("p"), "ts": time.time(), "status": "ready", "topic": "", **fields, "card_seq": None,
+         "error": ""}
     with store.lock(bot):
         _save(bot, p)
         for i in lessons:

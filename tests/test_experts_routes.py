@@ -118,9 +118,12 @@ def test_every_post_needs_x_fused(client, expert, path, body):
 
 def test_memory_and_forget(client, expert):
     item = memory.add(expert, "Use fused.load for UDF chaining.", trust="user")
+    once = memory.add(expert, "Read canvas.toml first.", session="s1")
     status, body = _json(client.get(f"/api/experts/{BID}/memory"))
-    assert status == 200 and [i["id"] for i in body["items"]] == [item["id"]]
-    assert item["id"] in body["index"]
+    assert status == 200 and [i["id"] for i in body["items"]] == [item["id"], once["id"]]
+    assert [i["indexed"] for i in body["items"]] == [True, False]  # an outcome lesson seen once is not loaded
+    assert item["id"] in body["index"] and once["id"] not in body["index"]
+    client.post(f"/api/experts/{BID}/memory/forget", {"id": once["id"]})
     status, body = _json(client.post(f"/api/experts/{BID}/memory/forget", {"id": item["id"]}))
     assert status == 200 and body == {"removed": 1}
     status, body = _json(client.post(f"/api/experts/{BID}/memory/forget", {}))
@@ -152,18 +155,18 @@ def test_checks(client, expert, monkeypatch):
     assert _json(client.post(f"/api/experts/{BID}/checks/run", {})) == (200, {"run_id": "r123"})
 
 
-def test_consolidate_proposes_and_shows_the_card(client, expert, monkeypatch):
+def test_consolidate_requests_a_proposal_and_returns_at_once(client, expert, monkeypatch):
     calls = []
     monkeypatch.setattr(consolidate, "run", lambda bot, force=False: (
         calls.append(("run", force)) or {"ran": True, "added": ["m1"], "bumped": [], "ignored": 0}))
     monkeypatch.setattr(proposals, "candidates", lambda bot: [{"id": "m1"}, {"id": "m2"}])
-    monkeypatch.setattr(proposals, "prepare", lambda bot, items: (
-        calls.append(("prepare", [i["id"] for i in items])) or {"id": "p9"}))
-    monkeypatch.setattr(cards, "show", lambda bot, p: calls.append(("show", p["id"])) or True)
+    monkeypatch.setattr(proposals, "prepare", lambda *a, **k: pytest.fail("never synchronous in a request"))
+    monkeypatch.setattr(proposals, "request", lambda bot, items, topic="": (
+        calls.append(("request", [i["id"] for i in items])) or {"id": "p9", "status": "preparing"}))
     status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {"force": True}))
     assert status == 200
     assert body == {"ran": True, "added": ["m1"], "bumped": [], "ignored": 0, "proposed": ["p9"]}
-    assert calls == [("run", True), ("prepare", ["m1", "m2"]), ("show", "p9")]
+    assert calls == [("run", True), ("request", ["m1", "m2"])]
     # Not due: a normal answer; nothing to propose.
     monkeypatch.setattr(consolidate, "run", lambda bot, force=False: {"ran": False, "added": [], "bumped": [],
                                                                       "ignored": 0})
@@ -173,13 +176,65 @@ def test_consolidate_proposes_and_shows_the_card(client, expert, monkeypatch):
     status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {"force": "yes"}))
     assert status == 400
 
-    def bad(bot, items):
+    monkeypatch.setattr(proposals, "candidates", lambda bot: [{"id": "m1"}])
+
+    def busy(bot, items, topic=""):
+        raise ValueError(proposals.BUSY)
+
+    monkeypatch.setattr(proposals, "request", busy)
+    status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {}))
+    assert status == 200 and body["proposed"] == []
+
+    def bad(bot, items, topic=""):
         raise ValueError("no lessons to propose")
 
-    monkeypatch.setattr(proposals, "candidates", lambda bot: [{"id": "m1"}])
-    monkeypatch.setattr(proposals, "prepare", bad)
+    monkeypatch.setattr(proposals, "request", bad)
     status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {}))
     assert status == 400 and body == {"error": "no lessons to propose"}
+
+
+def test_proposals_list_every_status_newest_first(client, expert):
+    for i, st in enumerate(proposals.STATUSES):
+        proposals._save(expert, {"id": f"p{i}", "ts": 100 + i, "status": st, "items": [],
+                                 **({"error": "it broke"} if st == "failed" else {})})
+    status, body = _json(client.get(f"/api/experts/{BID}/proposals"))
+    assert status == 200
+    assert [p["status"] for p in body["proposals"]] == list(reversed(proposals.STATUSES))
+    assert body["proposals"][0]["error"] == "it broke"
+    assert proposals.STATUSES == ("preparing", "ready", "shown", "approved", "rejected", "failed")
+
+
+def _run_dir(monkeypatch, tmp_path, roster):
+    from fused_render.claude_agent import agent_module
+    agent = agent_module()
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    run = tmp_path / "runs" / "20261116-111111-aaaaaa"
+    run.mkdir(parents=True, exist_ok=True)
+    if roster is not None:
+        (run / "experts.json").write_text(json.dumps(roster))
+    elif (run / "experts.json").exists():
+        (run / "experts.json").unlink()
+    return run.name
+
+
+def test_consult_only_an_expert_offered_to_the_session(client, expert, monkeypatch, tmp_path):
+    monkeypatch.setattr(consult, "consult", lambda bot, q, c="", caller=None: {
+        "id": "c1", "answer": "A", "refs": [], "used": [], "unsure": False})
+    cases = [([{"id": "someone-else", "name": "Canvas Expert"}], 403),
+             ([{"id": BID, "name": "Renamed"}], 200),
+             ([{"name": "canvas EXPERT"}], 200),
+             ([{"name": "Other"}], 403),
+             ([], 403),
+             (None, 200)]
+    for roster, want in cases:
+        rid = _run_dir(monkeypatch, tmp_path, roster)
+        status, body = _json(client.post("/api/experts/consult", {"expert": BID, "question": "q", "run_id": rid}))
+        assert status == want, roster
+        if want == 403:
+            assert body == {"error": "that expert is not offered to this session"}
+    # A local call (no run id) may consult any expert.
+    _run_dir(monkeypatch, tmp_path, [])
+    assert _json(client.post("/api/experts/consult", {"expert": BID, "question": "q"}))[0] == 200
 
 
 def test_capture(client, expert, monkeypatch):
@@ -212,6 +267,32 @@ def test_settings_and_engines(client, expert, monkeypatch):
     assert status == 200 and [e["id"] for e in body] == ["claude", "codex", "copilot"]
     assert [e["enabled"] for e in body] == [True, False, True]
     for row in body:
-        assert set(row) == {"id", "label", "enabled", "models", "default_model"}
+        assert set(row) == {"id", "label", "enabled", "models", "default_model", "note"}
         assert all(set(m) == {"id", "label"} for m in row["models"])
+    notes = {e["id"]: e["note"] for e in body}
+    assert notes["claude"] == notes["copilot"] == "" and "outside its folders" in notes["codex"]
     assert _json(client.get("/api/experts/nobody/engines"))[0] == 404
+
+
+def test_engines_report_the_claude_model_really_used(client, expert, monkeypatch):
+    from fused_render.agent_backends import registry as backends
+    monkeypatch.setattr(backends, "is_enabled", lambda bid: bid == "claude")
+    monkeypatch.setattr(backends, "enabled_ids", lambda: ["claude"])
+
+    def claude_default(bot_model, man_model=""):
+        meta = bstore.read_meta(BID)
+        meta["model"] = bot_model
+        meta["expert"]["model"] = man_model
+        bstore.write_meta(BID, meta)
+        from fused_render.bots import registry
+        b = registry.get(BID)
+        b.meta["model"], b.meta["expert"] = bot_model, dict(meta["expert"])
+        status, body = _json(client.get(f"/api/experts/{BID}/engines"))
+        assert status == 200
+        return body[0]["default_model"]
+
+    assert claude_default("local-4b") == "sonnet"  # a local model never goes to Claude
+    assert claude_default("gpt-5") == "sonnet"
+    assert claude_default("opus") == "opus"
+    assert claude_default("opus", "haiku") == "haiku"
+    assert claude_default("") == "sonnet"

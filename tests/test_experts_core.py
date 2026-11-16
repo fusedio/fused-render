@@ -81,6 +81,7 @@ def fake_text(monkeypatch):
         return r(prompt) if callable(r) else r
 
     monkeypatch.setattr(model, "text", text)
+    monkeypatch.setattr(model, "available", lambda b: (True, ""))
     text.calls, text.replies = calls, replies
     return text
 
@@ -147,12 +148,26 @@ def _backends(monkeypatch, enabled, default):
 
 def test_provider_for_auto_resolution(bot, monkeypatch):
     _backends(monkeypatch, ["claude", "copilot", "codex"], "codex")
-    assert model.provider_for(bot) == ("codex", "gpt-x")
-    _backends(monkeypatch, ["gemini", "copilot", "codex"], "gemini")
-    assert model.provider_for(bot) == ("copilot", "cp-1")  # default not one of the three: first enabled
+    assert model.provider_for(bot) == ("claude", "sonnet")  # auto never picks Codex, even as the default
+    _backends(monkeypatch, ["gemini", "copilot", "codex"], "codex")
+    assert model.provider_for(bot) == ("copilot", "cp-1")  # no Claude: Copilot
+    _backends(monkeypatch, ["codex"], "codex")
+    with pytest.raises(model.Unavailable, match="Codex runs an expert only when chosen"):
+        model.provider_for(bot)
+    assert model.fenced(bot) is False  # unavailable: not fenced
+    bot.meta["expert"] = {"engine": "codex"}
+    assert model.provider_for(bot) == ("codex", "gpt-x")  # named explicitly: allowed
+    assert model.fenced(bot) is False
+    bot.meta["expert"] = {}
     _backends(monkeypatch, ["claude"], "claude")
+    assert model.fenced(bot) is True
     bot.meta["model"] = "opus"
     assert model.provider_for(bot) == ("claude", "opus")  # the bot's own model meta
+    for local_or_foreign in ("local-4b", "gpt-5", "mlx-community/gemma"):
+        bot.meta["model"] = local_or_foreign
+        assert model.provider_for(bot) == ("claude", "sonnet"), local_or_foreign
+    bot.meta["model"] = "claude-opus-4-1"
+    assert model.provider_for(bot) == ("claude", "claude-opus-4-1")
     bot.meta["expert"] = {"model": "haiku"}
     assert model.provider_for(bot) == ("claude", "haiku")
     bot.meta["expert"] = {"engine": "codex"}
@@ -165,10 +180,12 @@ def test_provider_for_auto_resolution(bot, monkeypatch):
     assert model.available(bot) == (False, "needs Claude, Codex or Copilot")
     _backends(monkeypatch, ["claude"], "claude")
     assert model.available(bot) == (True, "")
+    assert model.ENGINE_NOTES["codex"].startswith("On Codex the expert can read files outside its folders")
 
 
 def test_text_goes_through_ai_call(bot, monkeypatch):
     _backends(monkeypatch, ["codex"], "codex")
+    bot.meta["expert"] = {"engine": "codex"}
 
     class FakeAI:
         @staticmethod
@@ -394,8 +411,12 @@ def test_memory_add_dedupe_bump_forget_index(bot):
     with pytest.raises(ValueError):
         memory.add(bot, "   ")
     assert [i["id"] for i in memory.items(bot)] == [a["id"], c["id"]]
+    # c is an outcome lesson seen once: kept, but not loaded into every answer until a second session sees it.
+    assert memory.index_text(bot).splitlines() == [f"- [{a['id']}] Use fused.load for UDFs. (seen 3×)"]
+    assert not memory.indexed(memory.items(bot)[1])
+    memory.add(bot, "Canvases live under user/", session="s7")
     assert memory.index_text(bot).splitlines() == [
-        f"- [{a['id']}] Use fused.load for UDFs. (seen 3×)", f"- [{c['id']}] Canvases live under user/ (seen 1×)"]
+        f"- [{a['id']}] Use fused.load for UDFs. (seen 3×)", f"- [{c['id']}] Canvases live under user/ (seen 2×)"]
     bot.meta["expert"] = {"memory": {"index_lines": 1}}
     assert len(memory.index_text(bot).splitlines()) == 1
     assert memory.mark(bot, c["id"], proposed=True, bogus=1)["proposed"] is True
@@ -447,7 +468,7 @@ def test_consolidate_applies_parsed_edits(bot, fake_text):
     assert observations.pending(bot) == [] and len(observations.done(bot)) == 4
 
 
-def test_consolidate_unparsable_falls_back_and_not_due(bot, fake_text):
+def test_consolidate_unparsable_keeps_pending_and_falls_back_after_three(bot, fake_text):
     assert consolidate.run(bot) == {"ran": False, "added": [], "bumped": [], "ignored": 0}
     memory.add(bot, "Lesson A")
     observations.write(bot, kind="user_correction", claim="lesson a.", trust="outcome", session="s1")
@@ -455,16 +476,46 @@ def test_consolidate_unparsable_falls_back_and_not_due(bot, fake_text):
     assert fake_text.calls == []
     observations.write(bot, kind="user_correction", claim="Lesson B", trust="outcome")
     observations.write(bot, kind="gap", claim="gap", trust="gap")
+    # 1st failure: an unreadable answer adds nothing and leaves everything pending.
     fake_text.replies.append("I could not decide, sorry [not json")
+    r = consolidate.run(bot)
+    assert r["ran"] is False and "could not be read" in r["reason"] and "1 of 3" in r["reason"]
+    assert [i["claim"] for i in memory.items(bot)] == ["Lesson A"] and len(observations.pending(bot)) == 3
+    assert consolidate.failures(bot) == 1
+    # 2nd: a failing call, same.
+    fake_text.replies.append(lambda p: (_ for _ in ()).throw(RuntimeError("down")))
+    r = consolidate.run(bot)
+    assert r["ran"] is False and "down" in r["reason"] and consolidate.failures(bot) == 2
+    assert [i["claim"] for i in memory.items(bot)] == ["Lesson A"]
+    # 3rd consecutive: exact-match fallback, then the counter resets.
+    fake_text.replies.append("still nothing")
     r = consolidate.run(bot)
     assert r["ran"] and len(r["added"]) == 1 and len(r["bumped"]) == 1 and r["ignored"] == 1
     assert sorted(i["claim"] for i in memory.items(bot)) == ["Lesson A", "Lesson B"]
-    # force: runs below the threshold; a failing model call is lossless too
-    observations.write(bot, kind="user_correction", claim="Lesson C", trust="outcome")
-    fake_text.replies.append(lambda p: (_ for _ in ()).throw(RuntimeError("down")))
-    assert consolidate.run(bot)["ran"] is False
+    assert observations.pending(bot) == [] and consolidate.failures(bot) == 0
+
+
+def test_consolidate_unknown_ops_and_omissions_are_nothing(bot, fake_text):
+    old = memory.add(bot, "existing")
+    o1 = observations.write(bot, kind="user_correction", claim="one", trust="outcome")
+    o2 = observations.write(bot, kind="user_correction", claim="two", trust="outcome")
+    o3 = observations.write(bot, kind="user_correction", claim="three", trust="outcome")
+    observations.write(bot, kind="user_correction", claim="omitted", trust="outcome")
+    fake_text.replies.append(json.dumps([{"obs": o1["id"], "op": "rewrite", "claim": "x"},
+                                         {"obs": o2["id"], "op": "bump", "item": "mnope"},
+                                         {"obs": o3["id"], "op": "bump", "item": old["id"]}]))
     r = consolidate.run(bot, force=True)
-    assert r["ran"] and len(r["added"]) == 1
+    assert r["ran"] and r["added"] == [] and r["bumped"] == [old["id"]] and r["ignored"] == 3
+    assert [i["claim"] for i in memory.items(bot)] == ["existing"]
+    assert observations.pending(bot) == [] and len(observations.done(bot)) == 4
+
+
+def test_consolidate_without_an_engine_does_nothing(bot, fake_text, monkeypatch):
+    monkeypatch.setattr(model, "available", lambda b: (False, "needs Claude, Codex or Copilot"))
+    observations.write(bot, kind="user_correction", claim="one", trust="outcome")
+    r = consolidate.run(bot, force=True)
+    assert r["ran"] is False and r["reason"] == "needs Claude, Codex or Copilot"
+    assert memory.items(bot) == [] and len(observations.pending(bot)) == 1 and fake_text.calls == []
 
 
 # -------------------------------------------------------------------- gate
@@ -646,3 +697,157 @@ def test_prepare_create_fallback_and_reject(bot, fake_text):
     assert p2["action"] == "update" and p2["skill"] == "canvas-basics"
     assert proposals.approve(bot, p2["id"])["skill"] == "canvas-basics"
     assert len(bot.skills()) == 1 and "Clones sit" in bot.skills()[0]["body"]
+
+
+# ------------------------------------------------- readtools: secrets, size, broad roots
+
+def test_readtools_refuse_hidden_and_secret_files(tmp_path):
+    root = tmp_path / "root"
+    (root / ".git").mkdir(parents=True)
+    (root / ".ssh").mkdir()
+    (root / "keys").mkdir()
+    (root / ".env").write_text("TOKEN=hello\n")
+    (root / ".git" / "config").write_text("hello\n")
+    (root / ".ssh" / "known").write_text("hello\n")
+    for n in ("server.pem", "tls.KEY", "id_rsa", "id_ed25519.pub", "credentials", "cert.p12", "c.pfx"):
+        (root / "keys" / n).write_text("hello\n")
+    (root / ".netrc").write_text("hello\n")
+    (root / ".fused-canvas.json").write_text('{"hello": 1}\n')
+    (root / "ok.txt").write_text("hello\n")
+    h = readtools.make_handler([str(root)])
+    for rel in (".env", ".git/config", ".ssh/known", ".netrc", "keys/server.pem", "keys/tls.KEY", "keys/id_rsa",
+                "keys/id_ed25519.pub", "keys/credentials", "keys/cert.p12", "keys/c.pfx"):
+        text, err = h("read_file", {"path": str(root / rel)})
+        assert err and "hidden or secret" in text, rel
+    text, err = h("list_dir", {"path": str(root / ".git")})
+    assert err and "hidden or secret" in text
+    text, err = h("search", {"query": "x", "path": str(root / ".ssh")})
+    assert err
+    text, err = h("read_file", {"path": str(root / ".fused-canvas.json")})
+    assert not err and "hello" in text  # the canvas marker stays readable
+    text, _ = h("list_dir", {"path": str(root / "keys")})
+    assert text.splitlines()[1:] == []
+    text, _ = h("list_dir", {"path": str(root)})
+    assert ".fused-canvas.json" in text and ".env" not in text and "ok.txt" in text
+    text, _ = h("search", {"query": "hello", "content": True})
+    assert "ok.txt" in text and ".fused-canvas.json" in text
+    for bad in (".env", "config", "known", "pem", "id_rsa", "credentials", "netrc", "p12"):
+        assert bad not in text, bad
+    text, _ = h("search", {"query": "id"})
+    assert text.startswith("no file")
+
+
+def test_readtools_refuse_files_over_20mb(tmp_path, monkeypatch):
+    root = tmp_path / "r"
+    root.mkdir()
+    (root / "big.csv").write_text("x" * 100)
+    h = readtools.make_handler([str(root)])
+    assert h("read_file", {"path": "big.csv"})[1] is False
+    monkeypatch.setattr(readtools, "READ_MAX_BYTES", 50)
+    text, err = h("read_file", {"path": "big.csv"})
+    assert err and "too large" in text
+
+
+def test_broad_roots_are_refused(tmp_path, monkeypatch):
+    home = tmp_path / "home" / "me"
+    (home / "docs").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    assert readtools.too_broad("/") and readtools.too_broad(str(home)) and readtools.too_broad(str(tmp_path))
+    assert readtools.too_broad("~") and not readtools.too_broad(str(home / "docs"))
+    got = readtools.resolve_reads({"reads": [{"kind": "folder", "path": p} for p in
+                                             ("/", "~", str(tmp_path / "home"), str(home / "docs"))]})
+    assert got == [str((home / "docs").resolve())]
+    h = readtools.make_handler(["/", str(home)])
+    assert h("list_dir", {}) == ("no readable folders", True)
+
+
+# ------------------------------------------------- proposals: async request, failures
+
+def _wait(pred, timeout=5.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+@pytest.fixture
+def shown(monkeypatch):
+    from fused_render.experts import cards
+    seen = []
+    monkeypatch.setattr(cards, "show", lambda b, p: seen.append(p) or True)
+    return seen
+
+
+def test_request_is_async_single_flight_and_shows_the_card(bot, fake_text, shown):
+    a = _seen(bot, "Use fused.load to read a UDF", 3)
+    b = _seen(bot, "Canvases live under user/", 3)
+    go = threading.Event()
+
+    def slow(prompt):
+        go.wait(5)
+        return json.dumps({"action": "create", "title": "UDF tips", "trigger": "udf", "body": "- fused.load"})
+
+    fake_text.replies.append(slow)
+    p = proposals.request(bot, [a, b], topic="udfs")
+    assert p["status"] == "preparing" and p["items"] == [a["id"], b["id"]] and p["topic"] == "udfs"
+    assert all(i["proposed"] for i in memory.items(bot))  # marked at once
+    assert proposals.candidates(bot) == []
+    with pytest.raises(ValueError, match="already being prepared"):
+        proposals.request(bot, [a])
+    assert proposals.get(bot, p["id"])["status"] == "preparing"
+    go.set()
+    assert _wait(lambda: proposals.get(bot, p["id"])["status"] == "ready")
+    done = proposals.get(bot, p["id"])
+    assert done["title"] == "UDF tips" and done["diff"].startswith("--- /dev/null") and done["error"] == ""
+    assert _wait(lambda: shown) and shown[0]["id"] == p["id"]
+    # Single-flight is over: another request is allowed, but not for lessons in an open proposal.
+    with pytest.raises(ValueError, match="no lessons"):
+        proposals.request(bot, [a, b])
+
+
+def test_open_proposals_exclude_their_items_from_candidates(bot):
+    a = _seen(bot, "lesson a", 3)
+    proposals._save(bot, {"id": "pold", "ts": 1, "status": "shown", "items": [a["id"]]})
+    assert proposals.candidates(bot) == []
+    proposals._save(bot, {"id": "pold", "ts": 1, "status": "rejected", "items": [a["id"]]})
+    assert [i["id"] for i in proposals.candidates(bot)] == [a["id"]]
+
+
+def test_request_failure_unmarks_the_lessons(bot, fake_text, shown, monkeypatch):
+    a = _seen(bot, "lesson a", 3)
+    monkeypatch.setattr(proposals, "_draft", lambda b, lessons: (_ for _ in ()).throw(RuntimeError("gate fell over")))
+    p = proposals.request(bot, [a])
+    assert _wait(lambda: proposals.get(bot, p["id"])["status"] == "failed")
+    failed = proposals.get(bot, p["id"])
+    assert "gate fell over" in failed["error"] and not memory.items(bot)[0]["proposed"]
+    assert [i["id"] for i in proposals.candidates(bot)] == [a["id"]] and shown == []
+    assert [x["status"] for x in proposals.listing(bot)] == ["failed"]
+
+
+def test_a_stale_preparing_record_does_not_block(bot, fake_text, shown):
+    a = _seen(bot, "lesson a", 3)
+    proposals._save(bot, {"id": "pstale", "ts": time.time() - 2 * proposals.PREPARE_STALE_S,
+                          "status": "preparing", "items": []})
+    fake_text.replies.append("not json")
+    p = proposals.request(bot, [a])
+    assert proposals.get(bot, "pstale")["status"] == "failed" and "interrupted" in proposals.get(bot, "pstale")["error"]
+    assert _wait(lambda: proposals.get(bot, p["id"])["status"] == "ready")
+
+
+def test_a_failed_approve_fails_the_proposal_for_good(bot, fake_text, monkeypatch):
+    from fused_render.experts import cards
+    a = _seen(bot, "lesson a", 3)
+    fake_text.replies.append("not json")
+    p = proposals.prepare(bot, [a])
+    monkeypatch.setattr(bot, "skill_save", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(ValueError, match="could not save the skill: disk full"):
+        proposals.approve(bot, p["id"])
+    after = proposals.get(bot, p["id"])
+    assert after["status"] == "failed" and "disk full" in after["error"]
+    assert not memory.items(bot)[0]["proposed"]
+    with pytest.raises(ValueError, match="failed"):
+        proposals.approve(bot, p["id"])  # never retried
+    assert cards.show(bot, after) is False  # never re-shown
+    assert proposals.mark_shown(bot, p["id"], 7)["status"] == "failed"
