@@ -71,14 +71,14 @@ describe("Modal popover pinned (the rail's +: hover previews, a press pins)", ()
   const fire = (type: string, e: unknown) => listeners.filter((l) => l.type === type).forEach((l) => l.fn(e));
   const outside = { nodeType: 1, closest: () => null, parentElement: null };
 
-  function mountPinned(pinned: boolean) {
+  function mountPinned(pinned: boolean, tempEscape = false) {
     installPortalContainer();
     capture();
     const anchor = createRef<HTMLElement>();
     const closes: number[] = [];
     const pins: number[] = [];
     const el = (p: boolean) => (
-      <Modal title="New task" onClose={() => closes.push(1)} popover={{ anchor, pinned: p, onPin: () => pins.push(1) }}>
+      <Modal title="New task" onClose={() => closes.push(1)} popover={{ anchor, pinned: p, onPin: () => pins.push(1), ...(tempEscape ? { tempEscape } : {}) }}>
         <span>body</span>
       </Modal>
     );
@@ -99,6 +99,20 @@ describe("Modal popover pinned (the rail's +: hover previews, a press pins)", ()
     act(() => fire("pointerdown", { target: outside }));
     act(() => fire("keydown", { key: "Escape" }));
     expect(m.closing()).toBe(false);
+    act(() => m.r.unmount());
+  });
+
+  test("pinned with `tempEscape` (the rail's temp card): Escape closes it — not one something inside took, nor one in a menu the card opened; a press outside still leaves it to its opener", () => {
+    const m = mountPinned(true, true);
+    act(() => fire("pointerdown", { target: outside }));
+    expect(m.closing()).toBe(false);
+    act(() => fire("keydown", { key: "Escape", defaultPrevented: true, target: outside }));
+    expect(m.closing()).toBe(false);
+    const inMenu = { closest: (s: string) => (s.includes("[role='menu']") ? {} : null) };
+    act(() => fire("keydown", { key: "Escape", defaultPrevented: false, target: inMenu }));
+    expect(m.closing()).toBe(false);
+    act(() => fire("keydown", { key: "Escape", defaultPrevented: false, target: outside }));
+    expect(m.closing()).toBe(true);
     act(() => m.r.unmount());
   });
 

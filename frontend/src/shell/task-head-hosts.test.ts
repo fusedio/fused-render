@@ -37,7 +37,8 @@ test("the rail's Tasks card: both heads on the shared chassis, the old ones kept
   // The list head: × closing the card, a static "Tasks", "Open tasks" — and
   // no ladder: it has nothing that folds.
   expect(shared).toContain("fitEnabled={false}");
-  expect(shared).toContain('lead={{ kind: "close", label: "Close Tasks", hint: "Close", onPress: api.close, ref: api.closeRef }}');
+  // The × only without the rail's pin (`api.pin`): with it no card has one.
+  expect(shared).toContain('lead={api.pin ? null : { kind: "close", label: "Close Tasks", hint: "Close", onPress: api.close, ref: api.closeRef }}');
   expect(shared).toContain('title="Tasks"');
   expect(shared).toContain('word: "Open tasks"');
   // The old heads are still there, as they were.
@@ -121,7 +122,8 @@ test("the New task card's FORM: the chassis' own head pieces on the shared head,
   const form = between(src, "{...(!chatOpen && unified ? {", "// …AND WITH THE SHARED HEAD ON");
   expect(form).toContain("head: ({ titleId, close, busy: closing, armed, parts }: ModalHeadContext) => (");
   // The ✕'s two states carry over: gone while busy, armed after a dirty close.
-  expect(form).toContain("lead={closing ? null : {");
+  // …and none in the rail's popover with the pin (`pinNode`).
+  expect(form).toContain("lead={closing || pinNode ? null : {");
   expect(form).toContain('label: armed ? "Close and discard changes" : "Close"');
   expect(form).toContain("onPress: close,");
   // The same nodes the chassis' head is given: crumb, name, source chip, pills.

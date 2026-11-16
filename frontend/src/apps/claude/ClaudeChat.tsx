@@ -179,6 +179,7 @@ import { PlaceTags } from "@shell/claude-rail/PlaceTags";
 // head — the same one every other task view draws.
 import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
 import { TaskPeekProject } from "@shell/TaskPeekWho";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
 import { shortTaskId } from "@shell/tasks-lib";
@@ -5837,6 +5838,15 @@ function ChatBody(props: ChatBodyProps) {
   const kebabMenu = (
       <Kebab
         {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
+        // OPEN IN TASKS (flag on, off the Tasks page): only a chat with a task
+        // row — the landing and a never-run chat have none to open.
+        {...openInTasksProps(
+          openInTasksItem({
+            on: headUnified,
+            taskKey: inChat ? (head.task?.key ?? null) : null,
+            onOpen: (href) => void navigateUrl(href),
+          }),
+        )}
         file={file}
         sessionId={inChat ? (state.sessionId ?? "") : ""}
         btnRef={kebabBtn}

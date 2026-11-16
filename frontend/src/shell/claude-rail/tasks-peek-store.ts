@@ -25,7 +25,7 @@ export const TASKS_PEEK_ID = "claude-rail-tasks-peek";
 export type TasksCardState = DoorCardState;
 
 /** The store itself, for the chassis the two cards share (DoorCard). */
-export const tasksCardStore = createDoorCardStore(TASKS_CARD_KEY, TASKS_PEEK_ID);
+export const tasksCardStore = createDoorCardStore(TASKS_CARD_KEY, TASKS_PEEK_ID, "tasks");
 
 export const tasksCardIntent = () => tasksCardStore.intent();
 export const closeTasksCard = (returningFocus = false): void => tasksCardStore.close(returningFocus);

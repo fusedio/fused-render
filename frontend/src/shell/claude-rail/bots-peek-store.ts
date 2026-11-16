@@ -18,7 +18,7 @@ export const BOTS_PEEK_ID = "claude-rail-bots-peek";
 export type BotsCardState = DoorCardState;
 
 /** The store itself, for the chassis the two cards share (DoorCard). */
-export const botsCardStore = createDoorCardStore(BOTS_CARD_KEY, BOTS_PEEK_ID);
+export const botsCardStore = createDoorCardStore(BOTS_CARD_KEY, BOTS_PEEK_ID, "bots");
 
 export const botsCardIntent = () => botsCardStore.intent();
 export const closeBotsCard = (returningFocus = false): void => botsCardStore.close(returningFocus);

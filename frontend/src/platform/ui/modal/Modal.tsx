@@ -235,8 +235,19 @@ export interface ModalProps {
      *     close it — an outside press and Escape do not.
      */
     pinned?: boolean;
+    /** A `pinned: true` popover that ESCAPE still closes (the rail's TEMP
+     *  card, claude-rail rail-pin-lib: a hover and a temp card close on
+     *  Escape, only a pinned one ignores it). Not an Escape something inside
+     *  already took (`defaultPrevented`), nor one pressed in a menu, a
+     *  listbox or a dialog the card opened — that one's Escape is its own. */
+    tempEscape?: boolean;
     /** The reader acted inside a preview (`pinned: false`): pin it. */
     onPin?: () => void;
+    /** ANY press inside the card, pinned or not — React's capture phase, so a
+     *  menu portaled out of it counts, and a grip's press too: the opener's
+     *  own outside-press rule reads it (the rail's temp card, claude-rail
+     *  rail-pin-lib). */
+    onPressInside?: () => void;
     /** The pointer entered / left the card (the opener's hover grace). */
     onPointerEnter?: () => void;
     onPointerLeave?: () => void;
@@ -342,6 +353,8 @@ export function Modal({
   // unmount below, which are bound once.
   const pinnedRef = useRef(popover?.pinned);
   pinnedRef.current = popover?.pinned;
+  const tempEscapeRef = useRef(popover?.tempEscape === true);
+  tempEscapeRef.current = popover?.tempEscape === true;
 
   // Store the previously-focused element, move focus into the dialog on mount,
   // and restore it on unmount. Callers win: an `initialFocus` ref takes
@@ -516,8 +529,15 @@ export function Modal({
   useEffect(() => {
     const onDocKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // A pinned popover closes by its ✕ only (header of `popover.pinned`).
-      if (pinnedRef.current === true) return;
+      // A pinned popover closes by its ✕ only (header of `popover.pinned`) —
+      // but for the opener's temp card (`popover.tempEscape`).
+      if (pinnedRef.current === true) {
+        if (!tempEscapeRef.current || e.defaultPrevented) return;
+        const pop = (e.target as Element | null)?.closest?.(
+          "[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']",
+        );
+        if (pop && pop !== dialogRef.current) return;
+      }
       if (!isTopmost(token.current)) return;
       attemptClose();
     };
@@ -685,6 +705,10 @@ export function Modal({
     if (e.button !== 0 || !dialog || !resize || closing) return;
     e.preventDefault();
     e.stopPropagation();
+    // A grip's press is a press inside the card (it stands outside the
+    // dialog's box): a preview with grips pins on it as on any press.
+    popover?.onPressInside?.();
+    if (pinnedRef.current === false) popover?.onPin?.();
     const r = dialog.getBoundingClientRect();
     const box = { left: r.left, top: r.top, width: r.width, height: r.height };
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -852,6 +876,7 @@ export function Modal({
               // `popover.pinned`). React's own events, so a pill's menu
               // portaled out of the card still counts as inside it.
               onPointerDownCapture: () => {
+                popover.onPressInside?.();
                 if (pinnedRef.current === false) popover.onPin?.();
               },
               onFocusCapture: () => {

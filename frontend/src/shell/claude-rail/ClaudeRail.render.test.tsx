@@ -414,7 +414,7 @@ describe("ClaudeRail's card beside the pane", () => {
   // everywhere"), behind its flag: the card's two-row head becomes the one
   // every task view draws — its own rename row gone, TaskPeekWho's in its place.
   const cls = (n: ReactTestInstance) => String(n.props?.className ?? "").split(" ");
-  test("flag on: the card wears the shared head — the ×, the identity, the ⋮ — and no title row of its own", async () => {
+  test("flag on: the card wears the shared head — the pin, the identity, the ⋮ — and no title row of its own", async () => {
     resetTaskHeadUnifiedFlagForTests();
     publishTaskHeadUnified({ enabled: true });
     try {
@@ -424,8 +424,11 @@ describe("ClaudeRail's card beside the pane", () => {
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(1);
       expect(peek.findAll((n) => cls(n).includes("claude-rail-peek-titlerow"))).toHaveLength(0);
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-side-peek-who")).length).toBeGreaterThan(0);
-      const lead = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-lead"));
-      expect(lead.props["aria-label"]).toBe("Close the preview");
+      // With the unified head the rail card has NO × (owner, 2026-11-16: a
+      // click outside closes a temp card, a pinned one is unpinned first):
+      // the pin is the head's first button.
+      expect(peek.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === "Close the preview")).toHaveLength(0);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("rail-pin-btn"))).toHaveLength(1);
       // The card's OWN star (toggleStar: tells the rail, dismisses on unstar),
       // not the head's plain TaskStar, as the count slot's other occupant —
       // and its archive as the id slot's (the a/b slots, 2026-11-15).
