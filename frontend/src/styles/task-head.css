@@ -781,6 +781,24 @@
 .task-head-facts-layer.is-b {
   opacity: 0;
   pointer-events: none;
+  /* THE STAR AND THE DOOR STAND AS CLOSE AS THE COUNT AND THE TIME (Akshil,
+     2026-11-16: "same padding should be between star and open button"). The
+     facts are bare text 6px apart; the acts are boxes with ink inside them —
+     the star's 14px glyph in a 22px button, the door's word inside its own
+     padding — so the same 6px between BOXES read as 16px between the marks.
+     No gap here, and 2px of padding on the door: 4px + 2px, the facts' 6px. */
+  gap: 0;
+}
+.task-head-facts-layer.is-b .task-head-open {
+  padding: 0 2px;
+}
+/* A fact repeated among the acts (no star, or no door, to trade with) keeps
+   the same 6px from its neighbour. */
+.task-head-facts-layer.is-b > .task-head-fact:first-child {
+  margin-right: 4px;
+}
+.task-head-facts-layer.is-b > .task-head-fact:not(:first-child) {
+  margin-left: 2px;
 }
 .task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible)) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
   opacity: 0;
