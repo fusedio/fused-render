@@ -157,20 +157,9 @@ export function ownPlace(t: Pick<TaskPulseTask, "canvas" | "target" | "project">
 /** THE PLACE A CARD'S WHERE-CHIP NAMES (RailPeek's head): the rail's own
  *  place when the row is in it, else the row's own (`ownPlace`) — a
  *  favourite from another canvas or folder, hovered on this rail, says where
- *  IT lives, not where the rail stands.
- *  A FADED ROW ON A FILE'S RAIL (`railRows`: a chat of the file's folder, or
- *  of another file in it) is read against the FOLDER the rail lists
- *  (`widePlace`), so its card says the same folder and file the folder
- *  page's own rail says — not the row's project, which may be a folder
- *  further up. (A canvas's faded rows are already in the canvas place: the
- *  node is not part of `inPlace`.) */
+ *  IT lives, not where the rail stands. */
 export function chipPlace(t: Pick<TaskPulseTask, "canvas" | "target" | "project">, place: RailPlace): RailPlace {
-  if (inPlace(t, place)) return place;
-  if (place.kind === "file" && place.dir) {
-    const wide = widePlace(place);
-    if (inPlace(t, wide)) return wide;
-  }
-  return ownPlace(t);
+  return inPlace(t, place) ? place : ownPlace(t);
 }
 
 /** The canvas the PAGE stands on, when the page can select a node in place
@@ -477,7 +466,7 @@ export function placeName(place: RailPlace): string {
 /** The place a narrowed rail lists in full (`railRows`): the canvas without
  *  its selected node, the folder an open file sits in. Any other place is
  *  its own. */
-export function widePlace(place: RailPlace): RailPlace {
+function widePlace(place: RailPlace): RailPlace {
   if (place.kind === "canvas") return { ...place, file: null };
   if (place.kind === "file" && place.dir) return { kind: "folder", dir: place.dir, sessionless: place.sessionless };
   return place;

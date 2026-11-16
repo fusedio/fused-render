@@ -306,7 +306,6 @@ import {
   placeRoot,
   queuedEditHref,
   railRows,
-  widePlace,
   railScope,
   railShown,
   readMark,
@@ -737,9 +736,6 @@ export function ClaudeRail({
   // `sessionless`) — every page's rail, so it is set here, not by the page.
   const seatPlace = useMemo((): RailPlace => ({ ...place, sessionless: true }), [place]);
   const scope = placeName(place);
-  // What the LIST is of, for its label: an open file's rail lists its folder
-  // (claude-rail-lib `railRows`), as a selected node's lists its canvas.
-  const listScope = place.kind === "file" && place.dir ? placeName(widePlace(place)) : scope;
   // THE CAPTION'S WORDS ARE THE LISTING'S, not the pulse's: the pulse carries
   // status and a title, but the list row's caption is built from the full row
   // (recap, last reply, last message, the draft) — and so is the List's ORDER
@@ -3304,7 +3300,7 @@ export function ClaudeRail({
             ref={listRef}
             className="claude-rail-chats"
             role="list"
-            aria-label={`Chats on ${node ? name : listScope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
+            aria-label={`Chats on ${node ? name : scope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
             // AT MOST TEN RINGS TALL, then it scrolls (claude-rail-lib
             // `LIST_ROWS_MAX`, claude-rail.css `.is-scroll`); the fades at
             // its edges say there is more above / below (`listEdges`).

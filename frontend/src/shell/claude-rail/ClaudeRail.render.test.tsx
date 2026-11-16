@@ -1105,9 +1105,6 @@ describe("ClaudeRail on an open file (owner, 2026-11-16)", () => {
         ["other", "claude-rail-seat is-off"],
       ]);
       expect(seps(r)).toBe(1);
-      // The list is the folder's, and says so.
-      const list = r.root.findAll((n) => typeof n.type === "string" && n.props.role === "list" && n.props.className === "claude-rail-chats")[0]!;
-      expect(list.props["aria-label"]).toBe("Chats on demo");
     });
   }
 
