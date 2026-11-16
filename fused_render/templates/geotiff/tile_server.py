@@ -424,6 +424,12 @@ def _serve():
         lv = f["levels"][li]
         with f["lock"]:
             missing = sorted({ci for ci in cis if (li, ci) not in f["chunks"]})
+        # The open-time check covers the smallest level; this one covers the
+        # window actually asked for (a max-zoom tile over full-width
+        # uncompressed strips can be far bigger than any overview).
+        refusal = T.stream_refusal(sum(lv["counts"][ci] for ci in missing))
+        if refusal:
+            raise T.TooLargeToStream(refusal)
         if len(missing) < 2:
             return
         ranges = [(lv["offs"][ci], lv["offs"][ci] + lv["counts"][ci]) for ci in missing]
@@ -610,10 +616,18 @@ def _serve():
         # user-defined CRS, exotic compression) fall back to rasterio below.
         try:
             return _tile_native(q, z, x, y)
-        except Exception:
+        except Exception as e:
             if T.is_remote(q1(q, "file") or ""):
                 # No rasterio fallback for a streamed file: /meta already
-                # said whether the native engine can draw it.
+                # said whether the native engine can draw it. Say WHY a tile
+                # failed: a network or changed-object error is transient
+                # (502; the next request reopens a changed object), a window
+                # over the budget is 413, and only an engine gap is "no tile".
+                RR = T.remote_range()
+                if isinstance(e, T.TooLargeToStream):
+                    return 413, str(e).encode(), "text/plain"
+                if isinstance(e, (RR.RemoteError, OSError)):
+                    return 502, str(e).encode(), "text/plain"
                 return 404, b"unsupported", "text/plain"
             f = os.path.abspath(os.path.expanduser(q1(q, "file") or ""))
             if not os.path.exists(f):

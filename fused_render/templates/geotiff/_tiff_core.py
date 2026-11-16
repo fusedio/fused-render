@@ -108,17 +108,29 @@ def _overview_levels(buf, en, first_next):
     return levels
 
 
+# More values than this in one tag is a corrupt count, not a big raster: a
+# 150k x 100k raster has ~60k tile offsets, a 1-row-per-strip one ~110k.
+_MAX_TAG_VALUES = 16 * 1024 * 1024
+
+
 def _read_values(buf, en, typ, count, off):
+    # A corrupt count (uint32, or uint64 in BigTIFF) must fail like any other
+    # malformed tag (struct.error), never size an allocation: the values have
+    # to fit inside the file, and no real tag holds more than _MAX_TAG_VALUES.
+    size = _TYPE_SIZE.get(typ, 1) * count
+    if count > _MAX_TAG_VALUES or off + size > len(buf):
+        raise struct.error(f"TIFF tag claims {count} values at offset {off}, "
+                           f"past what the file holds")
     if typ == 2:  # ASCII
         return buf[off:off + count].split(b"\x00")[0].decode("latin-1", "replace")
     fmt = {1: "B", 3: "H", 4: "I", 6: "b", 8: "h", 9: "i", 11: "f", 12: "d",
            13: "I", 16: "Q", 17: "q", 18: "Q"}.get(typ)
     if typ == 5:  # RATIONAL
-        vals = _unpack_at(en + "%dI" % (count * 2), buf, off)
+        vals = _unpack_at(f"{en}{count * 2}I", buf, off)
         return [vals[i] / vals[i + 1] if vals[i + 1] else 0.0 for i in range(0, len(vals), 2)]
     if not fmt:
         return list(buf[off:off + count])
-    return list(_unpack_at(en + fmt * count, buf, off))
+    return list(_unpack_at(f"{en}{count}{fmt}", buf, off))
 
 
 def _v(tags, tag, default=None):
@@ -298,7 +310,12 @@ def parse_header(path):
         en = ByteOrder(en)
     else:
         raise Unsupported(f"not a TIFF (version {version})")
-    t, next_off = _read_ifd(buf, en)
+    try:
+        t, next_off = _read_ifd(buf, en)
+    except (struct.error, IndexError) as e:
+        # A malformed first IFD is an engine gap like an exotic codec: the
+        # callers' fallbacks (rasterio locally) get their chance at it.
+        raise Unsupported(f"corrupt TIFF header ({e})") from None
     return buf, en, t, next_off
 
 

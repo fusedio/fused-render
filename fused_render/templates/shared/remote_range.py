@@ -22,8 +22,8 @@ Reads:
     The first request fetches `HEAD_BYTES`, which holds a COG's whole header.
   * A larger read goes straight to the network and is not kept — consumers
     cache what they decode.
-  * `read_many` merges ranges closer than `GAP` and fetches the merged runs on
-    up to `PARALLEL` connections: a tile window's chunks of one level are
+  * `read_many` merges ranges closer than `GAP` (runs capped at `MAX_RUN`) and
+    fetches the merged runs on up to `PARALLEL` connections: a tile window's chunks of one level are
     usually adjacent in a COG, so a row of tiles is one request.
 
 Consistency: the ETag from the first response is sent as `If-Match` on every
@@ -53,6 +53,9 @@ from concurrent.futures import ThreadPoolExecutor
 BLOCK = 64 * 1024
 HEAD_BYTES = 64 * 1024
 GAP = 64 * 1024
+#: A merged run never grows past this (one GET, one buffer); a single range
+#: bigger than it is still fetched whole — callers budget their own reads.
+MAX_RUN = 8 * 1024 * 1024
 PARALLEL = 6
 MAX_CACHE = 64 * 1024 * 1024
 TIMEOUT_S = 30.0
@@ -242,10 +245,18 @@ class RemoteBuffer:
                 r = conn.getresponse()
                 status = r.status
                 if status in (200, 206):
-                    if status == 200 and start > 0:
-                        conn.close()
-                        raise RemoteError(f"S3 ignored the byte range for {self.address}; "
-                                          "refusing to download the whole object")
+                    if status == 200:
+                        # The server (or a proxy) ignored Range and is sending
+                        # the whole object. Acceptable only when that object
+                        # is no bigger than the window asked for — checked
+                        # from Content-Length BEFORE reading a byte, so a big
+                        # object is refused, never buffered.
+                        length = r.getheader("Content-Length") or ""
+                        if start > 0 or not length.isdigit() or int(length) > stop - start:
+                            conn.close()
+                            raise RemoteError(
+                                f"S3 ignored the byte range for {self.address}; "
+                                "refusing to download the whole object")
                     body = r.read()
                 else:
                     r.read(64 * 1024)  # drain a small error body so the socket can be reused
@@ -389,7 +400,7 @@ class RemoteBuffer:
         runs: list[list] = []
         for i in todo:
             a, b = ranges[i]
-            if runs and a <= runs[-1][1] + GAP:
+            if runs and a <= runs[-1][1] + GAP and max(runs[-1][1], b) - runs[-1][0] <= MAX_RUN:
                 runs[-1][1] = max(runs[-1][1], b)
                 runs[-1][2].append(i)
             else:

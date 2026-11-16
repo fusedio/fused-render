@@ -144,7 +144,7 @@ def test_a_corrupt_bigtiff_ifd_count_is_refused(tmp_path):
     data[first:first + 8] = struct.pack("<Q", 10 ** 9)
     p = tmp_path / "bad.tif"
     p.write_bytes(bytes(data))
-    with pytest.raises(struct.error):
+    with pytest.raises(T.Unsupported, match="corrupt TIFF header"):
         T.parse_header(str(p))
 
 
@@ -352,3 +352,60 @@ def test_remote_stat_reports_stream_templates(monkeypatch):
     assert [e["mode"] for e in tif["stream_templates"]] == ["geotiff"]
     csv = c.get("/api/remote/stat", params={"url": "s3://fused-asset/a/b.csv"}).json()
     assert csv["stream_templates"] == []
+
+
+# --------------------------------------------- review fixes (PR 2301 Bugbot)
+
+
+@pytest.mark.parametrize("big", [True, False])
+def test_a_corrupt_tag_count_is_unsupported_not_an_allocation(tmp_path, big):
+    """A tag whose count claims more values than the file holds (uint64 in
+    BigTIFF) fails as a corrupt header — before any format string or slice
+    is sized by it — so callers fall back instead of the daemon dying."""
+    data = bytearray(_tiff(_images(), big=big, tiled=True))
+    first = struct.unpack_from("<Q" if big else "<I", data, 8 if big else 4)[0]
+    entry = first + (8 if big else 2)       # the first entry (tag 254)
+    # Rewrite its type to LONG8/LONG and its count to something absurd.
+    if big:
+        data[entry + 2:entry + 12] = struct.pack("<HQ", 16, 2 ** 61)
+    else:
+        data[entry + 2:entry + 8] = struct.pack("<HI", 4, 2 ** 31)
+    p = tmp_path / "bad-count.tif"
+    p.write_bytes(bytes(data))
+    with pytest.raises(T.Unsupported, match="corrupt TIFF header"):
+        T.parse_header(str(p))
+
+
+def test_read_values_refuses_values_past_the_end():
+    buf = b"\0" * 64
+    with pytest.raises(struct.error):
+        T._read_values(buf, "<", 4, 100, 0)
+    assert T._read_values(buf, "<", 3, 4, 0) == [0, 0, 0, 0]
+
+
+def test_a_server_ignoring_range_on_the_first_read_is_refused_unread(bucket):
+    """The first read is at offset 0: a 200 carrying a whole object bigger
+    than the window is refused from Content-Length, not buffered."""
+    bucket.objects["/big.bin"] = os.urandom(RF.HEAD_BYTES * 4)
+    bucket.ignore_range = True
+    with pytest.raises(RF.RemoteError, match="ignored the byte range"):
+        RF.RemoteBuffer("s3://fused-asset/big.bin")
+    # an object no bigger than the window is fine either way
+    bucket.objects["/small.bin"] = os.urandom(1000)
+    buf = RF.RemoteBuffer("s3://fused-asset/small.bin")
+    assert buf[:] == bucket.objects["/small.bin"]
+
+
+def test_merged_runs_are_capped(bucket, monkeypatch):
+    data = os.urandom(3_000_000)
+    bucket.objects["/obj.bin"] = data
+    buf = RF.RemoteBuffer("s3://fused-asset/obj.bin")
+    monkeypatch.setattr(RF, "MAX_RUN", 500_000)
+    before = len(bucket.log)
+    ranges = [(100_000 + i * 100_000, 200_000 + i * 100_000) for i in range(20)]
+    assert buf.read_many(ranges) == [data[a:b] for a, b in ranges]
+    sizes = []
+    for _, rng, _ in bucket.log[before:]:
+        a, _, b = rng[6:].partition("-")
+        sizes.append(int(b) - int(a) + 1)
+    assert len(sizes) >= 4 and max(sizes) <= 500_000
