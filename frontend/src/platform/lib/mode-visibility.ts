@@ -84,9 +84,29 @@ export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts)
 // and leave rather than work beside. Its `unavailableReason` below survives for
 // that kebab row's tooltip; `isSidebarMode("mcp")` is false, so a registry that
 // bound the template to a file would list it as an ordinary content mode.
-export const SIDEBAR_MODES = ["claude", "git"] as const;
+//
+// `udf` IS THE THIRD, AND THE ONE THAT IS NOT ALWAYS THERE (SPEC §53.3 NV-3):
+// the canvas node view — a node of a cloned canvas, live in the hosted
+// workbench, beside its own file's editor. Its gate (templates/udf/
+// condition.py) passes for a node file of a `user/` canvas only, with Canvases
+// on, so on nearly every file it does not exist at all. It is ranked LAST: the
+// default an absent `_side` opens stays the chat; a node file opens the node
+// pane by its own rule instead (lib/preview-side `nodePaneAuto`), so a file
+// that is not a node, or a reader with Canvases off, sees no change.
+export const SIDEBAR_MODES = ["claude", "git", "udf"] as const;
+
+/** The node view's mode (templates/udf, a native template). */
+export const NODE_MODE = "udf";
 
 const SIDEBAR_MODE_SET: ReadonlySet<string> = new Set(SIDEBAR_MODES);
+
+// Companions the switcher draws ONLY where they are on offer — no disabled
+// row explaining their absence (see below for why the others get one). The
+// node view belongs to a handful of files in one folder tree, behind an
+// opt-in feature: a "Not a canvas node" row on every other file would be a
+// question nobody asked, and it would change the sidebar for every reader who
+// never turned Canvases on.
+export const OFFERED_ONLY_SIDEBAR_MODES: ReadonlySet<string> = new Set([NODE_MODE]);
 
 // WHY A COMPANION IS NOT ON OFFER, in the words the switcher puts on it.
 //
@@ -114,6 +134,7 @@ const UNAVAILABLE_REASONS: Record<string, string> = {
   claude: "Claude is not available for this file",
   git: "Not inside a git repository",
   mcp: "Not a fused app folder (needs index.html and a main())",
+  udf: "Not a node of a canvas you work on",
 };
 
 // Deliberately total: a user registry can bind a mode of its own into either

@@ -122,6 +122,7 @@ export default function PreviewSidebar({
   onSelect,
   onClose: closeSide,
   chat,
+  nativeView,
   phase = "open",
 }: {
   // The switcher's whole list: every companion, in SIDEBAR_MODES order, the ones
@@ -146,6 +147,12 @@ export default function PreviewSidebar({
    * goes.
    */
   chat?: ReactNode;
+  /**
+   * ANOTHER NATIVE COMPANION (the canvas node view, `udf`; SPEC §53.3 NV-3),
+   * mounted by the caller for the active mode when it is one: like the chat
+   * it has no /render page to frame. Rendered as given, keyed by the caller.
+   */
+  nativeView?: ReactNode;
   /** The slide in/out (platform/lib/pane-presence): the caller holds this
    *  column mounted through its exit and says which way it is moving. */
   phase?: PanePhase;
@@ -391,6 +398,10 @@ export default function PreviewSidebar({
             // (`.chat-mount`, apps/claude/styles/chat.css), its own skeleton
             // covering its boot.
             chat
+          ) : nativeView ? (
+            <div key={active} className="preview-side-native">
+              {nativeView}
+            </div>
           ) : (
             <iframe
               // Keyed on the mode: a switch is the right moment for a fresh

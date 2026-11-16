@@ -10,6 +10,9 @@ import {
   reconcileSideSearch,
   sideFromMemory,
   writeQueryParam,
+  nodePaneAuto,
+  nodeViewShutAfter,
+  urlNamesSide,
   SIDE_OFF,
   type SideEntry,
   type SideSplitInput,
@@ -1025,5 +1028,94 @@ describe("Preview records the remembered tab only on an explicit pick", () => {
     // Open With -> Git is an explicit pick too, so it passes the tab.
     expect(pv).toContain("else if (sideOn && isSidebarMode(m)) setSide(m, m);");
     expect(ls).toContain('setSide({ open: true, mode: "git" }, "git")');
+  });
+});
+
+// --- the canvas node view (`udf`, SPEC §53.3 NV-3/NV-4) ----------------------
+
+describe("the node view companion", () => {
+  // As the registry ships it: templates/udf/condition.py, so conditional.
+  const udf: TemplateEntry = { ...t("udf"), conditional: true };
+
+  it("is never a disabled row: absent, it is not drawn at all", () => {
+    const s = sideSplit(file([claude], "yes"));
+    expect(rows(s.menu)).toEqual([
+      ["claude", null],
+      ["git", null],
+    ]);
+    // …nor on a file with no companion of its own.
+    expect(sideSplit(file([], "no")).menu.map((e) => e.mode)).toEqual(["claude", "git"]);
+  });
+
+  it("is not drawn while its gate is still out, and is once it says yes", () => {
+    const pending = sideSplit({ ...file([gatedClaude, udf], "yes"), conditionsPending: true });
+    expect(pending.menu.map((e) => e.mode)).toEqual(["claude", "git"]);
+    expect(pending.ready).toEqual(["git"]);
+    const settled = sideSplit({ ...file([gatedClaude, udf], "yes"), conditionsPending: false });
+    expect(settled.menu.map((e) => e.mode)).toEqual(["claude", "git", "udf"]);
+    expect(settled.ready).toEqual(["claude", "git", "udf"]);
+  });
+
+  it("is ranked last: an absent `_side` still opens the chat", () => {
+    const s = sideSplit({ ...file([udf, gatedClaude], "no"), conditionsPending: false });
+    expect(names(s.all)).toEqual(["claude", "udf"]);
+    expect(s.defaultSide).toBe("claude");
+  });
+
+  it("can be named by `_side` like any companion", () => {
+    const s = sideSplit({ ...file([gatedClaude, udf], "no"), conditionsPending: false });
+    expect(openedAt("?_side=udf", s)).toBe("udf");
+    // And spelled out in the URL, since it is not the default.
+    expect(sideParam("udf", s.defaultSide)).toBe("udf");
+  });
+});
+
+describe("nodePaneAuto (NV-4)", () => {
+  const base = { splitCapable: true, urlNamedSide: false, ready: ["claude", "udf"], shut: false };
+
+  it("opens the node pane on a node file whose URL said nothing", () => {
+    expect(nodePaneAuto(base)).toBe(true);
+  });
+
+  it("never where the gate has not said yes — Canvases off, not a node, still pending", () => {
+    expect(nodePaneAuto({ ...base, ready: ["claude"] })).toBe(false);
+    expect(nodePaneAuto({ ...base, ready: [] })).toBe(false);
+  });
+
+  it("never over the URL's own word, nor once the reader shut the pane", () => {
+    expect(nodePaneAuto({ ...base, urlNamedSide: true })).toBe(false);
+    expect(nodePaneAuto({ ...base, shut: true })).toBe(false);
+  });
+
+  it("never on a surface that does not split", () => {
+    expect(nodePaneAuto({ ...base, splitCapable: false })).toBe(false);
+  });
+});
+
+describe("urlNamesSide", () => {
+  it("is any `_side`, `off` included, or a legacy companion `_mode`", () => {
+    expect(urlNamesSide("?_side=claude")).toBe(true);
+    expect(urlNamesSide("?_side=off")).toBe(true);
+    expect(urlNamesSide("?_side=udf")).toBe(true);
+    expect(urlNamesSide("?_mode=claude")).toBe(true);
+    expect(urlNamesSide("?_mode=udf")).toBe(true);
+  });
+  it("is not silence, an empty `_side`, or a content `_mode`", () => {
+    expect(urlNamesSide("")).toBe(false);
+    expect(urlNamesSide("?_side=")).toBe(false);
+    expect(urlNamesSide("?_mode=code&session_id=x")).toBe(false);
+  });
+});
+
+describe("nodeViewShutAfter", () => {
+  it("closing the column on the node view shuts it; opening it unshuts", () => {
+    expect(nodeViewShutAfter("udf", null)).toBe(true);
+    expect(nodeViewShutAfter(null, "udf")).toBe(false);
+    expect(nodeViewShutAfter("claude", "udf")).toBe(false);
+  });
+  it("anything else leaves the memory alone", () => {
+    expect(nodeViewShutAfter("claude", null)).toBe(undefined);
+    expect(nodeViewShutAfter("udf", "claude")).toBe(undefined);
+    expect(nodeViewShutAfter(null, "git")).toBe(undefined);
   });
 });

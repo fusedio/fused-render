@@ -111,6 +111,8 @@
 // prevent, arrived at from the other direction.
 import type { TemplateEntry } from "@platform/lib/api";
 import {
+  NODE_MODE,
+  OFFERED_ONLY_SIDEBAR_MODES,
   SIDEBAR_MODES,
   defaultSidebarMode,
   isSidebarMode,
@@ -272,18 +274,35 @@ export interface SideSplit {
 // registry binding one of its own into this half. It has no canned reason and no
 // fixed rank, so it keeps its place at the end, which is where orderSidebarModes
 // puts it too.
-function sidebarMenu(all: TemplateEntry[], bound: TemplateEntry[]): SideEntry[] {
-  const menu: SideEntry[] = (SIDEBAR_MODES as readonly string[]).map(
-    (mode) =>
-      all.find((e) => e.mode === mode) ?? {
+//
+// An OFFERED-ONLY companion (mode-visibility `OFFERED_ONLY_SIDEBAR_MODES`, the
+// node view) gets no placeholder: it is drawn only once it is really on offer,
+// and not while its gate is still out either (`shown`, from `sideSplit`) — a
+// spinner row on every `.py` for the length of a probe that says no on all
+// but a few of them would be the very change its rule exists to avoid.
+function sidebarMenu(
+  all: TemplateEntry[],
+  bound: TemplateEntry[],
+  shown: (e: TemplateEntry) => boolean = () => true,
+): SideEntry[] {
+  const menu: SideEntry[] = [];
+  for (const mode of SIDEBAR_MODES as readonly string[]) {
+    const real = all.find((e) => e.mode === mode);
+    if (OFFERED_ONLY_SIDEBAR_MODES.has(mode)) {
+      if (real && shown(real)) menu.push(real);
+      continue;
+    }
+    menu.push(
+      real ?? {
         mode,
         // A placeholder is a row, never a template: no path, so no URL can be
         // built from it even by accident.
         path: null,
         icon: bound.find((e) => e.mode === mode)?.icon ?? null,
         disabledReason: unavailableReason(mode),
-      }
-  );
+      },
+    );
+  }
   for (const e of all) if (!isSidebarMode(e.mode)) menu.push(e);
   return menu;
 }
@@ -318,7 +337,7 @@ export function sideSplit(i: SideSplitInput): SideSplit {
   // DISPLACED when the leader's verdict allowed it.
   const leader = all[0];
   return {
-    menu: sidebarMenu(all, i.bound ?? []),
+    menu: sidebarMenu(all, i.bound ?? [], (e) => !unresolved(e)),
     all,
     settled,
     ready: splittable ? all.filter((e) => !unresolved(e)).map((e) => e.mode) : [],
@@ -612,4 +631,53 @@ export function reconcileSideSearch(
   if (want !== undefined) out = writeQueryParam(out, "_side", want);
   if (stale) out = writeQueryParam(out, "_mode", null);
   return out;
+}
+
+// THE NODE PANE OPENS BY ITSELF (SPEC §53.3 NV-4). A node file of a cloned
+// canvas (the `udf` gate passed) whose URL names no `_side` opens the node
+// view in the column, over whatever an absent `_side` would otherwise open —
+// the chat, the remembered tab, or nothing at all under the session's hidden
+// flag. That last one is deliberate: the hidden flag is about the column in
+// general, and the node pane has a memory of its own, `node_view_shut`
+// (platform/lib/node-view-shut), set when the reader closes THIS pane and held
+// for every node file until it is opened again.
+//
+// Never:
+//   * on a surface that does not split (a layout pane, an embed, a folder);
+//   * where the URL named a companion or `off` — an explicit `_side` always
+//     wins (`?_side=claude` from a task's door, a carried-in link) — or a
+//     legacy `_mode` companion did, or the reader has already picked or closed
+//     something on this file (`urlNamedSide`, kept by the caller);
+//   * before the gate has answered YES (`ready`, which also waits out THIS
+//     file's pending verdicts): with Canvases off, or on any file that is not
+//     a node, `udf` never becomes ready, and nothing differs from before.
+export function nodePaneAuto(i: {
+  splitCapable: boolean;
+  urlNamedSide: boolean;
+  ready: readonly string[];
+  shut: boolean;
+}): boolean {
+  return i.splitCapable && !i.urlNamedSide && !i.shut && i.ready.includes(NODE_MODE);
+}
+
+// Whether the URL a file view MOUNTED on already said something about the
+// column: any `_side` (a companion or `off`), or a legacy `_mode` naming a
+// companion (`parseSide`'s second branch). Either is the reader's own word and
+// beats the node pane's auto-open.
+export function urlNamesSide(search: string): boolean {
+  const params = new URLSearchParams(search);
+  const raw = params.get("_side");
+  if (raw !== null && raw !== "") return true;
+  const legacy = params.get("_mode");
+  return legacy !== null && isSidebarMode(legacy);
+}
+
+// What closing or opening the column does to the node pane's memory: closing
+// it while it shows the node view shuts it for every node file; opening the
+// node view (a tab pick, the toggle, a deep link's click) opens it again.
+// `undefined` = no change.
+export function nodeViewShutAfter(activeSide: string | null, next: string | null): boolean | undefined {
+  if (next === NODE_MODE) return false;
+  if (next === null && activeSide === NODE_MODE) return true;
+  return undefined;
 }

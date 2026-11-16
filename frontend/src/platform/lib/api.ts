@@ -2239,6 +2239,9 @@ export interface UiLayoutDoc {
   /** The chat text zoom, 1 = 100 % (platform/lib/chat-zoom.ts): one factor for
    *  every chat, always one of `CHAT_TEXT_SCALES` (ui-layout.ts). */
   chatTextScale?: number;
+  /** The canvas node view's pane was shut by the user (SPEC §53.3 NV-4):
+   *  a node file no longer opens it by itself until it is opened again. */
+  node_view_shut?: boolean;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {

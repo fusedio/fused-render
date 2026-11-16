@@ -54,6 +54,7 @@ import { dismissNotification, dismissPopup, notify } from "@platform/lib/notific
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
+  NODE_MODE,
   isModePending,
   isSidebarMode,
   partitionModes,
@@ -79,8 +80,13 @@ import {
   sideToggleTarget,
   reconcileSideSearch,
   sideReopenedByUrl,
+  nodePaneAuto,
+  nodeViewShutAfter,
+  urlNamesSide,
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
+import { getNodeViewShut, setNodeViewShut } from "@platform/lib/node-view-shut";
+import { NativeView } from "@platform/ui/NativeView";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
@@ -868,6 +874,30 @@ const FRAME_SWAP_TIMEOUT_MS = 4000;
 const annotateTargetFrame = (): HTMLIFrameElement | null =>
   document.querySelector<HTMLIFrameElement>("iframe[data-fused-annotate-target]");
 
+// A NATIVE content mode's box in the held-frame swap: what a frame's `load`
+// is to an iframe, its mount is to this — the view draws its own loading
+// state, so there is nothing to wait for before showing it.
+function NativePane({
+  className,
+  onReady,
+  children,
+}: {
+  className: string;
+  onReady: () => void;
+  children: ReactNode;
+}) {
+  const ready = useRef(onReady);
+  ready.current = onReady;
+  useEffect(() => {
+    ready.current();
+  }, []);
+  return (
+    <div className={className + " preview-native"}>
+      {children}
+    </div>
+  );
+}
+
 // THIS FILE ONCE HOSTED NO SNAPSHOT INDICATOR OF ITS OWN — the reasoning was
 // that a content pane is the ordinary template rendering ordinary bytes, the
 // code editor looks exactly like the code editor, with no room to say "these
@@ -1102,7 +1132,23 @@ function TemplatePreview({
   // than reconciled: a verdict that denies the open companion cannot leave this
   // paint framing it, because `activeSide` is recomputed from the lists every
   // render and an unhonourable request falls to the default (lib/preview-side).
-  const activeSide = resolveSide(sideReq, split, getSideTab());
+  // THE NODE PANE (SPEC §53.3 NV-4, lib/preview-side `nodePaneAuto`): a node
+  // file of a cloned canvas whose URL said nothing about the column opens it
+  // on the node view, unless the reader shut that pane (`node_view_shut`).
+  // `urlNamedSide` is the URL's word at mount, and any pick or close the
+  // reader makes here after (`applySide`) — either one wins over the auto-open.
+  const [urlNamedSide, setUrlNamedSide] = useState<boolean>(() => urlNamesSide(location.search));
+  const nodeAuto = nodePaneAuto({
+    splitCapable,
+    urlNamedSide,
+    ready: split.ready,
+    shut: getNodeViewShut(),
+  });
+  const activeSide = resolveSide(
+    nodeAuto ? { open: true, mode: NODE_MODE } : sideReq,
+    split,
+    getSideTab(),
+  );
   // THE COLUMN SLIDES (platform/lib/pane-presence): held mounted through its
   // exit, still showing the companion it had, like the app page's pane.
   const heldSide = useRef(activeSide);
@@ -1282,6 +1328,12 @@ function TemplatePreview({
   // lands on a fallback, and recording that would overwrite the real pick.
   const applySide = (next: string | null, tab?: string) => {
     setSideHidden(next === null);
+    // The node pane's own memory (NV-4): closing it shuts it for every node
+    // file, opening it opens it again. Either way the reader has spoken on
+    // this file, so the auto-open stands down for the rest of this mount.
+    const shut = nodeViewShutAfter(activeSide, next);
+    if (shut !== undefined) setNodeViewShut(shut);
+    setUrlNamedSide(true);
     if (tab) setSideTab(tab);
     // A user click is always real, URL-worthy state now, whichever way it
     // went — the flag-only closed state `sideFromHiddenFlag` guards against
@@ -1571,7 +1623,9 @@ function TemplatePreview({
   // strip lives on for the recents store, lib/session-params.)
   // The tab on screen came only from the remembered store: the reconcile must not
   // write it (see `sideFromMemory`). Recomputed each render, so it is a dep.
-  const activeFromMemory = sideFromMemory(sideReq, activeSide, getSideTab());
+  // …and the node pane's auto-open is not written either: it is this file's
+  // own answer to a silent URL, as the default companion is.
+  const activeFromMemory = sideFromMemory(sideReq, activeSide, getSideTab()) || nodeAuto;
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {
@@ -1880,7 +1934,9 @@ function TemplatePreview({
   const sideSrcFor = (m: string): string | null => {
     const t = sidebarModes.find((e) => e.mode === m);
     if (!t || t.path === null) return null;
-    if (m === CHAT_MODE) return "";
+    // A native companion has no page: any non-null answer means its gate
+    // has resolved and the column may mount it.
+    if (m === CHAT_MODE || m === NODE_MODE) return "";
     const borrowed = isBorrowedMode(m);
     const target = borrowed ? parentDir : fsPath;
     return (
@@ -2335,6 +2391,23 @@ function TemplatePreview({
              re-created by a switch away and back within the swap window. */}
             <div className="preview-frames">
             {frames.map((m) => {
+              // THE NODE VIEW AS THE CONTENT PANE (SPEC §53.3 NV-3: the mode on
+              // its own, and the layout pane's — an embed document is this same
+              // content pane). Native: drawn by apps/canvases through the
+              // shell's registry, never a frame of /render. It paints its own
+              // loading state, so it takes over from a held frame at once.
+              if (m === NODE_MODE) return (
+                <NativePane
+                  key={m}
+                  className={"preview-frame" + (m === shown ? " is-shown" : "")}
+                  onReady={() => {
+                    loadedFrames.current.add(m);
+                    if (m === activeMode) setShown(m);
+                  }}
+                >
+                  <NativeView mode={NODE_MODE} path={fsPath} placement="content" />
+                </NativePane>
+              );
               // THE CONTENT PANE'S CHAT (`_mode=claude` as the main body): the
               // FULL split variant, `chatOnly` false, because the chat's own
               // left pane IS this target's preview and that is the whole point
@@ -2597,6 +2670,11 @@ function TemplatePreview({
                 {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
                 {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
               />
+            }
+            nativeView={
+              shownSide === NODE_MODE ? (
+                <NativeView mode={NODE_MODE} path={fsPath} placement="side" />
+              ) : undefined
             }
             onSelect={(m) => setSide(m, m ?? undefined)}
             onClose={() => setSide(null)}

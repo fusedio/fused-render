@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { TemplateEntry } from "@platform/lib/api";
 import {
+  OFFERED_ONLY_SIDEBAR_MODES,
   SIDEBAR_MODES,
   unavailableReason,
   visibleModes,
@@ -81,6 +82,8 @@ describe("partitionModes", () => {
   it("agrees with isSidebarMode", () => {
     expect(isSidebarMode("claude")).toBe(true);
     expect(isSidebarMode("git")).toBe(true);
+    // The canvas node view (SPEC §53.3 NV-3) pairs with the content mode too.
+    expect(isSidebarMode("udf")).toBe(true);
     // MCP is a dialog off the bar's kebab now, not a companion.
     expect(isSidebarMode("mcp")).toBe(false);
     expect(isSidebarMode("claude_split")).toBe(false);
@@ -91,8 +94,11 @@ describe("partitionModes", () => {
   // template list can contain it, and borrowed from the parent folder instead.
   // `mcp` used to follow it here and is a dialog now (McpDialog); an unknown
   // mode in the input lands after the ranked ones.
-  it("ranks the companions chat, working tree", () => {
-    expect(SIDEBAR_MODES).toEqual(["claude", "git"]);
+  // `udf` (the canvas node view, SPEC §53.3 NV-3) is ranked last: an absent
+  // `_side` still opens the chat; a node file opens the node pane by its own
+  // rule (preview-side `nodePaneAuto`).
+  it("ranks the companions chat, working tree, node view", () => {
+    expect(SIDEBAR_MODES).toEqual(["claude", "git", "udf"]);
     expect(names(orderSidebarModes([t("mcp"), git, claude]))).toEqual([
       "claude",
       "git",
@@ -264,5 +270,11 @@ describe("effectiveActive", () => {
     const visible = visibleModes([listing, split], { claude_split: false });
     expect(visible.length).toBe(1);
     expect(effectiveActive(visible, "claude_split")?.mode).toBe(visible[0].mode);
+  });
+});
+
+describe("offered-only companions", () => {
+  it("is the node view alone: claude and git keep their disabled rows", () => {
+    expect([...OFFERED_ONLY_SIDEBAR_MODES]).toEqual(["udf"]);
   });
 });
