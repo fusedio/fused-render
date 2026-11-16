@@ -76,7 +76,11 @@ import {
   type RowModel,
 } from "@apps/explorer/lib/home-search";
 import { renderHighlight, renderHighlightPath } from "@apps/explorer/listing/bits";
-import { RemoteHitsGroup, useRemoteHits } from "@apps/explorer/RemoteHitsGroup";
+import {
+  RemoteHitsGroup,
+  remoteHighlightTerm,
+  useRemoteHits,
+} from "@apps/explorer/RemoteHitsGroup";
 import { canonicalRemoteUrl } from "@platform/lib/remote";
 import { useCanvasesFlag } from "@platform/lib/canvases-flag";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -150,6 +154,8 @@ function warnSlowSearchFailed(query: string, elapsedMs: number, error: Error): v
 }
 
 type LaunchTab = "recents" | "sessions" | "repos";
+
+const NO_LOCAL_HITS: HomeHit[] = [];
 
 // The row the user explicitly highlighted, by IDENTITY, not position: the list
 // has two halves (local rows, "Fused assets" rows) answering two independent
@@ -488,10 +494,13 @@ export function FilesSearch({
   // and a whitespace-derived pattern is at least as indiscriminate as a bare
   // substring search (see MIN_QUERY_CHARS's own doc comment, lib/home-search.ts).
   //
-  // A pasted S3 address (`s3://…` or an accepted S3 HTTPS link) is an ADDRESS,
-  // not a query, and is not `searchable` either: no local or bucket request,
-  // no list, no AI row. Enter opens it (`submit`) and the note says so.
-  // Flag OFF: an `s3://…` string is an ordinary local query, exactly as before
+  // A typed/pasted S3 address (`s3://…` or an accepted S3 HTTPS link) is an
+  // ADDRESS, not a local file name: it is not `searchable` (no local request,
+  // no AI row), but the BUCKET search still runs on it — the server reads an
+  // address being typed (`s3://fused` → buckets + keys matching "fused",
+  // `s3://fused-asset/cen` → "cen" inside that bucket). A bare Enter opens the
+  // address itself (`submit`) and the note says so; an arrowed-to bucket row
+  // opens that row. Flag OFF: an `s3://…` string is an ordinary local query, exactly as before
   // the remote integration existed.
   const canvasesOn = useCanvasesFlag();
   const remoteAddr = canvasesOn ? canonicalRemoteUrl(q) : null;
@@ -502,7 +511,12 @@ export function FilesSearch({
   // with the RAW query, like the local request: the server ranks the bucket
   // index with the same engine (remote_index.rank → search_ranked), so a
   // trailing space means the same thing there (A1, above).
-  const remote = useRemoteHits(q, searchable, ranked, canvasesOn);
+  const remote = useRemoteHits(
+    q,
+    trimmedQ.length >= MIN_QUERY_CHARS,
+    ranked,
+    canvasesOn,
+  );
 
   // -- a query that is really an address --------------------------------------
   //
@@ -850,7 +864,19 @@ export function FilesSearch({
   // which is why the live-walk listing box, which narrows against no server
   // answer to be a subset OF, is the one place that still uses it.
   const behind = answer !== null && answer.query !== q;
-  const hits = behind && answer ? narrowAnswer(answer, q) : (answer?.hits ?? []);
+  // An S3 address asks the local index nothing, so whatever `answer` holds is
+  // some earlier query's: none of it belongs under the address.
+  const hits =
+    remoteAddr !== null
+      ? NO_LOCAL_HITS
+      : behind && answer
+        ? narrowAnswer(answer, q)
+        : (answer?.hits ?? []);
+  // Whether the result list renders at all: a local search, a resolved
+  // path's "Open" row, or bucket rows on their own (an S3 address, which runs
+  // no local search). Every list-only affordance — aria-expanded, the active
+  // descendant, the arrow keys — keys off this one value.
+  const listShown = searchable || showOpenRow || remote.hits.length > 0;
 
   // The staleness deadline: past STALE_CLEAR_MS of a request outliving the
   // query it was asked for, "a little behind" stops being true — this used to
@@ -1224,8 +1250,10 @@ export function FilesSearch({
   // effect above as the query is typed, so by the time Enter is pressed the
   // row model already reflects it — `activeRow`/`submitRow` do the rest.
   const submit = () => {
-    // A pasted S3 address opens directly — no row, no AI, no local open.
-    if (remoteAddr !== null) {
+    // An S3 address with no row explicitly picked opens the address itself —
+    // bucket rows are never the default target. A picked bucket row (arrowed
+    // to) falls through and opens that row.
+    if (remoteAddr !== null && highlight === null) {
       navigate(remoteAddr);
       return;
     }
@@ -1254,10 +1282,10 @@ export function FilesSearch({
           placeholder={compact ? "Search files…" : "Search your files — or paste a path like ~/Downloads"}
           aria-label="Search your files"
           role="combobox"
-          aria-expanded={active && !showingAi && (searchable || showOpenRow)}
+          aria-expanded={active && !showingAi && listShown}
           aria-controls="fh-result-list"
           aria-activedescendant={
-            active && !showingAi && (searchable || showOpenRow) && current !== null
+            active && !showingAi && listShown && current !== null
               ? "fh-row-" + current
               : undefined
           }
@@ -1267,7 +1295,7 @@ export function FilesSearch({
           onChange={(e) => edit(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-              if (!active || showingAi || (!searchable && !showOpenRow)) return;
+              if (!active || showingAi || !listShown) return;
               e.preventDefault();
               // Step from `current` (the RESOLVED row, `activeRow` above), not
               // the raw `highlight` state: the top file row can be active with
@@ -1507,7 +1535,7 @@ export function FilesSearch({
               went out, `hits` is stale leftover from a longer query, and
               offering the AI row here would arm a model call on "a". The note
               above already says why the list is empty. */}
-          {(searchable || showOpenRow) && (
+          {listShown && (
             <ul
               className={"fh-results" + (behind ? " is-stale" : "")}
               id="fh-result-list"
@@ -1542,7 +1570,7 @@ export function FilesSearch({
               })}
               <RemoteHitsGroup
                 remote={remote}
-                query={trimmedQ}
+                query={remoteHighlightTerm(trimmedQ)}
                 rowOffset={remoteOffset}
                 current={current}
                 onHover={pick}

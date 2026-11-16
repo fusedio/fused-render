@@ -36,6 +36,19 @@ const REMOTE_BUCKET_ADDR = "s3://fused-asset";
 const HEAD_ID = "fh-remote-head";
 const NO_HITS: RemoteRankHit[] = [];
 
+/**
+ * The part of a typed S3 address the server actually matched keys against,
+ * for highlighting: `s3://fused` → "fused", `s3://fused-asset/cen` → "cen".
+ * Any other query is its own term.
+ */
+export function remoteHighlightTerm(query: string): string {
+  const m = /^s3:\/\/?(.*)$/i.exec(query);
+  if (!m) return query;
+  const rest = m[1];
+  const slash = rest.indexOf("/");
+  return slash < 0 ? rest : rest.slice(slash + 1);
+}
+
 export interface RemoteHits {
   /** Every hit fetched for the last answered query. */
   hits: RemoteRankHit[];

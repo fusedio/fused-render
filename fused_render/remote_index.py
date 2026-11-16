@@ -290,6 +290,17 @@ def rank(q: str, limit: int, ranked: bool, token=None) -> dict:
     # walks into it (`fused-asset/census`) searches the rest as a key.
     text = (q or "").strip()
     low = text.lower()
+    # An address being typed is a search too: `s3://`, or any start of it
+    # (`s3:`, `s3:/`), lists what is served, and `s3://<text>` searches
+    # `<text>` exactly as if the scheme had not been typed.
+    scheme = "s3://"
+    if low.startswith(scheme):
+        text = text[len(scheme):]
+        low = text.lower()
+        if not low:
+            low = text = BUCKET
+    elif len(low) >= 3 and scheme.startswith(low):
+        low = text = BUCKET
     bucket_hit = False
     if low == BUCKET or low.startswith(BUCKET + "/"):
         bucket_hit = low.rstrip("/") == BUCKET
