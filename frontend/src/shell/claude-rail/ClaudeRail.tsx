@@ -102,6 +102,12 @@
 // the new task is filed under the node (`task.canvas.file`) and shows in the
 // node's Recent list once the pane opens.
 //
+// AN OPEN FILE SORTS ITS FOLDER'S RAIL THE SAME WAY (owner, 2026-11-16: "let's
+// do the same with file explorer, when we open a file"): the explorer's file
+// page hands its folder with the file (`place.dir`), and the rail is the
+// folder page's own list — the file's chats first, the hairline, the folder's
+// and its other files' chats faded. The + still makes a task on the file.
+//
 // THE + WAITS WHERE THE PANE WAITS: the open pane has no chat to start one
 // from until the clone exists ("Loading editor…") or while the selected
 // node's file is still being written ("Saving <file>…"), so the + is held
@@ -300,6 +306,7 @@ import {
   placeRoot,
   queuedEditHref,
   railRows,
+  widePlace,
   railScope,
   railShown,
   readMark,
@@ -730,6 +737,9 @@ export function ClaudeRail({
   // `sessionless`) — every page's rail, so it is set here, not by the page.
   const seatPlace = useMemo((): RailPlace => ({ ...place, sessionless: true }), [place]);
   const scope = placeName(place);
+  // What the LIST is of, for its label: an open file's rail lists its folder
+  // (claude-rail-lib `railRows`), as a selected node's lists its canvas.
+  const listScope = place.kind === "file" && place.dir ? placeName(widePlace(place)) : scope;
   // THE CAPTION'S WORDS ARE THE LISTING'S, not the pulse's: the pulse carries
   // status and a title, but the list row's caption is built from the full row
   // (recap, last reply, last message, the draft) — and so is the List's ORDER
@@ -3294,7 +3304,7 @@ export function ClaudeRail({
             ref={listRef}
             className="claude-rail-chats"
             role="list"
-            aria-label={`Chats on ${node ? name : scope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
+            aria-label={`Chats on ${node ? name : listScope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
             // AT MOST TEN RINGS TALL, then it scrolls (claude-rail-lib
             // `LIST_ROWS_MAX`, claude-rail.css `.is-scroll`); the fades at
             // its edges say there is more above / below (`listEdges`).

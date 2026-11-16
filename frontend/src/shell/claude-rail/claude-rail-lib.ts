@@ -53,7 +53,8 @@ export interface RailRow {
   pulse: TaskPulseTask;
   row: Task | null;
   /** On a canvas with a node selected: a chat of the canvas that is not the
-   *  node's — drawn faded, under the node's own (`railRows`). */
+   *  node's — drawn faded, under the node's own (`railRows`). The same on a
+   *  file's rail: a chat of the file's folder that is not the file's. */
   off?: boolean;
 }
 
@@ -86,6 +87,10 @@ export type RailPlace =
       kind: "file";
       /** The file's full path. */
       file: string;
+      /** The folder the file was opened in (the explorer's file page): the
+       *  folder's other chats ride the rail too, faded under the file's own
+       *  (`railRows`). Absent: the file's chats alone. */
+      dir?: string | null;
       sessionless?: boolean;
     };
 
@@ -458,6 +463,15 @@ export function placeName(place: RailPlace): string {
   return path.slice(path.lastIndexOf("/") + 1) || path;
 }
 
+/** The place a narrowed rail lists in full (`railRows`): the canvas without
+ *  its selected node, the folder an open file sits in. Any other place is
+ *  its own. */
+export function widePlace(place: RailPlace): RailPlace {
+  if (place.kind === "canvas") return { ...place, file: null };
+  if (place.kind === "file" && place.dir) return { kind: "folder", dir: place.dir, sessionless: place.sessionless };
+  return place;
+}
+
 /**
  * The rail's seats, top to bottom.
  *
@@ -475,15 +489,26 @@ export function railRows(
   // and then there will be separator then the other tasks [faded]"): the
   // seats are the whole canvas's, the node's first (each group in the List's
   // order), the rest marked `off`.
-  const nodeOf = place.kind === "canvas" && place.file ? place : null;
-  const at: RailPlace = nodeOf ? { ...nodeOf, file: null } : place;
+  // AN OPEN FILE SORTS ITS FOLDER'S LIST THE SAME WAY (owner, 2026-11-16:
+  // "let's do the same with file explorer, when we open a file"): the seats
+  // are the folder's (the folder page's own rail), the file's first, the
+  // rest marked `off`.
+  const narrow =
+    (place.kind === "canvas" && place.file) || (place.kind === "file" && place.dir) ? place : null;
+  const at = narrow ? widePlace(narrow) : place;
   const pulseKeys = new Set(rows.map((t) => t.key));
   // Drafts the pulse does not carry (header): the listing's own draft rows
   // on this canvas stand in as their own pulse row — a `Task` is a superset.
   const drafts: TaskPulseTask[] = at.sessionless
-    ? [...listing.values()].filter((r) => !pulseKeys.has(r.key) && isDraftTask(r) && onRail(r, at))
+    ? [...listing.values()].filter(
+        (r) => !pulseKeys.has(r.key) && isDraftTask(r) && (onRail(r, at) || (narrow !== null && onRail(r, narrow))),
+      )
     : [];
-  const mine = [...rows.filter((t) => onRail(t, at)), ...drafts];
+  // The narrow place's own rows are in the wide one by construction (a node
+  // is on its canvas, a file under its folder) — and asked for by name all
+  // the same, so a file page handed a folder that is not the file's (a path
+  // spelled another way) still shows the file's chats.
+  const mine = [...rows.filter((t) => onRail(t, at) || (narrow !== null && onRail(t, narrow))), ...drafts];
   const byKey = new Map(mine.map((t) => [t.key, t]));
   const held = new Map<string, Task>();
   const ranked: Task[] = mine.map((t) => {
@@ -506,11 +531,11 @@ export function railRows(
       return pulse ? { pulse, row: held.get(row.key) ?? null } : null;
     })
     .filter((r): r is RailRow => r !== null);
-  if (!nodeOf) return seats;
+  if (!narrow) return seats;
   const ours: RailRow[] = [];
   const rest: RailRow[] = [];
   for (const s of seats) {
-    if (onRail(s.pulse, nodeOf)) ours.push(s);
+    if (onRail(s.pulse, narrow)) ours.push(s);
     else rest.push({ ...s, off: true });
   }
   return [...ours, ...rest];

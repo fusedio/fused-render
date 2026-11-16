@@ -1199,8 +1199,13 @@ function TemplatePreview({
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
   const sideSlot = usePreviewSideSlot();
-  // Where the rail stands while the column is shut (below): this file.
-  const railPlace = useMemo(() => ({ kind: "file" as const, file: fsPath }), [fsPath]);
+  // Where the rail stands while the column is shut (below): this file, in
+  // its folder — the folder's other chats ride under the file's own, faded
+  // (claude-rail-lib `railRows`; owner, 2026-11-16).
+  const railPlace = useMemo(
+    () => ({ kind: "file" as const, file: fsPath, dir: parentDir }),
+    [fsPath, parentDir],
+  );
   // THE RAIL IS CLAUDE'S: it stands only where the Claude companion is ready
   // to open (`sideTargets`, the settled list), and its door opens CLAUDE —
   // not the last companion the toggle would (a git column reopened from a
@@ -2559,7 +2564,9 @@ function TemplatePreview({
           the crumb bar's Show button moved to the column's own edge — exactly
           one opener on screen, SideChrome's rule), a + that opens the New
           task card on this file, and one ring per chat ON THIS FILE in the
-          List's order — what the shut column's Claude tab was showing. Its
+          List's order — what the shut column's Claude tab was showing — then
+          a hairline and the folder's other chats, faded (owner, 2026-11-16:
+          the canvas rail's node sort, for an open file). Its
           inner seam is the reopen drag the invisible SideReopenEdge used to
           carry (startSideReopenPull). Only where Claude is a ready companion
           (`railHere`): a file whose column holds git alone keeps the button
