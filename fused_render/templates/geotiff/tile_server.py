@@ -71,14 +71,8 @@ from platutil import venv_python  # noqa: E402
 
 
 def _version():
-    # The decoder and the range reader are imported by the daemon too, so an
-    # edit to either respawns it like an edit to this file does.
-    here = os.path.dirname(_me())
     try:
-        stamps = [os.path.getmtime(os.path.join(here, n))
-                  for n in ("tile_server.py", "_tiff_core.py",
-                            os.path.join("..", "shared", "remote_range.py"))]
-        return "|".join(str(t) for t in stamps) + "|" + _daemon_python()
+        return str(os.path.getmtime(_me())) + "|" + _daemon_python()
     except OSError:
         return "0"
 
@@ -142,25 +136,6 @@ def _alive(port, version):
         return False
 
 
-def _tell_origin(port, token):
-    """Point a reused daemon at the fused-render server that asked for it.
-    The daemon signs `s3://` reads through that server (`fused_s3`), and a
-    daemon outlives a server restart on another port — so every ensure()
-    says where the server is now, instead of the daemon trusting the address
-    it was started with."""
-    import urllib.parse
-    import urllib.request
-    origin = os.environ.get("FUSED_RENDER_ORIGIN") or ""
-    if not origin:
-        return
-    try:
-        urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/origin?t={urllib.parse.quote(token)}"
-            f"&o={urllib.parse.quote(origin)}", timeout=2).read()
-    except Exception:  # noqa: BLE001 - an old daemon without /origin: its env is used
-        pass
-
-
 def main(action: str = "ensure"):
     """runPython entrypoint: make sure the daemon is running, return {port}."""
     import subprocess
@@ -169,7 +144,6 @@ def main(action: str = "ensure"):
         with open(STATE) as f:
             st = json.load(f)
         if _alive(st.get("port"), version):
-            _tell_origin(st["port"], st.get("token", ""))
             return {"port": st["port"], "token": st.get("token"),
                     "reused": True, "version": version}
         # stale daemon (old version or dead) — ask it to quit, then respawn
@@ -278,23 +252,12 @@ def _serve():
         return lv
 
     def open_file(path):
-        remote = T.is_remote(path)
-        if not remote:
-            path = os.path.abspath(os.path.expanduser(path))
+        path = os.path.abspath(os.path.expanduser(path))
         with files_lock:
             f = files.get(path)
-            if f is not None and remote and f["buf"].changed:
-                # The object was replaced since it was opened: start over on
-                # the new version rather than mixing the two.
-                files.pop(path, None)
-                f = None
         if f is not None:
             return f
-        if remote:
-            buf = T.remote_range().RemoteBuffer(path)
-        else:
-            buf = path
-        buf, en, t0, next_off = T.parse_header(buf)
+        buf, en, t0, next_off = T.parse_header(path)
         meta = T.header_meta(path, buf, en, t0, next_off)
         levels = [_parse_level(buf, en, t0)]
         off, hops = next_off, 0
@@ -312,21 +275,10 @@ def _serve():
         levels.sort(key=lambda l: -l["W"])
         supported = all(l["comp"] in SUPPORTED_COMPS for l in levels)
         epsg = (meta.get("crs") or {}).get("epsg")
-        stream_error = None
-        if remote:
-            # The stretch reads the whole smallest level and a zoomed-out tile
-            # reads most of it: over the budget, streaming would be a slow
-            # download in disguise (a 3 GB file with no overviews).
-            small = levels[-1]
-            stream_error = (T.stream_refusal(T.level_bytes(small["counts"]))
-                            # read_window decodes it as float32 per band
-                            or T.decode_refusal(small["W"] * small["H"] * small["spp"] * 4))
         f = {"path": path, "buf": buf, "en": en, "levels": levels,
              "meta": meta, "epsg": epsg,
              "transform": meta.get("transform"), "bounds": meta.get("bounds"),
-             "supported": bool(supported and epsg and meta.get("transform")
-                               and not stream_error),
-             "remote": remote, "stream_error": stream_error,
+             "supported": bool(supported and epsg and meta.get("transform")),
              "lock": threading.Lock(),
              "chunks": {}, "chunk_order": [], "stretch": {}}
         with files_lock:
@@ -402,43 +354,6 @@ def _serve():
             return (lv["H"] + lv["th"] - 1) // lv["th"]
         return (lv["H"] + lv["rps"] - 1) // lv["rps"]
 
-    def window_chunks(lv, x0, y0, x1, y1, band_idx):
-        """The chunk indices `read_window` will decode for this window (the
-        same arithmetic as its loops)."""
-        W, H, planar = lv["W"], lv["H"], lv["planar"]
-        if lv["tiled"]:
-            tw, th = lv["tw"], lv["th"]
-            across = (W + tw - 1) // tw
-            per_plane = across * ((H + th - 1) // th)
-            return [(bk * per_plane if planar == 2 else 0) + ty * across + tx
-                    for ty in range(y0 // th, (y1 - 1) // th + 1)
-                    for tx in range(x0 // tw, (x1 - 1) // tw + 1)
-                    for bk in (band_idx if planar == 2 else [0])]
-        rps, nsy = lv["rps"], _nchunks_y(lv)
-        return [(bk * nsy if planar == 2 else 0) + si
-                for si in range(y0 // rps, (y1 - 1) // rps + 1)
-                for bk in (band_idx if planar == 2 else [0])]
-
-    def prefetch(f, li, cis):
-        """Fetch every not-yet-decoded chunk of `cis` in one coalesced,
-        concurrent `read_many` and decode them, so a remote window costs a
-        few ranged GETs instead of one per tile or strip (a 1-row-per-strip
-        BigTIFF would otherwise be hundreds per map tile)."""
-        lv = f["levels"][li]
-        with f["lock"]:
-            missing = sorted({ci for ci in cis if (li, ci) not in f["chunks"]})
-        # The open-time check covers the smallest level; this one covers the
-        # window actually asked for (a max-zoom tile over full-width
-        # uncompressed strips can be far bigger than any overview).
-        refusal = T.stream_refusal(sum(lv["counts"][ci] for ci in missing))
-        if refusal:
-            raise T.TooLargeToStream(refusal)
-        if len(missing) < 2:
-            return
-        ranges = [(lv["offs"][ci], lv["offs"][ci] + lv["counts"][ci]) for ci in missing]
-        for ci, raw in zip(missing, f["buf"].read_many(ranges, max_transfer=T.STREAM_BUDGET)):
-            _decode_chunk(f, li, ci, raw)
-
     def read_window(f, li, x0, y0, x1, y1, band_idx):
         """(len(band_idx), y1-y0, x1-x0) float32 from level li, NaN nodata."""
         lv = f["levels"][li]
@@ -449,8 +364,6 @@ def _serve():
         if x1 <= x0 or y1 <= y0:
             return out
         planar = lv["planar"]
-        if f.get("remote"):
-            prefetch(f, li, window_chunks(lv, x0, y0, x1, y1, band_idx))
         if lv["tiled"]:
             tw, th = lv["tw"], lv["th"]
             across = (W + tw - 1) // tw
@@ -619,19 +532,7 @@ def _serve():
         # user-defined CRS, exotic compression) fall back to rasterio below.
         try:
             return _tile_native(q, z, x, y)
-        except Exception as e:
-            if T.is_remote(q1(q, "file") or ""):
-                # No rasterio fallback for a streamed file: /meta already
-                # said whether the native engine can draw it. Say WHY a tile
-                # failed: a network or changed-object error is transient
-                # (502; the next request reopens a changed object), a window
-                # over the budget is 413, and only an engine gap is "no tile".
-                RR = T.remote_range()
-                if isinstance(e, T.TooLargeToStream):
-                    return 413, str(e).encode(), "text/plain"
-                if isinstance(e, (RR.RemoteError, OSError)):
-                    return 502, str(e).encode(), "text/plain"
-                return 404, b"unsupported", "text/plain"
+        except Exception:
             f = os.path.abspath(os.path.expanduser(q1(q, "file") or ""))
             if not os.path.exists(f):
                 return 404, b"unsupported", "text/plain"
@@ -718,8 +619,7 @@ def _serve():
         # sidecar files
         files = [f["path"]]
         base = f["path"].rsplit(".", 1)[0]
-        for ext in (() if f.get("remote") else
-                    (".aux.xml", ".ovr", ".msk", ".tfw", ".wld", ".prj")):
+        for ext in (".aux.xml", ".ovr", ".msk", ".tfw", ".wld", ".prj"):
             for cand in (f["path"] + ext, base + ext):
                 if os.path.isfile(cand) and cand not in files:
                     files.append(cand)
@@ -765,9 +665,6 @@ def _serve():
         f = open_file(q1(q, "file"))
         m = dict(f["meta"])
         m["supported"] = f["supported"]
-        if f.get("remote"):
-            m["remote"] = True
-            m["stream_error"] = f["stream_error"]
         m["crs_name"] = T._crs_name(m.get("crs"))
         import _raster_common as C
         m["lonlat_bounds"] = C.lonlat_bounds(m.get("bounds"), f["epsg"])
@@ -791,8 +688,6 @@ def _serve():
             m = _deep_meta(f, m)
         except Exception:
             pass
-        if f.get("remote"):
-            m["stream"] = f["buf"].stats()
         return 200, json.dumps(m, default=str).encode(), "application/json"
 
     def do_hist(q):
@@ -933,8 +828,6 @@ def _serve():
         return 200, R.encode_png(np.ascontiguousarray(rgba)), "image/png"
 
     def do_ltile(q, z, x, y):
-        if T.is_remote(q1(q, "file") or ""):
-            return 404, b"forced-level tiles are not streamed", "text/plain"
         file = os.path.abspath(os.path.expanduser(q1(q, "file")))
         # global stretch (sampled once, coarsest level) — a per-tile stretch
         # gives every tile its own contrast and the map shows seams
@@ -1009,13 +902,6 @@ def _serve():
                 if u.path == "/ping":
                     code, body, ct = 200, json.dumps(
                         {"ok": True, "version": VERSION}).encode(), "application/json"
-                elif u.path == "/origin":
-                    # ensure()'s word on where the fused-render server is now
-                    # (fused_s3 reads FUSED_RENDER_ORIGIN per call).
-                    o = q.get("o", [""])[0]
-                    if o.startswith("http://"):  # app.set_server_origin_env's shape
-                        os.environ["FUSED_RENDER_ORIGIN"] = o
-                    code, body, ct = 200, b"ok", "text/plain"
                 elif u.path == "/quit":
                     self._send(200, b"bye", "text/plain")
                     threading.Thread(target=srv.shutdown, daemon=True).start()

@@ -191,11 +191,6 @@ async function styleReady(){
   map.resize();
 }
 
-// An s3:// address (the explorer streams it, D1484): the daemon and
-// tiff_reader.py read it by HTTP ranges themselves, so the page only has to
-// keep it out of local-only paths (the folder browser).
-const isRemote = f => /^s3:\/\//i.test(f || '');
-
 // ---------------- daemon + state ----------------
 let daemon = null;       // {port}
 let meta = null;         // /meta payload for current file
@@ -695,18 +690,7 @@ async function loadFile(){
         tileMode = !!meta.supported;
       } catch (e) { meta = null; }
     }
-    // A streamed s3:// file the daemon will not stream (no overview small
-    // enough — a full view would read GBs): say so instead of handing it to
-    // the fallback engine, which would refuse the same read more slowly.
-    els.browse.style.display = isRemote(file) ? 'none' : '';
     syncControls();
-    if (meta && meta.stream_error){
-      status(meta.stream_error, true);
-      renderMeta();
-      loadedFile = file;
-      loadedQuery = renderQuery();
-      return;
-    }
     if (tileMode){
       setRasterTiles();
       fitToRaster();
