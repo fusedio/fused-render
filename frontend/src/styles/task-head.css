@@ -846,7 +846,9 @@
    title on hover, shouldn't occupy space after it"). It stands OVER the
    title's last 16px — pulled back by its own width and the seat's gap — so
    nothing after the title moves when it shows. The title's end fades out
-   under it (a mask, so it works on any head's background). Shown while the
+   under it (a mask, so it works on any head's background; the mask's opaque
+   stop is a palette ink, since only its alpha is read and the theme test
+   allows no colour literal here). Shown while the
    pointer is on the title half or the keyboard is on it; touch keeps it. */
 .task-head .task-side-peek-who.is-title .task-side-peek-rename {
   position: relative;
@@ -861,15 +863,15 @@
 }
 .task-head .task-side-peek-who.is-title:hover:has(.task-side-peek-rename) .task-side-peek-title,
 .task-head .task-side-peek-who.is-title:has(.task-side-peek-rename:focus-visible) .task-side-peek-title {
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent calc(100% - 16px));
-  mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent calc(100% - 16px));
+  -webkit-mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
+  mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
 }
 @media (hover: none) {
   .task-head .task-side-peek-who.is-title .task-side-peek-rename {
     pointer-events: auto;
   }
   .task-head .task-side-peek-who.is-title:has(.task-side-peek-rename) .task-side-peek-title {
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent calc(100% - 16px));
-    mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent calc(100% - 16px));
+    -webkit-mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
+    mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
   }
 }
