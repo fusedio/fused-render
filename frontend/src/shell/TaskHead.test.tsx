@@ -496,25 +496,30 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   // The where-tag's word: gone on every rung past 0 while the head is one
   // row; a stacked rail window has it back until row 1 itself is short.
   expect(css).toContain('.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where .place-tag-word');
-  expect(css).toContain('.task-head.is-stacked:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-where .place-tag-word');
+  expect(css).toContain('.task-head.is-stacked:is([data-fit="6"], [data-fit="7"]) .task-head-where .place-tag-word');
   const from = (n: number) =>
     `:is(${[1, 2, 3, 4, 5, 6, 7].filter((k) => k >= n).map((k) => `[data-fit="${k}"]`).join(", ")})`;
   // The chips give first, one at a time: the worktree pill, then the PR chip.
   expect(css).toContain(`.task-head${from(1)} .task-head-chips-host {`);
   expect(css).toContain(`.task-head${from(2)} .task-head-chips {`);
   const facts = ":is(.task-head-countslot, .task-head-timeslot)";
-  // A rail window, title still on row 1 and no room for it whole: the facts
-  // fold to nothing and come back under the pointer. With room, they stand.
-  const w3 = `.task-head.is-window:not(.is-stacked)${from(3)}`;
-  expect(css).toContain(`${w3} ${facts} {\n  width: 0;`);
-  expect(css).toContain(`${w3} ${facts} > .task-head-slot-a {`);
-  expect(css).toContain(`${w3}:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible))`);
+  // IN A RAIL WINDOW NOTHING MOVES (2026-11-16): the facts never fold there
+  // and no slot collapses — every seat holds its box at rest and under the
+  // pointer, so the where-tag and the title do not jump.
+  expect(css).not.toContain(`.task-head.is-window:not(.is-stacked)${from(3)} ${facts} {\n  width: 0;`);
+  expect(css).not.toContain(".task-head.is-window .task-head-kebab {\n  width: 0;");
   // A panel or a pane gives the time alone; the count stays.
   expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot {\n  width: 0;`);
-  // Short on width, the door is its ↗ alone.
-  expect(css).toContain(`.task-head${from(3)} .task-head-timeslot .task-head-open-word {`);
-  // A rail window's ⋮ waits for the pointer, and stays while its menu is open.
-  expect(css).toContain(".task-head.is-window .task-head-kebab {\n  width: 0;");
+  // Short on width, the door is its ↗ alone; a stacked rail window keeps the
+  // word until row 1 itself is short (5+), one rung before the where-tag's.
+  expect(css).toContain(`.task-head:not(.is-stacked)${from(3)} .task-head-timeslot .task-head-open-word,`);
+  expect(css).toContain(`.task-head.is-stacked${from(5)} .task-head-timeslot .task-head-open-word {`);
+  // A rail window's ⋮ waits for the pointer, and stays while its menu is
+  // open — invisible at rest, its seat held; the facts stand over that seat
+  // (a transform, no layout) and step back as it shows.
+  expect(css).toContain(".task-head.is-window .task-head-kebab {\n  opacity: 0;\n  pointer-events: none;");
+  expect(css).toContain(`.task-head.is-window:has(.task-head-kebab) ${facts} {`);
+  expect(css).toContain("transform: translateX(34px);");
   expect(css).toContain('[aria-expanded="true"]');
   expect(css).toContain(`.task-head${from(5)} .task-head-seats {`);
   expect(css).toContain(`.task-head${from(6)} .task-head-nav {`);
@@ -687,9 +692,13 @@ test("the stylesheet trades a slot's occupants on hover — the window's in a ra
   expect(css).toContain(`${trigger} .task-head-slot > .task-head-slot-b { opacity: 1;`);
   // At rest the control is invisible AND intangible.
   expect(css).toContain(".task-head-slot-b { display: inline-flex; align-items: center; opacity: 0; pointer-events: none; }");
-  // A slot with no fact holds no box at rest (Bugbot, #2285).
-  expect(css).toContain(
+  // A slot with no fact: a rail window holds its box like every other (the
+  // no-shift rule, 2026-11-16) — never collapsed; elsewhere its act stands.
+  expect(css).not.toContain(
     ".task-head.is-window .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) { width: 0;",
+  );
+  expect(css).toContain(
+    ".task-head:not(.is-window) .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) > .task-head-slot-b { opacity: 1;",
   );
   // IN A RAIL WINDOW THE ARCHIVE WAITS FOR THE HEAD ITSELF (2026-11-16): the
   // pointer elsewhere on the card (`.is-hot`, not `:hover`) keeps the number.

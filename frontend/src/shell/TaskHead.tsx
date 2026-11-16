@@ -306,8 +306,8 @@ export function TaskHead({
   );
   const isWindow = reveal === "window";
   // THE WHOLE WINDOW IS THE TRIGGER (Akshil, 2026-11-15): the b items show
-  // while the pointer is anywhere on the card, panel or pane the head tops —
-  // not only on the 44px line.
+  // while the pointer is anywhere on the card the head tops — not only on the
+  // 44px line — or the keyboard is inside it (2026-11-16).
   const [headEl, setHeadEl] = useState<HTMLElement | null>(null);
   const setHead = useCallback(
     (el: HTMLElement | null) => {
@@ -332,19 +332,50 @@ export function TaskHead({
       win = up && up !== document.body ? up : headEl.parentElement;
     }
     if (!win || typeof win.addEventListener !== "function") return;
-    const on = () => setHot(true);
+    // …OR WHILE THE CARD HAS THE KEYBOARD (Akshil, 2026-11-16: "show fav and
+    // open when card is in focus as well, not just mouse in that area"): a
+    // card the reader is typing in keeps its star, its door and its ⋮ up
+    // wherever the pointer went. The Archive still waits for the pointer on
+    // the head itself (task-head.css).
+    let pointerIn = false;
+    let focusIn = false;
+    const sync = () => setHot(pointerIn || focusIn);
+    const on = () => {
+      pointerIn = true;
+      sync();
+    };
     // Leaving the window also re-arms a spent filing press (below).
     const off = () => {
-      setHot(false);
+      pointerIn = false;
+      sync();
       setRefiled(false);
+    };
+    const focusOn = () => {
+      focusIn = true;
+      sync();
+    };
+    const focusOff = (e: FocusEvent) => {
+      // A move between two things inside the card is not a leave.
+      const to = e.relatedTarget as Node | null;
+      focusIn = !!to && win.contains(to);
+      sync();
     };
     win.addEventListener("pointerenter", on);
     win.addEventListener("pointerleave", off);
-    // Mounted under a pointer that is already there (a card opened by a press).
-    if (typeof win.matches === "function" && win.matches(":hover")) setHot(true);
+    win.addEventListener("focusin", focusOn);
+    win.addEventListener("focusout", focusOff);
+    // Mounted under a pointer that is already there (a card opened by a
+    // press), or around the focus (its composer took the keyboard first).
+    if (typeof win.matches === "function" && win.matches(":hover")) pointerIn = true;
+    if (typeof win.contains === "function" && typeof document !== "undefined" && document.activeElement && win.contains(document.activeElement)) {
+      focusIn = true;
+    }
+    sync();
     return () => {
       win.removeEventListener("pointerenter", on);
       win.removeEventListener("pointerleave", off);
+      win.removeEventListener("focusin", focusOn);
+      win.removeEventListener("focusout", focusOff);
       setHot(false);
     };
   }, [headEl, isWindow]);
