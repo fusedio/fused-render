@@ -274,11 +274,29 @@ def rank(q: str, limit: int, ranked: bool, token=None) -> dict:
     cfg, root, _ = opened
     from fused_render.index.query import search_ranked
 
-    out = search_ranked(cfg, root, q=q, limit=limit, include_dirs=True,
-                        token=token, ranked=ranked)
+    # Keys are matched relative to the bucket, so the bucket's own name is in
+    # no key. Typing it (or part of it) must still find the bucket: it is
+    # offered as the first hit, key "" and url `s3://<bucket>/`. A query that
+    # walks into it (`fused-asset/census`) searches the rest as a key.
+    text = (q or "").strip()
+    low = text.lower()
+    bucket_hit = False
+    if low == BUCKET or low.startswith(BUCKET + "/"):
+        bucket_hit = low.rstrip("/") == BUCKET
+        text = text[len(BUCKET) + 1:]
+    elif low and low in BUCKET:
+        bucket_hit = True
+    hits = []
+    if bucket_hit and limit > 0:
+        hits.append({"url": canonical_url(BUCKET, ""), "key": "",
+                     "is_dir": True, "size": None, "mtime": None})
+    if not text.strip():
+        return {"ready": True, "hits": hits, "total": len(hits),
+                "truncated": False}
+    out = search_ranked(cfg, root, q=text, limit=max(0, limit - len(hits)),
+                        include_dirs=True, token=token, ranked=ranked)
     if not out.get("covered"):
         return empty
-    hits = []
     for h in out["hits"]:
         if h.get("is_dir"):
             # A folder's key ends in "/"; its synthesised dirs-row mtime is

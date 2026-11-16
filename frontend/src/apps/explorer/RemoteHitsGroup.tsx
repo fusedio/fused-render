@@ -151,8 +151,15 @@ function RemoteRow({
   // unhighlighted, the same honest-over-lucky posture as the local rows.
   // A folder hit's key ends in "/": split (and highlight) the key WITHOUT it,
   // so the name cell is the folder's own last segment.
+  // The bucket itself (key "") is a hit too, so searching the bucket's name
+  // finds it: its row is named after the bucket, read off its own address.
   const isDir = hit.is_dir;
-  const key = isDir ? hit.key.replace(/\/+$/, "") : hit.key;
+  const key =
+    hit.key === ""
+      ? hit.url.replace(/^s3:\/\//, "").replace(/\/+$/, "")
+      : isDir
+        ? hit.key.replace(/\/+$/, "")
+        : hit.key;
   const from = nameStart(key);
   const name = key.slice(from) || key;
   const folder = from > 0 ? key.slice(0, from - 1) : "";
