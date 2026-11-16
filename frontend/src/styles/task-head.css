@@ -436,8 +436,11 @@
    hint panel (`data-hint`, PlaceTags). */
 .task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where a.place-tag.has-icon:is(:hover, :focus-visible),
 .task-head.is-stacked:is([data-fit="6"], [data-fit="7"]) .task-head-where a.place-tag.has-icon:is(:hover, :focus-visible) {
+  /* The pill's own hover tint — `--bg-alt` alone was one shade off a rail
+     card's background and read as nothing (Akshil, 2026-11-16: "hover over
+     this canvas or file icon doesn't show a visual cue"). */
   color: var(--fg);
-  background: var(--bg-alt);
+  background: rgba(var(--tint), 0.16);
   border-color: var(--border);
 }
 /* 1, 2. THE CHIPS, ONE AT A TIME (Akshil, 2026-11-16: "worktree and pr show

@@ -181,6 +181,26 @@ function pressedPickers() {
     expect(picker.props.set.removeLabel).toBe("Remove");
     return picker.props.onRemove;
   };
+  // A PRESS OR A KEY IN THE PICKER STOPS AT THE PICKER (2026-11-16): React
+  // bubbles a portal's events to the button's ancestors, and a Recent-chats
+  // row opens its chat on its own click and Enter.
+  {
+    const r = render(pick(task()));
+    act(() =>
+      pickButtons(r)[0]!.props.onClick({
+        stopPropagation() {},
+        currentTarget: { getBoundingClientRect: () => ({ top: 10, left: 10 }) },
+      }),
+    );
+    const shell = r.root.findByType(IconPicker).parent!;
+    for (const ev of ["onClick", "onDoubleClick", "onMouseDown", "onKeyDown", "onKeyUp"]) {
+      let stopped = 0;
+      shell.props[ev]({ stopPropagation: () => (stopped += 1) });
+      expect(stopped).toBe(1);
+    }
+    // Bubble phase only: a rail card's capture-phase watchers still hear it.
+    expect(Object.keys(shell.props).some((k) => k.endsWith("Capture"))).toBe(false);
+  }
   // A plain ring has nothing to remove.
   expect(removeOf(task())).toBeUndefined();
   // A face — picked, or the star's — can be removed.
