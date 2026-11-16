@@ -207,7 +207,7 @@ export function usePaneState(opts: UsePaneStateOptions): PaneState {
   //    protected the FIRST target — the one whose state STARTS OUT resolving —
   //    so the race it exists to prevent came back on every hop, and with it the
   //    price the comment there spells out: a session spawned with no
-  //    `mcp__fused_approvals__app_state` and no way back.
+  //    `mcp__fused_render__app_state` and no way back.
   //
   // Hosts that remount per file never saw this (the explorer's `ChatMount` is
   // keyed, and PreviewSidebar remounts on every hop); one that swaps `file` in

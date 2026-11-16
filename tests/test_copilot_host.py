@@ -544,10 +544,10 @@ def test_tool_mapping_table(host_mod, tmp_path):
                   [{"type": "diff", "path": "brand_new.txt", "oldText": None,
                     "newText": "hello\n"}])
     assert (name, inp["file_path"], inp["content"]) == ("Write", "brand_new.txt", "hello\n")
-    name, inp = m("other", "fused_approvals-app_state", {"reason": "look"}, [], "")
-    assert name == "mcp__fused_approvals__app_state" and inp["reason"] == "look"
+    name, inp = m("other", "fused_render-app_state", {"reason": "look"}, [], "")
+    assert name == "mcp__fused_render__app_state" and inp["reason"] == "look"
     # An unmapped kind keeps Copilot's own input under `_acp.raw`.
-    assert inp["_acp"] == {"kind": "other", "title": "fused_approvals-app_state",
+    assert inp["_acp"] == {"kind": "other", "title": "fused_render-app_state",
                            "raw": {"reason": "look"}}
     assert m("other", "github-list_issues", {}, [], "")[0] == "github-list_issues"
     assert m("", "", None, None, "")[0] == "tool"

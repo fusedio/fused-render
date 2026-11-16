@@ -120,7 +120,7 @@ _INTERRUPT_MARK = "[Request interrupted by user]"
 # ACP tool kinds → the Claude tool names the page already renders (D14).
 _KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
                  "search": "Grep"}
-_MCP_PREFIX = "fused_approvals-"
+_MCP_PREFIX = "fused_render-"
 _EDIT_TOOLS = frozenset({"Edit", "Write"})
 _FD_CLOSE_CAP = 65536
 
@@ -487,7 +487,7 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
     plus `_acp: {kind, title}` (and `raw`, the call's own input, only for a
     kind with no Claude twin — a mapped one already carries every field it
     has). An MCP tool reached through `--additional-mcp-config` surfaces as
-    `<server>-<tool>`; fused's own server becomes `mcp__fused_approvals__<tool>`
+    `<server>-<tool>`; fused's own server becomes `mcp__fused_render__<tool>`
     (the name agent.py pre-allows and `_segments_from_rows` strips)."""
     raw = raw if isinstance(raw, dict) else ({} if raw is None else {"value": raw})
     kind = str(kind or "")
@@ -534,7 +534,7 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
                 mcp = cand
                 break
         if mcp:
-            name = "mcp__fused_approvals__" + mcp[len(_MCP_PREFIX):]
+            name = "mcp__fused_render__" + mcp[len(_MCP_PREFIX):]
         else:
             name = title or kind or "tool"
     inp["_acp"] = acp

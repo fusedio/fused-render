@@ -428,7 +428,7 @@ def test_claude_spawn_with_the_flag_on_differs_only_by_the_s3_pieces(
     assert env_on["FUSED_RENDER_S3_SCRATCH"] == os.path.join(
         root, ".ranges", os.path.basename(run_dir))
     assert {k: v for k, v in env_on.items() if not k.startswith("FUSED_RENDER_S3_")} == env_off
-    tools = ["mcp__fused_approvals__s3_search", "mcp__fused_approvals__s3_read"]
+    tools = ["mcp__fused_render__s3_search", "mcp__fused_render__s3_read"]
     rules = [agent._read_rule(d) for d in agent._both_spellings([root])]
     assert rules and all("/cache/remote/**" in r for r in rules)
     added = [a for a in allowed_on if a not in allowed_off]
@@ -485,37 +485,51 @@ def test_every_other_backend_gets_the_server_and_the_read_grant(
     argv, rd = run("copilot")
     assert ("--add-dir" in argv and root in argv) is on
     cfg = json.load(open(os.path.join(rd, "mcp.json"), encoding="utf-8"))
-    env = cfg["mcpServers"]["fused_approvals"]["env"]
+    env = cfg["mcpServers"]["fused_render"]["env"]
     assert ("FUSED_RENDER_S3_ORIGIN" in env) is on
     agent_md = open(os.path.join(rd, "plugin", "agents", "fused.agent.md")).read()
-    assert ("fused_approvals-s3_read" in agent_md) is on
-    assert "mcp__fused_approvals__s3" not in agent_md
+    assert ("fused_render-s3_read" in agent_md) is on
+    assert "mcp__fused_render__s3" not in agent_md
 
     argv, rd = run("gemini")
     assert (root in argv) is on
     body = open(os.path.join(rd, "gemini", "GEMINI.md")).read()
-    assert ("mcp_fused_approvals_s3_search" in body) is on
+    assert ("mcp_fused_render_s3_search" in body) is on
 
     argv, rd = run("opencode")
     body = open(os.path.join(rd, "opencode", "AGENTS.md")).read()
-    assert (root in body) is on and ("fused_approvals_s3_read" in body) is on
+    assert (root in body) is on and ("fused_render_s3_read" in body) is on
 
     # OpenCode's MCP ceiling is GLOBAL: never raised for the S3 tools.
     facts = json.load(open(os.path.join(rd, "opencode", "spawn.json")))
     assert "mcp_timeout_ms" not in facts
 
     argv, rd = run("codex")
-    env_arg = [a for a in argv if a.startswith("mcp_servers.fused_approvals.env=")]
+    env_arg = [a for a in argv if a.startswith("mcp_servers.fused_render.env=")]
     assert env_arg and ("FUSED_RENDER_S3_ORIGIN" in env_arg[0]) is on
     ceiling = [a for a in argv if "tool_timeout_sec" in a]
-    assert ceiling == (["mcp_servers.fused_approvals.tool_timeout_sec=%.1f"
+    assert ceiling == (["mcp_servers.fused_render.tool_timeout_sec=%.1f"
                         % agent.S3_CALL_CEILING] if on else [])
 
 
 def test_breakout_may_call_the_s3_tools():
     ps = _load("permission_server")
     for tool in ("s3_search", "s3_read"):
-        assert ps._breakout_policy("mcp__fused_approvals__" + tool, {}, "/h") is None
+        assert ps._breakout_policy("mcp__fused_render__" + tool, {}, "/h") is None
+
+
+def test_every_copy_of_the_server_name_agrees(agent):
+    """fused-render's MCP server name is spelled in agent.py, the server
+    itself and each backend host (they load no sibling by import), and a
+    host whose copy drifted would file fused's own calls as a foreign
+    server's. One name, pinned here."""
+    name = _load("permission_server").SERVER_NAME
+    assert name == "fused_render"
+    assert agent.PERMISSION_SERVER == name
+    assert "__" not in name and "-" not in name
+    for host in ("gemini_host", "opencode_host"):
+        assert _load(host)._MCP_SERVER == name
+    assert _load("copilot_host")._MCP_PREFIX == name + "-"
 
 
 def test_hosts_know_the_tool_names():

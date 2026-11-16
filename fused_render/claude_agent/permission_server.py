@@ -87,7 +87,10 @@ import time
 import urllib.parse
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_NAME = "fused_approvals"
+# Named after the app, not the approval tool: this server is every tool
+# fused-render hands the agent. agent.PERMISSION_SERVER and each host's copy
+# mirror it (a test pins them); it was `fused_approvals` before.
+SERVER_NAME = "fused_render"
 TOOL_NAME = "approve"
 APP_STATE_TOOL = "app_state"
 CANVAS_SHOT_TOOL = "canvas_screenshot"

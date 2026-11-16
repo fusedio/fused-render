@@ -818,14 +818,14 @@ def test_copilot_argv_composition(agent, target, home, tmp_path, monkeypatch):
     # Same prompt as Claude's --append-system-prompt, with the pane tool in
     # Copilot's MCP spelling (`<server>-<tool>`, §10).
     assert agent._appended_prompt(file, True, "copilot").replace(
-        "mcp__fused_approvals__", "fused_approvals-") in agent_md
-    assert "fused_approvals-app_state" in agent_md
-    assert "mcp__fused_approvals__" not in agent_md
+        "mcp__fused_render__", "fused_render-") in agent_md
+    assert "fused_render-app_state" in agent_md
+    assert "mcp__fused_render__" not in agent_md
     skills = run_dir / "plugin" / "skills"
     assert skills.is_symlink() and sorted(os.listdir(skills)) == ["a", "b"]
     # mcp.json: the pane tools only (D4) — `--no-approve` on the server argv.
     with open(run_dir / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
+        server = json.load(fh)["mcpServers"]["fused_render"]
     assert "--no-approve" in server["args"]
     assert agent._state_dir(str(run_dir)) in server["args"]
 
@@ -2022,10 +2022,10 @@ def test_codex_argv_composition(agent, target, home, tmp_path, monkeypatch):
         key, _, value = o.partition("=")
         parsed[key] = tomllib.loads("v = " + value)["v"]
     with open(run_dir / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
-    assert parsed == {"mcp_servers.fused_approvals.command": server["command"],
-                      "mcp_servers.fused_approvals.args": server["args"],
-                      "mcp_servers.fused_approvals.env": server["env"]}
+        server = json.load(fh)["mcpServers"]["fused_render"]
+    assert parsed == {"mcp_servers.fused_render.command": server["command"],
+                      "mcp_servers.fused_render.args": server["args"],
+                      "mcp_servers.fused_render.env": server["env"]}
     assert "--no-approve" in server["args"]
     assert agent._state_dir(str(run_dir)) in server["args"]
     assert server["env"]["FUSED_RENDER_TERMINAL_ORIGIN"] == "http://127.0.0.1:9"
@@ -2053,7 +2053,7 @@ def test_codex_argv_without_a_pane_or_terminal_is_bare(agent, target, home,
     argv = agent._codex_argv(str(run_dir), False, None, "", "", "", [], file)
     assert len(argv) == 8
     with open(run_dir / "mcp.json") as fh:
-        args = json.load(fh)["mcpServers"]["fused_approvals"]["args"]
+        args = json.load(fh)["mcpServers"]["fused_render"]["args"]
     assert agent._state_dir(str(run_dir)) not in args
 
 
@@ -2407,8 +2407,8 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
     # The model-facing MCP name is `mcp_<server>_<tool>` (single underscores:
     # Gemini's `generateValidName` of `<server>_<tool>`), never Claude's
     # `mcp__<server>__<tool>` and never the bare tool name alone.
-    assert "mcp__fused_approvals__" not in text
-    assert "mcp_fused_approvals_app_state" in text
+    assert "mcp__fused_render__" not in text
+    assert "mcp_fused_render_app_state" in text
     assert not claude_only.search(text)
     # A canvas target (D235): the GEMINI.md names `canvas_screenshot`, so the
     # pane server must offer it — mcp.json is written even with no pane and
@@ -2420,10 +2420,10 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
     canvas_run.mkdir()
     agent._gemini_argv(str(canvas_run), False, "default", SID_GEMINI, "", "", [],
                        str(clone / "index.html"))
-    assert "mcp_fused_approvals_canvas_screenshot" in \
+    assert "mcp_fused_render_canvas_screenshot" in \
         (canvas_run / "gemini" / "GEMINI.md").read_text()
     with open(canvas_run / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
+        server = json.load(fh)["mcpServers"]["fused_render"]
     assert any(a.startswith("--canvas-shots=") for a in server["args"])
     # ...and a plain file with neither stays without one.
     plain_run = tmp_path / "run-plain"
@@ -2571,7 +2571,7 @@ def test_gemini_argv_composition(agent, target, home, tmp_path, monkeypatch):
     assert "--approval-mode" not in agent._gemini_argv(str(other), False, "default", SID_GEMINI, "", "", [], file)
     assert (run_dir / "gemini" / "GEMINI.md").read_text().strip()
     with open(run_dir / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
+        server = json.load(fh)["mcpServers"]["fused_render"]
     assert "--no-approve" in server["args"]
     assert agent._state_dir(str(run_dir)) in server["args"]
     assert server["env"]["FUSED_RENDER_TERMINAL_ORIGIN"] == "http://127.0.0.1:9"
@@ -2598,7 +2598,7 @@ def test_gemini_argv_without_a_pane_or_terminal_writes_no_mcp(agent, target, hom
     monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
     agent._gemini_argv(str(run_dir), False, None, "", "", "", [], file)
     with open(run_dir / "mcp.json") as fh:
-        args = json.load(fh)["mcpServers"]["fused_approvals"]["args"]
+        args = json.load(fh)["mcpServers"]["fused_render"]["args"]
     assert agent._state_dir(str(run_dir)) not in args and "--no-approve" in args
 
 
@@ -2843,8 +2843,8 @@ def test_the_opencode_prompt_never_speaks_claude(agent, home, tmp_path, monkeypa
                                       [str(extra), str(tmp_path / "gone")])
     assert ctx == str(run_dir / "opencode")
     text = (run_dir / "opencode" / "AGENTS.md").read_text()
-    assert "mcp__fused_approvals__" not in text
-    assert "fused_approvals_app_state" in text
+    assert "mcp__fused_render__" not in text
+    assert "fused_render_app_state" in text
     assert not claude_only.search(text)
     assert str(extra) in text and str(tmp_path / "gone") not in text
 
@@ -2870,7 +2870,7 @@ def test_opencode_argv_is_bare_and_the_facts_ride_the_run_dir(
                      "instructions": str(run_dir / "opencode" / "AGENTS.md")}
     assert (run_dir / "opencode" / "AGENTS.md").read_text().strip()
     with open(run_dir / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
+        server = json.load(fh)["mcpServers"]["fused_render"]
     assert "--no-approve" in server["args"]
     assert server["env"]["FUSED_RENDER_TERMINAL_ORIGIN"] == "http://127.0.0.1:9"
     # The mode table: `default` for Ask, the wire names otherwise; an

@@ -684,18 +684,18 @@ def test_tool_mapping_table(host_mod, tmp_path):
                     "newText": "hello\n"}])
     assert (name, inp["file_path"], inp["content"]) == ("Write", "brand_new.txt", "hello\n")
     # fused's own pane tools, however the title spells them.
-    assert m("other", "app_state (fused_approvals MCP Server)", None, [], "")[0] == \
-        "mcp__fused_approvals__app_state"
-    assert m("other", "fused_approvals_app_state", {"reason": "look"}, [], "")[0] == \
-        "mcp__fused_approvals__app_state"
-    assert m("other", "app_state", {}, [], "")[0] == "mcp__fused_approvals__app_state"
+    assert m("other", "app_state (fused_render MCP Server)", None, [], "")[0] == \
+        "mcp__fused_render__app_state"
+    assert m("other", "fused_render_app_state", {"reason": "look"}, [], "")[0] == \
+        "mcp__fused_render__app_state"
+    assert m("other", "app_state", {}, [], "")[0] == "mcp__fused_render__app_state"
     name, inp = m("other", "terminal_send(id: t1, text: ls -la)", None, [], "")
-    assert name == "mcp__fused_approvals__terminal_send"
+    assert name == "mcp__fused_render__terminal_send"
     assert (inp["id"], inp["text"]) == ("t1", "ls -la")
     # An unmapped kind keeps the call's own input under `_acp.raw`.
-    name, inp = m("other", "fused_approvals_app_state", {"reason": "look"}, [], "")
+    name, inp = m("other", "fused_render_app_state", {"reason": "look"}, [], "")
     assert inp["reason"] == "look"
-    assert inp["_acp"] == {"kind": "other", "title": "fused_approvals_app_state",
+    assert inp["_acp"] == {"kind": "other", "title": "fused_render_app_state",
                            "raw": {"reason": "look"}}
     assert m("other", "echo (weather MCP Server)", None, [], "")[0] == "weather-echo"
     assert m("other", "some free title", {}, [], "")[0] == "some free title"
@@ -1222,7 +1222,7 @@ def test_the_pane_mcp_server_rides_session_new(start, agent):
     new = next(e["msg"]["params"] for e in s.fake()
                if e.get("msg", {}).get("method") == "session/new")
     assert new == {"cwd": s.cwd, "mcpServers": []}
-    s2 = start(mcp={"fused_approvals": {
+    s2 = start(mcp={"fused_render": {
         "command": sys.executable,
         "args": ["permission_server.py", "/perm", "--no-approve"],
         "env": {"PYTHONUTF8": "1", "FUSED_RENDER_TERMINAL_ORIGIN": "http://x"},
@@ -1231,7 +1231,7 @@ def test_the_pane_mcp_server_rides_session_new(start, agent):
     new = next(e["msg"]["params"] for e in s2.fake()
                if e.get("msg", {}).get("method") == "session/new")
     assert new["mcpServers"] == [{
-        "name": "fused_approvals", "command": sys.executable,
+        "name": "fused_render", "command": sys.executable,
         "args": ["permission_server.py", "/perm", "--no-approve"],
         "env": [{"name": "PYTHONUTF8", "value": "1"},
                 {"name": "FUSED_RENDER_TERMINAL_ORIGIN", "value": "http://x"}]}]

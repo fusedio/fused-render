@@ -730,7 +730,7 @@ function ChatBody(props: ChatBodyProps) {
   // Natively that frame arrives as `annotateTarget`, a getter the host owns
   // (Preview.tsx looks its own mark up; CanvasWorkspace hands over its workbench
   // frame). Without it `hasPane` was false in the sidebar, no block was pushed,
-  // `has_pane:"0"` took `mcp__fused_approvals__app_state` out of the run's
+  // `has_pane:"0"` took `mcp__fused_render__app_state` out of the run's
   // roster — and, because `agent.py`'s `_pane_file` reads the pane off the
   // LEADING app-state block, every chat had in that layout was recorded as a
   // FOLDER chat and vanished from the file's Recent list (R3-1/R3-3).
@@ -962,7 +962,7 @@ function ChatBody(props: ChatBodyProps) {
   //
   // `has_pane` is what agent.py builds the session's MCP roster off, once, at
   // spawn: `pane=False` writes an `mcp.json` with no app-state channel and an
-  // `--allowed-tools` without `mcp__fused_approvals__app_state`, and there is
+  // `--allowed-tools` without `mcp__fused_render__app_state`, and there is
   // no way back — `_send` never touches argv, and `host.json` does not even
   // record the pane, so nothing can respawn for one appearing. A first message
   // typed before `statPath`/`runAppEntry` landed therefore cost the WHOLE

@@ -553,8 +553,8 @@ def _map_item(item: dict, cwd: str = "") -> tuple:
         server = str(item.get("server") or "")
         tool = str(item.get("tool") or "")
         args = item.get("arguments")
-        # D8: fused's own pane server is `fused_approvals`, so its
-        # `app_state` comes out as `mcp__fused_approvals__app_state` — the
+        # D8: fused's own pane server is `fused_render`, so its
+        # `app_state` comes out as `mcp__fused_render__app_state` — the
         # name agent.py pre-allows and `_segments_from_rows` strips — by the
         # same rule every other MCP tool follows.
         name = "mcp__%s__%s" % (server, tool)

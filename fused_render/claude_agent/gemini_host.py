@@ -108,7 +108,7 @@ _KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
                  "search": "Grep"}
 # How Gemini titles an MCP tool call: `<tool> (<server> MCP Server)`.
 _MCP_TITLE = re.compile(r"^(?P<tool>[A-Za-z0-9_.-]+) \((?P<server>[A-Za-z0-9_.-]+) MCP Server\)$")
-_MCP_SERVER = "fused_approvals"
+_MCP_SERVER = "fused_render"
 #: ...and an MCP call WITH arguments: `<tool>(key: value, …)`
 #: (`formatToolDisplayTitle` / `formatToolDescription`, verified 0.65.0):
 #: pairs joined by ", ", string values BARE (never quoted), arrays `[a, b]`,
@@ -474,7 +474,7 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
     has). Gemini sends no `rawInput`, so `title` (the tool's own description
     of the call — a shell command's command line) and `locations` carry
     what the card shows. An MCP tool is titled `<tool> (<server> MCP
-    Server)`; fused's own server becomes `mcp__fused_approvals__<tool>` (the
+    Server)`; fused's own server becomes `mcp__fused_render__<tool>` (the
     name agent.py pre-allows and `_segments_from_rows` strips), another
     server's `<server>-<tool>`, Copilot's spelling."""
     raw = raw if isinstance(raw, dict) else ({} if raw is None else {"value": raw})

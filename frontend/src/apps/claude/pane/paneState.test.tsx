@@ -7,7 +7,7 @@
 // the pane went on framing the old document, and `has_pane` answered `true` off
 // a stale `status: "ready"` — which walks straight past the `"resolving" → null`
 // guard in ClaudeChat that exists to stop a session being spawned without
-// `mcp__fused_approvals__app_state` (Bugbot, PR #1061). The guard only ever
+// `mcp__fused_render__app_state` (Bugbot, PR #1061). The guard only ever
 // protected the FIRST target, because only that one's state STARTS OUT
 // resolving.
 //

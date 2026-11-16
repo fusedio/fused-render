@@ -297,7 +297,7 @@ def test_the_app_state_plumbing_tool_is_not_a_segment(agent, tmp_path):
     EXACT tool is stripped: every other MCP tool is a real call the user is
     entitled to see."""
     plumbing = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
-    assert plumbing == "mcp__fused_approvals__app_state"
+    assert plumbing == "mcp__fused_render__app_state"
     data = _poll_rows(agent, tmp_path, [
         {"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "p1", "name": plumbing, "input": {}},
@@ -309,6 +309,21 @@ def test_the_app_state_plumbing_tool_is_not_a_segment(agent, tmp_path):
     ])
     assert [(s["name"], s["output"]) for s in data["segments"]] == [
         ("mcp__other__thing", "answer")]
+
+
+def test_a_transcript_from_before_the_rename_still_hides_app_state(agent, tmp_path):
+    """The server was `fused_approvals` before it carried more than approvals.
+    A chat restored from a transcript written then still names the old tool,
+    and its `app_state` reads must stay out of the history all the same."""
+    assert agent.LEGACY_PERMISSION_SERVER == "fused_approvals"
+    data = _poll_rows(agent, tmp_path, [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "p1",
+             "name": "mcp__fused_approvals__app_state", "input": {}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "p1", "content": "{...}"}]}},
+    ])
+    assert data["segments"] == []
 
 
 def test_meta_and_sidechain_rows_are_skipped(agent, tmp_path):

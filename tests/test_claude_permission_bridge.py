@@ -3009,7 +3009,7 @@ def test_breakout_denies_non_write_edits_even_on_a_handoff_md(
 
 @pytest.mark.parametrize("tool", [
     "Agent", "Task", "TodoWrite", "Skill", "ExitPlanMode", "EnterPlanMode",
-    "Workflow", "mcp__fused_approvals__terminal_send",
+    "Workflow", "mcp__fused_render__terminal_send",
     "mcp__other__get_thing"])
 def test_breakout_refuses_build_tools_and_unlisted_mcp_without_a_card(
         breakout, tool):
@@ -3023,9 +3023,9 @@ def test_breakout_refuses_build_tools_and_unlisted_mcp_without_a_card(
 def test_breakout_allows_a_read_only_mcp_tool_through_the_normal_flow(
         breakout, agent):
     s, perm_dir, _ = breakout
-    pending = _approve(s, "mcp__fused_approvals__terminal_read", {})
+    pending = _approve(s, "mcp__fused_render__terminal_read", {})
     req = _wait_for_request(perm_dir)
-    assert req["tool"] == "mcp__fused_approvals__terminal_read"
+    assert req["tool"] == "mcp__fused_render__terminal_read"
     assert agent._write_decision(str(perm_dir), req["id"],
                                  {"decision": "allow", "scope": "once"})
     assert _result_payload(pending.result(10))["behavior"] == "allow"
@@ -3059,7 +3059,7 @@ def test_breakout_hook_fails_closed_on_empty_stdin(tmp_path):
     assert _run_hook(tmp_path, "").returncode == 2
 
 
-@pytest.mark.parametrize("tool", ["mcp__fused_approvals__terminal_send",
+@pytest.mark.parametrize("tool", ["mcp__fused_render__terminal_send",
                                   "mcp__other__x", "Skill"])
 def test_breakout_hook_blocks_write_mcp_calls(tmp_path, tool):
     assert _run_hook(tmp_path, json.dumps(
@@ -3068,7 +3068,7 @@ def test_breakout_hook_blocks_write_mcp_calls(tmp_path, tool):
 
 def test_breakout_hook_lets_a_read_only_mcp_tool_through(tmp_path):
     r = _run_hook(tmp_path, json.dumps({
-        "tool_name": "mcp__fused_approvals__terminal_list", "tool_input": {}}))
+        "tool_name": "mcp__fused_render__terminal_list", "tool_input": {}}))
     assert r.returncode == 0 and r.stdout == ""
 
 
