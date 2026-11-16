@@ -304,7 +304,8 @@
 /* A SELECTED NODE SORTS THE LIST (ClaudeRail, claude-rail-lib `railRows`;
    owner, 2026-11-10): the node's chats first, a hairline, then every other
    chat on the canvas at half strength — full again under the pointer or the
-   keyboard, so the ring being read is never the faded one. The hairline is
+   keyboard, so the ring being read is never the faded one. An open file
+   sorts its folder's list the same way (owner, 2026-11-16). The hairline is
    the rail's own divider (sidebar.css `.sidebar-rail-sep`), its margin taken
    in by the list's 4px gap. */
 .claude-rail-node-sep {

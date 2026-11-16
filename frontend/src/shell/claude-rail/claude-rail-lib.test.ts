@@ -476,6 +476,59 @@ describe("listSeats (the two sections are independent, 2026-11-05)", () => {
   });
 });
 
+describe("railRows on an open file (the folder's list, the file's first; 2026-11-16)", () => {
+  const FOLDER = "/home/me/proj";
+  const FILE = `${FOLDER}/a.py`;
+  const onFile = pulse(task({ key: "f", target: FILE, project: "", happened_at: 100 }));
+  const onFolder = pulse(task({ key: "d", target: FOLDER, project: FOLDER, happened_at: 300 }));
+  const onOther = pulse(task({ key: "o", target: `${FOLDER}/sub/b.py`, project: FOLDER, happened_at: 200 }));
+  const elsewhere = pulse(task({ key: "x", target: "/home/me/else/c.py", project: "/home/me/else", happened_at: 400 }));
+  const all = [elsewhere, onFolder, onOther, onFile];
+  it("the file's chats first, then the folder's and its other files', marked off — nothing from outside the folder", () => {
+    const seats = railRows(all, new Map(), { kind: "file", file: FILE, dir: FOLDER });
+    expect(seats.map((s) => [s.pulse.key, !!s.off])).toEqual([
+      ["f", false],
+      ["d", true],
+      ["o", true],
+    ]);
+  });
+  it("is the folder page's own list, re-sorted", () => {
+    const folder = railRows(all, new Map(), { kind: "folder", dir: FOLDER }).map((s) => s.pulse.key);
+    const file = railRows(all, new Map(), { kind: "file", file: FILE, dir: FOLDER }).map((s) => s.pulse.key);
+    expect([...file].sort()).toEqual([...folder].sort());
+  });
+  it("a file with no chats of its own lists the folder's, all off", () => {
+    const seats = railRows(all, new Map(), { kind: "file", file: `${FOLDER}/none.py`, dir: FOLDER });
+    expect(seats.map((s) => [s.pulse.key, !!s.off])).toEqual([
+      ["d", true],
+      ["o", true],
+      ["f", true],
+    ]);
+  });
+  it("with no folder handed, the file's chats alone (a row's own place, the shell's cards)", () => {
+    const seats = railRows(all, new Map(), { kind: "file", file: FILE });
+    expect(seats.map((s) => [s.pulse.key, !!s.off])).toEqual([["f", false]]);
+  });
+  it("a folder that is not the file's still lists the file's chats, first", () => {
+    const seats = railRows(all, new Map(), { kind: "file", file: FILE, dir: "/home/me/else" });
+    expect(seats.map((s) => [s.pulse.key, !!s.off])).toEqual([
+      ["f", false],
+      ["x", true],
+    ]);
+  });
+  it("the folder's drafts ride too, the file's own draft with the file's chats", () => {
+    const mine = task({ key: "draft:1", kind: "draft", status: "upcoming", session_id: "", target: FILE, project: "", happened_at: 50 } as Partial<Task> & { key: string });
+    const theirs = task({ key: "draft:2", kind: "draft", status: "upcoming", session_id: "", target: FOLDER, project: FOLDER, happened_at: 60 } as Partial<Task> & { key: string });
+    const listing = new Map([
+      [mine.key, mine],
+      [theirs.key, theirs],
+    ]);
+    const seats = railRows([onFile, onFolder], listing, { kind: "file", file: FILE, dir: FOLDER, sessionless: true });
+    expect(seats.filter((s) => !s.off).map((s) => s.pulse.key).sort()).toEqual(["draft:1", "f"]);
+    expect(seats.filter((s) => s.off).map((s) => s.pulse.key).sort()).toEqual(["d", "draft:2"]);
+  });
+});
+
 describe("activeRing (one active ring per section)", () => {
   it("the open favourite wins over the section's last press", () => {
     expect(activeRing(["A", "B", "C"], ["B", "C"])).toBe("B");

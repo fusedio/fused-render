@@ -1082,3 +1082,45 @@ describe("ClaudeRail on a canvas with a node selected (owner, 2026-11-10)", () =
     expect(seps(r)).toBe(0);
   });
 });
+
+describe("ClaudeRail on an open file (owner, 2026-11-16)", () => {
+  const FILE = `${DIR}/n.py`;
+  const chats = [
+    chat("folder", { happened_at: 3_000, last_active: 3_000 }),
+    chat("other", { target: `${DIR}/o.py`, happened_at: 2_000, last_active: 2_000 }),
+    chat("mine", { target: FILE, happened_at: 1_000 }),
+  ];
+  const seatKeys = (r: ReactTestRenderer) =>
+    r.root
+      .findAll((n) => typeof n.type === "string" && n.props.role === "listitem")
+      .map((n) => [n.findAll((c) => typeof c.props?.["data-task-key"] === "string")[0]!.props["data-task-key"], n.props.className]);
+  const seps = (r: ReactTestRenderer) => r.root.findAll((n) => n.props?.className === "claude-rail-node-sep").length;
+
+  for (const favourites of [false, true]) {
+    test(`favourites ${favourites ? "on" : "off"}: the folder's chats stay — the file's first, a hairline, the rest faded`, async () => {
+      const r = await mountRail({ paneOpen: false, favourites, chats, place: { kind: "file", file: FILE, dir: DIR } });
+      expect(seatKeys(r)).toEqual([
+        ["mine", "claude-rail-seat"],
+        ["folder", "claude-rail-seat is-off"],
+        ["other", "claude-rail-seat is-off"],
+      ]);
+      expect(seps(r)).toBe(1);
+    });
+  }
+
+  test("the folder page itself: the List's order, nothing faded, no hairline", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { kind: "folder", dir: DIR } });
+    expect(seatKeys(r)).toEqual([
+      ["folder", "claude-rail-seat"],
+      ["other", "claude-rail-seat"],
+      ["mine", "claude-rail-seat"],
+    ]);
+    expect(seps(r)).toBe(0);
+  });
+
+  test("a file with no chat of its own: the folder's chats faded, no hairline above them", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { kind: "file", file: `${DIR}/x.py`, dir: DIR } });
+    expect(seatKeys(r).map(([, c]) => c)).toEqual(["claude-rail-seat is-off", "claude-rail-seat is-off", "claude-rail-seat is-off"]);
+    expect(seps(r)).toBe(0);
+  });
+});

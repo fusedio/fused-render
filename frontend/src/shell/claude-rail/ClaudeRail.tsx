@@ -102,6 +102,12 @@
 // the new task is filed under the node (`task.canvas.file`) and shows in the
 // node's Recent list once the pane opens.
 //
+// AN OPEN FILE SORTS ITS FOLDER'S RAIL THE SAME WAY (owner, 2026-11-16: "let's
+// do the same with file explorer, when we open a file"): the explorer's file
+// page hands its folder with the file (`place.dir`), and the rail is the
+// folder page's own list — the file's chats first, the hairline, the folder's
+// and its other files' chats faded. The + still makes a task on the file.
+//
 // THE + WAITS WHERE THE PANE WAITS: the open pane has no chat to start one
 // from until the clone exists ("Loading editor…") or while the selected
 // node's file is still being written ("Saving <file>…"), so the + is held
