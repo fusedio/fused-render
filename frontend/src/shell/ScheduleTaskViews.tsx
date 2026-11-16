@@ -6782,7 +6782,12 @@ function TaskCard({
           onDragStart();
         }}
         onDragEnd={onDragEnd}
-        onClick={() => {
+        onClick={(e) => {
+          // A PRESS FROM A PORTAL IS NOT THE CARD'S (Bugbot, PR #2300): the a/b
+          // ring's icon picker is portalled to the body, and React bubbles its
+          // clicks — a pick, a shuffle, Remove — up the component tree to here.
+          // Only a press on this card's own DOM opens it.
+          if (!e.currentTarget.contains(e.target as Node)) return;
           // The draft arm first, for the List row's reason: a draft has no
           // session and no folder to be missing from — the form IS its content.
           // Both kinds of draft come through here, the never-sent chat included

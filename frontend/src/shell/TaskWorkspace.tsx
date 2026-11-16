@@ -339,7 +339,11 @@ function WorkspaceCard({
       data-unread={task.unread > 0 ? "1" : undefined}
       aria-selected={selected}
       {...(peekOn ? peekItemProps(task.key, peekOpenable(task)) : {})}
-      onClick={() => {
+      onClick={(e) => {
+        // A PRESS FROM A PORTAL IS NOT THE CARD'S (Bugbot, PR #2300): the a/b
+        // ring's icon picker is portalled to the body and React bubbles its
+        // clicks up the component tree — a pick must neither select nor open.
+        if (!e.currentTarget.contains(e.target as Node)) return;
         onSelect();
         onOpen();
       }}

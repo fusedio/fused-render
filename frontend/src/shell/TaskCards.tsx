@@ -658,7 +658,13 @@ function TaskCard({
       // press anywhere on the card opens the same popup the head did. The head
       // keeps its own handler for the keyboard; the doors strip inside it still
       // stops its presses, so a door never also opens the popup.
-      onClick={() => onPeek(task)}
+      onClick={(e) => {
+        // A PRESS FROM A PORTAL IS NOT THE CARD'S (Bugbot, PR #2300): the a/b
+        // ring's icon picker is portalled to the body and React bubbles its
+        // clicks up the component tree — a pick must not open the popup.
+        if (!e.currentTarget.contains(e.target as Node)) return;
+        onPeek(task);
+      }}
     >
       {bulk && <RowCheck select={bulk} task={task} />}
       {/* THE HEAD IS THE DOOR (Akshil, 2026-09-05: "when I click on the heading
@@ -677,6 +683,8 @@ function TaskCard({
         aria-label={`Preview ${shortTaskId(task.task_id)}${task.unread > 0 ? `, ${taskUnreadLabel(task.unread)}` : ""}`}
         onClick={(e) => {
           e.stopPropagation();
+          // The picker's portalled clicks, as on the card above.
+          if (!e.currentTarget.contains(e.target as Node)) return;
           onPeek(task);
         }}
         onKeyDown={(e) => {
@@ -828,8 +836,10 @@ function TaskCard({
             a folder that opens, and a folder that is not gone has none).
 
             On the a/b tile Archive is not one of them (2026-11-16): it stands
-            over the id instead (`.tasks-idslot` above). */}
-        {((filing && !ab) || explorer || gone || jobs) && (
+            over the id instead (`.tasks-idslot` above) — so on that tile a
+            draft's Discard is a reason of its own to draw the strip, the one
+            `filing` used to give it (Bugbot, PR #2300). */}
+        {((filing && !ab) || explorer || gone || jobs || (ab && hasDraft(task) && !heldInPeek)) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
           {/* DISCARD THE UNSENT WORDS — the List row's and the Board card's own
               trash, on this wall too (design "one record", §5: the same actions

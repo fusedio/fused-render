@@ -319,3 +319,38 @@ test("DETAILED switch off: today's card — Archive over the ring, a bare id", a
   const [mark] = byClass(r, "ws-mark");
   expect(fileActs(mark!)).toHaveLength(1);
 });
+
+// ---- a click from the picker's portal is not the card's (Bugbot, PR #2300) ---
+// The picker is portalled to the body, and React bubbles its clicks up the
+// component tree into the card that holds the ring. Each host opens only on a
+// press inside its own DOM.
+
+const fromPortal = () => ({ currentTarget: { contains: () => false }, target: {}, stopPropagation() {} });
+const fromCard = () => ({ currentTarget: { contains: () => true }, target: {}, stopPropagation() {} });
+
+test("BOARD: a click bubbled from a portal does not open the card; one on the card does", async () => {
+  switches(true, true);
+  const opened: string[] = [];
+  const r = await render(
+    createElement(TaskBoard, {
+      tasks: [task({ key: "d", task_id: "", session_id: "", kind: "draft" } as Partial<Task>)],
+      onReload: () => {},
+      onOpenDraft: (t: Task) => opened.push(t.key),
+    }),
+  );
+  const [card] = hosts(r, (n) => n.type === "button" && cls(n).split(" ").includes("schedule-tv-card"));
+  act(() => card!.props.onClick(fromPortal()));
+  expect(opened).toEqual([]);
+  act(() => card!.props.onClick(fromCard()));
+  expect(opened).toEqual(["d"]);
+});
+
+test("DETAILED: a click bubbled from a portal neither selects nor opens the card", async () => {
+  switches(true, true);
+  const r = await detailed([task({ key: "a", status: "done" })]);
+  const card = () => byClass(r, "ws-card")[0]!;
+  act(() => card().props.onClick(fromPortal()));
+  expect(card().props["aria-selected"]).toBe(false);
+  act(() => card().props.onClick(fromCard()));
+  expect(card().props["aria-selected"]).toBe(true);
+});

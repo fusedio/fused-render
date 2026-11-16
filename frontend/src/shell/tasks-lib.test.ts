@@ -5017,7 +5017,9 @@ describe("the delete affordance", () => {
     // GATED on `gone` (Akshil, 2026-09-07): a task that still opens is archived.
     expect(head.slice(del, at)).toContain("{gone && (");
     // (On the a/b tile Archive is the id slot's, not a door: 2026-11-16.)
-    expect(head).toContain("{((filing && !ab) || explorer || gone || jobs) && (");
+    expect(head).toContain(
+      "{((filing && !ab) || explorer || gone || jobs || (ab && hasDraft(task) && !heldInPeek)) && (",
+    );
     // Trash, then Archive, then the folder (Akshil: "left-side of the archive button").
     expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_ARCHIVE"));
     expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
@@ -9961,7 +9963,9 @@ describe("the Cards view's frame", () => {
       'className={"task-card task-card--door" + (ab ? " task-card--ab" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")\n'
         + '        + (selected ? " is-selected" : "")}',
     );
-    expect(CARDS).toContain("onClick={() => onPeek(task)}");
+    // …but only a press on the card's own DOM: a click bubbled up the React
+    // tree from a portal (the a/b ring's icon picker) is not one (PR #2300).
+    expect(CARDS).toContain("if (!e.currentTarget.contains(e.target as Node)) return;\n        onPeek(task);");
     expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("pointer-events: none");
     expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("overflow: hidden");
     expect(head).toContain('e.key === "Enter" || e.key === " "');
