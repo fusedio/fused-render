@@ -3,7 +3,7 @@ import { approvalVerdict } from "@platform/lib/risk";
 import { GateCard, type GateStatus } from "@platform/ui/GateCard";
 
 import type { BotEvent } from "../lib/api";
-import { scoresLine } from "../lib/expert";
+import { proposalText, scoresLine } from "../lib/expert";
 
 /** The settled card's caption, from the user line that answered it (null while that line is unknown). */
 function verdictStatus(answer: string | null | undefined): GateStatus | undefined {
@@ -55,7 +55,9 @@ function ProposalCard({ e, live, title, answer }: { e: BotEvent; live: boolean; 
   const status: GateStatus | undefined = live ? undefined
     : v === "Approved" ? { tone: "allow", text: "✓ Approved" } : v === "Denied" ? { tone: "deny", text: "✗ Rejected" } : undefined;
   // The event text (cards.py card_text) says what changes; it leads when there is a diff to show under it.
-  const what = diff ? e.text.trim() : "";
+  // Its "Checks: …" line repeats `scores` and its "Approve?" the buttons, so both are dropped.
+  const text = proposalText(e.text);
+  const what = diff ? text : "";
   const scores = scoresLine(e.score_before, e.score_after);
   return (
     <GateCard
@@ -64,7 +66,7 @@ function ProposalCard({ e, live, title, answer }: { e: BotEvent; live: boolean; 
       head="Proposed skill change"
       riskSummary={what || undefined}
       sub={scores || undefined}
-      body={diff || e.text}
+      body={diff || text}
       bodyWhat="diff"
       resolved={!live}
       status={status}

@@ -36,11 +36,13 @@ export const anyPreparing = (ps: readonly ExpertProposal[] | null | undefined): 
 /** "seen 3×" (a lesson seen once still says so: the count is what earns a proposal). */
 export const seenLabel = (count: number | null | undefined): string => `seen ${Math.max(1, count || 0)}×`;
 
-/** The markers after a lesson's claim: who said it (only `user` is called out) and where it stands on the way to a skill. */
-export function lessonTags(it: Pick<ExpertItem, "trust" | "promoted" | "proposed">): string[] {
+/** The markers after a lesson's claim: who said it (only `user` is called out) and where it stands on the way to a skill
+ *  (one of "promoted", "not proposed again" for a rejected proposal, or "proposed", in that priority). */
+export function lessonTags(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected">): string[] {
   const out: string[] = [];
   if (it.trust === "user") out.push("user");
   if (it.promoted) out.push("promoted");
+  else if (it.rejected) out.push("not proposed again");
   else if (it.proposed) out.push("proposed");
   return out;
 }
@@ -73,6 +75,15 @@ export const scoreText = (s: ExpertScore | null | undefined): string => (s ? `${
 export function scoresLine(before: ExpertScore | null | undefined, after: ExpertScore | null | undefined): string {
   if (!before || !after) return "";
   return `Checks: ${before.score}/${before.total} → ${after.score}/${after.total}`;
+}
+
+/** A proposal event's text as the card shows it: without its "Checks: …" lines (the card's scores line says that) and
+ *  a trailing "Approve?" line (the buttons ask it). */
+export function proposalText(text: string | null | undefined): string {
+  const lines = (text || "").split("\n").filter((l) => !l.trim().startsWith("Checks:"));
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  if (lines.length && lines[lines.length - 1].trim() === "Approve?") lines.pop();
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /** While a gate run is going: "Running checks · 3 of 14". */

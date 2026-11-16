@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExpertEngineRow, ExpertItem, ExpertProposal } from "./api";
-import { anyPreparing, basename, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, pendingLine, proposalLine, scoreText,
+import { anyPreparing, basename, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, pendingLine, proposalLine, proposalText, scoreText,
   scoresLine, seenLabel, sortConsults, sortLessons, splitLessons } from "./expert";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
@@ -25,6 +25,9 @@ describe("lessons", () => {
     expect(lessonTags(item({ trust: "outcome", proposed: true }))).toEqual(["proposed"]);
     expect(lessonTags(item({ trust: "user", proposed: true, promoted: true }))).toEqual(["user", "promoted"]);
     expect(lessonTags(item({ trust: "gap" }))).toEqual([]);
+    expect(lessonTags(item({ proposed: true, rejected: true }))).toEqual(["not proposed again"]);
+    expect(lessonTags(item({ proposed: true, rejected: true, promoted: true }))).toEqual(["promoted"]);
+    expect(lessonTags(item({ rejected: true }))).toEqual(["not proposed again"]);
   });
   test("the pending line", () => {
     expect(pendingLine(0, false)).toBe("No observations waiting.");
@@ -112,5 +115,15 @@ describe("memory split and proposals", () => {
     expect(anyPreparing([p("a", "shown", 1)])).toBe(false);
     expect(anyPreparing([p("a", "shown", 1), p("b", "preparing", 2)])).toBe(true);
     expect(anyPreparing(null)).toBe(false);
+  });
+});
+
+describe("proposalText", () => {
+  test("drops the Checks line and a trailing Approve?", () => {
+    const t = "Update skill foo: handle bar.\n\nChecks: 13/14 now → 13/14 with this change.\n\nApprove?";
+    expect(proposalText(t)).toBe("Update skill foo: handle bar.");
+    expect(proposalText("A\nChecks: 1/2\nB")).toBe("A\nB");
+    expect(proposalText("Approve? is not last\nB")).toBe("Approve? is not last\nB");
+    expect(proposalText(null)).toBe("");
   });
 });

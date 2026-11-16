@@ -110,7 +110,7 @@ function LessonRow({ it, onForget }: { it: ExpertItem; onForget: (it: ExpertItem
         <span className="xp-claim">{it.claim}</span>
         <span className="xp-meta">
           <span title={it.updated ? `last seen ${fmtWhen(it.updated)}` : undefined}>{seenLabel(it.count)}</span>
-          {lessonTags(it).map((t) => <span key={t} className={`xp-tag ${t}`}>{t}</span>)}
+          {lessonTags(it).map((t) => <span key={t} className={`xp-tag ${t.replace(/ /g, "-")}`}>{t}</span>)}
         </span>
       </div>
       <button type="button" className="xp-forget" title="Forget this lesson" onClick={() => onForget(it)}>Forget</button>
