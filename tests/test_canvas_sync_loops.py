@@ -64,7 +64,8 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     os.remove(os.path.join(d, "b.json"))
     # Rows the frame holds whose file is gone are deleted, edges with them…
     assert cs.diff_views(cs.compact_state_from_disk(d), view) == [
-        {"op": "delete", "name": "gone"}, {"op": "delete", "name": "b"},
+        {"op": "delete", "name": "gone", "reason": "file_deleted"},
+        {"op": "delete", "name": "b", "reason": "file_deleted", "file": "b.json"},
         {"op": "edges", "set": [["F", "a"]]}]
     # …unless they are the frame's own new nodes still owed their first body.
     assert cs.diff_views(cs.compact_state_from_disk(d), view, pending=["gone", "b"]) == []
@@ -431,3 +432,20 @@ def test_snapshot_new_node_on_a_bare_row_is_fileless(tmp_path):
                         udfs, base_nodes=["a", "k"])
     result = cs.apply_snapshot(d, new, None)
     assert result["fileless"] == ["x"]
+
+
+def test_delta_never_drops_a_node_whose_file_is_there_under_another_rule(tmp_path):
+    """The deletion rule is "no file of that name at all", not "no node
+    source": a `_x.py` or a fusedignored file is not a node source, but a
+    node the frame holds on such a row is NOT read as a deleted file."""
+    d = _clone(tmp_path, [dict(A_ROW), {"udfName": "_x", "x": 0, "y": 0},
+                          {"udfName": "hid", "x": 0, "y": 0}],
+               {"a.py": "A", "_x.py": "X", "hid.py": "H", ".fusedignore": "/hid.py\n"})
+    disk = cs.compact_state_from_disk(d)
+    assert "_x" not in disk["files"] and "hid" not in disk["files"]
+    view = cs.held_view(disk, ["a", "_x", "hid"], embed_rows=None, ids={}, edges=[],
+                        bodies={"a": "A"})
+    assert cs.diff_views(disk, view) == []
+    os.remove(os.path.join(d, "hid.py"))
+    assert cs.diff_views(cs.compact_state_from_disk(d), view) == [
+        {"op": "delete", "name": "hid", "reason": "file_deleted"}]

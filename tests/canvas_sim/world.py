@@ -697,8 +697,6 @@ class Session:
             doc["canvas"]["edges"] = [e for e in doc["canvas"].get("edges") or [] if name not in e]
             self._write_doc(doc)
         os.remove(path)
-        if keep_row:
-            self.w.file_only_deleted.add(name)
 
 
 class Human:
@@ -802,13 +800,6 @@ class World:
         self.ledger = Ledger()
         self.trace: list[str] = []
         self.names: set[str] = set()
-        # Names a session `rm`'d the file of, leaving the row (Session.delete
-        # keep_row). Such a bare row is not a node (disk's nodes are its
-        # files): the push publishes the canvas without it, but drops it from
-        # the clone's own toml only for a name the sync point served, so one
-        # may stay behind locally. Exempt from the rows check — these names
-        # only, never a bare row anything else left (sim class 2's ghosts).
-        self.file_only_deleted: set[str] = set()
         self._n = 0
         self.stale_seen: list[dict] = []
         initial = initial or INITIAL
@@ -918,8 +909,6 @@ class World:
         source files by text modulo JSON/newline re-serialisation)."""
         out: list[str] = []
         rows, files = self.disk_view()
-        rows = {n: r for n, r in rows.items()
-                if n in files or n not in self.file_only_deleted or canvas_snapshot.is_folder(r)}
         srows = self.server.rows()
         sfiles = {s: (u.file, self.server.export_file(u)) for s, u in self.server.udfs.items()}
         if set(rows) != set(srows):

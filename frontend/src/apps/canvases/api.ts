@@ -465,8 +465,9 @@ export type BodyAck =
   | { ok: false; code: "fenced"; node: string; file: string }
   /** The node's file is gone from disk (deleted or renamed there): never
    *  recreated from the frame's text; the delta that drops or renames the
-   *  node settles it. */
-  | { ok: false; code: "gone"; node: string; file: string };
+   *  node settles it. `kept`: where the posted text was saved in the
+   *  canvas's trash (absent when it could not be written). */
+  | { ok: false; code: "gone"; node: string; file: string; kept?: string };
 
 /** Embed v3 body channel: one source text → the clone, compare-and-swap on
  *  the hash of what disk holds (`base_hash`). Throws with `.status` 409

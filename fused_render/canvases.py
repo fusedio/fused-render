@@ -3109,6 +3109,18 @@ class _SyncManager:
         self._push_proc: subprocess.Popen | None = None
         self._rowless: set[str] = set()
         self._fileless: set[str] = set()
+        # Every node source file this manager has seen on disk, by slug
+        # (`_note_disk`). A row whose file is in here and gone was DELETED —
+        # never a row written ahead of its file — so the push drops it from
+        # the clone's own toml too, served or not (`_push`).
+        self._seen_sources: set[str] = set()
+        # An empty cut deferred to deltas still in flight (cut_delta): the
+        # ack of the last of them cuts again (ack_delta).
+        self._recut_after_acks = False
+        # Bodies posted for a file that is gone, kept in the trash
+        # (`_keep_gone_body`): file → its trash folder, and the hash kept.
+        self._gone_trash: dict[str, str] = {}
+        self._gone_kept: dict[str, str] = {}
         # leg → the last folder-fix set logged (`_log_folder_fixes`).
         self._folder_fixes_logged: dict[str, frozenset] = {}
         self._pull_started_at: float | None = None
@@ -4940,10 +4952,23 @@ class _SyncManager:
             try:
                 served = {os.path.splitext(f)[0] for f in self._base_files or ()
                           if f.endswith(canvas_snapshot.BODY_SUFFIXES)}
+                # …and every source this manager saw on disk: a node never
+                # pushed whose file a session deleted left a bare row the
+                # server never gets (the copy below drops it) and the frame
+                # no longer shows (`diff_views`) — kept here, it was a local
+                # orphan for good.
+                # Never a row with ANY file of its name on disk (`source_stems`:
+                # wider than the node files the reconcile reads).
+                try:
+                    present = canvas_snapshot.source_stems(self.dir)
+                except OSError:
+                    present = None
+                deletable = (set() if present is None
+                             else (served | self._seen_sources) - present)
                 held = self.held_tombstones()
                 dropped = self._reconcile_rows(
                     "disk_to_server", self.dir, pending=self._rowless | held,
-                    drop=served - self._fileless,
+                    drop=deletable - self._fileless,
                     backup=lambda rel, data: self._backup_to(self._new_trash_dir(), rel, data))
                 self._fingerprint = frozen = self._take_fingerprint()
                 self._dirty_since = None
@@ -5932,6 +5957,12 @@ class _SyncManager:
                 for old in [r for r in self._rev_times if r <= self._view_rev] or \
                         sorted(self._rev_times)[:-64]:
                     self._rev_times.pop(old, None)
+        try:
+            # Every node source seen, for the push's bare-row drop. Off the
+            # lock; a failed look is only a row kept until the next move.
+            self._seen_sources.update(canvas_snapshot.node_files(self.dir))
+        except (OSError, ValueError):
+            pass
         self._bump()
 
     # -- the user's canvas changes, for Claude (journal, tombstones, hooks) ---
@@ -6256,7 +6287,11 @@ class _SyncManager:
             # read as stale and drop `skipped` — and the frame's next
             # snapshot, still showing its old value, would be written over
             # the session's edit (sim seed 1565: a title reverted). The acks
-            # settle the view; the next cut adopts.
+            # settle the view; the last of them asks for a cut again
+            # (`_recut_after_acks`), which adopts — or re-sends what the frame
+            # skipped. Without it, nothing would cut again until disk moved,
+            # and disk_to_embed would read "pending" meanwhile.
+            self._recut_after_acks = True
             return {"rev": rev, "base_rev": base_rev, "ops": [], "full": False,
                     **self._cut_seq()}
         if view is not None and not ops:
@@ -6405,6 +6440,10 @@ class _SyncManager:
         self.log_event("disk_to_embed", "delta acked",
                        ms=None if cut_at is None else (time.time() - cut_at) * 1000,
                        detail=f"rev {rev}")
+        if self._recut_after_acks and not any(r > self._view_rev for r in self._delta_views):
+            # An empty cut waited for this ack (cut_delta): cut again now.
+            self._recut_after_acks = False
+            self._force_recut()
         return {"ok": True, "rev": rev}
 
     def _adopt(self, disk: dict) -> dict:
@@ -6415,13 +6454,14 @@ class _SyncManager:
         the manifest gives none (the external CLI never does, a shim manifest
         may lag): the frame holds those ids regardless, and apply_snapshot's
         missed-rename detection reads an un-hinted rename with no id as a
-        delete. A node the reading has a row but no file for stays only while
-        it is `_fileless` (the frame's own, owed its first body): any other
-        was deleted by the delta (`canvas_snapshot.diff_views`)."""
+        delete. A node the reading has a row but no file for stays only
+        where `canvas_snapshot.keeps_bare_row` says so: any other was deleted
+        by the delta (`canvas_snapshot.diff_views`)."""
         cur = self._embed_view or {}
         out = dict(disk)
         held = [n for n in cur.get("nodes", {}) if n not in disk["nodes"]
-                and (n in disk["files"] or (n in disk["rowed"] and n in self._fileless))]
+                and (n in disk["files"]
+                     or canvas_snapshot.keeps_bare_row(disk, n, self._fileless))]
         if held:
             out["nodes"] = {**disk["nodes"],
                             **{n: disk["rowed"].get(n, cur["nodes"][n]) for n in held}}
@@ -6560,6 +6600,35 @@ class _SyncManager:
             logger.warning("canvas %s: forgetting node sessions failed", self.name,
                            exc_info=True)
 
+    def _keep_gone_body(self, file: str, text: str) -> str | None:
+        """Write a body posted for a file that is gone to the trash, as
+        `<trash>/<file>`; the path, or None when it could not be written.
+        ONE trash folder per file for this manager's life (`_gone_trash`):
+        the frame retries a `gone` post on a backoff, and a folder per retry
+        would prune the oldest real recovery points (`_new_trash_dir`). A
+        text equal to the one kept is not written again."""
+        digest = canvas_snapshot.body_hash(text)
+        trash = self._gone_trash.get(file)
+        if trash is not None and not os.path.isdir(trash):
+            trash = None  # pruned since: a fresh folder below
+        dest = os.path.join(trash, file) if trash else None
+        if dest and self._gone_kept.get(file) == digest and os.path.isfile(dest):
+            return dest
+        if trash is None:
+            trash = self._new_trash_dir()
+            if trash is None:
+                return None
+            self._gone_trash[file] = trash
+            dest = os.path.join(trash, file)
+        # `replace`: a lone surrogate from the frame must not turn the `gone`
+        # answer into an error; this is a recovery copy, not the file.
+        if not self._backup_to(trash, file, text.encode("utf-8", "replace")):
+            return None
+        self._gone_kept[file] = digest
+        self.log_event("embed_to_disk", "unsaved edit kept",
+                       detail=f"{file}: the workbench's text for a deleted file, in {dest}")
+        return dest
+
     def apply_body(self, node: str, file: str, base_hash: str, text: str) -> dict:
         """One source text from the workbench's body channel → the clone, by
         compare-and-swap on content (canvas_snapshot.body_hash). Under
@@ -6615,7 +6684,15 @@ class _SyncManager:
             # node it just made) may create a file.
             self.log_event("embed_to_disk", "body for a missing file",
                            detail=f"{file}: deleted or renamed on disk; not recreated")
-            return {"ok": False, "code": "gone", "node": node, "file": file}
+            ack = {"ok": False, "code": "gone", "node": node, "file": file}
+            # …but never lost: the text the frame posted is the user's edit
+            # on top of the file that went (the delta that follows drops the
+            # node, and its text with it). Kept in the trash, so it can be
+            # put back by hand; the page tells the user where.
+            kept = self._keep_gone_body(file, text)
+            if kept:
+                ack["kept"] = kept
+            return ack
         current_hash = canvas_snapshot.body_hash(current if current is not None else "")
         if current_hash != base_hash:
             self.log_event("embed_to_disk", "body stale",

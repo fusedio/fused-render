@@ -1804,7 +1804,7 @@ def test_a_source_file_deleted_on_disk_drops_its_node_from_the_frame(harness, tm
     m.ack_delta(first["rev"], True)
     (clone / "c.py").unlink()
     cut = m.cut_delta(full=False)
-    assert cut["ops"] == [{"op": "delete", "name": "c"},
+    assert cut["ops"] == [{"op": "delete", "name": "c", "reason": "file_deleted", "file": "c.py"},
                           {"op": "edges", "set": [["a", "b"]]}], cut
     m.ack_delta(cut["rev"], True)
     assert m.cut_delta(full=False)["ops"] == []      # settled: nothing re-sent
@@ -1843,12 +1843,66 @@ def test_an_empty_cut_behind_an_unacked_delta_keeps_the_view_for_its_ack(harness
     empty = m.cut_delta(full=False)
     assert empty["ops"] == [] and empty["rev"] > retitle["rev"]
     assert m._view_rev == first["rev"]                  # not adopted past the retitle
+    rev_before = m.disk_rev
     acked = m.ack_delta(retitle["rev"], True, skipped=["b"])
     assert not acked.get("stale"), acked
     assert m._embed_view["nodes"]["b"]["title"] == "old"   # what the frame still shows
-    again = m.cut_delta(full=False)                     # …so the title is re-sent
+    assert m.disk_rev > rev_before                      # the deferred cut is asked again
+    again = m.cut_delta(full=False)                     # …and re-sends the title
     assert any(o["op"] == "upsert" and o["name"] == "b" and o["row"]["title"] == "new"
                for o in again["ops"]), again
+    m.ack_delta(again["rev"], True)
+    # Nothing skipped: the deferred cut's follow-up catches the view up to
+    # disk, so disk_to_embed does not sit on "pending" until disk moves.
+    write_rows("newer")
+    third = m.cut_delta(full=False)
+    write_rows("newer", tail="\n# again\n")
+    assert m.cut_delta(full=False)["ops"] == []
+    m.ack_delta(third["rev"], True)
+    final = m.cut_delta(full=False)
+    assert final["ops"] == [] and m._view_rev == m.disk_rev == final["rev"]
+
+
+def test_a_deleted_files_bare_row_leaves_the_clone_at_the_push(harness, tmp_path, monkeypatch,
+                                                                fake_agent):
+    """A node never pushed whose file a session deleted: the push already
+    left it out of the server's copy; the clone's own toml drops the bare
+    row too, since this manager SAW the file — while a row written ahead of
+    its file (never seen) and a row whose file is there under a non-node
+    name (`_x.py`) both stay."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    clone = harness.clones / "alpha"
+    (clone / "c.py").write_text("c\n")
+    (clone / "_x.py").write_text("x\n")
+    rows = [{"udfName": n, "x": 0, "y": 400 * i} for i, n in enumerate(["a", "b", "c", "_x"])]
+    (clone / "canvas.toml").write_text(rtoml.dumps({"type": "canvas", "canvas": {"nodes": rows}}))
+    m.ack_delta(m.cut_delta(full=True)["rev"], True)        # c.py seen
+    (clone / "c.py").unlink()
+    rows.append({"udfName": "early", "x": 0, "y": 2000})      # its file not written yet
+    (clone / "canvas.toml").write_text(rtoml.dumps({"type": "canvas", "canvas": {"nodes": rows}}))
+    with m._flight_lock:
+        m._push()
+    assert [r["udfName"] for r in _rows(str(clone))] == ["a", "b", "_x", "early"]
+
+
+def test_a_body_for_a_deleted_file_is_kept_in_the_trash(harness, tmp_path, monkeypatch,
+                                                        fake_agent):
+    """The user typed into a node whose file a session deleted: never
+    written back as the file (that would undo the deletion), but kept in the
+    trash, path in the ack. Retries reuse ONE trash folder, so a backoff
+    loop never prunes real recovery points."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    clone = harness.clones / "alpha"
+    base = canvas_snapshot.body_hash("b1\n")
+    (clone / "b.py").unlink()
+    first = m.apply_body("b", "b.py", base, "b1 plus my edit\n")
+    assert first["code"] == "gone" and not (clone / "b.py").exists()
+    kept = first["kept"]
+    assert open(kept).read() == "b1 plus my edit\n"
+    assert m.apply_body("b", "b.py", base, "b1 plus my edit\n")["kept"] == kept
+    again = m.apply_body("b", "b.py", base, "b1 plus more\n")["kept"]
+    assert again == kept and open(kept).read() == "b1 plus more\n"
+    assert not (clone / "b.py").exists()
 
 
 def test_quit_releases_every_lease_within_the_budget(harness, tmp_path, monkeypatch, fake_agent):
