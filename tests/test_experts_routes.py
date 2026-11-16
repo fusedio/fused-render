@@ -7,7 +7,6 @@ The expert is a bot written straight through the bots store with
 calls a model or reads a real transcript.
 """
 import json
-import os
 import time
 
 import pytest

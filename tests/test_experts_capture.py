@@ -7,7 +7,6 @@ bot (`id`, `dir`, `meta`).
 """
 import json
 import threading
-import time
 import types
 
 import pytest
