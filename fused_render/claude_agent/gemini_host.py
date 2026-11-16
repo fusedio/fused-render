@@ -122,7 +122,7 @@ _CALL_ARG = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*): (?P<val>.*?)(?=, [A-Za
 #: fused's own pane-server tools (permission_server.py): the names an
 #: argument-bearing title is matched against, since it names no server.
 _FUSED_TOOLS = frozenset({"app_state", "canvas_screenshot", "terminal_list",
-                          "terminal_read", "terminal_send"})
+                          "terminal_read", "terminal_send", "s3_search", "s3_read"})
 #: The CLI's own mode notice (D4): on every approval-mode change it sends an
 #: `agent_message_chunk` whose text is `[MODE_UPDATE] <ApprovalMode id>`
 #: (`Session.handleApprovalModeChanged`, verified 0.65.0).

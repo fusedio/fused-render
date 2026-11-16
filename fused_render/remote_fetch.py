@@ -69,6 +69,9 @@ logger = logging.getLogger(__name__)
 #: Uncached files above this size get a "this will be downloaded" notice first.
 WARN_BYTES = 100 * 1024 * 1024
 
+#: Most bytes one `/api/remote/read` call serves; a longer window is clamped.
+RANGE_MAX_BYTES = 64 * 1024 * 1024
+
 #: Downloads streaming at once; later starts wait their turn.
 MAX_ACTIVE = 3
 
@@ -247,6 +250,21 @@ def cached_path(bucket: str, key: str, info: ObjectInfo) -> str | None:
     if entry.get("mtime_ns") is not None and entry["mtime_ns"] != st.st_mtime_ns:
         return None
     return canonical_fs_path(os.path.abspath(path))
+
+
+def cached_copy(bucket: str, key: str) -> tuple[str, ObjectInfo] | None:
+    """`(path, info)` of the cached copy of `s3://bucket/key` judged from the
+    manifest alone — no network: the file is intact and is the version the
+    manifest recorded (`cached_path` against that record). `info.mtime` is
+    None (the manifest keeps no object time). An object changed in the
+    bucket since the download is still answered from the old copy."""
+    entry = _entry(bucket, key)
+    size, etag = entry.get("size"), entry.get("etag")
+    if not isinstance(size, int) or not isinstance(etag, str):
+        return None
+    info = ObjectInfo(size=size, mtime=None, etag=etag)
+    path = cached_path(bucket, key, info)
+    return (path, info) if path else None
 
 
 # ---------------------------------------------------------------- the registry

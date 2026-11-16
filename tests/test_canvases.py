@@ -2958,6 +2958,25 @@ def test_the_claude_md_names_exactly_the_skills_the_app_hands_over():
         assert "workbench:%s" % skill in text, skill
 
 
+def test_the_claude_md_names_the_s3_skill_and_tools_without_requiring_them():
+    """The S3 tools (`s3_search`, `s3_read`) and the skill that teaches them
+    are named in the skills section, hedged ("when this session has them",
+    "if ... not in your list") because the tools need the Canvases flag and an
+    origin, and the skill may not be published yet — which is also why
+    `s3-files` is NOT in WORKBENCH_SKILLS (that tuple validates a plugin
+    root, and requiring it would reject every plugin fetched before it)."""
+    from fused_render import skill_plugin
+
+    text = canvases_mod._CLONE_CLAUDE_MD
+    head = text[text.index("## Skills"):text.index("## Reference canvases")]
+    assert "| `workbench:s3-files` |" in head
+    assert "`s3_search`" in head and "`s3_read`" in head
+    assert "when this session has them" in " ".join(head.split())
+    assert "never\nwith curl" in head or "never with curl" in " ".join(head.split())
+    assert "s3-files" not in skill_plugin.WORKBENCH_SKILLS
+    assert "fused-asset-s3" not in text
+
+
 def test_the_missing_skills_fallback_confines_the_session_to_its_folder():
     """The fallback has to be a BOUNDARY, not just "carry on".
 

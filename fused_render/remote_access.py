@@ -2,8 +2,9 @@
 
 Scope is one public bucket, `BUCKET` in `REGION`, read with anonymous HTTPS.
 Folders come from its index (`remote_index`); this module answers for objects:
-`head(bucket, key)` and `read_url(bucket, key)`. A signed reader for other
-buckets would replace these two functions here and nowhere else.
+`head(bucket, key)`, `read_url(bucket, key)` and `read_range(bucket, key,
+start, end)`. A signed reader for other buckets would replace these
+functions here and nowhere else.
 
 **No SSRF.** The only host ever contacted is built from `BUCKET`/`REGION`
 (`require_supported` refuses anything else before any network call), and
@@ -14,7 +15,9 @@ No import of anything under `fused_render.server` — the router imports this.
 from __future__ import annotations
 
 import email.utils
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 import httpx
@@ -133,6 +136,190 @@ def read_url(bucket: str, key: str) -> str:
     """The https URL a plain GET (with Range) downloads the object from."""
     require_supported(bucket)
     return f"https://{BUCKET}.s3.{REGION}.amazonaws.com/{quote(key, safe='/~')}"
+
+
+def iso_utc(ts: float | None) -> str | None:
+    """An epoch time as ISO-8601 UTC (`2026-04-26T02:05:41Z`); None for an
+    unknown time (None or 0, the index's placeholder)."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+# ------------------------------------------------------------------- ranges
+#
+# A range is a Python slice of the object's bytes: `obj[start:end]`, `end`
+# exclusive, None = to the end, a negative value counted from the end. So
+# `(-65536, None)` is the last 64 KiB and `(0, 4096)` the first 4 KiB — no
+# HTTP Range vocabulary leaks to callers. `max_bytes` caps the window's
+# length after it is resolved against the object size.
+
+#: Bytes per chunk handed to the caller.
+RANGE_CHUNK = 64 * 1024
+
+
+def resolve_range(start: int, end: int | None, size: int,
+                  max_bytes: int | None = None) -> tuple[int, int]:
+    """`(first, stop)` of `obj[start:end]` for an object of `size` bytes,
+    stop exclusive and at most `max_bytes` past first. A non-negative
+    `start` at or past the end is `range_not_satisfiable` (what S3 answers
+    for it); a negative one before the start clamps to 0, like a slice."""
+    if start >= 0 and start >= size:
+        raise RemoteError("range_not_satisfiable",
+                          f"offset {start} is past the end of the object ({size} bytes)")
+    window = range(size)[slice(start, end)]
+    first = window.start
+    stop = max(first, window.stop)
+    if max_bytes is not None:
+        stop = min(stop, first + max(0, max_bytes))
+    return first, stop
+
+
+class RangeBody:
+    """The bytes of one resolved range, as an iterator of chunks.
+
+    `info` is the object, `start`/`end` the window actually served (end
+    exclusive). Iterating stops after exactly `end - start` bytes whatever
+    the source sends, and raises `RemoteError("network")` if it ends short.
+    `close()` releases the source (an HTTP response, a file); it is safe to
+    call more than once and from another thread, and must be called even
+    when the body is never iterated."""
+
+    def __init__(self, chunks, closer, info: ObjectInfo, start: int, end: int,
+                 skip: int = 0, what: str = "the object"):
+        self._chunks = chunks
+        self._closer = closer
+        self._skip = skip
+        self._what = what
+        self._closed = False
+        self.info = info
+        self.start = start
+        self.end = end
+
+    def __iter__(self):
+        skip, left = self._skip, self.end - self.start
+        try:
+            for chunk in self._chunks:
+                if skip:
+                    if len(chunk) <= skip:
+                        skip -= len(chunk)
+                        continue
+                    chunk, skip = chunk[skip:], 0
+                if len(chunk) >= left:
+                    if left:
+                        yield chunk[:left]
+                    left = 0
+                    break
+                left -= len(chunk)
+                yield chunk
+        except (httpx.HTTPError, httpx.StreamError, OSError) as e:
+            raise RemoteError("network", f"reading {self._what} failed: {e}") from None
+        finally:
+            self.close()
+        if left:
+            raise RemoteError("network", f"{self._what} ended {left} bytes early")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._closer()
+        except Exception:  # noqa: BLE001 - releasing must never raise
+            pass
+
+
+def _content_range(value: str | None) -> tuple[int, int, int] | None:
+    """`(first, last, total)` of `bytes first-last/total`, else None."""
+    m = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", (value or "").strip())
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+
+def _http_range(start: int, end: int | None, max_bytes: int | None) -> str:
+    """The narrowest `Range` header that covers `obj[start:end]` (capped)."""
+    if start < 0:
+        # Suffix form: the server resolves it against the size in one trip.
+        return f"bytes={start}"
+    stop = end if end is not None and end >= 0 else None
+    if max_bytes is not None:
+        stop = start + max_bytes if stop is None else min(stop, start + max_bytes)
+    if stop is None or stop <= start:
+        return f"bytes={start}-"
+    return f"bytes={start}-{stop - 1}"
+
+
+def read_range(bucket: str, key: str, start: int, end: int | None = None, *,
+               max_bytes: int | None = None) -> tuple[RangeBody, ObjectInfo]:
+    """`obj[start:end]` of `s3://bucket/key` (see "ranges" above): one ranged
+    GET, never a HEAD — size, etag and the resolved window come from the
+    response itself. Returns `(body, info)`; `body.start`/`body.end` is the
+    window served. The response is open when this returns (status already
+    checked), so a caller can still answer an error before streaming; it
+    MUST `body.close()` (iterating to the end does it).
+
+    Errors are `RemoteError` with `head`'s codes, plus
+    `range_not_satisfiable` for a start past the end. A server that ignores
+    `Range` (200) is honoured only for a window starting at 0; otherwise it
+    is a `network` error rather than a download of the whole object."""
+    url = read_url(bucket, key)
+    what = canonical_url(bucket, key)
+    # Raw bytes, never a decoded body: the window is in object bytes.
+    headers = {"Range": _http_range(start, end, max_bytes),
+               "Accept-Encoding": "identity"}
+    try:
+        r = _client.send(_client.build_request("GET", url, headers=headers), stream=True)
+    except httpx.HTTPError as e:
+        raise RemoteError("network", f"could not reach S3 for {what}: {e}") from None
+    try:
+        if r.status_code == 416:
+            raise RemoteError("range_not_satisfiable", _past_end(r, start, what))
+        if r.status_code == 206:
+            cr = _content_range(r.headers.get("content-range"))
+            if cr is None:
+                raise RemoteError("network", f"S3 sent an unreadable byte range for {what}")
+            served_from, size = cr[0], cr[2]
+        elif r.status_code == 200:
+            length = r.headers.get("content-length")
+            if not (length and length.isdigit()):
+                raise RemoteError("network", f"S3 sent {what} without a length")
+            served_from, size = 0, int(length)
+        else:
+            raise error_for_status(r.status_code, what)
+        info = ObjectInfo(size=size, mtime=_http_date(r.headers.get("last-modified")),
+                          etag=clean_etag(r.headers.get("etag")))
+        first, stop = resolve_range(start, end, size, max_bytes)
+        if first < served_from:
+            raise RemoteError("network", f"S3 sent the wrong byte range for {what}")
+        if r.status_code == 200 and first > 0:
+            raise RemoteError("network", f"S3 ignored the byte range for {what}; "
+                                         "refusing to download the whole object")
+    except BaseException:
+        r.close()
+        raise
+    body = RangeBody(r.iter_raw(RANGE_CHUNK), r.close, info, first, stop,
+                     skip=first - served_from, what=what)
+    return body, info
+
+
+def _past_end(r: httpx.Response, start: int, what: str) -> str:
+    """The 416 message, with the object size when S3's error body says it."""
+    size = None
+    try:
+        buf = b""
+        for chunk in r.iter_raw(4096):
+            buf += chunk
+            if len(buf) >= 4096:
+                break
+        m = re.search(rb"<ActualObjectSize>(\d+)</ActualObjectSize>", buf)
+        size = int(m[1]) if m else None
+    except httpx.HTTPError:
+        pass
+    if size is None:
+        return f"offset {start} is past the end of {what}"
+    return f"offset {start} is past the end of {what} ({size} bytes)"
 
 
 def head(bucket: str, key: str) -> ObjectInfo:

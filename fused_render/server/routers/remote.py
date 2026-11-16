@@ -2,6 +2,9 @@
 
   GET  /api/remote/stat?url=           file or folder, and whether it is cached
   GET  /api/remote/list?url=&cursor=   one level of a folder, one page
+  GET  /api/remote/read?url=&offset=&length=
+                                       a byte range of an object, streamed
+                                       (the agent tool `s3_read`)
   POST /api/remote/fetch               download an object into the local cache
   GET  /api/remote/fetch/status?id=    where that download is up to
   POST /api/remote/fetch/cancel        stop it
@@ -21,8 +24,8 @@ import json
 import logging
 
 from fastapi import APIRouter, Header, Request
-from fastapi.responses import JSONResponse
-from starlette.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from fused_render import remote_access, remote_fetch
 from fused_render.remote_access import RemoteError, canonical_url
@@ -34,7 +37,7 @@ router = APIRouter()
 
 _STATUS = {"disabled": 403, "forbidden": 403, "bad_url": 400, "unsupported_bucket": 400,
            "not_found": 404, "not_public": 403, "network": 502, "index_not_ready": 503,
-           "internal": 500}
+           "range_not_satisfiable": 416, "internal": 500}
 
 
 def _fail(code: str, message: str) -> JSONResponse:
@@ -228,6 +231,105 @@ async def api_remote_fetch(request: Request, x_fused: str | None = Header(defaul
     if body is None:
         return _fail("bad_url", 'the request body must be {"url": "s3://…"}')
     return await run_in_threadpool(_handle, _fetch, body.get("url"))
+
+
+# ---- files: a byte range, streamed -------------------------------------------
+#
+# `offset`/`length` are an agent's words; `remote_access` takes a Python slice
+# (`obj[start:end]`, negative = from the end). A window longer than
+# `RANGE_MAX_BYTES` (including `length` omitted on a big object) is CLAMPED to
+# its first `RANGE_MAX_BYTES` bytes, never refused; `X-Remote-Range` always
+# names the bytes actually sent. An object already in the local cache is read
+# from that file with no network at all (`remote_fetch.cached_copy`); the
+# window rules are the same `remote_access.resolve_range` either way.
+
+
+def _int_param(name: str, raw: str | None) -> int | None:
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        raise RemoteError("bad_url", f"'{name}' must be an integer") from None
+
+
+def _window(offset: int | None, length: int | None) -> tuple[int, int]:
+    """`(start, max_bytes)` for offset/length: the window starts at `offset`
+    (negative = from the end, clamped to byte 0) and runs `length` bytes
+    from THERE (to the end when omitted), never more than the cap."""
+    if length is not None and length < 1:
+        raise RemoteError("bad_url", "'length' must be at least 1")
+    cap = remote_fetch.RANGE_MAX_BYTES
+    return offset or 0, cap if length is None else min(length, cap)
+
+
+def _file_range(path: str, info: remote_access.ObjectInfo, start: int, max_bytes: int,
+                what: str) -> remote_access.RangeBody:
+    first, stop = remote_access.resolve_range(start, None, info.size or 0, max_bytes)
+    f = open(path, "rb")  # noqa: SIM115 - RangeBody closes it
+    try:
+        f.seek(first)
+    except BaseException:
+        f.close()
+        raise
+    chunks = iter(lambda: f.read(remote_access.RANGE_CHUNK), b"")
+    return remote_access.RangeBody(chunks, f.close, info, first, stop, what=what)
+
+
+def _open_read(url, offset, length) -> remote_access.RangeBody:
+    bucket, key = _parse(url)
+    start, max_bytes = _window(_int_param("offset", offset), _int_param("length", length))
+    if not key or key.endswith("/"):
+        raise RemoteError("bad_url", "a folder has no bytes to read — list it instead")
+    what = canonical_url(bucket, key)
+    cached = remote_fetch.cached_copy(bucket, key)
+    if cached is not None:
+        try:
+            return _file_range(cached[0], cached[1], start, max_bytes, what)
+        except OSError:
+            logger.warning("cached copy of %s unreadable; reading from S3", what,
+                           exc_info=True)
+    body, _ = remote_access.read_range(bucket, key, start, max_bytes=max_bytes)
+    return body
+
+
+def _read_headers(body: remote_access.RangeBody) -> dict:
+    info = body.info
+    headers = {"Content-Length": str(body.end - body.start),
+               "X-Remote-Range": f"{body.start}-{body.end}",
+               "Content-Security-Policy": "sandbox",
+               "X-Content-Type-Options": "nosniff",
+               "Cache-Control": "no-store"}
+    if info.size is not None:
+        headers["X-Remote-Size"] = str(info.size)
+    if info.etag and info.etag.isascii() and info.etag.isprintable():
+        headers["X-Remote-Etag"] = info.etag
+    modified = remote_access.iso_utc(info.mtime)
+    if modified:
+        headers["X-Remote-Modified"] = modified
+    return headers
+
+
+@router.get("/api/remote/read")
+async def api_remote_read(url: str | None = None, offset: str | None = None,
+                          length: str | None = None):
+    gate = _gate()
+    if gate is not None:
+        return gate
+    opened = await run_in_threadpool(_handle, _open_read, url, offset, length)
+    if isinstance(opened, JSONResponse):
+        return opened
+    body = opened
+
+    async def stream():
+        try:
+            async for chunk in iterate_in_threadpool(iter(body)):
+                yield chunk
+        finally:
+            body.close()
+
+    return StreamingResponse(stream(), media_type="application/octet-stream",
+                             headers=_read_headers(body))
 
 
 @router.get("/api/remote/fetch/status")

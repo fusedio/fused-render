@@ -395,19 +395,23 @@ def _parse_cursor(cursor) -> int:
     return int(m.group(1))
 
 
-def list_dir(prefix: str, cursor: str | None = None) -> dict | None:
+def list_dir(prefix: str, cursor: str | None = None,
+             limit: int = PAGE_SIZE) -> dict | None:
     """One level of folder `prefix` ("" = bucket root, else ending in "/"):
     `{entries: [{key, name, is_dir, size, mtime}], cursor}`, child folders
-    first then files, each by name (byte order), `PAGE_SIZE` per page. None
-    when the store is not ready. A folder's key ends in "/" and carries no
-    size or mtime. `cursor` is opaque (an offset); a malformed one raises
-    ValueError. A missing folder lists as empty — ask `has_dir` first.
+    first then files, each by name (byte order), `limit` (at most
+    `PAGE_SIZE`) per page. None when the store is not ready. A folder's key
+    ends in "/" and carries no size or mtime. `cursor` is opaque (an
+    offset, advanced by the entries returned, so pages of different sizes
+    chain without gaps); a malformed one raises ValueError. A missing
+    folder lists as empty — ask `has_dir` first.
 
     Child folders come from dirs.parquet (`depth` = one more than the
     folder's, inside the folder's byte range, so row-group statistics skip
     the rest); files from the manifest's partitions pruned to the folder's
     path range (`query.prune`) and filtered on `dir` exactly."""
     offset = _parse_cursor(cursor)
+    page = max(1, min(int(limit), PAGE_SIZE))
     opened = _open_store()
     if opened is None:
         return None
@@ -432,18 +436,18 @@ def list_dir(prefix: str, cursor: str | None = None) -> dict | None:
     try:
         rows = con.execute(
             "SELECT grp, name, size, mtime FROM (" + " UNION ALL ".join(branches)
-            + f") ORDER BY grp, name LIMIT {PAGE_SIZE + 1} OFFSET {offset}").fetchall()
+            + f") ORDER BY grp, name LIMIT {page + 1} OFFSET {offset}").fetchall()
     finally:
         con.close()
     key_base = d[len(root) + 1:] + "/" if d != root else ""
     entries = []
-    for grp, name, size, mtime in rows[:PAGE_SIZE]:
+    for grp, name, size, mtime in rows[:page]:
         is_dir = grp == 0
         entries.append({"key": key_base + name + ("/" if is_dir else ""),
                         "name": name, "is_dir": is_dir,
                         "size": None if is_dir else int(size or 0),
                         "mtime": None if is_dir else float(mtime or 0.0)})
-    nxt = f"o{offset + PAGE_SIZE}" if len(rows) > PAGE_SIZE else None
+    nxt = f"o{offset + page}" if len(rows) > page else None
     return {"entries": entries, "cursor": nxt}
 
 
