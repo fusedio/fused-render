@@ -30,7 +30,7 @@ Guest-process rules: may die anytime (persist under `--cache` with temp+`os.repl
 - Runs folder's OWN declared env, no ancestor walk, no bundled union — `[project]` list complete. No project deps → `sys.executable`; `import fused_render` never available.
 - `templates/shared` NOT on sys.path → `import fused_ai` / `import background_app` fail. Bootstrap: read `<FUSED_RENDER_HOME_DIR or ~/.fused-render>/server.json`, `sys.path.insert(0, info["shared"])`.
 - `background_app` module (from shared): `status()`, `stop()`, `restart()`, `set_autostart(bool)` — daemon's own control channel. Needs `FUSED_RENDER_APP_DIR` env (set for managed daemons); raises `NotUnderEngine`, `ServerNotRunning`, `BackgroundAppError` — catch them.
-- Server-startup autostart skips folders whose venv isn't built (open page once first); `start()` falls back to `sys.executable`.
+- Venv not built yet: `start()`/`restart()` still start on `sys.executable` (never blocks), kick off the venv build (response carries `installing`/`install`) and the daemon respawns on the venv when it lands; autostart at server startup builds it, then starts the daemon.
 
 ## Page side: `fused.daemon`
 

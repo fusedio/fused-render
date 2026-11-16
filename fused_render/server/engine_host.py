@@ -826,7 +826,7 @@ def reap_idle_children(now: float | None = None) -> int:
 
 
 def restart(engine_id: str, failed: Child | None = None,
-           version: str | None = None) -> Child:
+           version: str | None = None, *, python: str | None = None) -> Child:
     """Kill and respawn the child, replaying its reinit requests.
 
     `failed` is the child the caller's request died against: when another
@@ -847,6 +847,11 @@ def restart(engine_id: str, failed: Child | None = None,
     instead of tearing the just-restarted child down and spawning it a
     second time.
 
+    `python` swaps the respawned child's interpreter (validated like any
+    other); omitted, `existing.python` carries over. `/api/apps/background/
+    restart` passes its freshly resolved interpreter so a daemon that started
+    on the D631 `sys.executable` fallback moves onto the venv once it is built.
+
     The new child's state is replayed BEFORE it is published, so a request
     retried mid-replay waits on the spawn lock rather than seeing a child whose
     registry is still empty.
@@ -862,8 +867,11 @@ def restart(engine_id: str, failed: Child | None = None,
         if (failed is not None and existing is not failed
                 and _alive(existing) and _ping(existing)):
             return existing
+        if python is not None:
+            _validate_interpreter(python)
         _terminate(existing)
-        child = Child(engine_id=engine_id, python=existing.python,
+        child = Child(engine_id=engine_id,
+                      python=python if python is not None else existing.python,
                       daemon=existing.daemon, cache=existing.cache,
                       version=version if version is not None else existing.version,
                       module=existing.module,

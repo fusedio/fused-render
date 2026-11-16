@@ -1136,7 +1136,7 @@ def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
 
     captured = {}
 
-    def fake_restart(eid, failed=None, version=None):
+    def fake_restart(eid, failed=None, version=None, *, python=None):
         captured["engine_id"] = eid
         captured["version"] = version
         return engine_host.Child(
@@ -1368,6 +1368,9 @@ def test_resurrect_autostart_skips_a_folder_with_no_venv_built(tmp_path, monkeyp
     background_apps.set_autostart(str(folder), True)
     monkeypatch.setattr(background_apps, "interpreter_for",
                         lambda f: "/definitely/not/a/real/python")
+    # D1481: the skip branch now also starts the venv build; fake it out.
+    monkeypatch.setattr(background_apps, "build_env_then_respawn",
+                        lambda *a, **k: None)
     started = []
     monkeypatch.setattr(engine_host, "ensure_background",
                         lambda *a, **k: started.append(a) or None)
