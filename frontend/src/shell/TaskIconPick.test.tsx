@@ -75,6 +75,23 @@ test("the ring of any numbered task is the picker's button — with the experime
   }
 });
 
+test("the button keeps the ring's status as its description", () => {
+  switches(true, true);
+  const r = render(
+    createElement(TaskIconPick, {
+      task: task(),
+      children: createElement(StatusIcon, { status: "done", unread: true }),
+    }),
+  );
+  const btn = pickButtons(r)[0]!;
+  expect(btn.props["aria-label"]).toBe("Choose icon");
+  const id = btn.props["aria-describedby"];
+  expect(typeof id).toBe("string");
+  const face = r.root.find((n) => n.props.id === id);
+  // The ring inside it carries the words a screen reader is described with.
+  expect(face.findAll((n) => n.type === "span" && /^Done/.test(String(n.props["aria-label"] ?? "")))).toHaveLength(1);
+});
+
 test("no button with the experiment off, or on a task with no number yet", () => {
   switches(false, true);
   const off = render(pick(task({ icon_slot: 3, icon_picked: true })));

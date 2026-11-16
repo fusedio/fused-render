@@ -33,7 +33,7 @@
 // width off screen. React still bubbles its events to the host, so the
 // card's focus hold sees the filter box, and the picker's own
 // `data-peek-keep` keeps a press on it from reading as blank page.
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { setTaskIcon, type HttpError, type Task } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
@@ -88,6 +88,13 @@ export function TaskIconPick({
   // be pressed again, and two fast draws answered out of order would keep the
   // earlier face (the star's rule, platform/ui/TaskStar).
   const chain = useRef<Promise<unknown>>(Promise.resolve());
+  // THE RING STILL SAYS WHAT IT SAYS. The button's name is "Choose icon",
+  // which hides the ring's own label ("Done, unread") from a screen reader —
+  // and on a Tasks row the ring is the only place the status is spoken (the
+  // row's link names the title). Since every numbered task's ring is this
+  // button now (2026-11-16), not only a favourite's face, the status rides
+  // as the button's DESCRIPTION, read off the ring inside it.
+  const faceId = useId();
   const save = useCallback(
     (slot: number | null) => {
       chain.current = chain.current
@@ -175,6 +182,7 @@ export function TaskIconPick({
         title="Choose icon"
         aria-haspopup="dialog"
         aria-expanded={anchor !== null}
+        aria-describedby={faceId}
         onMouseDown={editing ? (e) => e.preventDefault() : undefined}
         onClick={(e) => {
           // A control inside a door (a row, a card): the press is its own.
@@ -183,7 +191,11 @@ export function TaskIconPick({
           setAnchor((cur) => (cur && cur.key === key ? null : { key, top: rect.top, left: rect.left }));
         }}
       >
-        {children}
+        {/* `display: contents` (schedule.css): the ring stays the button's
+            own grid item, so nothing moves. */}
+        <span id={faceId} className="task-icon-pick-face">
+          {children}
+        </span>
       </button>
       {picker}
     </>

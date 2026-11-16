@@ -8151,7 +8151,11 @@ def _icon_faces() -> dict[str, tuple[int, bool]]:
     switch live instead (ScheduleTaskViews `StatusIcon`), and `picked` is
     what it needs to know to keep a hand-picked face with the switch off."""
     try:
-        return tasks_store.worn_icons(tasks_store.favourites_state())
+        state = tasks_store.favourites_state()
+        # Starred by the row's own reading (`favourite_of`): a record that is
+        # not a dict reads as not starred there, so it wears no star's face.
+        starred = {key for key in state if tasks_store.favourite_of(state, key)[0]}
+        return tasks_store.worn_icons(starred)
     except OSError:
         return {}
 

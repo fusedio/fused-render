@@ -212,3 +212,13 @@ def test_legacy_pick_without_a_word_keeps_todays_faces(state):
     assert _faces() == {"s1": (42, False)}
     tasks_store.set_favourite("s1", False)
     assert _faces() == {}
+
+
+def test_a_bad_favourites_record_is_no_star_and_no_face(state):
+    """The row reads a non-dict favourites record as not starred
+    (`favourite_of`); the face must agree, or a ring-less row would say
+    "not starred" while wearing the star's face."""
+    tasks_store.ensure_ids([("s1", P, 1.0)])
+    tasks_store._update(tasks_store.FAVOURITES_FILE,
+                        lambda state: (state.__setitem__("s1", "junk"), True))
+    assert _faces() == {}

@@ -2987,6 +2987,11 @@ input.schedule-when-field {
 .task-icon-pick .schedule-ring {
   transition: transform 0.12s ease;
 }
+/* The ring's wrapper, there only to be the button's description
+   (TaskIconPick `aria-describedby`): no box of its own. */
+.task-icon-pick-face {
+  display: contents;
+}
 .task-icon-pick:focus-visible {
   outline: 2px solid var(--accent, currentColor);
   outline-offset: 1px;
