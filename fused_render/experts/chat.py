@@ -214,7 +214,10 @@ class _Turn:
             return ("No lessons to turn into a skill (none match, or they were all proposed already). "
                     "Use remember_lesson first, or pass item_ids from list_memory."), True
         bot.set_doing("drafting a skill")
-        p = proposals.prepare(bot, items)
+        try:
+            p = proposals.prepare(bot, items)
+        except ValueError as e:
+            return f"Could not draft a skill: {e}", True
         if bot.stop_flag.is_set():
             return STOP_TEXT, True
         notes = []

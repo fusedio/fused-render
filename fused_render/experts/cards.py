@@ -104,7 +104,7 @@ def settle(bot, proposal, verdict) -> tuple[str, dict | None]:
     except Exception as e:  # noqa: BLE001
         logger.warning("expert %s: proposal %s not settled", bot.id, pid, exc_info=True)
         msg = f"Could not {'save' if verdict else 'reject'} the skill proposal: {e}"
-        bot.emit("error", msg)
+        bot.emit("note", msg)
         return msg, None
     bot.emit("note", msg)
     return msg, p
