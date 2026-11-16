@@ -316,6 +316,18 @@ class _ChromiumDelegate(NSObject):
         # gates the hardware). Anything else: denied — same as WebKit's path
         # for geolocation; for media WebKit showed its own prompt, which
         # Chromium does not offer here.
+        #
+        # "multiple_downloads" (Chromium's automatic-downloads limiter, which
+        # WebKit never had): granted for every origin. A frame may already
+        # download once without asking, and a denial latches the page to "no
+        # downloads" until it reloads — a workbench canvas framed from its own
+        # origin could download one file from its file explorer and then
+        # none. Every download still lands under ~/Downloads by
+        # `download_destination`.
+        if kind == "multiple_downloads":
+            logger.info("multiple downloads from %s -> grant",
+                        origin.absoluteString() if origin is not None else "?")
+            return True
         own = False
         if origin is not None:
             port = origin.port()

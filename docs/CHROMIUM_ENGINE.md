@@ -138,6 +138,11 @@ windows. Three things the first run fixed, all in `FRChromiumEngine.mm`:
   run (cefclient's fallback): CEF does not ask for a run for every task that
   becomes ready, and without it a navigation stalled after `OnBeforeBrowse`;
 * `--use-mock-keychain`, so the first window never asks for keychain access.
+* Chromium's automatic-downloads limiter (which WebKit never had) is granted
+  for every origin: after a page's first download the next one raises a
+  `MULTIPLE_DOWNLOADS` permission prompt, and a denial latches the page to
+  "no downloads" until it reloads — a framed workbench canvas downloaded one
+  file from its file explorer and then none.
 
 Not yet exercised:
 
