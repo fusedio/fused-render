@@ -54,8 +54,8 @@ def env(tmp_path, monkeypatch):
 
     def history(file, session_id, transcript=""):
         state["history_calls"].append((file, session_id, transcript))
-        return {"turns": [{"role": "user", "text": "please always use fused.load"},
-                          {"role": "assistant", "text": "ok " + "y" * 50000}], "backend": "claude"}
+        return {"turns": [{"role": "assistant", "text": "early " + "y" * 50000},
+                          {"role": "user", "text": "please always use fused.load"}], "backend": "claude"}
 
     monkeypatch.setattr(capture, "_agent", lambda: types.SimpleNamespace(_history=history))
     monkeypatch.setattr(capture, "_canvas_clone", lambda path: path if path.endswith("clone") else "")
