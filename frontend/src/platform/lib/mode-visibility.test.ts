@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import type { TemplateEntry } from "@platform/lib/api";
 import {
   OFFERED_ONLY_SIDEBAR_MODES,
+  isModeVisible,
+  isNodeViewEntry,
   SIDEBAR_MODES,
   unavailableReason,
   visibleModes,
@@ -82,8 +84,11 @@ describe("partitionModes", () => {
   it("agrees with isSidebarMode", () => {
     expect(isSidebarMode("claude")).toBe(true);
     expect(isSidebarMode("git")).toBe(true);
-    // The canvas node view (SPEC §53.3 NV-3) pairs with the content mode too.
-    expect(isSidebarMode("udf")).toBe(true);
+    // The canvas node view (SPEC §53.3 NV-3) pairs with the content mode too —
+    // by its ENTRY, the core native template; the bare name is not enough.
+    expect(isSidebarMode("udf")).toBe(false);
+    expect(isSidebarMode({ mode: "udf", native: true })).toBe(true);
+    expect(isSidebarMode({ mode: "udf" })).toBe(false);
     // MCP is a dialog off the bar's kebab now, not a companion.
     expect(isSidebarMode("mcp")).toBe(false);
     expect(isSidebarMode("claude_split")).toBe(false);
@@ -276,5 +281,23 @@ describe("effectiveActive", () => {
 describe("offered-only companions", () => {
   it("is the node view alone: claude and git keep their disabled rows", () => {
     expect([...OFFERED_ONLY_SIDEBAR_MODES]).toEqual(["udf"]);
+  });
+});
+
+describe("the node view's visibility needs an explicit yes", () => {
+  const udf: TemplateEntry = { mode: "udf", path: "/tpl/udf/native", icon: null, conditional: true, native: true };
+  it("hidden while the call is out, after a failed call, and on a no", () => {
+    expect(isModeVisible(udf, null)).toBe(false);
+    expect(isModePending(udf, null)).toBe(false);
+    expect(isModeVisible(udf, {})).toBe(false);
+    expect(isModeVisible(udf, { udf: false })).toBe(false);
+    expect(isModeVisible(udf, { udf: true })).toBe(true);
+    expect(names(visibleModes([t("code"), udf], {}))).toEqual(["code"]);
+  });
+  it("a `udf` that is not the native template follows the ordinary rules", () => {
+    const plain = { ...udf, native: undefined };
+    expect(isNodeViewEntry(plain)).toBe(false);
+    expect(isModeVisible(plain, {})).toBe(true);
+    expect(isModePending(plain, null)).toBe(true);
   });
 });

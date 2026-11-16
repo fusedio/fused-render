@@ -144,6 +144,9 @@ export interface TemplateEntry {
   path: string | null;
   icon: string | null;
   conditional?: boolean;
+  /** A native template (PT-6 amendment): the shell draws it, there is no
+   *  page to frame. Set by the server on the stat entry. */
+  native?: boolean;
 }
 
 export interface StatResult {

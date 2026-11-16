@@ -13,11 +13,13 @@ import {
   nodePaneAuto,
   nodeViewShutAfter,
   urlNamesSide,
+  fileSideState,
   SIDE_OFF,
   type SideEntry,
   type SideSplitInput,
 } from "@apps/explorer/lib/preview-side";
 import { PANE_SIDE_OFF } from "@apps/explorer/listing/pane-side";
+import { partitionModes, visibleModes } from "@platform/lib/mode-visibility";
 
 // `_side` as read at mount, in one call — the composition Preview makes (the
 // request in state, resolved against the split on every render).
@@ -1034,8 +1036,8 @@ describe("Preview records the remembered tab only on an explicit pick", () => {
 // --- the canvas node view (`udf`, SPEC §53.3 NV-3/NV-4) ----------------------
 
 describe("the node view companion", () => {
-  // As the registry ships it: templates/udf/condition.py, so conditional.
-  const udf: TemplateEntry = { ...t("udf"), conditional: true };
+  // As the server ships it: the core NATIVE template, gated (condition.py).
+  const udf: TemplateEntry = { ...t("udf"), conditional: true, native: true };
 
   it("is never a disabled row: absent, it is not drawn at all", () => {
     const s = sideSplit(file([claude], "yes"));
@@ -1043,20 +1045,16 @@ describe("the node view companion", () => {
       ["claude", null],
       ["git", null],
     ]);
-    // …nor on a file with no companion of its own.
     expect(sideSplit(file([], "no")).menu.map((e) => e.mode)).toEqual(["claude", "git"]);
   });
 
-  it("is not drawn while its gate is still out, and is once it says yes", () => {
-    const pending = sideSplit({ ...file([gatedClaude, udf], "yes"), conditionsPending: true });
-    expect(pending.menu.map((e) => e.mode)).toEqual(["claude", "git"]);
-    expect(pending.ready).toEqual(["git"]);
+  it("is drawn, once, when it is on offer", () => {
     const settled = sideSplit({ ...file([gatedClaude, udf], "yes"), conditionsPending: false });
     expect(settled.menu.map((e) => e.mode)).toEqual(["claude", "git", "udf"]);
     expect(settled.ready).toEqual(["claude", "git", "udf"]);
   });
 
-  it("is ranked last: an absent `_side` still opens the chat", () => {
+  it("is ranked last: the chat stays the split's own leader", () => {
     const s = sideSplit({ ...file([udf, gatedClaude], "no"), conditionsPending: false });
     expect(names(s.all)).toEqual(["claude", "udf"]);
     expect(s.defaultSide).toBe("claude");
@@ -1065,21 +1063,19 @@ describe("the node view companion", () => {
   it("can be named by `_side` like any companion", () => {
     const s = sideSplit({ ...file([gatedClaude, udf], "no"), conditionsPending: false });
     expect(openedAt("?_side=udf", s)).toBe("udf");
-    // And spelled out in the URL, since it is not the default.
-    expect(sideParam("udf", s.defaultSide)).toBe("udf");
   });
 });
 
 describe("nodePaneAuto (NV-4)", () => {
-  const base = { splitCapable: true, urlNamedSide: false, ready: ["claude", "udf"], shut: false };
+  const base = { splitCapable: true, urlNamedSide: false, ready: ["claude", "udf"], verdict: true, shut: false };
 
   it("opens the node pane on a node file whose URL said nothing", () => {
     expect(nodePaneAuto(base)).toBe(true);
   });
 
-  it("never where the gate has not said yes — Canvases off, not a node, still pending", () => {
+  it("needs the gate's explicit yes, and the native entry on offer", () => {
+    expect(nodePaneAuto({ ...base, verdict: false })).toBe(false);
     expect(nodePaneAuto({ ...base, ready: ["claude"] })).toBe(false);
-    expect(nodePaneAuto({ ...base, ready: [] })).toBe(false);
   });
 
   it("never over the URL's own word, nor once the reader shut the pane", () => {
@@ -1098,12 +1094,13 @@ describe("urlNamesSide", () => {
     expect(urlNamesSide("?_side=off")).toBe(true);
     expect(urlNamesSide("?_side=udf")).toBe(true);
     expect(urlNamesSide("?_mode=claude")).toBe(true);
-    expect(urlNamesSide("?_mode=udf")).toBe(true);
   });
-  it("is not silence, an empty `_side`, or a content `_mode`", () => {
+  it("is not silence, an empty `_side`, a content `_mode`, or a bare `_mode=udf`", () => {
     expect(urlNamesSide("")).toBe(false);
     expect(urlNamesSide("?_side=")).toBe(false);
     expect(urlNamesSide("?_mode=code&session_id=x")).toBe(false);
+    // A name alone does not make the node view a companion (its entry does).
+    expect(urlNamesSide("?_mode=udf")).toBe(false);
   });
 });
 
@@ -1117,5 +1114,130 @@ describe("nodeViewShutAfter", () => {
     expect(nodeViewShutAfter("claude", null)).toBe(undefined);
     expect(nodeViewShutAfter("udf", "claude")).toBe(undefined);
     expect(nodeViewShutAfter(null, "git")).toBe(undefined);
+  });
+});
+
+// THE FILE VIEW, AS TemplatePreview COMPOSES IT. Preview.tsx has no mount
+// precedent (see Preview.share-row.test.ts), so this drives the exact chain
+// it runs on every render — visibility (mode-visibility), partition, split,
+// the URL request, `fileSideState`, the reconcile's URL write — and its one
+// writer (`applySide`: the shut memory + `sideParam` against the effective
+// default). A "reload" is a fresh `view(search)` on the URL left behind.
+describe("the node pane in the file view (TemplatePreview's chain)", () => {
+  const code: TemplateEntry = t("code");
+  const udf: TemplateEntry = { ...t("udf"), conditional: true, native: true };
+  // What stat lists for a .py: code, udf (gated, native), claude (gated).
+  const PY = [code, udf, gatedClaude];
+  const YES = { udf: true, claude: true };
+  const NO = { udf: false, claude: true };
+
+  function view(
+    search: string,
+    o: { conditions: Record<string, boolean> | null; shut?: boolean; hidden?: boolean; templates?: TemplateEntry[] },
+  ) {
+    const templates = visibleModes(o.templates ?? PY, o.conditions);
+    const parts = partitionModes(templates);
+    const split = sideSplit({
+      splitCapable: true,
+      content: parts.content,
+      own: parts.sidebar,
+      borrowed: [],
+      borrowedPending: [],
+      conditionsPending: o.conditions === null,
+    });
+    const sideReq = parseSide(search, o.hidden ?? false);
+    const state = fileSideState({
+      split,
+      splitCapable: true,
+      sideReq,
+      urlNamedSide: urlNamesSide(search),
+      nodeVerdict: o.conditions?.udf,
+      shut: o.shut ?? false,
+      remembered: null,
+    });
+    const fixed = reconcileSideSearch(search, {
+      splitCapable: true,
+      offered: split.offered,
+      open: sideReq.open,
+      activeSide: state.activeSide,
+      defaultSide: state.defaultSide,
+      fromMemory: state.fromMemory,
+    });
+    const url = fixed === null ? search.replace(/^\?/, "") : fixed;
+    return { ...state, templates, parts, split, url };
+  }
+  // The column's one writer (Preview `applySide`), minus the React state.
+  function click(v: ReturnType<typeof view>, next: string | null, shut: boolean) {
+    const s = nodeViewShutAfter(v.activeSide, next);
+    const url = writeQueryParam(v.url, "_side", sideParam(next, v.defaultSide));
+    return { url, shut: s === undefined ? shut : s };
+  }
+
+  it("a failed conditions call ({}) offers and opens nothing — Canvases off reads the same", () => {
+    for (const conditions of [{}, NO]) {
+      const v = view("", { conditions });
+      expect(v.templates.map((e) => e.mode)).not.toContain("udf");
+      expect(v.nodeAuto).toBe(false);
+      expect(v.activeSide).toBe("claude"); // what the file opened before
+      expect(v.split.menu.map((e) => e.mode)).toEqual(["claude", "git"]);
+    }
+  });
+
+  it("while the conditions call is out, udf is neither listed nor pending", () => {
+    const v = view("", { conditions: null });
+    expect(v.templates.map((e) => e.mode)).toEqual(["code", "claude"]);
+    expect(v.activeSide).toBe(null);
+  });
+
+  it("the gate says yes: a silent URL opens the node pane and stays silent", () => {
+    const v = view("", { conditions: YES });
+    expect(v.nodeAuto).toBe(true);
+    expect(v.activeSide).toBe("udf");
+    expect(v.url).toBe("");
+  });
+
+  it("a `_side=claude` deep link stays in the URL and survives a reload", () => {
+    const v = view("_side=claude", { conditions: YES });
+    expect(v.activeSide).toBe("claude");
+    expect(v.url).toBe("_side=claude");
+    expect(view(v.url, { conditions: YES }).activeSide).toBe("claude");
+  });
+
+  it("a click on the Claude tab is written, and a reload lands on Claude", () => {
+    const v = view("", { conditions: YES });
+    const after = click(v, "claude", false);
+    expect(after.url).toBe("_side=claude");
+    expect(after.shut).toBe(false);
+    expect(view(after.url, { conditions: YES, shut: after.shut }).activeSide).toBe("claude");
+    // …and back on the Node tab is the clean URL again.
+    const back = click(view(after.url, { conditions: YES }), "udf", false);
+    expect(back.url).toBe("");
+  });
+
+  it("closing the node pane shuts it for every node file until it is opened again", () => {
+    const v = view("", { conditions: YES });
+    const closed = click(v, null, false);
+    expect(closed.shut).toBe(true);
+    expect(closed.url).toBe("_side=off");
+    // Another node file, silent URL, the session's hidden flag set by the close.
+    const other = view("", { conditions: YES, shut: closed.shut, hidden: true });
+    expect(other.nodeAuto).toBe(false);
+    expect(other.activeSide).toBe(null);
+    // The default there is the chat again, so a shut column reads as before.
+    expect(other.defaultSide).toBe("claude");
+    // Opened again on it: the memory clears.
+    const reopened = click(view("", { conditions: YES, shut: true }), "udf", true);
+    expect(reopened.shut).toBe(false);
+  });
+
+  it("a non-native `udf` entry is an ordinary template: content, not a companion", () => {
+    const plain: TemplateEntry = { ...t("udf"), conditional: true };
+    const v = view("", { conditions: YES, templates: [code, plain, gatedClaude] });
+    expect(v.parts.content.map((e) => e.mode)).toEqual(["code", "udf"]);
+    expect(v.parts.sidebar.map((e) => e.mode)).toEqual(["claude"]);
+    expect(v.nodeAuto).toBe(false);
+    expect(v.activeSide).toBe("claude");
+    // Ordinary visibility rules too: a missing verdict shows it.
+    expect(visibleModes([plain], {}).map((e) => e.mode)).toEqual(["udf"]);
   });
 });

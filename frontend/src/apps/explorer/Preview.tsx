@@ -55,6 +55,7 @@ import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
   NODE_MODE,
+  isNodeViewEntry,
   isModePending,
   isSidebarMode,
   partitionModes,
@@ -73,14 +74,12 @@ import {
 import {
   sideSplit,
   parseSide,
-  resolveSide,
-  sideFromMemory,
   sideParam,
   writeQueryParam,
   sideToggleTarget,
   reconcileSideSearch,
   sideReopenedByUrl,
-  nodePaneAuto,
+  fileSideState,
   nodeViewShutAfter,
   urlNamesSide,
   type SideRequest,
@@ -1137,18 +1136,26 @@ function TemplatePreview({
   // on the node view, unless the reader shut that pane (`node_view_shut`).
   // `urlNamedSide` is the URL's word at mount, and any pick or close the
   // reader makes here after (`applySide`) — either one wins over the auto-open.
+  // The gate's EXPLICIT answer is what counts (`conditions?.udf === true`):
+  // a failed conditions call is `{}`, and must not open anything.
+  // `sideDefault` is the default the URL's spelling is measured against — the
+  // node view itself where it opens by itself (lib/preview-side
+  // `fileSideState`), so a chosen `_side=claude` is written and survives a
+  // reload.
   const [urlNamedSide, setUrlNamedSide] = useState<boolean>(() => urlNamesSide(location.search));
-  const nodeAuto = nodePaneAuto({
-    splitCapable,
-    urlNamedSide,
-    ready: split.ready,
-    shut: getNodeViewShut(),
-  });
-  const activeSide = resolveSide(
-    nodeAuto ? { open: true, mode: NODE_MODE } : sideReq,
+  const {
+    activeSide,
+    defaultSide: sideDefault,
+    fromMemory: activeFromMemory,
+  } = fileSideState({
     split,
-    getSideTab(),
-  );
+    splitCapable,
+    sideReq,
+    urlNamedSide,
+    nodeVerdict: conditions?.[NODE_MODE],
+    shut: getNodeViewShut(),
+    remembered: getSideTab(),
+  });
   // THE COLUMN SLIDES (platform/lib/pane-presence): held mounted through its
   // exit, still showing the companion it had, like the app page's pane.
   const heldSide = useRef(activeSide);
@@ -1345,7 +1352,7 @@ function TemplatePreview({
     const search = writeQueryParam(
       location.search.replace(/^\?/, ""),
       "_side",
-      sideParam(next, split.defaultSide)
+      sideParam(next, sideDefault)
     );
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     setSideReq({ open: next !== null, mode: next });
@@ -1624,8 +1631,8 @@ function TemplatePreview({
   // The tab on screen came only from the remembered store: the reconcile must not
   // write it (see `sideFromMemory`). Recomputed each render, so it is a dep.
   // …and the node pane's auto-open is not written either: it is this file's
-  // own answer to a silent URL, as the default companion is.
-  const activeFromMemory = sideFromMemory(sideReq, activeSide, getSideTab()) || nodeAuto;
+  // own answer to a silent URL, as the default companion is
+  // (`activeFromMemory`, from `fileSideState` above).
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {
@@ -1639,7 +1646,9 @@ function TemplatePreview({
       // stays exactly as silent as it already was.
       open: sideFromHiddenFlag ? true : sideReq.open,
       activeSide,
-      defaultSide: split.defaultSide,
+      // The node view where it is this file's own default (`sideDefault`), so
+      // an explicit `_side=claude` is not normalised away.
+      defaultSide: sideDefault,
       fromMemory: activeFromMemory,
     });
     if (search === null) return; // already agrees
@@ -1649,7 +1658,7 @@ function TemplatePreview({
   }, [
     splitCapable,
     split.offered,
-    split.defaultSide,
+    sideDefault,
     sideReq.open,
     sideFromHiddenFlag,
     activeSide,
@@ -1936,7 +1945,7 @@ function TemplatePreview({
     if (!t || t.path === null) return null;
     // A native companion has no page: any non-null answer means its gate
     // has resolved and the column may mount it.
-    if (m === CHAT_MODE || m === NODE_MODE) return "";
+    if (m === CHAT_MODE || isNodeViewEntry(t)) return "";
     const borrowed = isBorrowedMode(m);
     const target = borrowed ? parentDir : fsPath;
     return (
@@ -2087,6 +2096,9 @@ function TemplatePreview({
   // through to the content pane as any unsplit surface would take it.
   const openMode = (m: string) => {
     if (m === "mcp" && mcpSrc) setMcpOpen(true);
+    // The node view goes by its ENTRY (a bare "udf" is not a companion,
+    // mode-visibility `isSidebarMode`): Open With → Node opens the column.
+    else if (sideOn && templates.some((t) => t.mode === m && isNodeViewEntry(t))) setSide(m, m);
     else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };
@@ -2396,7 +2408,7 @@ function TemplatePreview({
               // content pane). Native: drawn by apps/canvases through the
               // shell's registry, never a frame of /render. It paints its own
               // loading state, so it takes over from a held frame at once.
-              if (m === NODE_MODE) return (
+              if (m === NODE_MODE && contentModes.some((t) => t.mode === m && isNodeViewEntry(t))) return (
                 <NativePane
                   key={m}
                   className={"preview-frame" + (m === shown ? " is-shown" : "")}
@@ -2672,7 +2684,7 @@ function TemplatePreview({
               />
             }
             nativeView={
-              shownSide === NODE_MODE ? (
+              shownSide === NODE_MODE && sidebarModes.some(isNodeViewEntry) ? (
                 <NativeView mode={NODE_MODE} path={fsPath} placement="side" />
               ) : undefined
             }
@@ -2992,7 +3004,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   const templates = stat.templates.filter(
     (t) =>
       (t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)) &&
-      !(remoteUrl && (t.mode === "_render" || isSidebarMode(t.mode)))
+      !(remoteUrl && (t.mode === "_render" || isSidebarMode(t)))
   );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
   // The first unconditional template renders immediately — only an

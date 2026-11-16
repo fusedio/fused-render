@@ -42,11 +42,21 @@ import type { TemplateEntry } from "@platform/lib/api";
 export type ConditionVerdicts = Record<string, boolean> | null;
 
 // Gated and no verdict yet — the entry shows, but is not selectable.
+// An offered-only companion (the node view, below) is never pending: it is not
+// shown at all until its gate has said yes.
 export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
+  if (isNodeViewEntry(entry)) return false;
   return !!entry.conditional && verdicts === null;
 }
 
+// THE ONE EXCEPTION TO "a missing verdict shows": the canvas node view
+// (`udf`). Its gate answers yes for a handful of files behind an opt-in
+// feature and no for every other `.py`/`.json`/`.html`/`.md`, so reading a
+// failed or in-flight conditions call as "visible" would offer a node view —
+// and auto-open it (preview-side `nodePaneAuto`) — on every such file, with
+// Canvases off. It needs an explicit YES.
 export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
+  if (isNodeViewEntry(entry)) return verdicts !== null && verdicts[entry.mode] === true;
   if (!entry.conditional) return true;
   if (verdicts === null) return true; // in flight — pending, not denied
   return verdicts[entry.mode] !== false; // absent verdict (failed call) shows
@@ -144,8 +154,26 @@ export function unavailableReason(mode: string): string {
   return UNAVAILABLE_REASONS[mode] ?? "Not available here";
 }
 
-export function isSidebarMode(mode: string): boolean {
-  return SIDEBAR_MODE_SET.has(mode);
+// The node view's entry: the core NATIVE `udf` template (stat's `native:
+// true`). The server never lets a user folder shadow a core native template
+// (D1310: a stale `~/.fused-render/templates/udf/template.html` is ignored with
+// a warning), so a `udf` entry without the flag would come from another server
+// or a future rule; it is then an ordinary template, framed like any other —
+// never the node view, never a companion.
+export function isNodeViewEntry(entry: Pick<TemplateEntry, "mode" | "native">): boolean {
+  return entry.mode === NODE_MODE && entry.native === true;
+}
+
+// A mode NAME alone is enough for every companion but the node view, which
+// needs its entry (`isNodeViewEntry`): a bare "udf" — a legacy `_mode=udf`, an
+// Open With row looked up by name — is not a companion until the entry says it
+// is the native one.
+export function isSidebarMode(modeOrEntry: string | Pick<TemplateEntry, "mode" | "native">): boolean {
+  if (typeof modeOrEntry === "string") {
+    return SIDEBAR_MODE_SET.has(modeOrEntry) && !OFFERED_ONLY_SIDEBAR_MODES.has(modeOrEntry);
+  }
+  if (OFFERED_ONLY_SIDEBAR_MODES.has(modeOrEntry.mode)) return isNodeViewEntry(modeOrEntry);
+  return SIDEBAR_MODE_SET.has(modeOrEntry.mode);
 }
 
 // Split an ALREADY-VISIBLE list in two, order-preserving in both halves.
@@ -154,8 +182,8 @@ export function partitionModes(entries: TemplateEntry[]): {
   sidebar: TemplateEntry[];
 } {
   return {
-    content: entries.filter((e) => !isSidebarMode(e.mode)),
-    sidebar: entries.filter((e) => isSidebarMode(e.mode)),
+    content: entries.filter((e) => !isSidebarMode(e)),
+    sidebar: entries.filter((e) => isSidebarMode(e)),
   };
 }
 

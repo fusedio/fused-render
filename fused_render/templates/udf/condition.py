@@ -3,7 +3,7 @@
 `udf` is a NATIVE template (PT-6 amendment, like `claude`): the node view is
 drawn by the React shell (frontend/src/apps/canvases/NodeView.tsx), and this
 folder is only its registry name, this gate and its icon. It is bound to
-`.py`, `.json`, `.*.json`, `.html` and `.md` after each key's default, and is
+`.py`, `.json`, `.html` and `.md` after each key's default, and is
 conditional, so a file's default mode never changes (PT-8).
 
 Runs in the SERVER process when `/api/fs/conditions` resolves a file's gated

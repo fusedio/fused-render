@@ -12591,8 +12591,11 @@ today; one node fills the frame.
   amendment), the folder is only the registry name, the gate and the icon,
   and the view is drawn by the React shell in the file view itself, with no
   page of its own between the shell and the workbench frame. Registry: `udf`
-  is added after the first entry of `.py`, `.json`, `.*.json`, `.html` and
-  `.md`. It is conditional, so the file's default mode is unchanged (PT-8).
+  is added after the first entry of `.py`, `.json`, `.html` and `.md` (not
+  `.*.json`: a compound stem is never a node name, so the gate could only
+  say no). It is conditional, so the file's default mode is unchanged
+  (PT-8). Unlike other gated modes it is offered only on the gate's explicit
+  yes: an in-flight or failed conditions call neither lists it nor opens it.
   Not a `_` sentinel (PT-12): a sentinel has no folder, so it can carry no
   gate, and this mode must be offered for node files only.
 - **NV-2 Gate (`condition.py`).** True only when all hold, cheapest first:
@@ -12610,7 +12613,10 @@ today; one node fills the frame.
 - **NV-4 Opening a node file opens the pane.** When the gate passes and the
   file view has no `_side` in its URL, the node pane opens. Closing it is
   remembered per user (`ui_layout.json`, `node_view_shut`) and holds for
-  every node file until the pane is opened again.
+  every node file until the pane is opened again. Where the pane opens by itself it
+  is the file's default companion: picking another (`_side=claude`) is
+  written to the URL and survives a reload; picking the node view again
+  leaves the URL silent.
 - **NV-5 Start.** On mount the view calls, in order:
   `POST /api/canvases/clone {env, name}` when the folder is not a live clone
   (a reference copy is adopted in place, `_adopt_reference_copy`; the view
@@ -12637,7 +12643,9 @@ today; one node fills the frame.
   sync chip (the workspace's states and wording), the node's status from
   NM-6, and "Open in canvas", which goes to `/canvases/<env>/<name>?node=<udfName>`.
   On an `error` status the error text shows under the strip, collapsed to
-  one line; clicking it moves the editor pane to `error.line`.
+  one line, with its line number (`error.line`); a click unfolds it. The
+  editor pane is not moved to that line: there is no channel to the code
+  template's editor for it (53.5).
 - **NV-9 When the node is not there.** `present: false` that still holds
   2 s after the frame's first delta ack (a node not pushed yet is absent
   from the server's copy until that delta brings it) (the node was
@@ -12674,7 +12682,8 @@ untouched. `/render` refuses the name, as it does every native template.
 (params, widget state, a rename from the view): FP-9 and NM-4 refuse them
 today and are where they would be opened, per node. Logs and stdout beyond
 the error text. Upstream and downstream navigation. A node chat in the
-pane (the `claude` companion is the other `_side` mode). A lighter
+pane (the `claude` companion is the other `_side` mode). Moving the
+editor pane to the error's line (NV-8). A lighter
 single-node route in the workbench that does not hydrate the whole canvas.
 
 ### 53.6 Order of work

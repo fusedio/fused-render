@@ -135,17 +135,20 @@ def modes(path):
 def test_udf_is_registered_after_the_default_of_the_four_node_kinds():
     with open(server_templates.BUILTIN_REGISTRY, encoding="utf-8") as fh:
         registry = json.load(fh)
-    for key in (".py", ".json", ".*.json", ".html", ".md"):
+    for key in (".py", ".json", ".html", ".md"):
         assert registry[key][1] == "udf", key
         assert registry[key].count("udf") == 1, key
-    # Nowhere else.
+    # Nowhere else — not `.*.json` either: a compound stem is never a node
+    # name, so every such file would pay a gate evaluation for nothing.
     others = [k for k, v in registry.items() if "udf" in v
-              and k not in (".py", ".json", ".*.json", ".html", ".md")]
+              and k not in (".py", ".json", ".html", ".md")]
     assert others == []
 
 
 def test_udf_is_conditional_so_no_default_moves(tmp_path):
-    for name, default in (("a.py", "code"), ("a.json", "tree"), ("a.b.json", "tree"),
+    assert "udf" not in [e["mode"] for e in server_templates._templates_for(
+        str(tmp_path / "a.b.json"), False)[0]]
+    for name, default in (("a.py", "code"), ("a.json", "tree"),
                           ("a.html", "_render"), ("a.md", "markdown")):
         entries, error = server_templates._templates_for(str(tmp_path / name), False)
         assert error is None
@@ -356,3 +359,28 @@ def test_node_route_and_gate_agree(client, clone, base):
     for p in paths:
         node = client.get("/api/canvases/node", params={"path": str(p)}).json()
         assert (node.get("node") is not None) == gate(p), p
+
+
+def test_a_user_template_named_udf_cannot_shadow_the_node_view(tmp_path, monkeypatch, base):
+    """PT-6 / D1310: a core NATIVE template is never shadowed. A user folder
+    `udf/` with a page and a gate of its own is ignored: the entry stays the
+    core native one (`native: true`, which the shell keys the node view on)
+    and the core gate decides — so a plain .py is still refused."""
+    udir = tmp_path / "user-templates"
+    (udir / "udf").mkdir(parents=True)
+    (udir / "udf" / "template.html").write_text("<html>mine</html>", encoding="utf-8")
+    (udir / "udf" / "condition.py").write_text("def main(path):\n    return True\n", encoding="utf-8")
+    monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(udir))
+    monkeypatch.setattr(server_templates, "USER_REGISTRY", str(udir / "registry.json"))
+    monkeypatch.setattr(server_templates, "_WARNED_STALE", set())
+    core = os.path.join(server_templates.TEMPLATES_DIR, "udf", server_templates.NATIVE_MARKER)
+    path, err = server_templates._resolve_name("udf")
+    assert err is None and path == core
+    plain = tmp_path / "plain.py"
+    plain.write_text("x = 1\n", encoding="utf-8")
+    entries, _ = server_templates._templates_for(str(plain), False)
+    udf = next(e for e in entries if e["mode"] == "udf")
+    assert udf.get("native") is True and udf["path"] == core
+    assert gate(plain) is False
+    # And /render will not serve the user's page either.
+    assert server_templates.is_native_template_path(str(udir / "udf" / "template.html"))
