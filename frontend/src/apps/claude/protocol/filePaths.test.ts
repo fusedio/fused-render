@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { localPathFromHref, pathCandidate, resolveAgainst, touchedFiles } from "./filePaths";
+import { localPathFromHref, pathCandidate, prosePathMatches, resolveAgainst, touchedFiles } from "./filePaths";
 import type { Segment } from "./types";
 
 const tool = (name: string, input: Record<string, unknown>, children?: Segment[]): Segment =>
@@ -88,3 +88,22 @@ test("localPathFromHref: web URLs, relative links, fragments and the shell's own
   expect(localPathFromHref("/renderings/a.md")).toBe("/renderings/a.md");
 });
 
+
+test("prosePathMatches: finds bare absolute paths, strips sentence punctuation", () => {
+  const t = "The full write-up is at /private/tmp/x/scratchpad/REPORT.md. The substance:";
+  const [m] = prosePathMatches(t);
+  expect(m?.path).toBe("/private/tmp/x/scratchpad/REPORT.md");
+  expect(t.slice(m!.start, m!.end)).toBe("/private/tmp/x/scratchpad/REPORT.md");
+  expect(prosePathMatches("see ~/notes/a.md")[0]?.path).toBe("~/notes/a.md");
+  const l = prosePathMatches("at /w/src/a.ts:12, then");
+  expect(l[0]).toMatchObject({ path: "/w/src/a.ts", line: 12 });
+  expect("at /w/src/a.ts:12, then".slice(l[0]!.start, l[0]!.end)).toBe("/w/src/a.ts:12");
+  expect(prosePathMatches("(see /a/b.txt)").map((x) => x.path)).toEqual(["/a/b.txt"]);
+  expect(prosePathMatches("/a/b.md and /c/d.md").map((x) => x.path)).toEqual(["/a/b.md", "/c/d.md"]);
+});
+
+test("prosePathMatches: slash commands, URLs, relative paths and globs never match", () => {
+  for (const t of ["/clear", "run /clear now", "in /tmp", "https://x.com/a/b.md", "foo/bar/baz.ts", "/a/*.md"]) {
+    expect(prosePathMatches(t)).toEqual([]);
+  }
+});
