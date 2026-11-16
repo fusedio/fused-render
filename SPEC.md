@@ -12429,3 +12429,240 @@ and not a sync nicety.
 - **BS-5 Out of scope.** Template-side keys written by page HTML (photos
   roots, autocad recents) — no page-level pref API exists yet. LAN phone
   per-bot seen baseline (per-device origin by nature).
+
+## 53. Node View — A Canvas Node, Live, Beside Its File (D1484)
+
+Opening a node file of a cloned canvas (`~/Fused/canvas/<env>/user/<canvas>/udf_1.py`)
+offers a **node view**: that one node rendered live by the hosted workbench, in
+an iframe, beside the file's own editor. It is UDF development without the
+canvas on screen. Nothing about how a canvas syncs changes: the node view is
+one more frame on the same sync engine (`canvases._SyncManager`), which
+already treats disk as the record.
+
+Three parts, in the order they ship: per-frame pictures in the sync engine
+(53.1), a node mode in the hosted workbench (53.2), the view itself (53.3).
+
+**Scope.** Node files of `user/` canvases only: a UDF (`.py`), a widget
+(`.json`), an HTML node (`.html`), a note (`.md`). `team/` and `public/` copies
+get no node view at all (53.5).
+
+### 53.1 Per-frame pictures (sync engine)
+
+Today the engine keeps ONE picture of "what the embedded frame holds" per
+canvas (`_embed_view` and its bookkeeping, singular on `_SyncManager`), and no
+embed endpoint says which frame is speaking. Two frames on one canvas share
+that picture: a write by one is recorded as held by "the frame", so the other
+is never sent it, and every alternation of their generations resets the view
+(`_embed_enter`). Each frame gets its own.
+
+- **FP-1 Frame id.** The page that hosts a frame mints one id per mount
+  (`crypto.randomUUID()`), and sends it as `frame` on every embed call:
+  `POST /api/canvases/snapshot`, `POST /api/canvases/body`,
+  `GET /api/canvases/delta`, `POST /api/canvases/delta/ack`, and the
+  `WS /api/canvases/sync/events` query. Shape `^[A-Za-z0-9_-]{1,64}$`, else
+  400. The id is the page's, never the frame's: nothing the workbench posts
+  can name another frame's record.
+- **FP-2 The default record.** A call with no `frame` uses the record `""`.
+  An older page keeps working unchanged, so 53.1 can ship before 53.2 and
+  53.3 exist. `CanvasWorkspace` sends an id from this build on, which also
+  makes two workspace windows on one canvas correct.
+- **FP-3 What moves into the record** (`_FrameState`, one per id, in
+  `_SyncManager._frames`): `_embed_gen`, `_embed_view`, `_view_reset_pending`,
+  `_view_from_hello`, `_view_rev`, `_delta_views`, `_delta_names`,
+  `_skip_hold`, `_cut_rev`, `_skip_recut_seq`, `_recut_after_acks`,
+  `_embed_max_seq`, `_embed_applied`, `_gen_applied_max`, `_delta_error`,
+  `_rowless`, `_fileless`, and a `seen` flag. `cut_delta`, `ack_delta`,
+  `apply_snapshot`, `apply_rename`, `apply_body`, `_embed_enter`,
+  `_embed_commit_gen` and `_refresh_view_after_write` take the record they
+  act on. No logic inside them changes: each reads and writes the same
+  fields, on a record instead of on `self`.
+- **FP-4 What stays per canvas.** `disk_rev` and everything about disk, the
+  remote, the lease, pushes and pulls; `_body_written`, `_gone_trash`,
+  `_gone_kept` (the body channel is a compare-and-swap on disk and needs no
+  picture); `_rev_times`; `_last_cut_held` (its cause is the clone's
+  `canvas.toml`, not a frame).
+- **FP-5 The fences are set per canvas and lifted per frame.** A hard pull
+  sets `_hard_fence` and `_body_fence_rev` on every record that exists. Each
+  is lifted for a record by that record's own delta ack, by its own newer
+  generation, or by the deadline. A record created after the pull starts with
+  none: its first delta is a full state of the pulled clone.
+- **FP-6 One frame's write reaches the others.** A snapshot or body that
+  changes a file bumps `disk_rev` as it does today; the writer's view is
+  re-read from disk (its own edit never comes back), every other record's
+  view is untouched, so the next cut for each of them carries the change.
+  No broadcast is added: each page already cuts a delta when `disk_rev`
+  moves.
+- **FP-7 Aggregates.** `_push` reads the union of every record's `_rowless`
+  and `_fileless`. `sync_state`'s disk → embed leg is computed for the
+  calling frame when the request names one (the events socket does), and
+  otherwise reports the record that is furthest behind; "a frame has spoken"
+  is true when any record's `seen` is.
+- **FP-8 Lifetime.** A record is created by the first call naming its id,
+  with no view (so its first cut is a full state, the rule an unknown frame
+  already gets). It is dropped `FRAME_DROP_S` (60 s) after its events socket
+  closes with no call since, and all records go with the manager. At most
+  `MAX_FRAMES` (16) per canvas: the oldest socketless record is dropped to
+  make room, and with none to drop the call answers 409 `too_many_frames`.
+  A dropped frame that speaks again is a new record: a full cut, and a
+  snapshot from it is bounced as stale until it has acked one.
+- **FP-9 Scope of a frame.** A record may be created with `scope`, a node
+  name (`frame_scope=<udfName>` on the events socket, the first call a node
+  view makes). A scoped record's `snapshot` and `rename` posts are refused
+  (400 `scoped`), and its `body` post is refused for any other node. This is
+  enforced here, whatever the frame sends (53.2 NM-4 is the frame's half).
+- **FP-10 The page only relays its own frame.** `CanvasWorkspace` accepts
+  `fused-embed-snapshot`, `fused-embed-rename`, `fused-embed-delta-applied`
+  and `fused-embed-delta-rejected` only when `event.source` is its frame's
+  window, as it already does for `body` and `hello`.
+- **FP-11 Idle stop is unchanged.** Presence already counts events sockets
+  per canvas, so a node view keeps the engine up exactly as a workspace does,
+  and the engine stops `IDLE_STOP_S` after the last one of either kind
+  closes.
+
+### 53.2 Node mode (hosted workbench)
+
+A flag on the existing embed route. The canvas loads and runs as it does
+today; one node fills the frame.
+
+- **NM-1 The flag.** `fused_embed_node=<udfName>` beside
+  `fused_embed_auth=1&fused_embed_v=3`, kept in `sessionStorage` like the
+  other embed flags (`fused-embed-node`) and cleared when the page is not
+  framed. Read through `isEmbedNodeMode()` / `embedNodeName()`.
+- **NM-2 What shows.** The node's content (`SimpleUdfNodeContent`: output,
+  the error view, a widget's or an HTML node's render, a note's text) at the
+  full size of the frame, through the existing fullscreen portal
+  (`canvasNodeFullscreenAtom`, set to the node once the canvas has
+  hydrated). The overlay covers the whole window, not the sidebar and
+  canvas panes only. Nothing else is drawn: no top bar, no announcement bar,
+  no left or right pane and none of their collapsed chips, no canvas
+  controls, no exit chip. Esc, F and the folder toolbar do not leave it.
+  A note (TEXTBOX) is shown the same way; it has no toolbar entry to
+  fullscreen today, the atom is enough.
+- **NM-3 The canvas stays mounted.** Execution is page-level
+  (`useUdfsToData` over every UDF) and a widget or HTML node reads its
+  upstream results from atoms in the same frame, so the whole canvas
+  hydrates and runs underneath, hidden and inert.
+- **NM-4 A node frame only reads.** In node mode `sendCanvasSnapshot`, the
+  rename hint, the body channel and the host-AI calls are not sent, and no
+  editor is mounted (the `body` cap is ignored). The frame says
+  `fused-embed-hello` after each hydration and applies and acks deltas as
+  today. Code reaches it from the host's disk only.
+- **NM-5 Re-run.** An applied delta that changes a node's code re-runs it
+  under the existing autorun rule; autorun is on in node mode whatever the
+  canvas's stored switch says, and the stored switch is not written.
+- **NM-6 Node state to the host.** New, frame → host, node mode only:
+  `fused-embed-node-state {udfName, present, kind, status, error?}` on every
+  change and once after hydration. `present` is false when no node of that
+  name is loaded (the host falls back, NV-9). `kind` is `udf`, `widget`,
+  `html` or `note`. `status` is `getUdfStatus`'s value; `error` is
+  `{line?, text}` from `errorLineNo` and the result's stderr tail (capped at
+  8 KB) when the status is `error`.
+- **NM-7 Old pairs.** A workbench without node mode ignores the flag and
+  draws the whole canvas: the host waits `NODE_STATE_WAIT_S` (10 s) after
+  `fused-embed-auth-ready` for the first `fused-embed-node-state` and
+  otherwise shows "This environment's workbench cannot show a single node
+  yet" with "Open in canvas" (NV-8) in place of the frame.
+
+### 53.3 The node view (fused-render)
+
+- **NV-1 Template.** `fused_render/templates/udf_node/`: `template.html`,
+  `condition.py`, `icon.svg`. Registry: `udf_node` is added after the first
+  entry of `.py`, `.json`, `.*.json`, `.html` and `.md`. It is conditional,
+  so the file's default mode is unchanged (PT-8).
+- **NV-2 Gate (`condition.py`).** True only when all hold, cheapest first:
+  the `canvases_enabled` preference is on; the path is
+  `<canvases root>/<env>/user/<canvas>/<stem><ext>` by shape
+  (`canvases.clone_dir_for`, no syscall), `ext` one of the four and, for
+  `.py`, a stem not starting with `_`; the folder has a `canvas.toml` of at
+  most 2 MB; it parses with a node whose name is the stem and whose file
+  kind matches `ext`. Any exception is False. A reference copy under
+  `user/` passes (NV-5); `team/` and `public/` never do.
+- **NV-3 Where it shows.** `udf_node` joins `SIDEBAR_MODES`, so the file
+  view pairs it with the content mode: the file's editor on the left, the
+  node on the right, the seam draggable (`_side`). It is also an ordinary
+  mode in the switcher (the node alone) and a pane in layout mode (§14).
+- **NV-4 Opening a node file opens the pane.** When the gate passes and the
+  file view has no `_side` in its URL, the node pane opens. Closing it is
+  remembered per user (`ui_layout.json`, `node_view_shut`) and holds for
+  every node file until the pane is opened again.
+- **NV-5 Start.** On mount the view calls, in order:
+  `POST /api/canvases/clone {env, name}` when the folder is not a live clone
+  (a reference copy is adopted in place, `_adopt_reference_copy`; the view
+  shows "Cloning <canvas>…" and reloads the file's editor after, since the
+  pull may have replaced its text), then `POST /api/canvases/sync/start`.
+  No button: the engine starts because the file was opened. Not signed in
+  for the environment → the pane shows the sign-in action and nothing is
+  cloned or started.
+- **NV-6 The frame.** `<base>/workbench/<handle>/<name>?fused_embed_auth=1&fused_embed_v=3&fused_embed_node=<udfName>`,
+  `<base>` and the bearer exactly as the workspace's (`embed_url`,
+  `GET /api/canvases/token`, the embed proxy for a custom environment).
+  The token message carries `caps: []`.
+- **NV-7 The relay.** The view owns one frame id (FP-1), opens the events
+  socket with it and `frame_scope=<udfName>` (FP-9), and relays only the
+  read leg: `fused-embed-hello` → a full cut; a `disk_rev` or
+  `watcher_epoch` move → a cut; `fused-embed-delta-applied` / `-rejected` →
+  the ack, with one healing full cut after a real refusal. Every message is
+  accepted only from the frame's window on the workbench's origin. It
+  posts `fused-embed-sync-state` and answers `fused-embed-auth-refresh` as
+  the workspace does.
+- **NV-8 Header strip.** The node's title and kind, the canvas name, the
+  sync chip (the workspace's states and wording), the node's status from
+  NM-6, and "Open in canvas", which goes to `/canvases/<env>/<name>?node=<udfName>`.
+  On an `error` status the error text shows under the strip, collapsed to
+  one line; clicking it moves the editor pane to `error.line`.
+- **NV-9 When the node is not there.** `present: false` (the node was
+  deleted or renamed on disk, or the canvas has no such node upstream yet)
+  → the pane says so and offers "Open in canvas". A rename of the FILE in
+  the explorer is a new path, hence a new view on the new name.
+- **NV-10 The engine's own states.** `owned` by another fused-render
+  process, another owner's lease, `server_stale`, a failed clone or start:
+  the pane shows the workspace's notice for that state and its action
+  (take over, pull). The frame stays up wherever the workspace's does.
+- **NV-11 Edit loop, end to end.** A keystroke in the editor pane →
+  autosave (AS-1, 250 ms) → the watcher's `disk_rev` bump (~100 ms) → the
+  view's cut → the frame applies the delta and re-runs the node. The same
+  write is pushed upstream by the engine's debounce, unchanged. A UDF's own
+  code runs from the frame, so its output does not wait for the push; what
+  it loads from OTHER nodes (`fused.load`, `fused.run`) is the server's
+  saved canvas, so an edit to an upstream node shows after its push.
+
+### 53.4 Where the view's code lives
+
+`template.html` is a plain page (templates have no build step and cannot
+import from `frontend/src`), and the relay belongs beside the workspace's,
+in TypeScript, under the same tests. So the template is a shell: it resolves
+`env`, `name` and the node from `_file` and frames a bare same-origin shell
+route, `/canvases/<env>/<name>/node/<udfName>` (`apps/canvases/NodeView.tsx`,
+no shell chrome), which holds the header strip, the relay and the workbench
+frame. The delta leg is extracted from `CanvasWorkspace.tsx` into one module
+both pages use (`apps/canvases/embed-delta-relay.ts`); the workspace keeps
+its snapshot, body and AI legs.
+
+### 53.5 Out of scope
+
+`team/` and `public/` canvases, in any form. Writes from a node frame
+(params, widget state, a rename from the view): FP-9 and NM-4 refuse them
+today and are where they would be opened, per node. Logs and stdout beyond
+the error text. Upstream and downstream navigation. A node chat in the
+pane (the `claude` companion is the other `_side` mode). A lighter
+single-node route in the workbench that does not hydrate the whole canvas.
+
+### 53.6 Order of work
+
+1. **53.1** in fused-render, alone: no behaviour change for one frame, two
+   workspace windows become correct. Tests: two records on one manager
+   through every leg (snapshot, body, delta, ack, hard pull, generation
+   switch, drop and return).
+2. **53.2** in the workbench (`fusedlabs/application`, `client/`).
+3. **53.3** and **53.4** in fused-render, behind `canvases_enabled`.
+
+### 53.7 Open
+
+- **NV-4** opens a pane the user did not ask for, and NV-5 then starts a
+  sync and takes the lease on the canvas. Both follow from "the engine
+  starts automatically"; the alternative is the pane only on request.
+- **NM-5** forces autorun in node mode. The alternative honours the
+  canvas's switch and adds a Run button to the strip.
+- Whether `fused_embed_readonly=1` already gives NM-4's "reads only" while
+  still applying deltas and running nodes; if it does, node mode implies it
+  instead of gating each sender.
