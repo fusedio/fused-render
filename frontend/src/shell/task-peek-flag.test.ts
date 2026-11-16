@@ -147,7 +147,7 @@ describe("the markup adds nothing when the feature is off", () => {
     expect(VIEWS).toContain("{SHOW_PAGE_DOOR && peekOn && page && !openDraft && (");
     expect(VIEWS).toContain("{SHOW_PAGE_DOOR && peekOn && page && !isDraftTask(task) && (");
     // …and the card's hover strip is not drawn FOR one either.
-    expect(VIEWS).toContain("{((peekOn && page) || file || folderMissing");
+    expect(VIEWS).toContain("{((peekOn && page) || (file && !ab) || folderMissing");
   });
 
   it("writes no fit attributes on the list or the toolbar", () => {

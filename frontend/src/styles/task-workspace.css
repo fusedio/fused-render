@@ -541,6 +541,57 @@
 .ws-card:hover .tasks-rowmark:not(:has(.tasks-act)) .schedule-ring {
   opacity: 1;
 }
+
+/* THE A/B CARD (owner, 2026-11-16: "detailed view doesn't have archive button
+   on task id and status thing"; `ws-card--ab`, the List row's switch). The
+   List a/b row's two (tasks.css "The a/b row"): the mark slot holds no
+   Archive — the ring stays under the pointer (the rule above) and is the icon
+   picker's button — and Archive / Unarchive stands over TASK-nnn in the id's
+   own box. NOTHING MOVES: the button is out of flow over the number. Every
+   rule scoped to the modifier, so off the card is today's. */
+.ws-card--ab .tasks-idslot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.ws-card--ab .tasks-idslot:has(.tasks-act) {
+  min-width: 22px;
+}
+.ws-card--ab .tasks-idslot .tasks-act,
+.prefs-section .ws-card--ab .tasks-idslot .tasks-act {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  width: auto;
+  transform: translateY(-50%);
+}
+.ws-card--ab .tasks-idslot .tasks-id {
+  transition: opacity 0.08s ease;
+}
+/* The reveal is `.ws-card:hover .tasks-act` above; the number makes way only
+   where there is a button to make way for. */
+.ws-card--ab:hover .tasks-idslot:has(.tasks-act) .tasks-id,
+.ws-card--ab .tasks-idslot:has(.tasks-act:focus-visible) .tasks-id {
+  opacity: 0;
+}
+/* The ring as a button: its own skin, restated against `.prefs-section
+   button` (the List a/b row's rule). */
+.ws-card--ab .tasks-rowmark .task-icon-pick {
+  margin: -4px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  align-self: center;
+}
+.ws-card--ab .tasks-rowmark .task-icon-pick:hover,
+.ws-card--ab .tasks-rowmark .task-icon-pick[aria-expanded="true"] {
+  background: var(--row-hover, var(--bg-alt));
+  border: 0;
+}
 /* The selection checkbox sits in the gutter left of the card column, out of
    flow, on the card's first line: its right edge is 8px left of the card border,
    the same column as the group header's select-all (left = -22px there; here

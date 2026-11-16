@@ -3425,18 +3425,95 @@ function FoldedNode({
 /** THE A/B ROW'S RING (TaskNode, `ab`): the icon picker's button
  *  (TaskIconPick) — on ANY numbered task, ring or face, icons experiment on
  *  (2026-11-16: the icon is not the star's); on the legacy row, the bare
- *  ring. */
-function RingSeat({ pick, task, onDone, children }: {
+ *  ring. The Board card, the Cards wall and the Detailed view seat their
+ *  rings here too (owner, 2026-11-16: "click to change icon in status ring"
+ *  on every view); `nested` for the Board card, which is itself a
+ *  `<button>` (TaskStar's `nested`, for the same reason). */
+export function RingSeat({ pick, task, onDone, nested = false, children }: {
   pick: boolean;
   task: Task;
   onDone?: () => void;
+  nested?: boolean;
   children: React.ReactNode;
 }) {
   if (!pick) return <>{children}</>;
   return (
-    <TaskIconPick task={task} {...(onDone ? { onDone } : {})}>
+    <TaskIconPick task={task} nested={nested} {...(onDone ? { onDone } : {})}>
       {children}
     </TaskIconPick>
+  );
+}
+
+/** THE FILING BUTTON — Archive, or Unarchive on an archived task — one
+ *  component for every Tasks view that draws it in a slot of its own: the
+ *  List row (its mark slot, or its id slot on the a/b row), and the id slot
+ *  of the Board card, the Cards wall tile and the Detailed view's card on
+ *  the a/b switch (owner, 2026-11-16: "in card view we are missing the
+ *  archive button thing on task id" — "detailed view doesn't have archive
+ *  button on task id … fix that as well").
+ *
+ *  The DIRECTION is the intent's (tasks-lib.filingIntent) and the press is
+ *  the host's (`onPress`): each view already owns its filing path — the
+ *  row's note line, the Board's lane note, the wall's toast, the Detailed
+ *  view's Undo — and the confirm for a task that needs one sits on that
+ *  path, so this draws the button and nothing else.
+ *
+ *  A PRESS IS ITS OWN: it stops at the button, so it never opens the task
+ *  or toggles a selection (no host seats it inside a link: the List row's
+ *  link is a stretched SIBLING, under the button's `z-index: 2`). `nested` draws a `<span role="button">` for a host that is
+ *  itself a `<button>` (the Board card, TaskStar's `nested`), and that host
+ *  is a DRAG SOURCE: the span swallows its own mousedown, which is what
+ *  keeps a press on it from lifting the card — and keeps the press from
+ *  focusing the card under it. */
+export function FileAct({ file, onPress, disabled = false, label, nested = false, className }: {
+  file: FilingIntent;
+  onPress: () => void;
+  disabled?: boolean;
+  /** The accessible name, when the host's differs from the intent's own. */
+  label?: string;
+  nested?: boolean;
+  /** Extra classes, between `tasks-act` and the direction's suffix. */
+  className?: string;
+}) {
+  const press = (e: React.MouseEvent | React.KeyboardEvent) => {
+    e.stopPropagation();
+    // The span-button's host is a <button> (and a drag source): nothing of
+    // the press may reach it. A real button sits in no link on any host, so
+    // its press keeps the row's own shape.
+    if (nested) e.preventDefault();
+    if (disabled) return;
+    onPress();
+  };
+  const common = {
+    className: "tasks-act" + (className ? " " + className : "") + " tasks-act--" + file.kind,
+    "data-hint": file.title,
+    "aria-label": label ?? file.label,
+    onClick: press,
+  };
+  const glyph = file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE;
+  if (nested) {
+    return (
+      <span
+        {...common}
+        role="button"
+        tabIndex={0}
+        aria-disabled={disabled || undefined}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") press(e);
+        }}
+      >
+        {glyph}
+      </span>
+    );
+  }
+  return (
+    <button type="button" {...common} disabled={disabled}>
+      {glyph}
+    </button>
   );
 }
 
@@ -4337,21 +4414,10 @@ function TaskNode({
      hidden-until-hover is for a live control, not for a dead one.
 
      Drawn once and seated by `ab`: in the mark slot on the legacy row, over
-     the id on the a/b row. */
+     the id on the a/b row. The button itself is `FileAct`, the one every
+     view's id slot draws (2026-11-16). */
   const fileButton = file && (
-    <button
-      type="button"
-      className={"tasks-act tasks-act--" + file.kind}
-      data-hint={file.title}
-      aria-label={file.label}
-      disabled={acting}
-      onClick={(e) => {
-        e.stopPropagation();
-        void refile(file);
-      }}
-    >
-      {file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
-    </button>
+    <FileAct file={file} disabled={acting} onPress={() => void refile(file)} />
   );
   /* THE QUICK DOOR OUT (.claude-design/task-side-peek/design.md, Round 3): the
      row's own press opens the peek beside the list, and this is the way to the
@@ -6584,6 +6650,12 @@ function TaskCard({
   // page's vocabulary is most careful about: a Board that offered a return the
   // List did not draw is exactly the divergence the old SHOW_UNARCHIVE was.
   const file = filingIntent(task);
+  // THE A/B CARD (owner, 2026-11-16: "in card view we are missing the archive
+  // button thing on task id, and click to change icon in status ring"), on the
+  // List row's switch (`task_head_unified_enabled`): Archive leaves the hover
+  // strip for the id slot in the head, and the ring — where this card draws
+  // one — is the icon picker's button. Off, the card below is today's.
+  const ab = useTaskHeadUnified();
   // Run now / Re-run, which the List row and the calendar popover both already
   // offer and this card did not. The SAME function decides it here as there
   // (tasks-lib.taskRunIntent, which asks runNowIntent — the very function
@@ -6663,7 +6735,7 @@ function TaskCard({
     // one. The action is a SIBLING pinned over the card's head — where the head
     // has spare room to its right on every card — rather than a nested control
     // the browser would refuse to parse.
-    <div className={"tasks-card-wrap" + (isDragging ? " is-dragging" : "")}
+    <div className={"tasks-card-wrap" + (ab ? " tasks-card-wrap--ab" : "") + (isDragging ? " is-dragging" : "")}
       data-checked={bulk?.selection.has(task.key) ? "1" : undefined}>
       {bulk && <RowCheck select={bulk} task={task} />}
       <button
@@ -6771,20 +6843,51 @@ function TaskCard({
             So the head is the id, and a ring on the one card whose status its lane
             does not mention. */}
         <span className="schedule-tv-card-head">
-          {waiting
-            ? <StatusIcon status="needs_attention" label={asking || undefined} />
-            /* THE THIRD CARD WHOSE RING SAYS WHAT ITS LANE DOES NOT: a finished
-               turn with a job still running under it, drawn In Progress
-               (tasks-lib.liveJobRow / boardLane). The List row's own ring —
-               blue, "Background" — and ahead of the failed flag, as on the List
-               row and the Cards wall (StatusIcon: background outranks failed). */
-            : jobs
-              ? <StatusIcon status={status} background />
-              : failedOffLane && <StatusIcon status={lane} failed />}
+          {/* THE A/B CARD'S RING IS A BUTTON (RingSeat → TaskIconPick, the List
+              row's own): it opens the icon picker, on a numbered task with the
+              icons experiment on — a span-button, `nested`, since the card is a
+              <button>. Only where this card draws a ring at all (the rule
+              above): a card whose ring would repeat its lane still draws none. */}
+          {(waiting || jobs || failedOffLane) && (
+            <RingSeat pick={ab} task={task} nested>
+              {waiting
+                ? <StatusIcon status="needs_attention" label={asking || undefined} />
+                /* THE THIRD CARD WHOSE RING SAYS WHAT ITS LANE DOES NOT: a finished
+                   turn with a job still running under it, drawn In Progress
+                   (tasks-lib.liveJobRow / boardLane). The List row's own ring —
+                   blue, "Background" — and ahead of the failed flag, as on the List
+                   row and the Cards wall (StatusIcon: background outranks failed). */
+                : jobs
+                  ? <StatusIcon status={status} background />
+                  : failedOffLane && <StatusIcon status={lane} failed />}
+            </RingSeat>
+          )}
           <TaskAgentMark backend={task.backend} />
           {/* The star left of the id; a span-button, since the card is a <button>. */}
           <TaskStar task={task} nested />
-          <IdChip id={task.task_id} kind="task" />
+          {/* THE ID SLOT (a/b card): the List row's `.tasks-idslot` — TASK-nnn
+              at rest, the filing button over it while the card is pointed at,
+              in the same box (tasks.css "The a/b Board card"), so nothing on
+              the card moves. A span-button (`nested`), and the hover strip's
+              own Archive stands down below: one filing button per card. No
+              button where the filing cannot change (a run in flight): the
+              number stays. */}
+          {ab ? (
+            <span className="tasks-idslot">
+              <IdChip id={task.task_id} kind="task" />
+              {file ? (
+                <FileAct
+                  file={file}
+                  nested
+                  disabled={busy}
+                  label={`${file.label} ${shortTaskId(task.task_id)}`}
+                  onPress={() => void refile(file)}
+                />
+              ) : null}
+            </span>
+          ) : (
+            <IdChip id={task.task_id} kind="task" />
+          )}
           {/* The draft chip left this head with the List row's (Akshil,
               2026-09-11) and for the same reason — it is a tag now, and the
               tags sit together at the card's other end. It is in the foot,
@@ -6957,8 +7060,12 @@ function TaskCard({
           and it is the same button on the other view, so keeping it flagged here
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
-          itself is drawn whenever either survives its guard. */}
-      {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)
+          itself is drawn whenever either survives its guard.
+
+          ON THE A/B CARD ARCHIVE IS NOT HERE (2026-11-16): it stands over the
+          id in the head (`.tasks-idslot` above), the List row's seat, and a
+          second copy here would be two filing buttons on one card. */}
+      {((peekOn && page) || (file && !ab) || folderMissing || (hasDraft(task) && !heldInPeek)
         || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
@@ -7072,7 +7179,7 @@ function TaskCard({
               {run.rerun ? ICON_RERUN : ICON_PLAY}
             </button>
           )}
-          {file && (
+          {file && !ab && (
             <button
               type="button"
               className={"tasks-act tasks-card-act tasks-act--" + file.kind}

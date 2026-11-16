@@ -48,7 +48,9 @@ import {
   ICON_UNARCHIVE,
   OPEN_DOOR_LABEL,
   DraftChip,
+  FileAct,
   IdentityChip,
+  RingSeat,
   StatusIcon,
   StopJobButton,
 } from "./ScheduleTaskViews";
@@ -571,6 +573,12 @@ function TaskCard({
   // it is the way out.
   const explorer = gone ? null : (taskHref(task) ?? folderHref(task));
   const filing = filingIntent(task);
+  // THE A/B TILE (owner, 2026-11-16: "in card view we are missing the archive
+  // button thing on task id, and click to change icon in status ring"), on the
+  // List row's switch (`task_head_unified_enabled`): Archive leaves the doors
+  // strip for the id slot, and the ring is the icon picker's button — the List
+  // row's two, the List row's pieces (FileAct, RingSeat). Off, today's tile.
+  const ab = useTaskHeadUnified();
   /** "Usage limit · resumes 4:00 AM" on a session the plan's window stopped, ""
    *  on every other card. */
   const limit = usageLimitCaption(task);
@@ -633,7 +641,7 @@ function TaskCard({
   return (
     <>
     <section
-      className={"task-card task-card--door" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
+      className={"task-card task-card--door" + (ab ? " task-card--ab" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
         + (selected ? " is-selected" : "")}
       data-checked={bulk?.selection.has(task.key) ? "1" : undefined}
       // The side peek's two hooks on every openable item in every view: the
@@ -697,22 +705,41 @@ function TaskCard({
               does (tasks-lib.draftRing): this wall is the other place a settled
               task is SCANNED, and a card that looks finished while holding an
               unsent sentence is the one state the glance would otherwise miss. */}
-          <StatusIcon
-            status={taskColumn(task)}
-            failed={ringFailed(task)}
-            label={asking || undefined}
-            draftHeld={draftRing(task) && !heldInPeek}
-            background={liveJobRow(task)}
-            icon={task.icon_slot}
-            iconPicked={task.icon_picked}
-          />
+          {/* …and on the a/b tile it is a BUTTON (RingSeat → TaskIconPick, the
+              List row's own): the press opens the icon picker on a numbered
+              task with the icons experiment on, and stops there — it does not
+              also open the popup. */}
+          <RingSeat pick={ab} task={task} {...(onReload ? { onDone: onReload } : {})}>
+            <StatusIcon
+              status={taskColumn(task)}
+              failed={ringFailed(task)}
+              label={asking || undefined}
+              draftHeld={draftRing(task) && !heldInPeek}
+              background={liveJobRow(task)}
+              icon={task.icon_slot}
+              iconPicked={task.icon_picked}
+            />
+          </RingSeat>
           {/* The id keeps the List row's muted skin whatever the title row below
               shows. It was lifted to bold + full fg while that row was the
               conversation's last message (design.md §A); Akshil (2026-09-14)
               took the emphasis back out — one weight for the id everywhere. */}
           <TaskAgentMark backend={task.backend} />
           <TaskStar task={task} nested />
-          <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
+          {/* THE ID SLOT (a/b tile): the List row's `.tasks-idslot` — TASK-nnn
+              at rest, the filing button over it while the tile is pointed at,
+              in the same box (task-cards.css), so nothing on the tile moves.
+              The doors strip's Archive stands down below: one filing button
+              per tile. No button where the filing cannot change (a run in
+              flight): the number stays. */}
+          {ab ? (
+            <span className="tasks-idslot">
+              <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
+              {filing ? <FileAct file={filing} disabled={acting} onPress={refile} /> : null}
+            </span>
+          ) : (
+            <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
+          )}
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}
@@ -798,8 +825,11 @@ function TaskCard({
             browser's second, which read as no caption at all.
 
             Drawn only when it has a door to hold (a card with nothing to file,
-            a folder that opens, and a folder that is not gone has none). */}
-        {(filing || explorer || gone || jobs) && (
+            a folder that opens, and a folder that is not gone has none).
+
+            On the a/b tile Archive is not one of them (2026-11-16): it stands
+            over the id instead (`.tasks-idslot` above). */}
+        {((filing && !ab) || explorer || gone || jobs) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
           {/* DISCARD THE UNSENT WORDS — the List row's and the Board card's own
               trash, on this wall too (design "one record", §5: the same actions
@@ -861,7 +891,7 @@ function TaskCard({
               icon={ICON_STOP}
             />
           )}
-          {filing && (
+          {filing && !ab && (
             <button
               type="button"
               className="task-card-door"
