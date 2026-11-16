@@ -213,9 +213,10 @@ export interface TaskHeadProps {
    *  `headChipsHost`) — a seat at the head of the chips. */
   chipsRef?: (el: HTMLElement | null) => void;
   /** WHAT BRINGS THE b ITEMS (Akshil, 2026-11-16). `"window"` — a card off
-   *  the rail: the pointer anywhere on the card shows all of them, and at
-   *  rest the title has the row (no facts where it would be cut, no ⋮), on
-   *  a second line when the card is narrow. `"slot"` (default) — a panel or
+   *  the rail: the pointer anywhere on the card (or the keyboard inside it)
+   *  shows them, except the Archive, which waits for the pointer on the
+   *  head; the facts and the ⋮ stand at rest, and the title takes a second
+   *  line when the card is narrow. `"slot"` (default) — a panel or
    *  a pane: the pointer on the head shows them, the facts and the ⋮ stand
    *  at rest, and the head stays one row. */
   reveal?: "window" | "slot";
@@ -653,12 +654,19 @@ export function TaskHead({
         ) : null}
         {marks}
         {stackedNow ? (
-          // STACKED: the title has row 2, and the gap holds the slots and the
-          // ⋮ at the row's end. A head with no task keeps its place up here.
-          <>
-            {who ? null : placeEl}
-            <span className="task-head-idle" aria-hidden />
-          </>
+          // STACKED: the title has row 2; the marks' own seat takes the
+          // slack and the slots stand at the row's end (their `margin-left:
+          // auto`). No spacer between them: it held nothing but cost the row
+          // a gap, and the door's word folded a few px before it had to
+          // (Akshil, 2026-11-16: "there is still space but Open word not
+          // visible"). A head with no task keeps its place — and the spacer
+          // that holds its two clusters apart — up here.
+          who ? null : (
+            <>
+              {placeEl}
+              <span className="task-head-idle" aria-hidden />
+            </>
+          )
         ) : (
           <>
             {identity ?? (who ? null : <span className="task-head-idle" aria-hidden />)}

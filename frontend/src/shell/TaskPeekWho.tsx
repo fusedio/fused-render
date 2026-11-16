@@ -340,6 +340,11 @@ export function TaskPeekWho({
             <button
               type="button"
               className="icon-btn task-side-peek-rename"
+              // In the shared head the pencil stands OVER the title's end and
+              // takes no room (task-head.css): the fit ladder must not charge
+              // it a seat and a gap it does not hold (row-fit `rowNeed`) — it
+              // folded the where-tag's word 24px before the row was full.
+              {...(part === "title" ? { "data-fit-skip": "" } : {})}
               aria-label="Rename task"
               title="Rename task"
               onClick={startRename}

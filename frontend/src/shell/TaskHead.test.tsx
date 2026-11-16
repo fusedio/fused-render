@@ -394,7 +394,7 @@ test("the ladder: wide, nothing folds; narrow, it walks every rung and the title
   expect(kids.map((k) => cls(k).split(" ")[0])).toEqual([
     "task-head-acts",
     "task-side-peek-who",
-    "task-head-idle",
+    // No spacer: the marks' seat takes the slack, the slots stand at the end.
     "task-head-marks",
   ]);
   expect(JSON.stringify(row1)).toContain("task-side-peek-status");
@@ -515,13 +515,10 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   // word until row 1 itself is short (5+), one rung before the where-tag's.
   expect(css).toContain(`.task-head:not(.is-stacked)${from(3)} .task-head-timeslot .task-head-open-word,`);
   expect(css).toContain(`.task-head.is-stacked${from(5)} .task-head-timeslot .task-head-open-word {`);
-  // A rail window's ⋮ waits for the pointer, and stays while its menu is
-  // open — invisible at rest, its seat held; the facts stand over that seat
-  // (a transform, no layout) and step back as it shows.
-  expect(css).toContain(".task-head.is-window .task-head-kebab {\n  opacity: 0;\n  pointer-events: none;");
-  expect(css).toContain(`.task-head.is-window:has(.task-head-kebab) ${facts} {`);
-  expect(css).toContain("transform: translateX(34px);");
-  expect(css).toContain('[aria-expanded="true"]');
+  // A rail window's ⋮ always stands (2026-11-16): no rule hides it or holds
+  // its seat open, and nothing is moved over it at rest.
+  expect(css).not.toContain(".task-head.is-window .task-head-kebab {");
+  expect(css).not.toContain("translateX(");
   expect(css).toContain(`.task-head${from(5)} .task-head-seats {`);
   expect(css).toContain(`.task-head${from(6)} .task-head-nav {`);
   // The last rung caps the place; the id slot (and its Archive) never goes.

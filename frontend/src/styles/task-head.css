@@ -445,7 +445,7 @@
    time used to fold away here and the acts opened in their place, so the
    where-tag and the title jumped with every pass of the pointer. Now every
    seat holds one box at all times — each slot the wider of its two
-   occupants, the ⋮ its own 28px — and only what is IN the boxes trades. The
+   occupants, the ⋮ always standing — and only what is IN the boxes trades. The
    facts stay at every rung: the acts that replace them need the same room,
    so hiding them bought the title nothing. The one fold left on this rung is
    the door's word (below). */
@@ -502,43 +502,12 @@
   width: 15px;
   height: 15px;
 }
-/* A RAIL WINDOW'S ⋮ WAITS FOR THE POINTER TOO (Akshil, 2026-11-16), like its
-   star and its door — at every width. It stays while its menu is open (the
-   menu is outside the window) and for a keyboard that lands on it.
-
-   ITS SEAT IS ALWAYS HELD (the no-shift rule above): invisible and
-   intangible at rest, never zero wide — a seat that opened pushed the
-   where-tag and the title 34px left under the pointer. So the row does not
-   end in a hole at rest, the facts stand over that seat (a transform: no
-   layout moves) and step back as the ⋮ shows. */
-.task-head.is-window .task-head-kebab {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.08s ease;
-}
-.task-head.is-window:has(.task-head-kebab) :is(.task-head-countslot, .task-head-timeslot) {
-  /* The ⋮'s own 28px and the row's 6px gap. */
-  transform: translateX(34px);
-  transition: transform 0.08s ease;
-}
-.task-head.is-window:is(.is-hot, :hover, :has(.task-head-kebab :is(:focus-visible, [aria-expanded="true"], [data-popup-open])))
-  .task-head-kebab {
-  opacity: 1;
-  pointer-events: auto;
-}
-.task-head.is-window:is(.is-hot, :hover, :has(.task-head-slot-b :focus-visible), :has(.task-head-kebab :is(:focus-visible, [aria-expanded="true"], [data-popup-open])))
-  :is(.task-head-countslot, .task-head-timeslot) {
-  transform: none;
-}
-@media (hover: none) {
-  .task-head.is-window .task-head-kebab {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .task-head.is-window :is(.task-head-countslot, .task-head-timeslot) {
-    transform: none;
-  }
-}
+/* A RAIL WINDOW'S ⋮ ALWAYS STANDS (Akshil, 2026-11-16: "let's show the more
+   icon regardless of hover or click, next to 6d ago — that would stop the
+   shifting"). It waited for the pointer (2026-11-16, earlier the same day),
+   which either opened a seat under the pointer or left a hole at the row's
+   end at rest. Standing, it is the row's fixed end: the facts sit beside it
+   and the acts trade with them in place. */
 /* 4 is the component's (a rail window's title takes row 2). 5–7: */
 .task-head:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-seats {
   display: none;
@@ -818,6 +787,14 @@
 .task-head-countslot .claude-rail-peek-star {
   width: 22px;
   height: 22px;
+}
+/* THE PREVIEW'S REPLY STEPS ASIDE FOR THE POINTER ON THE HEAD (Akshil,
+   2026-11-16: "when we hover on the header we shouldn't show subtitle when
+   we are in hover preview"): on the head the reader is aiming at its
+   controls, and the line is noise beside them. Hidden, not removed, so the
+   title and the tags do not move. */
+.task-head.is-window:hover .task-head-subtitle {
+  visibility: hidden;
 }
 /* The reply line keeps its own face inside the subtitle seat. */
 .claude-rail-peek-task-head .task-head-subtitle {
