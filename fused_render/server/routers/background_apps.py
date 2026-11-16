@@ -13,7 +13,7 @@ rather than blocking a POST for however long building a venv would take
 (D631) — unlike `/api/run`'s fused-engine dispatch, which answers a missing
 venv with a structured `needs_install` response instead of ever substituting
 an interpreter that lacks the folder's declared packages. The fallback is
-only the first half (D1481): `start`/`restart` then kick off the venv build
+only the first half (D1482): `start`/`restart` then kick off the venv build
 (`background_apps.build_env_then_respawn`, non-blocking, reported as
 `installing`/`install` in the response) and a watcher respawns the daemon on
 the venv once it exists; `restart` of a live child also adopts the freshly
@@ -79,7 +79,7 @@ def _resolve(html) -> (
     verdict on that fallback — None when the interpreter didn't need one, or
     an actionable reason for the caller to report if the fallback attempt
     then fails. A non-None reason also means the caller must start the venv
-    build (D1481), since nothing else will for a daemon-only page.
+    build (D1482), since nothing else will for a daemon-only page.
     """
     folder = _folder_for(html)
     if folder is None:
@@ -121,7 +121,7 @@ def _protocol_for(manifest: background_apps.Manifest | None) -> str | None:
 def _with_install(response: dict, folder: str, unbuilt_reason: str | None) -> dict:
     """When the daemon came up on the D631 fallback, start the venv build and
     report it (`installing`/`install`) so a page can show it; the daemon moves
-    onto the venv by itself once the build lands (D1481)."""
+    onto the venv by itself once the build lands (D1482)."""
     if unbuilt_reason is None:
         return response
     install = background_apps.build_env_then_respawn(folder)
@@ -133,7 +133,7 @@ def _with_install(response: dict, folder: str, unbuilt_reason: str | None) -> di
 
 def _failed_unbuilt(folder: str) -> JSONResponse:
     """502 for a failed D631 fallback spawn: nothing is running, so kick off
-    the venv build too (D1481) and have the daemon start once it lands. The
+    the venv build too (D1482) and have the daemon start once it lands. The
     message says so rather than telling the user to retry by hand."""
     body = {"error": f"{os.path.basename(folder)} declares a project "
                      "environment that is not built yet. It is being "

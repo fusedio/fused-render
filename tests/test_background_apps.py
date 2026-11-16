@@ -1368,7 +1368,7 @@ def test_resurrect_autostart_skips_a_folder_with_no_venv_built(tmp_path, monkeyp
     background_apps.set_autostart(str(folder), True)
     monkeypatch.setattr(background_apps, "interpreter_for",
                         lambda f: "/definitely/not/a/real/python")
-    # D1481: the skip branch now also starts the venv build; fake it out.
+    # D1482: the skip branch now also starts the venv build; fake it out.
     monkeypatch.setattr(background_apps, "build_env_then_respawn",
                         lambda *a, **k: None)
     started = []

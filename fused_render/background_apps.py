@@ -427,7 +427,7 @@ _ENV_MAX_WAIT_S = 30 * 60.0
 
 
 def build_env_then_respawn(folder: str, start_if_stopped: bool = False) -> dict | None:
-    """Kick off the folder's venv install (D1481) and, once it lands, move the
+    """Kick off the folder's venv install (D1482) and, once it lands, move the
     daemon onto it. Returns the install progress, or None when nothing needed
     building (no venv chosen, or it already exists) or anything went wrong.
 
@@ -565,7 +565,7 @@ def resurrect_autostart(shutdown_event=None) -> None:
             reason = unbuilt_deps_reason(folder, interpreter)
             if reason is not None:
                 logger.warning("background app %s: %s, skipping", folder, reason)
-                # Not just skipped: build the venv and bring it up after (D1481).
+                # Not just skipped: build the venv and bring it up after (D1482).
                 build_env_then_respawn(folder, start_if_stopped=True)
                 continue
             version = version_for(folder, interpreter)

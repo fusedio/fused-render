@@ -1,4 +1,4 @@
-"""D1481: a daemon-only app's unbuilt venv is built by start/restart/autostart
+"""D1482: a daemon-only app's unbuilt venv is built by start/restart/autostart
 and the daemon is moved onto it once it exists."""
 import os
 import sys
@@ -302,7 +302,7 @@ def test_resurrect_autostart_builds_then_starts(tmp_path, workspace, monkeypatch
     assert started == [env.venv_python]
 
 
-# ------------------------------------------- failed fallback still builds (D1481)
+# ------------------------------------------- failed fallback still builds (D1482)
 
 
 def _failing_spawn(*a, **k):

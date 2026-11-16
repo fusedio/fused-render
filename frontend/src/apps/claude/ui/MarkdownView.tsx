@@ -76,7 +76,11 @@ export const MarkdownView = memo(function MarkdownView({
     // does a streaming tail (`enhance` false): a stat per frame is not free.
     const root = ref.current;
     if (!root || !linkifyEnabled({ links, enhance, hasOpener: !!openPreview })) return;
-    void linkifyPaths(root, { cwd, home, live: () => ref.current === root });
+    let stale = false;
+    void linkifyPaths(root, { cwd, home, live: () => !stale && ref.current === root });
+    return () => {
+      stale = true;
+    };
   }, [html, enhance, links, cwd, home, openPreview]);
   const onPathActivate = (target: EventTarget | null, newTab = false) => {
     const el = (target as Element | null)?.closest?.(PATH_ACTIVATE_SELECTOR);
