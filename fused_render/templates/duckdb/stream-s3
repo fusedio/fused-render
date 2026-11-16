@@ -1,7 +1,7 @@
 .parquet
 
 This template reads an s3:// parquet address in `_file` itself (D1486):
-reader.py signs it (fused_s3) and DuckDB reads the HTTPS URL with its httpfs
-extension, so a page reads the footer and the row groups and columns it
+the page signs it (fused.s3.sign), passes the HTTPS URL to reader.py, and
+DuckDB reads it with its httpfs extension, so a page reads the footer and the row groups and columns it
 shows, never the whole object. Only parquet streams: CSV/JSON have no footer
 to page from. Lines starting with "." list the extensions it streams.

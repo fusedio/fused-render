@@ -17,10 +17,11 @@ an ISO-8601 UTC string, or None when the URL does not expire (the public
 bucket, today) — a long-lived reader checks `expired()` and signs again, and
 re-signs once on a 403.
 
-Pass the `s3://` address between processes (a `runPython` param, a daemon
-request), never the signed URL: `runPython` params are kept in the call log,
-which goes into diagnostics bundles. Key caches by the address too — the URL
-may differ on every call.
+For a long-lived process (a tile daemon) that outlives one page request:
+pass it the `s3://` address and let it sign, and re-sign, for itself. A page
+reading through a one-shot `runPython` signs with `fused.s3.sign` and passes
+the URL (it lands in the call log; fine while URLs carry no credentials).
+Key caches by the address — the URL may differ on every call.
 
 **Travels with `appenv.py`.** Stdlib only and never `import fused_render`
 (SPEC PY-15; the `adding-a-shared-template-utility` skill). The server's

@@ -34,6 +34,7 @@ stay read-only.
 import datetime
 import decimal
 import os
+import urllib.parse
 
 import duckdb
 
@@ -83,23 +84,6 @@ def _is_streamed(file) -> bool:
     httpfs), not a local file. (A streamed grid is never editable, so
     writer.py — which has its own `_relation_for` — never receives one.)"""
     return isinstance(file, str) and file.startswith(("https://", "http://"))
-
-
-def _fused_s3():
-    """`templates/shared/fused_s3.py`, loaded by path (a user's same-named
-    module on sys.path must not stand in for it)."""
-    import importlib.util
-    import sys
-    name = "_duckdb_reader_fused_s3"
-    mod = sys.modules.get(name)
-    if mod is None:
-        here = os.path.dirname(os.path.abspath(__file__))
-        spec = importlib.util.spec_from_file_location(
-            name, os.path.join(os.path.dirname(here), "shared", "fused_s3.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        sys.modules[name] = mod
-    return mod
 
 
 def _load_httpfs(con) -> None:
@@ -469,11 +453,16 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
     # fetch, and a negative offset can't error out mid-query.
     limit = max(1, min(int(limit), MAX_LIMIT))
     offset = max(0, int(offset))
-    ext = _logical_ext(file)
     if isinstance(file, str) and file[:5].lower() == "s3://":
-        # Streamed from the bucket (the explorer passes the address itself,
-        # D1486): DuckDB reads the signed HTTPS URL with httpfs, so only the
-        # footer and the row groups/columns a query touches move. Parquet
+        raise ValueError("reader.py reads an S3 object from its signed URL: "
+                         "sign the s3:// address with fused.s3.sign first.")
+    streamed = _is_streamed(file)
+    # A URL's extension is its path's (a signed URL may carry a query).
+    ext = _logical_ext(urllib.parse.urlsplit(file).path if streamed else file)
+    if streamed:
+        # Streamed from the bucket (D1486): the page signed the s3:// address
+        # (fused.s3.sign) and DuckDB reads that HTTPS URL with httpfs, so only
+        # the footer and the row groups/columns a query touches move. Parquet
         # only — CSV/JSON have nothing to page from.
         if ext != ".parquet":
             raise ValueError("Only parquet files stream from S3. Download "
@@ -482,8 +471,7 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         try:
             con.execute("PRAGMA enable_object_cache=true")  # one footer parse per call
             _load_httpfs(con)
-            url = _fused_s3().sign(file)["url"]
-            return _read_flat(url, con, ext, offset, limit,
+            return _read_flat(file, con, ext, offset, limit,
                               sort, filters, mode, columns, positions)
         finally:
             con.close()
