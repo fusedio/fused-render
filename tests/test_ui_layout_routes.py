@@ -146,3 +146,23 @@ def test_corrupt_stored_doc_reads_absent(tmp_path, monkeypatch):
     with open(path, "w") as f:
         json.dump({"v": 1, "sidebar": {"width": 9999, "collapsed": False}}, f)
     assert client.get("/api/ui-layout").json() == {"exists": False, "layout": None}
+
+
+def test_node_view_shut_roundtrips_is_validated_and_is_carried(tmp_path, monkeypatch):
+    """The canvas node view's shut pane (SPEC §53.3 NV-4): a boolean, kept by
+    a whole-document PUT from an older bundle that never names it."""
+    client = _client(tmp_path, monkeypatch)
+    assert client.put("/api/ui-layout", json={"v": 1, "node_view_shut": True},
+                      headers=FUSED).status_code == 200
+    assert client.get("/api/ui-layout").json()["layout"]["node_view_shut"] is True
+    for bad in ("yes", 1, None):
+        assert client.put("/api/ui-layout", json={"v": 1, "node_view_shut": bad},
+                          headers=FUSED).status_code == 400, bad
+    # An older bundle's PUT says nothing of it: kept.
+    assert client.put("/api/ui-layout", json={"v": 1, "bookmarksCollapsed": True},
+                      headers=FUSED).status_code == 200
+    assert client.get("/api/ui-layout").json()["layout"]["node_view_shut"] is True
+    # Opened again: a PUT naming it false replaces it.
+    assert client.put("/api/ui-layout", json={"v": 1, "node_view_shut": False},
+                      headers=FUSED).status_code == 200
+    assert client.get("/api/ui-layout").json()["layout"]["node_view_shut"] is False

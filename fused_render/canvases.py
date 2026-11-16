@@ -1379,6 +1379,125 @@ def in_reference_copy(path: str) -> bool:
     return False
 
 
+# THE NODE VIEW'S GATE (SPEC §53.3 NV-2): which node of which clone a file
+# is, by the four node-source suffixes. The kind is what the file's suffix
+# makes the node in the workbench; a canvas.toml row carries no kind of its
+# own (only folders are typed), so "the row's kind matches the file" is: the
+# row is a node (not a folder) AND this file is the one `node_files` picks
+# for the stem (`foo.py` beside `foo.json` makes `foo.json` no node file).
+NODE_FILE_KINDS = {".py": "udf", ".json": "widget", ".html": "html", ".md": "note"}
+#: canvas.toml is node/edge metadata; past this it is not read (the canvas
+#: template's own gate uses the same bound).
+NODE_TOML_MAX_BYTES = 2 * 1024 * 1024
+
+
+def canvas_node_file(path) -> dict | None:
+    """`{env, name, node, kind, file, title, clone_dir}` when `path` is a node's
+    source file at the root of a `user/<canvas>` folder (a clone or a
+    reference copy there, D1476), else None. Cheapest first: the path's
+    shape and suffix (no syscall), then the folder's canvas.toml (one stat,
+    one read of at most NODE_TOML_MAX_BYTES), then one listdir for the
+    suffix rule. `team/` and `public/` never pass (`clone_dir_for`). Never
+    raises. Shared by the `udf` template's condition.py and
+    GET /api/canvases/node, so the mode and the view agree on what a node is.
+    The `canvases_enabled` preference is the CALLER's question."""
+    try:
+        path = str(path or "")
+        if not path or not os.path.isabs(path):
+            return None
+        path = os.path.normpath(path)
+        base = os.path.basename(path)
+        stem, ext = os.path.splitext(base)
+        kind = NODE_FILE_KINDS.get(ext)
+        if (kind is None or not stem or base.startswith(".")
+                or base in canvas_snapshot.IGNORED_BASENAMES
+                or (ext == ".py" and stem.startswith("_"))
+                # The frame scope (FP-9) and the embed key a node by this
+                # alphabet; a name outside it cannot be one node view's.
+                or not _NAME_RE.fullmatch(stem)):
+            return None
+        found = clone_dir_for(path)
+        if found is None:
+            return None
+        env, name, clone_dir = found
+        folder = os.path.dirname(path)
+        # Directly in the canvas folder: its parent is `user/<name>` and that
+        # folder's parent is the scope root, which is in no clone.
+        if (os.path.basename(folder) != name or clone_dir_for(folder) != found
+                or clone_dir_for(os.path.dirname(folder)) is not None):
+            return None
+        toml_path = os.path.join(folder, "canvas.toml")
+        if os.path.getsize(toml_path) > NODE_TOML_MAX_BYTES:
+            return None
+        with open(toml_path, "rb") as fh:
+            doc = tomllib.load(fh)
+        canvas = doc.get("canvas") if isinstance(doc, dict) else None
+        rows = canvas.get("nodes") if isinstance(canvas, dict) else None
+        row = canvas_snapshot.rows_by_name(rows if isinstance(rows, list) else []).get(stem)
+        if row is None or canvas_snapshot.is_folder(row):
+            return None
+        if canvas_snapshot.node_files(folder).get(stem) != base:
+            return None
+        title = row.get("title")
+        return {"env": env, "name": name, "node": stem, "kind": kind, "file": base,
+                "title": title.strip() if isinstance(title, str) and title.strip() else stem,
+                "clone_dir": clone_dir}
+    except Exception:  # noqa: BLE001 — a gate that cannot decide says no (CT-12)
+        return None
+
+
+def _cached_handle(env: str) -> str | None:
+    """The whoami handle when this process already holds a live answer for
+    `env`'s current login, else None. Never runs the CLI."""
+    with _CLI_CACHE_LOCK:
+        hit = _cli_cache.get(("whoami", env, _creds_sig(env)))
+    if hit is None or hit[0] <= time.monotonic() or not isinstance(hit[1], dict):
+        return None
+    handle = hit[1].get("handle")
+    return handle if isinstance(handle, str) and handle else None
+
+
+@router.get("/api/canvases/node")
+def api_canvases_node(path: str = ""):
+    """What the node view (SPEC §53.3) needs to start, so the page parses no
+    paths: `{enabled}` alone while the `canvases_enabled` preference is off;
+    `{enabled, node: null}` for a path that is not a node file (the `udf`
+    gate's own rule, `canvas_node_file`); else `{enabled, env, name, node,
+    kind, file, title, live, reference, signed_in, handle?}` (`title`: the
+    row's, else the node's name) — `live`: the folder is
+    a clone this process may sync (`_is_live_clone`); `reference`: it is a
+    reference copy (the view clones, adopting it in place, before starting
+    the sync); `signed_in`: `env`'s `fused login` store exists; `handle`: the
+    whoami answer when one is already cached (no CLI run here). A cheap
+    local read: no X-Fused guard, nothing written."""
+    from fused_render.shell import prefs
+
+    if not prefs.canvases_enabled():
+        return {"enabled": False}
+    if not isinstance(path, str) or not path or not os.path.isabs(os.path.expanduser(path)):
+        return _error("'path' must be an absolute path")
+    info = canvas_node_file(os.path.expanduser(path))
+    if info is None:
+        return {"enabled": True, "node": None}
+    env, name = info["env"], info["name"]
+    out = {
+        "enabled": True,
+        "env": env,
+        "name": name,
+        "node": info["node"],
+        "kind": info["kind"],
+        "file": info["file"],
+        "title": info["title"],
+        "live": _is_live_clone(env, name),
+        "reference": canvas_marker.is_reference(info["clone_dir"]),
+        "signed_in": _logged_in(env),
+    }
+    handle = _cached_handle(env)
+    if handle:
+        out["handle"] = handle
+    return out
+
+
 @router.get("/api/canvases/whoami")
 def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None)):
     # EXECUTES a control-plane call — D36 guard, like account's probe=1.
