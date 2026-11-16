@@ -365,3 +365,159 @@ def test_later_start_if_stopped_call_upgrades_an_existing_watcher(
     assert _wait(lambda: started)
     assert started == [eid]
     assert _wait(lambda: f not in background_apps._env_watchers)
+
+
+# ------------------------------------------- review round: race / shutdown / stop
+
+
+def test_call_after_watcher_decided_starts_a_fresh_watcher(tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    eid = background_apps.engine_id_for(f)
+    env = FakeEnv(monkeypatch, _venv_python(tmp_path))
+    monkeypatch.setattr(engine_host, "current", lambda e: None)
+    entered, release = threading.Event(), threading.Event()
+    moves = []
+    real_move = background_apps._move_onto_venv
+
+    def slow_move(folder_, flag, *a):
+        moves.append(flag)
+        entered.set()
+        release.wait(5)
+        return real_move(folder_, flag, *a)
+
+    monkeypatch.setattr(background_apps, "_move_onto_venv", slow_move)
+    started = []
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: started.append(a[0]))
+    # is_installed is already true, so the first call's watcher decides at once.
+    monkeypatch.setattr(envinstall, "is_installed", lambda p: True)
+    background_apps.build_env_then_respawn(f)
+    assert entered.wait(5)
+    # The watcher already decided (flag False). The registry entry must be gone,
+    # so this call is not OR-ed into a decided watcher.
+    assert f not in background_apps._env_watchers
+    background_apps.build_env_then_respawn(f, start_if_stopped=True)
+    env.finish()
+    release.set()
+    assert _wait(lambda: started == [eid])
+    assert moves == [False, True]
+
+
+def test_old_watcher_finally_does_not_pop_a_newer_entry(tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    FakeEnv(monkeypatch, _venv_python(tmp_path)).error = "x"
+    other = threading.Thread(target=lambda: None)
+    background_apps._env_watchers[f] = [True, other]
+    background_apps._watch_env(f)
+    assert background_apps._env_watchers[f] == [True, other]
+    background_apps._env_watchers.clear()
+
+
+def test_watcher_does_not_spawn_after_shutdown(tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    env = FakeEnv(monkeypatch, _venv_python(tmp_path))
+    stopping = threading.Event()
+    stopping.set()
+    monkeypatch.setattr(engine_host, "_stopping", stopping)
+    monkeypatch.setattr(engine_host, "current", lambda e: None)
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: pytest.fail("quitting"))
+    env.finish()
+    background_apps._move_onto_venv(f, True)
+    background_apps.build_env_then_respawn(f, start_if_stopped=True)
+    assert _wait(lambda: f not in background_apps._env_watchers)
+
+
+def test_shutdown_event_stops_the_watcher(tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    env = FakeEnv(monkeypatch, _venv_python(tmp_path))
+    ev = threading.Event()
+    ev.set()
+    monkeypatch.setattr(engine_host, "current", lambda e: None)
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: pytest.fail("shutting down"))
+    background_apps.build_env_then_respawn(f, start_if_stopped=True,
+                                           shutdown_event=ev)
+    env.finish()
+    assert _wait(lambda: f not in background_apps._env_watchers)
+
+
+def test_spawn_that_straddles_shutdown_is_stopped(tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    eid = background_apps.engine_id_for(f)
+    env = FakeEnv(monkeypatch, _venv_python(tmp_path))
+    env.finish()
+    ev = threading.Event()
+    monkeypatch.setattr(engine_host, "current", lambda e: None)
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: ev.set())
+    stopped = []
+    monkeypatch.setattr(engine_host, "stop", lambda e: stopped.append(e))
+    background_apps._move_onto_venv(f, True, shutdown_event=ev)
+    assert stopped == [eid]
+
+
+def test_stop_during_build_cancels_the_pending_start(tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    env = FakeEnv(monkeypatch, _venv_python(tmp_path))
+    monkeypatch.setattr(engine_host, "current", lambda e: None)
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: pytest.fail("stopped by the user"))
+    background_apps.build_env_then_respawn(f, start_if_stopped=True)
+    background_apps.cancel_pending_start(f)
+    env.finish()
+    assert _wait(lambda: f not in background_apps._env_watchers)
+
+
+def test_stop_then_start_during_build_still_starts(tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    eid = background_apps.engine_id_for(f)
+    env = FakeEnv(monkeypatch, _venv_python(tmp_path))
+    monkeypatch.setattr(engine_host, "current", lambda e: None)
+    started = []
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: started.append(a[0]))
+    background_apps.build_env_then_respawn(f, start_if_stopped=True)
+    background_apps.cancel_pending_start(f)
+    background_apps.build_env_then_respawn(f, start_if_stopped=True)
+    env.finish()
+    assert _wait(lambda: started == [eid])
+
+
+def test_cancel_pending_start_without_watcher_is_a_noop(tmp_path):
+    background_apps.cancel_pending_start(str(tmp_path / "nothing"))
+
+
+def test_stop_route_cancels_the_pending_start(client, tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    f = os.path.realpath(str(folder))
+    cancelled = []
+    monkeypatch.setattr(background_apps, "cancel_pending_start",
+                        lambda p: cancelled.append(p))
+    monkeypatch.setattr(engine_host, "stop", lambda e: None)
+    resp = client.post("/api/apps/background/stop",
+                       json={"html": str(folder / "index.html")}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    assert cancelled == [f]
+
+
+def test_validate_interpreter_accepts_the_folders_own_venv(tmp_path, monkeypatch):
+    folder = _folder(tmp_path)
+    real = tmp_path / "uvpy" / "python3.12"
+    real.parent.mkdir()
+    real.write_text("")
+    vpy = envinstall.venv_python_for(str(folder))
+    os.makedirs(os.path.dirname(vpy), exist_ok=True)
+    os.symlink(str(real), vpy)
+    with pytest.raises(engine_host.EngineError):
+        engine_host._validate_interpreter(vpy)
+    with pytest.raises(engine_host.EngineError):
+        engine_host._validate_interpreter(vpy, folder=str(tmp_path / "other"))
+    engine_host._validate_interpreter(vpy, folder=str(folder))

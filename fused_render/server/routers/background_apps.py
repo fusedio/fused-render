@@ -237,6 +237,7 @@ async def api_background_stop(body: dict = Body(...),
     if folder is None:
         return _error("request body must include 'html'")
     engine_id = background_apps.engine_id_for(folder)
+    background_apps.cancel_pending_start(folder)
     await asyncio.to_thread(engine_host.stop, engine_id)
     return {"ok": True}
 

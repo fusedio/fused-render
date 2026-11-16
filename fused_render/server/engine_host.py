@@ -174,14 +174,23 @@ def register_terminate_hook(fn) -> None:
     _terminate_hooks.append(fn)
 
 
-def _validate_interpreter(python: str) -> None:
+def _validate_interpreter(python: str, folder: str | None = None) -> None:
     """The interpreter must be one of ours: this app's own `sys.executable`, or a
     python from the home venv store; anything else is refused. Shared by the
     template path (`_validate`) and the background/daemon path
     (`ensure_background`); the server resolves it in both, so this is an
-    invariant check, not a trust boundary."""
+    invariant check, not a trust boundary. With `folder`, that folder's own
+    in-tree venv python is also accepted (compared by abspath, never realpath:
+    a venv python is a symlink to a base interpreter that may be neither the
+    host's nor under the venv store, e.g. a uv-managed Python)."""
     from fused_render.shell.storage import home_dir
 
+    if folder is not None:
+        from fused_render import envinstall
+
+        if (os.path.abspath(python)
+                == os.path.abspath(envinstall.venv_python_for(folder))):
+            return
     venvs = os.path.realpath(os.path.join(home_dir(), "venvs"))
     requested = os.path.realpath(python)
     if (requested != os.path.realpath(sys.executable)
@@ -557,7 +566,7 @@ def _validate_background(engine_id: str, python: str, daemon: str,
 
     if not _ENGINE_ID.match(engine_id):
         raise EngineError(f"refusing engine id {engine_id!r}: not a bare identifier")
-    _validate_interpreter(python)
+    _validate_interpreter(python, folder)
     target = os.path.realpath(daemon)
     folder = folder or os.path.dirname(daemon)
     manifest = background_apps.load_manifest(folder)
@@ -868,7 +877,7 @@ def restart(engine_id: str, failed: Child | None = None,
                 and _alive(existing) and _ping(existing)):
             return existing
         if python is not None:
-            _validate_interpreter(python)
+            _validate_interpreter(python, existing.folder)
         _terminate(existing)
         child = Child(engine_id=engine_id,
                       python=python if python is not None else existing.python,
