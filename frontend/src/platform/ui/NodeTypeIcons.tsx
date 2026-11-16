@@ -92,6 +92,9 @@ const NODE_ICONS: Record<string, (p: GlyphProps) => JSX.Element> = {
 /** The icon for a canvas node, by its file (`hex.py`, `dashboard.html`). */
 export function nodeTypeIcon(file: string): JSX.Element {
   const dot = file.lastIndexOf(".");
-  const Icon = dot > 0 ? NODE_ICONS[file.slice(dot + 1).toLowerCase()] : undefined;
+  const ext = dot > 0 ? file.slice(dot + 1).toLowerCase() : "";
+  // Own keys only: `notes.__proto__` must not find Object.prototype and try
+  // to draw it as a component (CodeRabbit on #2287).
+  const Icon = ext && Object.prototype.hasOwnProperty.call(NODE_ICONS, ext) ? NODE_ICONS[ext] : undefined;
   return Icon ? <Icon /> : iconForEntry(file, false);
 }
