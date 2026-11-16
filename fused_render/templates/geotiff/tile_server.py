@@ -76,7 +76,8 @@ def _version():
     here = os.path.dirname(_me())
     try:
         stamps = [os.path.getmtime(os.path.join(here, n))
-                  for n in ("tile_server.py", "_tiff_core.py", "_range_file.py")]
+                  for n in ("tile_server.py", "_tiff_core.py",
+                            os.path.join("..", "shared", "remote_range.py"))]
         return "|".join(str(t) for t in stamps) + "|" + _daemon_python()
     except OSError:
         return "0"
@@ -290,8 +291,7 @@ def _serve():
         if f is not None:
             return f
         if remote:
-            import _range_file
-            buf = _range_file.RemoteBuffer(path)
+            buf = T.remote_range().RemoteBuffer(path)
         else:
             buf = path
         buf, en, t0, next_off = T.parse_header(buf)

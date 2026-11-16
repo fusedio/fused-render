@@ -889,7 +889,19 @@
                   state.idsByAttr.set(String(id), id);
                 });
               }
-            } catch (_) { /* fall back to per-batch windows */ }
+            } catch (e) {
+              // A streamed (s3://) file refuses a sort/filter that would read
+              // most of it (reader.py STREAM_SCAN_BUDGET): every batch would
+              // refuse the same way, so say so instead of falling back.
+              if (/Too large to stream/.test((e && e.message) || "")) {
+                if (seq !== loadSeq) return;
+                setLoading(false);
+                const msg = String(e.message).replace(/^[\s\S]*?(Too large to stream)/, "$1");
+                wrap.innerHTML = `<div id="status" class="error">${escapeHtml(msg)}</div>`;
+                return;
+              }
+              /* otherwise fall back to per-batch windows */
+            }
           }
           if (state.deferRender) {
             // The break-the-hold timer arms only now: its 250ms budget was

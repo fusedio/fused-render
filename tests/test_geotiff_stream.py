@@ -5,7 +5,7 @@ ranges instead of an mmap of a downloaded copy.
   parses BigTIFF as well as classic TIFF — the big rasters in the bucket are
   BigTIFF, and the parity tests decode the same pixels from both layouts,
   written by the tiny writer below (no tifffile/GDAL in the test env).
-* `_range_file.RemoteBuffer` against a local HTTP server that speaks Range,
+* `remote_range.RemoteBuffer` (shared/) against a local HTTP server that speaks Range,
   ETag and If-Match: bytes-slice semantics, the header block cache, coalesced
   `read_many`, a changed object (412) and a re-sign after a 403.
 * the decoder end to end on a streamed address, and the stream budget that
@@ -13,14 +13,11 @@ ranges instead of an mmap of a downloaded copy.
 * which templates stream a bucket object (`stream-s3` marker) and the stat
   field the explorer reads.
 """
-import hashlib
 import os
 import random
 import struct
 import sys
-import threading
 import zlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 import pytest
@@ -31,8 +28,9 @@ GEOTIFF = os.path.join(os.path.dirname(fused_render.__file__), "templates", "geo
 if GEOTIFF not in sys.path:
     sys.path.insert(0, GEOTIFF)
 
-import _range_file as RF  # noqa: E402 - path seeded above, as the daemon does
-import _tiff_core as T  # noqa: E402
+import _tiff_core as T  # noqa: E402 - path seeded above, as the daemon does
+
+RF = T.remote_range()  # shared/remote_range.py, loaded the way the template loads it
 
 
 # --------------------------------------------------------------- TIFF writer
@@ -159,82 +157,7 @@ def test_unpack_at_matches_unpack_from_and_fails_the_same_way():
 
 # ------------------------------------------------------ a local range server
 
-
-class _Bucket:
-    """Objects served with Range / ETag / If-Match like S3, and a log."""
-
-    def __init__(self):
-        self.objects: dict[str, bytes] = {}
-        self.log: list = []
-        self.deny_next = 0       # answer this many requests with 403
-        self.ignore_range = False
-        bucket = self
-
-        class H(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                data = bucket.objects.get(self.path.split("?")[0])
-                rng = self.headers.get("Range")
-                bucket.log.append((self.path, rng, self.headers.get("If-Match")))
-                if bucket.deny_next:
-                    bucket.deny_next -= 1
-                    return self._send(403, b"<Error>AccessDenied</Error>")
-                if data is None:
-                    return self._send(404, b"")
-                etag = hashlib.md5(data).hexdigest()
-                im = self.headers.get("If-Match")
-                if im and im.strip('"') != etag:
-                    return self._send(412, b"")
-                if rng and not bucket.ignore_range:
-                    a, _, b = rng[6:].partition("-")
-                    a, b = int(a), min(int(b), len(data) - 1)
-                    if a >= len(data):
-                        return self._send(416, b"")
-                    return self._send(206, data[a:b + 1], etag,
-                                      f"bytes {a}-{b}/{len(data)}")
-                return self._send(200, data, etag)
-
-            def _send(self, status, body, etag=None, cr=None):
-                self.send_response(status)
-                self.send_header("Content-Length", str(len(body)))
-                if etag:
-                    self.send_header("ETag", f'"{etag}"')
-                if cr:
-                    self.send_header("Content-Range", cr)
-                self.end_headers()
-                self.wfile.write(body)
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.port = self.server.server_address[1]
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def url(self, key):
-        return f"https://bucket.test/{key}"
-
-
-@pytest.fixture
-def bucket(monkeypatch):
-    b = _Bucket()
-    import http.client
-
-    # The buffer speaks https to the bucket; the test bucket is plain http on
-    # loopback. Everything above the socket is the real code.
-    monkeypatch.setattr(RF, "_connect", lambda url: http.client.HTTPConnection(
-        "127.0.0.1", b.port, timeout=10))
-    signs = []
-
-    def sign(address):
-        signs.append(address)
-        return {"url": b.url(address.split("/", 3)[3]), "expires_at": None}
-
-    monkeypatch.setattr(RF.fused_s3, "sign", sign)
-    b.signs = signs
-    yield b
-    b.server.shutdown()
+from _range_bucket import bucket  # noqa: E402,F401 - the fixture (tests/_range_bucket.py)
 
 
 def test_remote_buffer_slices_like_bytes(bucket):
@@ -385,15 +308,28 @@ def test_gdal_source_signs_for_s3_and_passes_local_paths(bucket, tmp_path):
 # -------------------------------------------------- which templates stream
 
 
-def test_geotiff_streams_tifs_and_nothing_else_does_yet():
+def test_which_templates_stream_which_files():
     from fused_render.server import templates as server_templates
 
     tif = server_templates.remote_stream_templates("scene.tif")
     assert [e["mode"] for e in tif] == ["geotiff"]
     assert tif[0]["path"].endswith(os.path.join("geotiff", "template.html"))
     assert [e["mode"] for e in server_templates.remote_stream_templates("x.TIFF")] == ["geotiff"]
-    assert server_templates.remote_stream_templates("table.parquet") == []
-    assert server_templates.remote_stream_templates("Makefile") == []  # no text sniff
+    # duckdb is bound to CSV/JSON/.duckdb too, but its marker lists parquet only
+    assert [e["mode"] for e in server_templates.remote_stream_templates("t.parquet")] == ["duckdb"]
+    for name in ("t.csv", "t.json", "t.duckdb", "Makefile"):  # no text sniff either
+        assert server_templates.remote_stream_templates(name) == [], name
+
+
+def test_a_marker_lists_extensions_or_streams_everything(tmp_path):
+    from fused_render.server import templates as server_templates
+
+    m = tmp_path / "stream-s3"
+    m.write_text(".parquet .GeoParquet\nprose. not an extension line\n")
+    assert server_templates._streamed_extensions(str(m)) == (".parquet", ".geoparquet")
+    m.write_text("no extension lines at all\n")
+    assert server_templates._streamed_extensions(str(m)) is None
+    assert server_templates._streamed_extensions(str(tmp_path / "missing")) == ()
 
 
 def test_remote_stat_reports_stream_templates(monkeypatch):
@@ -414,5 +350,5 @@ def test_remote_stat_reports_stream_templates(monkeypatch):
     c = TestClient(app)
     tif = c.get("/api/remote/stat", params={"url": "s3://fused-asset/a/b.tif"}).json()
     assert [e["mode"] for e in tif["stream_templates"]] == ["geotiff"]
-    pq = c.get("/api/remote/stat", params={"url": "s3://fused-asset/a/b.parquet"}).json()
-    assert pq["stream_templates"] == []
+    csv = c.get("/api/remote/stat", params={"url": "s3://fused-asset/a/b.csv"}).json()
+    assert csv["stream_templates"] == []

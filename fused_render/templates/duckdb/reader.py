@@ -68,6 +68,54 @@ def _logical_ext(file: str) -> str:
 # so it stays attached to each row even after WHERE/ORDER BY reshuffle the page.
 _POS = "__fused_pos__"
 
+# A streamed (s3://, D1486) sort or filter scans its columns across every row
+# group over the network; past this many compressed bytes it is refused with a
+# pointer to Download instead of turning into a slow download in disguise.
+STREAM_SCAN_BUDGET = 256 * 1024 * 1024
+
+
+class TooLargeToStream(ValueError):
+    """A streamed query over `STREAM_SCAN_BUDGET` (the page shows the message)."""
+
+
+def _is_streamed(file) -> bool:
+    """`file` is a streamed object's DuckDB path (`_s3_fs.duckdb_path`), not a
+    local file. A plain prefix test, so writer.py (which imports
+    relation_for) never has to import fsspec."""
+    return isinstance(file, str) and file.startswith("fusedrange://")
+
+
+def _scan_bytes(con, file, columns) -> int:
+    """Compressed bytes of `columns` over every row group: what a sort/filter
+    on them reads at most (stats pruning can only make it less)."""
+    if not columns:
+        return 0
+    total = 0
+    for path, size in con.execute(
+            "SELECT path_in_schema, SUM(total_compressed_size) FROM parquet_metadata(?) "
+            "GROUP BY path_in_schema", [file]).fetchall():
+        if any(path == c or path.startswith(c + ".") or path.startswith(c + ", ")
+               for c in columns):
+            total += int(size or 0)
+    return total
+
+
+def _check_stream_scan(con, file, sort, filters, types):
+    """Raise TooLargeToStream when a streamed sort/filter would read more than
+    the budget. Only columns the query really uses count (unknown ones are
+    dropped by _build_where/_build_order too)."""
+    cols = {f.get("column") for f in (filters or []) if f.get("column") in types}
+    if sort and sort.get("column") in types:
+        cols.add(sort["column"])
+    nbytes = _scan_bytes(con, file, sorted(cols))
+    if nbytes > STREAM_SCAN_BUDGET:
+        size = (f"{nbytes / 1e9:.1f} GB" if nbytes >= 1e9
+                else f"{max(1, round(nbytes / 1e6))} MB")
+        raise TooLargeToStream(
+            f"Too large to stream: sorting or filtering here reads about "
+            f"{size} from S3. Download the file to sort or filter it.")
+
+
 # Filter operators the grid may request, grouped by how they build into SQL.
 _COMPARE_OPS = {"=", "!=", ">", "<", ">=", "<="}
 _NULL_OPS = {"is_null": "IS NULL", "not_null": "IS NOT NULL"}
@@ -217,7 +265,7 @@ def relation_for(file: str, file_row_number: bool = False) -> str:
     `file_row_number` (parquet only) asks read_parquet to expose its
     `file_row_number` pseudo-column — the row's physical position in the file.
     It's ignored for the other formats, which have no such pseudo-column."""
-    lit = _quote_str(os.path.abspath(file))
+    lit = _quote_str(file if _is_streamed(file) else os.path.abspath(file))
     ext = _logical_ext(file)
     if ext == ".parquet":
         opt = ", file_row_number=true" if file_row_number else ""
@@ -367,7 +415,15 @@ def _read_database(file, table, offset, limit, sort, filters, mode="full"):
 def _fs_gate(file, out):
     """FS gate over either path's verdict: a chmod -w file beats a
     content-level "editable" (the writer refuses it too — see writer.py).
-    Content-level read-only reasons (view, JSON) keep their own message."""
+    Content-level read-only reasons (view, JSON) keep their own message.
+    A streamed S3 object is always read-only: there is no local file."""
+    if _is_streamed(file):
+        out.update(
+            editable=False, remote=True,
+            readonly_message="S3",
+            readonly_tooltip="Streamed from S3: only the rows shown are read, "
+                             "and the file cannot be edited here.")
+        return out
     if out["editable"] and not os.access(file, os.W_OK):
         out.update(
             editable=False,
@@ -387,6 +443,23 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
     limit = max(1, min(int(limit), MAX_LIMIT))
     offset = max(0, int(offset))
     ext = _logical_ext(file)
+    if isinstance(file, str) and file[:5].lower() == "s3://":
+        # Streamed from the bucket (the explorer passes the address itself,
+        # D1486): DuckDB reads it through an fsspec filesystem of HTTP range
+        # reads, so only the footer and the row groups/columns a query
+        # touches move. Parquet only — CSV/JSON have nothing to page from.
+        if ext != ".parquet":
+            raise ValueError("Only parquet files stream from S3. Download "
+                             "this file to open it.")
+        import _s3_fs
+        con = duckdb.connect(":memory:")
+        try:
+            con.execute("PRAGMA enable_object_cache=true")  # one footer parse per call
+            _s3_fs.register(con)
+            return _read_flat(_s3_fs.duckdb_path(file), con, ext, offset, limit,
+                              sort, filters, mode, columns, positions)
+        finally:
+            con.close()
     if ext in _DB_EXTS:
         out = _read_database(file, table, offset, limit, sort, filters, mode)
         # "count" returns only {total_rows} — no editability verdict to gate.
@@ -423,6 +496,9 @@ def _read_flat(file: str, con, ext: str, offset: int, limit: int,
     types = {r[0]: r[1] for r in
              con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
     where, wbinds = _build_where(filters, types)
+    if _is_streamed(file) and mode != "schema" and positions is None and (
+            where or _build_order(sort, types)):
+        _check_stream_scan(con, file, sort, filters, types)
 
     # "schema" answers from the footer alone — no row bytes moved. The grid
     # uses it to paint the full header + skeleton cells immediately, then fills columns in from parallel batched page calls.

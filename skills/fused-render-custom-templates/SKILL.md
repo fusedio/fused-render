@@ -36,7 +36,7 @@ Flat object; same key grammar as built-in `fused_render/templates/registry.json`
 
 ## stream-s3
 
-Marker file (contents ignored) = template opens bucket objects WITHOUT download: explorer passes `_file=s3://bucket/key` instead of a local cache path. Template must then read it itself: `fused.s3.sign(addr)` (JS) / `fused_s3.sign(addr)` (Python, `templates/shared`) → `{url, expires_at}` HTTPS URL, Range works. Keep address as identity (cache keys, params); never pass the signed URL through `runPython` params (call log). Read only what the view needs — refuse/point to Download when a view would read most of a big file (geotiff: `STREAM_BUDGET`). Not honoured for conditional or native templates. Example: `geotiff/` (`_range_file.py`).
+Marker file = template opens bucket objects WITHOUT download. Lines starting with `.` list the extensions it streams (`.parquet` — duckdb; none = every bound file): explorer passes `_file=s3://bucket/key` instead of a local cache path. Template must then read it itself: `fused.s3.sign(addr)` (JS) / `fused_s3.sign(addr)` (Python, `templates/shared`) → `{url, expires_at}` HTTPS URL, Range works. Keep address as identity (cache keys, params); never pass the signed URL through `runPython` params (call log). Read only what the view needs — refuse/point to Download when a view would read most of a big file (geotiff: `STREAM_BUDGET`). Not honoured for conditional or native templates. Examples: `geotiff/` (range reads via `shared/remote_range.py`), `duckdb/` (`_s3_fs.py`: fsspec filesystem registered on DuckDB).
 
 ## Guardrail
 

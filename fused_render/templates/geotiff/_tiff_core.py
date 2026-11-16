@@ -54,7 +54,7 @@ class ByteOrder(str):
 
 def _unpack_at(fmt, buf, off):
     """`struct.unpack_from(fmt, buf, off)` for any SLICEABLE buffer: an mmap
-    of a local file, or a `_range_file.RemoteBuffer` (an s3:// object read
+    of a local file, or a `remote_range.RemoteBuffer` (an s3:// object read
     by HTTP ranges), which has no buffer protocol. Same bytes, and the same
     `struct.error` for a read past the end."""
     size = struct.calcsize(fmt)
@@ -171,6 +171,27 @@ _PHOTOMETRIC = {0: "min-is-white", 1: "min-is-black", 2: "RGB", 3: "palette",
                 4: "mask", 5: "CMYK", 6: "YCbCr"}
 
 
+def remote_range():
+    """`templates/shared/remote_range.py` (the HTTP range reader), loaded by
+    path once per process under its `LOADED_AS` name — never by sys.path, so
+    no same-named module of a user's can stand in for it."""
+    import importlib.util
+    name = "_fused_remote_range"
+    mod = sys.modules.get(name)
+    if mod is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(os.path.dirname(here), "shared", "remote_range.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+    return mod
+
+
 def is_remote(path) -> bool:
     """`path` is an `s3://` address (streamed, D1484), not a local file."""
     return isinstance(path, str) and path[:5].lower() == "s3://"
@@ -183,16 +204,15 @@ _REMOTE = {}
 
 def open_buffer(path):
     """The file as a sliceable buffer: an mmap for a local path, a
-    `_range_file.RemoteBuffer` (HTTP range reads of a URL the server signs)
+    `remote_range.RemoteBuffer` (shared/; HTTP range reads of a URL the server signs)
     for an `s3://` address. Everything below reads `buf` only by `len`,
     slicing and `_unpack_at`, so both work everywhere."""
     if not isinstance(path, str):
         return path  # already a buffer (the tile daemon opens its own)
     if is_remote(path):
-        import _range_file
         buf = _REMOTE.get(path)
         if buf is None or buf.changed:
-            buf = _REMOTE[path] = _range_file.RemoteBuffer(path)
+            buf = _REMOTE[path] = remote_range().RemoteBuffer(path)
         return buf
     import mmap
     with open(path, "rb") as f:
@@ -208,8 +228,7 @@ def gdal_source(path):
     and its own children only — never a runPython result or log line."""
     if not is_remote(path):
         return path, os.path.getsize(path)
-    import _range_file
-    url = _range_file.fused_s3.sign(path)["url"]
+    url = remote_range().fused_s3.sign(path)["url"]
     buf = _REMOTE.get(path)
     return "/vsicurl/" + url, (len(buf) if buf is not None else None)
 

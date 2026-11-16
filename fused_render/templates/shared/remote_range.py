@@ -1,22 +1,27 @@
-"""A remote object as a lazy, sliceable byte buffer — the geotiff stream path.
+"""A remote object as a lazy, sliceable byte buffer — the template stream path.
 
-The TIFF decoder (`_tiff_core`) and the tile daemon read their input as `buf`:
-`len(buf)`, `buf[a:b]`, `buf[i]` — an `mmap` for a local file. `RemoteBuffer`
-answers the same calls for an `s3://` address, by HTTP range requests against
-a URL the fused-render server signs (`fused_s3.sign`, D1484). So a COG opens
-with one request for its header and each tile costs one ranged GET, instead
-of a download of the whole object.
+Readers that take a local file as an mmap or a seekable file can take an
+`s3://` address instead (D1484/D1485): `RemoteBuffer` answers `len(buf)`,
+`buf[a:b]`, `buf[i]` and `buf.read(start, stop)` by HTTP range requests
+against a URL the fused-render server signs (`fused_s3.sign`). So a COG opens
+with one request for its header, a parquet page reads one footer and the
+column chunks it shows, instead of a download of the whole object.
 
     buf = RemoteBuffer("s3://fused-asset/x.tif")
     buf[:2], len(buf)                      # b"II", 175009443
     buf.read_many([(a, b), (c, d)])        # coalesced, fetched concurrently
 
+Consumers: geotiff (`_tiff_core`, the tile daemon) and duckdb (`_s3_fs`, an
+fsspec filesystem DuckDB reads through). Each loads this file BY PATH under
+the module name `LOADED_AS` (the recipe is beside it), so a user's own
+`remote_range.py` on sys.path can never stand in for it.
+
 Reads:
   * A small read (at most one block) is served from aligned BLOCK-sized blocks
-    kept in an LRU (`max_cache` bytes): IFDs, tag arrays, neighbouring tiles.
+    kept in an LRU (`max_cache` bytes): headers, footers, neighbouring tiles.
     The first request fetches `HEAD_BYTES`, which holds a COG's whole header.
-  * A larger read goes straight to the network and is not kept — the tile
-    daemon caches decoded tiles itself.
+  * A larger read goes straight to the network and is not kept — consumers
+    cache what they decode.
   * `read_many` merges ranges closer than `GAP` and fetches the merged runs on
     up to `PARALLEL` connections: a tile window's chunks of one level are
     usually adjacent in a COG, so a row of tiles is one request.
@@ -26,10 +31,9 @@ later request, so a changed object fails (`RemoteChanged`) instead of mixing
 bytes of two versions. Expiry: the URL is re-signed before `expires_at` and
 once after a 403. Redirects are never followed (http.client does not).
 
-Stdlib only; `certifi` is used for TLS roots when importable (the daemon
-venv's rasterio and the template venv's pyproj both bring it) unless
-`SSL_CERT_FILE` names a bundle. HTTPS proxies from the environment are
-honoured (CONNECT tunnel).
+Stdlib only (the shared-dir rule); `certifi` is used for TLS roots when
+importable unless `SSL_CERT_FILE` names a bundle. HTTPS proxies from the
+environment are honoured (CONNECT tunnel). Never imports `fused_render`.
 """
 from __future__ import annotations
 
@@ -38,6 +42,7 @@ import importlib.util
 import os
 import re
 import ssl
+import sys
 import threading
 import time
 import urllib.parse
@@ -62,12 +67,23 @@ class RemoteChanged(RemoteError):
     """The object changed since this buffer opened it (ETag mismatch)."""
 
 
+#: The sys.modules name every consumer loads this file under, by path:
+#:
+#:     mod = sys.modules.get("_fused_remote_range")
+#:     if mod is None:
+#:         spec = importlib.util.spec_from_file_location(
+#:             "_fused_remote_range", "<templates>/shared/remote_range.py")
+#:         mod = importlib.util.module_from_spec(spec)
+#:         sys.modules["_fused_remote_range"] = mod
+#:         spec.loader.exec_module(mod)
+LOADED_AS = "_fused_remote_range"
+
+
 def _load_fused_s3():
-    """`templates/shared/fused_s3.py`, by path: a same-named module earlier on
+    """`fused_s3.py` beside this file, by path: a same-named module earlier on
     sys.path (a user's own) must not shadow it."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(os.path.dirname(here), "shared", "fused_s3.py")
-    spec = importlib.util.spec_from_file_location("_geotiff_fused_s3", path)
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fused_s3.py")
+    spec = importlib.util.spec_from_file_location("_remote_range_fused_s3", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -133,6 +149,14 @@ def _executor() -> ThreadPoolExecutor:
         return _EXECUTOR
 
 
+def _http_date(value):
+    import email.utils
+    try:
+        return email.utils.parsedate_to_datetime(value).timestamp() if value else None
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
 _CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)")
 
 
@@ -154,6 +178,8 @@ class RemoteBuffer:
         self._lock = threading.Lock()
         self.etag: str | None = None
         self.size: int | None = None
+        #: The object's Last-Modified as an epoch time (None if not sent).
+        self.mtime: float | None = None
         self.changed = False
         self.requests = 0
         self.bytes_fetched = 0
@@ -206,7 +232,7 @@ class RemoteBuffer:
             u = urllib.parse.urlsplit(url)
             target = (u.path or "/") + ("?" + u.query if u.query else "")
             headers = {"Range": f"bytes={start}-{stop - 1}", "Accept-Encoding": "identity",
-                       "User-Agent": "fused-render-geotiff"}
+                       "User-Agent": "fused-render"}
             if self.etag:
                 headers["If-Match"] = f'"{self.etag}"'
             conn = None
@@ -254,6 +280,7 @@ class RemoteBuffer:
             etag = (r.getheader("ETag") or "").strip().removeprefix("W/").strip('"') or None
             if self.etag is None:
                 self.etag = etag
+                self.mtime = _http_date(r.getheader("Last-Modified"))
             elif etag and etag != self.etag:
                 self.changed = True
                 raise RemoteChanged(f"{self.address} changed while it was open; reopen it")
