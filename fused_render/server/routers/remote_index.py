@@ -43,12 +43,20 @@ def _error(message: str, code: str, status: int) -> JSONResponse:
     return JSONResponse({"error": message, "code": code}, status_code=status)
 
 
+def _rank(q: str, limit: int, ranked: bool, token) -> dict:
+    """`remote_index.rank`, after the (throttled) retry/refresh nudge: these
+    routes are how a session that only searches keeps its index current."""
+    remote_index.retry_if_needed()
+    return remote_index.rank(q, limit, ranked, token)
+
+
 @router.get("/api/remote-index/status")
 def api_remote_index_status():
     if not canvases_enabled():
         return {"enabled": False, "state": "absent", "rows": 0,
                 "fetched_at": None, "error": None}
     try:
+        remote_index.retry_if_needed()
         return {"enabled": True, **remote_index.status()}
     except Exception:  # noqa: BLE001 - details (local paths) stay in the log
         logger.exception("remote index status failed")
@@ -71,8 +79,7 @@ async def api_remote_index_rank(request: Request, q: str = Query(default=""),
     want_ranked = ranked.strip().lower() not in ("0", "false", "no", "off")
     async with cancellable(request) as token:
         try:
-            return await asyncio.to_thread(remote_index.rank, q, limit_n,
-                                           want_ranked, token)
+            return await asyncio.to_thread(_rank, q, limit_n, want_ranked, token)
         except Cancelled:
             logger.debug("remote index rank %r abandoned by the client", q)
             return Response(status_code=499)
@@ -121,6 +128,7 @@ def _hit(url: str, is_dir: bool, size, mtime) -> dict:
 
 def _search_list(bucket: str, prefix: str, cursor: str | None, limit: int,
                  file_key: str | None) -> dict | JSONResponse:
+    remote_index.retry_if_needed()
     try:
         page = remote_index.list_dir(prefix, cursor, limit)
     except ValueError:
@@ -184,7 +192,7 @@ async def api_remote_index_search(request: Request, q: str = Query(default=""),
 
     async with cancellable(request) as token:
         try:
-            out = await asyncio.to_thread(remote_index.rank, q, limit_n, True, token)
+            out = await asyncio.to_thread(_rank, q, limit_n, True, token)
         except Cancelled:
             logger.debug("remote index search %r abandoned by the client", q)
             return Response(status_code=499)

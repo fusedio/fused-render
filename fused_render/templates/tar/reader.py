@@ -19,6 +19,7 @@ the destination via .. or an absolute path is rejected), and non-regular members
 import bz2
 import gzip
 import lzma
+import hashlib
 import os
 import shutil
 import tarfile
@@ -26,7 +27,15 @@ import tempfile
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
-import remote_cache  # noqa: E402  (stdlib-only shared helper, see templates/shared/)
+try:
+    import remote_cache  # noqa: E402  (stdlib-only shared helper, see templates/shared/)
+except ModuleNotFoundError as exc:
+    # An exported app ships this file without templates/shared/ (export.py
+    # never bundles it). It has no server, so no remote cache either: keep the
+    # plain temp-dir behaviour below. Any other import failure is a real bug.
+    if exc.name != "remote_cache":
+        raise
+    remote_cache = None
 
 # Compression suffixes for a single (non-tar) compressed file, longest first so
 # ".tar.gz" is never treated as a plain ".gz" wrapper. Maps suffix -> opener.
@@ -182,6 +191,11 @@ def _preview_root(file):
     """`(dir, remote)`: a stable per-archive dir for previews — the system temp
     dir, or the remote cache's guarded `.previews/` when the archive is a
     bucket download (templates/shared/remote_cache.py)."""
+    if remote_cache is None:  # an exported app: see the import above
+        key = hashlib.sha1(os.path.realpath(file).encode("utf-8")).hexdigest()[:16]
+        root = os.path.join(tempfile.gettempdir(), "fused-render-tar", key)
+        os.makedirs(root, exist_ok=True)
+        return root, False
     return remote_cache.preview_root(file, "tar")
 
 

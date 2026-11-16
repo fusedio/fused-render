@@ -26,10 +26,28 @@ entry carries `part_etag` and `part_seal` (the `.partial`'s identity when its
 writer stopped) while a `.partial` exists, so a resume never stitches bytes of
 two versions of the object together, nor bytes someone else wrote.
 
+Where ctime is NOT a change time (Windows: it is the creation time, and an
+edit that restores the mtime leaves size, mtime, ctime and file index as
+they were), identity is not enough, so `_CTIME_IS_CHANGE_TIME` false switches
+to content: the entry also records the file's `sha256` (hashed while
+streaming) and `_valid_entry` re-hashes the file against it (~0.4 s/GB); a
+range read is never answered from the cache there (it goes to S3: re-hashing
+a large file per 64 MiB window would cost more than the read); and a
+`.partial` is resumed only under a single-part (MD5) ETag, whose final check
+covers the resumed prefix too — a multipart one restarts.
+
 **Disk floor.** Nothing here may leave the cache volume with less than
-`RESERVE_BYTES` free (`require_space`): a download is refused up front (and
-re-checked once the size is certain) with code `no_space`. Agents start
-downloads unattended, so this is the only brake.
+`RESERVE_BYTES` free (`require_space`), counting the bytes every admitted
+download has still to write: a download is refused up front (for the bytes a
+valid `.partial` still lacks) and re-checked once the size is certain, where
+it is admitted — check and reservation in one step, released however it
+ends. Code `no_space`. Agents start downloads unattended, so this is the
+only brake.
+
+**Size cap.** A caller may pass `max_bytes` (the agent tool does, unless it
+was told the file may be large): a download whose object is bigger, at the
+HEAD or once the GET's size is known, stops with code `too_large`. A join or
+a cache hit is not checked: neither starts a download.
 
 **Download.** Streams to `.partial`, verifies, renames atomically, and leaves
 the file read-only (an editable cached copy would let a save silently diverge
@@ -41,9 +59,14 @@ discards the download; a multipart ETag gets a size check only. The `.partial`
 is KEPT on a cancel or a network drop (both resumable) and DELETED when the
 object is gone/refused, the resume lands wrong, or the bytes do not verify.
 
-One download per object: a second `start` joins it (same id). At most
-`MAX_ACTIVE` stream at once; later ones wait their turn (`running`, `done: 0`)
-and can be cancelled while waiting. Cancel comes from the view (`cancel`) or
+One download per object: a second `start` joins it (same id). Only one
+thread ever writes an object's hash dir: each attempt holds that object's
+writer lock (`_writer`) for its whole run, so a cancelled attempt still
+winding down keeps the next one out, even if a third start replaced an
+attempt that was itself cancelled while waiting. At most `MAX_ACTIVE`
+stream at once; later ones wait their turn (`running`, `done: 0`) and can
+be cancelled while waiting. A finished record carries the `etag` and
+`modified` of the object it downloaded. Cancel comes from the view (`cancel`) or
 the download manager's ✕ (read back off each `jobs.upsert` reply, the
 `envinstall` mirror pattern). The jobs row (`sys:remote-fetch:<hash>`) opens
 after `_ROW_AFTER_S` of streaming so a logo never flashes a row; the in-memory
@@ -97,9 +120,11 @@ JOB_PREFIX = "sys:remote-fetch:"
 
 #: The manifest, in `<home>/cache/` beside the cache root (see the docstring).
 _MANIFEST = "remote-manifest.json"
-#: Where it lived before: inside the cache root. Migrated once, then removed.
-_OLD_MANIFEST = "manifest.json"
 _PARTIAL = ".partial"
+
+#: Whether `st_ctime` moves on every write (POSIX), so a file's identity pins
+#: its content. Windows reports the creation time there; see the docstring.
+_CTIME_IS_CHANGE_TIME = sys.platform != "win32"
 
 #: Open the download-manager row only once a download has streamed this long.
 _ROW_AFTER_S = 1.0
@@ -226,43 +251,7 @@ def _load(path: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _migrate_locked() -> None:
-    """Move a manifest from inside the cache root (where it used to live) to
-    `manifest_path()`, once; caller holds `_manifest_lock`. Only complete
-    entries whose file still matches them come across, stamped with the
-    file's identity now; partial-download state is dropped (those restart).
-    The old file is removed either way."""
-    old = os.path.join(cache_root(), _OLD_MANIFEST)
-    if not os.path.isfile(old):
-        return
-    if not os.path.exists(manifest_path()):
-        kept = {}
-        for k, entry in (_load(old) or {}).items():
-            bucket, _, key = k.partition("/")
-            if not isinstance(entry, dict):
-                continue
-            size, etag, mtime_ns = entry.get("size"), entry.get("etag"), entry.get("mtime_ns")
-            if not (isinstance(size, int) and isinstance(etag, str) and isinstance(mtime_ns, int)):
-                continue
-            try:
-                st = os.stat(cache_path(bucket, key))
-            except (OSError, RemoteError):
-                continue
-            if st.st_size == size and st.st_mtime_ns == mtime_ns:
-                kept[k] = {"etag": etag, "size": size, **_identity(st)}
-        try:
-            _write_manifest(kept)
-        except OSError:
-            logger.warning("could not migrate the remote cache manifest", exc_info=True)
-            return
-    try:
-        os.remove(old)
-    except OSError:
-        pass
-
-
 def _read_manifest() -> dict:
-    _migrate_locked()
     return _load(manifest_path()) or {}
 
 
@@ -301,9 +290,11 @@ def _entry(bucket: str, key: str) -> dict:
 
 
 def _identity(st: os.stat_result) -> dict:
-    """What a manifest entry pins a file on disk to. `ctime_ns` moves on any
-    write, rename, chmod or utime and cannot be set back, so a file rewritten
-    in place (even with its mtime restored) no longer matches."""
+    """What a manifest entry pins a file on disk to. On POSIX `ctime_ns`
+    moves on any write, rename, chmod or utime and cannot be set back, so a
+    file rewritten in place (even with its mtime restored) no longer matches.
+    Not on Windows (see `_CTIME_IS_CHANGE_TIME`): there the entry's `sha256`
+    is checked as well."""
     return {"mtime_ns": st.st_mtime_ns, "ctime_ns": st.st_ctime_ns, "ino": st.st_ino}
 
 
@@ -312,9 +303,18 @@ def _matches(entry: dict, st: os.stat_result) -> bool:
             and all(entry.get(k) == v for k, v in _identity(st).items()))
 
 
+def _file_sha256(path: str) -> str | None:
+    try:
+        with open(path, "rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest()
+    except OSError:
+        return None
+
+
 def _valid_entry(bucket: str, key: str) -> tuple[str, dict] | None:
     """`(path, entry)` when the manifest entry is complete (etag, size and
-    the file identity all present) and the file on disk still matches it."""
+    the file identity all present) and the file on disk still matches it —
+    by identity, plus by content where identity cannot pin it."""
     try:
         path = cache_path(bucket, key)
     except RemoteError:
@@ -327,7 +327,13 @@ def _valid_entry(bucket: str, key: str) -> tuple[str, dict] | None:
         st = os.stat(path)
     except OSError:
         return None
-    return (path, entry) if _matches(entry, st) else None
+    if not _matches(entry, st):
+        return None
+    if not _CTIME_IS_CHANGE_TIME:
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or _file_sha256(path) != digest:
+            return None
+    return path, entry
 
 
 def cached_path(bucket: str, key: str, info: ObjectInfo) -> str | None:
@@ -349,7 +355,11 @@ def cached_copy(bucket: str, key: str) -> tuple[str, ObjectInfo] | None:
     manifest alone — no network: the entry is complete and the file is still
     the one it recorded. `info` is the object as downloaded (size, etag,
     Last-Modified when recorded). An object changed in the bucket since the
-    download is still answered from the old copy."""
+    download is still answered from the old copy. Always None where ctime is
+    not a change time: proving the copy there means re-hashing all of it,
+    which a range read must not pay per window (it reads from S3 instead)."""
+    if not _CTIME_IS_CHANGE_TIME:
+        return None
     hit = _valid_entry(bucket, key)
     if hit is None:
         return None
@@ -381,22 +391,53 @@ def free_bytes() -> int:
     return shutil.disk_usage(p).free
 
 
-def require_space(needed: int) -> None:
+#: Downloads admitted to write (`require_space(admit=...)`), by `id(rec)`,
+#: until `_release`. Guarded by `_space_lock`, which never takes `_lock`
+#: (`start` calls `require_space` while holding `_lock`).
+_admitted: dict = {}
+_space_lock = threading.Lock()
+
+
+def _owed(rec: "_Fetch") -> int:
+    """Bytes an admitted download has still to write. Its written bytes
+    already show in the volume's free space, so only the rest is owed."""
+    return max(0, rec.need - (rec.done - rec.base))
+
+
+def require_space(needed: int, *, admit: "_Fetch | None" = None) -> None:
     """`RemoteError("no_space")` unless writing `needed` more bytes to the
-    cache volume leaves at least `RESERVE_BYTES` free. The one disk-floor
-    rule: whole downloads (`start`, `_download`) and range reads (the route,
-    since the agent's tool server saves ranges to this volume) all use it."""
-    try:
-        free = free_bytes()
-    except OSError:
-        return  # cannot tell: do not block on a failed statvfs
-    if free - max(0, needed) < RESERVE_BYTES:
-        raise RemoteError(
-            "no_space",
-            f"Not enough free disk space: {_fmt_bytes(free)} free, and fused-render "
-            f"keeps {_fmt_bytes(RESERVE_BYTES)} free"
-            + (f" after the {_fmt_bytes(needed)} this needs" if needed > 0 else "")
-            + ". Free up space and try again.")
+    cache volume — on top of what every admitted download still owes —
+    leaves at least `RESERVE_BYTES` free. The one disk-floor rule: whole
+    downloads (`start`, `_download`) and range reads (the route, since the
+    agent's tool server saves ranges to this volume) all use it.
+
+    With `admit`, a download passing the check is recorded as owing `needed`
+    in the same step (so parallel downloads cannot each pass against the same
+    free space); `_release` drops it."""
+    needed = max(0, needed)
+    with _space_lock:
+        try:
+            free = free_bytes()
+        except OSError:
+            free = None  # cannot tell: do not block on a failed statvfs
+        owed = sum(_owed(r) for r in _admitted.values() if r is not admit)
+        if free is not None and free - owed - needed < RESERVE_BYTES:
+            raise RemoteError(
+                "no_space",
+                f"Not enough free disk space: {_fmt_bytes(free)} free"
+                + (f", {_fmt_bytes(owed)} of it promised to downloads in progress"
+                   if owed > 0 else "")
+                + f", and fused-render keeps {_fmt_bytes(RESERVE_BYTES)} free"
+                + (f" after the {_fmt_bytes(needed)} this needs" if needed > 0 else "")
+                + ". Free up space and try again.")
+        if admit is not None:
+            admit.need, admit.base = needed, admit.done
+            _admitted[id(admit)] = admit
+
+
+def _release(rec: "_Fetch") -> None:
+    with _space_lock:
+        _admitted.pop(id(rec), None)
 
 
 # ---------------------------------------------------------------- the registry
@@ -418,11 +459,21 @@ class _Fetch:
     cancel: threading.Event = field(default_factory=threading.Event)
     row_open: bool = False
     exited: threading.Event = field(default_factory=threading.Event)
+    #: Refuse (`too_large`) an object bigger than this; None = no cap.
+    max_bytes: int | None = None
+    #: Space admission (`require_space`): bytes owed from `done == base`.
+    need: int = 0
+    base: int = 0
+    #: The object a finished download holds (None until then).
+    etag: str | None = None
+    modified: float | None = None
 
     def public(self) -> dict:
+        done = self.state == "done"
         return {"state": self.state, "done": self.done, "total": self.total,
-                "path": (canonical_fs_path(os.path.abspath(self.path))
-                         if self.state == "done" else None),
+                "path": canonical_fs_path(os.path.abspath(self.path)) if done else None,
+                "etag": self.etag if done else None,
+                "modified": self.modified if done else None,
                 "error": self.error, "code": self.code}
 
 
@@ -447,54 +498,109 @@ def _prune(now: float) -> None:
         del _fetches[fid]
 
 
-def start(bucket: str, key: str) -> dict:
+def _too_large(what: str, size: int, max_bytes: int) -> RemoteError:
+    return RemoteError("too_large", f"{what} is {_fmt_bytes(size)}, over the "
+                       f"{_fmt_bytes(max_bytes)} limit set for this download, so it was "
+                       "not downloaded")
+
+
+def _resume_offset(bucket: str, key: str, info: ObjectInfo, partial: str) -> int:
+    """How many bytes of `partial` a download of `info` may keep (no side
+    effects): all of them when it is this object version's `.partial`, exactly
+    as this module sealed it, and something will check its content where
+    identity cannot; else 0. The hash dir is in a tree agents can write, and
+    a multipart ETag gets no content check."""
+    try:
+        st = os.stat(partial)
+    except OSError:
+        return 0
+    entry = _entry(bucket, key)
+    if not (info.etag and entry.get("part_etag") == info.etag
+            and entry.get("part_seal") == _seal_of(st) and st.st_size > 0
+            and (info.size is None or st.st_size < info.size)):
+        return 0
+    if not _CTIME_IS_CHANGE_TIME and not _MD5_ETAG.match(info.etag):
+        return 0
+    return st.st_size
+
+
+#: One lock per object (by job id), held by the attempt writing its hash dir.
+#: Guarded by `_lock`; never dropped (one small lock per object fetched).
+_writers: dict[str, threading.Lock] = {}
+
+
+def _acquire(lock, rec: _Fetch) -> bool:
+    """Take `lock`, giving up (and finishing `rec` as cancelled) on a cancel."""
+    while not lock.acquire(timeout=0.25):
+        if rec.cancel.is_set():
+            _finish(rec, "cancelled", error="the download was cancelled")
+            return False
+    return True
+
+
+def start(bucket: str, key: str, max_bytes: int | None = None) -> dict:
     """Begin (or join) the download of `s3://bucket/key`.
 
-    `{"id", "state": "running"|"done", "path"}`. Raises RemoteError: `bad_url`
-    for a key that cannot be cached, and whatever the HEAD maps to."""
+    `{"id", "state": "running"|"done", "path"}`, plus for a cache hit
+    `total`, `etag` and `modified`. Raises RemoteError: `bad_url` for a key
+    that cannot be cached, `too_large` when a download would start for an
+    object over `max_bytes`, `no_space`, and whatever the HEAD maps to."""
     path = cache_path(bucket, key)
     fid = job_id(bucket, key)
+    what = canonical_url(bucket, key)
     with _lock:
         cur = _fetches.get(fid)
         if _live(cur):
             return {"id": fid, "state": "running", "path": None}
     info = remote_access.head(bucket, key)
+    # Outside `_lock`: on Windows `cached_path` re-hashes the cached file.
+    hit = cached_path(bucket, key, info)
+    partial = os.path.join(os.path.dirname(path), _PARTIAL)
+    kept = 0 if hit else _resume_offset(bucket, key, info, partial)
     now = time.time()
     with _lock:
         _prune(now)
         cur = _fetches.get(fid)
         if _live(cur):
             return {"id": fid, "state": "running", "path": None}
-        hit = cached_path(bucket, key, info)
         if hit:
             done = _Fetch(id=fid, bucket=bucket, key=key, path=path, state="done",
-                          done=info.size or 0, total=info.size, finished_at=now)
+                          done=info.size or 0, total=info.size, finished_at=now,
+                          etag=info.etag, modified=info.mtime)
             done.exited.set()  # no thread ever ran for a cache hit
             _fetches[fid] = done
-            return {"id": fid, "state": "done", "path": hit}
-        require_space(info.size or 0)
+            return {"id": fid, "state": "done", "path": hit, "total": info.size,
+                    "etag": info.etag, "modified": info.mtime}
+        if max_bytes is not None and info.size is not None and info.size > max_bytes:
+            raise _too_large(what, info.size, max_bytes)
+        # Only what a valid `.partial` still lacks; `_download` re-checks.
+        require_space((info.size or 0) - kept)
         # A cancelled attempt still winding down (cancel is noticed per chunk,
         # not while connecting) is replaced, not joined; the new attempt waits
-        # for it to exit so there is never a second writer on the partial.
-        prev = cur if cur is not None and not cur.exited.is_set() else None
-        rec = _Fetch(id=fid, bucket=bucket, key=key, path=path, total=info.size)
+        # for the object's writer lock, so there is never a second writer.
+        writer = _writers.setdefault(fid, threading.Lock())
+        rec = _Fetch(id=fid, bucket=bucket, key=key, path=path, total=info.size,
+                     max_bytes=max_bytes)
         _fetches[fid] = rec
 
     def _guarded() -> None:
         try:
-            # Wait for the previous attempt, then for a slot; cancellable throughout.
-            while ((prev is not None and not prev.exited.wait(0.25))
-                   or not _slots.acquire(timeout=0.25)):
-                if rec.cancel.is_set():
-                    _finish(rec, "cancelled", error="the download was cancelled")
-                    return
+            # The writer lock, then a slot; cancellable throughout.
+            if not _acquire(writer, rec):
+                return
             try:
-                _run(rec, info)
-            except BaseException:  # noqa: BLE001 - a stuck "running" is worse
-                logger.exception("remote fetch of %s died", canonical_url(bucket, key))
-                _finish(rec, "error", error="the download stopped unexpectedly", code="internal")
+                if not _acquire(_slots, rec):
+                    return
+                try:
+                    _run(rec, info)
+                except BaseException:  # noqa: BLE001 - a stuck "running" is worse
+                    logger.exception("remote fetch of %s died", what)
+                    _finish(rec, "error", error="the download stopped unexpectedly",
+                            code="internal")
+                finally:
+                    _slots.release()
             finally:
-                _slots.release()
+                writer.release()
         finally:
             rec.exited.set()
 
@@ -586,12 +692,14 @@ def _content_range(value: str | None) -> tuple[int | None, int | None]:
             int(total) if total.isdigit() else None)
 
 
-def _hash_prefix(path: str) -> "hashlib._Hash":
-    h = hashlib.md5()
+def _hash_prefix(path: str, hashers: list) -> None:
+    """Feed the bytes already in `path` (a resumed `.partial`) to `hashers`."""
+    if not hashers:
+        return
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(_CHUNK), b""):
-            h.update(chunk)
-    return h
+            for h in hashers:
+                h.update(chunk)
 
 
 def _discard(rec: _Fetch, partial: str) -> None:
@@ -639,27 +747,23 @@ def _run(rec: _Fetch, info: ObjectInfo) -> None:
 def _download(rec: _Fetch, info: ObjectInfo) -> None:
     bucket, key, path = rec.bucket, rec.key, rec.path
     partial = os.path.join(os.path.dirname(path), _PARTIAL)
-    what = canonical_url(bucket, key)
-    url = remote_access.read_url(bucket, key)
 
     # Resume only a .partial of the same object version, and only the very
-    # file this module sealed when it stopped writing it: the hash dir is in
-    # a tree agents can write, and a multipart ETag gets no content check.
-    offset = 0
-    if os.path.exists(partial):
-        entry = _entry(bucket, key)
-        try:
-            st = os.stat(partial)
-        except OSError:
-            st = None
-        if (st is not None and info.etag and entry.get("part_etag") == info.etag
-                and entry.get("part_seal") == _seal_of(st) and st.st_size > 0
-                and (info.size is None or st.st_size < info.size)):
-            offset = st.st_size
-        else:
-            _remove(partial)
+    # file this module sealed when it stopped writing it (`_resume_offset`).
+    offset = _resume_offset(bucket, key, info, partial)
+    if not offset and os.path.exists(partial):
+        _remove(partial)
     _update_entry(bucket, key, part_etag=info.etag, part_seal=None)
+    try:
+        _stream(rec, info, partial, offset)
+    finally:
+        _release(rec)  # the space it was admitted for, however it ended
 
+
+def _stream(rec: _Fetch, info: ObjectInfo, partial: str, offset: int) -> None:
+    bucket, key, path = rec.bucket, rec.key, rec.path
+    what = canonical_url(bucket, key)
+    url = remote_access.read_url(bucket, key)
     started = time.monotonic()
     last_tick = 0.0
     try:
@@ -677,13 +781,21 @@ def _download(rec: _Fetch, info: ObjectInfo) -> None:
                         _remove(partial)
                         offset = 0
                         continue
+                    etag = clean_etag(r.headers.get("etag")) or info.etag
                     if r.status_code == 206:
                         start_at, total = _content_range(r.headers.get("content-range"))
-                        if start_at != offset:
+                        if start_at != offset or etag != info.etag:
                             _discard(rec, partial)
-                            raise RemoteError("network", f"S3 resumed {what} at the wrong offset; try again")
+                            raise RemoteError("network", f"S3 resumed {what} at the wrong "
+                                              "offset or version; try again")
                         mode = "ab"
                     elif r.status_code == 200:
+                        # A restart. The kept bytes (perhaps of another
+                        # version) go BEFORE the new etag is recorded, so a
+                        # failure below (no_space, too_large) never leaves
+                        # them sealed under it for a later resume.
+                        if offset:
+                            open(partial, "wb").close()
                         offset = 0
                         length = r.headers.get("content-length")
                         total = int(length) if length and length.isdigit() else info.size
@@ -692,19 +804,22 @@ def _download(rec: _Fetch, info: ObjectInfo) -> None:
                         if r.status_code in (403, 404):
                             _discard(rec, partial)
                         raise error_for_status(r.status_code, what)
-                    etag = clean_etag(r.headers.get("etag")) or info.etag
                     if etag != info.etag:
                         _update_entry(bucket, key, part_etag=etag)
-                    # A single-part ETag is the object's MD5: verify it.
-                    hasher = None
-                    if etag and _MD5_ETAG.match(etag):
-                        hasher = _hash_prefix(partial) if mode == "ab" else hashlib.md5()
+                    # A single-part ETag is the object's MD5: verify it. Where
+                    # identity cannot pin a file, its sha256 is recorded too.
+                    hasher = hashlib.md5() if etag and _MD5_ETAG.match(etag) else None
+                    content = None if _CTIME_IS_CHANGE_TIME else hashlib.sha256()
+                    if mode == "ab":
+                        _hash_prefix(partial, [h for h in (hasher, content) if h is not None])
                     with _lock:
                         rec.total = total
                         rec.done = offset
+                    # Raised before a byte is written: a partial is kept.
+                    if rec.max_bytes is not None and total is not None and total > rec.max_bytes:
+                        raise _too_large(what, total, rec.max_bytes)
                     if total is not None:
-                        # Raised before a byte is written: a partial is kept.
-                        require_space(total - offset)
+                        require_space(total - offset, admit=rec)
                     with open(partial, mode) as f:
                         for chunk in r.iter_raw(_CHUNK):
                             if rec.cancel.is_set():
@@ -712,8 +827,12 @@ def _download(rec: _Fetch, info: ObjectInfo) -> None:
                             f.write(chunk)
                             if hasher is not None:
                                 hasher.update(chunk)
+                            if content is not None:
+                                content.update(chunk)
                             with _lock:
                                 rec.done += len(chunk)
+                            if rec.max_bytes is not None and rec.done > rec.max_bytes:
+                                raise _too_large(what, rec.done, rec.max_bytes)
                             now = time.monotonic()
                             if now - started >= _ROW_AFTER_S and now - last_tick >= _TICK_S:
                                 last_tick = now
@@ -736,9 +855,14 @@ def _download(rec: _Fetch, info: ObjectInfo) -> None:
                         pass
                     st = os.stat(path)
                     modified = remote_access.http_date(r.headers.get("last-modified"))
-                    _update_entry(bucket, key, etag=etag, size=st.st_size,
-                                  modified=modified if modified is not None else info.mtime,
+                    if modified is None:
+                        modified = info.mtime
+                    _update_entry(bucket, key, etag=etag, size=st.st_size, modified=modified,
+                                  sha256=content.hexdigest() if content is not None else None,
                                   part_etag=None, part_seal=None, **_identity(st))
+                    rec.etag, rec.modified = etag, modified
+                    with _lock:
+                        rec.total = st.st_size
                     _finish(rec, "done")
                     return
     except _Cancelled:

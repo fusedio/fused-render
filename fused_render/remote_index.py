@@ -38,9 +38,10 @@ bad file is rejected and the previous store keeps serving.
 **Refresh.** `start_background(reason)` runs one ingest on a daemon thread
 (one at a time per process; `store.compact`'s flock serialises across
 processes). `startup_check()` starts one when the store is absent or the
-last check is older than `REFRESH_S`; `retry_if_needed()` is the cheap
-in-flight version a caller runs when it finds the store not ready, and also
-refreshes a long-running server once a day.
+last check is older than `REFRESH_S`; `retry_if_needed()` is the cheap,
+throttled in-flight version every index-reading route runs (Home search,
+the agent's search, folder listings), which retries a failed ingest and
+also refreshes a long-running server once a day.
 
 pyarrow and duckdb belong to the optional `index` extra and are imported
 lazily; without them `status()` reports `error` and the readers answer
@@ -80,6 +81,8 @@ REQUIRED_COLUMNS = ("key", "size", "last_modified")
 REFRESH_S = 24 * 3600
 #: How long `retry_if_needed` waits after an attempt before another.
 RETRY_S = 30
+#: How often `retry_if_needed` looks at all (it runs on request paths).
+CHECK_EVERY_S = 5.0
 FETCH_TIMEOUT_S = 60
 #: Limits on the (untrusted) listing. The real one is ~7 MB / ~261k rows.
 MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024
@@ -99,6 +102,7 @@ FEATURE = "Fused assets search"
 
 _guard = threading.Lock()
 _running = False
+_next_check = 0.0  # monotonic; guarded by `_guard`
 
 
 class IngestError(Exception):
@@ -238,15 +242,21 @@ def retry_if_needed() -> None:
     """Cheap, idempotent, never raises. Starts a background ingest when the
     store is not ready (absent / failed) and the last attempt started more
     than `RETRY_S` ago, or a conditional refresh when a ready store's last
-    check is older than `REFRESH_S` (a server left running for days). Meant
-    for a caller that just found the store not ready; the hot readers
-    (`rank`, `list_dir`) never fetch."""
+    check is older than `REFRESH_S` (a server left running for days). The
+    routes that read the index call it on every request, ready or not (Home
+    search's `/rank` per keystroke), so it looks at most once per
+    `CHECK_EVERY_S`; the readers themselves (`rank`, `list_dir`) never fetch."""
+    global _next_check
     try:
         if _deps_missing():
             return
         with _guard:
             if _running:
                 return
+            now_m = time.monotonic()
+            if now_m < _next_check:
+                return
+            _next_check = now_m + CHECK_EVERY_S
         s = _read_state()
         now = time.time()
         if _open_store() is None:

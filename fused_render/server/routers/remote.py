@@ -6,6 +6,8 @@
                                        a byte range of an object, streamed
                                        (the agent tool `s3_read`; X-Fused)
   POST /api/remote/fetch               download an object into the local cache
+                                       (`{url, max_bytes?}`: over the cap,
+                                       413 `too_large` instead of a download)
   GET  /api/remote/fetch/status?id=    where that download is up to
   POST /api/remote/fetch/cancel        stop it
 
@@ -38,6 +40,7 @@ router = APIRouter()
 _STATUS = {"disabled": 403, "forbidden": 403, "bad_url": 400, "unsupported_bucket": 400,
            "not_found": 404, "not_public": 403, "network": 502, "index_not_ready": 503,
            "range_not_satisfiable": 416, "no_space": 507, "unknown_download": 404,
+           "too_large": 413,
            "internal": 500}
 
 
@@ -124,6 +127,7 @@ def _index_list(prefix: str, cursor: str | None) -> dict | None:
     rejects (ValueError) is `bad_url`."""
     from fused_render import remote_index
 
+    remote_index.retry_if_needed()  # throttled; retries a failed ingest, refreshes a stale one
     try:
         page = remote_index.list_dir(prefix, cursor)
     except ImportError:
@@ -218,9 +222,12 @@ async def _body(request: Request) -> dict | None:
     return body if isinstance(body, dict) else None
 
 
-def _fetch(url) -> dict:
+def _fetch(url, max_bytes) -> dict:
     bucket, key = _parse(url)
-    return remote_fetch.start(bucket, key)
+    if max_bytes is not None and (isinstance(max_bytes, bool) or not isinstance(max_bytes, int)
+                                  or max_bytes < 1):
+        raise RemoteError("bad_url", "'max_bytes' must be a positive integer")
+    return remote_fetch.start(bucket, key, max_bytes=max_bytes)
 
 
 @router.post("/api/remote/fetch")
@@ -231,7 +238,7 @@ async def api_remote_fetch(request: Request, x_fused: str | None = Header(defaul
     body = await _body(request)
     if body is None:
         return _fail("bad_url", 'the request body must be {"url": "s3://…"}')
-    return await run_in_threadpool(_handle, _fetch, body.get("url"))
+    return await run_in_threadpool(_handle, _fetch, body.get("url"), body.get("max_bytes"))
 
 
 # ---- files: a byte range, streamed -------------------------------------------
@@ -241,7 +248,8 @@ async def api_remote_fetch(request: Request, x_fused: str | None = Header(defaul
 # `RANGE_MAX_BYTES` (including `length` omitted on a big object) is CLAMPED to
 # its first `RANGE_MAX_BYTES` bytes, never refused; `X-Remote-Range` always
 # names the bytes actually sent. An object already in the local cache is read
-# from that file with no network at all (`remote_fetch.cached_copy`); the
+# from that file with no network at all (`remote_fetch.cached_copy`; never on
+# Windows, where proving the copy costs a full re-hash, so it reads S3); the
 # window rules are the same `remote_access.resolve_range` either way.
 
 

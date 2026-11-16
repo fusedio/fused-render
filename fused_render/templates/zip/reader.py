@@ -13,6 +13,7 @@ Actions (``action`` param):
 Every extraction is guarded against zip-slip (a member whose path escapes the
 destination via .. or an absolute path is rejected).
 """
+import hashlib
 import os
 import shutil
 import tempfile
@@ -20,7 +21,15 @@ import zipfile
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
-import remote_cache  # noqa: E402  (stdlib-only shared helper, see templates/shared/)
+try:
+    import remote_cache  # noqa: E402  (stdlib-only shared helper, see templates/shared/)
+except ModuleNotFoundError as exc:
+    # An exported app ships this file without templates/shared/ (export.py
+    # never bundles it). It has no server, so no remote cache either: keep the
+    # plain temp-dir behaviour below. Any other import failure is a real bug.
+    if exc.name != "remote_cache":
+        raise
+    remote_cache = None
 
 
 def _fmt_dt(date_time):
@@ -112,6 +121,11 @@ def _preview_root(file):
     """`(dir, remote)`: a stable per-archive dir for previews — the system temp
     dir, or the remote cache's guarded `.previews/` when the archive is a
     bucket download (templates/shared/remote_cache.py)."""
+    if remote_cache is None:  # an exported app: see the import above
+        key = hashlib.sha1(os.path.realpath(file).encode("utf-8")).hexdigest()[:16]
+        root = os.path.join(tempfile.gettempdir(), "fused-render-zip", key)
+        os.makedirs(root, exist_ok=True)
+        return root, False
     return remote_cache.preview_root(file, "zip")
 
 

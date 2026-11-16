@@ -1501,11 +1501,17 @@ _S3_HINTS = {
                 "read a smaller range.",
     "unknown_download": "The download was interrupted (fused-render may have "
                         "restarted); call s3_read again with the same url.",
+    "too_large": "Read a byte range instead (`offset`/`length`), or pass "
+                 "`allow_large: true` if you really need the whole file.",
 }
 
-# JSON-RPC id -> Event, for every s3_read still waiting on a download. A
-# `notifications/cancelled` for that id ends the wait (the download itself
-# goes on in fused-render: another session or the explorer may share it).
+# JSON-RPC id -> Event, for every s3_read in flight. Registered by the reader
+# thread before the call's own thread starts (`_s3_register`), so a
+# `notifications/cancelled` arriving at any point of the call is kept; dropped
+# when the call is answered (`_serve_request`). A cancel ends the call at its
+# next step: before the download is started, or the wait on it (the download
+# itself goes on in fused-render: another session or the explorer may share
+# it). A request already on the wire is not interrupted.
 _S3_WAITS: dict = {}
 _S3_WAITS_LOCK = threading.Lock()
 _S3_SWEPT = []
@@ -1843,16 +1849,24 @@ def _s3_range(url: str, offset, length, save: bool) -> dict:
     return _text(result)
 
 
-def _s3_wait_event():
-    """The cancel latch for the JSON-RPC request this thread serves, and the
-    key to drop afterwards (None off a serving thread)."""
-    event = threading.Event()
+def _s3_register(rpc_id) -> None:
+    """A cancel latch for request `rpc_id`, made before its thread runs."""
+    with _S3_WAITS_LOCK:
+        _S3_WAITS[str(rpc_id)] = threading.Event()
+
+
+def _s3_unregister(rpc_id) -> None:
+    with _S3_WAITS_LOCK:
+        _S3_WAITS.pop(str(rpc_id), None)
+
+
+def _s3_wait_event() -> threading.Event:
+    """The cancel latch of the JSON-RPC request this thread serves (a fresh,
+    never-set one off a serving thread, e.g. a direct call in a test)."""
     rpc_id = getattr(_RPC, "id", None)
-    key = None if rpc_id is None else str(rpc_id)
-    if key is not None:
-        with _S3_WAITS_LOCK:
-            _S3_WAITS[key] = event
-    return event, key
+    with _S3_WAITS_LOCK:
+        event = None if rpc_id is None else _S3_WAITS.get(str(rpc_id))
+    return event if event is not None else threading.Event()
 
 
 def _s3_cancel(rpc_id) -> None:
@@ -1878,6 +1892,7 @@ def _s3_whole(url: str, allow_large: bool) -> dict:
     `S3_FETCH_WAIT`. The result is the cached file's path, read-only."""
     origin = _s3_origin()
     deadline = time.monotonic() + S3_FETCH_WAIT
+    event = _s3_wait_event()
 
     def budget() -> float:
         return max(1.0, min(_S3_TIMEOUT, deadline - time.monotonic()))
@@ -1911,45 +1926,44 @@ def _s3_whole(url: str, allow_large: bool) -> dict:
             "for the last 64 KiB, where a Parquet file's footer length is), or pass "
             "`allow_large: true` if you really need the whole file."
             % (canonical, _s3_size_text(size), _s3_size_text(limit)))
+    if event.is_set():
+        return _error_result("cancelled; nothing was downloaded")
+    # The cap rides along: the object may have grown since the stat, and the
+    # server checks it against the size it actually starts downloading.
+    body = {"url": canonical} if allow_large else {"url": canonical, "max_bytes": limit}
     try:
-        status, rec = _server_http(origin, "POST", "/api/remote/fetch",
-                                   {"url": canonical}, timeout=budget())
+        status, rec = _server_http(origin, "POST", "/api/remote/fetch", body,
+                                   timeout=budget())
     except OSError as exc:
         return _s3_unreachable(exc)
     if status != 200 or not isinstance(rec, dict):
         return _s3_error(rec, status, "download the object")
     fid = rec.get("id")
-    event, key = _s3_wait_event()
-    try:
-        while rec.get("state") == "running":
-            if event.wait(_S3_POLL):
-                return _error_result("cancelled; the download goes on in fused-render")
-            if time.monotonic() >= deadline:
-                done, total = rec.get("done"), rec.get("total") or size
-                return _error_result(
-                    "%s is still downloading in fused-render (%s of %s so far). The "
-                    "download carries on: call s3_read again with the same url in a "
-                    "little while to get its path, or read a byte range now."
-                    % (canonical, _s3_size_text(done or 0), _s3_size_text(total)))
-            try:
-                status, rec = _server_http(
-                    origin, "GET",
-                    "/api/remote/fetch/status?" + urllib.parse.urlencode({"id": fid or ""}),
-                    timeout=budget())
-            except OSError as exc:
-                return _s3_unreachable(exc)
-            if status == 404 or (isinstance(rec, dict)
-                                 and rec.get("code") == "unknown_download"):
-                # The server forgot the download (a restart): not the file.
-                return _s3_error({"error": "the download of %s was interrupted"
-                                  % canonical, "code": "unknown_download"},
-                                 status, "follow the download")
-            if status != 200 or not isinstance(rec, dict):
-                return _s3_error(rec, status, "follow the download")
-    finally:
-        if key is not None:
-            with _S3_WAITS_LOCK:
-                _S3_WAITS.pop(key, None)
+    while rec.get("state") == "running":
+        if event.wait(_S3_POLL):
+            return _error_result("cancelled; the download goes on in fused-render")
+        if time.monotonic() >= deadline:
+            done, total = rec.get("done"), rec.get("total") or size
+            return _error_result(
+                "%s is still downloading in fused-render (%s of %s so far). The "
+                "download carries on: call s3_read again with the same url in a "
+                "little while to get its path, or read a byte range now."
+                % (canonical, _s3_size_text(done or 0), _s3_size_text(total)))
+        try:
+            status, rec = _server_http(
+                origin, "GET",
+                "/api/remote/fetch/status?" + urllib.parse.urlencode({"id": fid or ""}),
+                timeout=budget())
+        except OSError as exc:
+            return _s3_unreachable(exc)
+        if status == 404 or (isinstance(rec, dict)
+                             and rec.get("code") == "unknown_download"):
+            # The server forgot the download (a restart): not the file.
+            return _s3_error({"error": "the download of %s was interrupted"
+                              % canonical, "code": "unknown_download"},
+                             status, "follow the download")
+        if status != 200 or not isinstance(rec, dict):
+            return _s3_error(rec, status, "follow the download")
     if rec.get("state") != "done" or not rec.get("path"):
         state = rec.get("state")
         return _s3_error({"error": rec.get("error") or "the download did not finish (%s)"
@@ -1958,7 +1972,14 @@ def _s3_whole(url: str, allow_large: bool) -> dict:
                                                       if state == "cancelled"
                                                       else "download_error")},
                          200, "download the object")
-    result.update(path=rec["path"], bytes=size, note=note)
+    # Describe the object the download holds (it may have changed since the
+    # stat); a server that does not say keeps the stat's answer.
+    if isinstance(rec.get("total"), int) and not isinstance(rec.get("total"), bool):
+        result["size"] = rec["total"]
+    if isinstance(rec.get("etag"), str) and rec["etag"]:
+        result["etag"] = rec["etag"]
+        result["modified"] = _iso(rec.get("modified"))
+    result.update(path=rec["path"], bytes=result["size"], note=note)
     return _text(result)
 
 
@@ -2216,7 +2237,7 @@ def _dispatch(method: str, params: dict) -> dict:
 
 
 def _serve_request(req_id, method: str, params: dict) -> None:
-    _RPC.id = req_id  # read by _register_inflight on this serving thread
+    _RPC.id = req_id  # read by _register_inflight / _s3_wait_event on this thread
     try:
         _send({"jsonrpc": "2.0", "id": req_id, "result": _dispatch(method, params)})
     except LookupError as exc:
@@ -2228,6 +2249,7 @@ def _serve_request(req_id, method: str, params: dict) -> None:
                          % (type(exc).__name__, exc)}})
     finally:
         _RPC.id = None
+        _s3_unregister(req_id)
 
 
 def _breakout_hook(handoff_dir: str) -> int:
@@ -2431,6 +2453,8 @@ def main() -> int:
         params = msg.get("params")
         params = params if isinstance(params, dict) else {}
         if method == "tools/call":
+            if params.get("name") == S3_READ_TOOL:
+                _s3_register(req_id)  # before its thread: a cancel may come at once
             # Off the reader thread: a pending approval blocks for as long as
             # the user takes, and parallel tool calls must each get their own
             # card instead of queueing behind the first one.

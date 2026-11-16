@@ -61,18 +61,48 @@ def in_cache(path: str) -> bool:
         p = parent
 
 
-def _sweep(base: str, keep: str) -> None:
+def _holder(base: str, file: str):
+    """The top-level directory under `base` that holds `file` (an archive
+    member previewed out of another remote archive), or None. By identity,
+    walking up as `in_cache` does, so a spelling variant still counts."""
+    try:
+        base_st = os.stat(base)
+        p = os.path.realpath(file)
+    except (OSError, ValueError):
+        return None
+    while True:
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        try:
+            if os.path.samestat(os.stat(parent), base_st):
+                return p
+        except (OSError, ValueError):
+            pass
+        p = parent
+
+
+def _sweep(base: str, keep: list) -> None:
+    """Remove `base`'s stale (untouched for `PREVIEW_TTL_S`) directories,
+    except the ones in `keep`."""
     now = time.time()
     try:
         names = os.listdir(base)
     except OSError:
         return
+    kept = []
+    for k in keep:
+        try:
+            kept.append(os.stat(k))
+        except OSError:
+            pass
     for name in names:
         d = os.path.join(base, name)
-        if d == keep:
-            continue
         try:
-            if now - os.stat(d).st_mtime > PREVIEW_TTL_S:
+            st = os.stat(d)
+            if any(os.path.samestat(st, k) for k in kept):
+                continue
+            if now - st.st_mtime > PREVIEW_TTL_S:
                 shutil.rmtree(d, ignore_errors=True)
         except OSError:
             pass
@@ -81,16 +111,26 @@ def _sweep(base: str, keep: str) -> None:
 def preview_root(file: str, kind: str) -> tuple:
     """`(dir, remote)`: a stable per-input directory for files derived from
     `file`, and whether `file` is a remote (bucket) download. `kind` names the
-    template ("zip", "tar", "plist")."""
+    template ("zip", "tar", "plist").
+
+    For a remote input, stale previews of other inputs are swept — never this
+    one's, and never the preview directory `file` itself sits in (an archive
+    inside an archive), which is touched as in use."""
     key = hashlib.sha1(os.path.realpath(file).encode("utf-8")).hexdigest()[:16]
     remote = in_cache(file)
     if remote:
         base = os.path.join(cache_root(), ".previews")
         root = os.path.join(base, f"{kind}-{key}")
-        _sweep(base, root)
+        os.makedirs(root, exist_ok=True)
+        holder = _holder(base, file)
+        for d in (root, holder):
+            if d is not None:
+                try:
+                    os.utime(d)  # in use: not stale
+                except OSError:
+                    pass
+        _sweep(base, [d for d in (root, holder) if d is not None])
     else:
         root = os.path.join(tempfile.gettempdir(), f"fused-render-{kind}", key)
-    os.makedirs(root, exist_ok=True)
-    if remote:
-        os.utime(root)  # in use: not stale
+        os.makedirs(root, exist_ok=True)
     return root, remote
