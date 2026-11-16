@@ -488,11 +488,12 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(TASK_HEAD_STACK_LEVEL).toBe(4);
   expect(TASK_HEAD_TITLE_ROOM).toBe(180);
   const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
-  // The title is as wide as its words and never past 400px; the ladder
-  // charges it the same cap (2026-11-16).
+  // The title claims 400px (the ladder charges it no more), the chips stand
+  // beside that, and spare width goes back to the title — never past its own
+  // words (2026-11-16).
   expect(TASK_HEAD_TITLE_MAX).toBe(400);
-  expect(css).toContain(".task-head .task-side-peek-who.is-title .task-side-peek-title {\n  flex: 0 1 auto;");
-  expect(css).toContain(`max-width: ${TASK_HEAD_TITLE_MAX}px;`);
+  expect(css).toContain(`  flex: 1 1 ${TASK_HEAD_TITLE_MAX}px;\n  max-width: max-content;`);
+  expect(css).not.toContain(`max-width: ${TASK_HEAD_TITLE_MAX}px;`);
   // The where-tag's word: gone on every rung past 0 while the head is one
   // row; a stacked rail window has it back until row 1 itself is short.
   expect(css).toContain('.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where .place-tag-word');

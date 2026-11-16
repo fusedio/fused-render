@@ -175,11 +175,17 @@
    defend (basis 0), it takes what the title leaves and is the first thing a
    narrow head loses. */
 .task-head .task-side-peek-who.is-title .task-side-peek-title {
-  flex: 0 1 auto;
-  /* NEVER WIDER THAN 400px (Akshil, 2026-11-16), on either row: past that a
-     title is cut and the row's slack stays with its seat. The ladder charges
-     it no more than this (row-fit `TASK_HEAD_TITLE_MAX`). */
-  max-width: 400px;
+  /* 400px FIRST, THEN THE CHIPS, THEN MORE TITLE (Akshil, 2026-11-16: "give
+     title max 400px width, then show PR and worktree, and then if there is
+     space left we can show more of title — incrementally"). The title's
+     claim on the row is 400px (or its own words, if shorter): the ladder
+     charges it no more than that (row-fit `TASK_HEAD_TITLE_MAX`), so the
+     worktree pill and the PR chip stand whenever the title can have its
+     400px beside them, and give one at a time when it cannot. Width left
+     over after that goes back to the title, up to its full words — never
+     past them (`max-content`), so its seat keeps the row's slack. */
+  flex: 1 1 400px;
+  max-width: max-content;
 }
 .task-head-subtitle {
   flex: 1 1 0;

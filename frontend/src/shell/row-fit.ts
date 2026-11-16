@@ -777,10 +777,12 @@ export const TASK_HEAD_STACK_LEVEL = 4;
  *  (Akshil, 2026-11-16: "if space is less just move it to second line"). */
 export const TASK_HEAD_TITLE_ROOM = 180;
 
-/** THE WIDEST A TITLE IS DRAWN (Akshil, 2026-11-16: "for title let's have max
- *  400px"; task-head.css caps `.task-side-peek-title` at the same number). The
- *  ladder charges a title "whole" only up to here: past it the title is cut
- *  whatever folds, so nothing gives for width it could not use. */
+/** THE TITLE'S CLAIM ON THE ROW (Akshil, 2026-11-16: "give title max 400px
+ *  width, then show PR and worktree, and then if there is space left we can
+ *  show more of title"; task-head.css gives `.task-side-peek-title` the same
+ *  number as its flex basis). The ladder charges a title "whole" only up to
+ *  here, so the chips and the facts give only when the title cannot have
+ *  this much; width left over once they stand goes back to the title. */
 export const TASK_HEAD_TITLE_MAX = 400;
 
 /**
