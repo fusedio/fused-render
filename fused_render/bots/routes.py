@@ -1020,6 +1020,10 @@ def _skills(bid, body):
     elif op == "delete":
         b.skill_delete(body.get("rid") or "")
     elif op == "learn":
+        if _botmod().is_expert(b.meta):
+            # An expert learns through its own pass (docs/experts.md): a
+            # proposal card the user approves, never a free rewrite from chat.
+            raise ValueError("An expert's skills change through its approval cards or by editing them here.")
         b.learn_from_last()
     else:
         raise ValueError("op must be save|delete|learn")

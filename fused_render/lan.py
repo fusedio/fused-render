@@ -377,13 +377,14 @@ _DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | Non
     (re.compile(rf"^/api/bots/{_BOT}/steps/[A-Za-z0-9_.-]+$"), frozenset({"GET"}), None),
     (re.compile(rf"^/api/bots/{_BOT}/send$"), frozenset({"POST"}), None),
     (re.compile(rf"^/api/bots/{_BOT}/({'|'.join(_DOOR_BOT_OPS)})$"), frozenset({"POST"}), None),
-    # Experts (docs/experts.md §8): the Bots app's Expert pane. Reads, plus the
-    # three user actions the pane offers; never `consult` (an agent's door),
-    # `capture` (reads the Mac's transcripts on demand) or `settings`.
+    # Experts (docs/experts.md §8): the Bots app's Expert pane. Reads, plus
+    # two of the pane's user actions; never `consult` (an agent's door),
+    # `capture` (reads the Mac's transcripts on demand), `consolidate` (writes
+    # memory) or `settings`.
     (re.compile(r"^/api/experts$"), frozenset({"GET"}), None),
     (re.compile(r"^/api/experts/[A-Za-z0-9_-]+/(memory|observations|consults|checks|proposals|engines)$"),
      frozenset({"GET"}), None),
-    (re.compile(r"^/api/experts/[A-Za-z0-9_-]+/(checks/run|memory/forget|consolidate)$"),
+    (re.compile(r"^/api/experts/[A-Za-z0-9_-]+/(checks/run|memory/forget)$"),
      frozenset({"POST"}), None),
     (re.compile(r"^/api/claude/agent$"), frozenset({"POST"}), ("action", _DOOR_AGENT_ACTIONS)),
     (re.compile(r"^/api/claude/artifacts$"), frozenset({"POST"}), ("action", frozenset({"list", "live"}))),

@@ -815,11 +815,24 @@ def _public_fields(meta: dict, pub: dict) -> dict:
             elif k == "kind" and v in ("bot", "expert"):
                 out[k] = v  # an expert keeps its kind (docs/experts.md §5); "super" never travels
             elif k == "expert" and isinstance(v, dict) and pub.get("kind") == "expert":
-                out[k] = copy.deepcopy(v)  # the expert's manifest (experts.store.manifest fills defaults on read)
+                out[k] = _imported_expert(v)  # the expert's manifest (experts.store.manifest fills defaults on read)
             elif v not in (None, "", 0):
                 logger.info("bot package: %s=%r not applied", k, v)
         except ValueError as e:
             logger.info("bot package: %s refused: %s", k, e)
+    return out
+
+
+def _imported_expert(manifest: dict) -> dict:
+    """An imported expert's manifest, made safe to arrive (docs/experts.md §5): `shipped` is dropped (that key
+    names an expert this app ships, and a file must not claim to be one), and an offer to every session
+    (`offered_to.targets` holding "*") narrows to canvas sessions; the importer widens it in Settings. `reads`
+    is kept: it is what the expert is for."""
+    out = copy.deepcopy(manifest)
+    out.pop("shipped", None)
+    offered = out.get("offered_to")
+    if isinstance(offered, dict) and isinstance(offered.get("targets"), list) and "*" in offered["targets"]:
+        offered["targets"] = ["canvas"]
     return out
 
 
@@ -1236,6 +1249,8 @@ def _install_update(path: str, idx: dict, pub: dict, target, apps, memory: bool)
         raise NoSuchBot(f"no such bot {os.path.basename(target)}") from None
     if bm.is_super(b.meta):
         raise BotFileError("Super Bot is never updated from a package")
+    if (pub.get("kind") == "expert") != bm.is_expert(b.meta):
+        raise BotFileError("this package is a different kind of bot; install it as a new bot")
     _refuse_busy(b)
     rows = _app_rows(idx)
     # Every read from the file happens before any app installs or the bot is touched (as _install_new).

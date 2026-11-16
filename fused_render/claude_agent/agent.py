@@ -2731,7 +2731,8 @@ def _s3_read_dirs(s3: bool) -> list:
 
 # The experts' consult tool (permission_server.EXPERT_CONSULT_TOOL,
 # docs/experts.md §6). Read-only from the session's side (it asks; the expert
-# reads its own folders), so Claude pre-allows it.
+# reads its own folders), so Claude pre-allows it when every offered expert's
+# reads are fenced by us (`_expert_auto_allow`).
 EXPERT_TOOL = "expert_consult"
 # A consult is a whole short run of the expert (permission_server's
 # EXPERT_TIMEOUT, 600 s), so the per-call ceilings that would cut it short
@@ -2745,10 +2746,12 @@ _EXPERT_BACKENDS = ("claude", "codex", "copilot")
 
 
 def _expert_roster_live(file: str) -> list:
-    """`[{name, ask_me_about}]` for every AVAILABLE expert offered to `file`
+    """`[{id, name, ask_me_about, auto_allow}]` for every AVAILABLE expert
+    offered to `file`
     (`offered_to.targets` holds "*", or "canvas" and `file` is inside a canvas
     clone). Read from the experts' own modules ONLY when this process already
-    has them loaded (the server does: its router imports them), never
+    has them loaded (the server does: `_startup_experts` imports them before
+    the first spawn), never
     imported from here (SPEC PY-15), and only in the process that owns the
     bots, so a spawn never triggers the bots election. Never raises: any
     failure is no experts."""
@@ -2769,12 +2772,59 @@ def _expert_roster_live(file: str) -> list:
                 continue
             if model is not None and not model.available(bot)[0]:
                 continue
-            out.append({"name": str(bot.meta.get("name") or bot.id),
-                        "ask_me_about": " ".join(str(man.get("ask_me_about") or "").split())})
-        return out
+            out.append(_expert_entry({
+                "id": str(bot.id),
+                "name": bot.meta.get("name") or bot.id,
+                "ask_me_about": man.get("ask_me_about") or "",
+                "auto_allow": _expert_fenced(model, bot)}))
+        return [e for e in out if e]
     except Exception as exc:  # noqa: BLE001 — no experts, never a failed spawn
         sys.stderr.write("experts: no roster: %r\n" % (exc,))
         return []
+
+
+_EXPERT_NAME_MAX = 80
+_EXPERT_ABOUT_MAX = 240
+
+
+def _expert_line(value, cap: int) -> str:
+    """One line of an expert's self-description, safe for a prompt or a tool
+    description: control characters dropped, whitespace collapsed, capped."""
+    text = "".join(ch if ch.isprintable() or ch.isspace() else " " for ch in str(value or ""))
+    text = " ".join(text.split())
+    return text if len(text) <= cap else text[:cap - 1].rstrip() + "\u2026"
+
+
+def _expert_fenced(model, bot) -> bool:
+    """`model.fenced(bot)`: whether the expert's reads are fenced by us (False
+    for Codex, which keeps its own shell). False whenever it cannot be told."""
+    fenced = getattr(model, "fenced", None) if model is not None else None
+    if not callable(fenced):
+        return False
+    try:
+        return bool(fenced(bot))
+    except Exception:  # noqa: BLE001 — unknown reads as not fenced
+        return False
+
+
+def _expert_entry(e) -> dict:
+    """A roster entry normalised: `{id, name, ask_me_about, auto_allow}` with
+    the two texts sanitised (`_expert_line`); {} when it has no name."""
+    if not isinstance(e, dict):
+        return {}
+    name = _expert_line(e.get("name"), _EXPERT_NAME_MAX)
+    if not name:
+        return {}
+    return {"id": str(e.get("id") or ""), "name": name,
+            "ask_me_about": _expert_line(e.get("ask_me_about"), _EXPERT_ABOUT_MAX),
+            "auto_allow": e.get("auto_allow") is True}
+
+
+def _expert_auto_allow(experts: "list | None") -> bool:
+    """Whether Claude may pre-allow `expert_consult`: only when every offered
+    expert's reads are fenced (`auto_allow`). Otherwise each call cards."""
+    return bool(experts) and all(
+        isinstance(e, dict) and e.get("auto_allow") is True for e in experts)
 
 
 def _expert_roster(file: str, run_dir: str = "", refresh: bool = False) -> list:
@@ -2786,7 +2836,7 @@ def _expert_roster(file: str, run_dir: str = "", refresh: bool = False) -> list:
             with open(path, encoding="utf-8") as fh:
                 roster = json.load(fh)
             if isinstance(roster, list):
-                return [e for e in roster if isinstance(e, dict) and e.get("name")]
+                return [e for e in map(_expert_entry, roster) if e]
         except (OSError, ValueError):
             pass
     roster = _expert_roster_live(file)
@@ -2818,7 +2868,7 @@ def _expert_stamped(run_dir: str) -> list:
         roster = json.loads(env.get("FUSED_RENDER_EXPERTS") or "[]")
     except (OSError, ValueError, KeyError, TypeError):
         return []
-    return [e for e in roster if isinstance(e, dict) and e.get("name")] \
+    return [e for e in map(_expert_entry, roster) if e] \
         if isinstance(roster, list) else []
 
 
@@ -4993,9 +5043,12 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                        + [_read_rule(d) for d in _both_spellings([_s3_cache_root()])]
                        if s3 else [])
                     #   expert_consult — asks one of the user's experts (a
-                    #     read-only bot) a question; offered only when one is.
+                    #     read-only bot) a question. Pre-allowed only when
+                    #     every offered expert's reads are fenced by us
+                    #     (`auto_allow`); otherwise offered, but each call
+                    #     raises the normal permission card.
                     + ([f"mcp__{PERMISSION_SERVER}__{EXPERT_TOOL}"]
-                       if experts else [])
+                       if _expert_auto_allow(experts) else [])
                     + [_read_rule(SHOTS)]
                     + [_read_rule(d) for d in (extra_read_dirs or [])]
                     + [_read_rule(d) for d in
@@ -5351,6 +5404,7 @@ def _expert_note(file: str, backend: str = "", experts: "list | None" = None) ->
     material. Spelled in Claude's MCP name, so each backend's prefix rewrite
     applies (Copilot's plugin agent, Codex's developer instructions)."""
     roster = experts if experts is not None else _expert_roster_live(file)
+    roster = [e for e in map(_expert_entry, roster or []) if e]
     if not roster:
         return ""
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, EXPERT_TOOL)

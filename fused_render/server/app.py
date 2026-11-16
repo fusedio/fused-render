@@ -1377,6 +1377,15 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     @on_startup
     async def _startup_experts():
+        # The spawn-side roster (agent._expert_roster_live) reads these two
+        # off sys.modules and never imports them itself (SPEC PY-15), so they
+        # are loaded here, before the first session spawns, not on the first
+        # `/api/experts` request.
+        try:
+            import fused_render.experts.model  # noqa: F401
+            import fused_render.experts.store  # noqa: F401
+        except Exception:  # noqa: BLE001 — no experts offered, never a failed startup
+            logger.warning("could not load the experts modules", exc_info=True)
         if _platform.IS_WINDOWS:
             return
         try:

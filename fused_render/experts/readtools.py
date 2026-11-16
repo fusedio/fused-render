@@ -8,7 +8,10 @@ Outputs are capped; the handler never raises.
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 READ_PAGE_CHARS = 20_000
 LIST_MAX = 200
@@ -17,6 +20,48 @@ SEARCH_DEPTH = 8
 SEARCH_FILE_MAX = 2 * 1024 * 1024
 SEARCH_LINE = 200
 SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__"})
+#: Files the tools never open, list or find (matched on the name, case-insensitive); plus every dot-prefixed
+#: name below a root, except the canvas marker the skills refer to.
+SECRET_NAMES = ("*.pem", "*.key", "id_rsa*", "id_ed25519*", ".netrc", "credentials", "*.p12", "*.pfx")
+DOT_ALLOWED = frozenset({".fused-canvas.json"})
+READ_MAX_BYTES = 20 * 1024 * 1024
+
+
+def too_broad(path) -> bool:
+    """A root no expert may read: `/`, the home directory, or any ancestor of it."""
+    try:
+        real = os.path.realpath(os.path.expanduser(str(path)))
+        home = os.path.realpath(os.path.expanduser("~"))
+    except Exception:  # noqa: BLE001
+        return True
+    if real == os.path.realpath(os.sep):
+        return True
+    try:
+        return os.path.commonpath([real, home]) == real
+    except ValueError:
+        return False
+
+
+def secret_name(name) -> bool:
+    """A name the tools refuse: dot-prefixed (but the canvas marker), or on the secret denylist."""
+    n = str(name or "")
+    if n in DOT_ALLOWED:
+        return False
+    if n.startswith("."):
+        return True
+    low = n.lower()
+    return any(fnmatch.fnmatch(low, pat) for pat in SECRET_NAMES)
+
+
+def _hidden_below(real, root) -> bool:
+    """Whether a component of `real` below `root` is a refused name."""
+    try:
+        rel = os.path.relpath(real, root)
+    except ValueError:
+        return True
+    if rel == ".":
+        return False
+    return any(secret_name(part) for part in rel.split(os.sep))
 
 
 def _canvas_roots(scopes) -> list[str]:
@@ -69,6 +114,9 @@ def resolve_reads(manifest) -> list[str]:
             found = []
         for p in found:
             real = os.path.realpath(p)
+            if too_broad(real):
+                logger.warning("experts: refusing to read %s (the whole disk or home folder is too broad)", real)
+                continue
             if real not in out:
                 out.append(real)
     return out
@@ -148,8 +196,11 @@ def make_handler(roots, on_tool=None):
                 return None, f"not allowed: {raw} (no readable folders)"
             p = (existing or candidates)[0]
         real = os.path.realpath(p)
-        if allowed(real) is None:
+        root = allowed(real)
+        if root is None:
             return None, f"not allowed: {raw} is outside the folders this expert may read"
+        if _hidden_below(real, root):
+            return None, f"not allowed: {raw} is a hidden or secret file"
         return real, None
 
     def do_read(inp):
@@ -160,6 +211,12 @@ def make_handler(roots, on_tool=None):
             return f"error: {real} is a folder; use list_dir", True
         if not os.path.isfile(real):
             return f"error: no such file: {real}", True
+        try:
+            size = os.stat(real).st_size
+        except OSError as e:
+            return f"error: cannot read {real}: {e.strerror or e}", True
+        if size > READ_MAX_BYTES:
+            return f"error: {real} is too large to read ({size // (1024 * 1024)} MB; the limit is 20 MB)", True
         try:
             page = max(1, int(inp.get("page") or 1))
         except (TypeError, ValueError):
@@ -190,7 +247,7 @@ def make_handler(roots, on_tool=None):
             return f"error: cannot list {real}: {e.strerror or e}", True
         rows = []
         for n in names:
-            if n.startswith("."):
+            if secret_name(n):
                 continue
             full = os.path.join(real, n)
             if os.path.islink(full) and allowed(os.path.realpath(full)) is None:
@@ -228,13 +285,13 @@ def make_handler(roots, on_tool=None):
         for root in starts:
             base_depth = root.rstrip(os.sep).count(os.sep)
             for cur, dirs, files in os.walk(root):  # followlinks=False
-                dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
+                dirs[:] = sorted(d for d in dirs if not secret_name(d) and d not in SKIP_DIRS)
                 if cur.count(os.sep) - base_depth >= SEARCH_DEPTH:
                     dirs[:] = []
                 for n in sorted(files):
                     if len(hits) >= SEARCH_MAX:
                         break
-                    if n.startswith("."):
+                    if secret_name(n):
                         continue
                     if glob and not fnmatch.fnmatch(n, glob):
                         continue

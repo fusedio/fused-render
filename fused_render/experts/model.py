@@ -28,8 +28,34 @@ def _label(backend_id: str) -> str:
     return {"claude": "Claude", "codex": "Codex", "copilot": "Copilot"}.get(backend_id, backend_id)
 
 
+#: Engines `auto` may pick. Codex keeps its own shell in a tools turn (`codex exec -s read-only`), so its reads
+#: are not fenced by `readtools`: it runs only when the manifest names it.
+AUTO_ENGINES = ("claude", "copilot")
+#: A sentence per engine the settings page shows beside it ("" for none).
+ENGINE_NOTES = {"codex": "On Codex the expert can read files outside its folders. Reads are limited by Codex's "
+                         "own read-only sandbox, not by Fused."}
+_CLAUDE_FALLBACK = "sonnet"
+_CLAUDE_ALIASES = ("haiku", "sonnet", "opus", "fable")
+
+
+def _claude_model_ok(name: str, backends) -> bool:
+    """Whether `name` is a model the Claude engine takes: one of its aliases or a full `claude-…` id. A bot's
+    local model (`bots.bot.LOCAL_MODELS`) never is."""
+    try:
+        from fused_render.bots.bot import LOCAL_MODELS
+        if name in LOCAL_MODELS:
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        aliases = {m.id for m in backends.get("claude").models} or set(_CLAUDE_ALIASES)
+    except Exception:  # noqa: BLE001
+        aliases = set(_CLAUDE_ALIASES)
+    return name in aliases or name.lower().startswith("claude-")
+
+
 def provider_for(bot) -> tuple[str, str]:
-    """(provider, model) after resolving `auto`. Raises Unavailable."""
+    """(provider, model) after resolving `auto` (Claude, else Copilot; never Codex). Raises Unavailable."""
     from fused_render.agent_backends import registry as backends
 
     man = store.manifest(bot)
@@ -39,14 +65,11 @@ def provider_for(bot) -> tuple[str, str]:
     except Exception:  # noqa: BLE001
         enabled = [b for b in ENGINES if _safe_enabled(backends, b)]
     if engine == "auto":
-        try:
-            default = backends.default_id()
-        except Exception:  # noqa: BLE001
-            default = ""
-        if default in ENGINES and default in enabled:
-            provider = default
-        elif enabled:
-            provider = enabled[0]
+        auto = [b for b in AUTO_ENGINES if b in enabled]
+        if auto:
+            provider = auto[0]
+        elif "codex" in enabled:
+            raise Unavailable("needs Claude or Copilot (Codex runs an expert only when chosen in its settings)")
         else:
             raise Unavailable(_NONE_REASON)
     else:
@@ -58,12 +81,24 @@ def provider_for(bot) -> tuple[str, str]:
     model = (man.get("model") or "").strip()
     if not model and provider == "claude":
         model = str((getattr(bot, "meta", None) or {}).get("model") or "").strip()
+        if model and not _claude_model_ok(model, backends):
+            model = _CLAUDE_FALLBACK
     if not model:
         try:
             model = backends.get(provider).default_model or ""
         except Exception:  # noqa: BLE001
             model = ""
     return provider, model
+
+
+def fenced(bot) -> bool:
+    """Whether this expert's reads are fenced by `readtools` (its folders only). False on Codex, which reads
+    through its own sandbox, and False when no engine resolves."""
+    try:
+        provider, _model = provider_for(bot)
+    except Exception:  # noqa: BLE001 — Unavailable, or a broken registry
+        return False
+    return provider != "codex"
 
 
 def _safe_enabled(backends, bid) -> bool:
