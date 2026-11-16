@@ -191,3 +191,37 @@ test("prose: ~/ needs a known home", async () => {
   expect(await linkifyPaths(proseRoot(p), { home: "/h", stat: async () => true })).toBe(1);
   expect((p.kids[1] as FEl).attrs["data-path"]).toBe("/h/n/a.md");
 });
+
+test("prose: the path cap counts distinct files, not code plus prose", async () => {
+  const names = Array.from({ length: 15 }, (_, i) => `/w/f${i}.md`);
+  const codes = names.map((n) => code(n));
+  const p = el("p", `${names.join(" and ")} and /w/extra.md`);
+  const asked: string[] = [];
+  const n = await linkifyPaths(proseRoot(p, codes), { stat: async (x) => (asked.push(x), true) });
+  expect(asked).toContain("/w/extra.md");
+  expect(asked.length).toBe(16);
+  expect(n).toBe(15 + 16);
+  expect(render(p)).toContain("[span.c-path-link:/w/extra.md]");
+});
+
+test("prose: a pass superseded after its stats wraps nothing and does not throw", async () => {
+  const p = el("p", "see /w/a.md and /w/b.md now");
+  // Live for each per-path check, then superseded by the time the wrap loop starts.
+  let calls = 0;
+  const n = await linkifyPaths(proseRoot(p), {
+    stat: async () => true,
+    live: () => ++calls <= 2,
+  });
+  expect(n).toBe(0);
+  expect(render(p)).toBe("see /w/a.md and /w/b.md now");
+});
+
+test("prose: a hit whose text node was shortened is skipped without throwing", async () => {
+  const p = el("p", "see /w/a.md now");
+  const node = p.kids[0] as FText;
+  const n = await linkifyPaths(proseRoot(p), {
+    stat: async () => ((node.data = "see"), true),
+  });
+  expect(n).toBe(0);
+  expect(render(p)).toBe("see");
+});

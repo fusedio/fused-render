@@ -115,7 +115,8 @@ export async function linkifyPaths(
   const stat = opts.stat ?? statIsFile;
   const byPath = new Map<string, LinkTarget[]>();
   const proseByPath = new Map<string, ProseHit[]>();
-  const known = (abs: string) => byPath.has(abs) || proseByPath.has(abs);
+  // Distinct admitted paths (code + prose), so one in both counts once toward the cap.
+  const admitted = new Set<string>();
   for (const el of Array.from(root.querySelectorAll("code"))) {
     if (el.closest("pre")) continue;
     const cand = pathCandidate(el.textContent ?? "");
@@ -124,7 +125,10 @@ export async function linkifyPaths(
     const abs = resolveAgainst(cand.path, opts.cwd, opts.home);
     const list = byPath.get(abs);
     if (list) list.push(el);
-    else if (byPath.size < PATH_LINK_MAX) byPath.set(abs, [el]);
+    else if (byPath.size < PATH_LINK_MAX) {
+      byPath.set(abs, [el]);
+      admitted.add(abs);
+    }
   }
   for (const node of proseTexts(root)) {
     if (node.data.length < 3 || proseBlocked(node)) continue;
@@ -134,7 +138,10 @@ export async function linkifyPaths(
       const hit = { node, start: m.start, end: m.end, abs };
       const list = proseByPath.get(abs);
       if (list) list.push(hit);
-      else if (byPath.size + proseByPath.size < PATH_LINK_MAX || known(abs)) proseByPath.set(abs, [hit]);
+      else if (admitted.has(abs) || admitted.size < PATH_LINK_MAX) {
+        proseByPath.set(abs, [hit]);
+        admitted.add(abs);
+      }
     }
   }
   let marked = 0;
@@ -154,6 +161,7 @@ export async function linkifyPaths(
       }
     }),
   );
+  if (opts.live && !opts.live()) return marked;
   // Wrap per text node, last match first, so earlier offsets stay valid.
   const byNode = new Map<ProseText, ProseHit[]>();
   for (const h of confirmed) byNode.set(h.node, [...(byNode.get(h.node) ?? []), h]);
@@ -161,7 +169,7 @@ export async function linkifyPaths(
     for (const h of hits.sort((a, b) => b.start - a.start)) {
       const parent = node.parentNode;
       const doc = parent?.ownerDocument;
-      if (!parent || !doc) continue;
+      if (!parent || !doc || h.end > node.data.length) continue;
       const mid = node.splitText(h.start);
       mid.splitText(h.end - h.start);
       const span = doc.createElement("span");
