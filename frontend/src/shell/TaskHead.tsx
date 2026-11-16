@@ -60,12 +60,27 @@
 //      Akshil, 2026-11-16);
 //   6. the id slot (Archive stays in the ⋮).
 //
+// A RAIL WINDOW IS TWO LINES, ALWAYS (`reveal="window"` with a task; Akshil,
+// 2026-11-16: "in rail every task layout is a simple two-liner") — the hover
+// / favourite card, the Tasks card's chat, the New task card's chat, at every
+// width, not only when the ladder runs short:
+//
+//   [pin][←]  folder › file ………… [chips] COUNT · TIME  [⋮]
+//   status · ID SLOT · title ✎ · reply · [queue][status word]
+//
+// Row 1 is where the task lives (the place, a chevron, where in it) and its
+// facts; row 2 is the task. The three slots trade as everywhere, and nothing
+// folds to an icon: the where-tag and the door keep their words, and a long
+// place gives width instead (task-head.css `.is-two-line`). The ⋮ is the
+// host's to withhold — the rail card hands it over only once the card has
+// been pressed (RailPeek). A panel or a pane keeps the one row above.
+//
 // WHAT THE HOST OWNS. The ⋮ is the host's `<Kebab …/>` handed in whole, because
 // what it does on Archive and Delete (advance to the next task, go back to the
 // list, close the dialog) is the host's business; the head only seats it. The
 // same for `chips` and `seats`.
 import { useCallback, useEffect, useState, type ReactNode, type Ref } from "react";
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronUp, MessageSquare, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, ChevronUp, MessageSquare, X } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 import { queueCaption, type QueueFacts } from "@platform/lib/queue";
 import { TaskStar } from "@platform/ui/TaskStar";
@@ -220,8 +235,8 @@ export interface TaskHeadProps {
   /** WHAT BRINGS THE b ITEMS (Akshil, 2026-11-16). `"window"` — a card off
    *  the rail: the pointer anywhere on the card (or the keyboard inside it)
    *  shows them, except the Archive, which waits for the pointer on the
-   *  head; the facts and the ⋮ stand at rest, and the title takes a second
-   *  line when the card is narrow. `"slot"` (default) — a panel or
+   *  head; the facts and the ⋮ stand at rest, and a head with a task is two
+   *  lines at every width (where it lives and its facts, then the task). `"slot"` (default) — a panel or
    *  a pane: the pointer on the head shows them, the facts and the ⋮ stand
    *  at rest, and the head stays one row. */
   reveal?: "window" | "slot";
@@ -234,7 +249,8 @@ export interface TaskHeadProps {
   kebab?: ReactNode | ((fit: number) => ReactNode);
   /** The title on a row of its own: `"auto"` (default) lets the ladder
    *  decide at rung 5; `true` pins that layout (the other rungs still
-   *  measured); `false` never stacks and caps the ladder at rung 4. */
+   *  measured); `false` never stacks and caps the ladder at rung 4. A rail
+   *  window's head with a task is two lines whatever this says. */
   stacked?: boolean | "auto";
   /** Arm the fit ladder (the peek: only while the panel is up). */
   fitEnabled?: boolean;
@@ -390,7 +406,19 @@ export function TaskHead({
   // the ladder crosses the stack rung loses its draft (an accepted edge case).
   // ONLY A RAIL WINDOW STACKS ON ITS OWN (Akshil, 2026-11-16: "2nd line thing
   // is only for small windows, not for expanded sidebar").
-  const stackedNow = stacked === true || (stacked === "auto" && isWindow && fit >= TASK_HEAD_STACK_LEVEL);
+  //
+  // A RAIL WINDOW'S TASK HEAD IS ALWAYS TWO LINES (Akshil, 2026-11-16: "in
+  // rail every task layout is a simple two-liner"), at every width:
+  //
+  //   [pin][←]  folder › file ……………… [chips] count · time  [⋮]
+  //   status · id · title · reply
+  //
+  // Row 1 says where the task lives and its facts; row 2 is the task itself.
+  // Nothing in it folds to an icon: the where-tag and the door keep their
+  // words (task-head.css `.is-two-line`).
+  const twoLine = isWindow && !!task;
+  const stackedNow =
+    twoLine || stacked === true || (stacked === "auto" && isWindow && fit >= TASK_HEAD_STACK_LEVEL);
   /** The heading the dialog is named by, when there is a dialog (`titleId`). */
   const headingAttrs = titleId ? { id: titleId, role: "heading", "aria-level": 2 } : {};
   // A QUEUED LINE NAMES THE QUEUED ROW (Topbar's rule, Bugbot PR #1194): its
@@ -441,13 +469,16 @@ export function TaskHead({
   // THE MARKS HALF: status, agent mark, folder, id slot. Always on row 1.
   const marks = who ? (
     <TaskPeekWho
-      key={who.key}
+      // Keyed on the task, under its own name: in a two-line head this half
+      // and the title half are siblings on row 2.
+      key={`marks:${who.key}`}
       task={who}
       running={line ? false : running}
       part="marks"
       className="task-head-marks-seat"
       iconPress
-      place={placeEl}
+      // Two lines: the place stands on row 1, the ring goes down to row 2.
+      place={twoLine ? null : placeEl}
       idOverlay={idOverlay}
       // STACKED, THE NUMBER GOES DOWN WITH THE TITLE (Akshil, 2026-11-16):
       // row 2 reads "T012 title", and its Archive trades there.
@@ -635,6 +666,7 @@ export function TaskHead({
         "task-head" +
         (stackedNow ? " is-stacked" : "") +
         (isWindow ? " is-window" : "") +
+        (twoLine ? " is-two-line" : "") +
         (hot ? " is-hot" : "") +
         (refiled ? " is-refiled" : "") +
         (className ? ` ${className}` : "")
@@ -705,7 +737,21 @@ export function TaskHead({
             ) : null}
           </div>
         ) : null}
-        {marks}
+        {twoLine ? (
+          // WHERE IT LIVES, on row 1's left: `folder › file` (the place, then
+          // where in it), a chevron between when both stand.
+          placeEl || where ? (
+            <span className="task-head-crumb">
+              {placeEl}
+              {placeEl && where ? (
+                <ChevronRight className="task-head-crumb-sep" size={11} aria-hidden="true" data-fit-skip="" />
+              ) : null}
+              {where ? <span className="task-head-where">{where}</span> : null}
+            </span>
+          ) : null
+        ) : (
+          marks
+        )}
         {stackedNow ? (
           // STACKED: the title has row 2; the marks' own seat takes the
           // slack and the slots stand at the row's end (their `margin-left:
@@ -741,7 +787,7 @@ export function TaskHead({
               {seats}
             </span>
           ) : null}
-          {where ? <span className="task-head-where">{where}</span> : null}
+          {where && !twoLine ? <span className="task-head-where">{where}</span> : null}
           {clustered ? (
             factsCluster
           ) : (
@@ -755,6 +801,7 @@ export function TaskHead({
       </div>
       {stackedNow && (identity || line || status || statusRef) ? (
         <div className="task-head-titlerow">
+          {twoLine ? marks : null}
           {identity}
           {trail}
         </div>

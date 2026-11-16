@@ -14,9 +14,10 @@
 //
 // TWO SEATS IN THE UNIFIED HEAD (Akshil, 2026-11-16; `part`): the tags no
 // longer stand side by side there. The PLACE tag (the canvas's or the
-// folder's name) keeps the left seat, and only the favourite's window draws
-// it; the WHERE tag (Canvas, the node, the file) sits at the head's right
-// end, before the count slot. A CANVAS's where-tag is an icon and its word —
+// folder's name) keeps the left seat, and only the rail's cards draw it
+// (every one of them since their head became two lines, 2026-11-16 — the
+// head puts a chevron between the two itself); the WHERE tag (Canvas, the
+// node, the file) sits at a one-row head's right end, before the count slot. A CANVAS's where-tag is an icon and its word —
 // the icon alone where the head is short on width (task-head.css folds
 // `.place-tag-word`); a folder's file tag is its name alone. No chevron: the
 // two are apart. The presses are the same.
