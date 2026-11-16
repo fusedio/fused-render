@@ -526,6 +526,7 @@ def test_every_copy_of_the_server_name_agrees(agent):
     name = _load("permission_server").SERVER_NAME
     assert name == "fused_render"
     assert agent.PERMISSION_SERVER == name
+    assert agent.LEGACY_PERMISSION_SERVER == _load("permission_server").LEGACY_SERVER_NAME
     assert "__" not in name and "-" not in name
     for host in ("gemini_host", "opencode_host"):
         assert _load(host)._MCP_SERVER == name
