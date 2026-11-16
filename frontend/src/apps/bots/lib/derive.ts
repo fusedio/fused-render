@@ -48,10 +48,19 @@ export function activeHandoff(b: Pick<Bot, "handoffs">): Handoff | null {
   return best;
 }
 
-/** "running · step 3" ("running · step 3/60" with a step cap), "waiting for you", "idle · browser off", … */
+/** An expert (docs/experts.md): a read-only bot with no browser at all. Every browser surface checks this. */
+export const isExpert = (b: Pick<Bot, "kind"> | null | undefined): boolean => b?.kind === "expert";
+
+/** "running · step 3" ("running · step 3/60" with a step cap), "waiting for you", "idle · browser off", … An expert has
+ *  no browser, so it is never "browser off". */
 export const statusLabel = (b: Bot): string =>
   ({ running: `running · step ${b.step || 0}`, waiting: "waiting for you", paused: "paused", error: "error",
-     idle: b.browser?.running ? "idle" : "idle · browser off" } as Record<string, string>)[b.status] || b.status;
+     idle: b.browser?.running || isExpert(b) ? "idle" : "idle · browser off" } as Record<string, string>)[b.status] || b.status;
+
+/** The list row's idle line for an expert none of whose engines is on: the server's sentence ("needs Claude, Codex or
+ *  Copilot"); "" otherwise. */
+export const expertIdleNote = (b: Bot): string =>
+  isExpert(b) && b.expert_available === false ? b.expert_reason || "no engine available" : "";
 
 const DOING_WORDS: Record<string, string> = { thinking: "thinking", writing: "writing a reply" };
 

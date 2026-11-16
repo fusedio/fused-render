@@ -85,6 +85,11 @@ export interface BotEvent {
   error?: string;
   trace?: unknown;
   artifacts?: unknown;
+  /** approval: an expert's skill proposal card (docs/experts.md §4 cards.py): the proposal id; `detail` is its unified
+   *  diff. The two gate scores are null when the expert has no questions. */
+  expert_proposal?: string;
+  score_before?: ExpertScore | null;
+  score_after?: ExpertScore | null;
 }
 
 export interface Tab { i: number; id: string; title: string; url: string; active: boolean; ws: string }
@@ -197,8 +202,14 @@ export interface Bot {
   /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).
    *  Plain absolute paths, the user's own: the bot never writes there and only the dialog edits the list. */
   folders?: string[];
-  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); absent for an ordinary bot. */
-  kind?: "bot" | "super";
+  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": a read-only bot with no
+   *  browser that answers questions and learns (docs/experts.md); absent for an ordinary bot. */
+  kind?: "bot" | "super" | "expert";
+  /** Expert only: its manifest, defaults filled (docs/experts.md §3). */
+  expert?: ExpertManifest | null;
+  /** Expert only: false when none of its engines (Claude, Codex, Copilot) is on; `expert_reason` says so in a sentence. */
+  expert_available?: boolean;
+  expert_reason?: string;
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
   super_access?: "ask" | "full";
   face?: Face | null;
@@ -260,6 +271,49 @@ export interface Bot {
   /** Events past the page's cursor for this bot (merged into the store, then dropped). */
   events: BotEvent[];
 }
+
+// ------------------------------------------------------------------ experts (docs/experts.md §3, §4, §8) ----
+export type ExpertEngine = "auto" | "claude" | "codex" | "copilot";
+/** bot.meta["expert"] with every default filled (experts.store.manifest). */
+export interface ExpertManifest {
+  ask_me_about?: string;
+  reads?: ({ kind: "canvas-mirror"; scopes?: string[] } | { kind: "folder"; path: string } | { kind: string; [k: string]: unknown })[];
+  offered_to?: { targets?: string[] };
+  learns_from?: string[];
+  engine?: ExpertEngine | (string & {});
+  /** "" = the engine's default. */
+  model?: string;
+  memory?: { consolidate_at?: number; consolidate_after_s?: number; propose_at?: number; index_lines?: number };
+  shipped?: string;
+  [k: string]: unknown;
+}
+/** One lesson in memory.json. `trust`: user (said in chat), outcome (from a session), gap (an unanswered consult). */
+export interface ExpertItem {
+  id: string; claim: string; kind: string; trust: "user" | "outcome" | "gap" | (string & {}); count: number;
+  sessions: string[]; about: string[]; created: number; updated: number;
+  proposed: boolean; promoted: boolean; rejected: boolean;
+}
+/** A pending observation (not yet consolidated into memory). */
+export interface ExpertObs { id: string; ts: number; kind: string; claim: string; trust: string; session: string; about: string[]; consult: string }
+export interface ExpertCaller { run_id?: string; session_id?: string; backend?: string; target?: string; canvas?: string }
+/** One consult from an agent session (consults.jsonl). `ms`: how long it took. */
+export interface ExpertConsult {
+  id: string; ts: number; question: string; context: string; answer: string; refs: string[]; used: string[]; unsure: boolean;
+  caller?: ExpertCaller | null; ms: number;
+}
+export interface ExpertScore { score: number; total: number }
+export interface ExpertRunResult { q: string; passed: boolean; why: string; answer: string }
+/** One quality-gate run (gate.Run). */
+export interface ExpertRun { id: string; ts: number; score: number; total: number; results: ExpertRunResult[]; engine: string }
+export interface ExpertCheckStatus { running: boolean; run_id: string | null; done: number; total: number }
+export interface ExpertChecks { latest: ExpertRun | null; status: ExpertCheckStatus; questions: number }
+export interface ExpertProposal {
+  id: string; ts: number; status: "ready" | "shown" | "approved" | "rejected"; action: "update" | "create";
+  skill: string | null; title: string; trigger: string; body: string; diff: string; items: string[];
+  score_before: ExpertScore | null; score_after: ExpertScore | null; card_seq: number | null;
+}
+export interface ExpertConsolidateReply { ran: boolean; added: string[]; bumped: string[]; ignored: number; proposed: string[] }
+export interface ExpertEngineRow { id: string; label: string; enabled: boolean; models: { id: string; label: string }[]; default_model: string }
 
 export interface UsageBotRow { id: string; name: string; today: number; week: number; models: Record<string, number>; errors: number; last: number; live: boolean }
 /** One failed model call behind a bot's `errors` count (GET /api/bots/{id}/failures, newest first, this week).
@@ -541,6 +595,22 @@ export const api = {
   workspaceTake: () => post<{ taken: boolean; error: string }>(`${B}/workspace/take`, {}, "workspace/take"),
   /** Slow (runs each installed starter's setup tool): call after the strip is drawn. null = could not tell. */
   starterStatus: () => get<{ ok: true; ready: Record<string, boolean | null>; why: Record<string, string> }>("/api/bot-apps/starters/status", "starter_status"),
+};
+
+const XP = "/api/experts";
+const xid = (id: string) => `${XP}/${encodeURIComponent(id)}`;
+/** /api/experts/<id>/… (docs/experts.md §8). An expert's id is its bot id. */
+export const expertApi = {
+  memory: (id: string) => get<{ items: ExpertItem[]; index: string }>(`${xid(id)}/memory`, "expert memory"),
+  forgetMemory: (id: string, itemId: string) => post<{ removed: number }>(`${xid(id)}/memory/forget`, { id: itemId }, "expert forget"),
+  observations: (id: string) => get<{ pending: ExpertObs[]; due: boolean }>(`${xid(id)}/observations`, "expert observations"),
+  consults: (id: string) => get<{ consults: ExpertConsult[] }>(`${xid(id)}/consults`, "expert consults"),
+  checks: (id: string) => get<ExpertChecks>(`${xid(id)}/checks`, "expert checks"),
+  runChecks: (id: string) => post<{ run_id: string }>(`${xid(id)}/checks/run`, {}, "expert run checks"),
+  proposals: (id: string) => get<{ proposals: ExpertProposal[] }>(`${xid(id)}/proposals`, "expert proposals"),
+  consolidate: (id: string, force = false) => post<ExpertConsolidateReply>(`${xid(id)}/consolidate`, force ? { force: true } : {}, "expert consolidate"),
+  settings: (id: string, body: { engine?: string; model?: string }) => post<ExpertManifest>(`${xid(id)}/settings`, body, "expert settings"),
+  engines: (id: string) => get<ExpertEngineRow[]>(`${xid(id)}/engines`, "expert engines"),
 };
 
 /** POST /api/bots/<id>/seen {seq}: the unread mark (Bot.seen_seq). Silent: no banner, no poll after it (store.ts

@@ -253,6 +253,8 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot .name .rt { display: inline-block; vertical-align: -2px; margin-left: 5px; color: var(--muted); }
 .bots-page .bot .name .rt svg { width: 12px; height: 12px; display: block; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
+/* An expert (docs/experts.md): SUPER's badge on the page's accent. */
+.bots-page .bot .name .expert { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); vertical-align: 1px; letter-spacing: .04em; }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */
 .bots-page .bot .name .rt.warn, .bots-page .bot .sub .warn, .bots-page .r .s .warn { color: var(--err); }
 .bots-page .r .s .msg { display: block; color: var(--text); opacity: .85; white-space: pre-wrap; margin-top: 2px; }
@@ -531,7 +533,7 @@ div.bots-page:not(.sideapp) #satabb, div.bots-page.sideapp #sataba { background:
 .bots-page .sabar .winacts .btnlink:hover { color: inherit; text-decoration: underline; }
 .bots-page #saframe { display: none; flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 div.bots-page.sideapp #saframe { display: block; }
-div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap, .info) { display: none; }
+div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap, .info, .xpane) { display: none; }
 .bots-page .msg.approval { align-self: flex-start; background: var(--card); max-width: min(48rem, 90%); }
 /* The approval card is the shared GateCard (platform/ui/gate-card.css); this maps its --gate-* palette onto the page's own. */
 .bots-page .gate-card { --gate-accent: var(--accent); --gate-accent-text: var(--accent-text); --gate-ok: var(--ok); --gate-warn: var(--warn); --gate-err: var(--err); --gate-muted: var(--muted); --gate-line: var(--line); --gate-ground: var(--card); --gate-hover: var(--hover); --gate-pre-bg: var(--inset); --gate-on-accent: var(--accent-ink); }
@@ -608,6 +610,50 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap
 .bots-page .termwrap { position: relative; margin: 0 14px; height: 320px; border-radius: 14px; background: #000; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
 .bots-page:not(.stage) .shotwrap.termup { display: none; }
 div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
+/* An expert's preview column (components/ExpertPane.tsx): no browser; its Memory · Consults · Checks tabs ride the
+   Browser | Terminal strip (.viewsw .satab). The panels are also mounted in Settings › Expert (the dialog sits in the
+   page's portal host, so these rules reach it), hence nothing here leans on .preview. */
+.bots-page .xpane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden auto; padding-bottom: 14px; }
+.bots-page .xp-about { margin: 0 18px 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.bots-page .xp-warn { margin: 0 18px 10px; color: var(--err); font-size: 12px; }
+.bots-page .xpane .xp-panel { margin: 0 14px; }
+.bots-page [data-slot="dialog-content"] .xp-tabs.viewsw { margin: 4px 0 8px; }
+.bots-page .xp-panel { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.bots-page .xp-bar { display: flex; align-items: center; gap: 10px; padding: 4px 4px 8px; }
+.bots-page .xp-bar .xp-line { flex: 1; min-width: 0; }
+.bots-page .xp-bar button { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.bots-page .xp-score { color: var(--text); font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.bots-page .xp-prog { height: 3px; margin: 0 4px 8px; border-radius: 2px; background: var(--raised); overflow: hidden; }
+.bots-page .xp-prog > div { height: 100%; background: var(--accent); transition: width .3s; }
+.bots-page .xp-list { list-style: none; margin: 0; padding: 0; }
+.bots-page .xp-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 4px; border-top: 1px solid var(--line); }
+.bots-page .xp-row:first-child { border-top: none; }
+.bots-page .xp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.bots-page .xp-claim { color: var(--text); overflow-wrap: anywhere; }
+.bots-page .xp-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--muted); font-size: 11px; }
+.bots-page .xp-tag { font-size: 9.5px; letter-spacing: .03em; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
+.bots-page .xp-tag.user { color: var(--accent-text); border-color: color-mix(in srgb, var(--accent-text) 45%, transparent); }
+.bots-page .xp-tag.promoted { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.bots-page .xp-tag.unsure { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.bots-page .xp-row .xp-forget { flex: none; padding: 2px 8px; font-size: 11px; background: transparent; color: var(--muted); opacity: 0; }
+.bots-page .xp-row:hover .xp-forget, .bots-page .xp-row .xp-forget:focus-visible { opacity: 1; }
+.bots-page .xp-row .xp-forget:hover { background: var(--err); color: #fff; }
+@media (hover: none) { .bots-page .xp-row .xp-forget { opacity: 1; } }
+.bots-page .xp-fold > details { flex: 1; min-width: 0; }
+.bots-page .xp-fold summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; cursor: pointer; list-style: none; }
+.bots-page .xp-fold summary::-webkit-details-marker { display: none; }
+.bots-page .xp-fold summary .xp-claim { flex: 1 1 60%; min-width: 0; }
+.bots-page .xp-fold summary:hover .xp-claim { text-decoration: underline; }
+.bots-page .xp-why { flex-basis: 100%; }
+.bots-page .xp-mark { flex: none; width: 14px; font-weight: 600; }
+.bots-page .xp-mark.pass { color: var(--ok); }
+.bots-page .xp-mark.fail { color: var(--err); }
+.bots-page .xp-body { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.bots-page .xp-body pre { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--inset); color: var(--text); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow: auto; }
+.bots-page .xp-ctx { margin: 0; font-style: italic; }
+.bots-page .xp-refs { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+.bots-page .xp-refs code { font-size: 11px; padding: 0 5px; border-radius: 5px; background: var(--raised); color: var(--text); }
+.bots-page .xp-empty { padding: 20px 8px; text-align: center; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 .bots-page .shotwrap img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
 .bots-page .shotwrap .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--card); text-align: center; padding: 20px; font-size: 12px; }
 /* Asleep: Chrome was closed after sitting idle. The last frame stays, dimmed, with a moon; clicking wakes it (take-over relaunches). */
