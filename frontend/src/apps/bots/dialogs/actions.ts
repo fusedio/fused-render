@@ -21,7 +21,7 @@ export interface BotDialogValue {
   imessageTo: string;
   /** The preset key the bot was made from ("" for a blank bot, and always "" in Settings). */
   preset: string;
-  /** "super" for Super Bot (docs §5), else "bot". */
+  /** "super" for Super Bot (docs §5), "expert" for an expert (docs/experts.md; Settings only), else "bot". */
   kind: string;
   /** Super Bot's Mac access: "ask" | "full" (ignored for other bots). */
   superAccess: string;
@@ -68,9 +68,11 @@ export async function createBot(v: BotDialogValue): Promise<void> {
 export async function saveSettings(id: string, v: BotDialogValue): Promise<void> {
   if (!v.name) return;
   const was = getState().bots.find((x) => x.id === id);
-  const switched = !!was && v.kind !== "super" && v.browserId !== loginValue(was);
+  // An expert has no browser: no Logins switch and no encryption flag to send.
+  const expert = v.kind === "expert";
+  const switched = !!was && v.kind !== "super" && !expert && v.browserId !== loginValue(was);
   if (switched) await act(() => api.settings(id, { browser_id: v.browserId }));
-  const encrypt = switched && v.encrypt === !!was?.encrypt ? {} : { encrypt: v.encrypt };
+  const encrypt = expert || (switched && v.encrypt === !!was?.encrypt) ? {} : { encrypt: v.encrypt };
   const rules = v.allowRulesRemoved.length ? { allow_rules_remove: v.allowRulesRemoved } : {};
   const apps = { trusted_apps_add: v.trustedApps.filter((a) => !v.trustedAppsWas.includes(a)),
     trusted_apps_remove: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)),

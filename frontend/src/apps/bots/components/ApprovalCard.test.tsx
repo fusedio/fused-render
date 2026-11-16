@@ -71,3 +71,38 @@ describe("ApprovalCard", () => {
     expect(html(ev(), false)).not.toContain("gate-status");
   });
 });
+
+describe("ApprovalCard: an expert's skill proposal", () => {
+  const diff = "--- a/skills/canvas.md\n+++ b/skills/canvas.md\n@@ -1 +1,2 @@\n # Canvas\n+- reference upstream UDFs by name";
+  const prop = (extra: Partial<BotEvent> = {}) => ev({ text: "Update the skill “Canvas” with 2 lessons.", detail: diff, expert_proposal: "p1",
+    score_before: { score: 11, total: 14 }, score_after: { score: 12, total: 14 }, ...extra });
+  test("title, the diff as the body, the scores line", () => {
+    const out = html(prop());
+    expect(out).toContain("Proposed skill change");
+    expect(out).toContain("reference upstream UDFs by name");
+    expect(out).toContain("+++ b/skills/canvas.md");
+    expect(out).toContain("Checks: 11/14 → 12/14");
+    expect(out).toContain("Update the skill “Canvas” with 2 lessons.");
+    expect(out).not.toContain("wants your OK");
+  });
+  test("Approve and Reject on the thread's hooks; never Always approve", () => {
+    const out = html(prop({ forever: { kind: "builtin", key: "x", label: "does x" } }));
+    expect(out).toContain('data-approve="1"');
+    expect(out).toContain('data-deny="1"');
+    expect(out).toContain(">Approve<");
+    expect(out).toContain(">Reject<");
+    expect(out).not.toContain("data-forever");
+    expect(out).not.toContain("Always approve");
+    expect(out).toContain("msg approval proposal");
+    expect(out).toContain('data-seq="4"');
+  });
+  test("no scores line unless both runs exist", () => {
+    expect(html(prop({ score_before: null, score_after: null }))).not.toContain("Checks:");
+    expect(html(prop({ score_after: null }))).not.toContain("Checks:");
+  });
+  test("settled: no buttons, the verdict says Rejected or Approved", () => {
+    expect(html(prop(), false, { answer: "deny" })).toContain("✗ Rejected");
+    expect(html(prop(), false, { answer: "approve" })).toContain("✓ Approved");
+    expect(html(prop(), false)).not.toContain("<button");
+  });
+});
