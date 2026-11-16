@@ -547,6 +547,31 @@ def test_a_fresh_copilot_run_is_found_by_file_then_by_id(agent, target):
     assert found == {"run_id": name, "backend": "copilot"}
 
 
+def test_a_session_is_found_whatever_target_the_page_now_names(agent, tmp_path):
+    """One session = one host. The chat page's target moved from the app's
+    entry file to its folder while the host (and a background subagent) was
+    alive: the probe with the new target and the same session must find that
+    host, or the caller starts a second `claude --resume` on the session."""
+    app = tmp_path / "mf-portfolio"
+    app.mkdir()
+    run_dir = _fresh_copilot_run(agent, str(app / "index.html"), rows=(
+        {"type": "system", "subtype": "init", "session_id": SID_COPILOT},
+        {"type": "user", "message": {"role": "user", "content": "hi"}}))
+    name = os.path.basename(run_dir)
+    assert agent._live_host(str(app), SID_COPILOT) == {"run_id": name}
+    found = agent._live_run(str(app), SID_COPILOT)
+    assert found["run_id"] == name
+    # An unrelated target is no obstacle either: the session names the host.
+    assert agent._live_host(str(tmp_path / "elsewhere"), SID_COPILOT) == {"run_id": name}
+    # No session id: the target still decides, and a mismatch finds nothing.
+    assert agent._live_host(str(app)) == {"run_id": ""}
+    assert agent._live_run(str(app))["run_id"] == ""
+    # Another session on the same file is not this session's host.
+    other = "00000000-0000-4000-8000-00000000beef"
+    assert agent._live_host(str(app / "index.html"), other) == {"run_id": ""}
+    assert agent._live_run(str(app / "index.html"), other)["run_id"] == ""
+
+
 def test_send_keeps_the_session_id_the_copilot_host_wrote(agent, target, home,
                                                          monkeypatch):
     """`_send` re-records model/mode in host.json while the Copilot host may

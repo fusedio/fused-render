@@ -7529,8 +7529,9 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
     "is anything still running for this chat?" is the missing half: `resumeRun`
     was always able to adopt a run this frame did not start.
 
-    Matched on the TARGET first, and on the session only when the caller names
-    one. Two ids can identify the same chat — the session the run resumed
+    Matched on the TARGET when the caller names no session, and on the session
+    ALONE when it does (one session = one host; the page's target can change
+    under a live session, so the file must not veto a session match). Two ids can identify the same chat — the session the run resumed
     (`resumed_from` in meta.json) and the session the CLI minted for it (written
     to the `session` file by the first poll that sees one, because
     `--fork-session` can hand back a NEW id) — so either matching is a match,
@@ -7588,8 +7589,14 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
         # `test_another_chat_s_run_is_not_adopted` pins); it is "one of the two
         # is the directory the other one lives in", which is the folder/entry
         # pair the wall actually produces and nothing else.
-        if target != file and not (
-                session_id and _folder_and_member(target, file)):
+        #
+        # SINCE WIDENED TO THE SESSION ALONE. A session id has at most one
+        # host, so once the caller names one the target is not evidence either
+        # way (see `_live_host`): a chat's page target can change under a live
+        # session (file view -> app folder view) and a target filter that
+        # vetoes the session match re-attaches nothing. Only a caller with no
+        # session id falls back on the exact target match.
+        if not session_id and target != file:
             continue
         if session_id:
             # See `_run_own_session` for the three places this answer can come
@@ -7790,9 +7797,14 @@ def _live_host(file: str, session_id: str = "",
     would make `action=send` miss every follow-up typed after a reply lands
     and before the idle-reap timer ends the session, which is most of them.
 
-    Matching follows `_live_run`'s own rules exactly (same `meta.json` file
-    match, same `resumed_from`/`session`-file/`_session_from_out` session
-    match) — only the liveness check at the end differs.
+    Matching follows `_live_run`'s own rules exactly (session id given: the
+    `resumed_from`/`session`-file/`_session_from_out` match ALONE; no session
+    id: the `meta.json` file match) — only the liveness check at the end
+    differs. The file never vetoes a session match: one session = one host,
+    and the page's target can change under a live session (file view -> app
+    folder view). Probing with the new target used to answer "", the caller
+    then started a SECOND `claude --resume` on the same session while the
+    first host (and its background subagent) was still alive.
     """
     file = os.path.abspath(file)
     try:
@@ -7808,7 +7820,9 @@ def _live_host(file: str, session_id: str = "",
                 meta = json.load(fh)
         except (OSError, ValueError):
             continue
-        if os.path.abspath(meta.get("file", "")) != file:
+        # A session id names the host on its own; the target only decides
+        # when the caller has no session to go on.
+        if not session_id and os.path.abspath(meta.get("file", "")) != file:
             continue
         if session_id:
             own = _run_own_session(run_dir, meta)
