@@ -36,6 +36,7 @@ import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
 // sidebar's sign-in probe imports it); the barrel would pull the sub-app in.
 import { ENV_NAMES, canvasNameFromPath } from "@apps/canvases/api";
+import { registerNativeView } from "@platform/ui/NativeView";
 import {
   appIconUrl,
   getAppIcon,
@@ -179,6 +180,11 @@ const Canvases = lazy(() =>
 const CanvasWorkspace = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
 );
+// …and the canvas NODE VIEW, the native `udf` mode (SPEC §53.3/§53.4): the
+// explorer's preview may not import apps/canvases, so it mounts whatever the
+// shell registered for the mode (platform/ui/NativeView). Same chunk as the
+// two routes above, loaded on the first node file shown.
+registerNativeView("udf", () => import("@apps/canvases").then((m) => ({ default: m.NodeView })));
 // Bots (ported from FusedBot): browser bots, each driving its own Chrome
 // window. The page carries its own scoped stylesheet in the lazy chunk.
 const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
