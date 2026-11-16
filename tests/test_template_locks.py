@@ -60,9 +60,13 @@ def _norm(requirement: str) -> str:
 
 
 def _declaring_folders() -> list[str]:
+    """Template folders that declare an environment. A pyproject.toml with no
+    `[project]` table (duckdb's only declares its warm worker) has nothing to
+    build or lock."""
     return sorted(
         name for name in os.listdir(_TEMPLATES)
         if os.path.isfile(os.path.join(_TEMPLATES, name, "pyproject.toml"))
+        and "project" in _load(os.path.join(_TEMPLATES, name, "pyproject.toml"))
     )
 
 

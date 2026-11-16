@@ -1,0 +1,11 @@
+# The duckdb grid's warm worker (D1487). There is no [project] table, so
+# reader.py and writer.py keep running on the app's own interpreter (PY-17)
+# and this folder has no environment to build or lock.
+#
+# `main = "reader.py"` lets fused-render's shipped worker serve reader.py
+# from one long-lived process (`fused.daemon.run`). The grid uses it for a
+# streamed S3 parquet: DuckDB, httpfs and the file's footer stay loaded
+# between calls, so a page or sort reads only its row groups instead of
+# paying a fresh process each time. Local files still use runPython.
+[tool.fused-render.app]
+main = "reader.py"

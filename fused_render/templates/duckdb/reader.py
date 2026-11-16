@@ -34,6 +34,7 @@ stay read-only.
 import datetime
 import decimal
 import os
+import threading
 import urllib.parse
 
 import duckdb
@@ -94,6 +95,32 @@ def _load_httpfs(con) -> None:
     except duckdb.Error:
         con.execute("INSTALL httpfs")
         con.execute("LOAD httpfs")
+
+
+# One DuckDB database per process for streamed reads: httpfs is loaded once and
+# DuckDB's object cache keeps each file's parsed parquet footer. Under
+# `fused.runPython` the process ends after one call, so this only helps within
+# it; the grid sends streamed calls to this module's warm worker
+# (pyproject.toml `main =`, D1487), where it lasts between calls and a page,
+# sort or filter reads only its row groups. Each call gets its own cursor
+# (calls run concurrently on the worker's threads).
+_stream_db = None
+_stream_lock = threading.Lock()
+
+
+def _stream_cursor():
+    global _stream_db
+    with _stream_lock:
+        if _stream_db is None:
+            db = duckdb.connect(":memory:")
+            db.execute("PRAGMA enable_object_cache=true")
+            _load_httpfs(db)
+            # Skip the HEAD before every read (0.35 s -> 0.03 s a warm page).
+            # The worker serves an object as it first saw it until it is
+            # retired (idle_timeout_s); bucket objects are not edited in place.
+            db.execute("SET enable_http_metadata_cache=true")
+            _stream_db = db
+        return _stream_db.cursor()
 
 
 def _scan_bytes(con, file, columns) -> int:
@@ -467,10 +494,8 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         if ext != ".parquet":
             raise ValueError("Only parquet files stream from S3. Download "
                              "this file to open it.")
-        con = duckdb.connect(":memory:")
+        con = _stream_cursor()
         try:
-            con.execute("PRAGMA enable_object_cache=true")  # one footer parse per call
-            _load_httpfs(con)
             return _read_flat(file, con, ext, offset, limit,
                               sort, filters, mode, columns, positions)
         finally:

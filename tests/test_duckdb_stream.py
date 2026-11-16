@@ -135,3 +135,24 @@ def test_relation_for_keeps_a_streamed_url_and_writer_never_signs():
     assert "fused_s3" not in src and "httpfs" not in src
     with open(os.path.join(DUCKDB_DIR, "reader.py"), encoding="utf-8") as f:
         assert "fused_s3" not in f.read()  # the page signs, not the reader
+
+
+@needs_httpfs
+def test_a_warm_process_reads_each_footer_once(table):
+    """The warm worker (D1487) keeps one streaming database: a second schema
+    call on the same URL costs no request at all."""
+    _, _, b, url = table
+    reader.main(url, mode="schema")
+    before = len(b.log)
+    assert reader.main(url, mode="schema")["columns"]
+    assert len(b.log) == before
+
+
+def test_the_folder_declares_reader_as_its_warm_worker():
+    """pyproject.toml declares only `main = "reader.py"`: no [project], so
+    reader.py and writer.py stay on the app's own interpreter."""
+    from fused_render import background_apps, projectenv
+    manifest = background_apps.load_manifest(DUCKDB_DIR)
+    assert manifest is not None
+    assert os.path.basename(manifest.main) == "reader.py" and not manifest.daemon
+    assert not projectenv.has_project_env(DUCKDB_DIR)
