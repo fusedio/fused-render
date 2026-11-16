@@ -298,8 +298,16 @@ async def api_fs_raw(path: str, request: Request, base: str | None = None,
     # read has two exits (HEAD and the local file) and both can put a
     # scriptable content-type on this origin, so the hardening lives at the
     # single choke point rather than being repeated.
-    return _harden_raw(
+    resp = _harden_raw(
         await _api_fs_raw_read(path, request, base, pooled), request)
+    # A downloaded S3 object is untrusted bucket content: `sandbox` keeps it
+    # inert even if some load path renders it as a document (fetch() of the
+    # bytes is unaffected).
+    from fused_render import remote_fetch
+    full = path if (os.path.isabs(path) or not base) else os.path.join(os.path.dirname(base), path)
+    if 200 <= resp.status_code < 300 and remote_fetch.in_cache(full):
+        resp.headers["content-security-policy"] = "sandbox"
+    return resp
 
 async def _api_fs_raw_read(path: str, request: Request, base: str | None,
                            pooled: str | None):

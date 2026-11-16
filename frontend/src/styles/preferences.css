@@ -270,7 +270,13 @@
    .listing-behind — light on purpose, because this state can hold for as long
    as the box is open and rows nobody can read are worse than rows a few
    minutes old. The chip above says why in words. */
-.fh-results.is-stale {
+/* Per row, not on the list: the "Fused assets" rows (`.fh-remote-item`,
+   RemoteHitsGroup.tsx) arrive on their own request, so the local answer
+   being behind says nothing about them — they dim on their OWN held state.
+   The sticky AI row is exempt: it is an action, not a held answer, and a
+   translucent sticky row would let the rows scrolling under it show through. */
+.fh-results.is-stale > li:not(.fh-remote-item):not(.fh-ai-row),
+.fh-remote-item.is-held {
   opacity: 0.86;
 }
 
@@ -645,6 +651,46 @@
 .fh-result-date {
   min-width: 88px;
   text-align: right;
+}
+
+/* -- the "Fused assets" group (RemoteHitsGroup.tsx) ---------------------------
+   Bucket hits under the local rows, inside the same scrolling listbox and above
+   the sticky AI row. The heading is a quiet label row (not a selectable row:
+   no hover, no highlight — and no resting --bg-alt wash, which is the
+   selection tint here); bucket rows reuse `.fh-result`'s columns and add a
+   cloud glyph so they never read as files on this machine. */
+.fh-remote-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 14px 6px;
+  font-size: 12px;
+}
+
+.fh-remote-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.fh-remote-addr {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.fh-remote-cloud {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+}
+
+/* Over REMOTE_WARN_BYTES: opening it downloads the whole object first. */
+.fh-remote-size.is-big {
+  color: var(--warning);
+}
+
+.fh-remote-more {
+  padding: 6px 14px;
+  font-size: 12px;
 }
 
 /* -- the AI action row -------------------------------------------------------

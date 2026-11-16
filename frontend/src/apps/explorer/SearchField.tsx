@@ -32,6 +32,8 @@ import {
   type RefObject,
 } from "react";
 import { navigate } from "@platform/lib/router";
+import { canonicalRemoteUrl } from "@platform/lib/remote";
+import { useCanvasesFlag } from "@platform/lib/canvases-flag";
 import { basename, formatSize } from "@platform/lib/format";
 import { isMac } from "@platform/lib/platform";
 import { PathCrumbs } from "@apps/explorer/listing/path-crumbs";
@@ -235,6 +237,7 @@ export function SearchField({
   children,
 }: SearchFieldProps) {
   const crumbsPath = crumbsFsPath ?? fsPath;
+  const canvasesOn = useCanvasesFlag();
 
   // The field's own mode chip: whether the box holds a path-shaped, glob-free
   // query (real folder path, a bare tilde, a partial prefix of one — shape
@@ -729,6 +732,20 @@ export function SearchField({
               // not two copies of "clear, then remember to also blur."
               clearSearchQuery();
               return;
+            }
+            // An S3 address (s3://…, or an HTTPS link to an object) is a
+            // location, not a search or a path to complete: Enter opens it
+            // (platform/lib/remote.ts), ahead of every dropdown row. Only
+            // while the Canvases flag is on, like the home box and the
+            // search gate (useListingSearch): off, it is an ordinary query.
+            if (e.key === "Enter") {
+              const remote = canvasesOn ? canonicalRemoteUrl(query) : null;
+              if (remote) {
+                e.preventDefault();
+                e.stopPropagation();
+                navigate(remote);
+                return;
+              }
             }
             // `completionKeyAction`/`moveHighlight` stay generic over a row
             // COUNT and an INDEX into it — they don't know or care what a

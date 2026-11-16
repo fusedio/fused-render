@@ -276,6 +276,33 @@ export function shareRow(args: {
   ];
 }
 
+// THE FILE MENU FOR A REMOTE LOCATION (`remoteUrl`, RemoteView.tsx): the file
+// on screen is the cache's local copy of an `s3://` object, and every verb of
+// the ordinary menu — rename, delete, duplicate, cut, reveal, share, open in
+// terminal, splits, the app rows — would act on (or show) that cache file, not
+// on anything the reader opened. What is left speaks the s3 address.
+function remoteFileMenu(remoteUrl: string): MenuEntry[] {
+  return fileMenu({
+    open: [
+      {
+        label: "Open in New Tab",
+        icon: MenuIcons.newTab,
+        onClick: () => window.open(urlForFsPath(remoteUrl), "_blank", "noopener"),
+      },
+    ],
+    copy: [
+      {
+        label: "Copy Address",
+        icon: MenuIcons.copyPath,
+        onClick: () =>
+          void copyToClipboard(remoteUrl).then((ok) => {
+            if (ok) notify({ title: "Address copied", tone: "info" });
+          }),
+      },
+    ],
+  });
+}
+
 // One open modal for the preview file menu: a Rename prompt or a Delete confirm
 // (the trash-unsupported fallback). Mirrors Listing's DialogState, kept local
 // so the two views don't couple through a shared dialog type.
@@ -307,6 +334,9 @@ function usePreviewFileMenu(
   // returned the groups it composes. Absent (FallbackPreview, which has no
   // kebab), the bar shows this hook's groups alone.
   fileMenuRef?: React.MutableRefObject<(() => MenuEntry[]) | null>,
+  // An `s3://` location whose cached copy `fsPath` is (remoteFileMenu): both
+  // menus this hook opens shrink to the address's own verbs.
+  remoteUrl?: string,
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
@@ -466,7 +496,7 @@ function usePreviewFileMenu(
 
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, items: buildMenu() });
+    setMenu({ x: e.clientX, y: e.clientY, items: remoteUrl ? remoteFileMenu(remoteUrl) : buildMenu() });
   };
 
   // Where the status-bar drawer exists, run a new Claude Code session on this
@@ -498,7 +528,8 @@ function usePreviewFileMenu(
   useEffect(() => {
     let alive = true;
     setIsAppEntry(false);
-    if (stat.is_dir) return;
+    // A remote location's cache folder is no app (and nothing reads the answer).
+    if (stat.is_dir || remoteUrl) return;
     getAppEntry(parent)
       .then((r) => {
         if (alive) setIsAppEntry(r.entry != null && canonFsPath(r.entry) === fsPath);
@@ -509,7 +540,7 @@ function usePreviewFileMenu(
     return () => {
       alive = false;
     };
-  }, [fsPath, parent, stat.is_dir]);
+  }, [fsPath, parent, stat.is_dir, remoteUrl]);
 
   // SHARE, FOR THE FILE ITSELF — same flag as the app sheet (share-app-flag.ts:
   // "ON, each surface shows ONE Share entry"), reused here so a reader flips
@@ -526,7 +557,7 @@ function usePreviewFileMenu(
   });
   useEffect(() => {
     setShareEligibility({ canShare: false, refusal: null });
-    if (!sharingFilesEnabled || stat.is_dir) return;
+    if (!sharingFilesEnabled || stat.is_dir || remoteUrl) return;
     let alive = true;
     getShareFileStatus(fsPath)
       .then((s) => {
@@ -539,7 +570,7 @@ function usePreviewFileMenu(
     return () => {
       alive = false;
     };
-  }, [fsPath, stat.is_dir, sharingFilesEnabled]);
+  }, [fsPath, stat.is_dir, sharingFilesEnabled, remoteUrl]);
   const doShareFile = () => {
     if (!shareEligibility.canShare) return;
     openShareFile({ path: fsPath, name: stat.name });
@@ -675,6 +706,7 @@ function usePreviewFileMenu(
   // published one, this hook's groups alone otherwise — in the same
   // arrangement, so FallbackPreview's bar reads like TemplatePreview's.
   const barMenuItems = (): MenuEntry[] => {
+    if (remoteUrl) return remoteFileMenu(remoteUrl);
     if (fileMenuRef?.current) return fileMenuRef.current();
     const own = fileGroups();
     return fileMenu({
@@ -702,7 +734,10 @@ function usePreviewFileMenu(
     setMenu({
       x,
       y,
-      items: crumb
+      // A remote location's crumbs are s3 prefixes, never local folders to
+      // reveal (Breadcrumb draws them without the crumb-path attribute, so
+      // `crumb` is undefined there anyway; checked here too).
+      items: crumb && !remoteUrl
         ? crumbMenu({
             onReveal: () =>
               revealPath(crumb).catch((e) =>
@@ -858,6 +893,7 @@ function TemplatePreview({
   conditions,
   onRenderedTitle,
   actionsInTopbar,
+  remoteUrl,
 }: {
   fsPath: string;
   stat: StatResult;
@@ -865,6 +901,7 @@ function TemplatePreview({
   conditions: Record<string, boolean> | null;
   onRenderedTitle?: (title: string | null) => void;
   actionsInTopbar?: boolean;
+  remoteUrl?: string;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
@@ -883,7 +920,10 @@ function TemplatePreview({
   //     user built, sized by them, with their own bar (PaneModeMenu) writing
   //     `_mode`. A pane that grew a second split of its own would be answering a
   //     layout question the user already answered;
-  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
+  // Never for a remote location's cache copy (RemoteView.tsx): the companions
+  // (Claude chat, git, the parent's MCP) and the rail would all be about the
+  // cache folder, not the `s3://` object the reader opened.
+  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !remoteUrl;
   const parts = partitionModes(templates);
 
   // --- the BORROWED companion `git`, and the parent's `mcp`, from this file's parent folder -
@@ -965,6 +1005,8 @@ function TemplatePreview({
   // the two differ only for a file with no companions of its own, where both
   // branches are the same list anyway, and the sidebar half has to keep listing
   // the pending entry for the deep link's sake.
+  // A remote cache copy never gets here with a companion in `templates`
+  // (Preview drops them upstream), so this needs no remote case.
   const contentModes = split.offered ? parts.content : templates;
   const sidebarModes = split.offered ? split.all : [];
   // What the sidebar's switcher DRAWS, which is a longer list than the one above:
@@ -1994,7 +2036,7 @@ function TemplatePreview({
   };
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
   const fileMenuRef = useRef<(() => MenuEntry[]) | null>(null);
-  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef);
+  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef, remoteUrl);
 
   // THE APP ROWS (EntryActionsMenu's hook): App Doctor, Share, Open as project,
   // MCP config, gated on this file being its folder's entry page (the hook asks
@@ -2013,7 +2055,8 @@ function TemplatePreview({
   // strip still carries the query back for anyone who wants it.
   const appRows = useAppActionRows({
     fsPath,
-    isEntry: stat.is_dir ? false : undefined,
+    // A remote cache copy is nobody's entry page: no app rows, no probe.
+    isEntry: stat.is_dir || remoteUrl ? false : undefined,
     snapshotSha,
     snapshotResolved,
     snapshotPending,
@@ -2063,6 +2106,7 @@ function TemplatePreview({
   // instead.
   const ownsFileBar = !!actionsInTopbar && !stat.is_dir;
   const buildFileMenu = (): MenuEntry[] => {
+    if (remoteUrl) return remoteFileMenu(remoteUrl);
     if (!ownsFileBar) return fileMenu({ app: [...appRows.app, ...appRows.doctor], embed: appRows.embed });
     const own = fileOps.fileGroups();
     return fileMenu({
@@ -2157,7 +2201,7 @@ function TemplatePreview({
           (Listing.tsx's buildFolderMenu, with its own Open in embed row), so
           this one stands down — two `⋮` in one bar was the bug. */}
       {!(stat.is_dir && isListing) && (
-        <OverflowMenu items={buildFileMenu()} title="File actions" badge={appRows.badge} />
+        <OverflowMenu items={buildFileMenu()} title="File actions" badge={remoteUrl ? undefined : appRows.badge} />
       )}
       {/* The sidebar's OPENER, LAST in the bar — the shared control (SideChrome),
           which is where the "one affordance, two places, chosen by state" split
@@ -2763,16 +2807,18 @@ function FallbackPreview({
   stat,
   actionsInTopbar,
   onReload,
+  remoteUrl,
 }: {
   fsPath: string;
   stat: StatResult;
   actionsInTopbar?: boolean;
   onReload?: () => void;
+  remoteUrl?: string;
 }) {
   // No renderable views back this file (that's why it's the fallback), so Open
   // With resolves to the empty "No views available" list without a re-stat.
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
-  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar);
+  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, undefined, remoteUrl);
   return (
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileOps.onContextMenu} />}
@@ -2783,8 +2829,9 @@ function FallbackPreview({
             <dl>
               <dt>Name</dt>
               <dd>{stat.name}</dd>
-              <dt>Path</dt>
-              <dd>{fsPath}</dd>
+              {/* A remote location names its address, not the cache copy. */}
+              <dt>{remoteUrl ? "Address" : "Path"}</dt>
+              <dd>{remoteUrl ?? fsPath}</dd>
               <dt>Size</dt>
               <dd>{formatSize(stat.size)}</dd>
               <dt>Modified</dt>
@@ -2817,9 +2864,17 @@ interface PreviewProps {
   // a manual refresh. Undefined for callers that don't wire up StatView's
   // reload, where FallbackPreview simply omits the "reloading…" step.
   onReload?: () => void;
+  // Set when `fsPath` is the local CACHE COPY of a remote (`s3://`) location
+  // (apps/explorer/RemoteView.tsx). The viewer renders the cache file as usual
+  // — templates only ever see local paths — while the location the reader is
+  // at stays this address: the bar's merged search field stands down (it would
+  // show the cache folder as the path), the sidebar/rail/companion modes are
+  // off, and the file menus shrink to the address's own verbs
+  // (remoteFileMenu). Undefined for every local view.
+  remoteUrl?: string;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload, remoteUrl }: PreviewProps) {
   // Flush relay for a host framing THIS document (the canvas node pane, two
   // frames up from the editor): the host asks this window, and the ask goes
   // down to the shown content frame's own `__fusedFlushEdits` (the code
@@ -2845,13 +2900,21 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   // same way regardless of which of those a file lands in — the field is a
   // property of the FILE, not of how its body happens to render.
   const ownsBar = !!actionsInTopbar && !stat.is_dir;
-  const fileSearchField = <FileSearchField active={ownsBar} fsPath={fsPath} />;
+  const fileSearchField = <FileSearchField active={ownsBar && !remoteUrl} fsPath={fsPath} />;
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
+  // A remote location's cache copy (`remoteUrl`) is untrusted bucket content:
+  // never offered as a running page (`_render`, which /render also refuses for
+  // the cache) — an html/svg/js object opens in its source/code view instead.
+  // Nor any companion (Claude, git): with no split they would come back as
+  // content modes aimed at the cache folder, not the `s3://` object. A file
+  // whose only views are companions falls back to FallbackPreview.
   const templates = stat.templates.filter(
-    (t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)
+    (t) =>
+      (t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)) &&
+      !(remoteUrl && (t.mode === "_render" || isSidebarMode(t.mode)))
   );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
   // The first unconditional template renders immediately — only an
@@ -2944,13 +3007,20 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
           conditions={conditions}
           onRenderedTitle={onRenderedTitle}
           actionsInTopbar={actionsInTopbar}
+          remoteUrl={remoteUrl}
         />
       </>
     );
   return (
     <>
       {fileSearchField}
-      <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} onReload={onReload} />
+      <FallbackPreview
+        fsPath={fsPath}
+        stat={stat}
+        actionsInTopbar={actionsInTopbar}
+        onReload={onReload}
+        remoteUrl={remoteUrl}
+      />
     </>
   );
 }

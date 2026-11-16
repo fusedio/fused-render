@@ -106,6 +106,8 @@ import EmbedStrip from "@apps/explorer/EmbedStrip";
 import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
+import { RemoteView } from "@apps/explorer/RemoteView";
+import { isRemoteLocation } from "@platform/lib/remote";
 import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
@@ -861,11 +863,17 @@ export default function App({ config }: { config: Config }) {
     isBots ||
     canvasWorkspace !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
+  // An `s3://bucket/key` LOCATION (platform/lib/remote.ts) decodes through
+  // the same codec but is no filesystem path: it mounts RemoteView, never
+  // StatView or the install pages below (a key ending `.fused` is an S3
+  // object, not an app file to install), and nothing local gets it as a cwd.
+  const remoteLocation = fsPath && isRemoteLocation(fsPath) ? fsPath : null;
+  const localFsPath = remoteLocation ? null : fsPath;
   // Not behind the Marketplace flag: the install page is the one `.fused`
   // view there is (see isFusedInstallView); the flag gates the store's entry
   // points only.
-  const fusedFile = fsPath && isFusedInstallView(fsPath) ? fsPath : null;
-  const botFile = fsPath && isBotFileInstallView(fsPath) ? fsPath : null;
+  const fusedFile = localFsPath && isFusedInstallView(localFsPath) ? localFsPath : null;
+  const botFile = localFsPath && isBotFileInstallView(localFsPath) ? localFsPath : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -1203,6 +1211,14 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (remoteLocation) {
+    main = (
+      <RemoteView
+        key={epoch + ":" + remoteLocation}
+        location={remoteLocation}
+        home={config.home}
+      />
+    );
   } else if (fusedFile) {
     main = <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />;
   } else if (botFile) {
@@ -1300,7 +1316,7 @@ export default function App({ config }: { config: Config }) {
             pywinpty): `canRunInTerminal()` and `window._fusedOpenTerminal`
             both ride this mount, so every Run affordance and
             `fused.terminal.open/run` go away with it instead of failing. */}
-        {!IS_EMBED && terminalOn && <TerminalDrawer cwd={fsPath} />}
+        {!IS_EMBED && terminalOn && <TerminalDrawer cwd={localFsPath} />}
         {/* Breakout cards: research-only side chats, shell-level so they
             outlive the page they were opened from. */}
         {!IS_EMBED && <BreakoutCards />}

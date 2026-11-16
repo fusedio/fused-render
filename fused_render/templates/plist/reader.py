@@ -15,6 +15,18 @@ import json
 import os
 import plistlib
 import tempfile
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
+try:
+    import remote_cache  # noqa: E402  (stdlib-only shared helper, see templates/shared/)
+except ModuleNotFoundError as exc:
+    # An exported app ships this file without templates/shared/ (export.py
+    # never bundles it). It has no server, so no remote cache either: keep the
+    # plain temp-dir behaviour below. Any other import failure is a real bug.
+    if exc.name != "remote_cache":
+        raise
+    remote_cache = None
 
 
 def _jsonify(value):
@@ -32,14 +44,18 @@ def _jsonify(value):
 
 
 def _out_path(file):
-    """Stable temp path for the converted JSON, keyed on the plist's real path so
-    repeated opens reuse one file instead of littering temp."""
-    real = os.path.realpath(file)
-    key = hashlib.sha1(real.encode("utf-8")).hexdigest()[:16]
-    root = os.path.join(tempfile.gettempdir(), "fused-render-plist", key)
-    os.makedirs(root, exist_ok=True)
-    stem = os.path.splitext(os.path.basename(real))[0] or "plist"
-    return os.path.join(root, stem + ".json")
+    """`(path, remote)`: a stable path for the converted JSON, keyed on the
+    plist's real path — under the system temp dir, or the remote cache's
+    guarded `.previews/` when the plist is a bucket download
+    (templates/shared/remote_cache.py)."""
+    if remote_cache is None:  # an exported app: see the import above
+        key = hashlib.sha1(os.path.realpath(file).encode("utf-8")).hexdigest()[:16]
+        root, remote = os.path.join(tempfile.gettempdir(), "fused-render-plist", key), False
+        os.makedirs(root, exist_ok=True)
+    else:
+        root, remote = remote_cache.preview_root(file, "plist")
+    stem = os.path.splitext(os.path.basename(os.path.realpath(file)))[0] or "plist"
+    return os.path.join(root, stem + ".json"), remote
 
 
 def main(file: str, action: str = "convert") -> dict:
@@ -47,7 +63,7 @@ def main(file: str, action: str = "convert") -> dict:
         raise ValueError(f"unknown action: {action!r}")
     with open(file, "rb") as fh:
         data = plistlib.load(fh)
-    out = _out_path(file)
+    out, remote = _out_path(file)
     with open(out, "w", encoding="utf-8") as fh:
         json.dump(_jsonify(data), fh, ensure_ascii=False, indent=2)
-    return {"path": out, "size": os.path.getsize(out)}
+    return {"path": out, "size": os.path.getsize(out), "remote": remote}

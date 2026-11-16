@@ -122,7 +122,7 @@ _CALL_ARG = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*): (?P<val>.*?)(?=, [A-Za
 #: fused's own pane-server tools (permission_server.py): the names an
 #: argument-bearing or server-prefixed title is matched against.
 _FUSED_TOOLS = frozenset({"app_state", "canvas_screenshot", "terminal_list",
-                          "terminal_read", "terminal_send"})
+                          "terminal_read", "terminal_send", "s3_search", "s3_read"})
 #: D3: `session/load` answers around its replay (the history streams as
 #: `user_message_chunk` / `agent_message_chunk` updates, Gemini's road), so
 #: the replay is over only once the updates have been quiet for a beat —

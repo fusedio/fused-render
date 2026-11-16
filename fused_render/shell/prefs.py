@@ -1995,6 +1995,17 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         from fused_render.canvas_embed_proxy import controller
 
         controller.apply(None, None)
+    if body.get("canvases_enabled") is True:
+        # AFTER the write, best-effort: turning the canvas integration on is
+        # what makes the public `fused-asset` bucket searchable, so its index
+        # is fetched now (remote_index.py; a daemon thread, idempotent, one
+        # ingest at a time). Never allowed to fail the preference write.
+        try:
+            from fused_render import remote_index
+
+            remote_index.start_background("canvases-enabled")
+        except Exception:
+            logger.exception("remote index start failed")
     if "workbench_env" in body:
         # AFTER the write: the wrapper bakes workbench_env() in as the
         # FUSED_ENV a session's `fused` defaults to outside a clone, and it

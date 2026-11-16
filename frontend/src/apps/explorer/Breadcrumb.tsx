@@ -31,7 +31,7 @@
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
 import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { navigate, currentUrl, IS_EMBED } from "@platform/lib/router";
+import { navigate, currentUrl, spaLinkProps, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { isMod } from "@platform/lib/platform";
 import {
@@ -54,6 +54,7 @@ import {
 import { goBack, goForward } from "@platform/lib/nav-history";
 import Chevron from "@platform/ui/Chevron";
 import { urlScheme, fileUrlToPath } from "@platform/lib/path-url";
+import { canonicalRemoteUrl, isRemoteLocation, parseRemoteLocation } from "@platform/lib/remote";
 import { notify } from "@platform/lib/notifications";
 import { openTopbarMenu } from "@apps/explorer/topbar-menu";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
@@ -468,6 +469,19 @@ function TopbarActionsSlot() {
 // carrying the reason — the path bar has already closed by now, so a silent
 // no-op would read as "Enter did nothing".
 function openUrl(url: string, scheme: string): void {
+  // An S3 address — `s3://bucket/key`, or one of the HTTPS spellings of an
+  // object (platform/lib/remote.ts canonicalRemoteUrl) — is an explorer
+  // location in its own right. Accepted whatever the Canvases flag says: the
+  // page it opens explains when the integration is off.
+  const remote = canonicalRemoteUrl(url);
+  if (remote) {
+    navigate(remote);
+    return;
+  }
+  if (scheme === "s3") {
+    notify({ title: "That is not a valid S3 address — use s3://bucket/key", tone: "error" });
+    return;
+  }
   if (scheme === "file") {
     try {
       navigate(fileUrlToPath(url));
@@ -786,7 +800,9 @@ export function Breadcrumb({
     const scheme = urlScheme(path);
     if (scheme) {
       setEditing(false);
-      openUrl(path, scheme);
+      // An s3:// key may end in a space; canonicalRemoteUrl trims only the
+      // leading side, so it gets the untrimmed text.
+      openUrl(scheme === "s3" ? raw : path, scheme);
       return;
     }
     if (home !== undefined) {
@@ -800,7 +816,8 @@ export function Breadcrumb({
     if (path) navigate(path);
   };
   const rootTarget = underHome ? (home as string) : isDrive ? allParts[0] + "/" : "/";
-  const pieces: React.ReactNode[] = [
+  const remote = isRemoteLocation(fsPath) ? remoteCrumbs(fsPath) : null;
+  const pieces: React.ReactNode[] = remote ?? [
     <a
       key="root"
       href="#"
@@ -831,7 +848,7 @@ export function Breadcrumb({
     </a>,
   ];
   let acc = rootTarget === "/" ? "" : rootTarget;
-  parts.forEach((part, i) => {
+  if (!remote) parts.forEach((part, i) => {
     acc = acc + (acc.endsWith("/") ? "" : "/") + part;
     const target = acc;
     const isLast = i === parts.length - 1;
@@ -952,6 +969,50 @@ export function Breadcrumb({
       <TopbarActionsSlot />
     </>
   );
+}
+
+// The crumbs for a remote (`s3://`) location: `s3://bucket` › segment › …,
+// each ancestor a link to its own prefix. Plain links — no spring-load, no
+// drop target and no crumb-path attribute: an S3 prefix is not a folder a
+// file can be moved into, and the bar's ancestor right-click (Reveal in
+// Finder) has nothing local to reveal.
+function remoteCrumbs(loc: string): React.ReactNode[] {
+  const p = parseRemoteLocation(loc);
+  if (!p) return [];
+  const segs = p.key.split("/").filter((s) => s.length > 0);
+  const crumb = (key: string, label: string, target: string, isLast: boolean) => {
+    const shrink = label.length > (isLast ? 28 : 7) * 1.5;
+    const cls = "path-crumb" + (isLast ? " last" : "") + (shrink ? " shrink" : "");
+    if (isLast) {
+      return (
+        <span key={key} className={cls} title={target}>
+          {label}
+        </span>
+      );
+    }
+    const link = spaLinkProps(target, { isDir: true });
+    return (
+      <a key={key} href={link.href} className={cls} title={target} onClick={link.onClick}>
+        {label}
+      </a>
+    );
+  };
+  const pieces: React.ReactNode[] = [
+    crumb("root", "s3://" + p.bucket, `s3://${p.bucket}/`, segs.length === 0),
+  ];
+  let acc = `s3://${p.bucket}/`;
+  segs.forEach((seg, i) => {
+    acc += seg + "/";
+    pieces.push(
+      <span key={"sep" + i} className="path-crumb-sep">
+        /
+      </span>,
+    );
+    // The last crumb names the location itself (file or prefix); a link is
+    // never needed for it, so its trailing "/" does not matter.
+    pieces.push(crumb(acc, seg, acc, i === segs.length - 1));
+  });
+  return pieces;
 }
 
 export function StaticBreadcrumb({ label }: { label: string }) {

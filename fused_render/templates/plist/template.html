@@ -123,7 +123,14 @@
         const res = await fused.runPython("./reader.py", { file, action: "convert" });
         const tmp = res.path;
         const st = await fused.stat(tmp);
-        const t = st.templates && st.templates[0];
+        // JSON converted from a bucket download (res.remote) is untrusted: never
+        // frame it as a page — use its first non-_render view, or say so.
+        const t = (st.templates || []).find((v) => !(res.remote && v.mode === "_render"));
+        if (!t && res.remote) {
+          statusEl.className = "error";
+          statusEl.textContent = "No viewer is available for the converted property list.";
+          return;
+        }
         const src = !t || t.mode === "_render"
           ? `/render?path=${encodeURIComponent(tmp)}`
           : `/render?path=${encodeURIComponent(t.path)}&_file=${encodeURIComponent(tmp)}`;

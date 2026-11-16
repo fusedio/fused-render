@@ -35,6 +35,7 @@ import {
   STALE_CLEAR_MS,
 } from "@platform/lib/instant-search";
 import { noteIndexLifecycle, resetFsMutations } from "@platform/lib/index-freshness";
+import { publishCanvasesFlag } from "@platform/lib/canvases-flag";
 
 // --- the module boundary: a fetch stub, not a module mock -------------------
 interface RankCall {
@@ -92,6 +93,10 @@ let scanRequested = 0;
  * `mock.module` is out) and `window.dispatchEvent`/`history.pushState` are
  * plain stubbed globals same as `fetch` above. */
 const navPushes: string[] = [];
+/** Every GET /api/remote-index/rank's `q` (the "Fused assets" bucket search),
+ * answered at once with `remoteRankReply`. */
+const remoteRankCalls: string[] = [];
+let remoteRankReply: unknown = { ready: true, hits: [], total: 0, truncated: false };
 
 const realFetch = globalThis.fetch;
 
@@ -113,6 +118,10 @@ function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
         signal: init?.signal ?? undefined,
       });
     });
+  }
+  if (u.startsWith("/api/remote-index/rank")) {
+    remoteRankCalls.push(new URL(u, "http://localhost").searchParams.get("q") ?? "");
+    return Promise.resolve(new Response(JSON.stringify(remoteRankReply), { status: 200 }));
   }
   if (u.startsWith("/api/fs/stat")) {
     const params = new URL(u, "http://localhost").searchParams;
@@ -234,6 +243,8 @@ beforeEach(() => {
   searchFilesCalls.length = 0;
   scanRequested = 0;
   navPushes.length = 0;
+  remoteRankCalls.length = 0;
+  remoteRankReply = { ready: true, hits: [], total: 0, truncated: false };
   globalThis.fetch = fakeFetch as typeof fetch;
   // `indexRescanPending` (platform/lib/index-freshness) reads a module-level
   // `mutatedAt` set by real, non-virtual `Date.now()` — a leaked subscriber
@@ -1585,6 +1596,67 @@ describe("reload with a ?q= that carries a committed AI search (code review find
     expect(
       box.renderer.root.findAllByProps({ id: "fh-ai-hit-" + HOME + "/report.csv" }).length,
     ).toBeGreaterThan(0);
+    box.unmount();
+  });
+});
+
+describe("an S3 address typed into the home box (canvases flag on)", () => {
+  // The flag is module state (platform/lib/canvases-flag) that outlives a
+  // test: published ON per test and back OFF after, whatever the outcome.
+  afterEach(() => publishCanvasesFlag(false));
+
+  const BUCKET_ROW = {
+    url: "s3://fused-asset/fused-js/",
+    key: "fused-js/",
+    is_dir: true,
+    size: null,
+    mtime: null,
+  };
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 6; i++) await flush();
+  }
+
+  test("runs the bucket search (not the local one) and lists its rows under the open hint", async () => {
+    publishCanvasesFlag(true);
+    remoteRankReply = { ready: true, hits: [BUCKET_ROW], total: 1, truncated: false };
+    const box = mount();
+    await type(box, "s3://fused");
+    await settle();
+    expect(remoteRankCalls).toEqual(["s3://fused"]);
+    expect(rankCalls).toHaveLength(0);
+    expect(noteText(box)).toContain("to open s3://fused/");
+    expect(box.renderer.root.findAllByProps({ role: "listbox" })).toHaveLength(1);
+    expect(findByClass(box, "fh-remote-row")).toHaveLength(1);
+    expect(findByClass(box, "fh-ai-row")).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a bare Enter opens the typed address; an arrowed-to bucket row opens that row", async () => {
+    publishCanvasesFlag(true);
+    remoteRankReply = { ready: true, hits: [BUCKET_ROW], total: 1, truncated: false };
+    const box = mount();
+    await type(box, "s3://fused");
+    await settle();
+    await pressEnter(box);
+    expect(navPushes).toHaveLength(1);
+    expect(navPushes[0]).toContain("fused");
+    expect(navPushes[0]).not.toContain("fused-js");
+    await flush(() =>
+      box.input().props.onKeyDown({ key: "ArrowDown", preventDefault: () => {} }),
+    );
+    await pressEnter(box);
+    expect(navPushes).toHaveLength(2);
+    expect(navPushes[1]).toContain("fused-js");
+    box.unmount();
+  });
+
+  test("flag off: the same text is an ordinary local query and the bucket is never asked", async () => {
+    const box = mount();
+    await type(box, "s3://fused");
+    await settle();
+    expect(remoteRankCalls).toHaveLength(0);
+    expect(rankCalls.map((c) => c.q)).toEqual(["s3://fused"]);
     box.unmount();
   });
 });

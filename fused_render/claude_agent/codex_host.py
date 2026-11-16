@@ -1726,7 +1726,10 @@ class _Host:
         try:
             return str(self.agent._appended_prompt(
                 str(self.req.get("file") or self.cwd), bool(self.req.get("pane")),
-                BACKEND) or "")
+                BACKEND,
+                # What the spawn stamped into this run's mcp.json, so the S3
+                # note matches the server's roster (agent._s3_stamped).
+                s3=self.agent._s3_stamped(self.run_dir)) or "")
         except Exception as exc:  # noqa: BLE001
             sys.stderr.write("codex_host: no developer instructions: %r\n" % (exc,))
             return ""
