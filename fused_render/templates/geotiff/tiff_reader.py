@@ -219,7 +219,8 @@ with rasterio.open(p["file"]) as ds:
             "win_bounds": {"left": wb[0], "right": wb[2], "top": wb[3], "bottom": wb[1]},
             "window_px": [x0, y0, x1, y1],
             "descriptions": [ds.descriptions[i] or f"band {i+1}" for i in range(ds.count)],
-            "file_size": os.path.getsize(p["file"]),
+            "file_size": (p["file_size"] if p.get("file_size") is not None
+                          else os.path.getsize(p["file"])),
             "tiff": {"compression": (str(ds.compression.value) if ds.compression else "none"),
                      "layout": "tiled" if ds.profile.get("tiled") else "stripped",
                      "photometric": ds.profile.get("photometric"), "predictor": None,
@@ -240,8 +241,17 @@ def _decode_system(file, frac, max_cells):
     if not py:
         raise T.Unsupported("no system Python with rasterio (set GEO_PYTHON)")
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    size = None
+    if T.is_remote(file):
+        # GDAL reads a streamed file itself, from a URL signed for this call.
+        # It picks overviews for a decimated read like the pure engine does,
+        # and has the same budget: nothing it would read past STREAM_BUDGET.
+        _check_stream_budget(file, frac, max_cells)
+        file, size = T.gdal_source(file)
+        env = T.gdal_env(env)
     r = subprocess.run([py, "-c", _SYS_WORKER],
-                       input=json.dumps({"file": file, "frac": frac, "max_cells": max_cells}),
+                       input=json.dumps({"file": file, "frac": frac, "max_cells": max_cells,
+                                         "file_size": size}),
                        capture_output=True, text=True, timeout=120, env=env,
                        encoding="utf-8", errors="replace")
     if r.returncode != 0:
@@ -253,6 +263,35 @@ def _decode_system(file, frac, max_cells):
     except OSError:
         pass
     return arr, d["meta"]
+
+
+def _check_stream_budget(file, frac, max_cells):
+    """Raise TooLargeToStream when the read the rasterio worker below would
+    make is over budget: the same window it reads (its pixel rounding and its
+    fallback from a window under 2 px to the whole image), on the level a
+    decimated read picks (`_pick_ifd`, as GDAL's overview choice does),
+    counted block by block — GDAL fetches every block a window touches, so a
+    quarter of one huge strip costs the whole strip. A header the pure parser
+    cannot read passes: GDAL decides."""
+    try:
+        buf, en, t0, next_off = T.parse_header(file)
+    except (T.Unsupported, OSError):
+        return
+    W, H = T._v1(t0, 256), T._v1(t0, 257)
+    fx0, fy0, fx1, fy1 = frac
+    x0, y0 = int(fx0 * W), int(fy0 * H)
+    x1, y1 = min(W, int(round(fx1 * W))), min(H, int(round(fy1 * H)))
+    if x1 - x0 < 2 or y1 - y0 < 2:  # the worker's own fallback
+        x0, y0, x1, y1 = 0, 0, W, H
+    win = ("" if (x0, y0, x1, y1) == (0, 0, W, H)
+           else f"{x0 / W},{y0 / H},{x1 / W},{y1 / H}")
+    t, lw, lh = T._pick_ifd(buf, en, t0, next_off, W, H, win, max_cells)
+    sx, sy = lw / float(W), lh / float(H)
+    need, _offs, counts = T.window_chunks(
+        t, int(x0 * sx), int(y0 * sy), int(-(-x1 * sx // 1)), int(-(-y1 * sy // 1)))
+    refusal = T.stream_refusal(sum(counts[i] for i in need))
+    if refusal:
+        raise T.TooLargeToStream(refusal)
 
 
 # ---------------------------------------------------------------- decode dispatch
@@ -297,6 +336,8 @@ def _decode(file, win, max_cells, engine):
         s = meta["width"] / float(dW)
         meta["window_px"] = [int(round(v * s)) for v in (x0, y0, x1, y1)]
         return sub, meta
+    except T.TooLargeToStream:
+        raise  # rasterio would read the same bytes: download instead
     except T.Unsupported:
         if engine == "auto":
             return _decode_system(file, frac, max_cells)
@@ -322,9 +363,11 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
 
     if not file:
         return {"error": "no file selected"}
-    file = os.path.abspath(os.path.expanduser(file))
-    if not os.path.isfile(file):
-        return {"error": f"not a file: {file}"}
+    remote = T.is_remote(file)
+    if not remote:
+        file = os.path.abspath(os.path.expanduser(file))
+        if not os.path.isfile(file):
+            return {"error": f"not a file: {file}"}
 
     # header-only metadata (fast path for populating the info panel)
     try:
@@ -332,6 +375,10 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
         hmeta = T.header_meta(file, buf, en, t, next_off)
     except T.Unsupported:
         hmeta = None
+    except OSError as e:  # a streamed file the network could not read
+        if not remote:
+            raise
+        return {"error": f"could not read {file}: {e}"}
     if str(meta_only) == "1" and hmeta:
         hmeta["crs_name"] = T._crs_name(hmeta.get("crs"))
         hmeta["lonlat_bounds"] = C.lonlat_bounds(
@@ -341,6 +388,8 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
 
     try:
         bands, meta = _decode(file, win, max_cells, engine)
+    except T.TooLargeToStream as e:
+        return {"error": str(e), "too_large_to_stream": True}
     except T.Unsupported as e:
         return {"error": str(e), "hint": "try the system engine (rasterio)"}
     except Exception as e:

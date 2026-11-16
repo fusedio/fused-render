@@ -1,0 +1,7 @@
+.tif .tiff
+
+This template reads an s3:// address in `_file` itself (D1484, D1485): the
+tile daemon and tiff_reader.py open it with HTTP range requests on a URL the
+server signs (fused_s3, shared/remote_range.py), so the explorer opens bucket
+TIFFs here without downloading them first. Lines starting with "." list the
+extensions it streams (none listed = every file it is bound to).

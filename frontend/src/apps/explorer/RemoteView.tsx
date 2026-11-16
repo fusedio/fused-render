@@ -582,7 +582,7 @@ function RemoteCachedFile({
  *  `s3://` address as `_file` and reads only the byte ranges it shows, through
  *  a URL the server signs (`fused.s3.sign` / `fused_s3`). No download, no
  *  size notice. Download stays one click away for a file the viewer will not
- *  stream (the duckdb grid says so for a sort that would scan most of the file). */
+ *  stream (the geotiff viewer says so for a TIFF with no usable overview). */
 function RemoteStreamFile({ stat, onDownload }: { stat: RemoteStat; onDownload: () => void }) {
   const entry = (stat.stream_templates ?? [])[0];
   if (!entry || !entry.path) return null;

@@ -1,12 +1,40 @@
 """A local stand-in for an S3 bucket that speaks Range, ETag and If-Match,
-plus the `bucket` fixture that serves it on loopback over plain http (which
-DuckDB's httpfs reads like any URL). Used by tests/test_duckdb_stream.py.
+plus the `bucket` fixture that points `shared/remote_range.py` at it.
+Shared by tests/test_geotiff_stream.py and tests/test_duckdb_stream.py.
+
+The range reader speaks https to the real bucket; this bucket is plain http
+on loopback, so the fixture swaps `remote_range._connect` (the one function
+that opens a socket) and `fused_s3.sign` (the server round trip). Everything
+above the socket is the real code.
 """
 import hashlib
+import http.client
+import importlib.util
+import os
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+
+import fused_render
+
+_SHARED = os.path.join(os.path.dirname(fused_render.__file__), "templates", "shared")
+
+
+def remote_range():
+    """The shared range reader, loaded exactly as the templates load it (by
+    path, under `_fused_remote_range`), so a monkeypatch here is the one the
+    template code sees."""
+    name = "_fused_remote_range"
+    mod = sys.modules.get(name)
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(_SHARED, "remote_range.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
 
 
 class _Bucket:
@@ -62,11 +90,29 @@ class _Bucket:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def url(self, key):
+        # A real loopback URL, so DuckDB's httpfs can read it too (the range
+        # reader's socket is swapped below and ignores the host).
         return f"http://127.0.0.1:{self.port}/{key}"
 
 
 @pytest.fixture
-def bucket():
+def bucket(monkeypatch):
     b = _Bucket()
+
+    # The buffer speaks https to the bucket; the test bucket is plain http on
+    # loopback. Everything above the socket is the real code.
+    RF = remote_range()
+    monkeypatch.setattr(RF, "_connect", lambda url: http.client.HTTPConnection(
+        "127.0.0.1", b.port, timeout=10))
+    signs = []
+
+    def sign(address):
+        signs.append(address)
+        return {"url": b.url(address.split("/", 3)[3]), "expires_at": None}
+
+    monkeypatch.setattr(RF.fused_s3, "sign", sign)
+    b.signs = signs
     yield b
     b.server.shutdown()
+
+
