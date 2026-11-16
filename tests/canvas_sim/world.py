@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import zlib
 import random
 import re
 import time
@@ -677,7 +678,10 @@ class Session:
         self._write_doc(doc)
         self.w.names.add(name)
 
-    def delete(self, name: str, tok: str) -> None:
+    def delete(self, name: str, tok: str, *, keep_row: bool = False) -> None:
+        """`keep_row`: the session only `rm`s the file and leaves canvas.toml
+        alone — the frame must still drop the node (`diff_views`), not keep
+        showing it until a reload."""
         file = self.disk_nodes()[name]
         path = os.path.join(self.w.dir, file)
         with open(path, encoding="utf-8") as fh:
@@ -687,10 +691,11 @@ class Session:
         self.w.ledger.write("session", f"body:{name}", tok, token_of(old),
                             seen={f"body:{name}": token_of(old), f"x:{name}": row.get("x"),
                                   f"title:{name}": row.get("title")})
-        doc["canvas"]["nodes"] = [r for r in doc["canvas"]["nodes"]
-                                  if canvas_snapshot.row_name(r) != name]
-        doc["canvas"]["edges"] = [e for e in doc["canvas"].get("edges") or [] if name not in e]
-        self._write_doc(doc)
+        if not keep_row:
+            doc["canvas"]["nodes"] = [r for r in doc["canvas"]["nodes"]
+                                      if canvas_snapshot.row_name(r) != name]
+            doc["canvas"]["edges"] = [e for e in doc["canvas"].get("edges") or [] if name not in e]
+            self._write_doc(doc)
         os.remove(path)
 
 
@@ -1106,8 +1111,11 @@ class World:
     def _do_s_delete(self):
         n = self._session_target()
         if n and len(self.session.disk_nodes()) > 1:
-            self.note(f"session delete {n}")
-            self.session.delete(n, f"del_{self.tok('session')}")
+            # File only, or file and row: picked from the name, not the rng,
+            # so every seed keeps the action stream it had before.
+            keep_row = zlib.crc32(n.encode()) % 2 == 1
+            self.note(f"session delete {n}" + (" (file only)" if keep_row else ""))
+            self.session.delete(n, f"del_{self.tok('session')}", keep_row=keep_row)
 
     def _human_reload_maybe(self):
         if self.rng.random() < 0.5:

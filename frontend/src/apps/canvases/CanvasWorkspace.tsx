@@ -215,7 +215,7 @@ import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   CanvasOwnedError,
@@ -252,6 +252,8 @@ import {
 } from "./api";
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
+import { notify } from "@platform/lib/notifications";
+import { fileDeletedRemovals, keptEditNotice, removalNotice, type Removal } from "./sync-notices";
 import { RenameCanvasDialog } from "./RenameCanvasDialog";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
@@ -1967,6 +1969,10 @@ export default function CanvasWorkspace({
               disk_hash: ack.disk_hash,
             });
           } else {
+            if (ack.code === "gone" && ack.kept) {
+              const kept = ack.kept;
+              notify(keptEditNotice(body.file, () => void navigateUrl(viewUrlForFsPath(kept))));
+            }
             post({
               type: "fused-embed-body-rejected",
               seq,
@@ -2139,6 +2145,10 @@ export default function CanvasWorkspace({
   // A full state was sent to heal a refused delta and no delta has been
   // applied since: a second refusal does not heal again (no loop).
   const deltaHealRef = useRef(false);
+  // Nodes a posted delta removes because their file was deleted on disk
+  // (sync-notices), by rev: announced on the frame's applied ack, minus the
+  // ones it skipped. A few revs at most are ever in flight.
+  const removalsByRevRef = useRef(new Map<number, Removal[]>());
   const relayDelta = useCallback(
     (full: boolean) => {
       deltaChainRef.current = deltaChainRef.current.then(async () => {
@@ -2181,6 +2191,12 @@ export default function CanvasWorkspace({
               },
               origin,
             );
+            const removed = fileDeletedRemovals(ops);
+            if (removed.length) {
+              const byRev = removalsByRevRef.current;
+              byRev.set(delta.rev, removed);
+              for (const old of [...byRev.keys()].sort((a, b) => a - b).slice(0, -16)) byRev.delete(old);
+            }
             return;
           } catch (e) {
             const status = (e as { status?: number }).status;
@@ -2597,6 +2613,12 @@ export default function CanvasWorkspace({
         const skipped = Array.isArray(skippedRaw)
           ? skippedRaw.filter((n: unknown): n is string => typeof n === "string")
           : undefined;
+        const removed = removalsByRevRef.current.get(rev);
+        removalsByRevRef.current.delete(rev);
+        if (ok && removed) {
+          const notice = removalNotice(removed.filter((r) => !skipped?.includes(r.name)));
+          if (notice) notify(notice);
+        }
         relayChainRef.current = relayChainRef.current.then(() =>
           ackDelta(env, name, rev, ok, reason, skipped).then(() => undefined, () => undefined),
         );

@@ -719,6 +719,25 @@ def node_files(clone_dir: str) -> dict[str, str]:
     return out
 
 
+def source_stems(clone_dir: str) -> set[str]:
+    """Every stem with a source-suffixed file at the clone's root — WIDER
+    than `node_files`: ignored, `_`-prefixed and fusedignored files count.
+    The deletion rules (`keeps_bare_row`, the push's row drop) treat a row
+    as deleted only when NO file of its name is there at all, so a node
+    whose file exists but is not a node source is never dropped by them."""
+    return {f[:-len(sfx)] for f in os.listdir(clone_dir)
+            for sfx in _SOURCE_SUFFIXES if f.endswith(sfx) and len(f) > len(sfx)}
+
+
+def keeps_bare_row(disk: dict, name: str, pending: Iterable[str] = ()) -> bool:
+    """A node with a row on disk and no node source file that the frame
+    still keeps: one owed its first body (`pending`, the host's
+    `_fileless`), or one whose file IS there under rules that do not make
+    it a node source (`stems`: `_x.py`, a fusedignored file). Anything else
+    was deleted on disk (`diff_views`)."""
+    return name in disk["rowed"] and (name in pending or name in disk.get("stems", ()))
+
+
 def rows_by_name(rows: list) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for row in rows:
@@ -1023,6 +1042,16 @@ def apply_snapshot(
             upserted.append(name)
             added.append(name)
             continue
+        if name not in known_before and not is_folder(row):
+            # A node new to the embed landing on a row disk already holds
+            # with no source file (one whose file a session deleted, row left
+            # behind, and the user re-used the name): owed its first body like
+            # any new node, so pending — or the next delta reads the bare row
+            # as a deleted file and drops the user's new node (`diff_views`).
+            sfile = new["files"].get(name)
+            if name not in on_disk and not (
+                    sfile and os.path.isfile(os.path.join(clone_dir, sfile))):
+                fileless.append(name)
         diff = False
         vrow = view_nodes.get(name)
         for key in EMBED_ROW_KEYS:
@@ -1276,7 +1305,8 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
          canvas: {viewport, viewportBounds, comments}, files: {name: basename},
          ids: {name: server id} (from the remote manifest, when known),
          bodies: {name: text},   (every node's source file, all four kinds)
-         rowed: {name: row}}
+         rowed: {name: row},
+         stems: {stem}}          (`source_stems`: any source-named file)
 
     Same shape as `compact_state` where the keys overlap, so it serves as
     `prev` for `apply_snapshot` too. Raises FileNotFoundError when there is
@@ -1300,7 +1330,8 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
     scalars = {k: canvas[k] for k in CANVAS_KEYS if k in canvas}
     ids = {n: remote_ids[n] for n in nodes if remote_ids and isinstance(remote_ids.get(n), str)}
     return {"nodes": nodes, "order": order, "edges": edges, "canvas": scalars,
-            "files": files, "ids": ids, "bodies": bodies, "rowed": rowed}
+            "files": files, "ids": ids, "bodies": bodies, "rowed": rowed,
+            "stems": source_stems(clone_dir)}
 
 
 _NODE_GAP_PX = 75
@@ -1465,12 +1496,18 @@ def _upsert_op(disk: dict, name: str, *, row: bool, body: bool, sid: bool,
     return op
 
 
-def held_edges(disk: dict, vnodes: Iterable[str]) -> list[list[str]]:
-    held = disk["nodes"].keys() | ((disk["rowed"].keys() | disk["files"].keys()) & set(vnodes))
+def held_edges(disk: dict, vnodes: Iterable[str], pending: Iterable[str] = ()) -> list[list[str]]:
+    """Disk's edges between nodes the frame holds after the delta: disk's
+    nodes, plus the half-landed nodes it keeps — a file with no row yet, a
+    row `keeps_bare_row` keeps. A row whose file is gone is deleted
+    (`diff_views`), and its edges go with it."""
+    pending = set(pending)
+    bare = {n for n in disk["rowed"] if keeps_bare_row(disk, n, pending)}
+    held = disk["nodes"].keys() | ((disk["files"].keys() | bare) & set(vnodes))
     return [list(e) for e in disk["edges"] if e[0] in held and e[1] in held]
 
 
-def diff_views(disk: dict, view: dict | None) -> list[dict]:
+def diff_views(disk: dict, view: dict | None, *, pending: Iterable[str] = ()) -> list[dict]:
     """The ops that take `view` (what the embed holds; None = nothing known,
     a full state) to `disk`. Node-level, by UDF name:
 
@@ -1481,7 +1518,9 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
         rename {from, to, file}           — a name vanished whose server id
                                            reappears under a name the view
                                            lacks (then diffed as `to`)
-        delete {name}
+        delete {name, reason?, file?}     — `reason: "file_deleted"`: the
+                                           row is still on disk, the file
+                                           is not (see below)
         delete {name} + upsert {name, …}  — the node's source file changed
                                            KIND (`w.json` → `w.html`): the
                                            frame rebuilds the Udf from the
@@ -1491,6 +1530,18 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
                                            frame never moves its own camera
     A full state carries every node as an upsert plus `edges` and `canvas`;
     the frame drops what is not listed.
+
+    A node the view holds whose ROW is still on disk but whose source FILE
+    is gone (a session `rm`'d `x.py` and left canvas.toml alone) is a
+    delete too: disk's nodes are its files, the body channel answers a post
+    for it `gone` and leaves it to "the delta that drops the node", and the
+    push publishes the canvas without it. Kept out of the delta, the frame
+    showed it until a reload, its pane stuck on "Saving x.py…". Such a
+    delete says `reason: "file_deleted"` (and `file`, when the view knew
+    it) for the page's notice. `keeps_bare_row` names the exceptions: nodes
+    the frame itself just added whose row landed before their first body
+    post created the file (`pending`, the host's `_fileless`), and nodes
+    whose file is there under a name that is not a node source.
     """
     ops: list[dict] = []
     if view is None:
@@ -1524,8 +1575,11 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
             return False
         return os.path.splitext(view_file)[1] != os.path.splitext(disk_file)[1]
 
+    pending = set(pending)
     for name in vnodes:
-        if name in disk["rowed"] or name in disk["files"]:
+        if name in dnodes or name in disk["files"]:
+            continue
+        if keeps_bare_row(disk, name, pending):
             continue
         sid = vids.get(name)
         to = id_to_disk.get(sid) if sid else None
@@ -1535,7 +1589,14 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
                         "file": disk["files"].get(to)})
         else:
             # A rename that also changed kind is a delete plus a new node.
-            ops.append({"op": "delete", "name": name})
+            op: dict[str, Any] = {"op": "delete", "name": name}
+            if name in disk["rowed"] and not to:
+                # Its row is still there: the FILE went (a session's `rm`).
+                # Said so, for the page's notice; the frame reads only `name`.
+                op["reason"] = "file_deleted"
+                if vfiles.get(name):
+                    op["file"] = vfiles[name]
+            ops.append(op)
             retyped = retyped or bool(to)
     for name in disk["order"]:
         was = renamed_to.get(name, name)
@@ -1553,7 +1614,7 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
         if row or body or sid:
             ops.append(_upsert_op(disk, name, row=row, body=body, sid=sid,
                                   view_row=vnodes[was]))
-    edges = held_edges(disk, vnodes)
+    edges = held_edges(disk, vnodes, pending)
     if retyped or sorted(map(tuple, edges)) != sorted(map(tuple, view.get("edges", []))):
         ops.append({"op": "edges", "set": edges})
     vcanvas = view.get("canvas", {})
