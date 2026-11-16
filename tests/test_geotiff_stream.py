@@ -1,10 +1,8 @@
 """GeoTIFF streaming and the tile daemon's GDAL engine (D1488).
 
 The geotiff page signs an `s3://` file with `fused.s3.sign` and gives the tile
-daemon the HTTPS URL; the daemon reads it with GDAL (/vsicurl/) behind the
-same `open_file`/`read_window` interface as its pure-python engine, so
-/meta, /tile, /hist and /value work alike. Local files the pure engine can't
-read (BigTIFF) take the GDAL engine too.
+daemon the HTTPS URL; the daemon reads every file with GDAL, a URL through
+/vsicurl/, so a streamed file and a local one draw the same tiles.
 
 These run the real daemon in its own venv (rasterio + GDAL), against files
 written by that venv and served by the loopback bucket (tests/_range_bucket.py).
@@ -134,8 +132,7 @@ def test_a_streamed_tiff_draws_the_same_tiles_as_the_local_file(daemon, tiffs, b
     assert m["file_size"] == len(bucket.objects["/t/classic.tif"])
     assert m["files"] == []                          # the URL never goes back to the page
     assert url not in json.dumps(m)
-    local = _meta(daemon, tiffs["classic"])
-    assert local["engine"] == "pure python"
+    assert _meta(daemon, tiffs["classic"])["engine"] == "GDAL"
     assert daemon(TILE, file=url) == daemon(TILE, file=tiffs["classic"])
     assert json.loads(daemon("/value", file=url, lon=10.3, lat=49.7)[1]) == \
         json.loads(daemon("/value", file=tiffs["classic"], lon=10.3, lat=49.7)[1])
@@ -145,9 +142,8 @@ def test_a_streamed_tiff_draws_the_same_tiles_as_the_local_file(daemon, tiffs, b
     assert ranged, "GDAL read the object without Range requests"
 
 
-def test_a_local_bigtiff_takes_the_gdal_engine(daemon, tiffs):
-    m = _meta(daemon, tiffs["big"])
-    assert m["supported"] and m["engine"] == "GDAL"
+def test_a_bigtiff_draws_like_a_classic_tiff(daemon, tiffs):
+    assert _meta(daemon, tiffs["big"])["supported"]
     assert daemon(TILE, file=tiffs["big"]) == daemon(TILE, file=tiffs["classic"])
 
 

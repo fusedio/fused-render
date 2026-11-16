@@ -6,8 +6,8 @@ both:
 
   1. a runPython entrypoint `main(action="ensure")` — starts (or reuses) a
      long-lived localhost HTTP daemon and returns its port; and
-  2. the daemon itself (run as `python tile_server.py --serve`) — holds the
-     mmap'd file + parsed IFD index + a decoded-tile LRU warm, and serves
+  2. the daemon itself (run as `python tile_server.py --serve`) — keeps
+     GDAL datasets open (and GDAL's block and HTTP caches warm) and serves
      256px Web-Mercator XYZ tiles straight to MapLibre.
 
 Endpoints (all GET, CORS *):
@@ -20,14 +20,10 @@ Endpoints (all GET, CORS *):
   /ltile/{z}/{x}/{y}.png?file=&level=N -> PNG tile rendered ONLY from pyramid
         level N (0 = full res) via rasterio — used by the pyramid template
 
-Two engines sit behind one file interface (`open_file` + `read_window`), so
-/meta, /tile, /hist and /value work the same on either:
-  * native — the pure-python decoder over an mmap (uncompressed/deflate, and
-    more with imagecodecs); the fast path for local files;
-  * GDAL (rasterio) — everything else: an `https://` URL (a streamed bucket
-    object, D1488; GDAL reads it with HTTP range requests through /vsicurl/,
-    caching and merging them itself), and local files the native engine
-    can't read (BigTIFF, LZW without imagecodecs, …).
+Every file is read through GDAL (rasterio), behind `open_file` +
+`read_window`: a local path directly, an `https://` URL (a streamed bucket
+object, D1488) through /vsicurl/, where GDAL does the range requests, caching
+and merging itself. One reader for every compression, BigTIFF and COG.
 Idle shutdown after 30 min. The state file embeds this file's mtime, so
 editing the module auto-respawns a fresh daemon on the next ensure().
 """
@@ -216,15 +212,6 @@ def _serve():
     import _tiff_core as T
     import tiff_reader as R          # reuse encode_png / _lut / stretch utils
 
-    try:
-        import imagecodecs as IC
-    except ImportError:
-        IC = None
-    # compression codes the daemon can decode (1/8/32946 via stdlib zlib;
-    # the rest via imagecodecs when present)
-    SUPPORTED_COMPS = {1, 8, 32946} | (
-        {5, 7, 32773, 50000, 50001, 34887} if IC else set())
-
     VERSION = _version()
     last_hit = [time.time()]
 
@@ -259,98 +246,20 @@ def _serve():
     files = {}          # path -> dict(levels, meta, lock, stretch cache)
     files_lock = threading.Lock()
 
-    def _parse_level(buf, en, t):
-        jt = T._v(t, 347)      # JPEGTables (shared quant/huffman tables)
-        lv = {"tags": t,
-              "W": T._v1(t, 256), "H": T._v1(t, 257),
-              "spp": T._v1(t, 277, 1),
-              "comp": T._v1(t, 259, 1),
-              "predictor": T._v1(t, 317, 1),
-              "planar": T._v1(t, 284, 1),
-              "photometric": T._v1(t, 262, 1),
-              "jpegtables": bytes(jt) if isinstance(jt, list) else None}
-        bits = T._v(t, 258, [8]); bits = bits[0] if isinstance(bits, list) else bits
-        sf = T._v(t, 339, [1]); sf = sf[0] if isinstance(sf, list) else sf
-        lv["dtype"] = T._numpy_dtype(sf, bits, en)
-        if 322 in t:
-            lv["tiled"] = True
-            lv["tw"], lv["th"] = T._v1(t, 322), T._v1(t, 323)
-            lv["offs"], lv["counts"] = T._v(t, 324), T._v(t, 325)
-        else:
-            lv["tiled"] = False
-            lv["rps"] = T._v1(t, 278, lv["H"])
-            lv["offs"], lv["counts"] = T._v(t, 273), T._v(t, 279)
-        # decode 1 chunk up-front to verify decodability
-        return lv
-
     def open_file(path):
-        """The file's engine-neutral handle, cached: native for a local file
-        it can draw, else GDAL (always GDAL for a URL)."""
-        url = is_url(path)
-        key = path if url else os.path.abspath(os.path.expanduser(path))
+        """The file's handle, cached: GDAL opens a local path directly and a
+        URL through /vsicurl/."""
+        key = path if is_url(path) else os.path.abspath(os.path.expanduser(path))
         with files_lock:
             f = files.get(key)
         if f is not None:
             return f
-        f = native_err = None
-        if not url:
-            try:
-                f = _open_native(key)
-            except Exception as e:  # noqa: BLE001 - GDAL may still read it
-                native_err = e
-        if f is None or not f["supported"]:
-            try:
-                g = _open_gdal(key)
-            except Exception:
-                if f is None and native_err is not None:
-                    raise native_err
-                if f is None:
-                    raise
-                g = None
-            if g is not None and (g["supported"] or f is None):
-                f = g
+        f = _open_gdal(key)
         with files_lock:
             files[key] = f
         return f
 
-    def _open_native(path):
-        buf, en, t0, next_off = T.parse_header(path)
-        meta = T.header_meta(path, buf, en, t0, next_off)
-        levels = [_parse_level(buf, en, t0)]
-        off, hops = next_off, 0
-        while off and hops < 32:
-            try:
-                t, off = T._read_ifd(buf, en, off)
-            except Exception:
-                break
-            w = T._v1(t, 256)
-            subtype = T._v1(t, 254, 0) or 0
-            # keep reduced-resolution images (bit 0), skip masks (bit 2)
-            if w and T._v1(t, 277, 1) == levels[0]["spp"] and not (subtype & 4):
-                levels.append(_parse_level(buf, en, t))
-            hops += 1
-        levels.sort(key=lambda l: -l["W"])
-        supported = all(l["comp"] in SUPPORTED_COMPS for l in levels)
-        epsg = (meta.get("crs") or {}).get("epsg")
-        palette = None
-        # ColorMap: all reds, then greens, then blues. GDAL honours it on a
-        # single-band file whatever the photometric tag says, and so do we.
-        cm = T._v(t0, 320)
-        if levels[0]["spp"] == 1 and isinstance(cm, list) and cm \
-                and len(cm) % 3 == 0:
-            n = len(cm) // 3
-            rgb = (np.asarray(cm, dtype="uint32").reshape(3, n).T >> 8)
-            palette = np.concatenate(
-                [rgb, np.full((n, 1), 255)], axis=1).astype("uint8")
-        return {"engine": "native", "path": path, "buf": buf, "en": en,
-                "levels": levels, "meta": meta, "epsg": epsg,
-                "palette": palette,
-                "transform": meta.get("transform"), "bounds": meta.get("bounds"),
-                "supported": bool(supported and epsg and meta.get("transform")),
-                "lock": threading.Lock(),
-                "chunks": {}, "chunk_order": [], "stretch": {}}
-
-    # ---------------- GDAL engine ----------------
+    # ---------------- GDAL file handle ----------------
     def _gdal_level(ds):
         from rasterio.enums import ColorInterp as CI
         th, tw = ds.block_shapes[0]
@@ -456,7 +365,7 @@ def _serve():
             sizer.join(15)
             meta["file_size"] = size.get("n")
         epsg = (meta.get("crs") or {}).get("epsg")
-        f = {"engine": "gdal", "path": path, "gdal_name": name,
+        f = {"path": path, "gdal_name": name,
              "levels": levels, "meta": meta, "epsg": epsg, "palette": palette,
              "transform": meta["transform"], "bounds": meta["bounds"],
              "supported": bool(epsg and meta["transform"]),
@@ -516,121 +425,18 @@ def _serve():
         with _ds_pool_lock:
             _ds_pool[key].append(ds)
 
-    # ---------------- chunk-granular decode with LRU ----------------
-    MAX_CACHE_CHUNKS = 4096
-
-    def _decode_chunk(f, li, ci, raw):
-        """Decode already-fetched raw bytes of chunk ci -> (h, w, spp) ndarray,
-        cache under the file lock, return it. Split out from get_chunk so a
-        coalesced multi-chunk range read can decode each member from one buffer."""
-        lv = f["levels"][li]
-        spp = lv["spp"] if lv["planar"] == 1 else 1
-        if lv["tiled"]:
-            h, w = lv["th"], lv["tw"]
-        else:
-            h = min(lv["rps"], lv["H"] - (ci % _nchunks_y(lv)) * lv["rps"])
-            w = lv["W"]
-        comp = lv["comp"]
-        if comp == 7 and IC:
-            # JPEG-in-TIFF: merge the shared JPEGTables; imagecodecs converts
-            # YCbCr -> RGB itself, returning (h, w, spp) uint8
-            a = IC.jpeg_decode(bytes(raw), tables=lv["jpegtables"])
-            if a.ndim == 2:
-                a = a[:, :, None]
-            a = a[:h, :w, :spp]
-        else:
-            if comp in (1, 8, 32946):
-                data = T._decompress(raw, comp)
-            elif comp == 5 and IC:
-                data = IC.lzw_decode(bytes(raw))
-            elif comp == 32773 and IC:
-                data = IC.packbits_decode(bytes(raw))
-            elif comp == 50000 and IC:
-                data = IC.zstd_decode(bytes(raw))
-            elif comp == 50001 and IC:
-                a0 = IC.webp_decode(bytes(raw))
-                data = np.ascontiguousarray(a0[:h, :w, :spp]).tobytes()
-            elif comp == 34887 and IC:
-                data = IC.lerc_decode(bytes(raw)).tobytes()
-            else:
-                raise T.Unsupported(f"TIFF compression {comp}")
-            a = np.frombuffer(data, dtype=lv["dtype"])[: h * w * spp].reshape(h, w, spp)
-            a = T._unpredict(a, lv["predictor"])
-        with f["lock"]:
-            # A prefetch and an on-demand read can race to decode the same
-            # chunk; keep the first, or duplicate chunk_order keys would make
-            # LRU eviction drop live entries early.
-            if (li, ci) in f["chunks"]:
-                return f["chunks"][(li, ci)]
-            f["chunks"][(li, ci)] = a
-            f["chunk_order"].append((li, ci))
-            while len(f["chunk_order"]) > MAX_CACHE_CHUNKS:
-                old = f["chunk_order"].pop(0)
-                f["chunks"].pop(old, None)
-        return a
-
-    def get_chunk(f, li, ci):
-        """Decode one TIFF tile/strip of level li -> (h, w, spp) ndarray."""
-        lv = f["levels"][li]
-        with f["lock"]:
-            a = f["chunks"].get((li, ci))
-            if a is not None:
-                return a
-        off, cnt = lv["offs"][ci], lv["counts"][ci]
-        raw = f["buf"][off:off + cnt]
-        return _decode_chunk(f, li, ci, raw)
-
-    def _nchunks_y(lv):
-        if lv["tiled"]:
-            return (lv["H"] + lv["th"] - 1) // lv["th"]
-        return (lv["H"] + lv["rps"] - 1) // lv["rps"]
-
     def read_window(f, li, x0, y0, x1, y1, band_idx):
         """(len(band_idx), y1-y0, x1-x0) float32 from level li, NaN nodata."""
         lv = f["levels"][li]
-        W, H, spp = lv["W"], lv["H"], lv["spp"]
         x0, y0 = max(0, x0), max(0, y0)
-        x1, y1 = min(W, x1), min(H, y1)
+        x1, y1 = min(lv["W"], x1), min(lv["H"], y1)
         if f.get("min_zoom") is not None and \
                 max(0, x1 - x0) * max(0, y1 - y0) > ZOOM_WINDOW_MAX:
             raise ZoomIn(f"zoom in to z{f['min_zoom']} to read this TIFF")
         out = np.full((len(band_idx), y1 - y0, x1 - x0), np.nan, dtype="float32")
         if x1 <= x0 or y1 <= y0:
             return out
-        if f["engine"] == "gdal":
-            _gdal_read_window(f, li, x0, y0, x1, y1, band_idx, out)
-            nod = f["meta"].get("nodata")
-            if nod is not None:
-                out[out == nod] = np.nan
-            return out
-        planar = lv["planar"]
-        if lv["tiled"]:
-            tw, th = lv["tw"], lv["th"]
-            across = (W + tw - 1) // tw
-            down = (H + th - 1) // th
-            per_plane = across * down
-            for ty in range(y0 // th, (y1 - 1) // th + 1):
-                for tx in range(x0 // tw, (x1 - 1) // tw + 1):
-                    for oi, bk in enumerate(band_idx):
-                        ci = (bk * per_plane if planar == 2 else 0) + ty * across + tx
-                        a = get_chunk(f, li, ci)
-                        s = 0 if planar == 2 else bk
-                        gy0, gx0 = ty * th, tx * tw
-                        sy0, sx0 = max(y0, gy0), max(x0, gx0)
-                        sy1, sx1 = min(y1, gy0 + th, H), min(x1, gx0 + tw, W)
-                        out[oi, sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = \
-                            a[sy0 - gy0:sy1 - gy0, sx0 - gx0:sx1 - gx0, s]
-        else:
-            rps = lv["rps"]
-            nsy = _nchunks_y(lv)
-            for si in range(y0 // rps, (y1 - 1) // rps + 1):
-                for oi, bk in enumerate(band_idx):
-                    ci = (bk * nsy if planar == 2 else 0) + si
-                    a = get_chunk(f, li, ci)
-                    s = 0 if planar == 2 else bk
-                    gy0 = si * rps
-                    sy0, sy1 = max(y0, gy0), min(y1, gy0 + a.shape[0])
-                    out[oi, sy0 - y0:sy1 - y0, :] = a[sy0 - gy0:sy1 - gy0, x0:x1, s]
+        _gdal_read_window(f, li, x0, y0, x1, y1, band_idx, out)
         nod = f["meta"].get("nodata")
         if nod is not None:
             out[out == nod] = np.nan
@@ -781,26 +587,20 @@ def _serve():
         return 200, _EMPTY_TILE[0], "image/png"
 
     def do_tile(q, z, x, y):
-        # native pure-python engine first; files it can't read (BigTIFF,
-        # user-defined CRS, exotic compression) fall back to rasterio below.
         try:
-            return _tile_native(q, z, x, y)
+            return _tile(q, z, x, y)
         except ZoomIn:
             return empty_tile()
-        except Exception as e:
-            if is_url(q1(q, "file")):
-                # A streamed file has one engine; say why the tile failed
-                # (a network error is worth a retry, the next pan does one).
-                return 502, str(e).encode(), "text/plain"
-            f = os.path.abspath(os.path.expanduser(q1(q, "file") or ""))
-            if not os.path.exists(f):
-                return 404, b"unsupported", "text/plain"
-            return _tile_rio(q, z, x, y)
+        except Exception as e:  # noqa: BLE001 - say why the tile failed
+            # a network error on a streamed file is worth a retry (the next
+            # pan does one); anything else is a file this view can't draw
+            return (502 if is_url(q1(q, "file")) else 404), str(e).encode(), \
+                "text/plain"
 
-    def _tile_native(q, z, x, y):
+    def _tile(q, z, x, y):
         f = open_file(q1(q, "file"))
         if not f["supported"]:
-            raise ValueError("unsupported by native engine")
+            raise ValueError("no georeference to draw on the map")
         want_rgb, idx = render_params(q, f)
         st = parse_stretch(q, f, idx, want_rgb)
         mx0, my0, mx1, my1 = tile_bbox(z, x, y)
@@ -936,8 +736,7 @@ def _serve():
         f = open_file(q1(q, "file"))
         m = dict(f["meta"])
         m["supported"] = f["supported"]
-        m["engine"] = ("GDAL, streamed" if is_url(f["path"]) else
-                       "GDAL" if f["engine"] == "gdal" else "pure python")
+        m["engine"] = "GDAL, streamed" if is_url(f["path"]) else "GDAL"
         m["stream_error"] = f.get("stream_error")
         m["has_palette"] = f.get("palette") is not None
         m["min_zoom"] = f.get("min_zoom")
@@ -1152,21 +951,6 @@ def _serve():
         with _lvl_lock:
             _lvl_cache[key] = st
         return st
-
-    def _tile_rio(q, z, x, y):
-        """Rasterio fallback for local files the native engine can't read:
-        picks the overview level a COG reader would and renders through the
-        WarpedVRT."""
-        file = os.path.abspath(os.path.expanduser(q1(q, "file")))
-        m = _rio_meta(file)
-        mx0, my0, mx1, my1 = tile_bbox(z, x, y)
-        target = (mx1 - mx0) / TILE
-        level = 0
-        for i, fac in enumerate(m["factors"]):
-            if m["res0"] * fac <= target:
-                level = i
-        return _render_level(file, level, z, x, y, stretch=_rio_stretch(file),
-                             cmap=q1(q, "cmap", "viridis"))
 
     # ---------------- HTTP ----------------
     class H(BaseHTTPRequestHandler):
