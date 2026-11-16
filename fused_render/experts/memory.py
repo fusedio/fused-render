@@ -133,10 +133,28 @@ def mark(bot, item_id, **flags) -> dict | None:
     return None
 
 
+#: A lesson read from a task session (trust `outcome`) is loaded into every answer only once it was seen in this
+#: many sessions; one the user stated (trust `user`) is loaded at once. `gap` items never are.
+OUTCOME_MIN_COUNT = 2
+
+
+def indexed(item) -> bool:
+    """Whether `item` is part of the always-loaded index (before the `index_lines` cap)."""
+    if not isinstance(item, dict):
+        return False
+    trust = item.get("trust")
+    if trust == "user":
+        return True
+    if trust == "outcome":
+        return int(item.get("count") or 0) >= OUTCOME_MIN_COUNT
+    return False
+
+
 def index_text(bot) -> str:
-    """`- [<id>] <claim> (seen N×)`, most seen first, capped at the manifest's index_lines."""
+    """`- [<id>] <claim> (seen N×)`, most seen first, capped at the manifest's index_lines. Only `indexed`
+    items: user lessons, and outcome lessons seen in two sessions."""
     cap = store.manifest(bot)["memory"]["index_lines"]
-    rows = [i for i in items(bot) if i.get("trust") != "gap"]
+    rows = [i for i in items(bot) if indexed(i)]
     rows.sort(key=lambda i: (-int(i.get("count") or 0), -float(i.get("updated") or 0)))
     return "\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {int(i.get('count') or 0)}×)"
                      for i in rows[:cap])

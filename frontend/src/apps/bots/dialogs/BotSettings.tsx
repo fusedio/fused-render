@@ -27,7 +27,7 @@ import { Face } from "../components/Face";
 import { FolderPlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { ApiError, api, expertApi, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type ExpertEngineRow, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
-import { engineOptions, modelOptions } from "../lib/expert";
+import { engineNote, engineOptions, modelOptions } from "../lib/expert";
 import { faceOf } from "../lib/face";
 import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
 import { exportBotFile, type BotDialogValue } from "./actions";
@@ -503,6 +503,7 @@ function ExpertSection({ bot, confirm }: { bot: Bot; confirm: (title: string, te
           onChange={(e) => { void save({ engine: e.target.value, model: "" }); }}>
           {engineOptions(rows, engine).map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
         </NativeSelect>
+        {engineNote(rows, engine) ? <p className="mt-1.5 text-xs text-muted-foreground" role="note">⚠ {engineNote(rows, engine)}</p> : null}
       </Row>
       <Row title="Model" text="The engine's model for this expert's answers. Saved at once." htmlFor="bmxmodel">
         <NativeSelect className="w-full" id="bmxmodel" value={model} disabled={locked || engine === "auto"}

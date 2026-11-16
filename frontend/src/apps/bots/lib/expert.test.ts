@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { ExpertEngineRow, ExpertItem } from "./api";
-import { basename, checkProgress, consultMeta, engineOptions, lessonTags, modelOptions, pendingLine, scoreText, scoresLine, seenLabel, sortConsults, sortLessons } from "./expert";
+import type { ExpertEngineRow, ExpertItem, ExpertProposal } from "./api";
+import { anyPreparing, basename, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, pendingLine, proposalLine, scoreText,
+  scoresLine, seenLabel, sortConsults, sortLessons, splitLessons } from "./expert";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
   created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...p });
@@ -68,7 +69,7 @@ describe("checks", () => {
 describe("engine and model menus", () => {
   const rows: ExpertEngineRow[] = [
     { id: "claude", label: "Claude", enabled: true, models: [{ id: "sonnet", label: "Sonnet" }, { id: "opus", label: "Opus" }], default_model: "sonnet" },
-    { id: "codex", label: "Codex", enabled: false, models: [{ id: "gpt", label: "GPT" }], default_model: "gpt" },
+    { id: "codex", label: "Codex", enabled: false, models: [{ id: "gpt", label: "GPT" }], default_model: "gpt", note: "Codex keeps its own shell." },
     { id: "copilot", label: "Copilot", enabled: true, models: [], default_model: "" },
   ];
   test("Auto plus the enabled engines; the current one stays even when off", () => {
@@ -79,5 +80,37 @@ describe("engine and model menus", () => {
     expect(modelOptions(rows, "claude", "")).toEqual([["", "Default (Sonnet)"], ["sonnet", "Sonnet"], ["opus", "Opus"]]);
     expect(modelOptions(rows, "auto", "")).toEqual([["", "Default"]]);
     expect(modelOptions(rows, "copilot", "gpt-5")).toEqual([["", "Default"], ["gpt-5", "gpt-5"]]);
+  });
+  test("the selected engine's note, or nothing", () => {
+    expect(engineNote(rows, "codex")).toBe("Codex keeps its own shell.");
+    expect(engineNote(rows, "claude")).toBe("");
+    expect(engineNote(rows, "auto")).toBe("");
+  });
+});
+
+describe("memory split and proposals", () => {
+  const it = (id: string, count: number, indexed?: boolean): ExpertItem => ({ id, claim: id, kind: "lesson", trust: "outcome", count, sessions: [], about: [],
+    created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...(indexed === undefined ? {} : { indexed }) });
+  test("seen-once lessons apart; no flag reads as indexed", () => {
+    const { indexed, seenOnce } = splitLessons([it("a", 1, false), it("b", 3), it("c", 2, true), it("d", 1, false)]);
+    expect(indexed.map((x) => x.id)).toEqual(["b", "c"]);
+    expect(seenOnce.map((x) => x.id)).toEqual(["a", "d"]);
+  });
+  const p = (id: string, status: ExpertProposal["status"], ts: number, error?: string): ExpertProposal => ({ id, ts, status, action: "create", skill: null, title: "",
+    trigger: "", body: "", diff: "", items: [], score_before: null, score_after: null, card_seq: null, ...(error ? { error } : {}) });
+  test("the open ones newest first, each in its sentence", () => {
+    const open = openProposals([p("a", "approved", 5), p("b", "preparing", 1), p("c", "shown", 3), p("d", "failed", 2, "checks dropped"), p("e", "rejected", 9)]);
+    expect(open.map((x) => x.id)).toEqual(["c", "d", "b"]);
+    expect(proposalLine(p("b", "preparing", 1))).toBe("Drafting a skill proposal and running the checks…");
+    expect(proposalLine(p("r", "ready", 1))).toBe("A skill proposal is waiting for your answer in the chat.");
+    expect(proposalLine(p("c", "shown", 1))).toBe("A skill proposal is waiting for your answer in the chat.");
+    expect(proposalLine(p("d", "failed", 1, "checks dropped"))).toBe("A skill proposal failed: checks dropped");
+    expect(proposalLine(p("a", "approved", 1))).toBe("");
+    expect(openProposals(null)).toEqual([]);
+  });
+  test("polls only while one is preparing", () => {
+    expect(anyPreparing([p("a", "shown", 1)])).toBe(false);
+    expect(anyPreparing([p("a", "shown", 1), p("b", "preparing", 2)])).toBe(true);
+    expect(anyPreparing(null)).toBe(false);
   });
 });

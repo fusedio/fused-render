@@ -2839,7 +2839,7 @@ def _expert_roster(file: str, run_dir: str = "", refresh: bool = False) -> list:
                 return [e for e in map(_expert_entry, roster) if e]
         except (OSError, ValueError):
             pass
-    roster = _expert_roster_live(file)
+    roster = [e for e in map(_expert_entry, _expert_roster_live(file)) if e]
     if path and refresh:
         try:
             with _private_open(path) as fh:

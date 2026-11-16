@@ -4,19 +4,40 @@ Lessons seen often enough become a proposed skill change: one `model.text`
 call drafts it (updating an existing skill is preferred), the gate scores the
 expert before and after (a what-if run that writes nothing), and the draft is
 saved as "ready" for an approval card. Only `approve` writes a skill.
+
+`request` is the asynchronous entry point (chat, routes, scheduler): it saves
+the record as "preparing" and marks its lessons `proposed` at once, then one
+daemon thread runs `_draft` (the draft and both gate runs) and turns it
+"ready" (and calls `cards.show`) or "failed" with an `error` (its lessons are
+un-marked). One proposal is prepared per expert at a time. `prepare` is the
+same work done synchronously.
+
+Statuses: preparing | ready | shown | approved | rejected | failed. A failed
+approve (the skill could not be saved) is "failed" too, never re-shown.
 """
 from __future__ import annotations
 
 import difflib
+import logging
 import os
 import re
+import threading
 import time
 
 from fused_render.experts import gate, memory, model, store
 from fused_render.experts.consolidate import parse_json
 
-STATUSES = ("ready", "shown", "approved", "rejected")
+logger = logging.getLogger(__name__)
+
+STATUSES = ("preparing", "ready", "shown", "approved", "rejected", "failed")
+OPEN_STATUSES = ("preparing", "ready", "shown")
 BODY_CAP = 6000
+BUSY = "a skill proposal is already being prepared"
+#: A "preparing" record this process is not working on, older than this, was cut short (the app quit).
+PREPARE_STALE_S = 3600
+
+_PREPARING: set[str] = set()
+_PREPARING_GUARD = threading.Lock()
 
 DRAFT_PROMPT = """You maintain an expert's skills (playbooks). These lessons keep recurring and should become part of
 a skill. PREFER updating an existing skill whose subject fits; create a new skill only when none fits.
@@ -69,10 +90,16 @@ def listing(bot) -> list:
     return out
 
 
+def open_item_ids(bot) -> set:
+    """The lesson ids inside any open proposal (preparing, ready or shown)."""
+    return {iid for p in listing(bot) if p.get("status") in OPEN_STATUSES for iid in (p.get("items") or [])}
+
+
 def candidates(bot) -> list:
     at = store.manifest(bot)["memory"]["propose_at"]
+    busy = open_item_ids(bot)
     rows = [i for i in memory.items(bot)
-            if int(i.get("count") or 0) >= at and i.get("trust") != "gap"
+            if int(i.get("count") or 0) >= at and i.get("trust") != "gap" and i.get("id") not in busy
             and not i.get("proposed") and not i.get("promoted") and not i.get("rejected")]
     rows.sort(key=lambda i: -int(i.get("count") or 0))
     return rows
@@ -122,10 +149,8 @@ def _score(bot, skills_override):
         return None
 
 
-def prepare(bot, items) -> dict:
-    lessons = _resolve_items(bot, items)
-    if not lessons:
-        raise ValueError("no lessons to propose")
+def _draft(bot, lessons) -> dict:
+    """The draft and both gate runs for `lessons`: the proposal's fields (no id, no status). Slow: model calls."""
     skills = list(bot.skills())
     by_name = {s["name"]: s for s in skills}
     lessons_txt = "\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {i.get('count', 0)}×)" for i in lessons)
@@ -170,11 +195,18 @@ def prepare(bot, items) -> dict:
     if gate.questions(bot):
         score_before = _score(bot, skills)
         score_after = _score(bot, _override(skills, eff_name, title, trigger, body))
+    return {"action": action, "skill": skill, "title": title, "trigger": trigger, "body": body, "diff": diff,
+            "items": [i["id"] for i in lessons], "claims": [i.get("claim", "") for i in lessons],
+            "score_before": score_before, "score_after": score_after}
 
-    p = {"id": store.new_id("p"), "ts": time.time(), "status": "ready", "action": action, "skill": skill,
-         "title": title, "trigger": trigger, "body": body, "diff": diff, "items": [i["id"] for i in lessons],
-         "claims": [i.get("claim", "") for i in lessons],
-         "score_before": score_before, "score_after": score_after, "card_seq": None}
+
+def prepare(bot, items) -> dict:
+    """`request`'s work, synchronously: draft, gate, save as "ready", mark the lessons proposed."""
+    lessons = _resolve_items(bot, items)
+    if not lessons:
+        raise ValueError("no lessons to propose")
+    fields = _draft(bot, lessons)
+    p = {"id": store.new_id("p"), "ts": time.time(), "status": "ready", **fields, "card_seq": None}
     with store.lock(bot):
         _save(bot, p)
         for i in lessons:
@@ -182,19 +214,123 @@ def prepare(bot, items) -> dict:
     return p
 
 
+def _unmark(bot, item_ids) -> None:
+    for iid in item_ids or []:
+        try:
+            memory.mark(bot, iid, proposed=False)
+        except Exception:  # noqa: BLE001
+            logger.warning("expert %s: lesson %s not un-marked", getattr(bot, "id", "?"), iid, exc_info=True)
+
+
+def _fail(bot, pid, error) -> dict | None:
+    """Set proposal `pid` "failed" with `error` and un-mark its lessons (they may be proposed again)."""
+    with store.lock(bot):
+        p = get(bot, pid)
+        if p is None:
+            return None
+        p.update(status="failed", error=str(error or "failed")[:500], decided=time.time())
+        _save(bot, p)
+        _unmark(bot, p.get("items"))
+        return p
+
+
+def _preparing(bot) -> list:
+    """The open "preparing" records; one that was cut short (not worked on here, and old) is failed first."""
+    out = []
+    now = time.time()
+    for p in listing(bot):
+        if p.get("status") != "preparing":
+            continue
+        with _PREPARING_GUARD:
+            live = p["id"] in _PREPARING
+        if not live and now - float(p.get("ts") or 0) > PREPARE_STALE_S:
+            _fail(bot, p["id"], "interrupted: the app stopped while this proposal was being prepared")
+            continue
+        out.append(p)
+    return out
+
+
+def request(bot, items, *, topic="") -> dict:
+    """Start a proposal for `items` in the background and return its record at once (status "preparing"; its
+    lessons are marked `proposed` now). ValueError when one is already being prepared for this expert, or no
+    lesson is left to propose."""
+    with store.lock(bot):
+        if _preparing(bot):
+            raise ValueError(BUSY)
+        busy = open_item_ids(bot)
+        lessons = [i for i in _resolve_items(bot, items) if i["id"] not in busy]
+        if not lessons:
+            raise ValueError("no lessons to propose")
+        p = {"id": store.new_id("p"), "ts": time.time(), "status": "preparing", "topic": str(topic or "")[:200],
+             "action": None, "skill": None, "title": "", "trigger": "", "body": "", "diff": "",
+             "items": [i["id"] for i in lessons], "claims": [i.get("claim", "") for i in lessons],
+             "score_before": None, "score_after": None, "card_seq": None, "error": ""}
+        _save(bot, p)
+        for i in lessons:
+            memory.mark(bot, i["id"], proposed=True)
+        with _PREPARING_GUARD:
+            _PREPARING.add(p["id"])
+    t = threading.Thread(target=_prepare_bg, args=(bot, p["id"]), daemon=True,
+                         name=f"expert-proposal-{getattr(bot, 'id', '?')}")
+    t.start()
+    return dict(p)
+
+
+def _prepare_bg(bot, pid) -> None:
+    ready = None
+    try:
+        p = get(bot, pid)
+        if p is None:
+            return
+        lessons = _resolve_items(bot, p.get("items"))
+        if not lessons:
+            raise ValueError("its lessons were forgotten")
+        fields = _draft(bot, lessons)
+        with store.lock(bot):
+            p = get(bot, pid)
+            if p is None or p.get("status") != "preparing":
+                return
+            p.update(fields, status="ready", error="")
+            _save(bot, p)
+            ready = p
+    except Exception as e:  # noqa: BLE001 — a failed draft is a "failed" record, never a stuck "preparing"
+        logger.warning("expert %s: proposal %s failed", getattr(bot, "id", "?"), pid, exc_info=True)
+        _fail(bot, pid, str(e) or type(e).__name__)
+    finally:
+        with _PREPARING_GUARD:
+            _PREPARING.discard(pid)
+    if ready is not None:
+        try:
+            from fused_render.experts import cards
+            cards.show(bot, ready)  # False (the bot is busy) is fine: cards.tick / tick_one shows it later
+        except Exception:  # noqa: BLE001
+            logger.warning("expert %s: proposal %s card not shown", getattr(bot, "id", "?"), pid, exc_info=True)
+
+
 def _decide(bot, pid):
     p = get(bot, pid)
     if p is None:
         raise ValueError("no such proposal")
+    if p.get("status") == "failed":
+        raise ValueError("this proposal failed" + (f": {p['error']}" if p.get("error") else ""))
     if p.get("status") in ("approved", "rejected"):
         raise ValueError(f"this proposal was already {p['status']}")
+    if p.get("status") == "preparing":
+        raise ValueError("this proposal is still being prepared")
     return p
 
 
 def approve(bot, pid) -> dict:
+    """Write the skill. When that fails the proposal becomes "failed" (lessons un-marked) and ValueError says
+    why; it is never shown again."""
     with store.lock(bot):
         p = _decide(bot, pid)
-        name = bot.skill_save(p["title"], p["trigger"], p["body"], name=p.get("skill") or None)
+        try:
+            name = bot.skill_save(p["title"], p["trigger"], p["body"], name=p.get("skill") or None)
+        except Exception as e:  # noqa: BLE001
+            reason = f"could not save the skill: {str(e) or type(e).__name__}"
+            _fail(bot, pid, reason)
+            raise ValueError(reason) from e
         p.update(status="approved", skill=name, decided=time.time())
         _save(bot, p)
         for iid in p.get("items") or []:

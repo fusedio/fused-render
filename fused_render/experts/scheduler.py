@@ -6,8 +6,9 @@ One daemon timer thread, `canvas_mirror`'s shape: `start()` arms it
 
 `tick()`: capture due task sessions for the experts they are relevant to →
 `consolidate.run` for every expert whose observations are due → one proposal
-for the lessons that keep recurring (`routes.propose`: `proposals.prepare`,
-then `cards.show`) → `cards.tick()` for any proposal still waiting for its
+for the lessons that keep recurring (`routes.propose`: `proposals.request`,
+which drafts in the background and shows its own card when ready; none while
+one is being prepared) → `cards.tick()` for any proposal still waiting for its
 card. It never raises.
 
 ONE PROCESS TICKS. Two fused-render servers on one machine (the app and a dev

@@ -4,7 +4,10 @@ A consult is a separate, short run of the expert (`engine.answer`, profile
 "consult"). It never touches the expert's chat thread and never writes memory:
 the question and context are data from an agent. An unsure answer leaves a
 `gap` observation for consolidation to count. At most `MAX_PARALLEL` consults
-run at once in this process; the rest wait their turn.
+run at once in this process; the rest wait up to `SLOT_WAIT_S` for a turn and
+then fail with "the expert is busy". The caller's target folder becomes
+readable for the consult, unless it is `/`, the home folder or an ancestor of
+it (`readtools.too_broad`).
 """
 from __future__ import annotations
 
@@ -13,11 +16,13 @@ import os
 import threading
 import time
 
-from fused_render.experts import engine, model, store
+from fused_render.experts import engine, model, readtools, store
 
 logger = logging.getLogger(__name__)
 
 MAX_PARALLEL = 3
+SLOT_WAIT_S = 120
+BUSY = "the expert is busy; try again in a minute"
 _SLOTS = threading.BoundedSemaphore(MAX_PARALLEL)
 CONSULTS_FILE = "consults.jsonl"
 CALLER_KEYS = ("run_id", "session_id", "backend", "target", "canvas")
@@ -43,11 +48,20 @@ def consult(bot, question, context="", caller=None) -> dict:
         raise model.Unavailable(reason)
     extra = []
     target = who.get("target")
-    if isinstance(target, str) and os.path.isabs(os.path.expanduser(target)) and os.path.isdir(os.path.expanduser(target)):
-        extra.append(os.path.expanduser(target))
+    if isinstance(target, str):
+        t = os.path.expanduser(target)
+        if os.path.isabs(t) and os.path.isdir(t):
+            if readtools.too_broad(t):
+                logger.warning("expert %s: not reading the caller's target %s (too broad)", bot.id, t)
+            else:
+                extra.append(t)
     t0 = time.monotonic()
-    with _SLOTS:
+    if not _SLOTS.acquire(timeout=SLOT_WAIT_S):
+        raise RuntimeError(BUSY)
+    try:
         out = engine.answer(bot, question, profile="consult", context=context, extra_roots=extra)
+    finally:
+        _SLOTS.release()
     ms = int((time.monotonic() - t0) * 1000)
     cid = store.new_id("c")
     rec = {"id": cid, "ts": time.time(), "question": question, "context": context, "answer": out["answer"],

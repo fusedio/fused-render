@@ -23,6 +23,19 @@ describe("MemoryPanel", () => {
     expect(out).toContain("1 observation waiting to be consolidated.");
     expect(out).toContain(">Consolidate now<");
   });
+  test("seen-once lessons under their divider, open proposals above", () => {
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Indexed one", count: 2 }), item({ id: "b", claim: "Once only", indexed: false })],
+      pending: [], due: false, busy: false, onForget: noop, onConsolidate: noop,
+      proposals: [{ id: "p", ts: 1, status: "preparing", action: "create", skill: null, title: "", trigger: "", body: "", diff: "", items: [], score_before: null, score_after: null, card_seq: null }] }));
+    expect(out).toContain("Drafting a skill proposal and running the checks…");
+    const div = out.indexOf("Seen once. Not used in answers until it comes up again.");
+    expect(div).toBeGreaterThan(out.indexOf("Indexed one"));
+    expect(out.indexOf("Once only")).toBeGreaterThan(div);
+  });
+  test("no divider when every lesson is indexed", () => {
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a" })], pending: [], due: false, busy: false, onForget: noop, onConsolidate: noop }));
+    expect(out).not.toContain("Seen once.");
+  });
   test("empty: says what will appear", () => {
     const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [], pending: [], due: false, busy: false, onForget: noop, onConsolidate: noop }));
     expect(out).toContain("No lessons yet.");

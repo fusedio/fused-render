@@ -1,13 +1,15 @@
 """Skill-proposal approval cards (docs/experts.md §4 `cards.py`).
 
-A proposal prepared outside a chat task (the scheduler, the routes) is raised
-as an ordinary `approval` event when the expert is idle, the way `Bot.greet`
-runs: a worker installed as `bot.thread` under `bot.lock`, so `receive()`
-queues the user's reply into the inbox and `start_task` refuses meanwhile.
-Approve / Reject come back through the existing `/api/bots/<id>/send`.
+A proposal that turned "ready" (`proposals.request`'s thread) is raised as an
+ordinary `approval` event when the expert is idle, the way `Bot.greet` runs: a
+worker installed as `bot.thread` under `bot.lock`, so `receive()` queues the
+user's reply into the inbox and `start_task` refuses meanwhile. Approve /
+Reject come back through the existing `/api/bots/<id>/send`. A card is never
+raised inside a chat task.
 
-The same raise-and-wait is used inside a chat task by `experts.chat`'s
-`propose_skill` tool (`raise_card` + `wait_verdict`).
+`show` is tried when the proposal turns ready, `tick_one(bot)` when a chat
+task of that expert ends, and `tick()` on every scheduler pass. Only "ready"
+and "shown" proposals are ever shown ("failed" never is).
 """
 from __future__ import annotations
 
@@ -168,23 +170,35 @@ def _worker(bot, proposal) -> None:
                 logger.warning("expert %s: queued message not re-delivered", bot.id, exc_info=True)
 
 
-def tick() -> None:
-    """For every expert: show the oldest open proposal (ready, or shown on a card that is no longer up) if idle."""
+def _oldest_open(bot):
+    from fused_render.experts import proposals
+    open_ = [p for p in proposals.listing(bot) if p.get("status") in ("ready", "shown")]
+    if not open_:
+        return None
+    open_.sort(key=lambda p: float(p.get("ts") or 0))
+    return open_[0]
+
+
+def tick_one(bot) -> bool:
+    """Show the oldest open proposal (ready, or shown on a card that is no longer up) of this one expert when it
+    is idle. True when a card went up. Never raises."""
     try:
-        from fused_render.experts import proposals, store
+        with bot.lock:
+            if bot.thread is not None and bot.thread.is_alive():
+                return False
+        p = _oldest_open(bot)
+        return bool(p is not None and show(bot, p))
+    except Exception:  # noqa: BLE001
+        logger.warning("expert %s: proposal tick failed", getattr(bot, "id", "?"), exc_info=True)
+        return False
+
+
+def tick() -> None:
+    """`tick_one` for every expert."""
+    try:
+        from fused_render.experts import store
         experts = store.all_experts()
     except Exception:  # noqa: BLE001
         return
     for bot in experts:
-        try:
-            with bot.lock:
-                busy = bot.thread is not None and bot.thread.is_alive()
-            if busy:
-                continue
-            open_ = [p for p in proposals.listing(bot) if p.get("status") in ("ready", "shown")]
-            if not open_:
-                continue
-            open_.sort(key=lambda p: float(p.get("ts") or 0))
-            show(bot, open_[0])
-        except Exception:  # noqa: BLE001
-            logger.warning("expert %s: proposal tick failed", getattr(bot, "id", "?"), exc_info=True)
+        tick_one(bot)

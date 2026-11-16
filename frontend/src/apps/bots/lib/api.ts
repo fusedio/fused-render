@@ -292,6 +292,9 @@ export interface ExpertItem {
   id: string; claim: string; kind: string; trust: "user" | "outcome" | "gap" | (string & {}); count: number;
   sessions: string[]; about: string[]; created: number; updated: number;
   proposed: boolean; promoted: boolean; rejected: boolean;
+  /** False for a lesson seen once: kept, but not in the index answers draw on until it comes up again. Absent (an
+   *  older server) reads as indexed. */
+  indexed?: boolean;
 }
 /** A pending observation (not yet consolidated into memory). */
 export interface ExpertObs { id: string; ts: number; kind: string; claim: string; trust: string; session: string; about: string[]; consult: string }
@@ -308,12 +311,17 @@ export interface ExpertRun { id: string; ts: number; score: number; total: numbe
 export interface ExpertCheckStatus { running: boolean; run_id: string | null; done: number; total: number }
 export interface ExpertChecks { latest: ExpertRun | null; status: ExpertCheckStatus; questions: number }
 export interface ExpertProposal {
-  id: string; ts: number; status: "ready" | "shown" | "approved" | "rejected"; action: "update" | "create";
+  /** preparing: a background worker is drafting it and running the checks; ready/shown: its card waits in the chat;
+   *  failed: the worker gave up (`error` says why). */
+  id: string; ts: number; status: "preparing" | "ready" | "shown" | "approved" | "rejected" | "failed"; action: "update" | "create";
+  error?: string;
   skill: string | null; title: string; trigger: string; body: string; diff: string; items: string[];
   score_before: ExpertScore | null; score_after: ExpertScore | null; card_seq: number | null;
 }
 export interface ExpertConsolidateReply { ran: boolean; added: string[]; bumped: string[]; ignored: number; proposed: string[] }
-export interface ExpertEngineRow { id: string; label: string; enabled: boolean; models: { id: string; label: string }[]; default_model: string }
+/** `note`: a caveat to show under the Engine menu when this engine is picked (non-empty for Codex, whose reads are not
+ *  fenced by the app). */
+export interface ExpertEngineRow { id: string; label: string; enabled: boolean; models: { id: string; label: string }[]; default_model: string; note?: string }
 
 export interface UsageBotRow { id: string; name: string; today: number; week: number; models: Record<string, number>; errors: number; last: number; live: boolean }
 /** One failed model call behind a bot's `errors` count (GET /api/bots/{id}/failures, newest first, this week).

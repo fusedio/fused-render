@@ -6,17 +6,19 @@
 // Settings' "Expert" tab mounts the same panels (ExpertPanels) so the phone, which hides this column, reaches them.
 // Data: /api/experts/<id>/… (lib/api.ts expertApi), fetched for the open tab on a bot change, again when the bot's
 // `seq` moves (a chat turn may have taught it something) and every 10 s while the page is visible; the checks every
-// 2 s while a run is going. A failed call shows the page banner once (not again on every refresh while it keeps failing).
+// 2 s while a run is going; the proposals (shown on the Memory tab) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on every refresh while it keeps failing).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { expertApi, type Bot, type ExpertChecks, type ExpertConsult, type ExpertItem, type ExpertObs } from "../lib/api";
-import { basename, checkProgress, consultMeta, lessonTags, pendingLine, scoreText, seenLabel, sortConsults, sortLessons } from "../lib/expert";
+import { expertApi, type Bot, type ExpertChecks, type ExpertConsult, type ExpertItem, type ExpertObs, type ExpertProposal } from "../lib/api";
+import { anyPreparing, basename, checkProgress, consultMeta, lessonTags, openProposals, pendingLine, proposalLine, scoreText, seenLabel, SEEN_ONCE_LINE,
+  sortConsults, splitLessons } from "../lib/expert";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { errMsg, getState, hideBanner, showBanner } from "../state/store";
 import { askConfirm } from "../dialogs/ask";
+import { isLanHost } from "@platform/lib/host";
 
 export type ExpertTab = "memory" | "consults" | "checks";
 const TABS: [ExpertTab, string][] = [["memory", "Memory"], ["consults", "Consults"], ["checks", "Checks"]];
-const REFRESH_MS = 10_000, CHECKS_MS = 2_000;
+const REFRESH_MS = 10_000, CHECKS_MS = 2_000, PROPOSALS_MS = 5_000;
 
 type Confirm = (title: string, text: string, okLabel?: string, danger?: boolean) => Promise<boolean>;
 
@@ -26,8 +28,9 @@ interface Data {
   due: boolean;
   consults: ExpertConsult[] | null;
   checks: ExpertChecks | null;
+  proposals: ExpertProposal[] | null;
 }
-const EMPTY: Data = { memory: null, pending: null, due: false, consults: null, checks: null };
+const EMPTY: Data = { memory: null, pending: null, due: false, consults: null, checks: null, proposals: null };
 
 /** The open tab's data for expert `id`, kept fresh (see the header). `reload` refetches the tab now. */
 function useExpertData(id: string, seq: number, tab: ExpertTab) {
@@ -50,12 +53,20 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
     }
   }, []);
 
+  const loadProposals = useCallback(async (loud = false) => {
+    const want = id;
+    const p = await guard(() => expertApi.proposals(want), loud);
+    if (live.current === want && p) setData((d) => ({ ...d, proposals: p.proposals || [] }));
+  }, [id, guard]);
+
   const load = useCallback(async (which: ExpertTab, loud = false) => {
     const want = id;
     if (which === "memory") {
-      const [m, o] = await Promise.all([guard(() => expertApi.memory(want), loud), guard(() => expertApi.observations(want), loud)]);
+      const [m, o, p] = await Promise.all([guard(() => expertApi.memory(want), loud), guard(() => expertApi.observations(want), loud),
+        guard(() => expertApi.proposals(want), loud)]);
       if (live.current !== want) return;
-      setData((d) => ({ ...d, ...(m ? { memory: m.items || [] } : {}), ...(o ? { pending: o.pending || [], due: !!o.due } : {}) }));
+      setData((d) => ({ ...d, ...(m ? { memory: m.items || [] } : {}), ...(o ? { pending: o.pending || [], due: !!o.due } : {}),
+        ...(p ? { proposals: p.proposals || [] } : {}) }));
     } else if (which === "consults") {
       const c = await guard(() => expertApi.consults(want), loud);
       if (live.current === want && c) setData((d) => ({ ...d, consults: c.consults || [] }));
@@ -79,42 +90,68 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
     const t = window.setInterval(() => { if (!document.hidden) void load("checks"); }, CHECKS_MS);
     return () => window.clearInterval(t);
   }, [running, load]);
+  // A skill proposal is drafted and checked by a background worker: follow it until its card is up (or it failed).
+  const preparing = anyPreparing(data.proposals);
+  useEffect(() => {
+    if (!preparing) return;
+    const t = window.setInterval(() => { if (!document.hidden) void loadProposals(); }, PROPOSALS_MS);
+    return () => window.clearInterval(t);
+  }, [preparing, loadProposals]);
 
   return { data, setData, reload: load, guard };
 }
 
 // ------------------------------------------------------------------ panels ----
 
-export function MemoryPanel({ items, pending, due, onForget, onConsolidate, busy }: {
+function LessonRow({ it, onForget }: { it: ExpertItem; onForget: (it: ExpertItem) => void }) {
+  return (
+    <li className="xp-row">
+      <div className="xp-main">
+        <span className="xp-claim">{it.claim}</span>
+        <span className="xp-meta">
+          <span title={it.updated ? `last seen ${fmtWhen(it.updated)}` : undefined}>{seenLabel(it.count)}</span>
+          {lessonTags(it).map((t) => <span key={t} className={`xp-tag ${t}`}>{t}</span>)}
+        </span>
+      </div>
+      <button type="button" className="xp-forget" title="Forget this lesson" onClick={() => onForget(it)}>Forget</button>
+    </li>
+  );
+}
+
+export function MemoryPanel({ items, pending, due, onForget, onConsolidate, busy, proposals = null, lan = false }: {
   items: ExpertItem[] | null; pending: ExpertObs[] | null; due: boolean;
   onForget: (it: ExpertItem) => void; onConsolidate: () => void; busy: boolean;
+  proposals?: ExpertProposal[] | null;
+  /** On the phone: the LAN door does not serve `consolidate` (it writes memory), so the button stays off. */
+  lan?: boolean;
 }) {
   if (items == null) return <div className="xp-empty">Loading…</div>;
-  const rows = sortLessons(items), n = pending?.length || 0;
+  const { indexed, seenOnce } = splitLessons(items), n = pending?.length || 0;
+  const open = openProposals(proposals);
   return (
     <>
       <div className="xp-bar">
         <span className="xp-line">{pending == null ? "" : pendingLine(n, due)}</span>
-        <button type="button" className={busy ? "busy" : undefined} disabled={busy || !n}
-          title={n ? "Fold the waiting observations into lessons now" : "Nothing is waiting"} onClick={onConsolidate}>
+        <button type="button" className={busy ? "busy" : undefined} disabled={busy || !n || lan}
+          title={lan ? "Consolidate on the Mac" : n ? "Fold the waiting observations into lessons now" : "Nothing is waiting"} onClick={onConsolidate}>
           {busy ? "Consolidating…" : "Consolidate now"}
         </button>
       </div>
-      {rows.length ? (
-        <ul className="xp-list">
-          {rows.map((it) => (
-            <li key={it.id} className="xp-row">
-              <div className="xp-main">
-                <span className="xp-claim">{it.claim}</span>
-                <span className="xp-meta">
-                  <span title={it.updated ? `last seen ${fmtWhen(it.updated)}` : undefined}>{seenLabel(it.count)}</span>
-                  {lessonTags(it).map((t) => <span key={t} className={`xp-tag ${t}`}>{t}</span>)}
-                </span>
-              </div>
-              <button type="button" className="xp-forget" title="Forget this lesson" onClick={() => onForget(it)}>Forget</button>
-            </li>
-          ))}
+      {open.length ? (
+        <ul className="xp-proposals">
+          {open.map((p) => <li key={p.id} className={`xp-proposal ${p.status}`}>{proposalLine(p)}</li>)}
         </ul>
+      ) : null}
+      {indexed.length || seenOnce.length ? (
+        <>
+          {indexed.length ? <ul className="xp-list">{indexed.map((it) => <LessonRow key={it.id} it={it} onForget={onForget} />)}</ul> : null}
+          {seenOnce.length ? (
+            <>
+              <div className="xp-divider" role="separator">{SEEN_ONCE_LINE}</div>
+              <ul className="xp-list xp-seen-once">{seenOnce.map((it) => <LessonRow key={it.id} it={it} onForget={onForget} />)}</ul>
+            </>
+          ) : null}
+        </>
       ) : (
         <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that consult it, appears here once consolidated.</div>
       )}
@@ -208,6 +245,8 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
     if (r) setData((d) => ({ ...d, memory: (d.memory || []).filter((x) => x.id !== it.id) }));
     void reload("memory");
   };
+  // Consolidation answers at once (a proposal it raises is drafted in the background: the panel shows it as
+  // "preparing" and polls), so the button is busy only for the request itself; then the memory and proposals refetch.
   const onConsolidate = async () => {
     setConsolidating(true);
     try { await guard(() => expertApi.consolidate(id, true), true); } finally { setConsolidating(false); }
@@ -234,7 +273,7 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
         ))}
       </div>
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
-        {tab === "memory" ? <MemoryPanel items={data.memory} pending={data.pending} due={data.due} busy={consolidating}
+        {tab === "memory" ? <MemoryPanel items={data.memory} pending={data.pending} due={data.due} busy={consolidating} proposals={data.proposals} lan={isLanHost()}
           onForget={(it) => { void onForget(it); }} onConsolidate={() => { void onConsolidate(); }} /> : null}
         {tab === "consults" ? <ConsultsPanel consults={data.consults} /> : null}
         {tab === "checks" ? <ChecksPanel checks={data.checks} starting={starting} onRun={() => { void onRun(); }} /> : null}

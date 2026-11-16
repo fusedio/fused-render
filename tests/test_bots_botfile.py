@@ -893,3 +893,42 @@ def test_install_route_checks_mode_and_target(client):
     assert status == 400 and b"mode must be" in raw
     status, _h, raw = client.post("/api/botfile/install", {"path": "/x.fusedbot", "apps": [], "mode": "update"})
     assert status == 400 and b"target must be" in raw
+
+
+# ------------------------------------------------------------------ experts (docs/experts.md §5) ---
+def test_importing_an_expert_drops_shipped_and_narrows_an_offer_to_everyone(tmp_path):
+    from fused_render.bots import botfile, registry
+
+    manifest = {"shipped": "canvas", "ask_me_about": "canvases",
+                "reads": [{"path": "~/notes", "label": "notes"}],
+                "offered_to": {"targets": ["*"]}}
+    pub = {"name": "Imported expert", "kind": "expert", "expert": manifest}
+    path = _container(tmp_path / "e.fusedbot", {}, [("bot.json", json.dumps(pub).encode())])
+    out = botfile.install(path, apps=[], memory=False)
+    meta = registry.get(out["bot_id"]).meta
+    assert meta["kind"] == "expert"
+    assert "shipped" not in meta["expert"]
+    assert meta["expert"]["offered_to"]["targets"] == ["canvas"]
+    assert meta["expert"]["reads"] == [{"path": "~/notes", "label": "notes"}]
+    assert manifest["shipped"] == "canvas"  # the package's own dict is never edited in place
+
+
+def test_importing_an_expert_keeps_a_narrow_offer(tmp_path):
+    from fused_render.bots import botfile
+
+    assert botfile._imported_expert({"offered_to": {"targets": ["canvas"]}}) == {"offered_to": {"targets": ["canvas"]}}
+    assert botfile._imported_expert({"offered_to": {"targets": []}}) == {"offered_to": {"targets": []}}
+
+
+def test_update_refuses_a_package_of_a_different_kind(tmp_path):
+    from fused_render.bots import botfile, registry
+
+    b, _r1, _r2 = _rich_bot()
+    path = _export(b.id, tmp_path)  # a plain bot's package
+    rb = registry.get(b.id)
+    with rb.lock:
+        rb.meta["kind"] = "expert"  # the bot here is now an expert
+        rb.save()
+    with pytest.raises(botfile.BotFileError, match="different kind of bot"):
+        botfile.install(path, apps=[], memory=False, mode="update", target=b.id)
+    assert registry.get(b.id).meta["instructions"] == "the exported instructions"

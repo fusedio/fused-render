@@ -1,12 +1,37 @@
 // Pure helpers for an expert's panels (components/ExpertPane.tsx) and its proposal card (components/ApprovalCard.tsx):
 // ordering and the short strings the rows show. The shapes are docs/experts.md §4 (Item, Consult, Run, Proposal).
-import type { ExpertCheckStatus, ExpertConsult, ExpertEngineRow, ExpertItem, ExpertScore } from "./api";
+import type { ExpertCheckStatus, ExpertConsult, ExpertEngineRow, ExpertItem, ExpertProposal, ExpertScore } from "./api";
 import { fmtAgo } from "./format";
 
 /** Memory as the expert's own index reads it: most seen first, then the most recently touched. */
 export function sortLessons(items: readonly ExpertItem[]): ExpertItem[] {
   return [...items].sort((a, b) => (b.count || 0) - (a.count || 0) || (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id));
 }
+
+/** Memory split for the panel: the lessons answers draw on, then the ones seen once (`indexed === false`), which wait
+ *  under their own divider until they come up again. Each part sorted as `sortLessons`. */
+export function splitLessons(items: readonly ExpertItem[]): { indexed: ExpertItem[]; seenOnce: ExpertItem[] } {
+  const sorted = sortLessons(items);
+  return { indexed: sorted.filter((it) => it.indexed !== false), seenOnce: sorted.filter((it) => it.indexed === false) };
+}
+
+export const SEEN_ONCE_LINE = "Seen once. Not used in answers until it comes up again.";
+
+/** The proposals the Memory panel mentions (in progress, waiting on the user, or failed), newest first. */
+export function openProposals(ps: readonly ExpertProposal[] | null | undefined): ExpertProposal[] {
+  return (ps || []).filter((p) => ["preparing", "ready", "shown", "failed"].includes(p.status)).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+/** One open proposal as the Memory panel says it ("" for a status it does not mention). */
+export function proposalLine(p: Pick<ExpertProposal, "status" | "error">): string {
+  if (p.status === "preparing") return "Drafting a skill proposal and running the checks…";
+  if (p.status === "ready" || p.status === "shown") return "A skill proposal is waiting for your answer in the chat.";
+  if (p.status === "failed") return `A skill proposal failed: ${p.error || "no reason given"}`;
+  return "";
+}
+
+/** Whether a proposal is still being prepared (the pane polls while one is). */
+export const anyPreparing = (ps: readonly ExpertProposal[] | null | undefined): boolean => !!ps?.some((p) => p.status === "preparing");
 
 /** "seen 3×" (a lesson seen once still says so: the count is what earns a proposal). */
 export const seenLabel = (count: number | null | undefined): string => `seen ${Math.max(1, count || 0)}×`;
@@ -72,4 +97,9 @@ export function modelOptions(rows: readonly ExpertEngineRow[], engine: string, c
   for (const m of row?.models || []) out.push([m.id, m.label || m.id]);
   if (current && !out.some(([v]) => v === current)) out.push([current, current]);
   return out;
+}
+
+/** The selected engine's caveat (its row's `note`), shown under the Engine menu; "" when it has none. */
+export function engineNote(rows: readonly ExpertEngineRow[], engine: string): string {
+  return (rows.find((r) => r.id === engine)?.note || "").trim();
 }

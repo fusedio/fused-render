@@ -54,14 +54,24 @@ def secret_name(name) -> bool:
 
 
 def _hidden_below(real, root) -> bool:
-    """Whether a component of `real` below `root` is a refused name."""
-    try:
-        rel = os.path.relpath(real, root)
-    except ValueError:
-        return True
-    if rel == ".":
-        return False
-    return any(secret_name(part) for part in rel.split(os.sep))
+    """Whether a component of `real` below `root` is a refused name. Walked up by identity, not string, so a
+    root matched case-insensitively (APFS, `bots.bot.inside`) still yields the right components."""
+    parts = []
+    cur = real
+    while True:
+        if cur == root:
+            break
+        try:
+            if os.path.samefile(cur, root):
+                break
+        except OSError:
+            pass
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        parts.append(os.path.basename(cur))
+        cur = parent
+    return any(secret_name(p) for p in parts)
 
 
 def _canvas_roots(scopes) -> list[str]:
@@ -171,6 +181,9 @@ def make_handler(roots, on_tool=None):
         try:
             rr = os.path.realpath(os.path.expanduser(str(r)))
         except Exception:  # noqa: BLE001
+            continue
+        if too_broad(rr):
+            logger.warning("experts: refusing to read %s (the whole disk or home folder is too broad)", rr)
             continue
         if os.path.isdir(rr) and rr not in real_roots:
             real_roots.append(rr)

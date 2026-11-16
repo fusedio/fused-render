@@ -159,6 +159,42 @@ def caller_for_run(run_id) -> dict:
     return caller
 
 
+def _run_roster(run_id):
+    """The roster recorded in `<run dir>/experts.json` for `run_id`, or None when there is none to check."""
+    if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id) or run_id in (".", ".."):
+        return None
+    try:
+        path = os.path.join(_agent().RUNS, run_id, "experts.json")
+    except Exception:  # noqa: BLE001
+        return None
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []  # a roster we cannot read offers nothing
+    return data if isinstance(data, list) else []
+
+
+def offered_to_run(bot, run_id) -> bool:
+    """Whether `bot` is in the roster the session `run_id` was offered (`<run dir>/experts.json`): by `id` when
+    the entries carry one, else by name (case-insensitive). True when the run recorded no roster file."""
+    roster = _run_roster(run_id)
+    if roster is None:
+        return True
+    name = _name(bot).strip().casefold()
+    for e in roster:
+        if not isinstance(e, dict):
+            continue
+        if e.get("id"):
+            if str(e["id"]) == str(bot.id):
+                return True
+        elif str(e.get("name") or "").strip().casefold() == name:
+            return True
+    return False
+
+
 def canvas_clone(path) -> str:
     """The canvas clone `path` sits inside, or "" (`canvases._clone_for_session`,
     which also follows a moved clone's old path)."""
@@ -189,6 +225,8 @@ def experts_consult(body: dict = Body(...), x_fused: str | None = Header(default
     if not isinstance(run_id, str):
         raise ValueError("run_id must be a string")
     bot = _expert(key.strip())
+    if run_id and not offered_to_run(bot, run_id):
+        return _error("that expert is not offered to this session", 403)
     ok, reason = _mod("model").available(bot)
     if not ok:
         raise _Unavailable(reason or "no engine is available for this expert")
@@ -202,7 +240,8 @@ def experts_consult(body: dict = Body(...), x_fused: str | None = Header(default
 def experts_memory(eid: str):
     bot = _expert(eid)
     memory = _mod("memory")
-    return {"items": memory.items(bot), "index": memory.index_text(bot)}
+    items = [dict(i, indexed=bool(memory.indexed(i))) for i in memory.items(bot)]
+    return {"items": items, "index": memory.index_text(bot)}
 
 
 @router.post(PREFIX + "/{eid}/memory/forget")
@@ -290,22 +329,21 @@ def experts_consolidate(eid: str, body: dict | None = Body(default=None),
 
 
 def propose(bot) -> list:
-    """`proposals.candidates(bot)`, all of them, as ONE proposal (one draft
-    call and one gate before/after, however many lessons are due; `prepare`
-    marks them proposed), then its card (`cards.show`, which declines while
-    the bot is busy; `cards.tick` shows it later). Returns the new proposal
-    ids (none or one). Shared with the scheduler."""
-    proposals, cards = _mod("proposals"), _mod("cards")
+    """`proposals.candidates(bot)`, all of them, as ONE proposal started in the background
+    (`proposals.request`: status "preparing" at once, its card shows itself when ready). Returns the new
+    proposal ids (none or one); none when one is already being prepared. Shared with the scheduler."""
+    proposals = _mod("proposals")
     items = list(proposals.candidates(bot) or [])
     if not items:
         return []
-    prop = proposals.prepare(bot, items)
+    try:
+        prop = proposals.request(bot, items)
+    except ValueError as e:
+        if str(e) == getattr(proposals, "BUSY", ""):
+            return []
+        raise
     if not isinstance(prop, dict) or not prop.get("id"):
         return []
-    try:
-        cards.show(bot, prop)
-    except Exception:  # noqa: BLE001 — the proposal is saved; cards.tick retries the card
-        logger.warning("experts: could not show proposal %s", prop.get("id"), exc_info=True)
     return [prop["id"]]
 
 
@@ -385,8 +423,23 @@ def _label(bid: str) -> str:
 @router.get(PREFIX + "/{eid}/engines")
 @_handled
 def experts_engines(eid: str):
-    _expert(eid)
+    bot = _expert(eid)
     backends = _backends()
+    xmodel = _mod("model")
+    claude_default = ""
+    try:
+        provider, model = xmodel.provider_for(bot)
+        if provider == "claude":
+            claude_default = model
+    except Exception:  # noqa: BLE001 — Claude unavailable (or not the engine): its own default below
+        pass
+    if not claude_default:
+        # What provider_for would use with Claude chosen: the manifest's model, else the bot's (if Claude takes
+        # it), else Claude's default.
+        man = _mod("store").manifest(bot)
+        meta_model = str((getattr(bot, "meta", None) or {}).get("model") or "").strip()
+        claude_default = (man.get("model") or "").strip() or (
+            meta_model if meta_model and xmodel._claude_model_ok(meta_model, backends) else "")
     out = []
     for bid in ENGINE_IDS:
         b = backends.get(bid)
@@ -400,7 +453,10 @@ def experts_engines(eid: str):
             models = b.effective_models(health)
         except Exception:  # noqa: BLE001
             models = b.models
+        default = getattr(b, "default_model", "") or ""
+        if bid == "claude" and claude_default:
+            default = claude_default
         out.append({"id": bid, "label": b.label, "enabled": _enabled(bid),
                     "models": [{"id": m.id, "label": m.label} for m in models],
-                    "default_model": getattr(b, "default_model", "") or ""})
+                    "default_model": default, "note": xmodel.ENGINE_NOTES.get(bid, "")})
     return out
