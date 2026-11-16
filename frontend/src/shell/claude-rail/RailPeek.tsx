@@ -184,6 +184,7 @@ import {
   clampAnchor,
   favLike,
   placeClear,
+  pulseFace,
   rowOf,
   starMarkStep,
   starOutcome,
@@ -268,7 +269,8 @@ interface SeatFacts {
 
 function seatFacts(seat: RailRow, place: RailPlace): SeatFacts {
   const { pulse: t, row } = seat;
-  const merged = row ? { ...row, status: t.status } : t;
+  // The live status AND the face are the pulse's (`pulseFace`).
+  const merged = row ? { ...row, status: t.status, ...pulseFace(t) } : t;
   // The List's own title line (recap as the title once recaps are on).
   const line = cardTitleLine(merged);
   const draft = !!row && isDraftTask(row);
@@ -1121,10 +1123,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const starSeq = useRef(0);
   const starOf = (t: RailRow["pulse"]): boolean =>
     starMark && starMark.key === t.key ? starMark.on : !!t.starred;
-  // THE HEAD'S FACE: only while starred, by the star this card shows (the
-  // mark included, so the glyph leaves with the press) — the listing row lags
-  // the pulse, and its old slot would keep the glyph on an unstarred head.
-  const headIcon = head && starOf(head.t) ? (head.merged.icon_slot ?? head.t.icon_slot) : null;
+  // THE HEAD'S FACE: one PICKED by hand whatever the star (2026-11-16: the
+  // icon is not the star's), one that came with the star only while starred
+  // by the star this card shows (the mark included, so the glyph leaves with
+  // the press) — the listing row lags the pulse, and its old slot would keep
+  // the glyph on an unstarred head.
+  const headPicked = !!head?.merged.icon_picked;
+  const headIcon = head && (headPicked || starOf(head.t)) ? (head.merged.icon_slot ?? null) : null;
   useEffect(() => {
     if (!starMark) return;
     // The shown seat too.
@@ -1773,7 +1778,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 <>
                   <span className="claude-rail-peek-status">
                     <TaskIconPick
-                      task={{ key: head.t.key, icon_slot: headIcon }}
+                      task={{ key: head.t.key, task_id: head.t.task_id, icon_slot: headIcon, icon_picked: headPicked }}
                       editing={draft !== null}
                       onlyWhileEditing
                       onDone={onReload}
@@ -1786,6 +1791,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                         draftHeld={!!head.row && draftRing(head.merged as Task)}
                         {...(head.row?.failed ? { failed: true } : {})}
                         icon={headIcon}
+                        iconPicked={headPicked}
                       />
                     </TaskIconPick>
                     {/* Not while the title is being edited: the Archive seat

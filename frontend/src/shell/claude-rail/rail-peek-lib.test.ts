@@ -1210,3 +1210,22 @@ describe("railCardSize (the Tasks card and the + popover wear window A's size)",
     expect(railCardSize({ width: 5000, height: 900 }).width).toBe(PEEK_MAX_WIDTH);
   });
 });
+
+describe("pulseFace (Bugbot, PR #2293)", () => {
+  it("the pulse's face wins over a lagging listing row — a ring and an unpicked face are answers", async () => {
+    const { pulseFace } = await import("./rail-peek-lib");
+    const row = { icon_slot: 11, icon_picked: true };
+    // Removed on the pulse, still picked on the listing: the ring.
+    expect({ ...row, ...pulseFace({ icon_slot: null, icon_picked: false }) }).toEqual({
+      icon_slot: null,
+      icon_picked: false,
+    });
+    // Picked on the pulse, the listing not caught up: the pick.
+    expect({ ...{ icon_slot: null, icon_picked: false }, ...pulseFace({ icon_slot: 42, icon_picked: true }) }).toEqual({
+      icon_slot: 42,
+      icon_picked: true,
+    });
+    // An older server's pulse says nothing: the row stands.
+    expect({ ...row, ...pulseFace({}) }).toEqual(row);
+  });
+});

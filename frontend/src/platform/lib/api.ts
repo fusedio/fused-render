@@ -3946,12 +3946,18 @@ export interface TaskBackgroundJobs {
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
-  // THE FAVOURITE'S FACE (`task_icons_enabled`, 2026-11-10): which of the 299
+  // THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): which of the 299
   // glyphs in shell/task-icons.ts this task wears — arithmetic on its number
   // server-side (tasks_store.icon_slot); a pick (`setTaskIcon`) stamps
-  // another. ONLY A STARRED TASK CARRIES ONE (2026-11-11): null on every
-  // other row, which draws the ring; absent from an older server.
+  // another. THE ICON IS NOT THE STAR'S (2026-11-16): a row carries one when
+  // it was picked by hand, or while starred unless it was removed
+  // (tasks_store.worn_icons); null draws the ring. Absent from an older
+  // server.
   icon_slot?: number | null;
+  // …and whether the user gave it that face BY HAND (`icon: "on"` on its
+  // number record): a picked face shows with the favourites switch off and
+  // stays on an unstarred task; one that came with the star does neither.
+  icon_picked?: boolean;
   // FAVOURITE (owner, 2026-11-03): the star on the rail card. Server-side,
   // global (`tasks_store.FAVOURITES_FILE`), so every rail and every pane on
   // every page lists the same starred tasks. `starred_open` is the server's
@@ -4360,6 +4366,7 @@ export type TaskPulseTask = Pick<
   | "project"
   | "task_id"
   | "icon_slot"
+  | "icon_picked"
   | "title"
   | "target"
   | "session_id"
@@ -4978,10 +4985,15 @@ export function renameTask(key: string, title: string): Promise<{ ok: boolean; t
 }
 
 /** THE FACE THE USER PICKED for one task (`task_icons_enabled`): `slot`
- *  indexes shell/task-icons.ts and is kept server-side; null takes the pick
- *  back (the face the task's number gives it). Answers the slot it wears now. */
-export function setTaskIcon(key: string, slot: number | null): Promise<{ ok: boolean; icon_slot: number }> {
-  return postJson<{ ok: boolean; icon_slot: number }>("/api/tasks/icon", { key, slot });
+ *  indexes shell/task-icons.ts and is kept server-side, worn starred or not;
+ *  null is the picker's Remove — the ring again, starred or not, until a
+ *  star gives the icon back (2026-11-16). Answers what the task wears now
+ *  (`icon_slot` null after a Remove). A task with no number yet is a 409. */
+export function setTaskIcon(
+  key: string,
+  slot: number | null,
+): Promise<{ ok: boolean; icon_slot: number | null; icon_picked: boolean }> {
+  return postJson<{ ok: boolean; icon_slot: number | null; icon_picked: boolean }>("/api/tasks/icon", { key, slot });
 }
 
 /** THE STAR (owner, 2026-11-03): make a task a favourite, or take it back.

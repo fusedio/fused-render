@@ -673,9 +673,9 @@ test("the stylesheet trades a slot's occupants on hover — the window's in a ra
   expect(css).not.toContain(".task-side-peek-status:hover");
 });
 
-// ---- the favourite's face is a button (TaskIconPick, 2026-11-15) -------------
+// ---- the ring is a button (TaskIconPick, 2026-11-15; any task 2026-11-16) ----
 
-test("a favourite's status icon opens the icon picker outside a rename; a plain ring is not a button", async () => {
+test("the status icon opens the icon picker outside a rename — a favourite's face AND any task's plain ring", async () => {
   const icons = await import("@platform/lib/task-icons-flag");
   const favs = await import("@platform/lib/favourites-flag");
   act(() => {
@@ -692,7 +692,18 @@ test("a favourite's status icon opens the icon picker outside a rename; a plain 
     // Inside the status seat, and no title input anywhere: this is not a rename.
     expect(JSON.stringify(byClass(fav, "task-side-peek-status")[0])).toContain("task-icon-pick");
     expect(flat(fav).some((n) => n.type === "input")).toBe(false);
-    // Not starred: no slot, nothing to press.
+    // Not starred, no face (owner, 2026-11-16: the icon is not the star's):
+    // the plain ring is the same button, in the same seat.
+    const ring = render(head());
+    const ringBtn = byClass(ring, "task-icon-pick")[0]!;
+    expect(ringBtn.type).toBe("button");
+    expect(JSON.stringify(byClass(ring, "task-side-peek-status")[0])).toContain("task-icon-pick");
+    expect(JSON.stringify(ringBtn)).not.toContain("schedule-ring--glyph");
+    // A task with no number yet has nothing to stamp a pick on: no button.
+    expect(byClass(render(head({ task: task({ task_id: "" }) })), "task-icon-pick")).toHaveLength(0);
+    // The experiment off: no button on either.
+    act(() => icons.publishTaskIcons({ enabled: false }));
+    expect(byClass(render(head({ task: task({ starred: true, icon_slot: 3 } as Partial<Task>) })), "task-icon-pick")).toHaveLength(0);
     expect(byClass(render(head()), "task-icon-pick")).toHaveLength(0);
   } finally {
     icons.resetTaskIconsFlagForTests();

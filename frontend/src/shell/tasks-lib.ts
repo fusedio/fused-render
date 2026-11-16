@@ -6107,6 +6107,7 @@ export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
     // plain ring for the first frames and the glyph only once the listing
     // landed — the one mark on the row that visibly CHANGED on open.
     icon_slot: row.icon_slot ?? null,
+    icon_picked: row.icon_picked ?? false,
     project: row.project,
     target: row.target,
     session_id: row.session_id,

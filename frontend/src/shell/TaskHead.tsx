@@ -26,8 +26,8 @@
 //     back to the list INSIDE the same container. No word beside the arrow —
 //     the hint carries it ("Back to tasks").
 //   * ↑↓ — only where there is a list behind the head to walk.
-//   * STATUS — the ring; on a favourite its face, which pressed opens the icon
-//     picker (TaskIconPick). It no longer swaps with anything.
+//   * STATUS — the ring, or the face it wears; pressed, it opens the icon
+//     picker (TaskIconPick — any task, 2026-11-16). It swaps with nothing.
 //   * FOLDER — where the task lives: the host's `place`, or the folder chip.
 //   * THREE A/B SLOTS, one box and two occupants each, so nothing moves: `a`
 //     at rest, `b` while the pointer is on the head (or the keyboard is on a

@@ -4253,14 +4253,15 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          recaps: list | None = None,
          pending: dict | None = None,
          summary_titles: bool = False,
-         icons: dict[str, int] | None = None) -> dict:
+         icons: dict[str, tuple[int, bool]] | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
-    `icons` is `_icon_slots()`, read once per listing: every FAVOURITE's
-    face, computed from its number RECORD (the project the number was minted
-    in, plus a pick), never from this row's own project spelling — so the
-    face cannot change between two listings of one task. A task that is not
-    starred is not in it.
+    `icons` is `_icon_faces()`, read once per listing: every task that WEARS
+    a face (picked by hand, or starred and not removed — 2026-11-16), computed
+    from its number RECORD (the project the number was minted in, plus a
+    pick), never from this row's own project spelling — so the face cannot
+    change between two listings of one task. A task that wears the ring is
+    not in it.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
     card — computed once by the caller for the same reason `busy` is: it is one
@@ -4543,11 +4544,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     row = {
         "key": task["key"],
         "task_id": number,
-        # THE FAVOURITE'S FACE (`task_icons_enabled`, experiment 2026-11-10):
+        # THE TASK'S FACE (`task_icons_enabled`, experiment 2026-11-10):
         # which of the 299 glyphs this row wears, from its number record — see
-        # `_icon_slots`. None unless the task is starred (2026-11-11), and
-        # while it has no number.
-        "icon_slot": (icons or {}).get(task["key"]),
+        # `_icon_faces`. None on a task that wears the ring (not starred and
+        # never given one, or its icon removed — 2026-11-16) and while it has
+        # no number. `icon_picked`: the user gave it that face by hand, so it
+        # shows even with the favourites switch off (`_icon_face`).
+        **_icon_face(icons, task["key"]),
         # THE RAIL CARD'S STAR, and whether that favourite is the one expanded
         # card (`tasks_store.favourite_of`). Global, so every row answers.
         "starred": bool(task.get("starred")),
@@ -4971,7 +4974,7 @@ def _draft_title(text, fallback: str) -> str:
 
 
 def _draft_row(ident: str, record: dict, number: str = "",
-               icon: int | None = None) -> dict:
+               face: dict | None = None) -> dict:
     """One task draft as a listing row.
 
     THE SAME FIELD SET AS `_row`, deliberately and in full: the List, the Board
@@ -5033,7 +5036,9 @@ def _draft_row(ident: str, record: dict, number: str = "",
         # is scheduled. "" only when the state dir is unwritable, which is the
         # same "" every other row falls back to.
         "task_id": number,
-        "icon_slot": icon,
+        # A draft can wear a face picked by hand (2026-11-16); never a
+        # star's — only a started chat can be starred.
+        **(face or _icon_face(None, "")),
         "draft_id": ident,
         "kind": "draft",
         # WHICH composer this draft belongs to. The two are opened by different
@@ -5109,7 +5114,7 @@ def _draft_row(ident: str, record: dict, number: str = "",
 
 
 def _new_chat_draft_row(key: str, record: dict, number: str = "",
-                        icon: int | None = None) -> dict:
+                        face: dict | None = None) -> dict:
     """One UNSENT CHAT as a listing row — a draft keyed `new:<file>`.
 
     Round 1 gave this key no row: it names no session, so there was nothing for
@@ -5149,7 +5154,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "",
     return {
         "key": key,
         "task_id": number,
-        "icon_slot": icon,
+        **(face or _icon_face(None, "")),
         # There is no `draft:<id>` behind this one — the store keys it on the
         # folder. "" rather than the key so a client testing `draft_id` cannot
         # send this to the task-draft routes, which would 400 on the shape.
@@ -5546,7 +5551,7 @@ def _draft_rows(only: frozenset | set | None = None,
         if chat_drafts is None:
             chat_drafts = loaded_chat
     numbers = _draft_numbers(task_drafts, chat_drafts)
-    icons = _icon_slots()
+    icons = _icon_faces()
     # Which sessions this machine has ERASED — read at most once per build, and
     # only when a bound draft is actually seen, because it is a file read and
     # nearly every listing has nothing bound at all. See the skip below.
@@ -5591,13 +5596,13 @@ def _draft_rows(only: frozenset | set | None = None,
                     erased = set()
             if bound not in erased:
                 continue
-        rows.append(_draft_row(ident, record, numbers.get(key, ""), icons.get(key)))
+        rows.append(_draft_row(ident, record, numbers.get(key, ""), _icon_face(icons, key)))
     for key, record in chat_drafts.items():
         if not drafts.is_new_chat_key(key):
             continue
         if only is not None and key not in only:
             continue
-        rows.append(_new_chat_draft_row(key, record, numbers.get(key, ""), icons.get(key)))
+        rows.append(_new_chat_draft_row(key, record, numbers.get(key, ""), _icon_face(icons, key)))
     return rows
 
 
@@ -6311,7 +6316,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     for task in listed.values():
         _place(task)
     numbers = _numbers(listed)
-    icons = _icon_slots()
+    icons = _icon_faces()
     # The number and the name of whoever is in front, once the listing's own
     # allocation has run: a task seeing its first listing gets its number HERE,
     # and a holder outside a narrowed answer is named from the stored table.
@@ -6876,7 +6881,7 @@ async def api_tasks_changes_ws(ws: WebSocket):
 # which is where a task listing's weight actually is.
 _PULSE_FIELDS = (
     "key", "status", "unread", "last_active", "project",
-    "task_id", "icon_slot", "title", "target", "session_id",
+    "task_id", "icon_slot", "icon_picked", "title", "target", "session_id",
     # The desk's change detector (shell/CurrentAppsSection `pulseSignal`): the
     # sidebar refetches the projects table when a task's `happened_at` moves,
     # since that is exactly when `current_apps.observe` can have flipped a
@@ -8046,10 +8051,26 @@ def api_task_favourite(patch: FavouritePatch,
             raise HTTPException(status_code=409,
                                 detail="an archived favourite has no open card")
         force_closed = _archived
+    # A STAR GIVES THE ICON BACK (owner, 2026-11-16): a task whose icon was
+    # removed (`icon: "off"`) follows the star again once it BECOMES starred.
+    # Only on that flip, read before the write: a second `on: true` from a
+    # stale window onto a task already starred must not undo a Remove made
+    # since. An unstar writes nothing to the icon — a face that came with the
+    # star leaves with it, a picked one stays (`tasks_store.worn_icons`).
+    newly_starred = patch.on is True and not tasks_store.favourite_of(
+        tasks_store.favourites_state(), key)[0]
     # `on=False` (unstar) and `on=None, open=False` (close) only ever remove
     # or close a record: the store alone answers them.
     result = tasks_store.set_favourite(key, patch.on, patch.open,
                                        force_closed=force_closed or False)
+    if newly_starred and result["starred"]:
+        try:
+            tasks_store.clear_icon_off(key)
+        except OSError:
+            # The star stands; the icon simply stays removed until the next
+            # star — not worth failing the star over.
+            logger.warning("favourite: could not give %s its icon back", key)
+    # After both writes, so the repaint the watcher triggers sees the icon too.
     tasks_watch.notify(set(result["changed"]) | {key})
     return {"ok": True, "key": key, "starred": result["starred"],
             "open": result["open"]}
@@ -8118,43 +8139,55 @@ def api_task_rename(patch: RenamePatch,
     return {"ok": True, "title": stored}
 
 
-def _icon_slots() -> dict[str, int]:
-    """The face of every FAVOURITE (`tasks_store.icon_slots`, narrowed to the
-    starred keys) — owner, 2026-11-11: the icon is the mark of a special
-    task, given by the star and taken back with it. Every other row carries
-    no face and draws the ring. {} when the state dir cannot be read.
+def _icon_faces() -> dict[str, tuple[int, bool]]:
+    """`{key: (slot, picked)}` for every task that WEARS a face — owner,
+    2026-11-16: the icon and the star are two things (`tasks_store.worn_icons`
+    holds the rule: picked by hand, or starred and not removed by hand).
+    Every other row carries no face and draws the ring. {} when the state dir
+    cannot be read.
 
     NOT gated on the favourites switch here: a listing is cached until a task
     changes, and a preference flip changes none — the shell reads that
-    switch live instead (ScheduleTaskViews `StatusIcon`)."""
+    switch live instead (ScheduleTaskViews `StatusIcon`), and `picked` is
+    what it needs to know to keep a hand-picked face with the switch off."""
     try:
-        starred = tasks_store.favourites_state()
-        if not starred:
-            return {}
-        slots = tasks_store.icon_slots()
+        state = tasks_store.favourites_state()
+        # Starred by the row's own reading (`favourite_of`): a record that is
+        # not a dict reads as not starred there, so it wears no star's face.
+        starred = {key for key in state if tasks_store.favourite_of(state, key)[0]}
+        return tasks_store.worn_icons(starred)
     except OSError:
         return {}
-    return {key: slot for key, slot in slots.items()
-            if tasks_store.favourite_of(starred, key)[0]}
+
+
+def _icon_face(icons: dict[str, tuple[int, bool]] | None, key: str) -> dict:
+    """The two row fields for one key, out of `_icon_faces()`: `icon_slot`
+    (None: the ring) and `icon_picked`."""
+    slot, picked = (icons or {}).get(key) or (None, False)
+    return {"icon_slot": slot, "icon_picked": picked}
 
 
 class IconPatch(BaseModel):
     key: str
-    # The slot picked (0..ICON_COUNT-1), or None: the task's own face again.
+    # The slot picked (0..ICON_COUNT-1), or None: Remove — the ring again.
     slot: int | None = None
 
 
 @router.post("/api/tasks/icon")
 def api_task_icon(patch: IconPatch, x_fused: str | None = Header(default=None)):
-    """Give one task the FACE THE USER PICKED (`task_icons_enabled`; owner,
-    2026-11-11: "instead of giving a random one, we let user pick"): the icon
-    pressed while its title is being edited opens a picker over the whole
-    set, and the choice is stamped on the task's number record
-    (`tasks_store.set_icon`), so it never changes again by itself. `slot`
-    null is the picker's Reset: the number's own face. Any numbered task can
-    hold a pick; one without a number yet is refused. Answers the slot the
-    task wears now — which the listing shows only while it is starred
-    (`_icon_slots`)."""
+    """Give one task the FACE THE USER PICKED, or take its face away
+    (`task_icons_enabled`; owner, 2026-11-11: "instead of giving a random
+    one, we let user pick"; 2026-11-16: the icon is not the star's). Pressing
+    the status ring or icon of ANY task opens a picker over the whole set;
+    the choice is stamped on the task's number record
+    (`tasks_store.set_icon`), so it never changes again by itself, and the
+    task wears it starred or not. `slot` null is the picker's Remove: the
+    ring again, starred or not, until a star gives the icon back.
+
+    Any numbered task can hold one; one without a number yet is refused with
+    a 409 the shell swallows (there is nothing to stamp it on — the press
+    goes quiet and works a listing later). Answers what the task wears now:
+    `icon_slot` null after a Remove, and `icon_picked`."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -8165,13 +8198,15 @@ def api_task_icon(patch: IconPatch, x_fused: str | None = Header(default=None)):
     if slot is not None and not 0 <= slot < tasks_store.ICON_COUNT:
         raise HTTPException(status_code=400, detail="no such icon")
     try:
-        slot = tasks_store.set_icon(key, slot)
+        worn = tasks_store.set_icon(key, slot)
     except OSError:
         return _error("the task store is not writable right now")
-    if slot is None:
-        return _error("this task has no number yet; try again in a moment")
+    if worn is None:
+        return _error("this task has no number yet; try again in a moment",
+                      status=409)
     tasks_watch.notify({key})
-    return {"ok": True, "icon_slot": slot}
+    return {"ok": True, "icon_slot": worn["icon_slot"],
+            "icon_picked": worn["picked"]}
 
 
 def archive_task(task: dict, parked: dict, *,

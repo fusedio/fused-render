@@ -552,7 +552,7 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     # listing answers, and the Board's Upcoming lane sorts by the next run.
     pulse_fields = (
         "key", "status", "unread", "last_active", "project",
-        "task_id", "icon_slot", "title", "target", "session_id", "happened_at", "next_run",
+        "task_id", "icon_slot", "icon_picked", "title", "target", "session_id", "happened_at", "next_run",
         "next_run_entry", "next_run_repeats",
         # ...and where the row stands in its folder's line (2026-09-12): the
         # sidebar's Current apps section prints "n queued" beside "n running",
@@ -6474,6 +6474,83 @@ def test_starring_a_task_puts_the_star_on_the_row_and_the_pulse(client,
     assert {t["key"]: t for t in _pulse(client)}["sess-a"]["starred_at"] == pulse["starred_at"]
     _favourite(client, "sess-a", on=False)
     assert {t["key"]: t for t in _pulse(client)}["sess-a"]["starred_at"] is None
+
+
+# ------------------------------------------------------------- task icons
+# `POST /api/tasks/icon` and the star (owner, 2026-11-16): the icon and the
+# star are two things — a pick is worn starred or not, Remove gives the ring
+# back starred or not, a star brings a removed icon back, and an unstar takes
+# only a face that came with the star.
+
+
+def _icon(client, key, slot):
+    return client.post("/api/tasks/icon", headers=_FUSED,
+                       json={"key": key, "slot": slot})
+
+
+def _face(client, key):
+    row = _by_key(client)[key]
+    pulse = {t["key"]: t for t in _pulse(client)}[key]
+    # The pulse (the rail's rings, the Tasks page's first paint) agrees.
+    assert (pulse["icon_slot"], pulse["icon_picked"]) == (
+        row["icon_slot"], row["icon_picked"])
+    return row["icon_slot"], row["icon_picked"]
+
+
+def test_a_picked_icon_shows_on_an_unstarred_row_and_stays_on_unstar(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    assert _face(client, "sess-a") == (None, False)
+    r = _icon(client, "sess-a", 42)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "icon_slot": 42, "icon_picked": True}
+    # The cached listing was told: the row repaints with the face.
+    assert _face(client, "sess-a") == (42, True)
+    _favourite(client, "sess-a")
+    assert _face(client, "sess-a") == (42, True)
+    _favourite(client, "sess-a", on=False)
+    assert _face(client, "sess-a") == (42, True)
+
+
+def test_remove_gives_a_favourite_the_ring_and_a_new_star_brings_it_back(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    own, picked = _face(client, "sess-a")
+    assert own is not None and picked is False
+    r = _icon(client, "sess-a", None)
+    assert r.json() == {"ok": True, "icon_slot": None, "icon_picked": False}
+    assert _face(client, "sess-a") == (None, False)
+    assert _by_key(client)["sess-a"]["starred"] is True
+    # A stale window's second star on a task already starred does not undo
+    # the Remove: only a task BECOMING starred gets its icon back.
+    _favourite(client, "sess-a")
+    assert _face(client, "sess-a") == (None, False)
+    _favourite(client, "sess-a", on=False)
+    assert _face(client, "sess-a") == (None, False)
+    _favourite(client, "sess-a")
+    assert _face(client, "sess-a") == (own, False)
+
+
+def test_an_auto_icon_leaves_with_the_star(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    assert _face(client, "sess-a")[0] is not None
+    _favourite(client, "sess-a", on=False)
+    assert _face(client, "sess-a") == (None, False)
+
+
+def test_an_icon_for_a_task_with_no_number_is_a_quiet_409(client):
+    r = _icon(client, "nobody", 3)
+    assert r.status_code == 409
+    assert "number" in r.json()["error"]
+
+
+def test_an_icon_out_of_range_is_a_400(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _by_key(client)
+    assert _icon(client, "sess-a", 299).status_code == 400
+    assert _icon(client, "sess-a", -1).status_code == 400
 
 
 def test_opening_a_second_favourite_closes_the_first(client, projects_dir):
