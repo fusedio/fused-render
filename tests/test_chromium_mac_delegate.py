@@ -183,6 +183,15 @@ def test_permissions_granted_for_our_origin_only(mac):
     assert not d.chromiumView_allowPermission_forOrigin_(None, "geolocation", None)
 
 
+def test_multiple_downloads_granted_for_any_origin(mac):
+    # A denial latches Chromium's download limiter for the page, so a framed
+    # workbench (another origin) could download once and then never again.
+    d, *_ = _delegate(mac)
+    assert d.chromiumView_allowPermission_forOrigin_(None, "multiple_downloads", _url("https://www.fused.io/"))
+    assert d.chromiumView_allowPermission_forOrigin_(None, "multiple_downloads", _url(f"http://127.0.0.1:{PORT}/"))
+    assert d.chromiumView_allowPermission_forOrigin_(None, "multiple_downloads", None)
+
+
 def test_context_menu_items_follow_window_policy(mac):
     d, *_ = _delegate(mac)
     f = d.chromiumView_titleForContextMenuItem_linkURL_imageURL_mediaURL_proposedTitle_

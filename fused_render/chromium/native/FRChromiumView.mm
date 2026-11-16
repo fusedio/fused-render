@@ -522,8 +522,14 @@ class FRClient : public CefClient,
                               const CefString &requesting_origin,
                               uint32_t requested_permissions,
                               CefRefPtr<CefPermissionPromptCallback> callback) override {
+    // MULTIPLE_DOWNLOADS is Chromium's automatic-downloads limiter: after a
+    // page's first download, the next one prompts. Denying it latches the
+    // tab to "downloads not allowed" until it navigates, so every later
+    // download fails silently until a reload — it needs its own kind for the
+    // delegate to grant.
     NSString *kind = @"other";
-    if (requested_permissions & CEF_PERMISSION_TYPE_GEOLOCATION) kind = @"geolocation";
+    if (requested_permissions & CEF_PERMISSION_TYPE_MULTIPLE_DOWNLOADS) kind = @"multiple_downloads";
+    else if (requested_permissions & CEF_PERMISSION_TYPE_GEOLOCATION) kind = @"geolocation";
     else if (requested_permissions & CEF_PERMISSION_TYPE_NOTIFICATIONS) kind = @"notifications";
     else if (requested_permissions & CEF_PERMISSION_TYPE_CLIPBOARD) kind = @"clipboard";
     else if (requested_permissions & CEF_PERMISSION_TYPE_MIDI_SYSEX) kind = @"midi";
