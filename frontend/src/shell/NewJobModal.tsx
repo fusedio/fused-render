@@ -30,6 +30,8 @@ import { TaskPeekWho } from "./TaskPeekWho";
 // everywhere"), behind its flag; off, the chat's head below is unchanged.
 import { TaskHead } from "./TaskHead";
 import { useTaskHeadUnified } from "./task-head-flag";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
 import { usePlusCardHidden } from "./claude-rail/plus-card-store";
 import { useAutoReadOpenTasks, useDocumentVisible } from "./task-open-read";
 import { useTasksPulseRows } from "./tasksPulse";
@@ -2861,6 +2863,7 @@ export default function NewJobModal({
   onOpenDraft,
   initialChatEntry = null,
   initialChatSeed = null,
+  pinNode,
   onCreatedChat,
   onClose,
   onCreated,
@@ -3021,6 +3024,10 @@ export default function NewJobModal({
   /** The settings the entry was created with — the open chat's until its
    *  row is listed. */
   initialChatSeed?: { model?: string; effort?: string; backend?: string } | null;
+  /** THE RAIL CARD'S PIN (claude-rail RailPinButton): seated in both shared
+   *  heads — the landing's and the open chat's — first in the corner, before the ← (no ✕ with it).
+   *  The rail's popover only. */
+  pinNode?: ReactNode;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -5253,6 +5260,8 @@ export default function NewJobModal({
   const chatTitle = liveChat ? (cardTitleLine(liveChat).text || liveChat.title || "Chat") : "";
   const chatHref = liveChat ? taskHref(liveChat) : null;
   const unified = useTaskHeadUnified();
+  // "Open in Tasks" reads the page's path: a card kept across a hop re-reads it.
+  useUrlVersion();
   /** The shared head's chip seat (ChatMount `headChipsHost`): the chat's
    *  worktree pill shows there, as in every other task view. */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
@@ -5277,6 +5286,12 @@ export default function NewJobModal({
     if (onOpenChat) return onOpenChat(href);
     window.location.assign(href);
   };
+  /** OPEN IN TASKS: close the card, then go to the Tasks page with this task's
+   *  panel up (the rail's own Tasks door goes by `navigateUrl` too). */
+  const openInTasksFromCard = (href: string): void => {
+    onClose();
+    void navigateUrl(href);
+  };
   /** THE OPEN CHAT'S ⋮ on the shared head — the same `Kebab`, with the same
    *  props, the old head below renders inline. */
   const chatKebab = liveChat?.session_id ? (
@@ -5290,6 +5305,7 @@ export default function NewJobModal({
         queued={taskColumn(liveChat) === "queued"}
         onErased={leaveChat}
         onArchived={leaveChat}
+        {...openInTasksProps(openInTasksItem({ on: unified, taskKey: liveChat.key, onOpen: openInTasksFromCard }))}
         {...(chatHref && opensInSidePane(chatHref) ? {
           fullScreen: {
             on: false,
@@ -6058,6 +6074,7 @@ export default function NewJobModal({
                   queued={taskColumn(liveChat) === "queued"}
                   onErased={leaveChat}
                   onArchived={leaveChat}
+                  {...openInTasksProps(openInTasksItem({ on: unified, taskKey: liveChat.key, onOpen: openInTasksFromCard }))}
                   {...(chatHref && opensInSidePane(chatHref) ? {
                     fullScreen: {
                       on: false,
@@ -6090,7 +6107,10 @@ export default function NewJobModal({
         head: ({ titleId, close, busy: closing, armed, parts }: ModalHeadContext) => (
           <TaskHead
             className="nt-form-head"
-            lead={closing ? null : {
+            pinNode={pinNode}
+            // The rail's popover with the pin (`pinNode`): no × — a click
+            // outside closes a temp card, a pinned one is unpinned first.
+            lead={closing || pinNode ? null : {
               kind: "close",
               label: armed ? "Close and discard changes" : "Close",
               hint: armed ? "Press again to discard" : "Close",
@@ -6121,6 +6141,7 @@ export default function NewJobModal({
             reveal="window"
             className="nt-chat-head"
             lead={{ kind: "back", label: "Back", onPress: leaveChat }}
+            pinNode={pinNode}
             task={liveChat}
             title={liveChat ? undefined : (name || fields.title || "New task")}
             titleId={titleId}

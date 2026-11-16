@@ -22,3 +22,17 @@ test("a refused row says why in its label, lower-cased after the dash", () => {
   );
   expect(blockedActionLabel(TASK_ACTION_LABELS.delete, null)).toBe("Delete task");
 });
+
+import { TASKS_PATH, isTasksPath, openInTasksHref } from "./task-actions";
+
+test("Open in Tasks: href for a normal task, null on the Tasks page / flag off / no row", () => {
+  const base = { on: true, taskKey: "abc 123", pathname: "/explorer/view/x" };
+  expect(TASK_ACTION_LABELS.openInTasks).toBe("Open in Tasks");
+  expect(openInTasksHref(base)).toBe("/tasks?peek=abc%20123");
+  expect(openInTasksHref({ ...base, pathname: "/tasks" })).toBeNull();
+  expect(openInTasksHref({ ...base, on: false })).toBeNull();
+  expect(openInTasksHref({ ...base, taskKey: "" })).toBeNull();
+  expect(openInTasksHref({ ...base, taskKey: null })).toBeNull();
+  expect(isTasksPath(TASKS_PATH)).toBe(true);
+  expect(isTasksPath("/tasks/other")).toBe(false);
+});

@@ -1119,6 +1119,21 @@
   outline-offset: 1px;
   color: var(--fg);
 }
+/* THE PIN (RailPin.tsx; owner, 2026-11-16): hollow and muted while the card is
+   a hover or temp, filled in the accent once pinned — on the shared head's
+   icon button and on the legacy heads' row alike. */
+.rail-pin-btn.is-pinned,
+.rail-pin-btn.is-pinned:hover:not(:disabled) {
+  color: var(--accent-soft);
+}
+/* A PINNED WINDOW wears a very thin accent edge (owner, 2026-11-16: "when pin
+   have a very thin accent color border around"): the card's own 1px border,
+   in the accent — every rail card, and the +'s popover, told by the pressed
+   pin in its head. */
+.claude-rail-peek:has(.rail-pin-btn.is-pinned) .claude-rail-peek-card,
+.modal-popover .modal-dialog:has(.rail-pin-btn.is-pinned) {
+  border-color: var(--accent);
+}
 /* The chats: every kept mount stacked in the same box, the shown one visible.
    `visibility`, not `display`: a hidden chat keeps its layout and its scroll
    position, which is what makes coming back to it instant. */

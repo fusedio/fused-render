@@ -161,6 +161,8 @@ import { PlaceTags } from "./PlaceTags";
 // THE ONE TASK HEAD (design.md "One task head, everywhere"), behind its flag.
 import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { openInTasksItem } from "@platform/ui/openInTasks";
 import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
 import { TaskIconPick } from "@shell/TaskIconPick";
@@ -195,6 +197,7 @@ import {
   type StarMark,
 } from "./rail-peek-lib";
 import { publishWindowABox, setSnapGuide, windowABox } from "./card-snap";
+import { PinAngle, RailPinButton } from "./RailPin";
 
 /** Where a card's dragged size is kept in the ui-layout document: the
  *  rail's pinned card, or the favourite's (RailPeekProps `resizeKey`). */
@@ -215,18 +218,6 @@ function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; h
 /** Every grip, corners last so they paint (and hit) over the edges' ends —
  *  the favourite's card's too (header). */
 const ALL_GRIPS: readonly ResizeEdge[] = ["l", "t", "b", "tl", "bl"];
-
-/** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this") —
- *  Bootstrap Icons' `pin-angle-fill` (MIT), inlined: react-icons is not a
- *  dependency and one path does not earn one. Filled, angled, 16-unit box.
- *  The head's first seat while favourites are OFF (favourites-flag). */
-function PinAngleFill({ size = 14 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 0-.335-.018-.46-.039l-3.134 3.134a6 6 0 0 1 .16 1.013c.046.702-.032 1.687-.72 2.375a.5.5 0 0 1-.707 0l-2.829-2.828-3.182 3.182c-.195.195-1.219.902-1.414.707s.512-1.22.707-1.414l3.182-3.182-2.828-2.829a.5.5 0 0 1 0-.707c.688-.688 1.673-.767 2.375-.72a6 6 0 0 1 1.013.16l3.134-3.133a3 3 0 0 1-.04-.461c0-.43.108-1.022.589-1.503a.5.5 0 0 1 .353-.146" />
-    </svg>
-  );
-}
 
 /** The server's cap on a task's name (TaskPeekWho's). */
 const TITLE_MAX_LENGTH = 200;
@@ -429,6 +420,11 @@ export interface RailPeekProps {
    *  passing hover. Only a pinned card wears the corner grips
    *  and takes the remembered size (header). */
   pinned: boolean;
+  /** HOVER / TEMP / PIN (rail-pin-lib; the unified-head switch on): the
+   *  head's pin icon, its first button (no × with it) — `pinned` the card's pin (not a press's),
+   *  `onToggle` its press. Given, Escape closes a hover and a temp card and only
+   *  a pinned one ignores it. Absent: the card as it was. */
+  pinCtl?: { pinned: boolean; onToggle: () => void } | null;
   /** THE HEAD NAMES THE PLACE (Akshil, 2026-11-16: "canvas_name will only
    *  appear for fav window b"): the canvas's or the folder's own name, at the
    *  head's left — the favourite's window, whose chat may live anywhere. The
@@ -521,6 +517,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     openIcon,
     onBox,
     pinned,
+    pinCtl = null,
     placeName = false,
   },
   ref,
@@ -1126,6 +1123,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the pulse.
   const favsOn = useTaskFavourites();
   const unified = useTaskHeadUnified();
+  // "Open in Tasks" reads the page's path: a card kept across a hop re-reads it.
+  useUrlVersion();
   const [starMark, setStarMark] = useState<StarMark | null>(null);
   const starSeq = useRef(0);
   const starOf = (t: RailRow["pulse"]): boolean =>
@@ -1175,7 +1174,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // A HELD card ignores Escape (header): the head's and the chat's Escape
   // both read the flag off a ref, so the chat's handler need not re-mount.
   const heldRef = useRef(held);
-  heldRef.current = held;
+  // …and with the pin (`pinCtl`) Escape has one rule (owner, 2026-11-16: "a
+  // consistent behaviour"): a hover and a temp card close on it, only a
+  // PINNED one ignores it — a favourite's open card included, which is
+  // `held` for every other purpose.
+  heldRef.current = pinCtl ? pinCtl.pinned : held;
   const onChatEscape = useCallback(() => {
     if (!heldRef.current) onDismiss();
   }, [onDismiss]);
@@ -1299,7 +1302,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         }
       }}
     >
-      {held ? <X size={14} aria-hidden="true" /> : <PinAngleFill size={14} />}
+      {held ? <X size={14} aria-hidden="true" /> : <PinAngle size={14} filled />}
     </button>
   );
   const placeEl = (head: SeatFacts, part?: "place" | "where") =>
@@ -1504,7 +1507,20 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       <Star size={14} fill={starOf(head.t) ? "currentColor" : "none"} aria-hidden="true" />
     </button>
   );
-  const kebabFor = (head: SeatFacts, extraItems?: KebabExtraItem[]) => (
+  const kebabFor = (head: SeatFacts, hostItems?: KebabExtraItem[]) => {
+    // OPEN IN TASKS (flag on, off the Tasks page): the Open door's close,
+    // after a hop to the Tasks page with this task's panel up.
+    const inTasks = openInTasksItem({
+      on: unified,
+      taskKey: head.t.session_id ? head.t.key : null,
+      onOpen: (href) => {
+        void navigateUrl(href);
+        onHeld(false);
+        onDismiss("door");
+      },
+    });
+    const extraItems = inTasks ? [...(hostItems ?? []), inTasks] : hostItems;
+    return (
     <AgentProvider backend={head.row?.backend ?? head.t.backend ?? ""}>
       <Kebab
         // Keyed per chat: the menu caches its labels per session.
@@ -1544,7 +1560,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         {...(extraItems ? { extraItems } : {})}
       />
     </AgentProvider>
-  );
+    );
+  };
 
   return createPortal(
     <>
@@ -1622,9 +1639,15 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // dropped its draft on every change of shown chat).
               key={head.t.key}
               className="claude-rail-peek-task-head"
-              {...(favsOn ? {} : { leadNode: pinButton })}
+              {...(favsOn || pinCtl ? {} : { leadNode: pinButton })}
+              {...(pinCtl ? { pinNode: <RailPinButton pinned={pinCtl.pinned} onToggle={pinCtl.onToggle} /> } : {})}
+              // WITH THE PIN no card has a × (owner, 2026-11-16: "we don't need
+              // a × button"): a click outside closes a temp card, and a
+              // pinned one is unpinned first. The pin is the head's first seat.
               lead={
-                favsOn
+                pinCtl
+                  ? null
+                  : favsOn
                   ? {
                       kind: "close",
                       label: "Close the preview",

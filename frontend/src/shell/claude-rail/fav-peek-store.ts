@@ -418,6 +418,11 @@ export function favHoverIntent(): PeekIntent {
   return hoverIntent;
 }
 
+/** A press that started in the favourite's card (React's capture phase,
+ *  portals included; FavouritePeek) — the rail's outside-press watcher for a
+ *  TEMP card reads it (rail-pin-lib). */
+export const favPress = { inside: false };
+
 /** Drop the hover now (a press converted it, the rail went, the card was
  *  closed): no grace, nothing left pending. */
 export function dismissFavHover(): void {

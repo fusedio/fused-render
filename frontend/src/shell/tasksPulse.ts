@@ -415,6 +415,12 @@ export function pokeOnChatActivity(key: string | null) {
  * the listing will confirm. Empty until the first answer lands, which is the
  * behaviour the page had before this existed.
  */
+/** Has the pulse's first real answer landed (`loaded`)? Until then an empty
+ *  list says nothing about which chats exist. */
+export function tasksPulseLoaded(): boolean {
+  return loaded;
+}
+
 export function readTasksRows(): TaskPulseTask[] {
   return tasks;
 }

@@ -141,6 +141,11 @@ export interface TaskHeadProps {
    *  panes' hide-the-panel × while a chat's ← holds the lead — those panes
    *  have no other close. Order: [preLead][lead][↑][↓]. */
   preLead?: ReactNode;
+  /** THE RAIL CARD'S PIN (claude-rail RailPinButton; owner, 2026-11-16): a
+   *  rail card's head only. Seated first, where the × was — before a ← — so the
+   *  corner reads `[pin] [←] [↑][↓]`; in the acts cluster, which no rung
+   *  of the ladder folds. */
+  pinNode?: ReactNode;
   /** The favourite star, the count slot's `b` (default on). Off where the
    *  favourites switch is off (the rail card's legacy rule): the count stays. */
   star?: boolean;
@@ -272,6 +277,7 @@ export function TaskHead({
   className,
   leadNode,
   preLead,
+  pinNode,
   star = true,
   starNode,
   statusOverlay,
@@ -650,9 +656,11 @@ export function TaskHead({
       data-fit={fit}
     >
       <div className="task-head-row">
-        {preLead || leadNode || lead || nav ? (
+        {preLead || leadNode || lead || nav || pinNode ? (
           <div className="task-head-acts">
             {preLead}
+            {/* A ← lead: the pin before it, after any × (`pinNode`). */}
+            {lead?.kind === "back" && !leadNode ? pinNode : null}
             {leadNode ? (
               leadNode
             ) : lead ? (
@@ -668,6 +676,8 @@ export function TaskHead({
                 {leadIcon}
               </button>
             ) : null}
+            {/* A × lead (or none): the pin after it (`pinNode`). */}
+            {lead?.kind === "back" && !leadNode ? null : pinNode}
             {nav ? (
               // One seat for both chevrons, so one rung folds them (3).
               <span className="task-head-nav">

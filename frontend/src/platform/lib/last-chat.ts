@@ -252,6 +252,52 @@ export function useFavOpen(): string | null {
   return useSyncExternalStore(subscribeFavOpen, favOpen, favOpen);
 }
 
+// THE OPEN FAVOURITE'S PIN (claude-rail rail-pin-lib; owner, 2026-11-16,
+// behind the unified-head switch): which favourite's card the reader PINNED
+// in this window (the pin icon, a double-click on its ring) — the open card is
+// pinned while this names the open key, TEMP otherwise. sessionStorage
+// `fused-render:fav-pinned`, so a reload brings back only a pinned card
+// (FavouritePeek).
+const favPinnedMark = markStore("fused-render:fav-pinned");
+
+/** The favourite whose card is pinned in THIS window, by task key. */
+export function favPinned(): string | null {
+  return favPinnedMark.get();
+}
+
+/** Pin `key`'s favourite card in this window, or let the pin go (`null`). */
+export function setFavPinned(key: string | null): void {
+  favPinnedMark.set(key);
+}
+
+// WINDOW A'S PIN (claude-rail rail-pin-lib; owner, 2026-11-16: "when we pin we
+// are pinning the window rather than the task"): what the pinned window A
+// shows in this window — `task:<key>`, `plus`, `tasks`, `bots`, `git`
+// (`aPinWord`) — or nothing while it is not pinned. sessionStorage
+// `fused-render:a-pinned`, so the pin outlives the rail that held it: a page
+// hop, a page with no rail, a reload (ClaudeRail's restore).
+const aPinnedMark = markStore("fused-render:a-pinned");
+
+/** What the pinned window A shows in THIS window, or null. */
+export function aPinned(): string | null {
+  return aPinnedMark.get();
+}
+
+/** Pin window A on `word`, or let the pin go (`null`). */
+export function setAPinned(word: string | null): void {
+  aPinnedMark.set(word);
+}
+
+/** `onLastChatStorage`, for the favourite's pin. */
+export function onFavPinnedStorage(e: Pick<StorageEvent, "key" | "storageArea">): void {
+  favPinnedMark.onStorage(e);
+}
+
+/** The pinned favourite, live. */
+export function useFavPinned(): string | null {
+  return useSyncExternalStore(favPinnedMark.subscribe, favPinnedMark.get, favPinnedMark.get);
+}
+
 // THE OPEN BOT CARD IS PER WINDOW TOO (owner, 2026-11-08: "bots open in
 // window B close when I switch view, which is wrong — tasks open in window B
 // don't; they should only close on a switch to a task or another bot, or the

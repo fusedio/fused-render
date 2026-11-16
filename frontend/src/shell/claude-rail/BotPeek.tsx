@@ -74,6 +74,7 @@ import type { FaceSubject } from "@apps/bots/lib/face";
 import { botStatusWords } from "./claude-rail-lib";
 import { isBotsPath } from "@apps/bots/routes";
 import { publishFavBox } from "./fav-peek-store";
+import { RailPinButton } from "./RailPin";
 import { setSnapGuide, windowABox } from "./card-snap";
 import {
   FAV_HEIGHT,
@@ -169,10 +170,15 @@ export interface BotPeekProps {
   onHeld: (held: boolean) => void;
   /** PINNED by a press (PeekIntent), not a passing hover. */
   pinned: boolean;
+  /** HOVER / TEMP / PIN (rail-pin-lib; the unified-head switch on): the
+   *  head's pin icon, its first button (no × with it) — `pinned` the card's pin, `onToggle` its
+   *  press. Given, Escape closes a hover and a temp card; only a pinned one
+   *  ignores it. Absent: the card as it was. */
+  pinCtl?: { pinned: boolean; onToggle: () => void } | null;
 }
 
 export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
-  { id, shown, anchorOf, railEl, onPointerEnter, onPointerLeave, onCone, onPressInside, onHold, onDismiss, onNoRoom, onOpen, held, onHeld, pinned },
+  { id, shown, anchorOf, railEl, onPointerEnter, onPointerLeave, onCone, onPressInside, onHold, onDismiss, onNoRoom, onOpen, held, onHeld, pinned, pinCtl = null },
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -413,7 +419,9 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     onHold(false);
   };
   const heldRef = useRef(held);
-  heldRef.current = held;
+  // …and with the pin (`pinCtl`) only a PINNED card: temp closes as a hover
+  // does (owner, 2026-11-16: "a consistent behaviour").
+  heldRef.current = pinCtl ? pinCtl.pinned : held;
   // ESCAPE closes an unheld card: on the head, and in the chat's own thread
   // and composer once they have let it through (the composer prevents the
   // default when Escape was its own — a reply quote dropped, the command
@@ -484,18 +492,22 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
           {view && subject && (
             <div className="claude-rail-peek-head">
               <div className="claude-rail-peek-row">
-                <button
-                  type="button"
-                  className="claude-rail-peek-btn claude-rail-peek-close"
-                  aria-label="Close the preview"
-                  title="Close the preview"
-                  onClick={() => {
-                    onHeld(false);
-                    onDismiss();
-                  }}
-                >
-                  <X size={14} aria-hidden="true" />
-                </button>
+                {/* With the pin: no × (a click outside closes a temp card). */}
+                {!pinCtl && (
+                  <button
+                    type="button"
+                    className="claude-rail-peek-btn claude-rail-peek-close"
+                    aria-label="Close the preview"
+                    title="Close the preview"
+                    onClick={() => {
+                      onHeld(false);
+                      onDismiss();
+                    }}
+                  >
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                )}
+                {pinCtl && <RailPinButton variant="legacy" pinned={pinCtl.pinned} onToggle={pinCtl.onToggle} />}
                 <span className="claude-rail-peek-botface" aria-hidden="true">
                   <Face b={subject} />
                 </span>
