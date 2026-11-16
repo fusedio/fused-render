@@ -512,7 +512,30 @@ def _looks_like_text(path: str) -> bool:
     return True
 
 
-def _templates_for(path: str, is_dir: bool):
+#: A template folder holding this file reads an `s3://` address in `_file`
+#: itself (signing it with `fused.s3.sign` / `fused_s3`, D1484), so the
+#: explorer can open a bucket object in it without downloading first.
+STREAM_S3_MARKER = "stream-s3"
+
+
+def remote_stream_templates(name: str) -> list:
+    """The templates for a bucket object named `name` that stream it: the
+    same registry resolution a local file gets (user over core), kept to the
+    entries whose folder carries `STREAM_S3_MARKER`. Never a native template
+    and never a conditional one (its gate runs on a local path), and no text
+    sniff — there are no local bytes to sniff."""
+    entries, _err = _templates_for(name, False, sniff_text=False)
+    out = []
+    for e in entries:
+        path = e.get("path")
+        if (not path or e.get("conditional") or _is_native(path)
+                or not os.path.isfile(os.path.join(os.path.dirname(path), STREAM_S3_MARKER))):
+            continue
+        out.append(e)
+    return out
+
+
+def _templates_for(path: str, is_dir: bool, *, sniff_text: bool = True):
     """Returns (templates: list[dict], template_error: str|None) — SPEC PT-8.
 
     Both binding tables are registries in one format (D73): the built-in
@@ -564,7 +587,7 @@ def _templates_for(path: str, is_dir: bool):
             # The user's value resolved to nothing at all -> built-in fallback.
             entries, _ = _resolve_mode_list(builtin_names)
 
-    if not entries and not is_dir and _looks_like_text(path):
+    if not entries and not is_dir and sniff_text and _looks_like_text(path):
         # Nothing in either registry matched. Many config/dotfiles are plain
         # text the suffix matcher structurally can't reach — its keys are
         # dot-anchored *suffixes* needing a non-empty stem, so a whole-name

@@ -1,6 +1,7 @@
 """`/api/remote/*` — an `s3://` address as an explorer location.
 
-  GET  /api/remote/stat?url=           file or folder, and whether it is cached
+  GET  /api/remote/stat?url=           file or folder, whether it is cached,
+                                       and the templates that stream it
   GET  /api/remote/list?url=&cursor=   one level of a folder, one page
   GET  /api/remote/read?url=&offset=&length=
                                        a byte range of an object, streamed
@@ -144,7 +145,21 @@ def _dir_payload(bucket: str, prefix: str) -> dict:
     return {"url": canonical_url(bucket, prefix), "bucket": bucket, "key": prefix,
             "name": _name(bucket, prefix), "kind": "dir", "size": None, "mtime": None,
             "etag": None, "cached": False, "path": None,
-            "warn_bytes": remote_fetch.WARN_BYTES}
+            "warn_bytes": remote_fetch.WARN_BYTES, "stream_templates": []}
+
+
+def _stream_templates(name: str) -> list:
+    """The file's templates that read the `s3://` address themselves (a
+    `stream-s3` marker, D1484): the explorer opens the object in these with
+    no download. Best-effort: a registry problem means no streaming, never a
+    failed stat."""
+    from fused_render.server import templates as server_templates
+
+    try:
+        return server_templates.remote_stream_templates(name)
+    except Exception:  # noqa: BLE001
+        logger.warning("stream template lookup failed for %r", name, exc_info=True)
+        return []
 
 
 def _missing(bucket: str, key: str) -> RemoteError:
@@ -179,7 +194,8 @@ def _stat(url) -> dict:
     return {"url": canonical_url(bucket, key), "bucket": bucket, "key": key,
             "name": _name(bucket, key), "kind": "file", "size": info.size,
             "mtime": info.mtime, "etag": info.etag, "cached": path is not None,
-            "path": path, "warn_bytes": remote_fetch.WARN_BYTES}
+            "path": path, "warn_bytes": remote_fetch.WARN_BYTES,
+            "stream_templates": _stream_templates(_name(bucket, key))}
 
 
 def _list(url, cursor) -> dict:

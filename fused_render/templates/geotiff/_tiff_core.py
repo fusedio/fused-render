@@ -30,22 +30,66 @@ class Unsupported(Exception):
 
 
 # ---------------------------------------------------------------- TIFF parsing
-_TYPE_SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}
+_TYPE_SIZE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8,
+              13: 4, 16: 8, 17: 8, 18: 8}
+
+# A BigTIFF IFD with more entries than this is corrupt, not big (real files
+# carry a few dozen tags); without a cap a bad count would loop for hours.
+_MAX_BIGTIFF_ENTRIES = 4096
+
+
+class ByteOrder(str):
+    """The struct byte-order prefix ("<" or ">") that `parse_header` returns as
+    `en`, also carrying `.big` — True for BigTIFF (8-byte offsets, 20-byte IFD
+    entries). Still a plain "<"/">" to every caller that formats or compares
+    it, so the IFD layout rides along without changing a signature."""
+
+    big = False
+
+    def __new__(cls, prefix, big=False):
+        obj = super().__new__(cls, prefix)
+        obj.big = big
+        return obj
+
+
+def _unpack_at(fmt, buf, off):
+    """`struct.unpack_from(fmt, buf, off)` for any SLICEABLE buffer: an mmap
+    of a local file, or a `_range_file.RemoteBuffer` (an s3:// object read
+    by HTTP ranges), which has no buffer protocol. Same bytes, and the same
+    `struct.error` for a read past the end."""
+    size = struct.calcsize(fmt)
+    return struct.unpack(fmt, buf[off:off + size])
 
 
 def _read_ifd(buf, en, off=None):
-    """Parse one IFD at `off` (default: first) -> ({tag: (type, [values])}, next_ifd_off)."""
+    """Parse one IFD at `off` (default: first) -> ({tag: (type, [values])}, next_ifd_off).
+    Classic TIFF and BigTIFF (`en.big`): the layout differs, the result does not."""
+    if getattr(en, "big", False):
+        if off is None:
+            off = _unpack_at(en + "Q", buf, 8)[0]
+        n = _unpack_at(en + "Q", buf, off)[0]
+        if n > _MAX_BIGTIFF_ENTRIES:
+            raise struct.error(f"BigTIFF IFD claims {n} entries")
+        tags = {}
+        for i in range(n):
+            base = off + 8 + i * 20
+            tag, typ, count = _unpack_at(en + "HHQ", buf, base)
+            size = _TYPE_SIZE.get(typ, 1) * count
+            voff = base + 12 if size <= 8 else _unpack_at(en + "Q", buf, base + 12)[0]
+            tags[tag] = (typ, _read_values(buf, en, typ, count, voff))
+        next_off = _unpack_at(en + "Q", buf, off + 8 + n * 20)[0]
+        return tags, next_off
     if off is None:
-        off = struct.unpack_from(en + "I", buf, 4)[0]
-    n = struct.unpack_from(en + "H", buf, off)[0]
+        off = _unpack_at(en + "I", buf, 4)[0]
+    n = _unpack_at(en + "H", buf, off)[0]
     tags = {}
     for i in range(n):
         base = off + 2 + i * 12
-        tag, typ, count = struct.unpack_from(en + "HHI", buf, base)
+        tag, typ, count = _unpack_at(en + "HHI", buf, base)
         size = _TYPE_SIZE.get(typ, 1) * count
-        voff = base + 8 if size <= 4 else struct.unpack_from(en + "I", buf, base + 8)[0]
+        voff = base + 8 if size <= 4 else _unpack_at(en + "I", buf, base + 8)[0]
         tags[tag] = (typ, _read_values(buf, en, typ, count, voff))
-    next_off = struct.unpack_from(en + "I", buf, off + 2 + n * 12)[0]
+    next_off = _unpack_at(en + "I", buf, off + 2 + n * 12)[0]
     return tags, next_off
 
 
@@ -67,13 +111,14 @@ def _overview_levels(buf, en, first_next):
 def _read_values(buf, en, typ, count, off):
     if typ == 2:  # ASCII
         return buf[off:off + count].split(b"\x00")[0].decode("latin-1", "replace")
-    fmt = {1: "B", 3: "H", 4: "I", 6: "b", 8: "h", 9: "i", 11: "f", 12: "d"}.get(typ)
+    fmt = {1: "B", 3: "H", 4: "I", 6: "b", 8: "h", 9: "i", 11: "f", 12: "d",
+           13: "I", 16: "Q", 17: "q", 18: "Q"}.get(typ)
     if typ == 5:  # RATIONAL
-        vals = struct.unpack_from(en + "%dI" % (count * 2), buf, off)
+        vals = _unpack_at(en + "%dI" % (count * 2), buf, off)
         return [vals[i] / vals[i + 1] if vals[i + 1] else 0.0 for i in range(0, len(vals), 2)]
     if not fmt:
         return list(buf[off:off + count])
-    return list(struct.unpack_from(en + fmt * count, buf, off))
+    return list(_unpack_at(en + fmt * count, buf, off))
 
 
 def _v(tags, tag, default=None):
@@ -126,22 +171,114 @@ _PHOTOMETRIC = {0: "min-is-white", 1: "min-is-black", 2: "RGB", 3: "palette",
                 4: "mask", 5: "CMYK", 6: "YCbCr"}
 
 
-def parse_header(path):
-    """Read the file + parse the first IFD. Works for ANY compression —
-    header metadata is available even when pixels can't be decoded purely."""
+def is_remote(path) -> bool:
+    """`path` is an `s3://` address (streamed, D1484), not a local file."""
+    return isinstance(path, str) and path[:5].lower() == "s3://"
+
+
+# One RemoteBuffer per address per process: tiff_reader parses the header
+# and then decodes, and each would otherwise cost its own header request.
+_REMOTE = {}
+
+
+def open_buffer(path):
+    """The file as a sliceable buffer: an mmap for a local path, a
+    `_range_file.RemoteBuffer` (HTTP range reads of a URL the server signs)
+    for an `s3://` address. Everything below reads `buf` only by `len`,
+    slicing and `_unpack_at`, so both work everywhere."""
+    if not isinstance(path, str):
+        return path  # already a buffer (the tile daemon opens its own)
+    if is_remote(path):
+        import _range_file
+        buf = _REMOTE.get(path)
+        if buf is None or buf.changed:
+            buf = _REMOTE[path] = _range_file.RemoteBuffer(path)
+        return buf
     import mmap
     with open(path, "rb") as f:
         # mmap, not read(): header + tile decode only touch the pages they
         # use, so a 300MB COG opens as fast as a 3MB one
-        buf = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+
+
+def gdal_source(path):
+    """`(name, size)` for opening `path` with GDAL/rasterio: the local path
+    and its size, or for an `s3://` address a `/vsicurl/` name on a freshly
+    signed URL (and the object's size, or None). The URL is for this process
+    and its own children only — never a runPython result or log line."""
+    if not is_remote(path):
+        return path, os.path.getsize(path)
+    import _range_file
+    url = _range_file.fused_s3.sign(path)["url"]
+    buf = _REMOTE.get(path)
+    return "/vsicurl/" + url, (len(buf) if buf is not None else None)
+
+
+def gdal_env(base=None):
+    """Environment for a rasterio child reading a `/vsicurl/` source: no
+    sidecar-file probing (each would be a request), and a CA bundle for curl
+    when nothing names one (certifi, which pyproj and rasterio both bring)."""
+    env = dict(os.environ if base is None else base)
+    env.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+    env.setdefault("GDAL_HTTP_MAX_RETRY", "2")
+    if not (env.get("CURL_CA_BUNDLE") or env.get("SSL_CERT_FILE")):
+        try:
+            import certifi
+            env["CURL_CA_BUNDLE"] = certifi.where()
+        except ImportError:
+            pass
+    return env
+
+
+# A streamed read that would touch more than this is refused with a pointer
+# to the download instead: past it, "streaming" is a slow download that is
+# thrown away (a 3 GB TIFF with no overviews, viewed whole).
+STREAM_BUDGET = 64 * 1024 * 1024
+
+
+class TooLargeToStream(Unsupported):
+    """A streamed read over `STREAM_BUDGET`. Not an engine gap: no fallback
+    engine should be tried, the answer is to download the file."""
+
+
+def level_bytes(counts) -> int:
+    """Compressed bytes of one image level, from its byte-count tag."""
+    if isinstance(counts, list):
+        return int(sum(counts))
+    return int(counts or 0)
+
+
+def stream_refusal(nbytes: int) -> str | None:
+    """The sentence a viewer shows when a streamed view would read `nbytes`
+    (None when that is within budget)."""
+    if nbytes <= STREAM_BUDGET:
+        return None
+    return (f"Too large to stream: a full view of this TIFF reads about "
+            f"{nbytes / 1e9:.1f} GB (it has no small enough overview). "
+            f"Download it to view it.")
+
+
+def parse_header(path):
+    """Read the file + parse the first IFD. Works for ANY compression —
+    header metadata is available even when pixels can't be decoded purely.
+    `path` is a local path or an `s3://` address (`open_buffer`)."""
+    buf = open_buffer(path)
     if buf[:2] == b"II":
         en = "<"
     elif buf[:2] == b"MM":
         en = ">"
     else:
         raise Unsupported("not a TIFF (bad byte order mark)")
-    if struct.unpack_from(en + "H", buf, 2)[0] == 43:
-        raise Unsupported("BigTIFF (use system engine)")
+    version = _unpack_at(en + "H", buf, 2)[0]
+    if version == 43:
+        # BigTIFF: offset size (8) and a zero pad, then the first IFD as uint64.
+        if _unpack_at(en + "HH", buf, 4) != (8, 0):
+            raise Unsupported("BigTIFF with an unsupported offset size")
+        en = ByteOrder(en, big=True)
+    elif version == 42:
+        en = ByteOrder(en)
+    else:
+        raise Unsupported(f"not a TIFF (version {version})")
     t, next_off = _read_ifd(buf, en)
     return buf, en, t, next_off
 
@@ -184,7 +321,7 @@ def header_meta(path, buf, en, t, next_off):
         "width": int(W) if W else None, "height": int(H) if H else None,
         "count": int(spp), "dtype": f"{kind}{bits}",
         "nodata": _nodata(t),
-        "file_size": os.path.getsize(path),
+        "file_size": len(buf),
         "tiff": {
             "compression": _COMPRESSION.get(comp, f"code {comp}"),
             "layout": layout,
@@ -256,20 +393,45 @@ def read_tiff(path, win="", max_cells=0):
     wx0, wy0, wx1, wy1 = wsel if wsel else (0, 0, W, H)
 
     tiled = 322 in t
-    out = np.zeros((spp, H, W), dtype=dt)
-
+    planes = spp if planar == 2 else 1
     if tiled:
         tw, th = _v1(t, 322), _v1(t, 323)
         offs, counts = _v(t, 324), _v(t, 325)
         across = (W + tw - 1) // tw
-        down = (H + th - 1) // th
-        per_plane = across * down
-        planes = spp if planar == 2 else 1
+        per_plane = across * ((H + th - 1) // th)
+        need = [p * per_plane + ty * across + tx for p in range(planes)
+                for ty in range(wy0 // th, (wy1 - 1) // th + 1)
+                for tx in range(wx0 // tw, (wx1 - 1) // tw + 1)]
+    else:
+        rps = _v1(t, 278, H)
+        offs, counts = _v(t, 273), _v(t, 279)
+        nstrips_plane = (H + rps - 1) // rps
+        need = [p * nstrips_plane + si for p in range(planes)
+                for si in range(wy0 // rps, (wy1 - 1) // rps + 1)]
+    offs = offs if isinstance(offs, list) else [offs]
+    counts = counts if isinstance(counts, list) else [counts]
+    fetched = {}
+    if is_remote(path):
+        # Streamed: refuse a read over budget before fetching anything, then
+        # fetch every chunk in one coalesced read_many.
+        refusal = stream_refusal(sum(counts[i] for i in need))
+        if refusal:
+            raise TooLargeToStream(refusal)
+        raws = buf.read_many([(offs[i], offs[i] + counts[i]) for i in need])
+        fetched = dict(zip(need, raws))
+
+    def _raw(i):
+        raw = fetched.get(i)
+        return raw if raw is not None else buf[offs[i]:offs[i] + counts[i]]
+
+    out = np.zeros((spp, H, W), dtype=dt)
+
+    if tiled:
         for p in range(planes):
             for ty in range(wy0 // th, (wy1 - 1) // th + 1):
                 for tx in range(wx0 // tw, (wx1 - 1) // tw + 1):
                     ti = p * per_plane + ty * across + tx
-                    data = _decompress(buf[offs[ti]:offs[ti] + counts[ti]], comp)
+                    data = _decompress(_raw(ti), comp)
                     samp = 1 if planar == 2 else spp
                     tile = np.frombuffer(data, dtype=dt)[: th * tw * samp].reshape(th, tw, samp)
                     tile = _unpredict(tile, predictor)
@@ -281,14 +443,10 @@ def read_tiff(path, win="", max_cells=0):
                         for s in range(spp):
                             out[s, y0:y1, x0:x1] = tile[: y1 - y0, : x1 - x0, s]
     else:
-        rps = _v1(t, 278, H)
-        offs, counts = _v(t, 273), _v(t, 279)
-        nstrips_plane = (H + rps - 1) // rps
-        planes = spp if planar == 2 else 1
         for p in range(planes):
             for si in range(wy0 // rps, (wy1 - 1) // rps + 1):
                 gi = p * nstrips_plane + si
-                data = _decompress(buf[offs[gi]:offs[gi] + counts[gi]], comp)
+                data = _decompress(_raw(gi), comp)
                 y0 = si * rps
                 rows = min(rps, H - y0)
                 samp = 1 if planar == 2 else spp
