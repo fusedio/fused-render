@@ -1885,6 +1885,29 @@ def test_a_deleted_files_bare_row_leaves_the_clone_at_the_push(harness, tmp_path
     assert [r["udfName"] for r in _rows(str(clone))] == ["a", "b", "_x", "early"]
 
 
+def test_a_fileless_node_whose_file_lands_another_way_still_gets_its_delete(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """`_fileless` (a frame node owed its first body) must not outlive the
+    file landing: one written by a session, not the body channel, would
+    otherwise keep the name "pending" for good, and a later `rm` of it would
+    never reach the frame (Cursor Bugbot on #2292)."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    clone = harness.clones / "alpha"
+    rows = [{"udfName": n, "x": 0, "y": 400 * i} for i, n in enumerate(["a", "b", "d"])]
+    (clone / "canvas.toml").write_text(rtoml.dumps({"type": "canvas", "canvas": {"nodes": rows}}))
+    m._fileless = {"d"}                                   # the frame's new node, row first
+    first = m.cut_delta(full=True)
+    m.ack_delta(first["rev"], True)
+    m._embed_view["nodes"]["d"] = {"udfName": "d", "x": 0, "y": 800}
+    (clone / "d.py").write_text("d\n")                   # landed — not via a body post
+    landed = m.cut_delta(full=False)
+    assert "d" not in m._fileless
+    m.ack_delta(landed["rev"], True)
+    (clone / "d.py").unlink()
+    assert {"op": "delete", "name": "d", "reason": "file_deleted", "file": "d.py"} in \
+        m.cut_delta(full=False)["ops"]
+
+
 def test_a_body_for_a_deleted_file_is_kept_in_the_trash(harness, tmp_path, monkeypatch,
                                                         fake_agent):
     """The user typed into a node whose file a session deleted: never

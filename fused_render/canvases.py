@@ -4965,6 +4965,8 @@ class _SyncManager:
                     present = None
                 deletable = (set() if present is None
                              else (served | self._seen_sources) - present)
+                if present is not None:
+                    self._fileless -= present  # as in cut_delta: its file landed
                 held = self.held_tombstones()
                 dropped = self._reconcile_rows(
                     "disk_to_server", self.dir, pending=self._rowless | held,
@@ -6276,6 +6278,11 @@ class _SyncManager:
                             view[table][name] = acked[table][name]
                         else:
                             view[table].pop(name, None)
+        # A node owed its first body stops being owed one once ANY file of its
+        # name is on disk, however it got there (a session's write, an older
+        # workbench's snapshot, a body equal to disk): left in `_fileless`,
+        # a later `rm` of that file would never reach the frame.
+        self._fileless -= disk["stems"]
         ops = canvas_snapshot.diff_views(disk, view, pending=self._fileless)
         disk["edges"] = canvas_snapshot.held_edges(disk, view["nodes"] if view else (),
                                                    self._fileless)
