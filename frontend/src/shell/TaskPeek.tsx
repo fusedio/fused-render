@@ -165,6 +165,9 @@ function sidebarStamp(): number {
 
 /** Re-render on window resize: every make-room rule is about the CURRENT
  *  window, so a peek opened wide has to re-decide when the window narrows.
+ *  The host is watched too, for the right-edge chrome (the fallback rail, a
+ *  favourite's card) coming and going with no resize: the store's viewport
+ *  ends at the host's right edge (task-peek-store `viewportWidth`).
  *
  *  `enabled` is the flag's, and it reaches all the way down to the listener: a
  *  reader who has opted out of the side peek is not paying for a resize handler
@@ -173,10 +176,16 @@ function useViewportWidth(enabled: boolean): number {
   const [w, setW] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth));
   useEffect(() => {
     if (!enabled) return;
-    const read = () => setW(window.innerWidth);
+    const host = document.querySelector<HTMLElement>(".tasks-peek-host");
+    const read = () => setW(host ? host.getBoundingClientRect().right : window.innerWidth);
     read();
     window.addEventListener("resize", read);
-    return () => window.removeEventListener("resize", read);
+    const ro = host && typeof ResizeObserver !== "undefined" ? new ResizeObserver(read) : null;
+    ro?.observe(host!);
+    return () => {
+      window.removeEventListener("resize", read);
+      ro?.disconnect();
+    };
   }, [enabled]);
   return w;
 }

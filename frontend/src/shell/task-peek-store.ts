@@ -1475,8 +1475,21 @@ export function resetPeekWidth(): void {
 
 // ---- the sidebar, made to give way -------------------------------------------
 
+/**
+ * THE WINDOW UP TO THE HOST'S RIGHT EDGE — what the sidebar and the content
+ * area share. Chrome standing at the window's right (the shell's fallback
+ * rail, a favourite's card beside it) is not room the peek can have: counted
+ * as content, cover mode sized the panel that much wider than its host, the
+ * panel ran out past the host's left edge and `overflow: hidden` cut its ×
+ * off under the sidebar's rail. The left sidebar is still the planners' to
+ * subtract, so this is measured from the right, not as the host's width.
+ */
 function viewportWidth(): number {
-  return typeof window === "undefined" ? 0 : window.innerWidth || 0;
+  if (typeof window === "undefined") return 0;
+  const inner = window.innerWidth || 0;
+  const host = typeof document === "undefined" ? null : document.querySelector<HTMLElement>(".tasks-peek-host");
+  if (!host) return inner;
+  return Math.max(0, Math.min(inner, host.getBoundingClientRect().right));
 }
 
 /**
