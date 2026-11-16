@@ -425,12 +425,6 @@ export interface RailPeekProps {
    *  `onToggle` its press. Given, Escape closes a hover and a temp card and only
    *  a pinned one ignores it. Absent: the card as it was. */
   pinCtl?: { pinned: boolean; onToggle: () => void } | null;
-  /** THE HEAD NAMES THE PLACE (Akshil, 2026-11-16: "canvas_name will only
-   *  appear for fav window b"): the canvas's or the folder's own name, at the
-   *  head's left — the favourite's window, whose chat may live anywhere. The
-   *  rail's own card leaves it off (the page IS the place); the where-tag at
-   *  the head's right end stands in both. Unified head only. */
-  placeName?: boolean;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -518,7 +512,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onBox,
     pinned,
     pinCtl = null,
-    placeName = false,
   },
   ref,
 ) {
@@ -1624,13 +1617,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       {gripsOn && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
       <div className="claude-rail-peek-card">
         {head && unified ? (
-          // THE SHARED HEAD (flag on; shell/TaskHead): the × (or, favourites
-          // off, the pin that pressed IS the ×), the ring, the place, then the
-          // row's a/b slots (2026-11-15) — the number ↔ the card's archive,
-          // the count ↔ the card's star, the time ↔ Open — the ⋮, and the
-          // title on its own row once the card is too narrow for one
-          // (`stacked: "auto"`). The wrapper keeps the old head's class for
-          // its Escape and lays out as nothing (`is-unified`, task-head.css).
+          // THE SHARED HEAD (flag on; shell/TaskHead), TWO LINES AT EVERY
+          // WIDTH (a rail window's rule, 2026-11-16): row 1 is the pin (or,
+          // favourites off, the pin that pressed IS the ×), `folder › file`,
+          // then the count ↔ the card's star, the time ↔ Open, and the ⋮
+          // once the card has been pressed; row 2 is the ring, the number ↔
+          // the card's archive, and the title. The wrapper keeps the old
+          // head's class for its Escape and lays out as nothing
+          // (`is-unified`, task-head.css).
           <div className="claude-rail-peek-head is-unified" onKeyDown={onHeadKeyDown}>
             <TaskHead
               reveal="window"
@@ -1701,12 +1695,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               stacked="auto"
               // Measured only while the card is up.
               fitEnabled={!!shownKey}
-              // THE TAGS, APART (Akshil, 2026-11-16): the place's name at the
-              // left in the favourite's window alone (`placeName`); where in
-              // it — Canvas, the node, the file — at the right end, before
-              // the count slot, in every card. Favourites off: the where-chip
-              // as it was.
-              place={favsOn ? (placeName ? placeEl(head, "place") : null) : placeEl(head)}
+              // TWO LINES (Akshil, 2026-11-16): row 1 reads `folder › file`
+              // in every card, window A and B alike — the place's name (the
+              // canvas's or the folder's), then where in it (Canvas, the
+              // node, the file), which the head joins with a chevron. The
+              // name was the favourite window's alone while the head was one
+              // row. Favourites off: the where-chip as it was.
+              place={favsOn ? placeEl(head, "place") : placeEl(head)}
               {...(favsOn && hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}
               // The pulse's facts in the head's own slots: how many messages
               // (the unread ones turn it to ink) and when it last moved — none
@@ -1736,7 +1731,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     }
                   : null
               }
-              kebab={head.t.session_id && shownKey ? kebabFor(head) : null}
+              // THE ⋮ COMES WITH THE CLICK (Akshil, 2026-11-16: "kebab menu not
+              // shown on hover, only when we click"): a hover preview has
+              // none; a card the reader pressed (temp, pinned, the favourite's
+              // window opened by a press) has it.
+              kebab={head.t.session_id && shownKey && (pinned || held) ? kebabFor(head) : null}
             />
             {askedKey.current === head.t.key && archiveAsk.node}
           </div>
