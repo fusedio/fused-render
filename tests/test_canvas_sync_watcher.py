@@ -1785,6 +1785,72 @@ def test_a_delta_cut_behind_an_unacked_one_is_diffed_against_it(harness, tmp_pat
     assert {"op": "delete", "name": "c"} in after["ops"], after
 
 
+def test_a_source_file_deleted_on_disk_drops_its_node_from_the_frame(harness, tmp_path,
+                                                                     monkeypatch, fake_agent):
+    """A session `rm`s a node's file and leaves canvas.toml alone. Disk's
+    nodes are its files, the push publishes the canvas without it, and the
+    body channel answers a post for it `gone` — so the next delta deletes it
+    from the frame, edges with it, at once: kept out of the delta, the embed
+    showed it (its pane stuck on "Saving c.py…") until a reload. A node not
+    pushed yet has no push to drop its row first, so this is its only way out."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    clone = harness.clones / "alpha"
+    (clone / "c.py").write_text("c\n")
+    rows = [{"udfName": n, "x": 0, "y": 400 * i} for i, n in enumerate(["a", "b", "c"])]
+    (clone / "canvas.toml").write_text(rtoml.dumps(
+        {"type": "canvas", "canvas": {"nodes": rows, "edges": [["a", "c"], ["a", "b"]]}}))
+    first = m.cut_delta(full=True)
+    assert any(o["op"] == "upsert" and o["name"] == "c" for o in first["ops"]), first
+    m.ack_delta(first["rev"], True)
+    (clone / "c.py").unlink()
+    cut = m.cut_delta(full=False)
+    assert cut["ops"] == [{"op": "delete", "name": "c"},
+                          {"op": "edges", "set": [["a", "b"]]}], cut
+    m.ack_delta(cut["rev"], True)
+    assert m.cut_delta(full=False)["ops"] == []      # settled: nothing re-sent
+    # …while a node the frame just added, its row in before its first body
+    # created the file, is left alone.
+    m._fileless = {"d"}
+    (clone / "canvas.toml").write_text(rtoml.dumps({"type": "canvas", "canvas": {
+        "nodes": rows + [{"udfName": "d", "x": 0, "y": 1600}], "edges": [["a", "b"]]}}))
+    m._embed_view = {**m._embed_view, "nodes": {**m._embed_view["nodes"],
+                                                "d": {"udfName": "d", "x": 0, "y": 1600}}}
+    assert m.cut_delta(full=False)["ops"] == []
+
+
+def test_an_empty_cut_behind_an_unacked_delta_keeps_the_view_for_its_ack(harness, tmp_path,
+                                                                         monkeypatch, fake_agent):
+    """Disk moves with nothing to post (a toml rewrite the diff cannot see)
+    while a delta is still in flight. Adopted there, the view moved past
+    the delta, its ack read as stale and its `skipped` was lost — so the
+    frame's next snapshot, still showing its old title, was written over the
+    session's (sim seed 1565). The view waits for the ack instead."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    clone = harness.clones / "alpha"
+
+    def write_rows(title, tail=""):
+        rows = [{"udfName": "a", "x": 0, "y": 0}, {"udfName": "b", "x": 0, "y": 400, "title": title}]
+        (clone / "canvas.toml").write_text(
+            rtoml.dumps({"type": "canvas", "canvas": {"nodes": rows, "edges": []}}) + tail)
+
+    write_rows("old")
+    first = m.cut_delta(full=True)
+    m.ack_delta(first["rev"], True)
+    write_rows("new")
+    retitle = m.cut_delta(full=False)                  # in flight
+    assert [(o["op"], o["name"]) for o in retitle["ops"]] == [("upsert", "b")], retitle
+    write_rows("new", tail="\n# reformatted\n")
+    empty = m.cut_delta(full=False)
+    assert empty["ops"] == [] and empty["rev"] > retitle["rev"]
+    assert m._view_rev == first["rev"]                  # not adopted past the retitle
+    acked = m.ack_delta(retitle["rev"], True, skipped=["b"])
+    assert not acked.get("stale"), acked
+    assert m._embed_view["nodes"]["b"]["title"] == "old"   # what the frame still shows
+    again = m.cut_delta(full=False)                     # …so the title is re-sent
+    assert any(o["op"] == "upsert" and o["name"] == "b" and o["row"]["title"] == "new"
+               for o in again["ops"]), again
+
+
 def test_quit_releases_every_lease_within_the_budget(harness, tmp_path, monkeypatch, fake_agent):
     shims, m = _revision_clone(harness, tmp_path, monkeypatch)
     m._lease_mine = {"owner": m._lease_owner, "lease_until": "z"}

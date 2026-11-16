@@ -6212,6 +6212,7 @@ class _SyncManager:
             self._bump()
         view = None if full else self._embed_view
         base_rev = self._view_rev
+        pending: list[int] = []
         if view is not None:
             # Deltas already cut and still unacked: the page posts them in
             # order without waiting for acks, and the frame applies them in
@@ -6244,8 +6245,20 @@ class _SyncManager:
                             view[table][name] = acked[table][name]
                         else:
                             view[table].pop(name, None)
-        ops = canvas_snapshot.diff_views(disk, view)
-        disk["edges"] = canvas_snapshot.held_edges(disk, view["nodes"] if view else ())
+        ops = canvas_snapshot.diff_views(disk, view, pending=self._fileless)
+        disk["edges"] = canvas_snapshot.held_edges(disk, view["nodes"] if view else (),
+                                                   self._fileless)
+        if view is not None and not ops and pending:
+            # Nothing to post, but deltas are still in flight: the frame holds
+            # this reading only once it has applied them, and it may yet SKIP
+            # some of their ops (its own unacked snapshot touched the node).
+            # Adopted here, the view would move past them, their acks would
+            # read as stale and drop `skipped` — and the frame's next
+            # snapshot, still showing its old value, would be written over
+            # the session's edit (sim seed 1565: a title reverted). The acks
+            # settle the view; the next cut adopts.
+            return {"rev": rev, "base_rev": base_rev, "ops": [], "full": False,
+                    **self._cut_seq()}
         if view is not None and not ops:
             self._embed_view = self._adopt(disk)
             self._view_rev = rev
@@ -6402,11 +6415,13 @@ class _SyncManager:
         the manifest gives none (the external CLI never does, a shim manifest
         may lag): the frame holds those ids regardless, and apply_snapshot's
         missed-rename detection reads an un-hinted rename with no id as a
-        delete."""
+        delete. A node the reading has a row but no file for stays only while
+        it is `_fileless` (the frame's own, owed its first body): any other
+        was deleted by the delta (`canvas_snapshot.diff_views`)."""
         cur = self._embed_view or {}
         out = dict(disk)
         held = [n for n in cur.get("nodes", {}) if n not in disk["nodes"]
-                and (n in disk["rowed"] or n in disk["files"])]
+                and (n in disk["files"] or (n in disk["rowed"] and n in self._fileless))]
         if held:
             out["nodes"] = {**disk["nodes"],
                             **{n: disk["rowed"].get(n, cur["nodes"][n]) for n in held}}
