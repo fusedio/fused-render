@@ -18,8 +18,8 @@
 // Tasks row's own line with a lead and a ⋮ (Akshil, 2026-11-15, "a/b slots"):
 //
 //   [lead] [↑][↓] │ status · agent · [folder] · ID SLOT · title ✎ · reply
-//                 │ [queue] [status word] … [chips…] [seats…] COUNT SLOT
-//                 │ TIME SLOT [⋮]
+//                 │ [queue] [status word] … [chips…] [seats…] [where]
+//                 │ COUNT SLOT TIME SLOT [⋮]
 //
 //   * LEAD — exactly one corner control, the same 28px icon button either way:
 //     × closes the container the reader opened (panel, card, dialog); ← goes
@@ -29,6 +29,9 @@
 //   * STATUS — the ring, or the face it wears; pressed, it opens the icon
 //     picker (TaskIconPick — any task, 2026-11-16). It swaps with nothing.
 //   * FOLDER — where the task lives: the host's `place`, or the folder chip.
+//   * WHERE — where IN the place (2026-11-16): Canvas, the node, the file, as
+//     an icon and its word, right before the count slot; the icon alone as
+//     soon as the row is short (rung 1).
 //   * THREE A/B SLOTS, one box and two occupants each, so nothing moves: `a`
 //     at rest, `b` while the pointer is on the head (or the keyboard is on a
 //     `b` control; always, where there is no hover):
@@ -37,8 +40,9 @@
 //       TIME   when it last ran  ↔ ↗ Open
 //     A slot with no `b` (a run in flight has nothing to file; a pane IS the
 //     page, so it has no Open; favourites off) keeps its `a` under the pointer.
-//   * the last reply trails the title, muted, and gives way before it; the
-//     queue caption and the paused word after them.
+//   * a host's `subtitle` (the rail card's hover preview: the last reply)
+//     trails the title, muted, and gives way before it; the queue caption and
+//     the paused word after them. The head prints no reply of its own.
 //   * CHIPS (worktree, PR), host SEATS, and the ⋮ at the end.
 //
 // NEVER MOVED, NEVER HIDDEN: the lead, the folder, and the ⋮. (↗ Open stood
@@ -50,8 +54,10 @@
 //
 //   1. the time: the slot shrinks to a glyph, and Open under the pointer is
 //      the ↗ alone; 2. the chips; 3. the host's seats; 4. the ↑↓ chevrons;
-//   5. the title, its reply and the trail take row 2 — row 1 keeps the lead,
-//      status, folder, id slot … count slot, time slot, ⋮ (`stacked: "auto"`);
+//   5. the id slot, the title, its line and the trail take row 2 — row 1
+//      keeps the lead, status, folder … where, count slot, time slot, ⋮
+//      (`stacked: "auto"`; the number goes down with the title it names,
+//      Akshil, 2026-11-16);
 //   6. the id slot (Archive stays in the ⋮).
 //
 // WHAT THE HOST OWNS. The ⋮ is the host's `<Kebab …/>` handed in whole, because
@@ -153,8 +159,9 @@ export interface TaskHeadProps {
   /** Ring facts only the host knows (TaskPeekWho `ring`): unread, held
    *  draft, failed. */
   ring?: { unread?: boolean; draftHeld?: boolean; failed?: boolean };
-  /** A muted line after the title, in the title's row (TaskPeekWho), in
-   *  place of the task's own last reply. */
+  /** A muted line after the title, in the title's row (TaskPeekWho). None
+   *  unless the host passes one: the head never prints the task's last reply
+   *  itself (2026-11-16). */
   subtitle?: ReactNode;
   /** After a rename the server took (TaskPeekWho `onRenamed`). */
   onRenamed?: () => void;
@@ -189,6 +196,13 @@ export interface TaskHeadProps {
    *  chip. `null`: none — a head inside a view already scoped to that folder
    *  (the Explorer pane over the same folder). */
   place?: ReactNode;
+  /** WHERE IN THE PLACE (Akshil, 2026-11-16): the canvas chat's Canvas or
+   *  node tag, a folder chat's file tag (PlaceTags `part="where"`) — at the
+   *  row's right end, just before the count slot. An icon and its word; the
+   *  icon alone as soon as the row is short (the ladder's first rung,
+   *  task-head.css). Not an a/b slot: it stands at rest and under the
+   *  pointer. */
+  where?: ReactNode;
   chips?: ReactNode;
   seats?: ReactNode;
   /** The node the chat portals its usage-limit word into (ChatMount
@@ -199,9 +213,10 @@ export interface TaskHeadProps {
    *  `headChipsHost`) — a seat at the head of the chips. */
   chipsRef?: (el: HTMLElement | null) => void;
   /** WHAT BRINGS THE b ITEMS (Akshil, 2026-11-16). `"window"` — a card off
-   *  the rail: the pointer anywhere on the card shows all of them, and at
-   *  rest the title has the row (no facts where it would be cut, no ⋮), on
-   *  a second line when the card is narrow. `"slot"` (default) — a panel or
+   *  the rail: the pointer anywhere on the card (or the keyboard inside it)
+   *  shows them, except the Archive, which waits for the pointer on the
+   *  head; the facts and the ⋮ stand at rest, and the title takes a second
+   *  line when the card is narrow. `"slot"` (default) — a panel or
    *  a pane: the pointer on the head shows them, the facts and the ⋮ stand
    *  at rest, and the head stays one row. */
   reveal?: "window" | "slot";
@@ -246,6 +261,7 @@ export function TaskHead({
   queue = null,
   status = "",
   place,
+  where,
   chips,
   seats,
   chipsRef,
@@ -278,6 +294,9 @@ export function TaskHead({
   // The title is being edited (the title half tells the marks half, which
   // holds the icon button and the id slot).
   const [renaming, setRenaming] = useState(false);
+  // The icon picker is open (the marks half tells the title half, which holds
+  // the id slot once the head is stacked).
+  const [picking, setPicking] = useState(false);
   // Measured on the whole head — both rows — so a rung can answer either.
   const [fit, headRef] = useStripFit(
     stacked === false ? DROPS_NO_STACK : DROPS_ALL,
@@ -288,8 +307,8 @@ export function TaskHead({
   );
   const isWindow = reveal === "window";
   // THE WHOLE WINDOW IS THE TRIGGER (Akshil, 2026-11-15): the b items show
-  // while the pointer is anywhere on the card, panel or pane the head tops —
-  // not only on the 44px line.
+  // while the pointer is anywhere on the card the head tops — not only on the
+  // 44px line — or the keyboard is inside it (2026-11-16).
   const [headEl, setHeadEl] = useState<HTMLElement | null>(null);
   const setHead = useCallback(
     (el: HTMLElement | null) => {
@@ -314,19 +333,50 @@ export function TaskHead({
       win = up && up !== document.body ? up : headEl.parentElement;
     }
     if (!win || typeof win.addEventListener !== "function") return;
-    const on = () => setHot(true);
+    // …OR WHILE THE CARD HAS THE KEYBOARD (Akshil, 2026-11-16: "show fav and
+    // open when card is in focus as well, not just mouse in that area"): a
+    // card the reader is typing in keeps its star, its door and its ⋮ up
+    // wherever the pointer went. The Archive still waits for the pointer on
+    // the head itself (task-head.css).
+    let pointerIn = false;
+    let focusIn = false;
+    const sync = () => setHot(pointerIn || focusIn);
+    const on = () => {
+      pointerIn = true;
+      sync();
+    };
     // Leaving the window also re-arms a spent filing press (below).
     const off = () => {
-      setHot(false);
+      pointerIn = false;
+      sync();
       setRefiled(false);
+    };
+    const focusOn = () => {
+      focusIn = true;
+      sync();
+    };
+    const focusOff = (e: FocusEvent) => {
+      // A move between two things inside the card is not a leave.
+      const to = e.relatedTarget as Node | null;
+      focusIn = !!to && win.contains(to);
+      sync();
     };
     win.addEventListener("pointerenter", on);
     win.addEventListener("pointerleave", off);
-    // Mounted under a pointer that is already there (a card opened by a press).
-    if (typeof win.matches === "function" && win.matches(":hover")) setHot(true);
+    win.addEventListener("focusin", focusOn);
+    win.addEventListener("focusout", focusOff);
+    // Mounted under a pointer that is already there (a card opened by a
+    // press), or around the focus (its composer took the keyboard first).
+    if (typeof win.matches === "function" && win.matches(":hover")) pointerIn = true;
+    if (typeof win.contains === "function" && typeof document !== "undefined" && document.activeElement && win.contains(document.activeElement)) {
+      focusIn = true;
+    }
+    sync();
     return () => {
       win.removeEventListener("pointerenter", on);
       win.removeEventListener("pointerleave", off);
+      win.removeEventListener("focusin", focusOn);
+      win.removeEventListener("focusout", focusOff);
       setHot(false);
     };
   }, [headEl, isWindow]);
@@ -393,21 +443,20 @@ export function TaskHead({
       iconPress
       place={placeEl}
       idOverlay={idOverlay}
+      // STACKED, THE NUMBER GOES DOWN WITH THE TITLE (Akshil, 2026-11-16):
+      // row 2 reads "T012 title", and its Archive trades there.
+      idAt={stackedNow ? "title" : "marks"}
       editing={renaming}
+      onPickingChange={setPicking}
       {...(ring ? { ring } : {})}
       {...(onRenamed ? { onRenamed } : {})}
     />
   ) : null;
-  // THE LAST REPLY trails the title (the List row's line); a host's own
-  // subtitle wins.
-  const reply = who?.last_reply?.trim() ?? "";
-  const subtitleNode: ReactNode =
-    subtitle ??
-    (reply ? (
-      <span className="task-head-reply" data-hint={reply}>
-        {reply}
-      </span>
-    ) : null);
+  // NO REPLY LINE OF ITS OWN (Akshil, 2026-11-16): the head drew the task's
+  // last reply after every title, which the heads it replaced never did —
+  // only the Tasks row and the rail card's hover preview print it. A host
+  // that wants a line after the title passes `subtitle` (RailPeek).
+  const subtitleNode: ReactNode = subtitle ?? null;
   // THE TITLE HALF, wherever it stands: on row 1 after the marks, or —
   // stacked — on row 2 with the trail. A static title or the skeleton for a
   // head with no task.
@@ -419,6 +468,9 @@ export function TaskHead({
       task={who}
       part="title"
       className="task-head-title-seat"
+      idOverlay={idOverlay}
+      idAt={stackedNow ? "title" : "marks"}
+      picking={picking}
       onEditingChange={setRenaming}
       {...(titleId ? { titleId } : {})}
       {...(subtitleNode ? { subtitle: subtitleNode } : {})}
@@ -602,12 +654,19 @@ export function TaskHead({
         ) : null}
         {marks}
         {stackedNow ? (
-          // STACKED: the title has row 2, and the gap holds the slots and the
-          // ⋮ at the row's end. A head with no task keeps its place up here.
-          <>
-            {who ? null : placeEl}
-            <span className="task-head-idle" aria-hidden />
-          </>
+          // STACKED: the title has row 2; the marks' own seat takes the
+          // slack and the slots stand at the row's end (their `margin-left:
+          // auto`). No spacer between them: it held nothing but cost the row
+          // a gap, and the door's word folded a few px before it had to
+          // (Akshil, 2026-11-16: "there is still space but Open word not
+          // visible"). A head with no task keeps its place — and the spacer
+          // that holds its two clusters apart — up here.
+          who ? null : (
+            <>
+              {placeEl}
+              <span className="task-head-idle" aria-hidden />
+            </>
+          )
         ) : (
           <>
             {identity ?? (who ? null : <span className="task-head-idle" aria-hidden />)}
@@ -629,6 +688,7 @@ export function TaskHead({
               {seats}
             </span>
           ) : null}
+          {where ? <span className="task-head-where">{where}</span> : null}
           {countSlot}
           {timeSlot}
           {kebabNode ? <span className="task-head-kebab">{kebabNode}</span> : null}

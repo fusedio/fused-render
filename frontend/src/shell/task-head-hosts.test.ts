@@ -166,7 +166,11 @@ test("the folder seat: hosts with no place of their own take the head's chip; th
   // The pane states its own — and `null`, never an omission, over the folder
   // it is already scoped to (`mergedHead`), so no chip is drawn there.
   const chat = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
-  expect(chat).toContain("? (placeTag ?? (props.mergedHead ? null : <TaskPeekProject task={head.task} />))\n          : null");
+  // …and none where it knows its place (`placeTag`): a pane IS its place, so
+  // the name is not drawn; where in it rides the head's `where` seat
+  // (2026-11-16).
+  expect(chat).toContain("? (placeTag || props.mergedHead ? null : <TaskPeekProject task={head.task} />)\n          : null");
+  expect(chat).toContain("{...(inChat && whereTag ? { where: whereTag } : {})}");
 });
 
 test("the rail card: its pulse's facts ride the head's own slots, its star and archive the slots' other seats", () => {
@@ -175,6 +179,8 @@ test("the rail card: its pulse's facts ride the head's own slots, its star and a
   expect(shared).toContain("? { n: head.count, unread: head.unread }");
   expect(shared).toContain("? { text: head.when, ...(head.whenFull ? { title: head.whenFull } : {}) }");
   expect(shared).not.toContain("pulseEl(");
+  // The reply line: a hover preview's only — a pressed card shows none.
+  expect(shared).toContain("{...(head.reply && !pinned && !held");
   expect(shared).toContain("starNode: starButton(head)");
   expect(shared).toContain("statusOverlay: archiveButton(head)");
   // The old head keeps its picker gate: a button only during a rename.
