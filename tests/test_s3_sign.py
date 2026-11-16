@@ -297,3 +297,52 @@ def test_js_sign_rejects_with_status_and_code():
                 '(e) => out({m: e.message, s: e.status, c: e.code}));',
                 prelude="REPLY = {status: 502};")
     assert got == {"m": "HTTP 502", "s": 502, "c": None}
+
+
+# -------------------------------------------------- which templates stream
+# (D1485: the `stream-s3` marker and `/api/remote/stat`'s stream_templates)
+
+
+def test_which_templates_stream_which_files():
+    from fused_render.server import templates as server_templates
+
+    pq = server_templates.remote_stream_templates("t.parquet")
+    assert [e["mode"] for e in pq] == ["duckdb"]
+    assert pq[0]["path"].endswith(os.path.join("duckdb", "template.html"))
+    assert [e["mode"] for e in server_templates.remote_stream_templates("T.PARQUET")] == ["duckdb"]
+    # duckdb is bound to CSV/JSON/.duckdb too, but its marker lists parquet only
+    for name in ("t.csv", "t.json", "t.duckdb", "Makefile"):  # no text sniff either
+        assert server_templates.remote_stream_templates(name) == [], name
+
+
+def test_a_marker_lists_extensions_or_streams_everything(tmp_path):
+    from fused_render.server import templates as server_templates
+
+    m = tmp_path / "stream-s3"
+    m.write_text(".parquet .GeoParquet\nprose. not an extension line\n")
+    assert server_templates._streamed_extensions(str(m)) == (".parquet", ".geoparquet")
+    m.write_text("no extension lines at all\n")
+    assert server_templates._streamed_extensions(str(m)) is None
+    assert server_templates._streamed_extensions(str(tmp_path / "missing")) == ()
+
+
+def test_remote_stat_reports_stream_templates(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from fused_render import remote_access, remote_fetch
+    from fused_render.server.routers import remote as remote_router
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs, "canvases_enabled", lambda: True)
+    monkeypatch.setattr(remote_router, "_index_answer", lambda name, arg: None)
+    monkeypatch.setattr(remote_access, "head", lambda b, k: remote_access.ObjectInfo(
+        size=123, mtime=None, etag="e"))
+    monkeypatch.setattr(remote_fetch, "cached_path", lambda b, k, info: None)
+    app = FastAPI()
+    app.include_router(remote_router.router)
+    c = TestClient(app)
+    pq = c.get("/api/remote/stat", params={"url": "s3://fused-asset/a/b.parquet"}).json()
+    assert [e["mode"] for e in pq["stream_templates"]] == ["duckdb"]
+    csv = c.get("/api/remote/stat", params={"url": "s3://fused-asset/a/b.csv"}).json()
+    assert csv["stream_templates"] == []
