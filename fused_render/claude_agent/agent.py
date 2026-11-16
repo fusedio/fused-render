@@ -7790,9 +7790,12 @@ def _live_host(file: str, session_id: str = "",
     would make `action=send` miss every follow-up typed after a reply lands
     and before the idle-reap timer ends the session, which is most of them.
 
-    Matching follows `_live_run`'s own rules exactly (same `meta.json` file
-    match, same `resumed_from`/`session`-file/`_session_from_out` session
-    match) — only the liveness check at the end differs.
+    Matching follows `_live_run`'s own rules exactly, folder/member allowance
+    included (same `meta.json` file match, same `resumed_from`/`session`-file/
+    `_session_from_out` session match) — only the liveness check at the end
+    differs. The allowance matters: a live session's page target can move from
+    `<app>/index.html` to `<app>`, and the miss used to spawn a second
+    `claude --resume` on the same session.
     """
     file = os.path.abspath(file)
     try:
@@ -7808,7 +7811,9 @@ def _live_host(file: str, session_id: str = "",
                 meta = json.load(fh)
         except (OSError, ValueError):
             continue
-        if os.path.abspath(meta.get("file", "")) != file:
+        target = os.path.abspath(meta.get("file", ""))
+        if target != file and not (
+                session_id and _folder_and_member(target, file)):
             continue
         if session_id:
             own = _run_own_session(run_dir, meta)
