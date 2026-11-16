@@ -3,9 +3,9 @@
 # and this folder has no environment to build or lock.
 #
 # `main = "reader.py"` lets fused-render's shipped worker serve reader.py
-# from one long-lived process (`fused.daemon.run`). The grid uses it for a
-# streamed S3 parquet: DuckDB, httpfs and the file's footer stay loaded
-# between calls, so a page or sort reads only its row groups instead of
-# paying a fresh process each time. Local files still use runPython.
+# from one long-lived process (`fused.daemon.run`). The grid sends every read
+# there, so a page, sort or filter costs its query instead of a fresh Python
+# process; for a streamed S3 parquet, httpfs and the file's footer stay
+# loaded too. writer.py (edits) still runs one-shot through runPython.
 [tool.fused-render.app]
 main = "reader.py"

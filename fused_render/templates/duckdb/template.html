@@ -780,19 +780,18 @@
     // ---- load / save ----
 
     let loadSeq = 0;
-    // One reader.py call. A streamed file (its `file` is the signed URL) goes
-    // to this folder's warm worker (pyproject.toml `main =`, D1487): DuckDB,
-    // httpfs and the file's parquet footer stay loaded between calls, so a
-    // page costs its row-group reads instead of a fresh process each time.
-    // Local files, and any call the worker cannot take (a preview frame, a
-    // worker that would not start), run reader.py one-shot. A reader error
-    // (it carries a `type`) is the answer either way, not a reason to retry.
+    // One reader.py call, on this folder's warm worker (pyproject.toml
+    // `main =`, D1487): Python and DuckDB stay loaded between calls, and for
+    // a streamed file (its `file` is the signed URL) so do httpfs and the
+    // file's parquet footer, so a call costs its query instead of a fresh
+    // process. A call the worker cannot take (a preview frame, a worker that
+    // would not start) runs reader.py one-shot. A reader error (it carries a
+    // `type`) is the answer either way, not a reason to retry.
     // key:null — one grid load fans out count+schema+positions+N page batches
     // on reader.py, all results needed; default per-file cancellation (D114)
     // would keep only the last and leave the grid mostly empty.
     function readerCall(params) {
       const oneShot = () => fused.runPython("./reader.py", params, { key: null });
-      if (!/^https?:\/\//i.test(params.file || "")) return oneShot();
       return fused.daemon.run(params).catch((err) => {
         if (err && err.type) throw err;
         return oneShot();
