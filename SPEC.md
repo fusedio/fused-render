@@ -12456,16 +12456,19 @@ is never sent it, and every alternation of their generations resets the view
 (`_embed_enter`). Each frame gets its own.
 
 - **FP-1 Frame id.** The page that hosts a frame mints one id per mount
-  (`crypto.randomUUID()`), and sends it as `frame` on every embed call:
-  `POST /api/canvases/snapshot`, `POST /api/canvases/body`,
-  `GET /api/canvases/delta`, `POST /api/canvases/delta/ack`, and the
-  `WS /api/canvases/sync/events` query. Shape `^[A-Za-z0-9_-]{1,64}$`, else
-  400. The id is the page's, never the frame's: nothing the workbench posts
-  can name another frame's record.
-- **FP-2 The default record.** A call with no `frame` uses the record `""`.
-  An older page keeps working unchanged, so 53.1 can ship before 53.2 and
-  53.3 exist. `CanvasWorkspace` sends an id from this build on, which also
-  makes two workspace windows on one canvas correct.
+  (`newFrameId`, `crypto.randomUUID()`), and sends it as `frame` on every
+  embed call: `POST /api/canvases/snapshot`, `POST /api/canvases/body`,
+  `GET /api/canvases/delta`, `POST /api/canvases/delta/ack`,
+  `GET /api/canvases/sync/state` and the `WS /api/canvases/sync/events`
+  query. Shape `^[A-Za-z0-9_-]{1,64}$`, else 400 (the socket closes 1008).
+  The id is the page's, never the frame's: nothing the workbench posts can
+  name another frame's record. A reload of the frame is a new generation of
+  the same record.
+- **FP-2 The default record.** A call with no `frame` uses the record `""`,
+  which always exists and is never dropped. An older page keeps working
+  unchanged, so 53.1 ships before 53.2 and 53.3 exist. `CanvasWorkspace`
+  sends an id from this build on, which also makes two workspace windows on
+  one canvas correct.
 - **FP-3 What moves into the record** (`_FrameState`, one per id, in
   `_SyncManager._frames`): `_embed_gen`, `_embed_view`, `_view_reset_pending`,
   `_view_from_hello`, `_view_rev`, `_delta_views`, `_delta_names`,
@@ -12492,24 +12495,29 @@ is never sent it, and every alternation of their generations resets the view
   view is untouched, so the next cut for each of them carries the change.
   No broadcast is added: each page already cuts a delta when `disk_rev`
   moves.
-- **FP-7 Aggregates.** `_push` reads the union of every record's `_rowless`
-  and `_fileless`. `sync_state`'s disk → embed leg is computed for the
-  calling frame when the request names one (the events socket does), and
-  otherwise reports the record that is furthest behind; "a frame has spoken"
-  is true when any record's `seen` is.
+- **FP-7 Aggregates.** `_push` reads the union of every record's `rowless`
+  and `fileless`; a file that lands, or a node that is deleted, settles
+  `fileless` on every record. `sync_state`'s disk → embed leg is the calling
+  frame's when the request names one that has a record (the events socket
+  and the page's fallback poll do), and otherwise the record worst off among
+  those that have spoken: a refused delta first, then the furthest behind.
 - **FP-8 Lifetime.** A record is created by the first call naming its id,
   with no view (so its first cut is a full state, the rule an unknown frame
-  already gets). It is dropped `FRAME_DROP_S` (60 s) after its events socket
-  closes with no call since, and all records go with the manager. At most
-  `MAX_FRAMES` (16) per canvas: the oldest socketless record is dropped to
-  make room, and with none to drop the call answers 409 `too_many_frames`.
-  A dropped frame that speaks again is a new record: a full cut, and a
-  snapshot from it is bounced as stale until it has acked one.
-- **FP-9 Scope of a frame.** A record may be created with `scope`, a node
-  name (`frame_scope=<udfName>` on the events socket, the first call a node
-  view makes). A scoped record's `snapshot` and `rename` posts are refused
-  (400 `scoped`), and its `body` post is refused for any other node. This is
-  enforced here, whatever the frame sends (53.2 NM-4 is the frame's half).
+  already gets). It is dropped once no events socket names it and it has
+  made no call for `FRAME_DROP_S` (60 s); the rows it sent whose file never
+  came are dropped with it, as its own next generation would have. All
+  records go with the manager. At most `MAX_FRAMES` (16) per canvas, `""`
+  included: the idle record that spoke longest ago is dropped to make room,
+  and with none idle the call answers 409 `too_many_frames`. A dropped frame
+  that speaks again is a new record, exactly as a frame is to a manager that
+  restarted.
+- **FP-9 Scope of a frame.** A record may be created with a scope, a node
+  name: `frame_scope=<udfName>` on `delta` and `delta/ack`, the calls a node
+  view makes. The scope is fixed when the record is made; a later call
+  naming another is refused. A scoped record's `snapshot` and `rename` posts
+  are refused, and so is its `body` post for any other node (400 `scoped`,
+  nothing written). This is enforced here, whatever the frame sends (53.2
+  NM-4 is the frame's half).
 - **FP-10 The page only relays its own frame.** `CanvasWorkspace` accepts
   `fused-embed-snapshot`, `fused-embed-rename`, `fused-embed-delta-applied`
   and `fused-embed-delta-rejected` only when `event.source` is its frame's
@@ -12603,7 +12611,8 @@ today; one node fills the frame.
   `GET /api/canvases/token`, the embed proxy for a custom environment).
   The token message carries `caps: []`.
 - **NV-7 The relay.** The view owns one frame id (FP-1), opens the events
-  socket with it and `frame_scope=<udfName>` (FP-9), and relays only the
+  socket with it, names `frame_scope=<udfName>` on its cuts and acks (FP-9),
+  and relays only the
   read leg: `fused-embed-hello` → a full cut; a `disk_rev` or
   `watcher_epoch` move → a cut; `fused-embed-delta-applied` / `-rejected` →
   the ack, with one healing full cut after a real refusal. Every message is
@@ -12663,11 +12672,6 @@ single-node route in the workbench that does not hydrate the whole canvas.
 
 ### 53.7 Open
 
-- **NV-4** opens a pane the user did not ask for, and NV-5 then starts a
-  sync and takes the lease on the canvas. Both follow from "the engine
-  starts automatically"; the alternative is the pane only on request.
-- **NM-5** forces autorun in node mode. The alternative honours the
-  canvas's switch and adds a Run button to the strip.
 - Whether `fused_embed_readonly=1` already gives NM-4's "reads only" while
   still applying deltas and running nodes; if it does, node mode implies it
   instead of gating each sender.

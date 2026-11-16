@@ -276,6 +276,21 @@ export function canvasPagePath(
 const q = (env: WorkbenchEnv, name: string) =>
   `name=${encodeURIComponent(name)}&env=${env}`;
 
+/** An id for one workbench frame this page hosts (SPEC 53.1 FP-1): minted
+ *  once per mount and named on every embed call, so the server keeps a
+ *  picture of THIS frame, apart from any other frame on the same canvas. */
+export const newFrameId = (): string => {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === "function") c.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+};
+
+const fq = (frame?: string) => (frame ? `&frame=${encodeURIComponent(frame)}` : "");
+const fb = (frame?: string) => (frame ? { frame } : {});
+
 export interface CanvasEntry {
   name: string;
   id: string | null;
@@ -432,6 +447,7 @@ export const applySnapshot = (
   gen: number,
   seq: number,
   body: Record<string, unknown>,
+  frame?: string,
 ) =>
   postJson<{
     ok: boolean;
@@ -441,7 +457,7 @@ export const applySnapshot = (
     push_seq: number;
     /** Source files this snapshot removed from the clone (a node deleted in the canvas). */
     deleted_files?: string[];
-  }>("/api/canvases/snapshot", { name, env, gen, seq, body });
+  }>("/api/canvases/snapshot", { name, env, gen, seq, body, ...fb(frame) });
 
 /** Embed v3: the workbench's rename hint, same endpoint, same ack shape. */
 export const applyRename = (
@@ -450,10 +466,11 @@ export const applyRename = (
   gen: number,
   seq: number,
   rename: { from: string; to: string; file_from?: string | null; file_to?: string | null },
+  frame?: string,
 ) =>
   postJson<{ ok: boolean; gen: number; seq: number; changed: boolean; push_seq: number }>(
     "/api/canvases/snapshot",
-    { name, env, gen, seq, rename },
+    { name, env, gen, seq, rename, ...fb(frame) },
   );
 
 /** The body channel's answer (SyncManager.apply_body): written, already on
@@ -476,7 +493,8 @@ export const applyBody = (
   env: WorkbenchEnv,
   name: string,
   body: { node: string; file: string; base_hash: string; text: string },
-) => postJson<BodyAck>("/api/canvases/body", { name, env, ...body });
+  frame?: string,
+) => postJson<BodyAck>("/api/canvases/body", { name, env, ...body, ...fb(frame) });
 
 /** One op of a canvas delta (canvas_snapshot.diff_views): the frame applies
  *  them in order. Opaque to this page beyond `op`. */
@@ -504,8 +522,8 @@ export interface CanvasDelta {
 /** Embed v3: diff(disk, what the frame holds), for `fused-embed-delta`.
  *  `full` asks for the whole state (the frame just hydrated). Throws with
  *  `.status` 409 while a sync leg holds the clone. */
-export const getDelta = (env: WorkbenchEnv, name: string, full: boolean) =>
-  getJson<CanvasDelta>(`/api/canvases/delta?${q(env, name)}&full=${full ? 1 : 0}`);
+export const getDelta = (env: WorkbenchEnv, name: string, full: boolean, frame?: string) =>
+  getJson<CanvasDelta>(`/api/canvases/delta?${q(env, name)}&full=${full ? 1 : 0}${fq(frame)}`);
 
 /** The frame applied (`ok`) or refused a delta: the host's picture of the
  *  frame moves to that revision, or is dropped so the next delta is full. */
@@ -516,10 +534,12 @@ export const ackDelta = (
   ok: boolean,
   reason?: string,
   skipped?: string[],
+  frame?: string,
 ) =>
   postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", {
     name,
     env,
+    ...fb(frame),
     rev,
     ok,
     // The frame's own words for a refusal ("not hydrated yet" during boot),
@@ -624,8 +644,8 @@ export const forceQuitOwner = (env: WorkbenchEnv, name: string) =>
 
 /** The four sync legs (embed_to_disk is the page's own: it fills that leg
  *  from its relay queue), disk_rev / watcher_epoch, and the lock owner. */
-export const getSyncState = (env: WorkbenchEnv, name: string) =>
-  getJson<SyncState>(`/api/canvases/sync/state?${q(env, name)}`);
+export const getSyncState = (env: WorkbenchEnv, name: string, frame?: string) =>
+  getJson<SyncState>(`/api/canvases/sync/state?${q(env, name)}${fq(frame)}`);
 
 /** The sync log ring (200 per canvas) after `after` (a seq; 0 = all held).
  *  `next` is the seq to pass on the following call. */
@@ -635,10 +655,10 @@ export const getSyncLog = (env: WorkbenchEnv, name: string, after: number) =>
   );
 
 /** Same-origin URL of WS /api/canvases/sync/events (state / log / ping). */
-export const syncEventsUrl = (env: WorkbenchEnv, name: string) =>
+export const syncEventsUrl = (env: WorkbenchEnv, name: string, frame?: string) =>
   (location.protocol === "https:" ? "wss://" : "ws://") +
   location.host +
-  `/api/canvases/sync/events?${q(env, name)}`;
+  `/api/canvases/sync/events?${q(env, name)}${fq(frame)}`;
 
 /** Spawn a Claude session on the canvas clone primed with the failing
  *  push's errors; attach the chat iframe with the returned run_id. */
