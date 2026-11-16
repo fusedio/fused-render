@@ -321,7 +321,11 @@
     background-color var(--dur-fast) var(--ease-out),
     color var(--dur-fast) var(--ease-out);
 }
-.task-head-open.is-wordy .task-head-open-arrow {
+/* NO ARROW BESIDE THE WORD (Akshil, 2026-11-16: "in some places we have the
+   arrow icon next to Open, let's remove it from everywhere"): the door is its
+   word. The ↗ is drawn only where the word has folded away (the ladder's
+   rules below), since a door must show something. */
+.task-head-open .task-head-open-arrow {
   display: none;
 }
 .task-head-open:hover {
@@ -758,6 +762,12 @@
 .task-head-count.is-unread {
   color: var(--fg);
 }
+/* …but in a rail window every count is the same ink (Akshil, 2026-11-16:
+   "for some chats the message count is a different colour, bright white —
+   all of them should be the same colour"): the ring already says unread. */
+.task-head.is-window .task-head-count.is-unread {
+  color: var(--fg-muted);
+}
 /* The time reads from the slot's right edge, where a row's time column ends. */
 .task-head-timeslot {
   justify-items: end;
@@ -940,22 +950,36 @@
 .task-head .task-side-peek-who.is-title .task-side-peek-rename {
   position: relative;
   z-index: 1;
-  /* 16px of button (12px glyph, 2px padding) + the 8px gap before it. */
-  margin-left: -24px;
+  /* NEXT TO THE TITLE WHERE THERE IS ROOM (Akshil, 2026-11-16: "this edit
+     icon overlap should only happen if it is at the end of the right side,
+     otherwise it can pop next to it"): it stands in the slack after the
+     title and hands its own 16px + the 8px gap back, so it still takes no
+     room and nothing after it moves. */
+  margin-right: -24px;
   pointer-events: none;
+}
+/* …AND OVER THE TITLE'S END WHERE THERE IS NONE (TaskPeekWho
+   `is-rename-over`: the title runs to the seat's edge): pulled back by its
+   own width and the gap, the title fading out under it. */
+.task-head .task-side-peek-who.is-title.is-rename-over .task-side-peek-rename {
+  margin-left: -24px;
+  margin-right: 0;
 }
 .task-head .task-side-peek-who.is-title:hover .task-side-peek-rename,
 .task-head .task-side-peek-who.is-title .task-side-peek-rename:focus-visible {
   pointer-events: auto;
 }
-.task-head .task-side-peek-who.is-title:hover:has(.task-side-peek-rename) .task-side-peek-title,
-.task-head .task-side-peek-who.is-title:has(.task-side-peek-rename:focus-visible) .task-side-peek-title {
+.task-head .task-side-peek-who.is-title.is-rename-over:hover:has(.task-side-peek-rename) .task-side-peek-title,
+.task-head .task-side-peek-who.is-title.is-rename-over:has(.task-side-peek-rename:focus-visible) .task-side-peek-title {
   -webkit-mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
   mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
 }
 @media (hover: none) {
+  /* No pointer to measure by: the pencil stands over the title's end, always. */
   .task-head .task-side-peek-who.is-title .task-side-peek-rename {
     pointer-events: auto;
+    margin-left: -24px;
+    margin-right: 0;
   }
   .task-head .task-side-peek-who.is-title:has(.task-side-peek-rename) .task-side-peek-title {
     -webkit-mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));

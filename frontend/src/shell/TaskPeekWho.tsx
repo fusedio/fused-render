@@ -202,6 +202,21 @@ export function TaskPeekWho({
   const [draft, setDraft] = useState<string | null>(null);
   // The icon picker is open (TaskIconPick): the host's overlay stays away.
   const [iconPicking, setIconPicking] = useState(false);
+  // THE PENCIL STANDS OVER THE TITLE'S END ONLY WHERE THERE IS NO ROOM AFTER
+  // IT (Akshil, 2026-11-16: "this edit icon overlap should only happen if it
+  // is at the end of the right side, otherwise it can pop next to it"). Read
+  // when the pointer comes onto the title half — the moment the pencil shows:
+  // room for it between the title's end and the seat's edge, or not.
+  const [renameOver, setRenameOver] = useState(false);
+  const measureRename = (e: { currentTarget: HTMLElement }) => {
+    const seat = e.currentTarget;
+    if (typeof seat?.querySelector !== "function" || typeof seat.getBoundingClientRect !== "function") return;
+    const titleEl = seat.querySelector<HTMLElement>(".task-side-peek-title");
+    if (!titleEl) return;
+    // The seat's 8px gap, the pencil's 16px, and a hair.
+    const free = seat.getBoundingClientRect().right - titleEl.getBoundingClientRect().right;
+    setRenameOver(free < 26);
+  };
   useEffect(() => {
     if (!iconPicking) return;
     onPickingChange?.(true);
@@ -281,8 +296,10 @@ export function TaskPeekWho({
       className={
         "task-side-peek-who" +
         (part === "all" ? "" : ` is-${part}`) +
+        (renameOver ? " is-rename-over" : "") +
         (className ? ` ${className}` : "")
       }
+      {...(part === "title" ? { onMouseEnter: measureRename } : {})}
     >
       {!showMarks ? null : (
         <>

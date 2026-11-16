@@ -1132,7 +1132,13 @@
    pin in its head. */
 .claude-rail-peek:has(.rail-pin-btn.is-pinned) .claude-rail-peek-card,
 .modal-popover .modal-dialog:has(.rail-pin-btn.is-pinned) {
-  border-color: var(--accent);
+  /* A HAIRLINE, not the full 1px (owner, 2026-11-16: "make border accent
+     thinner when pin"): the card keeps its 1px border box, so nothing moves
+     on pin, but the border itself goes clear and a half-pixel accent line is
+     drawn on its outer half. */
+  border-color: transparent;
+  outline: 0.5px solid var(--accent);
+  outline-offset: -0.5px;
 }
 /* The chats: every kept mount stacked in the same box, the shown one visible.
    `visibility`, not `display`: a hidden chat keeps its layout and its scroll
@@ -1325,13 +1331,6 @@ a.claude-rail-peek-scope:focus-visible {
   padding: 0 10px;
   font-size: 12px;
   line-height: 22px;
-}
-/* The favourite's door: the word, then an ↗ (RailPeek `openIcon`). */
-.claude-rail-peek-open.has-icon {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 0 8px 0 10px;
 }
 /* The chat's own ⋮ (apps/claude/ui/Kebab), in a head seat: its button takes
    the head's size and hover wash so it sits level with the close beside it. */

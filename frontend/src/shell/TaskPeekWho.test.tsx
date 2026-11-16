@@ -366,6 +366,45 @@ test("picking: the icon picker open in the other half keeps the stacked id slot'
   expect(v.text()).not.toContain("host-archive");
 });
 
+test("the pencil stands over the title's end only where no room is left after it (`is-rename-over`, 2026-11-16)", () => {
+  const whoOf = (r: ReactTestRenderer) =>
+    r.root.findAll(
+      (n) => n.type === "div" && String(n.props.className ?? "").split(" ").includes("task-side-peek-who"),
+    )[0]!;
+  // The seat's right edge at 300px, the title ending `free` px before it.
+  const pointerOn = (free: number) => ({
+    currentTarget: {
+      getBoundingClientRect: () => ({ right: 300 }),
+      querySelector: () => ({ getBoundingClientRect: () => ({ right: 300 - free }) }),
+    },
+  });
+  const v = render({ task: task(), part: "title" });
+  // Read when the pointer comes onto the title half — never before.
+  expect(whoOf(v.r).props.className).not.toContain("is-rename-over");
+  // Under 26px (the 8px gap, the 16px pencil, a hair): over the title's end.
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(10)));
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(25)));
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  // Room for it: next to the title.
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(26)));
+  expect(whoOf(v.r).props.className).not.toContain("is-rename-over");
+  // A node with nothing to measure (a test's stand-in) or no title on
+  // screen (mid-rename) changes nothing.
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(0)));
+  act(() => whoOf(v.r).props.onMouseEnter({ currentTarget: {} }));
+  act(() =>
+    whoOf(v.r).props.onMouseEnter({
+      currentTarget: { getBoundingClientRect: () => ({ right: 300 }), querySelector: () => null },
+    }),
+  );
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  // Only the shared head's title half measures: the marks half and the
+  // block every older caller draws hear no pointer.
+  expect(whoOf(render({ task: task(), part: "marks" }).r).props.onMouseEnter).toBeUndefined();
+  expect(whoOf(render({ task: task() }).r).props.onMouseEnter).toBeUndefined();
+});
+
 test("the pencil in the shared head's title half is skipped by the fit ladder (it overlays the title's end)", () => {
   const started = task({ renamed: false } as Partial<Task>);
   const title = render({ task: started, part: "title" }).text();

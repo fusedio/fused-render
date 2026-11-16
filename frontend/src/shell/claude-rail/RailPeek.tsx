@@ -123,7 +123,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, ArrowUpRight, MessageSquare, Pencil, Star, X } from "lucide-react";
+import { Archive, ArchiveRestore, MessageSquare, Pencil, Star, X } from "lucide-react";
 import { notify } from "@platform/lib/notifications";
 import { archiveTask, renameTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
@@ -206,7 +206,7 @@ export type RailSizeKey = "canvasRailPeek" | "canvasRailFav";
 /** The size the reader last dragged a card to (ui-layout `key`, by default
  *  the rail's pinned card's `canvasRailPeek`), floored at the grips'
  *  minimums; null for "never". */
-function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; height: number } | null {
+export function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; height: number } | null {
   const s = getUiLayout()[key];
   if (!s) return null;
   return {
@@ -1784,7 +1784,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               {head.href && (
                 <button
                   type="button"
-                  className={openArrow ? "btn claude-rail-peek-open has-icon" : "btn claude-rail-peek-open"}
+                  // The word alone (Akshil, 2026-11-16: no arrow beside
+                  // "Open", anywhere).
+                  className="btn claude-rail-peek-open"
                   title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
                   onClick={() => {
                     onOpenChat(head.href!);
@@ -1796,7 +1798,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   }}
                 >
                   Open
-                  {openArrow ? <ArrowUpRight size={13} aria-hidden="true" /> : null}
                 </button>
               )}
               {head.t.session_id && shownKey && (
