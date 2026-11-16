@@ -62,6 +62,22 @@ export function favLike(t: { status: string; starred?: boolean } | undefined | n
   return !!t && (!!t.starred || isBlockedChat(t));
 }
 
+/** THE FACE BY THE PULSE'S WORD (Bugbot, PR #2293): a rail seat draws the
+ *  listing row where it holds one, but the listing lags the pulse, and since
+ *  the icon stopped being the star's (2026-11-16) `icon_slot: null` (the
+ *  ring) and `icon_picked: false` are real answers, not gaps — a `??` merge
+ *  kept the listing's old face after a pick or a Remove. The pulse is the
+ *  fresher source the star is already read from, so its face wins whenever
+ *  it carries one (an older server's pulse carries none: the row's stands). */
+export function pulseFace(
+  t: Pick<TaskPulseTask, "icon_slot" | "icon_picked">,
+): Partial<Pick<TaskPulseTask, "icon_slot" | "icon_picked">> {
+  const out: Partial<Pick<TaskPulseTask, "icon_slot" | "icon_picked">> = {};
+  if (t.icon_slot !== undefined) out.icon_slot = t.icon_slot;
+  if (t.icon_picked !== undefined) out.icon_picked = t.icon_picked;
+  return out;
+}
+
 /** The pointer rests this long on a ring before its chat is MOUNTED (the
  *  warm-up): a sweep down the rail must not mount every chat it crosses. */
 export const PEEK_WARM_MS = 60;
