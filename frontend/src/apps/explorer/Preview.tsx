@@ -2584,8 +2584,10 @@ function TemplatePreview({
             git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}
             activeSessionId={new URLSearchParams(location.search).get("session_id")}
             onOpen={openClaudeSide}
-            // A ring's door is this file's own URL with the chat's session
-            // (`taskHref`): the sidebar opens on it like any `_side=claude` link.
+            // A ring's door is its chat's own page with the session
+            // (`taskHref`): for this file's chats that is this file's URL —
+            // the sidebar opens on it like any `_side=claude` link; a faded
+            // ring's (the folder's, another file's) navigates there.
             onOpenChat={(href) => navigateUrl(href)}
             // The + beside the open column: this file's chat with no
             // session, its Recent chats page (already there: nothing to load).

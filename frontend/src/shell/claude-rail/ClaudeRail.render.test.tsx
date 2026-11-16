@@ -1105,12 +1105,15 @@ describe("ClaudeRail on an open file (owner, 2026-11-16)", () => {
         ["other", "claude-rail-seat is-off"],
       ]);
       expect(seps(r)).toBe(1);
+      // The list is the folder's, and says so.
+      const list = r.root.findAll((n) => typeof n.type === "string" && n.props.role === "list" && n.props.className === "claude-rail-chats")[0]!;
+      expect(list.props["aria-label"]).toBe("Chats on demo");
     });
   }
 
   test("the folder page itself: the List's order, nothing faded, no hairline", async () => {
     const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { kind: "folder", dir: DIR } });
-    expect(seatKeys(r).map(([k, c]) => [k, c])).toEqual([
+    expect(seatKeys(r)).toEqual([
       ["folder", "claude-rail-seat"],
       ["other", "claude-rail-seat"],
       ["mine", "claude-rail-seat"],

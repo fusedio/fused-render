@@ -157,9 +157,20 @@ export function ownPlace(t: Pick<TaskPulseTask, "canvas" | "target" | "project">
 /** THE PLACE A CARD'S WHERE-CHIP NAMES (RailPeek's head): the rail's own
  *  place when the row is in it, else the row's own (`ownPlace`) — a
  *  favourite from another canvas or folder, hovered on this rail, says where
- *  IT lives, not where the rail stands. */
+ *  IT lives, not where the rail stands.
+ *  A FADED ROW ON A FILE'S RAIL (`railRows`: a chat of the file's folder, or
+ *  of another file in it) is read against the FOLDER the rail lists
+ *  (`widePlace`), so its card says the same folder and file the folder
+ *  page's own rail says — not the row's project, which may be a folder
+ *  further up. (A canvas's faded rows are already in the canvas place: the
+ *  node is not part of `inPlace`.) */
 export function chipPlace(t: Pick<TaskPulseTask, "canvas" | "target" | "project">, place: RailPlace): RailPlace {
-  return inPlace(t, place) ? place : ownPlace(t);
+  if (inPlace(t, place)) return place;
+  if (place.kind === "file" && place.dir) {
+    const wide = widePlace(place);
+    if (inPlace(t, wide)) return wide;
+  }
+  return ownPlace(t);
 }
 
 /** The canvas the PAGE stands on, when the page can select a node in place

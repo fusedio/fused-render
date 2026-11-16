@@ -742,6 +742,27 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     expect(chipPlace(folder, PLACE)).toEqual({ kind: "folder", dir: "/apps/x", word: "Folder" });
   });
 
+  it("a faded row on a file's rail is read against the folder the rail lists, not its own project", () => {
+    const FOLDER = "/repo/sub";
+    const RAIL: RailPlace = { kind: "file", file: `${FOLDER}/a.py`, dir: FOLDER };
+    const own = pulse(task({ key: "a", canvas: null, project: "/repo", target: `${FOLDER}/a.py` }));
+    expect(chipPlace(own, RAIL)).toBe(RAIL);
+    // Its project is the repo above the folder: the folder page's rail calls
+    // it `sub › o.py`, and so does the file page's.
+    const other = pulse(task({ key: "b", canvas: null, project: "/repo", target: `${FOLDER}/o.py` }));
+    const at = chipPlace(other, RAIL);
+    expect(at).toEqual({ kind: "folder", dir: FOLDER, sessionless: undefined });
+    expect(railScope(other, at)).toEqual({ kind: "file", name: "o.py", file: `${FOLDER}/o.py` });
+    // The folder's own chat with no project is still the folder's.
+    const whole = pulse(task({ key: "c", canvas: null, project: "", target: FOLDER }));
+    expect(chipPlace(whole, RAIL)).toEqual({ kind: "folder", dir: FOLDER, sessionless: undefined });
+    // From outside the folder: its own place, as on any rail.
+    const out = pulse(task({ key: "d", canvas: null, project: "/apps/x", target: "/apps/x/main.py" }));
+    expect(chipPlace(out, RAIL)).toEqual({ kind: "folder", dir: "/apps/x", word: "Folder" });
+    // A file place with no folder: unchanged.
+    expect(chipPlace(other, { kind: "file", file: `${FOLDER}/a.py` })).toEqual({ kind: "folder", dir: "/repo", word: "Folder" });
+  });
+
   it("a node on another canvas (or no canvas page) navigates to that canvas with the node selected", () => {
     const at: RailPlace = { kind: "canvas", env: "prod", name: "other", dir: OTHER };
     const door = chipDoor({ kind: "node", name: "map", file: "map.py" }, at, { env: "unstable", name: "demo", file: null })!;
