@@ -40,8 +40,9 @@
 //       TIME   when it last ran  ↔ ↗ Open
 //     A slot with no `b` (a run in flight has nothing to file; a pane IS the
 //     page, so it has no Open; favourites off) keeps its `a` under the pointer.
-//   * the last reply trails the title, muted, and gives way before it; the
-//     queue caption and the paused word after them.
+//   * a host's `subtitle` (the rail card's hover preview: the last reply)
+//     trails the title, muted, and gives way before it; the queue caption and
+//     the paused word after them. The head prints no reply of its own.
 //   * CHIPS (worktree, PR), host SEATS, and the ⋮ at the end.
 //
 // NEVER MOVED, NEVER HIDDEN: the lead, the folder, and the ⋮. (↗ Open stood
@@ -156,8 +157,9 @@ export interface TaskHeadProps {
   /** Ring facts only the host knows (TaskPeekWho `ring`): unread, held
    *  draft, failed. */
   ring?: { unread?: boolean; draftHeld?: boolean; failed?: boolean };
-  /** A muted line after the title, in the title's row (TaskPeekWho), in
-   *  place of the task's own last reply. */
+  /** A muted line after the title, in the title's row (TaskPeekWho). None
+   *  unless the host passes one: the head never prints the task's last reply
+   *  itself (2026-11-16). */
   subtitle?: ReactNode;
   /** After a rename the server took (TaskPeekWho `onRenamed`). */
   onRenamed?: () => void;
@@ -409,16 +411,11 @@ export function TaskHead({
       {...(onRenamed ? { onRenamed } : {})}
     />
   ) : null;
-  // THE LAST REPLY trails the title (the List row's line); a host's own
-  // subtitle wins.
-  const reply = who?.last_reply?.trim() ?? "";
-  const subtitleNode: ReactNode =
-    subtitle ??
-    (reply ? (
-      <span className="task-head-reply" data-hint={reply}>
-        {reply}
-      </span>
-    ) : null);
+  // NO REPLY LINE OF ITS OWN (Akshil, 2026-11-16): the head drew the task's
+  // last reply after every title, which the heads it replaced never did —
+  // only the Tasks row and the rail card's hover preview print it. A host
+  // that wants a line after the title passes `subtitle` (RailPeek).
+  const subtitleNode: ReactNode = subtitle ?? null;
   // THE TITLE HALF, wherever it stands: on row 1 after the marks, or —
   // stacked — on row 2 with the trail. A static title or the skeleton for a
   // head with no task.

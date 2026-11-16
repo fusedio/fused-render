@@ -1649,8 +1649,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 draftHeld: !!head.row && draftRing(head.merged as Task),
                 ...(head.row?.failed ? { failed: true } : {}),
               }}
-              // The last reply after the title, as the old title row drew it.
-              {...(head.reply
+              // The last reply after the title, as the old title row drew it
+              // — WHILE THE CARD IS A HOVER PREVIEW ONLY (Akshil, 2026-11-16):
+              // a preview says what the chat last said; a card the reader
+              // pressed (pinned, held: a ring press, a press inside, the
+              // favourite's window opened by a press) is the chat itself, and
+              // its last reply is on screen below.
+              {...(head.reply && !pinned && !held
                 ? {
                     subtitle: (
                       <span

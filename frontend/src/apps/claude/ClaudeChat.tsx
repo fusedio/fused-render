@@ -5666,7 +5666,9 @@ function ChatBody(props: ChatBodyProps) {
         pageRoot={props.pageRoot ?? null}
         sessionId={head.task.session_id ?? null}
         {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
-        onlyDoor={!!props.mergedHead}
+        // No `onlyDoor` here: that rule keeps the folder's own name off the
+        // merged head, and the where-tag never carries it — one with no door
+        // is plain text, as on every other head (CodeRabbit on #2287).
         part="where"
       />
     ) : null;

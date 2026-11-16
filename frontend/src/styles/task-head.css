@@ -162,11 +162,19 @@
   min-width: 0;
 }
 
-/* The reply line after the title (the task's last reply, or a host's
-   `subtitle`): muted, italic, one line — the List row's way. IT GIVES WAY
-   BEFORE THE TITLE (the row's rule): no width of its own to defend (basis 0),
-   it takes what the title leaves and is the first thing a narrow head loses. */
-.task-head .task-side-peek-who.is-title:has(.task-head-subtitle) .task-side-peek-title {
+/* THE TITLE IS AS WIDE AS ITS WORDS, never stretched (2026-11-16): its seat
+   (`.task-side-peek-who`) takes the row's slack, not the title. A title that
+   grew to fill the row reported the row's width as its own (`scrollWidth`),
+   and the ladder (row-fit `titleWants`) then folded the facts and stacked a
+   rail window for a two-word title with room to spare — every head without a
+   line after the title, which since the reply left the head is most of them.
+
+   The line after the title (a host's `subtitle`: the rail card's hover
+   preview prints the last reply): muted, italic, one line — the List row's
+   way. IT GIVES WAY BEFORE THE TITLE (the row's rule): no width of its own to
+   defend (basis 0), it takes what the title leaves and is the first thing a
+   narrow head loses. */
+.task-head .task-side-peek-who.is-title .task-side-peek-title {
   flex: 0 1 auto;
 }
 .task-head-subtitle {

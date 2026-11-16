@@ -259,17 +259,20 @@ test("the folder stands before the number: the host's place, the task's own chip
   expect(byClass(render(head({ place: null })), "task-head-place")).toHaveLength(0);
 });
 
-test("the last reply trails the title; a host's subtitle wins", () => {
+test("no reply line of its own: only a host's subtitle trails the title (2026-11-16)", () => {
+  // The task's last reply is NOT drawn by the head: the panel, the Tasks
+  // card, the New task chat, the panes and the Cards popup show none.
   const r = render(head({ task: task({ last_reply: "Space should now fire." }) }));
-  const title = byClass(r, "is-title")[0]!;
-  expect(JSON.stringify(byClass(r, "task-head-reply")[0])).toContain("Space should now fire.");
-  expect(JSON.stringify(title)).toContain("task-head-subtitle");
+  expect(byClass(r, "task-head-subtitle")).toHaveLength(0);
+  expect(JSON.stringify(r.toJSON())).not.toContain("Space should now fire.");
+  // A host that passes one (the rail card's hover preview) gets it, in the
+  // title's own seat.
   const host = render(
     head({ task: task({ last_reply: "theirs" }), subtitle: createElement("span", { className: "host-sub" }) }),
   );
   expect(byClass(host, "host-sub")).toHaveLength(1);
-  expect(byClass(host, "task-head-reply")).toHaveLength(0);
-  expect(byClass(render(head()), "task-head-subtitle")).toHaveLength(0);
+  expect(JSON.stringify(byClass(host, "is-title")[0])).toContain("task-head-subtitle");
+  expect(JSON.stringify(host.toJSON())).not.toContain("theirs");
 });
 
 test("the lead corner: × with its hint, ← whose hint is its label, and a refusal said in both", () => {

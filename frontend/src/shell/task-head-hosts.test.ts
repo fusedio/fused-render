@@ -179,6 +179,8 @@ test("the rail card: its pulse's facts ride the head's own slots, its star and a
   expect(shared).toContain("? { n: head.count, unread: head.unread }");
   expect(shared).toContain("? { text: head.when, ...(head.whenFull ? { title: head.whenFull } : {}) }");
   expect(shared).not.toContain("pulseEl(");
+  // The reply line: a hover preview's only — a pressed card shows none.
+  expect(shared).toContain("{...(head.reply && !pinned && !held");
   expect(shared).toContain("starNode: starButton(head)");
   expect(shared).toContain("statusOverlay: archiveButton(head)");
   // The old head keeps its picker gate: a button only during a rename.
