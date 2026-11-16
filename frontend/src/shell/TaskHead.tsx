@@ -293,6 +293,9 @@ export function TaskHead({
   // The title is being edited (the title half tells the marks half, which
   // holds the icon button and the id slot).
   const [renaming, setRenaming] = useState(false);
+  // The icon picker is open (the marks half tells the title half, which holds
+  // the id slot once the head is stacked).
+  const [picking, setPicking] = useState(false);
   // Measured on the whole head — both rows — so a rung can answer either.
   const [fit, headRef] = useStripFit(
     stacked === false ? DROPS_NO_STACK : DROPS_ALL,
@@ -412,6 +415,7 @@ export function TaskHead({
       // row 2 reads "T012 title", and its Archive trades there.
       idAt={stackedNow ? "title" : "marks"}
       editing={renaming}
+      onPickingChange={setPicking}
       {...(ring ? { ring } : {})}
       {...(onRenamed ? { onRenamed } : {})}
     />
@@ -434,6 +438,7 @@ export function TaskHead({
       className="task-head-title-seat"
       idOverlay={idOverlay}
       idAt={stackedNow ? "title" : "marks"}
+      picking={picking}
       onEditingChange={setRenaming}
       {...(titleId ? { titleId } : {})}
       {...(subtitleNode ? { subtitle: subtitleNode } : {})}

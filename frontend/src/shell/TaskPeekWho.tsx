@@ -111,6 +111,8 @@ export function TaskPeekWho({
   idAt = "marks",
   editing = false,
   onEditingChange,
+  picking = false,
+  onPickingChange,
 }: {
   task: Task;
   /** RING FACTS ONLY THE HOST KNOWS (the rail card: RailPeek): the unread
@@ -162,6 +164,14 @@ export function TaskPeekWho({
   /** The title is being edited in the head's OTHER half (`part="title"`),
    *  for the half that holds the marks. */
   editing?: boolean;
+  /** The icon picker is open in the head's OTHER half (`part="marks"`), for
+   *  the half that holds the number when the head is stacked (`idAt`): its
+   *  Archive stays away meanwhile, as it does in one row (CodeRabbit on
+   *  #2287). */
+  picking?: boolean;
+  /** The icon picker opened or closed — for a head that splits the block in
+   *  two. Pass a STABLE function (a state setter). */
+  onPickingChange?: (picking: boolean) => void;
   /** The title input stood up or went away — for a head that splits the
    *  block in two. Pass a STABLE function (a state setter). */
   onEditingChange?: (editing: boolean) => void;
@@ -191,6 +201,11 @@ export function TaskPeekWho({
   const [draft, setDraft] = useState<string | null>(null);
   // The icon picker is open (TaskIconPick): the host's overlay stays away.
   const [iconPicking, setIconPicking] = useState(false);
+  useEffect(() => {
+    if (!iconPicking) return;
+    onPickingChange?.(true);
+    return () => onPickingChange?.(false);
+  }, [iconPicking, onPickingChange]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Enter saves and the unmount-time blur must not save twice; Escape must not
@@ -256,7 +271,7 @@ export function TaskPeekWho({
       <span className="task-head-slot task-head-idslot">
         <span className="task-side-peek-id task-head-slot-a">{shortTaskId(task.task_id)}</span>
         <span className="task-head-slot-b">
-          {renaming || editing || iconPicking ? null : idOverlay}
+          {renaming || editing || iconPicking || picking ? null : idOverlay}
         </span>
       </span>
     );
