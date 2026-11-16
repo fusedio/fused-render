@@ -16,6 +16,7 @@ Each extension resolves to ordered mode list (first = default; >1 shows switcher
     ├── template.html  required entry point
     ├── reader.py      optional siblings, referenced relatively
     ├── condition.py   optional per-file gate
+    ├── stream-s3      optional marker: template reads `_file=s3://…` itself
     └── icon.svg       optional switcher icon (monochrome, currentColor, square, legible 16px)
 ```
 
@@ -32,6 +33,10 @@ Flat object; same key grammar as built-in `fused_render/templates/registry.json`
 ## condition.py
 
 `def main(path) -> bool` beside template.html — show this template for this file? No file = always shown. Runs after registry resolution, evaluated in background (`GET /api/fs/conditions?path=…`), verdicts cached ~60 s; multiple gates for one extension run concurrently (cost = slowest gate, all still run). May read file, keep reads bounded (headers/footers). Broken gate = template dropped, reason in `error` on conditions response. Gated template never default while ungated one exists. Shows "conditional" badge in Templates → Library.
+
+## stream-s3
+
+Marker file = template opens bucket objects WITHOUT download. Template must take BOTH forms of `_file`: an `s3://` address (streamed) and a local path (an object already downloaded opens from its cached copy, like any local file). Lines starting with `.` list the extensions it streams (`.parquet` — duckdb; none = every bound file): explorer passes `_file=s3://bucket/key` instead of a local cache path. Template must then read it itself: `fused.s3.sign(addr)` (JS) / `fused_s3.sign(addr)` (Python, `templates/shared`) → `{url, expires_at}` HTTPS URL, Range works. Keep address as identity (`fused.params`, cache keys); sign in the page and pass the URL to `runPython` (duckdb), or let a long-lived daemon sign itself (`fused_s3`). Read only what the view needs — refuse/point to Download when a view would read most of a big file (duckdb: `STREAM_SCAN_BUDGET`). Not honoured for conditional or native templates. Example: `duckdb/` (DuckDB `httpfs` on the signed URL).
 
 ## Guardrail
 
