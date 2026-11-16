@@ -393,7 +393,14 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  min-height: 22px;
+  /* THE ROW IS AS TALL AS ITS ARCHIVE BUTTON, WITH OR WITHOUT IT (22px, plus
+     the 6px below). The id slot rides this row when the head is stacked, and
+     its button is withheld while the icon picker or a rename is up; the row
+     then fell back to the title's 16px, the head lost 6px, the chat under it
+     scrolled — and the picker, which closes on any scroll outside it, shut
+     the moment it opened (Akshil, 2026-11-16: the status icon "glitches" in
+     a small two-line window). */
+  min-height: 28px;
   padding: 0 2px 6px 6px;
 }
 .task-head-titlerow .task-side-peek-who {

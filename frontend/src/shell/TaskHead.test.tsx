@@ -494,6 +494,10 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(TASK_HEAD_TITLE_MAX).toBe(400);
   expect(css).toContain(`  flex: 1 1 ${TASK_HEAD_TITLE_MAX}px;\n  max-width: max-content;`);
   expect(css).not.toContain(`max-width: ${TASK_HEAD_TITLE_MAX}px;`);
+  // Row 2 keeps the Archive button's height with or without the button (the
+  // picker closes on a scroll, and a head that changed height scrolled the chat).
+  expect(css).toContain(".task-head-titlerow {\n  display: flex;\n  align-items: center;\n  min-width: 0;");
+  expect(css).toMatch(/\.task-head-titlerow \{[^}]*min-height: 28px;\s*padding: 0 2px 6px 6px;/);
   // The where-tag's word: gone on every rung past 0 while the head is one
   // row; a stacked rail window has it back until row 1 itself is short.
   expect(css).toContain('.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where .place-tag-word');

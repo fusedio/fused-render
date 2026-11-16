@@ -1732,6 +1732,16 @@ button.tasks-caret,
    hung off its right edge: over the a item's ink, costing the row nothing.
    `data-fit-skip` on the seat keeps it off the fit ladder's sums (row-fit.ts
    `rowNeed`), whichever of the two states it is in. */
+/* THE ROW IS AS TALL AS ITS HOVER SEATS, AT REST TOO (Akshil, 2026-11-16: "for
+   projects, hovering on the list changes height"). The star's and the door's
+   seats are 18px boxes that exist only under the pointer; a row with nothing
+   else that tall — the Project view's, which drops the folder chip — stood on
+   its 16px line at rest and grew 2px when pointed at, and the whole list
+   under it stepped down. The floor is those 18px plus the row's own padding,
+   so a row that already holds a chip is unchanged. */
+.tasks-row--ab {
+  min-height: calc(18px + 2 * var(--tasks-row-pad-y));
+}
 .tasks-row--ab > .tasks-bseat {
   position: relative;
   flex: 0 0 0px;
