@@ -387,8 +387,8 @@ test("the ladder: wide, nothing folds; narrow, it walks every rung and the title
   expect(foldedOpen(0)).toBe(false);
   expect(foldedOpen(7)).toBe(false);
   for (const r of [wide, narrow]) expect(byClass(r, "task-head-open")).toHaveLength(1);
-  // Row 1 keeps the marks — status, folder, id slot — and the slots; the
-  // title is not on it.
+  // Row 1 keeps the marks — status, folder — and the slots; the title and
+  // its number are not on it.
   const row1 = byClass(narrow, "task-head-row")[0]!;
   const kids = (row1.children ?? []) as ReactTestRendererJSON[];
   expect(kids.map((k) => cls(k).split(" ")[0])).toEqual([
@@ -399,13 +399,21 @@ test("the ladder: wide, nothing folds; narrow, it walks every rung and the title
   ]);
   expect(JSON.stringify(row1)).toContain("task-side-peek-status");
   expect(JSON.stringify(row1)).toContain("my-place");
-  expect(JSON.stringify(row1)).toContain("T042");
   expect(JSON.stringify(row1)).not.toContain("Rename the pane noun");
-  // Row 2 is the title alone.
+  // THE NUMBER GOES DOWN WITH THE TITLE (2026-11-16): row 1 has no id slot…
+  expect(JSON.stringify(row1)).not.toContain("T042");
+  expect(JSON.stringify(row1)).not.toContain("task-head-idslot");
+  // …row 2 is the id slot (the number and its Archive), then the title.
   const row2 = byClass(narrow, "task-head-titlerow")[0]!;
-  expect(JSON.stringify(row2)).toContain("Rename the pane noun");
-  expect(JSON.stringify(row2)).not.toContain("task-side-peek-status");
-  expect(JSON.stringify(row2)).not.toContain("T042");
+  const two = JSON.stringify(row2);
+  expect(two).toContain("Rename the pane noun");
+  expect(two).not.toContain("task-side-peek-status");
+  expect(two).toContain("task-head-idslot");
+  expect(two.indexOf("T042")).toBeGreaterThan(-1);
+  expect(two.indexOf("T042")).toBeLessThan(two.indexOf("Rename the pane noun"));
+  // One row: the number is with the marks, once.
+  expect(byClass(wide, "task-head-idslot")).toHaveLength(1);
+  expect(byClass(narrow, "task-head-idslot")).toHaveLength(1);
 });
 
 test("the chevrons share one seat, so one rung folds them; the lead is not in it", () => {
@@ -682,6 +690,14 @@ test("the stylesheet trades a slot's occupants on hover — the window's in a ra
   // A slot with no fact holds no box at rest (Bugbot, #2285).
   expect(css).toContain(
     ".task-head.is-window .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) { width: 0;",
+  );
+  // IN A RAIL WINDOW THE ARCHIVE WAITS FOR THE HEAD ITSELF (2026-11-16): the
+  // pointer elsewhere on the card (`.is-hot`, not `:hover`) keeps the number.
+  expect(css).toContain(
+    ".task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) { opacity: 0;",
+  );
+  expect(css).toContain(
+    ".task-head.task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a { opacity: 1;",
   );
   // Where there is no hover, the acts stand.
   expect(css).toContain("@media (hover: none) {");

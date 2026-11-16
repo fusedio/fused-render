@@ -1208,8 +1208,8 @@ a.place-tag.is-door {
 a.place-tag.is-door:hover {
   background: rgba(var(--tint), 0.14);
 }
-/* THE WHERE-TAG WEARS ITS ICON (PlaceTags `part="where"`; Akshil,
-   2026-11-16): the canvas mark, the node's type, the file's — then the word.
+/* A CANVAS'S WHERE-TAG WEARS ITS ICON (PlaceTags `part="where"`; Akshil,
+   2026-11-16): the canvas mark or the node's type — then the word.
    The icon never shrinks; the word is what a narrow head folds
    (task-head.css), leaving a round icon button. */
 .place-tag.has-icon {
@@ -1217,11 +1217,17 @@ a.place-tag.is-door:hover {
   align-items: center;
   gap: 4px;
   max-width: 140px;
+  /* The pill's own height with or without its word (the icon alone would
+     shrink it to the glyph). */
+  box-sizing: border-box;
+  height: 20px;
 }
+/* The star's and the archive's own size (14px; Akshil, 2026-11-16: "the icon
+   seems smaller — star and status ring, make nearly the same size"). */
 .place-tag.has-icon > svg {
   flex: 0 0 auto;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 .place-tag-word {
   min-width: 0;

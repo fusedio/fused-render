@@ -72,7 +72,7 @@ test('part="where" on a whole canvas: the Canvas tag, with the canvas mark', () 
   expect(((tag!.children ?? []) as ReactTestRendererJSON[])[0]!.type).toBe("svg");
 });
 
-test('part="where": a file under the folder wears its file icon; a whole folder draws nothing', () => {
+test('part="where": a file under the folder is its name alone — icons are the canvas\'s only; a whole folder draws nothing', () => {
   const file = flat({
     scope: { kind: "file", name: "index.html", file: "/a/app/index.html" },
     at: folder,
@@ -80,6 +80,9 @@ test('part="where": a file under the folder wears its file icon; a whole folder 
     part: "where",
   });
   expect(tags(file).map(text)).toEqual(["index.html"]);
-  expect(file.some((n) => n.type === "svg" && cls(n).includes("file-icon--html"))).toBe(true);
+  expect(file.some((n) => n.type === "svg")).toBe(false);
+  expect(cls(tags(file)[0]!)).not.toContain("has-icon");
+  // No word seat, so the ladder has nothing to fold: the name always stands.
+  expect(file.some((n) => cls(n).includes("place-tag-word"))).toBe(false);
   expect(flat({ scope: { kind: "whole", word: "Folder" }, at: folder, pageRoot: null, part: "where" })).toHaveLength(0);
 });

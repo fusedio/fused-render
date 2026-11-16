@@ -16,13 +16,13 @@
 // longer stand side by side there. The PLACE tag (the canvas's or the
 // folder's name) keeps the left seat, and only the favourite's window draws
 // it; the WHERE tag (Canvas, the node, the file) sits at the head's right
-// end, before the count slot, as an icon and its word — the icon alone where
-// the head is short on width (task-head.css folds `.place-tag-word`). No
-// chevron: the two are apart. The presses are the same.
+// end, before the count slot. A CANVAS's where-tag is an icon and its word —
+// the icon alone where the head is short on width (task-head.css folds
+// `.place-tag-word`); a folder's file tag is its name alone. No chevron: the
+// two are apart. The presses are the same.
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { ChevronRight } from "lucide-react";
 import { navigateUrl } from "@platform/lib/router";
-import { iconForEntry } from "@platform/ui/FileIcons";
 import { CanvasIcon, nodeTypeIcon } from "@platform/ui/NodeTypeIcons";
 import { placeRoot, placeTags, type PlaceTag, type RailPlace, type RailScope } from "./claude-rail-lib";
 
@@ -58,12 +58,14 @@ export interface PlaceTagsProps {
   part?: "place" | "where";
 }
 
-/** The where-tag's icon: the canvas mark, the node's type as the workbench
- *  draws it, the explorer's icon for a file. */
+/** The where-tag's icon — CANVASES ONLY (Akshil, 2026-11-16: "the icons for
+ *  now let's add only for canvases, not every folder file we have"): the
+ *  canvas mark, or the node's type as the workbench draws it. A file under a
+ *  folder is its name alone, and so never folds to an icon. */
 function whereIcon(tag: PlaceTag) {
   if (tag.kind === "canvas") return <CanvasIcon />;
   if (tag.kind === "node") return nodeTypeIcon(tag.file ?? tag.label);
-  return iconForEntry(tag.file ?? tag.label, false);
+  return null;
 }
 
 export function PlaceTags({ scope, at, pageRoot, onSelectNode, sessionId, onNavigate, onSelected, onlyDoor, secondaryOnly, part }: PlaceTagsProps) {
@@ -76,7 +78,7 @@ export function PlaceTags({ scope, at, pageRoot, onSelectNode, sessionId, onNavi
       : all;
   if (!tags.length) return null;
   if (onlyDoor && !tags.some((t) => t.door)) return null;
-  const iconed = part === "where";
+
   const press = (tag: PlaceTag, e: ReactMouseEvent<HTMLAnchorElement>) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
     e.preventDefault();
@@ -95,10 +97,11 @@ export function PlaceTags({ scope, at, pageRoot, onSelectNode, sessionId, onNavi
   return (
     <span className={"place-tags" + (part ? ` is-${part}` : "")} role="group" aria-label="Where this chat lives">
       {tags.map((tag, i) => {
-        const cls = `place-tag is-${tag.kind}` + (tag.door ? " is-door" : "") + (iconed ? " has-icon" : "");
-        const face = iconed ? (
+        const icon = part === "where" ? whereIcon(tag) : null;
+        const cls = `place-tag is-${tag.kind}` + (tag.door ? " is-door" : "") + (icon ? " has-icon" : "");
+        const face = icon ? (
           <>
-            {whereIcon(tag)}
+            {icon}
             <span className="place-tag-word">{tag.label}</span>
           </>
         ) : (

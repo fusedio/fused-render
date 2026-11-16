@@ -54,8 +54,10 @@
 //
 //   1. the time: the slot shrinks to a glyph, and Open under the pointer is
 //      the ↗ alone; 2. the chips; 3. the host's seats; 4. the ↑↓ chevrons;
-//   5. the title, its reply and the trail take row 2 — row 1 keeps the lead,
-//      status, folder, id slot … count slot, time slot, ⋮ (`stacked: "auto"`);
+//   5. the id slot, the title, its line and the trail take row 2 — row 1
+//      keeps the lead, status, folder … where, count slot, time slot, ⋮
+//      (`stacked: "auto"`; the number goes down with the title it names,
+//      Akshil, 2026-11-16);
 //   6. the id slot (Archive stays in the ⋮).
 //
 // WHAT THE HOST OWNS. The ⋮ is the host's `<Kebab …/>` handed in whole, because
@@ -406,6 +408,9 @@ export function TaskHead({
       iconPress
       place={placeEl}
       idOverlay={idOverlay}
+      // STACKED, THE NUMBER GOES DOWN WITH THE TITLE (Akshil, 2026-11-16):
+      // row 2 reads "T012 title", and its Archive trades there.
+      idAt={stackedNow ? "title" : "marks"}
       editing={renaming}
       {...(ring ? { ring } : {})}
       {...(onRenamed ? { onRenamed } : {})}
@@ -427,6 +432,8 @@ export function TaskHead({
       task={who}
       part="title"
       className="task-head-title-seat"
+      idOverlay={idOverlay}
+      idAt={stackedNow ? "title" : "marks"}
       onEditingChange={setRenaming}
       {...(titleId ? { titleId } : {})}
       {...(subtitleNode ? { subtitle: subtitleNode } : {})}

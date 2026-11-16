@@ -108,6 +108,7 @@ export function TaskPeekWho({
   iconPress = false,
   place,
   idOverlay,
+  idAt = "marks",
   editing = false,
   onEditingChange,
 }: {
@@ -152,6 +153,12 @@ export function TaskPeekWho({
    *  (`.task-head-idslot`, task-head.css). Withheld during a rename and while
    *  the icon picker is open. */
   idOverlay?: ReactNode;
+  /** WHICH HALF HOLDS THE NUMBER (Akshil, 2026-11-16: "when title goes to
+   *  second line have task id go to second line as well"): `"marks"` — the
+   *  default — after the marks; `"title"` — a stacked head's row 2, the
+   *  number leading the title it names. A half asked for the other's seat
+   *  draws no number. */
+  idAt?: "marks" | "title";
   /** The title is being edited in the head's OTHER half (`part="title"`),
    *  for the half that holds the marks. */
   editing?: boolean;
@@ -239,6 +246,20 @@ export function TaskPeekWho({
   const background = !running && liveJobRow(task);
   const showMarks = !bare && part !== "title";
   const showTitle = part !== "marks";
+  // THE NUMBER'S SEAT, drawn by whichever half holds it (`idAt`).
+  const idSeat =
+    idOverlay === undefined ? (
+      <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
+    ) : (
+      // One box, two occupants: the number at rest, the filing button while
+      // the head is pointed at (task-head.css, "THE A/B SLOTS").
+      <span className="task-head-slot task-head-idslot">
+        <span className="task-side-peek-id task-head-slot-a">{shortTaskId(task.task_id)}</span>
+        <span className="task-head-slot-b">
+          {renaming || editing || iconPicking ? null : idOverlay}
+        </span>
+      </span>
+    );
   return (
     <div
       className={
@@ -280,20 +301,11 @@ export function TaskPeekWho({
       <TaskAgentMark backend={task.backend} />
       {place}
       {starNode ?? (star && <TaskStar task={task} />)}
-      {idOverlay === undefined ? (
-        <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
-      ) : (
-        // One box, two occupants: the number at rest, the filing button while
-        // the head is pointed at (task-head.css, "THE A/B SLOTS").
-        <span className="task-head-slot task-head-idslot">
-          <span className="task-side-peek-id task-head-slot-a">{shortTaskId(task.task_id)}</span>
-          <span className="task-head-slot-b">
-            {renaming || editing || iconPicking ? null : idOverlay}
-          </span>
-        </span>
-      )}
+      {idAt === "marks" ? idSeat : null}
         </>
       )}
+      {/* A stacked head's number leads its title on row 2 (`idAt`). */}
+      {showTitle && part === "title" && idAt === "title" ? idSeat : null}
       {!showTitle ? null : draft === null ? (
         <>
           <span

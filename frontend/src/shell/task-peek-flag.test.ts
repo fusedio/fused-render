@@ -244,7 +244,9 @@ describe("the peek header", () => {
     // The block's box (its class list grew a `part` and a host class; the
     // literal is the first thing in it).
     const who = WHO.slice(WHO.indexOf('"task-side-peek-who"'));
-    const inner = ["<StatusIcon", "task-side-peek-id", "task-side-peek-title"].map((n) => {
+    // (The number's seat is one node, `idSeat`, placed after the marks — or,
+    // in a stacked head, leading the title on row 2: still before the title.)
+    const inner = ["<StatusIcon", '{idAt === "marks" ? idSeat : null}', "task-side-peek-title"].map((n) => {
       const i = who.indexOf(n);
       expect(i).toBeGreaterThan(-1);
       return i;
