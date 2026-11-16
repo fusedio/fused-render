@@ -317,7 +317,10 @@ def _serve():
             # The stretch reads the whole smallest level and a zoomed-out tile
             # reads most of it: over the budget, streaming would be a slow
             # download in disguise (a 3 GB file with no overviews).
-            stream_error = T.stream_refusal(T.level_bytes(levels[-1]["counts"]))
+            small = levels[-1]
+            stream_error = (T.stream_refusal(T.level_bytes(small["counts"]))
+                            # read_window decodes it as float32 per band
+                            or T.decode_refusal(small["W"] * small["H"] * small["spp"] * 4))
         f = {"path": path, "buf": buf, "en": en, "levels": levels,
              "meta": meta, "epsg": epsg,
              "transform": meta.get("transform"), "bounds": meta.get("bounds"),
@@ -433,7 +436,7 @@ def _serve():
         if len(missing) < 2:
             return
         ranges = [(lv["offs"][ci], lv["offs"][ci] + lv["counts"][ci]) for ci in missing]
-        for ci, raw in zip(missing, f["buf"].read_many(ranges)):
+        for ci, raw in zip(missing, f["buf"].read_many(ranges, max_transfer=T.STREAM_BUDGET)):
             _decode_chunk(f, li, ci, raw)
 
     def read_window(f, li, x0, y0, x1, y1, band_idx):

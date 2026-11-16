@@ -266,19 +266,30 @@ def _decode_system(file, frac, max_cells):
 
 
 def _check_stream_budget(file, frac, max_cells):
-    """Raise TooLargeToStream when the level a decimated read of `frac` would
-    use (the one `_pick_ifd` picks, as GDAL's overview choice does) is over
-    budget. A header the pure parser cannot read passes: GDAL decides."""
+    """Raise TooLargeToStream when the read the rasterio worker below would
+    make is over budget: the same window it reads (its pixel rounding and its
+    fallback from a window under 2 px to the whole image), on the level a
+    decimated read picks (`_pick_ifd`, as GDAL's overview choice does),
+    counted block by block — GDAL fetches every block a window touches, so a
+    quarter of one huge strip costs the whole strip. A header the pure parser
+    cannot read passes: GDAL decides."""
     try:
         buf, en, t0, next_off = T.parse_header(file)
     except (T.Unsupported, OSError):
         return
     W, H = T._v1(t0, 256), T._v1(t0, 257)
-    win = "" if frac == [0.0, 0.0, 1.0, 1.0] else ",".join(str(v) for v in frac)
-    t, _, _ = T._pick_ifd(buf, en, t0, next_off, W, H, win, max_cells)
-    counts = T._v(t, 325) or T._v(t, 279) or []
-    share = max((frac[2] - frac[0]) * (frac[3] - frac[1]), 0.0)
-    refusal = T.stream_refusal(int(T.level_bytes(counts) * share))
+    fx0, fy0, fx1, fy1 = frac
+    x0, y0 = int(fx0 * W), int(fy0 * H)
+    x1, y1 = min(W, int(round(fx1 * W))), min(H, int(round(fy1 * H)))
+    if x1 - x0 < 2 or y1 - y0 < 2:  # the worker's own fallback
+        x0, y0, x1, y1 = 0, 0, W, H
+    win = ("" if (x0, y0, x1, y1) == (0, 0, W, H)
+           else f"{x0 / W},{y0 / H},{x1 / W},{y1 / H}")
+    t, lw, lh = T._pick_ifd(buf, en, t0, next_off, W, H, win, max_cells)
+    sx, sy = lw / float(W), lh / float(H)
+    need, _offs, counts = T.window_chunks(
+        t, int(x0 * sx), int(y0 * sy), int(-(-x1 * sx // 1)), int(-(-y1 * sy // 1)))
+    refusal = T.stream_refusal(sum(counts[i] for i in need))
     if refusal:
         raise T.TooLargeToStream(refusal)
 

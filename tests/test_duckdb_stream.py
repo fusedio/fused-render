@@ -111,10 +111,21 @@ def test_the_filesystem_is_read_only_and_never_lists(table):
     assert _s3_fs.is_streamed(p) and not _s3_fs.is_streamed("/tmp/t.parquet")
 
 
-def test_writer_never_sees_a_streamed_path():
-    """relation_for (shared with writer.py) passes a streamed path through
-    untouched instead of making it absolute, and writer.py needs no fsspec."""
+def test_relation_for_keeps_a_streamed_path_and_writer_has_no_fsspec():
+    """relation_for passes a streamed path through untouched instead of making
+    it absolute; writer.py (its own `_relation_for`, reached only for an
+    editable grid, which a streamed one never is) needs no fsspec."""
     assert reader.relation_for("fusedrange://b/k.parquet") == \
         "read_parquet('fusedrange://b/k.parquet')"
     src = open(os.path.join(DUCKDB_DIR, "writer.py"), encoding="utf-8").read()
     assert "fsspec" not in src and "_s3_fs" not in src
+
+
+def test_exists_is_false_when_the_server_will_not_sign(monkeypatch):
+    RR = _s3_fs.remote_range()
+
+    def refuse(address):
+        raise RR.fused_s3.S3Error("integration off", code="disabled", status=403)
+
+    monkeypatch.setattr(RR.fused_s3, "sign", refuse)
+    assert _s3_fs.RemoteFS().exists("fusedrange://fused-asset/x.parquet") is False

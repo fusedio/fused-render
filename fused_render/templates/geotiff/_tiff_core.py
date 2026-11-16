@@ -267,6 +267,50 @@ def gdal_env(base=None):
 STREAM_BUDGET = 64 * 1024 * 1024
 
 
+# Decoded bytes a streamed read may allocate. The compressed-byte budget alone
+# does not bound memory: a huge, highly compressible raster (mostly nodata)
+# can be small on the wire and tens of GB once decoded.
+DECODE_BUDGET = 512 * 1024 * 1024
+
+
+def decode_refusal(nbytes: int) -> str | None:
+    """The sentence for a streamed read that would decode `nbytes` (None when
+    within DECODE_BUDGET)."""
+    if nbytes <= DECODE_BUDGET:
+        return None
+    return (f"Too large to stream: this view of the TIFF decodes to about "
+            f"{nbytes / 1e9:.1f} GB in memory (it has no small enough "
+            f"overview). Download it to view it.")
+
+
+def window_chunks(t, x0, y0, x1, y1):
+    """`(indices, offsets, counts)` of the tiles/strips of IFD `t` that the
+    pixel window [x0,x1)×[y0,y1) (in that IFD's own pixels) intersects, over
+    every plane. What a reader of that window fetches, block for block."""
+    W, H = _v1(t, 256), _v1(t, 257)
+    spp, planar = _v1(t, 277, 1), _v1(t, 284, 1)
+    planes = spp if planar == 2 else 1
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(W, x1), min(H, y1)
+    if 322 in t:
+        tw, th = _v1(t, 322), _v1(t, 323)
+        offs, counts = _v(t, 324), _v(t, 325)
+        across = (W + tw - 1) // tw
+        per_plane = across * ((H + th - 1) // th)
+        need = [p * per_plane + ty * across + tx for p in range(planes)
+                for ty in range(y0 // th, (y1 - 1) // th + 1)
+                for tx in range(x0 // tw, (x1 - 1) // tw + 1)] if x1 > x0 and y1 > y0 else []
+    else:
+        rps = _v1(t, 278, H)
+        offs, counts = _v(t, 273), _v(t, 279)
+        per_plane = (H + rps - 1) // rps
+        need = [p * per_plane + si for p in range(planes)
+                for si in range(y0 // rps, (y1 - 1) // rps + 1)] if x1 > x0 and y1 > y0 else []
+    offs = offs if isinstance(offs, list) else [offs]
+    counts = counts if isinstance(counts, list) else [counts]
+    return need, offs, counts
+
+
 class TooLargeToStream(Unsupported):
     """A streamed read over `STREAM_BUDGET`. Not an engine gap: no fallback
     engine should be tried, the answer is to download the file."""
@@ -432,28 +476,23 @@ def read_tiff(path, win="", max_cells=0):
     planes = spp if planar == 2 else 1
     if tiled:
         tw, th = _v1(t, 322), _v1(t, 323)
-        offs, counts = _v(t, 324), _v(t, 325)
         across = (W + tw - 1) // tw
         per_plane = across * ((H + th - 1) // th)
-        need = [p * per_plane + ty * across + tx for p in range(planes)
-                for ty in range(wy0 // th, (wy1 - 1) // th + 1)
-                for tx in range(wx0 // tw, (wx1 - 1) // tw + 1)]
     else:
         rps = _v1(t, 278, H)
-        offs, counts = _v(t, 273), _v(t, 279)
         nstrips_plane = (H + rps - 1) // rps
-        need = [p * nstrips_plane + si for p in range(planes)
-                for si in range(wy0 // rps, (wy1 - 1) // rps + 1)]
-    offs = offs if isinstance(offs, list) else [offs]
-    counts = counts if isinstance(counts, list) else [counts]
+    need, offs, counts = window_chunks(t, wx0, wy0, wx1, wy1)
     fetched = {}
     if is_remote(path):
-        # Streamed: refuse a read over budget before fetching anything, then
-        # fetch every chunk in one coalesced read_many.
-        refusal = stream_refusal(sum(counts[i] for i in need))
+        # Streamed: refuse a read over budget (bytes fetched, and bytes this
+        # function allocates — the whole level, see `out` below) before
+        # fetching anything, then fetch every chunk in one coalesced read_many.
+        refusal = (stream_refusal(sum(counts[i] for i in need))
+                   or decode_refusal(spp * H * W * dt.itemsize))
         if refusal:
             raise TooLargeToStream(refusal)
-        raws = buf.read_many([(offs[i], offs[i] + counts[i]) for i in need])
+        raws = buf.read_many([(offs[i], offs[i] + counts[i]) for i in need],
+                             max_transfer=STREAM_BUDGET)
         fetched = dict(zip(need, raws))
 
     def _raw(i):

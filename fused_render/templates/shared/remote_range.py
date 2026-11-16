@@ -382,10 +382,17 @@ class RemoteBuffer:
             return self.read(i, i + 1)[0]
         raise TypeError("RemoteBuffer indices must be integers or slices")
 
-    def read_many(self, ranges) -> list:
+    def read_many(self, ranges, *, max_transfer: int | None = None) -> list:
         """`[buf[a:b] for a, b in ranges]`, with nearby ranges merged into one
-        request and the merged runs fetched concurrently."""
-        ranges = [(int(a), int(b)) for a, b in ranges]
+        request and the merged runs fetched concurrently.
+
+        Merging fetches the gaps between ranges too, so it is bounded: the
+        gap bytes may not exceed the bytes asked for, and when the merged plan
+        would transfer more than `max_transfer` the ranges are fetched
+        unmerged instead (a caller's budget is on what it asked for)."""
+        size = len(self)
+        ranges = [slice(int(a), int(b)).indices(size)[:2] for a, b in ranges]
+        ranges = [(a, max(a, b)) for a, b in ranges]
         out: list = [None] * len(ranges)
         todo = []
         for i, (a, b) in enumerate(ranges):
@@ -397,14 +404,21 @@ class RemoteBuffer:
         if not todo:
             return out
         todo.sort(key=lambda i: ranges[i][0])
+        asked = sum(ranges[i][1] - ranges[i][0] for i in todo)
         runs: list[list] = []
+        waste = 0
         for i in todo:
             a, b = ranges[i]
-            if runs and a <= runs[-1][1] + GAP and max(runs[-1][1], b) - runs[-1][0] <= MAX_RUN:
+            gap = max(0, a - runs[-1][1]) if runs else 0
+            if (runs and a <= runs[-1][1] + GAP and waste + gap <= asked
+                    and max(runs[-1][1], b) - runs[-1][0] <= MAX_RUN):
                 runs[-1][1] = max(runs[-1][1], b)
                 runs[-1][2].append(i)
+                waste += gap
             else:
                 runs.append([a, b, [i]])
+        if max_transfer is not None and sum(hi - lo for lo, hi, _ in runs) > max_transfer:
+            runs = [[ranges[i][0], ranges[i][1], [i]] for i in todo]
 
         def fetch(run):
             lo, hi, members = run

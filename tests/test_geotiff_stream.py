@@ -409,3 +409,76 @@ def test_merged_runs_are_capped(bucket, monkeypatch):
         a, _, b = rng[6:].partition("-")
         sizes.append(int(b) - int(a) + 1)
     assert len(sizes) >= 4 and max(sizes) <= 500_000
+
+
+# ---------------------------------------- review fixes (PR 2301 CodeRabbit)
+
+
+def test_read_many_takes_slice_semantics(bucket):
+    data = os.urandom(300_000)
+    bucket.objects["/obj.bin"] = data
+    buf = RF.RemoteBuffer("s3://fused-asset/obj.bin")
+    ranges = [(-4, 300_000), (-100_000, -90_000), (299_990, 400_000), (10, 5)]
+    assert buf.read_many(ranges) == [data[a:b] for a, b in ranges]
+
+
+def test_merging_never_doubles_the_transfer(bucket):
+    """Tiny ranges far apart (each gap just under GAP) are not merged into
+    one request that is mostly gap bytes."""
+    data = os.urandom(4_000_000)
+    bucket.objects["/obj.bin"] = data
+    buf = RF.RemoteBuffer("s3://fused-asset/obj.bin")
+    before = len(bucket.log)
+    ranges = [(200_000 + i * (RF.GAP + 1024), 200_000 + i * (RF.GAP + 1024) + 1024)
+              for i in range(40)]
+    assert buf.read_many(ranges) == [data[a:b] for a, b in ranges]
+    moved = 0
+    for _, rng, _ in bucket.log[before:]:
+        a, _, b = rng[6:].partition("-")
+        moved += int(b) - int(a) + 1
+    assert moved <= 2 * sum(b - a for a, b in ranges) + RF.BLOCK * 4
+
+
+def test_max_transfer_falls_back_to_unmerged(bucket):
+    data = os.urandom(2_000_000)
+    bucket.objects["/obj.bin"] = data
+    buf = RF.RemoteBuffer("s3://fused-asset/obj.bin")
+    before = len(bucket.log)
+    ranges = [(300_000 + i * 60_000, 300_000 + i * 60_000 + 30_000) for i in range(10)]
+    assert buf.read_many(ranges, max_transfer=350_000) == [data[a:b] for a, b in ranges]
+    assert len(bucket.log) - before == 10  # merging would have moved 570 KB
+
+
+def test_a_streamed_read_over_the_decode_budget_is_refused(bucket, monkeypatch):
+    bucket.objects["/r.tif"] = _tiff(_images(200, 150), big=False, tiled=True)
+    monkeypatch.setattr(T, "_REMOTE", {})
+    monkeypatch.setattr(T, "DECODE_BUDGET", 10_000)
+    with pytest.raises(T.TooLargeToStream, match="decodes to about"):
+        T.read_tiff("s3://fused-asset/r.tif")
+
+
+def _one_strip_tiff():
+    """A 200x150 TIFF stored as ONE uncompressed strip (60 KB)."""
+    return _tiff([_images(200, 150)[0]], big=False, tiled=False, compress=False, chunk=150)
+
+
+@pytest.mark.parametrize("frac", [
+    [0.5, 0.5, 0.5, 0.5],      # zero area: the worker reads the whole image
+    [0.75, 0.75, 1.0, 1.0],    # a quarter, but inside the one strip
+])
+def test_rasterio_path_budget_counts_what_gdal_reads(bucket, monkeypatch, frac):
+    import tiff_reader as R
+    bucket.objects["/s.tif"] = _one_strip_tiff()
+    monkeypatch.setattr(T, "_REMOTE", {})
+    monkeypatch.setattr(T, "STREAM_BUDGET", 40_000)  # < the 60 KB strip
+    with pytest.raises(T.TooLargeToStream):
+        R._check_stream_budget("s3://fused-asset/s.tif", frac, 10 ** 9)
+
+
+def test_window_chunks_counts_blocks_per_plane():
+    t = {256: (4, [100]), 257: (4, [100]), 277: (3, [2]), 284: (3, [2]),
+         322: (3, [16]), 323: (3, [16]), 324: (4, list(range(98))), 325: (4, [1] * 98)}
+    need, _, _ = T.window_chunks(t, 0, 0, 20, 10)
+    across, per_plane = 7, 49
+    assert need == [0, 1, per_plane, per_plane + 1]
+    assert T.window_chunks(t, 5, 5, 5, 9)[0] == []  # empty window

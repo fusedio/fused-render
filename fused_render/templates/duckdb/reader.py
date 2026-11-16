@@ -80,8 +80,9 @@ class TooLargeToStream(ValueError):
 
 def _is_streamed(file) -> bool:
     """`file` is a streamed object's DuckDB path (`_s3_fs.duckdb_path`), not a
-    local file. A plain prefix test, so writer.py (which imports
-    relation_for) never has to import fsspec."""
+    local file. A plain prefix test: deciding needs no fsspec import. (A
+    streamed grid is never editable, so writer.py — which has its own
+    `_relation_for` — never receives one.)"""
     return isinstance(file, str) and file.startswith("fusedrange://")
 
 

@@ -103,7 +103,9 @@ class RemoteFS(AbstractFileSystem):
         try:
             self.buffer(path)
             return True
-        except OSError:
+        except (OSError, remote_range().fused_s3.S3Error):
+            # OSError: missing/unreadable object; S3Error: the server would
+            # not sign it (integration off, unsupported bucket, no server).
             return False
 
     def modified(self, path):
