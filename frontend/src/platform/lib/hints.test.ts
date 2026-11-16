@@ -181,3 +181,146 @@ describe("the task row's two-line form", () => {
     expect(VIEWS).toContain('data-hint-reply={lockedDraft ? "" : task.last_reply || ""}');
   });
 });
+
+describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
+  const SRC = readFileSync(new URL("./hints.ts", import.meta.url), "utf8");
+  const TASKS_CSS = readFileSync(new URL("../../styles/tasks.css", import.meta.url), "utf8");
+  const fn = (name: string) => {
+    const at = SRC.indexOf(`function ${name}(`);
+    expect(at).toBeGreaterThan(-1);
+    return SRC.slice(at, SRC.indexOf("\n}\n", at));
+  };
+  const rule = (sel: string) => {
+    const at = TASKS_CSS.indexOf(`${sel} {`);
+    expect(at).toBeGreaterThan(-1);
+    return TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at));
+  };
+
+  it("opts in on its own attribute, beside the task form's — and needs a title", () => {
+    // `data-hint-row` on a host that already carries `data-hint-title` /
+    // `data-hint-reply`: a host without it keeps the two-line caption, and a
+    // row with no title is no row (the plain hint draws).
+    const row = fn("renderRowHint");
+    expect(row).toContain('if (!el.hasAttribute("data-hint-row")) return false;');
+    expect(row).toContain("if (!title) return false;");
+  });
+
+  it("the row form is asked FIRST and the other two forms stand down for it", () => {
+    const show = fn("show");
+    expect(show).toContain("const row = renderRowHint(p, el);");
+    expect(show).toContain('p.classList.toggle("is-row", row);');
+    expect(show).toContain("const task = !row && renderTaskHint(p, el);");
+    expect(show).toContain('if (!row && !task) renderHint(p, el.getAttribute("data-hint") || "");');
+    // A host that is NOT a row must not inherit the last row's width.
+    expect(show).toContain('if (!row) p.style.width = "";');
+    expect(show.indexOf("renderRowHint(p, el)")).toBeLessThan(show.indexOf("renderTaskHint(p, el)"));
+  });
+
+  it("draws the row's own order: mark, number, title, reply, count, time", () => {
+    const row = fn("renderRowHint");
+    const order = ['"hint-row-mark"', '"hint-row-id"', '"hint-row-title"', '"hint-row-reply"', '"hint-row-count"', '"hint-row-time"'].map((c) =>
+      row.indexOf(c),
+    );
+    expect(order.every((i) => i > -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // The mark is the host's own drawing, cloned: the ring being pointed at.
+    expect(row).toContain("for (const kid of Array.from(el.children)) mark.append(kid.cloneNode(true));");
+    // A fact that was not given leaves no seat; the reply's seat always
+    // stands — it is the row's slack, so the facts stay at the right end.
+    expect(row).toContain('if (id) row.append(span("hint-row-id", id));');
+    expect(row).toContain("if (count) {");
+    expect(row).toContain('if (when) row.append(span("hint-row-time", when));');
+    expect(row).toContain('row.append(span("hint-row-reply", (el.getAttribute("data-hint-reply") || "").trim()));');
+  });
+
+  it("every word a task supplies goes in as TEXT, never as markup", () => {
+    // A title or a reply is whatever a chat said; only the count's glyph —
+    // a constant of this file — is written as HTML.
+    const row = fn("renderRowHint");
+    expect(row).toContain("s.textContent = text;");
+    expect(row).not.toContain("innerHTML");
+    expect((row.match(/insertAdjacentHTML/g) ?? []).length).toBe(1);
+    expect(row).toContain('c.insertAdjacentHTML("beforeend", ROW_COUNT_ICON);');
+    expect(SRC).toMatch(/const ROW_COUNT_ICON =\n\s*'<svg /);
+  });
+
+  it("is as wide as the window the ring opens — clamped to the room beside the column, never under 120px", () => {
+    const row = fn("renderRowHint");
+    // The window's width NOW when it is on screen (a drag included), the
+    // stamped one otherwise.
+    expect(row).toContain('const live = liveWidth(el.getAttribute("data-hint-width-of"));');
+    expect(row).toContain('const want = live || Number(el.getAttribute("data-hint-width")) || 0;');
+    expect(fn("liveWidth")).toContain("if (!selector) return 0;");
+    expect(fn("liveWidth")).toContain("return Math.round(box.getBoundingClientRect().width);");
+    expect(row).toContain("const room = rowEdge(el) - 8 - EDGE;");
+    expect(row).toContain('p.style.width = want > 0 ? `${Math.max(120, Math.min(want, room))}px` : "";');
+    // The clamp, worked: a 420px window beside a column at x=1452 keeps its
+    // 420; the same window in a 300px-wide viewport gets the room; a column
+    // hard against the left edge still gets the floor.
+    const EDGE = Number(SRC.match(/const EDGE = (\d+);/)?.[1]);
+    expect(EDGE).toBeGreaterThan(0);
+    const width = (want: number, edge: number) => Math.max(120, Math.min(want, edge - 8 - EDGE));
+    expect(width(420, 1452)).toBe(420);
+    expect(width(420, 252)).toBe(252 - 8 - EDGE);
+    expect(width(420, 60)).toBe(120);
+  });
+
+  it("prefers the window's LIVE width over the stamped one, and falls back when the window is not up", () => {
+    // The host stamps `data-hint-width` at its last render; a card the reader
+    // has just dragged is wider than that (2026-11-16: "we click a task ring,
+    // then resize and hover over another — the hover row's size doesn't
+    // change"). `data-hint-width-of` names the window; its box wins while it
+    // is on screen.
+    const row = fn("renderRowHint");
+    expect(row).toContain('const live = liveWidth(el.getAttribute("data-hint-width-of"));');
+    expect(row.indexOf("const live = liveWidth(")).toBeLessThan(row.indexOf("const want = live ||"));
+    // The live width goes through the same clamp as the stamped one.
+    expect(row.indexOf("const want = live ||")).toBeLessThan(row.indexOf("Math.max(120, Math.min(want, room))"));
+    // Every way of having no live window answers 0, which `||` passes over:
+    // no attribute, a selector the engine refuses, nothing matching it.
+    const live = fn("liveWidth");
+    expect(live).toContain("if (!selector) return 0;");
+    expect(live).toMatch(/try \{\s*box = document\.querySelector\(selector\);\s*\} catch \{\s*return 0;\s*\}/);
+    expect(live).toContain('if (!box || typeof box.getBoundingClientRect !== "function") return 0;');
+    // The preference, worked: a 515px window up beats a stamped 360; no
+    // window up, the stamped 360 stands; neither, no inline width at all.
+    const want = (liveW: number, stamped: string | null) => liveW || Number(stamped) || 0;
+    expect(want(515, "360")).toBe(515);
+    expect(want(0, "360")).toBe(360);
+    expect(want(0, null)).toBe(0);
+    expect(want(0, "")).toBe(0);
+  });
+
+  it("stands against the column's edge, where its windows stand — not against the one ring", () => {
+    expect(fn("rowEdge")).toContain('const col = el.closest("[data-hint-edge]") ?? el;');
+    expect(fn("rowEdge")).toContain("return col.getBoundingClientRect().left;");
+    const place = fn("placeBeside");
+    expect(place).toContain('const edge = p.classList.contains("is-row") ? rowEdge(el) : r.left;');
+    expect(place).toContain("const left = Math.max(EDGE, edge - 8 - w);");
+  });
+
+  it("a hide takes the row form and its width with it", () => {
+    // The panel is shared: a plain hint shown next must not come up a 420px
+    // row-shaped box.
+    const hide = SRC.slice(SRC.indexOf("export function hideHint"));
+    const body = hide.slice(0, hide.indexOf("\n}"));
+    expect(body).toContain("panel.replaceChildren();");
+    expect(body).toContain('panel.classList.remove("is-row");');
+    expect(body).toContain('panel.style.width = "";');
+  });
+
+  it("the stylesheet: one line, only the title and the reply give", () => {
+    const panel = rule(".hint-panel.is-row");
+    expect(panel).toContain("box-sizing: border-box;");
+    // The rail window's own ground, not the tooltip's lighter popover tone
+    // (2026-11-16: "make bg colour same as header").
+    expect(panel).toContain("background: var(--bg);");
+    expect(panel).toContain("max-width: none;");
+    expect(panel).toContain("white-space: nowrap;");
+    expect(rule(".hint-row")).toContain("display: flex;");
+    expect(rule(".hint-row-title")).toMatch(/flex: 0 1 auto;\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;/);
+    expect(rule(".hint-row-reply")).toMatch(/flex: 1 1 0;\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;/);
+    for (const fixed of [".hint-row-mark", ".hint-row-id"]) expect(rule(fixed)).toContain("flex: 0 0 auto;");
+    expect(TASKS_CSS).toMatch(/\.hint-row-count,\n\.hint-row-time \{\s*flex: 0 0 auto;/);
+  });
+});

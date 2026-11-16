@@ -206,7 +206,7 @@ export type RailSizeKey = "canvasRailPeek" | "canvasRailFav";
 /** The size the reader last dragged a card to (ui-layout `key`, by default
  *  the rail's pinned card's `canvasRailPeek`), floored at the grips'
  *  minimums; null for "never". */
-function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; height: number } | null {
+export function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; height: number } | null {
   const s = getUiLayout()[key];
   if (!s) return null;
   return {

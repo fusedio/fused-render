@@ -14,6 +14,7 @@ import type { RailPlace } from "./claude-rail-lib";
 
 const { ClaudeRail } = await import("./ClaudeRail");
 const { RailPeek } = await import("./RailPeek");
+const { FAV_PEEK_ID } = await import("./FavouritePeek");
 const { publishTaskFavourites, publishFavouritesParent, resetTaskFavouritesFlagForTests } = await import(
   "@platform/lib/favourites-flag"
 );
@@ -33,7 +34,7 @@ const { gitCardRail, gitCardState, registerGitCard, resetGitCardForTests } = awa
 const { resetRailGitCacheForTests } = await import("./rail-git");
 const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
 const { DoorCard } = await import("./DoorCard");
-const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
+const { PEEK_OPEN_MS, PEEK_WIDTH, FAV_WIDTH } = await import("./rail-peek-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
 const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("@shell/task-head-flag");
@@ -1127,5 +1128,101 @@ describe("ClaudeRail on an open file (owner, 2026-11-16)", () => {
     const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { kind: "file", file: `${DIR}/x.py`, dir: DIR } });
     expect(seatKeys(r).map(([, c]) => c)).toEqual(["claude-rail-seat is-off", "claude-rail-seat is-off", "claude-rail-seat is-off"]);
     expect(seps(r)).toBe(0);
+  });
+});
+
+describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2026-11-16)", () => {
+  const ringsOf = (r: ReactTestRenderer, key: string) =>
+    r.root.findAll((n) => n.type === "a" && n.props["data-task-key"] === key);
+  const inFoot = (n: ReactTestInstance) => {
+    for (let up = n.parent; up; up = up.parent) if (up.props?.className === "claude-rail-favs") return true;
+    return false;
+  };
+  const row = chat("a", { task_id: "TASK-042", title: "Rename the pane noun", message_count: 7, last_reply: "Done — renamed in three files." });
+  const ROW_ATTRS = ["data-hint-row", "data-hint-id", "data-hint-count", "data-hint-when", "data-hint-width", "data-hint-width-of"];
+
+  test("flag on: a list ring carries the row's facts and window A's width; the rail names the edge", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: false, chats: [row] });
+      const [ring] = ringsOf(r, "a");
+      expect(ring).toBeDefined();
+      // Opted into the row form (platform/lib/hints `renderRowHint`)…
+      expect(ring!.props["data-hint-row"]).toBe("");
+      // …with the number as every task view prints it, the count, the time…
+      expect(ring!.props["data-hint-id"]).toBe("T042");
+      expect(ring!.props["data-hint-count"]).toBe("7");
+      expect(String(ring!.props["data-hint-when"]).length).toBeGreaterThan(0);
+      // …the title and the reply the row prints (the reply even where the
+      // old caption was the title alone)…
+      expect(ring!.props["data-hint-title"]).toBe("Rename the pane noun");
+      expect(ring!.props["data-hint-reply"]).toBe("Done — renamed in three files.");
+      // …and the width of the window this ring opens: A's, never dragged.
+      expect(ring!.props["data-hint-width"]).toBe(String(PEEK_WIDTH));
+      // …or, while that window stands, its width on screen — a drag included
+      // (hints.ts `liveWidth`): the selector names window A, shown.
+      expect(ring!.props["data-hint-width-of"]).toBe("#claude-rail-peek.is-on");
+      expect(ring!.props["data-hint-side"]).toBe("left");
+      // The row stands against the rail's own edge, where its windows do.
+      expect(aside(r).props["data-hint-edge"]).toBe("");
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag on: a favourite's ring asks for window B's width, the list's ring for window A's", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    try {
+      const fav = { ...row, starred: true } as Task;
+      const r = await mountRail({ paneOpen: false, favourites: true, chats: [fav] });
+      const rings = ringsOf(r, "a");
+      const foot = rings.filter(inFoot);
+      const list = rings.filter((n) => !inFoot(n));
+      expect(foot).toHaveLength(1);
+      expect(foot[0]!.props["data-hint-row"]).toBe("");
+      // B opens narrower than A until it is dragged.
+      expect(FAV_WIDTH).not.toBe(PEEK_WIDTH);
+      expect(foot[0]!.props["data-hint-width"]).toBe(String(FAV_WIDTH));
+      expect(foot[0]!.props["data-hint-width-of"]).toBe(`#${FAV_PEEK_ID}.is-on`);
+      for (const ring of list) {
+        expect(ring.props["data-hint-width"]).toBe(String(PEEK_WIDTH));
+        expect(ring.props["data-hint-width-of"]).toBe("#claude-rail-peek.is-on");
+      }
+      // The two selectors name two different windows.
+      expect(FAV_PEEK_ID).not.toBe("claude-rail-peek");
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag on: a chat with no count prints none — the seat is left out, not zeroed", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: false, chats: [chat("a", { message_count: 0 })] });
+      const [ring] = ringsOf(r, "a");
+      expect(ring!.props["data-hint-row"]).toBe("");
+      expect(ring!.props["data-hint-count"]).toBe("");
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag off: the ring keeps the old caption — no row attribute at all", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: false });
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: false, chats: [row] });
+      const [ring] = ringsOf(r, "a");
+      expect(ring).toBeDefined();
+      for (const attr of ROW_ATTRS) expect(attr in ring!.props).toBe(false);
+      // The two-line caption's own attributes are still there.
+      expect(ring!.props["data-hint-title"]).toBe("Rename the pane noun");
+      expect(ring!.props["data-hint-side"]).toBe("left");
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
   });
 });

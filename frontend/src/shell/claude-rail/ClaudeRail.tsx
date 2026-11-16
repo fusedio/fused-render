@@ -263,10 +263,13 @@ import {
   isChatDraftTask,
   isDraftTask,
   liveJobRow,
+  relativeWhen,
   taskColumn,
   taskHref,
+  taskWhen,
 } from "@shell/tasks-lib";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
+import { shortTaskId } from "@platform/lib/task-id";
 import NewJobModal, { chatHopSeed, reopenTime, type DraftSeed } from "@shell/NewJobModal";
 import { fetchDrafts } from "@platform/lib/drafts";
 import {
@@ -344,6 +347,8 @@ import {
   dragMaxWidth,
   snapWidth,
   type Box,
+  FAV_WIDTH,
+  PEEK_WIDTH,
 } from "./rail-peek-lib";
 import { publishWindowABox, setSnapGuide } from "./card-snap";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
@@ -374,7 +379,7 @@ import { PLUS_DOOR, PlusPopIntent } from "./plus-pop-lib";
 import { publishPlusRender, usePlusCard, usePlusHosted, withdrawPlusRender } from "./plus-card-store";
 import { useLauncherOpen } from "./launcher-open";
 import { timeAgo } from "@platform/lib/format";
-import { RailPeek, type RailPeekHandle } from "./RailPeek";
+import { RailPeek, storedPeekSize, type RailPeekHandle } from "./RailPeek";
 import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platform/lib/botsPulse";
 import { navigateUrl } from "@platform/lib/router";
 import { Face } from "@apps/bots/components/Face";
@@ -3240,10 +3245,39 @@ export function ClaudeRail({
                   // opt-out (hints.ts `hintOf`): the card is the caption.
                   data-hint={captionless && !noRoom ? "" : line.hint || label}
                   data-hint-title={line.hint || label}
-                  data-hint-reply={titleOnly ? "" : reply}
+                  data-hint-reply={titleOnly && !pinModel ? "" : reply}
                   // Beside the ring, not at the pointer (platform/lib/hints
                   // `placeBeside`): a 48px column at the window's edge.
                   data-hint-side="left"
+                  // THE TASK'S ROW, NOT A TITLE TOOLTIP (Akshil, 2026-11-16:
+                  // "when we hover we show a tooltip with the title of the
+                  // task — instead show this as is"; hints.ts
+                  // `renderRowHint`): the Tasks list's own line — ring,
+                  // number, title, reply, count, time — as wide as the window
+                  // this ring opens (A for the list, B for a favourite).
+                  // Behind the unified-head switch, like the windows' heads.
+                  {...(pinModel
+                    ? {
+                        "data-hint-row": "",
+                        "data-hint-id": shortTaskId(merged.task_id),
+                        "data-hint-count": row && !draft && (row.message_count ?? 0) > 0 ? String(row.message_count) : "",
+                        "data-hint-when": draft
+                          ? ""
+                          : row
+                            ? taskWhen(merged as Task).text
+                            : relativeWhen(t.happened_at || t.last_active || 0),
+                        // The window's own default when it was never dragged:
+                        // B opens narrower than A (`FAV_WIDTH`).
+                        // The window itself while it stands (its live width,
+                        // a drag included); the remembered size otherwise.
+                        "data-hint-width-of": `#${foot && favsOn ? FAV_PEEK_ID : PEEK_ID}.is-on`,
+                        "data-hint-width": String(
+                          foot && favsOn
+                            ? (storedPeekSize("canvasRailFav")?.width ?? FAV_WIDTH)
+                            : (storedPeekSize("canvasRailPeek")?.width ?? PEEK_WIDTH),
+                        ),
+                      }
+                    : {})}
                   {...(popDoor
                     ? {
                         "aria-haspopup": "dialog" as const,
@@ -3584,6 +3618,9 @@ export function ClaudeRail({
   return (
     <aside
       ref={railRef}
+      // The row hint stands against the rail's edge, where its windows do
+      // (platform/lib/hints `rowEdge`).
+      data-hint-edge=""
       className={
         "claude-rail" +
         (favs.length + bots.length > 0 ? " has-favs" : "") +

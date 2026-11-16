@@ -497,6 +497,76 @@ button.tasks-caret,
 .hint-panel.is-task.is-reply {
   max-width: min(46ch, 60vw);
 }
+/* THE TASK'S ROW IN ONE LINE (hints.ts `renderRowHint`; Akshil, 2026-11-16):
+   a rail ring whose hover opens no card shows the Tasks list's own row — the
+   ring, the number, the title, the reply, the count, the time — as wide as
+   the window that ring opens (the panel's inline width). Only the title and
+   the reply give; every mark and fact keeps its width. */
+.hint-panel.is-row {
+  box-sizing: border-box;
+  /* The window's own ground (claude-rail.css `.claude-rail-peek-card`), not
+     the tooltip's lighter popover tone: the row stands over that window's
+     head and reads as one of its lines (Akshil, 2026-11-16: "make bg colour
+     same as header"). */
+  background: var(--bg);
+  max-width: none;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 400;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  border-radius: 8px;
+}
+.hint-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  min-width: 0;
+}
+.hint-row-mark {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.hint-row-id {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.hint-row-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  color: var(--fg);
+}
+.hint-row-reply {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+.hint-row-count,
+.hint-row-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.hint-row-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
 .hint-task {
   display: flex;
   flex-direction: column;
