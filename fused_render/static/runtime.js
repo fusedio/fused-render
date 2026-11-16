@@ -7588,6 +7588,49 @@
     },
   };
 
+  // ---------------------------------------------------------------- fused.s3
+  //
+  // fused.s3.sign("s3://bucket/key") -> {url, expires_at}: a URL that reads
+  // that one object with plain HTTPS GETs (Range included), so a template can
+  // stream it — DuckDB, GDAL, a range-reading decoder, or fetch() right here
+  // (the bucket answers CORS for Range) — instead of downloading it first.
+  // A thin door onto POST /api/remote/sign: the SERVER decides what may be
+  // signed (remote_access.sign_read_url) and, once private buckets arrive,
+  // holds the credentials; a page only ever sees a URL for the object it
+  // named. `expires_at` is an ISO-8601 UTC time, or null when the URL does
+  // not expire (the public bucket, today). A reader that outlives it, or gets
+  // a 403, signs again. Keep the s3:// address as the identity (cache keys,
+  // fused.params) — the URL may differ on every call, and must not be put in
+  // the page's URL state. Errors carry `.status` and the route's `.code`
+  // (disabled | bad_url | unsupported_bucket | forbidden).
+  //
+  // fused-s3:start
+  function s3Sign(url) {
+    return fetch("/api/remote/sign", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify({ url: url }),
+    }).then((res) =>
+      res
+        .json()
+        .catch(() => ({}))
+        .then((data) => {
+          if (!res.ok || !data || typeof data.url !== "string") {
+            const said =
+              (data && typeof data.error === "string" && data.error) || "HTTP " + res.status;
+            const err = new Error(said);
+            err.status = res.status;
+            err.code = (data && typeof data.code === "string" && data.code) || null;
+            throw err;
+          }
+          return { url: data.url, expires_at: data.expires_at || null };
+        }),
+    );
+  }
+
+  const s3 = { sign: s3Sign };
+  // fused-s3:end
+
   // ----------------------------------------------------------- fused.capture
   //
   // Native screen / microphone / still capture (SPEC §45). Named `capture` and
@@ -8250,6 +8293,7 @@
     tasks,
     bots,
     connect,
+    s3,
     trackJob,
     watchJob,
     autoReload,

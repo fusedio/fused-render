@@ -8,6 +8,9 @@
   POST /api/remote/fetch               download an object into the local cache
                                        (`{url, max_bytes?}`: over the cap,
                                        413 `too_large` instead of a download)
+  POST /api/remote/sign                a URL to read an object from directly
+                                       (`{url}` -> `{url, expires_at}`;
+                                       `fused.s3.sign`, any page; X-Fused)
   GET  /api/remote/fetch/status?id=    where that download is up to
   POST /api/remote/fetch/cancel        stop it
 
@@ -17,7 +20,7 @@ All of it is gated on the Canvases flag (off -> 403 `disabled`). Every error is
 right after parsing, before any network call. Folders come from its index only
 (`remote_index`; 503 `index_not_ready` while it loads); files are a live HEAD
 (size/etag must be current) plus a download, and need no index. Blocking work
-runs in the threadpool, never on the event loop. The two POSTs carry the same
+runs in the threadpool, never on the event loop. The POSTs carry the same
 `X-Fused` write guard as every other mutating route.
 """
 from __future__ import annotations
@@ -353,6 +356,40 @@ async def api_remote_read(url: str | None = None, offset: str | None = None,
 
     return StreamingResponse(stream(), media_type="application/octet-stream",
                              headers=_read_headers(body))
+
+
+# ---- files: a URL the page reads itself ---------------------------------------
+#
+# `fused.s3.sign` (runtime.js) and `fused_s3.sign` (templates/shared) — the
+# streaming path: a template asks for a read URL for its `s3://` address and
+# hands it to its own reader (DuckDB, GDAL, a range-reading TIFF decoder)
+# instead of waiting for a download. Open to every rendered page, like
+# runPython. The page names the object; `remote_access.sign_read_url` decides
+# whether it may be read, so a page can never point this at another host.
+# Pure: no network call, nothing cached.
+
+
+def _sign(url) -> dict:
+    bucket, key = _parse(url)
+    signed = remote_access.sign_read_url(bucket, key)
+    return {"url": signed.url, "expires_at": remote_access.iso_utc(signed.expires_at)}
+
+
+@router.post("/api/remote/sign")
+async def api_remote_sign(request: Request, x_fused: str | None = Header(default=None)):
+    refused = _guard(x_fused) or _gate()
+    if refused is not None:
+        return refused
+    body = await _body(request)
+    if body is None:
+        return _fail("bad_url", 'the request body must be {"url": "s3://…"}')
+    url = body.get("url")
+    call = getattr(request.state, "fused_call", None)
+    if call is not None and isinstance(url, str):
+        # The call log names the object signed (never the signed URL).
+        call["entrypoint"] = url[:2048]
+        call["entrypoint_name"] = url.rstrip("/").rsplit("/", 1)[-1][:256] or None
+    return _handle(_sign, url)
 
 
 @router.get("/api/remote/fetch/status")
