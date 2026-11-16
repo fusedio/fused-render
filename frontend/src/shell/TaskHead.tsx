@@ -505,21 +505,24 @@ export function TaskHead({
   const starEl = who ? (starNode ?? (star ? <TaskStar task={who} /> : null)) : null;
   const unread = countFact?.unread ?? 0;
   const countWords = countFact ? `${countFact.n} message${countFact.n === 1 ? "" : "s"}` : "";
+  /** The count as a fact: `cls` says which seat holds it. */
+  const countEl = (cls: string) =>
+    countFact ? (
+      <span
+        className={cls + " task-head-count" + (unread > 0 ? " is-unread" : "")}
+        // `role="img"` so the label is read (the rail card's rule).
+        role="img"
+        aria-label={countWords + (unread > 0 ? `, ${unread} unread` : "")}
+        data-hint={`${countWords} in this task` + (unread > 0 ? ` — ${unread} unread` : "")}
+      >
+        {countFact.n}
+        <MessageSquare size={12} aria-hidden="true" />
+      </span>
+    ) : null;
   const countSlot =
     who && (countFact || starEl) ? (
       <span className="task-head-slot task-head-countslot">
-        {countFact ? (
-          <span
-            className={"task-head-slot-a task-head-count" + (unread > 0 ? " is-unread" : "")}
-            // `role="img"` so the label is read (the rail card's rule).
-            role="img"
-            aria-label={countWords + (unread > 0 ? `, ${unread} unread` : "")}
-            data-hint={`${countWords} in this task` + (unread > 0 ? ` — ${unread} unread` : "")}
-          >
-            {countFact.n}
-            <MessageSquare size={12} aria-hidden="true" />
-          </span>
-        ) : null}
+        {countEl("task-head-slot-a")}
         <span className="task-head-slot-b">{starEl}</span>
       </span>
     ) : null;
@@ -548,19 +551,59 @@ export function TaskHead({
       <span className="task-head-open-word">{open.word ?? "Open"}</span>
     </a>
   ) : null;
+  const timeEl = (cls: string) =>
+    whenFact ? (
+      <span
+        className={cls + " task-head-time"}
+        {...(whenFact.title ? { "data-hint": whenFact.title } : {})}
+      >
+        {whenFact.text}
+      </span>
+    ) : null;
   const timeSlot = !who ? (
     // A HEAD WITH NO TASK has no a/b: its door stands as it always did.
     openLink
   ) : whenFact || openLink ? (
     <span className="task-head-slot task-head-timeslot">
-      {whenFact ? (
-        <span className="task-head-slot-a task-head-time" {...(whenFact.title ? { "data-hint": whenFact.title } : {})}>
-          {whenFact.text}
-        </span>
-      ) : null}
+      {timeEl("task-head-slot-a")}
       <span className="task-head-slot-b">{openLink}</span>
     </span>
   ) : null;
+  // A RAIL WINDOW'S FACTS AND ACTS ARE TWO LAYERS OF ONE BOX (Akshil,
+  // 2026-11-16: "too much space between message count and time", "star and
+  // Open have a weird gap, keep them closer"). Two slots, each as wide as its
+  // wider occupant, kept the row from shifting — but "1d ago" then stood in a
+  // box sized for "Open ↗" and the star in one sized for the count, so each
+  // pair had a hole in it. Here the count and the time sit side by side in
+  // one layer, the star and the door in another, both against the box's right
+  // edge; the box is the wider LAYER, so nothing outside it moves and nothing
+  // inside it is spread.
+  //
+  // ONLY WHERE BOTH FACTS TRADE (or neither does). With one act alone
+  // (favourites off: no star; a pane that is the page: no door) one fact
+  // STAYS under the pointer, and a stayer drawn in two independently aligned
+  // layers jumped by the difference of their widths (Bugbot on #2297). Those
+  // heads keep one slot per fact: the stayer is one node that never moves,
+  // and the other trades in a box of its own.
+  const hasActs = !!(starEl || openLink);
+  const clustered = isWindow && !!who && (!hasActs || (!!starEl && !!openLink));
+  const factsCluster =
+    clustered && (countFact || whenFact || hasActs) ? (
+      <span className={"task-head-facts" + (hasActs ? " has-acts" : "")}>
+        {countFact || whenFact ? (
+          <span className="task-head-facts-layer is-a">
+            {countEl("task-head-fact")}
+            {timeEl("task-head-fact")}
+          </span>
+        ) : null}
+        {hasActs ? (
+          <span className="task-head-facts-layer is-b">
+            {starEl}
+            {openLink}
+          </span>
+        ) : null}
+      </span>
+    ) : null;
   // The queue caption and the paused word trail the title, on its row — and
   // the host's status seat (`statusRef`, the chat's portaled pause word) with
   // them: on NO rung, and onto row 2 with the title when stacked.
@@ -689,8 +732,14 @@ export function TaskHead({
             </span>
           ) : null}
           {where ? <span className="task-head-where">{where}</span> : null}
-          {countSlot}
-          {timeSlot}
+          {clustered ? (
+            factsCluster
+          ) : (
+            <>
+              {countSlot}
+              {timeSlot}
+            </>
+          )}
           {kebabNode ? <span className="task-head-kebab">{kebabNode}</span> : null}
         </div>
       </div>

@@ -2963,8 +2963,11 @@ input.schedule-when-field {
 }
 
 /* The ring or icon as a button (shell/TaskIconPick — it opens the icon
-   picker; legacy heads only while a title is being edited): the ring's own box, a wash on hover, and a nudge
-   so the glyph reads as pressable. Nothing else in the head moves. */
+   picker; legacy heads only while a title is being edited): the ring's own
+   box and a wash on hover. The ring itself does not grow under the pointer
+   (Akshil, 2026-11-16: "don't increase scale when hover for task ring, that
+   looks bad") — the wash alone says it can be pressed. Nothing else in the
+   head moves. */
 .task-icon-pick {
   display: inline-grid;
   place-items: center;
@@ -2980,12 +2983,6 @@ input.schedule-when-field {
 .task-icon-pick:hover,
 .task-icon-pick[aria-expanded="true"] {
   background: var(--row-hover, var(--bg-alt));
-}
-.task-icon-pick:hover .schedule-ring {
-  transform: scale(1.12);
-}
-.task-icon-pick .schedule-ring {
-  transition: transform 0.12s ease;
 }
 /* The ring's wrapper, there only to be the button's description
    (TaskIconPick `aria-describedby`): no box of its own. */

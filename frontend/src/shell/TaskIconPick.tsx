@@ -162,13 +162,30 @@ export function TaskIconPick({
   const picker =
     anchor &&
     createPortal(
-      <IconPicker
-        anchor={anchor}
-        set={set}
-        {...(worn ? { onRemove: () => save(null) } : {})}
-        onClose={close}
-        toggleSelector=".task-icon-pick"
-      />,
+      // A PRESS IN THE PICKER IS THE PICKER'S (Akshil, 2026-11-16: "in recent
+      // chats when I click on the selection icon, it opens the task as well").
+      // The picker is portalled to the body, but React still bubbles its
+      // events up through this button's ANCESTORS — and a Recent-chats row is
+      // a `role="button"` div whose own click and Enter open the chat. Picking
+      // an icon, or pressing Enter in the filter, opened it. Stopped here, in
+      // the bubble phase only: a rail card's capture-phase watchers (its
+      // press-inside and focus holds) still see the picker as their own.
+      <div
+        style={{ display: "contents" }}
+        onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        onKeyUp={(e) => e.stopPropagation()}
+      >
+        <IconPicker
+          anchor={anchor}
+          set={set}
+          {...(worn ? { onRemove: () => save(null) } : {})}
+          onClose={close}
+          toggleSelector=".task-icon-pick"
+        />
+      </div>,
       document.body,
     );
   if (onlyWhileEditing && !editing) {

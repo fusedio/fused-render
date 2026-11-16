@@ -393,7 +393,14 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  min-height: 22px;
+  /* THE ROW IS AS TALL AS ITS ARCHIVE BUTTON, WITH OR WITHOUT IT (22px, plus
+     the 6px below). The id slot rides this row when the head is stacked, and
+     its button is withheld while the icon picker or a rename is up; the row
+     then fell back to the title's 16px, the head lost 6px, the chat under it
+     scrolled — and the picker, which closes on any scroll outside it, shut
+     the moment it opened (Akshil, 2026-11-16: the status icon "glitches" in
+     a small two-line window). */
+  min-height: 28px;
   padding: 0 2px 6px 6px;
 }
 .task-head-titlerow .task-side-peek-who {
@@ -428,6 +435,20 @@
   justify-content: center;
   background: transparent;
   border-color: transparent;
+  border-radius: 6px;
+}
+/* …AND IT SAYS IT CAN BE PRESSED (Akshil, 2026-11-16: "have some hover ui
+   indicator to know this is clickable"): the archive button's own wash under
+   the pointer, where the tag is a door. Its name comes up at once in the
+   hint panel (`data-hint`, PlaceTags). */
+.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where a.place-tag.has-icon:is(:hover, :focus-visible),
+.task-head.is-stacked:is([data-fit="6"], [data-fit="7"]) .task-head-where a.place-tag.has-icon:is(:hover, :focus-visible) {
+  /* The pill's own hover tint — `--bg-alt` alone was one shade off a rail
+     card's background and read as nothing (Akshil, 2026-11-16: "hover over
+     this canvas or file icon doesn't show a visual cue"). */
+  color: var(--fg);
+  background: rgba(var(--tint), 0.16);
+  border-color: var(--border);
 }
 /* 1, 2. THE CHIPS, ONE AT A TIME (Akshil, 2026-11-16: "worktree and pr show
    when there is width available, incrementally"): the first things to give,
@@ -480,23 +501,29 @@
 .task-head-open {
   flex-direction: row-reverse;
 }
-/* SHORT ON WIDTH, THE DOOR IS ITS ↗ ALONE (the narrow list row's rule) —
-   AND ITS WORD WHEREVER THERE IS ROOM (Akshil, 2026-11-16: "arrow icon with
-   Open should be shown when there is space"): a rail window whose title took
-   row 2 has row 1's room back, so the word stands there until row 1 itself
-   runs short (5+) — one rung before the where-tag's word (6+). */
-.task-head:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-word,
-.task-head.is-stacked:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-word {
+/* SHORT ON WIDTH, THE DOOR IS ITS ↗ ALONE (the narrow list row's rule) — in
+   a panel or a pane, from the facts' rung on.
+
+   A RAIL WINDOW KEEPS THE WORD (Akshil, 2026-11-16: "arrow icon with Open
+   should be shown when there is space"; then, of the ↗ alone in the time's
+   box: "after fav icon and before arrow icon there is odd space, so we
+   should have the Open button in this case"). Its time slot always holds a
+   box as wide as the wider occupant, so a bare ↗ left a hole beside the star
+   that the word nearly filled; the slot now holds the word's width and the
+   title pays the few px. Only a row that is short even with the title on
+   row 2 (5+) folds it — one rung before the where-tag's word (6+). */
+.task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-word,
+.task-head.is-window:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-facts, .task-head-timeslot) .task-head-open-word {
   display: none;
 }
-.task-head:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open,
-.task-head.is-stacked:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open {
+.task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open,
+.task-head.is-window:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-facts, .task-head-timeslot) .task-head-open {
   padding: 0;
   width: 22px;
   justify-content: center;
 }
-.task-head:not(.is-stacked):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-arrow,
-.task-head.is-stacked:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-arrow {
+.task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot .task-head-open-arrow,
+.task-head.is-window:is([data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-facts, .task-head-timeslot) .task-head-open-arrow {
   display: inline;
   /* Alone, the arrow is the star's size (the narrow row's rule). */
   width: 15px;
@@ -732,6 +759,61 @@
   justify-items: end;
 }
 
+/* A RAIL WINDOW'S FACTS AND ACTS: TWO LAYERS OF ONE BOX (TaskHead
+   `factsCluster`; Akshil, 2026-11-16: "too much space between message count
+   and time … star and Open do have a weird gap, keep them closer"). The box
+   is as wide as the wider layer, so the where-tag and the title never move;
+   each layer keeps its own two items side by side against the right edge,
+   so neither pair is spread to fill a box sized for the other. Only where
+   both facts trade (or neither): a head with one act alone keeps the two
+   slots, so the fact that stays is one node that never moves. */
+.task-head-facts {
+  display: inline-grid;
+  align-items: center;
+  justify-items: end;
+  flex: 0 0 auto;
+}
+.task-head-facts-layer {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 0.08s ease;
+}
+.task-head-facts-layer.is-b {
+  opacity: 0;
+  pointer-events: none;
+  /* THE STAR AND THE DOOR STAND AS CLOSE AS THE COUNT AND THE TIME (Akshil,
+     2026-11-16: "same padding should be between star and open button"). The
+     facts are bare text 6px apart; the acts are boxes with ink inside them —
+     the star's 14px glyph in a 22px button, the door's word inside its own
+     padding — so the same 6px between BOXES read as 16px between the marks.
+     No gap here, and 2px of padding on the door: 4px + 2px, the facts' 6px. */
+  gap: 0;
+}
+.task-head-facts-layer.is-b .task-head-open {
+  padding: 0 2px;
+}
+
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible)) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+  opacity: 0;
+  pointer-events: none;
+}
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible)) .task-head-facts > .task-head-facts-layer.is-b {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .task-head-facts > .task-head-facts-layer.is-b {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 /* THE ID SLOT'S BUTTON (shell/TaskFileSeat; the rail card's
    `.claude-rail-peek-archive`): 22px to aim at, a quiet wash on hover. */
 .task-head-idslot :is(.task-head-file, .claude-rail-peek-archive) {
@@ -784,7 +866,8 @@
   }
 }
 /* The rail card's own star, at the slot's size. */
-.task-head-countslot .claude-rail-peek-star {
+.task-head-countslot .claude-rail-peek-star,
+.task-head-facts .claude-rail-peek-star {
   width: 22px;
   height: 22px;
 }

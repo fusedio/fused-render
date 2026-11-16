@@ -119,7 +119,14 @@ export function PlaceTags({ scope, at, pageRoot, onSelectNode, sessionId, onNavi
               <a
                 href={tag.door.href}
                 className={cls}
-                title={tag.door.title}
+                // A where-tag may be folded to its icon (task-head.css): its
+                // NAME comes up at once in the app's hint panel (`data-hint`,
+                // no delay; Akshil, 2026-11-16: "when the html/py icon is
+                // collapsed and we hover, show the file name, instant
+                // tooltip") — in place of the browser's slow `title`, which
+                // would only repeat it a second later. What the press does
+                // stays in the accessible name.
+                {...(icon ? { "data-hint": tag.label } : { title: tag.door.title })}
                 // A tag that acts in place is a button to the reader, with
                 // the link kept for a modified press (a tab).
                 {...(tag.door.select && onSelectNode ? { role: "button" } : {})}
@@ -135,7 +142,7 @@ export function PlaceTags({ scope, at, pageRoot, onSelectNode, sessionId, onNavi
                 {face}
               </a>
             ) : (
-              <span className={cls} title={tag.path} aria-label={tag.path}>
+              <span className={cls} {...(icon ? { "data-hint": tag.label } : { title: tag.path })} aria-label={tag.path}>
                 {face}
               </span>
             )}

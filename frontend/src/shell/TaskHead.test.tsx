@@ -494,6 +494,10 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(TASK_HEAD_TITLE_MAX).toBe(400);
   expect(css).toContain(`  flex: 1 1 ${TASK_HEAD_TITLE_MAX}px;\n  max-width: max-content;`);
   expect(css).not.toContain(`max-width: ${TASK_HEAD_TITLE_MAX}px;`);
+  // Row 2 keeps the Archive button's height with or without the button (the
+  // picker closes on a scroll, and a head that changed height scrolled the chat).
+  expect(css).toContain(".task-head-titlerow {\n  display: flex;\n  align-items: center;\n  min-width: 0;");
+  expect(css).toMatch(/\.task-head-titlerow \{[^}]*min-height: 28px;\s*padding: 0 2px 6px 6px;/);
   // The where-tag's word: gone on every rung past 0 while the head is one
   // row; a stacked rail window has it back until row 1 itself is short.
   expect(css).toContain('.task-head:not(.is-stacked):not([data-fit="0"]) .task-head-where .place-tag-word');
@@ -511,10 +515,11 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {\n  width: 0;");
   // A panel or a pane gives the time alone; the count stays.
   expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot {\n  width: 0;`);
-  // Short on width, the door is its ↗ alone; a stacked rail window keeps the
-  // word until row 1 itself is short (5+), one rung before the where-tag's.
-  expect(css).toContain(`.task-head:not(.is-stacked)${from(3)} .task-head-timeslot .task-head-open-word,`);
-  expect(css).toContain(`.task-head.is-stacked${from(5)} .task-head-timeslot .task-head-open-word {`);
+  // Short on width, a panel's or a pane's door is its ↗ alone; a rail window
+  // keeps the word (its time slot holds the word's box) until the row is
+  // short even stacked (5+), one rung before the where-tag's word.
+  expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot .task-head-open-word,`);
+  expect(css).toContain(`.task-head.is-window${from(5)} :is(.task-head-facts, .task-head-timeslot) .task-head-open-word {`);
   // A rail window's ⋮ always stands (2026-11-16): no rule hides it or holds
   // its seat open, and nothing is moved over it at rest.
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {");
@@ -753,4 +758,46 @@ test("the status icon opens the icon picker outside a rename — a favourite's f
 test("no where-tag, no seat for it (a whole folder, a file: the place alone)", () => {
   const r = render(head());
   expect(byClass(r, "task-head-where")).toHaveLength(0);
+});
+
+test("a rail window's facts and acts are two layers of one box; a panel keeps the two slots (2026-11-16)", () => {
+  const props = {
+    task: task({ message_count: 6 }),
+    open: { href: "/x", label: "Open in Explorer", onOpen: () => {} },
+  };
+  const win = render(head({ ...props, reveal: "window" }));
+  // One box, two layers: count + time, then star + door. No per-fact slots.
+  expect(byClass(win, "task-head-facts")).toHaveLength(1);
+  expect(cls(byClass(win, "task-head-facts")[0]!)).toContain("has-acts");
+  expect(byClass(win, "task-head-countslot")).toHaveLength(0);
+  expect(byClass(win, "task-head-timeslot")).toHaveLength(0);
+  const [a, b] = byClass(win, "task-head-facts-layer");
+  expect(cls(a!)).toContain("is-a");
+  expect(JSON.stringify(a)).toContain("task-head-count");
+  expect(JSON.stringify(a)).toContain("task-head-time");
+  expect(cls(b!)).toContain("is-b");
+  expect(JSON.stringify(b)).toContain("task-head-open");
+  // ONE ACT ALONE (favourites off: no star): the count STAYS under the
+  // pointer, so the head keeps one slot per fact — the stayer is one node
+  // that cannot jump between two layers (Bugbot on #2297).
+  const noStar = render(head({ ...props, reveal: "window", star: false }));
+  expect(byClass(noStar, "task-head-facts")).toHaveLength(0);
+  const cs = byClass(noStar, "task-head-countslot")[0]!;
+  expect(JSON.stringify(cs)).toContain("task-head-count");
+  expect(JSON.stringify(cs)).not.toContain("task-star");
+  expect(JSON.stringify(byClass(noStar, "task-head-timeslot")[0])).toContain("task-head-open");
+  expect(byClass(noStar, "task-head-count")).toHaveLength(1);
+  // …and the same with a star but no door.
+  const noDoor = render(head({ task: task({ message_count: 6 }), reveal: "window" }));
+  expect(byClass(noDoor, "task-head-facts")).toHaveLength(0);
+  expect(byClass(noDoor, "task-head-time")).toHaveLength(1);
+  // No acts at all: the facts alone, and they stay under the pointer.
+  const bare = render(head({ task: task({ message_count: 6 }), reveal: "window", star: false }));
+  expect(cls(byClass(bare, "task-head-facts")[0]!)).not.toContain("has-acts");
+  expect(byClass(bare, "task-head-facts-layer")).toHaveLength(1);
+  // A panel or a pane keeps one slot per fact.
+  const pane = render(head(props));
+  expect(byClass(pane, "task-head-facts")).toHaveLength(0);
+  expect(byClass(pane, "task-head-countslot")).toHaveLength(1);
+  expect(byClass(pane, "task-head-timeslot")).toHaveLength(1);
 });
