@@ -1610,6 +1610,302 @@ button.tasks-caret,
   pointer-events: auto;
 }
 
+/* -- The a/b row (Akshil, 2026-11-15; `tasks-row--ab`) -------------------------
+   BEHIND `task_head_unified_enabled` (task-head-flag.ts): the row wears
+   `tasks-row--ab` while the switch is on, and every rule in this section is
+   scoped to it — off, the row above is the row, pixel for pixel.
+
+   THREE SLOTS, EACH ONE BOX WITH TWO OCCUPANTS: the a item at rest, the b item
+   while the row is pointed at.
+
+       TASK-nnn  <->  Archive / Unarchive      (`.tasks-idslot`)
+       count     <->  the favourite star       (`.tasks-row-msgs` + its seat)
+       time      <->  the door to the page     (`.tasks-row-time` + its seat)
+
+   The same `opacity` handover, on the same triggers, as every `.tasks-act` on
+   this page: the row's `:hover`, or a b control's own `:focus-visible` — never
+   `:focus-within` (the stuck-Archive bug, see the reveal's note above) and
+   never `display`, so each b control stays in the tab order and lights up for
+   a keyboard that lands on it. `pointer-events` travels with the ink:
+   invisible means intangible.
+
+   The status slot swaps nothing on this row (the mark slot's rules above find
+   no `.tasks-act` in it and leave the ring be); on a favourite its glyph is
+   the icon picker's button (TaskIconPick), lifted below.
+
+   NOTHING MOVES at rest: every b item is out of flow, over its a item's own
+   box, and the count, the time and the gaps between them are the legacy
+   row's. Under a pointer the star and the door take the row's end in flow
+   and the title runs up to the star ("Under a pointer", below) — whether or
+   not the fit ladder has folded their a items away (`data-fit`, further
+   down). */
+
+/* THE FAVOURITE'S FACE IS A BUTTON (TaskIconPick — it opens the icon picker):
+   lifted above the stretched link, or the link would take the press and open
+   the task. A row that is not a favourite has no button here. */
+.tasks-row--ab > .tasks-rowmark .task-icon-pick {
+  position: relative;
+  z-index: 2;
+  /* The button's own skin (schedule.css), restated: on the Tasks page the row
+     is inside `.prefs-section`, whose `button` rule would give it a padded,
+     bordered, filled box — and push the face off the rail. */
+  margin: -4px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  align-self: center;
+}
+.tasks-row--ab > .tasks-rowmark .task-icon-pick:hover,
+.tasks-row--ab > .tasks-rowmark .task-icon-pick[aria-expanded="true"] {
+  background: rgba(var(--tint), 0.1);
+  border: 0;
+}
+
+/* The id slot. The button spans the number's box (22px at least), so its
+   outline is the slot's and the number never shows around it. */
+.tasks-row--ab .tasks-idslot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.tasks-row--ab .tasks-idslot:has(.tasks-act) {
+  min-width: 22px;
+}
+
+.tasks-row--ab .tasks-idslot .tasks-act,
+.prefs-section .tasks-row--ab .tasks-idslot .tasks-act {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  width: auto;
+  transform: translateY(-50%);
+}
+
+/* BIGGER TO AIM AT THAN IT LOOKS (Akshil, 2026-08-18, for the mark slot this
+   button stands in on the legacy row): the press that misses opens the
+   conversation, which is the one outcome archiving is not. A transparent zone,
+   derived: the row's full height (`--tasks-row-pad-y` less the 3px the 22px
+   button overhangs the 16px line) and half a gap either side, so it meets its
+   neighbours' zones in the middle of the gap and crosses into neither.
+   Inherits `pointer-events`. */
+.tasks-row--ab .tasks-idslot .tasks-act::after {
+  content: "";
+  position: absolute;
+  inset: calc((22px - var(--tasks-rail-w)) / 2 - var(--tasks-row-pad-y))
+    calc(var(--tasks-row-gap) / -2);
+  border-radius: 8px;
+}
+
+.tasks-row--ab .tasks-idslot .tasks-id {
+  transition: opacity 0.08s ease;
+}
+
+/* The handover — only where there IS a button to hand over to. A row whose
+   filing cannot change (`filingIntent` -> null: a run in flight) keeps its
+   number under the pointer rather than a blank where its name was. */
+.tasks-row--ab:hover .tasks-idslot:has(.tasks-act) .tasks-id,
+.tasks-row--ab .tasks-idslot:has(.tasks-act:focus-visible) .tasks-id {
+  opacity: 0;
+}
+
+/* THE PRESS'S RECEIPT (Akshil, 2026-08-19), the mark slot's own rule above on
+   this row's seat: a spent press hands the slot BACK to the number — the ring
+   beside it, drawing the task's new state, is the confirmation — for as long
+   as the pointer stays on the row, and steps aside for the button's own
+   `:focus-visible`. */
+.tasks-row--ab.is-refiled:hover .tasks-idslot .tasks-act:not(:focus-visible) {
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-row--ab.is-refiled:hover .tasks-idslot:not(:has(.tasks-act:focus-visible)) .tasks-id {
+  opacity: 1;
+}
+
+/* THE B SEAT — where the star and the door stand. A ZERO-WIDTH seat right after
+   its a item (the hover strip's own trick, `.tasks-acts` below), the control
+   hung off its right edge: over the a item's ink, costing the row nothing.
+   `data-fit-skip` on the seat keeps it off the fit ladder's sums (row-fit.ts
+   `rowNeed`), whichever of the two states it is in. */
+.tasks-row--ab > .tasks-bseat {
+  position: relative;
+  flex: 0 0 0px;
+  width: 0;
+  align-self: stretch;
+  /* Cancels its own flex gap — the seat must not cost the row a px. */
+  margin-left: calc(var(--tasks-row-gap) * -1);
+}
+.tasks-row--ab > .tasks-bseat:empty {
+  display: none;
+}
+.tasks-row--ab > .tasks-bseat > .task-star,
+.tasks-row--ab > .tasks-bseat > .tasks-act {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  margin: 0;
+  transform: translateY(-50%);
+}
+
+/* The star: silent at rest like a `.tasks-act`, and on the same triggers. It
+   paints above the door (z-index 3 > 2): a door wider than its time overhangs
+   towards it (below), and the star must stay whole and pressable. */
+.tasks-row--ab > .tasks-bseat > .task-star {
+  opacity: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+.tasks-row--ab:hover > .tasks-bseat > .task-star,
+.tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat > .task-star,
+.tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat > .task-star {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* A tab onto the star arms the row's other b controls too, so the door after
+   it can be reached. */
+.tasks-row--ab:has(.task-star:focus-visible) .tasks-act {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The count and the time step aside — only for a b item that is really there:
+   a task with nothing to star keeps its count, a row with no page keeps its
+   time. */
+.tasks-row--ab > .tasks-row-msgs,
+.tasks-row--ab > .tasks-row-time {
+  transition: opacity 0.08s ease;
+}
+.tasks-row--ab:hover > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+.tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+.tasks-row--ab:has(.task-star:focus-visible) > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+.tasks-row--ab:hover > .tasks-row-time:has(+ .tasks-bseat--door),
+.tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-row-time:has(+ .tasks-bseat--door),
+.tasks-row--ab:has(.task-star:focus-visible) > .tasks-row-time:has(+ .tasks-bseat--door) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* UNDER A POINTER THE B ITEMS TAKE THE ROW'S END, IN FLOW (owner, 2026-11-16:
+   the star sat on "↗ Open", and the title stopped short of the star with room
+   to spare). The count and the time leave the flow, the star and the door
+   take boxes of their own, and the title runs up to the star. Each seat stands
+   the seam's 6px ("Two seams keep the old room", below) less the star's 2px
+   inset after what is before it, so title → star and star → door are the 10px
+   of ink title → count and count → time are at rest. The door's ink — the
+   arrow, the word — ends where the time's did: its 3px side and its hairline
+   hang into the row's padding.
+
+   Out of flow rather than `display: none`, so the phone's host can put its a
+   items back (lan.css) and the fit ladder can still read their widths; the
+   ladder measures a pointed-at row as it was at rest (row-fit.ts
+   `useRowFit`). A touch screen keeps the overlay below (`hover: none`). */
+@media (hover: hover) {
+  .tasks-row--ab:hover > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+  .tasks-row--ab:hover > .tasks-row-time:has(+ .tasks-bseat--door),
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-row-time:has(+ .tasks-bseat--door),
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-row-time:has(+ .tasks-bseat--door) {
+    position: absolute;
+    /* GONE AT ONCE, not faded: out of flow it lands at the row's start, and
+       an 80ms fade drew a ghost of the time over the status icon (Akshil,
+       2026-11-16). */
+    visibility: hidden;
+    transition: none;
+  }
+  .tasks-row--ab:hover > .tasks-bseat:not(:empty),
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat:not(:empty),
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat:not(:empty) {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    width: auto;
+    margin-left: 4px;
+  }
+  .tasks-row--ab:hover > .tasks-bseat > .task-star,
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat > .task-star,
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat > .task-star,
+  .tasks-row--ab:hover > .tasks-bseat > .tasks-act,
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat > .tasks-act,
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat > .tasks-act {
+    position: relative;
+    top: auto;
+    right: auto;
+    transform: none;
+    /* IN FLOW, BUT NOT TALLER THAN THE ROW'S LINE: a 22px control on an 18px
+       line grew every hovered row by 4px (Akshil, 2026-11-16). The overhang
+       goes into the row's own padding instead. */
+    margin-block: -2px;
+  }
+  .tasks-row--ab:hover > .tasks-bseat--door,
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat--door,
+  .tasks-row--ab:has(.task-star:focus-visible) > .tasks-bseat--door {
+    margin-right: -4px;
+  }
+  /* No star to stand after: the door takes the whole seam off the count. */
+  .tasks-row--ab:hover > .tasks-bseat--fav:empty ~ .tasks-bseat--door,
+  .tasks-row--ab:has(.tasks-act:focus-visible) > .tasks-bseat--fav:empty ~ .tasks-bseat--door {
+    margin-left: 6px;
+  }
+}
+
+/* THE TIME KEEPS THE LEGACY ROW'S COLUMN (owner, 2026-11-15): the count, the
+   time and the 10px between their inks (`--tasks-row-gap` + the seams' 6px,
+   "Two seams keep the old room" below) are exactly the legacy row's at rest —
+   the cell is NOT widened to the door. The door wears a tighter skin than the
+   strip's (3px sides, 2px gap — about 52px against the strip's 57px). On a
+   touch screen it stands over the time at rest, and where it is wider than
+   the time ("5h ago" is ~36px) it overhangs LEFTWARDS over the gap and the
+   count's tail — so it carries the row's own hover fill, and the ink it
+   covers does not show through it (the strip's wash, one colour); the star
+   above it stays whole. */
+.tasks-row--ab > .tasks-bseat--door > .tasks-act--page,
+.prefs-section .tasks-row--ab > .tasks-bseat--door > .tasks-act--page {
+  padding: 0 3px;
+  gap: 2px;
+}
+.tasks-row--ab > .tasks-bseat--door > .tasks-act--page:not(:hover) {
+  background: var(--row-bg-hover);
+}
+.tasks-row--ab.is-selected > .tasks-bseat--door > .tasks-act--page:not(:hover) {
+  background: var(--row-bg-hover);
+}
+.tasks-peek-host .tasks-row--ab.is-peeked > .tasks-bseat--door > .tasks-act--page:not(:hover) {
+  background: var(--row-bg-selected);
+}
+
+/* NO POINTER, NO HOVER (`hover: none` — a touch screen): the b items are the
+   row's resting state, since nothing else could ever reveal them. The phone's
+   own host opts back out (lan.css: its actions live in the peek's menu). */
+@media (hover: none) {
+  .tasks-row--ab .tasks-idslot .tasks-act,
+  .tasks-row--ab > .tasks-bseat > .task-star,
+  .tasks-row--ab > .tasks-bseat > .tasks-act {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .tasks-row--ab .tasks-idslot:has(.tasks-act) .tasks-id,
+  .tasks-row--ab > .tasks-row-msgs:has(+ .tasks-bseat > .task-star),
+  .tasks-row--ab > .tasks-row-time:has(+ .tasks-bseat--door) {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+/* THE FOLDER IS A CAPSULE on this row (owner, 2026-11-15): the rail favourite
+   card's place tag (`.place-tag`, claude-rail.css) is a pill with round ends,
+   and the two name the same thing — so the row's folder tag takes the same
+   ends and the same 7px sides (a 5px side is too tight against a full
+   round). Height, font, hairline and colours stay the tag's own. The PR
+   view's `#N` chip keeps its corners: it is a link, not a place. */
+.tasks-row--ab .schedule-tv-id--tag:not(.task-pr-num) {
+  border-radius: 999px;
+  padding-inline: 7px;
+}
+
 /* -- The same actions on a board card ------------------------------------------
    The card is a `<button>`, so the actions cannot live inside it — nested buttons
    do not parse. They are siblings, and this wrapper is what they are positioned
@@ -2714,8 +3010,11 @@ button.tasks-draft-pill.is-on:focus-visible {
   display: none;
 }
 
+/* NOT ON THE A/B ROW (owner, 2026-11-16: "it hides folder tag why, don't hide
+   that"): there the folder never folds, and the title gives instead
+   (row-fit.ts `ROW_DROP_SELECTOR.project`). */
 .tasks-list:is([data-fit="3"], [data-fit="4"])
-  .tasks-row
+  .tasks-row:not(.tasks-row--ab)
   .schedule-tv-id-shield:has(.schedule-tv-id) {
   display: none;
 }
@@ -2725,12 +3024,57 @@ button.tasks-draft-pill.is-on:focus-visible {
   display: none;
 }
 
+/* A FOLDED A ITEM DOES NOT TAKE ITS B ITEM WITH IT (the a/b row, 2026-11-15).
+   The time goes first and the count second, but the door and the star are
+   controls, and "a control that disappears because a folder name got longer is
+   a control nobody can rely on" (the door's own note, below). Under a pointer
+   they take the row's end in flow as they do on any a/b row ("Under a
+   pointer", the a/b row's section) — the door as the arrow alone, in the
+   word's own 3px skin, so the arrow ends on the row's edge with nothing after
+   it — and the title gives way for them. At rest the seats are zero-width
+   again and the row is the folded row. The seats carry `data-fit-skip`, so
+   none of this reaches the ladder's own measurement and the level cannot flap
+   on a hover. A touch screen, with no pointer, gives the seats their boxes at
+   rest. */
+.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door > .tasks-act--page {
+  gap: 0;
+  /* The word goes, the arrow stays: the label is a bare text node. */
+  font-size: 0;
+}
+/* THE WORD, THEN THE ARROW (Akshil, 2026-11-16): "Open ↗" where there is the
+   width for both. The label is a bare text node after the glyph, so the order
+   is the flex line's, reversed. */
+.tasks-row--ab > .tasks-bseat--door > .tasks-act--page {
+  flex-direction: row-reverse;
+}
+/* ALONE, THE ARROW IS THE STAR'S SIZE (Akshil, 2026-11-16): beside a word it
+   is a 10px mark on a label; on its own it is the whole control. */
+.tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door > .tasks-act--page svg {
+  width: 14px;
+  height: 14px;
+}
+@media (hover: none) {
+  .tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door {
+    flex-basis: 22px;
+    width: 22px;
+    margin-left: 0;
+  }
+  .tasks-list:is([data-fit="2"], [data-fit="3"], [data-fit="4"]) .tasks-row--ab > .tasks-bseat--fav {
+    flex-basis: 18px;
+    width: 18px;
+    margin-left: 0;
+  }
+}
+
 /* THE QUICK DOOR OUT of a row (.claude-design/task-side-peek/design.md, Round
    3): the row's own press opens the side peek beside the list, and this goes to
    the whole page. It is a `.tasks-act` like every other row action — silent at
    rest, revealed on hover, above the stretched link so its press is its own —
    and it is NEVER in the fit ladder above: a control that disappears because a
    folder name got longer is a control nobody can rely on.
+
+   ON THE A/B ROW IT STANDS OVER THE ROW'S TIME (2026-11-15: `.tasks-bseat`,
+   above), not in the hover strip the notes below were written beside.
 
    AND IT IS A WORD, not a glyph (Akshil, 2026-09-14 — design.md, Polish batch
    4). It wore the page's folder door mark, which is a fine mark in a menu and a
@@ -2820,6 +3164,12 @@ button.tasks-draft-pill.is-on:focus-visible {
 .tasks-row:hover > .tasks-acts > .tasks-acts-inner,
 .tasks-row:has(.tasks-act:focus-visible) > .tasks-acts > .tasks-acts-inner {
   opacity: 1;
+}
+/* AN EMPTY STRIP DRAWS NO WASH on the a/b row: the page door led the strip
+   on nearly every row, and with it over the time most a/b rows have nothing
+   here — the fade would dim the title's tail for no button at all. */
+.tasks-row--ab > .tasks-acts > .tasks-acts-inner:empty {
+  display: none;
 }
 .tasks-row > .tasks-acts .tasks-act {
   z-index: 4;

@@ -204,9 +204,23 @@ export function TasksPeek() {
             chat ? (
               <TaskHead
                 key="chat"
+                reveal="window"
                 className="claude-rail-tasks-chat-head"
+                // × THEN ← (Akshil, 2026-11-16): the card's own close stands in
+                // the corner on the chat too, the way back to the list after
+                // it. No ↑↓ here — the list is one ← away.
+                preLead={
+                  <button
+                    type="button"
+                    className="task-head-btn"
+                    aria-label="Close Tasks"
+                    data-hint="Close"
+                    onClick={api.close}
+                  >
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                }
                 lead={{ kind: "back", label: "Back to tasks", onPress: () => setChat(null), ref: api.backRef }}
-                nav={{ prev: chatEnds.prev, next: chatEnds.next, step: stepChat }}
                 task={task}
                 chipsRef={setChipsHost}
                 statusRef={setStatusHost}

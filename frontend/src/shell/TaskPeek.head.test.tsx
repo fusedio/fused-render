@@ -137,6 +137,16 @@ test("flag ON: the shared head — ×, chevrons, identity, ↗ Open and the chat
   expect(byLabel(r, "More actions")).toBeUndefined();
   // The worktree seat is there for the chat to portal into.
   expect(hostAll(r, (n) => hasClass(n, "task-head-chips-host"))).toHaveLength(1);
+  // THE ROW'S LINE (the a/b slots, 2026-11-15): the folder chip before the
+  // number, which trades with Archive; the count; and Open as the time slot's
+  // other occupant rather than a seat of its own.
+  const place = hostAll(r, (n) => hasClass(n, "task-head-place"))[0]!;
+  expect(place.findAll((n) => n.props["data-hint"] === "/repo/app").length).toBeGreaterThan(0);
+  const idSlot = hostAll(r, (n) => hasClass(n, "task-head-idslot"))[0]!;
+  expect(idSlot.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-file"))).toHaveLength(1);
+  expect(hostAll(r, (n) => hasClass(n, "task-head-countslot"))).toHaveLength(1);
+  const timeSlot = hostAll(r, (n) => hasClass(n, "task-head-timeslot"))[0]!;
+  expect(timeSlot.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-open"))).toHaveLength(1);
 });
 
 test("flag ON, a task with no session yet keeps the panel's own menu (Delete of a never-run message)", async () => {

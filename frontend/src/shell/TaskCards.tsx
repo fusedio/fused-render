@@ -60,6 +60,15 @@ import type { BreakoutControl } from "@apps/claude/ClaudeChat";
 import { useTaskHeadUnified } from "./task-head-flag";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@platform/shadcn/ui/dropdown-menu";
+import { RUN_BLOCKED_HINT, TASK_ACTION_LABELS, blockedActionLabel } from "@platform/lib/task-actions";
+import { TASK_ICON_TRASH } from "@platform/ui/TaskActionIcons";
 import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 import {
   CARD_PAGE,
@@ -1010,8 +1019,8 @@ function TaskPeek({
   // to take the focus it could not take at mount.
   const [chatReady, setChatReady] = useState(0);
   const unified = useTaskHeadUnified();
-  /** The shared head, for a task the chat's ⋮ can act on (see `head=`). */
-  const sharedHead = unified && !!task.session_id;
+  /** The shared head, for every task (see `head=`). */
+  const sharedHead = unified;
   /** The shared head's chip seat (ChatMount `headChipsHost`). */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
   /** …and its status seat, for the chat's pause word (ChatMount
@@ -1149,9 +1158,13 @@ function TaskPeek({
       // THE SHARED HEAD, with the flag on: × to close (the chassis' own guarded
       // close), the identity, the PR chip, ↗ Open and the chat's own ⋮ — which
       // is where Archive and Delete live now, offered the way every other task
-      // menu offers them. ONLY FOR A TASK WITH A SESSION: without one there is
-      // no ⋮, and the old head's doors (Archive, Delete, the folder-deleted
-      // door) are the only place those acts live — TaskPeek's rule.
+      // menu offers them.
+      //
+      // A TASK WITH NO SESSION has no chat ⋮, so the old head's doors find
+      // other seats (2026-11-15): Archive is the ring's, as on every head
+      // (TaskFileSeat); the folder is ↗ Open; and with the folder gone, the
+      // greyed door and Delete ride a plain ⋮ of their own — the Tasks page
+      // panel's way for the same task (TaskPeek `unifiedKebab`).
       {...(sharedHead ? {
         head: ({ titleId, close }: ModalHeadContext) => (
           <TaskHead
@@ -1223,6 +1236,46 @@ function TaskPeek({
                   ]}
                 />
               </AgentProvider>
+            ) : gone ? (
+              // THE SESSION-LESS ⋮ (folder gone): the chat ⋮'s own trigger,
+              // menu and rows (Kebab) — its `extraItems` door greyed with why,
+              // then Delete — so the head reads the same whichever menu is
+              // behind it, and the keyboard reaches Delete as it did the old
+              // head's button.
+              <div className="c-kebab">
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <button type="button" className="c-kebabbtn" aria-label="More options" title="More options">
+                        ⋮
+                      </button>
+                    }
+                  />
+                  <DropdownMenuContent
+                    side="bottom"
+                    align="end"
+                    sideOffset={6}
+                    aria-label="More options"
+                    className="c-overlay c-kebabpop c-kebabpop--head w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0"
+                  >
+                    <DropdownMenuItem className="c-kebab-opt" disabled title={MISSING_FOLDER_TOAST}>
+                      <span className="c-kebab-icon">{ICON_FOLDER}</span>
+                      {`${pageDoorLabel(task)} — folder deleted`}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator className="c-kebab-sep" />
+                    <DropdownMenuItem
+                      className="c-kebab-opt is-danger"
+                      variant="destructive"
+                      disabled={blocked}
+                      title={blocked ? ERASE_BLOCKED_HINT : undefined}
+                      onClick={() => setErasing(true)}
+                    >
+                      <span className="c-kebab-icon">{TASK_ICON_TRASH}</span>
+                      {blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null)}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             ) : null}
           />
         ),

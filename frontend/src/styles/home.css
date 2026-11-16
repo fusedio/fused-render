@@ -860,6 +860,18 @@
   .hw-task-rows .tasks-row-msgs {
     display: none;
   }
+  /* …and on the a/b row its star (the count slot's other occupant, tasks.css
+     "The a/b row") takes a box of its own while the row is pointed at (tasks.css
+     "Under a pointer"). A touch screen shows the star at rest, so there the
+     seat is reserved at rest, or the star would sit on the title's tail — as
+     the Tasks page does where its fit ladder folds the count. */
+  @media (hover: none) {
+    .hw-task-rows .tasks-row--ab > .tasks-bseat--fav {
+      flex-basis: 18px;
+      width: 18px;
+      margin-left: 0;
+    }
+  }
 }
 
 /* Cards strip: one scrolling grid, `--hw-rows` tall. Cards are always 330px

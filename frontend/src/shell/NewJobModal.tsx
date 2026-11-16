@@ -6118,6 +6118,7 @@ export default function NewJobModal({
       {...(chatOpen && unified ? {
         head: ({ titleId }: ModalHeadContext) => (
           <TaskHead
+            reveal="window"
             className="nt-chat-head"
             lead={{ kind: "back", label: "Back", onPress: leaveChat }}
             task={liveChat}
