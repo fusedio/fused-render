@@ -470,6 +470,13 @@ export { paneHomeHref } from "./claude-rail-lib";
 
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
 const PEEK_ID = "claude-rail-peek";
+/** Whichever card stands in window A right now (the row hint's live width,
+ *  platform/lib/hints `data-hint-width-of`): the task card, a door's card, or
+ *  the + popover. One at a time, so the first match is the window. */
+const WINDOW_A_LIVE = [PEEK_ID, TASKS_PEEK_ID, BOTS_PEEK_ID, GIT_PEEK_ID]
+  .map((id) => `#${id}.is-on`)
+  .concat(".modal-popover .modal-dialog")
+  .join(", ");
 
 /** The rail's width (claude-rail.css `.claude-rail`): what a shut pane leaves
  *  at the edge, and what a pull to reopen it is measured past (the `closedWidth`
@@ -3270,7 +3277,12 @@ export function ClaudeRail({
                         // B opens narrower than A (`FAV_WIDTH`).
                         // The window itself while it stands (its live width,
                         // a drag included); the remembered size otherwise.
-                        "data-hint-width-of": `#${foot && favsOn ? FAV_PEEK_ID : PEEK_ID}.is-on`,
+                        // WINDOW A IS WHICHEVER CARD HOLDS IT: a task's, or the
+                        // Tasks / Bots / Git door's, or the + popover — a list
+                        // ring hovered over a pinned Tasks card read the task
+                        // card's remembered width (Akshil, 2026-11-16: "window
+                        // A pinned, I resized, it showed the previous width").
+                        "data-hint-width-of": foot && favsOn ? `#${FAV_PEEK_ID}.is-on` : WINDOW_A_LIVE,
                         "data-hint-width": String(
                           foot && favsOn
                             ? (storedPeekSize("canvasRailFav")?.width ?? FAV_WIDTH)

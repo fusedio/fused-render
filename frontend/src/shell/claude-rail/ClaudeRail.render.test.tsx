@@ -1162,7 +1162,7 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
       expect(ring!.props["data-hint-width"]).toBe(String(PEEK_WIDTH));
       // …or, while that window stands, its width on screen — a drag included
       // (hints.ts `liveWidth`): the selector names window A, shown.
-      expect(ring!.props["data-hint-width-of"]).toBe("#claude-rail-peek.is-on");
+      expect(ring!.props["data-hint-width-of"]).toBe("#claude-rail-peek.is-on, #claude-rail-tasks-peek.is-on, #claude-rail-bots-peek.is-on, #claude-rail-git-peek.is-on, .modal-popover .modal-dialog");
       expect(ring!.props["data-hint-side"]).toBe("left");
       // The row stands against the rail's own edge, where its windows do.
       expect(aside(r).props["data-hint-edge"]).toBe("");
@@ -1188,7 +1188,7 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
       expect(foot[0]!.props["data-hint-width-of"]).toBe(`#${FAV_PEEK_ID}.is-on`);
       for (const ring of list) {
         expect(ring.props["data-hint-width"]).toBe(String(PEEK_WIDTH));
-        expect(ring.props["data-hint-width-of"]).toBe("#claude-rail-peek.is-on");
+        expect(ring.props["data-hint-width-of"]).toBe("#claude-rail-peek.is-on, #claude-rail-tasks-peek.is-on, #claude-rail-bots-peek.is-on, #claude-rail-git-peek.is-on, .modal-popover .modal-dialog");
       }
       // The two selectors name two different windows.
       expect(FAV_PEEK_ID).not.toBe("claude-rail-peek");
