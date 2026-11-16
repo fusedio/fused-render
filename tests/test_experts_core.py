@@ -851,3 +851,30 @@ def test_a_failed_approve_fails_the_proposal_for_good(bot, fake_text, monkeypatc
         proposals.approve(bot, p["id"])  # never retried
     assert cards.show(bot, after) is False  # never re-shown
     assert proposals.mark_shown(bot, p["id"], 7)["status"] == "failed"
+
+
+STRAY = ("### name: chart-type-conventions\ntitle: Chart type conventions\nTRIGGER: chart, sales chart\n\n"
+         "# Chart type conventions\n\n## Sales charts\n\n- Monthly revenue as a bar chart.")
+
+
+def test_draft_body_loses_copied_metadata_lines_on_create(bot, fake_text):
+    a = _seen(bot, "Sales charts show monthly revenue as bars", 3)
+    fake_text.replies.append(json.dumps({"action": "create", "skill": None, "title": "Chart type conventions",
+                                         "trigger": "chart, sales chart", "body": STRAY}))
+    assert "must NOT contain name, title or trigger" in proposals.DRAFT_PROMPT
+    p = proposals.prepare(bot, [a])
+    assert p["action"] == "create"
+    assert p["body"] == "## Sales charts\n\n- Monthly revenue as a bar chart."
+    assert "name:" not in p["diff"] and "trigger:" not in p["diff"]
+
+
+def test_draft_body_loses_copied_metadata_lines_on_update(bot, fake_text):
+    bot.skill_save("Chart type conventions", "chart", "## Sales charts", name="chart-type-conventions")
+    a = _seen(bot, "Sales charts show monthly revenue as bars", 3)
+    fake_text.replies.append(json.dumps({"action": "update", "skill": "chart-type-conventions",
+                                         "title": "Chart type conventions", "trigger": "chart", "body": STRAY}))
+    p = proposals.prepare(bot, [a])
+    assert p["action"] == "update" and p["skill"] == "chart-type-conventions"
+    assert p["body"] == "## Sales charts\n\n- Monthly revenue as a bar chart."
+    assert proposals._clean_body("title: x\n\n", "x") == ""
+    assert proposals._clean_body("# Other heading\nbody", "Title") == "# Other heading\nbody"

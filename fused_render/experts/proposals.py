@@ -51,7 +51,31 @@ Existing skills:
 Answer with ONLY a JSON object:
 {{"action": "update" | "create", "skill": "<existing skill name when updating, else null>",
   "title": "<skill title>", "trigger": "<comma-separated trigger words>",
-  "body": "<the COMPLETE new skill body in markdown (for an update: the whole body with the lessons merged in)>"}}"""
+  "body": "<the COMPLETE new skill body in markdown (for an update: the whole body with the lessons merged in)>"}}
+
+`body` is ONLY the skill's markdown content (its steps and advice). It must NOT contain name, title or trigger
+lines, nor the "### name: …" header used in the listing above: those go in their own JSON fields."""
+
+_META_LINE = re.compile(r"^(#+\s*)?(name|title|trigger)\s*:", re.I)
+
+
+def _clean_body(body, title="") -> str:
+    """`body` without the leading metadata lines a model copies from the skill listing ("### name: …",
+    "title: …", "trigger: …"), without a leading "# <title>" heading equal to the title, and without leading or
+    trailing blank lines."""
+    lines = str(body or "").splitlines()
+    want = " ".join(str(title or "").split()).casefold()
+    while lines:
+        head = lines[0].strip()
+        if not head or _META_LINE.match(head):
+            lines.pop(0)
+            continue
+        m = re.match(r"^#\s+(.*)$", head)
+        if m and want and " ".join(m.group(1).split()).casefold() == want:
+            lines.pop(0)
+            continue
+        break
+    return "\n".join(lines).strip()
 
 
 def _dir(bot) -> str:
@@ -186,6 +210,7 @@ def _draft(bot, lessons) -> dict:
         title = title or fb["title"]
         trigger = trigger or fb["trigger"]
         old_body, skill, eff_name = "", None, _slug(title)
+    body = _clean_body(body, title)[:BODY_CAP] or _fallback_draft(lessons)["body"]
     diff = "".join(difflib.unified_diff(
         [ln + "\n" for ln in old_body.splitlines()],
         [ln + "\n" for ln in body.splitlines()],
