@@ -35,7 +35,16 @@ let scanThrows = false;
 // before a real (deferred) GET could ever land anyway.
 let prefsRanked = true;
 
+// Every OTHER export stays the real one. In the full suite the module is
+// already loaded and bun patches only the keys below in place; run alone,
+// bun would replace the whole module, and the hook's own imports
+// (platform/lib/remote.ts's getJson, canvases-flag.ts's getPrefsShared) would
+// fail this file at load. Stubbing those instead would leak the stubs into
+// every later file in the process.
+const realApi = await import("@platform/lib/api");
+
 mock.module("@platform/lib/api", () => ({
+  ...realApi,
   indexRank: (
     root: string,
     q: string,
@@ -77,6 +86,8 @@ const freshness = await import("@platform/lib/index-freshness");
 // process), so relying on the mocked GET alone would make this hook's
 // starting value whatever an earlier, unrelated test file last published.
 const { publishRankedSearchEnabled } = await import("@apps/explorer/lib/ranked-search-pref");
+// Same process-global cache shape, pinned per test for the same reason.
+const { publishCanvasesFlag } = await import("@platform/lib/canvases-flag");
 
 function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
@@ -103,6 +114,7 @@ beforeEach(() => {
   scanThrows = false;
   prefsRanked = true;
   publishRankedSearchEnabled(true);
+  publishCanvasesFlag(false);
   freshness.resetFsMutations();
   clock.install();
 });
@@ -143,6 +155,32 @@ describe("the MIN_QUERY_CHARS gate", () => {
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(1);
     expect(rankCalls[0].q).toBe("wi");
+    expect(box.current().searching).toBe(true);
+    box.unmount();
+  });
+});
+
+describe("an S3 address in the box (platform/lib/remote.ts)", () => {
+  const ADDR = "s3://fused-asset/data/";
+
+  test("Canvases on: a location, not a search — no request, and the folder rows answer nothing", async () => {
+    publishCanvasesFlag(true);
+    try {
+      const box = await search(ADDR);
+      expect(rankCalls).toHaveLength(0);
+      expect(box.current().searching).toBe(false);
+      // Enter from the page body must not open row 0 of the current folder.
+      expect(box.current().rowsAnswerQuery).toBe(false);
+      box.unmount();
+    } finally {
+      publishCanvasesFlag(false);
+    }
+  });
+
+  test("Canvases off: an ordinary query, searched exactly as before", async () => {
+    const box = await search(ADDR);
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].q).toBe(ADDR);
     expect(box.current().searching).toBe(true);
     box.unmount();
   });

@@ -1005,13 +1005,9 @@ function TemplatePreview({
   // the two differ only for a file with no companions of its own, where both
   // branches are the same list anyway, and the sidebar half has to keep listing
   // the pending entry for the deep link's sake.
-  // A remote cache copy drops the companion modes from the content list too:
-  // with the split off they would otherwise come back as content modes.
-  const contentModes = split.offered
-    ? parts.content
-    : remoteUrl && parts.content.length > 0
-      ? parts.content
-      : templates;
+  // A remote cache copy never gets here with a companion in `templates`
+  // (Preview drops them upstream), so this needs no remote case.
+  const contentModes = split.offered ? parts.content : templates;
   const sidebarModes = split.offered ? split.all : [];
   // What the sidebar's switcher DRAWS, which is a longer list than the one above:
   // all three companions, the ones this file cannot show disabled and explaining
@@ -2903,10 +2899,13 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   // A remote location's cache copy (`remoteUrl`) is untrusted bucket content:
   // never offered as a running page (`_render`, which /render also refuses for
   // the cache) — an html/svg/js object opens in its source/code view instead.
+  // Nor any companion (Claude, git): with no split they would come back as
+  // content modes aimed at the cache folder, not the `s3://` object. A file
+  // whose only views are companions falls back to FallbackPreview.
   const templates = stat.templates.filter(
     (t) =>
       (t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)) &&
-      !(remoteUrl && t.mode === "_render")
+      !(remoteUrl && (t.mode === "_render" || isSidebarMode(t.mode)))
   );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
   // The first unconditional template renders immediately — only an

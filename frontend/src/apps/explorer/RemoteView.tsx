@@ -34,6 +34,7 @@ import {
   type RemoteEntry,
   type RemoteStat,
 } from "@platform/lib/remote";
+import { notify } from "@platform/lib/notifications";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import { BreadcrumbBar } from "@apps/explorer/Breadcrumb";
 import Preview from "@apps/explorer/Preview";
@@ -314,6 +315,8 @@ function RemoteDownload({
 }) {
   const big = stat.size === null || stat.size > stat.warn_bytes;
   const [phase, setPhase] = useState<FetchPhase>(() => (big ? { kind: "confirm" } : { kind: "starting" }));
+  // A cancel request is out (or was accepted and the poll has yet to see it).
+  const [cancelling, setCancelling] = useState(false);
   const reach = useNavReach();
   const alive = useRef(true);
   const timer = useRef<number | undefined>(undefined);
@@ -385,6 +388,7 @@ function RemoteDownload({
   const start = () => {
     const watch = ++watching.current;
     window.clearTimeout(timer.current);
+    setCancelling(false);
     setPhase({ kind: "starting" });
     remoteFetch(stat.url).then(
       (r) => {
@@ -410,13 +414,16 @@ function RemoteDownload({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Cancel only ASKS: the poll keeps running and is what reports the outcome
+  // (the server's "cancelled" — or "done", if the download won the race). A
+  // refused request says so and leaves the card watching the download.
   const cancel = (id: string) => {
-    watching.current++;
-    window.clearTimeout(timer.current);
-    setPhase({ kind: "cancelled" });
-    remoteFetchCancel(id).catch(() => {
-      /* the poll is already stopped; a refused cancel leaves a download that
-         finishes on its own and is simply cached next time */
+    const watch = watching.current;
+    setCancelling(true);
+    remoteFetchCancel(id).catch((err) => {
+      if (!alive.current || watching.current !== watch) return;
+      setCancelling(false);
+      notify({ title: `Could not cancel the download: ${asRemoteError(err).message}`, tone: "error" });
     });
   };
 
@@ -460,10 +467,10 @@ function RemoteDownload({
           <Button
             size="sm"
             variant="outline"
-            disabled={phase.kind !== "running"}
-            onClick={() => phase.kind === "running" && cancel(phase.id)}
+            disabled={phase.kind !== "running" || cancelling}
+            onClick={() => phase.kind === "running" && !cancelling && cancel(phase.id)}
           >
-            Cancel
+            {cancelling ? "Cancelling…" : "Cancel"}
           </Button>
         </div>
       </>

@@ -800,7 +800,9 @@ export function Breadcrumb({
     const scheme = urlScheme(path);
     if (scheme) {
       setEditing(false);
-      openUrl(path, scheme);
+      // An s3:// key may end in a space; canonicalRemoteUrl trims only the
+      // leading side, so it gets the untrimmed text.
+      openUrl(scheme === "s3" ? raw : path, scheme);
       return;
     }
     if (home !== undefined) {
