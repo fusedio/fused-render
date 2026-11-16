@@ -11603,6 +11603,8 @@ and `retry_post` (whether a proxied POST to it is safely re-runnable).
   `_resolve` falls back to `sys.executable` when the folder's project venv
   isn't built yet, the same fallback `/api/run`'s builtin engine takes
   (D500), rather than blocking a POST for the minutes a venv build can take;
+  start/restart then begin that build (`installing`/`install` in the response)
+  and a watcher respawns the daemon on the venv once it exists (D1482);
   `POST /stop`
   kills the running daemon, also without touching autostart — if it's on,
   the startup hook (or a later `start`/`restart`) brings it back; if it's
@@ -11673,7 +11675,8 @@ and `retry_post` (whether a proxied POST to it is safely re-runnable).
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `autostart_paths()` and brings each one up,
   logging-and-skipping a folder whose manifest went dead or whose project
-  venv isn't built rather than letting one bad folder block the others or
+  venv isn't built (it starts the venv build and brings the daemon up when it
+  lands, D1482) rather than letting one bad folder block the others or
   delay server readiness. Only paths explicitly present in the autostart
   store ever come back here — a folder that was only `start()`ed, with
   autostart never turned on, does not.

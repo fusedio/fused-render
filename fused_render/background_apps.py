@@ -41,6 +41,8 @@ import logging
 import math
 import os
 import sys
+import threading
+import time
 from dataclasses import dataclass
 
 from fused_render._platform import is_within
@@ -412,6 +414,154 @@ def cache_dir_for(engine_id: str) -> str:
     return os.path.join(storage.home_dir(), "apps", engine_id)
 
 
+# ------------------------------------------- build the venv, then move onto it
+
+# Folders with a watcher thread alive right now: one build-then-respawn watcher
+# per folder no matter how many start/restart calls arrive meanwhile. The value
+# is the folder's start_if_stopped flag: later calls OR theirs in (False never
+# downgrades True) and the watcher reads it at completion time.
+_env_watchers: dict[str, list] = {}  # folder -> [start_if_stopped, owner thread]
+_env_watchers_lock = threading.Lock()
+_ENV_POLL_S = 1.0
+_ENV_MAX_WAIT_S = 30 * 60.0
+
+
+def _quitting(shutdown_event=None) -> bool:
+    from fused_render.server import engine_host
+
+    return engine_host._stopping.is_set() or (
+        shutdown_event is not None and shutdown_event.is_set())
+
+
+def cancel_pending_start(folder: str) -> None:
+    """`stop()` during a build cancels the start the watcher was going to do:
+    clear its start_if_stopped flag (no-op when nothing is watching). A later
+    explicit start/restart ORs it back to True."""
+    with _env_watchers_lock:
+        entry = _env_watchers.get(folder)
+        if entry is not None:
+            entry[0] = False
+
+
+def build_env_then_respawn(folder: str, start_if_stopped: bool = False,
+                           shutdown_event=None) -> dict | None:
+    """Kick off the folder's venv install (D1482) and, once it lands, move the
+    daemon onto it. Returns the install progress, or None when nothing needed
+    building (no venv chosen, or it already exists) or anything went wrong.
+
+    The D631 fallback starts the daemon on `sys.executable` so a POST never
+    blocks on a build, but that interpreter lacks the folder's declared deps,
+    and nothing else ever builds the venv for a page that only talks to its
+    daemon. This is the missing half: non-blocking `envinstall.start` (jobs-dock
+    row included) plus ONE watcher thread per folder that polls for completion
+    and then respawns the daemon on the venv interpreter. `start_if_stopped`
+    (the autostart path, where nothing is running) starts it instead. On
+    install failure the fallback daemon is left alone. Never raises."""
+    try:
+        from fused_render import envinstall
+
+        interpreter = interpreter_for(folder)
+        if interpreter == sys.executable or os.path.isfile(interpreter):
+            return None
+        progress = envinstall.start(folder)
+        with _env_watchers_lock:
+            entry = _env_watchers.get(folder)
+            if entry is not None:
+                entry[0] = entry[0] or start_if_stopped
+            else:
+                t = threading.Thread(
+                    target=_watch_env, args=(folder, shutdown_event),
+                    name=f"bg-env-{os.path.basename(folder)}", daemon=True)
+                _env_watchers[folder] = [start_if_stopped, t]
+                t.start()
+        return progress
+    except Exception:  # noqa: BLE001 — must never fail a start/restart request
+        logger.exception("background app %s: could not start its env build", folder)
+        return None
+
+
+def _watch_env(folder: str, shutdown_event=None) -> None:
+    from fused_render import envinstall
+
+    me = threading.current_thread()
+    try:
+        deadline = time.monotonic() + _ENV_MAX_WAIT_S
+        key = envinstall.venv_key_for(folder)
+        while time.monotonic() < deadline:
+            if _quitting(shutdown_event):
+                return
+            if envinstall.is_installed(folder):
+                # Decide and deregister atomically: a call after this starts a
+                # fresh watcher instead of OR-ing into one that already acted.
+                with _env_watchers_lock:
+                    entry = _env_watchers.get(folder)
+                    start_if_stopped = entry[0] if entry is not None else False
+                    if entry is not None and entry[1] is me:
+                        del _env_watchers[folder]
+                _move_onto_venv(folder, start_if_stopped, shutdown_event)
+                return
+            prog = envinstall.progress(key)
+            if prog is not None and prog.get("done") and prog.get("error"):
+                logger.warning(
+                    "background app %s: building its environment failed (%s); "
+                    "leaving the fallback daemon as is", folder, prog["error"])
+                return
+            if prog is None:
+                # The first round may have been the pinned-Python download
+                # (its own key); once that is done, ask for the packages.
+                boot = envinstall.progress(envinstall.PYTHON_BOOTSTRAP_KEY)
+                if boot is not None and boot.get("done") and not boot.get("error"):
+                    envinstall.start(folder)
+                elif boot is not None and boot.get("done"):
+                    logger.warning(
+                        "background app %s: Python download failed (%s)",
+                        folder, boot.get("error"))
+                    return
+            time.sleep(_ENV_POLL_S)
+        logger.warning("background app %s: gave up waiting for its environment",
+                       folder)
+    except Exception:  # noqa: BLE001
+        logger.exception("background app %s: env watcher failed", folder)
+    finally:
+        with _env_watchers_lock:
+            entry = _env_watchers.get(folder)
+            if entry is not None and entry[1] is me:
+                del _env_watchers[folder]
+
+
+def _move_onto_venv(folder: str, start_if_stopped: bool,
+                    shutdown_event=None) -> None:
+    from fused_render.server import engine_host
+
+    if _quitting(shutdown_event):
+        return
+    venv_python = interpreter_for(folder)
+    if venv_python == sys.executable or not os.path.isfile(venv_python):
+        return
+    engine_id = engine_id_for(folder)
+    child = engine_host.current(engine_id)
+    version = version_for(folder, venv_python)
+    if child is not None and engine_host._alive(child):
+        if child.python == sys.executable:
+            logger.info("background app %s: environment built, respawning on it",
+                        folder)
+            engine_host.restart(engine_id, version=version, python=venv_python)
+            if _quitting(shutdown_event):
+                engine_host.stop(engine_id)
+        return
+    if start_if_stopped:
+        manifest = load_manifest(folder)
+        if manifest is None:
+            return
+        daemon, module = bring_up_args(manifest)
+        engine_host.ensure_background(
+            engine_id, venv_python, daemon, cache_dir_for(engine_id), version,
+            folder, idle_timeout_s=manifest.idle_timeout_s, module=module,
+            retry_post=manifest.retry_post)
+        if _quitting(shutdown_event):
+            engine_host.stop(engine_id)
+
+
 def resurrect_autostart(shutdown_event=None) -> None:
     """Start every autostart-opted-in app's daemon, best-effort: a folder
     that fails (dead manifest, project venv not built, a spawn error) is
@@ -451,6 +601,10 @@ def resurrect_autostart(shutdown_event=None) -> None:
             reason = unbuilt_deps_reason(folder, interpreter)
             if reason is not None:
                 logger.warning("background app %s: %s, skipping", folder, reason)
+                # Not just skipped: build the venv and bring it up after (D1482).
+                build_env_then_respawn(
+                    folder, start_if_stopped=True,
+                    shutdown_event=shutdown_event)
                 continue
             version = version_for(folder, interpreter)
             engine_id = engine_id_for(folder)

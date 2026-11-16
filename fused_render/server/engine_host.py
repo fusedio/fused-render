@@ -174,14 +174,23 @@ def register_terminate_hook(fn) -> None:
     _terminate_hooks.append(fn)
 
 
-def _validate_interpreter(python: str) -> None:
+def _validate_interpreter(python: str, folder: str | None = None) -> None:
     """The interpreter must be one of ours: this app's own `sys.executable`, or a
     python from the home venv store; anything else is refused. Shared by the
     template path (`_validate`) and the background/daemon path
     (`ensure_background`); the server resolves it in both, so this is an
-    invariant check, not a trust boundary."""
+    invariant check, not a trust boundary. With `folder`, that folder's own
+    in-tree venv python is also accepted (compared by abspath, never realpath:
+    a venv python is a symlink to a base interpreter that may be neither the
+    host's nor under the venv store, e.g. a uv-managed Python)."""
     from fused_render.shell.storage import home_dir
 
+    if folder is not None:
+        from fused_render import envinstall
+
+        if (os.path.abspath(python)
+                == os.path.abspath(envinstall.venv_python_for(folder))):
+            return
     venvs = os.path.realpath(os.path.join(home_dir(), "venvs"))
     requested = os.path.realpath(python)
     if (requested != os.path.realpath(sys.executable)
@@ -557,7 +566,7 @@ def _validate_background(engine_id: str, python: str, daemon: str,
 
     if not _ENGINE_ID.match(engine_id):
         raise EngineError(f"refusing engine id {engine_id!r}: not a bare identifier")
-    _validate_interpreter(python)
+    _validate_interpreter(python, folder)
     target = os.path.realpath(daemon)
     folder = folder or os.path.dirname(daemon)
     manifest = background_apps.load_manifest(folder)
@@ -826,7 +835,7 @@ def reap_idle_children(now: float | None = None) -> int:
 
 
 def restart(engine_id: str, failed: Child | None = None,
-           version: str | None = None) -> Child:
+           version: str | None = None, *, python: str | None = None) -> Child:
     """Kill and respawn the child, replaying its reinit requests.
 
     `failed` is the child the caller's request died against: when another
@@ -847,6 +856,11 @@ def restart(engine_id: str, failed: Child | None = None,
     instead of tearing the just-restarted child down and spawning it a
     second time.
 
+    `python` swaps the respawned child's interpreter (validated like any
+    other); omitted, `existing.python` carries over. `/api/apps/background/
+    restart` passes its freshly resolved interpreter so a daemon that started
+    on the D631 `sys.executable` fallback moves onto the venv once it is built.
+
     The new child's state is replayed BEFORE it is published, so a request
     retried mid-replay waits on the spawn lock rather than seeing a child whose
     registry is still empty.
@@ -862,8 +876,11 @@ def restart(engine_id: str, failed: Child | None = None,
         if (failed is not None and existing is not failed
                 and _alive(existing) and _ping(existing)):
             return existing
+        if python is not None:
+            _validate_interpreter(python, existing.folder)
         _terminate(existing)
-        child = Child(engine_id=engine_id, python=existing.python,
+        child = Child(engine_id=engine_id,
+                      python=python if python is not None else existing.python,
                       daemon=existing.daemon, cache=existing.cache,
                       version=version if version is not None else existing.version,
                       module=existing.module,
