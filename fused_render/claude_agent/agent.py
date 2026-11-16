@@ -360,9 +360,18 @@ _LIMIT_ERROR_MARKERS = {
     "opencode": ("rate limit", "quota", "too many requests", "429", "overloaded"),
 }
 
-# The MCP server + tool that `--permission-prompt-tool` names. The CLI addresses
-# an MCP tool as mcp__<server>__<tool>, so neither half may contain "__".
-PERMISSION_SERVER = "fused_approvals"
+# fused-render's own MCP server (permission_server.py): the permission prompt
+# below AND every tool fused-render hands the agent (pane, canvas, terminals,
+# S3), so it is named after the app rather than after any one of them. The CLI
+# addresses an MCP tool as mcp__<server>__<tool>, so neither half may contain
+# "__"; Copilot spells it `<server>-<tool>`, so no "-" either. Mirrored by
+# permission_server.SERVER_NAME and each host's copy (a test pins them).
+PERMISSION_SERVER = "fused_render"
+# What the server was called before it carried more than approvals. Only READ:
+# a transcript written before the rename (any backend's — the hosts store
+# Claude-shaped names) still carries `mcp__fused_approvals__app_state`, and
+# `_segments_from_rows` must keep hiding that plumbing in restored history.
+LEGACY_PERMISSION_SERVER = "fused_approvals"
 PERMISSION_TOOL = "approve"
 # The same server's second tool, which the MODEL calls: "what is the app in the
 # left pane doing right now". Pre-allowed on the spawn line (see _start) —
@@ -2636,7 +2645,7 @@ def _terminal_tools_supported() -> bool:
 
 # The two S3 tools (permission_server.S3_*): read-only, so pre-allowed.
 S3_TOOLS = ("s3_search", "s3_read")
-# Codex's per-server MCP call ceiling for `fused_approvals` when the S3 tools
+# Codex's per-server MCP call ceiling for `fused_render` when the S3 tools
 # are on. Its default is 60 s. A whole-object read stays under that by itself
 # (`permission_server.S3_FETCH_WAIT`, 40 s for the whole call), but a range
 # read is not time-boxed: 64 MiB needs more than 60 s below ~1.1 MB/s. The
@@ -5472,7 +5481,7 @@ def _codex_argv(run_dir: str, pane: bool, cli_mode: str | None,
         requests the host answers through `perm/` (D4).
     What is left is the pane MCP server (`app_state`, `terminal_*`), on the
     same condition as Copilot's `--additional-mcp-config`: Codex's config as
-    three `-c mcp_servers.fused_approvals.*` overrides (D8), built from the
+    three `-c mcp_servers.fused_render.*` overrides (D8), built from the
     very `mcp.json` `_write_mcp_config` writes for it (`--no-approve`), so
     the two agents can never be handed different servers."""
     cmd = [_codex_bin(), "app-server"]
@@ -9588,7 +9597,8 @@ def _segments_from_rows(rows: list, shape: tuple = (),
         shape[1] if shape else any(_thinking_delta_text(row) for row in rows))
     any_text = False    # mirrors _poll's `bool(text_parts)`
     pending_sep = False
-    plumbing = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+    plumbing = frozenset("mcp__%s__%s" % (server, APP_STATE_TOOL)
+                         for server in (PERMISSION_SERVER, LEGACY_PERMISSION_SERVER))
     # A REPLY ENDED, so the next chunk of the same kind opens a NEW segment
     # instead of growing the one before it.
     #
@@ -9731,11 +9741,12 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                     continue
                 name = str(block.get("name") or "")
                 tool_id = str(block.get("id") or "")
-                if name == plumbing:
+                if name in plumbing:
                     # This template's own bridge asking the page what it is
                     # showing. Nobody requested it and its answer is our JSON,
                     # so it is not part of the conversation. ONLY this exact
-                    # name: every other MCP tool is a real call.
+                    # name (or its pre-rename spelling, LEGACY_PERMISSION_SERVER):
+                    # every other MCP tool is a real call.
                     # Once per CALL: a finalized assistant row can be written
                     # twice (the `by_tool_id` guard below exists for that), and
                     # the notice must not be (Bugbot #1099).

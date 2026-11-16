@@ -141,7 +141,7 @@ prompting, and `permission_server.py` is that tool:
 ```
 claude (headless)                    agent.py / browser
    │  needs to run Edit
-   ├─► mcp__fused_approvals__approve
+   ├─► mcp__fused_render__approve
    │      └─ writes  perm/<id>.req.json ──────► poll → card with Allow/Deny
    │         …blocks…                             │
    │         reads   perm/<id>.res.json ◄─────────┘ decide

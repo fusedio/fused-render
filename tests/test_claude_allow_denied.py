@@ -407,6 +407,22 @@ def test_canvas_clone_keeps_its_hooks_and_gains_the_allow_once_one(
     assert "--allow-once-hook=" in settings["PreToolUse"][-1]["hooks"][0]["command"]
 
 
+def test_a_grant_from_before_the_server_rename_still_matches(tmp_path):
+    """A chat running across the update that renamed fused-render's MCP server
+    (`fused_approvals` -> `fused_render`): the refused call, and so the grant,
+    carry the old name, and the retry after the CLI respawned the new one.
+    Another server's tool of the same name is still a different tool."""
+    old = "mcp__fused_approvals__terminal_send"
+    new = "mcp__fused_render__terminal_send"
+    match = {"id": "t", "text": "make deploy\n"}
+    _grant(tmp_path, _entry(name=old, match=match))
+    foreign = {"tool_name": "mcp__other__terminal_send", "tool_input": match}
+    assert _run_hook(tmp_path / "allow-once.json", foreign).stdout == ""
+    r = _run_hook(tmp_path / "allow-once.json", {"tool_name": new, "tool_input": match})
+    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert not (tmp_path / "allow-once.json").exists()
+
+
 def _hook_in_process(tmp_path, monkeypatch, capsys, patches):
     """Run the hook in this process (so os.* can be broken) and return stdout."""
     import io

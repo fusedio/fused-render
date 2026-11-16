@@ -139,17 +139,17 @@ agent.py:      _HOST_FILES["codex"] = codex_host.py
 - **D8** System prompt via `thread/start {developerInstructions: <_appended_prompt(file, pane, "codex")>}`
   (and on `thread/resume`, same field). No plugin dir, no agent file. Pane
   tools (`app_state`, `terminal_*`) via Codex's MCP config as `-c` argv
-  overrides on the spawn: `-c mcp_servers.fused_approvals.command="<python>"`,
-  `-c mcp_servers.fused_approvals.args=[...]`, `-c mcp_servers.fused_approvals.env={...}`
+  overrides on the spawn: `-c mcp_servers.fused_render.command="<python>"`,
+  `-c mcp_servers.fused_render.args=[...]`, `-c mcp_servers.fused_render.env={...}`
   (TOML inline values: `json.dumps` IS TOML for a string and an array of
   strings, but NOT for a table — TOML spells `{"k" = "v"}` and Codex 0.163.0
   rejects the JSON `{"k": "v"}` with "expected a map"; `agent._toml_inline`
-  spells tables key by key, verified with `codex -c … mcp get fused_approvals
+  spells tables key by key, verified with `codex -c … mcp get fused_render
   --json` parsing all three overrides into an enabled stdio server), ONLY
   when a pane or terminal origin exists, same condition as `_copilot_argv`'s
   `--additional-mcp-config`. The tool then reaches the model as MCP server
-  `fused_approvals`, tool `app_state`; the host writes it as
-  `mcp__fused_approvals__app_state` (assumed: that the configured server
+  `fused_render`, tool `app_state`; the host writes it as
+  `mcp__fused_render__app_state` (assumed: that the configured server
   reaches a thread; the config shape is verified).
 - **D9** `extra_read_dirs`/shots → nothing: Codex's `read-only` and
   `workspace-write` sandboxes read the whole filesystem. The reference
@@ -249,7 +249,7 @@ agent.py:      _HOST_FILES["codex"] = codex_host.py
 ## 3. Codex host: spawn
 
 ```
-codex app-server [-c mcp_servers.fused_approvals.command="…" -c mcp_servers.fused_approvals.args=[…] -c mcp_servers.fused_approvals.env={…}]
+codex app-server [-c mcp_servers.fused_render.command="…" -c mcp_servers.fused_render.args=[…] -c mcp_servers.fused_render.env={…}]
 cwd = _workdir(file); env = _spawn_env("", backend="codex"); stdin/stdout = JSON-RPC pipes; stderr -> err.log
 ```
 

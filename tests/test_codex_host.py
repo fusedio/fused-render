@@ -482,7 +482,7 @@ def test_tool_items_become_the_claude_tool_rows(start, agent):
               if r.get("type") == "stream_event"
               and r["event"]["type"] == "content_block_start"]
     assert [b["name"] for b in blocks] == [
-        "Bash", "Write", "mcp__fused_approvals__app_state", "WebSearch"]
+        "Bash", "Write", "mcp__fused_render__app_state", "WebSearch"]
     bash, write, mcp, web = blocks
     assert bash["input"]["command"] == "/bin/bash -lc 'ls -la'"
     assert bash["input"]["description"] == "ls -la"

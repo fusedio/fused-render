@@ -151,7 +151,7 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   (`discoverMemoryPaths` → `getEnvironmentMemoryPaths(workspaceContext.
   getDirectories())`, verified in the source; gated on `isTrustedFolder()`,
   which `--skip-trust` makes true). The pane tool is named
-  `mcp_fused_approvals_<tool>` in that file (Claude's `mcp__<server>__<tool>`
+  `mcp_fused_render_<tool>` in that file (Claude's `mcp__<server>__<tool>`
   with single underscores): `DiscoveredMCPTool` declares an MCP tool to the
   model as `generateValidName("<server>_<tool>")`, which prefixes `mcp_`
   (verified in the source). The display title is a different string: `<tool>
@@ -267,7 +267,7 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   `locations`), so the title — the tool's own description of the call, a
   shell command's command line — is the command, and the path comes from
   `locations` or the `diff` content entry. An MCP tool is titled `<tool>
-  (<server> MCP Server)`: fused's own becomes `mcp__fused_approvals__<tool>`,
+  (<server> MCP Server)`: fused's own becomes `mcp__fused_render__<tool>`,
   another server's `<server>-<tool>`. Every input carries `_acp: {kind,
   title}`, which the frontend already strips.
 - **D15** erase removes the fused transcript + Gemini's own chat file(s):
