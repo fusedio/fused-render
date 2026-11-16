@@ -300,7 +300,7 @@ def test_gdal_source_signs_for_s3_and_passes_local_paths(bucket, tmp_path):
     p.write_bytes(b"II*\0")
     assert T.gdal_source(str(p)) == (str(p), 4)
     name, size = T.gdal_source("s3://fused-asset/a.tif")
-    assert name == "/vsicurl/https://bucket.test/a.tif"
+    assert name == f"/vsicurl/{bucket.url('a.tif')}"
     env = T.gdal_env({})
     assert env["GDAL_DISABLE_READDIR_ON_OPEN"] == "EMPTY_DIR"
 

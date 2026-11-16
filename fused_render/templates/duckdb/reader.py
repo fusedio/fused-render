@@ -79,11 +79,37 @@ class TooLargeToStream(ValueError):
 
 
 def _is_streamed(file) -> bool:
-    """`file` is a streamed object's DuckDB path (`_s3_fs.duckdb_path`), not a
-    local file. A plain prefix test: deciding needs no fsspec import. (A
-    streamed grid is never editable, so writer.py — which has its own
-    `_relation_for` — never receives one.)"""
-    return isinstance(file, str) and file.startswith("fusedrange://")
+    """`file` is a streamed object's signed https URL (DuckDB reads it with
+    httpfs), not a local file. (A streamed grid is never editable, so
+    writer.py — which has its own `_relation_for` — never receives one.)"""
+    return isinstance(file, str) and file.startswith(("https://", "http://"))
+
+
+def _fused_s3():
+    """`templates/shared/fused_s3.py`, loaded by path (a user's same-named
+    module on sys.path must not stand in for it)."""
+    import importlib.util
+    import sys
+    name = "_duckdb_reader_fused_s3"
+    mod = sys.modules.get(name)
+    if mod is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(os.path.dirname(here), "shared", "fused_s3.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.modules[name] = mod
+    return mod
+
+
+def _load_httpfs(con) -> None:
+    """DuckDB's httpfs extension on `con`. It is not in the Python wheel:
+    the first use installs it from DuckDB's extension repository."""
+    try:
+        con.execute("LOAD httpfs")
+    except duckdb.Error:
+        con.execute("INSTALL httpfs")
+        con.execute("LOAD httpfs")
 
 
 def _scan_bytes(con, file, columns) -> int:
@@ -446,18 +472,18 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
     ext = _logical_ext(file)
     if isinstance(file, str) and file[:5].lower() == "s3://":
         # Streamed from the bucket (the explorer passes the address itself,
-        # D1486): DuckDB reads it through an fsspec filesystem of HTTP range
-        # reads, so only the footer and the row groups/columns a query
-        # touches move. Parquet only — CSV/JSON have nothing to page from.
+        # D1486): DuckDB reads the signed HTTPS URL with httpfs, so only the
+        # footer and the row groups/columns a query touches move. Parquet
+        # only — CSV/JSON have nothing to page from.
         if ext != ".parquet":
             raise ValueError("Only parquet files stream from S3. Download "
                              "this file to open it.")
-        import _s3_fs
         con = duckdb.connect(":memory:")
         try:
             con.execute("PRAGMA enable_object_cache=true")  # one footer parse per call
-            _s3_fs.register(con)
-            return _read_flat(_s3_fs.duckdb_path(file), con, ext, offset, limit,
+            _load_httpfs(con)
+            url = _fused_s3().sign(file)["url"]
+            return _read_flat(url, con, ext, offset, limit,
                               sort, filters, mode, columns, positions)
         finally:
             con.close()

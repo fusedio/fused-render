@@ -90,7 +90,9 @@ class _Bucket:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def url(self, key):
-        return f"https://bucket.test/{key}"
+        # A real loopback URL, so DuckDB's httpfs can read it too (the range
+        # reader's socket is swapped below and ignores the host).
+        return f"http://127.0.0.1:{self.port}/{key}"
 
 
 @pytest.fixture

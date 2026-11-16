@@ -11,8 +11,8 @@ column chunks it shows, instead of a download of the whole object.
     buf[:2], len(buf)                      # b"II", 175009443
     buf.read_many([(a, b), (c, d)])        # coalesced, fetched concurrently
 
-Consumers: geotiff (`_tiff_core`, the tile daemon) and duckdb (`_s3_fs`, an
-fsspec filesystem DuckDB reads through). Each loads this file BY PATH under
+Consumer: geotiff (`_tiff_core`, the tile daemon); the duckdb grid reads
+parquet with DuckDB's own httpfs instead. A consumer loads this file BY PATH under
 the module name `LOADED_AS` (the recipe is beside it), so a user's own
 `remote_range.py` on sys.path can never stand in for it.
 
