@@ -823,12 +823,22 @@
    sits in the acts' layer after the door, so the rules above show and hide
    it; while its menu is open the layer stays, wherever the pointer went. A
    head with one act alone has no such layer: its ⋮ holds its seat after the
-   slots and shows on the same trigger. */
-.task-head:has(.task-head-kebab [aria-expanded="true"]) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+   slots and shows on the same trigger.
+
+   ANY MENU THE ROW OPENS HOLDS THE ACTS, not the ⋮'s alone (Akshil,
+   2026-11-17: "when I go to the main dropdown it shifts stuff, and when it
+   shifts it moves the dropdown, so it shifts back again"). The branch /
+   worktree chip's menu hangs from the chip; the pointer leaves the head to
+   reach it, the head went back to the count and the time, and since the box
+   wears the pair it shows (below) the chip slid by the difference — taking
+   its menu with it, out from under the pointer, and back again. So an open
+   menu anywhere in the row's marks (`aria-expanded="true"`: the chip's, the
+   ⋮'s) keeps the head as the reader left it until the menu shuts. */
+.task-head:has(.task-head-marks [aria-expanded="true"]) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
   opacity: 0;
   pointer-events: none;
 }
-.task-head:has(.task-head-kebab [aria-expanded="true"]) .task-head-facts > .task-head-facts-layer.is-b {
+.task-head:has(.task-head-marks [aria-expanded="true"]) .task-head-facts > .task-head-facts-layer.is-b {
   opacity: 1;
   pointer-events: auto;
 }
@@ -837,7 +847,7 @@
   pointer-events: none;
   transition: opacity 0.08s ease;
 }
-.task-head.is-window.is-two-line:is(.is-hot, :hover, :has(.task-head-kebab :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-marks > .task-head-kebab {
+.task-head.is-window.is-two-line:is(.is-hot, :hover, :has(.task-head-kebab :focus-visible), :has(.task-head-marks [aria-expanded="true"])) .task-head-marks > .task-head-kebab {
   opacity: 1;
   pointer-events: auto;
 }
@@ -883,13 +893,13 @@
   right: 0;
   transform: translateY(-50%);
 }
-.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible), :has(.task-head-marks [aria-expanded="true"])) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
   position: absolute;
   right: 0;
   visibility: hidden;
   transition: none;
 }
-.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-facts.has-acts > .task-head-facts-layer.is-b {
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible), :has(.task-head-marks [aria-expanded="true"])) .task-head-facts.has-acts > .task-head-facts-layer.is-b {
   position: static;
   transform: none;
 }

@@ -532,7 +532,13 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   // nothing is moved over it at rest. Its open menu keeps the layer up.
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {");
   expect(css).not.toContain("translateX(");
-  expect(css).toContain('.task-head:has(.task-head-kebab [aria-expanded="true"]) .task-head-facts > .task-head-facts-layer.is-b {\n  opacity: 1;');
+  expect(css).toContain('.task-head:has(.task-head-marks [aria-expanded="true"]) .task-head-facts > .task-head-facts-layer.is-b {\n  opacity: 1;');
+  // ANY menu the row opens holds the acts, not the ⋮'s alone (2026-11-17: the
+  // branch chip's menu hangs from a chip that slides when the head swaps
+  // pairs, so a head that swapped as the pointer went to the menu moved the
+  // menu out from under it, and back). No rule keys on the ⋮'s menu alone.
+  expect(css).not.toContain('.task-head-kebab [aria-expanded="true"]');
+  expect(css.split(':has(.task-head-marks [aria-expanded="true"])').length - 1).toBe(5);
   // A two-line head with one act alone has no acts' layer: its ⋮ keeps its
   // seat and shows on the same trigger.
   expect(css).toContain(".task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {\n  opacity: 0;");
@@ -601,7 +607,7 @@ test("the paired facts box is as wide as the pair it shows; the other pair is ou
   // the count and the time; under the pointer they trade places.
   expect(css).toMatch(/\.task-head-facts\.has-acts > \.task-head-facts-layer\.is-b \{\s*position: absolute;/);
   const hot =
-    '.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-facts.has-acts > .task-head-facts-layer';
+    '.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible), :has(.task-head-marks [aria-expanded="true"])) .task-head-facts.has-acts > .task-head-facts-layer';
   // The facts go at once — never faded out of flow over the acts.
   expect(css).toContain(`${hot}.is-a {\n  position: absolute;\n  right: 0;\n  visibility: hidden;\n  transition: none;\n}`);
   expect(css).toContain(`${hot}.is-b {\n  position: static;`);
