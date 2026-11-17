@@ -71,6 +71,12 @@ def consult(bot, question, context="", caller=None) -> dict:
             store.append_jsonl(_path(bot), rec)
     except OSError:
         logger.warning("expert %s: consult %s not logged", bot.id, cid, exc_info=True)
+    if rec["used"]:
+        try:
+            from fused_render.experts import memory
+            memory.cite(bot, rec["used"])  # the lessons this answer relied on (the memory budget's usage)
+        except Exception:  # noqa: BLE001 — the answer still goes back to the agent
+            logger.warning("expert %s: lessons of consult %s not cited", bot.id, cid, exc_info=True)
     if rec["unsure"]:
         try:
             from fused_render.experts import observations

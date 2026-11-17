@@ -27,7 +27,8 @@ _TRUST_RANK = {"gap": 0, "research": 1, "outcome": 1, "user": 2}
 FLAGS = ("proposed", "promoted", "rejected")
 CLAIM_MAX = 1000
 ARCHIVE_FILE = "memory-archive.jsonl"
-REASONS = ("stale", "promoted", "over_limit", "forgotten")
+REASONS = ("stale", "promoted", "over_limit", "forgotten", "merged")
+MERGE_CLAIM_MAX = 400
 DAY_S = 86400.0
 
 
@@ -230,8 +231,8 @@ def idle_days(item, now=None) -> float:
     return max(0.0, (now - last) / DAY_S) if last else 0.0
 
 
-def _archive(bot, rows, reason, *, skill="", whys=None) -> None:
-    """Append each removed item to the archive (full item + removed_at, reason, skill?, why?)."""
+def _archive(bot, rows, reason, *, skill="", whys=None, into="") -> None:
+    """Append each removed item to the archive (full item + removed_at, reason, skill?, why?, into?)."""
     now = time.time()
     for it in rows:
         rec = dict(it, removed_at=now, reason=reason)
@@ -239,6 +240,8 @@ def _archive(bot, rows, reason, *, skill="", whys=None) -> None:
             rec["promoted"] = True
         if skill:
             rec["skill"] = str(skill)
+        if into:
+            rec["into"] = str(into)
         why = (whys or {}).get(it.get("id"))
         if why:
             rec["why"] = str(why)[:500]
@@ -262,6 +265,57 @@ def remove(bot, ids, reason, *, skill="", whys=None) -> list:
         _save(bot, data)
         _archive(bot, gone, reason, skill=skill, whys=whys)
         return [dict(i) for i in gone]
+
+
+def merge(bot, ids, claim, *, why="") -> tuple[dict, list] | None:
+    """Generalise 2-3 lessons into one (the tidy step's `merge`). `claim` equal to one original after
+    normalisation keeps that item and folds the others into it; otherwise a new lesson (kind "lesson") holds the
+    merged claim. Either way: sessions = union, count = max(len(union), largest count), cited = sum, created =
+    earliest, updated / last_used = latest, about = union, trust "user" only when every original was, else
+    "outcome", `merged_from` = the originals folded in ({"id","claim"}). The others are archived with reason
+    "merged" and `into`. Returns (the merged item, the archived originals) or None when fewer than 2 of `ids`
+    exist."""
+    claim = " ".join(str(claim or "").split())
+    want = list(dict.fromkeys(str(i) for i in (ids or [])))
+    if not claim or len(claim) > MERGE_CLAIM_MAX:
+        return None
+    key = normalise(claim)
+    with store.lock(bot):
+        data = _load(bot)
+        orig = [i for i in data["items"] if i.get("id") in want]
+        if len(orig) < 2 or len(orig) != len(want):
+            return None
+        keep = next((i for i in orig if normalise(i.get("claim")) == key), None)
+        sessions = list(dict.fromkeys(s for i in orig for s in (i.get("sessions") or []) if s))
+        about = list(dict.fromkeys(a for i in orig for a in (i.get("about") or []) if a))
+        last = max((max(_f(i.get("updated")), _f(i.get("last_used"))) for i in orig), default=0.0)
+        fields = {
+            "sessions": sessions, "about": about,
+            "count": max(len(sessions), max(_n(i.get("count")) for i in orig)),
+            "cited": sum(cited(i) for i in orig),
+            "created": min(_f(i.get("created")) or time.time() for i in orig),
+            "updated": last or time.time(), "last_used": last or None,
+            "trust": "user" if all(i.get("trust") == "user" for i in orig) else "outcome",
+        }
+        folded = [i for i in orig if i is not keep]
+        if keep is not None:
+            keep.update(fields)
+            keep["merged_from"] = list(keep.get("merged_from") or []) + [
+                {"id": i["id"], "claim": i.get("claim", "")} for i in folded]
+            target = keep
+        else:
+            target = {"id": store.new_id("m"), "claim": claim, "kind": "lesson", **fields,
+                      "proposed": False, "promoted": False, "rejected": False,
+                      "contradicted": 0, "contradicted_sessions": [],
+                      "merged_from": [{"id": i["id"], "claim": i.get("claim", "")} for i in orig]}
+        gone_ids = {i["id"] for i in folded}
+        at = next(n for n, i in enumerate(data["items"]) if i.get("id") in want)
+        rest = [i for i in data["items"] if i.get("id") not in gone_ids and i is not target]
+        rest.insert(min(at, len(rest)), target)
+        data["items"] = rest
+        _save(bot, data)
+        _archive(bot, folded, "merged", into=target["id"], whys={i["id"]: why for i in folded} if why else None)
+        return dict(target), [dict(i) for i in folded]
 
 
 def archived(bot, limit=100) -> list:

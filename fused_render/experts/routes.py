@@ -34,6 +34,7 @@ ENGINE_IDS = ("claude", "codex", "copilot")
 ENGINE_CHOICES = ("auto",) + ENGINE_IDS
 CONSULTS_LIMIT = 100
 OBSERVATIONS_DONE_LIMIT = 200
+ARCHIVE_LIMIT = 100
 #: A run id as `agent._start` mints it (`YYYYmmdd-HHMMSS-<hex>`), loosely: a
 #: name that cannot climb out of the runs root.
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
@@ -244,9 +245,19 @@ def experts_memory(eid: str):
     def row(i):
         seen = i.get("contradicted_sessions")
         return dict(i, indexed=bool(memory.indexed(i)), contradicted=memory.contradicted(i),
-                    contradicted_sessions=[str(x) for x in seen] if isinstance(seen, list) else [])
+                    contradicted_sessions=[str(x) for x in seen] if isinstance(seen, list) else [],
+                    cited=memory.cited(i), last_used=i.get("last_used") or None, uses=memory.uses(i))
     items = [row(i) for i in memory.items(bot)]
-    return {"items": items, "index": memory.index_text(bot)}
+    budget = _mod("store").manifest(bot)["memory"]
+    return {"items": items, "index": memory.index_text(bot), "limit": budget["limit"],
+            "tidy_at": budget["tidy_at"], "total": len(items), "last_tidy": _mod("tidy").last(bot)}
+
+
+@router.get(PREFIX + "/{eid}/memory/archive")
+@_handled
+def experts_memory_archive(eid: str):
+    bot = _expert(eid)
+    return {"archived": _mod("memory").archived(bot, limit=ARCHIVE_LIMIT)}
 
 
 @router.post(PREFIX + "/{eid}/memory/forget")

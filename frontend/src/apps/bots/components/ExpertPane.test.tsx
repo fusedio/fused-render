@@ -52,7 +52,7 @@ describe("MemoryPanel", () => {
     const above = renderToStaticMarkup(createElement(MemoryPanel, { items, onForget: noop, nowMs: now,
       budget: { limit: 50, tidy_at: 30, total: 32, last_tidy: { at: now / 1000 - 3600, deleted: [{ id: "x", claim: "X" }], promoting: [{ id: "y", claim: "Y" }, { id: "z", claim: "Z" }], over_limit: [] } } }));
     expect(above).toContain("32 of 50 lessons");
-    expect(above).toContain("Above 30: each consolidation removes old, rarely used lessons and proposes heavily used ones as skills.");
+    expect(above).toContain("Above 30: each consolidation removes old, rarely used lessons, merges related ones, and proposes heavily used ones as skills.");
     expect(above).toContain("xp-meter-over");
     expect(above).toContain("Last tidy: removed 1, proposing 2 as skills.");
     // No limit: no line at all.
@@ -62,8 +62,9 @@ describe("MemoryPanel", () => {
     const arch = (p: Partial<ExpertArchived>): ExpertArchived => ({ id: "r", claim: "Old", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
       created: 0, updated: 0, removed_at: now / 1000 - 7200, reason: "stale", ...p });
     const archived = [arch({ id: "a", claim: "Gone stale", why: "not used in months" }), arch({ id: "b", claim: "Now a skill", reason: "promoted", skill: "h3-maps" }),
-      arch({ id: "c", reason: "over_limit" }), arch({ id: "d", reason: "forgotten" }), ...Array.from({ length: 30 }, (_, i) => arch({ id: `z${i}` }))];
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [], onForget: noop, nowMs: now, archived }));
+      arch({ id: "c", reason: "over_limit" }), arch({ id: "d", reason: "forgotten" }), arch({ id: "e", reason: "merged", into: "new" }), ...Array.from({ length: 30 }, (_, i) => arch({ id: `z${i}` }))];
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "new", claim: "General rule" })], onForget: noop, nowMs: now, archived }));
+    expect(out).toContain("merged into: General rule");
     expect(out).toContain("<details");
     expect(out).not.toContain("<details open");
     expect(out).toContain("Recently removed (20)");
@@ -98,6 +99,12 @@ describe("MemoryPanel", () => {
     expect(old).toContain("Seen in 1 session<");
     expect(old).toContain("last seen 2 h ago");
     expect(out).toContain(">Forget<");
+    expect(out).not.toContain("Merged from");
+    const m = renderToStaticMarkup(createElement(LessonCard, { it: item({ merged_from: [{ id: "a", claim: "Orig one" }, { id: "b", claim: "Orig two" }] }),
+      onForget: noop, initialOpen: true, nowMs: now }));
+    expect(m).toContain(">merged from 2<");
+    expect(m).toContain(">Merged from<");
+    expect(m).toContain("<li>Orig one</li><li>Orig two</li>");
     expect(renderToStaticMarkup(createElement(LessonCard, { it, onForget: noop, initialOpen: true, lan: true, nowMs: now }))).not.toContain(">Forget<");
   });
   test("empty: says what will appear", () => {

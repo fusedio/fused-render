@@ -51,15 +51,21 @@ export function budgetState(m: Pick<ExpertMemory, "limit" | "tidy_at" | "total">
   const above = total > tidyAt, bar = Math.max(limit, total), pct = (n: number) => Math.round((n / bar) * 1000) / 10;
   return {
     total, limit, tidyAt, above, label: `${total} of ${limit} lessons`,
-    note: above ? `Above ${tidyAt}: each consolidation removes old, rarely used lessons and proposes heavily used ones as skills.`
+    note: above ? `Above ${tidyAt}: each consolidation removes old, rarely used lessons, merges related ones, and proposes heavily used ones as skills.`
       : `Tidying starts above ${tidyAt}.`,
     fill: pct(Math.min(total, tidyAt)), over: pct(Math.max(0, total - tidyAt)),
   };
 }
 
-/** Why a lesson left memory, in plain words (the "Recently removed" rows). */
-export function removedReasonLabel(a: Pick<ExpertArchived, "reason" | "skill">): string {
+/** Why a lesson left memory, in plain words (the "Recently removed" rows). `merged` names the lesson it went into by
+ *  its claim, looked up in `items` (the current memory; "another lesson" when it is not there). */
+export function removedReasonLabel(a: Pick<ExpertArchived, "reason" | "skill" | "into">,
+  items: readonly Pick<ExpertItem, "id" | "claim">[] | null | undefined = null): string {
   switch (a.reason) {
+    case "merged": {
+      const into = a.into ? (items || []).find((it) => it.id === a.into) : undefined;
+      return `merged into: ${into?.claim || "another lesson"}`;
+    }
     case "stale": return "removed: old and rarely used";
     case "promoted": return a.skill ? `moved into the skill ${a.skill}` : "moved into a skill";
     case "over_limit": return "removed: memory was over its limit";
@@ -68,12 +74,14 @@ export function removedReasonLabel(a: Pick<ExpertArchived, "reason" | "skill">):
   }
 }
 
-/** "Last tidy: removed 3, proposing 2 as skills." for a tidy under a day old ("" when older, absent, or it did
- *  nothing). Lessons cut for being over the limit count as removed. */
+/** "Last tidy: removed 3, merged 4 into 2, proposing 2 as skills." for a tidy under a day old ("" when older, absent,
+ *  or it did nothing). Lessons cut for being over the limit count as removed; merged: the originals into the lessons
+ *  they became. */
 export function tidySummary(t: ExpertLastTidy | null | undefined, nowMs: number = Date.now()): string {
   if (!t || typeof t.at !== "number" || nowMs / 1000 - t.at >= 86400) return "";
   const removed = (t.deleted?.length || 0) + (t.over_limit?.length || 0), promoting = t.promoting?.length || 0;
-  const parts = [removed ? `removed ${removed}` : "", promoting ? `proposing ${promoting} as skill${promoting === 1 ? "" : "s"}` : ""].filter(Boolean);
+  const merges = (t.merged || []).filter(Boolean), into = merges.length, merged = merges.reduce((n, m) => n + (m.from?.length || 0), 0);
+  const parts = [removed ? `removed ${removed}` : "", into && merged ? `merged ${merged} into ${into}` : "", promoting ? `proposing ${promoting} as skill${promoting === 1 ? "" : "s"}` : ""].filter(Boolean);
   return parts.length ? `Last tidy: ${parts.join(", ")}.` : "";
 }
 
@@ -96,8 +104,10 @@ export function lessonSource(it: Pick<ExpertItem, "trust">): string {
 /** A lesson card's footer facts: where it stands on the way to a skill, "contradicted N×", and why a lesson is not
  *  used yet ("waiting for your approval" for a research finding, "seen once" otherwise). A lesson that goes into a
  *  skill leaves memory, so an older server's `promoted` lesson just shows no skill fact. */
-export function lessonFacts(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed" | "contradicted">): string[] {
+export function lessonFacts(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed" | "contradicted" | "merged_from">): string[] {
   const out: string[] = [];
+  const merged = Array.isArray(it.merged_from) ? it.merged_from.length : 0;
+  if (merged) out.push(`merged from ${merged}`);
   if (it.promoted) { /* nothing: never "in a skill" any more */ }
   else if (it.rejected) out.push("not proposed again");
   else if (it.proposed) out.push("skill proposal pending");

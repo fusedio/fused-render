@@ -300,6 +300,8 @@ export interface ExpertItem {
   cited?: number;
   /** When an answer last relied on it, or it was last seen (unix seconds; absent on an older server). */
   last_used?: number;
+  /** The lessons a tidy merged into this one (generalised; newer servers only). */
+  merged_from?: { id: string; claim: string }[];
   /** False for a lesson seen once, or a research finding waiting for approval: kept, but not in the index answers draw on until it comes up again. Absent (an
    *  older server) reads as indexed. */
   indexed?: boolean;
@@ -311,7 +313,11 @@ export interface ExpertItem {
 /** A lesson named by the last tidy (GET …/memory `last_tidy`). */
 export interface ExpertTidyRef { id: string; claim: string; why?: string }
 /** The last tidy a consolidation did above `tidy_at`: lessons removed, proposed as skills, cut for being over the limit. */
-export interface ExpertLastTidy { at: number; deleted?: ExpertTidyRef[]; promoting?: ExpertTidyRef[]; over_limit?: ExpertTidyRef[] }
+export interface ExpertLastTidy {
+  at: number; deleted?: ExpertTidyRef[]; promoting?: ExpertTidyRef[]; over_limit?: ExpertTidyRef[];
+  /** Related lessons generalised into one: `into` the new lesson's id, `claim` its claim, `from` the originals. */
+  merged?: { into: string; claim: string; from?: { id: string; claim: string }[] }[];
+}
 /** GET …/memory. The budget fields are newer servers only (absent: no budget line). */
 export interface ExpertMemory {
   items: ExpertItem[]; index: string;
@@ -319,12 +325,14 @@ export interface ExpertMemory {
   limit?: number; tidy_at?: number; total?: number;
   last_tidy?: ExpertLastTidy | null;
 }
-export type ExpertRemovedReason = "stale" | "promoted" | "over_limit" | "forgotten";
+export type ExpertRemovedReason = "stale" | "promoted" | "over_limit" | "forgotten" | "merged";
 /** A lesson that left memory (GET …/memory/archive, newest first). `skill`: the skill it moved into (promoted);
  *  `why`: the model's reason, when it gave one. */
 export interface ExpertArchived extends Omit<ExpertItem, "proposed" | "rejected"> {
   proposed?: boolean; rejected?: boolean;
   removed_at: number; reason: ExpertRemovedReason | (string & {}); skill?: string; why?: string;
+  /** `merged`: the id of the lesson it was merged into. */
+  into?: string;
 }
 /** A pending observation (not yet consolidated into memory). */
 /** One observation (observations.jsonl): something noted from a consult or a session, waiting to be consolidated

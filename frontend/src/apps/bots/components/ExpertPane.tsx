@@ -2,7 +2,7 @@
 // sections it shows what the expert knows and how it is doing, on four tabs in the Browser | Terminal strip's style:
 //   Memory       the budget line on top ("32 of 50 lessons", a meter, what tidying does, the last tidy), then the
 //                lessons it keeps (most used first), each a card: In use / Not used yet / Contradicted, where it came
-//                from, how often used; opened: what it is about, sessions seen in / answers relied on, first seen /
+//                from, how often used (and "merged from N"); opened: the lessons it was merged from, what it is about, sessions seen in / answers relied on, first seen /
 //                last used, and Forget. The skill proposals in progress above them; filter chips by status; at the
 //                bottom a collapsed "Recently removed" list (the archive: what left memory and why)
 //   Observations everything it noted from consults and sessions: "Waiting" (oldest first) and "Consolidated" (newest
@@ -275,6 +275,11 @@ export function LessonCard({ it, onForget, lan = false, initialOpen = false, now
       initialOpen={initialOpen}
       detail={() => (
         <>
+          {Array.isArray(it.merged_from) && it.merged_from.length ? (
+            <Part label="Merged from">
+              <ul className="xp-used xp-merged">{it.merged_from.map((m, i) => <li key={m.id || i}>{m.claim}</li>)}</ul>
+            </Part>
+          ) : null}
           {it.about?.length ? <Part label="About"><div className="xp-files">{it.about.map((a) => <span key={a} className="xp-about-chip">{a}</span>)}</div></Part> : null}
           <div>
             <p className="xp-facts">{usesLine(it)}</p>
@@ -315,7 +320,9 @@ export function MemoryBudgetLine({ budget, listed, nowMs }: { budget: MemoryBudg
 
 /** "Recently removed (N)", collapsed: what left memory (newest first, at most ARCHIVE_SHOWN), each its claim (two lines)
  *  and why and when it went. Nothing while the archive is empty or not loaded. */
-export function RemovedLessons({ archived, nowMs }: { archived: ExpertArchived[] | null | undefined; nowMs?: number }) {
+export function RemovedLessons({ archived, items = null, nowMs }: {
+  archived: ExpertArchived[] | null | undefined; items?: ExpertItem[] | null; nowMs?: number;
+}) {
   const rows = (archived || []).filter((a) => a && typeof a.claim === "string").slice(0, ARCHIVE_SHOWN);
   if (!rows.length) return null;
   return (
@@ -326,7 +333,7 @@ export function RemovedLessons({ archived, nowMs }: { archived: ExpertArchived[]
           <li key={`${a.id}-${a.removed_at || i}`} className="xp-removed-row">
             <span className="xp-removed-claim">{a.claim}</span>
             <span className="xp-facts" title={a.removed_at ? fmtWhen(a.removed_at) : undefined}>
-              {[removedReasonLabel(a), a.removed_at ? fmtAgo(a.removed_at, nowMs) : ""].filter(Boolean).join(" · ")}
+              {[removedReasonLabel(a, items), a.removed_at ? fmtAgo(a.removed_at, nowMs) : ""].filter(Boolean).join(" · ")}
             </span>
             {a.why ? <span className="xp-facts xp-note">{a.why}</span> : null}
           </li>
@@ -360,7 +367,7 @@ export function MemoryPanel({ items, onForget, proposals = null, budget = null, 
       ) : (
         <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that consult it, appears here once consolidated.</div>
       )}
-      <RemovedLessons archived={archived} nowMs={nowMs} />
+      <RemovedLessons archived={archived} items={items} nowMs={nowMs} />
     </>
   );
 }

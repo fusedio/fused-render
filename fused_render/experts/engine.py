@@ -344,6 +344,13 @@ def _run(bot, question, *, profile, context="", extra_roots=(), skills_override=
                           system=system_prompt(bot, profile, skills_override), tools=tools, handler=handler)
     out = parse(raw)
     out["raw"] = raw
+    if profile == "chat" and out.get("used"):
+        # A chat answer relied on these lessons (consults cite in consult.py; the gate's answers do not count).
+        try:
+            from fused_render.experts import memory
+            memory.cite(bot, out["used"])
+        except Exception:  # noqa: BLE001
+            logger.warning("expert %s: chat lessons not cited", getattr(bot, "id", "?"), exc_info=True)
     return out
 
 

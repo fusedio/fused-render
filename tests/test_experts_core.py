@@ -95,7 +95,8 @@ def test_manifest_defaults_and_is_expert(bot):
     m = store.manifest(bot)
     assert m["engine"] == "auto" and m["model"] == ""
     assert m["memory"] == {"consolidate_at": 3, "consolidate_after_s": 86400, "propose_at": 3,
-                           "index_lines": 200}
+                           "index_lines": 200, "limit": 50, "tidy_at": 30, "stale_days": 14, "rare_uses": 2,
+                           "heavy_uses": 5}
     assert "user_correction" in m["learns_from"] and m["reads"] == []
     bot.meta["expert"] = {"engine": "codex", "memory": {"propose_at": 5, "index_lines": "x"},
                           "shipped": "canvas-reference"}
@@ -840,7 +841,10 @@ def test_prepare_update_with_diff_runs_no_checks(bot, fake_text, monkeypatch):
     done = proposals.approve(bot, p["id"])
     assert done["status"] == "approved" and done["skill"] == "reading-udfs"
     assert bot.skills()[0]["body"] == new_body
-    assert memory.items(bot)[0]["promoted"] is True
+    # The skill carries the lesson now: it left memory for the archive (reason promoted, with the skill).
+    assert memory.items(bot) == []
+    arch = memory.archived(bot)
+    assert [(r["id"], r["reason"], r["skill"]) for r in arch] == [(a["id"], "promoted", "reading-udfs")]
     with pytest.raises(ValueError, match="already approved"):
         proposals.reject(bot, p["id"])
     with pytest.raises(ValueError):

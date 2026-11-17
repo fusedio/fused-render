@@ -12,7 +12,13 @@ guard rails whatever the model says:
   not a gap, and not inside an open proposal. All promotions go into ONE
   `proposals.request`, and none while a proposal is preparing or waiting on its
   card. The lessons stay in memory until the user approves.
-- An unreadable answer or a failed call: no deletions, no promotions.
+- `merge` (2-3 related, compatible lessons -> one generalised lesson) only for
+  distinct existing ids outside open proposals, not contradicted and not
+  promote-eligible, with a claim of 1-400 characters; at most `MAX_MERGES` per
+  tidy. A claim equal to one original keeps that item and folds the others in.
+  The originals are archived as `merged` with `into`.
+- Each lesson id belongs to the first action that names it.
+- An unreadable answer or a failed call: no deletions, merges or promotions.
 
 Then, with no model, the hard limit: while memory holds more than `limit`,
 lessons leave (archived as `over_limit`): first lessons not taught by the user
@@ -33,23 +39,28 @@ from fused_render.experts import memory, model, store
 logger = logging.getLogger(__name__)
 
 LAST_FILE = "tidy-last.json"
+MAX_MERGES = 5
 _SOURCES = {"user": "taught by you", "outcome": "from sessions", "research": "found by research",
             "gap": "an unanswered question"}
 
 PROMPT = """You keep an expert's memory of lessons tidy. Memory holds {total} lessons; it should stay well under {limit}.
-Review every lesson below and decide one thing for each:
+Review every lesson below and decide what to do with each:
 - "delete": the lesson is OLD and RARELY USED (seen and cited {rare} times or fewer in total, nothing in the last
   {stale} days). Lessons taught by the user should be kept.
 - "promote": the lesson is USED A LOT (seen and cited {heavy} times or more in total) and is still right: it should
   become part of a skill (a playbook) and leave memory.
+- "merge": two or three lessons about the SAME subject that say COMPATIBLE things, used enough to keep but not
+  enough to promote, become ONE lesson. Write one self-contained lesson that keeps what they share and the most
+  useful specifics. Never merge lessons that disagree. When unsure, keep them separate.
 - "keep": anything else. When unsure, keep.
 
 Lessons (one per line: id | claim | where it came from | seen N times | cited N times | age in days | days since
 last seen or used | contradicted N times | proposal open):
 {lines}
 
-Answer with ONLY a JSON list, one object per lesson you want to delete or promote (lessons you omit are kept):
-[{{"id": "<lesson id>", "do": "delete" | "promote" | "keep", "why": "<one short reason>"}}]"""
+Answer with ONLY a JSON list, one object per action (lessons you leave out are kept; name each lesson at most once):
+[{{"id": "<lesson id>", "do": "delete" | "promote" | "keep", "why": "<one short reason>"}},
+ {{"do": "merge", "ids": ["<lesson id>", "<lesson id>"], "claim": "<the one generalised lesson>", "why": "<reason>"}}]"""
 
 
 def _last_path(bot) -> str:
@@ -81,26 +92,40 @@ def _line(i, open_ids, now) -> str:
 
 
 def _review(bot, rows, open_ids, b, now):
-    """The model's verdicts `{id: (do, why)}`, or None when the call failed or the answer cannot be read."""
+    """The model's actions in answer order, `[{"do", "ids": [..], "claim"?, "why"}]`, or None when the call failed
+    or the answer cannot be read. Each lesson id belongs to the first action that names it; a later action naming
+    an id already taken is dropped whole."""
     from fused_render.experts.consolidate import parse_json
     prompt = PROMPT.format(total=len(rows), limit=b["limit"], rare=b["rare_uses"], stale=b["stale_days"],
                            heavy=b["heavy_uses"], lines="\n".join(_line(i, open_ids, now) for i in rows))
     try:
         answer = model.text(bot, prompt, system="You answer with JSON only.")
-    except Exception:  # noqa: BLE001 — no verdicts: nothing deleted or promoted by the model
+    except Exception:  # noqa: BLE001 — no verdicts: nothing deleted, merged or promoted by the model
         logger.warning("expert %s: tidy review failed", getattr(bot, "id", "?"), exc_info=True)
         return None
-    rows_out = parse_json(answer, list)
-    if rows_out is None:
+    raw = parse_json(answer, list)
+    if raw is None:
         return None
-    out = {}
-    for r in rows_out:
+    out, taken = [], set()
+    for r in raw:
         if not isinstance(r, dict):
             continue
-        iid, do = str(r.get("id") or ""), str(r.get("do") or "").strip().lower()
-        if iid and do in ("delete", "promote", "keep") and iid not in out:
-            why = r.get("why")
-            out[iid] = (do, " ".join(str(why).split())[:300] if isinstance(why, str) else "")
+        do = str(r.get("do") or "").strip().lower()
+        if do == "merge":
+            ids = r.get("ids")
+            ids = [str(x) for x in ids if isinstance(x, str) and x.strip()] if isinstance(ids, list) else []
+        elif do in ("delete", "promote", "keep"):
+            ids = [str(r.get("id") or "")] if r.get("id") else []
+        else:
+            continue
+        if not ids or taken.intersection(ids):
+            continue
+        taken.update(ids)
+        why = r.get("why")
+        act = {"do": do, "ids": ids, "why": " ".join(str(why).split())[:300] if isinstance(why, str) else ""}
+        if do == "merge":
+            act["claim"] = r.get("claim") if isinstance(r.get("claim"), str) else ""
+        out.append(act)
     return out
 
 
@@ -112,6 +137,22 @@ def can_delete(i, open_ids, b, now) -> bool:
 def can_promote(i, open_ids, b) -> bool:
     return (memory.uses(i) >= b["heavy_uses"] and not memory.contradicted(i) and not i.get("rejected")
             and not i.get("promoted") and i.get("trust") != "gap" and i["id"] not in open_ids)
+
+
+def can_merge(rows, ids, claim, open_ids, b) -> bool:
+    """2 or 3 distinct existing lessons, none under an open proposal, contradicted or promote-eligible; a claim
+    1-400 characters long that is not already another lesson's."""
+    by_id = {i["id"]: i for i in rows}
+    if len(ids) != len(set(ids)) or not 2 <= len(ids) <= 3 or any(i not in by_id for i in ids):
+        return False
+    if any(i in open_ids or memory.contradicted(by_id[i]) or memory.uses(by_id[i]) >= b["heavy_uses"]
+           for i in ids):
+        return False
+    claim = " ".join(str(claim or "").split())
+    if not claim or len(claim) > memory.MERGE_CLAIM_MAX:
+        return False
+    key = memory.normalise(claim)
+    return not any(memory.normalise(i.get("claim")) == key for i in rows if i["id"] not in ids)
 
 
 def _promoted_skill(bot, iid, approved) -> str:
@@ -154,14 +195,15 @@ def _brief(i, why="") -> dict:
 
 
 def run(bot) -> dict:
-    """One tidy: `{"deleted": [ids], "promoting": [ids], "over_limit": [ids]}`. Never raises for a model
-    failure (nothing is deleted or promoted then)."""
+    """One tidy: `{"deleted": [ids], "merged": [{"into", "claim", "from": [ids]}], "promoting": [ids],
+    "over_limit": [ids]}`. Order: deletions, merges, promotions, the hard limit. Never raises for a model failure
+    (nothing is deleted, merged or promoted then)."""
     from fused_render.experts import proposals
     b = budget(bot)
     now = time.time()
-    result = {"deleted": [], "promoting": [], "over_limit": []}
-    summary = {"at": now, "deleted": [], "promoting": [], "over_limit": [], "swept": [], "reviewed": False,
-               "error": ""}
+    result = {"deleted": [], "merged": [], "promoting": [], "over_limit": []}
+    summary = {"at": now, "deleted": [], "merged": [], "promoting": [], "over_limit": [], "swept": [],
+               "reviewed": False, "error": ""}
     swept = _sweep_promoted(bot)
     summary["swept"] = [_brief(i) for i in swept]
     rows = memory.items(bot)
@@ -169,21 +211,40 @@ def run(bot) -> dict:
 
     if len(rows) > b["tidy_at"]:
         open_ids = proposals.open_item_ids(bot)
-        verdicts = _review(bot, rows, open_ids, b, now)
+        actions = _review(bot, rows, open_ids, b, now)
         summary["reviewed"] = True
-        if verdicts is None:
-            summary["error"] = "the model's answer could not be read; nothing was deleted or promoted"
+        if actions is None:
+            summary["error"] = "the model's answer could not be read; nothing was deleted, merged or promoted"
         else:
             by_id = {i["id"]: i for i in rows}
-            deletes = {iid: why for iid, (do, why) in verdicts.items()
-                       if do == "delete" and iid in by_id and can_delete(by_id[iid], open_ids, b, now)}
-            promotes = [by_id[iid] for iid, (do, _why) in verdicts.items()
-                        if do == "promote" and iid in by_id and iid not in deletes
-                        and can_promote(by_id[iid], open_ids, b)]
+            # 1. deletions
+            deletes = {a["ids"][0]: a["why"] for a in actions
+                       if a["do"] == "delete" and a["ids"][0] in by_id
+                       and can_delete(by_id[a["ids"][0]], open_ids, b, now)}
             if deletes:
                 gone = memory.remove(bot, list(deletes), "stale", whys=deletes)
                 result["deleted"] = [i["id"] for i in gone]
                 summary["deleted"] = [_brief(i, deletes.get(i["id"], "")) for i in gone]
+            # 2. merges (at most MAX_MERGES)
+            for a in [a for a in actions if a["do"] == "merge"]:
+                if len(result["merged"]) >= MAX_MERGES:
+                    break
+                current = memory.items(bot)
+                if not can_merge(current, a["ids"], a.get("claim"), open_ids, b):
+                    continue
+                done = memory.merge(bot, a["ids"], a["claim"], why=a["why"])
+                if done is None:
+                    continue
+                new, _folded = done
+                originals = [{"id": i, "claim": by_id[i].get("claim", "")} for i in a["ids"]]
+                result["merged"].append({"into": new["id"], "claim": new.get("claim", ""), "from": list(a["ids"])})
+                summary["merged"].append({"into": new["id"], "claim": new.get("claim", ""), "from": originals,
+                                          **({"why": a["why"]} if a["why"] else {})})
+            # 3. promotions: ONE request, none while a proposal is preparing or waiting on its card
+            current = {i["id"]: i for i in memory.items(bot)}
+            promotes = [current[a["ids"][0]] for a in actions
+                        if a["do"] == "promote" and a["ids"][0] in current
+                        and can_promote(current[a["ids"][0]], open_ids, b)]
             busy = any(p.get("status") in proposals.OPEN_STATUSES for p in proposals.listing(bot))
             if promotes and not busy:
                 try:
@@ -206,7 +267,7 @@ def run(bot) -> dict:
 
     if summary["reviewed"] or swept or result["over_limit"]:
         summary["total_after"] = len(memory.items(bot))
-        summary["counts"] = {k: len(summary[k]) for k in ("deleted", "promoting", "over_limit", "swept")}
+        summary["counts"] = {k: len(summary[k]) for k in ("deleted", "merged", "promoting", "over_limit", "swept")}
         try:
             store.write_json(_last_path(bot), summary)
         except OSError:

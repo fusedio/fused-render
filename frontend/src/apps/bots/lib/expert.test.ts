@@ -44,7 +44,7 @@ describe("lessons", () => {
     expect(below).toMatchObject({ label: "30 of 50 lessons", above: false, note: "Tidying starts above 30.", fill: 60, over: 0 });
     const above = budgetState({ limit: 50, tidy_at: 30, total: 32 })!;
     expect(above).toMatchObject({ label: "32 of 50 lessons", above: true, fill: 60, over: 4 });
-    expect(above.note).toBe("Above 30: each consolidation removes old, rarely used lessons and proposes heavily used ones as skills.");
+    expect(above.note).toBe("Above 30: each consolidation removes old, rarely used lessons, merges related ones, and proposes heavily used ones as skills.");
     // total missing: the lessons listed; tidy_at missing: the limit; over the limit: the bar is the total.
     expect(budgetState({ limit: 50 }, 7)).toMatchObject({ total: 7, tidyAt: 50, note: "Tidying starts above 50." });
     expect(budgetState({ limit: 50, tidy_at: 30, total: 60 })).toMatchObject({ fill: 50, over: 50 });
@@ -56,6 +56,10 @@ describe("lessons", () => {
     expect(removedReasonLabel({ reason: "over_limit" })).toBe("removed: memory was over its limit");
     expect(removedReasonLabel({ reason: "forgotten" })).toBe("forgotten by you");
     expect(removedReasonLabel({ reason: "whatever" })).toBe("removed");
+    const items = [item({ id: "n", claim: "Use H3 for all hex maps" })];
+    expect(removedReasonLabel({ reason: "merged", into: "n" }, items)).toBe("merged into: Use H3 for all hex maps");
+    expect(removedReasonLabel({ reason: "merged", into: "gone" }, items)).toBe("merged into: another lesson");
+    expect(removedReasonLabel({ reason: "merged" })).toBe("merged into: another lesson");
   });
   test("tidySummary: under a day old, zero parts left out", () => {
     const now = 1_800_000_000_000, at = now / 1000 - 3600, r = (id: string) => ({ id, claim: id });
@@ -65,6 +69,10 @@ describe("lessons", () => {
     expect(tidySummary({ at, promoting: [r("a"), r("b")] }, now)).toBe("Last tidy: proposing 2 as skills.");
     expect(tidySummary({ at, deleted: [], promoting: [], over_limit: [] }, now)).toBe("");
     expect(tidySummary({ at: now / 1000 - 86400, deleted: [r("a")] }, now)).toBe("");
+    const merged = [{ into: "n1", claim: "N1", from: [r("a"), r("b")] }, { into: "n2", claim: "N2", from: [r("c"), r("d"), r("e")] }];
+    expect(tidySummary({ at, deleted: [r("x")], merged, promoting: [r("p")] }, now)).toBe("Last tidy: removed 1, merged 5 into 2, proposing 1 as skill.");
+    expect(tidySummary({ at, merged: [{ into: "n", claim: "N", from: [r("a"), r("b")] }] }, now)).toBe("Last tidy: merged 2 into 1.");
+    expect(tidySummary({ at, merged: [] }, now)).toBe("");
   });
   test("status: contradicted wins, then in use / not used yet", () => {
     expect(lessonStatus(item({}))).toBe("in-use");
@@ -86,6 +94,8 @@ describe("lessons", () => {
     expect(lessonFacts(item({ proposed: true }))).toEqual(["skill proposal pending"]);
     expect(lessonFacts(item({ proposed: true, rejected: true }))).toEqual(["not proposed again"]);
     expect(lessonFacts(item({ contradicted: 2 }))).toEqual(["contradicted 2×"]);
+    expect(lessonFacts(item({ merged_from: [{ id: "a", claim: "A" }, { id: "b", claim: "B" }] }))).toEqual(["merged from 2"]);
+    expect(lessonFacts(item({ merged_from: [] }))).toEqual([]);
     expect(lessonFacts(item({ indexed: false }))).toEqual(["seen once"]);
     expect(lessonFacts(item({ trust: "research", indexed: false, proposed: true }))).toEqual(["skill proposal pending", "waiting for your approval"]);
   });

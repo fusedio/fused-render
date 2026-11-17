@@ -176,7 +176,9 @@ def test_found_with_a_read_ref_becomes_a_research_lesson_and_a_proposal(expert, 
     assert _idle(expert)
     g = gaps.get(expert, g["id"])
     assert g["status"] == "answered" and g["resolution"] == "skill" and expert.skills()
-    assert lesson["id"] in memory.index_text(expert)
+    # The skill carries the finding now: the research lesson left memory for the archive.
+    assert lesson["id"] not in {i["id"] for i in memory.items(expert)}
+    assert memory.archived(expert)[0]["id"] == lesson["id"] and memory.archived(expert)[0]["reason"] == "promoted"
 
 
 @pytest.mark.parametrize("case", ["outside", "unread", "missing"])

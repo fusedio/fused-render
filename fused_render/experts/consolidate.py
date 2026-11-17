@@ -433,7 +433,7 @@ def _run(bot, force):
         tidied = tidymod.run(bot)
     except Exception:  # noqa: BLE001 — a failed tidy never undoes the run
         logger.warning("expert %s: tidying failed", bot.id, exc_info=True)
-        tidied = {"deleted": [], "promoting": [], "over_limit": []}
+        tidied = {"deleted": [], "merged": [], "promoting": [], "over_limit": []}
     out = _result(True, added, bumped, ignored)
     out.update(contradicted=list(dict.fromkeys(contradicted)), gaps=touched, researched=researched, proposed=proposed,
                tidied=tidied)
