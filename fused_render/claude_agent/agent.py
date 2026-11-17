@@ -7803,12 +7803,25 @@ def _live_run_in(folder: str) -> dict:
     its folder), with `_live_run`'s liveness test (pid alive AND a turn
     open). Unbounded on purpose — see `_live_run`'s `limit`; the sync caches
     the answer across its poll."""
+    for found in _live_runs_in(folder):
+        return {"run_id": found["run_id"], "backend": found["backend"]}
+    return {"run_id": ""}
+
+
+def _live_runs_in(folder: str):
+    """Every run with a turn open anywhere in `folder` (`_live_run_in`'s
+    match), newest first, lazily: `{run_id, backend, sessions}`, where
+    `sessions` holds the ids the run answers to — its own conversation
+    (`_run_own_session`) and the one it resumed (`resumed_from`). The canvas
+    sync asks "is a turn of a session OTHER than the one whose Stop just
+    fired still open here?" (`turn_end`): a Stop can arrive while its own
+    run still reads as open, so the stopping session is told apart by id."""
     workdir = os.path.abspath(folder)
     real = os.path.realpath(folder)
     try:
         names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
-        return {"run_id": ""}
+        return
     for name in names:
         run_dir = os.path.join(RUNS, name)
         try:
@@ -7823,8 +7836,9 @@ def _live_run_in(folder: str) -> dict:
             continue
         turn_open, _tasks_pending = _turn_state_fold(run_dir, {}, partial=True)
         if turn_open:
-            return {"run_id": name, "backend": _meta_backend(meta)}
-    return {"run_id": ""}
+            sessions = {s for s in (_run_own_session(run_dir, meta),
+                                    str(meta.get("resumed_from") or "")) if s}
+            yield {"run_id": name, "backend": _meta_backend(meta), "sessions": sessions}
 
 
 def _live_session_in(folder: str) -> dict:
