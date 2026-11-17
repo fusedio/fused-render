@@ -162,6 +162,7 @@ EXPECTED_STARTUP = [
     # Added 2026-10-06: the Bots sub-app's scheduler + iMessage bridge
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",
+    "_startup_experts",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and
     # every extension but the built-in `.fused` refused to share.
@@ -200,6 +201,7 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_terminal_sessions",
     # Added 2026-10-06: every loaded bot's task and Chrome (bots/registry.py).
     "_shutdown_bots",
+    "_shutdown_experts",
     "_shutdown_index_watch",
 ]
 
@@ -258,6 +260,7 @@ EXPECTED_SHUTDOWN_LEAN = [
     "_shutdown_terminal_sessions",
     # A request can start a bot's Chrome in a lean app too.
     "_shutdown_bots",
+    "_shutdown_experts",
 ]
 
 
