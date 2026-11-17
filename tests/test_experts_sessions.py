@@ -230,17 +230,43 @@ def test_expert_turn_message_and_system_prompt(expert):
     assert agent_engine.system_prompt_for(expert, "/x") == store.instructions(expert)
 
 
-def test_an_expert_rollover_makes_no_model_call(expert, monkeypatch):
+def _plan_fakes(expert, monkeypatch, conv):
     notes, rolled = [], []
-    monkeypatch.setattr(expert, "conversation", lambda: {"session_id": "old", "tokens": 10 ** 9, "prompt_hash": "h"})
+    monkeypatch.setattr(expert, "conversation", lambda: conv)
     monkeypatch.setattr(expert, "transcript_lines", lambda since=0, *a, **k: ["user: x"] * 10)
     monkeypatch.setattr(expert, "past_conversation", lambda *a, **k: ["user: earlier"])
     monkeypatch.setattr(expert, "summarize_conversation", lambda *a, **k: pytest.fail("a model call for an expert"))
     monkeypatch.setattr(expert, "conversation_rollover", lambda summary, h="": rolled.append(summary))
     monkeypatch.setattr(expert, "emit", lambda role, text, **k: notes.append(text))
+    return notes, rolled
+
+
+def test_over_budget_does_not_roll_an_expert_over(expert, monkeypatch):
+    notes, rolled = _plan_fakes(expert, monkeypatch, {"session_id": "old", "tokens": 10 ** 9, "prompt_hash": "h"})
     _conv, resume = agent_engine._conversation_plan(expert, agent_engine.DEFAULT_MODEL, "h")
-    assert resume is None and rolled == ["user: earlier"]
-    assert notes and "compacted" in notes[0] and "recall" not in notes[0]
+    assert resume == "old" and rolled == [] and notes == []
+
+
+def test_an_expert_rollover_makes_no_model_call(expert, monkeypatch):
+    # Its instructions changed: a resumed session cannot take the new system prompt, so a fresh one, from the digest.
+    notes, rolled = _plan_fakes(expert, monkeypatch, {"session_id": "old", "tokens": 10, "prompt_hash": "before"})
+    _conv, resume = agent_engine._conversation_plan(expert, agent_engine.DEFAULT_MODEL, "after")
+    assert resume is None and rolled == ["user: earlier"] and notes == []
+
+
+def test_an_expert_chat_leaves_compaction_to_the_cli(expert, monkeypatch):
+    from fused_render.bots import claude_cli
+    seen = []
+
+    def spawn(cmd, cwd):
+        seen.append(cmd)
+        raise RuntimeError("stop here")
+    monkeypatch.setattr(claude_cli, "runnable", lambda: "claude")
+    monkeypatch.setattr(agent_engine, "_spawn", spawn)
+    agent_engine.run(expert, "hi")
+    assert seen and "--autocompact" not in seen[0] and "--resume" not in seen[0]
+    # An ordinary bot still holds the CLI's compaction off until fused's rollover.
+    assert "--autocompact" in agent_engine.argv("claude", "m", "low", "/sp", "/mcp", window=200000)
 
 
 # -------------------------------------------------------------- task-quiet ---

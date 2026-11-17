@@ -566,8 +566,10 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
     sources stay off in both: nothing from the user's own Claude Code setup
     (CLAUDE.md, skills, hooks) reaches a bot. `resume` continues the bot's
     conversation (its CLI session); sessions persist on disk for that. `window`
-    (the model's context window) is passed as --autocompact so the CLI's own
-    compaction never fires before fused's rollover (ROLLOVER_FRACTION). `fence`
+    (the model's context window) is passed as --autocompact (the CLI's
+    "auto-compact window size", 100k-1M tokens) so the CLI's own compaction
+    never fires before fused's rollover (ROLLOVER_FRACTION); an expert's turn
+    passes none and its chat is left to the CLI's own compaction. `fence`
     (an expert: experts.sessions.fence) replaces the tool, permission and MCP
     flags with the expert's own and `NO_MCP`; `mcp_file` is unused then."""
     out = [bin_path, "-p",
@@ -925,22 +927,24 @@ def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
     prompt changed, or no session yet: the first turn under this design, or
     the turn after a lost resume). A rollover seeds the fresh session with
     bot.summarize_conversation over the transcript since the session began;
-    a thin slice (a new bot) takes the digest without a model call, and so
-    does an expert always: its chat makes no model call of ours (its memory
-    is memory.md, and it has no `recall`)."""
+    a thin slice (a new bot) takes the digest without a model call. An
+    expert never rolls over for the budget (its chat is left to the CLI's own
+    auto-compaction: `argv` gets no --autocompact for it), and its rollover
+    (no session yet, instructions changed) always takes the digest: its chat
+    makes no model call of ours (its memory is memory.md; it has no `recall`)."""
     conv = _call(getattr(bot, "conversation", None), None)
     if not isinstance(conv, dict):
         return None, None  # a bot without a conversation record (tests' fake): every turn a fresh session
+    expert = xstore.is_expert(bot)
     limit = rollover_at(model)
     sid = conv.get("session_id")
     tokens = int(conv.get("tokens") or 0)
-    if sid and tokens < limit and conv.get("prompt_hash") == sp_hash:
+    if sid and (tokens < limit or expert) and conv.get("prompt_hash") == sp_hash:
         return conv, sid
-    why = "over budget" if sid and tokens >= limit else ("system prompt changed" if sid else "new")
+    why = "over budget" if sid and tokens >= limit and not expert else ("system prompt changed" if sid else "new")
     since = int(conv.get("since_seq") or 0)
     lines = _call(getattr(bot, "transcript_lines", None), [], since)
     previous = (conv.get("summary") or "").strip()
-    expert = xstore.is_expert(bot)
     summary = (_call(getattr(bot, "summarize_conversation", None), "", since, previous)
                if len(lines) >= 4 and not expert else "")
     if not summary:  # a thin slice, or a summary call that failed: the previous note plus the digest
@@ -950,9 +954,8 @@ def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
         # Memory upkeep rides on the rollover (bot.curate_memory): one more call, every ~half a window.
         _call(getattr(bot, "curate_memory", None), None, since)
     if why == "over budget":
-        bot.emit("note", f"Conversation compacted at {tokens // 1000}k tokens: " + (
-            "a digest of the earlier messages carries what came before." if expert else
-            "a summary carries what came before; `recall` still reaches every earlier message."))
+        bot.emit("note", f"Conversation compacted at {tokens // 1000}k tokens: a summary carries what came before; "
+                         "`recall` still reaches every earlier message.")
     return _call(getattr(bot, "conversation", None), None), None
 
 
@@ -1036,7 +1039,8 @@ def run(bot, task: str, label: str | None = None) -> None:
             # `_permission`, whose fence judges by `bot.folder_roots` (docs §6). No --add-dir (was `~` whole).
             sess.cwd = cwd  # before the spawn: the first permission call may land at once
             proc = _spawn(argv(bin_path, model, effort, sp_file, mcp_file, super_mode=mode,
-                               resume=resume, window=context_window(model),
+                               # An expert: no --autocompact, the CLI compacts its chat by itself (_conversation_plan).
+                               resume=resume, window=None if expert else context_window(model),
                                fence=xsessions.fence(bot, write=True) if expert else None), cwd)
             sess.proc = proc
             threading.Thread(target=_drain_stderr, args=(sess, proc), daemon=True, name=f"bot-stderr-{bot.id}").start()
