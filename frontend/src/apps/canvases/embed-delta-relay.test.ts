@@ -627,4 +627,43 @@ describe("review round", () => {
     // The one in flight lands; the two behind it never leave.
     expect(t.acks.map((a) => a.rev)).toEqual([1]);
   });
+
+  test("a failed full cut (a 503) is asked again within the window, as the workspace does", async () => {
+    const t = fakeTransport([{ status: 503 }, { status: 503 }, { rev: 4, full: true, ops: ops(1) }]);
+    const r = createEmbedDeltaRelay(t);
+    r.handleMessage({ type: "fused-embed-hello" });
+    await r.idle();
+    expect(t.asked).toEqual([true, true, true]);
+    expect(t.posted.map((m) => m.rev)).toEqual([4]);
+  });
+
+  test("a cut that failed is asked again on the next sight of the SAME rev", async () => {
+    const t = fakeTransport([{ status: 503 }, { rev: 6, base_rev: 5, ops: ops(1) }]);
+    const r = createEmbedDeltaRelay(t);
+    r.onSyncState(state(5)); // first sight
+    r.onSyncState(state(6)); // the cut fails
+    await r.idle();
+    expect(t.posted).toEqual([]);
+    r.onSyncState(state(6)); // the poll sees rev 6 again
+    await r.idle();
+    expect(t.asked).toEqual([false, false]);
+    expect(t.posted.map((m) => m.rev)).toEqual([6]);
+    // Delivered: the same rev is not cut a third time.
+    r.onSyncState(state(6));
+    await r.idle();
+    expect(t.asked.length).toBe(2);
+  });
+
+  test("a held window that ran out is asked again on the next sight of the same rev", async () => {
+    const held = Array.from({ length: DELTA_RETRY_WINDOW_MS / 1000 + 2 }, () => ({ rev: 6, held: "x" }));
+    const t = fakeTransport([...held, { rev: 6, base_rev: 5, ops: ops(1) }]);
+    const r = createEmbedDeltaRelay(t);
+    r.onSyncState(state(5));
+    r.onSyncState(state(6));
+    await r.idle();
+    expect(t.posted).toEqual([]);
+    r.onSyncState(state(6));
+    await r.idle();
+    expect(t.posted.map((m) => m.rev)).toEqual([6]);
+  });
 });

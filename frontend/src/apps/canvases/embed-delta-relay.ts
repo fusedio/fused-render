@@ -219,7 +219,11 @@ export interface RelayHooks {
   onPresence?(presence: NodePresence): void;
   /** No node-ready within NODE_READY_WAIT_MS of auth-ready (NM-7). */
   onNoNodeMode?(): void;
+  /** The token request failed. Recoverable: the frame stays up, and the next
+   *  auth-refresh (or `retryToken`) asks again. */
   onError?(message: string): void;
+  /** A token reached the frame: a failure reported before is over. */
+  onToken?(): void;
 }
 
 export interface EmbedDeltaRelay {
@@ -230,6 +234,8 @@ export interface EmbedDeltaRelay {
   /** Queue a cut. Resolves when it (and every cut before it) is done. */
   relayDelta(full: boolean): Promise<void>;
   postSyncState(state: unknown): void;
+  /** Ask for the token again and post it (after `onError`). */
+  retryToken(): Promise<void>;
   /** Both chains settled — for tests and teardown. */
   idle(): Promise<void>;
   dispose(): void;
@@ -276,6 +282,15 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
     }
   };
 
+  // A cut that never reached the frame (an error, or a held/409 window that
+  // ran out): forget the last state looked at, so the next sight of the
+  // SAME disk_rev (a poll, a socket state) asks again instead of reading as
+  // "nothing moved" — the frame would otherwise stay stale until the next
+  // edit or hello.
+  const unfinished = () => {
+    cursor.seenRev = null;
+  };
+
   const relayDelta = (full: boolean): Promise<void> => {
     deltaChain = deltaChain.then(async () => {
       const started = now();
@@ -284,7 +299,7 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
         try {
           const delta = await t.getDelta(full);
           if (delta.held !== undefined) {
-            if (now() - started > DELTA_RETRY_WINDOW_MS) return;
+            if (now() - started > DELTA_RETRY_WINDOW_MS) return unfinished();
             await sleep(DELTA_RETRY_MS);
             continue;
           }
@@ -308,11 +323,14 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
           return;
         } catch (e) {
           const status = (e as { status?: number }).status;
-          if (status === 409 && now() - started <= DELTA_RETRY_WINDOW_MS) {
+          // A full state is asked once (a hello, a heal) and nothing re-asks
+          // it if it is lost: any failure retries within the window, not
+          // only a busy clone — as CanvasWorkspace's relay does.
+          if ((status === 409 || full) && now() - started <= DELTA_RETRY_WINDOW_MS) {
             await sleep(DELTA_RETRY_MS);
             continue;
           }
-          return;
+          return unfinished();
         }
       }
     });
@@ -337,8 +355,9 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
         caps: [],
         ...(publicOrigin ? { publicOrigin } : {}),
       });
+      hooks.onToken?.();
     } catch (e) {
-      hooks.onError?.((e as Error).message);
+      if (!disposed) hooks.onError?.((e as Error).message);
     }
   };
 
@@ -431,6 +450,7 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
       if (deltaOwed(cursor, state.disk_rev, state.watcher_epoch)) void relayDelta(false);
     },
     relayDelta,
+    retryToken: seedToken,
     postSyncState(state) {
       if (!disposed) t.post({ type: "fused-embed-sync-state", state });
     },

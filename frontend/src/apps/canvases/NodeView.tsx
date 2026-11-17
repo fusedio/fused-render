@@ -268,6 +268,10 @@ export default function NodeView({ path }: NativeViewProps) {
   const [presence, setPresence] = useState<NodePresence>("pending");
   const [noNodeMode, setNoNodeMode] = useState(false);
   const [repostSeq, setRepostSeq] = useState(0);
+  // A failed token request: recoverable, so the frame stays mounted (its
+  // next auth-refresh, or Retry, asks again) — the workspace shows it as a
+  // banner over a frame it keeps, too.
+  const [tokenError, setTokenError] = useState<string | null>(null);
   const relayRef = useRef<EmbedDeltaRelay | null>(null);
   useEffect(() => {
     if (!env || !name || !udfName) return;
@@ -304,7 +308,8 @@ export default function NodeView({ path }: NativeViewProps) {
         onNodeState: setNodeState,
         onPresence: setPresence,
         onNoNodeMode: () => setNoNodeMode(true),
-        onError: (m) => setFrameError(m),
+        onError: (m) => setTokenError(m),
+        onToken: () => setTokenError(null),
       },
     );
     relayRef.current = relay;
@@ -615,13 +620,26 @@ export default function NodeView({ path }: NativeViewProps) {
           className="node-view-frame"
           style={missing || waiting ? { visibility: "hidden" } : undefined}
         />
-        {waiting && (
+        {waiting && !tokenError && (
           <div className="preview-resolving node-view-overlay">
             <span className="mode-icon-spinner" />
             Loading {udfName}…
           </div>
         )}
-        {missing && (
+        {tokenError && (
+          <div className="node-view-message node-view-overlay">
+            <p role="alert" className="node-view-error-text">
+              Could not sign the workbench in: {tokenError}
+            </p>
+            <div className="node-view-actions">
+              <button type="button" className="btn btn-primary" onClick={() => void relayRef.current?.retryToken()}>
+                Retry
+              </button>
+              {openButton}
+            </div>
+          </div>
+        )}
+        {!tokenError && missing && (
           // NV-9: kept mounted underneath — a delta that brings the node
           // back (a rename undone, the first push of a new node) shows it.
           <div className="node-view-message node-view-overlay">
@@ -680,7 +698,10 @@ function NodeStrip({
     if (!error) setErrorOpen(false);
   }, [error]);
   const s2d = sync?.legs.server_to_disk.state;
-  const showPull = !owned && (s2d === "stale" || pull.busy);
+  // SyncStrip's rule: a failed pull keeps its button (the held move is still
+  // there to bring in), and so does a pull another page started.
+  const pullFailed = s2d === "error" && (sync?.legs.server_to_disk.changed.length ?? 0) > 0;
+  const showPull = !owned && (s2d === "stale" || s2d === "pulling" || pullFailed || pull.busy);
   return (
     <div className="node-view-head">
       {/* Two rows, so the strip holds in a narrow pane (down to 380px): the

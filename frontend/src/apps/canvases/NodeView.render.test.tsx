@@ -316,6 +316,82 @@ describe("NodeView's frame and relay (NV-6, NV-7)", () => {
     }
   });
 
+  test("a failed token request keeps the frame mounted; Retry recovers it", async () => {
+    route("GET", "/api/canvases/node", { body: NODE });
+    route("POST", "/api/canvases/sync/start", { body: { name: "demo", dir: "/x", error: null } });
+    route("GET", "/api/canvases/status", { body: STATUS });
+    route("GET", "/api/canvases/sync/state", { body: SYNC });
+    route("GET", "/api/canvases/token", { status: 503, body: { error: "token service down" } });
+
+    const listeners: Array<(e: unknown) => void> = [];
+    const win = window as unknown as { addEventListener: unknown; removeEventListener: unknown };
+    const realAdd = win.addEventListener;
+    const realRemove = win.removeEventListener;
+    win.addEventListener = (type: string, fn: (e: unknown) => void) => {
+      if (type === "message") listeners.push(fn);
+    };
+    win.removeEventListener = (type: string, fn: (e: unknown) => void) => {
+      const i = listeners.indexOf(fn);
+      if (type === "message" && i >= 0) listeners.splice(i, 1);
+    };
+    const posted: Array<Record<string, unknown>> = [];
+    const frameWin = { postMessage: (msg: Record<string, unknown>) => posted.push(msg) };
+    try {
+      let r!: ReactTestRenderer;
+      await act(async () => {
+        r = create(
+          createElement(NodeView, { path: "/Users/me/Fused/canvas/prod/user/demo/udf_1.py", placement: "content" }),
+          { createNodeMock: (el) => (el.type === "iframe" ? { contentWindow: frameWin } : null) },
+        );
+      });
+      await settle();
+      await act(async () => {
+        for (const fn of [...listeners]) fn({ data: { type: "fused-embed-auth-ready" }, source: frameWin, origin: ORIGIN });
+      });
+      await settle(4);
+      expect(text(r)).toContain("token service down");
+      // The frame is still there to take a token.
+      expect(r.root.findAllByType("iframe").length).toBe(1);
+      expect(posted.some((m) => m.type === "fused-embed-auth-token")).toBe(false);
+
+      route("GET", "/api/canvases/token", { body: { access_token: "tok" } });
+      const retry = r.root.find((n) => n.type === "button" && n.props.children === "Retry");
+      await act(async () => {
+        retry.props.onClick();
+      });
+      await settle(4);
+      expect(posted.some((m) => m.type === "fused-embed-auth-token" && m.accessToken === "tok")).toBe(true);
+      expect(text(r)).not.toContain("token service down");
+      expect(r.root.findAllByType("iframe").length).toBe(1);
+      r.unmount();
+    } finally {
+      win.addEventListener = realAdd;
+      win.removeEventListener = realRemove;
+    }
+  });
+
+  test("a failed pull keeps the Pull button, as SyncStrip does", async () => {
+    const failed = {
+      ...SYNC,
+      legs: {
+        ...SYNC.legs,
+        server_to_disk: {
+          state: "error",
+          since_ms: 0,
+          changed: [{ slug: "udf_1", kind: "changed" }],
+          reason: "pull failed",
+        },
+      },
+    };
+    route("GET", "/api/canvases/node", { body: NODE });
+    route("POST", "/api/canvases/sync/start", { body: { name: "demo", dir: "/x", error: null } });
+    route("GET", "/api/canvases/status", { body: STATUS });
+    route("GET", "/api/canvases/sync/state", { body: failed });
+    const r = await mount();
+    expect(r.root.findAll((n) => n.type === "button" && n.props.children === "Pull").length).toBe(1);
+    r.unmount();
+  });
+
   test("signed out: no sync chip", async () => {
     route("GET", "/api/canvases/node", { body: { ...NODE, signed_in: false, live: false } });
     const r = await mount();
