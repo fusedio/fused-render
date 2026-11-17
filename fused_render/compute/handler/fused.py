@@ -17,7 +17,7 @@ class Response:
     opaque 500 at request time):
       - media_type == "application/json": body may be any JSON-serializable value.
       - any other media_type: body must be str, bytes, or None. bytes are sent
-        base64-encoded across the Lambda boundary and decoded by the serve handler
+        base64-encoded across the process boundary and decoded by the host
         (so binary responses — images, PDFs — work).
 
     `media_type` is required; use the helpers below for the common types.
@@ -85,7 +85,8 @@ class _UDF:
         return self._fn(*args, **kwargs)
 
     def map(self, items, filename=None, max_workers=16):
-        # Fan out: invoke filename as a child Lambda for each item in items.
+        # Fan out: run filename as a child run (a local subprocess, brokered by
+        # fused_render.compute.invoke) for each item in items.
         # items: iterable of dicts; each dict becomes kwargs for one child invocation.
         # filename falls back to @fused.udf(filename=...) then "user_code.py".
         from concurrent.futures import ThreadPoolExecutor as _TPE  # noqa: N814
@@ -93,7 +94,7 @@ class _UDF:
         try:
             from _openfused import invoke as _invoke  # type: ignore[import]
         except ImportError:
-            raise RuntimeError("map() is only available inside Lambda execution")
+            raise RuntimeError("map() is only available inside a fused-render run")
         _filename = filename or self._filename or "user_code.py"
 
         def _call(kw):
@@ -129,8 +130,8 @@ def load(filename):
     # "worker.py" — so callers can drop the extension; an explicit ".py" is
     # left as-is. The file itself is not read here (no eager exec); it's read
     # inside _openfused.invoke() when the worker is called or .map()'d.
-    # Calling it directly dispatches a single child Lambda invocation.
-    # .map() fans out to multiple child Lambdas concurrently.
+    # Calling it directly dispatches a single child run (a local subprocess).
+    # .map() fans out to several child runs concurrently.
     _fname = filename if filename.endswith(".py") else filename + ".py"
 
     def _stub(**kwargs):
@@ -138,7 +139,7 @@ def load(filename):
             from _openfused import invoke as _invoke
         except ImportError:
             raise RuntimeError(
-                "fused.load() requires _openfused (only available inside Lambda execution)"
+                "fused.load() is only available inside a fused-render run"
             )
         return _invoke(_fname, **kwargs)["return_value"]
 

@@ -15,10 +15,9 @@ easy to "fix" into wrongness:
 * **Loading is strict** (§3). Here the manifest *is* the surface, so a malformed entry raises
 instead of quietly shrinking
   `tools/list`.
-* **Execution is always the local backend** (§5). An app's entrypoints read the
-  author's own token files and localhost services; an env-resolved backend would
-  ship their source to Lambda / Fused Cloud the moment the ambient environment
-  is not `local`. `config.get_backend()` is deliberately not consulted.
+* **Execution is the local backend** (§5), the only one fused-render has. An
+  app's entrypoints read the author's own token files and localhost services,
+  so they run on this machine and nowhere else.
 
 An app folder is NOT a workspace project (no registry entry, no `scripts/`
 layout, no `openfused.toml` — which is also why the manifest is named
