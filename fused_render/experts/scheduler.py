@@ -6,7 +6,8 @@ every side session's harness process. A tick runs quiet.py's pass; compaction is
 (sessions.after_write).
 
 ONE PROCESS TICKS: two fused-render servers on one machine must not both read the same transcripts, so a tick
-runs only in the process that owns the bots (`bots.registry.owns()`) and only while it holds the machine-wide
+runs only in the process that owns the bots (`bots.registry.owns()`) and holds the bots workspace claim
+(`registry.workspace_claimed()`, the same door `require_workspace` guards), and only while it holds the machine-wide
 lease `experts-scheduler` (`tasks_store.try_acquire_lease`, released after the tick). A process that loses
 either skips that tick.
 """
@@ -42,6 +43,15 @@ def _owner() -> bool:
         return False
 
 
+def _workspace() -> bool:
+    """The bots workspace claim (`registry.workspace_claimed`): a task-quiet session writes the expert's folder."""
+    try:
+        from fused_render.bots import registry
+        return bool(registry.workspace_claimed())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def tick(stop: threading.Event | None = None) -> dict:
     """One pass. Returns `{"ran": bool, "skipped": why, "quiet": {...}, "errors": n}`. Never raises."""
     out = {"ran": False, "skipped": "", "quiet": {}, "errors": 0}
@@ -52,6 +62,9 @@ def tick(stop: threading.Event | None = None) -> dict:
     try:
         if not _owner():
             out["skipped"] = "this process does not own the bots"
+            return out
+        if not _workspace():
+            out["skipped"] = "another app holds the bots workspace"
             return out
         from fused_render import tasks_store
         leased = tasks_store.try_acquire_lease(LEASE, machine_wide=True)

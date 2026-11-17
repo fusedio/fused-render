@@ -575,6 +575,10 @@ def _file_name(file_name: str | None, name: str) -> str:
     return base if base.lower().endswith(EXT) else base + EXT
 
 
+#: An expert's instructions.md, skills and memory.md live in its folder, which a `.fusedbot` does not carry.
+EXPERT_REFUSAL = "An expert cannot be exported yet: its instructions, skills and memory would not travel with it"
+
+
 def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, dest_dir: str) -> str:
     """Write the bot as a `.fusedbot` under `dest_dir` and return its path. `apps` are the folders the user ticked:
     manifest rows and folders added in the dialog alike, each re-resolved; a bundled one is exported as a nested
@@ -582,12 +586,14 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
     source}` with the source's kind/key/slug/url/repo/commit, never a plan row's `fallback`. Caps are checked on declared sizes BEFORE anything is
     exported, so an over-budget package fails in a second instead of after minutes of compression. Built in a
     scratch dir beside the destination and renamed in once complete: the result path is only ever absent or whole."""
-    from fused_render.bots.bot import is_super
+    from fused_render.bots.bot import is_expert, is_super
     from fused_render.server.routers.appfile import _unique_export_path
 
     _path, raw, public, meta = _public(bid)
     if is_super(public):
         raise ValueError("Super Bot cannot be exported: it is this machine's own assistant")
+    if is_expert(public):
+        raise ValueError(EXPERT_REFUSAL)
     name = public.get("name") or bid
     if not isinstance(apps, list) or not all(isinstance(a, str) for a in apps):
         raise ValueError("apps must be a list of app folder names")

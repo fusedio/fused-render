@@ -11,9 +11,9 @@ lock when the kind writes, note memory.md, hand the prompt to the harness
 (`harness`, the ONE function that knows which CLI runs an expert), note
 memory.md again, and save a row `{id, kind, started, ended, status, trigger,
 transcript, memory_diff}` under `.fused/expert/sessions/`. The change log the
-UI shows is the rows with a non-empty diff (`changes`). Every writing session
-leaves the hash of memory.md as it ended in `.fused/expert/left.json`; a file
-that differs from it was edited by hand since (`edited_by_hand`).
+UI shows is the rows with a non-empty diff (`changes`). Every session that
+changed memory.md leaves its hash as it ended in `.fused/expert/left.json`; a
+file that differs from it was edited by hand since (`edited_by_hand`).
 
 The fence is the harness's own (`fence`): only Read / Glob / Grep (plus Edit /
 Write when the kind writes) exist, the one pre-allowed write is memory.md, and
@@ -82,14 +82,23 @@ def _spellings(path: str) -> list:
     return out
 
 
+_GLOB_CHARS = frozenset("*?[]{}")
+
+
 def fence(bot, write: bool) -> list:
     """The harness flags that fence an expert's session. Reads inside the working directory (the expert's
-    folder) are the harness's default; each granted folder gets a Read rule; memory.md gets the one Edit rule
-    (which covers Write) when `write`. Everything else has nobody to ask and is refused."""
+    folder) are the harness's default; each granted folder gets a Read rule (a folder whose path has glob
+    characters gets none); memory.md gets the one Edit rule (which covers Write) when `write`. Everything else has
+    nobody to ask and is refused. The rule list is variadic: callers put another `--flag` (or nothing) after it."""
     rules = []
     if write:
         rules += [f"Edit({_rule_path(p)})" for p in _spellings(store.memory_path(bot))]
     for folder in store.read_folders(bot):
+        if any(_GLOB_CHARS & set(p) for p in _spellings(folder)):
+            # The rule is a glob and the CLI has no escape for these: such a folder is not granted (refused
+            # like any other read outside the fence) rather than widened to whatever the pattern matches.
+            logger.warning("expert %s: folder %r has glob characters; not granted", getattr(bot, "id", "?"), folder)
+            continue
         rules += [f"Read({_rule_path(p)}/**)" for p in _spellings(folder)]
     out = ["--tools", "Read,Glob,Grep" + (",Edit,Write" if write else ""), "--permission-mode", "default"]
     return out + (["--allowedTools", *rules] if rules else [])
@@ -141,7 +150,9 @@ def harness(bot, prompt: str, write: bool) -> dict:
     sp_file = os.path.join(cache, f"system_prompt.{uuid.uuid4().hex[:8]}.txt")
     with open(sp_file, "w", encoding="utf-8") as f:
         f.write(store.instructions(bot))
-    cmd = [bin_path, "-p", "--output-format", "stream-json", "--verbose",
+    # --no-session-persistence: a side session is never resumed, and a transcript left under ~/.claude/projects/
+    # would list as a task (verified on claude 2.1.326). Not in the chat (bots/agent_engine.argv), which resumes.
+    cmd = [bin_path, "-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
            "--model", bot.meta.get("model") or agent_engine.DEFAULT_MODEL,
            "--effort", bot.meta.get("effort") or agent_engine.DEFAULT_EFFORT,
            "--system-prompt-file", sp_file, *agent_engine.NO_MCP, *fence(bot, write)]
@@ -242,7 +253,8 @@ def _left_path(bot) -> str:
 
 
 def _mark_left(bot) -> None:
-    """memory.md as the writing session that just ended left it (`edited_by_hand`)."""
+    """memory.md as the writing session that just ended left it (`edited_by_hand`). Called only when that session
+    changed it: one that changed nothing (a chat "hi") must not clear a hand edit's note."""
     store.write_json(_left_path(bot), {"sha256": _sha(store.memory(bot)), "at": time.time()})
 
 
@@ -266,13 +278,13 @@ def changes(bot, limit: int = CHANGES_SHOWN) -> list:
 
 def note_chat(bot, before, message: str) -> dict | None:
     """After a chat turn (bots/agent_engine.run, under the write lock): a `chat` row when memory.md changed from
-    `before`, else nothing. Either way memory.md is now as a session left it."""
+    `before`, else nothing (and then memory.md's "as a session left it" mark stays where it was)."""
     if before is None:
         return None
     d = diff(before, store.memory(bot))
-    _mark_left(bot)
     if not d:
         return None
+    _mark_left(bot)
     rec = _new_row("chat", {"message": str(message or "")[:500]})
     rec.update(ended=time.time(), status="done", memory_diff=d)
     _save(bot, rec)
@@ -340,7 +352,7 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
         if res.get("cost_usd") is not None:
             rec["cost_usd"] = res["cost_usd"]
         rec["answer"] = res.get("answer") or ""
-        if writes:
+        if writes and rec["memory_diff"]:
             _mark_left(bot)
     finally:
         with _GUARD:

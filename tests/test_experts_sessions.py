@@ -85,6 +85,20 @@ def test_changes_and_edited_by_hand(expert, monkeypatch):
     assert sessions.edited_by_hand(expert) is True
 
 
+def test_a_session_that_changed_nothing_keeps_the_hand_edit_note(expert, monkeypatch):
+    stub(monkeypatch, lambda b, p, w: append_memory(b, "- [1 · 2026-11-17] Learned.") if "learn" in p else None)
+    sessions.run(expert, "task-quiet", "learn")
+    append_memory(expert, "- [1 · 2026-11-17] Typed by the user.")
+    assert sessions.edited_by_hand(expert) is True
+    assert sessions.note_chat(expert, store.memory(expert), "hi") is None  # a chat "hi"
+    sessions.run(expert, "task-quiet", "nothing new")
+    assert sessions.edited_by_hand(expert) is True
+    before = store.memory(expert)
+    append_memory(expert, "- [1 · 2026-11-17] Told in chat.")
+    sessions.note_chat(expert, before, "remember")  # a session that did change it: memory is as it left it
+    assert sessions.edited_by_hand(expert) is False
+
+
 # --------------------------------------------------------------------- lock ---
 def _overlap(monkeypatch, expert, kinds):
     live, peak, guard = [0], [0], threading.Lock()
@@ -174,6 +188,37 @@ def test_fence_flags(expert, tmp_path):
     assert "--tools=" not in cmd and not any("mcp__" in x for x in cmd)
     assert cmd[-len(agent_engine.NO_MCP):] == agent_engine.NO_MCP
     assert cmd[cmd.index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    # The rule list is variadic: it is followed by another flag.
+    assert cmd[cmd.index(w[-1]) + 1].startswith("--")
+
+
+def test_fence_skips_a_folder_with_glob_characters(expert, tmp_path):
+    ok, odd = tmp_path / "ok", tmp_path / "odd[1]"
+    ok.mkdir()
+    odd.mkdir()
+    expert.meta["folders"] = [str(ok), str(odd)]
+    w = sessions.fence(expert, write=False)
+    assert f"Read(//{str(ok).lstrip('/')}/**)" in w and not any("odd[1]" in x for x in w)
+
+
+def test_side_sessions_leave_no_cli_transcript(expert, monkeypatch):
+    from fused_render.bots import claude_cli
+    seen = {}
+
+    class Proc:
+        pid, returncode = 0, 0
+
+        def __init__(self, cmd, **kw):
+            seen["cmd"] = cmd
+
+        def communicate(self, data, timeout=None):
+            return b'{"type":"result","subtype":"success","result":"ok"}\n', b""
+    monkeypatch.setattr(claude_cli, "runnable", lambda: "claude")
+    monkeypatch.setattr(sessions.subprocess, "Popen", Proc)
+    assert sessions.harness(expert, "q", False)["answer"] == "ok"
+    assert "--no-session-persistence" in seen["cmd"]
+    assert "--no-session-persistence" not in agent_engine.argv("claude", "m", "low", "/sp", "",
+                                                               fence=sessions.fence(expert, True))
 
 
 def test_expert_turn_message_and_system_prompt(expert):
@@ -183,6 +228,19 @@ def test_expert_turn_message_and_system_prompt(expert):
     text, _ = agent_engine.first_message(expert, "Next?", conv={"session_id": "abc"})
     assert text == f"Today is {sessions.today()}.\n\nMESSAGE: Next?"
     assert agent_engine.system_prompt_for(expert, "/x") == store.instructions(expert)
+
+
+def test_an_expert_rollover_makes_no_model_call(expert, monkeypatch):
+    notes, rolled = [], []
+    monkeypatch.setattr(expert, "conversation", lambda: {"session_id": "old", "tokens": 10 ** 9, "prompt_hash": "h"})
+    monkeypatch.setattr(expert, "transcript_lines", lambda since=0, *a, **k: ["user: x"] * 10)
+    monkeypatch.setattr(expert, "past_conversation", lambda *a, **k: ["user: earlier"])
+    monkeypatch.setattr(expert, "summarize_conversation", lambda *a, **k: pytest.fail("a model call for an expert"))
+    monkeypatch.setattr(expert, "conversation_rollover", lambda summary, h="": rolled.append(summary))
+    monkeypatch.setattr(expert, "emit", lambda role, text, **k: notes.append(text))
+    _conv, resume = agent_engine._conversation_plan(expert, agent_engine.DEFAULT_MODEL, "h")
+    assert resume is None and rolled == ["user: earlier"]
+    assert notes and "compacted" in notes[0] and "recall" not in notes[0]
 
 
 # -------------------------------------------------------------- task-quiet ---
@@ -275,3 +333,29 @@ def test_three_failed_attempts_then_give_up_until_it_grows(expert, monkeypatch, 
     assert quiet.run_pass()["sessions"] == 1
     rec = quiet._load(expert)["sessions"]["s1"]
     assert rec["size"] == os.path.getsize(transcript) and "fails" not in rec
+
+
+def test_a_busy_expert_is_not_a_failed_attempt(expert, monkeypatch, transcript):
+    calls = stub(monkeypatch)
+    monkeypatch.setattr(sessions, "_timeout", lambda: 0.01)
+    quiet.record_use(expert, "r1")
+    _age(transcript)
+    lock = store.write_lock(expert)
+    lock.acquire()  # a long chat turn holds the memory
+    try:
+        for _ in range(4):
+            assert quiet.run_pass() == {"sessions": 1, "errors": 1}
+    finally:
+        lock.release()
+    assert calls == [] and "fails" not in quiet._load(expert)["sessions"]["s1"]
+    assert all(r["error"] == sessions.BUSY for r in sessions.rows(expert))
+    assert quiet.run_pass() == {"sessions": 1, "errors": 0} and len(calls) == 1
+
+
+def test_tick_skips_without_the_workspace_claim(monkeypatch):
+    from fused_render.experts import scheduler
+    monkeypatch.setattr(registry, "owns", lambda: True)
+    monkeypatch.setattr(registry, "workspace_claimed", lambda: False)
+    monkeypatch.setattr(quiet, "run_pass", lambda **k: pytest.fail("a pass without the workspace"))
+    out = scheduler.tick()
+    assert out["ran"] is False and "workspace" in out["skipped"]

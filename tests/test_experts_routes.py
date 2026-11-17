@@ -30,8 +30,38 @@ def test_list_context_and_use_recorded(client, expert):
     st, out = j(client.post("/api/experts/context", {"expert": "canvas helper", "run_id": "r1"}))
     assert st == 200, out
     assert out["memory"] == store.memory(expert) and out["memory_path"] == store.memory_path(expert)
-    assert out["skills"] == [{"title": "Alpha skill", "path": os.path.join(store.expert_dir(expert), "skills", "a.md")}]
+    assert out["skills"] == [{"title": "Alpha skill", "path": os.path.join(store.expert_dir(expert), "skills", "a.md"),
+                              "text": "# Alpha skill\n\nbody"}]
     assert quiet._load(expert)["sessions"]["s-r1"]["run_ids"] == ["r1"]
+
+
+def test_context_caps_skill_text(client, expert):
+    from fused_render.experts import routes
+    d = os.path.join(store.expert_dir(expert), "skills")
+    os.makedirs(d, exist_ok=True)
+    for i in range(6):  # 6 files of 5 KB: each fits its own cap, the fifth meets the total's
+        with open(os.path.join(d, f"s{i}.md"), "w") as f:
+            f.write(f"# S{i}\n" + "x" * (5 * 1024))
+    with open(os.path.join(d, "a-big.md"), "w") as f:
+        f.write("# Big\n" + "y" * (10 * 1024))
+    st, out = j(client.post("/api/experts/context", {"expert": expert.id, "run_id": "r1"}))
+    assert st == 200, out
+    texts = {s["title"]: s["text"] for s in out["skills"]}
+    assert texts["Big"].startswith("# Big\nyyy") and "[... cut: " in texts["Big"]
+    assert len(texts["Big"].split("\n[... cut")[0]) <= routes.SKILL_TEXT_MAX
+    assert "cut" not in texts["S0"] and "cut" not in texts["S2"]
+    assert "[... cut: " in texts["S3"] and texts["S4"].startswith("[... cut: ") and texts["S5"].startswith("[... cut: ")
+    shown = sum(len(t.split("[... cut")[0].rstrip("\n")) for t in texts.values())
+    assert shown <= routes.SKILLS_TEXT_MAX
+
+
+def test_context_and_ask_need_the_workspace(client, expert, monkeypatch):
+    monkeypatch.setattr(registry, "workspace_claimed", lambda: False)
+    for path, body in (("/api/experts/context", {"expert": expert.id, "run_id": "r1"}),
+                       ("/api/experts/ask", {"expert": expert.id, "question": "q?", "run_id": "r1"})):
+        st, out = j(client.post(path, body))
+        assert st == 409 and out["reason"] == "workspace_busy", out
+    assert quiet._load(expert)["sessions"] == {}  # no use recorded
 
 
 def test_errors(client, expert):
@@ -99,3 +129,34 @@ def test_seed_once_and_a_deleted_expert_stays_deleted():
     assert seed.seed() == [] and len(store.all_experts()) == 1
     registry.delete(b.id)
     assert seed.seed() == [] and store.all_experts() == []
+
+
+def test_a_cut_short_seed_is_finished():
+    from fused_render import canvases
+    from fused_render.bots import bot as bm
+    # What a seed killed right after create() leaves: the default instructions, no skills, no face, no folders.
+    b = bm.create(name="Canvas Reference", kind="expert", greet=False,
+                  expert={"ask_me_about": "x", "shipped": "canvas-reference"})
+    d = store.expert_dir(b)
+    assert open(os.path.join(d, "instructions.md")).read() == store.DEFAULT_INSTRUCTIONS
+    assert not b.meta.get("face") and not b.meta.get("folders")
+    assert seed.seed() == ["canvas-reference"]
+    [b] = store.all_experts()
+    shipped = os.path.join(seed.SHIPPED_DIR, "canvas-reference")
+    assert open(os.path.join(d, "instructions.md")).read() == open(os.path.join(shipped, "instructions.md")).read()
+    assert sorted(os.listdir(os.path.join(d, "skills"))) == sorted(os.listdir(os.path.join(shipped, "skills")))
+    assert b.meta["face"]["shape"] == "hexagon" and b.folders() == [os.path.abspath(canvases.canvases_base())]
+
+
+def test_a_cut_short_seed_keeps_what_the_user_changed(tmp_path):
+    from fused_render.bots import bot as bm
+    b = bm.create(name="Canvas Reference", kind="expert", greet=False,
+                  expert={"ask_me_about": "x", "shipped": "canvas-reference"})
+    with open(os.path.join(store.expert_dir(b), "instructions.md"), "w") as f:
+        f.write("mine")
+    b.meta["folders"] = bm.clean_folders([str(tmp_path)])
+    b.save()
+    seed.seed()
+    [b] = store.all_experts()
+    assert open(os.path.join(store.expert_dir(b), "instructions.md")).read() == "mine"
+    assert b.folders() == [os.path.abspath(str(tmp_path))]

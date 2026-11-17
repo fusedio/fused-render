@@ -925,7 +925,9 @@ def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
     prompt changed, or no session yet: the first turn under this design, or
     the turn after a lost resume). A rollover seeds the fresh session with
     bot.summarize_conversation over the transcript since the session began;
-    a thin slice (a new bot) takes the digest without a model call."""
+    a thin slice (a new bot) takes the digest without a model call, and so
+    does an expert always: its chat makes no model call of ours (its memory
+    is memory.md, and it has no `recall`)."""
     conv = _call(getattr(bot, "conversation", None), None)
     if not isinstance(conv, dict):
         return None, None  # a bot without a conversation record (tests' fake): every turn a fresh session
@@ -938,16 +940,19 @@ def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
     since = int(conv.get("since_seq") or 0)
     lines = _call(getattr(bot, "transcript_lines", None), [], since)
     previous = (conv.get("summary") or "").strip()
-    summary = _call(getattr(bot, "summarize_conversation", None), "", since, previous) if len(lines) >= 4 else ""
+    expert = xstore.is_expert(bot)
+    summary = (_call(getattr(bot, "summarize_conversation", None), "", since, previous)
+               if len(lines) >= 4 and not expert else "")
     if not summary:  # a thin slice, or a summary call that failed: the previous note plus the digest
         summary = ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))).strip()
     _call(getattr(bot, "conversation_rollover", None), None, summary, sp_hash)
-    if why != "new" and not xstore.is_expert(bot):  # an expert's memory is memory.md, kept by the expert itself
+    if why != "new" and not expert:  # an expert's memory is memory.md, kept by the expert itself
         # Memory upkeep rides on the rollover (bot.curate_memory): one more call, every ~half a window.
         _call(getattr(bot, "curate_memory", None), None, since)
     if why == "over budget":
-        bot.emit("note", f"Conversation compacted at {tokens // 1000}k tokens: a summary carries what came before; "
-                         "`recall` still reaches every earlier message.")
+        bot.emit("note", f"Conversation compacted at {tokens // 1000}k tokens: " + (
+            "a digest of the earlier messages carries what came before." if expert else
+            "a summary carries what came before; `recall` still reaches every earlier message."))
     return _call(getattr(bot, "conversation", None), None), None
 
 
@@ -1071,7 +1076,7 @@ def run(bot, task: str, label: str | None = None) -> None:
                 _end_session(sess)
             since = int(conv.get("since_seq") or 0) if isinstance(conv, dict) else 0
             previous = (conv.get("summary") or "").strip() if isinstance(conv, dict) else ""
-            summary = (_call(getattr(bot, "summarize_conversation", None), "", since, previous)
+            summary = ((None if expert else _call(getattr(bot, "summarize_conversation", None), "", since, previous))
                        or ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))))
             _call(getattr(bot, "conversation_rollover", None), None, summary, _sha(sp_text))
             conv = _call(getattr(bot, "conversation", None), None)

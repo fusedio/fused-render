@@ -686,10 +686,13 @@ def _package():
 @_handled
 def bot_package_plan(bid: str):
     """What exporting this bot as a `.fusedbot` would carry (package.plan): the export dialog's whole model."""
-    from fused_render.bots.bot import is_super
+    from fused_render.bots.bot import is_expert, is_super
     try:
-        if is_super(_store().read_meta(bid)):  # before the plan: no scan of a bot that can never be exported
+        meta = _store().read_meta(bid)
+        if is_super(meta):  # before the plan: no scan of a bot that can never be exported
             raise ValueError("Super Bot cannot be exported: it is this machine's own assistant")
+        if is_expert(meta):
+            raise ValueError(_package().EXPERT_REFUSAL)
     except (FileNotFoundError, LookupError):
         raise ValueError(f"no such bot {bid}")
     except OSError as e:
@@ -1064,8 +1067,8 @@ def _tool(bid, body):
 
 
 def _viewport(bid, body):
-    _refuse_expert(bid, "viewport")
     """The live view's stage size: the bot's Chrome window follows it (stored for the next launch when asleep)."""
+    _refuse_expert(bid, "viewport")
     try:
         w, h = int(body.get("w")), int(body.get("h"))
     except (TypeError, ValueError):

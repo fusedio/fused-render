@@ -66,21 +66,27 @@ def _canvas_folder() -> str:
 
 
 def seed_one(key: str):
-    """Install shipped expert `key` (or finish one a cut-short seed left). Returns the Bot."""
+    """Install shipped expert `key`, or finish one a cut-short seed left (an expert with this shipped key but no
+    witness entry): files it lacks are copied, an instructions.md still the default one is replaced, and a face
+    or folders it has none of are set. Nothing the user set is overwritten. Returns the Bot."""
     from fused_render.bots import bot as bm
     src = os.path.join(SHIPPED_DIR, key)
     with open(os.path.join(src, "expert.json"), encoding="utf-8") as f:
         spec = json.load(f)
     b = _existing(key)
     if b is not None:
-        _copy(src, store.expert_dir(b), overwrite=False)
-        return b
-    b = bm.create(name=store.line(spec.get("name") or key, 80), kind="expert", greet=False,
-                  expert={"ask_me_about": store.line(spec.get("ask_me_about")), "shipped": key})
-    _copy(src, store.expert_dir(b), overwrite=True)  # over the default instructions.md create() laid out
-    if isinstance(spec.get("face"), dict):
+        d = store.expert_dir(b)
+        if store.read_text(os.path.join(d, store.INSTRUCTIONS)) == store.DEFAULT_INSTRUCTIONS:
+            os.remove(os.path.join(d, store.INSTRUCTIONS))  # create() laid it out; the copy was cut short
+        _copy(src, d, overwrite=False)
+    else:
+        b = bm.create(name=store.line(spec.get("name") or key, 80), kind="expert", greet=False,
+                      expert={"ask_me_about": store.line(spec.get("ask_me_about")), "shipped": key})
+        _copy(src, store.expert_dir(b), overwrite=True)  # over the default instructions.md create() laid out
+    if isinstance(spec.get("face"), dict) and not b.meta.get("face"):
         b.meta["face"] = bm.check_face(b.meta, spec["face"])
-    b.meta["folders"] = bm.clean_folders([_canvas_folder()])
+    if not b.meta.get("folders"):
+        b.meta["folders"] = bm.clean_folders([_canvas_folder()])
     b.save()
     return b
 

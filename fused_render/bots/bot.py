@@ -1980,7 +1980,7 @@ class Bot:
 
     def _expert_summary(self, meta, inbox_n, bs, detail):
         """summary() for an expert (docs/experts.md): the shape the page reads, no browser, plus its settings
-        (`expert`: ask_me_about, reads)."""
+        (`expert`: ask_me_about, shipped)."""
         try:
             from fused_render.experts import store as xstore
             manifest = xstore.manifest(self)

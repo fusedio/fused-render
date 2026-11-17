@@ -825,14 +825,9 @@ def _public_fields(meta: dict, pub: dict) -> dict:
 
 def _imported_expert(manifest: dict) -> dict:
     """An imported expert's manifest, made safe to arrive (docs/experts.md §5): `shipped` is dropped (that key
-    names an expert this app ships, and a file must not claim to be one), and an offer to every session
-    (`offered_to.targets` holding "*") narrows to canvas sessions; the importer widens it in Settings. `reads`
-    is kept: it is what the expert is for."""
+    names an expert this app ships, and a file must not claim to be one)."""
     out = copy.deepcopy(manifest)
     out.pop("shipped", None)
-    offered = out.get("offered_to")
-    if isinstance(offered, dict) and isinstance(offered.get("targets"), list) and "*" in offered["targets"]:
-        offered["targets"] = ["canvas"]
     return out
 
 

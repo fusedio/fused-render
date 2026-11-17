@@ -2734,10 +2734,21 @@ def _s3_read_dirs(s3: bool) -> list:
 # the server; an expert runs fenced in its own session), so Claude pre-allows
 # all three, like the S3 tools.
 EXPERT_TOOLS = ("expert_list", "expert_context", "expert_ask")
-# An ask is a whole expert session (permission_server's EXPERT_TIMEOUT,
-# 600 s), so the per-call ceilings that would cut it short (Codex's 60 s
-# default, this server's own) are raised above it.
-EXPERT_CALL_CEILING = 660.0
+# An ask is a whole expert session, so the per-call ceilings that would cut it
+# short (Codex's 60 s default, this server's own) sit 60 s above the task-side
+# wait, permission_server.EXPERT_TIMEOUT = the server's worst case (an ask slot
+# waited for up to experts/sessions.ASK_WAIT_S 120 s, then the harness's
+# TIMEOUT_S 600 s or $FUSED_RENDER_EXPERT_TIMEOUT) + 30 s. The numbers are
+# copied there and here (neither side imports the other).
+def _expert_call_ceiling() -> float:
+    try:
+        harness = float(os.environ.get("FUSED_RENDER_EXPERT_TIMEOUT") or 0)
+    except ValueError:
+        harness = 0.0
+    return (harness if harness > 0 else 600.0) + 120 + 30 + 60
+
+
+EXPERT_CALL_CEILING = _expert_call_ceiling()
 # Present in a run dir when `_start` found experts for it: the Claude argv is
 # built in the session host, a process that cannot see the bots, so it reads
 # the answer from here.

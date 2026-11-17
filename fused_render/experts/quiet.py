@@ -11,7 +11,7 @@ and expert_ask, routes.py) notes the calling run in the expert's `.fused/expert/
 whose transcript has been idle `idle_s()` and has grown past `size`, starts ONE `task-quiet` session with only the
 unread turns (speaker-tagged, framed as data) and "update your memory from this". The new size is recorded only
 after that session finished ok; a failure is retried next pass, and after `MAX_FAILS` attempts at one size that
-size counts as read. Everything is on disk, so a restart loses nothing and a resumed task is read again from
+size counts as read (a session that never started because the expert stayed busy is not an attempt). Everything is on disk, so a restart loses nothing and a resumed task is read again from
 where it was left. Nothing here reads what the expert wrote.
 """
 from __future__ import annotations
@@ -268,6 +268,8 @@ def quiet_one(bot, session: dict, rec: dict) -> dict | None:
     row = sessions.run(bot, "task-quiet", prompt_for(md), trigger)
     if row.get("status") == "done":
         _update(bot, sid, read)
+    elif row.get("error") == sessions.BUSY:
+        pass  # the write lock was held the whole wait (a long chat turn): not an attempt, the next pass retries
     else:
         def failed(r):
             f = r.get("fails") if isinstance(r.get("fails"), dict) else {}

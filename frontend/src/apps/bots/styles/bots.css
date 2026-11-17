@@ -650,7 +650,7 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page :is(button.xp-head, .xp-head.static, button.xp-change) { display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 0; padding: 7px 10px;
   border-radius: 7px; background: transparent; color: var(--muted); text-align: left; font-size: 12px; font-weight: inherit; line-height: 1.45; }
 .bots-page :is(button.xp-head, button.xp-change):hover { background: var(--hover); }
-.bots-page button.xp-change { flex-direction: row; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.bots-page .xp-changes button.xp-change { flex-direction: row; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; }
 .bots-page button.xp-change .xp-origin { flex: 1; }
 .bots-page button.xp-change .xp-when { margin-left: 0; }
 .bots-page .xp-detail { display: flex; flex-direction: column; gap: 10px; padding: 4px 10px 10px; min-width: 0; }
