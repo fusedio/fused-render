@@ -155,42 +155,34 @@ def test_checks(client, expert, monkeypatch):
     assert _json(client.post(f"/api/experts/{BID}/checks/run", {})) == (200, {"run_id": "r123"})
 
 
-def test_consolidate_requests_a_proposal_and_returns_at_once(client, expert, monkeypatch):
+def test_consolidate_starts_in_the_background_and_returns_at_once(client, expert, monkeypatch):
     calls = []
-    monkeypatch.setattr(consolidate, "run", lambda bot, force=False: (
-        calls.append(("run", force)) or {"ran": True, "added": ["m1"], "bumped": [], "ignored": 0}))
-    monkeypatch.setattr(proposals, "candidates", lambda bot: [{"id": "m1"}, {"id": "m2"}])
-    monkeypatch.setattr(proposals, "prepare", lambda *a, **k: pytest.fail("never synchronous in a request"))
-    monkeypatch.setattr(proposals, "request", lambda bot, items, topic="": (
-        calls.append(("request", [i["id"] for i in items])) or {"id": "p9", "status": "preparing"}))
+    monkeypatch.setattr(consolidate, "run", lambda *a, **k: pytest.fail("never synchronous in a request"))
+    monkeypatch.setattr(consolidate, "start", lambda bot, force=False: calls.append(force) or True)
     status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {"force": True}))
-    assert status == 200
-    assert body == {"ran": True, "added": ["m1"], "bumped": [], "ignored": 0, "proposed": ["p9"]}
-    assert calls == [("run", True), ("request", ["m1", "m2"])]
-    # Not due: a normal answer; nothing to propose.
-    monkeypatch.setattr(consolidate, "run", lambda bot, force=False: {"ran": False, "added": [], "bumped": [],
-                                                                      "ignored": 0})
-    monkeypatch.setattr(proposals, "candidates", lambda bot: [])
+    assert status == 200 and body == {"started": True} and calls == [True]
+    monkeypatch.setattr(consolidate, "start", lambda bot, force=False: False)  # running, or nothing to do
     status, body = _json(client.post(f"/api/experts/{BID}/consolidate", None, raw=True))
-    assert status == 200 and body["ran"] is False and body["proposed"] == []
+    assert status == 200 and body == {"started": False}
     status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {"force": "yes"}))
     assert status == 400
+    monkeypatch.setattr(model, "available", lambda bot: (False, "needs Claude, Codex or Copilot"))
+    status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {}))
+    assert status == 409 and body["reason"] == "unavailable"
 
-    monkeypatch.setattr(proposals, "candidates", lambda bot: [{"id": "m1"}])
 
-    def busy(bot, items, topic=""):
+def test_propose_is_one_request_for_every_candidate(expert, monkeypatch):
+    from fused_render.experts import routes
+    calls = []
+    monkeypatch.setattr(proposals, "candidates", lambda bot: [{"id": "m1"}, {"id": "m2"}])
+    monkeypatch.setattr(proposals, "request", lambda bot, items, topic="", gap="": (
+        calls.append([i["id"] for i in items]) or {"id": "p9", "status": "preparing"}))
+    assert routes.propose(expert) == ["p9"] and calls == [["m1", "m2"]]
+
+    def busy(bot, items, topic="", gap=""):
         raise ValueError(proposals.BUSY)
-
     monkeypatch.setattr(proposals, "request", busy)
-    status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {}))
-    assert status == 200 and body["proposed"] == []
-
-    def bad(bot, items, topic=""):
-        raise ValueError("no lessons to propose")
-
-    monkeypatch.setattr(proposals, "request", bad)
-    status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {}))
-    assert status == 400 and body == {"error": "no lessons to propose"}
+    assert routes.propose(expert) == []
 
 
 def test_proposals_list_every_status_newest_first(client, expert):

@@ -82,6 +82,9 @@ def fake_text(monkeypatch):
 
     monkeypatch.setattr(model, "text", text)
     monkeypatch.setattr(model, "available", lambda b: (True, ""))
+    # Gap repair's research run (consolidate step c): nothing found.
+    monkeypatch.setattr(model, "tool_turn", lambda b, prompt, **k: '{"found": false, "answer": "", "refs": [], '
+                                                                  '"why": "nothing"}')
     text.calls, text.replies = calls, replies
     return text
 

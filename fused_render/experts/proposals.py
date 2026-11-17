@@ -133,6 +133,21 @@ def candidates(bot) -> list:
     return rows
 
 
+def propose_candidates(bot) -> list:
+    """`candidates(bot)`, all of them, as ONE proposal started in the background (`request`). Returns the new
+    proposal ids (none or one); none when one is already being prepared."""
+    items = list(candidates(bot) or [])
+    if not items:
+        return []
+    try:
+        prop = request(bot, items)
+    except ValueError as e:
+        if str(e) == BUSY:
+            return []
+        raise
+    return [prop["id"]] if isinstance(prop, dict) and prop.get("id") else []
+
+
 def _slug(name) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")[:60] or "playbook"
 

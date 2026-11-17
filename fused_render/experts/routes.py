@@ -264,7 +264,8 @@ def experts_memory_forget(eid: str, body: dict = Body(...), x_fused: str | None 
 def experts_observations(eid: str):
     bot = _expert(eid)
     obs = _mod("observations")
-    return {"pending": obs.pending(bot), "due": bool(obs.due(bot))}
+    return {"pending": obs.pending(bot), "due": bool(obs.due(bot)),
+            "consolidating": _mod("consolidate").status(bot)}
 
 
 @router.get(PREFIX + "/{eid}/consults")
@@ -322,29 +323,41 @@ def experts_consolidate(eid: str, body: dict | None = Body(default=None),
     force = body.get("force", False)
     if not isinstance(force, bool):
         raise ValueError("force must be true or false")
+    ok, reason = _mod("model").available(bot)
+    if not ok:
+        raise _Unavailable(reason or "no engine is available for this expert")
     _writable()
-    result = dict(_mod("consolidate").run(bot, force=force) or {})
-    result["proposed"] = propose(bot)
-    return result
+    return {"started": bool(_mod("consolidate").start(bot, force=force))}
 
 
 def propose(bot) -> list:
-    """`proposals.candidates(bot)`, all of them, as ONE proposal started in the background
-    (`proposals.request`: status "preparing" at once, its card shows itself when ready). Returns the new
-    proposal ids (none or one); none when one is already being prepared. Shared with the scheduler."""
-    proposals = _mod("proposals")
-    items = list(proposals.candidates(bot) or [])
-    if not items:
-        return []
-    try:
-        prop = proposals.request(bot, items)
-    except ValueError as e:
-        if str(e) == getattr(proposals, "BUSY", ""):
-            return []
-        raise
-    if not isinstance(prop, dict) or not prop.get("id"):
-        return []
-    return [prop["id"]]
+    """`proposals.propose_candidates(bot)`: every due lesson as ONE proposal started in the background. Returns
+    the new proposal ids (none or one). Shared with the scheduler."""
+    return list(_mod("proposals").propose_candidates(bot) or [])
+
+
+# --------------------------------------------------------------------- gaps ---
+@router.get(PREFIX + "/{eid}/gaps")
+@_handled
+def experts_gaps(eid: str):
+    bot = _expert(eid)
+    st = _mod("consolidate").status(bot)
+    return {"gaps": _mod("gaps").listing(bot),
+            "researching": st.get("gap") if st.get("stage") == "researching" else None}
+
+
+@router.post(PREFIX + "/{eid}/gaps/{gid}/dismiss")
+@_handled
+def experts_gap_dismiss(eid: str, gid: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    bot = _expert(eid)
+    gaps = _mod("gaps")
+    if gid not in gaps.ids(bot):  # never used in a path; only a stored id is accepted
+        raise _NotFound("no such gap")
+    _writable()
+    return gaps.dismiss(bot, gid)
 
 
 # ------------------------------------------------------------------ capture ---

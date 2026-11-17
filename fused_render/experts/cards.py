@@ -181,13 +181,16 @@ def _oldest_open(bot):
 
 def tick_one(bot) -> bool:
     """Show the oldest open proposal (ready, or shown on a card that is no longer up) of this one expert when it
-    is idle. True when a card went up. Never raises."""
+    is idle; with none waiting, ask a gap question that is due (`ask_if_needed`). True when a card went up.
+    Never raises."""
     try:
         with bot.lock:
             if bot.thread is not None and bot.thread.is_alive():
                 return False
         p = _oldest_open(bot)
-        return bool(p is not None and show(bot, p))
+        if p is not None:
+            return bool(show(bot, p))
+        return ask_if_needed(bot)
     except Exception:  # noqa: BLE001
         logger.warning("expert %s: proposal tick failed", getattr(bot, "id", "?"), exc_info=True)
         return False
@@ -202,3 +205,133 @@ def tick() -> None:
         return
     for bot in experts:
         tick_one(bot)
+
+
+# ------------------------------------------------------------------ gap questions ---
+GAP_TEXT = ("Sessions asked me this {n} time{s} and I could not find the answer in my skills or the folders I read:"
+            "\n\n{q}\n\nIf you tell me, I will remember it. Reply \"skip\" to drop it.")
+#: A reply this long or longer is an answer even when it starts like a "no" ("No, it lives in …").
+NO_MAX_WORDS = 4
+
+
+def _busy(bot) -> bool:
+    return bot.thread is not None and bot.thread.is_alive()
+
+
+def ask_if_needed(bot) -> bool:
+    """Raise the question card for the gap that is due (`gaps.to_ask`) when the expert is idle and no proposal
+    card is waiting. True when a card went up. Never raises."""
+    try:
+        from fused_render.experts import gaps
+        with bot.lock:
+            if _busy(bot):
+                return False
+        if _oldest_open(bot) is not None:
+            return False
+        g = gaps.to_ask(bot)
+        return bool(g is not None and ask_gap(bot, g))
+    except Exception:  # noqa: BLE001
+        logger.warning("expert %s: gap question tick failed", getattr(bot, "id", "?"), exc_info=True)
+        return False
+
+
+def ask_gap(bot, gap) -> bool:
+    """Ask the user about `gap` in the expert's chat when the bot is idle (a worker becomes `bot.thread`, the way
+    `show` raises a proposal card). False when it is busy, deleted, or another gap card is up."""
+    from fused_render.experts import gaps
+    if not isinstance(gap, dict) or not gap.get("id"):
+        return False
+    with bot.lock:
+        if getattr(bot, "deleted", False) or getattr(bot, "read_only", False) or _busy(bot):
+            return False
+        if not gaps.card_claim(bot, gap["id"]):
+            return False
+        bot.stop_flag.clear()
+        bot.pause_flag.clear()
+        bot.inbox = []
+        t = threading.Thread(target=_gap_worker, args=(bot, gap), daemon=True, name=f"expert-gap-{bot.id}")
+        bot.thread = t
+        try:
+            t.start()
+        except Exception:
+            bot.thread = None
+            gaps.card_release(bot, gap["id"])
+            raise
+    return True
+
+
+def _is_skip(text) -> bool:
+    _yes, no = _verdict_res()
+    t = str(text or "").strip()
+    return t.casefold().strip(" .!") == "skip" or (no.match(t) is not None and len(t.split()) < NO_MAX_WORDS)
+
+
+def _gap_worker(bot, gap) -> None:
+    from fused_render.experts import gaps
+    gid = gap["id"]
+    queued, settled, stopped = [], False, False
+    try:
+        bot.set_status("waiting", task="Question from the expert", step=0, note="", waiting_on=None)
+        n = int(gap.get("count") or 1)
+        ev = bot.emit("question", GAP_TEXT.format(n=n, s="" if n == 1 else "s", q=gap.get("question") or ""),
+                      expert_gap=gid, options=["Skip"])
+        seq = ev.get("seq")
+        gaps.mark_asked(bot, gid, seq)
+        bot.set_status("waiting", waiting_on=seq)
+        while True:
+            _wait_inbox(bot)
+            if bot.stop_flag.is_set():
+                stopped = True
+                break
+            reply = None
+            for a in bot._drain_inbox():
+                # Only the user at this Mac can answer: an answer becomes a lesson the expert trusts.
+                if reply is None and not chan.is_texted(a) and str(a).strip():
+                    reply = str(a).strip()
+                else:
+                    queued.append(a)
+            if reply is not None:
+                if _is_skip(reply):
+                    gaps.dismiss(bot, gid)
+                    bot.emit("note", "Dropped: I will not ask about this again.")
+                else:
+                    out = gaps.answer(bot, gid, reply)
+                    claim = (out.get("lesson") or {}).get("claim") or reply
+                    bot.emit("note", f"Thanks. Saved as a lesson: {claim}")
+                settled = True
+                break
+            if any(chan.is_texted(a) for a in queued):
+                bot.emit("note", "Only you, at this Mac, can answer this question; that message waits until it is "
+                                 "answered or skipped here.")
+            bot.set_status("waiting", waiting_on=seq)  # receive() flipped it to running
+    except Exception as e:  # noqa: BLE001 — never a stuck "waiting"
+        logger.warning("expert %s: gap question failed", bot.id, exc_info=True)
+        try:
+            bot.emit("error", f"The question card failed: {type(e).__name__}: {e}")
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        if not settled:
+            try:
+                gaps.put_aside(bot, gid, stopped=stopped)
+            except Exception:  # noqa: BLE001
+                logger.warning("expert %s: gap %s not put aside", bot.id, gid, exc_info=True)
+        try:
+            with bot.lock:
+                queued += list(bot._drain_inbox())
+                bot.set_status("idle", note="", waiting_on=None)
+                if bot.thread is threading.current_thread():
+                    bot.thread = None
+        except Exception:  # noqa: BLE001
+            logger.warning("expert %s: gap card slot not released cleanly", bot.id, exc_info=True)
+            with bot.lock:
+                if bot.thread is threading.current_thread():
+                    bot.thread = None
+        gaps.card_release(bot, gid)
+        if queued:
+            try:
+                from fused_render.experts import chat
+                bot.start_task("\n".join(str(a) for a in queued), label=str(queued[0]),
+                               via=chat._redeliver_via(queued))
+            except Exception:  # noqa: BLE001
+                logger.warning("expert %s: queued message not re-delivered", bot.id, exc_info=True)
