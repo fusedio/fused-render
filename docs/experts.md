@@ -45,6 +45,8 @@ Bot folder (bots v3 layout, `bots/paths.py`):
     checks/<run_id>.json        gate runs; checks/latest.json is a copy of the newest finished run
     proposals/<id>.json         skill proposals
     gaps.json                   {"version":1,"gaps":[Gap],"last_asked":{"at","gap"}} (§11)
+    memory-archive.jsonl        one removed lesson per line (§12)
+    tidy-last.json              the last tidy's summary (§12)
 ```
 
 Machine state: `<home>/bots/experts-seeded.json` (seed witness), `<home>/bots/experts-captured.json`
@@ -64,7 +66,8 @@ under `experts.store.lock(bot)` (one `threading.RLock` per bot id).
   "learns_from": ["repeated_request", "user_correction", "error_then_fix", "answer_contradicted", "unanswered"],
   "engine": "auto",
   "model": "",
-  "memory": {"consolidate_at": 3, "consolidate_after_s": 86400, "propose_at": 3, "index_lines": 200},
+  "memory": {"consolidate_at": 3, "consolidate_after_s": 86400, "propose_at": 3, "index_lines": 200,
+             "limit": 50, "tidy_at": 30, "stale_days": 14, "rare_uses": 2, "heavy_uses": 5},
   "gaps": {"research": true, "ask_after": 2, "max_attempts": 2, "ask_every_s": 86400},
   "shipped": "canvas-reference"
 }
@@ -76,6 +79,8 @@ under `experts.store.lock(bot)` (one `threading.RLock` per bot id).
   `ask_after` = times a gap is asked before the user may be asked about it; `max_attempts` = research runs per gap
   before the user may be asked; `ask_every_s` = at most one new gap question per expert per this many seconds.
 
+- `memory.limit` / `tidy_at` / `stale_days` / `rare_uses` / `heavy_uses`: the memory budget (§12). A manifest
+  without them gets the defaults.
 - `reads` kinds: `canvas-mirror` (every environment root under the canvases root, the listed scope folders
   that exist) and `folder` (`{"kind":"folder","path":"/abs"}`).
 - `offered_to.targets`: `"canvas"` = sessions whose target is inside a canvas clone; `"*"` = every session.
@@ -148,15 +153,23 @@ make_handler(roots, on_tool=None) -> handler       # handler(name, input) -> (te
 ```
 Item = {"id","claim","kind","trust","count","sessions":[...],"about":[...],"created","updated",
         "proposed": bool, "promoted": bool, "rejected": bool,
-        "contradicted": int, "contradicted_sessions": [...]}      # absent on older items: 0 / []
+        "contradicted": int, "contradicted_sessions": [...],      # absent on older items: 0 / []
+        "cited": int, "last_used": ts | None,                     # absent on older items: 0 / None
+        "merged_from"?: [{"id","claim"}]}                         # a lesson a tidy merge made (§12)
 items(bot) -> list[Item]
 add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, gap="") -> Item   # gap: stored as `gap`
         # a claim equal after normalisation (lowercase, collapsed whitespace, no trailing punctuation) bumps instead
-bump(bot, item_id, *, session="") -> Item | None      # count += 1 only when `session` is new or empty
+bump(bot, item_id, *, session="") -> Item | None      # count += 1 only when `session` is new or empty; sets last_used
+cite(bot, ids) -> [ids]                               # cited += 1, last_used = now, per existing id (once per call)
+cited(item) -> int ; uses(item) -> int                # uses = count + cited
+age_days(item, now=None) ; idle_days(item, now=None)  # from created ; from max(updated, last_used)
+remove(bot, ids, reason, *, skill="", whys=None) -> [Item]   # out of memory into the archive
+merge(bot, ids, claim, *, why="") -> (Item, [archived]) | None   # tidy's merge (§12)
+archived(bot, limit=100) -> list                      # the archive, newest first
 contradict(bot, item_id, *, session="") -> Item | None  # contradicted += 1 only when `session` is new to
                                                       # contradicted_sessions or empty; never touches count
 contradicted(item) -> int                             # 0 when absent
-forget(bot, id_or_text) -> int                        # removed count
+forget(bot, id_or_text) -> int                        # removed count; archived with reason "forgotten"
 mark(bot, item_id, **flags) -> Item | None
 indexed(item) -> bool      # part of the always-loaded index: trust user, or trust outcome with count >= 2
 index_text(bot) -> str     # "- [<id>] <claim> (seen N×)" for indexed items, most seen first, capped at index_lines;
@@ -165,8 +178,9 @@ index_text(bot) -> str     # "- [<id>] <claim> (seen N×)" for indexed items, mo
 `trust`: `user` (said directly in chat, or the user's answer to a gap question), `outcome` (from a session),
 `research` (a gap's grounded finding, §11; carries `gap: <gap id>`), `gap` (an unanswered consult). An `outcome`
 lesson enters the index (and so every answer) only once seen in two sessions; a `user` lesson at once; a
-`research` lesson only once `promoted` (its skill fix was approved; `GET …/memory` reports `indexed: false`
-until then); `gap` never.
+`research` lesson never while it is in memory (`GET …/memory` reports `indexed: false`): once its skill fix is
+approved the skill carries it and the lesson leaves memory (§12). Only an old item still flagged `promoted` (stored
+before approval removed lessons) is indexed, until the next tidy archives it; `gap` never.
 A lesson with `contradicted > 0` (a session showed it wrong or too broad) stays in memory and in the index, flagged
 as above, and is never a `proposals.candidates` item.
 
@@ -196,17 +210,20 @@ observation: `add` / `bump` name the memory item, `gap` names the gap record it 
 run(bot, *, force=False) -> {"ran": bool, "added": [ids], "bumped": [ids], "ignored": int, "reason"?: str,
                               # when ran:
                               "contradicted": [ids], "gaps": [gap ids touched], "researched": [gap ids],
-                              "proposed": [proposal ids]}
+                              "proposed": [proposal ids],
+                              "tidied": {"deleted": [ids], "merged": [{"into","claim","from":[ids]}],
+                                         "promoting": [ids], "over_limit": [ids]}}   # §12
 start(bot, *, force=False) -> bool    # run in a daemon thread; False when one runs or would_run is False
-status(bot) -> {"running": bool, "stage": "lessons"|"gaps"|"researching"|"proposing"|"", "gap": gid|None}
-would_run(bot, force=False) -> bool   # not force: observations.due; force: anything pending or gaps.repairable
+status(bot) -> {"running": bool, "stage": "lessons"|"gaps"|"researching"|"proposing"|"tidying"|"", "gap": gid|None}
+would_run(bot, force=False) -> bool   # not force: observations.due; force: anything pending, gaps.repairable,
+                                      # or memory over tidy_at (tidy.needed)
 failures(bot) -> int        # consecutive failed consolidation calls
 FALLBACK_AFTER = 3
 ```
 Single flight per expert (`run` while one runs → `{"ran": False, ...}`). Not due and not `force` →
-`{"ran": False, ...}`; `force` with nothing pending still runs when an open gap is repairable. No engine
-(`model.available` false) → `{"ran": False, "reason": …}`, nothing touched. Stages, in one run (§11):
-**lessons** → **gaps** → **researching** (one per gap) → **proposing**.
+`{"ran": False, ...}`; `force` with nothing pending still runs when an open gap is repairable or memory holds more
+than `tidy_at` lessons. No engine (`model.available` false) → `{"ran": False, "reason": …}`, nothing touched. Stages,
+in one run (§11, §12): **lessons** → **gaps** → **researching** (one per gap) → **proposing** → **tidying**.
 One `model.text` call: current items + pending lesson observations → JSON list of
 `{"obs": id, "op": "add" | "bump" | "nothing", "item": id?, "claim": str?}`. When there are gap observations and
 open gaps, the call also lists those gap observations and the open gaps, and may answer
@@ -263,7 +280,8 @@ request(bot, items, *, topic="", gap="") -> Proposal   # asynchronous; see below
 propose_candidates(bot) -> [pid]    # all candidates as ONE request; [] when none or one is preparing
 prepare(bot, items) -> Proposal     # the same work synchronously (tests): the draft; "ready"
 get(bot, pid) -> Proposal | None ; listing(bot) -> list[Proposal]      # every status, newest first
-approve(bot, pid) -> Proposal       # bot.skill_save(...), items marked promoted
+approve(bot, pid) -> Proposal       # bot.skill_save(...), then its items leave memory for the archive
+                                    # (reason "promoted", skill = the saved name; §12)
 reject(bot, pid) -> Proposal        # items marked rejected
 card_text(proposal) -> tuple[str, str]   # (text, detail) for the approval event; detail is the unified diff
 ```
@@ -495,7 +513,8 @@ POSTs require the `X-Fused` header (`server.common._require_fused`). Errors are 
 |---|---|
 | `GET /api/experts` | `[{id, name, ask_me_about, engine, model, available, reason}]` |
 | `POST /api/experts/consult` | `{expert, question, context?, run_id?}` → `{id, answer, refs, used, unsure}`; 404 unknown expert; 409 `{error, reason:"unavailable"}`; 403 `{error: "that expert is not offered to this session"}` when `run_id` is given, `<run dir>/experts.json` exists and the expert is not in it (matched by `id` when the entry has one, else by name, case-insensitive). No `run_id` (a local call): any expert. |
-| `GET /api/experts/{id}/memory` | `{items: [Item + {indexed: bool}], index: str}`; every item carries `contradicted` (int) and `contradicted_sessions` (0 / `[]` when absent) |
+| `GET /api/experts/{id}/memory` | `{items: [Item + {indexed: bool, uses: int}], index: str, limit: int, tidy_at: int, total: int, last_tidy: TidySummary \| null}`; every item carries `contradicted` (int), `contradicted_sessions` (0 / `[]` when absent), `cited` (int, 0 when absent), `last_used` (ts or null) and, when a merge made it, `merged_from` (§12) |
+| `GET /api/experts/{id}/memory/archive` | `{archived: [Item + {removed_at, reason, skill?, why?, into?}]}`, newest first, 100 (§12) |
 | `POST /api/experts/{id}/memory/forget` | `{id}` → `{removed}` |
 | `GET /api/experts/{id}/observations` | `{pending: [Obs] (oldest first), done: [Obs] (newest first, 200), due: bool, consolidating: consolidate.status}`; every observation of kind `gap` carries `gap`: its Gap record (by `outcome.gap`, else by consult id), `null` when none yet |
 | `GET /api/experts/{id}/consults` | `{consults: [Consult]}` (newest first, 100) |
@@ -558,7 +577,7 @@ skill fixes. Nothing else researches; the scheduler only decides WHEN consolidat
      un-proposed `research` lesson regardless of count on the next run.
    - **Not found** (or a failed run): `attempts += 1`, `error` says why, the gap stays `open`.
 4. **Propose** (stage `proposing`): `proposals.propose_candidates` as before. Approve → gap `answered`
-   (resolution `skill`) and the research lesson is `promoted`, so it joins the index; reject or a failed proposal →
+   (resolution `skill`) and the research lesson leaves memory for the archive (the skill now carries it, §12); reject or a failed proposal →
    `dismissed` (never researched or proposed again).
 5. **Ask the user.** An open gap is `askable` once `count >= ask_after` or `attempts >= max_attempts` (and it was
    researched at least once, unless research is off). `cards.tick_one` (scheduler tick, chat hand-back) and the end
@@ -579,3 +598,69 @@ skill fixes. Nothing else researches; the scheduler only decides WHEN consolidat
 
 Trust (§7 holds): research never writes a skill, and its lesson stays out of answers until the user approves its
 skill fix; only the user's answer typed at the Mac writes a `user` lesson.
+
+## 12. Memory budget
+
+Memory used to grow without bound: a session can add two or three lessons, most are seen once and never used, and
+nothing ever left. Now memory holds **at most `limit` (50) lessons**, and once it holds **more than `tidy_at` (30)**,
+every consolidation run ends by tidying it (stage `tidying`, module `experts/tidy.py`).
+
+**Usage.** Each lesson counts how often it is used: `count` (sessions that showed it) and `cited` (consult or chat
+answers whose `used` list named it; `memory.cite`, called by `consult.consult` and by chat runs in `engine._run`;
+the quality gate's answers do not count). `uses = count + cited`. `last_used` is set by a citation or a bump.
+A lesson's age runs from `created`; its idle time from the later of `updated` and `last_used`.
+
+**What leaves memory, and where it goes.** Every lesson that leaves memory is appended to
+`memory-archive.jsonl` (the full lesson plus `removed_at`, `reason`, and `skill`, `why` or `into` when they apply).
+The reasons:
+
+- `promoted`: the user approved a skill proposal that covered the lesson; the skill carries it now (`skill` names
+  it). This happens in `proposals.approve`, right after the skill is written. An old lesson still flagged
+  `promoted` from before this rule is archived the next time tidy runs.
+- `forgotten`: the user's own Forget (chat `forget_lesson`, `POST …/memory/forget`).
+- `stale`: tidy deleted it (`why` is the model's reason).
+- `merged`: tidy folded it into a broader lesson (`into` is that lesson's id).
+- `over_limit`: memory was over its limit.
+
+**The tidy review.** One model call sees every lesson as a short line (id, claim, where it came from: taught by you /
+from sessions / found by research, times seen, times cited, age, days since last seen or used, times
+contradicted, whether a proposal is open) and the rule in plain words: delete lessons that are old AND rarely used;
+promote lessons that are used a lot; merge two or three related lessons that agree into one; keep the rest; when
+unsure, keep. It answers a JSON list of `{"id", "do": "delete"|"promote"|"keep", "why"}` and
+`{"do": "merge", "ids": [2-3 ids], "claim", "why"}`. The model only suggests; code decides, in this order:
+
+1. **Delete** only a lesson with `uses <= rare_uses` (2), idle for at least `stale_days` (14), not taught by the
+   user and not in an open proposal. Anything else the model wants deleted is kept.
+2. **Merge** (at most 5 per tidy) only 2 or 3 distinct existing lessons, none in an open proposal, none
+   contradicted, none used enough to promote (`uses >= heavy_uses`), with a merged claim of 1-400 characters that
+   is not another lesson's claim. Some detail may be lost; that is the price of a smaller memory. The merged lesson
+   (kind `lesson`) takes the union of the sessions and `about`, `count` = the size of that union (or the largest
+   original count if bigger), the summed `cited`, the earliest `created`, the latest `updated` / `last_used`, trust
+   `user` only when every original was the user's (else `outcome`), and `merged_from: [{"id","claim"}]`. A merged
+   claim equal to one of the originals keeps that lesson and folds the others into it.
+3. **Promote** only a lesson with `uses >= heavy_uses` (5), not contradicted, not rejected and not in an open
+   proposal. All of them go into ONE `proposals.request`, and none while a proposal is preparing or waiting on its
+   card. They stay in memory until the user approves (then they are archived as `promoted`); on Reject they stay and
+   are not proposed again.
+4. Each lesson belongs to the first action in the answer that names it; a later action naming it is ignored.
+   A failed call or an answer that cannot be read deletes, merges and promotes nothing.
+
+**The hard limit**, enforced after the review with no model: while memory holds more than `limit`, lessons leave as
+`over_limit`: first those not taught by the user and not in an open proposal (fewest uses first, then longest idle),
+then the others not taught by the user, and a user-taught lesson only when nothing else is left.
+
+`memory.add` never refuses because of the limit; tidy handles it. Archived lessons are out of every prompt (capture,
+consolidation, answers). `force` consolidation (`POST …/consolidate {"force": true}`) runs a tidy even with nothing
+pending when memory holds more than `tidy_at`.
+
+**Results.** `consolidate.run` returns `tidied: {"deleted": [ids], "merged": [{"into", "claim", "from": [ids]}],
+"promoting": [ids], "over_limit": [ids]}`. The last tidy that reviewed or removed anything is saved as
+`tidy-last.json` and served as `last_tidy` on `GET …/memory`:
+
+```
+TidySummary = {"at": ts, "reviewed": bool, "error": str, "total_before": int, "total_after": int,
+               "deleted": [{"id","claim","why"?}], "merged": [{"into","claim","from": [{"id","claim"}],"why"?}],
+               "promoting": [{"id","claim"}], "proposal"?: pid, "over_limit": [{"id","claim"}],
+               "swept": [{"id","claim"}],
+               "counts": {"deleted","merged","promoting","over_limit","swept"}}
+```

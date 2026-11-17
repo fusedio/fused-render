@@ -261,9 +261,10 @@ def run(bot) -> dict:
     if extra > 0:
         open_ids = proposals.open_item_ids(bot)
         drop = _over_limit_order(rows, open_ids, now)[:extra]
-        gone = memory.remove(bot, [i["id"] for i in drop], "over_limit")
-        result["over_limit"] = [i["id"] for i in gone]
-        summary["over_limit"] = [_brief(i) for i in gone]
+        gone = {i["id"] for i in memory.remove(bot, [i["id"] for i in drop], "over_limit")}
+        drop = [i for i in drop if i["id"] in gone]  # in removal order
+        result["over_limit"] = [i["id"] for i in drop]
+        summary["over_limit"] = [_brief(i) for i in drop]
 
     if summary["reviewed"] or swept or result["over_limit"]:
         summary["total_after"] = len(memory.items(bot))
