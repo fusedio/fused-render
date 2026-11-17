@@ -66,6 +66,7 @@ import {
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import { retainedFrames } from "@apps/explorer/lib/held-frames";
 import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
 import {
   pendingClaudeAskVersion,
@@ -877,6 +878,12 @@ const annotateTargetFrame = (): HTMLIFrameElement | null =>
 // A NATIVE content mode's box in the held-frame swap: what a frame's `load`
 // is to an iframe, its mount is to this — the view draws its own loading
 // state, so there is nothing to wait for before showing it.
+//
+// A pane without `is-shown` — the node view kept mounted behind another mode
+// (NV-12) — is taken out of pointer, focus and assistive-tech reach by CSS
+// (`.preview-native.preview-frame:not(.is-shown)`, preview.css), on the very
+// paint the class changes: an effect would leave a frame in which the hidden
+// pane still caught clicks over the mode in front of it.
 function NativePane({
   className,
   onReady,
@@ -2023,15 +2030,28 @@ function TemplatePreview({
     return () => window.clearTimeout(id);
   }, [shown, activeMode, framePending]);
   // Retire the frames the swap left behind, once the incoming one has faded in.
+  //
+  // EXCEPT THE NODE VIEW (SPEC §53.3 NV-12), which stays mounted, hidden,
+  // while its file stays open and the mode is on offer. Its open is the
+  // heaviest in the shell — sync/start, a token, a cross-origin workbench that
+  // boots, syncs and runs the node — so Node → Code → Node used to pay all of
+  // it again for a view that had not changed. Kept, it also stays live: its
+  // relay keeps the frame in step with the disk while Code edits the file, so
+  // switching back shows the edit already applied. `filter` keeps the list's
+  // order, so the kept pane is never moved (a moved frame reloads).
+  const nodeOffered = contentModes.some((t) => t.mode === NODE_MODE && isNodeViewEntry(t));
   useEffect(() => {
-    if (frames.length <= 1 || shown !== activeMode) return;
+    if (shown !== activeMode) return;
+    const keep = retainedFrames(frames, activeMode, NODE_MODE, nodeOffered);
+    if (keep.length === frames.length) return;
     const id = window.setTimeout(() => {
-      setFrames([activeMode]);
+      setFrames((f) => retainedFrames(f, activeMode, NODE_MODE, nodeOffered));
       // Their documents are gone with them, so they are no longer "loaded".
-      for (const m of [...loadedFrames.current]) if (m !== activeMode) loadedFrames.current.delete(m);
+      const kept = new Set(keep);
+      for (const m of [...loadedFrames.current]) if (!kept.has(m)) loadedFrames.current.delete(m);
     }, FRAME_FADE_MS);
     return () => window.clearTimeout(id);
-  }, [frames, shown, activeMode]);
+  }, [frames, shown, activeMode, nodeOffered]);
 
   // Embed hides the whole preview-header, hence the switcher (shell.css). A
   // directory whose mode list carries `_listing` alongside another mode (a
@@ -2384,7 +2404,11 @@ function TemplatePreview({
               // this same content pane. The `_node` sentinel (PT-12): drawn by
               // apps/canvases through the shell's registry, never a frame. It paints its
               // own loading state, so it takes over from a held frame at once.
-              if (m === NODE_MODE && contentModes.some((t) => t.mode === m && isNodeViewEntry(t))) return (
+              // A kept node pane whose mode left the list (a git snapshot,
+              // NV-12) draws nothing until the retirement above drops it —
+              // never an iframe of a mode with no page.
+              if (m === NODE_MODE && m !== activeMode && !contentModes.some((t) => t.mode === m)) return null;
+              if (m === NODE_MODE && nodeOffered) return (
                 <NativePane
                   key={m}
                   className={"preview-frame" + (m === shown ? " is-shown" : "")}

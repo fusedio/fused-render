@@ -12695,6 +12695,17 @@ today; one node fills the frame.
   code runs from the frame, so its output does not wait for the push; what
   it loads from OTHER nodes (`fused.load`, `fused.run`) is the server's
   saved canvas, so an edit to an upstream node shows after its push.
+- **NV-12 Kept across mode switches.** Once mounted, the node view stays
+  mounted, hidden (no pointer, focus or assistive-tech reach: `visibility:
+  hidden` and `pointer-events: none` from the paint it is hidden on), while
+  its file stays open and the
+  mode is on offer: switching to Code, Api or any other content mode and back
+  shows the same view, its workbench frame, sync and relay untouched, with no
+  second open. Every other mode's frame is still retired after the swap
+  (`apps/explorer/lib/held-frames.ts`). Hidden, it stays live: its relay
+  keeps applying disk changes, so an edit made in Code is already in the
+  frame when the reader switches back. A git snapshot (which does not offer
+  the mode) drops it; navigating to another file unmounts it.
 
 ### 53.4 Where the view's code lives
 

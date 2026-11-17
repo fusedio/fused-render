@@ -8077,3 +8077,11 @@ A user redid a canvas's folders through Claude; the five old folders stayed on s
 - **Naming.** `_node`, shown as "Node" as before: the view shows whichever node the file is (a UDF, a widget, an HTML node, a note), so the mode is named for the node rather than for one of its kinds.
 - **Accepted breaks.** A `?_mode=udf` link falls back to the default (PT-9), which on a node file is the node view anyway. A user registry naming `udf` now names a dangling template (CT-6) until it says `_node`. A user folder `udf/` is an ordinary template again; nothing shadows a sentinel.
 - **Rejected.** A `condition.py` in a reserved folder per sentinel (a folder for a mode that has none, the thing this removes). Gating sentinels in the client (verdicts are the server's: the gate reads prefs.json and canvas.toml, and the route it shares a rule with is a server route).
+
+## D1491: The node view is kept across mode switches (2026-11-17)
+
+- **What.** SPEC §53.3 NV-12. The content pane no longer retires the node view when another mode is chosen: it stays mounted and hidden (CSS `visibility: hidden` and `pointer-events: none` once the fade-out ends), while the file is open and the mode is on offer.
+- **Why.** The held-frame swap retires every frame but the incoming one after the fade, which for a page template is a cheap reload. For the node view it was the whole open again — sync/start, status, a token, a cross-origin workbench boot and the node's run — for a view that had not changed. Kept, it also stays in step with the disk, so a Code edit is already applied when the reader switches back.
+- **Cost accepted.** A hidden node view keeps its workbench frame, sync socket and relay running while another mode is shown. That is one per open file, and it ends when the file is left.
+- **Not covered.** Layout panes (`Panel.tsx`, `Tabs.tsx`) switch a pane's mode by writing the pane's embed iframe `src`, which reloads the embedded document, node view included.
+- **Rejected.** Keeping every mode's frame (page templates reload cheaply, and a kept frame per mode multiplies memory for nothing).
