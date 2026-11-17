@@ -187,6 +187,20 @@ def test_launcher_remote_rows_never_raise(monkeypatch):
     assert launcher.remote_results("x") == []
 
 
+def test_launcher_remote_rows_skip_keys_the_explorer_cannot_address(monkeypatch):
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs, "canvases_enabled", lambda: True)
+    monkeypatch.setattr(remote_index, "retry_if_needed", lambda: None)
+    hit = lambda key: {"url": "s3://fused-asset/" + key, "key": key, "is_dir": key.endswith("/"),
+                       "size": None, "mtime": None}
+    monkeypatch.setattr(remote_index, "rank", lambda *a, **k: {
+        "ready": True, "hits": [hit("data//tile.parquet"), hit("data/tile.parquet"), hit("x//")],
+        "total": 3, "truncated": False})
+    assert [r["path"] for r in launcher.remote_results("tile")] == [
+        "s3://fused-asset/data/tile.parquet"]
+
+
 def test_remote_page_for():
     assert launcher.remote_page_for("s3://fused-asset/") == "/explorer/view/s3%3A/fused-asset"
     assert (launcher.remote_page_for("s3://fused-asset/a b/c#d.csv")

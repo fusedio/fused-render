@@ -667,7 +667,16 @@ def remote_results(query: str, limit: int = REMOTE_RESULTS) -> list[dict]:
         return []
     if not out.get("ready"):
         return []
-    return [_remote_row(h) for h in (out.get("hits") or [])[:limit]]
+    # A key with an empty segment (`a//b`) has no explorer address: the URL
+    # codec drops empty segments (path-url.ts rootedFsPath), so its row would
+    # open a different key. Left out rather than shown and mis-opened.
+    def addressable(key: str) -> bool:
+        # A folder key ends in exactly one "/" of its own; strip only that.
+        body = key[:-1] if key.endswith("/") else key
+        return "//" not in body and not body.endswith("/")
+
+    hits = [h for h in (out.get("hits") or []) if addressable(str(h.get("key") or ""))]
+    return [_remote_row(h) for h in hits[:limit]]
 
 
 # ---- the panel beside the Claude rail ---------------------------------------------
