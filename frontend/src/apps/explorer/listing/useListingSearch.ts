@@ -37,7 +37,7 @@
 // refreshed" actually describes — an answer whose index has since moved and
 // has not yet been repainted over it.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { indexRank, requestFolderScan } from "@platform/lib/api";
+import { rankFolder as indexRank, requestScan as requestFolderScan } from "@apps/explorer/listing/source";
 import type { IndexRankResult, RankReason } from "@platform/lib/api";
 import {
   fsMutationCount,

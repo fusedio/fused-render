@@ -6,8 +6,10 @@
 // ordinary BreadcrumbBar, which draws S3 crumbs for a remote location.
 //
 // Three bodies, by the server's stat:
-//   - a prefix (`kind: "dir"`) → a read-only, one-level table (RemoteListing),
-//     with a search box over the folder's whole subtree (RemoteFolderSearch.tsx);
+//   - a prefix (`kind: "dir"`) → the explorer's own folder view (Listing), the
+//     same component a local folder gets: it lists, searches, completes and
+//     resolves typed addresses from the bucket index (listing/source.ts), with
+//     every write and the side pane switched off (Listing's `remote`);
 //   - a cached file → the EXISTING viewer (Preview) on the cached local copy,
 //     with `remoteUrl` set so the viewer keeps every local-file affordance
 //     (rename, delete, reveal, share, splits, sidebar, app rows) out of reach
@@ -20,11 +22,11 @@
 // The address bar, tab title and history stay on the `s3://` address
 // throughout; only Preview's iframe ever receives the local cache path, and
 // only a streaming template's iframe receives the `s3://` address.
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@platform/shadcn/ui/button";
 import { canonFsPath } from "@platform/lib/path-url";
-import { IS_PREVIEW, navHintIsDir, navigate, navigateUrl, replaceSearch, spaLinkProps } from "@platform/lib/router";
-import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
+import { IS_PREVIEW, navHintIsDir, navigate, navigateUrl } from "@platform/lib/router";
+import { basename, formatSize } from "@platform/lib/format";
 import { useDocumentTitle, useNavReach } from "@platform/lib/hooks";
 import { goBack } from "@platform/lib/nav-history";
 import { statPath, type StatResult } from "@platform/lib/api";
@@ -34,19 +36,12 @@ import {
   remoteFetch,
   remoteFetchCancel,
   remoteFetchStatus,
-  remoteList,
   remoteStat,
-  type RemoteEntry,
-  type RemoteRankHit,
   type RemoteStat,
 } from "@platform/lib/remote";
 import { notify } from "@platform/lib/notifications";
-import { substringMatch } from "@platform/lib/fuzzy";
-import { iconForEntry } from "@platform/ui/FileIcons";
-import { renderHighlightPath } from "@apps/explorer/listing/bits";
-import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
-import { RemoteSearchRow, remoteSearchCount, useRemoteFolderSearch } from "@apps/explorer/RemoteFolderSearch";
 import { BreadcrumbBar } from "@apps/explorer/Breadcrumb";
+import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
 
@@ -182,263 +177,6 @@ function RemoteErrorBody({ error, onRetry }: { error: RemoteApiError; onRetry?: 
       </div>
     </div>
   );
-}
-
-// -- folder (prefix) listing --------------------------------------------------
-
-const NO_HITS: RemoteRankHit[] = [];
-
-/** The search query in the address bar (`?q=`), so Back from a hit lands on
- *  the folder still searching for it. */
-function urlQuery(): string {
-  return new URLSearchParams(location.search).get("q") || "";
-}
-
-function RemoteListing({ url }: { url: string }) {
-  const [entries, setEntries] = useState<RemoteEntry[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<RemoteApiError | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const ctl = useRef<AbortController | null>(null);
-
-  const prefix = asPrefix(url);
-  const [query, setQuery] = useState(urlQuery);
-  const [sel, setSel] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const ranked = useRankedSearchEnabled();
-  const search = useRemoteFolderSearch(prefix, query, ranked);
-  const searching = search.status !== "idle";
-  const hits = search.status === "done" ? search.hits : NO_HITS;
-
-  // The query rides the current history entry (no new entry per keystroke).
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    if ((params.get("q") || "") === query) return;
-    if (query) params.set("q", query);
-    else params.delete("q");
-    const qs = params.toString();
-    replaceSearch(location.pathname + (qs ? "?" + qs : ""));
-  }, [query]);
-  // A new answer starts the keyboard back at its first row.
-  useEffect(() => setSel(0), [hits]);
-  useEffect(() => {
-    document.querySelector("table.listing-table tr.row.selected")?.scrollIntoView({ block: "nearest" });
-  }, [sel]);
-
-  const load = (from: string | null) => {
-    ctl.current?.abort();
-    const c = new AbortController();
-    ctl.current = c;
-    setLoading(true);
-    setError(null);
-    retryWhileIndexLoads(() => remoteList(prefix, { cursor: from, signal: c.signal }), c.signal).then(
-      (r) => {
-        if (c.signal.aborted) return;
-        setEntries((prev) => (from ? [...prev, ...r.entries] : r.entries));
-        setCursor(r.cursor);
-        setLoading(false);
-      },
-      (err) => {
-        if (c.signal.aborted || isAbort(err)) return;
-        setError(asRemoteError(err));
-        setLoading(false);
-      },
-    );
-  };
-
-  useEffect(() => {
-    setEntries([]);
-    setCursor(null);
-    load(null);
-    return () => ctl.current?.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, attempt]);
-
-  const onSearchKey = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      if (query) setQuery("");
-      else e.currentTarget.blur();
-    } else if (e.key === "ArrowDown" && hits.length) {
-      e.preventDefault();
-      setSel((i) => Math.min(i + 1, hits.length - 1));
-    } else if (e.key === "ArrowUp" && hits.length) {
-      e.preventDefault();
-      setSel((i) => Math.max(i - 1, 0));
-    } else if (e.key === "Enter" && hits[sel]) {
-      e.preventDefault();
-      navigate(hits[sel].url, { isDir: hits[sel].is_dir });
-    }
-  };
-
-  const searchRow = (
-    <RemoteSearchRow
-      query={query}
-      setQuery={setQuery}
-      inputRef={inputRef}
-      count={remoteSearchCount(search)}
-      searching={search.status === "searching" || (search.status === "done" && search.held)}
-      onKeyDown={onSearchKey}
-    />
-  );
-
-  // A folder that cannot be listed has nothing to search either: the error
-  // card alone, as before.
-  if (error && entries.length === 0 && !searching) {
-    return <RemoteErrorBody error={error} onRetry={() => setAttempt((n) => n + 1)} />;
-  }
-
-  // The status line a search shows in place of rows (null: rows, or nothing).
-  let searchStatus: string | null = null;
-  if (search.status === "searching") searchStatus = "Searching…";
-  else if (search.status === "not_ready") searchStatus = "The fused-asset index is still loading. Results appear once it has loaded.";
-  else if (search.status === "error") searchStatus = `Search failed: ${search.message}`;
-  else if (search.status === "done" && hits.length === 0 && !search.held)
-    searchStatus = `No matches for “${query.trim()}” in this folder or below it.`;
-
-  const head = (
-    <thead className={(searching ? hits.length : entries.length) === 0 ? "listing-head-empty" : undefined}>
-      <tr>
-        <th className="col-name">
-          <span className="col-label">Name</span>
-        </th>
-        <th className="col-size">
-          <span className="col-label">Size</span>
-        </th>
-        <th className="col-mtime">
-          <span className="col-label">Modified</span>
-        </th>
-      </tr>
-    </thead>
-  );
-
-  return (
-    <div className="listing">
-      {searchRow}
-      <div className="listing-scroll">
-        {searching ? (
-          <table className="listing-table">
-            {head}
-            <tbody>
-              {hits.map((hit, i) => {
-                // The hit's path below this folder: what the row shows, with
-                // the match marked (a query that is not one plain substring of
-                // it renders unmarked, as the local search's rows do).
-                const rel = hit.key.slice(prefixKey(prefix).length).replace(/\/+$/, "");
-                const positions = substringMatch(query.trim(), rel)?.positions ?? [];
-                const link = spaLinkProps(hit.url, { isDir: hit.is_dir });
-                return (
-                  <tr
-                    key={hit.url}
-                    className={"row" + (i === sel ? " selected" : "")}
-                    title={hit.url}
-                    onMouseMove={() => i !== sel && setSel(i)}
-                    onClick={() => navigate(hit.url, { isDir: hit.is_dir })}
-                  >
-                    <td className="name">
-                      <a
-                        className="row-handle"
-                        href={link.href}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          link.onClick(e);
-                        }}
-                        style={{ color: "inherit", textDecoration: "none", cursor: "pointer" }}
-                      >
-                        <span className="icon">{iconForEntry(rel.split("/").pop() || rel, hit.is_dir)}</span>
-                        <span className="search-path">{renderHighlightPath(rel, positions)}</span>
-                      </a>
-                    </td>
-                    <td className="size">{hit.is_dir ? "" : formatSize(hit.size)}</td>
-                    <td className="mtime" title={hit.mtime !== null ? formatMtimeFull(hit.mtime) : undefined}>
-                      {hit.mtime !== null ? formatMtime(hit.mtime) : ""}
-                    </td>
-                  </tr>
-                );
-              })}
-              {searchStatus !== null && (
-                <tr>
-                  <td colSpan={3} className={"status-message" + (search.status === "error" ? " error" : "")}>
-                    {searchStatus}
-                  </td>
-                </tr>
-              )}
-              {search.status === "done" && search.truncated && !search.held && (
-                <tr>
-                  <td colSpan={3} className="status-message">
-                    Showing the top {hits.length.toLocaleString()} matches. Type more to narrow them down.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        ) : (
-          <table className="listing-table">
-            {head}
-            <tbody>
-              {entries.map((entry) => {
-                const link = spaLinkProps(entry.url, { isDir: entry.is_dir });
-                return (
-                  <tr
-                    key={entry.url}
-                    className="row"
-                    onClick={() => navigate(entry.url, { isDir: entry.is_dir })}
-                  >
-                    <td className="name">
-                      <a
-                        className="row-handle"
-                        href={link.href}
-                        onClick={(e) => {
-                          // The row's own click would navigate a second time.
-                          e.stopPropagation();
-                          link.onClick(e);
-                        }}
-                        style={{ color: "inherit", textDecoration: "none", cursor: "pointer" }}
-                      >
-                        <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
-                        <span className="name-text">{entry.name}</span>
-                      </a>
-                    </td>
-                    <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
-                    <td className="mtime" title={formatMtimeFull(entry.mtime)}>
-                      {formatMtime(entry.mtime)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-        {!searching && loading && entries.length === 0 && (
-          <div className="preview-resolving">
-            <span className="mode-icon-spinner" />
-            Listing…
-          </div>
-        )}
-        {!searching && (cursor || (error && entries.length > 0)) && (
-          <div className="listing-truncated">
-            <div className="status-message">
-              {error ? `Could not load more: ${error.message}` : `${entries.length} shown.`}
-              <button
-                type="button"
-                className="listing-load-more"
-                disabled={loading}
-                onClick={() => load(cursor)}
-              >
-                {loading ? "Loading…" : error ? "Retry" : "Load more"}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** The bucket key of a prefix address: `s3://b/a/b/` → `a/b/`, the root → "". */
-function prefixKey(prefixUrl: string): string {
-  return parseRemoteLocation(prefixUrl)?.key ?? "";
 }
 
 // -- uncached file: notice / download -----------------------------------------
@@ -805,7 +543,9 @@ export function RemoteView({ location, home }: { location: string; home: string 
   } else if (state.status === "error") {
     content = <RemoteErrorBody error={state.error} onRetry={retry} />;
   } else if (state.stat.kind === "dir") {
-    content = <RemoteListing url={state.stat.url} />;
+    // `location`, not the stat's url: the folder is addressed exactly as the
+    // address bar spells it, so its rows, crumbs and saved sort agree.
+    content = <Listing fsPath={location} barChrome />;
   } else if (state.stat.cached && state.stat.path) {
     content = (
       <RemoteCachedFile

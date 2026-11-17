@@ -73,7 +73,7 @@ def test_scoped_rank_stays_inside_the_folder(store):
 def test_scoped_rank_matches_below_the_folder_only(store):
     # "agriculture" names the folder itself, which is not inside its own subtree.
     out = remote_index.rank("agriculture", 50, True, prefix="agriculture_cdl_crops/")
-    assert out == {"ready": True, "hits": [], "total": 0, "truncated": False}
+    assert out["ready"] is True and out["hits"] == []
 
 
 def test_scoped_rank_folder_hits_end_in_slash(store):
@@ -87,7 +87,37 @@ def test_scoped_rank_folder_hits_end_in_slash(store):
 
 def test_scoped_rank_unknown_folder_is_ready_and_empty(store):
     out = remote_index.rank("crop", 50, True, prefix="no_such_folder/")
-    assert out == {"ready": True, "hits": [], "total": 0, "truncated": False}
+    assert out["ready"] is True and out["hits"] == []
+
+
+def test_scoped_rank_speaks_the_local_query_grammar(store):
+    # A glob, at any depth below the folder (resolve_query's `**/` prefix).
+    out = remote_index.rank("*.csv", 50, True, prefix="agriculture_cdl_crops/")
+    assert out["mode"] == "glob"
+    assert _keys(out) == {"agriculture_cdl_crops/notes/crop_codes.csv"}
+    # A leading "/" pins the pattern to the folder itself (depth 1).
+    out = remote_index.rank("/*.csv", 50, True, prefix="agriculture_cdl_crops/")
+    assert _keys(out) == set()
+    out = remote_index.rank("/*.parquet", 50, True, prefix="agriculture_cdl_crops/")
+    assert _keys(out) == {"agriculture_cdl_crops/CDL_crop_name.parquet"}
+    # Words split by whitespace match in order, even across a folder.
+    out = remote_index.rank("notes codes", 50, True, prefix="agriculture_cdl_crops/")
+    assert "agriculture_cdl_crops/notes/crop_codes.csv" in _keys(out)
+    # Substring mode says so, with the pattern it ran.
+    out = remote_index.rank("crop", 50, True, prefix="census/")
+    assert (out["mode"], out["pattern"]) == ("substring", "crop")
+
+
+def test_scoped_rank_at_the_bucket_root(store):
+    # prefix "" is the bucket's root folder: a plain key search, no bucket hit.
+    out = remote_index.rank("fused-asset", 50, True, prefix="")
+    assert out["hits"] == []
+    assert "census/tracts.parquet" in _keys(remote_index.rank("tracts", 50, True, prefix=""))
+
+
+def test_scoped_rank_query_leaving_the_folder_answers_nothing(store):
+    out = remote_index.rank("../census/*", 50, True, prefix="agriculture_cdl_crops/")
+    assert out["ready"] is True and out["hits"] == []
 
 
 def test_whole_bucket_rank_unchanged(store):
@@ -110,6 +140,8 @@ def test_rank_route_under(store, monkeypatch):
     r = client.get("/api/remote-index/rank",
                    params={"q": "crop", "under": "s3://fused-asset/census"})
     assert {h["key"] for h in r.json()["hits"]} == {"census/crop_survey.parquet"}
+    r = client.get("/api/remote-index/rank", params={"q": "tracts", "under": "s3://fused-asset/"})
+    assert {h["key"] for h in r.json()["hits"]} == {"census/tracts.parquet"}
     r = client.get("/api/remote-index/rank", params={"q": "crop", "under": "s3://other-bucket/"})
     assert r.status_code == 400 and r.json()["code"] == "unsupported_bucket"
     r = client.get("/api/remote-index/rank", params={"q": "crop", "under": "census/"})

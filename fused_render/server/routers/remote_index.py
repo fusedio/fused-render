@@ -12,7 +12,8 @@ box treats those as one condition, so they answer 200 with `enabled: false` /
   size, mtime}], total, truncated}` — files and folders; a folder's key/url
   end in "/" and its size/mtime are null. `under` (an `s3://` folder
   address) scopes the search to that folder's subtree — the S3 folder
-  view's search box; absent, the whole bucket (Home, the launcher). The query runs on a worker thread and is interrupted
+  view, with the local folder search's query grammar and `mode`/`pattern`
+  in the answer; absent, the whole bucket (Home, the launcher). The query runs on a worker thread and is interrupted
   (duckdb `interrupt`) when the client disconnects, through the same
   `cancellable` / `CancelToken` machinery `/api/index/rank` uses; an
   abandoned request answers 499 to nobody.
@@ -45,7 +46,7 @@ def _error(message: str, code: str, status: int) -> JSONResponse:
     return JSONResponse({"error": message, "code": code}, status_code=status)
 
 
-def _rank(q: str, limit: int, ranked: bool, token, prefix: str = "") -> dict:
+def _rank(q: str, limit: int, ranked: bool, token, prefix: str | None = None) -> dict:
     """`remote_index.rank`, after the (throttled) retry/refresh nudge: these
     routes are how a session that only searches keeps its index current."""
     remote_index.retry_if_needed()
@@ -80,7 +81,7 @@ async def api_remote_index_rank(request: Request, q: str = Query(default=""),
     except ValueError:
         return _error("'limit' must be an integer", "bad_url", 400)
     want_ranked = ranked.strip().lower() not in ("0", "false", "no", "off")
-    prefix = ""
+    prefix = None
     if under.strip():
         try:
             bucket, key = remote_access.parse_url(under)
