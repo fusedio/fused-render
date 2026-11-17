@@ -74,14 +74,19 @@ export function beginLoad(key: string, label: string, before: Record<string, num
   perfMark(`${PREFIX}:${key}:begin`);
 }
 
-/** Note that `stage` landed. Begins a timeline if none is open (a view
- *  mounted without the surface that usually begins it); only the FIRST mark of
- *  a stage counts, and a finished timeline takes no more marks. */
+/** Note that `stage` landed. Only the FIRST mark of a stage counts, and a
+ *  finished timeline takes no more marks. A mark that passes `label` is a
+ *  view's first one and begins a timeline when none exists (a view mounted
+ *  without the surface that usually begins it); any other mark with no
+ *  timeline is dropped, so a late step can never start a load that nothing
+ *  will finish (a finished record evicted from the map, a callback after
+ *  its view is gone). */
 export function markLoad(key: string, stage: string, label?: string): void {
   let t = timelines.get(key);
   if (t && t.end !== null) return;
   if (!t) {
-    beginLoad(key, label ?? key);
+    if (label === undefined) return;
+    beginLoad(key, label);
     t = timelines.get(key)!;
   }
   if (t.stages.some((s) => s.stage === stage)) return;

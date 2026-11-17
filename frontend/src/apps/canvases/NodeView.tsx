@@ -115,21 +115,25 @@ function openInCanvas(env: WorkbenchEnv, name: string, file: string): void {
 export default function NodeView({ path }: NativeViewProps) {
   // The load timeline (NV-12, platform/lib/load-timeline): each step of the
   // open marks the file's timeline when it lands; the node on screen ends it.
-  // `mount` is this chunk loaded and drawing. Marks stop when this mount
-  // goes: an async step that lands after an unmount must not mark (or end)
-  // the timeline of the next open of the same file.
-  const alive = useRef(true);
+  // `mount` is this chunk loaded and drawing. This view records only its own
+  // open: marks stop once it has ended the timeline (a later `hello` from a
+  // re-booted frame is not a load) and once the mount is gone (an async step
+  // that lands after an unmount must not mark, or end, the timeline of the
+  // next open of the same file).
+  const recording = useRef(true);
   useEffect(() => {
-    alive.current = true;
+    recording.current = true;
     return () => {
-      alive.current = false;
+      recording.current = false;
     };
   }, []);
   const markLoad = useCallback((p: string, stage: string, label?: string) => {
-    if (alive.current) markTimeline(p, stage, label);
+    if (recording.current) markTimeline(p, stage, label);
   }, []);
   const finishLoad = useCallback((p: string, stage: string) => {
-    if (alive.current) finishTimeline(p, stage);
+    if (!recording.current) return;
+    recording.current = false;
+    finishTimeline(p, stage);
   }, []);
   const label = path.slice(path.lastIndexOf("/") + 1) || path;
   useEffect(() => markLoad(path, "mount", label), [path, label, markLoad]);

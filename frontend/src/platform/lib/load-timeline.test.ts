@@ -60,6 +60,12 @@ describe("a load timeline", () => {
     expect(openTimeline("/p/a.md")?.label).toBe("a.md");
   });
 
+  it("a mark with no label and no timeline is dropped, never a new load", () => {
+    markLoad("/p/b.md", "hello");
+    expect(openTimeline("/p/b.md")).toBeNull();
+    expect(loadTimelines()).toEqual([]);
+  });
+
   it("a reopen begins afresh and keeps the earlier run", () => {
     beginLoad("k", "k");
     markLoad("k", "gate");
@@ -89,9 +95,13 @@ it("keeps a bounded number of finished records", () => {
     finishLoad(`f${i}`, "ready");
   }
   expect(loadTimelines()).toHaveLength(20);
-  // The newest are kept and still refuse late marks; the oldest are gone.
+  // The newest are kept and still refuse late marks; the oldest are gone,
+  // and a late mark for an evicted one (a view still mounted) starts nothing.
   markLoad("f49", "late");
   expect(openTimeline("f49")).toBeNull();
+  markLoad("f0", "hello");
+  expect(openTimeline("f0")).toBeNull();
+  expect(loadTimelines()).toHaveLength(20);
   const all = loadTimelines();
   expect(all[all.length - 1].key).toBe("f49");
 });
