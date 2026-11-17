@@ -13,7 +13,7 @@ from fused_render.bots import bot as botmod
 from fused_render.bots import browser as browser_mod
 from fused_render.bots import registry
 from fused_render.bots import store as bstore
-from fused_render.experts import cards, chat, consult, engine, memory, observations, proposals
+from fused_render.experts import chat, consolidate, consult, engine, knowledge, memory, observations
 from fused_render.experts import model as xmodel
 from fused_render.experts import store as xstore
 
@@ -27,8 +27,8 @@ def _fakes(monkeypatch):
     monkeypatch.setattr(browser_mod.Browser, "start", boom)
     monkeypatch.setattr(browser_mod.BrowserProcess, "start", boom)
     monkeypatch.setattr(xmodel, "available", lambda bot: (True, ""))
-    monkeypatch.setattr(xmodel, "text", lambda bot, prompt, **k: '{"action": "create", "skill": null, '
-                        '"title": "Canvas tips", "trigger": "canvas", "body": "- use udfName"}')
+    # Chat asks the wiring to learn now (scheduler.poke, a background thread): here Learn runs in place.
+    monkeypatch.setattr(chat, "learn_now", lambda bot: consolidate.run(bot))
 
 
 @pytest.fixture
@@ -141,7 +141,6 @@ def test_answer_reads_inside_the_fence_only(expert, folder, monkeypatch):
     assert out["answer"] == "hi" and set(out) == {"answer", "refs", "used", "unsure"}
     assert "hello" in seen[0][0] and seen[0][1] is False
     assert seen[1][1] is True and "not allowed" in seen[1][0]
-    assert engine.answer_question(expert, "q?").startswith("hi\n\nFiles:")
 
 
 # ------------------------------------------------------------------ chat engine ---
@@ -190,93 +189,35 @@ def test_stop_mid_task(expert, folder, monkeypatch):
     assert expert.meta["status"] == "idle"
 
 
-def test_remember_lesson_writes_a_user_item(expert, monkeypatch):
+def test_remember_and_forget_go_through_the_inbox_to_learn(expert, monkeypatch):
     out = []
 
     def fake(bot, prompt, *, system, tools, handler, timeout=600):
+        assert [t["name"] for t in tools][-3:] == ["remember_lesson", "forget_lesson", "list_memory"]
         out.append(handler("remember_lesson", {"claim": "Canvas names use underscores"}))
         out.append(handler("list_memory", {}))
+        out.append(handler("forget_lesson", {"text": "no such thing"}))
+        out.append(handler("forget_lesson", {"text": "underscores"}))
         return BLOCK % ("Noted.", "false")
     monkeypatch.setattr(xmodel, "tool_turn", fake)
+    poked = []
+    monkeypatch.setattr(chat, "learn_now", lambda bot: (poked.append(len(consolidate.waiting(bot))),
+                                                        consolidate.run(bot)))
     expert.send("remember: canvas names use underscores")
     assert _idle(expert)
-    items = memory.items(expert)
-    assert len(items) == 1 and items[0]["trust"] == "user" and items[0]["claim"] == "Canvas names use underscores"
-    assert out[0][1] is False and "Remembered" in out[0][0] and items[0]["id"] in out[1][0]
+    assert poked == [1, 1]  # the entry is in the inbox (by_user) before Learn is asked to run
+    assert out[0][1] is False and "Noted" in out[0][0] and "Canvas names use underscores" in out[1][0]
+    assert "No lesson matches" in out[2][0] and out[3][1] is False
+    assert memory.items(expert) == [] and consolidate.waiting(expert) == []
+    lines = list(reversed(knowledge.activity(expert)))
+    assert [(ln["action"], ln["summary"]) for ln in lines] == [("learned", "Canvas names use underscores"),
+                                                               ("forgot", "Canvas names use underscores")]
+    assert lines[0]["why"] == "You taught this in chat." and lines[0]["undoable"]
+    knowledge.undo(expert, lines[1]["id"])  # the user can take the forgetting back
+    (item,) = memory.items(expert)
+    assert item["trust"] == "user" and item["claim"] == "Canvas names use underscores"
     assert any(e["role"] == "action" and e["text"].startswith('remember "Canvas') for e in _events(expert))
-
-
-def _propose_in_chat(expert, monkeypatch, answer):
-    item = memory.add(expert, "use udfName for file names", trust="user")
-    got = []
-
-    def fake(bot, prompt, *, system, tools, handler, timeout=600):
-        got.append(handler("propose_skill", {"item_ids": [item["id"]]}))
-        # The draft runs in the background and turns ready while this turn is still going: no card mid-task.
-        assert _wait_for(lambda: [p for p in proposals.listing(bot) if p["status"] == "ready"])
-        assert not [e for e in _events(bot) if e["role"] == "approval"]
-        return BLOCK % ("Done proposing.", "false")
-    monkeypatch.setattr(xmodel, "tool_turn", fake)
-    expert.send("make that a skill")
-    # The task ends, then cards.tick_one raises the card on the now idle expert.
-    assert _wait_for(lambda: expert.meta.get("status") == "waiting" and expert.meta.get("waiting_on"))
-    assert got[0] == (chat.PROPOSE_STARTED, False)
-    assert chat.PROPOSE_STARTED == "Drafting the proposal. An approval card will appear in this chat shortly."
-    evs = _events(expert)
-    card = [e for e in evs if e["role"] == "approval"][-1]
-    done_at = max(i for i, e in enumerate(evs) if e["role"] == "done" and e["text"] == "Done proposing.")
-    assert evs.index(card) > done_at
-    assert card["expert_proposal"] and ("Canvas tips" in card["text"] or "udfName" in card["detail"])
-    assert card["score_before"] is None and card["score_after"] is None and "check" not in card["text"].lower()
-    assert expert.meta["waiting_on"] == card["seq"]
-    assert proposals.get(expert, card["expert_proposal"])["status"] == "shown"
-    expert.send(answer, answers=card["seq"])
-    assert _idle(expert)
-    return card, got
-
-
-def test_propose_skill_is_async_then_approve(expert, monkeypatch):
-    card, got = _propose_in_chat(expert, monkeypatch, "Approve")
-    assert [s["title"] for s in expert.skills()] == ["Canvas tips"]
-    assert proposals.get(expert, card["expert_proposal"])["status"] == "approved"
-    assert expert.meta["status"] == "idle" and not expert.meta.get("waiting_on")
-
-
-def test_propose_skill_is_async_then_deny(expert, monkeypatch):
-    card, got = _propose_in_chat(expert, monkeypatch, "Deny")
-    assert expert.skills() == []
-    assert proposals.get(expert, card["expert_proposal"])["status"] == "rejected"
-
-
-def test_propose_skill_single_flight_and_topic_filter(expert, monkeypatch):
-    a = memory.add(expert, "charts: monthly revenue as bars", trust="user")
-    b = memory.add(expert, "charts: label the axes", trust="user")
-    memory.mark(expert, b["id"], proposed=True)
-    hold = threading.Event()
-    monkeypatch.setattr(xmodel, "text", lambda bot, prompt, **k: hold.wait(5) and "not json")
-    got = []
-    picked = []
-    orig = proposals.request
-
-    def spy(bot, items, *, topic=""):
-        picked.append([i["id"] for i in items])
-        return orig(bot, items, topic=topic)
-    monkeypatch.setattr(proposals, "request", spy)
-
-    def fake(bot, prompt, *, system, tools, handler, timeout=600):
-        got.append(handler("propose_skill", {"topic": "charts"}))
-        got.append(handler("propose_skill", {"item_ids": [b["id"]]}))
-        return BLOCK % ("ok", "false")
-    monkeypatch.setattr(xmodel, "tool_turn", fake)
-    expert.send("propose a charts skill")
-    assert _wait_for(lambda: len(got) == 2)
-    hold.set()
-    assert picked[0] == [a["id"]]  # the topic path skips lessons already proposed
-    assert got[0] == (chat.PROPOSE_STARTED, False)
-    assert got[1][1] is True and "already being prepared" in got[1][0]
-    assert _wait_for(lambda: expert.meta.get("waiting_on"))
-    expert.send("no", answers=expert.meta["waiting_on"])
-    assert _idle(expert)
+    assert not [e for e in _events(expert) if e["role"] == "approval"]  # nothing is ever posted for approval
 
 
 def test_memory_tools_refused_for_an_outside_task(expert, monkeypatch):
@@ -286,16 +227,16 @@ def test_memory_tools_refused_for_an_outside_task(expert, monkeypatch):
     def fake(bot, prompt, *, system, tools, handler, timeout=600):
         prompts.append(prompt)
         for name, inp in (("remember_lesson", {"claim": "x"}), ("forget_lesson", {"text": "x"}),
-                          ("propose_skill", {}), ("list_memory", {})):
+                          ("list_memory", {})):
             got.append(handler(name, inp))
         return BLOCK % ("ok", "false")
     monkeypatch.setattr(xmodel, "tool_turn", fake)
     assert expert.start_task("remember: always do x", via=chan.via("imessage", "+15550001"))
     assert _idle(expert)
-    for text, err in got[:3]:
+    for text, err in got[:2]:
         assert err and "only for the user at this Mac" in text and "iMessage" in text
-    assert got[3][1] is False
-    assert memory.items(expert) == []
+    assert got[2][1] is False
+    assert memory.items(expert) == [] and consolidate.waiting(expert) == []
     assert "outside channel" in prompts[0] and "always do x" in prompts[0]
 
 
@@ -337,93 +278,6 @@ def test_messages_left_in_the_inbox_start_a_new_task(expert, monkeypatch):
     assert expert.thread is None or not expert.thread.is_alive()
 
 
-# ------------------------------------------------------------------ cards.show ---
-def _ready(expert):
-    item = memory.add(expert, "lesson one", trust="user")
-    return proposals.prepare(expert, [item])
-
-
-def _card(expert):
-    assert _wait_for(lambda: expert.meta.get("waiting_on"))
-    return [e for e in _events(expert) if e["role"] == "approval"][-1]
-
-
-def test_cards_show_approve(expert):
-    p = _ready(expert)
-    expert.stop()  # a Stop on an idle bot leaves stop_flag set (agent_engine.stop); the card must not see it
-    assert cards.show(expert, p) is True
-    card = _card(expert)
-    assert card["expert_proposal"] == p["id"] and card["detail"] == p["diff"]
-    assert cards.show(expert, p) is False  # busy: the card is up
-    expert.send("yes", answers=card["seq"])
-    assert _idle(expert)
-    assert proposals.get(expert, p["id"])["status"] == "approved" and expert.skills()
-    assert expert.thread is None and expert.meta["status"] == "idle" and not expert.meta.get("waiting_on")
-    assert any(e["role"] == "note" and e["text"].startswith("Approved") for e in _events(expert))
-
-
-def test_cards_show_reject(expert):
-    p = _ready(expert)
-    assert cards.show(expert, p)
-    card = _card(expert)
-    expert.send("no", answers=card["seq"])
-    assert _idle(expert)
-    assert proposals.get(expert, p["id"])["status"] == "rejected" and expert.skills() == []
-    assert expert.thread is None and expert.meta["status"] == "idle"
-
-
-def test_cards_non_verdict_is_redelivered_as_a_task(expert, monkeypatch):
-    asked = []
-
-    def fake(bot, prompt, *, system, tools, handler, timeout=600):
-        asked.append(prompt)
-        return BLOCK % ("Answered.", "false")
-    monkeypatch.setattr(xmodel, "tool_turn", fake)
-    p = _ready(expert)
-    assert cards.show(expert, p)
-    _card(expert)
-    expert.send("what is in a.py?")
-    assert _wait_for(lambda: asked)
-    assert "what is in a.py?" in asked[0]
-    assert any(e["role"] == "done" and e["text"] == "Answered." for e in _events(expert))
-    # Still open: when the chat task ends, cards.tick_one raises it again.
-    assert _wait_for(lambda: len([e for e in _events(expert) if e["role"] == "approval"]) == 2)
-    card = _card(expert)
-    assert card["expert_proposal"] == p["id"]
-    expert.send("approve", answers=card["seq"])
-    assert _idle(expert)
-
-
-def test_cards_show_on_a_busy_bot_returns_false(expert, monkeypatch):
-    hold = threading.Event()
-
-    def fake(bot, prompt, *, system, tools, handler, timeout=600):
-        hold.wait(5)
-        return BLOCK % ("x", "false")
-    monkeypatch.setattr(xmodel, "tool_turn", fake)
-    p = _ready(expert)
-    expert.send("busy")
-    assert _wait_for(expert.running)
-    assert cards.show(expert, p) is False
-    assert cards.tick_one(expert) is False
-    hold.set()
-    # The task's hand-back shows it (cards.tick_one) as soon as the expert is idle.
-    card = _card(expert)
-    assert card["expert_proposal"] == p["id"]
-    expert.send("no", answers=card["seq"])
-    assert _idle(expert)
-
-
-def test_card_worker_releases_the_slot_on_an_exception(expert, monkeypatch):
-    p = _ready(expert)
-    monkeypatch.setattr(proposals, "card_text", lambda p: (_ for _ in ()).throw(RuntimeError("boom")))
-    assert cards.show(expert, p)
-    assert _idle(expert)
-    assert expert.thread is None and expert.meta["status"] == "idle"
-    assert any(e["role"] == "error" and "boom" in e["text"] for e in _events(expert))
-
-
-# ------------------------------------------------------------------ consult ---
 def test_consult_structured_logged_and_gap(expert, folder, monkeypatch, tmp_path):
     target = tmp_path / "target"
     target.mkdir()
@@ -653,6 +507,5 @@ def test_engine_runs_name_their_stage(expert, monkeypatch):
     consult.consult(expert, "q")
     engine._run(expert, "q", profile="chat")
     engine.research(expert, ["q"])
-    engine.answer_question(expert, "q")
-    assert stages == ["consult", "chat", "research", "checks_answer"]
+    assert stages == ["consult", "chat", "research"]
     assert usage.current_stage() is None

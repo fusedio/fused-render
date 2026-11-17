@@ -55,6 +55,7 @@ unread(bot) -> int ; seen(bot) -> None
 | `lesson_add` | `claim, kind, trust, via, session, about` | new lesson (or the existing equal one, upgraded) |
 | `lesson_bump` | `id, session` | count +1, once per session |
 | `lesson_confirm` | `id, session` | `confirmed` +1; count unchanged |
+| `lesson_contradict` | `id, session` | `contradicted` +1, once per session; count unchanged; logged quiet as `counted` |
 | `lesson_edit` | `id, claim` | rewrites the claim; previous kept in the lesson's `history` |
 | `lesson_remove` | `id, reason, into?, skill?` | lesson leaves memory |
 | `lesson_merge` | `ids, claim` | one lesson replaces several; count = largest original |

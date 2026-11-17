@@ -1,5 +1,6 @@
-"""An expert's lessons (docs/experts.md §4 `memory.py`): `<expert>/memory.json`
-= `{"version": 1, "items": [Item]}`.
+"""An expert's lessons (docs/experts-autonomous.md): `<expert>/memory.json`
+= `{"version": 1, "items": [Item]}`. Any part may call the read functions; the mutators are called only by
+`knowledge.py`, the one writer (`cite`, a usage counter, is the exception: answers call it).
 
 A claim equal to an existing one after normalisation (lowercase, collapsed
 whitespace, no trailing punctuation) bumps that item instead of adding a
@@ -11,7 +12,7 @@ wrong or too broad. It never raises `count`.
 `confirm` is a sighting that is NOT independent evidence (the expert's own advice echoed back by a session,
 or a statement capture could not ground in a user line): `confirmed += 1` once per session
 (`confirmed_sessions`), `last_used` set, `count` untouched. Only `count` decides what is used in answers and
-proposed (docs/experts.md "Only independent evidence raises a count").
+written into a skill (docs/experts.md "Only independent evidence raises a count").
 
 A user correction verified in a session is stored with trust `user` and `via: "session"`. `narrow` rewrites a
 lesson's claim (the old wording kept in `history`) and clears its contradiction mark; a lesson a user correction
@@ -33,7 +34,6 @@ from fused_render.experts import store
 
 KINDS_TRUST = ("user", "outcome", "research", "gap")
 _TRUST_RANK = {"gap": 0, "research": 1, "outcome": 1, "user": 2}
-FLAGS = ("proposed", "promoted", "rejected")
 CLAIM_MAX = 1000
 ARCHIVE_FILE = "memory-archive.jsonl"
 REASONS = ("stale", "promoted", "over_limit", "forgotten", "merged", "corrected")
@@ -138,7 +138,7 @@ def add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, g
                 return _defaults(dict(it))
         it = {"id": store.new_id("m"), "claim": claim, "kind": str(kind or "lesson"), "trust": trust,
               "count": 1 if counted else 0, "sessions": [session] if session and counted else [], "about": about,
-              "created": now, "updated": now, "proposed": False, "promoted": False, "rejected": False,
+              "created": now, "updated": now,
               "contradicted": 0, "contradicted_sessions": [], "cited": 0, "last_used": None,
               "confirmed": 0 if counted else 1,
               "confirmed_sessions": [session] if session and not counted else []}
@@ -230,30 +230,29 @@ def contradicted(item) -> int:
         return 0
 
 
-def forget(bot, id_or_text) -> int:
-    """Remove the item with this id, else every item whose claim equals the
-    text after normalisation, else every item whose claim contains it (at least
-    3 characters). Returns how many were removed."""
+def find(bot, claim):
+    """The lesson whose claim equals `claim` after normalisation (the one `add` would bump), or None."""
+    key = normalise(" ".join(str(claim or "").split())[:CLAIM_MAX])
+    return next((i for i in items(bot) if normalise(i.get("claim")) == key), None)
+
+
+def match(bot, id_or_text) -> list:
+    """The lessons `forget` would remove: the item with this id, else every item whose claim equals the text after
+    normalisation, else every item whose claim contains it (at least 3 characters)."""
     needle = str(id_or_text or "").strip()
     if not needle:
-        return 0
+        return []
     key = normalise(needle)
+    rows = items(bot)
+    return ([i for i in rows if i.get("id") == needle]
+            or [i for i in rows if normalise(i.get("claim")) == key]
+            or ([i for i in rows if key in normalise(i.get("claim"))] if len(key) >= 3 else []))
+
+
+def forget(bot, id_or_text) -> int:
+    """Remove the lessons `match` finds (archived as `forgotten`). Returns how many were removed."""
     with store.lock(bot):
-        data = _load(bot)
-        before = len(data["items"])
-        keep = [i for i in data["items"] if i.get("id") != needle]
-        if len(keep) == before:
-            keep = [i for i in data["items"] if normalise(i.get("claim")) != key]
-        if len(keep) == before and len(key) >= 3:
-            keep = [i for i in data["items"] if key not in normalise(i.get("claim"))]
-        removed = before - len(keep)
-        if removed:
-            kept = {id(i) for i in keep}
-            gone = [i for i in data["items"] if id(i) not in kept]
-            data["items"] = keep
-            _save(bot, data)
-            _archive(bot, gone, "forgotten")
-        return removed
+        return len(remove(bot, [i["id"] for i in match(bot, id_or_text)], "forgotten"))
 
 
 def cite(bot, ids) -> list:
@@ -318,8 +317,6 @@ def _archive(bot, rows, reason, *, skill="", whys=None, into="") -> None:
     now = time.time()
     for it in rows:
         rec = dict(it, removed_at=now, reason=reason)
-        if reason == "promoted":
-            rec["promoted"] = True
         if skill:
             rec["skill"] = str(skill)
         if into:
@@ -391,7 +388,6 @@ def merge(bot, ids, claim, *, why="") -> tuple[dict, list] | None:
             target = keep
         else:
             target = {"id": store.new_id("m"), "claim": claim, "kind": "lesson", **fields,
-                      "proposed": False, "promoted": False, "rejected": False,
                       "contradicted": 0, "contradicted_sessions": [],
                       "merged_from": [{"id": i["id"], "claim": i.get("claim", "")} for i in orig]}
         gone_ids = {i["id"] for i in folded}
@@ -404,15 +400,10 @@ def merge(bot, ids, claim, *, why="") -> tuple[dict, list] | None:
         return dict(target), [dict(i) for i in folded]
 
 
-def archived(bot, limit=100) -> list:
-    """The archive, NEWEST first (at most `limit`)."""
-    return list(reversed(store.read_jsonl(_archive_path(bot), limit=limit)))
-
-
 def promoted(bot, limit=None) -> list:
     """Archived lessons that went into a skill (reason `promoted` with a `skill` name), newest first, one per id."""
     out, seen = [], set()
-    for rec in archived(bot, limit=limit):
+    for rec in reversed(store.read_jsonl(_archive_path(bot), limit=limit)):
         if isinstance(rec, dict) and rec.get("reason") == "promoted" and rec.get("skill") and rec.get("id") \
                 and rec["id"] not in seen:
             seen.add(rec["id"])
@@ -424,22 +415,8 @@ def promoted_ids(bot) -> set:
     return {r["id"] for r in promoted(bot)}
 
 
-def mark(bot, item_id, **flags) -> dict | None:
-    with store.lock(bot):
-        data = _load(bot)
-        for it in data["items"]:
-            if it.get("id") == item_id:
-                for k, v in flags.items():
-                    if k in FLAGS:
-                        it[k] = bool(v)
-                it["updated"] = time.time()
-                _save(bot, data)
-                return dict(it)
-    return None
-
-
 #: A lesson read from a task session (trust `outcome`) is loaded into every answer only once it was seen in this
-#: many sessions; one the user stated (trust `user`) is loaded at once. `gap` items never are.
+#: many sessions; one the user stated (trust `user`) or research found is loaded at once. `gap` items never are.
 OUTCOME_MIN_COUNT = 2
 
 
@@ -452,15 +429,12 @@ def indexed(item) -> bool:
         return True
     if trust == "outcome":
         return int(item.get("count") or 0) >= OUTCOME_MIN_COUNT
-    if trust == "research":
-        # A gap's finding reaches answers only once its skill fix was approved (the skill carries it then).
-        return bool(item.get("promoted"))
-    return False
+    return trust == "research"  # grounded in a file the research run actually read
 
 
 def index_text(bot) -> str:
     """`- [<id>] <claim> (seen N×)`, most seen first, capped at the manifest's index_lines. Only `indexed`
-    items: user lessons, and outcome lessons seen in two sessions. A contradicted item's line ends with
+    items: user and research lessons, and outcome lessons seen in two sessions. A contradicted item's line ends with
     " (contradicted in N session(s); prefer newer lessons on this)"."""
     cap = store.manifest(bot)["memory"]["index_lines"]
     rows = [i for i in items(bot) if indexed(i)]

@@ -1,9 +1,8 @@
-"""`/api/experts/*` (docs/experts.md §8) against a real server (`client`).
+"""`/api/experts/*` (docs/experts-autonomous.md "HTTP") against a real server (`client`).
 
 The expert is a bot written straight through the bots store with
 `kind: "expert"`; every model-facing function (`consult.consult`,
-`consolidate.run`, `proposals.*`, `cards.show`, `gate.start`,
-`capture.capture_session`, `model.available`) is monkeypatched, so nothing here
+`consolidate.start`, `capture.capture_session`, `model.available`) is monkeypatched, so nothing here
 calls a model or reads a real transcript.
 """
 import json
@@ -15,7 +14,7 @@ from _bots_conftest import *  # noqa: F401,F403
 
 from fused_render.bots import paths as bpaths
 from fused_render.bots import store as bstore
-from fused_render.experts import capture, cards, consolidate, consult, gate, memory, model, proposals
+from fused_render.experts import capture, consolidate, consult, knowledge, memory, model, scheduler
 
 BID = "e1e1e1e1"
 
@@ -42,10 +41,12 @@ def test_list(client, expert, monkeypatch):
     status, body = _json(client.get("/api/experts"))
     assert status == 200
     assert body == [{"id": BID, "name": "Canvas Expert", "ask_me_about": "Writing canvases", "engine": "auto",
-                     "model": "", "available": True, "reason": ""}]
+                     "model": "", "available": True, "reason": "", "unread": 0}]
     monkeypatch.setattr(model, "available", lambda bot: (False, "needs Claude, Codex or Copilot"))
     _s, body = _json(client.get("/api/experts"))
     assert body[0]["available"] is False and body[0]["reason"] == "needs Claude, Codex or Copilot"
+    knowledge.apply(expert, {"op": "lesson_add", "claim": "Read canvas.toml first.", "why": "w"})
+    assert _json(client.get("/api/experts"))[1][0]["unread"] == 1
 
 
 def test_consult_happy_path_and_the_caller(client, expert, monkeypatch, tmp_path):
@@ -103,9 +104,9 @@ def test_consult_errors(client, expert, monkeypatch):
 
 @pytest.mark.parametrize("path,body", [
     ("/api/experts/consult", {"expert": BID, "question": "q"}),
-    (f"/api/experts/{BID}/memory/forget", {"id": "x"}),
-    (f"/api/experts/{BID}/checks/run", {}),
-    (f"/api/experts/{BID}/consolidate", {}),
+    (f"/api/experts/{BID}/activity/seen", {}),
+    (f"/api/experts/{BID}/activity/a1/undo", {}),
+    (f"/api/experts/{BID}/learn", {}),
     (f"/api/experts/{BID}/capture", {"session_id": "s"}),
     (f"/api/experts/{BID}/settings", {"engine": "auto"}),
     (f"/api/experts/{BID}/skills/canvas-folder-layout/restore", {}),
@@ -117,107 +118,119 @@ def test_every_post_needs_x_fused(client, expert, path, body):
     assert status == 403
 
 
-def test_memory_and_forget(client, expert):
+def test_memory(client, expert):
     item = memory.add(expert, "Use fused.load for UDF chaining.", trust="user")
     once = memory.add(expert, "Read canvas.toml first.", session="s1")
-    status, body = _json(client.get(f"/api/experts/{BID}/memory"))
-    assert status == 200 and [i["id"] for i in body["items"]] == [item["id"], once["id"]]
-    assert [i["indexed"] for i in body["items"]] == [True, False]  # an outcome lesson seen once is not loaded
-    assert item["id"] in body["index"] and once["id"] not in body["index"]
-    assert [(i["contradicted"], i["contradicted_sessions"]) for i in body["items"]] == [(0, []), (0, [])]
     memory.contradict(expert, item["id"], session="s7")
     status, body = _json(client.get(f"/api/experts/{BID}/memory"))
+    assert status == 200 and set(body) == {"items", "budget"}
+    assert body["budget"] == {"limit": 50, "tidy_at": 30, "total": 2, "last_tidy": None}
+    assert [i["id"] for i in body["items"]] == [item["id"], once["id"]]
+    assert [i["indexed"] for i in body["items"]] == [True, False]  # an outcome lesson seen once is not loaded
     assert (body["items"][0]["contradicted"], body["items"][0]["contradicted_sessions"]) == (1, ["s7"])
-    assert "(contradicted in 1 session(s); prefer newer lessons on this)" in body["index"]
-    client.post(f"/api/experts/{BID}/memory/forget", {"id": once["id"]})
-    status, body = _json(client.post(f"/api/experts/{BID}/memory/forget", {"id": item["id"]}))
-    assert status == 200 and body == {"removed": 1}
-    status, body = _json(client.post(f"/api/experts/{BID}/memory/forget", {}))
-    assert status == 400
+    assert (body["items"][1]["confirmed"], body["items"][1]["via"], body["items"][1]["history"]) == (0, "", [])
     status, body = _json(client.get("/api/experts/nobody/memory"))
     assert status == 404 and body["error"]
 
 
-def test_observations_consults_proposals(client, expert, monkeypatch):
-    from fused_render.experts import observations
-    observations.write(expert, kind="user_correction", claim="c", trust="outcome")
-    status, body = _json(client.get(f"/api/experts/{BID}/observations"))
-    assert status == 200 and len(body["pending"]) == 1 and body["due"] is False
+def test_consults(client, expert, monkeypatch):
     monkeypatch.setattr(consult, "log", lambda bot, limit=100: [{"id": "a", "ts": 1}, {"id": "b", "ts": 2}])
     status, body = _json(client.get(f"/api/experts/{BID}/consults"))
     assert status == 200 and [c["id"] for c in body["consults"]] == ["b", "a"]
-    monkeypatch.setattr(proposals, "listing", lambda bot: [{"id": "p1"}])
-    assert _json(client.get(f"/api/experts/{BID}/proposals")) == (200, {"proposals": [{"id": "p1"}]})
 
 
-def test_memory_and_observations_carry_the_learning_fields(client, expert):
-    from fused_render.experts import observations
-    plain = memory.add(expert, "Read canvas.toml first.", session="s1")
-    said = memory.add(expert, "Title regional charts with the region name.", trust="user", via="session")
-    memory.confirm(expert, plain["id"], session="s2")
-    memory.narrow(expert, said["id"], "Title regional chart nodes with the region name only.")
-    status, body = _json(client.get(f"/api/experts/{BID}/memory"))
-    rows = {i["id"]: i for i in body["items"]}
-    assert (rows[plain["id"]]["confirmed"], rows[plain["id"]]["via"], rows[plain["id"]]["history"]) == (1, "", [])
-    assert rows[said["id"]]["via"] == "session" and rows[said["id"]]["confirmed"] == 0
-    assert [h["claim"] for h in rows[said["id"]]["history"]] == ["Title regional charts with the region name."]
-    observations.write(expert, kind="user_correction", claim="c", trust="outcome", by_user=True,
-                       quote="use the region name", after_advice=True)
-    status, body = _json(client.get(f"/api/experts/{BID}/observations"))
-    o = body["pending"][0]
-    assert (o["by_user"], o["quote"], o["after_advice"]) == (True, "use the region name", True)
+@pytest.mark.parametrize("method,path", [
+    ("get", "proposals"), ("get", "gaps"), ("post", "gaps/g1/dismiss"), ("get", "checks"), ("post", "checks/run"),
+    ("get", "observations"), ("post", "consolidate"), ("get", "memory/archive"), ("post", "memory/forget"),
+])
+def test_the_approval_routes_are_gone(client, expert, method, path):
+    url = f"/api/experts/{BID}/{path}"
+    status = (client.get(url) if method == "get" else client.post(url, {}))[0]
+    assert status in (404, 405)
 
 
-def test_checks(client, expert, monkeypatch):
-    status, body = _json(client.get(f"/api/experts/{BID}/checks"))
-    assert status == 200 and body["latest"] is None and body["questions"] == 0
-    assert body["status"]["running"] is False
-    status, body = _json(client.post(f"/api/experts/{BID}/checks/run", {}))
-    assert status == 400 and "no questions" in body["error"]
-    monkeypatch.setattr(gate, "questions", lambda bot: [{"q": "Q?", "must": ["x"]}])
-    monkeypatch.setattr(gate, "start", lambda bot: "r123")
-    assert _json(client.post(f"/api/experts/{BID}/checks/run", {})) == (200, {"run_id": "r123"})
+def test_activity_undo_and_seen(client, expert, monkeypatch):
+    monkeypatch.setattr(consolidate, "status", lambda bot: {"running": True, "stage": "lessons", "waiting": 2})
+    a = knowledge.apply(expert, {"op": "lesson_add", "claim": "Read canvas.toml first.", "why": "Seen twice."})
+    b = knowledge.apply(expert, {"op": "lesson_bump", "id": a["target"], "session": "s2", "why": "Seen again."})
+    status, body = _json(client.get(f"/api/experts/{BID}/activity"))
+    assert status == 200 and set(body) == {"items", "unread", "waiting", "learning"}
+    assert [i["id"] for i in body["items"]] == [a["id"]]  # the quiet `counted` line is hidden
+    assert (body["unread"], body["waiting"], body["learning"]) == (1, 2, {"running": True, "stage": "lessons"})
+    status, body = _json(client.get(f"/api/experts/{BID}/activity?quiet=1"))
+    assert [i["id"] for i in body["items"]] == [b["id"], a["id"]]
+    status, body = _json(client.get(f"/api/experts/{BID}/activity?quiet=1&limit=5&before={b['id']}"))
+    assert [i["id"] for i in body["items"]] == [a["id"]]
+
+    assert _json(client.post(f"/api/experts/{BID}/activity/seen", {})) == (200, {})
+    assert _json(client.get(f"/api/experts/{BID}/activity"))[1]["unread"] == 0
+
+    status, body = _json(client.post(f"/api/experts/{BID}/activity/{a['id']}/undo", {}))
+    assert status == 200 and body["ok"] is True
+    assert body["item"]["action"] == "undo" and body["item"]["target"] == a["id"]
+    assert memory.items(expert) == []
+    status, body = _json(client.post(f"/api/experts/{BID}/activity/{a['id']}/undo", {}))
+    assert status == 409 and "already undone" in body["detail"]
+    status, body = _json(client.post(f"/api/experts/{BID}/activity/nope/undo", {}))
+    assert status == 409 and body["detail"]
+    assert _json(client.get(f"/api/experts/{BID}/activity"))[1]["items"][-1]["undone"] is True
+    assert _json(client.get("/api/experts/nobody/activity"))[0] == 404
 
 
-def test_consolidate_starts_in_the_background_and_returns_at_once(client, expert, monkeypatch):
+def test_learn_starts_in_the_background_and_returns_at_once(client, expert, monkeypatch):
     calls = []
     monkeypatch.setattr(consolidate, "run", lambda *a, **k: pytest.fail("never synchronous in a request"))
     monkeypatch.setattr(consolidate, "start", lambda bot, force=False: calls.append(force) or True)
-    status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {"force": True}))
+    status, body = _json(client.post(f"/api/experts/{BID}/learn", {"force": True}))
     assert status == 200 and body == {"started": True} and calls == [True]
+    assert scheduler.poke(expert) is True and calls == [True, False]  # what chat calls after a taught lesson
     monkeypatch.setattr(consolidate, "start", lambda bot, force=False: False)  # running, or nothing to do
-    status, body = _json(client.post(f"/api/experts/{BID}/consolidate", None, raw=True))
+    status, body = _json(client.post(f"/api/experts/{BID}/learn", None, raw=True))
     assert status == 200 and body == {"started": False}
-    status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {"force": "yes"}))
+    status, body = _json(client.post(f"/api/experts/{BID}/learn", {"force": "yes"}))
     assert status == 400
+    # Learning switched off: nothing starts, not even when forced.
+    monkeypatch.setattr(consolidate, "start", lambda bot, force=False: pytest.fail("learning is off"))
+    assert _json(client.post(f"/api/experts/{BID}/settings", {"learning": False}))[1]["learning"] is False
+    assert _json(client.post(f"/api/experts/{BID}/learn", {"force": True})) == (200, {"started": False})
     monkeypatch.setattr(model, "available", lambda bot: (False, "needs Claude, Codex or Copilot"))
-    status, body = _json(client.post(f"/api/experts/{BID}/consolidate", {}))
+    status, body = _json(client.post(f"/api/experts/{BID}/learn", {}))
     assert status == 409 and body["reason"] == "unavailable"
 
 
-def test_propose_is_one_request_for_every_candidate(expert, monkeypatch):
-    from fused_render.experts import routes
-    calls = []
-    monkeypatch.setattr(proposals, "candidates", lambda bot: [{"id": "m1"}, {"id": "m2"}])
-    monkeypatch.setattr(proposals, "request", lambda bot, items, topic="", gap="": (
-        calls.append([i["id"] for i in items]) or {"id": "p9", "status": "preparing"}))
-    assert routes.propose(expert) == ["p9"] and calls == [["m1", "m2"]]
+def test_the_scheduler_learns_only_for_experts_with_learning_on(expert, monkeypatch):
+    from fused_render.bots import registry
+    ran = []
+    monkeypatch.setattr(registry, "owns", lambda: True)
+    monkeypatch.setattr(scheduler, "_acquire", lambda: True)
+    monkeypatch.setattr(scheduler, "_release", lambda: None)
+    monkeypatch.setattr(capture, "capture_due", lambda limit=0, stop=None: {"sessions": 1})
+    monkeypatch.setattr(consolidate, "run", lambda bot, **k: ran.append(bot.id) or {"ran": True})
+    out = scheduler.tick()
+    assert out["ran"] and out["consolidated"] == [BID] and out["capture"] == {"sessions": 1} and "proposed" not in out
+    expert.meta["expert"] = dict(expert.meta["expert"], learning=False)
+    out = scheduler.tick()
+    assert out["consolidated"] == [] and ran == [BID] and out["capture"] == {"sessions": 1}  # capture still runs
 
-    def busy(bot, items, topic="", gap=""):
-        raise ValueError(proposals.BUSY)
-    monkeypatch.setattr(proposals, "request", busy)
-    assert routes.propose(expert) == []
 
-
-def test_proposals_list_every_status_newest_first(client, expert):
-    for i, st in enumerate(proposals.STATUSES):
-        proposals._save(expert, {"id": f"p{i}", "ts": 100 + i, "status": st, "items": [],
-                                 **({"error": "it broke"} if st == "failed" else {})})
-    status, body = _json(client.get(f"/api/experts/{BID}/proposals"))
-    assert status == 200
-    assert [p["status"] for p in body["proposals"]] == list(reversed(proposals.STATUSES))
-    assert body["proposals"][0]["error"] == "it broke"
-    assert proposals.STATUSES == ("preparing", "ready", "shown", "approved", "rejected", "failed")
+def test_skill_restore_goes_through_knowledge(client, expert):
+    import os
+    from fused_render.experts import store
+    shipped = os.path.join(store.expert_dir(expert), knowledge.SHIPPED_DIR)
+    os.makedirs(shipped)
+    with open(os.path.join(shipped, "layout.md"), "w") as f:
+        f.write("# Layout\ntrigger: layout\n\nThe shipped body.\n")
+    knowledge.apply(expert, {"op": "skill_restore", "skill": "layout", "why": "w"})
+    knowledge.apply(expert, {"op": "skill_edit", "skill": "layout", "why": "w",
+                             "ops": [{"op": "add", "heading": "Mine", "section": "Extra."}]})
+    status, body = _json(client.get(f"/api/experts/{BID}/skills/health"))
+    assert status == 200 and [(h["name"], h["shipped"], h["damaged"]) for h in body] == [("layout", True, False)]
+    assert _json(client.post(f"/api/experts/{BID}/skills/layout/restore", {})) == (200, {"restored": True})
+    assert expert.skills()[0]["body"] == "The shipped body."
+    line = knowledge.activity(expert)[0]
+    assert line["action"] == "skill_restored" and line["undoable"] and line["target"] == "layout"
+    assert _json(client.post(f"/api/experts/{BID}/skills/nope/restore", {}))[0] == 404
+    assert _json(client.post(f"/api/experts/{BID}/skills/..%2Fx/restore", {}))[0] == 404
 
 
 def _run_dir(monkeypatch, tmp_path, roster):
@@ -278,6 +291,12 @@ def test_settings_and_engines(client, expert, monkeypatch):
     assert status == 400 and "engine must be one of" in body["error"]
     status, body = _json(client.post(f"/api/experts/{BID}/settings", {"model": 3}))
     assert status == 400
+    status, body = _json(client.get(f"/api/experts/{BID}/settings"))
+    assert status == 200 and body["learning"] is True and body["engine"] == "copilot"  # learning is on by default
+    status, body = _json(client.post(f"/api/experts/{BID}/settings", {"learning": False}))
+    assert status == 200 and body["learning"] is False and body["engine"] == "copilot"
+    assert _json(client.get(f"/api/experts/{BID}/settings"))[1]["learning"] is False
+    assert _json(client.post(f"/api/experts/{BID}/settings", {"learning": "no"}))[0] == 400
 
     status, body = _json(client.get(f"/api/experts/{BID}/engines"))
     assert status == 200 and [e["id"] for e in body] == ["claude", "codex", "copilot"]

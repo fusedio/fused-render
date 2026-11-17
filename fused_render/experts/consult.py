@@ -3,7 +3,7 @@
 A consult is a separate, short run of the expert (`engine.answer`, profile
 "consult"). It never touches the expert's chat thread and never writes memory:
 the question and context are data from an agent. An unsure answer leaves a
-`gap` observation for consolidation to count. At most `MAX_PARALLEL` consults
+`gap` entry in the inbox (`inbox_write`, Answer's only way into the inbox; chat uses it for `taught` / `forget`). At most `MAX_PARALLEL` consults
 run at once in this process; the rest wait up to `SLOT_WAIT_S` for a turn and
 then fail with "the expert is busy". The caller's target folder becomes
 readable for the consult, unless it is `/`, the home folder or an ancestor of
@@ -18,7 +18,7 @@ import os
 import threading
 import time
 
-from fused_render.experts import engine, model, readtools, store
+from fused_render.experts import engine, memory, model, readtools, store
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,16 @@ def _path(bot) -> str:
 def _caller(caller) -> dict:
     c = caller if isinstance(caller, dict) else {}
     return {k: c[k] for k in CALLER_KEYS if c.get(k) not in (None, "")}
+
+
+def inbox_write(bot, kind, claim, **fields) -> dict:
+    """One inbox entry from Answer: `gap` (an unsure consult), `taught` or `forget` (chat, `by_user=True` only
+    for a message typed at the computer). Learn reads it from `observations/pending/`."""
+    obs = {"id": store.new_id("o"), "ts": time.time(), "kind": kind, "claim": " ".join(str(claim or "").split()),
+           "trust": "gap" if kind == "gap" else "user", **fields}
+    with store.lock(bot):
+        store.write_json(os.path.join(store.expert_dir(bot), "observations", "pending", obs["id"] + ".json"), obs)
+    return obs
 
 
 def consult(bot, question, context="", caller=None) -> dict:
@@ -77,18 +87,16 @@ def consult(bot, question, context="", caller=None) -> dict:
         logger.warning("expert %s: consult %s not logged", bot.id, cid, exc_info=True)
     if rec["used"]:
         try:
-            from fused_render.experts import memory
             memory.cite(bot, rec["used"])  # the lessons this answer relied on (the memory budget's usage)
         except Exception:  # noqa: BLE001 — the answer still goes back to the agent
             logger.warning("expert %s: lessons of consult %s not cited", bot.id, cid, exc_info=True)
     if rec["unsure"]:
         try:
-            from fused_render.experts import observations
-            observations.write(bot, kind="gap", claim=f"Could not answer: {question[:500]}", trust="gap",
-                               session=str(who.get("session_id") or ""), about=list(rec["refs"]), consult=cid,
-                               source={"target": who.get("target") or "", "backend": who.get("backend") or ""})
+            inbox_write(bot, "gap", f"Could not answer: {question[:500]}",
+                        session=str(who.get("session_id") or ""), about=list(rec["refs"]), consult=cid,
+                        source={"target": who.get("target") or "", "backend": who.get("backend") or ""})
         except Exception:  # noqa: BLE001 — the answer still goes back to the agent
-            logger.warning("expert %s: gap observation for consult %s not written", bot.id, cid, exc_info=True)
+            logger.warning("expert %s: gap entry for consult %s not written", bot.id, cid, exc_info=True)
     return {"id": cid, "answer": rec["answer"], "refs": rec["refs"], "used": rec["used"], "unsure": rec["unsure"]}
 
 

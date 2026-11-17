@@ -77,7 +77,7 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model, "text", text)
     monkeypatch.setattr(model, "available", lambda bot: (True, ""))
-    monkeypatch.setattr(consult, "log", lambda bot, limit=100: list(state["log"]))
+    monkeypatch.setattr(capture, "_consults", lambda bot: list(state["log"]))
     monkeypatch.setattr(capture.time, "time", lambda: NOW)
     state["add"] = add
     return state
@@ -114,8 +114,7 @@ def test_relevance_by_offered_to_and_by_consult_log(env, tmp_path):
 
 
 def test_relevance_by_run_id_when_the_session_was_not_known_yet(env, tmp_path, monkeypatch):
-    from fused_render.experts import routes
-    monkeypatch.setattr(routes, "caller_for_run", lambda rid: {"session_id": "s9" if rid == "r9" else ""})
+    monkeypatch.setattr(capture, "_run_session", lambda rid: "s9" if rid == "r9" else "")
     env["log"] = [{"id": "c1", "caller": {"session_id": "", "run_id": "r9"}}]
     assert capture.relevant(_Bot(tmp_path, "n", targets=[]), {"session_id": "s9", "canvas": ""})
 
@@ -405,16 +404,13 @@ def sched(monkeypatch, tmp_path):
     order = []
     bots = [_Bot(tmp_path, "a"), _Bot(tmp_path, "b")]
     mods = {
-        "store": types.SimpleNamespace(all_experts=lambda: bots),
+        "store": types.SimpleNamespace(all_experts=lambda: bots, manifest=lambda bot: {
+            "learning": bot.id != "paused", "offered_to": {"targets": ["*"]}}),
         "capture": types.SimpleNamespace(capture_due=lambda limit, stop=None: order.append(("capture", limit))
                                          or {"sessions": 1}),
         "model": types.SimpleNamespace(available=lambda bot: (bot.id != "off", "")),
-        "observations": types.SimpleNamespace(due=lambda bot: order.append(("due", bot.id)) or bot.id == "a"),
-        "consolidate": types.SimpleNamespace(run=lambda bot: order.append(("consolidate", bot.id))
-                                             or {"ran": True}),
-        "routes": types.SimpleNamespace(propose=lambda bot: order.append(("propose", bot.id))
-                                        or (["p1"] if bot.id == "a" else [])),
-        "cards": types.SimpleNamespace(tick=lambda: order.append(("cards",))),
+        "consolidate": types.SimpleNamespace(run=lambda bot: order.append(("learn", bot.id))
+                                             or {"ran": bot.id == "a"}),
     }
     monkeypatch.setattr(scheduler, "_mod", lambda name: mods[name])
     monkeypatch.setattr(scheduler, "_owner", lambda: True)
@@ -437,11 +433,13 @@ def sched(monkeypatch, tmp_path):
 def test_tick_order(sched):
     out = scheduler.tick()
     assert out["ran"] and out["errors"] == 0
-    assert sched.order == [("capture", scheduler.CAPTURE_PER_TICK),
-                           ("due", "a"), ("consolidate", "a"), ("propose", "a"),
-                           ("due", "b"), ("propose", "b"), ("cards",)]
-    assert out["consolidated"] == ["a"] and out["proposed"] == ["p1"]
-    assert sched.lease["released"] == 1 and not sched.lease["held"]
+    assert sched.order == [("capture", scheduler.CAPTURE_PER_TICK), ("learn", "a"), ("learn", "b")]
+    assert out["consolidated"] == ["a"]  # Learn itself decides whether anything is due
+    sched.bots[1].id = "paused"  # learning switched off: sessions are still noticed, nothing is learned
+    del sched.order[:]
+    scheduler.tick()
+    assert sched.order == [("capture", scheduler.CAPTURE_PER_TICK), ("learn", "a")]
+    assert sched.lease["released"] == 2 and not sched.lease["held"]
 
 
 def test_tick_never_raises_and_carries_on(sched):
@@ -451,12 +449,10 @@ def test_tick_never_raises_and_carries_on(sched):
     sched.mods["capture"].capture_due = boom
     sched.mods["consolidate"].run = boom
     out = scheduler.tick()
-    assert out["ran"] and out["errors"] == 2
-    assert ("cards",) in sched.order and ("propose", "a") in sched.order
+    assert out["ran"] and out["errors"] == 3  # capture, and Learn for each of the two experts
     sched.mods["store"].all_experts = boom
-    sched.mods["cards"].tick = boom
     out = scheduler.tick()
-    assert out["errors"] >= 3
+    assert out["errors"] >= 1
     assert sched.lease["released"] == 2
 
 
@@ -481,7 +477,7 @@ def test_start_is_idempotent_and_shutdown_is_clean(sched, monkeypatch):
     monkeypatch.setattr(scheduler, "STARTUP_DELAY_S", 0.0)
     monkeypatch.setattr(scheduler, "TICK_S", 0.05)
     ticked = threading.Event()
-    sched.mods["cards"].tick = lambda: ticked.set()
+    sched.mods["consolidate"].run = lambda bot: ticked.set()
     before = threading.active_count()
     scheduler.start()
     scheduler.start()

@@ -23,6 +23,8 @@ DEFAULT_MANIFEST = {
                     "answer_contradicted", "unanswered"],
     "engine": "auto",
     "model": "",
+    # Whether the expert learns in the background (docs/experts-autonomous.md). Off: sessions are still noticed.
+    "learning": True,
     "memory": {"consolidate_at": 3, "consolidate_after_s": 86400, "propose_at": 3,
                "index_lines": 200,
                # The memory budget (docs/experts.md "Memory budget"): at most `limit` lessons; above `tidy_at`
@@ -77,6 +79,8 @@ def manifest(bot) -> dict:
         out["engine"] = engine
     if isinstance(raw.get("model"), str):
         out["model"] = raw["model"].strip()
+    if isinstance(raw.get("learning"), bool):
+        out["learning"] = raw["learning"]
     mem = raw.get("memory") if isinstance(raw.get("memory"), dict) else {}
     d = DEFAULT_MANIFEST["memory"]
     out["memory"] = {

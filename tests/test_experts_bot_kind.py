@@ -154,7 +154,7 @@ def test_seed_creates_once_and_not_after_delete(tmp_path, monkeypatch):
     assert b.meta["face"]["shape"] == "hexagon"
     sk = b.skills()
     assert [s["name"] for s in sk] == ["layout"] and sk[0]["title"] == "Folder layout" and sk[0]["trigger"] == "layout, folder"
-    assert open(os.path.join(b.public_dir, "questions.md")).read().startswith("## Q?")
+    assert not os.path.exists(os.path.join(b.public_dir, "questions.md"))  # no longer seeded
     assert xseed.seed() == []
     registry.delete(b.id)
     assert xseed.seed() == []  # the witness keeps a deleted expert deleted

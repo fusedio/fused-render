@@ -7,12 +7,11 @@ setting, docs/experts.md "Developer settings"); `shutdown()` stops it; `reset()`
 
 `tick()`: capture due task sessions for the experts they are relevant to
 (skipped outright, sessions not even listed, when no available expert is
-offered to any target or was ever consulted) →
-`consolidate.run` for every expert whose observations are due → one proposal
-for the lessons that keep recurring (`routes.propose`: `proposals.request`,
-which drafts in the background and shows its own card when ready; none while
-one is being prepared) → `cards.tick()` for any proposal still waiting for its
-card. It never raises.
+offered to any target or was ever consulted) → `consolidate.run` (Learn) for
+every expert whose manifest has `learning` on; the run itself decides whether
+anything is due. `poke(bot)` starts a Learn run for one expert right away, in
+the background (chat calls it after the user teaches or forgets something).
+It never raises.
 
 ONE PROCESS TICKS. Two fused-render servers on one machine (the app and a dev
 server) must not both read the same transcripts or both consolidate one
@@ -79,8 +78,8 @@ def _release() -> None:
 
 def tick(stop: threading.Event | None = None) -> dict:
     """One pass. Returns what it did: `{"ran": bool, "skipped": why,
-    "capture": {...}, "consolidated": [ids], "proposed": [ids], "errors": n}`."""
-    out = {"ran": False, "skipped": "", "capture": {}, "consolidated": [], "proposed": [], "errors": 0}
+    "capture": {...}, "consolidated": [ids], "errors": n}`."""
+    out = {"ran": False, "skipped": "", "capture": {}, "consolidated": [], "errors": 0}
     if not _TICK_LOCK.acquire(blocking=False):
         out["skipped"] = "a tick is already running"
         return out
@@ -160,27 +159,25 @@ def _run(out: dict, stop) -> None:
         if _stopped(stop):
             return
         try:
-            if _mod("observations").due(bot):
-                res = _mod("consolidate").run(bot) or {}
-                if res.get("ran"):
-                    out["consolidated"].append(bot.id)
+            if _learning(bot) and (_mod("consolidate").run(bot) or {}).get("ran"):
+                out["consolidated"].append(bot.id)
         except Exception:  # noqa: BLE001
             out["errors"] += 1
-            logger.warning("experts scheduler: consolidate %s failed", bot.id, exc_info=True)
-        if _stopped(stop):
-            return
-        try:
-            out["proposed"] += _mod("routes").propose(bot)
-        except Exception:  # noqa: BLE001
-            out["errors"] += 1
-            logger.warning("experts scheduler: proposing for %s failed", bot.id, exc_info=True)
-    if _stopped(stop):
-        return
+            logger.warning("experts scheduler: learning for %s failed", bot.id, exc_info=True)
+
+
+def _learning(bot) -> bool:
+    return _mod("store").manifest(bot).get("learning") is not False
+
+
+def poke(bot, force=False) -> bool:
+    """Run Learn for `bot` soon: `consolidate.start`, a background thread, one run per expert at a time. False
+    when learning is off for it, a run is already going, or nothing is due. Never raises, never blocks."""
     try:
-        _mod("cards").tick()
+        return _learning(bot) and bool(_mod("consolidate").start(bot, force=force))
     except Exception:  # noqa: BLE001
-        out["errors"] += 1
-        logger.warning("experts scheduler: cards.tick failed", exc_info=True)
+        logger.warning("experts scheduler: poke %s failed", getattr(bot, "id", "?"), exc_info=True)
+        return False
 
 
 def _env_seconds(name: str, default: float) -> float:

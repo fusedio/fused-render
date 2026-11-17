@@ -1,5 +1,6 @@
-"""experts memory budget (docs/experts.md "Memory budget"): usage tracking, the archive, tidy (delete / merge /
-promote with code-enforced guard rails, the hard limit) and its HTTP surface. No real model."""
+"""experts memory budget (docs/experts-autonomous.md "tidy"): usage tracking, and the tidy step (delete / merge
+with code-enforced guard rails, the hard limit, heavy-use promotion through distill), asserted on memory and the
+activity log. No real model."""
 from __future__ import annotations
 
 from _bots_conftest import *  # noqa: F401,F403 — FusedBot's conftest fixtures (client, …)
@@ -9,7 +10,7 @@ import time
 
 import pytest
 
-from fused_render.experts import consolidate, consult, engine, memory, model, proposals, store, tidy
+from fused_render.experts import consolidate, consult, distill, engine, knowledge, memory, model, store, tidy
 
 DAY = 86400.0
 
@@ -67,18 +68,19 @@ def answer(monkeypatch):
     return A
 
 
-@pytest.fixture
-def requests(monkeypatch):
-    """`proposals.request` recorded (no drafting thread)."""
-    calls = []
+def _tidy(bot):
+    """Drive the tidy step the way the Learn loop does; returns the activity lines it produced."""
+    gen, line, lines = tidy.step(bot, {}), None, []
+    try:
+        while True:
+            line = knowledge.apply(bot, {"stage": "tidy", **gen.send(line)})
+            lines.append(line)
+    except StopIteration:
+        return lines
 
-    def fake(b, items, *, topic="", gap=""):
-        ids = [i["id"] if isinstance(i, dict) else i for i in items]
-        calls.append(ids)
-        return {"id": "pfake", "items": ids, "status": "preparing"}
 
-    monkeypatch.setattr(proposals, "request", fake)
-    return calls
+def _archive(bot):
+    return store.read_jsonl(os.path.join(store.expert_dir(bot), memory.ARCHIVE_FILE))
 
 
 def _lesson(bot, claim, *, trust="outcome", count=1, cited=0, idle=30.0, age=None, sessions=None, **extra):
@@ -147,8 +149,6 @@ def test_consult_and_chat_cite_the_used_lessons(bot, monkeypatch):
                                                              '"unsure": false}\n```' % a["id"])
     engine._run(bot, "q", profile="chat")
     assert memory.items(bot)[0]["cited"] == 2
-    engine.answer_question(bot, "q")  # the gate's answers do not count
-    assert memory.items(bot)[0]["cited"] == 2
 
 
 # ------------------------------------------------------------------ archive
@@ -156,127 +156,56 @@ def test_consult_and_chat_cite_the_used_lessons(bot, monkeypatch):
 def test_forget_archives(bot):
     a = memory.add(bot, "Forget me please")
     assert memory.forget(bot, a["id"]) == 1
-    arch = memory.archived(bot)
+    arch = _archive(bot)
     assert arch[0]["id"] == a["id"] and arch[0]["reason"] == "forgotten" and arch[0]["claim"] == "Forget me please"
     assert arch[0]["removed_at"]
 
 
-def test_approve_moves_lessons_to_the_archive_with_the_skill(bot, monkeypatch):
-    a = _lesson(bot, "Lesson A", count=3)
-    b = _lesson(bot, "Lesson B", count=3)
-    keep = _lesson(bot, "Lesson C")
-    monkeypatch.setattr(model, "text", lambda *a_, **k: json.dumps(
-        {"action": "create", "title": "Canvas Rules", "trigger": "canvas", "body": "- A\n- B"}))
-    p = proposals.prepare(bot, [a["id"], b["id"]])
-    proposals.approve(bot, p["id"])
-    assert _ids(bot) == {keep["id"]}
-    arch = memory.archived(bot)
-    assert {r["id"] for r in arch} == {a["id"], b["id"]}
-    assert all(r["reason"] == "promoted" and r["skill"] == "canvas-rules" for r in arch)
-
-
-def test_old_promoted_items_are_swept_when_tidy_runs(bot, answer):
-    a = _lesson(bot, "Old promoted lesson", count=4, promoted=True)
-    proposals._save(bot, {"id": "pold", "ts": 1, "status": "approved", "skill": "old-skill", "items": [a["id"]]})
-    other = _lesson(bot, "Still here")
-    tidy.run(bot)
-    assert _ids(bot) == {other["id"]} and answer.calls == []  # below tidy_at: swept without a model call
-    rec = memory.archived(bot)[0]
-    assert rec["reason"] == "promoted" and rec["skill"] == "old-skill"
-    assert tidy.last(bot)["swept"] == [{"id": a["id"], "claim": "Old promoted lesson"}]
-
-
-# ------------------------------------------------------------------ tidy: skip, delete
+# ------------------------------------------------------------------ the tidy step
 
 def test_tidy_skipped_at_or_below_tidy_at(bot, answer):
+    _fill(bot, 29)
+    _lesson(bot, "Stale and rare", idle=40)  # 30 lessons: not above tidy_at
+    assert _tidy(bot) == [] and answer.calls == []
+
+
+def test_a_forced_run_tidies_above_tidy_at(bot, answer):
     _fill(bot, 30)
-    r = consolidate.run(bot, force=True)
-    assert r["ran"] is False  # nothing pending and nothing to tidy: force does not start
-    assert consolidate.would_run(bot, force=True) is False
-    assert tidy.run(bot) == {"deleted": [], "merged": [], "promoting": [], "over_limit": []}
-    assert answer.calls == [] and tidy.last(bot) is None
+    stale = _lesson(bot, "Stale and rare", idle=40)
+    answer.value = [{"id": stale["id"], "do": "delete", "why": "nobody used it"}]
+    assert consolidate.run(bot, force=True)["ran"]
+    assert stale["id"] not in _ids(bot)
+    arch = _archive(bot)[0]
+    assert (arch["id"], arch["reason"]) == (stale["id"], "stale")
+    (line,) = knowledge.activity(bot)
+    assert (line["action"], line["target"], line["stage"], line["why"]) == (
+        "removed", stale["id"], "tidy", "nobody used it") and line["undoable"]
 
 
-def test_force_consolidate_runs_tidy_above_tidy_at(bot, answer):
-    _fill(bot, 30)
-    stale = _lesson(bot, "Stale lesson", count=1, idle=30)
-    answer.value = [{"id": stale["id"], "do": "delete", "why": "old and unused"}]
-    assert consolidate.would_run(bot, force=True)
-    r = consolidate.run(bot, force=True)
-    assert r["ran"] and r["tidied"]["deleted"] == [stale["id"]] and len(answer.calls) == 1
-    assert "Stale lesson" in answer.calls[0] and "when unsure, keep" in answer.calls[0].lower()
-
-
-def test_valid_stale_delete_is_archived_with_why(bot, answer):
-    _fill(bot, 30)
-    stale = _lesson(bot, "Stale lesson", count=1, cited=1, idle=20)
-    answer.value = [{"id": stale["id"], "do": "delete", "why": "old and unused"}]
-    r = tidy.run(bot)
-    assert r["deleted"] == [stale["id"]] and stale["id"] not in _ids(bot)
-    rec = memory.archived(bot)[0]
-    assert rec["reason"] == "stale" and rec["why"] == "old and unused"
-    last = tidy.last(bot)
-    assert last["deleted"] == [{"id": stale["id"], "claim": "Stale lesson", "why": "old and unused"}]
-    assert last["counts"]["deleted"] == 1 and last["at"]
-
-
-@pytest.mark.parametrize("case", ["recent", "used", "user", "proposal"])
+@pytest.mark.parametrize("case", ["user", "recent", "used", "unknown"])
 def test_model_delete_outside_the_guard_rails_is_ignored(bot, answer, case):
     _fill(bot, 30)
-    kw = {"recent": {"idle": 3}, "used": {"count": 2, "cited": 1}, "user": {"trust": "user"}, "proposal": {}}[case]
-    x = _lesson(bot, "Candidate lesson", **{"count": 1, "idle": 30, **kw})
-    if case == "proposal":
-        proposals._save(bot, {"id": "popen", "ts": time.time(), "status": "shown", "items": [x["id"]]})
-    answer.value = [{"id": x["id"], "do": "delete", "why": "x"}]
-    assert tidy.run(bot)["deleted"] == [] and x["id"] in _ids(bot)
+    kw = {"user": {"trust": "user", "idle": 40}, "recent": {"idle": 3}, "used": {"idle": 40, "count": 2, "cited": 2},
+          "unknown": {"idle": 40}}[case]
+    it = _lesson(bot, "Maybe delete me", **kw)
+    stale = _lesson(bot, "Zzz qqq www", idle=40)  # a real candidate, so the model is asked
+    answer.value = [{"id": "mnope" if case == "unknown" else it["id"], "do": "delete"},
+                    {"id": stale["id"], "do": "keep"}]
+    assert _tidy(bot) == [] and it["id"] in _ids(bot) and len(answer.calls) == 1
 
 
-def test_unparseable_answer_or_failure_changes_nothing(bot, answer, requests):
+@pytest.mark.parametrize("value", ["not json at all", RuntimeError("down")])
+def test_unparseable_answer_or_failure_changes_nothing_and_is_asked_again(bot, answer, value):
     _fill(bot, 30)
-    _lesson(bot, "Stale lesson", count=1, idle=30)
+    _lesson(bot, "Stale and rare", idle=40)
+    answer.value = value
     before = _ids(bot)
-    answer.value = "I would delete the stale one."
-    assert tidy.run(bot) == {"deleted": [], "merged": [], "promoting": [], "over_limit": []}
-    assert tidy.last(bot)["error"]
-    answer.value = RuntimeError("boom")
-    tidy.run(bot)
-    assert _ids(bot) == before and requests == [] and memory.archived(bot) == []
+    assert _tidy(bot) == [] and _ids(bot) == before
+    _tidy(bot)
+    assert len(answer.calls) == 2  # a failed review is not remembered as "unchanged"
 
 
-# ------------------------------------------------------------------ tidy: promote
-
-def test_valid_promotions_go_into_one_request(bot, answer, requests):
-    _fill(bot, 30)
-    a = _lesson(bot, "Heavy A", count=2, cited=3, idle=1)
-    b = _lesson(bot, "Heavy B", count=5, idle=1)
-    answer.value = [{"id": a["id"], "do": "promote", "why": "used"}, {"id": b["id"], "do": "promote"}]
-    r = tidy.run(bot)
-    assert requests == [[a["id"], b["id"]]] and r["promoting"] == [a["id"], b["id"]]
-    assert {a["id"], b["id"]} <= _ids(bot)  # they stay until the user approves
-    assert [x["id"] for x in tidy.last(bot)["promoting"]] == [a["id"], b["id"]]
-
-
-@pytest.mark.parametrize("case", ["light", "contradicted", "rejected"])
-def test_model_promote_outside_the_guard_rails_is_ignored(bot, answer, requests, case):
-    _fill(bot, 30)
-    kw = {"light": {"count": 2, "cited": 2}, "contradicted": {"count": 6, "contradicted": 1},
-          "rejected": {"count": 6, "rejected": True}}[case]
-    x = _lesson(bot, "Maybe heavy", idle=1, **kw)
-    answer.value = [{"id": x["id"], "do": "promote"}]
-    assert tidy.run(bot)["promoting"] == [] and requests == []
-
-
-def test_no_promotion_while_a_proposal_is_open(bot, answer, requests):
-    _fill(bot, 30)
-    x = _lesson(bot, "Heavy", count=6, idle=1)
-    proposals._save(bot, {"id": "pwait", "ts": time.time(), "status": "ready", "items": ["mother"]})
-    answer.value = [{"id": x["id"], "do": "promote"}]
-    assert tidy.run(bot)["promoting"] == [] and requests == []
-
-
-# ------------------------------------------------------------------ tidy: merge
-
-def test_merge_two_and_three(bot, answer, requests):
+def test_merge_two_and_three(bot, answer):
     _fill(bot, 30)
     a = _lesson(bot, "Charts use the dark theme", count=2, cited=1, idle=5, age=40, sessions=["s1", "s2"])
     b = _lesson(bot, "Charts in canvases are dark", count=1, cited=2, idle=2, age=10, sessions=["s2", "s3"],
@@ -288,289 +217,118 @@ def test_merge_two_and_three(bot, answer, requests):
         {"do": "merge", "ids": [a["id"], b["id"]], "claim": "Charts in canvases use the dark theme", "why": "same"},
         {"do": "merge", "ids": [c["id"], d["id"], e["id"]], "claim": "A UDF returns a (Geo)DataFrame"},
     ]
-    r = tidy.run(bot)
-    assert len(r["merged"]) == 2
-    m1, m2 = r["merged"]
-    assert m1["from"] == [a["id"], b["id"]] and m1["claim"] == "Charts in canvases use the dark theme"
+    l1, l2 = _tidy(bot)
+    assert (l1["action"], l1["why"], l1["ok"]) == ("merged", "same", True) and l2["action"] == "merged"
     items = {i["id"]: i for i in memory.items(bot)}
-    n1, n2 = items[m1["into"]], items[m2["into"]]
+    n1, n2 = items[l1["target"]], items[l2["target"]]
     assert a["id"] not in items and b["id"] not in items and n1["kind"] == "lesson"
+    assert n1["claim"] == "Charts in canvases use the dark theme"
+    # count is the LARGEST original, never the size of the session union.
     assert n1["sessions"] == ["s1", "s2", "s3"] and n1["count"] == 2 and n1["cited"] == 3
     assert n1["trust"] == "outcome" and n1["about"] == ["/x"]
-    assert abs(n1["created"] - a["created"]) < 1 and abs(n1["updated"] - b["updated"]) < 1
     assert n1["merged_from"] == [{"id": a["id"], "claim": a["claim"]}, {"id": b["id"], "claim": b["claim"]}]
     assert n2["trust"] == "user" and n2["count"] == 1 and len(n2["merged_from"]) == 3
-    arch = {x["id"]: x for x in memory.archived(bot)}
+    arch = {x["id"]: x for x in _archive(bot)}
     assert arch[a["id"]]["reason"] == "merged" and arch[a["id"]]["into"] == n1["id"]
-    assert arch[e["id"]]["into"] == n2["id"]
-    last = tidy.last(bot)["merged"]
-    assert last[0]["into"] == n1["id"] and last[0]["from"][0] == {"id": a["id"], "claim": a["claim"]}
-    assert requests == [[n1["id"]]]  # the merged lesson (uses 5, count 2) is promote-ready: no model needed
+    knowledge.undo(bot, l1["id"])  # the originals come back as they were
+    assert {a["id"], b["id"]} <= _ids(bot) and n1["id"] not in _ids(bot)
 
 
-def test_merge_count_takes_the_largest_original_when_bigger(bot, answer):
-    _fill(bot, 30)
-    a = _lesson(bot, "Canvas charts stay dark", count=4, idle=1, sessions=["s1"])
-    b = _lesson(bot, "Charts stay dark", count=1, idle=1, sessions=["s1"])
-    answer.value = [{"do": "merge", "ids": [a["id"], b["id"]], "claim": "Charts in canvases stay dark"}]
-    into = tidy.run(bot)["merged"][0]["into"]
-    assert next(i for i in memory.items(bot) if i["id"] == into)["count"] == 4
-
-
-def test_merged_count_is_the_largest_original_not_the_session_union(bot, answer):
-    _fill(bot, 30)
-    a = _lesson(bot, "Charts use the dark theme", count=1, idle=1, sessions=["s1"])
-    b = _lesson(bot, "Charts are dark", count=1, idle=1, sessions=["s2"])
-    answer.value = [{"do": "merge", "ids": [a["id"], b["id"]], "claim": "Canvas charts use the dark theme"}]
-    into = tidy.run(bot)["merged"][0]["into"]
-    merged = next(i for i in memory.items(bot) if i["id"] == into)
-    assert merged["count"] == 1 and merged["sessions"] == ["s1", "s2"]
-    assert not memory.indexed(merged)  # two lessons seen once each are not a lesson seen twice
-    # The once-per-session bump rule still holds against the session union.
-    assert memory.bump(bot, into, session="s2")["count"] == 1
-    bumped = memory.bump(bot, into, session="s9")
-    assert bumped["count"] == 2 and memory.indexed(bumped)
-
-
-def test_merge_equal_to_an_original_folds_into_it(bot, answer):
-    _fill(bot, 30)
-    a = _lesson(bot, "Charts use the dark theme", count=1, idle=1, sessions=["s1"])
-    b = _lesson(bot, "Dark charts", count=1, idle=1, sessions=["s2"])
-    answer.value = [{"do": "merge", "ids": [a["id"], b["id"]], "claim": "charts use the dark theme."}]
-    r = tidy.run(bot)
-    assert r["merged"][0]["into"] == a["id"]
-    kept = next(i for i in memory.items(bot) if i["id"] == a["id"])
-    assert kept["claim"] == "Charts use the dark theme" and kept["count"] == 1
-    assert kept["merged_from"] == [{"id": b["id"], "claim": "Dark charts"}]
-    assert b["id"] not in _ids(bot) and memory.archived(bot)[0]["into"] == a["id"]
-
-
-@pytest.mark.parametrize("case", ["heavy", "contradicted", "proposal", "empty", "long", "one", "four", "missing"])
+@pytest.mark.parametrize("case", ["one", "four", "unknown", "contradicted", "heavy", "empty", "long", "taken",
+                                  "two_groups"])
 def test_merge_outside_the_guard_rails_is_ignored(bot, answer, case):
     _fill(bot, 30)
-    a = _lesson(bot, "Canvas charts use dark theme alpha", count=1, idle=1)
-    b = _lesson(bot, "Canvas charts use dark theme beta", count=1, idle=1,
-                **{"heavy": {"cited": 5}, "contradicted": {"contradicted": 1}}.get(case, {}))
-    c = _lesson(bot, "Canvas charts use dark theme gamma", count=1, idle=1)
-    d = _lesson(bot, "Canvas charts use dark theme delta", count=1, idle=1)
-    if case == "proposal":
-        proposals._save(bot, {"id": "popen", "ts": time.time(), "status": "preparing", "items": [b["id"]]})
-    ids = {"one": [a["id"]], "four": [a["id"], b["id"], c["id"], d["id"]],
-           "missing": [a["id"], "mnope"]}.get(case, [a["id"], b["id"]])
-    claim = {"empty": "  ", "long": "x" * 401}.get(case, "Alpha and beta")
+    a = _lesson(bot, "Charts use the dark theme", idle=2)
+    b = _lesson(bot, "Charts in canvases are dark theme", idle=2,
+                **({"contradicted": 1} if case == "contradicted" else {}),
+                **({"count": 3, "cited": 3} if case == "heavy" else {}))
+    c = _lesson(bot, "Dark theme charts everywhere", idle=2)
+    d = _lesson(bot, "Dark charts theme again", idle=2)
+    u1 = _lesson(bot, "Loaders parquet files monthly", idle=2)
+    u2 = _lesson(bot, "Parquet loaders files weekly", idle=2)
+    ids = {"one": [a["id"]], "four": [a["id"], b["id"], c["id"], d["id"]], "unknown": [a["id"], "mnope"],
+           "two_groups": [a["id"], u1["id"]]}.get(case, [a["id"], b["id"]])
+    claim = {"empty": "  ", "long": "x" * 401, "taken": u2["claim"]}.get(case, "Charts are dark")
     answer.value = [{"do": "merge", "ids": ids, "claim": claim}]
     before = _ids(bot)
-    assert tidy.run(bot)["merged"] == [] and _ids(bot) == before
+    assert _tidy(bot) == [] and _ids(bot) == before
 
 
-def test_an_id_belongs_to_the_first_action_naming_it(bot, answer, requests):
+def test_an_id_belongs_to_the_first_action_naming_it_and_at_most_five_merges(bot, answer):
     _fill(bot, 30)
-    a = _lesson(bot, "Canvas charts use dark theme alpha", count=1, idle=1)
-    b = _lesson(bot, "Canvas charts use dark theme beta", count=1, idle=1)
-    c = _lesson(bot, "Canvas charts use dark theme gamma", count=1, idle=30)
-    answer.value = [{"id": a["id"], "do": "keep"},
-                    {"do": "merge", "ids": [a["id"], b["id"]], "claim": "Alpha beta"},  # a is taken: dropped
-                    {"do": "merge", "ids": [b["id"], c["id"]], "claim": "Beta gamma"},
-                    {"id": c["id"], "do": "delete"}]  # c is taken by the merge
-    r = tidy.run(bot)
-    assert [m["from"] for m in r["merged"]] == [[b["id"], c["id"]]] and r["deleted"] == []
-    assert a["id"] in _ids(bot)
+    pairs = [(_lesson(bot, f"Topic{k} alpha{k} beta{k} one", idle=2), _lesson(bot, f"Topic{k} alpha{k} beta{k} two",
+                                                                         idle=2)) for k in range(6)]
+    answer.value = [{"do": "merge", "ids": [x["id"], y["id"]], "claim": f"Merged {k}"}
+                    for k, (x, y) in enumerate(pairs)] + [{"id": pairs[0][0]["id"], "do": "delete"}]
+    lines = _tidy(bot)
+    assert [ln["action"] for ln in lines] == ["merged"] * tidy.MAX_MERGES
+    assert {pairs[5][0]["id"], pairs[5][1]["id"]} <= _ids(bot)
 
 
-def test_at_most_five_merges(bot, answer):
-    _fill(bot, 25)
-    pairs = [(_lesson(bot, f"topic{k} alpha{k} left", idle=1), _lesson(bot, f"topic{k} alpha{k} right", idle=1))
-             for k in range(6)]
-    answer.value = [{"do": "merge", "ids": [x["id"], y["id"]], "claim": f"Pair {k}"}
-                    for k, (x, y) in enumerate(pairs)]
-    assert len(tidy.run(bot)["merged"]) == 5
-
-
-# ------------------------------------------------------------------ hard limit
-
-def test_hard_limit_removes_least_used_non_user_first(bot, answer):
-    _budget(bot, limit=5, tidy_at=3)
-    u1 = _lesson(bot, "User lesson one", trust="user", count=0, idle=90)
-    u2 = _lesson(bot, "User lesson two", trust="user", count=1, idle=90)
-    o_low = _lesson(bot, "Outcome rarely", count=1, idle=1)
-    o_idle = _lesson(bot, "Outcome idle", count=2, idle=50)
-    o_fresh = _lesson(bot, "Outcome fresh", count=2, idle=1)
-    o_held = _lesson(bot, "Outcome held", count=0, idle=90)
-    o_busy = _lesson(bot, "Outcome busy", count=9, idle=1)
-    proposals._save(bot, {"id": "popen", "ts": time.time(), "status": "shown", "items": [o_held["id"]]})
-    answer.value = "not json"
-    r = tidy.run(bot)
-    # 7 lessons, limit 5: the lowest-use non-user lesson, then the longer idle of the two with 2 uses.
-    assert r["over_limit"] == [o_low["id"], o_idle["id"]]
-    assert {u1["id"], u2["id"], o_fresh["id"], o_held["id"], o_busy["id"]} == _ids(bot)
-    assert {x["reason"] for x in memory.archived(bot)} == {"over_limit"}
-    assert tidy.last(bot)["counts"]["over_limit"] == 2
+def test_hard_limit_removes_least_used_non_user_first_and_needs_no_model(bot, answer):
+    _budget(bot, limit=5, tidy_at=10)
+    keep = [_lesson(bot, f"Used k{k}a k{k}b", count=3, cited=2, idle=1) for k in range(3)]
+    user = _lesson(bot, "User taught and never used", trust="user", count=0, idle=90)
+    rare_old = _lesson(bot, "Rare old thing", count=1, idle=60)
+    rare_new = _lesson(bot, "Rare new stuff", count=1, idle=2)
+    mid = _lesson(bot, "Middle used item", count=2, idle=2)
+    lines = _tidy(bot)
+    assert answer.calls == []
+    assert [(ln["action"], ln["target"]) for ln in lines] == [("removed", rare_old["id"]), ("removed", rare_new["id"])]
+    assert "at most 5" in lines[0]["why"]
+    assert _ids(bot) == {i["id"] for i in keep} | {user["id"], mid["id"]}
+    assert {x["reason"] for x in _archive(bot)} == {"over_limit"}
 
 
 def test_hard_limit_takes_user_lessons_only_when_nothing_else_is_left(bot, answer):
     _budget(bot, limit=2, tidy_at=10)
-    u = [_lesson(bot, f"User {k}", trust="user", count=k, idle=k) for k in range(3)]
-    o = _lesson(bot, "Outcome", count=9, idle=0)
-    held = _lesson(bot, "Held", count=9, idle=0)
-    proposals._save(bot, {"id": "popen", "ts": time.time(), "status": "shown", "items": [held["id"]]})
-    r = tidy.run(bot)
-    assert r["over_limit"] == [o["id"], held["id"], u[0]["id"]]
-    assert _ids(bot) == {u[1]["id"], u[2]["id"]} and answer.calls == []
+    u = [_lesson(bot, f"User lesson u{k}a u{k}b", trust="user", count=k, idle=1) for k in range(3)]
+    o = _lesson(bot, "Outcome lesson", count=9, idle=1)
+    _tidy(bot)
+    assert _ids(bot) == {u[1]["id"], u[2]["id"]} and o["id"] not in _ids(bot)
 
 
 def test_add_never_refuses_over_the_limit(bot):
-    _budget(bot, limit=1)
-    memory.add(bot, "one")
-    memory.add(bot, "two")
-    assert len(memory.items(bot)) == 2
+    _budget(bot, limit=2)
+    for k in range(4):
+        memory.add(bot, f"Lesson number {k}")
+    assert len(memory.items(bot)) == 4  # the limit is enforced by tidy, not by add
 
 
-# ------------------------------------------------------------------ HTTP
-
-BID = "e2e2e2e2"
-
-
-@pytest.fixture
-def expert(client, monkeypatch):
-    from fused_render.bots import paths as bpaths
-    from fused_render.bots import registry
-    from fused_render.bots import store as bstore
-    bpaths.place(BID, "Tidy Expert")
-    bstore.write_meta(BID, {"id": BID, "name": "Tidy Expert", "kind": "expert", "model": "", "effort": "",
-                            "status": "idle", "instructions": "", "created": time.time(), "task": "",
-                            "step": 0, "url": None, "title": None, "expert": {}})
-    monkeypatch.setattr(model, "available", lambda b: (True, ""))
-    return registry.get(BID)
-
-
-def _get(client, path):
-    status, _h, body = client.get(path)
-    return status, json.loads(body or b"null")
-
-
-def test_memory_route_budget_fields_last_tidy_and_archive(client, expert, answer):
-    a = memory.add(expert, "Use fused.load", trust="user")
-    gone = memory.add(expert, "Forget this one")
-    memory.cite(expert, [a["id"]])
-    status, body = _get(client, f"/api/experts/{BID}/memory")
-    assert status == 200 and body["limit"] == 50 and body["tidy_at"] == 30 and body["total"] == 2
-    assert body["last_tidy"] is None
-    row = body["items"][0]
-    assert row["cited"] == 1 and row["last_used"] and row["uses"] == 2
-    assert body["items"][1]["cited"] == 0 and body["items"][1]["last_used"] is None
-    memory.forget(expert, gone["id"])
-    status, body = _get(client, f"/api/experts/{BID}/memory/archive")
-    assert status == 200 and [(r["id"], r["reason"]) for r in body["archived"]] == [(gone["id"], "forgotten")]
-    _fill(expert, 30)
-    answer.value = []
-    tidy.run(expert)
-    _s, body = _get(client, f"/api/experts/{BID}/memory")
-    assert body["last_tidy"]["reviewed"] is True and body["last_tidy"]["counts"]["deleted"] == 0
-    status, _b = _get(client, "/api/experts/nobody/memory/archive")
-    assert status == 404
-
-
-def test_post_consolidate_starts_for_tidy_alone(client, expert, answer):
-    _fill(expert, 31)
-    status, _h, body = client.post(f"/api/experts/{BID}/consolidate", {"force": True})
-    assert status == 200 and json.loads(body) == {"started": True}
-    end = time.time() + 5
-    while consolidate.status(expert)["running"] and time.time() < end:
-        time.sleep(0.02)
-    assert tidy.last(expert) is not None
-
-
-# ------------------------------------------------------------------ candidates first, model only when useful
-
-def test_no_model_call_without_candidates(bot, answer, requests):
+def test_no_model_call_without_candidates_and_an_unchanged_memory_is_not_reviewed_twice(bot, answer):
     _fill(bot, 31)
-    r = tidy.run(bot)
-    assert r == {"deleted": [], "merged": [], "promoting": [], "over_limit": []} and answer.calls == []
-    last = tidy.last(bot)
-    assert last["model_called"] is False and last["skipped"] == "no_candidates" and last["reviewed"] is True
-
-
-def test_no_model_call_at_or_below_tidy_at_even_with_candidates(bot, answer, requests):
-    _fill(bot, 28)
-    _lesson(bot, "Stale lesson", count=1, idle=30)
-    _lesson(bot, "Heavy lesson", count=3, cited=4, idle=1)
-    tidy.run(bot)
-    assert answer.calls == [] and requests == [] and tidy.last(bot) is None
-
-
-def test_unchanged_fingerprint_skips_the_model(bot, answer, monkeypatch):
-    _fill(bot, 30)
-    stale = _lesson(bot, "Stale lesson", count=1, idle=30)
-    answer.value = [{"id": stale["id"], "do": "keep", "why": "still useful"}]
-    tidy.run(bot)
-    assert len(answer.calls) == 1 and tidy.last(bot)["model_called"] is True
-    assert os.path.isfile(os.path.join(store.expert_dir(bot), tidy.FP_FILE))
-    tidy.run(bot)  # nothing changed, same day
-    assert len(answer.calls) == 1
-    assert tidy.last(bot)["skipped"] == "unchanged" and tidy.last(bot)["model_called"] is False
-    later = time.time() + DAY  # a new day: reviewed again
-    monkeypatch.setattr(tidy.time, "time", lambda: later)
-    tidy.run(bot)
+    assert _tidy(bot) == [] and answer.calls == []
+    stale = _lesson(bot, "Zzz qqq www", idle=40)
+    answer.value = [{"id": stale["id"], "do": "keep"}]
+    _tidy(bot)
+    _tidy(bot)
+    assert len(answer.calls) == 1  # same fingerprint: skipped with no model call
+    _lesson(bot, "Vvv bbb nnn", idle=40)  # memory changed: reviewed again
+    _tidy(bot)
     assert len(answer.calls) == 2
-    tidy.run(bot)
-    assert len(answer.calls) == 2
-    _lesson(bot, "Exports go to the downloads folder", count=1, idle=30)  # memory changed: reviewed again
-    tidy.run(bot)
-    assert len(answer.calls) == 3
-    memory.cite(bot, [stale["id"]])  # changed again, but the cited lesson is no longer stale
-    tidy.run(bot)
-    assert len(answer.calls) == 4 and stale["id"] not in answer.calls[-1]
+    prompt = answer.calls[-1]
+    assert "Zzz qqq www" in prompt and "filler k0a" not in prompt  # the model sees only the candidates
 
 
-def test_a_failed_review_is_not_remembered_as_unchanged(bot, answer):
+def test_heavy_use_promotion_goes_through_distill(bot, answer):
+    """Tidy only names the lessons used a lot (and seen twice); distill writes them into a skill."""
+    _budget(bot, propose_at=9)
     _fill(bot, 30)
-    _lesson(bot, "Stale lesson", count=1, idle=30)
-    answer.value = "not json"
-    tidy.run(bot)
-    tidy.run(bot)
-    assert len(answer.calls) == 2
-
-
-def test_promotion_needs_no_model_and_two_sightings(bot, answer, requests):
-    _fill(bot, 30)
-    seen = _lesson(bot, "Seen in two sessions and cited", count=2, cited=3, idle=1)
-    cited_only = _lesson(bot, "Cited a lot but seen once", count=1, cited=9, idle=1)
-    r = tidy.run(bot)
-    assert answer.calls == [] and requests == [[seen["id"]]] and r["promoting"] == [seen["id"]]
-    assert cited_only["id"] in _ids(bot)
-    assert not tidy.can_promote(cited_only, set(), tidy.budget(bot))
-
-
-def test_the_model_sees_only_the_candidates(bot, answer, requests):
-    _fill(bot, 30)
-    stale = _lesson(bot, "Stale lesson about exports", count=1, idle=30)
-    a = _lesson(bot, "Charts use the dark theme", count=1, idle=1)
-    b = _lesson(bot, "Canvas charts are dark", count=1, idle=1)
-    heavy = _lesson(bot, "Heavy dark charts lesson", count=3, cited=3, idle=1)
-    tidy.run(bot)
-    assert len(answer.calls) == 1
-    prompt = answer.calls[0]
-    for x in (stale, a, b):
-        assert x["id"] in prompt and x["claim"] in prompt
-    assert heavy["id"] not in prompt and "filler" not in prompt
-    assert "when unsure, keep" in prompt.lower() and '"promote"' not in prompt
-    assert requests == [[heavy["id"]]]
-
-
-def test_a_model_merge_outside_one_shown_group_is_ignored(bot, answer):
-    _fill(bot, 30)
-    a = _lesson(bot, "Charts use the dark theme", count=1, idle=1)
-    b = _lesson(bot, "Canvas charts are dark", count=1, idle=1)
-    c = _lesson(bot, "UDFs return dataframes", count=1, idle=1)
-    d = _lesson(bot, "UDFs must return a dataframe", count=1, idle=1)
-    e = _lesson(bot, "Return a dataframe from UDFs", count=1, idle=1)
-    lone = _lesson(bot, "Exports go to the downloads folder", count=1, idle=1)
-    answer.value = [{"do": "merge", "ids": [a["id"], c["id"]], "claim": "Mixed groups"},
-                    {"do": "merge", "ids": [b["id"], lone["id"]], "claim": "Not a candidate"},
-                    {"do": "merge", "ids": [d["id"], e["id"]], "claim": "A UDF returns a dataframe"}]
-    r = tidy.run(bot)
-    assert [m["from"] for m in r["merged"]] == [[d["id"], e["id"]]]
-    assert {a["id"], b["id"], c["id"], lone["id"]} <= _ids(bot)
+    heavy = _lesson(bot, "Heavy hitter lesson", count=2, cited=3, idle=1)
+    cited_only = _lesson(bot, "Cited only lesson", count=1, cited=9, idle=1)
+    contra = _lesson(bot, "Heavy but contradicted", count=3, cited=3, idle=1, contradicted=1)
+    b = tidy.budget(bot)
+    assert [i["id"] for i in tidy.promote_ready(memory.items(bot), b)] == [heavy["id"]]
+    assert [i["id"] for i in distill.candidates(bot)] == [heavy["id"]]
+    assert _tidy(bot) == [] and heavy["id"] in _ids(bot)  # tidy itself removes nothing
+    answer.value = {"action": "create", "title": "Heavy hitters", "trigger": "heavy", "body": "- Heavy hitter."}
+    consolidate.run(bot, force=True)
+    assert heavy["id"] not in _ids(bot) and {cited_only["id"], contra["id"]} <= _ids(bot)
+    assert [s["name"] for s in bot.skills()] == ["heavy-hitters"]
+    assert memory.promoted(bot)[0]["skill"] == "heavy-hitters"
+    _budget(bot, propose_at=9, tidy_at=99)  # below tidy_at heavy use alone earns nothing
+    again = _lesson(bot, "Another heavy lesson", count=2, cited=3, idle=1)
+    assert again["id"] not in [i["id"] for i in distill.candidates(bot)]
 
 
 def test_merge_candidates_group_related_lessons_only(bot):
@@ -582,11 +340,9 @@ def test_merge_candidates_group_related_lessons_only(bot):
     unrelated = _lesson(bot, "Exports go to the downloads folder", idle=1)
     other = _lesson(bot, "Python files need a main function", idle=1)
     contra = _lesson(bot, "Dark theme charts in canvases", idle=1, contradicted=1)
-    groups = [sorted(i["id"] for i in g) for g in tidy.merge_candidates(memory.items(bot), set(), b)]
+    groups = [sorted(i["id"] for i in g) for g in tidy.merge_candidates(memory.items(bot), b)]
     assert sorted(x_["id"] for x_ in (x, y)) in groups
     assert sorted(t["id"] for t in (tagged1, tagged2)) in groups
     flat = {i for g in groups for i in g}
     assert unrelated["id"] not in flat and other["id"] not in flat and contra["id"] not in flat
-    held = tidy.merge_candidates(memory.items(bot), {x["id"]}, b)  # in an open proposal: left out
-    assert x["id"] not in {i["id"] for g in held for i in g}
     assert tidy.related(unrelated, other) == 0.0 and tidy.related(x, y) >= tidy.MERGE_OVERLAP

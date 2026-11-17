@@ -1,6 +1,5 @@
-"""experts core: store, model, readtools, memory, observations, consolidate,
-gate, proposals (docs/experts.md §4). No real model, no network beyond a
-loopback fake of `/api/ai`."""
+"""experts core: store, model, readtools, memory, the inbox and the lessons step of the Learn loop
+(docs/experts-autonomous.md). No real model, no network beyond a loopback fake of `/api/ai`."""
 from __future__ import annotations
 
 import json
@@ -12,8 +11,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from fused_render.experts import (consolidate, gate, memory, model, observations, proposals, readtools,
-                                  store)
+from fused_render.experts import (consolidate, distill, engine, knowledge, memory, model, observations,
+                                  readtools, store)
+
+
+def _done(bot):
+    """The handled inbox entries (observations/done), oldest first."""
+    d = os.path.join(store.expert_dir(bot), "observations", "done")
+    rows = [store.read_json(os.path.join(d, n), None) for n in (os.listdir(d) if os.path.isdir(d) else [])]
+    return sorted(rows, key=lambda o: o["ts"])
+
+
+def _acts(bot, quiet=True):
+    """(action, target) of every activity line, oldest first."""
+    return [(ln["action"], ln["target"]) for ln in reversed(knowledge.activity(bot, limit=500, quiet=quiet))]
 
 
 class FakeBot:
@@ -423,8 +434,9 @@ def test_memory_add_dedupe_bump_forget_index(bot):
         f"- [{a['id']}] Use fused.load for UDFs. (seen 3×)", f"- [{c['id']}] Canvases live under user/ (seen 2×)"]
     bot.meta["expert"] = {"memory": {"index_lines": 1}}
     assert len(memory.index_text(bot).splitlines()) == 1
-    assert memory.mark(bot, c["id"], proposed=True, bogus=1)["proposed"] is True
-    assert "bogus" not in memory.items(bot)[1]
+    assert not {"proposed", "promoted", "rejected"} & set(memory.items(bot)[1])
+    assert memory.find(bot, "canvases live under USER/")["id"] == c["id"]
+    assert [i["id"] for i in memory.match(bot, "canvases")] == [c["id"]]
     assert memory.forget(bot, c["id"]) == 1
     assert memory.forget(bot, "use fused.load for udfs") == 1
     assert memory.items(bot) == []
@@ -435,19 +447,38 @@ def test_memory_add_dedupe_bump_forget_index(bot):
 
 # ------------------------------------------------------------ observations
 
-def test_observations_write_due_archive(bot):
-    assert not observations.due(bot)
+def test_inbox_write_due_archive(bot):
+    assert not consolidate.due(bot)
     o1 = observations.write(bot, kind="user_correction", claim="x", trust="outcome", session="s")
     time.sleep(0.01)
     o2 = observations.write(bot, kind="gap", claim="y", trust="gap", consult="c1")
     assert [o["id"] for o in observations.pending(bot)] == [o1["id"], o2["id"]]
-    assert not observations.due(bot)
-    assert observations.due(bot, now=time.time() + 86400 + 5)  # by age
+    assert [o["id"] for o in consolidate.waiting(bot)] == [o1["id"], o2["id"]]
+    assert not consolidate.due(bot)
+    assert consolidate.due(bot, now=time.time() + 86400 + 5)  # by age
+    assert consolidate.due(bot, force=True)
     observations.write(bot, kind="unanswered", claim="z", trust="outcome")
-    assert observations.due(bot)  # by count
-    observations.archive(bot, [o1["id"], "../evil"])
-    assert len(observations.pending(bot)) == 2
-    assert [o["id"] for o in observations.done(bot)] == [o1["id"]]
+    assert consolidate.due(bot)  # by count
+    consolidate._archive(bot, [o1["id"], "../evil"], {})
+    assert len(consolidate.waiting(bot)) == 2 and consolidate.status(bot)["waiting"] == 2
+    assert [(o["id"], o["outcome"]["op"]) for o in _done(bot)] == [(o1["id"], "nothing")]
+
+
+def test_an_entry_from_the_user_is_due_at_once_and_learning_can_be_switched_off(bot):
+    from fused_render.experts import consult
+    observations.write(bot, kind="user_correction", claim="x", trust="outcome", session="s", by_user=False)
+    assert not consolidate.due(bot)
+    observations.write(bot, kind="user_correction", claim="y", trust="outcome", session="s", by_user=True,
+                       quote="no, do y instead")
+    assert consolidate.due(bot)  # a correction with a verified quote
+    consolidate._archive(bot, [o["id"] for o in consolidate.waiting(bot)], {})
+    consult.inbox_write(bot, "taught", "Always z.", by_user=False)
+    assert not consolidate.due(bot)
+    consult.inbox_write(bot, "forget", "z", by_user=True)
+    assert consolidate.due(bot)
+    bot.meta["expert"] = {"learning": False}
+    assert not consolidate.due(bot) and not consolidate.due(bot, force=True)
+    assert consolidate.run(bot, force=True) == {"ran": False} and knowledge.activity(bot) == []
 
 
 # ------------------------------------------------------------- consolidate
@@ -464,38 +495,44 @@ def test_consolidate_applies_parsed_edits(bot, fake_text):
         {"obs": o3["id"], "op": "nothing"},
         {"obs": g["id"], "op": "add", "claim": "gap must not land"}]) + "\n```")
     r = consolidate.run(bot)
-    assert r["ran"] is True and len(r["added"]) == 1 and r["bumped"] == [old["id"]] and r["ignored"] == 2
+    assert r["ran"] is True and all(ln["ok"] for ln in r["lines"])
     claims = {i["claim"]: i for i in memory.items(bot)}
     assert set(claims) == {"existing lesson", "A crisp new lesson."}
     assert claims["existing lesson"]["count"] == 2
     assert "could not answer X" not in fake_text.calls[0]  # gaps are not offered as lessons
-    assert observations.pending(bot) == [] and len(observations.done(bot)) == 4
+    assert observations.pending(bot) == [] and len(_done(bot)) == 4
+    # Everything it did is on the activity log, each line with its stage, a reason and where it came from.
+    assert _acts(bot) == [("learned", claims["A crisp new lesson."]["id"]), ("counted", old["id"]), ("noticed", ""),
+                          ("could_not_find", "")]
+    first = knowledge.activity(bot)[-1]
+    assert first["stage"] == "lessons" and first["why"] and first["evidence"] == {"session": "s9", "item": o1["id"]}
+    assert _acts(bot, quiet=False) == [("learned", claims["A crisp new lesson."]["id"]), ("could_not_find", "")]
 
 
 def test_consolidate_unparsable_keeps_pending_and_falls_back_after_three(bot, fake_text):
-    assert consolidate.run(bot) == {"ran": False, "added": [], "bumped": [], "ignored": 0}
+    assert consolidate.run(bot) == {"ran": False}
     memory.add(bot, "Lesson A")
     observations.write(bot, kind="user_correction", claim="lesson a.", trust="outcome", session="s1")
     assert consolidate.run(bot)["ran"] is False  # 1 < consolidate_at, young
     assert fake_text.calls == []
     observations.write(bot, kind="user_correction", claim="Lesson B", trust="outcome")
     observations.write(bot, kind="gap", claim="gap", trust="gap")
-    # 1st failure: an unreadable answer adds nothing and leaves everything pending.
+    # 1st failure: an unreadable answer adds nothing and leaves everything waiting; the log says so.
     fake_text.replies.append("I could not decide, sorry [not json")
-    r = consolidate.run(bot)
-    assert r["ran"] is False and "could not be read" in r["reason"] and "1 of 3" in r["reason"]
+    consolidate.run(bot)
+    line = knowledge.activity(bot)[0]
+    assert line["action"] == "skipped" and "could not be read" in line["why"] and "1 of 3" in line["summary"]
     assert [i["claim"] for i in memory.items(bot)] == ["Lesson A"] and len(observations.pending(bot)) == 3
     assert consolidate.failures(bot) == 1
     # 2nd: a failing call, same.
     fake_text.replies.append(lambda p: (_ for _ in ()).throw(RuntimeError("down")))
-    r = consolidate.run(bot)
-    assert r["ran"] is False and "down" in r["reason"] and consolidate.failures(bot) == 2
+    consolidate.run(bot)
+    assert "down" in knowledge.activity(bot)[0]["why"] and consolidate.failures(bot) == 2
     assert [i["claim"] for i in memory.items(bot)] == ["Lesson A"]
     # 3rd consecutive: exact-match fallback, then the counter resets.
     fake_text.replies.append("still nothing")
-    r = consolidate.run(bot)
-    assert r["ran"] and len(r["added"]) == 1 and len(r["bumped"]) == 1 and r["ignored"] == 1
-    assert sorted(i["claim"] for i in memory.items(bot)) == ["Lesson A", "Lesson B"]
+    consolidate.run(bot)
+    assert sorted((i["claim"], i["count"]) for i in memory.items(bot)) == [("Lesson A", 2), ("Lesson B", 1)]
     assert observations.pending(bot) == [] and consolidate.failures(bot) == 0
 
 
@@ -508,16 +545,14 @@ def test_consolidate_unknown_ops_and_omissions_are_nothing(bot, fake_text):
     fake_text.replies.append(json.dumps([{"obs": o1["id"], "op": "rewrite", "claim": "x"},
                                          {"obs": o2["id"], "op": "bump", "item": "mnope"},
                                          {"obs": o3["id"], "op": "bump", "item": old["id"]}]))
-    r = consolidate.run(bot, force=True)
-    assert r["ran"] and r["added"] == [] and r["bumped"] == [old["id"]] and r["ignored"] == 3
-    assert [i["claim"] for i in memory.items(bot)] == ["existing"]
-    assert observations.pending(bot) == [] and len(observations.done(bot)) == 4
+    assert consolidate.run(bot, force=True)["ran"]
+    assert [(i["claim"], i["count"]) for i in memory.items(bot)] == [("existing", 2)]
+    assert _acts(bot) == [("counted", old["id"])]  # a bump of a lesson that does not exist is not even tried
+    assert observations.pending(bot) == [] and len(_done(bot)) == 4
 
 
 def test_consolidate_bumps_confirmed_lessons_once_per_session_without_the_model(bot, fake_text):
-    # count 3 would reach the default propose_at and start a drafting thread (a model call of its own, racing the
-    # assertion below): this test is about consolidation's own calls only.
-    bot.meta["expert"] = {"memory": {"propose_at": 9}}
+    bot.meta["expert"] = {"memory": {"propose_at": 9}}  # count 3 would otherwise earn a skill (distill)
     lesson = memory.add(bot, "Users want a Parquet loader node.", kind="repeated_request", session="s1")
 
     def confirm(session):
@@ -525,15 +560,14 @@ def test_consolidate_bumps_confirmed_lessons_once_per_session_without_the_model(
                                   trust="outcome", session=session, confirms=lesson["id"])
 
     seen = [confirm("s2"), confirm("s2"), confirm("s3"), confirm("s1")]
-    r = consolidate.run(bot, force=True)
+    assert consolidate.run(bot, force=True)["ran"]
     assert fake_text.calls == []  # only confirmations: no model decision
-    assert r["proposed"] == []
-    assert r["ran"] and r["added"] == [] and r["bumped"] == [lesson["id"]] and r["ignored"] == 0
     item = memory.items(bot)[0]
     assert item["count"] == 3 and item["sessions"] == ["s1", "s2", "s3"]  # s2 and s1 again count once
-    done = {o["id"]: o for o in observations.done(bot)}
+    done = {o["id"]: o for o in _done(bot)}
     assert all(done[o["id"]]["outcome"]["op"] == "bump" and done[o["id"]]["outcome"]["item"] == lesson["id"]
                for o in seen)
+    assert knowledge.activity(bot, quiet=False) == []  # counting is quiet
 
 
 def test_consolidate_sends_unconfirmed_observations_to_the_model(bot, fake_text):
@@ -546,11 +580,11 @@ def test_consolidate_sends_unconfirmed_observations_to_the_model(bot, fake_text)
     new = observations.write(bot, kind="repeated_request", claim="Asked once.", trust="outcome", session="s5")
     fake_text.replies.append(lambda p: json.dumps([{"obs": new["id"], "op": "add"},
                                                    {"obs": stale["id"], "op": "add"}]))
-    r = consolidate.run(bot, force=True)
+    consolidate.run(bot, force=True)
     assert c["id"] not in fake_text.calls[0] and new["id"] in fake_text.calls[0] and stale["id"] in fake_text.calls[0]
-    assert r["bumped"] == [lesson["id"]] and len(r["added"]) == 2
-    kinds = {i["claim"]: i["kind"] for i in memory.items(bot)}
-    assert kinds == {"Known lesson.": "lesson", "Asked once.": "repeated_request", "Stale one.": "user_correction"}
+    kinds = {i["claim"]: (i["kind"], i["count"]) for i in memory.items(bot)}
+    assert kinds == {"Known lesson.": ("lesson", 2), "Asked once.": ("repeated_request", 1),
+                     "Stale one.": ("user_correction", 1)}
 
 
 @pytest.mark.parametrize("kind", ["repeated_request", "user_correction", "error_then_fix", "advice_confirmed",
@@ -578,7 +612,7 @@ def test_a_request_pattern_is_never_bumped_onto_a_non_request_lesson(bot, fake_t
                                                    {"obs": o2["id"], "op": "bump", "item": req["id"]},
                                                    {"obs": o3["id"], "op": "bump", "item": naming["id"]},
                                                    {"obs": o4["id"], "op": "bump", "item": naming["id"]}]))
-    r = consolidate.run(bot, force=True)
+    consolidate.run(bot, force=True)
     prompt = fake_text.calls[0]
     assert "SAME lesson" in prompt and "When in doubt" in prompt and "may only be bumped onto" in prompt
     assert f"[{naming['id']}] (user_correction)" in prompt
@@ -589,8 +623,7 @@ def test_a_request_pattern_is_never_bumped_onto_a_non_request_lesson(bot, fake_t
     assert sorted(i["claim"] for i in new) == ["The user asks for a Parquet loader node wired to a "
                                                "monthly-revenue chart node.", "The user asks for a map node."]
     assert all(i["kind"] == "repeated_request" and i["trust"] == "outcome" for i in new)
-    assert sorted(r["bumped"]) == sorted([naming["id"], req["id"]]) and len(r["added"]) == 2
-    done = {o["id"]: o["outcome"] for o in observations.done(bot)}
+    done = {o["id"]: o["outcome"] for o in _done(bot)}
     assert done[o1["id"]]["op"] == "add" and done[o2["id"]] == {**done[o2["id"]], "op": "bump", "item": req["id"]}
 
 
@@ -618,9 +651,6 @@ def test_observation_contradicts_is_validated_like_confirms(bot):
                                contradicts="mgone")
     assert o["contradicts"] == lesson["id"] and o["by_user"] is True
     assert "contradicts" not in stale and "by_user" not in stale
-    observations.archive(bot, [o["id"]], {o["id"]: {"op": "contradict", "item": lesson["id"], "new": "mx"}})
-    assert observations.done(bot)[0]["outcome"] == {**observations.done(bot)[0]["outcome"], "op": "contradict",
-                                                    "item": lesson["id"], "new": "mx"}
 
 
 BAR = "For a sales chart always show monthly revenue as a bar chart, never a line chart."
@@ -640,7 +670,7 @@ def test_consolidate_live_case_a_contradiction_never_bumps_the_lesson_it_contrad
     fake_text.replies.append(lambda p: json.dumps([
         {"obs": contra["id"], "op": "same", "as": corr["id"]},
         {"obs": corr["id"], "op": "add", "claim": REGIONAL}]))
-    r = consolidate.run(bot, force=True)
+    assert consolidate.run(bot, force=True)["ran"]
     prompt = fake_text.calls[0]
     assert contra["id"] in prompt and '"same"' in prompt and "never" in prompt
     items = {i["id"]: i for i in memory.items(bot)}
@@ -648,16 +678,14 @@ def test_consolidate_live_case_a_contradiction_never_bumps_the_lesson_it_contrad
     assert items[old["id"]]["contradicted"] == 1 and items[old["id"]]["contradicted_sessions"] == ["live"]
     new = [i for i in items.values() if i["id"] != old["id"]]
     assert [(i["claim"], i["kind"], i["count"]) for i in new] == [(REGIONAL, "user_correction", 1)]  # added once
-    assert r["ran"] and r["added"] == [new[0]["id"]] and old["id"] not in r["bumped"]
-    assert r["contradicted"] == [old["id"]]
-    done = {o["id"]: o["outcome"] for o in observations.done(bot)}
+    done = {o["id"]: o["outcome"] for o in _done(bot)}
     assert {k: done[contra["id"]][k] for k in ("op", "item", "new")} == {
         "op": "contradict", "item": old["id"], "new": new[0]["id"]}
     assert done[corr["id"]]["op"] == "add"
-    # The contradicted lesson is flagged in every answer and never proposed as a skill fix.
+    # The contradicted lesson is flagged in every answer and never written into a skill.
     assert "(contradicted in 1 session(s); prefer newer lessons on this)" in memory.index_text(bot)
     memory.bump(bot, old["id"], session="s9")
-    assert old["id"] not in [i["id"] for i in proposals.candidates(bot)]
+    assert old["id"] not in [i["id"] for i in distill.candidates(bot)]
 
 
 def test_consolidate_a_model_bump_of_a_contradiction_is_an_add(bot, fake_text):
@@ -673,15 +701,14 @@ def test_consolidate_a_model_bump_of_a_contradiction_is_an_add(bot, fake_text):
         {"obs": contra["id"], "op": "bump", "item": old["id"]},
         {"obs": loose["id"], "op": "bump", "item": other["id"]},
         {"obs": corr["id"], "op": "bump", "item": old["id"]}]))  # bumps a lesson this batch contradicts
-    r = consolidate.run(bot, force=True)
+    consolidate.run(bot, force=True)
     items = {i["claim"]: i for i in memory.items(bot)}
     assert items[BAR]["count"] == 1 and items[BAR]["contradicted"] == 1
     assert items["Some other lesson."]["count"] == 1
     assert items[REGIONAL]["kind"] == "advice_contradicted"  # no USER line said so
     assert items["Never trust X."]["kind"] == "advice_contradicted"
     assert items["Bar charts are fine."]["kind"] == "user_correction"
-    assert r["bumped"] == [] and len(r["added"]) == 3
-    done = {o["id"]: o["outcome"] for o in observations.done(bot)}
+    done = {o["id"]: o["outcome"] for o in _done(bot)}
     assert done[contra["id"]]["op"] == "contradict" and done[contra["id"]]["new"] == items[REGIONAL]["id"]
     assert done[loose["id"]]["op"] == "add"
 
@@ -691,11 +718,10 @@ def test_consolidate_a_contradiction_the_model_drops_still_counts(bot, fake_text
     contra = observations.write(bot, kind="advice_contradicted", claim=BAR, trust="outcome", session="live",
                                 contradicts=old["id"])
     fake_text.replies.append(lambda p: json.dumps([{"obs": contra["id"], "op": "add"}]))  # the old text itself
-    r = consolidate.run(bot, force=True)
+    consolidate.run(bot, force=True)
     item = memory.items(bot)[0]
     assert len(memory.items(bot)) == 1 and item["count"] == 1 and item["contradicted"] == 1
-    assert r["ignored"] == 0 and r["added"] == [] and r["bumped"] == []
-    out = observations.done(bot)[0]["outcome"]
+    out = _done(bot)[0]["outcome"]
     assert out["op"] == "contradict" and out["item"] == old["id"] and "new" not in out
 
 
@@ -707,179 +733,38 @@ def test_consolidate_without_an_engine_does_nothing(bot, fake_text, monkeypatch)
     assert memory.items(bot) == [] and len(observations.pending(bot)) == 1 and fake_text.calls == []
 
 
-# -------------------------------------------------------------------- gate
+def test_a_failing_step_is_logged_and_the_others_still_run(bot, fake_text, monkeypatch):
+    from fused_render.experts import gaps
 
-QUESTIONS = """# Checks
-
-## How do I read one UDF in another?
-- must: mentions referencing the upstream UDF by name
-- must: points at a real canvas file
-
-## Where do canvases live?
-* Must: names the user folder
-"""
-
-
-def _grader(prompt):
-    return json.dumps({"passed": "GOOD" in prompt, "why": "checked"})
+    def boom(bot, ctx):
+        raise RuntimeError("disk on fire")
+        yield
+    monkeypatch.setattr(gaps, "step", boom)
+    o = observations.write(bot, kind="user_correction", claim="one", trust="outcome")
+    fake_text.replies.append(json.dumps([{"obs": o["id"], "op": "add"}]))
+    r = consolidate.run(bot, force=True)
+    assert r["ran"] and [i["claim"] for i in memory.items(bot)] == ["one"]
+    (line,) = [ln for ln in knowledge.activity(bot) if ln["action"] == "skipped"]
+    assert line["stage"] == "research" and "disk on fire" in line["why"]
 
 
-def test_gate_questions_run_status_latest(bot, fake_text):
-    assert gate.questions(bot) == []
-    with open(os.path.join(bot.public_dir, "questions.md"), "w") as f:
-        f.write(QUESTIONS)
-    qs = gate.questions(bot)
-    assert qs == [{"q": "How do I read one UDF in another?",
-                   "must": ["mentions referencing the upstream UDF by name", "points at a real canvas file"]},
-                  {"q": "Where do canvases live?", "must": ["names the user folder"]}]
-    fake_text.replies.extend([_grader] * 2)
-    seen = []
+# -------------------------------------------------------------- parse_json
 
-    def answer(b, q, override):
-        seen.append(override)
-        return "GOOD answer" if "UDF" in q else "meh"
-
-    r = gate.run(bot, answer_fn=answer)
-    assert (r["score"], r["total"]) == (1, 2) and seen == [None, None]
-    assert [x["passed"] for x in r["results"]] == [True, False] and r["results"][0]["answer"] == "GOOD answer"
-    assert gate.latest(bot)["id"] == r["id"]
-    # skills_override: never persisted
-    fake_text.replies.extend([_grader] * 2)
-    r2 = gate.run(bot, skills_override=[], answer_fn=lambda b, q, o: "GOOD")
-    assert r2["score"] == 2 and gate.latest(bot)["id"] == r["id"]
-    assert not os.path.exists(os.path.join(store.expert_dir(bot), "checks", r2["id"] + ".json"))
-    # unreadable grader / crashing answer: failed questions, not a crash
-    fake_text.replies.extend(["no json here"])
-    r3 = gate.run(bot, skills_override=[], answer_fn=lambda b, q, o: (_ for _ in ()).throw(ValueError("x"))
-                  if "UDF" in q else "GOOD")
-    assert r3["score"] == 0 and "could not be read" in r3["results"][1]["why"]
+def test_parse_json_keeps_a_fenced_block_inside_a_string_byte_for_byte():
+    body = "Intro.\n\n```python\nx = [1, 2]\n```\n\nOutro with } and ]."
+    raw = json.dumps({"action": "create", "body": body})
+    assert engine.parse_json(raw, dict)["body"] == body
+    assert engine.parse_json("```json\n" + raw + "\n```", dict)["body"] == body  # outer wrapper only
+    assert engine.parse_json("Here you go:\n" + raw + "\nHope that helps [really].", dict)["body"] == body
 
 
-def test_gate_start_status(bot, fake_text, monkeypatch):
-    with open(os.path.join(bot.public_dir, "questions.md"), "w") as f:
-        f.write(QUESTIONS)
-    assert gate.status(bot) == {"running": False, "run_id": None, "done": 0, "total": 0, "error": ""}
-    release = threading.Event()
+def test_parse_json_lists_prose_and_failures():
+    assert engine.parse_json('Answer: [{"obs": "o1", "op": "nothing"}] ok', list) == [{"obs": "o1", "op": "nothing"}]
+    assert engine.parse_json('see [note] then [1, "]"]', list) == [1, "]"]
+    assert engine.parse_json('{"a": "unclosed', dict) is None
+    assert engine.parse_json(None, list) is None
+    assert engine.parse_json("[1]", dict) is None
 
-    def answer(b, q, o):
-        release.wait(5)
-        return "GOOD"
-
-    monkeypatch.setattr(gate, "_default_answer_fn", lambda: answer)
-    fake_text.replies.extend([_grader] * 2)
-    rid = gate.start(bot)
-    assert gate.start(bot) == rid  # one at a time
-    st = gate.status(bot)
-    assert st["running"] and st["run_id"] == rid and st["total"] == 2
-    release.set()
-    deadline = time.time() + 5
-    while gate.status(bot)["running"] and time.time() < deadline:
-        time.sleep(0.02)
-    st = gate.status(bot)
-    assert not st["running"] and st["done"] == 2
-    assert gate.latest(bot)["id"] == rid and gate.latest(bot)["score"] == 2
-
-    # a crash inside the thread is recorded and never leaves running stuck
-    monkeypatch.setattr(gate, "_run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-    rid2 = gate.start(bot)
-    deadline = time.time() + 5
-    while gate.status(bot)["running"] and time.time() < deadline:
-        time.sleep(0.02)
-    st = gate.status(bot)
-    assert st["run_id"] == rid2 and not st["running"] and "boom" in st["error"]
-    saved = store.read_json(os.path.join(store.expert_dir(bot), "checks", rid2 + ".json"), None)
-    assert "boom" in saved["error"] and gate.latest(bot)["id"] == rid
-
-
-# --------------------------------------------------------------- proposals
-
-def _seen(bot, claim, n):
-    it = None
-    for i in range(n):
-        it = memory.add(bot, claim, session=f"s{i}")
-    return it
-
-
-def test_candidates_thresholds(bot):
-    a = _seen(bot, "lesson a", 3)
-    _seen(bot, "lesson b", 2)
-    c = _seen(bot, "lesson c", 4)
-    d = _seen(bot, "lesson d", 3)
-    memory.mark(bot, d["id"], rejected=True)
-    g = memory.add(bot, "gap thing", trust="gap")
-    for i in range(3):
-        memory.bump(bot, g["id"])
-    assert [i["id"] for i in proposals.candidates(bot)] == [c["id"], a["id"]]
-    bot.meta["expert"] = {"memory": {"propose_at": 2}}
-    assert len(proposals.candidates(bot)) == 3
-
-
-def test_prepare_update_with_diff_runs_no_checks(bot, fake_text, monkeypatch):
-    bot.skill_save("Reading UDFs", "udf, load", "Step one.\nStep two.", name="reading-udfs")
-    with open(os.path.join(bot.public_dir, "questions.md"), "w") as f:
-        f.write("## How do I read a UDF?\n- must: mentions fused.load\n")
-    a = _seen(bot, "Use fused.load to read a UDF", 3)
-    new_body = "Step one.\nStep two.\n\n## Loading\n\nUse fused.load(name)."
-    fake_text.replies.append(json.dumps({"action": "update", "skill": "reading-udfs", "heading": "Loading",
-                                         "section": "Use fused.load(name).", "triggers": []}))  # the only model call
-    monkeypatch.setattr(gate, "run", lambda *a, **k: pytest.fail("a proposal never runs the quality gate"))
-    monkeypatch.setattr(gate, "_default_answer_fn", lambda: pytest.fail("a proposal never answers gate questions"))
-    p = proposals.prepare(bot, [a])
-    assert p["status"] == "ready" and p["action"] == "update" and p["skill"] == "reading-udfs"
-    assert p["score_before"] is None and p["score_after"] is None and "before_reused" not in p
-    assert fake_text.replies == []
-    assert "+Use fused.load(name)." in p["diff"] and "skills/reading-udfs.md" in p["diff"]
-    text, _detail = proposals.card_text(p)
-    assert "check" not in text.lower() and text.endswith("Approve?")
-    # drafting wrote nothing: skill unchanged, no gate run persisted
-    assert bot.skills()[0]["body"] == "Step one.\nStep two."
-    assert gate.latest(bot) is None
-    assert memory.items(bot)[0]["proposed"] is True
-    assert proposals.candidates(bot) == []
-    assert proposals.get(bot, p["id"]) == p and proposals.listing(bot) == [p]
-    text, detail = proposals.card_text(p)
-    assert "update the skill" in text and detail == p["diff"]
-    shown = proposals.mark_shown(bot, p["id"], 42)
-    assert shown["status"] == "shown" and shown["card_seq"] == 42
-
-    done = proposals.approve(bot, p["id"])
-    assert done["status"] == "approved" and done["skill"] == "reading-udfs"
-    assert bot.skills()[0]["body"] == new_body
-    # The skill carries the lesson now: it left memory for the archive (reason promoted, with the skill).
-    assert memory.items(bot) == []
-    arch = memory.archived(bot)
-    assert [(r["id"], r["reason"], r["skill"]) for r in arch] == [(a["id"], "promoted", "reading-udfs")]
-    with pytest.raises(ValueError, match="already approved"):
-        proposals.reject(bot, p["id"])
-    with pytest.raises(ValueError):
-        proposals.approve(bot, "pnope")
-
-
-def test_prepare_create_fallback_and_reject(bot, fake_text):
-    a = _seen(bot, "Canvases live under the user folder", 3)
-    b = _seen(bot, "Team canvases are read-only copies", 3)
-    fake_text.replies.append("```\nnot json at all\n```")  # unparsable: deterministic draft, no gate (no questions)
-    p = proposals.prepare(bot, [a["id"], b])
-    assert p["action"] == "create" and p["skill"] is None and p["title"].startswith("Lessons: ")
-    assert p["trigger"] and "- Canvases live under the user folder" in p["body"]
-    assert p["diff"].startswith("--- /dev/null") and "+trigger: " + p["trigger"] in p["diff"] and p["score_before"] is None and p["score_after"] is None
-    assert len(fake_text.calls) == 1 and bot.skills() == []
-    r = proposals.reject(bot, p["id"])
-    assert r["status"] == "rejected" and all(i["rejected"] for i in memory.items(bot))
-    assert bot.skills() == []
-    with pytest.raises(ValueError):
-        proposals.prepare(bot, [])
-
-    # a "create" naming an existing skill's slug never overwrites that skill: it gets a free name
-    bot.skill_save("Canvas Basics", "canvas", "Old body.")
-    c = _seen(bot, "Clones sit in user/", 3)
-    fake_text.replies.append(json.dumps({"action": "create", "title": "Canvas Basics", "trigger": "canvas",
-                                         "body": "Clones sit in user/."}))
-    p2 = proposals.prepare(bot, [c])
-    assert p2["action"] == "create" and p2["skill"] is None and p2["name"] == "canvas-basics-2"
-    assert proposals.approve(bot, p2["id"])["skill"] == "canvas-basics-2"
-    assert {s["name"]: s["body"] for s in bot.skills()} == {"canvas-basics": "Old body.",
-                                                           "canvas-basics-2": "Clones sit in user/."}
 
 
 # ------------------------------------------------- readtools: secrets, size, broad roots
@@ -942,123 +827,3 @@ def test_broad_roots_are_refused(tmp_path, monkeypatch):
     assert got == [str((home / "docs").resolve())]
     h = readtools.make_handler(["/", str(home)])
     assert h("list_dir", {}) == ("no readable folders", True)
-
-
-# ------------------------------------------------- proposals: async request, failures
-
-def _wait(pred, timeout=5.0):
-    end = time.time() + timeout
-    while time.time() < end:
-        if pred():
-            return True
-        time.sleep(0.01)
-    return False
-
-
-@pytest.fixture
-def shown(monkeypatch):
-    from fused_render.experts import cards
-    seen = []
-    monkeypatch.setattr(cards, "show", lambda b, p: seen.append(p) or True)
-    return seen
-
-
-def test_request_is_async_single_flight_and_shows_the_card(bot, fake_text, shown):
-    a = _seen(bot, "Use fused.load to read a UDF", 3)
-    b = _seen(bot, "Canvases live under user/", 3)
-    go = threading.Event()
-
-    def slow(prompt):
-        go.wait(5)
-        return json.dumps({"action": "create", "title": "UDF tips", "trigger": "udf", "body": "- fused.load"})
-
-    fake_text.replies.append(slow)
-    p = proposals.request(bot, [a, b], topic="udfs")
-    assert p["status"] == "preparing" and p["items"] == [a["id"], b["id"]] and p["topic"] == "udfs"
-    assert all(i["proposed"] for i in memory.items(bot))  # marked at once
-    assert proposals.candidates(bot) == []
-    with pytest.raises(ValueError, match="already being prepared"):
-        proposals.request(bot, [a])
-    assert proposals.get(bot, p["id"])["status"] == "preparing"
-    go.set()
-    assert _wait(lambda: proposals.get(bot, p["id"])["status"] == "ready")
-    done = proposals.get(bot, p["id"])
-    assert done["title"] == "UDF tips" and done["diff"].startswith("--- /dev/null") and done["error"] == ""
-    assert _wait(lambda: shown) and shown[0]["id"] == p["id"]
-    # Single-flight is over: another request is allowed, but not for lessons in an open proposal.
-    with pytest.raises(ValueError, match="no lessons"):
-        proposals.request(bot, [a, b])
-
-
-def test_open_proposals_exclude_their_items_from_candidates(bot):
-    a = _seen(bot, "lesson a", 3)
-    proposals._save(bot, {"id": "pold", "ts": 1, "status": "shown", "items": [a["id"]]})
-    assert proposals.candidates(bot) == []
-    proposals._save(bot, {"id": "pold", "ts": 1, "status": "rejected", "items": [a["id"]]})
-    assert [i["id"] for i in proposals.candidates(bot)] == [a["id"]]
-
-
-def test_request_failure_unmarks_the_lessons(bot, fake_text, shown, monkeypatch):
-    a = _seen(bot, "lesson a", 3)
-    monkeypatch.setattr(proposals, "_draft", lambda b, lessons: (_ for _ in ()).throw(RuntimeError("gate fell over")))
-    p = proposals.request(bot, [a])
-    assert _wait(lambda: proposals.get(bot, p["id"])["status"] == "failed")
-    failed = proposals.get(bot, p["id"])
-    assert "gate fell over" in failed["error"] and not memory.items(bot)[0]["proposed"]
-    assert [i["id"] for i in proposals.candidates(bot)] == [a["id"]] and shown == []
-    assert [x["status"] for x in proposals.listing(bot)] == ["failed"]
-
-
-def test_a_stale_preparing_record_does_not_block(bot, fake_text, shown):
-    a = _seen(bot, "lesson a", 3)
-    proposals._save(bot, {"id": "pstale", "ts": time.time() - 2 * proposals.PREPARE_STALE_S,
-                          "status": "preparing", "items": []})
-    fake_text.replies.append("not json")
-    p = proposals.request(bot, [a])
-    assert proposals.get(bot, "pstale")["status"] == "failed" and "interrupted" in proposals.get(bot, "pstale")["error"]
-    assert _wait(lambda: proposals.get(bot, p["id"])["status"] == "ready")
-
-
-def test_a_failed_approve_fails_the_proposal_for_good(bot, fake_text, monkeypatch):
-    from fused_render.experts import cards
-    a = _seen(bot, "lesson a", 3)
-    fake_text.replies.append("not json")
-    p = proposals.prepare(bot, [a])
-    monkeypatch.setattr(bot, "skill_save", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
-    with pytest.raises(ValueError, match="could not save the skill: disk full"):
-        proposals.approve(bot, p["id"])
-    after = proposals.get(bot, p["id"])
-    assert after["status"] == "failed" and "disk full" in after["error"]
-    assert not memory.items(bot)[0]["proposed"]
-    with pytest.raises(ValueError, match="failed"):
-        proposals.approve(bot, p["id"])  # never retried
-    assert cards.show(bot, after) is False  # never re-shown
-    assert proposals.mark_shown(bot, p["id"], 7)["status"] == "failed"
-
-
-STRAY = ("### name: chart-type-conventions\ntitle: Chart type conventions\nTRIGGER: chart, sales chart\n\n"
-         "# Chart type conventions\n\n## Sales charts\n\n- Monthly revenue as a bar chart.")
-
-
-def test_draft_body_loses_copied_metadata_lines_on_create(bot, fake_text):
-    a = _seen(bot, "Sales charts show monthly revenue as bars", 3)
-    fake_text.replies.append(json.dumps({"action": "create", "skill": None, "title": "Chart type conventions",
-                                         "trigger": "chart, sales chart", "body": STRAY}))
-    assert "must NOT contain name, title or trigger" in proposals.DRAFT_PROMPT
-    p = proposals.prepare(bot, [a])
-    assert p["action"] == "create"
-    assert p["body"] == "## Sales charts\n\n- Monthly revenue as a bar chart."
-    assert "name:" not in p["diff"] and "+trigger: chart, sales chart" in p["diff"]
-
-
-def test_draft_body_loses_copied_metadata_lines_on_update(bot, fake_text):
-    bot.skill_save("Chart type conventions", "chart", "Intro.", name="chart-type-conventions")
-    a = _seen(bot, "Sales charts show monthly revenue as bars", 3)
-    fake_text.replies.append(json.dumps({"action": "update", "skill": "chart-type-conventions",
-                                         "heading": "Sales charts", "section": STRAY}))
-    p = proposals.prepare(bot, [a])
-    assert p["action"] == "update" and p["skill"] == "chart-type-conventions"
-    # metadata lines, the copied "# title" and the repeated heading dropped: only the new material is appended
-    assert p["body"] == "Intro.\n\n## Sales charts\n\n- Monthly revenue as a bar chart."
-    assert proposals._clean_body("title: x\n\n", "x") == ""
-    assert proposals._clean_body("# Other heading\nbody", "Title") == "# Other heading\nbody"

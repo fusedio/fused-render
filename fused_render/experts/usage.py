@@ -22,11 +22,10 @@ from fused_render.experts import store
 logger = logging.getLogger(__name__)
 
 USAGE_FILE = "usage.jsonl"
-STAGES = ("consult", "chat", "research", "checks_answer", "checks_grade", "capture", "consolidate", "tidy",
-          "draft", "other")
+STAGES = ("consult", "chat", "research", "capture", "consolidate", "tidy", "draft", "other")
 #: The calling module (last name part) -> its stage, for callers that name none.
-MODULE_STAGES = {"capture": "capture", "consolidate": "consolidate", "tidy": "tidy", "proposals": "draft",
-                 "gate": "checks_grade", "gaps": "research"}
+MODULE_STAGES = {"capture": "capture", "consolidate": "consolidate", "tidy": "tidy", "distill": "draft",
+                 "gaps": "research"}
 _SKIP_MODULES = frozenset({"fused_render.experts.model", "fused_render.experts.usage"})
 CHARS_PER_TOKEN = 4
 

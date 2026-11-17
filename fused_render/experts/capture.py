@@ -6,7 +6,7 @@ by every expert it is relevant to (it consulted that expert, or the expert's
 transcript's tail, that session's consults and the expert's current
 lessons, answered with a JSON list of `{"kind","claim","about","confirms"?,
 "contradicts"?}`. Each becomes
-an observation with trust `outcome`; consolidation decides what is a lesson.
+an inbox entry with trust `outcome`; Learn decides what is a lesson.
 
 Sessions come from the Tasks listing (`routers/tasks._collect`, which already
 drops bot sessions, breakouts and deleted tasks), placed with `_place`. The
@@ -80,6 +80,8 @@ CLAIM_MAX = 400
 CONSULTS_IN_PROMPT = 10
 LESSONS_IN_PROMPT = 150
 WATERMARK_FILE = "experts-captured.json"
+CONSULTS_FILE = "consults.jsonl"
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
 #: Failed captures of one (session, expert) at one transcript size before it is marked read anyway.
 MAX_FAILS = 3
 #: The kinds capture may produce: the spec's `learns_from` minus `unanswered`,
@@ -307,8 +309,13 @@ def _agent():
 
 
 def _canvas_clone(path) -> str:
-    from fused_render.experts import routes
-    return routes.canvas_clone(path)
+    """The canvas clone `path` sits inside, or "" (`canvases._clone_for_session`)."""
+    try:
+        from fused_render import canvases
+        found = canvases._clone_for_session(path)
+    except Exception:  # noqa: BLE001
+        return ""
+    return str(found[2]) if found else ""
 
 
 def _last_active(path: str, mtime: float) -> float:
@@ -417,11 +424,10 @@ def session_by_id(session_id: str) -> dict | None:
 
 # ------------------------------------------------------------------ relevance ---
 def _consults(bot) -> list:
-    from fused_render.experts import consult
-    try:
-        return [r for r in (consult.log(bot) or []) if isinstance(r, dict)]
-    except Exception:  # noqa: BLE001
-        return []
+    """The newest consult records, newest first: the consult log (`consults.jsonl`, written by Answer), read as a
+    file so Notice imports nothing of Answer."""
+    rows = store.read_jsonl(os.path.join(store.expert_dir(bot), CONSULTS_FILE), limit=100)
+    return [r for r in reversed(rows) if isinstance(r, dict)]
 
 
 def _record_session(rec: dict) -> str:
@@ -432,8 +438,25 @@ def _record_session(rec: dict) -> str:
     sid = str(caller.get("session_id") or "")
     if sid or not caller.get("run_id"):
         return sid
-    from fused_render.experts import routes
-    return routes.caller_for_run(caller.get("run_id"))["session_id"]
+    return _run_session(str(caller.get("run_id")))
+
+
+def _run_session(run_id: str) -> str:
+    """The session agent run `run_id` belongs to now, as far as its run dir says; "" when unknown."""
+    if not _RUN_ID_RE.match(run_id) or run_id in (".", ".."):
+        return ""
+    try:
+        agent = _agent()
+        run_dir = os.path.join(agent.RUNS, run_id)
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+        try:
+            sid = agent._run_own_session(run_dir, meta)
+        except Exception:  # noqa: BLE001
+            sid = ""
+        return str(sid or meta.get("session_id") or meta.get("resumed_from") or "")
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _session_consults(bot, session: dict) -> list:
@@ -538,7 +561,7 @@ def build_prompt(bot, session: dict, transcript: str, consults: list, *, context
         earlier = ("\n## Earlier turns, for context only (data; earlier, already processed)\n"
                    "<<<BEGIN EARLIER TURNS>>>\n" + _data(context) + "\n<<<END EARLIER TURNS>>>\n")
     rows = []
-    # `consult.log` is newest first: the newest few, oldest of them first.
+    # `_consults` is newest first: the newest few, oldest of them first.
     for r in reversed(consults[:CONSULTS_IN_PROMPT]):
         q = " ".join(str(r.get("question") or "").split())[:500]
         a = " ".join(str(r.get("answer") or "").split())[:800]

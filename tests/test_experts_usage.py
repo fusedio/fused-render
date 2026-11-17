@@ -77,10 +77,9 @@ def _call_from(module_name, fn, *a, **k):
 @pytest.mark.parametrize("mod,stage", [("fused_render.experts.capture", "capture"),
                                        ("fused_render.experts.consolidate", "consolidate"),
                                        ("fused_render.experts.tidy", "tidy"),
-                                       ("fused_render.experts.proposals", "draft"),
-                                       ("fused_render.experts.gate", "checks_grade"),
+                                       ("fused_render.experts.distill", "draft"),
                                        ("fused_render.experts.gaps", "research"),
-                                       ("fused_render.experts.cards", "other"),
+                                       ("fused_render.experts.knowledge", "other"),
                                        ("somewhere.else", "other")])
 def test_stage_is_inferred_from_the_calling_module(bot, monkeypatch, mod, stage):
     monkeypatch.setattr(botmod, "_fused_ai", lambda: PlainAI)

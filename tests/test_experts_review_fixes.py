@@ -17,7 +17,7 @@ from fused_render.bots import paths as bpaths
 from fused_render.bots import registry
 from fused_render.bots import store as bstore
 from fused_render.bots.channels import base as chan
-from fused_render.experts import cards, chat, consult, engine, gaps, memory, proposals, readtools
+from fused_render.experts import consult, engine, readtools
 from fused_render.experts import model as xmodel
 from fused_render.experts import seed as xseed
 
@@ -67,55 +67,7 @@ def _idle(b):
     return _wait_for(lambda: not b.running())
 
 
-def _ready(expert, claim="lesson one"):
-    item = memory.add(expert, claim, trust="user")
-    return proposals.prepare(expert, [item])
-
-
-# ------------------------------------------------------------- #7 provenance ---
-def test_a_yielded_proposal_card_redelivers_an_outside_message_as_outside(expert, monkeypatch):
-    asked, vias = [], []
-
-    def fake(bot, prompt, *, system, tools, handler, timeout=600):
-        asked.append(prompt)
-        vias.append(dict(bot.task_via))
-        return ANSWER
-    monkeypatch.setattr(xmodel, "tool_turn", fake)
-    p = _ready(expert)
-    assert cards.show(expert, p)
-    assert _wait_for(lambda: expert.meta.get("waiting_on"))
-    expert.receive("remember that the answer is 7", via=chan.via("imessage", "+15550001"))
-    assert _wait_for(lambda: asked)  # then the card comes back up (the proposal is still open)
-    assert "outside channel" in asked[0].lower() and "the answer is 7" in asked[0]
-    assert vias[0].get("kind") == "imessage"
-
-
 # ------------------------------------------------------- #8 atomic re-delivery ---
-def test_redelivery_takes_the_slot_before_another_worker_can(expert, monkeypatch):
-    monkeypatch.setattr(xmodel, "tool_turn", lambda bot, prompt, **k: ANSWER)
-    p1, p2 = _ready(expert, "lesson one"), _ready(expert, "lesson two")
-    real = chat.redeliver
-    seen = {}
-
-    def racing(bot, queued):
-        # Another worker tries to raise a card the moment the slot is free: it must wait for this lock.
-        rival = threading.Thread(target=lambda: seen.setdefault("rival", cards.show(bot, p2)))
-        rival.start()
-        rival.join(0.3)
-        seen["rival_blocked"] = rival.is_alive()
-        seen["started"] = real(bot, queued)
-        seen["thread"] = rival
-        return seen["started"]
-    monkeypatch.setattr(chat, "redeliver", racing)
-    assert cards.show(expert, p1)
-    assert _wait_for(lambda: expert.meta.get("waiting_on"))
-    expert.send("what is in a.py?")
-    assert _wait_for(lambda: "thread" in seen)
-    seen["thread"].join(5)
-    assert seen["rival_blocked"] and seen["started"] is True and seen["rival"] is False
-    assert _wait_for(lambda: any(e["role"] == "done" and e["text"] == "Answered." for e in _events(expert)))
-
-
 def test_hand_back_redelivers_under_the_slot_lock(expert, monkeypatch):
     hold = threading.Event()
     calls = []
@@ -142,35 +94,6 @@ def test_hand_back_redelivers_under_the_slot_lock(expert, monkeypatch):
     assert owned[-1] is True  # started while the finished task still held bot.lock: no worker slipped in
 
 
-# ------------------------------------------------- #12 research vs user decision ---
-@pytest.mark.parametrize("found", [True, False])
-@pytest.mark.parametrize("decision", ["dismissed", "answered"])
-def test_research_finishing_late_keeps_the_users_decision(expert, monkeypatch, found, decision):
-    g = gaps.record(expert, "What is ANSWER?", consult="c1")
-
-    def research(bot, questions, transcript=""):
-        if decision == "dismissed":
-            gaps.dismiss(bot, g["id"])
-        else:
-            gaps.answer(bot, g["id"], "It is 42")
-        return {"found": found, "answer": "ANSWER is 7", "refs": [], "why": "x"}
-    monkeypatch.setattr(engine, "research", research)
-    monkeypatch.setattr(gaps, "accept", lambda bot, res: {"answer": "ANSWER is 7", "refs": []} if found else None)
-    out = gaps._research(expert, g["id"])
-    assert out["status"] == decision and int(out["attempts"]) == 0 and out["proposal"] is None
-    assert [i for i in memory.items(expert) if i["trust"] == "research"] == []
-    assert proposals.listing(expert) == []
-
-
-def test_snooze_is_public(expert):
-    g = gaps.record(expert, "What is ANSWER?", consult="c1")
-    until = time.time() + 3600
-    out = gaps.snooze(expert, g["id"], until)
-    assert out["status"] == "open" and out["snoozed_until"] == until and gaps.snoozed(out)
-    assert gaps.snooze(expert, "nope", until) is None
-
-
-# ------------------------------------------------------ #16 / #17 search fence ---
 def test_search_and_listing_skip_an_alias_of_a_secret_file(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
@@ -222,21 +145,22 @@ def _witness():
 
 def test_a_failed_skill_copy_is_finished_next_start_and_edits_then_survive(tmp_path, monkeypatch):
     _shipped(tmp_path, monkeypatch)
-    real = botmod.Bot.skill_save
+    from fused_render.experts import knowledge
+    real = knowledge.apply
 
-    def flaky(self, title, trigger, body, name=None):
-        if name == "naming":
+    def flaky(bot, change):
+        if change.get("skill") == "naming":
             raise OSError("disk full")
-        return real(self, title, trigger, body, name=name)
-    monkeypatch.setattr(botmod.Bot, "skill_save", flaky)
+        return real(bot, change)
+    monkeypatch.setattr(knowledge, "apply", flaky)
     ids = xseed.seed()
     b = registry.get(ids[0])
     assert [s["name"] for s in b.skills()] == ["layout"] and _witness()["pending"] is True
-    monkeypatch.setattr(botmod.Bot, "skill_save", real)
+    monkeypatch.setattr(knowledge, "apply", real)
     assert xseed.seed() == []
     assert sorted(s["name"] for s in b.skills()) == ["layout", "naming"]
     assert "pending" not in _witness() and xseed.PENDING not in b.meta["expert"]
-    assert b.meta["face"]["shape"] == "hexagon" and os.path.isfile(os.path.join(b.public_dir, "questions.md"))
+    assert b.meta["face"]["shape"] == "hexagon" and not os.path.exists(os.path.join(b.public_dir, "questions.md"))
     # Complete now: the user's edits and deletes stand on every later start.
     b.skill_save("Folder layout", "layout", "My own body.", name="layout")
     b.skill_delete("naming")

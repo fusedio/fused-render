@@ -1,72 +1,60 @@
-"""Consolidation: the one learning loop (docs/experts.md §4 `consolidate.py`, §11).
+"""Learn: the one loop (docs/experts-autonomous.md "Learn : one loop").
 
-observations -> consolidation -> memory -> skill fixes. One `run`:
+`run(bot, force=False)` is one pass, synchronously; `start` runs it in a background thread; `status` says
+whether one is running, its stage and how many inbox entries wait. Nothing here waits for a person and nothing
+here writes memory or skills: a run is a list of independent steps, each a generator of changes, and the loop
+applies every change through `knowledge.apply` (the step receives the activity line back from its `yield`).
 
-a. lessons: an observation whose `confirms` names an existing lesson is a
-   bump of it with the observation's session, no model decision; for the
-   rest one `model.text` call proposes an edit per lesson observation
-   (add / bump / nothing); code applies them. The model is the filter between
-   transcript text and memory, so a failed call or an unreadable answer adds
-   nothing: the observations stay pending and a failure is counted
-   (`consolidate-failures.json`); only after `FALLBACK_AFTER` consecutive
-   failures does it fall back to one exact-match `memory.add` each.
-b. gaps: gap observations (unsure consults) become gap records
-   (`gaps.record`); the same call may answer `{"op": "gap", "gap": id}` to fold
-   a question asked in other words into an open gap. Never lessons.
-c. repair: up to `gaps.REPAIR_PER_RUN` open gaps are researched
-   (`gaps.research`); a grounded finding is a `research` lesson plus a skill
-   proposal.
-d. proposing: every due lesson as one proposal (`proposals.propose_candidates`).
-e. tidying: the memory budget (`tidy.run`): above `tidy_at` lessons, code
-   picks heavily used lessons to promote, and a model review is asked only
-   about the delete / merge candidates (code-enforced guard rails); above
-   `limit`, the least used leave. Then
-   skill pressure (`tidy.skill_pressure`): a skill over 80% of the body limit
-   gets ONE "reorganise" proposal when none is open.
+1. `lessons` (this module): inbox entries into lesson changes.
+2. `research` (`gaps.step`): open unsure questions.
+3. `distill` (`distill.step`): lessons that earned a skill.
+4. `tidy` (`tidy.step`): the memory budget.
 
-A contradiction (an observation whose `contradicts` names an existing lesson)
-is never a bump of that lesson: `memory.contradict` counts it, and the
-observation's claim (the corrected rule) goes to the model like any other
-lesson observation, except that an `advice_contradicted` observation may never
-be bumped (an answer that does is read as `add`) and may be answered
-`{"op": "same", "as": <observation id>}` when another observation in the batch
-already states that corrected rule. No observation in the batch may bump a
-lesson the batch contradicts.
+A step that raises is logged as a `note skipped` line and the next step still runs. Steps share one dict, `ctx`:
+`inbox` (the entries waiting when the run began) and `corrections` (the lessons step's hand-over to distill: a
+verified user correction of a rule a skill states).
 
-Only independent evidence raises a lesson's `count` (`counts`): a grounded
-`repeated_request` / `user_correction` that is not `after_advice`, an
-`error_then_fix` (and, in chat, the user's teaching). An `advice_confirmed`, an
-`after_advice` statement or an ungrounded one is credited with
-`memory.confirm` instead (`confirmed`, once per session; outcome op
-`confirm`), and a new lesson from one starts at count 0.
+Due (`due`): `consolidate_at` entries wait, or the oldest is `consolidate_after_s` old, or any waiting entry is
+from the user (`taught`, `forget`, or a correction with a verified quote), or `force`. Never when the manifest
+says `learning: false`.
 
-A user correction capture verified (`by_user` with a `quote`) takes effect at
-once: its lesson is trust `user`, `via: "session"`. When it contradicts a
-lesson, ONE model call per pair decides (`resolve`): `replace` archives the
-old lesson (reason `corrected`, `into` the new one), `narrow` rewrites the old
-claim (history kept) and clears its mark; an unreadable answer marks it
-contradicted as before. When the old rule was written into a skill, a
-correction proposal for that skill is requested (`request_correction`), or
-queued in `pending-corrections.json` while a proposal is open.
+The inbox is `<expert>/observations/pending/*.json`; a handled entry moves to `observations/done/` with what
+happened to it (`outcome`).
 
-Each archived observation records what happened to it (`outcome`). `start`
-runs it in a background thread; `status` says which stage is running.
+The lessons step, rule by rule (unchanged from docs/experts.md §13):
+
+- `taught` / `forget` (chat, `by_user` true only): a `user` lesson, or the matching lessons leave. No model.
+- An entry whose `confirms` names an existing lesson is credited to it with no model decision. For the rest ONE
+  `model.text` call answers an edit per entry (add / bump / nothing). The model is the filter between transcript
+  text and memory, so a failed call or an unreadable answer adds nothing: the entries stay waiting and the
+  failure is counted (`consolidate-failures.json`); only after `FALLBACK_AFTER` consecutive failures does each
+  become an exact-match add.
+- Only independent evidence raises a lesson's `count` (`counts`): an `error_then_fix`, or a grounded
+  `repeated_request` / `user_correction` that is not `after_advice`. Anything else is a `lesson_confirm`, and a
+  new lesson from it starts at count 0. Once per session either way.
+- A contradiction (`contradicts` names a lesson) is never a bump of that lesson; its claim, the corrected rule,
+  is a lesson of its own. A verified user correction (`correction`) takes effect at once: its lesson is trust
+  `user`, and ONE model call per pair (`resolve`) decides whether the old lesson is replaced (removed, reason
+  `corrected`) or narrowed (`lesson_edit`). Without a decision the old lesson is only marked contradicted. When
+  the old rule already lives in a skill, the pair goes to distill (`ctx["corrections"]`).
+- Unsure questions (`gap` entries) are recorded and grouped (`gaps.record`, `gaps.merge`); never lessons.
 """
 from __future__ import annotations
 
-import json
 import logging
+import os
 import re
 import threading
+import time
 
-from fused_render.experts import memory, model, observations, store
+from fused_render.experts import distill, gaps, knowledge, memory, model, store, tidy
+from fused_render.experts.engine import parse_json
 
 logger = logging.getLogger(__name__)
 
 FALLBACK_AFTER = 3
 FAILURES_FILE = "consolidate-failures.json"
-CORRECTIONS_FILE = "pending-corrections.json"
-SNOOZE_KEY = "snoozed_until"
+USER_KINDS = ("taught", "forget")
 
 RESOLVE_PROMPT = """The user corrected one of an expert's lessons in a session. Decide what happens to the OLD lesson.
 
@@ -79,9 +67,6 @@ What the user said (verbatim): {quote}
   self-contained sentence in "narrowed_claim" (the corrected rule stays beside it as its own lesson).
 
 Answer with ONLY a JSON object: {{"resolution": "replace" | "narrow", "narrowed_claim": "<only for narrow>"}}"""
-
-_RUNNING: set[str] = set()
-_RUNNING_GUARD = threading.Lock()
 
 PROMPT = """You keep an expert's memory of lessons. Below are its current lessons and new observations.
 For EACH observation decide one edit:
@@ -102,84 +87,197 @@ New observations:
 Answer with ONLY a JSON list, one object per observation:
 [{{"obs": "<observation id>", "op": "add" | "bump" | "nothing" | "same", "item": "<lesson id, for bump>", "claim": "<for add>", "as": "<observation id, for same>"}}]"""
 
+GAP_SECTION = """
 
-_OUTER_OPEN = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*$")
+Some observations above have kind "gap": a question the expert could not answer. Below are the open gaps (questions
+already recorded). For a gap observation that asks the SAME thing as one of these in other words, answer
+{{"obs": "<observation id>", "op": "gap", "gap": "<gap id>"}}; otherwise "nothing". A gap observation is never
+"add" or "bump".
 
+Open gaps:
+{gaps}"""
 
-def _unwrap(text: str) -> str:
-    """`text` without ONE outer code-fence wrapper around the whole answer (a leading ```json / ``` line and a
-    trailing ``` line). Nothing inside is touched: a fence inside a JSON string survives."""
-    s = (text or "").strip()
-    lines = s.split("\n")
-    if len(lines) >= 2 and _OUTER_OPEN.match(lines[0].strip()) and lines[-1].strip() == "```":
-        return "\n".join(lines[1:-1])
-    return s
+_GAP_PREFIX = re.compile(r"^\s*could not answer:\s*", re.I)
+_WHY = {"taught": "You taught this in chat.", "error_then_fix": "An error in a session was fixed this way.",
+        "repeated_request": "You asked for this in a session.",
+        "advice_confirmed": "A session followed this advice and it held."}
 
-
-def _balanced_end(s: str, i: int) -> int:
-    """The index of the bracket closing the JSON value opened at `s[i]`, scanning with string / escape awareness
-    (a bracket inside a string does not count); -1 when it never closes."""
-    depth, in_str, esc = 0, False, False
-    for j in range(i, len(s)):
-        c = s[j]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == "\\":
-                esc = True
-            elif c == '"':
-                in_str = False
-            continue
-        if c == '"':
-            in_str = True
-        elif c in "[{":
-            depth += 1
-        elif c in "]}":
-            depth -= 1
-            if depth == 0:
-                return j
-    return -1
+_GUARD = threading.Lock()
+#: bot id -> the stage of the run in flight.
+_RUNNING: dict[str, str] = {}
 
 
-def parse_json(text, want=list):
-    """The JSON value of type `want` (list or dict) in a model's answer; None when there is none.
+# ------------------------------------------------------------------ the inbox (read side) ---
+def _dir(bot, which) -> str:
+    return os.path.join(store.expert_dir(bot), "observations", which)
 
-    The contents of JSON strings are never altered: only an outer fence wrapper around the whole answer is removed
-    before parsing; failing that, the first balanced JSON value of type `want` (found with string / escape
-    awareness, so a code fence or bracket inside a string value survives byte for byte) is parsed."""
-    s = _unwrap(text)
+
+def waiting(bot) -> list:
+    """The inbox entries not handled yet, oldest first."""
+    path = _dir(bot, "pending")
     try:
-        val = json.loads(s)
-    except ValueError:
-        val = None
-    if isinstance(val, want):
-        return val
-    opener = "[" if want is list else "{"
-    i = s.find(opener)
-    while i != -1:
-        j = _balanced_end(s, i)
-        if j != -1:
+        names = [n for n in os.listdir(path) if n.endswith(".json")]
+    except OSError:
+        return []
+    rows = [store.read_json(os.path.join(path, n), None) for n in names]
+    rows = [o for o in rows if isinstance(o, dict) and o.get("id")]
+    rows.sort(key=lambda o: (float(o.get("ts") or 0), str(o["id"])))
+    return rows
+
+
+def _archive(bot, ids, outcomes) -> None:
+    """pending/ -> done/, each entry with what the run did with it: `outcome` = `{"op": "add" | "bump" | "confirm"
+    | "nothing" | "gap" | "contradict" | "forget", "at", "item"?, "new"?, "resolution"?, "gap"?}`."""
+    now = time.time()
+    os.makedirs(_dir(bot, "done"), exist_ok=True)
+    with store.lock(bot):
+        for oid in ids:
+            name = os.path.basename(str(oid)) + ".json"
+            src = os.path.join(_dir(bot, "pending"), name)
+            obs = store.read_json(src, None)
+            if not isinstance(obs, dict):
+                continue
+            obs["outcome"] = {**(outcomes.get(oid) or {"op": "nothing"}), "at": now}
             try:
-                val = json.loads(s[i:j + 1])
-            except ValueError:
-                val = None
-            if isinstance(val, want):
-                return val
-        i = s.find(opener, i + 1)
-    return None
+                store.write_json(os.path.join(_dir(bot, "done"), name), obs)
+                os.remove(src)
+            except OSError:
+                logger.warning("expert %s: inbox entry %s not archived", bot.id, oid, exc_info=True)
 
 
-def _result(ran, added=(), bumped=(), ignored=0, reason=""):
-    added = list(dict.fromkeys(added))
-    bumped = [b for b in dict.fromkeys(bumped) if b not in added]
-    out = {"ran": ran, "added": added, "bumped": bumped, "ignored": ignored}
-    if reason:
-        out["reason"] = reason
-    return out
+# ------------------------------------------------------------------ evidence rules ---
+def verified(o) -> bool:
+    """A statement proved to be the user's: `by_user` true with the quote it was checked against."""
+    return o.get("by_user") is True and bool(str(o.get("quote") or "").strip())
 
 
+def echo(o) -> bool:
+    """The expert's own advice echoed back: `advice_confirmed`, or a statement made only after its advice."""
+    return o.get("kind") == "advice_confirmed" or bool(o.get("after_advice"))
+
+
+def counts(o) -> bool:
+    """Whether entry `o` is independent evidence that raises a lesson's `count` (once per session): an
+    `error_then_fix`, or a grounded `repeated_request` / `user_correction` (or a user-stated `advice_contradicted`)
+    that is not `after_advice`. Never an `advice_confirmed`. An entry stored before grounding existed (no
+    `by_user` key) keeps the old rule (anything but an echo counts)."""
+    if echo(o):
+        return False
+    if o.get("kind") == "error_then_fix" or "by_user" not in o:
+        return True
+    return verified(o)
+
+
+def correction(o) -> bool:
+    """A verified user correction: takes effect at once (trust `user`)."""
+    return verified(o) and o.get("kind") in ("user_correction", "advice_contradicted") and not o.get("after_advice")
+
+
+def from_user(o) -> bool:
+    """An entry that makes a run due at once: taught or forgotten in chat, or a verified correction."""
+    return (o.get("kind") in USER_KINDS and o.get("by_user") is True) or correction(o)
+
+
+def due(bot, force=False, now=None) -> bool:
+    man = store.manifest(bot)
+    if man.get("learning") is False:
+        return False
+    if force:
+        return True
+    rows = waiting(bot)
+    if not rows:
+        return False
+    mem = man["memory"]
+    now = time.time() if now is None else now
+    return (len(rows) >= mem["consolidate_at"] or now - float(rows[0].get("ts") or now) >= mem["consolidate_after_s"]
+            or any(from_user(o) for o in rows))
+
+
+# ------------------------------------------------------------------ the loop ---
+def status(bot) -> dict:
+    """`{"running": bool, "stage": "lessons" | "research" | "distill" | "tidy" | "", "waiting": int}`."""
+    with _GUARD:
+        stage = _RUNNING.get(str(bot.id))
+    return {"running": stage is not None, "stage": stage or "", "waiting": len(waiting(bot))}
+
+
+def _claim(bot) -> bool:
+    with _GUARD:
+        if str(bot.id) in _RUNNING:
+            return False
+        _RUNNING[str(bot.id)] = ""
+        return True
+
+
+def _release(bot) -> None:
+    with _GUARD:
+        _RUNNING.pop(str(bot.id), None)
+
+
+def run(bot, force=False) -> dict:
+    """One pass: `{"ran": bool, "reason"?: str, "lines"?: [activity line]}`. Not `ran` when nothing is due, the
+    expert's learning is off, no engine is available, or a run is already in flight for this expert."""
+    if not _claim(bot):
+        return {"ran": False, "reason": "already running"}
+    try:
+        return _run(bot, force)
+    finally:
+        _release(bot)
+
+
+def start(bot, force=False) -> bool:
+    """`run` in a background thread. False when one is already running for this expert or nothing is due."""
+    if not _claim(bot):
+        return False
+    try:
+        if not due(bot, force):
+            _release(bot)
+            return False
+
+        def go():
+            try:
+                _run(bot, force)
+            except Exception:  # noqa: BLE001 — never out of a helper thread
+                logger.warning("expert %s: learning failed", getattr(bot, "id", "?"), exc_info=True)
+            finally:
+                _release(bot)
+
+        threading.Thread(target=go, daemon=True, name=f"expert-learn-{bot.id}").start()
+        return True
+    except Exception:
+        _release(bot)
+        raise
+
+
+def _run(bot, force) -> dict:
+    if not due(bot, force):
+        return {"ran": False}
+    ok, why = model.available(bot)
+    if not ok:
+        return {"ran": False, "reason": why or "no engine is available for this expert"}
+    ctx = {"inbox": waiting(bot), "corrections": []}
+    lines = []
+    for name, step in (("lessons", lessons), ("research", gaps.step), ("distill", distill.step),
+                       ("tidy", tidy.step)):
+        with _GUARD:
+            _RUNNING[str(bot.id)] = name
+        gen, line = step(bot, ctx), None
+        try:
+            while True:
+                line = knowledge.apply(bot, {"stage": name, **gen.send(line)})
+                lines.append(line)
+        except StopIteration:
+            pass
+        except Exception as e:  # noqa: BLE001 — one failed step never stops the others
+            logger.warning("expert %s: the %s step failed", bot.id, name, exc_info=True)
+            lines.append(knowledge.apply(bot, {
+                "op": "note", "action": "skipped", "stage": name, "summary": f"The {name} step failed.",
+                "why": f"{type(e).__name__}: {e}"[:300]}))
+    return {"ran": True, "lines": lines}
+
+
+# ------------------------------------------------------------------ step 1: lessons ---
 def _failures_path(bot) -> str:
-    import os
     return os.path.join(store.expert_dir(bot), FAILURES_FILE)
 
 
@@ -192,151 +290,14 @@ def failures(bot) -> int:
 
 
 def _set_failures(bot, n: int, error: str = "") -> None:
-    import time
-    store.write_json(_failures_path(bot), {"count": int(n), "error": error[:300], "at": time.time()})
-
-
-#: bot id -> {"stage", "gap"} while a run is in flight.
-_STAGE: dict[str, dict] = {}
-STAGES = ("lessons", "gaps", "researching", "proposing", "tidying")
-_GAP_PREFIX = re.compile(r"^\s*could not answer:\s*", re.I)
-
-GAP_SECTION = """
-
-Some observations above have kind "gap": a question the expert could not answer. Below are the open gaps (questions
-already recorded). For a gap observation that asks the SAME thing as one of these in other words, answer
-{{"obs": "<observation id>", "op": "gap", "gap": "<gap id>"}}; otherwise "nothing". A gap observation is never
-"add" or "bump".
-
-Open gaps:
-{gaps}"""
-
-
-def _stage(bot, stage, gap=None) -> None:
-    with _RUNNING_GUARD:
-        _STAGE[str(bot.id)] = {"stage": stage, "gap": gap}
-
-
-def status(bot) -> dict:
-    """`{"running": bool, "stage": "lessons"|"gaps"|"researching"|"proposing"|"tidying"|"", "gap": gid|None}`."""
-    key = str(bot.id)
-    with _RUNNING_GUARD:
-        if key not in _RUNNING:
-            return {"running": False, "stage": "", "gap": None}
-        st = _STAGE.get(key) or {}
-        return {"running": True, "stage": st.get("stage") or "", "gap": st.get("gap")}
-
-
-def _claim(bot) -> bool:
-    key = str(bot.id)
-    with _RUNNING_GUARD:
-        if key in _RUNNING:
-            return False
-        _RUNNING.add(key)
-        _STAGE[key] = {"stage": "", "gap": None}
-        return True
-
-
-def _release(bot) -> None:
-    key = str(bot.id)
-    with _RUNNING_GUARD:
-        _RUNNING.discard(key)
-        _STAGE.pop(key, None)
-
-
-def would_run(bot, force=False) -> bool:
-    """Whether a run would do anything: observations due (or, with `force`, any pending observation, a gap
-    the repair step would research, or memory over its `tidy_at`)."""
-    if not force:
-        return observations.due(bot)
-    from fused_render.experts import gaps, tidy
-    return bool(observations.pending(bot)) or bool(_repairable(bot)) or tidy.needed(bot) \
-        or bool(queued_corrections(bot))
-
-
-def run(bot, *, force=False) -> dict:
-    """One consolidation, synchronously (the scheduler's thread): lessons, gap records, gap repair, proposals."""
-    if not _claim(bot):
-        return _result(False)
-    try:
-        return _run(bot, force)
-    finally:
-        _release(bot)
-
-
-def start(bot, *, force=False) -> bool:
-    """`run` in a background thread. False when one is already running for this expert or there is nothing to
-    do (`would_run`)."""
-    if not _claim(bot):
-        return False
-    try:
-        if not would_run(bot, force):
-            _release(bot)
-            return False
-
-        def go():
-            try:
-                _run(bot, force)
-            except Exception:  # noqa: BLE001 — never out of a helper thread
-                logger.warning("expert %s: consolidation failed", getattr(bot, "id", "?"), exc_info=True)
-            finally:
-                _release(bot)
-
-        threading.Thread(target=go, daemon=True, name=f"expert-consolidate-{bot.id}").start()
-        return True
-    except Exception:
-        _release(bot)
-        raise
-
-
-def verified(o) -> bool:
-    """A statement capture proved is the user's: `by_user` true with the quote it was checked against."""
-    return o.get("by_user") is True and bool(str(o.get("quote") or "").strip())
-
-
-def echo(o) -> bool:
-    """The expert's own advice echoed back: `advice_confirmed`, or a statement made only after its advice."""
-    return o.get("kind") == "advice_confirmed" or bool(o.get("after_advice"))
-
-
-def counts(o) -> bool:
-    """Whether observation `o` is independent evidence that raises a lesson's `count` (once per session): an
-    `error_then_fix`, or a grounded `repeated_request` / `user_correction` (or a user-stated `advice_contradicted`)
-    that is not `after_advice`. Never an `advice_confirmed`. An observation stored before grounding existed (no
-    `by_user` key) keeps the old rule (anything but an echo counts)."""
-    if echo(o):
-        return False
-    if o.get("kind") == "error_then_fix":
-        return True
-    if "by_user" not in o:
-        return True
-    return verified(o)
-
-
-def correction(o) -> bool:
-    """A verified user correction: takes effect at once (trust `user`)."""
-    return verified(o) and o.get("kind") in ("user_correction", "advice_contradicted") and not o.get("after_advice")
-
-
-def snoozed(gap, now=None) -> bool:
-    """A gap the user asked to be asked about later (`snoozed_until` in the future): not asked or researched."""
-    import time
-    try:
-        until = float((gap or {}).get(SNOOZE_KEY) or 0)
-    except (TypeError, ValueError):
-        return False
-    return until > (time.time() if now is None else now)
-
-
-def _repairable(bot, touched=()) -> list:
-    from fused_render.experts import gaps as gapmod
-    return [g for g in gapmod.repairable(bot, touched) if not snoozed(g)]
+    if n or failures(bot):
+        store.write_json(_failures_path(bot), {"count": int(n), "error": error[:300], "at": time.time()})
 
 
 def resolve(bot, old, new_claim, quote) -> dict | None:
     """ONE model decision for a verified user correction of lesson `old`: `{"resolution": "replace"}` or
     `{"resolution": "narrow", "narrowed_claim": str}`; None when the call fails or the answer cannot be read (the
-    caller then keeps the old behaviour: the lesson is marked contradicted)."""
+    old lesson is then only marked contradicted)."""
     prompt = RESOLVE_PROMPT.format(old=" ".join(str(old.get("claim") or "").split()),
                                    new=" ".join(str(new_claim or "").split()),
                                    quote=" ".join(str(quote or "").split()) or "(not given)")
@@ -350,207 +311,128 @@ def resolve(bot, old, new_claim, quote) -> dict | None:
     res = str(ans.get("resolution") or "").strip().lower()
     if res == "replace":
         return {"resolution": "replace"}
-    narrowed = " ".join(str(ans.get("narrowed_claim") or "").split()) if isinstance(ans.get("narrowed_claim"), str) \
-        else ""
+    narrowed = " ".join(ans["narrowed_claim"].split()) if isinstance(ans.get("narrowed_claim"), str) else ""
     if res == "narrow" and narrowed and memory.normalise(narrowed) != memory.normalise(new_claim):
         return {"resolution": "narrow", "narrowed_claim": narrowed}
     return None
 
 
-def skill_of(bot, item_id) -> str:
-    """The skill a lesson was written into: a live lesson's `skill`, the approved proposal that carried a lesson
-    still flagged `promoted`, or its memory-archive record (reason `promoted` with a `skill`). "" when none."""
-    live = next((i for i in memory.items(bot) if i.get("id") == item_id), None)
-    if live is not None:
-        if live.get("skill"):
-            return str(live["skill"])
-        if live.get("promoted"):
-            from fused_render.experts import proposals
-            for p in proposals.listing(bot):
-                if p.get("status") == "approved" and item_id in (p.get("items") or []) and p.get("skill"):
-                    return str(p["skill"])
-    for rec in memory.promoted(bot):
-        if rec.get("id") == item_id:
-            return str(rec["skill"])
-    return ""
+def _because(o) -> dict:
+    """The `why` and `evidence` every change made for inbox entry `o` carries."""
+    src = o.get("source") if isinstance(o.get("source"), dict) else {}
+    ev = {"session": o.get("session") or "", "quote": o.get("quote") or "", "source": src.get("target") or "",
+          "item": o["id"]}
+    why = "You said so in a session." if correction(o) else _WHY.get(o.get("kind"), "Seen in a session.")
+    return {"why": why, "evidence": {k: v for k, v in ev.items() if v}}
 
 
-def _corrections_path(bot) -> str:
-    import os
-    return os.path.join(store.expert_dir(bot), CORRECTIONS_FILE)
+def _live(bot, item_id):
+    return next((i for i in memory.items(bot) if i.get("id") == item_id), None)
 
 
-def queued_corrections(bot) -> list:
-    """The skill corrections waiting for the proposal slot (`pending-corrections.json`), oldest first."""
-    rows = store.read_json(_corrections_path(bot), [])
-    return [r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict) and r.get("item")]
+def _lesson_kind(o) -> str:
+    # The corrected rule of a contradiction is a user correction when a USER line said so (capture's `by_user`).
+    if o.get("kind") == "advice_contradicted" and o.get("by_user"):
+        return "user_correction"
+    return o.get("kind") or "lesson"
 
 
-def _queue_correction(bot, corr: dict) -> None:
-    """Queue `corr`, replacing a queued entry for the same (lesson, skill): one lesson may correct several skills.
-    The caller holds `store.lock(bot)`."""
-    import time
-    key = (corr.get("item"), corr.get("skill") or "")
-    rows = [r for r in queued_corrections(bot) if (r.get("item"), r.get("skill") or "") != key]
-    store.write_json(_corrections_path(bot), [*rows, dict(corr, at=time.time())])
+def lessons(bot, ctx):
+    """Step 1 (module docstring). Yields lesson changes and notes; archives every entry it handled."""
+    pend = ctx["inbox"]
+    outcomes: dict[str, dict] = {}  # inbox entry id -> what this run did with it
 
-
-def request_correction(bot, corr: dict) -> str | None:
-    """Request a skill proposal that changes skill `corr["skill"]` to follow the user's correction (lesson
-    `corr["item"]`), or queue it when a proposal is open (single flight). Returns the proposal id, or None when it
-    was queued or its lesson is gone."""
-    from fused_render.experts import proposals
-    with store.lock(bot):
-        if proposals.any_open(bot):
-            _queue_correction(bot, corr)
-            return None
-    try:
-        p = proposals.request(bot, [corr["item"]], topic=f"Correction: {corr.get('old') or ''}"[:200],
-                              correction={"skill": corr.get("skill") or "", "old": corr.get("old") or "",
-                                          "quote": corr.get("quote") or ""})
-    except ValueError as e:
-        if str(e) == proposals.BUSY:
-            with store.lock(bot):
-                _queue_correction(bot, corr)
-        return None
-    return p.get("id") if isinstance(p, dict) else None
-
-
-def drain_corrections(bot) -> list:
-    """The next queued correction, requested when no proposal is open (one per run: single flight). Entries whose
-    lesson left memory are dropped. Returns the proposal ids started."""
-    from fused_render.experts import proposals
-    with store.lock(bot):
-        rows = queued_corrections(bot)
+    # What the user said in chat: no model, and never held back by a failed model call below.
+    said = [o for o in pend if o.get("kind") in USER_KINDS]
+    for o in said:
+        text = " ".join(str(o.get("claim") or "").split())
+        if o.get("by_user") is not True or not text:
+            continue  # only a message typed at the computer may teach or forget
+        if o["kind"] == "taught":
+            line = yield {"op": "lesson_add", "claim": text, "kind": "lesson", "trust": "user", **_because(o)}
+            it = memory.find(bot, text) if line.get("ok") else None
+            if it:
+                outcomes[o["id"]] = {"op": "add", "item": it["id"]}
+            continue
+        rows = memory.match(bot, text)
+        outcomes[o["id"]] = {"op": "forget"}
         if not rows:
-            return []
-        live = {i["id"] for i in memory.items(bot)}
-        rows = [r for r in rows if r.get("item") in live]
-        if proposals.any_open(bot):
-            store.write_json(_corrections_path(bot), rows)
-            return []
-        nxt, rest = (rows[0], rows[1:]) if rows else (None, [])
-        store.write_json(_corrections_path(bot), rest)
-    if nxt is None:
-        return []
-    pid = request_correction(bot, nxt)
-    return [pid] if pid else []
+            yield {"op": "note", "action": "skipped", "summary": f"No lesson matches “{text[:200]}”.",
+                   "why": "You asked to forget it in chat.", "evidence": {"item": o["id"]}}
+        for i in rows:
+            yield {"op": "lesson_remove", "id": i["id"], "reason": "forgotten",
+                   "why": "You asked to forget this in chat.", "evidence": {"item": o["id"]}}
+    _archive(bot, [o["id"] for o in said], outcomes)
 
-
-def _credit_correction(bot, o, item_id):
-    """Credit verified user correction `o` to lesson `item_id`: counted once per session like a bump, and the
-    lesson raised to trust `user` via `session` (memory.add on its own claim, which upgrades the trust of the equal
-    lesson). None when the lesson is gone."""
-    with store.lock(bot):
-        live = memory.items(bot)
-        target = next((i for i in live if i.get("id") == item_id), None)
-        if target is None:
-            return None
-        key = memory.normalise(target.get("claim"))
-        first = next((i for i in live if memory.normalise(i.get("claim")) == key), None)
-        if first is not None and first.get("id") != item_id:
-            return memory.bump(bot, item_id, session=o.get("session") or "")  # an equal claim shadows it: count only
-        return memory.add(bot, target.get("claim") or "", kind=target.get("kind") or "lesson", trust="user",
-                          session=o.get("session") or "", via="session", counted=counts(o))
-
-
-def _question_of(obs) -> str:
-    return _GAP_PREFIX.sub("", str(obs.get("claim") or "")).strip()
-
-
-def _run(bot, force):
-    from fused_render.experts import gaps as gapmod
-    if not force and not observations.due(bot):
-        return _result(False)
-    from fused_render.experts import tidy as tidymod
-    pend = observations.pending(bot)
-    if not pend and not (force and (_repairable(bot) or tidymod.needed(bot) or queued_corrections(bot))):
-        return _result(False)
-    ok, why = model.available(bot)
-    if not ok:
-        return _result(False, reason=why or "no engine is available for this expert")
-    _stage(bot, "lessons")
-    gap_obs = [o for o in pend if o.get("trust") == "gap" or o.get("kind") == "gap"]
-    real = [o for o in pend if o not in gap_obs]
-    # An observation that `confirms` an existing lesson (capture validated the id) is a deterministic bump of
-    # it, applied below once the model step has not bailed out; it never reaches the model.
-    # A request pattern confirms only a request pattern (the same guard as a model "bump" below).
+    gap_obs = [o for o in pend if o not in said and (o.get("trust") == "gap" or o.get("kind") == "gap")]
+    real = [o for o in pend if o not in said and o not in gap_obs]
+    if not real and not gap_obs:
+        return
     live = memory.items(bot)
     item_kinds = {i["id"]: i.get("kind") for i in live}
     item_claims = {i["id"]: memory.normalise(i.get("claim")) for i in live}
-    # A lesson already written into a skill (archived as promoted) may be contradicted too: its skill then follows.
+    # A rule already written into a skill (archived as promoted) may be contradicted too: its skill then follows.
     in_skills = {r["id"]: r for r in memory.promoted(bot) if r["id"] not in item_kinds}
     for rid, rec in in_skills.items():
-        item_claims.setdefault(rid, memory.normalise(rec.get("claim")))
-    # An observation that `contradicts` an existing lesson: a contradiction of it (applied below, never a bump),
-    # while its claim, the corrected rule, goes to the model as a lesson of its own.
-    contradicting = [o for o in real if str(o.get("contradicts") or "") in item_kinds
-                     or str(o.get("contradicts") or "") in in_skills]
+        item_claims[rid] = memory.normalise(rec.get("claim"))
+    contradicting = [o for o in real if str(o.get("contradicts") or "") in item_claims]
     contra_items = {str(o["contradicts"]) for o in contradicting}
+    # An entry that `confirms` an existing lesson is credited to it with no model decision (a request pattern
+    # confirms only a request pattern, the same guard as a model "bump" below).
     confirmed = [o for o in real if o not in contradicting and str(o.get("confirms") or "") in item_kinds
                  and (o.get("kind") != "repeated_request" or item_kinds[o["confirms"]] == "repeated_request")]
     real = [o for o in real if o not in confirmed]
-    added, bumped, noted, contradicted, ignored = [], [], [], [], len(gap_obs)
-    resolved: list[dict] = []
-    open_gaps = gapmod.open_gaps(bot) if gap_obs else []
-    offer = gap_obs if open_gaps else []  # gap observations reach the model only to be merged into a gap
-
-    outcomes: dict[str, dict] = {}  # observation id -> what this run did with it (stored on the archived record)
-
-    def note(o, item, before_ids):
-        if item is None:
-            return
-        op = "add" if item["id"] not in before_ids else "bump" if counts(o) else "confirm"
-        (added if op == "add" else bumped if op == "bump" else noted).append(item["id"])
-        outcomes[o["id"]] = {"op": op, "item": item["id"]}
-
-    def credit(o, item_id):
-        # Independent evidence raises the count (once per session); an echo of the expert's advice, or a statement
-        # not grounded in a user line, is only noted as confirmed. A verified user correction also raises the
-        # lesson to trust "user" (via "session"), so it is indexed at once (§13).
-        if correction(o):
-            it = _credit_correction(bot, o, item_id)
-            if it is not None:
-                bumped.append(it["id"])
-                outcomes[o["id"]] = {"op": "bump", "item": it["id"]}
-            return it
-        if counts(o):
-            it, op = memory.bump(bot, item_id, session=o.get("session") or ""), "bump"
-        else:
-            it, op = memory.confirm(bot, item_id, session=o.get("session") or ""), "confirm"
-        if it is not None:
-            (bumped if op == "bump" else noted).append(it["id"])
-            outcomes[o["id"]] = {"op": op, "item": it["id"]}
-        return it
-
-    def lesson_kind(o):
-        # The corrected rule of a contradiction is a user correction when a USER line said so (capture's `by_user`).
-        if o.get("kind") == "advice_contradicted" and o.get("by_user"):
-            return "user_correction"
-        return o.get("kind") or "lesson"
+    open_gaps = gaps.open_gaps(bot) if gap_obs else []
+    offer = gap_obs if open_gaps else []  # gap entries reach the model only to be grouped with an open gap
 
     def add(o, claim=None):
+        """The entry's claim as a lesson (or the equal existing one, credited). False when nothing was stored."""
         claim = claim if claim is not None else o.get("claim")
         old = str(o.get("contradicts") or "")
         if old in item_claims and memory.normalise(claim) == item_claims[old]:
             return True  # the "corrected rule" is the contradicted lesson's own text: never a bump of it
+        if not str(claim or "").strip():
+            return False
         before = {i["id"] for i in memory.items(bot)}
         user = correction(o)  # a verified user correction takes effect at once, like chat teaching
-        try:
-            note(o, memory.add(bot, claim, kind=lesson_kind(o),
-                               trust="user" if user else (o.get("trust") or "outcome"),
-                               session=o.get("session") or "", about=o.get("about"),
-                               via="session" if user else "", counted=counts(o)), before)
-            return True
-        except ValueError:
+        line = yield {"op": "lesson_add", "claim": claim, "kind": _lesson_kind(o),
+                      "trust": "user" if user else (o.get("trust") or "outcome"), "via": "session" if user else "",
+                      "session": o.get("session") or "", "about": o.get("about") or [], "counted": counts(o),
+                      **_because(o)}
+        it = memory.find(bot, claim) if line.get("ok") else None
+        if it is None:
             return False
+        op = "add" if it["id"] not in before else "bump" if counts(o) else "confirm"
+        outcomes[o["id"]] = {"op": op, "item": it["id"]}
+        return True
+
+    def credit(o, item_id):
+        """Entry `o` seen again as lesson `item_id`: independent evidence raises its count (once per session), an
+        echo or an ungrounded statement is only noted, and a verified user correction also raises the lesson to
+        trust `user` (so it is used at once). False when the lesson is gone."""
+        target = _live(bot, item_id)
+        if target is None:
+            return False
+        ref = {"id": item_id, "session": o.get("session") or "", **_because(o)}
+        first = memory.find(bot, target.get("claim"))
+        if correction(o) and first is not None and first["id"] == item_id:
+            line = yield {"op": "lesson_add", "claim": target.get("claim") or "", "kind": target.get("kind") or "lesson",
+                          "trust": "user", "via": "session", "session": ref["session"], "counted": counts(o),
+                          **_because(o)}
+            op = "bump"
+        elif counts(o) or correction(o):
+            line, op = (yield {"op": "lesson_bump", **ref}), "bump"
+        else:
+            line, op = (yield {"op": "lesson_confirm", **ref}), "confirm"
+        if not line.get("ok"):
+            return False
+        outcomes[o["id"]] = {"op": op, "item": item_id}
+        return True
 
     edits, fallback = None, False
     if real or offer:
-        current = memory.items(bot)
         items_txt = "\n".join(f"- [{i['id']}] ({i.get('kind', 'lesson')}) {i.get('claim', '')} "
-                              f"(seen {i.get('count', 0)}×)"
-                              for i in current) or "(none yet)"
+                              f"(seen {i.get('count', 0)}×)" for i in memory.items(bot)) or "(none yet)"
         obs_txt = "\n".join(f"- [{o['id']}] ({o.get('kind', '')}, trust {o.get('trust', '')}) {o.get('claim', '')}"
                             for o in real + offer)
         prompt = PROMPT.format(items=items_txt, obs=obs_txt)
@@ -559,8 +441,7 @@ def _run(bot, force):
                 f"- [{g['id']}] {g['question']} (asked {g.get('count', 0)}×)" for g in open_gaps))
         error = ""
         try:
-            answer = model.text(bot, prompt, system="You answer with JSON only.")
-            edits = parse_json(answer, list)
+            edits = parse_json(model.text(bot, prompt, system="You answer with JSON only."), list)
             if edits is None:
                 error = "the model's answer could not be read"
         except Exception as e:  # noqa: BLE001 — counted below; nothing is added on a failed call
@@ -569,11 +450,12 @@ def _run(bot, force):
             n = failures(bot) + 1
             if n < FALLBACK_AFTER:
                 _set_failures(bot, n, error)
-                return _result(False, reason=f"{error}; the observations stay pending ({n} of "
-                                             f"{FALLBACK_AFTER} tries)")
-            # Consecutive failures: exact-match adds (memory.add's dedupe), so the queue cannot grow forever.
+                yield {"op": "note", "action": "skipped", "why": error[:300],
+                       "summary": f"{len(pend) - len(said)} things stay waiting (try {n} of {FALLBACK_AFTER})."}
+                return
+            # Consecutive failures: exact-match adds, so the queue cannot grow forever.
             for o in real:
-                add(o)
+                yield from add(o)
             fallback = True
     if real or not offer or edits is not None:
         _set_failures(bot, 0)
@@ -583,7 +465,7 @@ def _run(bot, force):
     open_ids = {g["id"] for g in open_gaps}
     merges: dict[str, str] = {}
     handled: set[str] = set()
-    same: dict[str, str] = {}  # an advice_contradicted observation id -> the observation that states its rule
+    same: dict[str, str] = {}  # an advice_contradicted entry id -> the entry that states its rule
     for e in (edits or []) if not fallback else []:
         if not isinstance(e, dict):
             continue
@@ -593,42 +475,32 @@ def _run(bot, force):
                 merges.setdefault(oid, str(e["gap"]))
             continue  # never a lesson
         o = by_id.get(oid)
-        if o is None or o["id"] in handled:
+        if o is None or oid in handled:
             continue
-        handled.add(o["id"])
+        handled.add(oid)
         op = str(e.get("op") or "").lower()
+        claim = e["claim"] if isinstance(e.get("claim"), str) and e["claim"].strip() else None
         if o.get("kind") == "advice_contradicted":
-            if op == "same" and str(e.get("as") or "") in by_id and str(e.get("as")) != o["id"]:
-                same[o["id"]] = str(e["as"])
+            if op == "same" and str(e.get("as") or "") in by_id and str(e.get("as")) != oid:
+                same[oid] = str(e["as"])
                 continue
             if op == "bump":  # a contradiction never raises confidence in anything: its rule is a lesson of its own
-                op, e = "add", {**e, "claim": None}
+                op, claim = "add", None
         elif op == "bump" and str(e.get("item") or "") in contra_items:
-            op, e = "add", {**e, "claim": None}  # never a bump of a lesson this batch contradicts
-        if op == "bump" and o.get("kind") == "repeated_request":
-            # A request pattern is its own lesson: bumped only onto a request pattern, else added.
-            target = next((i for i in memory.items(bot) if i.get("id") == str(e.get("item") or "")), None)
-            if target is None or target.get("kind") != "repeated_request":
-                op = "add"
-                e = {**e, "claim": None}
+            op, claim = "add", None  # never a bump of a lesson this batch contradicts
+        if op == "bump" and o.get("kind") == "repeated_request" \
+                and (_live(bot, str(e.get("item") or "")) or {}).get("kind") != "repeated_request":
+            op, claim = "add", None  # a request pattern is bumped only onto a request pattern
         if op == "bump" and e.get("item"):
-            if credit(o, str(e["item"])) is None:
-                ignored += 1  # a bump of a lesson that does not exist: nothing
+            yield from credit(o, str(e["item"]))
         elif op == "add":
-            claim = e["claim"] if isinstance(e.get("claim"), str) and e["claim"].strip() else o.get("claim")
-            if not add(o, claim):
-                ignored += 1
-        elif o not in contradicting:
-            ignored += 1  # "nothing", or an op we do not know
-    if not fallback:
-        # Omitted by the answer: nothing (a contradiction still counts below).
-        ignored += len([o for o in real if o["id"] not in handled and o not in contradicting])
+            yield from add(o, claim)
     for oid, other in same.items():
-        # The corrected rule another observation of this batch states: counted toward that lesson, not added again.
+        # The corrected rule another entry of this batch states: counted toward that lesson, not added again.
         target = (outcomes.get(other) or {}).get("item")
         if target and target not in contra_items:
-            credit(by_id[oid], target)
-    corrections: list[dict] = []  # skill corrections to request once the observations are archived
+            yield from credit(by_id[oid], target)
+
     decided: dict[tuple, dict | None] = {}  # (old, new) -> the resolution, one model call per pair
     for o in contradicting:
         old_id = str(o["contradicts"])
@@ -636,128 +508,52 @@ def _run(bot, force):
         partner = by_id.get(same.get(o["id"], ""))
         user = correction(o) or (partner is not None and correction(partner))
         quote = o.get("quote") if verified(o) else (partner or {}).get("quote")
-        old = next((i for i in memory.items(bot) if i.get("id") == old_id), None) or in_skills.get(old_id)
-        if old is None:
-            continue  # forgotten between the check above and now
-        is_live = old_id not in in_skills
-        skill = skill_of(bot, old_id) if user and new and new != old_id else ""
+        old = _live(bot, old_id)
         res = None
-        if user and new and new != old_id and is_live:
+        if old is not None and user and new and new != old_id:
             key = (old_id, new)
             if key not in decided:
-                new_claim = next((i.get("claim") for i in memory.items(bot) if i.get("id") == new), o.get("claim"))
-                decided[key] = resolve(bot, old, new_claim, quote)
-                d = decided[key]
-                if d and d["resolution"] == "replace":
-                    if not memory.remove(bot, [old_id], "corrected", into=new):
-                        decided[key] = None
-                elif d and d["resolution"] == "narrow":
-                    if memory.narrow(bot, old_id, d["narrowed_claim"]) is None:
-                        decided[key] = None
-                if decided[key]:
-                    resolved.append({"item": old_id, "resolution": decided[key]["resolution"], "into": new})
+                d = resolve(bot, old, (_live(bot, new) or {}).get("claim") or o.get("claim"), quote)
+                if d:
+                    line = yield ({"op": "lesson_remove", "id": old_id, "reason": "corrected", "into": new}
+                                  if d["resolution"] == "replace" else
+                                  {"op": "lesson_edit", "id": old_id, "claim": d["narrowed_claim"]}) | _because(o)
+                    d = d if line.get("ok") else None
+                decided[key] = d
             res = decided[key]
-        if is_live and res is None:
-            it = memory.contradict(bot, old_id, session=o.get("session") or "")
-            if it is not None:
-                contradicted.append(it["id"])
+        if old is not None and res is None:
+            yield {"op": "lesson_contradict", "id": old_id, "session": o.get("session") or "", **_because(o)}
         oc = {"op": "contradict", "item": old_id}
         if new and new != old_id:
             oc["new"] = new
         if res:
             oc["resolution"] = res["resolution"]
         outcomes[o["id"]] = oc
-        if skill and not any(c["item"] == new and c["skill"] == skill for c in corrections):
-            corrections.append({"item": new, "skill": skill, "old": old.get("claim", ""), "quote": quote or "",
-                                "old_id": old_id})
+        skill = (in_skills.get(old_id) or {}).get("skill")
+        if skill and user and new and not any(c["item"] == new and c["skill"] == skill for c in ctx["corrections"]):
+            # The old rule lives in a skill: distill rewrites that section from the corrected lesson.
+            ctx["corrections"].append({"item": new, "skill": skill, "old": in_skills[old_id].get("claim", ""),
+                                       "quote": quote or ""})
     for o in confirmed:
-        # memory.bump counts a session once, so a repeat from the same session does not inflate the count.
-        if str(o["confirms"]) in contra_items:
-            ignored += 1  # never a bump of a lesson this batch contradicts (the model path's guard too)
-            continue
-        if credit(o, str(o["confirms"])) is None:
-            ignored += 1  # forgotten between the check above and now
+        if str(o["confirms"]) not in contra_items:  # never a bump of a lesson this batch contradicts
+            yield from credit(o, str(o["confirms"]))
 
-    # Gap observations -> gap records (one count per distinct consult), merged where the model said so.
-    _stage(bot, "gaps")
-    touched: list[str] = []
+    # Unsure questions -> gap records (one count per distinct consult), grouped where the model said so.
     renamed: dict[str, str] = {}  # a gap id merged away this run -> the gap it went into
     for o in gap_obs:
-        q = _question_of(o)
+        q = _GAP_PREFIX.sub("", str(o.get("claim") or "")).strip()
         if not q:
             continue
-        try:
-            g = gapmod.record(bot, q, consult=o.get("consult") or "", session=o.get("session") or "")
-            target = merges.get(o["id"])
-            if target and target != g["id"]:
-                kept = gapmod.merge(bot, g["id"], target)
-                if kept is not None:
-                    touched = [t for t in touched if t not in (g["id"], target)]
-                    for gone in (g["id"], target):
-                        if gone != kept["id"]:
-                            renamed[gone] = kept["id"]
-                    g = kept
-            if g["id"] not in touched:
-                touched.append(g["id"])
-            outcomes[o["id"]] = {"op": "gap", "gap": g["id"]}
-        except Exception:  # noqa: BLE001 — one bad record never blocks the run
-            logger.warning("expert %s: gap observation %s not recorded", bot.id, o.get("id"), exc_info=True)
+        g = gaps.record(bot, q, consult=o.get("consult") or "", session=o.get("session") or "")
+        target = merges.get(o["id"])
+        kept = gaps.merge(bot, g["id"], target) if target and target != g["id"] else None
+        if kept is not None:
+            renamed.update({gone: kept["id"] for gone in (g["id"], target) if gone != kept["id"]})
+            g = kept
+        outcomes[o["id"]] = {"op": "gap", "gap": g["id"]}
+        yield {"op": "note", "action": "noticed", "summary": f"Could not answer: {q[:300]}",
+               "why": "A session asked this and I was not sure.", "evidence": _because(o)["evidence"]}
     for oc in outcomes.values():
         while oc.get("gap") in renamed:
             oc["gap"] = renamed[oc["gap"]]
-    observations.archive(bot, [o["id"] for o in pend], outcomes)
-
-    # Repair: research the open gaps touched now, plus older ones still worth a try.
-    researched = []
-    for g in _repairable(bot, touched):
-        _stage(bot, "researching", g["id"])
-        try:
-            gapmod.research(bot, g["id"])
-            researched.append(g["id"])
-        except Exception:  # noqa: BLE001
-            logger.warning("expert %s: gap %s not researched", bot.id, g["id"], exc_info=True)
-
-    # Skill fixes: every lesson that is due (count >= propose_at, or an un-proposed research lesson) as ONE
-    # proposal; none while one is being prepared (the rest wait for the next run).
-    _stage(bot, "proposing")
-    from fused_render.experts import proposals
-    corrected = []
-    try:
-        # A skill that states a rule the user corrected comes first: the queued ones, then this run's.
-        corrected = drain_corrections(bot)
-        for c in corrections:
-            pid = request_correction(bot, c)
-            if pid:
-                corrected.append(pid)
-    except Exception:  # noqa: BLE001
-        logger.warning("expert %s: skill correction not requested", bot.id, exc_info=True)
-    try:
-        proposed = corrected + proposals.propose_candidates(bot)
-    except Exception:  # noqa: BLE001
-        logger.warning("expert %s: proposing failed", bot.id, exc_info=True)
-        proposed = list(corrected)
-    # The memory budget: last, after lessons, gaps and the normal proposals.
-    _stage(bot, "tidying")
-    try:
-        tidied = tidymod.run(bot)
-    except Exception:  # noqa: BLE001 — a failed tidy never undoes the run
-        logger.warning("expert %s: tidying failed", bot.id, exc_info=True)
-        tidied = {"deleted": [], "merged": [], "promoting": [], "over_limit": []}
-    # Skill pressure: a nearly full skill gets ONE reorganise proposal (no model call decides it).
-    try:  # a proposal requested just now is open: no reorganise (skill_pressure would say the same)
-        reorganise = None if proposed or tidied["promoting"] else tidymod.skill_pressure(bot)
-    except Exception:  # noqa: BLE001
-        logger.warning("expert %s: skill pressure check failed", bot.id, exc_info=True)
-        reorganise = None
-    out = _result(True, added, bumped, ignored)
-    out.update(contradicted=list(dict.fromkeys(contradicted)), gaps=touched, researched=researched, proposed=proposed,
-               tidied=tidied, reorganise=reorganise, confirmed=list(dict.fromkeys(noted)), resolved=resolved,
-               corrections=corrected)
-    if (researched or touched) and not proposed and not tidied["promoting"] and not reorganise:
-        # A gap research could not answer may now be asked (the scheduler's cards.tick would, later).
-        try:
-            from fused_render.experts import cards
-            cards.ask_if_needed(bot)
-        except Exception:  # noqa: BLE001
-            logger.warning("expert %s: gap question not raised", bot.id, exc_info=True)
-    return out
+    _archive(bot, [o["id"] for o in pend if o not in said], outcomes)

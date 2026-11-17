@@ -6,7 +6,7 @@ are `{"error": "<sentence>"}`: an unknown expert -> 404, `ValueError` /
 `RuntimeError` -> 400, the bots workspace held by another fused-render -> 409,
 no engine for a consult -> 409 with `reason: "unavailable"`.
 
-Every endpoint that may call a model (consult, consolidate, capture) is a sync
+Every endpoint that may call a model (consult, capture) is a sync
 `def`, so FastAPI runs it on its threadpool and the event loop never waits on
 one. The expert modules are imported lazily and reached through their module
 (`_mod("consult").consult(...)`), so the server imports this router without
@@ -33,8 +33,6 @@ PREFIX = "/api/experts"
 ENGINE_IDS = ("claude", "codex", "copilot")
 ENGINE_CHOICES = ("auto",) + ENGINE_IDS
 CONSULTS_LIMIT = 100
-OBSERVATIONS_DONE_LIMIT = 200
-ARCHIVE_LIMIT = 100
 #: A run id as `agent._start` mints it (`YYYYmmdd-HHMMSS-<hex>`), loosely: a
 #: name that cannot climb out of the runs root.
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
@@ -120,7 +118,8 @@ def experts_list():
             ok, reason = False, str(e)
         out.append({"id": bot.id, "name": _name(bot), "ask_me_about": man.get("ask_me_about") or "",
                     "engine": man.get("engine") or "auto", "model": man.get("model") or "",
-                    "available": bool(ok), "reason": "" if ok else (reason or "")})
+                    "available": bool(ok), "reason": "" if ok else (reason or ""),
+                    "unread": _mod("knowledge").unread(bot)})
     return out
 
 
@@ -272,50 +271,66 @@ def experts_memory(eid: str):
                     cited=memory.cited(i), last_used=i.get("last_used") or None, uses=memory.uses(i))
     items = [row(i) for i in memory.items(bot)]
     budget = _mod("store").manifest(bot)["memory"]
-    return {"items": items, "index": memory.index_text(bot), "limit": budget["limit"],
-            "tidy_at": budget["tidy_at"], "total": len(items), "last_tidy": _mod("tidy").last(bot)}
+    return {"items": items, "budget": {"limit": budget["limit"], "tidy_at": budget["tidy_at"], "total": len(items),
+                                        # The tidy summary is gone: what a tidy did is in the activity log.
+                                        "last_tidy": None}}
 
 
-@router.get(PREFIX + "/{eid}/memory/archive")
+# ----------------------------------------------------------------- activity ---
+@router.get(PREFIX + "/{eid}/activity")
 @_handled
-def experts_memory_archive(eid: str):
+def experts_activity(eid: str, limit: int = 100, before: str | None = None, quiet: bool = False):
     bot = _expert(eid)
-    return {"archived": _mod("memory").archived(bot, limit=ARCHIVE_LIMIT)}
+    knowledge = _mod("knowledge")
+    st = _mod("consolidate").status(bot)
+    return {"items": knowledge.activity(bot, limit=limit, before=before, quiet=quiet),
+            "unread": knowledge.unread(bot), "waiting": int(st.get("waiting") or 0),
+            "learning": {"running": bool(st.get("running")), "stage": st.get("stage") or ""}}
 
 
-@router.post(PREFIX + "/{eid}/memory/forget")
+@router.post(PREFIX + "/{eid}/activity/seen")
 @_handled
-def experts_memory_forget(eid: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def experts_activity_seen(eid: str, x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    body = _body_dict(body)
     bot = _expert(eid)
-    target = body.get("id")
-    if not isinstance(target, str) or not target.strip():
-        raise ValueError("id must name a memory item (its id or its text)")
     _writable()
-    return {"removed": int(_mod("memory").forget(bot, target.strip()))}
+    _mod("knowledge").seen(bot)
+    return {}
 
 
-@router.get(PREFIX + "/{eid}/observations")
+@router.post(PREFIX + "/{eid}/activity/{aid}/undo")
 @_handled
-def experts_observations(eid: str):
+def experts_activity_undo(eid: str, aid: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     bot = _expert(eid)
-    obs = _mod("observations")
-    gaps = _mod("gaps")
-    by_id = {g["id"]: g for g in gaps.with_proposal(bot, gaps.listing(bot))}
-    by_consult = {c: g for g in by_id.values() for c in (g.get("consults") or [])}
+    _writable()
+    knowledge = _mod("knowledge")
+    try:
+        return {"ok": True, "item": knowledge.undo(bot, aid)}
+    except knowledge.Refused as e:
+        return Response(json.dumps({"detail": str(e)}), status_code=409, media_type="application/json")
 
-    def join(o):
-        if o.get("kind") != "gap" and o.get("trust") != "gap":
-            return o
-        gid = ((o.get("outcome") or {}).get("gap")) if isinstance(o.get("outcome"), dict) else None
-        return dict(o, gap=by_id.get(gid) or by_consult.get(o.get("consult") or "") or None)
 
-    return {"pending": [join(o) for o in obs.pending(bot)],
-            "done": [join(o) for o in obs.done(bot, limit=OBSERVATIONS_DONE_LIMIT)],
-            "due": bool(obs.due(bot)), "consolidating": _mod("consolidate").status(bot)}
+@router.post(PREFIX + "/{eid}/learn")
+@_handled
+def experts_learn(eid: str, body: dict | None = Body(default=None), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    body = _body_dict(body if body is not None else {})
+    bot = _expert(eid)
+    force = body.get("force", False)
+    if not isinstance(force, bool):
+        raise ValueError("force must be true or false")
+    ok, reason = _mod("model").available(bot)
+    if not ok:
+        raise _Unavailable(reason or "no engine is available for this expert")
+    _writable()
+    return {"started": bool(_mod("scheduler").poke(bot, force=force))}
 
 
 @router.get(PREFIX + "/{eid}/consults")
@@ -332,76 +347,6 @@ def experts_consults(eid: str):
 def experts_usage(eid: str, days: int = 7):
     """Tokens per stage and per day over the last `days` days (`usage.summary`, no model call)."""
     return _mod("usage").summary(_expert(eid), days=days)
-
-
-# ------------------------------------------------------------------- checks ---
-@router.get(PREFIX + "/{eid}/checks")
-@_handled
-def experts_checks(eid: str):
-    bot = _expert(eid)
-    gate = _mod("gate")
-    return {"latest": gate.latest(bot), "status": gate.status(bot), "questions": len(gate.questions(bot))}
-
-
-@router.post(PREFIX + "/{eid}/checks/run")
-@_handled
-def experts_checks_run(eid: str, x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    bot = _expert(eid)
-    gate = _mod("gate")
-    if not gate.questions(bot):
-        raise ValueError("this expert has no questions to check (questions.md is empty or missing)")
-    ok, reason = _mod("model").available(bot)
-    if not ok:
-        raise _Unavailable(reason or "no engine is available for this expert")
-    _writable()
-    return {"run_id": gate.start(bot)}
-
-
-# ---------------------------------------------------------------- proposals ---
-@router.get(PREFIX + "/{eid}/proposals")
-@_handled
-def experts_proposals(eid: str):
-    bot = _expert(eid)
-    return {"proposals": _mod("proposals").listing(bot)}
-
-
-@router.post(PREFIX + "/{eid}/consolidate")
-@_handled
-def experts_consolidate(eid: str, body: dict | None = Body(default=None),
-                        x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    body = _body_dict(body if body is not None else {})
-    bot = _expert(eid)
-    force = body.get("force", False)
-    if not isinstance(force, bool):
-        raise ValueError("force must be true or false")
-    ok, reason = _mod("model").available(bot)
-    if not ok:
-        raise _Unavailable(reason or "no engine is available for this expert")
-    _writable()
-    return {"started": bool(_mod("consolidate").start(bot, force=force))}
-
-
-def propose(bot) -> list:
-    """`proposals.propose_candidates(bot)`: every due lesson as ONE proposal started in the background. Returns
-    the new proposal ids (none or one). Shared with the scheduler."""
-    return list(_mod("proposals").propose_candidates(bot) or [])
-
-
-# --------------------------------------------------------------------- gaps ---
-@router.get(PREFIX + "/{eid}/gaps")
-@_handled
-def experts_gaps(eid: str):
-    bot = _expert(eid)
-    st = _mod("consolidate").status(bot)
-    gaps = _mod("gaps")
-    return {"gaps": gaps.with_proposal(bot, gaps.listing(bot)),
-            "researching": st.get("gap") if st.get("stage") == "researching" else None}
 
 
 @router.get(PREFIX + "/{eid}/skills/health")
@@ -423,22 +368,8 @@ def experts_skill_restore(eid: str, name: str, x_fused: str | None = Header(defa
         raise _NotFound("no such shipped skill")
     _writable()
     if not seed.restore_shipped_skill(bot, name):
-        raise _NotFound("no such shipped skill")
+        raise ValueError("the skill could not be restored")
     return {"restored": True}
-
-
-@router.post(PREFIX + "/{eid}/gaps/{gid}/dismiss")
-@_handled
-def experts_gap_dismiss(eid: str, gid: str, x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    bot = _expert(eid)
-    gaps = _mod("gaps")
-    if gid not in gaps.ids(bot):  # never used in a path; only a stored id is accepted
-        raise _NotFound("no such gap")
-    _writable()
-    return gaps.with_proposal(bot, [gaps.dismiss(bot, gid)])[0]
 
 
 # ------------------------------------------------------------------ capture ---
@@ -465,6 +396,12 @@ def experts_capture(eid: str, body: dict = Body(...), x_fused: str | None = Head
 
 
 # ----------------------------------------------------------------- settings ---
+@router.get(PREFIX + "/{eid}/settings")
+@_handled
+def experts_settings_get(eid: str):
+    return _mod("store").manifest(_expert(eid))
+
+
 @router.post(PREFIX + "/{eid}/settings")
 @_handled
 def experts_settings(eid: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
@@ -473,7 +410,7 @@ def experts_settings(eid: str, body: dict = Body(...), x_fused: str | None = Hea
         return guard
     body = _body_dict(body)
     bot = _expert(eid)
-    engine, model = body.get("engine"), body.get("model")
+    engine, model, learning = body.get("engine"), body.get("model"), body.get("learning")
     if engine is not None:
         if engine not in ENGINE_CHOICES:
             raise ValueError("engine must be one of " + ", ".join(ENGINE_CHOICES))
@@ -481,6 +418,8 @@ def experts_settings(eid: str, body: dict = Body(...), x_fused: str | None = Hea
             raise ValueError(f"{_label(engine)} is turned off in Preferences")
     if model is not None and not isinstance(model, str):
         raise ValueError("model must be a string (empty for the default)")
+    if learning is not None and not isinstance(learning, bool):
+        raise ValueError("learning must be true or false")
     _writable()
     store = _mod("store")
     with bot.lock:
@@ -490,6 +429,8 @@ def experts_settings(eid: str, body: dict = Body(...), x_fused: str | None = Hea
             raw["engine"] = engine
         if model is not None:
             raw["model"] = model.strip()
+        if learning is not None:
+            raw["learning"] = learning
         bot.meta["expert"] = raw
         bot.save()
     return store.manifest(bot)

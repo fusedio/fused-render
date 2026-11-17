@@ -5,16 +5,15 @@ expert. One `engine` run, profile "chat", over the read-only tools plus the
 chat-only tools below; every tool call becomes one `action` row. It never
 touches Chrome.
 
-Trust: `remember_lesson`, `forget_lesson` and `propose_skill` run only for a
-task the user started at the Mac (`channels.base.is_local(bot.task_via)`) during
-which no outside-channel message (`channels.base.Outside`) arrived; otherwise
-they answer with an error sentence. Outside messages reach the model framed as
-from an outside channel, never as a USER INSTRUCTION.
+Trust: `remember_lesson` and `forget_lesson` run only for a task the user started at the Mac
+(`channels.base.is_local(bot.task_via)`) during which no outside-channel message (`channels.base.Outside`)
+arrived; otherwise they answer with an error sentence. Outside messages reach the model framed as from an outside
+channel, never as a USER INSTRUCTION.
 
-`propose_skill` only starts a proposal (`proposals.request`): the card appears
-later, from `cards`, never inside the task. When the task ends the thread hands
-the bot back the way `Bot.greet` does: messages still in the inbox start a new
-task, otherwise `cards.tick_one` shows a proposal that became ready meanwhile.
+Chat is part of Answer and never changes memory itself: the two tools write an inbox entry (`taught` / `forget`,
+`by_user` true) and ask the wiring to run Learn now (`scheduler.poke`, a late import: chat imports no Learn
+module). The change shows up on the Activity tab moments later. When the task ends, messages still in the inbox
+start a new task.
 
 Stop: the model call is one HTTP request to this server's `/api/ai` and cannot
 be interrupted mid-flight. `stop_flag` is honoured at the next tool call (the
@@ -30,15 +29,14 @@ import time
 import traceback
 
 from fused_render.bots.channels import base as chan
-from fused_render.experts import engine, model
+from fused_render.experts import consult, engine, memory, model
 
 logger = logging.getLogger(__name__)
 
 STOP_TEXT = "STOPPED by the user. Do not call any more tools; reply with one short line and the JSON block."
 UNTRUSTED_TEXT = ("error: {tool} is only for the user at this Mac. This chat turn {why}, so your memory and skills "
                   "were not changed. Tell the user they can ask for it in the expert's chat on the Mac.")
-PROPOSE_STARTED = "Drafting the proposal. An approval card will appear in this chat shortly."
-_TRUSTED_TOOLS = ("remember_lesson", "forget_lesson", "propose_skill")
+_TRUSTED_TOOLS = ("remember_lesson", "forget_lesson")
 DETAIL_CAP = 1500
 SUMMARY_CAP = 160
 
@@ -52,22 +50,9 @@ CHAT_TOOLS = [
      "description": "Forget lessons: by id (e.g. m1a2b3c4) or every lesson containing the text.",
      "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
     {"name": "list_memory",
-     "description": "List every lesson you remember, with ids, counts and whether it was proposed or became a skill.",
+     "description": "List every lesson you remember, with ids and counts.",
      "parameters": {"type": "object", "properties": {}}},
-    {"name": "run_checks",
-     "description": "Start your quality checks (the fixed questions in questions.md) in the background. The results "
-                    "appear on the Checks tab; this returns at once.",
-     "parameters": {"type": "object", "properties": {}}},
-    {"name": "propose_skill",
-     "description": "Start drafting a change to your skills from lessons. Returns at once; the draft is "
-                    "written in the background and an approval card with the diff appears in this chat "
-                    "shortly. Pass `item_ids` (lesson ids) or a `topic`; with neither, the "
-                    "lessons that keep recurring are used.",
-     "parameters": {"type": "object", "properties": {
-         "item_ids": {"type": "array", "items": {"type": "string"}},
-         "topic": {"type": "string"}}}},
 ]
-_CHAT_NAMES = {t["name"] for t in CHAT_TOOLS}
 
 
 def _clip(s, n):
@@ -135,10 +120,6 @@ class _Turn:
             return f'forget "{_clip(inp.get("text"), 60)}"'
         if name == "list_memory":
             return "list memory"
-        if name == "run_checks":
-            return "run checks"
-        if name == "propose_skill":
-            return "propose a skill" + (f' about "{_clip(inp.get("topic"), 40)}"' if inp.get("topic") else "")
         return name
 
     @staticmethod
@@ -189,68 +170,38 @@ class _Turn:
     # -- chat-only tools -----------------------------------------------------------
     def chat_tool(self, name, inp):
         bot = self.bot
-        from fused_render.experts import memory
         if name in _TRUSTED_TOOLS and not self.trusted():
             return UNTRUSTED_TEXT.format(tool=name, why=self.untrusted_reason()), True
-        if name == "remember_lesson":
-            claim = " ".join(str(inp.get("claim") or "").split())
-            if not claim:
-                return "error: remember_lesson needs `claim`", True
-            it = memory.add(bot, claim, kind="lesson", trust="user")
-            return f"Remembered [{it['id']}]: {it.get('claim')} (seen {int(it.get('count') or 1)}×)", False
-        if name == "forget_lesson":
-            text = str(inp.get("text") or "").strip()
+        if name in _TRUSTED_TOOLS:
+            key = "claim" if name == "remember_lesson" else "text"
+            text = " ".join(str(inp.get(key) or "").split())
             if not text:
-                return "error: forget_lesson needs `text`", True
-            n = memory.forget(bot, text)
-            return (f"Forgot {n} lesson{'s' if n != 1 else ''}." if n else f"No lesson matches \"{text}\"."), False
+                return f"error: {name} needs `{key}`", True
+            if name == "forget_lesson" and not memory.match(bot, text):
+                return f"No lesson matches \"{text}\".", False
+            consult.inbox_write(bot, "taught" if name == "remember_lesson" else "forget", text, by_user=True)
+            learn_now(bot)
+            return ("Noted. I am adding it to my memory now; it shows on the Activity tab."
+                    if name == "remember_lesson" else "Noted. I am forgetting it now; it shows on the Activity tab."), False
         if name == "list_memory":
             rows = memory.items(bot)
             if not rows:
                 return "No lessons yet.", False
             out = [f"{len(rows)} lessons:"]
             for i in sorted(rows, key=lambda i: -int(i.get("count") or 0)):
-                flags = [f for f in ("proposed", "promoted", "rejected") if i.get(f)]
-                out.append(f"- [{i['id']}] {i.get('claim', '')} (seen {int(i.get('count') or 0)}×, {i.get('trust', '')}"
-                           + (", " + ", ".join(flags) if flags else "") + ")")
+                out.append(f"- [{i['id']}] {i.get('claim', '')} (seen {int(i.get('count') or 0)}×, "
+                           f"{i.get('trust', '')})")
             return "\n".join(out), False
-        if name == "run_checks":
-            from fused_render.experts import gate
-            n = len(gate.questions(bot))
-            if not n:
-                return "No checks to run: this expert has no questions.md.", False
-            rid = gate.start(bot)
-            return f"Checks started ({n} questions, run {rid}); the results appear on the Checks tab.", False
-        if name == "propose_skill":
-            return self._propose(inp)
         return f"unknown tool: {name}", True
 
-    def _pick_items(self, inp):
-        from fused_render.experts import memory, proposals
-        rows = memory.items(self.bot)
-        ids = inp.get("item_ids")
-        if isinstance(ids, list) and ids:
-            want = [str(x) for x in ids]
-            return [i for i in rows if i.get("id") in want]
-        topic = " ".join(str(inp.get("topic") or "").split()).lower()
-        open_ = [i for i in rows if i.get("trust") != "gap" and not i.get("promoted") and not i.get("rejected")]
-        if topic:
-            words = [w for w in topic.split() if len(w) > 2] or [topic]
-            return [i for i in open_ if not i.get("proposed")
-                    and any(w in str(i.get("claim") or "").lower() for w in words)]
-        return proposals.candidates(self.bot) or [i for i in open_ if not i.get("proposed")]
 
-    def _propose(self, inp):
-        from fused_render.experts import proposals
-        items = self._pick_items(inp)
-        if not items:
-            return ("No lessons to turn into a skill (none match, or they were all proposed already). "
-                    "Use remember_lesson first, or pass item_ids from list_memory."), True
-        try:
-            proposals.request(self.bot, items, topic=str(inp.get("topic") or ""))
-        except ValueError as e:
-            return f"Could not start a skill proposal: {e}.", True
-        return PROPOSE_STARTED, False
+def learn_now(bot) -> None:
+    """Ask the wiring to run Learn for `bot` now. A late import, so chat imports no Learn module; never raises."""
+    try:
+        from fused_render.experts import scheduler
+        scheduler.poke(bot)
+    except Exception:  # noqa: BLE001 — the entry waits for the next tick
+        logger.warning("expert %s: could not start learning", getattr(bot, "id", "?"), exc_info=True)
 
 
 def frame_message(turn, msg) -> str:
@@ -336,56 +287,24 @@ def run(bot, task, label=None) -> None:
         _hand_back(bot)
 
 
-def _redeliver_via(queued):
-    """The via a re-delivered batch runs under: an outside message's own (so it stays untrusted), else the web."""
-    for m in queued:
-        if chan.is_texted(m):
-            v = dict(getattr(m, "via", None) or {})
-            v.pop("answers", None)
-            return v or None
-    return None
-
-
-def redeliver(bot, queued) -> bool:
-    """Start the messages a worker left in the inbox as one new task, under `_redeliver_via(queued)` (an outside
-    message keeps its outside posture). Call it holding `bot.lock`, right after this worker released the slot:
-    the lock is an RLock and `start_task` takes the slot under it, so no other worker (a card, a gap question)
-    can claim the slot in between and make `start_task` refuse (and the messages be lost). True when started."""
-    if not queued:
-        return False
-    ok = bot.start_task("\n".join(str(m) for m in queued), label=str(queued[0]), via=_redeliver_via(queued))
-    if not ok:
-        logger.warning("expert %s: queued message not re-delivered (refused)", getattr(bot, "id", "?"))
-    return bool(ok)
-
-
 def _hand_back(bot) -> None:
-    """Release the bot the way `Bot.greet` does, then re-deliver what the turn left in the inbox as a new task,
-    or show a skill proposal that became ready meanwhile (`cards.tick_one`). Never raises."""
+    """Release the bot the way `Bot.greet` does, then start what the turn left in the inbox as one new task (an
+    outside message keeps its outside posture, so the batch stays untrusted). Never raises."""
     me = threading.current_thread()
-    queued = []
     try:
         with bot.lock:
             # Drain, release and re-deliver under one lock: receive() queues into the inbox only while it sees
-            # this thread alive, so nothing can land between the drain and the hand-over, and no card worker can
-            # take the slot before the re-delivered task does.
+            # this thread alive, so nothing can land between the drain and the hand-over.
             if bot.thread is not me:
                 return
             queued = list(bot._drain_inbox())
             bot.task_via = dict(chan.WEB)
             bot.thread = None
             if queued:
-                try:
-                    redeliver(bot, queued)
-                except Exception:  # noqa: BLE001
-                    logger.warning("expert %s: queued message not re-delivered", bot.id, exc_info=True)
-    except Exception:  # noqa: BLE001
-        logger.warning("expert %s: task slot not released cleanly", getattr(bot, "id", "?"), exc_info=True)
-        return
-    try:
-        if queued:
-            return
-        from fused_render.experts import cards
-        cards.tick_one(bot)
+                via = next((dict(getattr(m, "via", None) or {}) for m in queued if chan.is_texted(m)), None)
+                if via:
+                    via.pop("answers", None)
+                if not bot.start_task("\n".join(str(m) for m in queued), label=str(queued[0]), via=via or None):
+                    logger.warning("expert %s: queued message not re-delivered (refused)", bot.id)
     except Exception:  # noqa: BLE001
         logger.warning("expert %s: hand-back failed", getattr(bot, "id", "?"), exc_info=True)
