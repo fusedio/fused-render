@@ -57,6 +57,15 @@ export const NODE_ABSENT_GRACE_MS = 2_000;
  *  for up to this long (CanvasWorkspace's DELTA_RETRY_*). */
 export const DELTA_RETRY_MS = 1_000;
 export const DELTA_RETRY_WINDOW_MS = 30_000;
+/** How many times a cut that failed transiently may re-arm its rev (the
+ *  next sight of the same disk_rev asks again), 2 s, 4 s, 8 s apart. */
+export const REARMS_PER_REV = 3;
+
+/** A failure worth asking again: busy (409), a server error (5xx), or no
+ *  HTTP answer at all (a network error carries no status). */
+export function transientFailure(status: number | undefined): boolean {
+  return status === undefined || status === 409 || status >= 500;
+}
 /** The events socket's reconnect backoff, and the poll while it is down. */
 export const SYNC_POLL_MS = 2_000;
 export const WS_RETRY_MIN_MS = 1_000;
@@ -234,7 +243,8 @@ export interface EmbedDeltaRelay {
   /** Queue a cut. Resolves when it (and every cut before it) is done. */
   relayDelta(full: boolean): Promise<void>;
   postSyncState(state: unknown): void;
-  /** Ask for the token again and post it (after `onError`). */
+  /** Ask for the token again and post it (after `onError`). Resolves when
+   *  done; while one request is out, further calls share it. */
   retryToken(): Promise<void>;
   /** Both chains settled — for tests and teardown. */
   idle(): Promise<void>;
@@ -282,13 +292,34 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
     }
   };
 
-  // A cut that never reached the frame (an error, or a held/409 window that
-  // ran out): forget the last state looked at, so the next sight of the
-  // SAME disk_rev (a poll, a socket state) asks again instead of reading as
-  // "nothing moved" — the frame would otherwise stay stale until the next
-  // edit or hello.
+  // A cut that never reached the frame for a TRANSIENT reason (a 409 or
+  // 5xx or network window that ran out, a held window that ran out): forget
+  // the last state looked at, after a growing delay, so the next sight of
+  // the SAME disk_rev (a poll, a socket state) asks again instead of
+  // reading as "nothing moved". At most REARMS_PER_REV times per rev; then
+  // only a new rev or a hello asks again. A permanent refusal (a 4xx other
+  // than 409) re-arms nothing.
+  let rearmRev: number | null = null;
+  let rearms = 0;
+  let rearmTimer: unknown = null;
+  const stopRearmTimer = () => {
+    if (rearmTimer !== null) clearT(rearmTimer);
+    rearmTimer = null;
+  };
   const unfinished = () => {
-    cursor.seenRev = null;
+    const rev = cursor.seenRev;
+    if (rev === null || disposed) return;
+    if (rev !== rearmRev) {
+      rearmRev = rev;
+      rearms = 0;
+    }
+    if (rearms >= REARMS_PER_REV) return;
+    rearms += 1;
+    stopRearmTimer();
+    rearmTimer = setT(() => {
+      rearmTimer = null;
+      if (!disposed && cursor.seenRev === rev) cursor.seenRev = null;
+    }, DELTA_RETRY_MS * 2 ** rearms);
   };
 
   const relayDelta = (full: boolean): Promise<void> => {
@@ -306,6 +337,7 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
           // Assigned, not max'd: the counter is per watcher and starts over
           // with a new one (`deltaOwed`).
           cursor.lastRev = delta.rev;
+          rearmRev = null;
           const ops = delta.ops ?? [];
           // Nothing to apply against a known base: nothing to post.
           if (!delta.full && ops.length === 0) return;
@@ -323,10 +355,12 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
           return;
         } catch (e) {
           const status = (e as { status?: number }).status;
-          // A full state is asked once (a hello, a heal) and nothing re-asks
-          // it if it is lost: any failure retries within the window, not
-          // only a busy clone — as CanvasWorkspace's relay does.
-          if ((status === 409 || full) && now() - started <= DELTA_RETRY_WINDOW_MS) {
+          // Busy (409), a server error (5xx) or no answer at all (network):
+          // asked again within the window — a full state (a hello, a heal)
+          // is asked once and nothing else re-asks it if it is lost. Any
+          // other 4xx is a refusal another ask would only repeat.
+          if (!transientFailure(status)) return;
+          if (now() - started <= DELTA_RETRY_WINDOW_MS) {
             await sleep(DELTA_RETRY_MS);
             continue;
           }
@@ -337,7 +371,18 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
     return deltaChain;
   };
 
-  const seedToken = async () => {
+  // One token request at a time: a second ask (a double-clicked Retry, an
+  // auth-refresh) while one is out shares it.
+  let tokenInFlight: Promise<void> | null = null;
+  const seedToken = (): Promise<void> => {
+    if (!tokenInFlight) {
+      tokenInFlight = fetchAndPostToken().finally(() => {
+        tokenInFlight = null;
+      });
+    }
+    return tokenInFlight;
+  };
+  const fetchAndPostToken = async () => {
     try {
       const accessToken = await t.getToken();
       if (disposed) return;
@@ -347,7 +392,7 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
       } catch {
         publicOrigin = undefined;
       }
-      t.post({
+      const posted = t.post({
         type: "fused-embed-auth-token",
         accessToken,
         // A reading frame: none of the write channels (body, ai, open, gone,
@@ -355,7 +400,8 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
         caps: [],
         ...(publicOrigin ? { publicOrigin } : {}),
       });
-      hooks.onToken?.();
+      // Only a token that reached a frame ends a reported failure.
+      if (posted) hooks.onToken?.();
     } catch (e) {
       if (!disposed) hooks.onError?.((e as Error).message);
     }
@@ -466,6 +512,7 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
     },
     dispose() {
       disposed = true;
+      stopRearmTimer();
       stopNodeTimer();
       stopPresenceTimer();
     },

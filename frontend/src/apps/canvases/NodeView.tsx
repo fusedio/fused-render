@@ -273,6 +273,13 @@ export default function NodeView({ path }: NativeViewProps) {
   // banner over a frame it keeps, too.
   const [tokenError, setTokenError] = useState<string | null>(null);
   const relayRef = useRef<EmbedDeltaRelay | null>(null);
+  const [tokenRetrying, setTokenRetrying] = useState(false);
+  const retryToken = useCallback(() => {
+    const relay = relayRef.current;
+    if (!relay) return;
+    setTokenRetrying(true);
+    void relay.retryToken().finally(() => setTokenRetrying(false));
+  }, []);
   useEffect(() => {
     if (!env || !name || !udfName) return;
     const post = (message: Record<string, unknown>): boolean => {
@@ -632,8 +639,8 @@ export default function NodeView({ path }: NativeViewProps) {
               Could not sign the workbench in: {tokenError}
             </p>
             <div className="node-view-actions">
-              <button type="button" className="btn btn-primary" onClick={() => void relayRef.current?.retryToken()}>
-                Retry
+              <button type="button" className="btn btn-primary" onClick={retryToken} disabled={tokenRetrying}>
+                {tokenRetrying ? "Retrying…" : "Retry"}
               </button>
               {openButton}
             </div>
@@ -702,6 +709,12 @@ function NodeStrip({
   // there to bring in), and so does a pull another page started.
   const pullFailed = s2d === "error" && (sync?.legs.server_to_disk.changed.length ?? 0) > 0;
   const showPull = !owned && (s2d === "stale" || s2d === "pulling" || pullFailed || pull.busy);
+  // SyncStrip's text too: this page's own pull error first (the click just
+  // made), else the server's reason for a failed pull leg.
+  const pullErrorText =
+    pull.busy || s2d === "pulling"
+      ? null
+      : (pull.error ?? (pullFailed ? (sync?.legs.server_to_disk.reason ?? "Pull failed") : null));
   return (
     <div className="node-view-head">
       {/* Two rows, so the strip holds in a narrow pane (down to 380px): the
@@ -746,9 +759,9 @@ function NodeStrip({
           </button>
         )}
       </div>
-      {pull.error && (
+      {pullErrorText && (
         <p role="alert" className="node-view-error-line node-view-error-text">
-          {pull.error}
+          {pullErrorText}
         </p>
       )}
       {error && (

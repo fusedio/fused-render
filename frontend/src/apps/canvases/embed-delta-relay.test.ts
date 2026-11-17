@@ -6,6 +6,7 @@ import {
   FAILED_POLLS_BEFORE_HEAL,
   NODE_ABSENT_GRACE_MS,
   NODE_READY_WAIT_MS,
+  REARMS_PER_REV,
   SYNC_POLL_MS,
   WS_RETRY_MAX_MS,
   WS_RETRY_MIN_MS,
@@ -17,6 +18,7 @@ import {
   keepNewer,
   nodePresence,
   parseNodeState,
+  transientFailure,
   type RelayTransport,
   type SocketLike,
 } from "./embed-delta-relay";
@@ -637,24 +639,17 @@ describe("review round", () => {
     expect(t.posted.map((m) => m.rev)).toEqual([4]);
   });
 
-  test("a cut that failed is asked again on the next sight of the SAME rev", async () => {
+  test("a failed delta cut (a 503) is asked again within the window", async () => {
     const t = fakeTransport([{ status: 503 }, { rev: 6, base_rev: 5, ops: ops(1) }]);
     const r = createEmbedDeltaRelay(t);
-    r.onSyncState(state(5)); // first sight
-    r.onSyncState(state(6)); // the cut fails
-    await r.idle();
-    expect(t.posted).toEqual([]);
-    r.onSyncState(state(6)); // the poll sees rev 6 again
+    r.onSyncState(state(5));
+    r.onSyncState(state(6));
     await r.idle();
     expect(t.asked).toEqual([false, false]);
     expect(t.posted.map((m) => m.rev)).toEqual([6]);
-    // Delivered: the same rev is not cut a third time.
-    r.onSyncState(state(6));
-    await r.idle();
-    expect(t.asked.length).toBe(2);
   });
 
-  test("a held window that ran out is asked again on the next sight of the same rev", async () => {
+  test("a held window that ran out is asked again on the next sight of the same rev, after a delay", async () => {
     const held = Array.from({ length: DELTA_RETRY_WINDOW_MS / 1000 + 2 }, () => ({ rev: 6, held: "x" }));
     const t = fakeTransport([...held, { rev: 6, base_rev: 5, ops: ops(1) }]);
     const r = createEmbedDeltaRelay(t);
@@ -662,8 +657,90 @@ describe("review round", () => {
     r.onSyncState(state(6));
     await r.idle();
     expect(t.posted).toEqual([]);
+    const asked = t.asked.length;
+    r.onSyncState(state(6)); // too soon: the re-arm waits
+    await r.idle();
+    expect(t.asked.length).toBe(asked);
+    t.advance(2_000);
     r.onSyncState(state(6));
     await r.idle();
     expect(t.posted.map((m) => m.rev)).toEqual([6]);
+  });
+
+  test("a persistent 503 is bounded: the window, then at most REARMS_PER_REV re-arms of that rev", async () => {
+    const t = fakeTransport();
+    t.getDelta = async (full) => {
+      t.asked.push(full);
+      const e = new Error("down") as Error & { status: number };
+      e.status = 503;
+      throw e;
+    };
+    const r = createEmbedDeltaRelay(t);
+    r.onSyncState(state(5));
+    r.onSyncState(state(6));
+    await r.idle();
+    const perWindow = t.asked.length;
+    expect(perWindow).toBe(DELTA_RETRY_WINDOW_MS / 1000 + 2);
+    for (let i = 0; i < 10; i += 1) {
+      t.advance(60_000);
+      r.onSyncState(state(6));
+      await r.idle();
+    }
+    expect(t.asked.length).toBe(perWindow * (1 + REARMS_PER_REV));
+    // A new rev asks again.
+    r.onSyncState(state(7));
+    await r.idle();
+    expect(t.asked.length).toBe(perWindow * (2 + REARMS_PER_REV));
+    r.dispose();
+  });
+
+  test("a 400 on a full cut is not asked again, and re-arms nothing", async () => {
+    const t = fakeTransport([{ status: 400 }, { rev: 1, full: true, ops: ops(1) }]);
+    const r = createEmbedDeltaRelay(t);
+    r.onSyncState(state(1));
+    r.handleMessage({ type: "fused-embed-hello" });
+    await r.idle();
+    expect(t.asked).toEqual([true]);
+    t.advance(60_000);
+    r.onSyncState(state(1));
+    await r.idle();
+    expect(t.asked).toEqual([true]);
+    expect(t.posted).toEqual([]);
+  });
+
+  test("transientFailure: 409, 5xx and no status; not another 4xx", () => {
+    expect([undefined, 409, 500, 503].map(transientFailure)).toEqual([true, true, true, true]);
+    expect([400, 403, 404, 422].map(transientFailure)).toEqual([false, false, false, false]);
+  });
+  test("retryToken: one request at a time, shared by a second ask", async () => {
+    const t = fakeTransport();
+    let release!: () => void;
+    const gate = new Promise<void>((res) => (release = res));
+    let fetches = 0;
+    t.getToken = async () => {
+      fetches += 1;
+      await gate;
+      return "tok";
+    };
+    const r = createEmbedDeltaRelay(t);
+    const one = r.retryToken();
+    const two = r.retryToken();
+    expect(two).toBe(one);
+    release();
+    await Promise.all([one, two]);
+    expect(fetches).toBe(1);
+    expect(t.posted.filter((m) => m.type === "fused-embed-auth-token").length).toBe(1);
+    // Done: the next ask is a new request.
+    await r.retryToken();
+    expect(fetches).toBe(2);
+  });
+
+  test("onToken only when the token reached a frame", async () => {
+    const t = fakeTransport();
+    t.unframe();
+    let tokens = 0;
+    const r = createEmbedDeltaRelay(t, { onToken: () => (tokens += 1) });
+    await r.retryToken();
+    expect(tokens).toBe(0);
   });
 });

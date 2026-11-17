@@ -354,11 +354,21 @@ describe("NodeView's frame and relay (NV-6, NV-7)", () => {
       expect(r.root.findAllByType("iframe").length).toBe(1);
       expect(posted.some((m) => m.type === "fused-embed-auth-token")).toBe(false);
 
-      route("GET", "/api/canvases/token", { body: { access_token: "tok" } });
+      // A token request held open: Retry is disabled while it is out.
+      let answer!: () => void;
+      const held = new Promise<void>((res) => (answer = res));
+      route("GET", "/api/canvases/token", async () => {
+        await held;
+        return { body: { access_token: "tok" } };
+      });
       const retry = r.root.find((n) => n.type === "button" && n.props.children === "Retry");
       await act(async () => {
         retry.props.onClick();
       });
+      await settle(2);
+      const busy = r.root.find((n) => n.type === "button" && n.props.children === "Retrying…");
+      expect(busy.props.disabled).toBe(true);
+      answer();
       await settle(4);
       expect(posted.some((m) => m.type === "fused-embed-auth-token" && m.accessToken === "tok")).toBe(true);
       expect(text(r)).not.toContain("token service down");
@@ -379,7 +389,7 @@ describe("NodeView's frame and relay (NV-6, NV-7)", () => {
           state: "error",
           since_ms: 0,
           changed: [{ slug: "udf_1", kind: "changed" }],
-          reason: "pull failed",
+          reason: "merge conflict in udf_1.py",
         },
       },
     };
@@ -389,6 +399,10 @@ describe("NodeView's frame and relay (NV-6, NV-7)", () => {
     route("GET", "/api/canvases/sync/state", { body: failed });
     const r = await mount();
     expect(r.root.findAll((n) => n.type === "button" && n.props.children === "Pull").length).toBe(1);
+    // …and the strip's error line says why, as SyncStrip's does (the chip
+    // carries the worst leg's reason too, but only while it IS the worst).
+    const line = r.root.findAll((n) => n.type === "p" && n.props.role === "alert");
+    expect(line.map((n) => n.props.children)).toEqual(["merge conflict in udf_1.py"]);
     r.unmount();
   });
 
