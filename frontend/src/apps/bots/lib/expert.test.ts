@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { ExpertConsult, ExpertEngineRow, ExpertGap, ExpertItem, ExpertObs, ExpertProposal } from "./api";
 import { gapNote, gapProposal, observationText } from "./expert";
 import { CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, filterConsults, formatDuration, groupConsultsByDay, isLongContext, usedLessons } from "./expert";
-import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, observationGaps, observationMeta, observationResultLabel, observationTypeLabel,
-  researchingGap, sortObservations, unresolvedGapCount, checkProgress, consultMeta, engineNote, engineOptions, lessonTagClass, lessonTags, modelOptions, openProposals, proposalLine, proposalText, scoreText,
-  scoresLine, seenLabel, sortConsults, sortLessons, splitLessons } from "./expert";
+import { filterLessons, filterObservations, LESSON_STATUS_LABEL, lessonFacts, lessonSource, lessonStatus, observationFacts, observationSource, observationTone } from "./expert";
+import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, observationGaps, observationResultLabel, observationTypeLabel,
+  researchingGap, sortObservations, unresolvedGapCount, checkProgress, engineNote, engineOptions, modelOptions, openProposals, proposalLine, proposalText, scoreText,
+  scoresLine, seenLabel, sortConsults, sortLessons } from "./expert";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
   created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...p });
@@ -23,21 +24,33 @@ describe("lessons", () => {
     expect(seenLabel(3)).toBe("seen 3×");
     expect(seenLabel(0)).toBe("seen 1×");
   });
-  test("tags: user trust, then promoted over proposed", () => {
-    expect(lessonTags(item({ trust: "user" }))).toEqual(["user"]);
-    expect(lessonTags(item({ trust: "outcome", proposed: true }))).toEqual(["proposed"]);
-    expect(lessonTags(item({ trust: "user", proposed: true, promoted: true }))).toEqual(["user", "promoted"]);
-    expect(lessonTags(item({ trust: "gap" }))).toEqual([]);
-    expect(lessonTags(item({ proposed: true, rejected: true }))).toEqual(["not proposed again"]);
-    expect(lessonTags(item({ proposed: true, rejected: true, promoted: true }))).toEqual(["promoted"]);
-    expect(lessonTags(item({ trust: "user", contradicted: 2 }))).toEqual(["user", "contradicted 2×"]);
-    expect(lessonTags(item({ contradicted: 0 }))).toEqual([]);
-    expect(lessonTagClass("contradicted 2×")).toBe("contradicted");
-    expect(lessonTagClass("seen once")).toBe("seen-once");
-    expect(lessonTags(item({ rejected: true }))).toEqual(["not proposed again"]);
-    expect(lessonTags(item({ trust: "research", indexed: false, proposed: true }))).toEqual(["found by research", "waiting for your approval", "proposed"]);
-    expect(lessonTags(item({ trust: "research" }))).toEqual(["found by research"]);
-    expect(lessonTags(item({ trust: "outcome", indexed: false }))).toEqual(["seen once"]);
+  test("status: contradicted wins, then in use / not used yet", () => {
+    expect(lessonStatus(item({}))).toBe("in-use");
+    expect(lessonStatus(item({ indexed: true }))).toBe("in-use");
+    expect(lessonStatus(item({ indexed: false }))).toBe("not-used");
+    expect(lessonStatus(item({ indexed: false, contradicted: 1 }))).toBe("contradicted");
+    expect(LESSON_STATUS_LABEL["not-used"]).toBe("Not used yet");
+  });
+  test("source by trust", () => {
+    expect(lessonSource(item({ trust: "user" }))).toBe("taught by you");
+    expect(lessonSource(item({ trust: "outcome" }))).toBe("from sessions");
+    expect(lessonSource(item({ trust: "research" }))).toBe("found by research");
+    expect(lessonSource(item({ trust: "gap" }))).toBe("");
+  });
+  test("facts: skill state, contradicted, why not used", () => {
+    expect(lessonFacts(item({}))).toEqual([]);
+    expect(lessonFacts(item({ promoted: true, proposed: true }))).toEqual(["in a skill"]);
+    expect(lessonFacts(item({ proposed: true }))).toEqual(["skill proposal pending"]);
+    expect(lessonFacts(item({ proposed: true, rejected: true }))).toEqual(["not proposed again"]);
+    expect(lessonFacts(item({ contradicted: 2 }))).toEqual(["contradicted 2×"]);
+    expect(lessonFacts(item({ indexed: false }))).toEqual(["seen once"]);
+    expect(lessonFacts(item({ trust: "research", indexed: false, proposed: true }))).toEqual(["skill proposal pending", "waiting for your approval"]);
+  });
+  test("filter: in use (contradicted included) and not used yet, order kept", () => {
+    const xs = [item({ id: "a", indexed: false }), item({ id: "b" }), item({ id: "c", contradicted: 1 }), item({ id: "d", indexed: true })];
+    expect(filterLessons(xs, "all").map((x) => x.id)).toEqual(["a", "b", "c", "d"]);
+    expect(filterLessons(xs, "in-use").map((x) => x.id)).toEqual(["b", "c", "d"]);
+    expect(filterLessons(xs, "not-used").map((x) => x.id)).toEqual(["a"]);
   });
 });
 
@@ -51,11 +64,6 @@ describe("consults", () => {
     expect(basename("C:\\x\\y")).toBe("y");
     expect(basename("")).toBe("");
     expect(basename(undefined)).toBe("");
-  });
-  test("meta: when, target, backend as far as known", () => {
-    const now = 1_000_000_000_000, ts = now / 1000 - 120;
-    expect(consultMeta({ ts, caller: { target: "/c/team/sales-map", backend: "codex" } }, now)).toBe("2 min ago · sales-map · codex");
-    expect(consultMeta({ ts, caller: null }, now)).toBe("2 min ago");
   });
 });
 
@@ -143,14 +151,7 @@ describe("engine and model menus", () => {
   });
 });
 
-describe("memory split and proposals", () => {
-  const it = (id: string, count: number, indexed?: boolean): ExpertItem => ({ id, claim: id, kind: "lesson", trust: "outcome", count, sessions: [], about: [],
-    created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...(indexed === undefined ? {} : { indexed }) });
-  test("seen-once lessons apart; no flag reads as indexed", () => {
-    const { indexed, seenOnce } = splitLessons([it("a", 1, false), it("b", 3), it("c", 2, true), it("d", 1, false)]);
-    expect(indexed.map((x) => x.id)).toEqual(["b", "c"]);
-    expect(seenOnce.map((x) => x.id)).toEqual(["a", "d"]);
-  });
+describe("proposals", () => {
   const p = (id: string, status: ExpertProposal["status"], ts: number, error?: string): ExpertProposal => ({ id, ts, status, action: "create", skill: null, title: "",
     trigger: "", body: "", diff: "", items: [], score_before: null, score_after: null, card_seq: null, ...(error ? { error } : {}) });
   test("the open ones newest first, each in its sentence", () => {
@@ -269,11 +270,33 @@ describe("observations", () => {
     expect(observationResultLabel(obs({ kind: "gap", gap: gap({ id: "x", status: "open" }) }), "x")).toBe("researching…");
     expect(observationResultLabel(obs({ kind: "gap", gap: gap({ status: "answered", resolution: "skill" }) }))).toBe("answered by a new skill");
   });
-  test("meta: when, then the source, else consult", () => {
-    const now = 1_000_000_000_000;
-    expect(observationMeta(obs({ ts: now / 1000, source: { target: "/x/canvases/sales/", backend: "claude" } }), now)).toMatch(/ · sales · claude$/);
-    expect(observationMeta(obs({ ts: now / 1000, consult: "c1" }), now)).toMatch(/ · consult$/);
-    expect(observationMeta(obs({ ts: now / 1000 }), now)).not.toContain("·");
+  test("source: folder and backend, else consult", () => {
+    expect(observationSource(obs({ source: { target: "/x/canvases/sales/", backend: "claude" } }))).toBe("sales · claude");
+    expect(observationSource(obs({ consult: "c1" }))).toBe("consult");
+    expect(observationSource(obs({}))).toBe("");
+  });
+  test("type marker tone", () => {
+    expect(observationTone("gap")).toBe("warn");
+    expect(observationTone("advice_contradicted")).toBe("warn");
+    expect(observationTone("answer_contradicted", { op: "contradict" })).toBe("warn");
+    expect(observationTone("advice_confirmed")).toBe("ok");
+    expect(observationTone("error_then_fix")).toBe("ok");
+    expect(observationTone("user_correction")).toBe("accent");
+    expect(observationTone("repeated_request")).toBe("muted");
+  });
+  test("facts: waiting, what came of it, asked N×", () => {
+    expect(observationFacts(obs({ kind: "user_correction" }), false)).toEqual(["waiting to be consolidated"]);
+    expect(observationFacts(obs({ kind: "gap", gap: gap({ status: "open", count: 3 }) }), false)).toEqual(["waiting to be consolidated", "asked 3×"]);
+    expect(observationFacts(obs({ kind: "gap", gap: gap({ id: "x", status: "open" }) }), false, "x")).toEqual(["researching…"]);
+    expect(observationFacts(obs({ kind: "gap", gap: gap({ status: "proposed", proposal_status: "preparing" }) }), false)).toEqual(["drafting a skill fix…"]);
+    expect(observationFacts(obs({ outcome: { op: "add" } }), true)).toEqual(["new lesson"]);
+    expect(observationFacts(obs({ outcome: { op: "weird" } }), true)).toEqual([]);
+  });
+  test("filter: unsure is the gaps, learnings the rest", () => {
+    const os = [obs({ id: "a", kind: "gap" }), obs({ id: "b", kind: "user_correction" }), obs({ id: "c", kind: "advice_confirmed" })];
+    expect(filterObservations(os, "all").map((o) => o.id)).toEqual(["a", "b", "c"]);
+    expect(filterObservations(os, "unsure").map((o) => o.id)).toEqual(["a"]);
+    expect(filterObservations(os, "learnings").map((o) => o.id)).toEqual(["b", "c"]);
   });
   test("waiting oldest first, consolidated newest first; missing lists are empty", () => {
     const { waiting, done } = sortObservations([obs({ id: "b", ts: 2 }), obs({ id: "a", ts: 1 })], [obs({ id: "c", ts: 3 }), obs({ id: "d", ts: 5 })]);

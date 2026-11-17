@@ -655,22 +655,10 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-proposals { list-style: none; margin: 0 0 6px; padding: 0 4px; display: flex; flex-direction: column; gap: 4px; }
 .xpanels .xp-proposal { color: var(--xp-text); }
 .xpanels .xp-proposal.failed { color: var(--xp-err); }
-.xpanels .xp-divider { margin: 10px 4px 2px; padding-top: 8px; border-top: 1px solid var(--xp-line); color: var(--xp-muted); font-size: 11px; }
-.xpanels .xp-seen-once .xp-claim { color: var(--xp-muted); }
 .xpanels .xp-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 4px; border-top: 1px solid var(--xp-line); }
 .xpanels .xp-row:first-child { border-top: none; }
-.xpanels .xp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .xpanels .xp-claim { color: var(--xp-text); overflow-wrap: anywhere; }
 .xpanels .xp-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--xp-muted); font-size: 11px; }
-.xpanels .xp-tag { font-size: 9.5px; letter-spacing: .03em; padding: 0 6px; border-radius: 6px; border: 1px solid var(--xp-line); color: var(--xp-muted); }
-.xpanels .xp-tag.user { color: var(--xp-accent-text); border-color: color-mix(in srgb, var(--xp-accent-text) 45%, transparent); }
-.xpanels .xp-tag.not-proposed-again { opacity: .8; }
-.xpanels .xp-tag.promoted { color: var(--xp-ok); border-color: color-mix(in srgb, var(--xp-ok) 45%, transparent); }
-.xpanels .xp-tag.unsure { color: var(--xp-warn); border-color: color-mix(in srgb, var(--xp-warn) 45%, transparent); }
-.xpanels .xp-row .xp-forget { flex: none; padding: 2px 8px; font-size: 11px; background: transparent; color: var(--xp-muted); opacity: 0; }
-.xpanels .xp-row:hover .xp-forget, .xpanels .xp-row .xp-forget:focus-visible { opacity: 1; }
-.xpanels .xp-row .xp-forget:hover { background: var(--xp-err); color: #fff; }
-@media (hover: none) { .xpanels .xp-row .xp-forget { opacity: 1; } }
 .xpanels .xp-fold > details { flex: 1; min-width: 0; }
 .xpanels .xp-fold summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; cursor: pointer; list-style: none; }
 .xpanels .xp-fold summary::-webkit-details-marker { display: none; }
@@ -682,22 +670,20 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-mark.fail { color: var(--xp-err); }
 .xpanels .xp-body { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .xpanels .xp-body pre { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--xp-inset); color: var(--xp-text); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow: auto; }
-.xpanels .xp-ctx { margin: 0; font-style: italic; }
-.xpanels .xp-refs { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
-.xpanels .xp-refs code { font-size: 11px; padding: 0 5px; border-radius: 5px; background: var(--xp-raised); color: var(--xp-text); }
 .xpanels .xp-sec + .xp-sec { margin-top: 12px; }
 .xpanels .xp-h { margin: 0; padding: 4px 4px 2px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--xp-muted); opacity: .8; }
 .xpanels .xp-status { display: block; color: var(--xp-text); }
-.xpanels .xp-gap-err { flex-basis: 100%; opacity: .85; overflow-wrap: anywhere; }
-/* Consults (ConsultsPanel / ConsultCard): filter chips, day dividers, one bordered card per consult. The header button is
-   the whole click target; closed, the card never shows any of the answer. */
+/* The list tabs' cards (XCard: lessons, observations, consults): filter chips, day dividers, one bordered card per row.
+   The header button is the whole click target; detail (a consult's answer, a finding, Forget / Drop) shows only when open. */
 .xpanels .xp-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 8px; }
 .xpanels .xp-filters .xp-chip { padding: 3px 10px; font-size: 11.5px; background: transparent; color: var(--xp-muted); border: 1px solid var(--xp-line); }
 .xpanels .xp-filters .xp-chip:hover:not(:disabled) { background: var(--xp-hover); color: var(--xp-text); }
 .xpanels .xp-filters .xp-chip.on { background: var(--xp-on); color: var(--xp-text); border-color: transparent; }
 .xpanels .xp-chip .xp-n { margin-left: 3px; font-variant-numeric: tabular-nums; opacity: .75; }
 .xpanels .xp-day { margin: 12px 2px 6px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--xp-muted); }
-.xpanels .xp-dayg:first-of-type .xp-day { margin-top: 2px; }
+.xpanels .xp-dayg:first-of-type > .xp-day { margin-top: 2px; }
+.xpanels .xp-sec .xp-dayg:first-of-type > .xp-day { margin-top: 4px; }
+.xpanels .xp-sec .xp-cards { margin-top: 4px; }
 .xpanels .xp-cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .xpanels .xp-card { min-width: 0; border: 1px solid var(--xp-line); border-radius: 8px; transition: border-color .15s; }
 .xpanels .xp-card:hover { border-color: color-mix(in srgb, var(--xp-muted) 45%, var(--xp-line)); }
@@ -707,8 +693,10 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-card.open button.xp-card-head { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .xpanels .xp-card-line { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--xp-muted); white-space: nowrap; }
 .xpanels .xp-cstat { flex: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 500; }
-.xpanels .xp-cstat.answered { color: var(--xp-ok); }
-.xpanels .xp-cstat.unsure { color: var(--xp-warn); }
+.xpanels .xp-cstat.tone-ok { color: var(--xp-ok); }
+.xpanels .xp-cstat.tone-warn { color: var(--xp-warn); }
+.xpanels .xp-cstat.tone-accent { color: var(--xp-accent-text); }
+.xpanels .xp-cstat.tone-muted { color: var(--xp-muted); }
 .xpanels .xp-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .xpanels .xp-src { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .xpanels .xp-when { flex: none; }
@@ -716,7 +704,13 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-card.open .xp-chev { transform: rotate(180deg); }
 .xpanels .xp-q { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-weight: 500; color: var(--xp-text); overflow-wrap: anywhere; white-space: pre-line; }
 .xpanels .xp-card.open .xp-q { display: block; -webkit-line-clamp: unset; overflow: visible; }
-.xpanels .xp-facts { font-size: 11px; color: var(--xp-muted); }
+.xpanels .xp-facts { margin: 0; font-size: 11px; color: var(--xp-muted); overflow-wrap: anywhere; }
+.xpanels .xp-note { opacity: .85; }
+.xpanels .xp-txt { margin: 0; color: var(--xp-text); overflow-wrap: anywhere; }
+.xpanels .xp-about-chip { padding: 1px 8px; border-radius: 6px; background: var(--xp-raised); color: var(--xp-text); font-size: 11px; }
+.xpanels .xp-acts { display: flex; justify-content: flex-end; }
+.xpanels .xp-acts .xp-forget { padding: 3px 10px; font-size: 11px; background: transparent; color: var(--xp-muted); border: 1px solid var(--xp-line); }
+.xpanels .xp-acts .xp-forget:hover { background: var(--xp-err); color: #fff; border-color: transparent; }
 .xpanels .xp-card-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 11px 11px; min-width: 0; }
 .xpanels .xp-part { min-width: 0; }
 .xpanels .xp-lbl { margin: 0 0 4px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--xp-muted); }

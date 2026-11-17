@@ -1,20 +1,23 @@
 // An expert's preview column (docs/experts.md §10): no browser, so in place of the screenshot, live view and info
 // sections it shows what the expert knows and how it is doing, on four tabs in the Browser | Terminal strip's style:
-//   Memory       the lessons it keeps (most seen first; Forget per row), the ones not used in answers yet, and the
-//                skill proposals in progress
+//   Memory       the lessons it keeps (most seen first), each a card: In use / Not used yet / Contradicted, where it came
+//                from, how often seen; opened: what it is about, first / last seen, sessions, and Forget. The skill
+//                proposals in progress above them; filter chips by status
 //   Observations everything it noted from consults and sessions: "Waiting" (oldest first) and "Consolidated" (newest
-//                first, each with what came of it); "Consolidate now" and its live stage line on top; an unsure consult
-//                (a gap) opens to what research found and can be dropped while it is unresolved
+//                first, under day dividers, each with what came of it); "Consolidate now", its live stage line and the
+//                proposal status lines on top; an unsure row opens to what research found and can be dropped while it is
+//                unresolved; a lesson row opens to the lesson it landed on; filter chips Unsure / Learnings
 //   Consults     the questions agent sessions asked it (newest first, under day dividers, filterable by outcome), each a
 //                card (status, source, when, the question, small facts) opening to the context, the answer as markdown,
 //                the files (click copies the path) and the lessons it used
 //   Checks       its fixed questions (questions.md) graded on the last run; "Run checks" starts one and shows it move
+// All three list tabs draw the same card (XCard); its detail renders only when the card is open.
 // Settings' "Expert" tab mounts the same panels (ExpertPanels) so the phone, which hides this column, reaches them.
 // Data: /api/experts/<id>/… (lib/api.ts expertApi), fetched for the open tab on a bot change, again when the bot's
 // `seq` moves (a chat turn may have taught it something) and every 10 s while the page is visible; the observations
 // (which carry a consolidation's progress) with every refresh whichever tab is open, and every 5 s while a
 // consolidation runs or a gap is being researched; the checks every 2 s while a run is going; the proposals (shown on
-// the Memory tab) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on
+// the Memory and Observations tabs) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on
 // every refresh while it keeps failing).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { expertApi, type Bot, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem, type ExpertObs,

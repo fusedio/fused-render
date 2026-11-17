@@ -5,43 +5,55 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import type { ExpertChecks, ExpertConsult, ExpertGap, ExpertItem, ExpertObs, ExpertProposal } from "../lib/api";
 
-const { MemoryPanel, ConsultsPanel, ConsultCard, ChecksPanel, ObservationsPanel } = await import("./ExpertPane");
+const { MemoryPanel, LessonCard, ConsultsPanel, ConsultCard, ChecksPanel, ObservationsPanel, ObsCard } = await import("./ExpertPane");
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
   created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...p });
 const noop = () => {};
 
 describe("MemoryPanel", () => {
-  test("lessons most seen first, with their tags and a Forget each; no observations or Consolidate here", () => {
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Alpha", count: 1 }), item({ id: "b", claim: "Beta", count: 5, trust: "user", promoted: true })],
-      onForget: noop }));
-    expect(out.indexOf("Beta")).toBeLessThan(out.indexOf("Alpha"));
+  const now = new Date(2026, 10, 17, 15, 0).getTime();
+  test("lesson cards most seen first: status, source, seen N×, claim, facts; no Forget while closed", () => {
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Alpha", count: 1, indexed: false }),
+      item({ id: "b", claim: "Beta", count: 5, trust: "user", promoted: true }), item({ id: "c", claim: "Gamma", count: 2, contradicted: 1 })], onForget: noop }));
+    expect(out.indexOf("Beta")).toBeLessThan(out.indexOf("Gamma"));
+    expect(out.indexOf("Gamma")).toBeLessThan(out.indexOf("Alpha"));
+    expect(out).toContain('aria-expanded="false"');
+    expect(out).toContain(">In use<");
+    expect(out).toContain(">Not used yet<");
+    expect(out).toContain(">Contradicted<");
+    expect(out).toContain("tone-warn");
+    expect(out).toContain(">taught by you<");
+    expect(out).toContain(">from sessions<");
     expect(out).toContain("seen 5×");
-    expect(out).toContain('xp-tag user">user<');
-    expect(out).toContain('xp-tag promoted">promoted<');
-    expect(out.split(">Forget<").length - 1).toBe(2);
+    expect(out).toContain(">in a skill<");
+    expect(out).toContain(">contradicted 1×<");
+    expect(out).toContain(">seen once<");
+    expect(out).not.toContain(">Forget<");
+    expect(out).toMatch(/All <span class="xp-n">3</);
+    expect(out).toMatch(/In use <span class="xp-n">2</);
+    expect(out).toMatch(/Not used yet <span class="xp-n">1</);
+    expect(out).not.toContain("Not used in answers yet");
     expect(out).not.toContain("Consolidate");
-    expect(out).not.toContain("observation");
   });
-  test("not-yet-used lessons under their divider with the reason, open proposals above", () => {
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Indexed one", count: 2 }), item({ id: "b", claim: "Once only", indexed: false }),
-      item({ id: "c", claim: "Researched", trust: "research", indexed: false })], onForget: noop,
+  test("open proposals above the list; a single lesson has no filter row", () => {
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Researched", trust: "research", indexed: false })], onForget: noop,
       proposals: [{ id: "p", ts: 1, status: "preparing", action: "create", skill: null, title: "", trigger: "", body: "", diff: "", items: [], score_before: null, score_after: null, card_seq: null }] }));
     expect(out).toContain("Drafting a skill proposal…");
-    const div = out.indexOf("Not used in answers yet");
-    expect(div).toBeGreaterThan(out.indexOf("Indexed one"));
-    expect(out.indexOf("Once only")).toBeGreaterThan(div);
-    expect(out).toContain('xp-tag seen-once">seen once<');
+    expect(out.indexOf("Drafting a skill proposal…")).toBeLessThan(out.indexOf("Researched"));
     expect(out).toContain(">found by research<");
     expect(out).toContain(">waiting for your approval<");
+    expect(out).not.toContain("xp-filters");
   });
-  test("a contradicted lesson carries its warning tag", () => {
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Bar charts only", count: 2, contradicted: 1, contradicted_sessions: ["s"] })], onForget: noop }));
-    expect(out).toContain('xp-tag contradicted">contradicted 1×<');
-  });
-  test("no divider when every lesson is indexed", () => {
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a" })], onForget: noop }));
-    expect(out).not.toContain("Not used in answers yet");
+  test("opened lesson: about chips, first / last seen, sessions, Forget (not on the phone)", () => {
+    const it = item({ id: "a", claim: "Use H3", about: ["maps", "h3"], created: now / 1000 - 3 * 86400, updated: now / 1000 - 7200, sessions: ["s1", "s2"] });
+    const out = renderToStaticMarkup(createElement(LessonCard, { it, onForget: noop, initialOpen: true, nowMs: now }));
+    expect(out).toContain('aria-expanded="true"');
+    expect(out).toContain(">About<");
+    expect(out).toContain(">maps<");
+    expect(out).toContain("first seen 3 d ago · last seen 2 h ago · in 2 sessions");
+    expect(out).toContain(">Forget<");
+    expect(renderToStaticMarkup(createElement(LessonCard, { it, onForget: noop, initialOpen: true, lan: true, nowMs: now }))).not.toContain(">Forget<");
   });
   test("empty: says what will appear", () => {
     expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [], onForget: noop }))).toContain("No lessons yet.");
@@ -57,7 +69,7 @@ describe("ConsultsPanel", () => {
   test("collapsed card: status, source, time, chevron, question, facts; none of the answer", () => {
     const out = renderToStaticMarkup(createElement(ConsultsPanel, { consults: [one], nowMs: now }));
     expect(out).toContain('aria-expanded="false"');
-    expect(out).toContain('xp-cstat unsure');
+    expect(out).toContain("xp-cstat tone-warn");
     expect(out).toContain(">Unsure<");
     expect(out).toContain("Airbnb_AI_Visualization · claude");
     expect(out).toContain("1 h ago");
@@ -147,7 +159,7 @@ describe("ObservationsPanel", () => {
     obs({ id: "d5", ts: 6, claim: "Held up", kind: "advice_confirmed", outcome: { op: "bump", item: "m3" } }),
     obs({ id: "d3", ts: 7, claim: "Settled gap", kind: "gap", outcome: { op: "gap" }, gap: gap({ id: "g2", status: "answered", resolution: "user" }) })];
   const base = { pending, done, onConsolidate: noop, onDrop: noop };
-  test("intro and Consolidate on top; Waiting oldest first, then Consolidated newest first, with tags and results", () => {
+  test("intro and Consolidate on top; Waiting oldest first, then Consolidated newest first; markers, sources, facts", () => {
     const out = renderToStaticMarkup(createElement(ObservationsPanel, base));
     expect(out).toContain("Everything I noted from consults and sessions.");
     expect(out.split(">Consolidate now<").length - 1).toBe(1);
@@ -158,28 +170,49 @@ describe("ObservationsPanel", () => {
     expect(out.indexOf("Newer waiting")).toBeLessThan(c);
     expect(out.indexOf("New done")).toBeLessThan(out.indexOf("Settled gap"));
     expect(out.indexOf("Settled gap")).toBeLessThan(out.indexOf("Old done"));
-    expect(out).toContain(">unsure<");
+    expect(out).toMatch(/xp-cstat tone-warn"><span class="xp-dot" aria-hidden="true"><\/span>unsure</);
     expect(out).toContain(">asked for<");
     expect(out).toContain(">fix that worked<");
+    expect(out).toContain(">waiting to be consolidated<");
     expect(out).toContain(">new lesson<");
     expect(out).toContain(">counted toward a lesson<");
     expect(out).toContain(">answered by you<");
-    expect(out).toContain('xp-tag kind-advice_contradicted">advice contradicted<');
-    expect(out).toContain('xp-tag res-contradict">contradicted a lesson<');
+    expect(out).toMatch(/tone-warn"><span class="xp-dot" aria-hidden="true"><\/span>advice contradicted</);
+    expect(out).toContain(">contradicted a lesson<");
     expect(out).toContain(">advice confirmed<");
-    expect(out).toContain("sales · claude");
-    expect(out).toContain(" · consult<");
+    expect(out).toContain(">sales · claude<");
+    expect(out).toContain(">consult<");
     expect(out).toContain("asked 3×");
-    expect(out).toContain("engine timed out");
-    expect(out).toContain("<details>");
-    expect(out).toContain(">z.py<");
-    expect(out.split(">Drop<").length - 1).toBe(1);
+    expect(out).not.toContain("Found it");  // a finding only when opened
+    expect(out).not.toContain(">Drop<");
+    expect(out).toMatch(/All <span class="xp-n">7</);
+    expect(out).toMatch(/Unsure <span class="xp-n">2</);
+    expect(out).toMatch(/Learnings <span class="xp-n">5</);
+    expect(out).toContain("xp-day");
+  });
+  test("opened: the lesson it landed on, both sides of a contradiction, a gap's note, finding, files and Drop", () => {
+    const items = [item({ id: "m1", claim: "Old rule" }), item({ id: "m2", claim: "New rule" })];
+    const contra = renderToStaticMarkup(createElement(ObsCard, { o: done[2], consolidated: true, researching: null, proposals: null, items, lan: false, onDrop: noop, initialOpen: true }));
+    expect(contra).toContain(">Contradicted<");
+    expect(contra).toContain("Old rule");
+    expect(contra).toContain(">Corrected rule<");
+    expect(contra).toContain("New rule");
+    const bump = renderToStaticMarkup(createElement(ObsCard, { o: obs({ outcome: { op: "bump", item: "m2" } }), consolidated: true, researching: null, proposals: null, items, lan: false, onDrop: noop, initialOpen: true }));
+    expect(bump).toContain(">Lesson<");
+    expect(bump).toContain("New rule");
+    const g = obs({ kind: "gap", claim: "Q", gap: gap({ error: "not found: nothing on it", finding: { answer: "Found it", refs: ["/x/y/z.py"] } }) });
+    const unsure = renderToStaticMarkup(createElement(ObsCard, { o: g, consolidated: false, researching: null, proposals: null, items, lan: false, onDrop: noop, initialOpen: true }));
+    expect(unsure).toContain("Looked into it: nothing on it");
+    expect(unsure).toContain("Found it");
+    expect(unsure).toContain(">z.py<");
+    expect(unsure).toContain(">Drop<");
+    expect(renderToStaticMarkup(createElement(ObsCard, { o: g, consolidated: false, researching: null, proposals: null, items, lan: true, onDrop: noop, initialOpen: true }))).not.toContain(">Drop<");
   });
   test("while consolidating: the stage line, the button waits, the researched gap says so", () => {
     const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, consolidating: { running: true, stage: "researching", gap: "g1" } }));
     expect(out).toContain("Researching an open question…");
     expect(out).toContain(">Consolidating…<");
-    expect(out).toContain("researching…");
+    expect(out).toContain(">researching… · asked 3×<");
   });
   test("nothing waiting and no open question: the button is off", () => {
     const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, pending: [], done: [done[0]] }));
@@ -198,12 +231,11 @@ describe("ObservationsPanel", () => {
     expect(out).toContain("diff did not apply");
     expect(out).toContain(">Which basemap?<");
     expect(out).not.toContain("Could not answer:");
-    expect(out).toContain("Looked into it: no doc on it");
+    expect(out).not.toContain("no doc on it");  // the research note shows only when the card is opened
     expect(out).not.toContain("proposed in chat");
   });
-  test("phone: no Consolidate, no Drop; empty state", () => {
+  test("phone: no Consolidate; empty state", () => {
     const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, lan: true }));
-    expect(out).not.toContain(">Drop<");
     expect(out).not.toContain("Consolidate now");
     expect(renderToStaticMarkup(createElement(ObservationsPanel, { ...base, pending: [], done: [] }))).toContain("Nothing noted yet.");
   });
