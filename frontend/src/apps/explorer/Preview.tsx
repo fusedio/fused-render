@@ -58,6 +58,7 @@ import {
   isNodeViewEntry,
   isModePending,
   isSidebarMode,
+  modesUnderSnapshot,
   partitionModes,
   unavailableReason,
   visibleModes,
@@ -939,6 +940,25 @@ function TemplatePreview({
   // a preferred `udf` (PT-8), which holds the pane on the checking placeholder.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
 
+  // The shell's git snapshot (`_snapshot`): see "the shell's git snapshot"
+  // below for the whole story.
+  const urlVersion = useUrlVersion();
+  const {
+    sha: snapshotSha,
+    snap: snapshotResolved,
+    pending: snapshotPending,
+    error: snapshotError,
+    retry: retrySnapshot,
+    backToLive,
+    applySelected: applySelectedSnapshot,
+  } = usePreviewSnapshot(fsPath, urlVersion);
+  // THE NODE VIEW IS LIVE BY NATURE (SPEC §53.3): it draws the canvas as the
+  // workbench holds it now, never as of a commit. Under a snapshot it is not
+  // offered at all, so the pane falls back to a mode that honours the commit
+  // (Code) instead of drawing the live node under "Showing this file as of
+  // commit …"; Back to live brings it back.
+  const offered = modesUnderSnapshot(templates, snapshotSha);
+
   // --- the content/sidebar split (`_side`) ----------------------------------
   // ONE surface splits: a single FILE opened on the explorer route in its own
   // window. Everything else keeps `claude` as an ordinary content mode,
@@ -954,7 +974,7 @@ function TemplatePreview({
   // (Claude chat, git, the parent's MCP) and the rail would all be about the
   // cache folder, not the `s3://` object the reader opened.
   const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !remoteUrl;
-  const parts = partitionModes(templates);
+  const parts = partitionModes(offered);
 
   // --- the BORROWED companion `git`, and the parent's `mcp`, from this file's parent folder -
   // A working tree belongs to the FOLDER (templates/git/condition.py), and so does
@@ -1037,7 +1057,7 @@ function TemplatePreview({
   // the pending entry for the deep link's sake.
   // A remote cache copy never gets here with a companion in `templates`
   // (Preview drops them upstream), so this needs no remote case.
-  const contentModes = split.offered ? parts.content : templates;
+  const contentModes = split.offered ? parts.content : offered;
   const sidebarModes = split.offered ? split.all : [];
   // What the sidebar's switcher DRAWS, which is a longer list than the one above:
   // all three companions, the ones this file cannot show disabled and explaining
@@ -1196,16 +1216,9 @@ function TemplatePreview({
   // AND the git sidebar hop — round 3 findings 2 and 7), and `snapshotError`
   // is the round 3 finding 8 fix: a non-404 resolve failure used to leave
   // this pane pending forever with no way out.
-  const urlVersion = useUrlVersion();
-  const {
-    sha: snapshotSha,
-    snap: snapshotResolved,
-    pending: snapshotPending,
-    error: snapshotError,
-    retry: retrySnapshot,
-    backToLive,
-    applySelected: applySelectedSnapshot,
-  } = usePreviewSnapshot(fsPath, urlVersion);
+  // (The hook itself is called at the top of this component: the node view's
+  // snapshot rule, below `isPending`, needs `snapshotSha` before the mode
+  // lists are built.)
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
     // git sidebar to select in, and two instances racing for one window global
@@ -2064,7 +2077,7 @@ function TemplatePreview({
     else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };
-  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
+  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(offered, openMode));
   const fileMenuRef = useRef<(() => MenuEntry[]) | null>(null);
   const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef, remoteUrl);
 

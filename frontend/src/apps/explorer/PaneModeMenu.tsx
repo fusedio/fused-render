@@ -45,6 +45,25 @@ interface PaneModeMenuProps {
   variant?: "bar" | "tab";
 }
 
+/** The menu's two readings of a pane's modes: `selected`, the entry the
+ *  URL's `_mode` selects (the default when it names none on offer — a
+ *  pending preferred `udf` included), and `active`, the trigger's label: a
+ *  pending entry has no icon yet, so the label falls back to the first entry
+ *  that is not pending. They differ only while the selected entry is
+ *  pending; `applyMode` compares against `selected`. */
+export function paneModeChoice(
+  visible: TemplateEntry[],
+  conditions: Parameters<typeof isModePending>[1],
+  activeMode: string | null,
+): { defaultEntry: TemplateEntry; active: TemplateEntry; selected: TemplateEntry } {
+  const isPending = (t: TemplateEntry) => isModePending(t, conditions);
+  const defaultEntry = defaultMode(visible) as TemplateEntry;
+  const selected = effectiveActive(visible, activeMode) ?? defaultEntry;
+  const settled = visible.find((t) => !isPending(t)) ?? defaultEntry;
+  const active = !isPending(selected) ? selected : isPending(defaultEntry) ? settled : defaultEntry;
+  return { defaultEntry, active, selected };
+}
+
 export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" }: PaneModeMenuProps) {
   const [templates, setTemplates] = useState<TemplateEntry[]>([]);
   // Deferred condition.py verdicts (CT-12): null while any gated entry is
@@ -123,14 +142,7 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   const visible = visibleModes(templates, conditions);
   if (visible.length < 2) return null;
 
-  const defaultEntry = defaultMode(visible) as TemplateEntry;
-  // A pending entry can't be the trigger's label (it has no icon yet), so it
-  // falls back to the first entry that is not pending — the preferred `udf`
-  // is the default while pending, so the default alone is not enough.
-  const requested = effectiveActive(visible, activeMode);
-  const settled = visible.find((t) => !isPending(t)) ?? defaultEntry;
-  const active =
-    requested && !isPending(requested) ? requested : isPending(defaultEntry) ? settled : defaultEntry;
+  const { defaultEntry, active, selected } = paneModeChoice(visible, conditions, activeMode);
 
   const toggle = (e: MouseEvent) => {
     e.stopPropagation();
@@ -145,7 +157,11 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   };
 
   const applyMode = (mode: string) => {
-    if (mode === active.mode) return;
+    // Against what the URL SELECTS, not the trigger's label: while the
+    // preferred `udf` is pending the label falls back to Code, and picking
+    // Code must still pin `?_mode=code` (or the verdict's yes would switch
+    // the pane away from what was just picked).
+    if (mode === selected.mode) return;
     const [head, tail] = splitAtLayout(query);
     const params = new URLSearchParams(head);
     // Selecting the default mode DELETES _mode (clean URLs, PT-9).

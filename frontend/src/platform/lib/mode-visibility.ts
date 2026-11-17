@@ -147,6 +147,18 @@ export function isNodeViewEntry(entry: Pick<TemplateEntry, "mode" | "native">): 
   return entry.mode === NODE_MODE && entry.native === true;
 }
 
+// The modes a pane may offer while it previews a git snapshot (`_snapshot`):
+// every one but the node view, which is live by nature — it draws the canvas
+// as the workbench holds it now, never as of a commit, so under "Showing this
+// file as of commit …" it would show the wrong era. Without a snapshot the
+// list is returned as is.
+export function modesUnderSnapshot<T extends Pick<TemplateEntry, "mode" | "native">>(
+  entries: T[],
+  snapshotSha: string | null | undefined
+): T[] {
+  return snapshotSha ? entries.filter((e) => !isNodeViewEntry(e)) : entries;
+}
+
 // The default CANDIDATE although gated (SPEC PT-8's one exception): the node
 // view's entry where stat marked it `prefer` — a path shaped like a canvas
 // node file, Canvases on. Never any other entry, whatever the server sends.

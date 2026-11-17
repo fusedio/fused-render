@@ -77,7 +77,9 @@ export function NativeView({
   const View = componentFor(mode);
   if (!View) return <>{fallback}</>;
   return (
-    <NativeViewBoundary>
+    // Keyed by mode AND file, outside the boundary: a view that failed for
+    // one file must not keep its error when the pane moves to another.
+    <NativeViewBoundary key={`${mode}:${props.path}`}>
       <Suspense
         fallback={
           <div className="preview-resolving">

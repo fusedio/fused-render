@@ -46,3 +46,32 @@ test("an unregistered mode renders the fallback, never a view", () => {
   );
   expect(JSON.stringify(tree.toJSON())).toBe(JSON.stringify("none"));
 });
+
+test("an error shown for one file does not stay when the pane moves to another", async () => {
+  function Fragile({ path }: NativeViewProps) {
+    if (path.endsWith("bad.py")) throw new Error("boom for bad.py");
+    return createElement("span", null, `ok ${path}`);
+  }
+  registerNativeView("fragile", async () => ({ default: Fragile }));
+  const at = (path: string) =>
+    createElement(NativeView, { mode: "fragile", path, placement: "content" as const });
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    let tree!: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(at("/c/bad.py"));
+    });
+    await act(async () => {});
+    expect(JSON.stringify(tree.toJSON())).toContain("boom for bad.py");
+    await act(async () => {
+      tree.update(at("/c/good.py"));
+    });
+    await act(async () => {});
+    const shown = JSON.stringify(tree.toJSON());
+    expect(shown).toContain("ok /c/good.py");
+    expect(shown).not.toContain("boom");
+  } finally {
+    console.error = realError;
+  }
+});

@@ -13,6 +13,7 @@ import {
   effectiveActive,
   isModeVisible,
   isNodeViewEntry,
+  modesUnderSnapshot,
 } from "@platform/lib/mode-visibility";
 
 const t = (mode: string, conditional = false): TemplateEntry => ({
@@ -343,5 +344,32 @@ describe("defaultMode with a preferred entry", () => {
     expect(isSidebarMode("udf")).toBe(false);
     expect(names(partitionModes(visibleModes(list, { udf: true, claude: true })).sidebar)).toEqual(["claude"]);
     expect(SIDEBAR_MODES).toEqual(["claude", "git"]);
+  });
+});
+
+// SPEC §53.3: the node view is live; a git snapshot preview never offers it.
+describe("modesUnderSnapshot", () => {
+  const code = t("code");
+  const udf: TemplateEntry = {
+    mode: "udf",
+    path: "/tpl/udf/native",
+    icon: null,
+    conditional: true,
+    native: true,
+    prefer: true,
+  };
+  it("drops the node view under a snapshot, so the default falls to a mode that honours it", () => {
+    const under = modesUnderSnapshot([udf, code], "abc123");
+    expect(under.map((e) => e.mode)).toEqual(["code"]);
+    expect(defaultMode(visibleModes(under, { udf: true }))?.mode).toBe("code");
+    expect(effectiveActive(visibleModes(under, { udf: true }), "udf")?.mode).toBe("code");
+  });
+  it("keeps every mode when there is no snapshot", () => {
+    expect(modesUnderSnapshot([udf, code], null)).toEqual([udf, code]);
+    expect(modesUnderSnapshot([udf, code], "")).toEqual([udf, code]);
+  });
+  it("keeps a non-native `udf` (an ordinary framed template, not the node view)", () => {
+    const framed: TemplateEntry = { mode: "udf", path: "/u/udf/template.html", icon: null, conditional: false };
+    expect(modesUnderSnapshot([framed, code], "abc123").map((e) => e.mode)).toEqual(["udf", "code"]);
   });
 });
