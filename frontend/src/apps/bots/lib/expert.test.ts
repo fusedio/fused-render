@@ -32,8 +32,8 @@ describe("lessons", () => {
   test("used N×; the opened card's line", () => {
     expect(usedLabel(item({ count: 2, cited: 3 }))).toBe("used 5×");
     expect(usedLabel(item({ count: 0 }))).toBe("used 1×");
-    expect(usesLine(item({ count: 2, cited: 1 }))).toBe("Seen in 2 sessions · relied on in 1 answer");
-    expect(usesLine(item({ count: 1 }))).toBe("Seen in 1 session");
+    expect(usesLine(item({ count: 2, cited: 1 }))).toBe("Seen in 2 tasks · relied on in 1 answer");
+    expect(usesLine(item({ count: 1 }))).toBe("Seen in 1 task");
   });
   test("budgetState: null without a limit; the sentence and the meter by state", () => {
     expect(budgetState(null)).toBeNull();
@@ -68,9 +68,19 @@ describe("lessons", () => {
     expect(lessonStatus(item({ indexed: false, contradicted: 1 }))).toBe("contradicted");
     expect(LESSON_STATUS_LABEL["not-used"]).toBe("Not used yet");
   });
+  test("worked and failed lessons: the source says so; a failed one is marked \"Does not work\"", () => {
+    expect(lessonSource(item({ kind: "worked" }))).toBe("worked in a task");
+    expect(lessonSource(item({ kind: "failed" }))).toBe("did not work in a task");
+    expect(lessonStatus(item({ kind: "failed" }))).toBe("failed");
+    expect(lessonStatus(item({ kind: "failed", indexed: false, contradicted: 1 }))).toBe("failed");
+    expect(lessonStatus(item({ kind: "worked", indexed: false }))).toBe("not-used");
+    expect(LESSON_STATUS_LABEL.failed).toBe("Does not work");
+    // The chips still go by whether answers draw on it.
+    expect(filterLessons([item({ kind: "failed", indexed: false })], "not-used")).toHaveLength(1);
+  });
   test("source by trust", () => {
     expect(lessonSource(item({ trust: "user" }))).toBe("taught by you");
-    expect(lessonSource(item({ trust: "outcome" }))).toBe("from sessions");
+    expect(lessonSource(item({ trust: "outcome" }))).toBe("from tasks");
     expect(lessonSource(item({ trust: "research" }))).toBe("found by research");
     expect(lessonSource(item({ trust: "gap" }))).toBe("");
   });
@@ -187,7 +197,7 @@ describe("activity", () => {
   const line = (p: Partial<ExpertActivity>): ExpertActivity => ({ id: "a", ts: 1, action: "learned", summary: "s", ok: true, ...p });
   test("every action in plain words; an unknown one reads as itself", () => {
     const want: Record<string, string> = { learned: "Learned", counted: "Seen again", corrected: "Corrected", forgot: "Forgot", merged: "Merged", removed: "Removed",
-      skill_updated: "Skill updated", skill_created: "Skill created", skill_restored: "Skill restored", noticed: "Noticed", researched: "Researched",
+      skill_updated: "Skill updated", skill_created: "Skill created", skill_restored: "Skill restored", noticed: "Noted", researched: "Researched",
       could_not_find: "Could not find out", skipped: "Skipped", undo: "Undo" };
     for (const [a, l] of Object.entries(want)) expect(actionLabel(a)).toBe(l);
     expect(actionLabel("lesson_split")).toBe("Lesson split");
@@ -200,6 +210,7 @@ describe("activity", () => {
     expect(actionTone(line({ action: "skill_created", ok: false }))).toBe("warn");
     expect(actionTone(line({ action: "could_not_find" }))).toBe("warn");
     expect(actionTone(line({ action: "forgot" }))).toBe("muted");
+    expect(actionTone(line({ action: "noticed" }))).toBe("muted");  // a first sighting: not the "learned" dot
   });
   test("the header names a skill, never an internal id", () => {
     for (const action of ["skill_updated", "skill_created", "skill_restored"]) expect(activityTarget(line({ action, target: " maps.md " }))).toBe("maps.md");
@@ -221,11 +232,17 @@ describe("activity", () => {
     expect(filterActivity(xs, "skills").map((a) => a.id)).toEqual(["1", "5"]);
     expect(filterActivity(xs, "memory").map((a) => a.id)).toEqual(["0", "4"]);
     expect(filterActivity(xs, "all")).toHaveLength(7);
+    expect(activityGroup(line({ action: "noticed" }))).toBe("memory");
+    expect(activityGroup(line({ action: "counted" }))).toBe("memory");
   });
-  test("quiet lines: the flag, else counted and noticed; hidden unless everything; newest first", () => {
+  test("quiet lines: the line's own flag (a counted line without one is quiet); hidden unless everything; newest first", () => {
     expect(isQuiet(line({ quiet: true }))).toBe(true);
     expect(isQuiet(line({ action: "counted" }))).toBe(true);
+    expect(isQuiet(line({ action: "counted", quiet: false }))).toBe(false);
     expect(isQuiet(line({ action: "noticed", quiet: false }))).toBe(false);
+    expect(isQuiet(line({ action: "noticed" }))).toBe(false);
+    expect(isQuiet(line({ action: "noticed", quiet: true }))).toBe(true);
+    expect(shownActivity([line({ action: "noticed" })], false)).toHaveLength(1);
     expect(isQuiet(line({}))).toBe(false);
     const xs = [line({ id: "a", ts: 1 }), line({ id: "b", ts: 3, quiet: true }), line({ id: "c", ts: 2 })];
     expect(shownActivity(xs, false).map((a) => a.id)).toEqual(["c", "a"]);
@@ -252,13 +269,18 @@ describe("activity", () => {
     expect(learningLine({ running: true, stage: "tidy" })).toBe("Tidying memory…");
     expect(learningLine({ running: true, stage: "" })).toBe("Learning…");
   });
-  test("evidence: the quote, where it came from, the file", () => {
-    expect(evidenceParts(null)).toEqual({ quote: "", from: "", fromTitle: "", file: "" });
-    expect(evidenceParts({ quote: " use H3 ", session: "s1", source: { target: "/x/canvases/Airbnb/", backend: "claude" } }))
-      .toEqual({ quote: "use H3", from: "Airbnb · claude", fromTitle: "/x/canvases/Airbnb/\nsession s1", file: "" });
-    expect(evidenceParts({ source: { canvas: "/x/canvases/Maps", target: "/x/t" } }).from).toBe("Maps");
-    expect(evidenceParts({ session: "s1" }).from).toBe("a session");
-    expect(evidenceParts({ source: "/x/docs/tiles.md" })).toMatchObject({ file: "/x/docs/tiles.md", from: "" });
+  test("evidence: the quote, the task it came from, its files, the file research found it in", () => {
+    expect(evidenceParts(null)).toEqual({ quote: "", from: "", fromTitle: "", files: [], file: "" });
+    expect(evidenceParts({ quote: " use H3 ", session: "s1", source: { canvas: "/x/canvases/Airbnb_AI_Visualization/", target: "/x/t", backend: "claude",
+      files: ["/x/t/yc.py", " ", "/x/t/yc.py", "/x/t/map.html"] } }))
+      .toEqual({ quote: "use H3", from: "From your task on Airbnb_AI_Visualization", fromTitle: "/x/canvases/Airbnb_AI_Visualization/",
+        files: ["/x/t/yc.py", "/x/t/map.html"], file: "" });
+    // No canvas: never a bare "a session", never the backend's name.
+    expect(evidenceParts({ session: "s1" }).from).toBe("From one of your tasks");
+    expect(evidenceParts({ session: "s1", source: { target: "/x/t", backend: "claude" } }).from).toBe("From one of your tasks");
+    expect(evidenceParts({ source: { target: "/x/t" } })).toMatchObject({ from: "From one of your tasks", files: [] });
+    expect(evidenceParts({ source: "/x/docs/tiles.md" })).toEqual({ quote: "", from: "", fromTitle: "", files: [], file: "/x/docs/tiles.md" });
+    expect(evidenceParts({ quote: "q" }).from).toBe("");
   });
   test("a refused undo: the server's detail, else the error's text", () => {
     expect(undoError(new ApiError("409 Conflict", 409, { detail: "changed since; undo the later change first" }))).toBe("changed since; undo the later change first");
@@ -276,7 +298,7 @@ describe("activity", () => {
 
 describe("learning wording (corrections, confirmations)", () => {
   test("a user lesson from a session says so; confirmed N× is a fact", () => {
-    expect(lessonSource(item({ trust: "user", via: "session" }))).toBe("you said this in a session");
+    expect(lessonSource(item({ trust: "user", via: "session" }))).toBe("you said this in a task");
     expect(lessonSource(item({ trust: "user" }))).toBe("taught by you");
     expect(lessonFacts(item({ confirmed: 3 }))).toContain("confirmed 3×");
     expect(lessonFacts(item({ confirmed: 0 })).some((f) => f.startsWith("confirmed"))).toBe(false);

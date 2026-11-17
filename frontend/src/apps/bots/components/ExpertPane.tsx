@@ -7,8 +7,8 @@
 //             and "Show everything" (the quiet lines too). Opening the tab marks the activity as seen.
 //   Memory    the budget line on top ("32 of 50 lessons", a meter, what tidying does, the last tidy), then the lessons
 //             it keeps (most used first), each a card: In use / Not used yet / Contradicted, where it came from, how
-//             often used; opened: earlier wording, the lessons it was merged from, what it is about, sessions / answers
-//   Consults  the questions agent sessions asked it (newest first, under day dividers, filterable by outcome), each a
+//             often used; opened: earlier wording, the lessons it was merged from, what it is about, tasks / answers
+//   Consults  the questions tasks asked it (newest first, under day dividers, filterable by outcome), each a
 //             card (status, source, when, the question, small facts) opening to the context, the answer as markdown,
 //             the files (click copies the path) and the lessons it used
 // All three tabs draw the same card (XCard); its detail renders only when the card is open.
@@ -242,7 +242,7 @@ function Filters<F extends string>({ label, options, counts, value, onChange, to
 
 // ---- Memory ----
 
-const LESSON_TONE: Record<LessonStatus, CardTone> = { "in-use": "ok", "not-used": "muted", contradicted: "warn" };
+const LESSON_TONE: Record<LessonStatus, CardTone> = { "in-use": "ok", "not-used": "muted", contradicted: "warn", failed: "warn" };
 
 export function LessonCard({ it, initialOpen = false, nowMs }: { it: ExpertItem; initialOpen?: boolean; nowMs?: number }) {
   const st = lessonStatus(it);
@@ -318,7 +318,7 @@ export function MemoryPanel({ items, budget = null, nowMs }: {
             : <div className="xp-empty">No lessons match this filter.</div>}
         </>
       ) : (
-        <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that ask it questions, appears here. To make it forget something, tell it in the chat.</div>
+        <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the tasks that ask it questions, appears here. To make it forget something, tell it in the chat.</div>
       )}
     </>
   );
@@ -328,7 +328,7 @@ export function MemoryPanel({ items, budget = null, nowMs }: {
 
 const CONSULT_TONE: Record<ConsultStatus, CardTone> = { answered: "ok", unsure: "warn" };
 
-/** One consult: status, source, when; the question; small facts. Opened: the session's context, the answer as markdown,
+/** One consult: status, source, when; the question; small facts. Opened: the task's context, the answer as markdown,
  *  files, lessons used. Closed, it shows none of the answer. */
 export function ConsultCard({ c, items, initialOpen = false, nowMs }: {
   c: ExpertConsult; items: ExpertItem[] | null; initialOpen?: boolean; nowMs?: number;
@@ -341,7 +341,7 @@ export function ConsultCard({ c, items, initialOpen = false, nowMs }: {
       detail={() => (
         <>
           {c.context ? (
-            <Part label="Context from the session">
+            <Part label="Context from the task">
               <p className={`xp-ctx${longCtx && !allCtx ? " clamp" : ""}`}>{c.context}</p>
               {longCtx ? <button type="button" className="xp-more" aria-expanded={allCtx} onClick={() => setAllCtx((v) => !v)}>{allCtx ? "Show less" : "Show all"}</button> : null}
             </Part>
@@ -363,7 +363,7 @@ const CONSULT_FILTERS: [ConsultFilter, string][] = [["all", "All"], ["answered",
 export function ConsultsPanel({ consults, items = null, nowMs }: { consults: ExpertConsult[] | null; items?: ExpertItem[] | null; nowMs?: number }) {
   const [filter, setFilter] = useState<ConsultFilter>("all");
   if (consults == null) return <div className="xp-empty">Loading…</div>;
-  if (!consults.length) return <div className="xp-empty">No consults yet. When an agent session asks this expert a question, the question and its answer appear here.</div>;
+  if (!consults.length) return <div className="xp-empty">No consults yet. When a task asks this expert a question, the question and its answer appear here.</div>;
   const counts = { all: consults.length, answered: filterConsults(consults, "answered").length, unsure: filterConsults(consults, "unsure").length };
   const groups = groupConsultsByDay(filterConsults(consults, filter), nowMs);
   return (
@@ -405,9 +405,10 @@ export function ActivityCard({ a, onUndo, undoing = false, undoError: refused = 
       detail={() => (
         <>
           {ev.quote ? <Part label="You said"><p className="xp-txt">“{ev.quote}”</p></Part> : null}
-          {ev.from ? <Part label="Came from"><p className="xp-txt" title={ev.fromTitle || undefined}>{ev.from}</p></Part> : null}
-          {ev.file ? <Part label="Read in"><Files refs={[ev.file]} /></Part> : null}
-          {!ev.quote && !ev.from && !ev.file ? <p className="xp-facts">Nothing more is recorded for this.</p> : null}
+          {ev.from ? <p className="xp-txt xp-from" title={ev.fromTitle || undefined}>{ev.from}</p> : null}
+          {ev.files.length ? <Part label="Files"><Files refs={ev.files} /></Part> : null}
+          {ev.file ? <Part label="Found in"><Files refs={[ev.file]} /></Part> : null}
+          {!ev.quote && !ev.from && !ev.files.length && !ev.file ? <p className="xp-facts">Nothing more is recorded for this.</p> : null}
         </>
       )} />
   );
@@ -449,7 +450,7 @@ export function ActivityPanel({ items, waiting = 0, learning = null, everything 
       <div className="xp-toolbar">
         <Filters label="Show activity" options={ACTIVITY_FILTERS} counts={counts} value={filter} onChange={setFilter} total={all.length} />
         <button type="button" className={`xp-chip xp-every${everything ? " on" : ""}`} aria-pressed={everything}
-          title="Also show the small things: what it noticed and what it saw again" onClick={() => onEverything(!everything)}>Show everything</button>
+          title="Also show the small things, like what it saw again" onClick={() => onEverything(!everything)}>Show everything</button>
       </div>
       {!all.length ? <div className="xp-empty">Nothing yet. Everything this expert learns, changes in its skills or looks into by itself is listed here, and you can undo it.</div>
         : !shown.length ? <div className="xp-empty">Nothing matches this filter.</div>

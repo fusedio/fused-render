@@ -14,7 +14,7 @@ const noop = () => {};
 describe("ActivityPanel", () => {
   const now = new Date(2026, 10, 17, 15, 0).getTime(), at = (d: number, h: number) => new Date(2026, 10, d, h).getTime() / 1000;
   const line = (p: Partial<ExpertActivity>): ExpertActivity => ({ id: "a", ts: at(17, 14), action: "learned", target: "", summary: "Use H3 for hex maps.",
-    why: "You said so in a session.", ok: true, undoable: true, undone: false, ...p });
+    why: "You said so in a task.", ok: true, undoable: true, undone: false, ...p });
   const base = { onEverything: noop, onLearn: noop, onUndo: noop };
   const lines = [
     line({ id: "a1", ts: at(17, 14), action: "skill_updated", target: "maps.md", summary: "Added a rule about hex sizes.", why: "Three sessions needed it." }),
@@ -96,15 +96,32 @@ describe("ActivityPanel", () => {
     expect(out).toContain('aria-expanded="true"');
     expect(out).toContain(">You said<");
     expect(out).toContain("“always use H3”");
-    expect(out).toContain(">Came from<");
-    expect(out).toContain(">Airbnb · claude<");
-    expect(out).not.toContain(">Read in<");
+    expect(out).toContain(">From one of your tasks<");
+    expect(out).not.toContain(">Found in<");
+    expect(out).not.toContain(">Files<");
     const file = renderToStaticMarkup(createElement(ActivityCard, { a: line({ action: "researched", evidence: { source: "/x/docs/tiles.md" } }), initialOpen: true }));
-    expect(file).toContain(">Read in<");
+    expect(file).toContain(">Found in<");
+    expect(file).not.toContain("From ");
     expect(file).toContain(">tiles.md<");
     expect(file).not.toContain(">You said<");
     expect(file).not.toContain(">Undo<");  // no handler (the phone)
     expect(renderToStaticMarkup(createElement(ActivityCard, { a: line({ evidence: null }), initialOpen: true }))).toContain("Nothing more is recorded for this.");
+    // A task entry: one line naming the canvas, its files as chips; no "Came from", "Read in" or bare "a session".
+    const task = renderToStaticMarkup(createElement(ActivityCard, { initialOpen: true, a: line({ action: "noticed",
+      why: "This worked in a task. Not used in answers until a second task shows it.",
+      evidence: { quote: "show YC company data", session: "s1", source: { canvas: "/x/canvases/Airbnb_AI_Visualization", target: "/x/t", backend: "claude", files: ["/x/t/yc.py", "/x/t/map.html"] } } }) }));
+    expect(task).toContain(">Noted<");
+    expect(task).not.toContain(">Learned<");
+    expect(task).toContain("tone-muted");
+    expect(task).not.toContain("tone-ok");
+    expect(task).toContain("act-memory");
+    expect(task).toContain(">This worked in a task. Not used in answers until a second task shows it.<");
+    expect(task).toContain(">You said<");
+    expect(task).toContain(">From your task on Airbnb_AI_Visualization<");
+    expect(task).toContain(">Files<");
+    expect(task).toContain(">yc.py<");
+    expect(task).toContain(">map.html<");
+    for (const gone of ["Came from", "Read in", "a session", "claude"]) expect(task).not.toContain(gone);
     // Closed: none of the evidence.
     expect(renderToStaticMarkup(createElement(ActivityCard, { a }))).not.toContain("always use H3");
   });
@@ -151,7 +168,7 @@ describe("MemoryPanel", () => {
     expect(out).toContain(">Contradicted<");
     expect(out).toContain("tone-warn");
     expect(out).toContain(">taught by you<");
-    expect(out).toContain(">from sessions<");
+    expect(out).toContain(">from tasks<");
     expect(out).toContain("used 5×");
     expect(out).not.toContain("seen 5×");
     expect(out).toContain(">contradicted 1×<");
@@ -190,11 +207,11 @@ describe("MemoryPanel", () => {
     expect(out).toContain('aria-expanded="true"');
     expect(out).toContain(">About<");
     expect(out).toContain(">maps<");
-    expect(out).toContain("Seen in 2 sessions · relied on in 4 answers");
+    expect(out).toContain("Seen in 2 tasks · relied on in 4 answers");
     expect(out).toContain("first seen 3 d ago · last used 10 min ago");
     // An older server (no cited / last_used): the sessions alone and the last seen time.
     const old = renderToStaticMarkup(createElement(LessonCard, { it: item({ count: 1, updated: now / 1000 - 7200 }), initialOpen: true, nowMs: now }));
-    expect(old).toContain("Seen in 1 session<");
+    expect(old).toContain("Seen in 1 task<");
     expect(old).toContain("last seen 2 h ago");
     expect(out).not.toContain(">Forget<");
     expect(out).not.toContain("Merged from");
@@ -207,13 +224,23 @@ describe("MemoryPanel", () => {
   test("a single lesson has no filter row", () => {
     expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ trust: "research", indexed: false })] }))).not.toContain("xp-filters");
   });
-  test("an opened lesson shows its earlier wording and a session-said source", () => {
+  test("an opened lesson shows its earlier wording and a said-in-a-task source", () => {
     const out = renderToStaticMarkup(createElement(LessonCard, { it: item({ trust: "user", via: "session", confirmed: 2,
       history: [{ claim: "Old wording here", at: 1 }] }), initialOpen: true, nowMs: 0 }));
     expect(out).toContain("Earlier wording");
     expect(out).toContain("Old wording here");
-    expect(out).toContain("you said this in a session");
+    expect(out).toContain("you said this in a task");
     expect(out).toContain("confirmed 2×");
+  });
+  test("worked and failed lessons: the source label, and an amber \"Does not work\" marker", () => {
+    const failed = renderToStaticMarkup(createElement(LessonCard, { it: item({ kind: "failed", claim: "Loading the full file" }) }));
+    expect(failed).toContain(">Does not work<");
+    expect(failed).toContain("tone-warn");
+    expect(failed).toContain(">did not work in a task<");
+    const worked = renderToStaticMarkup(createElement(LessonCard, { it: item({ kind: "worked", indexed: false }) }));
+    expect(worked).toContain(">worked in a task<");
+    expect(worked).toContain(">Not used yet<");
+    expect(worked).not.toContain("tone-warn");
   });
   test("empty: says what will appear", () => {
     expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [] }))).toContain("No lessons yet.");
@@ -260,7 +287,7 @@ describe("ConsultsPanel", () => {
   test("opened card: context, the answer as markdown, file chips, lessons used by claim", () => {
     const out = renderToStaticMarkup(createElement(ConsultCard, { c: one, items: [item({ id: "m1", claim: "Prefer H3 for hex maps" })], initialOpen: true, nowMs: now }));
     expect(out).toContain('aria-expanded="true"');
-    expect(out).toContain("Context from the session");
+    expect(out).toContain("Context from the task");
     expect(out).toContain("The user wants a map.");
     expect(out).toContain(">Answer<");
     expect(out).toContain("xp-md");

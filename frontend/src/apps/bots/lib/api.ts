@@ -284,8 +284,9 @@ export interface ExpertManifest {
   shipped?: string;
   [k: string]: unknown;
 }
-/** One lesson in memory.json. `trust`: user (said in chat), outcome (from a session), gap (an unanswered consult),
- *  research (found by the expert looking into a question it could not answer). */
+/** One lesson in memory.json. `trust`: user (said in chat), outcome (from a task), gap (an unanswered consult),
+ *  research (found by the expert looking into a question it could not answer). `kind`: "worked" / "failed" for
+ *  something a task showed works / does not work (anything else: an ordinary lesson). */
 export interface ExpertItem {
   id: string; claim: string; kind: string; trust: "user" | "outcome" | "gap" | "research" | (string & {}); count: number;
   sessions: string[]; about: string[]; created: number; updated: number;
@@ -329,15 +330,17 @@ export interface ExpertConsult {
   caller?: ExpertCaller | null; ms: number;
 }
 /** What a change rests on: the session it came from, the user's own words, the file it was read in, the lesson it is
- *  about. `source` is a path, or where an observation came from (`target` folder, `backend`, `canvas`). */
+ *  about. `source` is a path (research), or the task an entry came from: its `canvas`, `target` folder, `backend`,
+ *  and the `files` it touched. */
 export interface ExpertEvidence {
   session?: string; quote?: string; item?: string;
-  source?: string | { target?: string; backend?: string; canvas?: string; path?: string } | null;
+  source?: string | { target?: string; backend?: string; canvas?: string; path?: string; files?: string[] } | null;
 }
 export type ExpertAction = "learned" | "counted" | "corrected" | "forgot" | "merged" | "removed" | "skill_updated" | "skill_created" | "skill_restored"
   | "noticed" | "researched" | "could_not_find" | "skipped" | "undo";
 /** One line of activity.jsonl: one thing the expert did. `summary`: what; `why`: one sentence; `ok: false` with
- *  `error` for a change that was refused; `quiet` for the lines hidden unless asked (counted, noticed). */
+ *  `error` for a change that was refused; `quiet` for the lines hidden unless asked. `noticed`: a first
+ *  sighting, kept but not yet used in answers. */
 export interface ExpertActivity {
   id: string; ts: number; action: ExpertAction | (string & {}); target?: string; summary: string; why?: string;
   evidence?: ExpertEvidence | null; stage?: string; ok: boolean; undoable?: boolean; undone?: boolean; error?: string; quiet?: boolean;

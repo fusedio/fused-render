@@ -2,7 +2,7 @@
 // The shapes are docs/experts.md (the activity line, the lesson, the consult).
 import type { ExpertActivity, ExpertBudget, ExpertConsult, ExpertEngineRow, ExpertEvidence, ExpertItem, ExpertLastTidy, ExpertLearning } from "./api";
 
-/** How often a lesson was used: the sessions that showed it plus the answers that relied on it (`cited`, absent on an
+/** How often a lesson was used: the tasks that showed it plus the answers that relied on it (`cited`, absent on an
  *  older server: 0). */
 export const lessonUses = (it: Pick<ExpertItem, "count" | "cited">): number => Math.max(0, it.count || 0) + Math.max(0, it.cited || 0);
 
@@ -14,10 +14,10 @@ export function sortLessons(items: readonly ExpertItem[]): ExpertItem[] {
 /** "used 3×" (lessonUses; a lesson in memory was seen at least once, so never "used 0×"). */
 export const usedLabel = (it: Pick<ExpertItem, "count" | "cited">): string => `used ${Math.max(1, lessonUses(it))}×`;
 
-/** The opened lesson card's counts: "Seen in 2 sessions · relied on in 5 answers" (the second part only when the
+/** The opened lesson card's counts: "Seen in 2 tasks · relied on in 5 answers" (the second part only when the
  *  server reports `cited`). */
 export function usesLine(it: Pick<ExpertItem, "count" | "cited">): string {
-  const seen = Math.max(1, it.count || 0), parts = [`Seen in ${seen} session${seen === 1 ? "" : "s"}`];
+  const seen = Math.max(1, it.count || 0), parts = [`Seen in ${seen} task${seen === 1 ? "" : "s"}`];
   if (typeof it.cited === "number") parts.push(`relied on in ${it.cited} answer${it.cited === 1 ? "" : "s"}`);
   return parts.join(" · ");
 }
@@ -51,25 +51,30 @@ export function tidySummary(t: ExpertLastTidy | null | undefined, nowMs: number 
   return parts.length ? `Last tidy: ${parts.join(", ")}.` : "";
 }
 
-export type LessonStatus = "in-use" | "not-used" | "contradicted";
+export type LessonStatus = "in-use" | "not-used" | "contradicted" | "failed";
 export type LessonFilter = "all" | "in-use" | "not-used";
-export const LESSON_STATUS_LABEL: Record<LessonStatus, string> = { "in-use": "In use", "not-used": "Not used yet", contradicted: "Contradicted" };
+export const LESSON_STATUS_LABEL: Record<LessonStatus, string> = { "in-use": "In use", "not-used": "Not used yet", contradicted: "Contradicted", failed: "Does not work" };
 
-/** A lesson card's status marker: "contradicted" when any session showed it wrong (wins), else whether answers draw on
- *  it (`indexed === false`: not used yet; absent reads as in use). */
-export function lessonStatus(it: Pick<ExpertItem, "indexed" | "contradicted">): LessonStatus {
+/** A lesson card's status marker: "failed" for something a task showed does not work (`kind: "failed"`; wins), then
+ *  "contradicted" when any task showed it wrong, else whether answers draw on it (`indexed === false`: not used yet;
+ *  absent reads as in use). */
+export function lessonStatus(it: Pick<ExpertItem, "indexed" | "contradicted"> & Partial<Pick<ExpertItem, "kind">>): LessonStatus {
+  if (it.kind === "failed") return "failed";
   if ((it.contradicted || 0) > 0) return "contradicted";
   return it.indexed === false ? "not-used" : "in-use";
 }
 
-/** Where a lesson came from, by its trust: "taught by you" ("you said this in a session" for a correction verified in
- *  a task session, `via: "session"`), "from sessions", "found by research" ("" otherwise). */
-export function lessonSource(it: Pick<ExpertItem, "trust"> & Partial<Pick<ExpertItem, "via">>): string {
-  if (it.trust === "user") return it.via === "session" ? "you said this in a session" : "taught by you";
-  return it.trust === "outcome" ? "from sessions" : it.trust === "research" ? "found by research" : "";
+/** Where a lesson came from. By its kind first: "worked in a task" / "did not work in a task" (`kind: "worked"` /
+ *  `"failed"`). Else by its trust: "taught by you" ("you said this in a task" for a correction verified in a task,
+ *  `via: "session"`), "from tasks", "found by research" ("" otherwise). */
+export function lessonSource(it: Pick<ExpertItem, "trust"> & Partial<Pick<ExpertItem, "via" | "kind">>): string {
+  if (it.kind === "worked") return "worked in a task";
+  if (it.kind === "failed") return "did not work in a task";
+  if (it.trust === "user") return it.via === "session" ? "you said this in a task" : "taught by you";
+  return it.trust === "outcome" ? "from tasks" : it.trust === "research" ? "found by research" : "";
 }
 
-/** A lesson card's footer facts: "merged from N", "contradicted N×", "confirmed N×" (sessions that echoed the expert's
+/** A lesson card's footer facts: "merged from N", "contradicted N×", "confirmed N×" (tasks that echoed the expert's
  *  own advice; they do not raise its count), and "seen once" for a lesson answers do not draw on yet. */
 export function lessonFacts(it: Pick<ExpertItem, "indexed" | "contradicted" | "merged_from"> & Partial<Pick<ExpertItem, "confirmed">>): string[] {
   const out: string[] = [];
@@ -209,7 +214,7 @@ export function engineNote(rows: readonly ExpertEngineRow[], engine: string): st
 // ------------------------------------------------------------------ activity ----
 
 const ACTION_LABEL: Record<string, string> = { learned: "Learned", counted: "Seen again", corrected: "Corrected", forgot: "Forgot", merged: "Merged",
-  removed: "Removed", skill_updated: "Skill updated", skill_created: "Skill created", skill_restored: "Skill restored", noticed: "Noticed",
+  removed: "Removed", skill_updated: "Skill updated", skill_created: "Skill created", skill_restored: "Skill restored", noticed: "Noted",
   researched: "Researched", could_not_find: "Could not find out", skipped: "Skipped", undo: "Undo" };
 /** What the expert did, in plain words ("Skill updated"; an action this page does not know reads as itself, spaced). */
 export function actionLabel(action: string | null | undefined): string {
@@ -220,7 +225,8 @@ export function actionLabel(action: string | null | undefined): string {
 }
 
 /** The marker's tone: the warning token for a change that failed or something it could not do, the positive one for
- *  what it now knows, the accent for a skill change, muted for the rest (and for anything undone). */
+ *  what it now knows, the accent for a skill change, muted for the rest (a first sighting, `noticed`, is not yet
+ *  something it knows) and for anything undone. */
 export function actionTone(a: Pick<ExpertActivity, "action" | "ok"> & Partial<Pick<ExpertActivity, "undone">>): "ok" | "warn" | "muted" | "accent" {
   if (a.ok === false || a.action === "could_not_find") return "warn";
   if (a.undone) return "muted";
@@ -236,7 +242,7 @@ export function activityTarget(a: Pick<ExpertActivity, "action"> & Partial<Pick<
 }
 
 export type ActivityFilter = "all" | "skills" | "memory";
-const MEMORY_ACTIONS = new Set(["learned", "counted", "corrected", "forgot", "merged", "removed"]);
+const MEMORY_ACTIONS = new Set(["learned", "noticed", "counted", "corrected", "forgot", "merged", "removed"]);
 /** Which chip a line belongs under: a skill change, a memory change, or neither (notes, dead ends and undos show under All only). */
 export function activityGroup(a: Pick<ExpertActivity, "action">): "skills" | "memory" | "" {
   return a.action.startsWith("skill_") ? "skills" : MEMORY_ACTIONS.has(a.action) ? "memory" : "";
@@ -245,9 +251,10 @@ export function filterActivity(xs: readonly ExpertActivity[], f: ActivityFilter)
   return f === "all" ? [...xs] : xs.filter((a) => activityGroup(a) === f);
 }
 
-/** A quiet line (seen again, noticed): hidden unless "Show everything" is on. */
+/** A quiet line: hidden unless "Show everything" is on. The line's own `quiet` field decides; only a `counted` line
+ *  without the field (an older server) is taken as quiet. */
 export const isQuiet = (a: Pick<ExpertActivity, "action"> & Partial<Pick<ExpertActivity, "quiet">>): boolean =>
-  a.quiet === true || (a.quiet == null && (a.action === "counted" || a.action === "noticed"));
+  a.quiet === true || (a.quiet == null && a.action === "counted");
 /** The lines as listed: newest first, without the quiet ones unless `everything`. */
 export function shownActivity(xs: readonly ExpertActivity[], everything: boolean): ExpertActivity[] {
   return [...xs].filter((a) => everything || !isQuiet(a)).sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -275,13 +282,17 @@ export function learningLine(l: ExpertLearning | null | undefined): string {
   }
 }
 
-/** A line's evidence as the opened card shows it: the user's words, where it came from (the session's folder or canvas
- *  and what ran it; "a session" when only the session is known), and the file it was read in. */
-export function evidenceParts(e: ExpertEvidence | null | undefined): { quote: string; from: string; fromTitle: string; file: string } {
+/** A line's evidence as the opened card shows it: the user's words (`quote`); where it came from as one line (`from`:
+ *  "From your task on <canvas>", or "From one of your tasks" when the canvas is not known; `fromTitle`: the full
+ *  path); the files that task touched (`files`); and the file research found it in (`file`, a path source). */
+export function evidenceParts(e: ExpertEvidence | null | undefined): { quote: string; from: string; fromTitle: string; files: string[]; file: string } {
   const src = e?.source, o = src && typeof src === "object" ? src : null;
-  const file = typeof src === "string" ? src.trim() : (o?.path || "").trim();
-  const where = basename(o?.canvas) || basename(o?.target), from = [where, o?.backend || ""].filter(Boolean).join(" · ") || (e?.session ? "a session" : "");
-  return { quote: (e?.quote || "").trim(), from, fromTitle: [o?.canvas || o?.target || "", e?.session ? `session ${e.session}` : ""].filter(Boolean).join("\n"), file };
+  const file = typeof src === "string" ? src.trim() : typeof o?.path === "string" ? o.path.trim() : "";
+  const canvas = basename(typeof o?.canvas === "string" ? o.canvas : "");
+  const task = !!e?.session || (!!o && !file);
+  const from = canvas ? `From your task on ${canvas}` : task ? "From one of your tasks" : "";
+  const files = Array.isArray(o?.files) ? [...new Set(o.files.filter((f): f is string => typeof f === "string").map((f) => f.trim()).filter(Boolean))] : [];
+  return { quote: (e?.quote || "").trim(), from, fromTitle: canvas ? String(o?.canvas) : "", files, file };
 }
 
 /** The message a failed undo shows on its card: the server's `detail` (a 409 says why), else the error's own text. */
