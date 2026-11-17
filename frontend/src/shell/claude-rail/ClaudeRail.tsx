@@ -2165,6 +2165,16 @@ export function ClaudeRail({
   }, [listWord]);
   const popUp = !!card?.pop;
   const popHeld = pinModel && popUp && !!card?.held;
+  // LET GO: this + card was held and no longer is (its unpin). It stands
+  // beside the rail again at once — `popPlace` must not read it as a card
+  // that is about to be held (Bugbot on #2329: the unpinned + card stayed
+  // where it floated, the window's mark and position going a tick after the
+  // placement had been asked).
+  const popHeldOnce = useRef<{ seq: number | null; held: boolean }>({ seq: null, held: false });
+  const popSeqNow = card?.pop ? card.seq : null;
+  if (popHeldOnce.current.seq !== popSeqNow) popHeldOnce.current = { seq: popSeqNow, held: false };
+  if (popHeld) popHeldOnce.current.held = true;
+  const popLetGo = popHeldOnce.current.held && !popHeld;
   // THE + CARD MOVES WHEN PINNED (rail-move-lib; owner, 2026-11-17): it is
   // window A's, and floats at window A's position — the one the list's card
   // and the door cards read too, so a swap between them keeps it. The drag
@@ -2573,7 +2583,8 @@ export function ClaudeRail({
       // for that render it slid across the page to where the window floats
       // (owner, 2026-11-17: "window jumps"). The window is pinned while its
       // mark stands, whichever card the mark still names.
-      const floatAt = popMove.floating || (pinModel && aPinned() !== null) ? windowPos("a") : null;
+      // …but not a card that was held and LET GO (its unpin): docked.
+      const floatAt = popMove.floating || (pinModel && !popLetGo && aPinned() !== null) ? windowPos("a") : null;
       if (floatAt) return floatPlacement(floatAt, want, viewportOf(window));
       const rail = railRef.current;
       const row = rail && rowOf(rail);
@@ -2585,7 +2596,7 @@ export function ClaudeRail({
         maxHeight: want.height,
       });
     },
-    [favBox, draftCardBox, popMove.floating],
+    [favBox, draftCardBox, popMove.floating, popLetGo],
   );
   // A DRAFT'S RING IS A POPOVER DOOR (owner, 2026-11-07: a draft "behaves
   // exactly like the +"): its hover previews the New task popover on its
