@@ -14,7 +14,7 @@
 //     tick for React's capture phase to say whether the press came from the
 //     card's own tree (a menu or picker portaled out of it).
 import { useEffect, useRef, type Ref } from "react";
-import { pinWords, pressVerdict, type PressTarget, type PressWhere } from "./rail-pin-lib";
+import { pinWords, pressVerdict, viewPress, type PressTarget, type PressWhere } from "./rail-pin-lib";
 
 /** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this"; and
  *  2026-11-16, of the pin the card showed with favourites off: "copy that
@@ -103,10 +103,14 @@ export function useTempOutside(o: {
         ownSelectors: at.ownSelectors,
       });
       at.flag.inside = false;
+      // Lowered here, raised by whichever rail window the press started in
+      // (rail-pin-lib `viewPress`): another window's portaled menu is the
+      // view too, and closes nothing.
+      viewPress.inside = false;
       window.clearTimeout(tick);
       tick = window.setTimeout(() => {
         const later = now.current;
-        if (dom === "outside" && !later.flag.inside) later.close();
+        if (dom === "outside" && !later.flag.inside && !viewPress.inside) later.close();
       }, 0);
     };
     document.addEventListener("pointerdown", onDown, true);

@@ -124,7 +124,7 @@ import {
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ownPlace, type RailPlace, type RailRow } from "./claude-rail-lib";
-import { hopDropsOpen, reloadDropsOpen } from "./rail-pin-lib";
+import { hopDropsOpen, reloadDropsOpen, viewPress } from "./rail-pin-lib";
 import {
   FAV_HEIGHT,
   FAV_WIDTH,
@@ -432,6 +432,7 @@ export function FavouritePeek() {
   const pressInside = useCallback(() => {
     // The rail's outside-press watcher for a temp card (rail-pin-lib).
     favPress.inside = true;
+    viewPress.inside = true;
     if (!hovering || !hoverRow) return;
     setFavOpen(hoverRow.key);
     dismissFavHover();

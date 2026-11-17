@@ -212,36 +212,42 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     expect(show).toContain("const task = !row && renderTaskHint(p, el);");
     expect(show).toContain('if (!row && !task) renderHint(p, el.getAttribute("data-hint") || "");');
     // A host that is NOT a row must not inherit the last row's width.
-    expect(show).toContain('if (!row) p.style.width = "";');
+    expect(show).toContain('p.style.width = "";');
     expect(show.indexOf("renderRowHint(p, el)")).toBeLessThan(show.indexOf("renderTaskHint(p, el)"));
   });
 
-  it("draws the row's own order: mark, number, title, reply, count, time", () => {
+  it("draws title, count, time — no mark, number or reply (2026-11-17)", () => {
+    // "strip the left part, that is status and task id, keep the time and
+    // count as is" — and no subtitle ("not subtitle as well").
     const row = fn("renderRowHint");
-    const order = ['"hint-row-mark"', '"hint-row-id"', '"hint-row-title"', '"hint-row-reply"', '"hint-row-count"', '"hint-row-time"'].map((c) =>
-      row.indexOf(c),
-    );
+    const order = ['"hint-row-title"', '"hint-row-count"', '"hint-row-time"'].map((c) => row.indexOf(c));
     expect(order.every((i) => i > -1)).toBe(true);
-    expect([...order].sort((a, b) => a - b)).toEqual(order);
-    // The mark is the host's own drawing, cloned: the ring being pointed at.
-    expect(row).toContain("for (const kid of Array.from(el.children)) mark.append(kid.cloneNode(true));");
-    // A fact that was not given leaves no seat; the reply's seat always
-    // stands — it is the row's slack, so the facts stay at the right end.
-    expect(row).toContain('if (id) row.append(span("hint-row-id", id));');
+    expect([...order].sort((x, y) => x - y)).toEqual(order);
+    for (const gone of ["hint-row-mark", "hint-row-id", "hint-row-reply", "cloneNode"]) expect(row).not.toContain(gone);
+    for (const attr of ["data-hint-id", "data-hint-reply"]) expect(row).not.toContain(attr);
+    // A fact that was not given leaves no seat.
     expect(row).toContain("if (count) {");
     expect(row).toContain('if (when) row.append(span("hint-row-time", when));');
-    expect(row).toContain('row.append(span("hint-row-reply", (el.getAttribute("data-hint-reply") || "").trim()));');
   });
 
   it("every word a task supplies goes in as TEXT, never as markup", () => {
-    // A title or a reply is whatever a chat said; only the count's glyph —
-    // a constant of this file — is written as HTML.
+    // A title is whatever a chat said; only the count's glyph — a constant
+    // of this file — is written as HTML.
     const row = fn("renderRowHint");
     expect(row).toContain("s.textContent = text;");
     expect(row).not.toContain("innerHTML");
     expect((row.match(/insertAdjacentHTML/g) ?? []).length).toBe(1);
     expect(row).toContain('c.insertAdjacentHTML("beforeend", ROW_COUNT_ICON);');
     expect(SRC).toMatch(/const ROW_COUNT_ICON =\n\s*'<svg /);
+  });
+
+  it("says which window the ring opens, so only that one is dimmed (2026-11-17)", () => {
+    // "it darkens both instead of only … one of the window".
+    const row = fn("renderRowHint");
+    expect(row).toContain('p.setAttribute("data-row-window", el.getAttribute("data-hint-window") === "b" ? "b" : "a");');
+    // The mark goes with the row: a caption that follows must not carry it.
+    expect(fn("show")).toContain('p.removeAttribute("data-row-window");');
+    expect(fn("hideHint")).toContain('panel.removeAttribute("data-row-window");');
   });
 
   it("is as wide as the window the ring opens — clamped to the room beside the column, never under 120px", () => {
@@ -374,12 +380,15 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     // for + new button, bots and tasks as well"): window A in the Modal
     // chassis, named beside the cards. Its `::before` is the accent line.
     expect(TASKS_CSS).toContain(
-      "body:has(.hint-panel.is-row.is-on:not(.is-passing)) .claude-rail-peek > .claude-rail-peek-card::after,\nbody:has(.hint-panel.is-row.is-on:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after {\n  opacity: 1;\n}",
+      'body:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .claude-rail-peek:not(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after,\nbody:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after,\nbody:has(.hint-panel.is-row.is-on[data-row-window="b"]:not(.is-passing)) .claude-rail-peek:is(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after {\n  opacity: 1;\n}',
     );
     // No scrim for a row the SCROLL brought (2026-11-17: "when I scroll there
     // is a little flash of the overlay that comes in and goes out"): no rule
     // dims on `.is-row.is-on` alone any more.
     expect(TASKS_CSS).not.toContain("body:has(.hint-panel.is-row.is-on) ");
+    // …and none dims BOTH windows: every "on" rule names the row's window
+    // (2026-11-17: "it darkens both instead of only … one of the window").
+    expect(TASKS_CSS).not.toContain("body:has(.hint-panel.is-row.is-on:not(.is-passing))");
     const newTask = readFileSync(join(import.meta.dir, "../../styles/new-task.css"), "utf8");
     expect(newTask).toContain(".new-task-dialog::before {");
     expect(newTask).not.toContain(".new-task-dialog::after");
@@ -394,11 +403,19 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     const composer = readFileSync(join(import.meta.dir, "../../apps/claude/styles/composer.css"), "utf8");
     expect(composer).toMatch(/\.c-kebabpop \{[^}]*border: 1px solid var\(--c-border-strong\);[^}]*box-shadow: 0 6px 24px var\(--c-shadow\);/);
     expect(panel).toContain("max-width: none;");
-    expect(panel).toContain("white-space: nowrap;");
+    // THE NAME IS NEVER CLAMPED (2026-11-17: "get rid of truncation … don't
+    // truncate it"): the panel wraps, the title has no ellipsis and is the
+    // row's slack; the count and the time keep their width at the right end.
+    expect(panel).toContain("white-space: normal;");
+    expect(panel).not.toContain("white-space: nowrap;");
+    expect(panel).toContain("padding: 9px 12px;");
     expect(rule(".hint-row")).toContain("display: flex;");
-    expect(rule(".hint-row-title")).toMatch(/flex: 0 1 auto;\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;/);
-    expect(rule(".hint-row-reply")).toMatch(/flex: 1 1 0;\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;/);
-    for (const fixed of [".hint-row-mark", ".hint-row-id"]) expect(rule(fixed)).toContain("flex: 0 0 auto;");
+    expect(rule(".hint-row")).toContain("align-items: baseline;");
+    expect(rule(".hint-row")).not.toMatch(/\n  height:/);
+    expect(rule(".hint-row-title")).toMatch(/flex: 1 1 auto;\s*min-width: 0;/);
+    expect(rule(".hint-row-title")).not.toContain("text-overflow");
+    expect(rule(".hint-row-title")).not.toContain("overflow: hidden;");
     expect(TASKS_CSS).toMatch(/\.hint-row-count,\n\.hint-row-time \{\s*flex: 0 0 auto;/);
+    for (const gone of [".hint-row-mark", ".hint-row-id", ".hint-row-reply"]) expect(TASKS_CSS).not.toContain(gone);
   });
 });

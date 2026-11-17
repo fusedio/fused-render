@@ -1263,3 +1263,53 @@
     border-top-color: currentColor;
   }
 }
+
+/* -- A PINNED RAIL WINDOW'S FIRST ROW WEARS THE HOVER ROW'S GROUND (Akshil,
+   2026-11-17: "for pin, make the first row same color hover task header …
+   when we pin the first row of the header becomes same color as hover task
+   header") ---------------------------------------------------------------------
+   The ground is the one the ring's hover row stands on (tasks.css
+   `.hint-panel.is-row`: `--row-bg-hover`), so a pinned window reads as "this
+   one is held" at a glance, with no accent and no border (the pin itself is
+   the muted filled glyph, claude-rail.css). Keyed off the pin button's own
+   state — every rail window's head seats that button, so no card has to say
+   it twice. The row bleeds to the head's edges: the head's side padding is
+   taken back and given to the row. Row 2 (the title) keeps the head's ground.
+   The legacy heads (a bot's card) have their own row box. */
+.task-head:has(.rail-pin-btn.is-pinned) .task-head-row {
+  margin: 0 -10px;
+  padding: 0 10px;
+  background: var(--row-bg-hover);
+}
+.claude-rail-peek-head:has(.rail-pin-btn.is-pinned) > .claude-rail-peek-row:first-child {
+  margin: -4px -8px 0 -6px;
+  padding: 4px 8px 0 6px;
+  background: var(--row-bg-hover);
+}
+/* A head of ONE row (the Bots and Git cards, a bot's card): the row is the
+   whole head, so the ground runs down to the head's rule — the head's 5px
+   foot was left dark under it (Akshil, 2026-11-17: "header line below black,
+   not full fill?"). */
+.claude-rail-peek-head:has(.rail-pin-btn.is-pinned) > .claude-rail-peek-row:only-child {
+  margin-bottom: -5px;
+  padding-bottom: 5px;
+}
+
+/* -- A RAIL WINDOW'S TWO LINES, EVENLY SPACED (Akshil, 2026-11-17, of a pinned
+   head: "a bit ugly, can you just add a bit of padding on top and remove a
+   bit of padding from bottom … but make sure it is uniform across top,
+   middle and bottom") ----------------------------------------------------------
+   With row 1 on its own ground the two rows read as two boxes, and their air
+   did not match: 12px above and below row 1's tags (a 44px row), then 4px
+   above the title's ring and 10px under it (a 28px row with its 6px foot).
+   Now every band is 10px: row 1 is 40px (20px tags, 10 + 10), row 2 is 34px
+   (its 22px archive seat between 6px above and the 6px foot, so the 14px
+   ring has 10 + 10). The head is 75px where it was 73. Every rail window's
+   two-line head, pinned or not — a pin must not move the chat under it. */
+.task-head.is-window.is-two-line .task-head-row {
+  min-height: 40px;
+}
+.task-head.is-window.is-two-line .task-head-titlerow {
+  min-height: 34px;
+  padding-top: 6px;
+}

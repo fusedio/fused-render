@@ -1,6 +1,7 @@
 // HOVER / TEMP / PIN (rail-pin-lib.ts; owner, 2026-11-16): the parts that need
-// no DOM — the transition table row by row, the ring click's reading (a
-// double-click is the click's `detail`), the outside press's classifier, where
+// no DOM — the transition table row by row, the ring click's reading (it
+// opens, never closes, and no double-click pins: 2026-11-17), the outside
+// press's classifier (the rail and its windows are the view), where
 // a pinned task card lands, and the store halves (door cards, the bot card,
 // the hop carry) that hold the two words.
 import { describe, expect, test } from "bun:test";
@@ -12,6 +13,7 @@ import {
   frameBlurCloses,
   hopDropsOpen,
   hopKeeps,
+  inRailView,
   outsideCloses,
   pinToggle,
   pinWords,
@@ -23,6 +25,7 @@ import {
   ringClick,
   ringSelector,
   botRingSelector,
+  RAIL_VIEW_SELECTORS,
   type CardMode,
 } from "./rail-pin-lib";
 import { createDoorCardStore } from "./door-card-store";
@@ -56,16 +59,12 @@ describe("the transition table (design.md), row by row", () => {
     expect(cardStep("hover", "pin-icon")).toBe("pinned");
     expect(cardStep("temp", "pin-icon")).toBe("pinned");
   });
-  test("closed / hover / temp + double-click ring → pinned", () => {
-    for (const m of ["closed", "hover", "temp"] as const) expect(cardStep(m, "dblclick-ring")).toBe("pinned");
-    // …and it is the pin's toggle: a pinned window double-clicked is temp.
-    expect(cardStep("pinned", "dblclick-ring")).toBe("temp");
-  });
   test("temp + press inside → temp (no change)", () => expect(cardStep("temp", "press-inside")).toBe("temp"));
   test("temp + one press outside → closed", () => expect(cardStep("temp", "press-outside")).toBe("closed"));
-  test("temp + click own ring → closed; pinned + click own ring → pinned (only the unpin lets it go)", () => {
-    expect(cardStep("temp", "click-ring")).toBe("closed");
+  test("an open card + click own ring → no change: a ring opens, it is not a toggle (2026-11-17)", () => {
+    expect(cardStep("temp", "click-ring")).toBe("temp");
     expect(cardStep("pinned", "click-ring")).toBe("pinned");
+    expect(cardStep("closed", "click-ring")).toBe("temp");
   });
   test("pinned + press outside → pinned (no change)", () => expect(cardStep("pinned", "press-outside")).toBe("pinned"));
   test("pinned + pin icon → temp", () => expect(cardStep("pinned", "pin-icon")).toBe("temp"));
@@ -94,53 +93,32 @@ describe("the transition table (design.md), row by row", () => {
   });
 });
 
-describe("ringClick: the click's own count reads the double-click", () => {
-  test("a single click on a closed card's ring, or another ring, opens temp (rows 1–3)", () => {
-    expect(ringClick({ mode: "closed", own: false, detail: 1 })).toBe("open");
-    expect(ringClick({ mode: "temp", own: false, detail: 1 })).toBe("open");
+describe("ringClick: a ring opens, it never closes, and no double-click pins (owner, 2026-11-17)", () => {
+  test("a click on a closed card's ring, or another ring, opens temp (rows 1–3)", () => {
+    expect(ringClick({ mode: "closed", own: false })).toBe("open");
+    expect(ringClick({ mode: "temp", own: false })).toBe("open");
   });
   test("THE PIN IS THE WINDOW'S: a click that opens or swaps a card in a pinned window opens it pinned", () => {
-    expect(ringClick({ mode: "closed", own: false, detail: 1, windowPinned: true })).toBe("pin");
-    expect(ringClick({ mode: "closed", own: false, detail: 0, windowPinned: true })).toBe("pin");
-    expect(ringClick({ mode: "closed", own: false, detail: 1, windowPinned: false })).toBe("open");
+    expect(ringClick({ mode: "closed", own: false, windowPinned: true })).toBe("pin");
+    expect(ringClick({ mode: "closed", own: false, windowPinned: false })).toBe("open");
   });
   test("the hover card's own ring: the click makes it temp", () => {
-    expect(ringClick({ mode: "hover", own: true, detail: 1 })).toBe("open");
+    expect(ringClick({ mode: "hover", own: true })).toBe("open");
   });
-  test("a single click on its own ring closes a TEMP card; a pinned window ignores it", () => {
-    expect(ringClick({ mode: "temp", own: true, detail: 1 })).toBe("close");
-    expect(ringClick({ mode: "pinned", own: true, detail: 1 })).toBe("keep");
-    expect(ringClick({ mode: "pinned", own: true, detail: 1, windowPinned: true })).toBe("keep");
-    expect(ringClick({ mode: "pinned", own: true, detail: 0, windowPinned: true })).toBe("keep");
+  test("the ring of an OPEN card does nothing: temp stays temp, pinned stays pinned", () => {
+    expect(ringClick({ mode: "temp", own: true })).toBe("keep");
+    expect(ringClick({ mode: "temp", own: true, windowPinned: true })).toBe("keep");
+    expect(ringClick({ mode: "pinned", own: true })).toBe("keep");
+    expect(ringClick({ mode: "pinned", own: true, windowPinned: true })).toBe("keep");
   });
-  test("the second click of a double-click pins, never closes — and on the ring a pinned window shows, it unpins", () => {
-    for (const mode of MODES) {
-      if (mode !== "pinned") expect(ringClick({ mode, own: true, detail: 2 })).toBe("pin");
-      expect(ringClick({ mode, own: false, detail: 2 })).toBe("pin");
-    }
-    expect(ringClick({ mode: "pinned", own: true, detail: 2 })).toBe("unpin");
-    expect(ringClick({ mode: "pinned", own: true, detail: 2, windowPinned: true })).toBe("unpin");
-    // A third click of the burst changes nothing more.
-    expect(ringClick({ mode: "pinned", own: true, detail: 3 })).toBe("keep");
-    expect(ringClick({ mode: "temp", own: true, detail: 3 })).toBe("keep");
+  test("it never closes and never unpins, whatever the state", () => {
+    const acts = new Set<string>();
+    for (const mode of MODES) for (const own of [true, false]) for (const windowPinned of [true, false]) acts.add(ringClick({ mode, own, windowPinned }));
+    expect([...acts].sort()).toEqual(["keep", "open", "pin"]);
   });
-  test("a pinned window double-clicked walked: the first click keeps, the second unpins", () => {
-    expect(ringClick({ mode: "pinned", own: true, detail: 1, windowPinned: true })).toBe("keep");
-    expect(ringClick({ mode: "pinned", own: true, detail: 2, windowPinned: true })).toBe("unpin");
-  });
-  test("row 8 walked: an open temp card double-clicked — closes, then opens pinned (one blink)", () => {
-    let mode: CardMode = "temp";
-    const first = ringClick({ mode, own: true, detail: 1 });
-    expect(first).toBe("close");
-    mode = "closed";
-    expect(ringClick({ mode, own: false, detail: 2 })).toBe("pin");
-  });
-  test("row 9: a slow second click (the platform says detail 1) on its own ring closes", () => {
-    expect(ringClick({ mode: "temp", own: true, detail: 1 })).toBe("close");
-  });
-  test("row 20: Enter on a ring (detail 0) is a click", () => {
-    expect(ringClick({ mode: "closed", own: false, detail: 0 })).toBe("open");
-    expect(ringClick({ mode: "temp", own: true, detail: 0 })).toBe("close");
+  test("a double-click walked: the first click opens temp, the second lands on the open card and keeps it temp", () => {
+    expect(ringClick({ mode: "closed", own: false })).toBe("open");
+    expect(ringClick({ mode: "temp", own: true })).toBe("keep");
   });
 });
 
@@ -156,9 +134,9 @@ describe("pinToggle, the frame's blur, the pin's words", () => {
     expect(frameBlurCloses("pinned")).toBe(false);
     expect(frameBlurCloses("hover")).toBe(false);
   });
-  test("the hint says the double-click; pinned, it says Unpin", () => {
-    expect(pinWords(false)).toBe("Pin (double-click the ring)");
-    expect(pinWords(true)).toBe("Unpin (double-click the ring)");
+  test("the hint is the one word — the pin icon is the only pin (2026-11-17)", () => {
+    expect(pinWords(false)).toBe("Pin");
+    expect(pinWords(true)).toBe("Unpin");
   });
 });
 
@@ -178,20 +156,31 @@ describe("pressVerdict: what an outside press is (design.md 'Outside')", () => {
   test("a menu or picker the card opened (a portal: React's capture says so): inside", () => {
     expect(pressVerdict(at(), { ...o, pressedInside: true })).toBe("inside");
   });
-  test("its own door: own — the click is the toggle", () => {
+  test("its own door: own — its click opens and never closes", () => {
     expect(pressVerdict(at(own), o)).toBe("own");
   });
-  test("the page, the rail's blank, a pane, nothing at all: outside", () => {
+  test("the page, a pane, the left sidebar, nothing at all: outside", () => {
     expect(pressVerdict(at(), o)).toBe("outside");
     expect(pressVerdict(null, o)).toBe("outside");
+    expect(pressVerdict(at(".sidebar"), o)).toBe("outside");
   });
-  test("the OTHER window's card and rings count as outside (owner's ruling)", () => {
-    expect(pressVerdict(at("#claude-rail-fav-peek"), o)).toBe("outside");
-    expect(pressVerdict(at(ringSelector(".claude-rail-favs", "f")), o)).toBe("outside");
-    expect(pressVerdict(at(botRingSelector("b1")), o)).toBe("outside");
+  test("THE RAIL AND THE OTHER WINDOW ARE THE VIEW, NOT OUTSIDE (owner, 2026-11-17: 'rail and window a/b clicks don't count')", () => {
+    // The rail's blank and any ring or door on it (all inside `.claude-rail`)…
+    expect(pressVerdict(at(".claude-rail"), o)).toBe("view");
+    expect(pressVerdict(at(".claude-rail", ringSelector(".claude-rail-favs", "f")), o)).toBe("view");
+    expect(pressVerdict(at(".claude-rail", botRingSelector("b1")), o)).toBe("view");
+    // …the other window's card (every card stands in `.claude-rail-peek`)…
+    expect(pressVerdict(at(".claude-rail-peek", "#claude-rail-fav-peek"), o)).toBe("view");
+    // …and the + New task popover.
+    expect(pressVerdict(at(".modal-popover"), o)).toBe("view");
+    expect(RAIL_VIEW_SELECTORS).toEqual([".claude-rail", ".claude-rail-peek", ".modal-popover", BRIDGE_SELECTOR]);
+    expect(inRailView(at(".claude-rail"))).toBe(true);
+    expect(inRailView(at())).toBe(false);
+    expect(inRailView(null)).toBe(false);
   });
   test("outsideCloses: only a temp card, only an outside press", () => {
     expect(outsideCloses("temp", "outside")).toBe(true);
+    expect(outsideCloses("temp", "view")).toBe(false);
     expect(outsideCloses("temp", "own")).toBe(false);
     expect(outsideCloses("temp", "inside")).toBe(false);
     expect(outsideCloses("pinned", "outside")).toBe(false);

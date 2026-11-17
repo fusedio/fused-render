@@ -25,6 +25,7 @@ import {
 import { pinnedBots } from "./claude-rail-lib";
 import { useFavPeekState } from "./fav-peek-store";
 import { useCanvasRailPeek } from "./rail-peek-flag";
+import { viewPress } from "./rail-pin-lib";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
 
@@ -84,6 +85,7 @@ export function BotCardHost() {
       onCone={(inside) => (inside ? intent.enterCone() : intent.leaveCone())}
       onPressInside={() => {
         botPress.inside = true;
+        viewPress.inside = true;
         intent.pressStart();
       }}
       onHold={(held) => intent.hold(held)}

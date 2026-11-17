@@ -1139,9 +1139,12 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
     return false;
   };
   const row = chat("a", { task_id: "TASK-042", title: "Rename the pane noun", message_count: 7, last_reply: "Done — renamed in three files." });
-  const ROW_ATTRS = ["data-hint-row", "data-hint-id", "data-hint-count", "data-hint-when", "data-hint-width", "data-hint-width-of"];
+  const ROW_ATTRS = ["data-hint-row", "data-hint-count", "data-hint-when", "data-hint-window", "data-hint-width", "data-hint-width-of"];
+  // The row's left part, gone since 2026-11-17 ("strip the left part, that
+  // is status and task id").
+  const GONE_ATTRS = ["data-hint-id"];
 
-  test("flag on: a list ring carries the row's facts and window A's width; the rail names the edge", async () => {
+  test("flag on: a list ring carries the title, count, time and window A's width — no number; the rail names the edge", async () => {
     resetTaskHeadUnifiedFlagForTests();
     publishTaskHeadUnified({ enabled: true });
     try {
@@ -1150,14 +1153,15 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
       expect(ring).toBeDefined();
       // Opted into the row form (platform/lib/hints `renderRowHint`)…
       expect(ring!.props["data-hint-row"]).toBe("");
-      // …with the number as every task view prints it, the count, the time…
-      expect(ring!.props["data-hint-id"]).toBe("T042");
+      // …with the title, the count and the time (2026-11-17: "strip the left
+      // part, that is status and task id, keep the time and count as is"):
+      // no number is handed over any more.
+      expect(ring!.props["data-hint-title"]).toBe("Rename the pane noun");
       expect(ring!.props["data-hint-count"]).toBe("7");
       expect(String(ring!.props["data-hint-when"]).length).toBeGreaterThan(0);
-      // …the title and the reply the row prints (the reply even where the
-      // old caption was the title alone)…
-      expect(ring!.props["data-hint-title"]).toBe("Rename the pane noun");
-      expect(ring!.props["data-hint-reply"]).toBe("Done — renamed in three files.");
+      for (const a of GONE_ATTRS) expect(a in ring!.props).toBe(false);
+      // …and the window it opens, the one the scrim dims: A.
+      expect(ring!.props["data-hint-window"]).toBe("a");
       // …and the width of the window this ring opens: A's, never dragged.
       expect(ring!.props["data-hint-width"]).toBe(String(PEEK_WIDTH));
       // …or, while that window stands, its width on screen — a drag included
@@ -1186,6 +1190,9 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
       expect(FAV_WIDTH).not.toBe(PEEK_WIDTH);
       expect(foot[0]!.props["data-hint-width"]).toBe(String(FAV_WIDTH));
       expect(foot[0]!.props["data-hint-width-of"]).toBe(`#${FAV_PEEK_ID}.is-on`);
+      // …and names window B as the one its row dims; the list's rings name A.
+      expect(foot[0]!.props["data-hint-window"]).toBe("b");
+      for (const ring of list) expect(ring.props["data-hint-window"]).toBe("a");
       for (const ring of list) {
         expect(ring.props["data-hint-width"]).toBe(String(PEEK_WIDTH));
         expect(ring.props["data-hint-width-of"]).toBe("#claude-rail-peek.is-on, #claude-rail-tasks-peek.is-on, #claude-rail-bots-peek.is-on, #claude-rail-git-peek.is-on, .modal-popover .modal-dialog");

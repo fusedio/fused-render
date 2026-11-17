@@ -16,6 +16,8 @@ import {
   favHoverKey,
   resetFavHoverForTests,
   favPeekState,
+  FAV_BOX_RELEASE_MS,
+  flushFavBoxReleaseForTests,
   publishFavBox,
   publishFavBoxFor,
   botCardUp,
@@ -439,8 +441,37 @@ describe("favourite card box (avoid)", () => {
     await settle();
     expect(favPeekState().favBox).toEqual(box);
     publishFavBoxFor(true, box);
+    flushFavBoxReleaseForTests();
     await settle();
     expect(favPeekState().favBox).toBeNull();
+  });
+  it("a closing window B lets go of its box a beat later, so a window A closing in the same press never re-places (2026-11-17)", async () => {
+    // "window B closes first and then window A closes, but during that split
+    // second it shifts down a bit".
+    const box = { left: 10, top: 20, width: 300, height: 200 };
+    const other = { left: 10, top: 60, width: 300, height: 160 };
+    publishFavBox(box, "fav");
+    await settle();
+    // The null is NOT heard at once: window A still sees the box…
+    publishFavBox(null, "fav");
+    await settle();
+    expect(favPeekState().favBox).toEqual(box);
+    // …until the beat is over.
+    await new Promise((r) => setTimeout(r, FAV_BOX_RELEASE_MS + 30));
+    await settle();
+    expect(favPeekState().favBox).toBeNull();
+    // A box published inside the beat (window B reopening, or the other kind
+    // taking it) is heard at once and cancels the release.
+    publishFavBox(box, "fav");
+    await settle();
+    publishFavBox(null, "fav");
+    publishFavBox(other, "bot");
+    await settle();
+    expect(favPeekState().favBox).toEqual(other);
+    await new Promise((r) => setTimeout(r, FAV_BOX_RELEASE_MS + 30));
+    await settle();
+    expect(favPeekState().favBox).toEqual(other);
+    expect(FAV_BOX_RELEASE_MS).toBeLessThanOrEqual(100);
   });
   it("window B has one box: a card that is going never clears the other kind's box", async () => {
     const fav = { left: 10, top: 20, width: 300, height: 200 };
@@ -461,11 +492,13 @@ describe("favourite card box (avoid)", () => {
     await settle();
     expect(favPeekState().favBox).toEqual(bot);
     publishFavBox(null, "bot");
+    flushFavBoxReleaseForTests();
     await settle();
     expect(favPeekState().favBox).toBeNull();
     // An owner-less null (a reset, a hover) clears whatever stands.
     publishFavBox(bot, "bot");
     publishFavBox(null);
+    flushFavBoxReleaseForTests();
     await settle();
     expect(favPeekState().favBox).toBeNull();
   });

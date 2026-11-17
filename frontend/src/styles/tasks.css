@@ -497,11 +497,14 @@ button.tasks-caret,
 .hint-panel.is-task.is-reply {
   max-width: min(46ch, 60vw);
 }
-/* THE TASK'S ROW IN ONE LINE (hints.ts `renderRowHint`; Akshil, 2026-11-16):
-   a rail ring whose hover opens no card shows the Tasks list's own row — the
-   ring, the number, the title, the reply, the count, the time — as wide as
-   the window that ring opens (the panel's inline width). Only the title and
-   the reply give; every mark and fact keeps its width. */
+/* THE TASK'S NAME AND FACTS BESIDE ITS RING (hints.ts `renderRowHint`;
+   Akshil, 2026-11-16): a rail ring whose hover opens no card shows the task
+   in a panel as wide as the window that ring opens (the panel's inline
+   width). Since 2026-11-17 the left part is gone and nothing is clamped
+   ("strip the left part, that is status and task id, keep the time and count
+   as is. And don't truncate it"): the title, whole — wrapping when it is
+   longer than its room — then the count and the time, fixed, at the right
+   end on the title's first line. */
 .hint-panel.is-row {
   box-sizing: border-box;
   /* THE TASKS ROW UNDER THE POINTER, IN THE APP'S OWN POPOVER DRESS (Akshil,
@@ -523,11 +526,14 @@ button.tasks-caret,
   border-color: var(--nt-card-border-strong);
   box-shadow: 0 6px 24px var(--shadow-md);
   max-width: none;
-  padding: 0 12px;
+  /* One line is the 36px row it always was (17.5px of text + 18); more
+     lines keep the same air above and below. */
+  padding: 9px 12px;
   font-size: 13px;
   font-weight: 400;
-  white-space: nowrap;
-  overflow-wrap: normal;
+  /* The name wraps, never clamps: a long one takes a second line. */
+  white-space: normal;
+  overflow-wrap: anywhere;
   border-radius: 8px;
 }
 /* …AND THE RAIL'S WINDOWS STEP BACK UNDER A SCRIM WHILE THE ROW IS UP (Akshil,
@@ -573,53 +579,38 @@ button.tasks-caret,
    goes out"): rings sliding under a resting pointer raise their rows and
    each scroll tick takes them down again; the windows stay as they are until
    the pointer itself moves onto a ring. */
-body:has(.hint-panel.is-row.is-on:not(.is-passing)) .claude-rail-peek > .claude-rail-peek-card::after,
-body:has(.hint-panel.is-row.is-on:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after {
+/* ONLY THE WINDOW THE RING OPENS (Akshil, 2026-11-17: "when I hover task
+   items when there is a task open on window A/B it darkens both instead of
+   only … one of the window"): the row says whose it is (`data-row-window`,
+   hints.ts) — a list ring's is window A (a task's card, Tasks / Bots / Git,
+   the + popover), a favourite's is window B (the favourite's card, a bot's).
+   The other window is not what the reader is about to replace, and stays
+   lit. */
+body:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .claude-rail-peek:not(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after,
+body:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after,
+body:has(.hint-panel.is-row.is-on[data-row-window="b"]:not(.is-passing)) .claude-rail-peek:is(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after {
   opacity: 1;
 }
 .hint-row {
   display: flex;
-  align-items: center;
+  /* The facts sit on the title's FIRST line, however many it takes. */
+  align-items: baseline;
   gap: 8px;
-  height: 36px;
   min-width: 0;
-}
-.hint-row-mark {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-}
-.hint-row-id {
-  flex: 0 0 auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
 }
 .hint-row-title {
-  flex: 0 1 auto;
+  /* The title is the row's slack: it takes what the facts leave, and wraps. */
+  flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-weight: 500;
   color: var(--fg);
-}
-.hint-row-reply {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 12px;
-  font-style: italic;
-  color: var(--fg-muted);
 }
 .hint-row-count,
 .hint-row-time {
   flex: 0 0 auto;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   color: var(--fg-muted);
 }
 .hint-row-count {
