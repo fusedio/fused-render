@@ -1,5 +1,5 @@
 """experts core: store, model, readtools, memory, the inbox and the lessons step of the Learn loop
-(docs/experts-autonomous.md). No real model, no network beyond a loopback fake of `/api/ai`."""
+(docs/experts.md). No real model, no network beyond a loopback fake of `/api/ai`."""
 from __future__ import annotations
 
 import json

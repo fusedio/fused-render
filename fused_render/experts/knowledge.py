@@ -1,4 +1,4 @@
-"""The only writer of an expert's memory and skills (docs/experts-autonomous.md `knowledge.py`).
+"""The only writer of an expert's memory and skills (docs/experts.md `knowledge.py`).
 
 `apply(bot, change)` makes one change, saves what `undo` needs under `history/`, and appends one line to
 `activity.jsonl`. It never raises for a bad change: the line says `ok: false` and why. `undo` puts a lesson back as
@@ -30,6 +30,8 @@ TITLE_CAP = 80
 DEFAULT_HEADING = "Learned lessons"
 SECTION_OPS = ("add", "replace", "remove")
 CHANGED_SINCE = "changed since; undo the later change first"
+UNDO_WHY = "You undid this."
+LINKED_UNDO_WHY = "Undone together with the skill change."
 
 _META_LINE = re.compile(r"^(#+\s*)?(name|title|trigger)\s*:", re.I)
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
@@ -523,7 +525,7 @@ def _log(bot, line) -> dict:
 
 
 def apply(bot, change: dict) -> dict:
-    """Make one change (docs/experts-autonomous.md, the ops table) and return the activity line written for it.
+    """Make one change (docs/experts.md, the ops table) and return the activity line written for it.
     Never raises for a bad change: the line has `ok: false` and `error`. A change may carry `summary` (replaces the
     line's own) and `quiet: true` (the UI hides the line unless asked)."""
     c = change if isinstance(change, dict) else {}
@@ -537,6 +539,8 @@ def apply(bot, change: dict) -> dict:
             "ok": True, "undoable": False, "undone": False, "error": ""}
     if c.get("quiet") is True:
         line["quiet"] = True
+    if c.get("because"):  # the activity line this change follows: undoing that one undoes this one too
+        line["because"] = str(c["because"])
     hist = None
     with store.lock(bot):
         try:
@@ -559,11 +563,20 @@ def apply(bot, change: dict) -> dict:
         return _log(bot, line)
 
 
-def undo(bot, activity_id: str) -> dict:
+def _undo_line(bot, orig, why) -> dict:
+    return _log(bot, {"id": store.new_id("a"), "ts": time.time(), "action": "undo", "target": orig["id"],
+                      "summary": "Undid: " + str(orig.get("summary") or orig.get("action") or ""), "why": why,
+                      "evidence": {}, "stage": "", "ok": True, "undoable": False, "undone": False, "error": ""})
+
+
+def undo(bot, activity_id: str, why: str = UNDO_WHY) -> dict:
     """Undo one applied change and return the undo's own activity line. Raises `Refused` when there is nothing to
-    undo, it was undone already, or a skill's file is no longer what that change left."""
+    undo, it was undone already, or a skill's file is no longer what that change left. Every not yet undone line
+    whose `because` is this line's id (the lessons a skill change took out of memory) is undone with it, each
+    logged as its own undo line."""
     with store.lock(bot):
-        orig = next((r for r in _lines(bot) if r["id"] == activity_id), None)
+        rows = _lines(bot)
+        orig = next((r for r in rows if r["id"] == activity_id), None)
         if orig is None:
             raise Refused("no such activity")
         if orig["undone"]:
@@ -578,9 +591,15 @@ def undo(bot, activity_id: str) -> dict:
             _write(path, hist.get("before"))
         else:
             _restore_lessons(bot, hist.get("before") or {})
-        return _log(bot, {"id": store.new_id("a"), "ts": time.time(), "action": "undo", "target": activity_id,
-                          "summary": "Undid: " + str(orig.get("summary") or orig.get("action") or ""), "why": "",
-                          "evidence": {}, "stage": "", "ok": True, "undoable": False, "undone": False, "error": ""})
+        line = _undo_line(bot, orig, why)
+        for r in rows:
+            if r.get("because") != activity_id or r["undone"] or not r.get("undoable"):
+                continue
+            linked = store.read_json(_history_path(bot, r["id"]), None)
+            if isinstance(linked, dict) and linked.get("kind") == "lesson":
+                _restore_lessons(bot, linked.get("before") or {})
+                _undo_line(bot, r, LINKED_UNDO_WHY)
+        return line
 
 
 def activity(bot, limit=100, before=None, quiet=True) -> list:

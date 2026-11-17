@@ -1,4 +1,4 @@
-"""Learn, step 2: research on the questions the expert could not answer (docs/experts-autonomous.md "research").
+"""Learn, step 2: research on the questions the expert could not answer (docs/experts.md "research").
 
 An unsure consult leaves a `gap` entry in the inbox. The lessons step records it here (`record`: the same
 question after normalisation is one gap, counted once per distinct consult; `merge` folds a question asked in
@@ -8,6 +8,8 @@ run each (`engine.research`):
 - FOUND (the run cites a real file inside the expert's roots that it actually read) -> a `lesson_add` change,
   trust `research`, its source file in `evidence`; the gap is "answered".
 - NOT FOUND -> `attempts += 1`, the gap stays "open", and a `note could_not_find` line says why.
+- OUT OF ATTEMPTS (and nothing changed in the sources) -> one visible `note could_not_find`, once per gap
+  (`reported` on the gap), so a question that will not be researched again is never only a quiet "noticed" line.
 
 Nobody is asked anything. Research limits (`may_research`): `max_attempts` is a hard cap, at most one run per
 gap per `RESEARCH_EVERY_S` (24 h), and a gap at the cap gets one more run only when the expert's skills or read
@@ -206,6 +208,23 @@ def repairable(bot) -> list:
     return rows[:REPAIR_PER_RUN]
 
 
+def gave_up(bot) -> list:
+    """The open gaps that are out of attempts, whose sources did not change since the last attempt (so
+    `may_research` skips them for good) and that were not reported yet. [] when research is off."""
+    m = store.manifest(bot)["gaps"]
+    if not m["research"]:
+        return []
+    fp, out = None, []
+    for g in listing(bot):
+        if g["status"] != "open" or g.get("reported") or int(g.get("attempts") or 0) < m["max_attempts"]:
+            continue
+        stored = str(g.get("research_fp") or "")
+        fp = sources_fp(bot) if stored and fp is None else fp
+        if not stored or fp == stored:
+            out.append(g)
+    return out
+
+
 def accept(bot, res) -> dict | None:
     """A research result as a finding `{"answer","refs"}`, or None: `found` true, a non-empty answer, and at least
     one ref that is an existing file inside the expert's roots which the run actually read."""
@@ -228,7 +247,16 @@ def accept(bot, res) -> dict | None:
 
 
 def step(bot, ctx):
-    """Step 2 of a Learn run: one research run per repairable gap; found -> a lesson, not found -> a note."""
+    """Step 2 of a Learn run: one research run per repairable gap; found -> a lesson, not found -> a note. A gap
+    that is out of attempts and will not be researched again gets one visible note, once."""
+    for g in gave_up(bot):
+        line = yield {"op": "note", "action": "could_not_find",
+                      "summary": f"Could not find an answer to: {g['question'][:300]}",
+                      "why": f"I looked {int(g.get('attempts') or 0)} times and will look again only when my "
+                             "skills or folders change.",
+                      "evidence": {"item": g["id"], "session": (g.get("sessions") or [""])[-1]}}
+        if line is None or line.get("ok"):
+            _update(bot, g["id"], reported=True)
     for g in repairable(bot):
         _update(bot, g["id"], researched_at=time.time(), research_fp=sources_fp(bot))
         try:
@@ -250,6 +278,9 @@ def step(bot, ctx):
                 _update(bot, g["id"], status="answered", finding=finding, error="")
                 continue
             error = str(line.get("error") or "the answer could not be stored")
-        _update(bot, g["id"], attempts=int(g.get("attempts") or 0) + 1, error=error)
+        attempts = int(g.get("attempts") or 0) + 1
+        # The note below is the visible line for a gap that is now out of attempts.
+        _update(bot, g["id"], attempts=attempts, error=error,
+                **({"reported": True} if attempts >= store.manifest(bot)["gaps"]["max_attempts"] else {}))
         yield {"op": "note", "action": "could_not_find", "summary": f"Could not find an answer to: {g['question'][:300]}",
                "why": error[:300], "evidence": evidence}

@@ -1,4 +1,4 @@
-"""`/api/experts/*` (docs/experts-autonomous.md "HTTP") against a real server (`client`).
+"""`/api/experts/*` (docs/experts.md "HTTP") against a real server (`client`).
 
 The expert is a bot written straight through the bots store with
 `kind: "expert"`; every model-facing function (`consult.consult`,
@@ -168,6 +168,7 @@ def test_activity_undo_and_seen(client, expert, monkeypatch):
     status, body = _json(client.post(f"/api/experts/{BID}/activity/{a['id']}/undo", {}))
     assert status == 200 and body["ok"] is True
     assert body["item"]["action"] == "undo" and body["item"]["target"] == a["id"]
+    assert body["item"]["why"] == "You undid this."
     assert memory.items(expert) == []
     status, body = _json(client.post(f"/api/experts/{BID}/activity/{a['id']}/undo", {}))
     assert status == 409 and "already undone" in body["detail"]

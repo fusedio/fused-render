@@ -23,7 +23,7 @@ DEFAULT_MANIFEST = {
                     "answer_contradicted", "unanswered"],
     "engine": "auto",
     "model": "",
-    # Whether the expert learns in the background (docs/experts-autonomous.md). Off: sessions are still noticed.
+    # Whether the expert learns in the background (docs/experts.md). Off: sessions are still noticed.
     "learning": True,
     "memory": {"consolidate_at": 3, "consolidate_after_s": 86400, "propose_at": 3,
                "index_lines": 200,
@@ -31,7 +31,7 @@ DEFAULT_MANIFEST = {
                # consolidation also tidies (deletes stale, rarely used lessons; promotes heavily used ones).
                "limit": 50, "tidy_at": 30, "stale_days": 14, "rare_uses": 2, "heavy_uses": 5},
     "shipped": "",
-    "gaps": {"research": True, "ask_after": 2, "max_attempts": 2, "ask_every_s": 86400},
+    "gaps": {"research": True, "max_attempts": 2},
 }
 ENGINE_CHOICES = ("auto", "claude", "codex", "copilot")
 
@@ -98,9 +98,7 @@ def manifest(bot) -> dict:
     g = DEFAULT_MANIFEST["gaps"]
     out["gaps"] = {
         "research": gaps["research"] if isinstance(gaps.get("research"), bool) else g["research"],
-        "ask_after": _int(gaps.get("ask_after"), g["ask_after"], 1),
         "max_attempts": _int(gaps.get("max_attempts"), g["max_attempts"], 1),
-        "ask_every_s": _int(gaps.get("ask_every_s"), g["ask_every_s"], 0),
     }
     if isinstance(raw.get("shipped"), str):
         out["shipped"] = raw["shipped"]

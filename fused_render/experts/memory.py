@@ -1,4 +1,4 @@
-"""An expert's lessons (docs/experts-autonomous.md): `<expert>/memory.json`
+"""An expert's lessons (docs/experts.md): `<expert>/memory.json`
 = `{"version": 1, "items": [Item]}`. Any part may call the read functions; the mutators are called only by
 `knowledge.py`, the one writer (`cite`, a usage counter, is the exception: answers call it).
 

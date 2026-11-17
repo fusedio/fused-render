@@ -1,4 +1,4 @@
-"""The inbox, Notice's side (docs/experts-autonomous.md "Files"): what capture saw in a session.
+"""The inbox, Notice's side (docs/experts.md "Files"): what capture saw in a session.
 
 One JSON file per entry in `<expert>/observations/pending/`; Learn (`consolidate.py`) reads it there and moves
 it to `observations/done/` with an `outcome`. Kinds: capture's (`repeated_request`, `user_correction`,

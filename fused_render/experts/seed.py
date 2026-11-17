@@ -1,4 +1,4 @@
-"""Shipped experts (docs/experts.md §4 `seed.py`, docs/experts-autonomous.md).
+"""Shipped experts (docs/experts.md).
 
 Each folder under `SHIPPED_DIR` is one expert: `expert.json` (`{"name",
 "manifest", "face"?}`), `instructions.md` and `skills/*.md` (the skills format:

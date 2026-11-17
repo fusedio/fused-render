@@ -1,4 +1,4 @@
-"""Learn, step 3: lessons into skills (docs/experts-autonomous.md "distill").
+"""Learn, step 3: lessons into skills (docs/experts.md "distill").
 
 A lesson has earned a skill when it was seen `propose_at` times, when tidy's budget says it is used a lot
 (`tidy.promote_ready`), or when it is the user's verified correction of a rule a skill states (the lessons step
@@ -193,7 +193,7 @@ def _write(bot, lessons, correction=None):
         return
     skill = change.get("skill") or next((s["name"] for s in bot.skills() if s["name"] not in before), "")
     for i in lessons:
-        yield {"op": "lesson_remove", "id": i["id"], "reason": "promoted", "skill": skill,
+        yield {"op": "lesson_remove", "id": i["id"], "reason": "promoted", "skill": skill, "because": line["id"],
                "why": f"It is now part of the skill “{skill}”."}
 
 

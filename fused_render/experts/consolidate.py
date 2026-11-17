@@ -1,4 +1,4 @@
-"""Learn: the one loop (docs/experts-autonomous.md "Learn : one loop").
+"""Learn: the one loop (docs/experts.md "Learn : one loop").
 
 `run(bot, force=False)` is one pass, synchronously; `start` runs it in a background thread; `status` says
 whether one is running, its stage and how many inbox entries wait. Nothing here waits for a person and nothing
@@ -21,7 +21,7 @@ says `learning: false`.
 The inbox is `<expert>/observations/pending/*.json`; a handled entry moves to `observations/done/` with what
 happened to it (`outcome`).
 
-The lessons step, rule by rule (unchanged from docs/experts.md §13):
+The lessons step, rule by rule (docs/experts.md "Capture"):
 
 - `taught` / `forget` (chat, `by_user` true only): a `user` lesson, or the matching lessons leave. No model.
 - An entry whose `confirms` names an existing lesson is credited to it with no model decision. For the rest ONE

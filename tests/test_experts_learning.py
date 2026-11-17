@@ -1,4 +1,4 @@
-"""How experts learn (docs/experts-autonomous.md "Learn : one loop"): a verified user correction takes effect at
+"""How experts learn (docs/experts.md "Learn : one loop"): a verified user correction takes effect at
 once (trust user, via session; replace / narrow / unparseable), only independent evidence raises a count, lessons
 that earned a skill are written into it at once (distill), a corrected skill rule is rewritten, and everything is
 on the activity log. No real model: `model.text` answers from a queue (`fake_text`, from test_experts_core)."""
@@ -294,6 +294,9 @@ def test_a_lesson_seen_often_enough_is_written_into_a_skill_at_once(bot, fake_te
     # Nothing waits for anyone: no pending state is left anywhere, and undo puts the file back.
     knowledge.undo(bot, lines[0]["id"])
     assert "Legends" not in _file(bot)
+    # The lesson line carries the skill line's id, so the rule is back in memory, not in neither place.
+    assert lines[1]["because"] == lines[0]["id"]
+    assert sorted(i["id"] for i in memory.items(bot)) == sorted([extra["id"], lesson["id"]])
 
 
 def test_no_fitting_skill_makes_a_new_one_and_an_unreadable_draft_falls_back_to_bullets(bot, fake_text):

@@ -377,7 +377,7 @@ _DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | Non
     (re.compile(rf"^/api/bots/{_BOT}/steps/[A-Za-z0-9_.-]+$"), frozenset({"GET"}), None),
     (re.compile(rf"^/api/bots/{_BOT}/send$"), frozenset({"POST"}), None),
     (re.compile(rf"^/api/bots/{_BOT}/({'|'.join(_DOOR_BOT_OPS)})$"), frozenset({"POST"}), None),
-    # Experts (docs/experts-autonomous.md): the Bots app's Expert pane. Reads,
+    # Experts (docs/experts.md): the Bots app's Expert pane. Reads,
     # plus marking the activity log as seen; never `consult` (an agent's
     # door), `capture` (reads the Mac's transcripts on demand), `learn`,
     # `undo` (both change what the expert knows) or `settings`.

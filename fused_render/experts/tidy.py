@@ -1,5 +1,4 @@
-"""Learn, step 4: the memory budget (docs/experts-autonomous.md "tidy"; rules unchanged from docs/experts.md
-"Memory budget").
+"""Learn, step 4: the memory budget (docs/experts.md "Memory budget").
 
 Memory holds at most `limit` lessons (manifest `memory.limit`, 50). When it holds more than `tidy_at` (30), the
 end of a Learn run also tidies it. This module writes nothing: `step` yields `lesson_remove` / `lesson_merge`

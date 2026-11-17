@@ -267,7 +267,7 @@ export interface Bot {
   events: BotEvent[];
 }
 
-// ------------------------------------------------------------------ experts (docs/experts-autonomous.md) ----
+// ------------------------------------------------------------------ experts (docs/experts.md) ----
 export type ExpertEngine = "auto" | "claude" | "codex" | "copilot";
 /** bot.meta["expert"] with every default filled (experts.store.manifest). */
 export interface ExpertManifest {
@@ -636,7 +636,7 @@ export const api = {
 
 const XP = "/api/experts";
 const xid = (id: string) => `${XP}/${encodeURIComponent(id)}`;
-/** /api/experts/… (docs/experts-autonomous.md "HTTP"). An expert's id is its bot id. */
+/** /api/experts/… (docs/experts.md "HTTP"). An expert's id is its bot id. */
 export const expertApi = {
   list: () => get<ExpertRow[]>(XP, "experts"),
   activity: (id: string, o: { limit?: number; before?: string; quiet?: boolean } = {}) => {

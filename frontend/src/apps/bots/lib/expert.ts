@@ -1,5 +1,5 @@
 // Pure helpers for an expert's panels (components/ExpertPane.tsx): ordering and the short strings the cards show.
-// The shapes are docs/experts-autonomous.md (the activity line, the lesson, the consult).
+// The shapes are docs/experts.md (the activity line, the lesson, the consult).
 import type { ExpertActivity, ExpertBudget, ExpertConsult, ExpertEngineRow, ExpertEvidence, ExpertItem, ExpertLastTidy, ExpertLearning } from "./api";
 
 /** How often a lesson was used: the sessions that showed it plus the answers that relied on it (`cited`, absent on an

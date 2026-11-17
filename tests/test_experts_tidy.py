@@ -1,4 +1,4 @@
-"""experts memory budget (docs/experts-autonomous.md "tidy"): usage tracking, and the tidy step (delete / merge
+"""experts memory budget (docs/experts.md "tidy"): usage tracking, and the tidy step (delete / merge
 with code-enforced guard rails, the hard limit, heavy-use promotion through distill), asserted on memory and the
 activity log. No real model."""
 from __future__ import annotations

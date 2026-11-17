@@ -1,4 +1,4 @@
-"""Research (docs/experts-autonomous.md "research"): unsure consults become gap entries in the inbox; a Learn run
+"""Research (docs/experts.md "research"): unsure consults become gap entries in the inbox; a Learn run
 records and groups them, researches the open ones, turns a grounded finding into a `research` lesson with its
 source, and logs "could not find" for the rest. Nobody is ever asked. `experts.model.text` / `tool_turn` are
 fakes: no model, no network, no Chrome."""
@@ -96,11 +96,9 @@ def _found(path, answer="ANSWER is 42", read=True, refs=None):
 
 # ------------------------------------------------------------------ records ---
 def test_manifest_gap_defaults(expert):
-    assert store.manifest(expert)["gaps"] == {"research": True, "ask_after": 2, "max_attempts": 2,
-                                              "ask_every_s": 86400}
-    _set_gaps(expert, research=False, ask_after="x")
-    assert store.manifest(expert)["gaps"] == {"research": False, "ask_after": 2, "max_attempts": 2,
-                                              "ask_every_s": 86400}
+    assert store.manifest(expert)["gaps"] == {"research": True, "max_attempts": 2}
+    _set_gaps(expert, research=False, max_attempts="x", ask_after=5, ask_every_s=1)  # the old asking keys are gone
+    assert store.manifest(expert)["gaps"] == {"research": False, "max_attempts": 2}
 
 
 def test_record_dedupes_and_counts_once_per_consult(expert):
@@ -318,6 +316,30 @@ def test_a_touched_gap_at_the_cap_is_not_researched_again(expert, monkeypatch):
     assert after["attempts"] == 2 and after["count"] == 2 and after["status"] == "open"
 
 
+def test_a_gap_out_of_attempts_is_reported_once_as_could_not_find(expert, monkeypatch):
+    g = _capped(expert)
+    _no_research(monkeypatch)
+    consolidate.run(expert, force=True)
+    lines = [ln for ln in knowledge.activity(expert) if ln["action"] == "could_not_find"]
+    assert len(lines) == 1 and "quiet" not in lines[0] and lines[0]["stage"] == "research"
+    assert lines[0]["summary"] == "Could not find an answer to: What is ANSWER?"
+    assert lines[0]["why"] and lines[0]["evidence"]["item"] == g["id"]
+    assert _gap(expert, g["id"])["reported"] is True and _gap(expert, g["id"])["attempts"] == 2
+    _gap_obs(expert, "What is ANSWER?", "c1")  # asked again, another run: no second line
+    consolidate.run(expert, force=True)
+    consolidate.run(expert, force=True)
+    assert len([ln for ln in knowledge.activity(expert) if ln["action"] == "could_not_find"]) == 1
+
+
+def test_the_attempt_that_uses_up_the_cap_is_its_own_report(expert, monkeypatch):
+    g = gaps.record(expert, "What is ANSWER?", consult="c0")
+    gaps._update(expert, g["id"], attempts=1)
+    monkeypatch.setattr(xmodel, "tool_turn", lambda bot, prompt, **k: NOT_FOUND)
+    assert [c["action"] for c in gaps.step(expert, {})] == ["could_not_find"]
+    assert _gap(expert, g["id"])["reported"] is True and gaps.gave_up(expert) == []
+    assert list(gaps.step(expert, {})) == []
+
+
 def test_a_gap_is_researched_at_most_once_a_day(expert, monkeypatch):
     g = gaps.record(expert, "What is ANSWER?", consult="c0")
     gaps._update(expert, g["id"], attempts=1, researched_at=time.time() - 3600)
@@ -336,7 +358,8 @@ def test_changed_sources_allow_one_more_research_at_the_cap(expert, folder, monk
     assert [x["id"] for x in gaps.repairable(expert)] == [g["id"]]
     runs = []
     monkeypatch.setattr(xmodel, "tool_turn", lambda bot, prompt, **k: runs.append(1) or NOT_FOUND)
-    assert [c["action"] for c in gaps.step(expert, {})] == ["could_not_find"]
+    # (two lines: the legacy gap is reported as given up, the other is researched once more)
+    assert [c["action"] for c in gaps.step(expert, {})] == ["could_not_find", "could_not_find"]
     g2 = _gap(expert, g["id"])
     assert runs == [1] and g2["attempts"] == 3 and g2["research_fp"] == gaps.sources_fp(expert)
     gaps._update(expert, g["id"], researched_at=time.time() - 2 * 86400)  # a day later: still no change

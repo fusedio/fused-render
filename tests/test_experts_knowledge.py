@@ -1,4 +1,4 @@
-"""`experts/knowledge.py`, the only writer of memory and skills (docs/experts-autonomous.md): every op, the activity
+"""`experts/knowledge.py`, the only writer of memory and skills (docs/experts.md): every op, the activity
 line, undo of a lesson (item level) and of a skill (whole file, refused when it changed since), the read-back
 check, sections no op names staying byte for byte, unread / seen, the rule that nothing else writes, and the seed's
 update rule for shipped skills. The skill store is the real `Bot.skills` code; no model."""
@@ -78,6 +78,48 @@ def _skill(bot, body=BODY):
 
 def _claims(bot):
     return [i["claim"] for i in memory.items(bot)]
+
+
+# -------------------------------------------------------------- linked undo ---
+def _promoted(bot):
+    """A lesson written into a skill the way distill does it: the skill line, then a `lesson_remove` that carries
+    the skill line's id as `because`."""
+    made = _skill(bot)
+    a = knowledge.apply(bot, {"op": "lesson_add", "claim": "Rows and files agree.", "why": "w"})
+    b = knowledge.apply(bot, {"op": "lesson_add", "claim": "Use hyphens.", "why": "w"})
+    edit = knowledge.apply(bot, {"op": "skill_edit", "skill": "canvas-layout", "why": "w",
+                                 "ops": [{"op": "add", "heading": "Naming", "section": "Use hyphens."}]})
+    gone = [knowledge.apply(bot, {"op": "lesson_remove", "id": x["target"], "reason": "promoted",
+                                  "skill": "canvas-layout", "because": edit["id"], "why": "w"}) for x in (a, b)]
+    assert all(g["ok"] and g["because"] == edit["id"] for g in gone) and "because" not in edit
+    assert _claims(bot) == []
+    return made, edit, gone
+
+
+def test_undoing_a_skill_line_puts_back_the_lessons_it_took_out_of_memory(bot):
+    _made, edit, gone = _promoted(bot)
+    line = knowledge.undo(bot, edit["id"])
+    assert (line["target"], line["why"]) == (edit["id"], "You undid this.")
+    assert b"Naming" not in _file(bot, "canvas-layout")
+    assert sorted(_claims(bot)) == ["Rows and files agree.", "Use hyphens."]  # the rule is in memory again
+    undos = [r for r in knowledge.activity(bot) if r["action"] == "undo"]
+    assert sorted(r["target"] for r in undos) == sorted([edit["id"]] + [g["id"] for g in gone])  # one line each
+    assert {r["why"] for r in undos if r["target"] != edit["id"]} == {"Undone together with the skill change."}
+    rows = {r["id"]: r for r in knowledge.activity(bot)}
+    assert all(rows[g["id"]]["undone"] for g in gone)
+    with pytest.raises(knowledge.Refused, match="already undone"):
+        knowledge.undo(bot, gone[0]["id"])
+
+
+def test_a_lesson_line_is_undone_alone_and_not_again_with_its_skill_line(bot):
+    _made, edit, gone = _promoted(bot)
+    alone = knowledge.undo(bot, gone[0]["id"])  # allowed: the skill keeps the rule, memory has it again
+    assert alone["why"] == "You undid this." and _claims(bot) == ["Rows and files agree."]
+    assert b"Naming" in _file(bot, "canvas-layout")
+    knowledge.undo(bot, edit["id"])
+    undos = [r["target"] for r in knowledge.activity(bot) if r["action"] == "undo"]
+    assert sorted(undos) == sorted([edit["id"]] + [g["id"] for g in gone])  # the first lesson line: once
+    assert sorted(_claims(bot)) == ["Rows and files agree.", "Use hyphens."]
 
 
 # ------------------------------------------------------------------ lessons ---

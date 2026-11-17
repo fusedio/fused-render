@@ -1,4 +1,4 @@
-"""Rule 1 of docs/experts-autonomous.md, enforced statically: the expert has three parts (Notice, Learn, Answer)
+"""Rule 1 of docs/experts.md, enforced statically: the expert has three parts (Notice, Learn, Answer)
 that meet only at files. No module of one part imports a module of another part, at module level or inside a
 function, by `import` or by name through importlib."""
 from __future__ import annotations

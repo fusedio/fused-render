@@ -1,4 +1,4 @@
-// An expert's preview column (docs/experts-autonomous.md "UI"): no browser, so in place of the screenshot, live view
+// An expert's preview column (docs/experts.md "UI"): no browser, so in place of the screenshot, live view
 // and info sections it shows what the expert did and knows, on three tabs in the Browser | Terminal strip's style:
 //   Activity  (default) everything it did by itself, newest first under day dividers, each a card: what it did, when,
 //             the summary and why; opened: what it rests on (your words, where it came from, the file). A change that
