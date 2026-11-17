@@ -220,18 +220,18 @@ test("a slow write does not clobber a newer copy the user made while it was in f
 
 // Open With marks the row that IS the default, so picking it clears `_mode`
 // and any other row writes one. The default is the shared `defaultMode`: on a
-// canvas node file that is the preferred `udf` (PT-8), never Code — Code must
+// canvas node file that is the preferred `_udf` (PT-8), never Code — Code must
 // write `_mode=code`, or the click lands back on the node view.
 test("Open With: on a node file the node view is the default and Code writes _mode", () => {
   const picked: Array<[string, boolean]> = [];
   const modes = [
     { mode: "code", path: "/t/code/template.html", icon: null },
-    { mode: "udf", path: "/t/udf/native", icon: null, conditional: true, native: true, prefer: true },
+    { mode: "_udf", path: null, icon: null, conditional: true, prefer: true },
     { mode: "api", path: "/t/api/template.html", icon: null },
   ];
   const rows = buildOpenWithItems(modes as never, (m, isDefault) => picked.push([m, isDefault]));
   for (const row of rows as MenuItem[]) row.onClick?.();
-  expect(picked).toEqual([["code", false], ["udf", true], ["api", false]]);
+  expect(picked).toEqual([["code", false], ["_udf", true], ["api", false]]);
 });
 
 test("Open With: without a preferred entry the first unconditional mode is the default", () => {

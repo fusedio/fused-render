@@ -9,6 +9,9 @@
 const SENTINEL_NAMES: Record<string, string> = {
   _render: "Preview",
   _listing: "Listing",
+  // The canvas node view (SPEC §53.3): the mode is the NODE, whatever its
+  // kind (a UDF, a widget, an HTML node, a note).
+  _udf: "Node",
 };
 
 // Registry keys whose conventional casing a generic capitalize would destroy.
@@ -23,9 +26,6 @@ const NICE_NAMES: Record<string, string> = {
   sql: "SQL",
   pdf: "PDF",
   mcp: "MCP",
-  // The canvas node view (templates/udf, SPEC §53.3): the mode is the NODE,
-  // whatever its kind (a UDF, a widget, an HTML node, a note).
-  udf: "Node",
 };
 
 export function modeTitle(mode: string): string {

@@ -49,7 +49,7 @@ export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts)
 }
 
 // THE ONE EXCEPTION TO "a missing verdict shows": the canvas node view
-// (`udf`, SPEC §53.3). Its gate answers yes for a handful of files behind an
+// (`_udf`, SPEC §53.3). Its gate answers yes for a handful of files behind an
 // opt-in feature and no for every other `.py`/`.json`/`.html`/`.md`, so
 // reading a failed conditions call as "visible" would offer — and, where it is
 // the default candidate, open — a node view on files that are not nodes. It
@@ -136,15 +136,16 @@ export function unavailableReason(mode: string): string {
   return UNAVAILABLE_REASONS[mode] ?? "Not available here";
 }
 
-// The canvas node view's mode (templates/udf, a native template).
-export const NODE_MODE = "udf";
+// The canvas node view's mode: the `_udf` shell sentinel (SPEC PT-12,
+// §53.3) — no template folder, drawn by apps/canvases through the shell's
+// native-view registry, gated server-side (`SENTINEL_CONDITIONS`).
+export const NODE_MODE = "_udf";
 
-// The node view's entry: the core NATIVE `udf` template (stat's `native:
-// true`). The server never lets a user folder shadow a core native template
-// (D1310), so a `udf` entry without the flag would come from another server
-// or a future rule; it is then an ordinary template, framed like any other.
-export function isNodeViewEntry(entry: Pick<TemplateEntry, "mode" | "native">): boolean {
-  return entry.mode === NODE_MODE && entry.native === true;
+// The node view's entry: the `_udf` sentinel (`path: null`). The sentinel
+// namespace is shell-owned, so no folder can claim the name; a folder called
+// `udf` is an ordinary template, framed like any other.
+export function isNodeViewEntry(entry: Pick<TemplateEntry, "mode" | "path">): boolean {
+  return entry.mode === NODE_MODE && entry.path === null;
 }
 
 // The modes a pane may offer while it previews a git snapshot (`_snapshot`):
@@ -152,7 +153,7 @@ export function isNodeViewEntry(entry: Pick<TemplateEntry, "mode" | "native">): 
 // as the workbench holds it now, never as of a commit, so under "Showing this
 // file as of commit …" it would show the wrong era. Without a snapshot the
 // list is returned as is.
-export function modesUnderSnapshot<T extends Pick<TemplateEntry, "mode" | "native">>(
+export function modesUnderSnapshot<T extends Pick<TemplateEntry, "mode" | "path">>(
   entries: T[],
   snapshotSha: string | null | undefined
 ): T[] {

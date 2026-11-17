@@ -1,7 +1,7 @@
 // The canvas NODE VIEW (SPEC §53.3, §53.4): one node of a cloned canvas,
 // rendered live by the hosted workbench in a frame — the node file's default
 // content mode, its code one switch away. Mounted by the explorer's preview
-// for the native `udf` mode — the content pane, a layout pane — through the
+// for the `_udf` sentinel mode — the content pane, a layout pane — through the
 // shell's native-view registry (platform/ui/NativeView), so this file loads with the
 // rest of the canvases chunk and never with the main bundle.
 //

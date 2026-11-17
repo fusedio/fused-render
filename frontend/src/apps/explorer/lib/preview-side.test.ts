@@ -1048,12 +1048,13 @@ describe("Preview records the remembered tab only on an explicit pick", () => {
 // fresh mount on the URL left behind.
 describe("a canvas node file in the file view (TemplatePreview's chain)", () => {
   const code: TemplateEntry = t("code");
-  const native = { conditional: true, native: true } as const;
-  // stat on a node-shaped path with Canvases on: udf gated, native, preferred.
-  const NODE = [code, { ...t("udf"), ...native, prefer: true }, gatedClaude];
-  // stat on any other `.py`, or with Canvases off: udf gated, native, unmarked.
-  const PLAIN = [code, { ...t("udf"), ...native }, gatedClaude];
-  const YES = { udf: true, claude: true };
+  // The `_udf` sentinel as stat ships it: no folder, gated.
+  const node = { ...t("_udf"), path: null, conditional: true } as const;
+  // stat on a node-shaped path with Canvases on: `_udf` gated, preferred.
+  const NODE = [code, { ...node, prefer: true }, gatedClaude];
+  // stat on any other `.py`, or with Canvases off: `_udf` gated, unmarked.
+  const PLAIN = [code, node, gatedClaude];
+  const YES = { _udf: true, claude: true };
 
   function paint(templatesIn: TemplateEntry[], search: string, mountMode: string, conditions: ConditionVerdicts) {
     const templates = visibleModes(templatesIn, conditions);
@@ -1104,12 +1105,12 @@ describe("a canvas node file in the file view (TemplatePreview's chain)", () => 
   it("opens on the node view, with no code editor painted first, and a silent URL", () => {
     const { first, settled } = open(NODE, "", YES);
     // First paint: the "checking" placeholder, not Code.
-    expect(first.shown).toBe("udf");
+    expect(first.shown).toBe("_udf");
     expect(first.checking).toBe(true);
     // The verdict lands: the node view, in the content pane.
-    expect(settled.shown).toBe("udf");
+    expect(settled.shown).toBe("_udf");
     expect(settled.checking).toBe(false);
-    expect(settled.menu).toEqual(["code", "udf"]);
+    expect(settled.menu).toEqual(["code", "_udf"]);
     expect(settled.url).toBe("");
   });
 
@@ -1117,9 +1118,9 @@ describe("a canvas node file in the file view (TemplatePreview's chain)", () => 
     const { first, settled } = open(NODE, "", YES);
     expect(settled.activeSide).toBe("claude");
     expect(settled.sideMenu).toEqual(["claude", "git"]);
-    expect(first.sideMenu).not.toContain("udf");
+    expect(first.sideMenu).not.toContain("_udf");
     // Even when asked for by name: an unknown companion falls to the default.
-    expect(open(NODE, "?_side=udf", YES).settled.activeSide).toBe("claude");
+    expect(open(NODE, "?_side=_udf", YES).settled.activeSide).toBe("claude");
   });
 
   it("Code is written as `_mode=code`, survives a reload, and Node again clears it", () => {
@@ -1131,23 +1132,23 @@ describe("a canvas node file in the file view (TemplatePreview's chain)", () => 
     expect(reload.first.shown).toBe("code");
     expect(reload.first.checking).toBe(false);
     expect(reload.settled.shown).toBe("code");
-    expect(pick(url, "udf", reload.settled.defaultMode)).toBe("");
+    expect(pick(url, "_udf", reload.settled.defaultMode)).toBe("");
   });
 
-  it("a no, or a failed conditions call ({}), falls back to Code with udf nowhere", () => {
-    for (const settledV of [{ udf: false, claude: true }, {}] as ConditionVerdicts[]) {
+  it("a no, or a failed conditions call ({}), falls back to Code with the node view nowhere", () => {
+    for (const settledV of [{ _udf: false, claude: true }, {}] as ConditionVerdicts[]) {
       const { first, settled } = open(NODE, "", settledV);
       expect(first.checking).toBe(true);
       expect(settled.shown).toBe("code");
       expect(settled.checking).toBe(false);
-      expect(settled.menu).not.toContain("udf");
-      expect(settled.sideMenu).not.toContain("udf");
+      expect(settled.menu).not.toContain("_udf");
+      expect(settled.sideMenu).not.toContain("_udf");
       expect(settled.url).toBe("");
     }
   });
 
   it("a plain .py, or Canvases off (no `prefer`): Code at once, as before", () => {
-    for (const settledV of [{ udf: false, claude: true }, {}] as ConditionVerdicts[]) {
+    for (const settledV of [{ _udf: false, claude: true }, {}] as ConditionVerdicts[]) {
       const { first, settled } = open(PLAIN, "", settledV);
       expect(first.shown).toBe("code");
       expect(first.checking).toBe(false);

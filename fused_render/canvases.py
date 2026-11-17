@@ -1409,7 +1409,7 @@ def node_file_shape(path) -> tuple[str, str, str, str, str] | None:
     with `_`), directly in a `user/<canvas>` folder of a canvases root — else
     None. The path alone decides: no syscall on it, canvas.toml unread
     (`clone_dir_for` resolves only the fixed roots). `canvas_node_file`'s
-    first step, and all that stat asks before it marks the `udf` entry as the
+    first step, and all that stat asks before it marks the `_udf` entry as the
     default candidate (SPEC PT-8, `prefer`). Never raises."""
     try:
         path = str(path or "")
@@ -1448,8 +1448,8 @@ def canvas_node_file(path) -> dict | None:
     shape and suffix (`node_file_shape`, no syscall), then the folder's
     canvas.toml (one stat, one read of at most NODE_TOML_MAX_BYTES), then
     one listdir for the suffix rule. `team/` and `public/` never pass
-    (`clone_dir_for`). Never raises. Shared by the `udf` template's
-    condition.py and GET /api/canvases/node, so the mode and the view agree
+    (`clone_dir_for`). Never raises. Shared by the `_udf` sentinel's gate
+    (`server.templates._node_view_gate`) and GET /api/canvases/node, so the mode and the view agree
     on what a node is. The `canvases_enabled` preference is the CALLER's
     question."""
     try:
