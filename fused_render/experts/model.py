@@ -1,6 +1,7 @@
 """Every model call an expert makes (docs/experts.md §4 `model.py`).
 
 `text` is a plain completion through the bot's usage-ledgered `_ai_call`.
+Every call also writes one line of the expert's own token ledger (`usage.py`).
 `tool_turn` is an HTTP client of this server's own `POST /api/ai` with
 native tools: it reads the NDJSON stream (`turn`, `chunk`, `tool_call`,
 `done`), answers each `tool_call` through `handler(name, input)` and
@@ -118,14 +119,83 @@ def available(bot) -> tuple[bool, str]:
     return True, ""
 
 
-def text(bot, prompt, *, system="", timeout=180) -> str:
+class _CountingAI:
+    """The `fused_ai` client as `bot._ai_call` sees it, but the call goes out as the same non-streaming
+    `POST /api/ai` that `fused_ai.text` makes, through the client's own `_post_json`, so the whole result frame
+    (its `usage`) is kept on `self.result`. A client without those helpers (a test's fake) is called as is."""
+
+    _KEYS = (("model", "model"), ("provider", "provider"), ("effort", "effort"),
+             ("system_prompt", "systemPrompt"), ("thinking", "thinking"))
+
+    def __init__(self, ai):
+        self._ai = ai
+        self.result = None
+
+    def text(self, prompt, **kw):
+        post = getattr(self._ai, "_post_json", None)
+        error = getattr(self._ai, "_error_from_payload", None)
+        if not callable(post) or not callable(error):
+            return self._ai.text(prompt, **kw)
+        body = {"prompt": prompt}
+        for k, wire in self._KEYS:
+            if kw.get(k) is not None:
+                body[wire] = kw[k]
+        timeout = kw.get("timeout") or getattr(self._ai, "_DEFAULT_TIMEOUT_S", 120.0)
+        payload = post("/api/ai", body, timeout=timeout)
+        if not payload.get("ok"):
+            raise error(200, payload)
+        result = payload.get("result") or {}
+        self.result = result if isinstance(result, dict) else None
+        return (result.get("text") if isinstance(result, dict) else "") or ""
+
+
+def _account(bot, stage, provider, model_, *, result, chars_in, chars_out, tool_calls, ms, ok):
+    """One usage line: the gateway's counts when `result` carries them, else characters / 4. Never raises."""
+    try:
+        from fused_render.experts import usage
+        real = usage.tokens_from_result(result)
+        if real is not None:
+            usage.record(bot, stage=stage, provider=provider, model=model_, input_tokens=real["input_tokens"],
+                         output_tokens=real["output_tokens"], cache_read_tokens=real["cache_read_tokens"],
+                         rounds=real["rounds"] if real["rounds"] is not None else max(1, tool_calls),
+                         ms=ms, ok=ok, estimated=False)
+        else:
+            usage.record(bot, stage=stage, provider=provider, model=model_, input_tokens=usage.estimate(chars_in),
+                         output_tokens=usage.estimate(chars_out), cache_read_tokens=None,
+                         rounds=max(1, tool_calls), ms=ms, ok=ok, estimated=True)
+    except Exception:  # noqa: BLE001 — accounting never breaks a model call
+        pass
+
+
+def _stage(stage):
+    try:
+        from fused_render.experts import usage
+        return usage.resolve_stage(stage)
+    except Exception:  # noqa: BLE001
+        return "other"
+
+
+def text(bot, prompt, *, system="", timeout=180, stage=None) -> str:
+    """One plain completion. `stage` labels its usage line (docs §4 `usage.py`); left out, it is the engine's
+    scope or the calling module's name."""
     from fused_render.bots import bot as botmod
 
+    st = _stage(stage)
     provider, model = provider_for(bot)
     kw = {"provider": provider, "model": model or None, "timeout": timeout}
     if system:
         kw["system_prompt"] = system
-    return bot._ai_call(botmod._fused_ai(), prompt, **kw)
+    ai = _CountingAI(botmod._fused_ai())
+    t0 = time.monotonic()
+    ok, out = False, ""
+    try:
+        out = bot._ai_call(ai, prompt, **kw)
+        ok = True
+        return out
+    finally:
+        _account(bot, st, provider, model, result=ai.result, chars_in=len(system or "") + len(str(prompt or "")),
+                 chars_out=len(out) if isinstance(out, str) else 0, tool_calls=0,
+                 ms=int((time.monotonic() - t0) * 1000), ok=ok)
 
 
 # ---------------------------------------------------------------- tool turns
@@ -177,7 +247,7 @@ def _answer_call(origin, turn_id, frame, handler, timeout):
     except Exception as e:  # noqa: BLE001 — a failed tool is the model's to read, never the turn's crash
         content, is_error = f"error: {type(e).__name__}: {e}", True
     if not turn_id or not call_id:
-        return
+        return content
     url = f"{origin}/api/ai/turns/{turn_id}/results"
     try:
         with _post(url, {"id": call_id, "content": content, "isError": is_error},
@@ -191,6 +261,7 @@ def _answer_call(origin, turn_id, frame, handler, timeout):
             pass
     except (OSError, ValueError):
         pass
+    return content
 
 
 def _ledger(bot, model, ok, err):
@@ -203,9 +274,11 @@ def _ledger(bot, model, ok, err):
         pass
 
 
-def tool_turn(bot, prompt, *, system, tools, handler, timeout=600) -> str:
+def tool_turn(bot, prompt, *, system, tools, handler, timeout=600, stage=None) -> str:
     """One `/api/ai` tools turn. Returns the final text; RuntimeError with the
-    server's sentence on any failure (Unavailable when no engine is on)."""
+    server's sentence on any failure (Unavailable when no engine is on). `stage`
+    labels the usage line, as for `text`."""
+    st = _stage(stage)
     provider, model = provider_for(bot)
     origin = _origin()
     body = {"prompt": prompt, "stream": True, "tools": list(tools or []), "provider": provider}
@@ -213,8 +286,24 @@ def tool_turn(bot, prompt, *, system, tools, handler, timeout=600) -> str:
         body["model"] = model
     if system:
         body["systemPrompt"] = system
-    deadline = time.monotonic() + max(1.0, float(timeout))
-    ok, err = False, None
+    t0 = time.monotonic()
+    deadline = t0 + max(1.0, float(timeout))
+    ok, err, final = False, None, None
+    # For the estimate when the gateway reports no counts: every model round re-sends the system prompt, the
+    # prompt and every tool result so far, so round i's input is base + the results before it.
+    acct = {"calls": 0, "in": 0, "out": 0, "ctx": 0, "result": None}
+    base = len(system or "") + len(str(prompt or ""))
+
+    def answered(frame):
+        content = _answer_call(origin, turn_id, frame, handler, timeout)
+        try:
+            call_chars = len(json.dumps(frame.get("input"), default=str))
+        except Exception:  # noqa: BLE001
+            call_chars = 0
+        acct["in"] += base + acct["ctx"]
+        acct["calls"] += 1
+        acct["out"] += call_chars
+        acct["ctx"] += call_chars + len(content if isinstance(content, str) else "")
     try:
         try:
             resp = _post(f"{origin}/api/ai", body, timeout)
@@ -255,13 +344,14 @@ def tool_turn(bot, prompt, *, system, tools, handler, timeout=600) -> str:
                 elif kind == "chunk":
                     chunks.append(str(frame.get("text") or ""))
                 elif kind == "tool_call":
-                    _answer_call(origin, turn_id, frame, handler, timeout)
+                    answered(frame)
                 elif kind == "done":
                     if not frame.get("ok", False):
                         e = frame.get("error")
                         msg = (e.get("message") if isinstance(e, dict) else e) or "the AI turn failed"
                         raise RuntimeError(str(msg))
                     result = frame.get("result")
+                    acct["result"] = result
                     if isinstance(result, dict) and isinstance(result.get("text"), str):
                         final = result["text"]
                     else:
@@ -280,3 +370,6 @@ def tool_turn(bot, prompt, *, system, tools, handler, timeout=600) -> str:
         raise
     finally:
         _ledger(bot, model, ok, err)
+        out_chars = acct["out"] + (len(final) if ok and isinstance(final, str) else 0)
+        _account(bot, st, provider, model, result=acct["result"], chars_in=acct["in"] + base + acct["ctx"],
+                 chars_out=out_chars, tool_calls=acct["calls"], ms=int((time.monotonic() - t0) * 1000), ok=ok)
