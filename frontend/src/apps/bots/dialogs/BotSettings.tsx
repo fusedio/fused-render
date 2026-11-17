@@ -54,7 +54,7 @@ export interface BotSettingsProps {
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
   // An expert (docs/experts.md) has no browser: no Browser tab, no Terminal; its own "Expert" tab holds the engine, the
-  // model and the Memory · Consults · Checks panels (the phone hides the preview column that shows them otherwise).
+  // model and the Activity · Memory · Consults panels (the phone hides the preview column that shows them otherwise).
   const isExpert = bot.kind === "expert";
   // On the phone (isLanHost) the Connections, Browser and Phone tabs are not drawn: their routes (Preferences,
   // /api/bots/browsers, iMessage) are Mac-side and the LAN door 404s them (lan.py `_DOORS`).

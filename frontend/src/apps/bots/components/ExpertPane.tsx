@@ -19,7 +19,7 @@
 // failed call shows the page banner once (not again on every refresh while it keeps failing).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { expertApi, type Bot, type ExpertActivity, type ExpertBudget, type ExpertConsult, type ExpertItem, type ExpertLearning, type ExpertMemory } from "../lib/api";
-import { actionLabel, actionTone, activityGroup, basename, budgetState, canUndo, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, evidenceParts,
+import { actionLabel, actionTone, activityGroup, activityTarget, basename, budgetState, canUndo, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, evidenceParts,
   filterActivity, filterConsults, filterLessons, groupByDay, groupConsultsByDay, isLongContext, learningLine, LESSON_STATUS_LABEL, lessonFacts, lessonSource,
   lessonStatus, shownActivity, sortLessons, tidySummary, undoError, usedLabel, usedLessons, usesLine, waitingLine,
   type ActivityFilter, type ConsultFilter, type ConsultStatus, type LessonFilter, type LessonStatus } from "../lib/expert";
@@ -400,7 +400,7 @@ export function ActivityCard({ a, onUndo, undoing = false, undoError: refused = 
   ) : null;
   return (
     <XCard tone={actionTone(a)} mark={actionLabel(a.action)} className={`act-${activityGroup(a) || "note"}${a.undone ? " undone" : ""}${failed ? " failed" : ""}`}
-      source={a.target || ""} right={fmtAgo(a.ts, nowMs)} rightTitle={a.ts ? fmtWhen(a.ts) : undefined} text={a.summary} facts={a.why ? [a.why] : []}
+      source={activityTarget(a)} right={fmtAgo(a.ts, nowMs)} rightTitle={a.ts ? fmtWhen(a.ts) : undefined} text={a.summary} facts={a.why ? [a.why] : []}
       initialOpen={initialOpen} foot={foot}
       detail={() => (
         <>

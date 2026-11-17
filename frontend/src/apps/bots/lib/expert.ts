@@ -210,7 +210,7 @@ export function engineNote(rows: readonly ExpertEngineRow[], engine: string): st
 
 const ACTION_LABEL: Record<string, string> = { learned: "Learned", counted: "Seen again", corrected: "Corrected", forgot: "Forgot", merged: "Merged",
   removed: "Removed", skill_updated: "Skill updated", skill_created: "Skill created", skill_restored: "Skill restored", noticed: "Noticed",
-  researched: "Researched", could_not_find: "Could not find out", skipped: "Skipped", undo: "Undone" };
+  researched: "Researched", could_not_find: "Could not find out", skipped: "Skipped", undo: "Undo" };
 /** What the expert did, in plain words ("Skill updated"; an action this page does not know reads as itself, spaced). */
 export function actionLabel(action: string | null | undefined): string {
   const a = action || "";
@@ -228,9 +228,16 @@ export function actionTone(a: Pick<ExpertActivity, "action" | "ok"> & Partial<Pi
   return a.action === "learned" || a.action === "corrected" || a.action === "researched" ? "ok" : "muted";
 }
 
+const SKILL_TARGET_ACTIONS = new Set(["skill_updated", "skill_created", "skill_restored"]);
+/** What the card header names beside the action: the skill a skill change touched. "" for every other line, whose
+ *  `target` is an internal id (a lesson's, or for an undo the line it took back). */
+export function activityTarget(a: Pick<ExpertActivity, "action"> & Partial<Pick<ExpertActivity, "target">>): string {
+  return SKILL_TARGET_ACTIONS.has(a.action) ? (a.target || "").trim() : "";
+}
+
 export type ActivityFilter = "all" | "skills" | "memory";
 const MEMORY_ACTIONS = new Set(["learned", "counted", "corrected", "forgot", "merged", "removed"]);
-/** Which chip a line belongs under: a skill change, a memory change, or neither (notes and undos show under All only). */
+/** Which chip a line belongs under: a skill change, a memory change, or neither (notes, dead ends and undos show under All only). */
 export function activityGroup(a: Pick<ExpertActivity, "action">): "skills" | "memory" | "" {
   return a.action.startsWith("skill_") ? "skills" : MEMORY_ACTIONS.has(a.action) ? "memory" : "";
 }

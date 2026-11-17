@@ -4,7 +4,7 @@ import { CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, filte
 import { filterLessons, LESSON_STATUS_LABEL, lessonFacts, lessonSource, lessonStatus } from "./expert";
 import { basename, engineNote, engineOptions, modelOptions, sortConsults, sortLessons } from "./expert";
 import { budgetState, ENGINE_HELP, LEARNING_HELP, lessonUses, tidySummary, usedLabel, usesLine } from "./expert";
-import { actionLabel, actionTone, activityGroup, canUndo, evidenceParts, filterActivity, isQuiet, learningLine, shownActivity, undoError, waitingLine } from "./expert";
+import { actionLabel, actionTone, activityGroup, activityTarget, canUndo, evidenceParts, filterActivity, isQuiet, learningLine, shownActivity, undoError, waitingLine } from "./expert";
 import { unreadByExpert } from "./expertUnread";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
@@ -188,7 +188,7 @@ describe("activity", () => {
   test("every action in plain words; an unknown one reads as itself", () => {
     const want: Record<string, string> = { learned: "Learned", counted: "Seen again", corrected: "Corrected", forgot: "Forgot", merged: "Merged", removed: "Removed",
       skill_updated: "Skill updated", skill_created: "Skill created", skill_restored: "Skill restored", noticed: "Noticed", researched: "Researched",
-      could_not_find: "Could not find out", skipped: "Skipped", undo: "Undone" };
+      could_not_find: "Could not find out", skipped: "Skipped", undo: "Undo" };
     for (const [a, l] of Object.entries(want)) expect(actionLabel(a)).toBe(l);
     expect(actionLabel("lesson_split")).toBe("Lesson split");
     expect(actionLabel("")).toBe("Did something");
@@ -200,6 +200,20 @@ describe("activity", () => {
     expect(actionTone(line({ action: "skill_created", ok: false }))).toBe("warn");
     expect(actionTone(line({ action: "could_not_find" }))).toBe("warn");
     expect(actionTone(line({ action: "forgot" }))).toBe("muted");
+  });
+  test("the header names a skill, never an internal id", () => {
+    for (const action of ["skill_updated", "skill_created", "skill_restored"]) expect(activityTarget(line({ action, target: " maps.md " }))).toBe("maps.md");
+    expect(activityTarget(line({ action: "learned", target: "m64e724f4" }))).toBe("");
+    expect(activityTarget(line({ action: "undo", target: "a62b0e4a3" }))).toBe("");
+    expect(activityTarget(line({ action: "skill_updated" }))).toBe("");
+  });
+  test("a dead end reads plainly and sits under All only", () => {
+    const a = line({ action: "could_not_find" });
+    expect(actionLabel(a.action)).toBe("Could not find out");
+    expect(activityGroup(a)).toBe("");
+    expect(filterActivity([a], "skills")).toEqual([]);
+    expect(filterActivity([a], "memory")).toEqual([]);
+    expect(filterActivity([a], "all")).toEqual([a]);
   });
   test("the Skills and Memory chips; notes and undos only under All", () => {
     const xs = ["learned", "skill_updated", "skipped", "undo", "merged", "skill_restored", "researched"].map((action, i) => line({ id: String(i), action }));

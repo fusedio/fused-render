@@ -615,7 +615,7 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap
 .bots-page .termwrap { position: relative; margin: 0 14px; height: 320px; border-radius: 14px; background: #000; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
 .bots-page:not(.stage) .shotwrap.termup { display: none; }
 div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
-/* An expert's preview column (components/ExpertPane.tsx): no browser; its Memory · Consults · Checks tabs ride the
+/* An expert's preview column (components/ExpertPane.tsx): no browser; its Activity · Memory · Consults tabs ride the
    Browser | Terminal strip (.viewsw .satab). The panels (ExpertPanels, root .xpanels) are also mounted in Settings ›
    Expert, and that dialog portals to <body>, OUTSIDE .bots-page, so every panel rule hangs off .xpanels itself and
    reads its own --xp-* tokens: the page's tokens inside .bots-page, the shadcn/shell tokens the other Settings tabs

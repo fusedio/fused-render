@@ -110,8 +110,19 @@ describe("ActivityPanel", () => {
   });
   test("an undo line is never itself undoable", () => {
     const out = renderToStaticMarkup(createElement(ActivityCard, { a: line({ action: "undo", summary: "Put the lesson back.", undoable: true }), onUndo: noop }));
-    expect(out).toContain(">Undone<");
-    expect(out).not.toContain(">Undo<");
+    expect(out).toContain(">Undo<");
+    expect(out).not.toContain(">Undone<");
+    expect(out).not.toContain("xp-undo");
+  });
+  test("the header shows a skill's name, and no internal id for a lesson or an undo", () => {
+    const card = (p: Partial<ExpertActivity>) => renderToStaticMarkup(createElement(ActivityCard, { a: line(p) }));
+    expect(card({ action: "skill_updated", target: "maps.md" })).toContain(">maps.md<");
+    expect(card({ action: "learned", target: "m64e724f4" })).not.toContain("m64e724f4");
+    const undo = card({ action: "undo", target: "a62b0e4a3", summary: "Undid: Use H3 for hex maps.", undoable: false });
+    expect(undo).not.toContain("a62b0e4a3");
+    expect(undo).toContain("Undid: Use H3 for hex maps.");
+    // The original line keeps its own marker.
+    expect(card({ action: "forgot", undone: true })).toContain(">undone<");
   });
 });
 
