@@ -6003,6 +6003,11 @@ function ChatBody(props: ChatBodyProps) {
             : null
       }
       task={inChat ? head.task : null}
+      // Two lines, the rail window's layout (Akshil, 2026-11-17) — but one row
+      // in full screen, where the head is a seat inside the pane's own header.
+      twoLine={inChat && !leadHost}
+      // No star seat while favourites are off (`placeTagOn` is that switch).
+      star={placeTagOn}
       {...(fallbackTitle ? { title: fallbackTitle } : {})}
       pending={inChat && head.pending && !headLine}
       running={running}

@@ -797,6 +797,7 @@ export function taskHeadNeed(head: HTMLElement): number {
   // (A measured stand-in in a test has no attributes; it reads as rung 0.)
   const level = typeof head.getAttribute === "function" ? Number(head.getAttribute("data-fit")) || 0 : 0;
   const isWindow = !!head.classList?.contains?.("is-window");
+  const twoLine = !!head.classList?.contains?.("is-two-line");
   let need = 0;
   for (const row of Array.from(head.children) as HTMLElement[]) {
     const cls = typeof row.className === "string" ? row.className.split(" ") : [];
@@ -815,7 +816,8 @@ export function taskHeadNeed(head: HTMLElement): number {
       // (task-head.css, "IN A RAIL WINDOW NOTHING MOVES", 2026-11-16): every
       // seat holds its box, so what is measured is what it needs. A panel's
       // folded time slot still opens under the pointer and is charged for it.
-      if (!isWindow && level >= TASK_HEAD_FACTS_LEVEL) rowWants += hoverDelta(row, ".task-head-timeslot");
+      // (Nor does a two-line panel fold its time: task-head.css.)
+      if (!isWindow && !twoLine && level >= TASK_HEAD_FACTS_LEVEL) rowWants += hoverDelta(row, ".task-head-timeslot");
     }
     need = Math.max(need, rowWants);
   }

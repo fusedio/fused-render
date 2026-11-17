@@ -73,7 +73,9 @@
 // folds to an icon: the where-tag and the door keep their words, and a long
 // place gives width instead (task-head.css `.is-two-line`). The ⋮ is the
 // host's to withhold — the rail card hands it over only once the card has
-// been pressed (RailPeek). A panel or a pane keeps the one row above.
+// been pressed (RailPeek). A panel or a pane keeps the one row above —
+// unless its host asks for the same two lines (`twoLine`, 2026-11-17: the
+// Tasks page's panel and the chat panes), keeping its own reveal.
 //
 // WHAT THE HOST OWNS. The ⋮ is the host's `<Kebab …/>` handed in whole, because
 // what it does on Archive and Delete (advance to the next task, go back to the
@@ -162,7 +164,10 @@ export interface TaskHeadProps {
    *  of the ladder folds. */
   pinNode?: ReactNode;
   /** The favourite star, the count slot's `b` (default on). Off where the
-   *  favourites switch is off (the rail card's legacy rule): the count stays. */
+   *  favourites switch is off (the rail card's legacy rule): the count stays.
+   *  A `twoLine` host MUST say so: `TaskStar` draws nothing while the switch
+   *  is off, but its element still counts as an act, and a head that pairs
+   *  its facts would trade the count for nothing under the pointer. */
   star?: boolean;
   /** A host's own star control in the star's seat. */
   starNode?: ReactNode;
@@ -240,6 +245,13 @@ export interface TaskHeadProps {
    *  a pane: the pointer on the head shows them, the facts and the ⋮ stand
    *  at rest, and the head stays one row. */
   reveal?: "window" | "slot";
+  /** TWO LINES IN A PANEL OR A PANE TOO (Akshil, 2026-11-17: "take a look at
+   *  the two line header in popup windows a/b, try that same in expanded
+   *  sidebar"): the rail window's layout — where it lives and the facts on
+   *  row 1, the task on row 2 — for a head that keeps `reveal="slot"`. The
+   *  host asks; a head with nothing to name (no task, no title, nobody
+   *  pending) stays one row. A rail window is two lines without asking. */
+  twoLine?: boolean;
   /** ↗ Open — the time slot's `b` on a task's head; always shown on a head
    *  with no task (the card's list head). Null where the head IS the page:
    *  the time stays under the pointer. */
@@ -308,6 +320,7 @@ export function TaskHead({
   count,
   when,
   reveal = "slot",
+  twoLine: twoLineAsked = false,
 }: TaskHeadProps) {
   // A SPENT PRESS HANDS THE RING BACK (the Tasks row's `.is-refiled`): up on
   // the filing press, down when the pointer leaves the head — no selector can
@@ -405,7 +418,9 @@ export function TaskHead({
   // THE TITLE MOVES ROWS HERE, which remounts it: a rename half-typed when
   // the ladder crosses the stack rung loses its draft (an accepted edge case).
   // ONLY A RAIL WINDOW STACKS ON ITS OWN (Akshil, 2026-11-16: "2nd line thing
-  // is only for small windows, not for expanded sidebar").
+  // is only for small windows, not for expanded sidebar") — the ladder never
+  // stacks a panel or a pane; one is two lines only when its host asks
+  // (`twoLine`, 2026-11-17).
   //
   // A RAIL WINDOW'S TASK HEAD IS ALWAYS TWO LINES (Akshil, 2026-11-16: "in
   // rail every task layout is a simple two-liner"), at every width:
@@ -416,7 +431,11 @@ export function TaskHead({
   // Row 1 says where the task lives and its facts; row 2 is the task itself.
   // Nothing in it folds to an icon: the where-tag and the door keep their
   // words (task-head.css `.is-two-line`).
-  const twoLine = isWindow && !!task;
+  //
+  // A PANEL OR A PANE THAT ASKS (`twoLine`, 2026-11-17) wears the same two
+  // lines — and keeps them for a chat with no task row yet (the fallback
+  // title, the skeleton), so the head does not grow a row when the task lands.
+  const twoLine = isWindow ? !!task : twoLineAsked && !!(task || title || pending);
   const stackedNow =
     twoLine || stacked === true || (stacked === "auto" && isWindow && fit >= TASK_HEAD_STACK_LEVEL);
   /** The heading the dialog is named by, when there is a dialog (`titleId`). */
@@ -623,7 +642,7 @@ export function TaskHead({
   // heads keep one slot per fact: the stayer is one node that never moves,
   // and the other trades in a box of its own.
   const hasActs = !!(starEl || openLink);
-  const clustered = isWindow && !!who && (!hasActs || (!!starEl && !!openLink));
+  const clustered = (isWindow || twoLine) && !!who && (!hasActs || (!!starEl && !!openLink));
   const factsCluster =
     clustered && (countFact || whenFact || hasActs) ? (
       <span className={"task-head-facts" + (hasActs ? " has-acts" : "")}>
@@ -760,7 +779,8 @@ export function TaskHead({
           // (Akshil, 2026-11-16: "there is still space but Open word not
           // visible"). A head with no task keeps its place — and the spacer
           // that holds its two clusters apart — up here.
-          who ? null : (
+          // (Two lines with no task: the crumb already holds the place.)
+          who || twoLine ? null : (
             <>
               {placeEl}
               <span className="task-head-idle" aria-hidden />

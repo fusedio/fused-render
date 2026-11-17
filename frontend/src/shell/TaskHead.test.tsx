@@ -520,11 +520,11 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(css).not.toContain(`.task-head.is-window:not(.is-stacked)${from(3)} ${facts} {\n  width: 0;`);
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {\n  width: 0;");
   // A panel or a pane gives the time alone; the count stays.
-  expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot {\n  width: 0;`);
+  expect(css).toContain(`.task-head:not(.is-window):not(.is-two-line)${from(3)} .task-head-timeslot {\n  width: 0;`);
   // Short on width, a panel's or a pane's door is its ↗ alone; a rail
   // window's two-line head keeps the word at every width (2026-11-16) — only
   // a window head that is not two lines (no task) folds it, from rung 5.
-  expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot .task-head-open-word,`);
+  expect(css).toContain(`.task-head:not(.is-window):not(.is-two-line)${from(3)} .task-head-timeslot .task-head-open-word,`);
   expect(css).toContain(`.task-head.is-window:not(.is-two-line)${from(5)} :is(.task-head-facts, .task-head-timeslot) .task-head-open-word {`);
   expect(css).not.toContain(`.task-head.is-window${from(5)} :is(.task-head-facts, .task-head-timeslot)`);
   // A rail window's ⋮ always stands (2026-11-16): no rule hides it or holds
@@ -536,6 +536,57 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   // The last rung caps the place; the id slot (and its Archive) never goes.
   expect(css).toContain(`.task-head[data-fit="7"] .task-head-place {\n  max-width: 96px;`);
   expect(css).not.toContain(".task-head-idslot {\n  display: none;");
+});
+
+test("a panel or a pane that asks wears the rail window's two lines, keeping its own reveal (2026-11-17)", async () => {
+  const props = {
+    twoLine: true,
+    place: createElement("span", { className: "my-place" }, "app"),
+    where: createElement("span", { className: "my-where" }, "hex"),
+    open: { href: "/x", label: "Open in Explorer", onOpen: () => {} },
+    kebab: createElement("button", { className: "my-kebab" }, "⋮"),
+  };
+  const r = render(head(props), 2000);
+  expect(cls(headNode(r))).toContain("is-two-line");
+  expect(cls(headNode(r))).toContain("is-stacked");
+  // Still a panel: the pointer on the head is what trades the slots.
+  expect(cls(headNode(r))).not.toContain("is-window");
+  // ROW 1: the lead, `folder › file`, the facts as one box, the ⋮.
+  const row1 = byClass(r, "task-head-row")[0]!;
+  const kids = (row1.children ?? []) as ReactTestRendererJSON[];
+  expect(kids.map((k) => cls(k).split(" ")[0])).toEqual(["task-head-acts", "task-head-crumb", "task-head-marks"]);
+  expect(byClass(r, "task-head-where")).toHaveLength(1);
+  expect(byClass(r, "task-head-facts")).toHaveLength(1);
+  expect(JSON.stringify(row1)).not.toContain("Rename the pane noun");
+  // ROW 2: the ring, the id slot, the title.
+  const two = JSON.stringify(byClass(r, "task-head-titlerow")[0]!);
+  const order = ["task-side-peek-status", "task-head-idslot", "Rename the pane noun"].map((w) => two.indexOf(w));
+  expect(order.every((i) => i > -1)).toBe(true);
+  expect([...order].sort((x, y) => x - y)).toEqual(order);
+
+  // A chat with no task row yet keeps the two lines (its fallback title on
+  // row 2, the place once), so the head does not grow when the task lands…
+  const fallback = render(head({ ...props, task: null, title: "Claude" }), 2000);
+  expect(cls(headNode(fallback))).toContain("is-two-line");
+  expect(JSON.stringify(byClass(fallback, "task-head-titlerow")[0]!)).toContain("Claude");
+  expect(byClass(fallback, "task-head-place")).toHaveLength(1);
+  // …and a head with nothing to name (a pane's landing) stays one row.
+  const landing = render(head({ twoLine: true, task: null }), 2000);
+  expect(cls(headNode(landing))).not.toContain("is-two-line");
+  expect(byClass(landing, "task-head-titlerow")).toHaveLength(0);
+
+  // One act alone (favourites off: the host passes `star={false}`): the
+  // facts keep a slot each, so the count stays under the pointer.
+  const noStar = render(head({ ...props, star: false }), 2000);
+  expect(byClass(noStar, "task-head-facts")).toHaveLength(0);
+  expect(byClass(noStar, "task-head-timeslot")).toHaveLength(1);
+
+  // THE CRUMB HOLDS ITS WIDTH in a panel (the ladder folds the chips and the
+  // seats instead), is cut only on the last rung, and the time never folds.
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\) \.task-head-crumb \{\s*flex: 0 0 auto;/);
+  expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\)\[data-fit="7"\] \.task-head-crumb > :is\(\.task-head-place, \.task-head-where\) \{\s*flex: 0 1 auto;\s*max-width: 96px;/);
+  expect(css).not.toContain('.task-head:not(.is-window):is([data-fit="3"]');
 });
 
 test("reveal: a rail window says so in its class; a panel or a pane does not", () => {
