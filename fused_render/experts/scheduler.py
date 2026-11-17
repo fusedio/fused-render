@@ -1,8 +1,9 @@
 """The experts' background pass (docs/experts.md §4 `scheduler.py`).
 
 One daemon timer thread, `canvas_mirror`'s shape: `start()` arms it
-(idempotent), the first `tick` runs `STARTUP_DELAY_S` after it and then every
-`TICK_S`; `shutdown()` stops it; `reset()` forgets everything (tests).
+(idempotent), the first `tick` runs `start_delay_s()` after it and then every
+`tick_s()` (`STARTUP_DELAY_S` / `TICK_S` unless overridden by a developer
+setting, docs/experts.md "Developer settings"); `shutdown()` stops it; `reset()` forgets everything (tests).
 
 `tick()`: capture due task sessions for the experts they are relevant to →
 `consolidate.run` for every expert whose observations are due → one proposal
@@ -23,6 +24,8 @@ from __future__ import annotations
 
 import importlib
 import logging
+import math
+import os
 import random
 import threading
 import time
@@ -31,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 TICK_S = 300
 STARTUP_DELAY_S = 90.0
+TICK_ENV = "FUSED_RENDER_EXPERT_TICK_S"
+START_DELAY_ENV = "FUSED_RENDER_EXPERT_START_DELAY_S"
+#: The smallest override either developer setting accepts.
+MIN_OVERRIDE_S = 5.0
 _JITTER = 0.1
 LEASE = "experts-scheduler"
 #: Due sessions read per tick; the rest wait for the next one.
@@ -151,15 +158,37 @@ def _run(out: dict, stop) -> None:
         logger.warning("experts scheduler: cards.tick failed", exc_info=True)
 
 
+def _env_seconds(name: str, default: float) -> float:
+    """`default`, or `$name` floored at `MIN_OVERRIDE_S` when it is a positive
+    number; a malformed or non-positive value is ignored. Read at call time."""
+    raw = os.environ.get(name)
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0 and math.isfinite(value):
+            return max(MIN_OVERRIDE_S, value)
+    return float(default)
+
+
+def tick_s() -> float:
+    return _env_seconds(TICK_ENV, TICK_S)
+
+
+def start_delay_s() -> float:
+    return _env_seconds(START_DELAY_ENV, STARTUP_DELAY_S)
+
+
 def _timer_loop(stop: threading.Event) -> None:
-    if stop.wait(STARTUP_DELAY_S):
+    if stop.wait(start_delay_s()):
         return
     while not stop.is_set():
         try:
             tick(stop)
         except Exception:  # noqa: BLE001 — never out of a helper thread
             logger.warning("experts scheduler: pass failed", exc_info=True)
-        if stop.wait(TICK_S * random.uniform(1 - _JITTER, 1 + _JITTER)):
+        if stop.wait(tick_s() * random.uniform(1 - _JITTER, 1 + _JITTER)):
             return
 
 

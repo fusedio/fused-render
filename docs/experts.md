@@ -386,6 +386,15 @@ One daemon timer thread (`canvas_mirror` pattern). `tick`: capture due sessions 
 each expert `consolidate.run` when `observations.due` (which also records, researches and proposes, §11) → `routes.propose` (all `proposals.candidates` as ONE
 `proposals.request`; nothing while one is preparing) → `cards.tick()`. Never raises.
 
+#### Developer settings
+
+For testing the automatic loop end to end in a dev environment only; never set them in production. Unset,
+malformed or non-positive values leave the defaults in place; each is read when used, not at import.
+
+- `FUSED_RENDER_EXPERT_IDLE_S`: idle threshold before a task session is captured (`capture.idle_s()`, default `IDLE_S` = 1800).
+- `FUSED_RENDER_EXPERT_TICK_S`: scheduler tick interval (`scheduler.tick_s()`, default `TICK_S` = 300, floored at 5).
+- `FUSED_RENDER_EXPERT_START_DELAY_S`: delay before the first tick (`scheduler.start_delay_s()`, default `STARTUP_DELAY_S` = 90, floored at 5).
+
 ### `experts/seed.py`
 ```
 seed() -> list[str]          # ids of experts created now

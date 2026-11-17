@@ -41,6 +41,7 @@ from fused_render.experts import store
 logger = logging.getLogger(__name__)
 
 IDLE_S = 1800
+IDLE_ENV = "FUSED_RENDER_EXPERT_IDLE_S"
 #: Sessions last active longer ago than this are never due: the first run on a
 #: machine must not read every transcript it ever had (an interpretation; the
 #: spec bounds only the idle side).
@@ -279,11 +280,27 @@ def _session_of(task: dict, tasks=None) -> dict | None:
             "_task": task}
 
 
+def idle_s() -> float:
+    """The idle threshold: `IDLE_S`, or `$FUSED_RENDER_EXPERT_IDLE_S` when it is
+    a positive number (a developer setting for testing the loop end to end;
+    a malformed or non-positive value is ignored). Read at call time."""
+    raw = os.environ.get(IDLE_ENV)
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0 and value != float("inf"):
+            return value
+    return float(IDLE_S)
+
+
 def due_sessions(now=None) -> list:
-    """Task sessions idle for at least `IDLE_S` (and active within
+    """Task sessions idle for at least `idle_s()` (and active within
     `LOOKBACK_S`) whose transcript was not yet captured at its current size.
     Bot sessions are not tasks (`_collect` drops them). Newest first."""
     now = time.time() if now is None else now
+    idle_min = idle_s()
     tasks = _tasks()
     marks = _watermarks()
     out = []
@@ -297,7 +314,7 @@ def due_sessions(now=None) -> list:
             continue
         # Cheap filters on the stat before any transcript read: the mtime is
         # never earlier than the last real activity.
-        if now - st.st_mtime < IDLE_S or now - st.st_mtime > LOOKBACK_S + IDLE_S:
+        if now - st.st_mtime < idle_min or now - st.st_mtime > LOOKBACK_S + idle_min:
             continue
         if _captured_size(marks, sid) == st.st_size:
             continue
@@ -305,7 +322,7 @@ def due_sessions(now=None) -> list:
         if session is None:
             continue
         idle = now - session["last_active"]
-        if idle < IDLE_S or idle > LOOKBACK_S:
+        if idle < idle_min or idle > LOOKBACK_S:
             continue
         out.append(session)
     out.sort(key=lambda s: -s["last_active"])

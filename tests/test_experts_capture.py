@@ -26,6 +26,15 @@ class _Bot:
         self.meta = {"id": bid, "name": "Canvas Expert", "kind": "expert", "expert": man}
 
 
+_DEV_ENV = ("FUSED_RENDER_EXPERT_IDLE_S", "FUSED_RENDER_EXPERT_TICK_S", "FUSED_RENDER_EXPERT_START_DELAY_S")
+
+
+@pytest.fixture(autouse=True)
+def _no_dev_settings(monkeypatch):
+    for name in _DEV_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """A fake Tasks listing of transcripts on disk, and every collaborator."""
@@ -380,3 +389,38 @@ def test_the_real_lease_is_exclusive(tmp_path, monkeypatch):
         other.close()
     finally:
         tasks_store.reset_leases_for_tests()
+
+
+def test_dev_settings_default_to_the_constants():
+    assert capture.idle_s() == capture.IDLE_S == 1800
+    assert scheduler.tick_s() == scheduler.TICK_S == 300
+    assert scheduler.start_delay_s() == scheduler.STARTUP_DELAY_S == 90.0
+
+
+def test_dev_settings_are_honoured_and_floored(monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_EXPERT_IDLE_S", "60")
+    monkeypatch.setenv("FUSED_RENDER_EXPERT_TICK_S", "30")
+    monkeypatch.setenv("FUSED_RENDER_EXPERT_START_DELAY_S", "10.5")
+    assert capture.idle_s() == 60.0
+    assert scheduler.tick_s() == 30.0
+    assert scheduler.start_delay_s() == 10.5
+    monkeypatch.setenv("FUSED_RENDER_EXPERT_IDLE_S", "2")  # no floor on the idle threshold
+    monkeypatch.setenv("FUSED_RENDER_EXPERT_TICK_S", "1")
+    monkeypatch.setenv("FUSED_RENDER_EXPERT_START_DELAY_S", "0.5")
+    assert capture.idle_s() == 2.0
+    assert scheduler.tick_s() == 5.0 and scheduler.start_delay_s() == 5.0
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "0", "-5", "nan", "inf", "1e999"])
+def test_malformed_dev_settings_are_ignored(monkeypatch, raw):
+    for name in _DEV_ENV:
+        monkeypatch.setenv(name, raw)
+    assert capture.idle_s() == 1800
+    assert scheduler.tick_s() == 300 and scheduler.start_delay_s() == 90.0
+
+
+def test_idle_override_makes_a_shorter_idle_session_due(env, monkeypatch):
+    env["add"]("recent", age=90)
+    assert capture.due_sessions(NOW) == []
+    monkeypatch.setenv("FUSED_RENDER_EXPERT_IDLE_S", "60")
+    assert [s["session_id"] for s in capture.due_sessions(NOW)] == ["recent"]
