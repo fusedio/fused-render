@@ -382,7 +382,7 @@ _DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | Non
     # `capture` (reads the Mac's transcripts on demand), `consolidate` (writes
     # memory) or `settings`.
     (re.compile(r"^/api/experts$"), frozenset({"GET"}), None),
-    (re.compile(r"^/api/experts/[A-Za-z0-9_-]+/(memory|observations|consults|checks|proposals|engines)$"),
+    (re.compile(r"^/api/experts/[A-Za-z0-9_-]+/(memory|observations|consults|checks|proposals|engines|gaps)$"),
      frozenset({"GET"}), None),
     (re.compile(r"^/api/experts/[A-Za-z0-9_-]+/(checks/run|memory/forget)$"),
      frozenset({"POST"}), None),

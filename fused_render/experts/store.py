@@ -26,6 +26,7 @@ DEFAULT_MANIFEST = {
     "memory": {"consolidate_at": 3, "consolidate_after_s": 86400, "propose_at": 3,
                "index_lines": 200},
     "shipped": "",
+    "gaps": {"research": True, "ask_after": 2, "max_attempts": 2, "ask_every_s": 86400},
 }
 ENGINE_CHOICES = ("auto", "claude", "codex", "copilot")
 
@@ -80,6 +81,14 @@ def manifest(bot) -> dict:
         "consolidate_after_s": _int(mem.get("consolidate_after_s"), d["consolidate_after_s"], 0),
         "propose_at": _int(mem.get("propose_at"), d["propose_at"], 1),
         "index_lines": _int(mem.get("index_lines"), d["index_lines"], 1),
+    }
+    gaps = raw.get("gaps") if isinstance(raw.get("gaps"), dict) else {}
+    g = DEFAULT_MANIFEST["gaps"]
+    out["gaps"] = {
+        "research": gaps["research"] if isinstance(gaps.get("research"), bool) else g["research"],
+        "ask_after": _int(gaps.get("ask_after"), g["ask_after"], 1),
+        "max_attempts": _int(gaps.get("max_attempts"), g["max_attempts"], 1),
+        "ask_every_s": _int(gaps.get("ask_every_s"), g["ask_every_s"], 0),
     }
     if isinstance(raw.get("shipped"), str):
         out["shipped"] = raw["shipped"]

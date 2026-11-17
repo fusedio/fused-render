@@ -1,6 +1,6 @@
 // Pure helpers for an expert's panels (components/ExpertPane.tsx) and its proposal card (components/ApprovalCard.tsx):
 // ordering and the short strings the rows show. The shapes are docs/experts.md §4 (Item, Consult, Run, Proposal).
-import type { ExpertCheckStatus, ExpertConsult, ExpertEngineRow, ExpertItem, ExpertProposal, ExpertScore } from "./api";
+import type { ExpertCheckStatus, ExpertConsult, ExpertEngineRow, ExpertGap, ExpertItem, ExpertProposal, ExpertScore } from "./api";
 import { fmtAgo } from "./format";
 
 /** Memory as the expert's own index reads it: most seen first, then the most recently touched. */
@@ -114,3 +114,41 @@ export function modelOptions(rows: readonly ExpertEngineRow[], engine: string, c
 export function engineNote(rows: readonly ExpertEngineRow[], engine: string): string {
   return (rows.find((r) => r.id === engine)?.note || "").trim();
 }
+
+// ------------------------------------------------------------------ gaps ----
+
+const UNRESOLVED = new Set<string>(["open", "researching", "proposed", "asked"]);
+/** Whether a gap still waits on something (open, researching, or its proposal / question is up in the chat). */
+export const gapUnresolved = (g: Pick<ExpertGap, "status">): boolean => UNRESOLVED.has(g.status);
+
+/** The number the Gaps tab label shows (0 = no number). */
+export const unresolvedGapCount = (gs: readonly Pick<ExpertGap, "status">[] | null | undefined): number => (gs || []).filter(gapUnresolved).length;
+
+/** A gap's status tag in plain words. */
+export function gapStatusLabel(g: Pick<ExpertGap, "status" | "resolution">): string {
+  switch (g.status) {
+    case "open": return "waiting";
+    case "researching": return "researching…";
+    case "proposed": return "skill proposal in chat";
+    case "asked": return "asked you in chat";
+    case "answered": return g.resolution === "user" ? "answered by you" : g.resolution === "skill" ? "answered by a new skill" : "answered";
+    case "dismissed": return "dropped";
+    default: return String(g.status || "");
+  }
+}
+
+/** The Gaps panel's two parts: unresolved (most asked first, then the most recently asked), then resolved (most
+ *  recently touched first). */
+export function splitGaps(gs: readonly ExpertGap[] | null | undefined): { unresolved: ExpertGap[]; resolved: ExpertGap[] } {
+  const all = [...(gs || [])];
+  return {
+    unresolved: all.filter(gapUnresolved).sort((a, b) => (b.count || 0) - (a.count || 0) || (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id)),
+    resolved: all.filter((g) => !gapUnresolved(g)).sort((a, b) => (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id)),
+  };
+}
+
+/** "asked 3×". */
+export const askedLabel = (count: number | null | undefined): string => `asked ${Math.max(1, count || 0)}×`;
+
+export const GAPS_INTRO = "Questions sessions asked that I could not answer. I research each one, then propose a skill or ask you.";
+export const GAPS_EMPTY = "No gaps yet. When a session asks something I cannot answer, it shows up here.";

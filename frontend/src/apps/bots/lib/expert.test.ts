@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { ExpertEngineRow, ExpertItem, ExpertProposal } from "./api";
-import { anyPreparing, basename, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, pendingLine, proposalLine, proposalText, scoreText,
+import type { ExpertEngineRow, ExpertGap, ExpertItem, ExpertProposal } from "./api";
+import { anyPreparing, askedLabel, basename, gapStatusLabel, splitGaps, unresolvedGapCount, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, pendingLine, proposalLine, proposalText, scoreText,
   scoresLine, seenLabel, sortConsults, sortLessons, splitLessons } from "./expert";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
@@ -125,5 +125,38 @@ describe("proposalText", () => {
     expect(proposalText("A\nChecks: 1/2\nB")).toBe("A\nB");
     expect(proposalText("Approve? is not last\nB")).toBe("Approve? is not last\nB");
     expect(proposalText(null)).toBe("");
+  });
+});
+
+const gap = (p: Partial<ExpertGap>): ExpertGap => ({ id: "g", question: "q", questions: [], count: 1, consults: [], sessions: [], created: 0, updated: 0,
+  status: "open", attempts: 0, finding: null, proposal: null, card_seq: null, resolution: "", error: "", ...p });
+
+describe("gaps", () => {
+  test("status wording", () => {
+    expect(gapStatusLabel(gap({ status: "open" }))).toBe("waiting");
+    expect(gapStatusLabel(gap({ status: "researching" }))).toBe("researching…");
+    expect(gapStatusLabel(gap({ status: "proposed" }))).toBe("skill proposal in chat");
+    expect(gapStatusLabel(gap({ status: "asked" }))).toBe("asked you in chat");
+    expect(gapStatusLabel(gap({ status: "answered", resolution: "skill" }))).toBe("answered by a new skill");
+    expect(gapStatusLabel(gap({ status: "answered", resolution: "user" }))).toBe("answered by you");
+    expect(gapStatusLabel(gap({ status: "dismissed", resolution: "dismissed" }))).toBe("dropped");
+  });
+  test("unresolved first, most asked first; resolved after, newest first", () => {
+    const { unresolved, resolved } = splitGaps([
+      gap({ id: "a", count: 1, status: "open" }), gap({ id: "b", count: 5, status: "asked" }), gap({ id: "c", status: "answered", updated: 1 }),
+      gap({ id: "d", count: 2, status: "researching" }), gap({ id: "e", status: "dismissed", updated: 9 }), gap({ id: "f", count: 2, status: "proposed", updated: 4 }),
+    ]);
+    expect(unresolved.map((g) => g.id)).toEqual(["b", "f", "d", "a"]);
+    expect(resolved.map((g) => g.id)).toEqual(["e", "c"]);
+    expect(splitGaps(null)).toEqual({ unresolved: [], resolved: [] });
+  });
+  test("unresolved count", () => {
+    expect(unresolvedGapCount([gap({ status: "open" }), gap({ status: "researching" }), gap({ status: "proposed" }), gap({ status: "asked" }),
+      gap({ status: "answered" }), gap({ status: "dismissed" })])).toBe(4);
+    expect(unresolvedGapCount(null)).toBe(0);
+  });
+  test("asked N×", () => {
+    expect(askedLabel(3)).toBe("asked 3×");
+    expect(askedLabel(0)).toBe("asked 1×");
   });
 });

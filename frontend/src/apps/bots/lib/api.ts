@@ -48,6 +48,8 @@ export interface BotEvent {
   /** action: the full raw tool result (<= 1500 chars), shown when the chip is opened. Notes may carry one too (unused). */
   detail?: unknown;
   options?: string[];
+  /** question: the expert asking the user about one of its knowledge gaps (ExpertGap.id); renders as any question. */
+  expert_gap?: string;
   /** Several options may be ticked; the answer is a comma-separated list (or "None"). */
   multi?: boolean;
   /** approval: the rule the card's third button writes (send with `forever: true`); absent when this call may never
@@ -317,6 +319,15 @@ export interface ExpertProposal {
   error?: string;
   skill: string | null; title: string; trigger: string; body: string; diff: string; items: string[];
   score_before: ExpertScore | null; score_after: ExpertScore | null; card_seq: number | null;
+}
+/** A question agent sessions asked that the expert could not answer (gaps.jsonl). The expert researches it in the
+ *  background: a finding becomes a skill proposal card (`proposed`); none, a question to the user in the chat (`asked`). */
+export type ExpertGapStatus = "open" | "researching" | "proposed" | "asked" | "answered" | "dismissed";
+export interface ExpertGap {
+  id: string; question: string; questions: string[]; count: number; consults: string[]; sessions: string[];
+  created: number; updated: number; status: ExpertGapStatus; attempts: number;
+  finding: { answer: string; refs: string[] } | null; proposal: string | null; card_seq: number | null;
+  resolution: "" | "skill" | "user" | "dismissed"; error: string;
 }
 export interface ExpertConsolidateReply { ran: boolean; added: string[]; bumped: string[]; ignored: number; proposed: string[] }
 /** `note`: a caveat to show under the Engine menu when this engine is picked (non-empty for Codex, whose reads are not
@@ -613,6 +624,9 @@ export const expertApi = {
   forgetMemory: (id: string, itemId: string) => post<{ removed: number }>(`${xid(id)}/memory/forget`, { id: itemId }, "expert forget"),
   observations: (id: string) => get<{ pending: ExpertObs[]; due: boolean }>(`${xid(id)}/observations`, "expert observations"),
   consults: (id: string) => get<{ consults: ExpertConsult[] }>(`${xid(id)}/consults`, "expert consults"),
+  gaps: (id: string) => get<{ gaps: ExpertGap[]; researching: string | null }>(`${xid(id)}/gaps`, "expert gaps"),
+  researchGap: (id: string, gid: string) => post<{ started: boolean }>(`${xid(id)}/gaps/${encodeURIComponent(gid)}/research`, {}, "expert research gap"),
+  dismissGap: (id: string, gid: string) => post<ExpertGap>(`${xid(id)}/gaps/${encodeURIComponent(gid)}/dismiss`, {}, "expert drop gap"),
   checks: (id: string) => get<ExpertChecks>(`${xid(id)}/checks`, "expert checks"),
   runChecks: (id: string) => post<{ run_id: string }>(`${xid(id)}/checks/run`, {}, "expert run checks"),
   proposals: (id: string) => get<{ proposals: ExpertProposal[] }>(`${xid(id)}/proposals`, "expert proposals"),

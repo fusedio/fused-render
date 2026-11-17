@@ -670,7 +670,7 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-row .xp-forget { flex: none; padding: 2px 8px; font-size: 11px; background: transparent; color: var(--xp-muted); opacity: 0; }
 .xpanels .xp-row:hover .xp-forget, .xpanels .xp-row .xp-forget:focus-visible { opacity: 1; }
 .xpanels .xp-row .xp-forget:hover { background: var(--xp-err); color: #fff; }
-@media (hover: none) { .xpanels .xp-row .xp-forget { opacity: 1; } }
+@media (hover: none) { .xpanels .xp-row .xp-forget { opacity: 1; } .xpanels .xp-row .xp-forget:disabled { opacity: .4; } }
 .xpanels .xp-fold > details { flex: 1; min-width: 0; }
 .xpanels .xp-fold summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; cursor: pointer; list-style: none; }
 .xpanels .xp-fold summary::-webkit-details-marker { display: none; }
@@ -685,6 +685,16 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-ctx { margin: 0; font-style: italic; }
 .xpanels .xp-refs { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
 .xpanels .xp-refs code { font-size: 11px; padding: 0 5px; border-radius: 5px; background: var(--xp-raised); color: var(--xp-text); }
+.xpanels .xp-tabs .xp-count { font-variant-numeric: tabular-nums; color: var(--xp-accent-text); }
+.xpanels .xp-acts { flex: none; display: inline-flex; gap: 2px; }
+.xpanels .xp-row .xp-forget:disabled { background: transparent; color: var(--xp-muted); }
+.xpanels .xp-row:hover .xp-forget:disabled { opacity: .4; }
+.xpanels .xp-row .xp-research:not(:disabled):hover { background: var(--xp-hover); color: var(--xp-text); }
+.xpanels .xp-gap-err { flex-basis: 100%; opacity: .85; overflow-wrap: anywhere; }
+.xpanels .xp-resolved > .xp-row { opacity: .6; }
+.xpanels .xp-resolved .xp-claim { color: var(--xp-muted); }
+.xpanels .xp-tag.gap-researching, .xpanels .xp-tag.gap-proposed, .xpanels .xp-tag.gap-asked { color: var(--xp-accent-text); border-color: color-mix(in srgb, var(--xp-accent-text) 45%, transparent); }
+.xpanels .xp-tag.gap-answered { color: var(--xp-ok); border-color: color-mix(in srgb, var(--xp-ok) 45%, transparent); }
 .xpanels .xp-empty { padding: 20px 8px; text-align: center; font-size: 12.5px; line-height: 1.5; color: var(--xp-muted); }
 @media (prefers-reduced-motion: reduce) { .xpanels * { animation: none !important; transition: none !important; } }
 .bots-page .shotwrap img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
