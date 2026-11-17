@@ -14,7 +14,9 @@ import botHomeImg from "@assets/fusedbot-icon-1024.png";
 import renderHomeImg from "@assets/fusedrender-icon-1024.png";
 
 interface LauncherRow {
-  kind?: "app" | "appfile" | "file" | "folder" | "bot" | "home" | "bots" | "canvas";
+  kind?: "app" | "appfile" | "file" | "folder" | "bot" | "home" | "bots" | "canvas" | "s3";
+  /** An `s3` row (launcher.py `_remote_row`): a folder in the bucket rather than an object. */
+  is_dir?: boolean;
   home?: boolean;
   /** A canvas row's Fused environment (launcher.py `_canvas_row`): the subtitle, since a prod and an unstable
    *  clone can share a name. */
@@ -36,7 +38,7 @@ interface LauncherSettings {
   row_modifier?: string;
   row_modifier_display?: string;
 }
-interface LauncherReply { apps?: LauncherRow[]; files?: LauncherRow[]; files_reason?: string }
+interface LauncherReply { apps?: LauncherRow[]; files?: LauncherRow[]; files_reason?: string; remote?: LauncherRow[] }
 
 declare global {
   interface Window {
@@ -62,7 +64,8 @@ const panel = document.getElementById("panel") as HTMLElement;
 const HDRS = { "X-Fused": "1", "Content-Type": "application/json" };
 
 const state = {
-  apps: [] as LauncherRow[], files: [] as LauncherRow[], filesReason: "", rows: [] as LauncherRow[],
+  apps: [] as LauncherRow[], files: [] as LauncherRow[], remote: [] as LauncherRow[], filesReason: "",
+  rows: [] as LauncherRow[],
   els: [] as HTMLElement[], sel: 0, seq: 0, recording: false, settings: null as LauncherSettings | null,
   lastH: 0, rowMods: ["alt"], rowSym: "⌥",
 };
@@ -92,11 +95,12 @@ async function query(text: string) {
     if (seq !== state.seq) return;
     state.apps = Array.isArray(data.apps) ? data.apps : [];
     state.files = Array.isArray(data.files) ? data.files : [];
+    state.remote = Array.isArray(data.remote) ? data.remote : [];
     state.filesReason = String(data.files_reason || "");
     // One list to select from. Empty query: apps, then files, then the bottom rows — last, so <modifier>+0 and
     // the footer read the same. Typed query: the server already ranked the bottom rows among the apps, so its
-    // order stands, then files.
-    const files = state.files;
+    // order stands, then files, then the fused-asset bucket's rows (only ever sent for a typed query).
+    const files = state.files.concat(state.remote);
     state.rows = text.trim()
       ? state.apps.concat(files)
       : state.apps.filter((a) => !a.home).concat(files, state.apps.filter((a) => a.home));
@@ -145,6 +149,11 @@ function subtitle(app: LauncherRow) {
   if (app.kind === "bot") return app.status && app.status !== "idle" ? app.status : "";
   // A file row names its folder: the name is already the title.
   if (app.kind === "file" || app.kind === "folder") return tilde(app.path.replace(/\/[^/]*$/, "") || "/");
+  // A bucket row names the folder it sits in, as an address: the bucket's own row reads as the bucket.
+  if (app.kind === "s3") {
+    const parent = app.path.replace(/\/+$/, "").replace(/\/[^/]*$/, "/");
+    return parent === "s3://" ? "S3 bucket" : parent;
+  }
   return tilde(app.path);
 }
 // The digit a row answers to. Under an empty query the shell home is <modifier>+0 (the global shortcut too), the
@@ -184,7 +193,8 @@ function rowModsHeld(e: KeyboardEvent) {
 function emptyCopy(text: string): { line: string; tip: string } {
   const line = text ? `No app, bot or file matches “${text}”` : "Nothing opened yet";
   let tip = "";
-  if (!text) tip = "Type to search every app in your workspace, your bots, and the files and folders in your home.";
+  if (!text) tip = "Type to search every app in your workspace, your bots, and the files and folders in your home"
+    + " (and the fused-asset bucket, with Canvases on).";
   else if (state.filesReason === "scanning") tip = "The file index is still scanning — files appear once it has covered your home folder.";
   else if (state.filesReason) tip = "Files are searched from the index; your home folder is not indexed yet (Preferences → Index).";
   return { line, tip };
@@ -209,17 +219,18 @@ function render() {
   }
   let sect = "";
   rows.forEach((app, i) => {
-    const kind = app.home ? "" : (app.kind === "file" || app.kind === "folder") ? "files" : "apps";
-    if (kind && kind !== sect && kind === "files") {
+    const kind = app.home ? "" : app.kind === "s3" ? "remote"
+      : (app.kind === "file" || app.kind === "folder") ? "files" : "apps";
+    if (kind && kind !== sect && (kind === "files" || kind === "remote")) {
       const h = document.createElement("li");
       h.className = "sect";
       h.setAttribute("aria-hidden", "true");
-      h.textContent = "Files";
+      h.textContent = kind === "remote" ? "Fused assets" : "Files";
       list.appendChild(h);
     }
     if (kind) sect = kind;
     const li = document.createElement("li");
-    li.className = "row" + (i === state.sel ? " sel" : "") + (kind === "files" ? " file" : "")
+    li.className = "row" + (i === state.sel ? " sel" : "") + (kind === "files" || kind === "remote" ? " file" : "")
       + (app.kind === "bot" ? " bot" : "");
     li.setAttribute("role", "option");
     li.dataset.i = String(i);
@@ -229,10 +240,11 @@ function render() {
       homeIcon(icon, app);
     } else if (app.kind === "bot") {
       icon.innerHTML = faceSvg({ id: app.id || app.path, name: app.name, face: app.face });
-    } else if (kind === "files" || app.kind === "canvas") {
+    } else if (kind === "files" || kind === "remote" || app.kind === "canvas") {
       const g = document.createElement("div");
       g.className = "glyph";
-      g.innerHTML = app.kind === "folder" ? FOLDER_SVG : app.kind === "canvas" ? CANVAS_SVG : FILE_SVG;
+      g.innerHTML = app.kind === "folder" || (app.kind === "s3" && app.is_dir) ? FOLDER_SVG
+        : app.kind === "canvas" ? CANVAS_SVG : FILE_SVG;
       icon.appendChild(g);
     } else if (app.icon) {
       const img = document.createElement("img");
@@ -294,7 +306,8 @@ function open(i: number) {
   const app = state.rows[i];
   if (!app) return;
   if (app.home) { if (app.kind === "bots") openBots(); else openHome(); return; }
-  // The native side opens by (kind, key): a bot's key is its id (the row's `path`), anything else its real path.
+  // The native side opens by (kind, key): a bot's key is its id (the row's `path`), an s3 row's its `s3://`
+  // address, anything else its real path.
   const b = bridge();
   if (b) b.postMessage({ type: "open", kind: app.kind, key: app.path });
   else location.href = app.url || "/";
@@ -313,6 +326,7 @@ function reset() {
   // click must not launch a stale row from the previous query.
   state.apps = [];
   state.files = [];
+  state.remote = [];
   state.rows = [];
   state.sel = 0;
   render();

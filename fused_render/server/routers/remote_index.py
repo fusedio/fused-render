@@ -8,9 +8,11 @@ box treats those as one condition, so they answer 200 with `enabled: false` /
 
 - GET /status → `{enabled, state: "absent"|"fetching"|"ready"|"error",
   rows, fetched_at, error}`.
-- GET /rank?q=&limit=&ranked= → `{ready, hits: [{url, key, is_dir, size,
-  mtime}], total, truncated}` — files and folders; a folder's key/url end
-  in "/" and its size/mtime are null. The query runs on a worker thread and is interrupted
+- GET /rank?q=&limit=&ranked=&under= → `{ready, hits: [{url, key, is_dir,
+  size, mtime}], total, truncated}` — files and folders; a folder's key/url
+  end in "/" and its size/mtime are null. `under` (an `s3://` folder
+  address) scopes the search to that folder's subtree — the S3 folder
+  view's search box; absent, the whole bucket (Home, the launcher). The query runs on a worker thread and is interrupted
   (duckdb `interrupt`) when the client disconnects, through the same
   `cancellable` / `CancelToken` machinery `/api/index/rank` uses; an
   abandoned request answers 499 to nobody.
@@ -43,11 +45,11 @@ def _error(message: str, code: str, status: int) -> JSONResponse:
     return JSONResponse({"error": message, "code": code}, status_code=status)
 
 
-def _rank(q: str, limit: int, ranked: bool, token) -> dict:
+def _rank(q: str, limit: int, ranked: bool, token, prefix: str = "") -> dict:
     """`remote_index.rank`, after the (throttled) retry/refresh nudge: these
     routes are how a session that only searches keeps its index current."""
     remote_index.retry_if_needed()
-    return remote_index.rank(q, limit, ranked, token)
+    return remote_index.rank(q, limit, ranked, token, prefix=prefix)
 
 
 @router.get("/api/remote-index/status")
@@ -67,7 +69,8 @@ def api_remote_index_status():
 @router.get("/api/remote-index/rank")
 async def api_remote_index_rank(request: Request, q: str = Query(default=""),
                                 limit: str = Query(default=""),
-                                ranked: str = Query(default="true")):
+                                ranked: str = Query(default="true"),
+                                under: str = Query(default="")):
     if not canvases_enabled():
         return dict(_NOT_READY)
     # Parsed here rather than typed on the signature, so a malformed value
@@ -77,9 +80,17 @@ async def api_remote_index_rank(request: Request, q: str = Query(default=""),
     except ValueError:
         return _error("'limit' must be an integer", "bad_url", 400)
     want_ranked = ranked.strip().lower() not in ("0", "false", "no", "off")
+    prefix = ""
+    if under.strip():
+        try:
+            bucket, key = remote_access.parse_url(under)
+            remote_access.require_supported(bucket)
+        except RemoteError as e:
+            return _error(e.message, e.code, 400)
+        prefix = key if (not key or key.endswith("/")) else key + "/"
     async with cancellable(request) as token:
         try:
-            return await asyncio.to_thread(_rank, q, limit_n, want_ranked, token)
+            return await asyncio.to_thread(_rank, q, limit_n, want_ranked, token, prefix)
         except Cancelled:
             logger.debug("remote index rank %r abandoned by the client", q)
             return Response(status_code=499)

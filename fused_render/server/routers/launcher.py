@@ -3,7 +3,8 @@
 
 The panel's page (`/launcher`, a Vite page: frontend/launcher.html →
 shell-dist/launcher.html, hosted by launcher_panel.py) asks the search per
-keystroke. ``running`` comes from the window manager through
+keystroke (apps, files from the local index, and objects from the
+`fused-asset` bucket's index). ``running`` comes from the window manager through
 `launcher.native_hooks["open_keys"]` — a plain attribute read, safe from
 this thread — and is empty wherever there are no windows. The settings are
 part of `/api/prefs` (shell/prefs.py: `launcher_hotkey`,
@@ -11,6 +12,7 @@ part of `/api/prefs` (shell/prefs.py: `launcher_hotkey`,
 """
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Body, Header, Query
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -109,12 +111,23 @@ def api_launcher_shown():
         return {"shown": False}
 
 
+#: The bucket search runs beside the app and file searches rather than after
+#: them, so a keystroke pays for the slower of the two, not their sum.
+_remote_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="launcher-remote")
+
+
 @router.get("/api/launcher")
 def api_launcher(q: str = Query(default="")):
     """``apps`` as before; ``files`` (and the index's coverage ``reason``
-    when it had none to give) for a non-empty query. Sync on purpose: the
-    index query blocks, and FastAPI runs a plain ``def`` in its threadpool."""
+    when it had none to give) and ``remote`` (`fused-asset` bucket rows,
+    `launcher.remote_results`) for a non-empty query. Sync on purpose: the
+    index queries block, and FastAPI runs a plain ``def`` in its threadpool."""
+    remote = _remote_pool.submit(launcher.remote_results, q) if q.strip() else None
     apps = launcher.results(q, _running())
     files = launcher.file_results(q, exclude=[a["path"] for a in apps if a.get("path")])
+    try:
+        remote_rows = remote.result() if remote is not None else []
+    except Exception:  # noqa: BLE001 — remote_results never raises; belt and braces
+        remote_rows = []
     return {"query": q, "apps": apps, "files": files["files"],
-            "files_reason": files["reason"]}
+            "files_reason": files["reason"], "remote": remote_rows}
