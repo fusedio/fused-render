@@ -2358,6 +2358,41 @@ def test_a_frame_that_keeps_skipping_with_no_edit_of_its_own_is_flagged_once(
     assert m.sync_state()["embed_heal_seq"] == 2
 
 
+def test_a_heal_the_frame_takes_in_full_settles_the_skips_with_no_disk_move(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """The heal is the page's full cut on `embed_heal_seq`, with nothing new
+    on disk. Skip holds are stamped with the rev they were skipped at and
+    drop only on a LATER rev, so the heal must come at a newer rev: taken in
+    full, it ends the streak and the holds, and the leg clears."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    clone = harness.clones / "alpha"
+
+    def write_rows(title):
+        rows = [{"udfName": "a", "x": 0, "y": 0}, {"udfName": "b", "x": 0, "y": 400, "title": title}]
+        (clone / "canvas.toml").write_text(
+            rtoml.dumps({"type": "canvas", "canvas": {"nodes": rows, "edges": []}}))
+
+    write_rows("t0")
+    first = m.cut_delta(full=True)
+    m.ack_delta(first["rev"], True)
+    for i in range(1, canvases_mod.EMBED_SKIP_STREAK_ACKS + 1):
+        write_rows(f"t{i}")
+        cut = m.cut_delta(full=False)
+        m.ack_delta(cut["rev"], True, skipped=["b"])
+    assert m.sync_state()["embed_heal_seq"] == 1
+    # The page answers the heal with a full cut; disk has not moved.
+    heal = m.cut_delta(full=True)
+    assert heal["rev"] > max(m._skip_hold.values()), (heal["rev"], m._skip_hold)
+    assert any(o.get("name") == "b" for o in heal["ops"]), heal
+    m.ack_delta(heal["rev"], True)
+    state = m.sync_state()
+    assert m._skip_hold == {}
+    assert state["embed_skipping"] is None
+    assert state["legs"]["disk_to_embed"]["state"] != "held"
+    # Nothing left to re-send: the next cut is empty.
+    assert m.cut_delta(full=False)["ops"] == []
+
+
 def test_a_stop_overtaken_during_the_merge_download_applies_nothing(
         harness, tmp_path, monkeypatch, fake_agent):
     """The next turn starts while a stale turn end downloads the server's

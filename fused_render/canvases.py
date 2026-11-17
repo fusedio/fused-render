@@ -6271,6 +6271,11 @@ class _SyncManager:
                 and now - streak["since"] < EMBED_SKIP_STREAK_S):
             return
         streak["stuck"] = True
+        # A newer rev first: a skip hold drops only on a delta cut at a rev
+        # past the one it was skipped at (`ack_delta`), and with no disk move
+        # the page's full cut would come at that same rev — taken in full, it
+        # would settle nothing and the leg would stay held.
+        self._force_recut()
         self._embed_heal_seq += 1
         names = sorted(streak["names"])
         self.log_event("disk_to_embed", "workbench holding back", ok=False,
