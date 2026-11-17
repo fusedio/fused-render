@@ -321,6 +321,16 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     expect(panel).toContain("border-color: var(--nt-card-border-strong);");
     expect(panel).toContain("box-shadow: 0 6px 24px var(--shadow-md);");
     expect(TASKS_CSS).not.toContain("is-spot");
+    // While the row is up the rail's windows stand under a light scrim
+    // (2026-11-17: "let's do scrim 30"): 55% of the app's modal scrim token —
+    // 30% black dark, 22% light — over the card, taking no pointer.
+    expect(TASKS_CSS).toContain(
+      'body:has(.hint-panel.is-row.is-on) .claude-rail-peek-card::after {\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: 50;\n  background: color-mix(in srgb, var(--scrim) 55%, transparent);\n  pointer-events: none;\n}',
+    );
+    expect(TASKS_CSS).toContain("body:has(.hint-panel.is-row.is-on) .claude-rail-peek-card {\n  position: relative;\n}");
+    const tokens = readFileSync(join(import.meta.dir, "../../styles/tokens.css"), "utf8");
+    expect(tokens).toContain("--scrim: rgba(0, 0, 0, 0.55);");
+    expect(tokens).toContain("--scrim: rgba(0, 0, 0, 0.4);");
     // The same recipe the chat's popovers wear.
     const composer = readFileSync(join(import.meta.dir, "../../apps/claude/styles/composer.css"), "utf8");
     expect(composer).toMatch(/\.c-kebabpop \{[^}]*border: 1px solid var\(--c-border-strong\);[^}]*box-shadow: 0 6px 24px var\(--c-shadow\);/);

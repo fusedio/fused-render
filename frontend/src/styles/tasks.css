@@ -516,8 +516,9 @@ button.tasks-caret,
                `.c-ctxpop`, `.c-selpop`… `--c-border-strong`; the same value
                at the root is `--nt-card-border-strong`);
        shadow  those popovers' `0 6px 24px`.
-     (Tried the same day and dropped: dimming the window behind — "feels a
-     bit off" — and a lighter grey ground with a moat — "not good enough".) */
+     (Tried the same day and dropped: fading the window's content to half —
+     "feels a bit off" — and a lighter grey ground with a moat — "not good
+     enough". What stayed is the light scrim below.) */
   background: var(--row-bg-hover);
   border-color: var(--nt-card-border-strong);
   box-shadow: 0 6px 24px var(--shadow-md);
@@ -528,6 +529,24 @@ button.tasks-caret,
   white-space: nowrap;
   overflow-wrap: normal;
   border-radius: 8px;
+}
+/* …AND THE RAIL'S WINDOWS STEP BACK UNDER A SCRIM WHILE THE ROW IS UP (Akshil,
+   2026-11-17, after trying window opacity, content dimming, a blur and six
+   scrim strengths on a live build: "let's do scrim 30"). The app's own modal
+   scrim (`--scrim`: 55% black dark, 40% light) is "quite high intensity"
+   here, so the window takes 55% of it — 30% black in a dark theme, 22% in a
+   light one — and follows every theme's token. Laid over the card's content
+   and under the row; it takes no pointer. No transition: a hint is instant. */
+body:has(.hint-panel.is-row.is-on) .claude-rail-peek-card {
+  position: relative;
+}
+body:has(.hint-panel.is-row.is-on) .claude-rail-peek-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, var(--scrim) 55%, transparent);
+  pointer-events: none;
 }
 .hint-row {
   display: flex;

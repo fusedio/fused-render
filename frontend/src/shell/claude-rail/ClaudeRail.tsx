@@ -3203,7 +3203,14 @@ export function ClaudeRail({
               // caption; so is every other favourite's ring while any favourite card is open.
               const favRing = wears.favRing;
               const titleOnly = wears.titleOnly;
-              const captionless = peekOn && !titleOnly;
+              // …BUT NOT THE RING OF THE WINDOW'S OWN OPEN TASK (Akshil,
+              // 2026-11-17: "for window A, if we hover on the task that is
+              // open we don't show this new header; for window B we show —
+              // wrong, follow window A"): under the unified head the open
+              // favourite's ring says nothing, like the list ring whose card
+              // stands — its window is the caption. The other favourites'
+              // rings keep their row.
+              const captionless = peekOn && (!titleOnly || (pinModel && favRing));
               // THE RING'S WINDOW (owner, 2026-11-05: two sections, two
               // windows): a favourite's ring talks to window B's hover
               // (fav-peek-store `favHoverIntent`), a list ring to this
