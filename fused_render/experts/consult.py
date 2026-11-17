@@ -75,7 +75,8 @@ def consult(bot, question, context="", caller=None) -> dict:
         try:
             from fused_render.experts import observations
             observations.write(bot, kind="gap", claim=f"Could not answer: {question[:500]}", trust="gap",
-                               session=str(who.get("session_id") or ""), about=list(rec["refs"]), consult=cid)
+                               session=str(who.get("session_id") or ""), about=list(rec["refs"]), consult=cid,
+                               source={"target": who.get("target") or "", "backend": who.get("backend") or ""})
         except Exception:  # noqa: BLE001 — the answer still goes back to the agent
             logger.warning("expert %s: gap observation for consult %s not written", bot.id, cid, exc_info=True)
     return {"id": cid, "answer": rec["answer"], "refs": rec["refs"], "used": rec["used"], "unsure": rec["unsure"]}

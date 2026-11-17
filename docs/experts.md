@@ -15,8 +15,9 @@ A third bot kind, `expert`, beside `bot` and `super` (`fused_render/bots/bot.py`
   - **Chat**: the user talks to it on the Bots page (one task at a time, the bot's own thread).
   - **Consult**: an agent session (a Task) calls the MCP tool `expert_consult`; the server runs a separate,
     parallel, short run of the expert and returns a structured answer. Consults never touch the chat thread.
-- It learns: observations are captured from chat teaching, unsure consults and idle task sessions; they are
-  consolidated into memory; lessons that keep recurring are proposed as skill changes on an approval card.
+- It learns in ONE loop: observations → consolidation → memory → skill fixes. Observations come from idle task
+  sessions (lessons) and unsure consults (gaps). Consolidation folds lessons into memory and gaps into gap
+  records, researches open gaps, and proposes skill fixes on an approval card (§11).
 - Engines: `claude`, `codex`, `copilot` only (`agent_backends.registry`). Selected per expert. `auto` is
   Claude when enabled, else Copilot; it NEVER resolves to Codex. Codex keeps its own shell in a tools turn
   (`codex exec -s read-only`), so its reads are not fenced by `readtools`; it runs an expert only when the
@@ -42,6 +43,7 @@ Bot folder (bots v3 layout, `bots/paths.py`):
     consults.jsonl              one Consult record per line, newest last
     checks/<run_id>.json        gate runs; checks/latest.json is a copy of the newest finished run
     proposals/<id>.json         skill proposals
+    gaps.json                   {"version":1,"gaps":[Gap],"last_asked":{"at","gap"}} (§11)
 ```
 
 Machine state: `<home>/bots/experts-seeded.json` (seed witness), `<home>/bots/experts-captured.json`
@@ -62,9 +64,14 @@ under `experts.store.lock(bot)` (one `threading.RLock` per bot id).
   "engine": "auto",
   "model": "",
   "memory": {"consolidate_at": 3, "consolidate_after_s": 86400, "propose_at": 3, "index_lines": 200},
+  "gaps": {"research": true, "ask_after": 2, "max_attempts": 2, "ask_every_s": 86400},
   "shipped": "canvas-reference"
 }
 ```
+
+- `gaps` (§11): `research: false` skips the repair step (gaps are still recorded and may still be asked);
+  `ask_after` = times a gap is asked before the user may be asked about it; `max_attempts` = research runs per gap
+  before the user may be asked; `ask_every_s` = at most one new gap question per expert per this many seconds.
 
 - `reads` kinds: `canvas-mirror` (every environment root under the canvases root, the listed scope folders
   that exist) and `folder` (`{"kind":"folder","path":"/abs"}`).
@@ -139,7 +146,7 @@ make_handler(roots, on_tool=None) -> handler       # handler(name, input) -> (te
 Item = {"id","claim","kind","trust","count","sessions":[...],"about":[...],"created","updated",
         "proposed": bool, "promoted": bool, "rejected": bool}
 items(bot) -> list[Item]
-add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None) -> Item
+add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, gap="") -> Item   # gap: stored as `gap`
         # a claim equal after normalisation (lowercase, collapsed whitespace, no trailing punctuation) bumps instead
 bump(bot, item_id, *, session="") -> Item | None      # count += 1 only when `session` is new or empty
 forget(bot, id_or_text) -> int                        # removed count
@@ -147,37 +154,56 @@ mark(bot, item_id, **flags) -> Item | None
 indexed(item) -> bool      # part of the always-loaded index: trust user, or trust outcome with count >= 2
 index_text(bot) -> str     # "- [<id>] <claim> (seen N×)" for indexed items, most seen first, capped at index_lines
 ```
-`trust`: `user` (said directly in chat), `outcome` (from a session), `gap` (an unanswered consult). An
-`outcome` lesson enters the index (and so every answer) only once seen in two sessions; a `user` lesson at
-once; `gap` never.
+`trust`: `user` (said directly in chat, or the user's answer to a gap question), `outcome` (from a session),
+`research` (a gap's grounded finding, §11; carries `gap: <gap id>`), `gap` (an unanswered consult). An `outcome`
+lesson enters the index (and so every answer) only once seen in two sessions; a `user` lesson at once; a
+`research` lesson only once `promoted` (its skill fix was approved; `GET …/memory` reports `indexed: false`
+until then); `gap` never.
 
 ### `experts/observations.py`
 ```
-Obs = {"id","ts","kind","claim","trust","session","about":[...],"consult": ""}
-write(bot, *, kind, claim, trust, session="", about=None, consult="") -> Obs
+Obs = {"id","ts","kind","claim","trust","session","about":[...],"consult": "",
+       "source"?: {"target": str, "backend": str},          # where it came from, when known
+       "outcome"?: {"op": "add"|"bump"|"nothing"|"gap", "item"?: memory item id, "gap"?: gap id, "at": ts}}
+write(bot, *, kind, claim, trust, session="", about=None, consult="", source=None) -> Obs
 pending(bot) -> list[Obs]                  # oldest first
-archive(bot, ids) -> None                  # pending/ -> done/
+done(bot, limit=200) -> list[Obs]          # archived, NEWEST first (limit None: all)
+archive(bot, ids, outcomes=None) -> None   # pending/ -> done/, writing outcomes[id] (default op "nothing") as `outcome`
 due(bot, now=None) -> bool                 # len(pending) >= consolidate_at, or oldest older than consolidate_after_s
 ```
-`kind` is one of the manifest's `learns_from` values, or `"gap"`.
+`kind` is one of the manifest's `learns_from` values, or `"gap"`. `source` is set by `consult.py` (the caller's
+`target` / `backend`) and `capture.py` (the session's). `outcome` is set by consolidation when it archives the
+observation: `add` / `bump` name the memory item, `gap` names the gap record it was folded into (after any merge).
 
 ### `experts/consolidate.py`
 ```
-run(bot, *, force=False) -> {"ran": bool, "added": [ids], "bumped": [ids], "ignored": int, "reason"?: str}
+run(bot, *, force=False) -> {"ran": bool, "added": [ids], "bumped": [ids], "ignored": int, "reason"?: str,
+                              # when ran:
+                              "gaps": [gap ids touched], "researched": [gap ids], "proposed": [proposal ids]}
+start(bot, *, force=False) -> bool    # run in a daemon thread; False when one runs or would_run is False
+status(bot) -> {"running": bool, "stage": "lessons"|"gaps"|"researching"|"proposing"|"", "gap": gid|None}
+would_run(bot, force=False) -> bool   # not force: observations.due; force: anything pending or gaps.repairable
 failures(bot) -> int        # consecutive failed consolidation calls
 FALLBACK_AFTER = 3
 ```
-Not due and not `force` → `{"ran": False, ...}`. No engine (`model.available` false) → `{"ran": False,
-"reason": …}`, nothing touched. One `model.text` call: current items + pending observations → JSON list of
-`{"obs": id, "op": "add" | "bump" | "nothing", "item": id?, "claim": str?}`. Code applies the edits
-(`memory.add` / `memory.bump`), archives the observations, returns. The model is the filter between
+Single flight per expert (`run` while one runs → `{"ran": False, ...}`). Not due and not `force` →
+`{"ran": False, ...}`; `force` with nothing pending still runs when an open gap is repairable. No engine
+(`model.available` false) → `{"ran": False, "reason": …}`, nothing touched. Stages, in one run (§11):
+**lessons** → **gaps** → **researching** (one per gap) → **proposing**.
+One `model.text` call: current items + pending lesson observations → JSON list of
+`{"obs": id, "op": "add" | "bump" | "nothing", "item": id?, "claim": str?}`. When there are gap observations and
+open gaps, the call also lists those gap observations and the open gaps, and may answer
+`{"obs": id, "op": "gap", "gap": <open gap id>}` (same question in other words: the two records are merged).
+Code applies the edits (`memory.add` / `memory.bump`), records gaps, archives the observations with their
+`outcome`, repairs, proposes, returns. The model is the filter between
 transcript text and memory, so a failed call or an unparseable answer adds NOTHING: the observations stay
 pending, the failure is counted (`consolidate-failures.json`) and `{"ran": False, "reason"}` comes back. Only
 on the `FALLBACK_AFTER`-th consecutive failure does it fall back to `memory.add` per observation
 (exact-match dedupe); a success resets the count. An unknown op, a bump of a lesson that does not exist,
 or an observation the answer omitted is `nothing` (archived, counted in `ignored`, not added).
-Observations with trust `gap` are never added as lessons; they are counted in `ignored` (they stay visible
-in `done/`).
+Observations with trust `gap` are never added as lessons; they are counted in `ignored` and folded into gap
+records (they stay visible in `done/`). A failed or unreadable call merges no gaps; with only gap observations
+pending it counts no failure.
 
 ### `experts/gate.py` — the quality gate
 ```
@@ -201,9 +227,11 @@ Proposal = {"id","ts","status": "preparing"|"ready"|"shown"|"approved"|"rejected
             "score_before": {"score","total"}|None,"score_after": {"score","total"}|None,"card_seq": int|None}
 STATUSES = ("preparing", "ready", "shown", "approved", "rejected", "failed")
 BUSY = "a skill proposal is already being prepared"
-candidates(bot) -> list[Item]       # count >= propose_at, not proposed/promoted/rejected, trust != gap,
+candidates(bot) -> list[Item]       # (count >= propose_at, or trust "research" whose gap is not closed),
+                                    # not proposed/promoted/rejected, trust != gap,
                                     # and not in any open (preparing/ready/shown) proposal
-request(bot, items, *, topic="") -> Proposal   # asynchronous; see below
+request(bot, items, *, topic="", gap="") -> Proposal   # asynchronous; see below
+propose_candidates(bot) -> [pid]    # all candidates as ONE request; [] when none or one is preparing
 prepare(bot, items) -> Proposal     # the same work synchronously (tests): draft + gate before/after; "ready"
 get(bot, pid) -> Proposal | None ; listing(bot) -> list[Proposal]      # every status, newest first
 approve(bot, pid) -> Proposal       # bot.skill_save(...), items marked promoted
@@ -218,6 +246,10 @@ proposal is `preparing`, `request` raises `ValueError(BUSY)`. A `preparing` reco
 working on and older than an hour (the app quit mid-draft) is failed as "interrupted". When `approve`'s
 `skill_save` (or anything else) raises, the proposal becomes `failed` with the reason, its items are
 un-marked and `ValueError` is raised; a failed proposal is never shown or decided again.
+A proposal whose items include a `research` lesson (or given `gap`) records `gap: <first gap id>` and
+`gaps: [ids]`; `request` marks those gaps `proposed` with the proposal id. `approve` → each such gap
+`answered` (resolution `skill`); `reject` and the failed path (`_fail`, also a failed approve) → `dismissed`.
+`card_text` says the expert looked into a question it could not answer when the proposal has a `gap`.
 Updating an existing skill is preferred to creating one. The gate scores are skipped (None) when the expert
 has no questions.
 
@@ -228,7 +260,7 @@ answer(bot, question, *, profile, context="", extra_roots=(), skills_override=No
 answer_question(bot, question, skills_override=None) -> str       # for the gate; profile "consult", no logging
 system_prompt(bot, profile, skills_override=None) -> str
 ```
-`profile` is `"chat"` or `"consult"`. The system prompt = role and rules, the bot's instructions, every
+`profile` is `"chat"`, `"consult"` or `"research"` (used only by `research` below). The system prompt = role and rules, the bot's instructions, every
 skill in full (or `skills_override`: a list of `{name,title,trigger,body}`), and `memory.index_text`.
 The model is told to finish with a fenced JSON block `{"answer","refs","used","unsure"}`. `parse(text)` is
 lenient: `json.loads(..., strict=False)` (raw newlines inside strings are fine); the LAST ```` ```json ````
@@ -238,6 +270,16 @@ text); a ```` ```json ```` block (or a trailing `{"answer": …`) that still can
 text shown, with `answer` and `unsure` recovered by regex (`"unsure"\s*:\s*true`). The reader never sees a
 JSON block. No block at all → the whole text is the answer, `unsure` false. Tools come from `readtools`; roots are
 `resolve_reads(manifest) + [bot's skills dir] + extra_roots`.
+
+```
+research(bot, questions, *, transcript="") -> {"found","answer","refs","why","read": [paths],"roots": [paths]}
+parse_research(text) -> {"found","answer","refs","why"}     # the LAST JSON object with "found"; else found false
+```
+The research profile: a session asked this, the expert could not answer, now dig (search every root with several
+queries, open the most promising files, decide). The question(s) and the asking session's transcript tail sit
+between `<<<BEGIN …>>>` / `<<<END …>>>` markers declared DATA. It must finish with
+`{"found": bool, "answer": str, "refs": [abs paths it opened], "why": str}`. `read` is every realpath the
+`read_file` tool served in this run.
 
 ### `experts/consult.py`
 ```
@@ -249,7 +291,8 @@ Consult = {"id","ts","question","context","answer","refs","used","unsure","calle
 added to `extra_roots` when it exists and is not `/`, the home folder or an ancestor of it
 (`readtools.too_broad`). At most 3 consults run at once per process; the others wait up to `SLOT_WAIT_S`
 (120 s) and then raise `RuntimeError("the expert is busy; try again in a minute")`. An unsure answer writes
-an observation (`kind "gap"`, trust `gap`). Raises `model.Unavailable` when no engine is on.
+an observation (`kind "gap"`, trust `gap`, `source` = the caller's target / backend) and nothing else: gap records
+are consolidation's (§11). Raises `model.Unavailable` when no engine is on.
 
 ### `experts/chat.py` — the bot engine for kind expert
 ```
@@ -278,10 +321,13 @@ become `action` events. Chat-only tools, executed in-process:
   (`Bot.greet`'s pattern). Messages left there start a new task (under the outside message's via when there
   was one, so it stays untrusted); otherwise `cards.tick_one(bot)` shows a proposal that became ready.
 
-### `experts/cards.py` — proposal cards outside a chat task
+### `experts/cards.py` — proposal cards and gap questions outside a chat task
 ```
 show(bot, proposal) -> bool          # raise the approval card when the bot is idle; False if busy or not ready/shown
-tick_one(bot) -> bool                # this expert: show its oldest "ready"/"shown" proposal if idle; never raises
+ask_gap(bot, gap) -> bool            # raise the gap question when the bot is idle (§11)
+ask_if_needed(bot) -> bool           # gaps.to_ask, when idle and no proposal card waits; never raises
+tick_one(bot) -> bool                # this expert: show its oldest "ready"/"shown" proposal if idle, else
+                                     # ask_if_needed; never raises
 tick() -> None                       # tick_one for every expert
 ```
 A `failed` (or `preparing`) proposal is never shown.
@@ -289,6 +335,23 @@ Pattern: `Bot.greet` (bot.py) — install a worker as `bot.thread` under `bot.lo
 (`detail` = diff, plus `expert_proposal: <id>`, `score_before`, `score_after`), `set_status("waiting",
 waiting_on=seq)`, wait on the inbox, classify with the YES / NO regexes, then `proposals.approve` /
 `reject`, emit a `note`, set idle, release the thread, re-deliver any non-verdict text as a new task.
+
+### `experts/gaps.py` (§11)
+```
+Gap = {"id","question","questions":[str],"count": int,"consults":[consult ids],"sessions":[session ids],
+       "created","updated","status": "open"|"researching"|"proposed"|"asked"|"answered"|"dismissed",
+       "attempts": int,"finding": {"answer": str,"refs":[str]} | None,"proposal": pid | None,
+       "card_seq": int | None,"resolution": "" | "skill" | "user" | "dismissed","error": str}
+listing(bot) -> list[Gap]             # not closed first, most asked first
+get(bot, gid) ; ids(bot) -> set
+record(bot, question, *, consult="", session="") -> Gap   # same normalised question bumps (once per consult)
+merge(bot, a, b) -> Gap | None        # into the older; counts summed, lists united; only open gaps
+dismiss(bot, gid) -> Gap
+answer(bot, gid, text) -> Gap         # memory.add(trust="user"); status answered, resolution "user"
+repairable(bot, touched=()) -> [Gap]  # step c's gaps; [] when manifest gaps.research is false
+research(bot, gid) -> Gap             # internal (consolidation): one research run, then act on it
+askable(bot, gap) -> bool ; to_ask(bot) -> Gap | None
+```
 
 ### `experts/capture.py`
 ```
@@ -320,7 +383,7 @@ start() ; shutdown() ; tick() -> dict
 TICK_S = 300
 ```
 One daemon timer thread (`canvas_mirror` pattern). `tick`: capture due sessions for relevant experts → for
-each expert `consolidate.run` when `observations.due` → `routes.propose` (all `proposals.candidates` as ONE
+each expert `consolidate.run` when `observations.due` (which also records, researches and proposes, §11) → `routes.propose` (all `proposals.candidates` as ONE
 `proposals.request`; nothing while one is preparing) → `cards.tick()`. Never raises.
 
 ### `experts/seed.py`
@@ -382,15 +445,20 @@ POSTs require the `X-Fused` header (`server.common._require_fused`). Errors are 
 | `POST /api/experts/consult` | `{expert, question, context?, run_id?}` → `{id, answer, refs, used, unsure}`; 404 unknown expert; 409 `{error, reason:"unavailable"}`; 403 `{error: "that expert is not offered to this session"}` when `run_id` is given, `<run dir>/experts.json` exists and the expert is not in it (matched by `id` when the entry has one, else by name, case-insensitive). No `run_id` (a local call): any expert. |
 | `GET /api/experts/{id}/memory` | `{items: [Item + {indexed: bool}], index: str}` |
 | `POST /api/experts/{id}/memory/forget` | `{id}` → `{removed}` |
-| `GET /api/experts/{id}/observations` | `{pending: [Obs], due: bool}` |
+| `GET /api/experts/{id}/observations` | `{pending: [Obs] (oldest first), done: [Obs] (newest first, 200), due: bool, consolidating: consolidate.status}`; every observation of kind `gap` carries `gap`: its Gap record (by `outcome.gap`, else by consult id), `null` when none yet |
 | `GET /api/experts/{id}/consults` | `{consults: [Consult]}` (newest first, 100) |
 | `GET /api/experts/{id}/checks` | `{latest: Run|null, status, questions: int}` |
 | `POST /api/experts/{id}/checks/run` | `{run_id}` |
 | `GET /api/experts/{id}/proposals` | `{proposals: [Proposal]}` (every status, newest first, with `error`) |
-| `POST /api/experts/{id}/consolidate` | `{force?: bool}` → consolidate result + `{proposed: [ids]}`; returns at once: the one proposal is `preparing` (`[]` when one already is) |
+| `POST /api/experts/{id}/consolidate` | `{force?: bool}` → `{started: bool}`: `consolidate.start` in the background (false when one runs or there is nothing to do); 409 `unavailable` without an engine. Progress: `consolidating` on `GET …/observations` |
+| `GET /api/experts/{id}/gaps` | `{gaps: [Gap], researching: gid \| null}` (`researching` from `consolidate.status`) |
+| `POST /api/experts/{id}/gaps/{gid}/dismiss` | → Gap; 404 `{"error": "no such gap"}` unless `gid` is a stored gap id (never used in a path) |
 | `POST /api/experts/{id}/capture` | `{session_id}` → `{observations: [Obs]}` |
 | `POST /api/experts/{id}/settings` | `{engine?, model?}` → manifest |
 | `GET /api/experts/{id}/engines` | `[{id, label, enabled, models: [{id, label}], default_model, note}]`; Claude's `default_model` is what `provider_for` would really use; `note` is `ENGINE_NOTES[id]` or `""` |
+
+Phone door (`lan.py`): the GETs above including `…/gaps`, plus `checks/run` and `memory/forget`; never
+`gaps/{gid}/dismiss`, `consolidate`, `consult`, `capture` or `settings`.
 
 ## 9. `questions.md`
 
@@ -409,3 +477,50 @@ column renders `ExpertPane` with tabs Memory · Consults · Checks (also reachab
 proposals carry `status` (`preparing` … `failed`) and `error`. Proposal cards are ordinary `approval` events
 with `expert_proposal`, `score_before`, `score_after`; the diff is the card body. Approve / Reject go
 through the existing `/api/bots/<id>/send`.
+
+## 11. Gap repair: one learning loop
+
+Gaps are one kind of observation, handled by the same consolidation that turns lessons into memory and memory into
+skill fixes. Nothing else researches; the scheduler only decides WHEN consolidation runs (`observations.due`), and
+`POST …/consolidate` runs it now in the background.
+
+1. **Observe.** An unsure consult writes an observation `kind "gap"`, trust `gap`, claim `Could not answer: <q>`,
+   `consult` = its id, `source` = the caller's target / backend. No gap record yet.
+2. **Consolidate → gap records** (stage `gaps`). Each gap observation → `gaps.record` (the same question after
+   normalisation is one gap; `count` goes up once per distinct consult). When open gaps exist, the consolidation
+   call may answer `{"op": "gap", "gap": <id>}` to fold a question asked in other words into it (`merge`: keep the
+   older id, sum counts, unite questions / consults / sessions). Unparseable or missing → no merge. The archived
+   observation's `outcome` is `{"op": "gap", "gap": <id>}`.
+3. **Repair** (stage `researching`, `status.gap` = the gap). Unless `gaps.research` is false: the open gaps touched in
+   this run plus older open gaps with `attempts < max_attempts`, most asked first, at most 2 per run. Each gets one
+   research run (`engine.research`, given the questions and, when the gap has a session `capture` can find, the
+   tail of that session after its `expert_consult` call, 12k chars, `capture.render_turns`).
+   - **Found** only when `found` is true, `answer` is non-empty and at least one ref is an existing file inside the
+     expert's roots that the run's `read_file` actually served. Then: `memory.add(trust="research",
+     claim="When asked: <question> Answer: <answer>", about=<refs>, gap=<gid>)` and at once
+     `proposals.request([that item], gap=gid)`; the gap is `proposed` (with `finding`, and `proposal` once a request
+     starts). If a proposal is already being prepared, the lesson waits: `proposals.candidates` takes an
+     un-proposed `research` lesson regardless of count on the next run.
+   - **Not found** (or a failed run): `attempts += 1`, `error` says why, the gap stays `open`.
+4. **Propose** (stage `proposing`): `proposals.propose_candidates` as before. Approve → gap `answered`
+   (resolution `skill`) and the research lesson is `promoted`, so it joins the index; reject or a failed proposal →
+   `dismissed` (never researched or proposed again).
+5. **Ask the user.** An open gap is `askable` once `count >= ask_after` or `attempts >= max_attempts` (and it was
+   researched at least once, unless research is off). `cards.tick_one` (scheduler tick, chat hand-back) and the end
+   of a consolidation run that started no proposal call `cards.ask_if_needed`: when the expert is idle and no
+   proposal card waits, at most one new gap question per `ask_every_s`, `cards.ask_gap` raises a `question` event
+   (worker as `bot.thread`, `set_status("waiting", waiting_on=seq)`, gap `asked` with `card_seq` while it is up):
+
+   ```
+   {"role": "question", "text": "Sessions asked me this <N> time(s) and I could not find the answer in my skills or
+     the folders I read:\n\n<question>\n\nIf you tell me, I will remember it. Reply \"skip\" to drop it.",
+    "expert_gap": "<gid>", "options": ["Skip"], "seq": …}
+   ```
+   Only a message typed at the Mac counts (`not channels.base.is_texted(msg)`); an outside message leaves the card
+   up (a note says so) and is re-delivered as an untrusted task once the card settles. "skip" (or a short reply
+   matching the NO regex, under 4 words) → `gaps.dismiss`. Any other text → `gaps.answer`: a `user` lesson
+   `When asked "<question>": <text>`, gap `answered` (resolution `user`), a note `Thanks. Saved as a lesson: …`.
+   A Stop or an error puts the card aside (gap `open` again); `bot.thread` and the status are always released.
+
+Trust (§7 holds): research never writes a skill, and its lesson stays out of answers until the user approves its
+skill fix; only the user's answer typed at the Mac writes a `user` lesson.

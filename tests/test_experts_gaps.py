@@ -402,3 +402,71 @@ def test_phone_door_allows_only_the_gaps_get():
     allowed = [d for d in lan._DOORS if d[0].match(path)]
     assert allowed and all(d[1] == frozenset({"GET"}) for d in allowed)
     assert not any(d[0].match(path + "/g1/dismiss") for d in lan._DOORS)
+
+
+# -------------------------------------------------------------- observations ---
+def test_archived_observations_record_their_outcome(expert, monkeypatch):
+    _set_gaps(expert, research=False)
+    old = memory.add(expert, "existing lesson")
+    g0 = gaps.record(expert, "How do I chain UDFs?", consult="c0")
+    o_add = observations.write(expert, kind="user_correction", claim="new", trust="outcome")
+    o_bump = observations.write(expert, kind="user_correction", claim="again", trust="outcome")
+    o_none = observations.write(expert, kind="user_correction", claim="noise", trust="outcome")
+    o_gap = _gap_obs(expert, "How can a UDF read another's output?", "c1")
+    o_new = _gap_obs(expert, "Where do canvases live?", "c2")
+    monkeypatch.setattr(xmodel, "text", lambda bot, prompt, **k: json.dumps([
+        {"obs": o_add["id"], "op": "add", "claim": "A new lesson."}, {"obs": o_bump["id"], "op": "bump",
+                                                                      "item": old["id"]},
+        {"obs": o_none["id"], "op": "nothing"}, {"obs": o_gap["id"], "op": "gap", "gap": g0["id"]}]))
+    r = consolidate.run(expert, force=True)
+    done = {o["id"]: o for o in observations.done(expert)}
+    assert done[o_add["id"]]["outcome"]["op"] == "add" and done[o_add["id"]]["outcome"]["item"] == r["added"][0]
+    assert done[o_bump["id"]]["outcome"] == {"op": "bump", "item": old["id"], "at": done[o_bump["id"]]["outcome"]["at"]}
+    assert done[o_none["id"]]["outcome"]["op"] == "nothing" and "item" not in done[o_none["id"]]["outcome"]
+    assert done[o_gap["id"]]["outcome"]["op"] == "gap" and done[o_gap["id"]]["outcome"]["gap"] == g0["id"]
+    new_gap = [g for g in gaps.listing(expert) if g["question"] == "Where do canvases live?"][0]
+    assert done[o_new["id"]]["outcome"]["gap"] == new_gap["id"]
+    assert [o["id"] for o in observations.done(expert, limit=2)] == [o["id"] for o in observations.done(expert)][:2]
+
+
+def test_observations_carry_their_source(expert, monkeypatch, tmp_path):
+    target = tmp_path / "proj"
+    target.mkdir()
+    monkeypatch.setattr(xmodel, "tool_turn", lambda bot, prompt, **k:
+                        '```json\n{"answer": "no idea", "refs": [], "used": [], "unsure": true}\n```')
+    consult.consult(expert, "how?", caller={"session_id": "s1", "target": str(target), "backend": "codex"})
+    o = observations.pending(expert)[0]
+    assert o["source"] == {"target": str(target), "backend": "codex"} and o["session"] == "s1"
+    from fused_render.experts import capture
+    monkeypatch.setattr(capture, "transcript_markdown", lambda s: "USER| always use x")
+    monkeypatch.setattr(xmodel, "text", lambda bot, prompt, **k: json.dumps(
+        [{"kind": "repeated_request", "claim": "Use x.", "about": []}]))
+    monkeypatch.setattr(capture, "mark_captured", lambda *a, **k: None)
+    capture.capture_session(expert, {"session_id": "s2", "backend": "claude", "target": "/w/canvas", "path": ""})
+    o = [x for x in observations.pending(expert) if x["session"] == "s2"][0]
+    assert o["source"] == {"target": "/w/canvas", "backend": "claude"}
+    plain = observations.write(expert, kind="user_correction", claim="c", trust="outcome")
+    assert "source" not in plain
+
+
+def test_observations_route_shape(client, expert, monkeypatch):
+    _set_gaps(expert, research=False)
+    monkeypatch.setattr(xmodel, "text", lambda bot, prompt, **k: "[]")
+    lesson = observations.write(expert, kind="user_correction", claim="c", trust="outcome")
+    gobs = _gap_obs(expert, "What is ANSWER?", "c1")
+    status, _h, body = client.get(f"/api/experts/{expert.id}/observations")
+    body = json.loads(body)
+    assert status == 200 and set(body) == {"pending", "done", "due", "consolidating"}
+    assert [o["id"] for o in body["pending"]] == [lesson["id"], gobs["id"]] and body["done"] == []
+    assert "gap" not in body["pending"][0] and body["pending"][1]["gap"] is None  # no gap record yet
+    consolidate.run(expert, force=True)
+    pending = _gap_obs(expert, "what is answer", "c2")  # not folded into a gap record until consolidation
+    status, _h, body = client.get(f"/api/experts/{expert.id}/observations")
+    body = json.loads(body)
+    assert [o["id"] for o in body["done"]] == [gobs["id"], lesson["id"]]  # newest first
+    done = {o["id"]: o for o in body["done"]}
+    g = done[gobs["id"]]["gap"]
+    assert g["question"] == "What is ANSWER?" and g["status"] == "open" and done[gobs["id"]]["outcome"]["op"] == "gap"
+    assert done[lesson["id"]]["outcome"]["op"] == "nothing" and "gap" not in done[lesson["id"]]
+    assert body["pending"][0]["id"] == pending["id"] and body["pending"][0]["gap"] is None
+    assert body["consolidating"] == {"running": False, "stage": "", "gap": None}

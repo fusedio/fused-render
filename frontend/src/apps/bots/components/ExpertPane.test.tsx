@@ -3,44 +3,44 @@ installDomShim();
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import type { ExpertChecks, ExpertGap, ExpertItem } from "../lib/api";
+import type { ExpertChecks, ExpertGap, ExpertItem, ExpertObs } from "../lib/api";
 
-const { MemoryPanel, ConsultsPanel, ChecksPanel, GapsSection } = await import("./ExpertPane");
+const { MemoryPanel, ConsultsPanel, ChecksPanel, ObservationsPanel } = await import("./ExpertPane");
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
   created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...p });
 const noop = () => {};
 
 describe("MemoryPanel", () => {
-  test("lessons most seen first, with their tags, a Forget each, and the pending line", () => {
+  test("lessons most seen first, with their tags and a Forget each; no observations or Consolidate here", () => {
     const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Alpha", count: 1 }), item({ id: "b", claim: "Beta", count: 5, trust: "user", promoted: true })],
-      pending: [{ id: "o", ts: 1, kind: "user_correction", claim: "x", trust: "user", session: "", about: [], consult: "" }], due: false, busy: false, onForget: noop, onConsolidate: noop }));
+      onForget: noop }));
     expect(out.indexOf("Beta")).toBeLessThan(out.indexOf("Alpha"));
     expect(out).toContain("seen 5×");
     expect(out).toContain('xp-tag user">user<');
     expect(out).toContain('xp-tag promoted">promoted<');
     expect(out.split(">Forget<").length - 1).toBe(2);
-    expect(out).toContain("1 observation waiting to be consolidated.");
-    expect(out).toContain(">Consolidate now<");
-    expect(out.split(">Consolidate now<").length - 1).toBe(1);
+    expect(out).not.toContain("Consolidate");
+    expect(out).not.toContain("observation");
   });
-  test("seen-once lessons under their divider, open proposals above", () => {
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Indexed one", count: 2 }), item({ id: "b", claim: "Once only", indexed: false })],
-      pending: [], due: false, busy: false, onForget: noop, onConsolidate: noop,
+  test("not-yet-used lessons under their divider with the reason, open proposals above", () => {
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Indexed one", count: 2 }), item({ id: "b", claim: "Once only", indexed: false }),
+      item({ id: "c", claim: "Researched", trust: "research", indexed: false })], onForget: noop,
       proposals: [{ id: "p", ts: 1, status: "preparing", action: "create", skill: null, title: "", trigger: "", body: "", diff: "", items: [], score_before: null, score_after: null, card_seq: null }] }));
     expect(out).toContain("Drafting a skill proposal and running the checks…");
     const div = out.indexOf("Not used in answers yet");
     expect(div).toBeGreaterThan(out.indexOf("Indexed one"));
     expect(out.indexOf("Once only")).toBeGreaterThan(div);
     expect(out).toContain('xp-tag seen-once">seen once<');
+    expect(out).toContain(">found by research<");
+    expect(out).toContain(">waiting for your approval<");
   });
   test("no divider when every lesson is indexed", () => {
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a" })], pending: [], due: false, busy: false, onForget: noop, onConsolidate: noop }));
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a" })], onForget: noop }));
     expect(out).not.toContain("Not used in answers yet");
   });
   test("empty: says what will appear", () => {
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [], pending: [], due: false, busy: false, onForget: noop, onConsolidate: noop }));
-    expect(out).toContain("No lessons yet.");
+    expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [], onForget: noop }))).toContain("No lessons yet.");
   });
 });
 
@@ -81,43 +81,55 @@ describe("ChecksPanel", () => {
   });
 });
 
-describe("Memory panel: open questions", () => {
+describe("ObservationsPanel", () => {
   const gap = (p: Partial<ExpertGap>): ExpertGap => ({ id: "g", question: "q", questions: [], count: 1, consults: [], sessions: [], created: 0, updated: 0,
     status: "open", attempts: 0, finding: null, proposal: null, card_seq: null, resolution: "", error: "", ...p });
-  const gaps = [gap({ id: "a", question: "Rare one", count: 1, error: "engine timed out" }),
-    gap({ id: "b", question: "Common one", count: 4, finding: { answer: "Found it", refs: ["/x/y/z.py"] } }),
-    gap({ id: "c", question: "Done one", status: "answered", resolution: "user" })];
-  const base = { items: [item({ id: "l", claim: "A lesson", count: 2 })], pending: [], due: false, busy: false, onForget: noop, onConsolidate: noop };
-  test("three sections in order; one Consolidate button; the stage line while running; resolved folded away", () => {
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { ...base, gaps, researching: "b", consolidating: { running: true, stage: "researching", gap: "b" } }));
-    const w = out.indexOf("Waiting to be consolidated"), q = out.indexOf(">Open questions<"), l = out.indexOf(">Lessons<");
+  const obs = (p: Partial<ExpertObs>): ExpertObs => ({ id: "o", ts: 1, kind: "user_correction", claim: "c", trust: "user", session: "", about: [], consult: "", ...p });
+  const pending = [obs({ id: "p2", ts: 20, claim: "Newer waiting", kind: "repeated_request", source: { target: "/x/canvases/sales", backend: "claude" } }),
+    obs({ id: "p1", ts: 10, claim: "Older waiting", kind: "gap", consult: "c1", gap: gap({ id: "g1", count: 3, error: "engine timed out",
+      finding: { answer: "Found it", refs: ["/x/y/z.py"] } }) })];
+  const done = [obs({ id: "d1", ts: 5, claim: "Old done", outcome: { op: "add" } }), obs({ id: "d2", ts: 9, claim: "New done", kind: "error_then_fix", outcome: { op: "bump" } }),
+    obs({ id: "d3", ts: 7, claim: "Settled gap", kind: "gap", outcome: { op: "gap" }, gap: gap({ id: "g2", status: "answered", resolution: "user" }) })];
+  const base = { pending, done, onConsolidate: noop, onDrop: noop };
+  test("intro and Consolidate on top; Waiting oldest first, then Consolidated newest first, with tags and results", () => {
+    const out = renderToStaticMarkup(createElement(ObservationsPanel, base));
+    expect(out).toContain("Everything I noted from consults and sessions.");
+    expect(out.split(">Consolidate now<").length - 1).toBe(1);
+    const w = out.indexOf(">Waiting<"), c = out.indexOf(">Consolidated<");
     expect(w).toBeGreaterThan(-1);
-    expect(q).toBeGreaterThan(w);
-    expect(l).toBeGreaterThan(q);
-    expect(out).toContain("Consolidating looks into each one");
-    expect(out).toContain("Researching an open question…");
-    expect(out.split("Consolidat").length).toBeGreaterThan(1);
-    expect(out.split("<button").length - 1).toBe(1 + 2 + 1 + 1); // consolidate, 2× Drop, Show resolved, Forget
-    expect(out).toContain(">Consolidating…<");
-    expect(out.indexOf("Common one")).toBeLessThan(out.indexOf("Rare one"));
-    expect(out).toContain("researching…");
+    expect(c).toBeGreaterThan(w);
+    expect(out.indexOf("Older waiting")).toBeLessThan(out.indexOf("Newer waiting"));
+    expect(out.indexOf("Newer waiting")).toBeLessThan(c);
+    expect(out.indexOf("New done")).toBeLessThan(out.indexOf("Settled gap"));
+    expect(out.indexOf("Settled gap")).toBeLessThan(out.indexOf("Old done"));
+    expect(out).toContain(">unsure<");
+    expect(out).toContain(">asked for<");
+    expect(out).toContain(">fix that worked<");
+    expect(out).toContain(">new lesson<");
+    expect(out).toContain(">counted toward a lesson<");
+    expect(out).toContain(">answered by you<");
+    expect(out).toContain("sales · claude");
+    expect(out).toContain(" · consult<");
+    expect(out).toContain("asked 3×");
     expect(out).toContain("engine timed out");
+    expect(out).toContain("<details>");
     expect(out).toContain(">z.py<");
-    expect(out).toContain("Show 1 resolved");
-    expect(out).not.toContain("Done one");
-    expect(out).not.toContain("Research now");
+    expect(out.split(">Drop<").length - 1).toBe(1);
   });
-  test("resolved ones, once shown, are dimmed under their divider", () => {
-    const out = renderToStaticMarkup(createElement(GapsSection, { gaps, researching: null, onDrop: noop, showResolved: true }));
-    expect(out.indexOf("Done one")).toBeGreaterThan(out.indexOf(">Resolved<"));
-    expect(out).toContain("xp-list xp-resolved");
-    expect(out).toContain("answered by you");
-    expect(out).toContain("Hide resolved");
+  test("while consolidating: the stage line, the button waits, the researched gap says so", () => {
+    const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, consolidating: { running: true, stage: "researching", gap: "g1" } }));
+    expect(out).toContain("Researching an open question…");
+    expect(out).toContain(">Consolidating…<");
+    expect(out).toContain("researching…");
   });
-  test("no gaps: no section; phone: no Consolidate, no Drop", () => {
-    expect(renderToStaticMarkup(createElement(MemoryPanel, { ...base, gaps: [] }))).not.toContain("Open questions");
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { ...base, gaps, lan: true }));
+  test("nothing waiting and no open question: the button is off", () => {
+    const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, pending: [], done: [done[0]] }));
+    expect(out).toMatch(/disabled=""[^>]*>Consolidate now</);
+  });
+  test("phone: no Consolidate, no Drop; empty state", () => {
+    const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, lan: true }));
     expect(out).not.toContain(">Drop<");
     expect(out).not.toContain("Consolidate now");
+    expect(renderToStaticMarkup(createElement(ObservationsPanel, { ...base, pending: [], done: [] }))).toContain("Nothing noted yet.");
   });
 });

@@ -21,11 +21,17 @@ def _safe(obs_id) -> str:
     return os.path.basename(str(obs_id or ""))
 
 
-def write(bot, *, kind, claim, trust, session="", about=None, consult="") -> dict:
+def write(bot, *, kind, claim, trust, session="", about=None, consult="", source=None) -> dict:
+    """`source`: where it came from when known, `{"target": str, "backend": str}` (the consulting or captured
+    session's folder and engine)."""
     obs = {"id": store.new_id("o"), "ts": time.time(), "kind": str(kind or ""),
            "claim": " ".join(str(claim or "").split()), "trust": str(trust or "outcome"),
            "session": str(session or ""), "about": [str(a) for a in (about or []) if str(a).strip()],
            "consult": str(consult or "")}
+    if isinstance(source, dict):
+        src = {k: str(source.get(k) or "") for k in ("target", "backend")}
+        if any(src.values()):
+            obs["source"] = src
     with store.lock(bot):
         store.write_json(os.path.join(_dir(bot, "pending"), obs["id"] + ".json"), obs)
     return obs
@@ -52,20 +58,50 @@ def pending(bot) -> list:
     return _read_dir(_dir(bot, "pending"))
 
 
-def done(bot) -> list:
-    """Archived observations, oldest first (not in the contract; for views)."""
-    return _read_dir(_dir(bot, "done"))
+DONE_LIMIT = 200
 
 
-def archive(bot, ids) -> None:
+def done(bot, limit=DONE_LIMIT) -> list:
+    """Archived observations, NEWEST first, at most `limit` (None: all), each with the `outcome` consolidation
+    recorded on it."""
+    rows = list(reversed(_read_dir(_dir(bot, "done"))))
+    return rows if limit is None else rows[:max(0, int(limit))]
+
+
+OUTCOME_OPS = ("add", "bump", "nothing", "gap")
+
+
+def archive(bot, ids, outcomes=None) -> None:
+    """pending/ -> done/. `outcomes` maps an observation id to what consolidation did with it:
+    `{"op": "add"|"bump"|"nothing"|"gap", "item"?: memory item id, "gap"?: gap id}`; it is stored on the archived
+    record as `outcome` (with `at`). An id without one gets `{"op": "nothing"}`."""
+    outcomes = outcomes if isinstance(outcomes, dict) else {}
+    now = time.time()
     with store.lock(bot):
         src, dst = _dir(bot, "pending"), _dir(bot, "done")
         for oid in ids or []:
             name = _safe(oid)
             if not name:
                 continue
+            path = os.path.join(src, name + ".json")
+            obs = store.read_json(path, None)
+            if isinstance(obs, dict):
+                oc = outcomes.get(oid) if isinstance(outcomes.get(oid), dict) else {}
+                op = oc.get("op") if oc.get("op") in OUTCOME_OPS else "nothing"
+                out = {"op": op, "at": now}
+                if op in ("add", "bump") and oc.get("item"):
+                    out["item"] = str(oc["item"])
+                if op == "gap" and oc.get("gap"):
+                    out["gap"] = str(oc["gap"])
+                obs["outcome"] = out
+                try:
+                    store.write_json(os.path.join(dst, name + ".json"), obs)
+                    os.remove(path)
+                    continue
+                except OSError:
+                    pass
             try:
-                os.replace(os.path.join(src, name + ".json"), os.path.join(dst, name + ".json"))
+                os.replace(path, os.path.join(dst, name + ".json"))
             except OSError:
                 pass
 

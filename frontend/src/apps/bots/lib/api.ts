@@ -300,7 +300,15 @@ export interface ExpertItem {
   indexed?: boolean;
 }
 /** A pending observation (not yet consolidated into memory). */
-export interface ExpertObs { id: string; ts: number; kind: string; claim: string; trust: string; session: string; about: string[]; consult: string }
+/** One observation (observations.jsonl): something noted from a consult or a session, waiting to be consolidated
+ *  (`pending`) or already folded in (`done`, with its `outcome`). `kind`: gap (an unsure consult; `claim` is the
+ *  question and `gap` the joined gap), repeated_request, user_correction, error_then_fix, answer_contradicted. */
+export interface ExpertObs {
+  id: string; ts: number; kind: string; claim: string; trust: string; session: string; about: string[]; consult: string;
+  source?: { target?: string; backend?: string } | null;
+  outcome?: { op: "add" | "bump" | "nothing" | "gap" | (string & {}); item?: string; gap?: string; at?: number } | null;
+  gap?: ExpertGap | null;
+}
 export interface ExpertCaller { run_id?: string; session_id?: string; backend?: string; target?: string; canvas?: string }
 /** One consult from an agent session (consults.jsonl). `ms`: how long it took. */
 export interface ExpertConsult {
@@ -627,9 +635,8 @@ const xid = (id: string) => `${XP}/${encodeURIComponent(id)}`;
 export const expertApi = {
   memory: (id: string) => get<{ items: ExpertItem[]; index: string }>(`${xid(id)}/memory`, "expert memory"),
   forgetMemory: (id: string, itemId: string) => post<{ removed: number }>(`${xid(id)}/memory/forget`, { id: itemId }, "expert forget"),
-  observations: (id: string) => get<{ pending: ExpertObs[]; due: boolean; consolidating?: ExpertConsolidating }>(`${xid(id)}/observations`, "expert observations"),
+  observations: (id: string) => get<{ pending: ExpertObs[]; done?: ExpertObs[]; due: boolean; consolidating?: ExpertConsolidating }>(`${xid(id)}/observations`, "expert observations"),
   consults: (id: string) => get<{ consults: ExpertConsult[] }>(`${xid(id)}/consults`, "expert consults"),
-  gaps: (id: string) => get<{ gaps: ExpertGap[]; researching: string | null }>(`${xid(id)}/gaps`, "expert gaps"),
   dismissGap: (id: string, gid: string) => post<ExpertGap>(`${xid(id)}/gaps/${encodeURIComponent(gid)}/dismiss`, {}, "expert drop gap"),
   checks: (id: string) => get<ExpertChecks>(`${xid(id)}/checks`, "expert checks"),
   runChecks: (id: string) => post<{ run_id: string }>(`${xid(id)}/checks/run`, {}, "expert run checks"),

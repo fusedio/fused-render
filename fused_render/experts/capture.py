@@ -468,7 +468,9 @@ def capture_session(bot, session: dict) -> list:
     written = []
     for row in parse(answer, allowed):
         written.append(observations.write(bot, kind=row["kind"], claim=row["claim"], trust="outcome",
-                                          session=session["session_id"], about=row["about"]))
+                                          session=session["session_id"], about=row["about"],
+                                          source={"target": session.get("target") or "",
+                                                  "backend": session.get("backend") or ""}))
     mark_captured(session, bot)
     return written
 

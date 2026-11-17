@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { ExpertEngineRow, ExpertGap, ExpertItem, ExpertProposal } from "./api";
-import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, splitGaps, unresolvedGapCount, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, pendingLine, proposalLine, proposalText, scoreText,
+import type { ExpertEngineRow, ExpertGap, ExpertItem, ExpertObs, ExpertProposal } from "./api";
+import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, observationGaps, observationMeta, observationResultLabel, observationTypeLabel,
+  researchingGap, sortObservations, unresolvedGapCount, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, proposalLine, proposalText, scoreText,
   scoresLine, seenLabel, sortConsults, sortLessons, splitLessons } from "./expert";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
@@ -31,11 +32,6 @@ describe("lessons", () => {
     expect(lessonTags(item({ trust: "research", indexed: false, proposed: true }))).toEqual(["found by research", "waiting for your approval", "proposed"]);
     expect(lessonTags(item({ trust: "research" }))).toEqual(["found by research"]);
     expect(lessonTags(item({ trust: "outcome", indexed: false }))).toEqual(["seen once"]);
-  });
-  test("the pending line", () => {
-    expect(pendingLine(0, false)).toBe("No observations waiting.");
-    expect(pendingLine(1, false)).toBe("1 observation waiting to be consolidated.");
-    expect(pendingLine(3, true)).toBe("3 observations waiting to be consolidated (due now).");
   });
 });
 
@@ -138,7 +134,7 @@ describe("gaps", () => {
   test("status wording", () => {
     expect(gapStatusLabel(gap({ status: "open" }))).toBe("waiting");
     expect(gapStatusLabel(gap({ status: "researching" }))).toBe("researching…");
-    expect(gapStatusLabel(gap({ status: "proposed" }))).toBe("skill proposal in chat");
+    expect(gapStatusLabel(gap({ status: "proposed" }))).toBe("skill fix proposed in chat");
     expect(gapStatusLabel(gap({ status: "asked" }))).toBe("asked you in chat");
     expect(gapStatusLabel(gap({ status: "answered", resolution: "skill" }))).toBe("answered by a new skill");
     expect(gapStatusLabel(gap({ status: "answered", resolution: "user" }))).toBe("answered by you");
@@ -146,15 +142,6 @@ describe("gaps", () => {
     expect(gapStatusLabel(gap({ id: "x", status: "open" }), "x")).toBe("researching…");
     expect(gapStatusLabel(gap({ id: "x", status: "open" }), "y")).toBe("waiting");
     expect(gapStatusLabel(gap({ id: "x", status: "dismissed" }), "x")).toBe("dropped");
-  });
-  test("unresolved first, most asked first; resolved after, newest first", () => {
-    const { unresolved, resolved } = splitGaps([
-      gap({ id: "a", count: 1, status: "open" }), gap({ id: "b", count: 5, status: "asked" }), gap({ id: "c", status: "answered", updated: 1 }),
-      gap({ id: "d", count: 2, status: "researching" }), gap({ id: "e", status: "dismissed", updated: 9 }), gap({ id: "f", count: 2, status: "proposed", updated: 4 }),
-    ]);
-    expect(unresolved.map((g) => g.id)).toEqual(["b", "f", "d", "a"]);
-    expect(resolved.map((g) => g.id)).toEqual(["e", "c"]);
-    expect(splitGaps(null)).toEqual({ unresolved: [], resolved: [] });
   });
   test("unresolved count", () => {
     expect(unresolvedGapCount([gap({ status: "open" }), gap({ status: "researching" }), gap({ status: "proposed" }), gap({ status: "asked" }),
@@ -175,5 +162,47 @@ describe("consolidating", () => {
     expect(consolidatingLine({ running: true, stage: "gaps", gap: null })).toBe("Sorting open questions…");
     expect(consolidatingLine({ running: true, stage: "researching", gap: "g" })).toBe("Researching an open question…");
     expect(consolidatingLine({ running: true, stage: "proposing", gap: "g" })).toBe("Drafting a skill fix…");
+  });
+});
+
+const obs = (p: Partial<ExpertObs>): ExpertObs => ({ id: "o", ts: 0, kind: "user_correction", claim: "c", trust: "user", session: "", about: [], consult: "", ...p });
+
+describe("observations", () => {
+  test("type tags", () => {
+    expect(observationTypeLabel("gap")).toBe("unsure");
+    expect(observationTypeLabel("repeated_request")).toBe("asked for");
+    expect(observationTypeLabel("user_correction")).toBe("correction");
+    expect(observationTypeLabel("error_then_fix")).toBe("fix that worked");
+    expect(observationTypeLabel("answer_contradicted")).toBe("advice checked");
+    expect(observationTypeLabel("something_new")).toBe("learning");
+    expect(observationTypeLabel(undefined)).toBe("learning");
+  });
+  test("result tags: the op, or the gap's standing", () => {
+    expect(observationResultLabel(obs({ outcome: { op: "add" } }))).toBe("new lesson");
+    expect(observationResultLabel(obs({ outcome: { op: "bump" } }))).toBe("counted toward a lesson");
+    expect(observationResultLabel(obs({ outcome: { op: "nothing" } }))).toBe("nothing new");
+    expect(observationResultLabel(obs({}))).toBe("");
+    expect(observationResultLabel(obs({ kind: "gap", outcome: { op: "gap" }, gap: gap({ status: "proposed" }) }))).toBe("skill fix proposed in chat");
+    expect(observationResultLabel(obs({ kind: "gap", gap: gap({ id: "x", status: "open" }) }), "x")).toBe("researching…");
+    expect(observationResultLabel(obs({ kind: "gap", gap: gap({ status: "answered", resolution: "skill" }) }))).toBe("answered by a new skill");
+  });
+  test("meta: when, then the source, else consult", () => {
+    const now = 1_000_000_000_000;
+    expect(observationMeta(obs({ ts: now / 1000, source: { target: "/x/canvases/sales/", backend: "claude" } }), now)).toMatch(/ · sales · claude$/);
+    expect(observationMeta(obs({ ts: now / 1000, consult: "c1" }), now)).toMatch(/ · consult$/);
+    expect(observationMeta(obs({ ts: now / 1000 }), now)).not.toContain("·");
+  });
+  test("waiting oldest first, consolidated newest first; missing lists are empty", () => {
+    const { waiting, done } = sortObservations([obs({ id: "b", ts: 2 }), obs({ id: "a", ts: 1 })], [obs({ id: "c", ts: 3 }), obs({ id: "d", ts: 5 })]);
+    expect(waiting.map((o) => o.id)).toEqual(["a", "b"]);
+    expect(done.map((o) => o.id)).toEqual(["d", "c"]);
+    expect(sortObservations(undefined, null)).toEqual({ waiting: [], done: [] });
+  });
+  test("the joined gaps, each once; the gap being researched", () => {
+    const g = gap({ id: "g1" });
+    expect(observationGaps([obs({ gap: g }), obs({})], [obs({ gap: g })]).map((x) => x.id)).toEqual(["g1"]);
+    expect(researchingGap({ running: true, stage: "researching", gap: "g1" })).toBe("g1");
+    expect(researchingGap({ running: true, stage: "lessons", gap: null })).toBe(null);
+    expect(researchingGap({ running: false, stage: "researching", gap: "g1" })).toBe(null);
   });
 });

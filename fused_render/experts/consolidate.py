@@ -1,14 +1,23 @@
-"""Fold pending observations into memory (docs/experts.md §4 `consolidate.py`).
+"""Consolidation: the one learning loop (docs/experts.md §4 `consolidate.py`, §11).
 
-One `model.text` call proposes an edit per observation; code applies them.
-The model is the filter between transcript text and memory, so without it
-nothing is added: no engine -> `ran: False` with a `reason`; a failed call or
-an answer that cannot be parsed leaves the observations pending and counts a
-failure (`<expert>/consolidate-failures.json`). Only after
-`FALLBACK_AFTER` consecutive failures does it fall back to one exact-match
-`memory.add` per observation. An unknown op, a bump of an unknown lesson, or
-an observation the answer omitted is `nothing` (archived, not added). `gap`
-observations are never lessons.
+observations -> consolidation -> memory -> skill fixes. One `run`:
+
+a. lessons: one `model.text` call proposes an edit per lesson observation
+   (add / bump / nothing); code applies them. The model is the filter between
+   transcript text and memory, so a failed call or an unreadable answer adds
+   nothing: the observations stay pending and a failure is counted
+   (`consolidate-failures.json`); only after `FALLBACK_AFTER` consecutive
+   failures does it fall back to one exact-match `memory.add` each.
+b. gaps: gap observations (unsure consults) become gap records
+   (`gaps.record`); the same call may answer `{"op": "gap", "gap": id}` to fold
+   a question asked in other words into an open gap. Never lessons.
+c. repair: up to `gaps.REPAIR_PER_RUN` open gaps are researched
+   (`gaps.research`); a grounded finding is a `research` lesson plus a skill
+   proposal.
+d. proposing: every due lesson as one proposal (`proposals.propose_candidates`).
+
+Each archived observation records what happened to it (`outcome`). `start`
+runs it in a background thread; `status` says which stage is running.
 """
 from __future__ import annotations
 
@@ -205,17 +214,21 @@ def _run(bot, force):
     open_gaps = gapmod.open_gaps(bot) if gap_obs else []
     offer = gap_obs if open_gaps else []  # gap observations reach the model only to be merged into a gap
 
-    def note(item, before_ids):
+    outcomes: dict[str, dict] = {}  # observation id -> what this run did with it (stored on the archived record)
+
+    def note(o, item, before_ids):
         if item is None:
             return
-        (bumped if item["id"] in before_ids else added).append(item["id"])
+        op = "bump" if item["id"] in before_ids else "add"
+        (bumped if op == "bump" else added).append(item["id"])
+        outcomes[o["id"]] = {"op": op, "item": item["id"]}
 
     def add(o, claim=None):
         before = {i["id"] for i in memory.items(bot)}
         try:
-            note(memory.add(bot, claim if claim is not None else o.get("claim"), kind=o.get("kind") or "lesson",
-                            trust=o.get("trust") or "outcome", session=o.get("session") or "",
-                            about=o.get("about")), before)
+            note(o, memory.add(bot, claim if claim is not None else o.get("claim"), kind=o.get("kind") or "lesson",
+                               trust=o.get("trust") or "outcome", session=o.get("session") or "",
+                               about=o.get("about")), before)
             return True
         except ValueError:
             return False
@@ -274,6 +287,7 @@ def _run(bot, force):
             it = memory.bump(bot, str(e["item"]), session=o.get("session") or "")
             if it is not None:
                 bumped.append(it["id"])
+                outcomes[o["id"]] = {"op": "bump", "item": it["id"]}
             else:
                 ignored += 1  # a bump of a lesson that does not exist: nothing
         elif op == "add":
@@ -288,6 +302,7 @@ def _run(bot, force):
     # Gap observations -> gap records (one count per distinct consult), merged where the model said so.
     _stage(bot, "gaps")
     touched: list[str] = []
+    renamed: dict[str, str] = {}  # a gap id merged away this run -> the gap it went into
     for o in gap_obs:
         q = _question_of(o)
         if not q:
@@ -299,12 +314,19 @@ def _run(bot, force):
                 kept = gapmod.merge(bot, g["id"], target)
                 if kept is not None:
                     touched = [t for t in touched if t not in (g["id"], target)]
+                    for gone in (g["id"], target):
+                        if gone != kept["id"]:
+                            renamed[gone] = kept["id"]
                     g = kept
             if g["id"] not in touched:
                 touched.append(g["id"])
+            outcomes[o["id"]] = {"op": "gap", "gap": g["id"]}
         except Exception:  # noqa: BLE001 — one bad record never blocks the run
             logger.warning("expert %s: gap observation %s not recorded", bot.id, o.get("id"), exc_info=True)
-    observations.archive(bot, [o["id"] for o in pend])
+    for oc in outcomes.values():
+        while oc.get("gap") in renamed:
+            oc["gap"] = renamed[oc["gap"]]
+    observations.archive(bot, [o["id"] for o in pend], outcomes)
 
     # Repair: research the open gaps touched now, plus older ones still worth a try.
     researched = []
@@ -327,7 +349,7 @@ def _run(bot, force):
         proposed = []
     out = _result(True, added, bumped, ignored)
     out.update(gaps=touched, researched=researched, proposed=proposed)
-    if researched and not proposed:
+    if (researched or touched) and not proposed:
         # A gap research could not answer may now be asked (the scheduler's cards.tick would, later).
         try:
             from fused_render.experts import cards

@@ -33,6 +33,7 @@ PREFIX = "/api/experts"
 ENGINE_IDS = ("claude", "codex", "copilot")
 ENGINE_CHOICES = ("auto",) + ENGINE_IDS
 CONSULTS_LIMIT = 100
+OBSERVATIONS_DONE_LIMIT = 200
 #: A run id as `agent._start` mints it (`YYYYmmdd-HHMMSS-<hex>`), loosely: a
 #: name that cannot climb out of the runs root.
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
@@ -264,8 +265,19 @@ def experts_memory_forget(eid: str, body: dict = Body(...), x_fused: str | None 
 def experts_observations(eid: str):
     bot = _expert(eid)
     obs = _mod("observations")
-    return {"pending": obs.pending(bot), "due": bool(obs.due(bot)),
-            "consolidating": _mod("consolidate").status(bot)}
+    gaps = _mod("gaps")
+    by_id = {g["id"]: g for g in gaps.listing(bot)}
+    by_consult = {c: g for g in by_id.values() for c in (g.get("consults") or [])}
+
+    def join(o):
+        if o.get("kind") != "gap" and o.get("trust") != "gap":
+            return o
+        gid = ((o.get("outcome") or {}).get("gap")) if isinstance(o.get("outcome"), dict) else None
+        return dict(o, gap=by_id.get(gid) or by_consult.get(o.get("consult") or "") or None)
+
+    return {"pending": [join(o) for o in obs.pending(bot)],
+            "done": [join(o) for o in obs.done(bot, limit=OBSERVATIONS_DONE_LIMIT)],
+            "due": bool(obs.due(bot)), "consolidating": _mod("consolidate").status(bot)}
 
 
 @router.get(PREFIX + "/{eid}/consults")

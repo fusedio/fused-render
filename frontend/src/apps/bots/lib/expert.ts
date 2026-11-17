@@ -1,6 +1,6 @@
 // Pure helpers for an expert's panels (components/ExpertPane.tsx) and its proposal card (components/ApprovalCard.tsx):
 // ordering and the short strings the rows show. The shapes are docs/experts.md §4 (Item, Consult, Run, Proposal).
-import type { ExpertCheckStatus, ExpertConsolidating, ExpertConsult, ExpertEngineRow, ExpertGap, ExpertItem, ExpertProposal, ExpertScore } from "./api";
+import type { ExpertCheckStatus, ExpertConsolidating, ExpertConsult, ExpertEngineRow, ExpertGap, ExpertObs, ExpertItem, ExpertProposal, ExpertScore } from "./api";
 import { fmtAgo } from "./format";
 
 /** Memory as the expert's own index reads it: most seen first, then the most recently touched. */
@@ -48,12 +48,6 @@ export function lessonTags(it: Pick<ExpertItem, "trust" | "promoted" | "proposed
   else if (it.rejected) out.push("not proposed again");
   else if (it.proposed) out.push("proposed");
   return out;
-}
-
-/** The Memory tab's line about observations not yet folded into lessons. */
-export function pendingLine(n: number, due: boolean): string {
-  if (!n) return "No observations waiting.";
-  return `${n} observation${n === 1 ? "" : "s"} waiting to be consolidated${due ? " (due now)" : ""}.`;
 }
 
 /** Consults newest first (the route already sends them so; a merge or an older server may not). */
@@ -134,7 +128,7 @@ export function gapStatusLabel(g: Pick<ExpertGap, "id" | "status" | "resolution"
   switch (g.status) {
     case "open": return "waiting";
     case "researching": return "researching…";
-    case "proposed": return "skill proposal in chat";
+    case "proposed": return "skill fix proposed in chat";
     case "asked": return "asked you in chat";
     case "answered": return g.resolution === "user" ? "answered by you" : g.resolution === "skill" ? "answered by a new skill" : "answered";
     case "dismissed": return "dropped";
@@ -142,20 +136,54 @@ export function gapStatusLabel(g: Pick<ExpertGap, "id" | "status" | "resolution"
   }
 }
 
-/** The Gaps panel's two parts: unresolved (most asked first, then the most recently asked), then resolved (most
- *  recently touched first). */
-export function splitGaps(gs: readonly ExpertGap[] | null | undefined): { unresolved: ExpertGap[]; resolved: ExpertGap[] } {
-  const all = [...(gs || [])];
-  return {
-    unresolved: all.filter(gapUnresolved).sort((a, b) => (b.count || 0) - (a.count || 0) || (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id)),
-    resolved: all.filter((g) => !gapUnresolved(g)).sort((a, b) => (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id)),
-  };
-}
-
 /** "asked 3×". */
 export const askedLabel = (count: number | null | undefined): string => `asked ${Math.max(1, count || 0)}×`;
 
-export const GAPS_INTRO = "Questions sessions asked that I could not answer. Consolidating looks into each one, then proposes a skill fix or asks you.";
+// ------------------------------------------------------------------ observations ----
+
+export const OBS_INTRO = "Everything I noted from consults and sessions. Consolidating turns these into lessons and skill fixes.";
+export const OBS_EMPTY = "Nothing noted yet. Unsure answers and things I learn from sessions show up here.";
+
+const OBS_TYPES: Record<string, string> = { gap: "unsure", repeated_request: "asked for", user_correction: "correction",
+  error_then_fix: "fix that worked", answer_contradicted: "advice checked" };
+/** An observation's type tag. */
+export const observationTypeLabel = (kind: string | null | undefined): string => OBS_TYPES[kind || ""] || "learning";
+
+/** A consolidated observation's result tag: what consolidation made of it. A gap row says where its gap stands
+ *  (gapStatusLabel; `researching` as there); "" when there is nothing to say (still pending, unknown op). */
+export function observationResultLabel(o: Pick<ExpertObs, "kind" | "outcome" | "gap">, researching: string | null = null): string {
+  if (o.gap) return gapStatusLabel(o.gap, researching);
+  switch (o.outcome?.op) {
+    case "add": return "new lesson";
+    case "bump": return "counted toward a lesson";
+    case "nothing": return "nothing new";
+    case "gap": return o.kind === "gap" ? "waiting" : "";
+    default: return "";
+  }
+}
+
+/** A row's meta line: when, then where it came from (the source folder and backend when known, else "consult"). */
+export function observationMeta(o: Pick<ExpertObs, "ts" | "source" | "consult">, nowMs: number = Date.now()): string {
+  const target = basename(o.source?.target), backend = o.source?.backend || "";
+  const where = target || backend ? [target, backend].filter(Boolean).join(" · ") : o.consult ? "consult" : "";
+  return [fmtAgo(o.ts, nowMs), where].filter(Boolean).join(" · ");
+}
+
+/** The tab's two sections: waiting (oldest first) and consolidated (newest first). */
+export function sortObservations(pending: readonly ExpertObs[] | null | undefined, done: readonly ExpertObs[] | null | undefined): { waiting: ExpertObs[]; done: ExpertObs[] } {
+  return { waiting: [...(pending || [])].sort((a, b) => (a.ts || 0) - (b.ts || 0)), done: [...(done || [])].sort((a, b) => (b.ts || 0) - (a.ts || 0)) };
+}
+
+/** The gaps joined into the observations (each once), for "is an open question left". */
+export function observationGaps(...lists: (readonly ExpertObs[] | null | undefined)[]): ExpertGap[] {
+  const seen = new Map<string, ExpertGap>();
+  for (const l of lists) for (const o of l || []) if (o.gap && !seen.has(o.gap.id)) seen.set(o.gap.id, o.gap);
+  return [...seen.values()];
+}
+
+/** The gap a running consolidation is researching now, if any. */
+export const researchingGap = (c: ExpertConsolidating | null | undefined): string | null =>
+  c?.running && (c.stage === "researching" || c.stage === "proposing") ? c.gap || null : null;
 
 /** While a consolidation runs: what it is doing, by stage ("" when it is not running). */
 export function consolidatingLine(c: ExpertConsolidating | null | undefined): string {
