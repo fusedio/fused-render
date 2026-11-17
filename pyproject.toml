@@ -126,6 +126,11 @@ dev = [
     # `tests/test_ai_llamacpp_worker.py` can exercise real `{% for %}`/`{{ }}`
     # rendering rather than a hand-rolled stand-in.
     "jinja2",
+    # A TEST dependency: the engine tests' headerless scripts and the
+    # app-package fast path assume the app's own interpreter has pandas, as every
+    # packaged build does through `[bundled]`. It used to arrive here through
+    # `fused[aws]`'s data group; `[fused]` is now the plain CLI (D1495).
+    "pandas",
     # Every feature extra, so the suite runs against the whole product.
     "fused-render[all]",
 ]

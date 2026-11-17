@@ -307,11 +307,7 @@ jobs:
           node-version: "22"
 
       - name: Install fused-render (dev + fused extras)
-        # pandas: the engine tests' headerless scripts and app-package fast path
-        # assume the app's own interpreter has it, as every packaged build does
-        # (`[bundled]`). It used to arrive through `fused[aws]`'s data group; the
-        # `[fused]` extra is now the plain CLI (D1495), so it is named here.
-        run: pip install -e ".[dev,fused]" pandas
+        run: pip install -e ".[dev,fused]"
 
       - name: Prove the engine tests run rather than skip
         # The failure mode this job exists to avoid is looking like coverage
