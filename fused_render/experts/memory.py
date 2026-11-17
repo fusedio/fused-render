@@ -8,6 +8,15 @@ is new or empty. `contradict` is the opposite count (`contradicted`, once per
 session, sessions in `contradicted_sessions`): a session showed the lesson
 wrong or too broad. It never raises `count`.
 
+`confirm` is a sighting that is NOT independent evidence (the expert's own advice echoed back by a session,
+or a statement capture could not ground in a user line): `confirmed += 1` once per session
+(`confirmed_sessions`), `last_used` set, `count` untouched. Only `count` decides what is used in answers and
+proposed (docs/experts.md "Only independent evidence raises a count").
+
+A user correction verified in a session is stored with trust `user` and `via: "session"`. `narrow` rewrites a
+lesson's claim (the old wording kept in `history`) and clears its contradiction mark; a lesson a user correction
+replaced leaves memory with reason `corrected` and `into` (the correction's lesson id).
+
 Usage: `cite` counts an answer (consult or chat) that relied on a lesson
 (`cited`, `last_used`); `bump` also sets `last_used`. `uses = count + cited`.
 A lesson that leaves memory (forgotten, promoted into a skill, tidied away)
@@ -27,7 +36,8 @@ _TRUST_RANK = {"gap": 0, "research": 1, "outcome": 1, "user": 2}
 FLAGS = ("proposed", "promoted", "rejected")
 CLAIM_MAX = 1000
 ARCHIVE_FILE = "memory-archive.jsonl"
-REASONS = ("stale", "promoted", "over_limit", "forgotten", "merged")
+REASONS = ("stale", "promoted", "over_limit", "forgotten", "merged", "corrected")
+HISTORY_MAX = 10
 MERGE_CLAIM_MAX = 400
 DAY_S = 86400.0
 
@@ -57,9 +67,18 @@ def _save(bot, data) -> None:
     store.write_json(_path(bot), {"version": 1, "items": data["items"]})
 
 
+def _defaults(it) -> dict:
+    """Fields an older item lacks, filled for readers (not written back)."""
+    it.setdefault("confirmed", 0)
+    it.setdefault("via", "")
+    it.setdefault("history", [])
+    return it
+
+
 def items(bot) -> list:
+    """Every lesson; `confirmed` (0), `via` ("") and `history` ([]) are filled in when absent."""
     with store.lock(bot):
-        return _load(bot)["items"]
+        return [_defaults(i) for i in _load(bot)["items"]]
 
 
 def _bump_in(item, session, now) -> None:
@@ -72,8 +91,23 @@ def _bump_in(item, session, now) -> None:
     item["last_used"] = now
 
 
-def add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, gap="") -> dict:
-    """`gap`: the gap id a `research` lesson answers (stored as `gap`)."""
+def _confirm_in(item, session, now) -> None:
+    seen = item.get("confirmed_sessions")
+    if not isinstance(seen, list):
+        seen = item["confirmed_sessions"] = []
+    if not session or session not in seen:
+        item["confirmed"] = _n(item.get("confirmed")) + 1
+    if session and session not in seen:
+        seen.append(session)
+    item["last_used"] = now
+
+
+def add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, gap="", via="",
+        counted=True) -> dict:
+    """`gap`: the gap id a `research` lesson answers (stored as `gap`). `via`: where a `user` lesson was said
+    ("session": a user correction verified in a task session). `counted` False: the sighting is not independent
+    evidence, so an equal existing lesson is `confirm`ed instead of bumped, and a new lesson starts at `count` 0,
+    `confirmed` 1."""
     claim = " ".join(str(claim or "").split())[:CLAIM_MAX]
     if not claim:
         raise ValueError("a lesson needs a claim")
@@ -86,26 +120,35 @@ def add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, g
         data = _load(bot)
         for it in data["items"]:
             if normalise(it.get("claim")) == key:
-                _bump_in(it, session, now)
+                if counted:
+                    _bump_in(it, session, now)
+                else:
+                    _confirm_in(it, session, now)
                 # A lesson the user states outranks the same one seen in a session.
                 if _TRUST_RANK.get(trust, 0) > _TRUST_RANK.get(it.get("trust"), 0):
                     it["trust"] = trust
+                    if via:
+                        it["via"] = str(via)
                 for a in about:
                     if a not in it.setdefault("about", []):
                         it["about"].append(a)
                 if gap and not it.get("gap"):
                     it["gap"] = str(gap)
                 _save(bot, data)
-                return dict(it)
+                return _defaults(dict(it))
         it = {"id": store.new_id("m"), "claim": claim, "kind": str(kind or "lesson"), "trust": trust,
-              "count": 1, "sessions": [session] if session else [], "about": about,
+              "count": 1 if counted else 0, "sessions": [session] if session and counted else [], "about": about,
               "created": now, "updated": now, "proposed": False, "promoted": False, "rejected": False,
-              "contradicted": 0, "contradicted_sessions": [], "cited": 0, "last_used": None}
+              "contradicted": 0, "contradicted_sessions": [], "cited": 0, "last_used": None,
+              "confirmed": 0 if counted else 1,
+              "confirmed_sessions": [session] if session and not counted else []}
         if gap:
             it["gap"] = str(gap)
+        if via:
+            it["via"] = str(via)
         data["items"].append(it)
         _save(bot, data)
-        return dict(it)
+        return _defaults(dict(it))
 
 
 def bump(bot, item_id, *, session="") -> dict | None:
@@ -116,6 +159,45 @@ def bump(bot, item_id, *, session="") -> dict | None:
                 _bump_in(it, str(session or ""), time.time())
                 _save(bot, data)
                 return dict(it)
+    return None
+
+
+def confirm(bot, item_id, *, session="") -> dict | None:
+    """A session showed this lesson again, but not as independent evidence (it echoed the expert's own advice):
+    `confirmed += 1` only when `session` is new to `confirmed_sessions` or empty; sets `last_used`. Never touches
+    `count`."""
+    with store.lock(bot):
+        data = _load(bot)
+        for it in data["items"]:
+            if it.get("id") == item_id:
+                _confirm_in(it, str(session or ""), time.time())
+                _save(bot, data)
+                return _defaults(dict(it))
+    return None
+
+
+def narrow(bot, item_id, claim) -> dict | None:
+    """Rewrite a lesson's claim to a narrower one (a user correction showed it too broad): the previous wording is
+    appended to `history` as `{claim, at}`, and its contradiction mark is cleared. None when the item is gone or the
+    claim is empty."""
+    claim = " ".join(str(claim or "").split())[:CLAIM_MAX]
+    if not claim:
+        return None
+    now = time.time()
+    with store.lock(bot):
+        data = _load(bot)
+        for it in data["items"]:
+            if it.get("id") == item_id:
+                hist = it.get("history") if isinstance(it.get("history"), list) else []
+                if normalise(claim) != normalise(it.get("claim")):
+                    hist = (hist + [{"claim": it.get("claim", ""), "at": now}])[-HISTORY_MAX:]
+                    it["claim"] = claim
+                it["history"] = hist
+                it["contradicted"] = 0
+                it["contradicted_sessions"] = []
+                it["updated"] = now
+                _save(bot, data)
+                return _defaults(dict(it))
     return None
 
 
@@ -248,9 +330,10 @@ def _archive(bot, rows, reason, *, skill="", whys=None, into="") -> None:
         store.append_jsonl(_archive_path(bot), rec)
 
 
-def remove(bot, ids, reason, *, skill="", whys=None) -> list:
+def remove(bot, ids, reason, *, skill="", whys=None, into="") -> list:
     """Move the items with these ids out of memory into the archive with `reason` (one of `REASONS`), the
-    `skill` that now carries them (promoted) and a per-id `why` (`whys`). Returns the removed items."""
+    `skill` that now carries them (promoted), a per-id `why` (`whys`) and `into` (corrected: the lesson that replaced
+    them). Returns the removed items."""
     if reason not in REASONS:
         raise ValueError(f"unknown reason: {reason}")
     want = {str(i) for i in (ids or [])}
@@ -263,7 +346,7 @@ def remove(bot, ids, reason, *, skill="", whys=None) -> list:
             return []
         data["items"] = [i for i in data["items"] if i.get("id") not in want]
         _save(bot, data)
-        _archive(bot, gone, reason, skill=skill, whys=whys)
+        _archive(bot, gone, reason, skill=skill, whys=whys, into=into)
         return [dict(i) for i in gone]
 
 
@@ -324,6 +407,21 @@ def merge(bot, ids, claim, *, why="") -> tuple[dict, list] | None:
 def archived(bot, limit=100) -> list:
     """The archive, NEWEST first (at most `limit`)."""
     return list(reversed(store.read_jsonl(_archive_path(bot), limit=limit)))
+
+
+def promoted(bot, limit=None) -> list:
+    """Archived lessons that went into a skill (reason `promoted` with a `skill` name), newest first, one per id."""
+    out, seen = [], set()
+    for rec in archived(bot, limit=limit):
+        if isinstance(rec, dict) and rec.get("reason") == "promoted" and rec.get("skill") and rec.get("id") \
+                and rec["id"] not in seen:
+            seen.add(rec["id"])
+            out.append(rec)
+    return out
+
+
+def promoted_ids(bot) -> set:
+    return {r["id"] for r in promoted(bot)}
 
 
 def mark(bot, item_id, **flags) -> dict | None:

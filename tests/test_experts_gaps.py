@@ -206,7 +206,10 @@ def test_not_found_below_ask_after_stays_open_without_a_question(expert):
     assert r["researched"] == [g["id"]] and g["status"] == "open" and g["attempts"] == 1
     assert "not found" in g["error"] and not gaps.askable(expert, g)
     assert not any(e["role"] == "question" for e in _events(expert))
-    # The second attempt (max_attempts 2) makes it askable; then it is not researched again.
+    # Not again within 24 hours.
+    assert gaps.repairable(expert) == []
+    # A day later, the second attempt (max_attempts 2) makes it askable; then it is not researched again.
+    gaps._update(expert, g["id"], researched_at=time.time() - gaps.RESEARCH_EVERY_S - 1)
     consolidate.run(expert, force=True)
     g = gaps.get(expert, g["id"])
     assert g["attempts"] == 2
@@ -511,3 +514,120 @@ def test_gaps_over_http_carry_their_proposal_state(client, expert):
     proposals._save(expert, dict(rec, status="ready"))
     by_id, joined = http()
     assert by_id[linked["id"]]["proposal_status"] == "ready" == joined[linked["id"]]["proposal_status"]
+
+
+# ------------------------------------------------------------ research limits ---
+def _no_research(monkeypatch):
+    monkeypatch.setattr(xmodel, "tool_turn", lambda *a, **k: pytest.fail("no research run expected"))
+
+
+def _capped(expert, question="What is ANSWER?", consult_id="c0", **fields):
+    """An open gap at max_attempts (2), last researched two days ago against today's sources."""
+    g = gaps.record(expert, question, consult=consult_id)
+    gaps._update(expert, g["id"], **{"attempts": 2, "researched_at": time.time() - 2 * 86400,
+                                     "research_fp": gaps.sources_fp(expert), **fields})
+    return gaps.get(expert, g["id"])
+
+
+def test_a_touched_gap_at_the_cap_is_not_researched_again(expert, monkeypatch):
+    g = _capped(expert)
+    _no_research(monkeypatch)
+    _gap_obs(expert, "What is ANSWER?", "c1")  # asked again: touched by this run
+    r = consolidate.run(expert, force=True)
+    assert r["gaps"] == [g["id"]] and r["researched"] == []
+    assert gaps.get(expert, g["id"])["attempts"] == 2
+    with pytest.raises(ValueError):  # the direct path obeys the same cap
+        gaps.research(expert, g["id"])
+    assert gaps.askable(expert, gaps.get(expert, g["id"]))  # only the question to the user is left
+
+
+def test_a_gap_is_researched_at_most_once_a_day(expert, monkeypatch):
+    g = gaps.record(expert, "What is ANSWER?", consult="c0")
+    gaps._update(expert, g["id"], attempts=1, researched_at=time.time() - 3600)
+    assert gaps.repairable(expert) == []
+    _no_research(monkeypatch)
+    with pytest.raises(ValueError):
+        gaps.research(expert, g["id"])
+    gaps._update(expert, g["id"], researched_at=time.time() - gaps.RESEARCH_EVERY_S - 60)
+    assert [x["id"] for x in gaps.repairable(expert)] == [g["id"]]
+
+
+def test_changed_sources_allow_one_more_research_at_the_cap(expert, folder, monkeypatch):
+    g = _capped(expert)
+    legacy = _capped(expert, "Who wrote b.py?", "c9", research_fp="")  # no stored fingerprint: never
+    assert gaps.repairable(expert) == []
+    time.sleep(0.01)
+    with open(os.path.join(folder, "new.py"), "w") as f:  # a read root changed
+        f.write("NEW = 1\n")
+    assert [x["id"] for x in gaps.repairable(expert)] == [g["id"]]
+    runs = []
+    monkeypatch.setattr(xmodel, "tool_turn", lambda bot, prompt, **k: runs.append(1) or NOT_FOUND)
+    gaps.research(expert, g["id"])
+    g2 = gaps.get(expert, g["id"])
+    assert runs == [1] and g2["attempts"] == 3 and g2["research_fp"] == gaps.sources_fp(expert)
+    gaps._update(expert, g["id"], researched_at=time.time() - 2 * 86400)  # a day later: still no change
+    assert gaps.repairable(expert) == [] and legacy["id"] not in {x["id"] for x in gaps.repairable(expert)}
+    expert.skill_save("Canvas rules", "canvas", "- a rule")  # a skill changed: one more again
+    assert [x["id"] for x in gaps.repairable(expert)] == [g["id"]]
+
+
+def test_a_snoozed_gap_is_neither_researched_nor_asked(expert, monkeypatch):
+    g = gaps.record(expert, "What is ANSWER?", consult="c0")
+    gaps.record(expert, "What is ANSWER?", consult="c1")  # count 2 >= ask_after
+    gaps._update(expert, g["id"], attempts=1, researched_at=time.time() - 2 * 86400,
+                 snoozed_until=time.time() + 3600)
+    assert gaps.repairable(expert) == [] and not gaps.askable(expert, gaps.get(expert, g["id"]))
+    assert gaps.to_ask(expert) is None
+    gaps._update(expert, g["id"], snoozed_until=time.time() - 1)
+    assert gaps.askable(expert, gaps.get(expert, g["id"])) and [x["id"] for x in gaps.repairable(expert)] == [g["id"]]
+
+
+# ---------------------------------------------------------------- idle tick ---
+class _Tasks:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def _collect(self):
+        return {r["session_id"]: dict(r) for r in self.rows}
+
+    def _place(self, task):
+        pass
+
+
+def _idle_tick_fakes(monkeypatch):
+    from fused_render import session_liveness
+    from fused_render.experts import capture
+    monkeypatch.setattr(scheduler, "_owner", lambda: True)
+    monkeypatch.setattr(scheduler, "_acquire", lambda: True)
+    monkeypatch.setattr(scheduler, "_release", lambda: None)
+    monkeypatch.setattr(xmodel, "text", lambda *a, **k: pytest.fail("an idle tick calls no model"))
+    monkeypatch.setattr(xmodel, "tool_turn", lambda *a, **k: pytest.fail("an idle tick calls no model"))
+    monkeypatch.setattr(session_liveness, "tail_activity", lambda *a, **k: pytest.fail("no transcript read"))
+    monkeypatch.setattr(capture, "_agent", lambda: pytest.fail("no transcript read"))
+    monkeypatch.setattr(capture, "transcript_markdown", lambda *a, **k: pytest.fail("no transcript read"))
+    return capture
+
+
+def test_an_idle_tick_calls_no_model_and_reads_no_transcript(expert, monkeypatch, tmp_path):
+    capture = _idle_tick_fakes(monkeypatch)
+    raw = dict(expert.meta.get("expert") or {})
+    raw["offered_to"] = {"targets": ["*"]}  # every session is relevant: capture must list them
+    expert.meta["expert"] = raw
+    fresh, old = tmp_path / "fresh.jsonl", tmp_path / "old.jsonl"
+    fresh.write_text('{"x": 1}\n')
+    old.write_text('{"x": 1}\n')
+    os.utime(old, (time.time() - 10 * 86400,) * 2)  # past the lookback window
+    listed = []
+    tasks = _Tasks([{"session_id": "s-fresh", "path": str(fresh)}, {"session_id": "s-old", "path": str(old)}])
+    monkeypatch.setattr(capture, "_tasks", lambda: listed.append(1) or tasks)
+    out = scheduler.tick()
+    assert out["ran"] and out["errors"] == 0 and listed  # sessions were listed (stat only)
+    assert out["capture"]["sessions"] == 0 and out["consolidated"] == [] and out["proposed"] == []
+
+
+def test_an_idle_tick_skips_capture_when_no_expert_takes_sessions(expert, monkeypatch):
+    capture = _idle_tick_fakes(monkeypatch)
+    monkeypatch.setattr(capture, "capture_due", lambda **k: pytest.fail("no session listing"))
+    monkeypatch.setattr(capture, "_tasks", lambda: pytest.fail("no session listing"))
+    out = scheduler.tick()  # not offered anywhere, never consulted
+    assert out["ran"] and out["errors"] == 0 and out["capture"]["skipped"]

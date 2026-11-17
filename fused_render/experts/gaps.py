@@ -19,6 +19,14 @@ open gaps per run with one deep, read-only run each (`research`, profile
 - The user's own answer, typed at the Mac, becomes a `user` lesson
   (`answer`); "skip" dismisses it.
 
+Research limits (`may_research`, every path, `research` itself included):
+`max_attempts` is a hard cap (a gap touched again in a later run is NOT
+researched past it), at most one run per gap per `RESEARCH_EVERY_S` (24 h),
+and a gap at the cap is only askable, unless the expert's skills or read roots
+changed since its last attempt (`sources_fp`, stored as `research_fp`): then
+it gets one more run. A gap with `snoozed_until` in the future is neither
+researched nor asked.
+
 Research never writes a skill: only the user's Approve on the proposal card
 does, and its lesson stays out of answers until then.
 
@@ -46,6 +54,10 @@ TRANSCRIPT_CAP = 12000
 BUSY = "research is already running for this expert"
 #: Gaps researched per consolidation run.
 REPAIR_PER_RUN = 2
+#: One research run per gap per this many seconds, whatever path asks.
+RESEARCH_EVERY_S = 86400.0
+#: Directory entries the read-root fingerprint looks at per root, at most.
+_FP_ENTRIES_MAX = 4000
 
 _GUARD = threading.Lock()
 #: bot id -> the gap id being researched in this process.
@@ -107,7 +119,8 @@ def _view(bot, g) -> dict:
     mid-run) reads as "open"."""
     g = dict(g)
     for k, v in (("questions", []), ("consults", []), ("sessions", []), ("attempts", 0), ("finding", None),
-                 ("proposal", None), ("card_seq", None), ("resolution", ""), ("error", "")):
+                 ("proposal", None), ("card_seq", None), ("resolution", ""), ("error", ""),
+                 ("researched_at", 0), ("research_fp", "")):
         g.setdefault(k, v)
     if g.get("status") == "researching" and researching(bot) != g["id"]:
         g["status"] = "open"
@@ -298,15 +311,107 @@ def proposal_settled(bot, gid, pid, *, approved) -> None:
 
 
 # ---------------------------------------------------------------- research ---
+def snoozed(g, now=None) -> bool:
+    """The gap carries a `snoozed_until` in the future: neither researched nor asked until then."""
+    try:
+        until = float(g.get("snoozed_until") or 0)
+    except (TypeError, ValueError):
+        return False
+    return until > (time.time() if now is None else now)
+
+
+def _stat_sig(path) -> str:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ""
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def _newest_mtime(root) -> int:
+    """The newest mtime (ns) among `root` and its top two directory levels; at most `_FP_ENTRIES_MAX` entries."""
+    newest, seen = 0, 0
+    try:
+        newest = os.stat(root).st_mtime_ns
+    except OSError:
+        return 0
+    level = [root]
+    for _depth in range(2):
+        nxt = []
+        for d in level:
+            try:
+                with os.scandir(d) as it:
+                    for e in it:
+                        seen += 1
+                        if seen > _FP_ENTRIES_MAX:
+                            return newest
+                        try:
+                            st = e.stat(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        newest = max(newest, st.st_mtime_ns)
+                        if e.is_dir(follow_symlinks=False):
+                            nxt.append(e.path)
+            except OSError:
+                continue
+        level = nxt
+    return newest
+
+
+def sources_fp(bot) -> str:
+    """A cheap fingerprint of what research can read: each skill file's name, size and mtime, and for each read
+    root (the manifest's `reads`) the newest mtime among its top two directory levels. No file is read."""
+    from fused_render.experts import readtools
+    parts = []
+    sd = getattr(bot, "skills_dir", None)
+    try:
+        names = sorted(n for n in os.listdir(sd) if n.endswith(".md")) if sd else []
+    except OSError:
+        names = []
+    for n in names:
+        parts.append(f"s:{n}:{_stat_sig(os.path.join(sd, n))}")
+    try:
+        roots = readtools.resolve_reads(store.manifest(bot))
+    except Exception:  # noqa: BLE001 — unreadable reads: no roots
+        roots = []
+    for r in roots:
+        parts.append(f"r:{r}:{_newest_mtime(r)}")
+    return "|".join(parts)
+
+
+def may_research(bot, g, now=None, fp=None) -> bool:
+    """The research rules every path obeys (docs/experts.md §11): an open gap, not on a card, not snoozed, not
+    researched in the last `RESEARCH_EVERY_S`, and attempts < max_attempts, or, at the cap, once more when the
+    skills or read roots changed since its last attempt (`sources_fp` differs from the stored `research_fp`).
+    `fp` is a callable returning the current fingerprint (computed only when needed)."""
+    now = time.time() if now is None else now
+    if g.get("status") != "open" or g["id"] == card_up(bot) or snoozed(g, now):
+        return False
+    if now - float(g.get("researched_at") or 0) < RESEARCH_EVERY_S:
+        return False
+    if int(g.get("attempts") or 0) < _settings(bot)["max_attempts"]:
+        return True
+    stored = str(g.get("research_fp") or "")
+    if not stored or g.get("finding"):
+        return False
+    return (fp() if fp else sources_fp(bot)) != stored
+
+
 def repairable(bot, touched=()) -> list:
-    """The gaps consolidation researches this run (step c): the open gaps in `touched`, plus older open gaps with
-    attempts < max_attempts; most asked first, at most `REPAIR_PER_RUN`. [] when `research` is off."""
+    """The gaps consolidation researches this run (step c): the open gaps that `may_research` (being touched in
+    this run no longer bypasses the cap); most asked first, at most `REPAIR_PER_RUN`. [] when `research` is
+    off. `touched` is kept for callers and does not change the choice."""
     s = _settings(bot)
     if not s["research"]:
         return []
-    touched = set(touched or ())
-    rows = [g for g in listing(bot) if g["status"] == "open" and g["id"] != card_up(bot)
-            and (g["id"] in touched or int(g.get("attempts") or 0) < s["max_attempts"])]
+    now = time.time()
+    cache: list = []
+
+    def fp():
+        if not cache:
+            cache.append(sources_fp(bot))
+        return cache[0]
+    rows = [g for g in listing(bot) if may_research(bot, g, now, fp)]
     rows.sort(key=lambda g: (-int(g.get("count") or 0), float(g.get("created") or 0)))
     return rows[:REPAIR_PER_RUN]
 
@@ -350,6 +455,8 @@ def research(bot, gid) -> dict:
         raise ValueError("no such gap")
     if g["status"] != "open" or card_up(bot) == gid:
         raise ValueError(f"this gap is {g['status']}; it is not researched now")
+    if not may_research(bot, g):
+        raise ValueError("this gap is not researched now (attempt cap, once a day, or snoozed)")
     if not _claim(bot, gid):
         raise ValueError(BUSY)
     try:
@@ -418,7 +525,7 @@ def lesson_text(gap, finding) -> str:
 
 def _research(bot, gid) -> dict:
     from fused_render.experts import engine, memory, proposals
-    g = _update(bot, gid, status="researching", error="")
+    g = _update(bot, gid, status="researching", error="", researched_at=time.time(), research_fp=sources_fp(bot))
     error = ""
     try:
         res = engine.research(bot, list(g.get("questions") or [g["question"]]), transcript=_session_tail(g))
@@ -451,7 +558,7 @@ def askable(bot, g) -> bool:
     """An open gap the user may be asked about: seen `ask_after` times or tried `max_attempts` times, and
     researched at least once (unless research is off)."""
     s = _settings(bot)
-    if g.get("status") != "open":
+    if g.get("status") != "open" or snoozed(g):
         return False
     attempts = int(g.get("attempts") or 0)
     if s["research"] and attempts < 1:

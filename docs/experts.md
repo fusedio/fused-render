@@ -47,6 +47,7 @@ Bot folder (bots v3 layout, `bots/paths.py`):
     gaps.json                   {"version":1,"gaps":[Gap],"last_asked":{"at","gap"}} (§11)
     memory-archive.jsonl        one removed lesson per line (§12)
     tidy-last.json              the last tidy's summary (§12)
+    tidy-fingerprint.json       {"fp","at"}: memory's fingerprint after the last clean tidy that changed nothing (§12)
 ```
 
 Machine state: `<home>/bots/experts-seeded.json` (seed witness), `<home>/bots/experts-captured.json`
@@ -529,7 +530,8 @@ waiting_on=seq)`, wait on the inbox, classify with the YES / NO regexes, then `p
 Gap = {"id","question","questions":[str],"count": int,"consults":[consult ids],"sessions":[session ids],
        "created","updated","status": "open"|"researching"|"proposed"|"asked"|"answered"|"dismissed",
        "attempts": int,"finding": {"answer": str,"refs":[str]} | None,"proposal": pid | None,
-       "card_seq": int | None,"resolution": "" | "skill" | "user" | "dismissed","error": str}
+       "card_seq": int | None,"resolution": "" | "skill" | "user" | "dismissed","error": str,
+       "researched_at": ts | 0,"research_fp": str,"snoozed_until"?: ts}   # §11 research limits
 listing(bot) -> list[Gap]             # not closed first, most asked first
 with_proposal(bot, rows) -> list      # copies for HTTP + "proposal_status", "proposal_error" (below)
 get(bot, gid) ; ids(bot) -> set
@@ -537,7 +539,9 @@ record(bot, question, *, consult="", session="") -> Gap   # same normalised ques
 merge(bot, a, b) -> Gap | None        # into the older; counts summed, lists united; only open gaps
 dismiss(bot, gid) -> Gap
 answer(bot, gid, text) -> Gap         # memory.add(trust="user"); status answered, resolution "user"
-repairable(bot, touched=()) -> [Gap]  # step c's gaps; [] when manifest gaps.research is false
+repairable(bot, touched=()) -> [Gap]  # step c's gaps (may_research); [] when manifest gaps.research is false
+may_research(bot, gap) -> bool        # the research limits, every path (§11); research() raises ValueError otherwise
+sources_fp(bot) -> str                # skill names + sizes + mtimes, each read root's newest mtime (2 levels)
 research(bot, gid) -> Gap             # internal (consolidation): one research run, then act on it
 askable(bot, gap) -> bool ; to_ask(bot) -> Gap | None
 ```
@@ -584,7 +588,8 @@ and a resumed session is read again only once its transcript has grown.
 start() ; shutdown() ; tick() -> dict
 TICK_S = 300
 ```
-One daemon timer thread (`canvas_mirror` pattern). `tick`: capture due sessions for relevant experts → for
+One daemon timer thread (`canvas_mirror` pattern). `tick`: capture due sessions for relevant experts (skipped,
+sessions not even listed, when no available expert is offered to any target or was ever consulted) → for
 each expert `consolidate.run` when `observations.due` (which also records, researches and proposes, §11) → `routes.propose` (all `proposals.candidates` as ONE
 `proposals.request`; nothing while one is preparing) → `cards.tick()`. Never raises.
 
@@ -717,9 +722,19 @@ skill fixes. Nothing else researches; the scheduler only decides WHEN consolidat
    call may answer `{"op": "gap", "gap": <id>}` to fold a question asked in other words into it (`merge`: keep the
    older id, sum counts, unite questions / consults / sessions). Unparseable or missing → no merge. The archived
    observation's `outcome` is `{"op": "gap", "gap": <id>}`.
-3. **Repair** (stage `researching`, `status.gap` = the gap). Unless `gaps.research` is false: the open gaps touched in
-   this run plus older open gaps with `attempts < max_attempts`, most asked first, at most 2 per run. Each gets one
-   research run (`engine.research`, given the questions and, when the gap has a session `capture` can find, the
+3. **Repair** (stage `researching`, `status.gap` = the gap). Unless `gaps.research` is false: the open gaps that
+   `gaps.may_research`, most asked first, at most 2 per run. A research run is the most expensive single call, so
+   the limits hold on every path (`gaps.research` itself raises `ValueError` past them), and being touched again in
+   this run does not lift them:
+   - `max_attempts` is a hard cap. A gap at the cap with no answer is only eligible for the question to the user
+     (step 5), unless the expert's skills or read roots changed since its last attempt: `research_fp` (stored when a
+     run starts: skill file names + sizes + mtimes, and for each read root the newest mtime among its top two
+     directory levels, `gaps.sources_fp`) differs from now, and then it gets ONE more run (which stores the new
+     fingerprint). A gap with no stored `research_fp` (older data) gets none.
+   - At most one run per gap per 24 hours (`researched_at`, `RESEARCH_EVERY_S`).
+   - A gap with `snoozed_until` in the future is neither researched nor asked until then.
+
+   Each chosen gap gets one research run (`engine.research`, given the questions and, when the gap has a session `capture` can find, the
    tail of that session after its `expert_consult` call, 12k chars, `capture.render_turns`).
    - **Found** only when `found` is true, `answer` is non-empty and at least one ref is an existing file inside the
      expert's roots that the run's `read_file` actually served. Then: `memory.add(trust="research",
@@ -732,7 +747,7 @@ skill fixes. Nothing else researches; the scheduler only decides WHEN consolidat
    (resolution `skill`) and the research lesson leaves memory for the archive (the skill now carries it, §12); reject or a failed proposal →
    `dismissed` (never researched or proposed again).
 5. **Ask the user.** An open gap is `askable` once `count >= ask_after` or `attempts >= max_attempts` (and it was
-   researched at least once, unless research is off). `cards.tick_one` (scheduler tick, chat hand-back) and the end
+   researched at least once, unless research is off), and it is not snoozed. `cards.tick_one` (scheduler tick, chat hand-back) and the end
    of a consolidation run that started no proposal call `cards.ask_if_needed`: when the expert is idle and no
    proposal card waits, at most one new gap question per `ask_every_s`, `cards.ask_gap` raises a `question` event
    (worker as `bot.thread`, `set_status("waiting", waiting_on=seq)`, gap `asked` with `card_seq` while it is up):
@@ -774,16 +789,26 @@ The reasons:
 - `merged`: tidy folded it into a broader lesson (`into` is that lesson's id).
 - `over_limit`: memory was over its limit.
 
-**The tidy review.** One model call sees every lesson as a short line (id, claim, where it came from: taught by you /
-from sessions / found by research, times seen, times cited, age, days since last seen or used, times
-contradicted, whether a proposal is open) and the rule in plain words: delete lessons that are old AND rarely used;
-promote lessons that are used a lot; merge two or three related lessons that agree into one; keep the rest; when
-unsure, keep. It answers a JSON list of `{"id", "do": "delete"|"promote"|"keep", "why"}` and
-`{"do": "merge", "ids": [2-3 ids], "claim", "why"}`. The model only suggests; code decides, in this order:
+**The tidy review: code first, the model only when it can change something.** Code computes, with no model:
 
-1. **Delete** only a lesson with `uses <= rare_uses` (2), idle for at least `stale_days` (14), not taught by the
-   user and not in an open proposal. Anything else the model wants deleted is kept.
-2. **Merge** (at most 5 per tidy) only 2 or 3 distinct existing lessons, none in an open proposal, none
+- `delete_candidates`: lessons that pass the delete guard rails (rule 1 below).
+- `promote_ready`: lessons that pass the promote guard rails (rule 3 below).
+- `merge_candidates`: groups of 2 or 3 lessons plausibly about the same subject (`tidy.merge_candidates`): a shared
+  `about` tag, or claims sharing at least 2 content words (stop words dropped, a plural `s` stripped) that make at
+  least half of the shorter claim's content words. Contradicted lessons, lessons in an open proposal, and
+  promote-ready (or `uses >= heavy_uses`) lessons are left out. Strongest pairs first; each lesson in at most one
+  group; at most 10 groups.
+
+ONE model call is made only when there are delete or merge candidates, and it sees ONLY those lessons, each as a
+short line (id, claim, where it came from: taught by you / from sessions / found by research, times seen, times
+cited, age, days since last seen or used, times contradicted, whether a proposal is open): which delete candidates
+to delete (it may keep one that still looks valuable) and which groups to merge into what claim; when unsure, keep.
+It answers a JSON list of `{"id", "do": "delete"|"keep", "why"}` and `{"do": "merge", "ids": [2-3 ids of ONE group],
+"claim", "why"}`. Promotion needs no model. The model only suggests; code decides, in this order:
+
+1. **Delete** only a delete candidate: `uses <= rare_uses` (2), idle for at least `stale_days` (14), not taught by
+   the user and not in an open proposal. Anything else the model wants deleted is kept.
+2. **Merge** (at most 5 per tidy) only 2 or 3 distinct existing lessons of ONE shown group, none in an open proposal, none
    contradicted, none used enough to promote (`uses >= heavy_uses`), with a merged claim of 1-400 characters that
    is not another lesson's claim. Some detail may be lost; that is the price of a smaller memory. The merged lesson
    (kind `lesson`) takes the union of the sessions (for the record) and `about`, `count` = the LARGEST original
@@ -792,12 +817,19 @@ unsure, keep. It answers a JSON list of `{"id", "do": "delete"|"promote"|"keep",
    already in the union), the summed `cited`, the earliest `created`, the latest `updated` / `last_used`, trust
    `user` only when every original was the user's (else `outcome`), and `merged_from: [{"id","claim"}]`. A merged
    claim equal to one of the originals keeps that lesson and folds the others into it.
-3. **Promote** only a lesson with `uses >= heavy_uses` (5), not contradicted, not rejected and not in an open
-   proposal. All of them go into ONE `proposals.request`, and none while a proposal is preparing or waiting on its
+3. **Promote**, with no model, every lesson with `uses >= heavy_uses` (5) AND `count >= 2`, not contradicted, not
+   rejected and not in an open proposal. `uses` includes citations, which can be inflated (an answer may cite a
+   lesson that did not really bear on it), so being cited alone never promotes a lesson: it needs independent
+   sightings too. All of them go into ONE `proposals.request`, and none while a proposal is preparing or waiting on its
    card. They stay in memory until the user approves (then they are archived as `promoted`); on Reject they stay and
    are not proposed again.
 4. Each lesson belongs to the first action in the answer that names it; a later action naming it is ignored.
-   A failed call or an answer that cannot be read deletes, merges and promotes nothing.
+   A failed call or an answer that cannot be read deletes and merges nothing (promotion does not depend on it).
+
+**Skipped when nothing changed.** The memory fingerprint (ids, counts, cited, contradicted and proposal flags,
+sorted, plus the day number, the budget and whether a proposal is open) is saved in `tidy-fingerprint.json` after a
+tidy that reviewed cleanly and changed nothing. While it is unchanged, the next tidy skips the review with no model
+call (`skipped: "unchanged"`); a new day, any change to memory, or a failed review means a fresh review.
 
 **Skill pressure** (`tidy.skill_pressure`, in the tidying stage after the memory tidy; no model call decides it):
 when a skill's body is over 80% (`PRESSURE`) of the body limit and no proposal is open (preparing, ready or shown),
@@ -816,11 +848,14 @@ consolidation, answers). `force` consolidation (`POST …/consolidate {"force": 
 pending when memory holds more than `tidy_at`.
 
 **Results.** `consolidate.run` returns `tidied: {"deleted": [ids], "merged": [{"into", "claim", "from": [ids]}],
-"promoting": [ids], "over_limit": [ids]}`. The last tidy that reviewed or removed anything is saved as
-`tidy-last.json` and served as `last_tidy` on `GET …/memory`:
+"promoting": [ids], "over_limit": [ids]}`. The last tidy that ran above `tidy_at` (reviewed or skipped) or removed
+anything is saved as `tidy-last.json` and served as `last_tidy` on `GET …/memory`. `reviewed`: code computed the
+candidates (false when skipped as unchanged); `model_called`: the review call was made; `skipped`: `""`,
+`"unchanged"` (same fingerprint, no review) or `"no_candidates"` (reviewed, nothing for the model):
 
 ```
-TidySummary = {"at": ts, "reviewed": bool, "error": str, "total_before": int, "total_after": int,
+TidySummary = {"at": ts, "reviewed": bool, "model_called": bool, "skipped": "" | "unchanged" | "no_candidates",
+               "error": str, "total_before": int, "total_after": int,
                "deleted": [{"id","claim","why"?}], "merged": [{"into","claim","from": [{"id","claim"}],"why"?}],
                "promoting": [{"id","claim"}], "proposal"?: pid, "over_limit": [{"id","claim"}],
                "swept": [{"id","claim"}],

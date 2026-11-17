@@ -5,7 +5,9 @@ One daemon timer thread, `canvas_mirror`'s shape: `start()` arms it
 `tick_s()` (`STARTUP_DELAY_S` / `TICK_S` unless overridden by a developer
 setting, docs/experts.md "Developer settings"); `shutdown()` stops it; `reset()` forgets everything (tests).
 
-`tick()`: capture due task sessions for the experts they are relevant to →
+`tick()`: capture due task sessions for the experts they are relevant to
+(skipped outright, sessions not even listed, when no available expert is
+offered to any target or was ever consulted) →
 `consolidate.run` for every expert whose observations are due → one proposal
 for the lessons that keep recurring (`routes.propose`: `proposals.request`,
 which drafts in the background and shows its own card when ready; none while
@@ -111,29 +113,52 @@ def _stopped(stop) -> bool:
     return stop is not None and stop.is_set()
 
 
+def _takes_sessions(bot) -> bool:
+    """Whether any task session could be relevant to `bot` (`capture.relevant`): it is offered to some target, or
+    some session has consulted it. Cheap: the manifest and the newest consult record, no transcript."""
+    try:
+        if (_mod("store").manifest(bot).get("offered_to") or {}).get("targets"):
+            return True
+        return bool(_mod("consult").log(bot, limit=1))
+    except Exception:  # noqa: BLE001 — unsure: let capture decide
+        return True
+
+
+def _available(experts) -> list:
+    out = []
+    for bot in experts:
+        try:
+            if _mod("model").available(bot)[0]:
+                out.append(bot)
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 def _run(out: dict, stop) -> None:
     store = _mod("store")
     try:
-        out["capture"] = _mod("capture").capture_due(limit=CAPTURE_PER_TICK, stop=stop)
-    except Exception:  # noqa: BLE001
-        out["errors"] += 1
-        logger.warning("experts scheduler: capture failed", exc_info=True)
-    if _stopped(stop):
-        return
-    try:
-        experts = list(store.all_experts())
+        experts = _available(list(store.all_experts()))
+        listed = True
     except Exception:  # noqa: BLE001
         out["errors"] += 1
         logger.warning("experts scheduler: could not list experts", exc_info=True)
-        experts = []
+        experts, listed = [], False
+    # Capture lists and stats task sessions (and reads a due one's transcript tail), so it runs only when some
+    # available expert could find a session relevant at all (or the experts could not be listed: capture decides).
+    if not listed or any(_takes_sessions(b) for b in experts):
+        try:
+            out["capture"] = _mod("capture").capture_due(limit=CAPTURE_PER_TICK, stop=stop)
+        except Exception:  # noqa: BLE001
+            out["errors"] += 1
+            logger.warning("experts scheduler: capture failed", exc_info=True)
+    else:
+        out["capture"] = {"sessions": 0, "observations": 0, "errors": 0, "skipped": "no expert takes sessions"}
+    if _stopped(stop):
+        return
     for bot in experts:
         if _stopped(stop):
             return
-        try:
-            if not _mod("model").available(bot)[0]:
-                continue
-        except Exception:  # noqa: BLE001
-            continue
         try:
             if _mod("observations").due(bot):
                 res = _mod("consolidate").run(bot) or {}

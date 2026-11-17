@@ -62,6 +62,8 @@ def env(tmp_path, monkeypatch):
 
     def history(file, session_id, transcript=""):
         state["history_calls"].append((file, session_id, transcript))
+        if state.get("turns") is not None:
+            return {"turns": list(state["turns"]), "backend": "claude"}
         return {"turns": [{"role": "assistant", "text": "early " + "y" * 50000},
                           {"role": "user", "text": "please always use fused.load"}], "backend": "claude"}
 
@@ -264,13 +266,16 @@ def test_capture_live_case_a_contradiction_names_the_lesson_it_contradicts(env, 
     session = capture.due_sessions(NOW)[0]
     rule = ("For regional sales canvases use a line chart with one line per region; bar charts are only for the "
             "company-wide Sales Dashboard.")
+    said = "That is wrong for regional canvases, use one line per region."
+    env["turns"] = [{"role": "assistant", "text": "Use a bar chart."}, {"role": "user", "text": said}]
     env["answers"] = [json.dumps([
         {"kind": "advice_contradicted", "claim": rule, "contradicts": old["id"], "by": "user",
-         "about": ["charts"]},
-        {"kind": "user_correction", "claim": rule, "about": ["charts"]}])]
+         "about": ["charts"], "quote": "wrong for regional canvases"},
+        {"kind": "user_correction", "claim": rule, "about": ["charts"], "quote": said}])]
     obs = capture.capture_session(bot, session)
     assert [o["kind"] for o in obs] == ["advice_contradicted", "user_correction"]
     assert obs[0]["contradicts"] == old["id"] and "confirms" not in obs[0] and obs[0]["by_user"] is True
+    assert obs[0]["quote"] == "wrong for regional canvases" and obs[1]["by_user"] is True
     assert obs[0]["claim"] == rule
     stored = {o["id"]: o for o in observations.pending(bot)}
     assert stored[obs[0]["id"]]["contradicts"] == old["id"] and "contradicts" not in stored[obs[1]["id"]]
@@ -352,7 +357,9 @@ def test_capture_is_per_expert_and_a_failing_one_gives_up(env, tmp_path, monkeyp
     assert marks["s"]["experts"]["b"]["gave_up"] is True and marks["s"]["size"] == 100
     assert capture.due_sessions(NOW) == []  # it no longer blocks the queue
     assert len(observations.pending(good)) == 1 and observations.pending(bad) == []
-    # The session grows: both are asked again, the failure count starts over.
+    # The session grows (a new user turn): both are asked again, the failure count starts over.
+    env["turns"] = [{"role": "assistant", "text": "early"}, {"role": "user", "text": "please always use fused.load"},
+                    {"role": "user", "text": "and name nodes load_<thing>"}]
     env["add"]("s", age=3600, size=150, canvas=True)
     capture.capture_due(NOW)
     assert calls.count("g") == 2 and calls.count("b") == capture.MAX_FAILS + 1

@@ -98,7 +98,8 @@ def _lesson(bot, claim, *, trust="outcome", count=1, cited=0, idle=30.0, age=Non
 
 
 def _fill(bot, n, **kw):
-    return [_lesson(bot, f"filler lesson number {k}", count=2, cited=1, idle=1, **kw) for k in range(n)]
+    """`n` recent, unrelated lessons: no delete, merge or promote candidates among them."""
+    return [_lesson(bot, f"filler k{k}a k{k}b k{k}c", count=2, cited=1, idle=1, **kw) for k in range(n)]
 
 
 def _ids(bot):
@@ -275,7 +276,7 @@ def test_no_promotion_while_a_proposal_is_open(bot, answer, requests):
 
 # ------------------------------------------------------------------ tidy: merge
 
-def test_merge_two_and_three(bot, answer):
+def test_merge_two_and_three(bot, answer, requests):
     _fill(bot, 30)
     a = _lesson(bot, "Charts use the dark theme", count=2, cited=1, idle=5, age=40, sessions=["s1", "s2"])
     b = _lesson(bot, "Charts in canvases are dark", count=1, cited=2, idle=2, age=10, sessions=["s2", "s3"],
@@ -304,13 +305,14 @@ def test_merge_two_and_three(bot, answer):
     assert arch[e["id"]]["into"] == n2["id"]
     last = tidy.last(bot)["merged"]
     assert last[0]["into"] == n1["id"] and last[0]["from"][0] == {"id": a["id"], "claim": a["claim"]}
+    assert requests == [[n1["id"]]]  # the merged lesson (uses 5, count 2) is promote-ready: no model needed
 
 
 def test_merge_count_takes_the_largest_original_when_bigger(bot, answer):
     _fill(bot, 30)
-    a = _lesson(bot, "Lesson one", count=4, idle=1, sessions=["s1"])
-    b = _lesson(bot, "Lesson two", count=1, idle=1, sessions=["s1"])
-    answer.value = [{"do": "merge", "ids": [a["id"], b["id"]], "claim": "Lessons one and two"}]
+    a = _lesson(bot, "Canvas charts stay dark", count=4, idle=1, sessions=["s1"])
+    b = _lesson(bot, "Charts stay dark", count=1, idle=1, sessions=["s1"])
+    answer.value = [{"do": "merge", "ids": [a["id"], b["id"]], "claim": "Charts in canvases stay dark"}]
     into = tidy.run(bot)["merged"][0]["into"]
     assert next(i for i in memory.items(bot) if i["id"] == into)["count"] == 4
 
@@ -346,11 +348,11 @@ def test_merge_equal_to_an_original_folds_into_it(bot, answer):
 @pytest.mark.parametrize("case", ["heavy", "contradicted", "proposal", "empty", "long", "one", "four", "missing"])
 def test_merge_outside_the_guard_rails_is_ignored(bot, answer, case):
     _fill(bot, 30)
-    a = _lesson(bot, "Lesson alpha", count=1, idle=1)
-    b = _lesson(bot, "Lesson beta", count=1, idle=1,
+    a = _lesson(bot, "Canvas charts use dark theme alpha", count=1, idle=1)
+    b = _lesson(bot, "Canvas charts use dark theme beta", count=1, idle=1,
                 **{"heavy": {"cited": 5}, "contradicted": {"contradicted": 1}}.get(case, {}))
-    c = _lesson(bot, "Lesson gamma", count=1, idle=1)
-    d = _lesson(bot, "Lesson delta", count=1, idle=1)
+    c = _lesson(bot, "Canvas charts use dark theme gamma", count=1, idle=1)
+    d = _lesson(bot, "Canvas charts use dark theme delta", count=1, idle=1)
     if case == "proposal":
         proposals._save(bot, {"id": "popen", "ts": time.time(), "status": "preparing", "items": [b["id"]]})
     ids = {"one": [a["id"]], "four": [a["id"], b["id"], c["id"], d["id"]],
@@ -363,9 +365,9 @@ def test_merge_outside_the_guard_rails_is_ignored(bot, answer, case):
 
 def test_an_id_belongs_to_the_first_action_naming_it(bot, answer, requests):
     _fill(bot, 30)
-    a = _lesson(bot, "Lesson alpha", count=1, idle=1)
-    b = _lesson(bot, "Lesson beta", count=1, idle=1)
-    c = _lesson(bot, "Lesson gamma", count=1, idle=30)
+    a = _lesson(bot, "Canvas charts use dark theme alpha", count=1, idle=1)
+    b = _lesson(bot, "Canvas charts use dark theme beta", count=1, idle=1)
+    c = _lesson(bot, "Canvas charts use dark theme gamma", count=1, idle=30)
     answer.value = [{"id": a["id"], "do": "keep"},
                     {"do": "merge", "ids": [a["id"], b["id"]], "claim": "Alpha beta"},  # a is taken: dropped
                     {"do": "merge", "ids": [b["id"], c["id"]], "claim": "Beta gamma"},
@@ -377,7 +379,8 @@ def test_an_id_belongs_to_the_first_action_naming_it(bot, answer, requests):
 
 def test_at_most_five_merges(bot, answer):
     _fill(bot, 25)
-    pairs = [(_lesson(bot, f"Pair {k} left", idle=1), _lesson(bot, f"Pair {k} right", idle=1)) for k in range(6)]
+    pairs = [(_lesson(bot, f"topic{k} alpha{k} left", idle=1), _lesson(bot, f"topic{k} alpha{k} right", idle=1))
+             for k in range(6)]
     answer.value = [{"do": "merge", "ids": [x["id"], y["id"]], "claim": f"Pair {k}"}
                     for k, (x, y) in enumerate(pairs)]
     assert len(tidy.run(bot)["merged"]) == 5
@@ -475,3 +478,115 @@ def test_post_consolidate_starts_for_tidy_alone(client, expert, answer):
     while consolidate.status(expert)["running"] and time.time() < end:
         time.sleep(0.02)
     assert tidy.last(expert) is not None
+
+
+# ------------------------------------------------------------------ candidates first, model only when useful
+
+def test_no_model_call_without_candidates(bot, answer, requests):
+    _fill(bot, 31)
+    r = tidy.run(bot)
+    assert r == {"deleted": [], "merged": [], "promoting": [], "over_limit": []} and answer.calls == []
+    last = tidy.last(bot)
+    assert last["model_called"] is False and last["skipped"] == "no_candidates" and last["reviewed"] is True
+
+
+def test_no_model_call_at_or_below_tidy_at_even_with_candidates(bot, answer, requests):
+    _fill(bot, 28)
+    _lesson(bot, "Stale lesson", count=1, idle=30)
+    _lesson(bot, "Heavy lesson", count=3, cited=4, idle=1)
+    tidy.run(bot)
+    assert answer.calls == [] and requests == [] and tidy.last(bot) is None
+
+
+def test_unchanged_fingerprint_skips_the_model(bot, answer, monkeypatch):
+    _fill(bot, 30)
+    stale = _lesson(bot, "Stale lesson", count=1, idle=30)
+    answer.value = [{"id": stale["id"], "do": "keep", "why": "still useful"}]
+    tidy.run(bot)
+    assert len(answer.calls) == 1 and tidy.last(bot)["model_called"] is True
+    assert os.path.isfile(os.path.join(store.expert_dir(bot), tidy.FP_FILE))
+    tidy.run(bot)  # nothing changed, same day
+    assert len(answer.calls) == 1
+    assert tidy.last(bot)["skipped"] == "unchanged" and tidy.last(bot)["model_called"] is False
+    later = time.time() + DAY  # a new day: reviewed again
+    monkeypatch.setattr(tidy.time, "time", lambda: later)
+    tidy.run(bot)
+    assert len(answer.calls) == 2
+    tidy.run(bot)
+    assert len(answer.calls) == 2
+    _lesson(bot, "Exports go to the downloads folder", count=1, idle=30)  # memory changed: reviewed again
+    tidy.run(bot)
+    assert len(answer.calls) == 3
+    memory.cite(bot, [stale["id"]])  # changed again, but the cited lesson is no longer stale
+    tidy.run(bot)
+    assert len(answer.calls) == 4 and stale["id"] not in answer.calls[-1]
+
+
+def test_a_failed_review_is_not_remembered_as_unchanged(bot, answer):
+    _fill(bot, 30)
+    _lesson(bot, "Stale lesson", count=1, idle=30)
+    answer.value = "not json"
+    tidy.run(bot)
+    tidy.run(bot)
+    assert len(answer.calls) == 2
+
+
+def test_promotion_needs_no_model_and_two_sightings(bot, answer, requests):
+    _fill(bot, 30)
+    seen = _lesson(bot, "Seen in two sessions and cited", count=2, cited=3, idle=1)
+    cited_only = _lesson(bot, "Cited a lot but seen once", count=1, cited=9, idle=1)
+    r = tidy.run(bot)
+    assert answer.calls == [] and requests == [[seen["id"]]] and r["promoting"] == [seen["id"]]
+    assert cited_only["id"] in _ids(bot)
+    assert not tidy.can_promote(cited_only, set(), tidy.budget(bot))
+
+
+def test_the_model_sees_only_the_candidates(bot, answer, requests):
+    _fill(bot, 30)
+    stale = _lesson(bot, "Stale lesson about exports", count=1, idle=30)
+    a = _lesson(bot, "Charts use the dark theme", count=1, idle=1)
+    b = _lesson(bot, "Canvas charts are dark", count=1, idle=1)
+    heavy = _lesson(bot, "Heavy dark charts lesson", count=3, cited=3, idle=1)
+    tidy.run(bot)
+    assert len(answer.calls) == 1
+    prompt = answer.calls[0]
+    for x in (stale, a, b):
+        assert x["id"] in prompt and x["claim"] in prompt
+    assert heavy["id"] not in prompt and "filler" not in prompt
+    assert "when unsure, keep" in prompt.lower() and '"promote"' not in prompt
+    assert requests == [[heavy["id"]]]
+
+
+def test_a_model_merge_outside_one_shown_group_is_ignored(bot, answer):
+    _fill(bot, 30)
+    a = _lesson(bot, "Charts use the dark theme", count=1, idle=1)
+    b = _lesson(bot, "Canvas charts are dark", count=1, idle=1)
+    c = _lesson(bot, "UDFs return dataframes", count=1, idle=1)
+    d = _lesson(bot, "UDFs must return a dataframe", count=1, idle=1)
+    e = _lesson(bot, "Return a dataframe from UDFs", count=1, idle=1)
+    lone = _lesson(bot, "Exports go to the downloads folder", count=1, idle=1)
+    answer.value = [{"do": "merge", "ids": [a["id"], c["id"]], "claim": "Mixed groups"},
+                    {"do": "merge", "ids": [b["id"], lone["id"]], "claim": "Not a candidate"},
+                    {"do": "merge", "ids": [d["id"], e["id"]], "claim": "A UDF returns a dataframe"}]
+    r = tidy.run(bot)
+    assert [m["from"] for m in r["merged"]] == [[d["id"], e["id"]]]
+    assert {a["id"], b["id"], c["id"], lone["id"]} <= _ids(bot)
+
+
+def test_merge_candidates_group_related_lessons_only(bot):
+    b = tidy.budget(bot)
+    x = _lesson(bot, "Charts in canvases use the dark theme", idle=1)
+    y = _lesson(bot, "Canvas charts default to a dark theme", idle=1)
+    tagged1 = _lesson(bot, "Read the manifest first", idle=1, about=["/w/canvas.toml"])
+    tagged2 = _lesson(bot, "Never edit generated files", idle=1, about=["/w/canvas.toml"])
+    unrelated = _lesson(bot, "Exports go to the downloads folder", idle=1)
+    other = _lesson(bot, "Python files need a main function", idle=1)
+    contra = _lesson(bot, "Dark theme charts in canvases", idle=1, contradicted=1)
+    groups = [sorted(i["id"] for i in g) for g in tidy.merge_candidates(memory.items(bot), set(), b)]
+    assert sorted(x_["id"] for x_ in (x, y)) in groups
+    assert sorted(t["id"] for t in (tagged1, tagged2)) in groups
+    flat = {i for g in groups for i in g}
+    assert unrelated["id"] not in flat and other["id"] not in flat and contra["id"] not in flat
+    held = tidy.merge_candidates(memory.items(bot), {x["id"]}, b)  # in an open proposal: left out
+    assert x["id"] not in {i["id"] for g in held for i in g}
+    assert tidy.related(unrelated, other) == 0.0 and tidy.related(x, y) >= tidy.MERGE_OVERLAP

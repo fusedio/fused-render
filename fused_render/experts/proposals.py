@@ -124,6 +124,14 @@ Answer with ONLY a JSON object:
 {{"action": "update", "skill": "{name}", "ops": [...], "triggers_add": [], "triggers_remove": [],
   "why": "<one short sentence>"}}"""
 
+CORRECTION_NOTE = """THE USER CORRECTED A RULE THAT THE SKILL "{skill}" STATES. Old rule (now wrong): {old}
+What the user said, verbatim: "{quote}"
+The lesson above is the corrected rule. Change the skill "{skill}" (action "update"): `replace` the section that
+states the old rule with corrected content, or `remove` it when the corrected rule makes it pointless. Do NOT only
+add a section beside the old text: the old rule must not stay in the skill.
+
+"""
+
 RETRY_PROMPT = """The change you proposed to the skill "{name}" does not fit: {why}.
 Nothing may be cut, so give operations, applied AFTER yours, that bring it under the limits: a `move` of a coherent
 group of sections into a new skill (with its own title and trigger words), and/or `triggers_remove` for trigger
@@ -832,11 +840,13 @@ def _sizes(body) -> str:
     return "\n".join(rows) or "(none)"
 
 
-def _draft(bot, lessons, *, reorganise=None) -> dict:
+def _draft(bot, lessons, *, reorganise=None, correction=None) -> dict:
     """The draft for `lessons` (or, with `reorganise` = a skill name, a change that makes that skill smaller): the
     proposal's fields (no id, no status). One model call, plus at most one re-ask showing a different skill the
     model chose and one retry when the result is over the limits. Raises `Unfit` when the material cannot be saved
-    uncut, or the draft changes nothing."""
+    uncut, or the draft changes nothing. `correction` (`{"skill","old","quote"}`): the user corrected a rule that
+    skill states; the draft is shown that skill and told to replace or remove the old rule's text, and anything but
+    an update of that skill is `Unfit`."""
     skills = list(bot.skills())
     by_name = {s["name"]: s for s in skills}
     claims_md = "\n".join(f"- {i.get('claim', '')}" for i in lessons)
@@ -848,14 +858,20 @@ def _draft(bot, lessons, *, reorganise=None) -> dict:
             return REORGANISE_PROMPT.format(size=len(body), cap=body_cap(), chosen=_chosen_block(chosen),
                                             skills=_section_listing(others), name=chosen["name"])
         lessons_txt = "\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {i.get('count', 0)}×)" for i in lessons)
-        return DRAFT_PROMPT.format(lessons=lessons_txt, chosen=_chosen_block(chosen), skills=_section_listing(others))
+        out = DRAFT_PROMPT.format(lessons=lessons_txt, chosen=_chosen_block(chosen), skills=_section_listing(others))
+        if fix:
+            out = CORRECTION_NOTE.format(skill=fix, old=" ".join(str(correction.get("old") or "").split()),
+                                         quote=" ".join(str(correction.get("quote") or "").split())) + out
+        return out
 
+    fix = str((correction or {}).get("skill") or "") if isinstance(correction, dict) else ""
+    fix = fix if fix in by_name else ""
     if reorganise:
         chosen = by_name.get(reorganise)
         if chosen is None:
             raise Unfit(f"the skill “{reorganise}” no longer exists")
     else:
-        chosen = _best_skill(skills, lessons)
+        chosen = by_name[fix] if fix else _best_skill(skills, lessons)
     draft = _ask(bot, prompt_for(chosen))
     name = draft.get("skill") if isinstance(draft, dict) and isinstance(draft.get("skill"), str) else None
     action = str((draft or {}).get("action") or "").strip().lower()
@@ -870,6 +886,8 @@ def _draft(bot, lessons, *, reorganise=None) -> dict:
             draft = again
             name = draft.get("skill") if isinstance(draft.get("skill"), str) else None
             action = str(draft.get("action") or "").strip().lower()
+    if fix and (not isinstance(draft, dict) or action != "update" or name != fix):
+        raise Unfit(f"the draft did not change the skill “{fix}” that states the corrected rule")
     if not isinstance(draft, dict):
         draft, action, name = _fallback_draft(lessons), "create", None
     note = ""
@@ -921,6 +939,8 @@ def _draft(bot, lessons, *, reorganise=None) -> dict:
         m = plan["moved"]
         diff += _diff("", m["body"], "", m["trigger"], m["name"], True)
     out = {k: v for k, v in plan.items() if not k.startswith("_")}
+    if fix:
+        out.update(reason="correction")
     out.update(diff=diff, note=note, why=why_text, kind="reorganise" if reorganise else "lessons",
                base_body=plan["_old_body"], base_trigger=plan["_old_trigger"],
                items=[i["id"] for i in lessons], claims=[i.get("claim", "") for i in lessons],
@@ -1013,11 +1033,13 @@ def _start(bot, p) -> dict:
     return dict(p)
 
 
-def request(bot, items, *, topic="", gap="") -> dict:
+def request(bot, items, *, topic="", gap="", correction=None) -> dict:
     """Start a proposal for `items` in the background and return its record at once (status "preparing"; its
     lessons are marked `proposed` now). `gap` (or the `gap` link of a `research` lesson among the items) records
-    the gap the proposal fixes; those gaps turn "proposed". ValueError when one is already being prepared for this
-    expert, or no lesson is left to propose."""
+    the gap the proposal fixes; those gaps turn "proposed". `correction` (`{"skill","old","quote"}`): the items are
+    a user's correction of a rule skill `skill` states; the record gets `reason: "correction"` and `correction`, and
+    the draft must replace or remove the old rule's text in that skill. ValueError when one is already being
+    prepared for this expert, or no lesson is left to propose."""
     with store.lock(bot):
         if _preparing(bot):
             raise ValueError(BUSY)
@@ -1029,6 +1051,9 @@ def request(bot, items, *, topic="", gap="") -> dict:
              "topic": str(topic or "")[:200], "action": None, "skill": None, "title": "", "trigger": "", "body": "",
              "diff": "", "items": [i["id"] for i in lessons], "claims": [i.get("claim", "") for i in lessons],
              "score_before": None, "score_after": None, "card_seq": None, "error": ""}
+        if isinstance(correction, dict) and correction.get("skill"):
+            p["reason"] = "correction"
+            p["correction"] = {k: str(correction.get(k) or "")[:1000] for k in ("skill", "old", "quote")}
         linked = list(dict.fromkeys([str(gap)] * bool(gap) + [str(i["gap"]) for i in lessons if i.get("gap")]))
         if linked:
             p["gap"], p["gaps"] = linked[0], linked
@@ -1077,7 +1102,8 @@ def _prepare_bg(bot, pid) -> None:
             lessons = _resolve_items(bot, p.get("items"))
             if not lessons:
                 raise ValueError("its lessons were forgotten")
-            fields = _draft(bot, lessons)
+            fields = (_draft(bot, lessons, correction=p["correction"]) if p.get("correction")
+                      else _draft(bot, lessons))
         with store.lock(bot):
             p = get(bot, pid)
             if p is None or p.get("status") != "preparing":
@@ -1259,6 +1285,8 @@ def card_text(proposal) -> tuple[str, str]:
         size = len(p.get("base_body") or "")
         text = (f"The skill “{p.get('title', '')}” is nearly full ({size} of {body_cap()} characters), so I'd like "
                 f"to reorganise it" + (f": {p['why']}" if p.get("why") else "."))
+    elif p.get("reason") == "correction":
+        text = "You corrected something a skill says. I'd like to change it"
     elif p.get("gap"):
         text = (f"Sessions asked me something I could not answer, so I looked into it and found the answer. "
                 f"I'd like to {what} with it")

@@ -14,7 +14,9 @@ and "shown" proposals are ever shown ("failed" never is).
 from __future__ import annotations
 
 import logging
+import re
 import threading
+import time
 
 from fused_render.bots.channels import base as chan
 
@@ -214,6 +216,21 @@ GAP_TEXT = ("Sessions asked me this {n} time{s} and I could not find the answer 
             "\n\n{q}\n\nIf you tell me, I will remember it. Reply \"skip\" to drop it.")
 #: A reply this long or longer is an answer even when it starts like a "no" ("No, it lives in …").
 NO_MAX_WORDS = 4
+#: A reply shorter than this that starts like "later" / "I don't know" puts the question off (`SNOOZE_DAYS`).
+SNOOZE_MAX_WORDS = 8
+SNOOZE_DAYS = 7
+_DROP = re.compile(r"^\W*(?:skip|drop)(?:\s+(?:it|this|that))?\W*$", re.I)
+_FILLER = r"(?:(?:um+|uh+|hmm+|sorry|ok(?:ay)?|well|honestly|oh)\W+)*"
+_SNOOZE = re.compile(
+    r"^\W*" + _FILLER + r"(?:"
+    r"(?:maybe\s+|perhaps\s+|ask\s+(?:me\s+)?(?:again\s+)?)?later"
+    r"|not\s+(?:right\s+)?now|not\s+yet|not\s+today"
+    r"|(?:please\s+)?ask\s+(?:me\s+)?(?:again\s+)?(?:another\s+time|next\s+time|tomorrow|next\s+week)"
+    r"|remind\s+me"
+    r"|(?:i\s+)?(?:don'?t|do\s+not|dont)\s+know|idk|dunno"
+    r"|(?:i'?m\s+|i\s+am\s+)?(?:not\s+(?:sure|certain)|unsure)"
+    r"|(?:i\s+)?(?:have\s+|got\s+)?no\s+(?:idea|clue)"
+    r")\b", re.I)
 
 
 def _busy(bot) -> bool:
@@ -231,7 +248,7 @@ def ask_if_needed(bot) -> bool:
         if _oldest_open(bot) is not None:
             return False
         g = gaps.to_ask(bot)
-        return bool(g is not None and ask_gap(bot, g))
+        return bool(g is not None and not _snoozed(g) and ask_gap(bot, g))
     except Exception:  # noqa: BLE001
         logger.warning("expert %s: gap question tick failed", getattr(bot, "id", "?"), exc_info=True)
         return False
@@ -241,7 +258,7 @@ def ask_gap(bot, gap) -> bool:
     """Ask the user about `gap` in the expert's chat when the bot is idle (a worker becomes `bot.thread`, the way
     `show` raises a proposal card). False when it is busy, deleted, or another gap card is up."""
     from fused_render.experts import gaps
-    if not isinstance(gap, dict) or not gap.get("id"):
+    if not isinstance(gap, dict) or not gap.get("id") or _snoozed(gap):
         return False
     with bot.lock:
         if getattr(bot, "deleted", False) or getattr(bot, "read_only", False) or _busy(bot):
@@ -265,7 +282,33 @@ def ask_gap(bot, gap) -> bool:
 def _is_skip(text) -> bool:
     _yes, no = _verdict_res()
     t = str(text or "").strip()
-    return t.casefold().strip(" .!") == "skip" or (no.match(t) is not None and len(t.split()) < NO_MAX_WORDS)
+    return bool(_DROP.match(t)) or (no.match(t) is not None and len(t.split()) < NO_MAX_WORDS)
+
+
+def classify_reply(text) -> str:
+    """A reply to a gap question, decided by code before anything is saved: "skip" ("skip" / "drop", or a short
+    "no"), "snooze" ("later", "not now", "ask me later", "remind me", "I don't know", "not sure", "no idea" and close
+    variants, under `SNOOZE_MAX_WORDS` words) or "answer" (anything else)."""
+    t = str(text or "").strip().replace("’", "'")
+    if _DROP.match(t):
+        return "skip"
+    if len(t.split()) < SNOOZE_MAX_WORDS and _SNOOZE.match(t):
+        return "snooze"
+    return "skip" if _is_skip(t) else "answer"
+
+
+def snooze_gap(bot, gid, days=SNOOZE_DAYS):
+    """Put a gap question off: the gap is "open" again with `snoozed_until` = now + `days`; nothing is saved to
+    memory. Until then it is neither asked nor researched."""
+    from fused_render.experts import gaps
+    return gaps._update(bot, gid, status="open", card_seq=None, snoozed_until=time.time() + days * 86400.0)
+
+
+def _snoozed(gap) -> bool:
+    try:
+        return float((gap or {}).get("snoozed_until") or 0) > time.time()
+    except (TypeError, ValueError):
+        return False
 
 
 def _gap_worker(bot, gap) -> None:
@@ -293,9 +336,13 @@ def _gap_worker(bot, gap) -> None:
                 else:
                     queued.append(a)
             if reply is not None:
-                if _is_skip(reply):
+                verdict = classify_reply(reply)
+                if verdict == "skip":
                     gaps.dismiss(bot, gid)
                     bot.emit("note", "Dropped: I will not ask about this again.")
+                elif verdict == "snooze":
+                    snooze_gap(bot, gid)
+                    bot.emit("note", f"OK, I will ask again in {SNOOZE_DAYS} days. Nothing was saved.")
                 else:
                     out = gaps.answer(bot, gid, reply)
                     claim = (out.get("lesson") or {}).get("claim") or reply
