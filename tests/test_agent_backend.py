@@ -501,6 +501,31 @@ def test_a_run_started_at_a_moved_clones_old_path_is_live_in_the_clone(agent, tm
     assert agent._live_session_in(str(other)) == {"run_id": ""}
 
 
+def test_every_open_turn_in_a_folder_is_listed_with_the_sessions_it_answers_to(agent, tmp_path):
+    """Two sessions mid-turn in one canvas clone: the sync's turn end asks
+    for a turn of a session OTHER than the stopping one, so it needs every
+    live run, each with its own conversation id and the one it resumed."""
+    clone = tmp_path / "unstable" / "user" / "alpha"
+    clone.mkdir(parents=True)
+    user = {"type": "user", "message": {"role": "user", "content": "hi"}}
+    first = _fresh_copilot_run(agent, str(clone / "a.py"), name="20261016-130000-aaa",
+                               rows=({"type": "system", "session_id": "sess-a"}, user))
+    second = _fresh_copilot_run(agent, str(clone), name="20261016-130500-bbb", rows=(user,))
+    with open(os.path.join(second, "meta.json")) as fh:
+        meta = json.load(fh)
+    meta["resumed_from"] = "sess-b"
+    with open(os.path.join(second, "meta.json"), "w") as fh:
+        json.dump(meta, fh)
+    runs = list(agent._live_runs_in(str(clone)))
+    assert [r["run_id"] for r in runs] == [os.path.basename(second), os.path.basename(first)]
+    assert runs[0]["sessions"] == {"sess-b"} and runs[1]["sessions"] == {"sess-a"}
+    # `_live_run_in` still answers the newest one.
+    assert agent._live_run_in(str(clone))["run_id"] == os.path.basename(second)
+    other = tmp_path / "unstable" / "user" / "beta"
+    other.mkdir()
+    assert list(agent._live_runs_in(str(other))) == []
+
+
 def test_an_errored_first_turn_still_records_before_naming(agent, target):
     """The `recorded` latch skips an errored poll; the settings record does
     not — the id goes out on that poll all the same."""

@@ -238,6 +238,7 @@ import {
   type AiToolDefinition,
   type AiStreamError,
   checkRemote,
+  publishCanvas,
   pullCanvas,
   startSync,
   takeoverSync,
@@ -262,9 +263,11 @@ import { CHAT_PARAMS, placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
+  healWanted,
   mergeLogEvents,
   noWatcher,
   type EmbedFailure,
+  type HealMark,
   type MergedSyncState,
   type RelayEntry,
   type SyncLogEvent,
@@ -1269,6 +1272,21 @@ export default function CanvasWorkspace({
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [nodePath, nodeFileOnDisk, sync?.disk_rev]);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const onPublish = useCallback(async () => {
+    setPublishBusy(true);
+    setPublishError(null);
+    try {
+      const s = await publishCanvas(env, name);
+      if (!s.ok) setPublishError(s.error ?? "Publish failed");
+      void getSyncState(env, name).then(applyState, () => undefined);
+    } catch (e) {
+      setPublishError((e as Error).message);
+    } finally {
+      setPublishBusy(false);
+    }
+  }, [env, name]);
   const onPull = useCallback(async (hard = false) => {
     setPullBusy(true);
     setPullError(null);
@@ -2205,7 +2223,10 @@ export default function CanvasWorkspace({
             return;
           } catch (e) {
             const status = (e as { status?: number }).status;
-            if (status === 409 && Date.now() - started <= DELTA_RETRY_WINDOW_MS) {
+            // A full state is asked once (a hello, a heal on `embed_heal_seq`)
+            // and nothing re-asks it if it is lost: any failure retries
+            // within the window, not only a busy clone.
+            if ((status === 409 || full) && Date.now() - started <= DELTA_RETRY_WINDOW_MS) {
               await new Promise((r) => window.setTimeout(r, DELTA_RETRY_MS));
               continue;
             }
@@ -2244,6 +2265,17 @@ export default function CanvasWorkspace({
     }
     relayDelta(false);
   }, [sync?.disk_rev, sync?.watcher_epoch, relayDelta]);
+
+  // The server saw the frame skip the same nodes delta after delta with no
+  // edit of its own posted (`embed_heal_seq` moves once per such streak):
+  // send it a full state, as a hello would. Per watcher, like the counter
+  // above; the first sight of a watcher's value is a baseline, not a move.
+  const healMarkRef = useRef<HealMark | null>(null);
+  useEffect(() => {
+    const { heal, mark } = healWanted(healMarkRef.current, sync?.watcher_epoch ?? null, sync?.embed_heal_seq);
+    healMarkRef.current = mark;
+    if (heal) relayDelta(true);
+  }, [sync?.embed_heal_seq, sync?.watcher_epoch, relayDelta]);
 
   // The node this page currently shows, readable from the message handler
   // without re-subscribing it on every selection.
@@ -3374,6 +3406,7 @@ export default function CanvasWorkspace({
           disabled: pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
           onPull: () => void onPull(),
         }}
+        publish={{ busy: publishBusy, error: publishError, onPublish: () => void onPublish() }}
       />
       {drawerOpen && (sync || owned) && (
         <SyncDrawer

@@ -296,6 +296,18 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
 # How long /api/canvases/snapshot waits on _op_lock before answering 409.
 SNAPSHOT_LOCK_WAIT_S = 1.0
+# A frame that keeps acking deltas with names SKIPPED ("kept its own newer
+# change") while no snapshot of its own reaches us is not holding a newer
+# edit — it would have posted it. Past this many such acks, or this long,
+# the disk→canvas leg reads "held" with the names, the log says so once, and
+# the page is asked to send the frame a full state (`embed_heal_seq`).
+EMBED_SKIP_STREAK_ACKS = 3
+# A turn end held because ANOTHER session's turn is open in the clone
+# (`turn_end`) publishes anyway once the hold is this old — at the next turn
+# end or watcher tick. Turns that keep overlapping, or a turn that never
+# reads as ended, would otherwise keep the folder unpublished for good.
+TURN_END_HOLD_MAX_S = 180.0
+EMBED_SKIP_STREAK_S = 10.0
 # stop()'s bound on joining the watcher thread. A push still inside its CLI
 # can hold that thread for up to PUSH_TIMEOUT; the quit rung terminates the
 # CLI first (terminate_push), and no caller should hang behind a network call.
@@ -3297,6 +3309,12 @@ class _FrameState:
         # name → the disk_rev when the hold began: only a delta cut AFTER it
         # (its base carries the held picture) settles the name.
         self.skip_hold: dict[str, int] = {}
+        # Consecutive acks that skipped names with no snapshot of the frame's
+        # applied in between (`_note_skip_streak`): {names, since, count,
+        # stuck}, or None. `embed_heal_seq` moves once per stuck streak; the
+        # page answers a move with a full state for THIS frame.
+        self.skip_streak: dict | None = None
+        self.embed_heal_seq = 0
         self.embed_applied: dict[tuple[int, int], dict] = {}
         self.gen_applied_max: dict[int, int] = {}
         # Causality between the two legs (audit 2026-11-10): the highest delta
@@ -3532,6 +3550,11 @@ class _SyncManager:
         # _note_disk runs on the watcher thread (its scan) and on request
         # threads (under _op_lock): the compare-and-bump needs its own lock.
         self._rev_lock = threading.Lock()
+        # A turn end held for another session's open turn: {since, run_id},
+        # or None. Cleared by the next push; past TURN_END_HOLD_MAX_S the
+        # watcher publishes even while a run is live (`_tick`). Per canvas:
+        # it is about the clone's sessions, not about any frame.
+        self._publish_held: dict | None = None
         # What the user did to the canvas from the workbench, for the Claude
         # sessions working in this clone (owner, 2026-11-10: Claude is told in
         # real time). `_journal` is a bounded ring of {seq, at, kind, name,
@@ -5307,6 +5330,8 @@ class _SyncManager:
                 self._dirty_since = self._dirty_since or time.time()
             self._push_started_at = None
             self.push_state = "pending" if moved else "idle"
+            # Published: a turn end held for another session's turn is moot.
+            self._publish_held = None
             # Last: `status()` reads without the lock, so a reader that sees
             # the new push_seq must already see the push settled, not
             # push_seq 1 with push_state still "pushing".
@@ -5435,6 +5460,17 @@ class _SyncManager:
         if self._idle_check(live):
             return  # stopping: this was the last tick
         self._lease_tick()
+        streaking = [f for f in list(self._frames.values()) if f.skip_streak is not None]
+        if streaking and self._op_lock.acquire(blocking=False):
+            # The time half of the skip-streak rule: a frame that skipped
+            # names once and then went quiet is as stuck as one that skipped
+            # three deltas. Non-blocking: a busy clone is checked next tick.
+            # Per frame: each streak is one frame's.
+            try:
+                for f in streaking:
+                    self._check_skip_streak(f)
+            finally:
+                self._op_lock.release()
         gen = self._fp_gen
         current = self._take_fingerprint()
         self._note_disk(current)
@@ -5474,7 +5510,10 @@ class _SyncManager:
             # a hosted tab does not save over a server it has not looked
             # at, and neither does this one; or while another owner has the
             # canvas checked out (its lease).
-            if not live and self.server_stale is None and not self._leased_elsewhere():
+            # A turn end held for another session's turn past
+            # TURN_END_HOLD_MAX_S publishes now, live run or not.
+            if ((not live or self._publish_hold_expired())
+                    and self.server_stale is None and not self._leased_elsewhere()):
                 # Non-blocking: a manual push or a pull in flight already
                 # owns the network leg; this tick just skips. The pause
                 # count is re-read UNDER the flight lock — pause() raises
@@ -5763,8 +5802,10 @@ class _SyncManager:
         passing the session's hook count when the Stop arrived: once it
         moves, that session's next turn is under way, and neither the
         merge nor the push may land in the middle of it (its own Stop
-        publishes). Returns what happened: "pushed", "merged", "idle", "busy",
-        "held", "superseded"."""
+        publishes). Nor while ANOTHER session's turn is open in the clone
+        (`_other_live_turn`): that session's change set may be half-done, and
+        its own Stop publishes. Returns what happened: "pushed", "merged",
+        "idle", "busy", "held", "superseded"."""
         def superseded() -> bool:
             return (hooks_at_stop is not None
                     and self._tool_hooks.get(session_id, 0) != hooks_at_stop)
@@ -5773,6 +5814,16 @@ class _SyncManager:
             self.log_event("disk_to_server", "turn end", ok=False,
                            detail="a newer turn started in this folder; its own turn end publishes")
             return "superseded"
+
+        def held_for(other: str) -> str:
+            if self._publish_held is None:
+                self._publish_held = {"since": time.time(), "run_id": other}
+                self._bump()
+            self.log_event("disk_to_server", "turn end", ok=False,
+                           detail="publish held: another session's turn is still open "
+                                  "in this folder; its turn end publishes (or the watcher, "
+                                  f"after {TURN_END_HOLD_MAX_S / 60:g} min)")
+            return "held"
 
         self.agent_run_id(fresh=True)
         if not self._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
@@ -5784,13 +5835,45 @@ class _SyncManager:
                 return "busy"
             if superseded():
                 return gave_way()
+            other = self._other_live_turn(session_id)
+            if other and not self._publish_hold_expired():
+                # Another session is mid-turn in this folder: its change set
+                # may be half-done (a file without its row, a rename without
+                # its canvas.toml edit), and publishing now would ship it —
+                # rows reconciled for its new files at the canvas's edge, old
+                # names removed from the server. Neither merge nor push: the
+                # other session's own Stop publishes, the debounce backstop
+                # does once no run is live, and either publishes anyway once
+                # the hold is TURN_END_HOLD_MAX_S old (`_tick`): a turn that
+                # never ends, or turns that keep overlapping, must not keep
+                # the folder unpublished for good.
+                return held_for(other)
+            if other:
+                self.log_event("disk_to_server", "turn end", ok=False,
+                               detail=f"publishing although another session's turn is still "
+                                      f"open: held for over {TURN_END_HOLD_MAX_S / 60:g} min")
+            else:
+                self._publish_held = None
+            capped = bool(other)
+
+            def fenced() -> bool:
+                # Re-checked after the network legs, at the merge and at the
+                # push's freeze: another session's turn may have started since
+                # the check above (unless the hold already ran out).
+                return superseded() or (not capped and bool(self._other_live_turn(session_id)))
+
+            def fenced_out() -> str:
+                if superseded():
+                    return gave_way()
+                return held_for(self._other_live_turn(session_id) or "unknown")
+
             what = "idle"
             if self.server_stale is not None:
                 cli = fused_cli()
                 if cli is not None and _shim_manifest_command(cli) is not None:
-                    merged = self._merge_now(fence=superseded)
+                    merged = self._merge_now(fence=fenced)
                     if merged.get("code") == "superseded":
-                        return gave_way()
+                        return fenced_out()
                     if merged.get("ok"):
                         what = "merged"
             if self.server_stale is not None or self._leased_elsewhere():
@@ -5802,15 +5885,46 @@ class _SyncManager:
             dirty = (self._dirty_since is not None
                      or self._take_fingerprint() != self._fingerprint)
             if dirty:
-                if superseded():
-                    return gave_way()
+                if fenced():
+                    return fenced_out()
                 self.log_event("disk_to_server", "turn end", detail="publishing the folder")
-                if self._push(fence=superseded) == "busy" and superseded():
-                    return gave_way()
+                if self._push(fence=fenced) == "busy" and fenced():
+                    return fenced_out()
                 return "pushed"
             return what
         finally:
             self._flight_lock.release()
+
+    def _publish_hold_expired(self) -> bool:
+        """A turn end held for another session's open turn (`_publish_held`)
+        TURN_END_HOLD_MAX_S ago or more: publish anyway."""
+        held = self._publish_held
+        return held is not None and time.time() - held["since"] >= TURN_END_HOLD_MAX_S
+
+    def _other_live_turn(self, session_id: str) -> str:
+        """The run id of a turn open in this clone that belongs to a session
+        other than `session_id`, or "". "" as well when that cannot be told —
+        no session id (a backend whose hook names none), an agent module
+        without `_live_runs_in`, a failed lookup: a turn end then publishes
+        as it always did (fail open; the alternative holds a publish on a
+        guess). The stopping session's own run may still read as open when
+        its Stop arrives, so it is told apart by the ids it answers to."""
+        if not session_id:
+            return ""
+        agent = _agent_module()
+        runs_in = getattr(agent, "_live_runs_in", None) if agent is not None else None
+        if runs_in is None:
+            return ""
+        try:
+            for run in runs_in(self.dir):
+                sessions = run.get("sessions") or ()
+                # A run naming no session cannot be told from the stopping
+                # one: not counted (fail open, as above).
+                if sessions and session_id not in sessions:
+                    return str(run.get("run_id") or "") or "unknown"
+        except Exception:  # noqa: BLE001 — "cannot tell" publishes, as before
+            logger.debug("live-run lookup failed for %s", self.dir, exc_info=True)
+        return ""
 
     def _lease_reason(self) -> str:
         owner = (self._lease_held_by or {}).get("owner") or "another editor"
@@ -6430,6 +6544,64 @@ class _SyncManager:
             self._rev_times[self.disk_rev] = time.time()
         self._bump()
 
+    def _note_skip_streak(self, fr: _FrameState, skipped: set[str]) -> None:
+        """An applied ack, under _op_lock. Names skipped: one more ack of the
+        streak (started now if none runs). None skipped and none still held
+        over from an earlier skip: the frame took everything, the streak is
+        over. A snapshot of the frame's own ends it too
+        (`_refresh_view_after_write`): that is the newer change a skip is
+        supposed to stand for."""
+        if not skipped:
+            if not fr.skip_hold:
+                self._clear_skip_streak(fr, "the workbench took every change")
+            return
+        streak = fr.skip_streak
+        if streak is None:
+            fr.skip_streak = {"names": set(skipped), "since": time.time(),
+                              "count": 1, "stuck": False}
+        else:
+            streak["names"] = set(skipped)
+            streak["count"] += 1
+        self._check_skip_streak(fr)
+
+    def _check_skip_streak(self, fr: _FrameState, now: float | None = None) -> None:
+        """Mark a skip streak stuck once it reaches EMBED_SKIP_STREAK_ACKS acks
+        or EMBED_SKIP_STREAK_S seconds: logged once, shown on the
+        disk→canvas leg, and `_embed_heal_seq` moves so the page sends the
+        frame a full state. Once per streak — a frame that skips the full
+        state too stays shown as held, never asked again in a loop."""
+        streak = fr.skip_streak
+        if streak is None or streak["stuck"]:
+            return
+        now = time.time() if now is None else now
+        if (streak["count"] < EMBED_SKIP_STREAK_ACKS
+                and now - streak["since"] < EMBED_SKIP_STREAK_S):
+            return
+        streak["stuck"] = True
+        # A newer rev first: a skip hold drops only on a delta cut at a rev
+        # past the one it was skipped at (`ack_delta`), and with no disk move
+        # the page's full cut would come at that same rev — taken in full, it
+        # would settle nothing and the leg would stay held.
+        self._force_recut()
+        fr.embed_heal_seq += 1
+        names = sorted(streak["names"])
+        self.log_event("disk_to_embed", "workbench holding back", ok=False,
+                       detail=f"{_file_list(names, 8)}: skipped in {streak['count']} "
+                              "delta(s) with no edit of its own posted; asking it "
+                              "for a full state")
+        self._bump()
+
+    def _clear_skip_streak(self, fr: _FrameState, why: str) -> None:
+        streak, fr.skip_streak = fr.skip_streak, None
+        if streak is not None and streak["stuck"]:
+            self.log_event("disk_to_embed", "workbench caught up", detail=why)
+            self._bump()
+
+    def _skip_streak_reason(self, fr: _FrameState) -> str:
+        names = sorted((fr.skip_streak or {}).get("names") or ())
+        return ("The canvas is not taking disk changes to "
+                f"{_file_list(names, 6)}: it reads them as unsaved edits of its own")
+
     def _remote_ids(self) -> dict[str, str]:
         """slug → server id from the last remote manifest (the shim emits
         ids; an older shim or the external CLI gives none)."""
@@ -6456,6 +6628,7 @@ class _SyncManager:
         fr.seen = True
         # The frame's own post describes what it shows now: nothing held over.
         fr.skip_hold = {}
+        self._clear_skip_streak(fr, "the workbench posted its own change")
         fr.view_from_hello = False
         self._bump()
         try:
@@ -6625,6 +6798,7 @@ class _SyncManager:
             # full state on its next hello or the next disk move.
             fr.embed_view = None
             fr.skip_hold = {}
+            self._clear_skip_streak(fr, "the workbench refused a delta")
             if not benign:
                 fr.delta_error = (f"the workbench refused the delta for rev {rev}"
                                      + (f": {reason}" if reason else ""))
@@ -6691,6 +6865,7 @@ class _SyncManager:
             fr.view_from_hello = True
         fr.view_rev = rev
         fr.delta_error = None
+        self._note_skip_streak(fr, skipped)
         if skipped:
             # The snapshot that made the frame skip reached this host before
             # this ack (the page relays both through one ordered chain), so a
@@ -7122,13 +7297,20 @@ class _SyncManager:
             fr.last_call = now
         else:
             spoken = [f for f in frames if f.seen]
-            fr = (min(spoken, key=lambda f: (f.delta_error is None, f.view_rev))
-                  if spoken else self._frames[""])
+            fr = (min(spoken, key=lambda f: (
+                f.delta_error is None,
+                not (f.skip_streak is not None and f.skip_streak["stuck"]),
+                f.view_rev)) if spoken else self._frames[""])
         rev, view_rev = self.disk_rev, fr.view_rev
         unacked = [t for r, t in list(self._rev_times.items()) if r > view_rev]
         oldest = min(unacked) if unacked else None
+        streak = fr.skip_streak
+        stuck = streak if streak is not None and streak["stuck"] else None
         if fr.seen and fr.delta_error is not None:
             d2e = {"state": "error", "oldest_age_ms": age(oldest), "reason": fr.delta_error}
+        elif fr.seen and stuck is not None:
+            d2e = {"state": "held", "oldest_age_ms": age(stuck["since"]),
+                   "reason": self._skip_streak_reason(fr)}
         elif fr.seen and rev > view_rev and self._last_cut_held is not None:
             d2e = {"state": "held", "oldest_age_ms": age(oldest), "reason": self._last_cut_held}
         elif fr.seen and rev > view_rev:
@@ -7148,11 +7330,21 @@ class _SyncManager:
             d2s = {"state": "held", "oldest_age_ms": age(dirty), "reason": self._lease_reason()}
         elif ps == "pending" or dirty is not None:
             reason = None
+            waiting = False
             if self._paused():
                 reason = "sync is paused"
+            elif self._publish_held is not None:
+                left = max(0, int(TURN_END_HOLD_MAX_S - (time.time() - self._publish_held["since"])))
+                reason = ("waiting for another Claude session in this folder to finish its "
+                          f"turn; publishing anyway in {left // 60}:{left % 60:02d}")
+                waiting = True
             elif self._agent_run_id:
                 reason = "waiting for the Claude session in this folder to finish"
-            d2s = {"state": "pending", "oldest_age_ms": age(dirty), "reason": reason}
+                waiting = True
+            d2s = {"state": "pending", "oldest_age_ms": age(dirty), "reason": reason,
+                   # The page offers "Publish now" (sync/push) while a session
+                   # is what the publish waits on.
+                   "waiting_on_session": waiting}
         else:
             d2s = {"state": "idle", "oldest_age_ms": None, "reason": None}
         d2s["last_push_at"] = self.last_push_at
@@ -7196,6 +7388,13 @@ class _SyncManager:
             },
             "disk_rev": rev,
             "watcher_epoch": self.watcher_epoch,
+            # The frame keeps skipping names with no edit of its own posted
+            # (`_check_skip_streak`), or None; `embed_heal_seq` moves once per
+            # such streak and the page answers with a full state for it.
+            "embed_skipping": None if stuck is None else {
+                "names": sorted(stuck["names"]), "since": stuck["since"],
+                "count": stuck["count"]},
+            "embed_heal_seq": fr.embed_heal_seq,
             "owner": {"pid": os.getpid(), "port": canvas_sync_state.server_port()},
             "other_watchers": _other_watchers(self.env, self.name),
             "error_detail": list(self.error_detail),
@@ -7249,7 +7448,7 @@ for _field in ("embed_gen", "embed_view", "view_reset_pending", "view_from_hello
                "view_rev", "delta_views", "delta_names", "skip_hold", "cut_rev",
                "skip_recut_seq", "recut_after_acks", "embed_max_seq", "embed_applied",
                "gen_applied_max", "delta_error", "rowless", "fileless", "hard_fence",
-               "body_fence_rev"):
+               "body_fence_rev", "skip_streak", "embed_heal_seq"):
     setattr(_SyncManager, "_" + _field, _default_frame_field(_field))
 _SyncManager._frame_seen = _default_frame_field("seen")
 del _field

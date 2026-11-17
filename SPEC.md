@@ -12430,7 +12430,7 @@ and not a sync nicety.
   roots, autocad recents) — no page-level pref API exists yet. LAN phone
   per-bot seen baseline (per-device origin by nature).
 
-## 53. Node View — A Canvas Node, Live, As Its File's Default View (D1488)
+## 53. Node View — A Canvas Node, Live, As Its File's Default View (D1489)
 
 Opening a node file of a cloned canvas (`~/Fused/canvas/<env>/user/<canvas>/udf_1.py`)
 opens a **node view**: that one node rendered live by the hosted workbench, in

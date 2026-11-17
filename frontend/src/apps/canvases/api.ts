@@ -569,6 +569,12 @@ export const pullCanvas = (env: WorkbenchEnv, name: string, hard = false) =>
     hard ? { name, env, hard: true } : { name, env },
   );
 
+/** Publish the clone NOW, through the watcher's own push (sync/push): the
+ *  sync strip's "Publish now" while the publish waits on a Claude session's
+ *  turn. Answers the status with `ok` (the push landed). */
+export const publishCanvas = (env: WorkbenchEnv, name: string) =>
+  postJson<SyncStatus & { ok: boolean; error?: string | null }>("/api/canvases/sync/push", { name, env });
+
 /** Ask the watcher to probe the server for changes now (the window or tab
  *  just came into focus) instead of on its next timed poll. Detect-only;
  *  a stale verdict arrives as the usual sync state (the Pull button). */

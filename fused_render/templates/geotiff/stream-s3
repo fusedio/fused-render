@@ -1,0 +1,7 @@
+.tif .tiff
+
+This template reads an s3:// address in `_file` itself (D1488): the page signs
+it (fused.s3.sign) and hands the tile daemon the HTTPS URL, which GDAL reads
+with range requests, so the explorer opens bucket TIFFs here without
+downloading them. A TIFF without overviews streams only zoomed in. Lines
+starting with "." list the extensions it streams.

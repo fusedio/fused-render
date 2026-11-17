@@ -270,3 +270,22 @@ def test_a_page_that_names_no_frame_is_the_one_frame_it_always_was(m, harness):
     assert set(m._frames) == {""} and m._frames[""].seen is True
     assert m._view_rev == cut["rev"] and m._embed_view is m._frames[""].embed_view
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "idle"
+
+
+def test_a_skip_streak_is_one_frames_and_heals_only_that_frame(m):
+    """#2311's skip streak (a frame that keeps declining deltas is asked for a
+    full state) is per frame: another frame on the canvas is not held, and its
+    page is not told to heal."""
+    _hello(m, "A")
+    _hello(m, "B")
+    fa, fb = m._frame("A"), m._frame("B")
+    for _ in range(canvases_mod.EMBED_SKIP_STREAK_ACKS):
+        m._note_skip_streak(fa, {"a"})
+    assert fa.skip_streak["stuck"] is True and fa.embed_heal_seq == 1
+    assert fb.skip_streak is None and fb.embed_heal_seq == 0
+    a, b = m.sync_state(frame="A"), m.sync_state(frame="B")
+    assert a["legs"]["disk_to_embed"]["state"] == "held" and a["embed_heal_seq"] == 1
+    assert b["legs"]["disk_to_embed"]["state"] != "held" and b["embed_heal_seq"] == 0
+    assert b["embed_skipping"] is None
+    # With no frame named, the stuck frame is the one reported.
+    assert m.sync_state()["legs"]["disk_to_embed"]["state"] == "held"
