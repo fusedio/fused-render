@@ -311,8 +311,19 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     // scroll causes under a pointer at rest carry the spot it already had.
     const pointed = SRC.slice(SRC.indexOf("function pointed("));
     const body = pointed.slice(0, pointed.indexOf("\n}"));
-    expect(body).toContain("if (e.clientX === pointerX && e.clientY === pointerY) return;");
+    expect(body).toContain("if (known && e.clientX === pointerX && e.clientY === pointerY) return;");
     expect(body.indexOf("return;")).toBeLessThan(body.indexOf("passing = false;"));
+    // The FIRST event seen is a baseline, not a move (CodeRabbit on #2320): a
+    // pointer resting on the rail at load has no earlier spot to compare
+    // with, so its first scroll-made event must record the spot and leave
+    // the mark armed.
+    expect(SRC).toContain("let pointerX = Number.NaN;");
+    expect(body).toContain("const known = !Number.isNaN(pointerX) && !Number.isNaN(pointerY);");
+    const record = body.indexOf("pointerY = e.clientY;");
+    const baseline = body.indexOf("if (!known) return;");
+    expect(record).toBeGreaterThan(-1);
+    expect(baseline).toBeGreaterThan(record);
+    expect(baseline).toBeLessThan(body.indexOf("passing = false;"));
     expect(body).toContain('panel.classList.remove("is-passing");');
     for (const fn of ["function onOver(", "function onMove("]) {
       const at = SRC.indexOf(fn);

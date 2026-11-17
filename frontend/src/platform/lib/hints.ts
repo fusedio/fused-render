@@ -400,11 +400,19 @@ function onScrolled(): void {
 }
 
 /** A pointer event at a NEW spot is the reader pointing. The events a scroll
- *  causes under a pointer at rest carry the spot it already had. */
+ *  causes under a pointer at rest carry the spot it already had.
+ *
+ *  THE FIRST EVENT IS A BASELINE, NOT A MOVE (CodeRabbit on #2320): until one
+ *  has been seen there is no spot to compare with, and a pointer already
+ *  resting on the rail when the page loaded would have its first scroll-made
+ *  event read as "somewhere new" — clearing the mark and dimming the window
+ *  with nothing having moved. */
 function pointed(e: PointerEvent): void {
-  if (e.clientX === pointerX && e.clientY === pointerY) return;
+  const known = !Number.isNaN(pointerX) && !Number.isNaN(pointerY);
+  if (known && e.clientX === pointerX && e.clientY === pointerY) return;
   pointerX = e.clientX;
   pointerY = e.clientY;
+  if (!known) return;
   if (!passing) return;
   passing = false;
   if (panel) panel.classList.remove("is-passing");
