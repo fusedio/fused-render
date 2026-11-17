@@ -17,10 +17,12 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { expertApi, type Bot, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem, type ExpertObs,
   type ExpertProposal } from "../lib/api";
-import { anyPreparing, askedLabel, basename, checkProgress, consolidatingLine, consultMeta, gapUnresolved, lessonTagClass, lessonTags, OBS_EMPTY, OBS_INTRO,
+import { anyPreparing, askedLabel, basename, checkProgress, consolidatingLine, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus,
+  filterConsults, gapUnresolved, groupConsultsByDay, isLongContext, lessonTagClass, lessonTags, OBS_EMPTY, OBS_INTRO,
   observationGaps, observationMeta, observationResultLabel, observationTypeLabel, openProposals, proposalLine, researchingGap, scoreText, seenLabel,
-  SEEN_ONCE_LINE, sortConsults, sortObservations, splitLessons, unresolvedGapCount } from "../lib/expert";
+  SEEN_ONCE_LINE, sortObservations, splitLessons, unresolvedGapCount, usedLessons, type ConsultFilter } from "../lib/expert";
 import { fmtAgo, fmtWhen } from "../lib/format";
+import { md } from "../lib/md";
 import { errMsg, getState, hideBanner, showBanner } from "../state/store";
 import { askConfirm } from "../dialogs/ask";
 import { isLanHost } from "@platform/lib/host";
@@ -196,36 +198,113 @@ export function MemoryPanel({ items, onForget, proposals = null }: {
   );
 }
 
-export function ConsultsPanel({ consults }: { consults: ExpertConsult[] | null }) {
+const CHEVRON = (
+  <svg className="xp-chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="m6 9 6 6 6-6" />
+  </svg>
+);
+
+/** A file chip: the ref's basename (full path as the title); a click copies the full path and says "Copied" briefly. */
+function FileChip({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const onClick = () => {
+    try {
+      navigator.clipboard.writeText(path).then(() => {
+        setCopied(true);
+        window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setCopied(false), 1400);
+      }).catch(() => {});
+    } catch { /* no clipboard here (plain-http LAN page): the title still shows the path */ }
+  };
+  return (
+    <button type="button" className={`xp-file${copied ? " copied" : ""}`} title={`${path}\nClick to copy the full path`} onClick={onClick}>
+      {copied ? "Copied" : basename(path) || path}
+    </button>
+  );
+}
+
+/** One consult as a card: status, source, when and a chevron; the question (two lines while closed); small facts.
+ *  Opened: the session's context, the answer as markdown (md(): the chat's renderer and sanitiser), files, lessons used.
+ *  Closed, it shows none of the answer. */
+export function ConsultCard({ c, items, initialOpen = false, nowMs }: {
+  c: ExpertConsult; items: ExpertItem[] | null; initialOpen?: boolean; nowMs?: number;
+}) {
+  const [open, setOpen] = useState(initialOpen);
+  const [allCtx, setAllCtx] = useState(false);
+  const bodyId = useId();
+  const status = consultStatus(c), facts = consultFacts(c), source = consultSource(c), longCtx = isLongContext(c.context);
+  return (
+    <li className={`xp-card ${status}${open ? " open" : ""}`}>
+      <button type="button" className="xp-card-head" aria-expanded={open} aria-controls={open ? bodyId : undefined} onClick={() => setOpen((o) => !o)}>
+        <span className="xp-card-line">
+          <span className={`xp-cstat ${status}`}><span className="xp-dot" aria-hidden="true" />{CONSULT_STATUS_LABEL[status]}</span>
+          <span className="xp-src" title={c.caller?.target || undefined}>{source}</span>
+          <span className="xp-when" title={fmtWhen(c.ts)}>{fmtAgo(c.ts, nowMs)}</span>
+          {CHEVRON}
+        </span>
+        <span className="xp-q">{c.question}</span>
+        {facts.length ? <span className="xp-facts">{facts.join(" · ")}</span> : null}
+      </button>
+      {open ? (
+        <div className="xp-card-body" id={bodyId}>
+          {c.context ? (
+            <section className="xp-part">
+              <h5 className="xp-lbl">Context from the session</h5>
+              <p className={`xp-ctx${longCtx && !allCtx ? " clamp" : ""}`}>{c.context}</p>
+              {longCtx ? <button type="button" className="xp-more" aria-expanded={allCtx} onClick={() => setAllCtx((v) => !v)}>{allCtx ? "Show less" : "Show all"}</button> : null}
+            </section>
+          ) : null}
+          <section className="xp-part">
+            <h5 className="xp-lbl">Answer</h5>
+            {c.answer ? <div className="xp-md" dangerouslySetInnerHTML={{ __html: md(c.answer) }} /> : <p className="xp-none">(no answer)</p>}
+          </section>
+          {c.refs?.length ? (
+            <section className="xp-part">
+              <h5 className="xp-lbl">Files</h5>
+              <div className="xp-files">{c.refs.map((r) => <FileChip key={r} path={r} />)}</div>
+            </section>
+          ) : null}
+          {c.used?.length ? (
+            <section className="xp-part">
+              <h5 className="xp-lbl">Lessons used</h5>
+              <ul className="xp-used">{usedLessons(c.used, items).map((l) => <li key={l.id}>{l.text}</li>)}</ul>
+            </section>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+const FILTERS: [ConsultFilter, string][] = [["all", "All"], ["answered", "Answered"], ["unsure", "Unsure"]];
+
+export function ConsultsPanel({ consults, items = null, nowMs }: { consults: ExpertConsult[] | null; items?: ExpertItem[] | null; nowMs?: number }) {
+  const [filter, setFilter] = useState<ConsultFilter>("all");
   if (consults == null) return <div className="xp-empty">Loading…</div>;
   if (!consults.length) return <div className="xp-empty">No consults yet. When an agent session asks this expert a question, the question and its answer appear here.</div>;
+  const counts = { all: consults.length, answered: filterConsults(consults, "answered").length, unsure: filterConsults(consults, "unsure").length };
+  const groups = groupConsultsByDay(filterConsults(consults, filter), nowMs);
   return (
-    <ul className="xp-list">
-      {sortConsults(consults).map((c) => (
-        <li key={c.id} className="xp-row xp-fold">
-          <details>
-            <summary>
-              <span className="xp-claim">{c.question}</span>
-              <span className="xp-meta">
-                <span title={fmtWhen(c.ts)}>{consultMeta(c)}</span>
-                {c.unsure ? <span className="xp-tag unsure" title="The expert was not sure of this answer">unsure</span> : null}
-              </span>
-            </summary>
-            <div className="xp-body">
-              {c.context ? <p className="xp-ctx">{c.context}</p> : null}
-              <pre>{c.answer || "(no answer)"}</pre>
-              {c.refs?.length ? (
-                <div className="xp-refs">
-                  <span className="xp-meta">Files</span>
-                  {c.refs.map((r) => <code key={r} title={r}>{basename(r) || r}</code>)}
-                </div>
-              ) : null}
-              {c.caller?.target ? <div className="xp-meta" title={c.caller.target}>From {c.caller.target}</div> : null}
-            </div>
-          </details>
-        </li>
-      ))}
-    </ul>
+    <>
+      {consults.length >= 2 ? (
+        <div className="xp-filters" role="group" aria-label="Show consults">
+          {FILTERS.map(([f, l]) => (
+            <button key={f} type="button" className={`xp-chip${filter === f ? " on" : ""}`} aria-pressed={filter === f}
+              disabled={f !== "all" && !counts[f] && filter !== f} onClick={() => setFilter(f)}>
+              {l} <span className="xp-n">{counts[f]}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {groups.length ? groups.map((g) => (
+        <section key={g.key} className="xp-dayg" aria-label={g.label}>
+          <h4 className="xp-day">{g.label}</h4>
+          <ul className="xp-cards">{g.items.map((c) => <ConsultCard key={c.id} c={c} items={items} nowMs={nowMs} />)}</ul>
+        </section>
+      )) : <div className="xp-empty">No consults match this filter.</div>}
+    </>
   );
 }
 

@@ -69,6 +69,77 @@ export function consultMeta(c: Pick<ExpertConsult, "ts" | "caller">, nowMs: numb
   return [fmtAgo(c.ts, nowMs), target, backend].filter(Boolean).join(" · ");
 }
 
+// ------------------------------------------------------------------ consult cards ----
+
+export type ConsultStatus = "answered" | "unsure";
+export type ConsultFilter = "all" | ConsultStatus;
+
+/** A consult's outcome: "unsure" when the expert said it was not sure, else "answered". */
+export const consultStatus = (c: Pick<ExpertConsult, "unsure">): ConsultStatus => (c.unsure ? "unsure" : "answered");
+export const CONSULT_STATUS_LABEL: Record<ConsultStatus, string> = { answered: "Answered", unsure: "Unsure" };
+
+/** Where a consult came from: "<target folder> · <backend>" (each as far as known), "direct" without a caller target. */
+export function consultSource(c: Pick<ExpertConsult, "caller">): string {
+  const target = basename(c.caller?.target);
+  if (!target) return "direct";
+  return [target, c.caller?.backend || ""].filter(Boolean).join(" · ");
+}
+
+/** A consult's length from milliseconds: "18s", "1m 5s", "2m"; "<1s" under half a second; "" when unknown. */
+export function formatDuration(ms: number | null | undefined): string {
+  if (!ms || ms < 0 || !Number.isFinite(ms)) return "";
+  const s = Math.round(ms / 1000);
+  if (s < 1) return "<1s";
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+/** The collapsed card's footer facts: "N files", "N lessons used", the duration (each only when there is one). */
+export function consultFacts(c: Pick<ExpertConsult, "refs" | "used" | "ms">): string[] {
+  const out: string[] = [], refs = c.refs?.length || 0, used = c.used?.length || 0, dur = formatDuration(c.ms);
+  if (refs) out.push(`${refs} file${refs === 1 ? "" : "s"}`);
+  if (used) out.push(`${used} lesson${used === 1 ? "" : "s"} used`);
+  if (dur) out.push(dur);
+  return out;
+}
+
+/** The consults one filter chip keeps ("all" keeps every one), in the order given. */
+export function filterConsults(cs: readonly ExpertConsult[], f: ConsultFilter): ExpertConsult[] {
+  return f === "all" ? [...cs] : cs.filter((c) => consultStatus(c) === f);
+}
+
+/** Consults newest first, under day dividers: "Today", "Yesterday", else a short date ("Sep 8", with the year when it
+ *  is not this year). `key` is the local calendar day. Timestamps are epoch seconds. */
+export function groupConsultsByDay(cs: readonly ExpertConsult[], nowMs: number = Date.now()): { key: string; label: string; items: ExpertConsult[] }[] {
+  const now = new Date(nowMs), yest = new Date(now);
+  yest.setDate(now.getDate() - 1);
+  const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+  const today = dayKey(now), yesterday = dayKey(yest);
+  const out: { key: string; label: string; items: ExpertConsult[] }[] = [];
+  for (const c of sortConsults(cs)) {
+    const d = new Date((c.ts || 0) * 1000), key = dayKey(d);
+    let g = out[out.length - 1];
+    if (!g || g.key !== key) {
+      const label = key === today ? "Today" : key === yesterday ? "Yesterday"
+        : d.toLocaleDateString([], { month: "short", day: "numeric", ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}) });
+      g = { key, label, items: [] };
+      out.push(g);
+    }
+    g.items.push(c);
+  }
+  return out;
+}
+
+/** Whether a consult's context is long enough to clamp (more than about 4 lines in the narrow panel). */
+export const isLongContext = (t: string | null | undefined): boolean => !!t && (t.split("\n").length > 4 || t.length > 280);
+
+/** The lessons a consult drew on, as their claims (from the memory items; the id itself when it is not found). */
+export function usedLessons(used: readonly string[] | null | undefined, items: readonly Pick<ExpertItem, "id" | "claim">[] | null | undefined): { id: string; text: string }[] {
+  const by = new Map((items || []).map((it) => [it.id, it.claim]));
+  return (used || []).map((id) => ({ id, text: by.get(id) || id }));
+}
+
 /** "11 / 14" (the Checks tab's headline). */
 export const scoreText = (s: ExpertScore | null | undefined): string => (s ? `${s.score} / ${s.total}` : "");
 

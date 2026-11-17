@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { ExpertEngineRow, ExpertGap, ExpertItem, ExpertObs, ExpertProposal } from "./api";
+import type { ExpertConsult, ExpertEngineRow, ExpertGap, ExpertItem, ExpertObs, ExpertProposal } from "./api";
+import { CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, filterConsults, formatDuration, groupConsultsByDay, isLongContext, usedLessons } from "./expert";
 import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, observationGaps, observationMeta, observationResultLabel, observationTypeLabel,
   researchingGap, sortObservations, unresolvedGapCount, checkProgress, consultMeta, engineNote, engineOptions, lessonTagClass, lessonTags, modelOptions, openProposals, proposalLine, proposalText, scoreText,
   scoresLine, seenLabel, sortConsults, sortLessons, splitLessons } from "./expert";
@@ -54,6 +55,53 @@ describe("consults", () => {
     const now = 1_000_000_000_000, ts = now / 1000 - 120;
     expect(consultMeta({ ts, caller: { target: "/c/team/sales-map", backend: "codex" } }, now)).toBe("2 min ago · sales-map · codex");
     expect(consultMeta({ ts, caller: null }, now)).toBe("2 min ago");
+  });
+});
+
+describe("consult cards", () => {
+  const c = (p: Partial<ExpertConsult>): ExpertConsult => ({ id: "c", ts: 0, question: "", context: "", answer: "", refs: [], used: [], unsure: false, ms: 0, ...p });
+  test("status: answered unless unsure", () => {
+    expect(consultStatus(c({}))).toBe("answered");
+    expect(consultStatus(c({ unsure: true }))).toBe("unsure");
+    expect(CONSULT_STATUS_LABEL.unsure).toBe("Unsure");
+  });
+  test("source: target basename and backend, or direct", () => {
+    expect(consultSource(c({ caller: { target: "/u/canvases/Airbnb_AI_Visualization/", backend: "claude" } }))).toBe("Airbnb_AI_Visualization · claude");
+    expect(consultSource(c({ caller: { target: "/u/x/sales" } }))).toBe("sales");
+    expect(consultSource(c({ caller: { backend: "codex" } }))).toBe("direct");
+    expect(consultSource(c({ caller: null }))).toBe("direct");
+  });
+  test("duration: seconds, then minutes and seconds", () => {
+    expect(formatDuration(18_200)).toBe("18s");
+    expect(formatDuration(65_000)).toBe("1m 5s");
+    expect(formatDuration(120_000)).toBe("2m");
+    expect(formatDuration(300)).toBe("<1s");
+    expect(formatDuration(0)).toBe("");
+    expect(formatDuration(undefined)).toBe("");
+  });
+  test("facts: files, lessons used, duration, each only when present", () => {
+    expect(consultFacts(c({ refs: ["a", "b"], used: ["m1"], ms: 18_000 }))).toEqual(["2 files", "1 lesson used", "18s"]);
+    expect(consultFacts(c({ refs: ["a"], used: ["m1", "m2"] }))).toEqual(["1 file", "2 lessons used"]);
+    expect(consultFacts(c({}))).toEqual([]);
+  });
+  test("filter by status", () => {
+    const cs = [c({ id: "a" }), c({ id: "b", unsure: true }), c({ id: "d" })];
+    expect(filterConsults(cs, "all").map((x) => x.id)).toEqual(["a", "b", "d"]);
+    expect(filterConsults(cs, "answered").map((x) => x.id)).toEqual(["a", "d"]);
+    expect(filterConsults(cs, "unsure").map((x) => x.id)).toEqual(["b"]);
+  });
+  test("group by day: newest first, Today / Yesterday / short date", () => {
+    const now = new Date(2026, 10, 17, 15, 0).getTime(), at = (d: number, h: number) => new Date(2026, 10, d, h).getTime() / 1000;
+    const gs = groupConsultsByDay([c({ id: "old", ts: at(10, 9) }), c({ id: "t1", ts: at(17, 9) }), c({ id: "y", ts: at(16, 20) }), c({ id: "t2", ts: at(17, 14) })], now);
+    expect(gs.map((g) => g.label)).toEqual(["Today", "Yesterday", new Date(2026, 10, 10).toLocaleDateString([], { month: "short", day: "numeric" })]);
+    expect(gs[0].items.map((x) => x.id)).toEqual(["t2", "t1"]);
+    expect(groupConsultsByDay([], now)).toEqual([]);
+  });
+  test("long context and used lessons", () => {
+    expect(isLongContext("a\nb\nc\nd")).toBe(false);
+    expect(isLongContext("a\nb\nc\nd\ne")).toBe(true);
+    expect(isLongContext("x".repeat(300))).toBe(true);
+    expect(usedLessons(["m1", "gone"], [item({ id: "m1", claim: "Use bar charts" })])).toEqual([{ id: "m1", text: "Use bar charts" }, { id: "gone", text: "gone" }]);
   });
 });
 
