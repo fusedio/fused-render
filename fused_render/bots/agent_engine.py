@@ -243,7 +243,7 @@ class Turn:
         self.stderr = deque(maxlen=40)
         # Super Bot (docs §5): built-in Claude Code tool calls seen on the stream, and whether the task has read the web.
         self.is_super = tools.is_super(bot)
-        self.builtin_rows = self.is_super or xstore.is_expert(bot)  # built-in calls -> `action` rows (_builtin_use)
+        self.is_expert = xstore.is_expert(bot)
         self.max_steps = _botmod().step_cap(bot.meta)
         self.web_touched = False
         self.pending_builtin: dict = {}      # tool_use_id -> (tool name, transcript label)
@@ -255,6 +255,11 @@ class Turn:
         self.ctx_tokens = 0
         self.nudged = False
         self.saw_init = False
+
+    @property
+    def builtin_rows(self) -> bool:
+        """Built-in Claude Code calls become `action` rows (_builtin_use): Super Bot's and an expert's."""
+        return self.is_super or self.is_expert
 
     # stdin -----------------------------------------------------------------
     def write(self, obj: dict) -> bool:
