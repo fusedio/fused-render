@@ -64,9 +64,7 @@ import {
   visibleModes,
   defaultMode,
   effectiveActive,
-  type ConditionVerdicts,
 } from "@platform/lib/mode-visibility";
-import { beginLoad, finishLoad, lastRequestMs, markLoad, openTimeline } from "@platform/lib/load-timeline";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { retainedFrames } from "@apps/explorer/lib/held-frames";
 import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
@@ -849,33 +847,6 @@ function useConditions(fsPath: string, templates: TemplateEntry[]): Record<strin
   return verdicts;
 }
 
-// THE NODE VIEW'S LOAD TIMELINE BEGINS HERE (SPEC §53.3 NV-12, platform/lib/
-// load-timeline). Its first step is this pane's — the gate verdict the content
-// pane waits on before the view can mount — so the timeline starts when the
-// preview of a node-shaped file (the preferred node view entry, PT-8) opens on
-// the node view: no `_mode`, or `_mode` naming it. The stat that brought the
-// pane here is recorded beside it. The view itself (apps/canvases/NodeView)
-// marks every later step and ends the timeline when the node is on screen.
-function useNodeViewLoadStart(fsPath: string, templates: TemplateEntry[], conditions: ConditionVerdicts): void {
-  const opensOnNode = templates.some((t) => isNodeViewEntry(t) && t.prefer === true) && (() => {
-    const requested = new URLSearchParams(location.search).get("_mode");
-    return requested === null || requested === NODE_MODE;
-  })();
-  useEffect(() => {
-    if (!opensOnNode) return;
-    const stat = lastRequestMs(`/api/fs/stat?path=${encodeURIComponent(fsPath)}`);
-    beginLoad(fsPath, fsPath.slice(fsPath.lastIndexOf("/") + 1) || fsPath, stat === null ? {} : { stat });
-    // Begins once per file opened: a later `_mode` change is not a new open.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fsPath]);
-  useEffect(() => {
-    if (!opensOnNode || conditions === null || !openTimeline(fsPath)) return;
-    if (conditions[NODE_MODE] === true) markLoad(fsPath, "gate");
-    else finishLoad(fsPath, "gate said no");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fsPath, conditions]);
-}
-
 // --- Held-frame mode swap (A1) ----------------------------------------------
 // How long the incoming preview frame takes to fade in over the outgoing one.
 // Must match `--dur-med` in shell.css (the CSS owns the actual transition; this
@@ -909,7 +880,7 @@ const annotateTargetFrame = (): HTMLIFrameElement | null =>
 // state, so there is nothing to wait for before showing it.
 //
 // A pane without `is-shown` — the node view kept mounted behind another mode
-// (NV-13) — is taken out of pointer, focus and assistive-tech reach by CSS
+// (NV-12) — is taken out of pointer, focus and assistive-tech reach by CSS
 // (`.preview-native.preview-frame:not(.is-shown)`, preview.css), on the very
 // paint the class changes: an effect would leave a frame in which the hidden
 // pane still caught clicks over the mode in front of it.
@@ -2060,7 +2031,7 @@ function TemplatePreview({
   }, [shown, activeMode, framePending]);
   // Retire the frames the swap left behind, once the incoming one has faded in.
   //
-  // EXCEPT THE NODE VIEW (SPEC §53.3 NV-13), which stays mounted, hidden,
+  // EXCEPT THE NODE VIEW (SPEC §53.3 NV-12), which stays mounted, hidden,
   // while its file stays open and the mode is on offer. Its open is the
   // heaviest in the shell — sync/start, a token, a cross-origin workbench that
   // boots, syncs and runs the node — so Node → Code → Node used to pay all of
@@ -2434,7 +2405,7 @@ function TemplatePreview({
               // apps/canvases through the shell's registry, never a frame. It paints its
               // own loading state, so it takes over from a held frame at once.
               // A kept node pane whose mode left the list (a git snapshot,
-              // NV-13) draws nothing until the retirement above drops it —
+              // NV-12) draws nothing until the retirement above drops it —
               // never an iframe of a mode with no page.
               if (m === NODE_MODE && m !== activeMode && !contentModes.some((t) => t.mode === m)) return null;
               if (m === NODE_MODE && nodeOffered) return (
@@ -3034,7 +3005,6 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   // The first unconditional template renders immediately — only an
   // ALL-conditional list has nothing safe to show and waits here.
   const conditions = useConditions(fsPath, templates);
-  useNodeViewLoadStart(fsPath, templates, conditions);
   const resolving = conditions === null;
   // Shared visibility policy (lib/mode-visibility): gated entries are pending
   // while resolving, stay when no verdict ever arrived, and drop on an

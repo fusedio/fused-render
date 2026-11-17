@@ -1,5 +1,5 @@
 // Which of the content pane's mounted mode frames survive a finished swap
-// (Preview's held-frame swap, A1; SPEC §53.3 NV-13). Pure, so the rule has a
+// (Preview's held-frame swap, A1; SPEC §53.3 NV-12). Pure, so the rule has a
 // test of its own rather than living only inside Preview's effects.
 //
 // The incoming mode always stays. Every other frame is retired — its document

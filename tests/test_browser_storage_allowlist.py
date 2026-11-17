@@ -32,7 +32,6 @@ ALLOWED = {
     "platform/lib/bots-available.ts": "cache",     # last "server offers Bots" answer, re-read on boot
     "platform/lib/botsPulse.ts": "cache",          # pinned bot rows until the next poll lands
     "platform/lib/claude-defaults.ts": "signal",
-    "platform/lib/debug-flag.ts": "dev",            # the shell's debug flag (chat debug views, load timelines)
     "platform/lib/favourites-flag.ts": "cache",    # flag pair's last prefs answer, re-read
     "platform/lib/last-chat.ts": "tab",            # last chat picked, per window (sessionStorage)
     "platform/lib/peek-session.ts": "tab",         # chats mounted in this window's panes (sessionStorage)
@@ -70,6 +69,7 @@ ALLOWED = {
     "apps/claude/feature-flag.ts": "signal",
     "apps/claude/protocol/run-controller.ts": "tab",
     "apps/claude/ui/TasksPanel.tsx": "display",     # Agents & shells strip open/closed (per viewer)
+    "apps/claude/ui/debug-sent.ts": "dev",
     "apps/claude/ui/outbox.ts": "tab",              # queued lines survive a reload of this tab
     "apps/claude/ui/useRecentTasks.ts": "tab",
     "apps/explorer/lib/fs-clipboard.ts": "tab",

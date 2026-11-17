@@ -257,7 +257,7 @@
 }
 
 /* A native pane that is NOT shown — the node view kept mounted behind
-   another mode (SPEC §53.3 NV-13) — takes no pointer, focus or
+   another mode (SPEC §53.3 NV-12) — takes no pointer, focus or
    assistive-tech hit from the paint it is hidden on: a full-size box at
    z-index 0 would otherwise sit over a mode that is not itself stacked
    (the content pane's chat mount). `visibility` flips only once the fade-out

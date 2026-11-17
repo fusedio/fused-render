@@ -12695,26 +12695,7 @@ today; one node fills the frame.
   code runs from the frame, so its output does not wait for the push; what
   it loads from OTHER nodes (`fused.load`, `fused.run`) is the server's
   saved canvas, so an edit to an upstream node shows after its push.
-- **NV-12 Load timeline.** Every step of a node view's open marks a load
-  timeline for the file (`platform/lib/load-timeline`), from the content
-  pane's gate verdict to the node on screen: `gate` (Preview, the conditions
-  call), `mount` (the canvases chunk loaded and the view drawing), `info`
-  (`GET /api/canvases/node`), `clone` (only when one ran), `sync`
-  (`POST /api/canvases/sync/start`), `status` and `whoami` (the workbench
-  base and the handle; the handle's call only when the node info lacks it),
-  `frame` (the frame URL set), `frame-load` (the frame's `load`), `hello`
-  and `token` (the workbench talking and signed in) and `ready` (the relay's
-  `present`). It begins when a node-shaped file's preview opens on the node
-  view (no `_mode`, or `_mode` naming it), with the stat that brought the
-  pane there recorded beside it, and ends at `ready` or at the state that
-  stops the open (`signed out`, `not a node`, `gate said no`, `owned
-  elsewhere`, `node absent`, `no node mode`, `error`). Marks go to the
-  Performance API as `fused-load:<path>:<stage>` and a measure over the
-  whole; `window.__fusedLoadTimelines()` returns the recorded timelines; with
-  the shell's debug flag (`localStorage["fused-render.debug"] = "1"`) a
-  finished timeline prints one console line, each stage with its time since
-  the one before. Recording only: no step waits on it.
-- **NV-13 Kept across mode switches.** Once mounted, the node view stays
+- **NV-12 Kept across mode switches.** Once mounted, the node view stays
   mounted, hidden (no pointer, focus or assistive-tech reach: `visibility:
   hidden` and `pointer-events: none` from the paint it is hidden on), while
   its file stays open and the
