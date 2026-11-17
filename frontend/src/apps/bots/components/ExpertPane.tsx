@@ -442,12 +442,13 @@ export function ConsultsPanel({ consults, items = null, nowMs }: { consults: Exp
 
 // ---- Observations ----
 
-/** "Consolidate now" (the Observations tab). Off while a consolidation runs or there is nothing to fold in or look into. */
+/** "Consolidate now" (the Observations tab). Off while a consolidation runs or there is nothing to fold in, look into
+ *  or tidy (memory over its `tidy_at`: a forced consolidation tidies it even with nothing waiting). */
 function ConsolidateButton({ busy, running, work, onClick }: { busy: boolean; running: boolean; work: boolean; onClick: () => void }) {
   const on = busy || running;
   return (
     <button type="button" className={on ? "busy" : undefined} disabled={on || !work} onClick={onClick}
-      title={running ? "A consolidation is running" : work ? "Fold the waiting observations into lessons and look into the open questions now" : "Nothing is waiting"}>
+      title={running ? "A consolidation is running" : work ? "Fold the waiting observations into lessons, look into the open questions and tidy memory now" : "Nothing is waiting"}>
       {on ? "Consolidating…" : "Consolidate now"}
     </button>
   );
@@ -496,8 +497,10 @@ export function ObsCard({ o, consolidated, researching, proposals, items, lan, o
 
 const OBS_FILTERS: [ObservationFilter, string][] = [["all", "All"], ["unsure", "Unsure"], ["learnings", "Learnings"]];
 
-export function ObservationsPanel({ pending, done, consolidating = null, proposals = null, items = null, busy = false, onConsolidate, onDrop, lan = false, nowMs }: {
+export function ObservationsPanel({ pending, done, consolidating = null, proposals = null, items = null, budget = null, busy = false, onConsolidate, onDrop, lan = false, nowMs }: {
   pending: ExpertObs[] | null; done: ExpertObs[] | null; consolidating?: ExpertConsolidating | null;
+  /** The memory's budget (the memory route, as the Memory tab's budget line): memory over `tidy_at` counts as work. */
+  budget?: MemoryBudget | null;
   /** The skill proposals (as on the Memory tab): their status lines under the intro, and what a proposed gap says. */
   proposals?: ExpertProposal[] | null;
   /** The memory items: an opened row names the lesson it landed on by its claim. */
@@ -509,7 +512,8 @@ export function ObservationsPanel({ pending, done, consolidating = null, proposa
   const [filter, setFilter] = useState<ObservationFilter>("all");
   if (pending == null) return <div className="xp-empty">Loading…</div>;
   const { waiting, done: folded } = sortObservations(pending, done), running = !!consolidating?.running;
-  const researching = researchingGap(consolidating), work = waiting.length > 0 || unresolvedGapCount(observationGaps(waiting, folded)) > 0;
+  const researching = researchingGap(consolidating), work = waiting.length > 0 || unresolvedGapCount(observationGaps(waiting, folded)) > 0
+    || !!budgetState(budget, items?.length || 0)?.above;
   const all = [...waiting, ...folded];
   const counts = { all: all.length, unsure: filterObservations(all, "unsure").length, learnings: filterObservations(all, "learnings").length };
   const w = filterObservations(waiting, filter), d = filterObservations(folded, filter);
@@ -641,7 +645,7 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
       </div>
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
         {tab === "memory" ? <MemoryPanel items={data.memory} proposals={data.proposals} budget={data.budget} archived={data.archive} lan={isLanHost()} onForget={(it) => { void onForget(it); }} /> : null}
-        {tab === "observations" ? <ObservationsPanel pending={data.pending} done={data.done} consolidating={data.consolidating} proposals={data.proposals} items={data.memory} busy={consolidating}
+        {tab === "observations" ? <ObservationsPanel pending={data.pending} done={data.done} consolidating={data.consolidating} proposals={data.proposals} items={data.memory} budget={data.budget} busy={consolidating}
           lan={isLanHost()} onConsolidate={() => { void onConsolidate(); }} onDrop={(g) => { void onDrop(g); }} /> : null}
         {tab === "consults" ? <ConsultsPanel consults={data.consults} items={data.memory} /> : null}
         {tab === "checks" ? <ChecksPanel checks={data.checks} starting={starting} onRun={() => { void onRun(); }} /> : null}

@@ -254,11 +254,19 @@ export function checkProgress(st: ExpertCheckStatus | null | undefined): string 
   return st.total ? `Running checks · ${st.done} of ${st.total}` : "Running checks…";
 }
 
+/** The Engine field's helper text: how Auto resolves (model.py `AUTO_ENGINES`: Claude if on, else Copilot; never
+ *  Codex, whose reads Fused does not fence). */
+export const ENGINE_HELP = "Who answers for this expert. Auto uses Claude when it is on, otherwise Copilot; it never picks Codex. Saved at once.";
+
+const ENGINE_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", copilot: "Copilot" };
+
 /** The Engine menu: Auto, then each engine that is switched on (an engine that is off cannot be picked). The current
- *  value stays listed even when it went off, so the menu never silently shows another one. */
+ *  value stays listed even when it went off, or before the engines arrive (`rows` empty), so the menu never silently
+ *  shows another one (and a change never writes Auto by accident). */
 export function engineOptions(rows: readonly ExpertEngineRow[], current: string): [string, string][] {
   const out: [string, string][] = [["auto", "Auto"]];
   for (const r of rows) if (r.id !== "auto" && (r.enabled || r.id === current)) out.push([r.id, r.enabled ? r.label : `${r.label} (off)`]);
+  if (current && !out.some(([v]) => v === current)) out.push([current, ENGINE_LABELS[current] || current]);
   return out;
 }
 

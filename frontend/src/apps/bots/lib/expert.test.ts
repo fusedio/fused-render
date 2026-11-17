@@ -6,7 +6,7 @@ import { filterLessons, filterObservations, LESSON_STATUS_LABEL, lessonFacts, le
 import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, observationGaps, observationResultLabel, observationTypeLabel,
   researchingGap, sortObservations, unresolvedGapCount, checkProgress, engineNote, engineOptions, modelOptions, openProposals, proposalLine, proposalText, proposalWarnings, warningsLine, scoreText,
   scoresLine, sortConsults, sortLessons } from "./expert";
-import { budgetState, lessonUses, removedReasonLabel, tidySummary, usedLabel, usesLine } from "./expert";
+import { budgetState, ENGINE_HELP, lessonUses, removedReasonLabel, tidySummary, usedLabel, usesLine } from "./expert";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
   created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...p });
@@ -191,6 +191,17 @@ describe("engine and model menus", () => {
   test("Auto plus the enabled engines; the current one stays even when off", () => {
     expect(engineOptions(rows, "auto").map(([v]) => v)).toEqual(["auto", "claude", "copilot"]);
     expect(engineOptions(rows, "codex")).toContainEqual(["codex", "Codex (off)"]);
+  });
+  test("before the engines arrive, the saved engine is still an option (a change never writes Auto by accident)", () => {
+    expect(engineOptions([], "claude")).toEqual([["auto", "Auto"], ["claude", "Claude"]]);
+    expect(engineOptions([], "copilot")).toEqual([["auto", "Auto"], ["copilot", "Copilot"]]);
+    expect(engineOptions([], "codex")).toEqual([["auto", "Auto"], ["codex", "Codex"]]);
+    expect(engineOptions([], "auto")).toEqual([["auto", "Auto"]]);
+    expect(engineOptions(rows.filter((r) => r.id !== "copilot"), "copilot")).toContainEqual(["copilot", "Copilot"]);
+  });
+  test("the Auto helper text: Claude, else Copilot, never Codex", () => {
+    expect(ENGINE_HELP).toContain("Auto uses Claude when it is on, otherwise Copilot");
+    expect(ENGINE_HELP).toContain("never picks Codex");
   });
   test("the engine's models after its default", () => {
     expect(modelOptions(rows, "claude", "")).toEqual([["", "Default (Sonnet)"], ["sonnet", "Sonnet"], ["opus", "Opus"]]);

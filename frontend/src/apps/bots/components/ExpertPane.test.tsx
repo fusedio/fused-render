@@ -270,6 +270,16 @@ describe("ObservationsPanel", () => {
     const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, pending: [], done: [done[0]] }));
     expect(out).toMatch(/disabled=""[^>]*>Consolidate now</);
   });
+  test("Consolidate stays on with nothing waiting when memory is over its tidy threshold (a forced run tidies)", () => {
+    const quiet = { ...base, pending: [], done: [done[0]] };
+    const over = renderToStaticMarkup(createElement(ObservationsPanel, { ...quiet, budget: { limit: 50, tidy_at: 30, total: 32 } }));
+    expect(over).not.toMatch(/disabled=""[^>]*>Consolidate now</);
+    expect(over).toContain(">Consolidate now<");
+    const at = renderToStaticMarkup(createElement(ObservationsPanel, { ...quiet, budget: { limit: 50, tidy_at: 30, total: 30 } }));
+    expect(at).toMatch(/disabled=""[^>]*>Consolidate now</);
+    const old = renderToStaticMarkup(createElement(ObservationsPanel, { ...quiet, budget: { tidy_at: 30, total: 32 } }));
+    expect(old).toMatch(/disabled=""[^>]*>Consolidate now</);
+  });
   test("proposals: status lines under the intro, a proposed gap's wording, its failure muted; text and note cleaned", () => {
     const prop = (id: string, status: ExpertProposal["status"], error = ""): ExpertProposal => ({ id, ts: 1, status, error, action: "create", skill: null, title: "", trigger: "", body: "",
       diff: "", items: [], score_before: null, score_after: null, card_seq: null });
