@@ -51,10 +51,13 @@ export interface BotSettingsProps {
 
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
+  // An expert (docs/experts.md) has no browser, no terminal and no engine choice: General (with "Ask me about") and
+  // Permissions (only the folders it may read) are its whole dialog.
+  const isExpert = bot.kind === "expert";
   // On the phone (isLanHost) the Connections, Browser and Phone tabs are not drawn: their routes (Preferences,
   // /api/bots/browsers, iMessage) are Mac-side and the LAN door 404s them (lan.py `_DOORS`).
   const lan = isLanHost();
-  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"],
+  const tabs: [SettingsTab, string][] = isExpert ? [["general", "General"], ["permissions", "Permissions"]] : [["general", "General"], ["permissions", "Permissions"],
     ...(lan ? [] : [["connections", "Connections"] as [SettingsTab, string], ["browser", "Browser"] as [SettingsTab, string]]),
     ["skills", "Skills"], ["routines", "Routines"], ["memory", "Memory"],
     ...(isSuper && !lan ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
@@ -66,9 +69,10 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     maxSteps: bot.max_steps ? String(bot.max_steps) : "",
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
     superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], connections: bot.connections || [], allowRules: bot.allow_rules || [],
-    folders: bot.folders || [],
-    browserId: isSuper ? "" : loginValue(bot),
+    folders: bot.folders || [], askMeAbout: bot.expert?.ask_me_about || "",
+    browserId: isSuper || isExpert ? "" : loginValue(bot),
   }));
+  const [askMeAbout, setAskMeAbout] = useState(init.askMeAbout);
   const [name, setName] = useState(init.name);
   const [model, setModel] = useState(init.model);
   const [effort, setEffort] = useState(init.effort);
@@ -78,7 +82,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [approval, setApproval] = useState<string>(init.approval);
   const [buildAccess, setBuildAccess] = useState<string>(init.buildAccess);
   // The Terminal row shows for every bot except Super Bot, which has Bash.
-  const terminalFeature = !isSuper;
+  const terminalFeature = !isSuper && !isExpert;
   const [terminal, setTerminal] = useState(init.terminal);
   const [superAccess, setSuperAccess] = useState<string>(init.superAccess);
   const [encrypt, setEncrypt] = useState(init.encrypt);
@@ -134,7 +138,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [browserId, setBrowserId] = useState(init.browserId);
   // The Logins menu: one option per other browser (bots sharing one collapse into one; Super Bot's browser included),
   // listed as the dialog opened. Super Bot's own row is hidden.
-  const [groups] = useState(() => (isSuper ? [] : loginGroups(getState().bots, bot.id)));
+  const [groups] = useState(() => (isSuper || isExpert ? [] : loginGroups(getState().bots, bot.id)));
   const sharedNames = (bot.shared_with || []).map((o) => o.name).join(", ");
   const appliesToAll = sharedNames ? ` Applies to every bot sharing these logins (${sharedNames}).` : "";
   const [face, setFace] = useState<FaceT | null | undefined>(bot.face);
@@ -145,7 +149,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, ...(terminalFeature ? { terminal } : {}), encrypt, profile, maxSteps,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
-    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, trustedAppsWas: liveTrusted, connections, connectionsWas: liveConnections, folders,
+    kind: isSuper ? "super" : isExpert ? "expert" : "bot", ...(isExpert ? { askMeAbout: askMeAbout.trim() } : {}), superAccess, browserId, trustedApps, trustedAppsWas: liveTrusted, connections, connectionsWas: liveConnections, folders,
     allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
   // Dirty = what Save would send. The trusted-apps pair is compared as the add / remove diff, not the lists: a tick
   // that lands from a build or a card while the dialog is open changes both lists and is not the user's edit.
@@ -156,9 +160,10 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const okDisabled = fingerprint(read()) === initial;
   const n = name.trim();
 
-  // Your Chrome's profiles and the apps root, listed fresh each time.
+  // Your Chrome's profiles and the apps root, listed fresh each time (an expert shows neither).
   useEffect(() => {
     let live = true;
+    if (isExpert) return;
     void act(() => api.profiles(), true).then((r) => { if (live) setProfiles(r?.profiles || []); });
     void act(() => api.apps(), true).then((r) => { if (live) setAppRows(r?.apps || []); });
     return () => { live = false; };
@@ -275,14 +280,20 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                     <span className="size-9 [&>svg]:block [&>svg]:size-full"><Face b={bm} /></span>
                   </FacePopover>
                 </Row>
-                <Row title="What it should do" text="Standing rules for every task." htmlFor="bminstr" stack>
+                {isExpert ? (
+                  <Row title="Ask me about" text="One line on what it knows. Tasks see it when they list experts." htmlFor="bmabout">
+                    <Input id="bmabout" maxLength={240} placeholder="e.g. Writing canvases, the canvas APIs" value={askMeAbout}
+                      onChange={(e) => setAskMeAbout(e.target.value)} />
+                  </Row>
+                ) : null}
+                <Row title="What it should do" text={isExpert ? "Standing rules for its chats and sessions." : "Standing rules for every task."} htmlFor="bminstr" stack>
                   <Textarea id="bminstr" rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} className="max-h-64"
                     placeholder={isSuper ? "Blank keeps Super Bot's own: files in its Inbox folder, say before anything destructive."
                       : "e.g. “Browse LinkedIn for me. Answer in bullets. Never like or comment.”"} />
                 </Row>
                 <Row title="Model" text="Applies from the next task." htmlFor="bmmodel">
                   <NativeSelect className="w-full" id="bmmodel" value={model} onChange={(e) => setModel(e.target.value)}>
-                    {modelsFor(isSuper).map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
+                    {modelsFor(isSuper || isExpert).map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
                   </NativeSelect>
                 </Row>
                 <Row title="Thinking" text="How much it thinks per step." htmlFor="bmeffort">
@@ -290,10 +301,10 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                     {EFFORTS.map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
                   </NativeSelect>
                 </Row>
-                <Row title="Steps per task" text={`Tool calls one task may take before it is stopped. Blank keeps the default (${isSuper ? 1000 : 200}). Applies from the next task.`} htmlFor="bmsteps">
+                {isExpert ? null : <Row title="Steps per task" text={`Tool calls one task may take before it is stopped. Blank keeps the default (${isSuper ? 1000 : 200}). Applies from the next task.`} htmlFor="bmsteps">
                   <Input id="bmsteps" type="text" inputMode="numeric" pattern="[0-9]*" maxLength={5} className="w-full" value={maxSteps}
                     placeholder={isSuper ? "1000" : "200"} onChange={(e) => { if (/^\d*$/.test(e.target.value)) setMaxSteps(e.target.value); }} />
-                </Row>
+                </Row>}
               </Rows>
             ) : null}
 
@@ -307,14 +318,14 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                     </NativeSelect>
                   </Row>
                 ) : null}
-                <Row title={isSuper ? "Before it sends, buys, deletes or posts" : "Before it buys, deletes or posts"}
+                {isExpert ? null : <Row title={isSuper ? "Before it sends, buys, deletes or posts" : "Before it buys, deletes or posts"}
                   text="“Never ask” lets it finish on its own. A step the bot itself flags as irreversible still shows a card." htmlFor="bmapproval">
                   <NativeSelect className="w-full" id="bmapproval" value={approval} onChange={(e) => setApproval(e.target.value)}>
                     <NativeSelectOption value="ask">Ask me first</NativeSelectOption>
                     <NativeSelectOption value="auto">Never ask</NativeSelectOption>
                   </NativeSelect>
-                </Row>
-                {!isSuper ? (
+                </Row>}
+                {!isSuper && !isExpert ? (
                   <Row title="When it builds an app with Claude Code" text="Builds land under ~/Fused/app and park under Builds while a question waits." htmlFor="bmbuild">
                     <NativeSelect className="w-full" id="bmbuild" value={buildAccess} onChange={(e) => setBuildAccess(e.target.value)}>
                       <NativeSelectOption value="scoped">Ask before risky steps</NativeSelectOption>
@@ -333,7 +344,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                     </NativeSelect>
                   </Row>
                 ) : null}
-                {allowRules.length ? (
+                {allowRules.length && !isExpert ? (
                   <Row title="Approved forever" text="Calls this bot makes without asking: ones you approved with “Approve, don't ask again” on a card, and ones its preset pre-approved. Remove one and the bot asks again next time." stack>
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmforever">
                       {allowRules.map((r) => (
@@ -348,7 +359,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                   </Row>
                 ) : null}
                 <Row title="Folders it may read" stack
-                  text={"Files and folders here are open to its ls, find and readfile. It never writes there. Apps it runs read what they read." + (isSuper ? " Its shell is not fenced." : "")}>
+                  text={isExpert ? "Besides its own folder, it may read files and folders here. It never writes there; memory.md is the only file it writes."
+                    : "Files and folders here are open to its ls, find and readfile. It never writes there. Apps it runs read what they read." + (isSuper ? " Its shell is not fenced." : "")}>
                   {folders.length ? (
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmfolders">
                       {folders.map((f) => (
@@ -372,7 +384,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                     <div><Button type="button" variant="outline" size="sm" disabled={picking} onClick={() => void pickFolder()}><FolderPlusIcon />Add folder…</Button></div>
                   )}
                 </Row>
-                {appRows.length ? (
+                {appRows.length && !isExpert ? (
                   <Row title="Apps it may use without asking" text="A ticked app's tools and scripts run without asking. Everything else asks first." stack>
                     {appRows.length > 5 ? (
                       <div className="relative">

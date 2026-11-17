@@ -21,8 +21,10 @@ export interface BotDialogValue {
   imessageTo: string;
   /** The preset key the bot was made from ("" for a blank bot, and always "" in Settings). */
   preset: string;
-  /** "super" for Super Bot (docs §5), else "bot". */
+  /** "super" for Super Bot (docs §5), "expert" for an expert (docs/experts.md; Settings only), else "bot". */
   kind: string;
+  /** Expert only: the one-line "Ask me about" description (sent as `ask_me_about`). */
+  askMeAbout?: string;
   /** Super Bot's Mac access: "ask" | "full" (ignored for other bots). */
   superAccess: string;
   /** App folders whose tools never ask this bot for approval (Settings > Permissions > Apps it may use without asking). */
@@ -67,6 +69,13 @@ export async function createBot(v: BotDialogValue): Promise<void> {
  *  sent only when the user changed it, so the old browser's flag never overwrites the new one's. A blank name saves nothing. */
 export async function saveSettings(id: string, v: BotDialogValue): Promise<void> {
   if (!v.name) return;
+  if (v.kind === "expert") {
+    // An expert's dialog edits only these: no browser, terminal, approvals, apps or bot memory (its memory.md is its own).
+    await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions,
+      ask_me_about: v.askMeAbout ?? "", folders: v.folders }));
+    if (v.face) await act(() => api.flag(id, { face: v.face }));
+    return;
+  }
   const was = getState().bots.find((x) => x.id === id);
   const switched = !!was && v.kind !== "super" && v.browserId !== loginValue(was);
   if (switched) await act(() => api.settings(id, { browser_id: v.browserId }));

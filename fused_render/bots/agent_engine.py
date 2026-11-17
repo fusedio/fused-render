@@ -22,7 +22,18 @@ about arrives here as a `permission` tool call (`_permission`) and becomes the
 same approval card a risky click raises. Built-in tool calls never reach
 `handle_tool`; `_drive` reads them off the stream (tool_use, then the echoed
 tool_result) and emits `action` rows for the transcript, and counts them
-against Super Bot's larger step cap. Once a task has touched the web (a browser
+against Super Bot's larger step cap.
+
+An expert (docs/experts.md) runs here too, with none of Super Bot's extras: its
+folder is the working directory, instructions.md (experts.store.instructions)
+the system prompt, no browser and no bot MCP server (`NO_MCP`), and Claude
+Code's own fence (experts.sessions.fence: Read/Glob/Grep/Edit/Write, the one
+pre-allowed write memory.md, no permission prompt tool, so everything else is
+refused by the CLI). Its first message is the conversation summary plus the
+date and the MESSAGE (`_expert_message`); built-in calls become `action` rows as
+Super Bot's do. A chat turn writes memory, so it holds the expert's write lock
+and ends with experts.sessions.note_chat (a "chat" session row when memory.md
+changed) and after_write (compaction). Once a task has touched the web (a browser
 action or WebFetch/WebSearch) writes and shell always ask, whatever
 `super_access` says: page text is the injection channel for a bot with a shell.
 
@@ -75,6 +86,8 @@ from urllib.parse import quote
 
 from fused_render import _platform, permission_risk
 from fused_render.bots import apptools, channels, claude_cli, paths, tools
+from fused_render.experts import sessions as xsessions
+from fused_render.experts import store as xstore
 
 # The step cap (bot.MAX_STEPS / SUPER_MAX_STEPS, or the bot's own `max_steps`): --max-turns does not exist on this
 # CLI, so tool calls are counted here against bot.step_cap(meta), read once per turn.
@@ -91,6 +104,9 @@ MCP_SERVER = "bot"             # the model sees mcp__bot__<tool>
 ROLLOVER_FRACTION = 0.5        # roll the conversation over when its context passes this share of the model's window (owner, 2026-10-07)
 NUDGE_FRACTION = 0.8           # … and nudge the model to `remember` durable facts at this share of the rollover mark
 WINDOW_DEFAULT = 200_000
+#: An expert's session (chat here, side sessions in experts/sessions.py): nothing from the user's own Claude Code
+#: setup, no MCP server at all (inline JSON is accepted by the CLI, verified on 2.1.326), no slash commands.
+NO_MCP = ["--setting-sources=", "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config", "--disable-slash-commands"]
 WINDOW_1M = 1_000_000
 _MILLION = re.compile(r"\[1m\]|fable|opus-?5|sonnet-?5|haiku-?5|opus-?4-?[78](?!\d)|^(?:opus|sonnet|haiku)$", re.I)  # the frontend's rule (context-window.ts): every 5.x model and Opus 4.7+ run 1M (CLI 2.1.300, measured 2026-10-15)
 
@@ -227,6 +243,7 @@ class Turn:
         self.stderr = deque(maxlen=40)
         # Super Bot (docs §5): built-in Claude Code tool calls seen on the stream, and whether the task has read the web.
         self.is_super = tools.is_super(bot)
+        self.builtin_rows = self.is_super or xstore.is_expert(bot)  # built-in calls -> `action` rows (_builtin_use)
         self.max_steps = _botmod().step_cap(bot.meta)
         self.web_touched = False
         self.pending_builtin: dict = {}      # tool_use_id -> (tool name, transcript label)
@@ -421,6 +438,8 @@ def first_message(bot, task: str, past=None, page: dict | None = None, conv: dic
     follow-up ("now open the second one") does not spend its first call on
     `observe`; its refs are the turn's current ones (run() took it through
     _observe)."""
+    if xstore.is_expert(bot):
+        return _expert_message(bot, task, past, conv)
     m = bot.meta
     conv = conv if isinstance(conv, dict) else {}
     fresh = not conv.get("session_id")
@@ -509,10 +528,25 @@ def first_message(bot, task: str, past=None, page: dict | None = None, conv: dic
     return text, sent
 
 
+def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tuple:
+    """An expert's turn message: on a fresh session the conversation summary (or digest), then the date and the
+    MESSAGE; a resumed session already holds the rest. Its instructions are the system prompt."""
+    conv = conv if isinstance(conv, dict) else {}
+    parts = []
+    if not conv.get("session_id"):
+        summary = (conv.get("summary") or "").strip()
+        if not summary:
+            past = _call(bot.past_conversation, []) if past is None else past
+            summary = "\n".join(past) if past else "(this is the start of the conversation)"
+        parts.append("CONVERSATION SO FAR (with the user, oldest first):\n" + summary)
+    parts += [f"Today is {xsessions.today()}.", f"MESSAGE: {task}"]
+    return "\n\n".join(parts), {}
+
+
 # ------------------------------------------------------------- spawning ---
 def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
          super_mode: str | None = None,
-         resume: str | None = None, window: int | None = None) -> list:
+         resume: str | None = None, window: int | None = None, fence: list | None = None) -> list:
     """docs §6, verified on claude 2.1.287. No --include-partial-messages
     (thoughts are per text block, and the flag floods stdout). `super_mode` (the
     CLI permission mode, bot.py SUPER_ACCESS values) switches Super Bot on: the
@@ -528,7 +562,9 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
     (CLAUDE.md, skills, hooks) reaches a bot. `resume` continues the bot's
     conversation (its CLI session); sessions persist on disk for that. `window`
     (the model's context window) is passed as --autocompact so the CLI's own
-    compaction never fires before fused's rollover (ROLLOVER_FRACTION)."""
+    compaction never fires before fused's rollover (ROLLOVER_FRACTION). `fence`
+    (an expert: experts.sessions.fence) replaces the tool, permission and MCP
+    flags with the expert's own and `NO_MCP`; `mcp_file` is unused then."""
     out = [bin_path, "-p",
            "--input-format", "stream-json",
            "--output-format", "stream-json",
@@ -541,6 +577,8 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
         out += ["--resume", str(resume)]
     if window:
         out += ["--autocompact", str(int(window))]
+    if fence is not None:
+        return out + list(fence) + NO_MCP
     if super_mode:
         out += ["--permission-mode", super_mode,
                 "--permission-prompt-tool", f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}"]
@@ -585,6 +623,8 @@ def _super_cwd(bot, fallback: str) -> str:
 
 
 def system_prompt_for(bot, cwd: str) -> str:
+    if xstore.is_expert(bot):
+        return xstore.instructions(bot)
     if not tools.is_super(bot):
         return SYSTEM_PROMPT
     return SYSTEM_PROMPT + SUPER_PROMPT + f"\nINBOX: {cwd}"
@@ -819,7 +859,7 @@ def _drive(bot, sess: Turn, proc) -> tuple:
                     uses += 1
                     if str(blk.get("name") or "") != f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}":
                         _doing(bot, _tool_doing(str(blk.get("name") or ""), blk.get("input")))
-                    if sess.is_super and not str(blk.get("name") or "").startswith("mcp__"):
+                    if sess.builtin_rows and not str(blk.get("name") or "").startswith("mcp__"):
                         _builtin_use(bot, sess, blk)
                     elif str(blk.get("name") or "") != f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}":
                         mcp_uses += 1
@@ -897,7 +937,7 @@ def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
     if not summary:  # a thin slice, or a summary call that failed: the previous note plus the digest
         summary = ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))).strip()
     _call(getattr(bot, "conversation_rollover", None), None, summary, sp_hash)
-    if why != "new":
+    if why != "new" and not xstore.is_expert(bot):  # an expert's memory is memory.md, kept by the expert itself
         # Memory upkeep rides on the rollover (bot.curate_memory): one more call, every ~half a window.
         _call(getattr(bot, "curate_memory", None), None, since)
     if why == "over budget":
@@ -916,6 +956,8 @@ def run(bot, task: str, label: str | None = None) -> None:
     final_msg = ""
     collected = False
     conv = None
+    expert = xstore.is_expert(bot)
+    wlock = mem_before = None  # an expert's write lock, held for the turn, and memory.md as the turn found it
     # Per-turn bot state the shared helpers read (steps_engine.run resets the same).
     bot.task_dir, bot.task_started = None, time.time()
     bot._tool_apps = set()
@@ -930,10 +972,14 @@ def run(bot, task: str, label: str | None = None) -> None:
         except AttributeError:
             pass
         bot.emit("system", f"Task started: {label or task}")
-        bot.browser.start()
+        if not expert:
+            bot.browser.start()
         bin_path = claude_cli.runnable()
         if not bin_path:
             raise RuntimeError("the Claude Code CLI (`claude`) was not found; install it or pick a local model")
+        if expert:
+            wlock = _expert_hold(bot)  # None: Stop landed while a side session held the memory (the check below)
+            mem_before = xstore.memory(bot) if wlock is not None else None
         if bot.stop_flag.is_set():
             bot.emit("system", "Stopped")
             _call(bot._routine_outcome, None, task, "stopped", "")
@@ -944,14 +990,14 @@ def run(bot, task: str, label: str | None = None) -> None:
         cache = paths.bot_cache_dir(bot.id)
         os.makedirs(cache, exist_ok=True)
         mode = super_mode(bot)
-        cwd = _super_cwd(bot, cache) if mode else cache
+        cwd = xstore.expert_dir(bot) if expert else (_super_cwd(bot, cache) if mode else cache)
         sp_text = system_prompt_for(bot, cwd)
         sp_file = os.path.join(cache, "system_prompt.txt")
         with open(sp_file, "w", encoding="utf-8") as f:
             f.write(sp_text)
         conv, resume_id = _conversation_plan(bot, model, _sha(sp_text))
         page = None
-        st = _call(lambda: bot.browser.status_cached(), {})
+        st = {} if expert else _call(lambda: bot.browser.status_cached(), {})
         if isinstance(st, dict) and st.get("running") and _real_page(st.get("url")):
             page = _observe(bot, _ProbeTurn())
             if not _real_page(page.get("url")):
@@ -975,12 +1021,13 @@ def run(bot, task: str, label: str | None = None) -> None:
                 sess.prev_url = u
                 sess.visited[u] = 1  # as if a goto had landed there: coming back later is a revisit
             prompt, sent = first_message(bot, task, None, page=page, conv=conv)
-            mcp_file = write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token)
+            mcp_file = "" if expert else write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token)
             # Super Bot reads its Inbox (cwd) without a prompt; every other read, and every write, reaches
             # `_permission`, whose fence judges by `bot.folder_roots` (docs §6). No --add-dir (was `~` whole).
             sess.cwd = cwd  # before the spawn: the first permission call may land at once
             proc = _spawn(argv(bin_path, model, effort, sp_file, mcp_file, super_mode=mode,
-                               resume=resume, window=context_window(model)), cwd)
+                               resume=resume, window=context_window(model),
+                               fence=xsessions.fence(bot, write=True) if expert else None), cwd)
             sess.proc = proc
             threading.Thread(target=_drain_stderr, args=(sess, proc), daemon=True, name=f"bot-stderr-{bot.id}").start()
             if bot.stop_flag.is_set():  # Stop landed while we were spawning
@@ -1084,9 +1131,26 @@ def run(bot, task: str, label: str | None = None) -> None:
         if sess is not None:
             _end_session(sess)
         _terminate(proc)
+        if wlock is not None:
+            _call(xsessions.note_chat, None, bot, mem_before, task)  # a "chat" row when memory.md changed
+            wlock.release()
+            _call(xsessions.after_write, None, bot)
         fresh = getattr(bot, "_fresh_downloads", None)
         if not collected and (getattr(bot, "task_dir", None) is not None or (fresh and _call(fresh, False))):
             _call(bot.collect_task_artifacts, None, final_msg)  # stopped / errored / capped turns keep what they got
+
+
+def _expert_hold(bot):
+    """Take the expert's write lock for a chat turn (one memory writer at a time, experts/sessions.py); waits
+    while a task-quiet or compact session holds it. None when Stop lands meanwhile."""
+    lock = xstore.write_lock(bot)
+    if lock.acquire(blocking=False):
+        return lock
+    _doing(bot, "waiting for the expert's memory")
+    while not lock.acquire(timeout=1.0):
+        if bot.stop_flag.is_set():
+            return None
+    return lock
 
 
 class _ProbeTurn:

@@ -253,6 +253,8 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot .name .rt { display: inline-block; vertical-align: -2px; margin-left: 5px; color: var(--muted); }
 .bots-page .bot .name .rt svg { width: 12px; height: 12px; display: block; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
+/* An expert (docs/experts.md): SUPER's badge on the page's accent. */
+.bots-page .bot .name .expert { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); vertical-align: 1px; letter-spacing: .04em; }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */
 .bots-page .bot .name .rt.warn, .bots-page .bot .sub .warn, .bots-page .r .s .warn { color: var(--err); }
 .bots-page .r .s .msg { display: block; color: var(--text); opacity: .85; white-space: pre-wrap; margin-top: 2px; }
@@ -531,7 +533,7 @@ div.bots-page:not(.sideapp) #satabb, div.bots-page.sideapp #sataba { background:
 .bots-page .sabar .winacts .btnlink:hover { color: inherit; text-decoration: underline; }
 .bots-page #saframe { display: none; flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 div.bots-page.sideapp #saframe { display: block; }
-div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap, .info) { display: none; }
+div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap, .info, .xpane) { display: none; }
 .bots-page .msg.approval { align-self: flex-start; background: var(--card); max-width: min(48rem, 90%); }
 /* The approval card is the shared GateCard (platform/ui/gate-card.css); this maps its --gate-* palette onto the page's own. */
 .bots-page .gate-card { --gate-accent: var(--accent); --gate-accent-text: var(--accent-text); --gate-ok: var(--ok); --gate-warn: var(--warn); --gate-err: var(--err); --gate-muted: var(--muted); --gate-line: var(--line); --gate-ground: var(--card); --gate-hover: var(--hover); --gate-pre-bg: var(--inset); --gate-on-accent: var(--accent-ink); }
@@ -608,6 +610,56 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap
 .bots-page .termwrap { position: relative; margin: 0 14px; height: 320px; border-radius: 14px; background: #000; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
 .bots-page:not(.stage) .shotwrap.termup { display: none; }
 div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
+/* An expert's preview column (components/ExpertPane.tsx): no browser; Memory · Sessions on the Browser | Terminal
+   strip (.viewsw .satab). The file and the diffs are monospace; a row that changed memory carries a +/− chip. */
+.bots-page .xpane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden auto; padding-bottom: 14px; }
+.bots-page .xp-about { margin: 0 18px 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.bots-page .xp-panel { margin: 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; min-width: 0; }
+.bots-page .xp-panel p { margin: 0 0 6px; }
+.bots-page .xp-path { font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); overflow-wrap: anywhere; }
+.bots-page .xp-size { font-variant-numeric: tabular-nums; }
+.bots-page .xp-size.over, .bots-page .xp-err { color: var(--err); }
+.bots-page .xp-hand { color: var(--warn); }
+.bots-page .xp-note { opacity: .85; }
+.bots-page .xp-empty { padding: 16px 4px; text-align: center; }
+.bots-page .xp-none { margin: 0; }
+.bots-page .xp-lbl { margin: 0 0 4px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.bots-page .xp-chhead { margin-top: 14px !important; }
+.bots-page :is(.xp-mem, .xp-diff) { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--inset); color: var(--text);
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
+.bots-page .xp-dl.add { color: var(--ok); }
+.bots-page .xp-dl.del { color: var(--err); }
+.bots-page .xp-dl.hunk, .bots-page .xp-dl.meta { color: var(--muted); }
+/* Kind tag, status, the "changed memory" chip: one line, the origin under it. */
+.bots-page .xp-line { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; white-space: nowrap; }
+.bots-page .xp-kind { flex: none; padding: 0 6px; border-radius: 6px; background: var(--raised); color: var(--text); font-size: 10.5px; }
+.bots-page .xp-st { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+.bots-page .xp-st.tone-ok { color: var(--ok); } .bots-page .xp-st.tone-err { color: var(--err); }
+.bots-page .xp-st.tone-warn { color: var(--warn); } .bots-page .xp-st.tone-accent { color: var(--accent-text); }
+.bots-page .xp-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.bots-page .xp-chg { flex: none; padding: 0 6px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.bots-page .xp-when { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; }
+.bots-page .xp-origin { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.bots-page .xp-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 8px; }
+.bots-page .xp-chip { padding: 3px 10px; font-size: 11.5px; background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; }
+.bots-page .xp-chip.on { background: var(--card); color: var(--text); border-color: transparent; }
+.bots-page .xp-chip .xp-n { margin-left: 3px; opacity: .75; font-variant-numeric: tabular-nums; }
+.bots-page :is(.xp-rows, .xp-changes) { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.bots-page .xp-row { min-width: 0; border: 1px solid var(--line); border-radius: 8px; }
+.bots-page .xp-row.open { margin-bottom: 4px; }
+.bots-page :is(button.xp-head, .xp-head.static, button.xp-change) { display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 0; padding: 7px 10px;
+  border-radius: 7px; background: transparent; color: var(--muted); text-align: left; font-size: 12px; font-weight: inherit; line-height: 1.45; }
+.bots-page :is(button.xp-head, button.xp-change):hover { background: var(--hover); }
+.bots-page button.xp-change { flex-direction: row; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.bots-page button.xp-change .xp-origin { flex: 1; }
+.bots-page button.xp-change .xp-when { margin-left: 0; }
+.bots-page .xp-detail { display: flex; flex-direction: column; gap: 10px; padding: 4px 10px 10px; min-width: 0; }
+.bots-page .xp-tr { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; }
+.bots-page .xp-turn { display: flex; gap: 8px; min-width: 0; }
+.bots-page .xp-role { flex: none; width: 52px; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding-top: 1px; }
+.bots-page .xp-ttext { flex: 1; min-width: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.bots-page .xp-turn.role-tool .xp-ttext { color: var(--muted); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.bots-page .xp-turn.role-refused :is(.xp-role, .xp-ttext) { color: var(--err); }
 .bots-page .shotwrap img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
 .bots-page .shotwrap .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--card); text-align: center; padding: 20px; font-size: 12px; }
 /* Asleep: Chrome was closed after sitting idle. The last frame stays, dimmed, with a moon; clicking wakes it (take-over relaunches). */

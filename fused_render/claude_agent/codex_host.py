@@ -1730,7 +1730,7 @@ class _Host:
                 # What the spawn stamped into this run's mcp.json, so the S3
                 # note matches the server's roster (agent._s3_stamped).
                 s3=self.agent._s3_stamped(self.run_dir),
-                # Likewise the experts roster (`agent._expert_stamped`).
+                # Likewise the expert tools (`agent._expert_stamped`).
                 experts=self.agent._expert_stamped(self.run_dir)) or "")
         except Exception as exc:  # noqa: BLE001
             sys.stderr.write("codex_host: no developer instructions: %r\n" % (exc,))

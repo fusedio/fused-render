@@ -267,9 +267,22 @@ export interface Bot {
 // ------------------------------------------------------------------ experts (docs/experts.md) ----
 /** bot.meta["expert"] (experts.store.manifest): the one-line description expert_list shows, and the shipped key ("" if none). */
 export interface ExpertManifest { ask_me_about?: string; shipped?: string }
-/** GET /api/experts/<id>/memory: memory.md as it stands, where it is, and its size against the compaction limit. */
-export interface ExpertMemory { text: string; path: string; lines: number; bytes: number; limit_lines: number; limit_bytes: number }
-export type ExpertSessionKind = "ask" | "task-quiet" | "compact";
+/** A session that changed memory.md (the change log), as GET …/memory lists it: newest first, at most 20. */
+export interface ExpertChange { id: string; kind: ExpertSessionKind | (string & {}); started: number; trigger?: ExpertTrigger | null }
+/** GET /api/experts/<id>/memory: memory.md as it stands, where it is, its size against the compaction limit, whether
+ *  it was edited by hand since the last session wrote it, and the sessions that changed it. */
+export interface ExpertMemory {
+  text: string; path: string; lines: number; bytes: number; limit_lines: number; limit_bytes: number;
+  edited_by_hand?: boolean; changes?: ExpertChange[];
+}
+/** "chat": a row only for a main-thread chat turn that changed memory (no transcript). */
+export type ExpertSessionKind = "chat" | "ask" | "task-quiet" | "compact";
+/** What started a session, by kind: chat {message}; ask {asker, question, session_id?}; task-quiet {session_id,
+ *  run_id?, target, backend, from_size, to_size}; compact {lines, bytes}. Every key optional here. */
+export interface ExpertTrigger {
+  message?: string; asker?: string; question?: string; session_id?: string; run_id?: string; target?: string; backend?: string;
+  from_size?: number; to_size?: number; lines?: number; bytes?: number; [k: string]: unknown;
+}
 export type ExpertSessionStatus = "running" | "done" | "error" | "interrupted";
 /** One line of a side session's transcript. */
 export interface ExpertTurn { role: "prompt" | "expert" | "tool" | "refused" | (string & {}); text: string }
@@ -277,7 +290,7 @@ export interface ExpertTurn { role: "prompt" | "expert" | "tool" | "refused" | (
  *  unified diff of memory.md before / after ("" when it changed nothing). Times are unix seconds. */
 export interface ExpertSession {
   id: string; kind: ExpertSessionKind | (string & {}); started: number; ended: number | null;
-  status: ExpertSessionStatus | (string & {}); trigger?: Record<string, unknown> | null;
+  status: ExpertSessionStatus | (string & {}); trigger?: ExpertTrigger | null;
   transcript?: ExpertTurn[]; memory_diff?: string; answer?: string; error?: string; cost_usd?: number;
 }
 
