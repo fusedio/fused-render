@@ -42,7 +42,9 @@ and the date it was last seen:
     - [4 · 2026-11-17] Pull a shared canvas with `fused canvas pull` before editing it.
 
 When you see a fact that is already in memory, raise its count and set its date to today. Do not add a second
-line for it. A new fact starts at count 1 with today's date.
+line for it. A new fact starts at count 1 with today's date. A fact counts as seen again only when a task showed it
+in practice (it ran, it failed, the user said it): a task repeating what `expert_context` or `expert_ask` told it
+is not new evidence and must not raise a count.
 
 Where memory and a skill disagree, memory wins: it is newer and comes from real use.
 

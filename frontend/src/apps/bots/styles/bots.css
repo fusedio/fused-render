@@ -227,7 +227,8 @@ div.bots-page.lanim .bot { transition: padding .3s, border-radius .3s, transform
 /* Both directions keep the expanded row layout for the whole slide and let the shrinking/growing width clip the text, so closing mirrors opening
    instead of dropping the text on the first frame. The collapsed rules take over only once body.lanim is lifted, when the row is already a circle. */
 div.bots-page.lanim .bot { grid-template-columns: 44px minmax(0, 1fr) auto; justify-content: start; height: auto; overflow: hidden; }
-div.bots-page.lanim .bot > :is(.name, .sub), div.bots-page.lanim .bot .meta .time { display: block; }
+div.bots-page.lanim .bot > .sub, div.bots-page.lanim .bot .meta .time { display: block; }
+div.bots-page.lanim .bot > .name { display: flex; }
 div.bots-page.lanim .bot .meta { display: flex; }
 div.bots-page.lanim .bot .badge { position: static; width: 9px; height: 9px; margin-right: 3px; box-shadow: none; }
 /* The header and search stay in their expanded form too, clipped by the narrowing panel; the icon rail (stacked +, hidden search) appears only when the slide has finished. */
@@ -241,7 +242,11 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot.sel { background: var(--bots-shell-selected); }
 .bots-page .bot .av { grid-row: 1 / 3; }
 .bots-page .bot .av.settings { cursor: pointer; }  /* the selected row's avatar opens Settings, like the header avatar */
-.bots-page .bot .name { grid-column: 2; grid-row: 1; min-width: 0; font-weight: 400; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A flex line: the name (.nm) is the one item that shrinks and ellipsizes; the pin, SUPER / EXPERT and the routines
+   clock keep their width, so a long name never clips a badge. */
+.bots-page .bot .name { grid-column: 2; grid-row: 1; min-width: 0; font-weight: 400; font-size: 13px; overflow: hidden; white-space: nowrap; display: flex; align-items: center; }
+.bots-page .bot .name .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bots-page .bot .name > :is(.pin, .super, .expert, .rt) { flex: none; }
 .bots-page .bot .sub { grid-column: 2 / -1; grid-row: 2; min-width: 0; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .bot .meta { grid-column: 3; grid-row: 1; display: flex; align-items: center; gap: 6px; }
 .bots-page .bot .time { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
