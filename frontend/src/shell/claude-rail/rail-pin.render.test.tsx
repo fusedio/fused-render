@@ -1,9 +1,11 @@
-// RAIL CARDS: HOVER / TEMP / PIN, MOUNTED (rail-pin-lib.ts; owner, 2026-11-16).
-// Every door × the transitions that need the rail: a click is temp, one press
-// outside closes it, the pin icon (or a double-click) pins and outside presses
-// are ignored, the pin icon again is temp, the own ring closes; window A and B
-// close each other's temp card; the hop rows 13–17; and the switch off keeps
-// every rule it had. Real modules throughout, as ClaudeRail.render.test.tsx;
+// RAIL CARDS: HOVER / TEMP / PIN, MOUNTED (rail-pin-lib.ts; owner, 2026-11-16,
+// 2026-11-17). Every door × the transitions that need the rail: a click is
+// temp, one press outside (the page, not the rail) closes it, the pin icon —
+// the only pin — pins and outside presses are ignored, the pin icon again is
+// temp; a ring or door never closes its own card and a double-click is just
+// two clicks; the rail and window A / B are the view, so a press there closes
+// no temp card; the hop rows 13–17; and the switch off keeps every rule it
+// had. Real modules throughout, as ClaudeRail.render.test.tsx;
 // the document's and the window's listeners are recorded so a press, a key
 // and a frame's blur can be played to them.
 import { installDomShim, installPortalContainer, removePortalContainer } from "@platform/lib/testDomShim";
@@ -31,14 +33,14 @@ const { setBotsAvailableForTests } = await import("@platform/lib/bots-available"
 const { aPinned, botOpen, favOpen, favPinned, setAPinned, setBotOpen, setFavOpen, setFavPinned } = await import("@platform/lib/last-chat");
 const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { botCardState, resetBotCardForTests } = await import("./bot-card-store");
-const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
+const { botsCardState, botsCardStore, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState, tasksCardStore } = await import("./tasks-peek-store");
 const { forgetGitCardRail, gitCardIntent, gitCardState, gitCardStore, resetGitCardForTests, setGitCardRail, GIT_CARD_KEY } =
   await import("./git-peek-store");
 const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("@shell/task-head-flag");
 const { resetFlagsForTests: resetClaudeFlagsForTests } = await import("@apps/claude/feature-flag");
 const { getPlusCard, plusHostElement, registerPlusHost, resetPlusCardStoreForTests } = await import("./plus-card-store");
-const { doorSelector, ringSelector, botRingSelector } = await import("./rail-pin-lib");
+const { doorSelector, ringSelector, botRingSelector, viewPress } = await import("./rail-pin-lib");
 const { PLUS_DOOR } = await import("./plus-pop-lib");
 
 const DIR = "/home/me/apps/demo";
@@ -210,6 +212,7 @@ afterEach(() => {
   setFavPinned(null);
   setBotOpen(null);
   setBotsAvailableForTests(null);
+  viewPress.inside = false;
   (globalThis as { fetch: unknown }).fetch = realFetch;
   dropSharedPrefsRead();
   resetClaudeFlagsForTests();
@@ -313,9 +316,19 @@ async function press(n: ReactTestInstance, detail = 1) {
   });
 }
 
-/** An element the classifier reads, matching the selectors given. */
-const at = (...matches: string[]) => ({ closest: (s: string) => (matches.includes(s) ? {} : null) });
+/** An element the classifier reads, matching the selectors given (an
+ *  `Element`, as the list's and the bot's watchers only read one). */
+const at = (...matches: string[]) =>
+  Object.assign(new (g.Element as new () => object)(), { closest: (s: string) => (matches.includes(s) ? {} : null) });
+/** A press on the page: no rail, no window. */
 const NOWHERE = at();
+/** A press on the rail (its blank, or something on it given): the view. */
+const onRail = (...matches: string[]) => at(".claude-rail", ...matches);
+
+/** The pin icon in window A's task card head (RailPeek `pinCtl`). */
+async function pinIcon(r: ReactTestRenderer) {
+  await act(async () => peek(r)!.props.pinCtl.onToggle());
+}
 
 /** A pointerdown played to the document's capture listeners, then the tick
  *  the watchers wait. */
@@ -362,11 +375,33 @@ describe("the task ring's card (window A), switch on", () => {
     expect(shownKey(r)).toBe("a");
     await escapeOnBody();
     expect(shownKey(r)).toBeNull();
-    await press(listRing(r, "a"), 1);
-    await press(listRing(r, "a"), 2);
+    await press(listRing(r, "a"));
+    await pinIcon(r);
     expect(peek(r)!.props.pinCtl.pinned).toBe(true);
     await escapeOnBody();
     expect(shownKey(r)).toBe("a");
+  });
+
+  test("the rail is the view, not outside: its blank, another ring, a door or window B's card close no temp card", async () => {
+    const r = await mount({ unified: true });
+    await press(listRing(r, "a"));
+    await pressAt(onRail());
+    await pressAt(onRail(ringSelector(".claude-rail-chats", "b")));
+    await pressAt(onRail(doorSelector("tasks")));
+    await pressAt(at(".claude-rail-peek"));
+    await pressAt(at(".modal-popover"));
+    expect(shownKey(r)).toBe("a");
+    expect(peek(r)!.props.held).toBe(false);
+    // A menu window B portaled out (`viewPress`, raised in its capture phase).
+    await act(async () => {
+      for (const fn of [...(docL.get("pointerdown") ?? [])]) fn({ target: NOWHERE, button: 0 });
+      viewPress.inside = true;
+      await tick();
+    });
+    expect(shownKey(r)).toBe("a");
+    // The page is outside.
+    await pressAt(NOWHERE);
+    expect(shownKey(r)).toBeNull();
   });
 
   test("the pin icon PINS (outside presses and the frame ignored), again is temp, then an outside press closes", async () => {
@@ -392,51 +427,51 @@ describe("the task ring's card (window A), switch on", () => {
     expect(shownKey(r)).toBeNull();
   });
 
-  test("its own ring's click closes a TEMP card; a pinned window ignores it — only the unpin lets it go", async () => {
+  test("its own ring opens, never closes: a second click (or a detail-2 one) leaves a TEMP card up, temp; a pinned one up, pinned", async () => {
     const r = await mount({ unified: true });
     await press(listRing(r, "a"));
     await press(listRing(r, "a"));
-    expect(shownKey(r)).toBeNull();
+    expect(shownKey(r)).toBe("a");
+    expect(peek(r)!.props.held).toBe(false);
+    await press(listRing(r, "a"), 2);
+    expect(shownKey(r)).toBe("a");
+    expect(peek(r)!.props.held).toBe(false);
+    expect(aPinned()).toBeNull();
+    await pinIcon(r);
     await press(listRing(r, "a"));
-    await act(async () => peek(r)!.props.pinCtl.onToggle());
-    await press(listRing(r, "a"));
+    await press(listRing(r, "a"), 2);
     expect(shownKey(r)).toBe("a");
     expect(peek(r)!.props.held).toBe(true);
     expect(aPinned()).toBe("task:" + chat("a").key);
-    // Unpinned: temp again, the mark gone, and its ring closes it.
-    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    // Unpinned: temp again, the mark gone; its ring still leaves it up, and
+    // only an outside press closes it.
+    await pinIcon(r);
     expect(peek(r)!.props.held).toBe(false);
     expect(aPinned()).toBeNull();
     await press(listRing(r, "a"));
+    expect(shownKey(r)).toBe("a");
+    await pressAt(NOWHERE);
     expect(shownKey(r)).toBeNull();
   });
 
-  test("a double-click pins (rows 7/8): from closed, and over its own temp card", async () => {
+  test("a double-click is two clicks (rows 7/8): it opens temp and pins nothing; a lone detail-2 click opens temp", async () => {
     const r = await mount({ unified: true });
     await press(listRing(r, "a"), 1);
     await press(listRing(r, "a"), 2);
     expect(shownKey(r)).toBe("a");
-    expect(peek(r)!.props.held).toBe(true);
-    // A single click on its own ring: a pinned window stays.
-    await press(listRing(r, "a"), 1);
-    expect(shownKey(r)).toBe("a");
-    expect(peek(r)!.props.held).toBe(true);
-    // A double-click on it is the unpin: the card stays, temp.
-    await press(listRing(r, "a"), 2);
-    expect(shownKey(r)).toBe("a");
     expect(peek(r)!.props.held).toBe(false);
-    // Row 9: temp again, a slow second click (detail 1) on its own ring closes.
-    await press(listRing(r, "a"), 1);
+    expect(aPinned()).toBeNull();
+    await pressAt(NOWHERE);
     expect(shownKey(r)).toBeNull();
-    // A lone second click (the first one closed it): opens pinned.
     await press(listRing(r, "b"), 2);
     expect(shownKey(r)).toBe("b");
-    expect(peek(r)!.props.held).toBe(true);
+    expect(peek(r)!.props.held).toBe(false);
   });
 
   test("THE PIN IS THE WINDOW'S: another ring of a pinned window swaps what it shows, still pinned", async () => {
     const r = await mount({ unified: true });
-    await press(listRing(r, "a"), 2);
+    await press(listRing(r, "a"));
+    await pinIcon(r);
     expect(peek(r)!.props.held).toBe(true);
     await press(listRing(r, "b"));
     expect(shownKey(r)).toBe("b");
@@ -504,29 +539,34 @@ describe("the switch off: every rule as it was", () => {
 describe("the favourite's card (window B), switch on", () => {
   const starred = () => [chat("a"), chat("f", { starred: true })];
 
-  test("a click is temp; one press outside closes it; a double-click pins and outside presses and its own ring are ignored", async () => {
+  test("a click is temp; one press outside closes it; its own ring never closes nor pins it; the pin icon pins and outside presses are ignored", async () => {
     const r = await mount({ unified: true, chats: starred() });
     await press(footRing(r, "f"));
     expect(favOpen()).toBe("f");
     expect(favPinned()).toBeNull();
     await pressAt(NOWHERE);
     expect(favOpen()).toBeNull();
+    // A double-click is two clicks: open, then nothing — temp.
     await press(footRing(r, "f"), 1);
     await press(footRing(r, "f"), 2);
     expect(favOpen()).toBe("f");
-    expect(favPinned()).toBe("f");
+    expect(favPinned()).toBeNull();
+    // The pin icon (FavouritePeek `togglePin`: the window's pin mark).
+    await act(async () => setFavPinned("f"));
     await pressAt(NOWHERE);
     await frameBlur();
     await escapeOnBody();
     expect(favOpen()).toBe("f");
-    // Its own ring: a pinned window stays; a double-click on it unpins
-    // (temp), and then the ring closes it.
+    // Its own ring: a pinned window stays pinned, a click or a detail-2 one.
     await press(footRing(r, "f"), 1);
-    expect(favOpen()).toBe("f");
     await press(footRing(r, "f"), 2);
     expect(favOpen()).toBe("f");
-    expect(favPinned()).toBeNull();
+    expect(favPinned()).toBe("f");
+    // The pin icon again: temp; the ring still leaves it up.
+    await act(async () => setFavPinned(null));
     await press(footRing(r, "f"), 1);
+    expect(favOpen()).toBe("f");
+    await pressAt(NOWHERE);
     expect(favOpen()).toBeNull();
     // Escape's one rule: with the focus nowhere it closes a temp card.
     await press(footRing(r, "f"));
@@ -535,11 +575,12 @@ describe("the favourite's card (window B), switch on", () => {
     expect(favOpen()).toBeNull();
   });
 
-  test("its own ring is not an outside press; the card's own tree (a portal) is inside", async () => {
+  test("its own ring and the rail are not an outside press; the card's own tree (a portal) is inside", async () => {
     const { favPress } = await import("./fav-peek-store");
     const r = await mount({ unified: true, chats: starred() });
     await press(footRing(r, "f"));
-    await pressAt(at(ringSelector(".claude-rail-favs", "f")));
+    await pressAt(onRail(ringSelector(".claude-rail-favs", "f")));
+    await pressAt(onRail());
     expect(favOpen()).toBe("f");
     await act(async () => {
       for (const fn of [...(docL.get("pointerdown") ?? [])]) fn({ target: NOWHERE, button: 0 });
@@ -561,31 +602,46 @@ describe("the favourite's card (window B), switch on", () => {
 describe("window A and window B (rows 3, 4, 6)", () => {
   const starred = () => [chat("a"), chat("f", { starred: true })];
 
-  test("A temp, a press on B's ring: A closes, and B opens temp", async () => {
+  test("A temp, a press on B's ring or B's card: A stays (the rail is the view), and B opens temp; a page press closes both", async () => {
     const r = await mount({ unified: true, chats: starred() });
     await press(listRing(r, "a"));
-    await pressAt(at(ringSelector(".claude-rail-favs", "f")));
-    expect(shownKey(r)).toBeNull();
+    await pressAt(onRail(ringSelector(".claude-rail-favs", "f")));
+    expect(shownKey(r)).toBe("a");
     await press(footRing(r, "f"));
     expect(favOpen()).toBe("f");
     expect(favPinned()).toBeNull();
+    await pressAt(at(".claude-rail-peek"));
+    expect(shownKey(r)).toBe("a");
+    expect(peek(r)!.props.held).toBe(false);
+    expect(favOpen()).toBe("f");
+    await pressAt(NOWHERE);
+    expect(shownKey(r)).toBeNull();
+    expect(favOpen()).toBeNull();
   });
 
-  test("B temp, a press on A's ring: B closes", async () => {
+  test("B temp, a press on A's ring or A's card: B stays; a page press closes it", async () => {
     const r = await mount({ unified: true, chats: starred() });
     await press(footRing(r, "f"));
-    await pressAt(at(ringSelector(".claude-rail-chats", "a")));
+    await pressAt(onRail(ringSelector(".claude-rail-chats", "a")));
+    await pressAt(at(".claude-rail-peek"));
+    expect(favOpen()).toBe("f");
+    expect(favPinned()).toBeNull();
+    await pressAt(NOWHERE);
     expect(favOpen()).toBeNull();
   });
 
   test("row 4: A pinned, B opened: both stay up; B pinned, A opened: both stay", async () => {
     const r = await mount({ unified: true, chats: starred() });
-    await press(listRing(r, "a"), 2);
-    await pressAt(at(ringSelector(".claude-rail-favs", "f")));
-    await press(footRing(r, "f"), 2);
+    await press(listRing(r, "a"));
+    await pinIcon(r);
+    await pressAt(onRail(ringSelector(".claude-rail-favs", "f")));
+    await press(footRing(r, "f"));
+    await act(async () => setFavPinned("f"));
     expect(shownKey(r)).toBe("a");
     expect(favOpen()).toBe("f");
-    await pressAt(at(ringSelector(".claude-rail-chats", "b")));
+    await pressAt(onRail(ringSelector(".claude-rail-chats", "b")));
+    await pressAt(NOWHERE);
+    expect(shownKey(r)).toBe("a");
     expect(favOpen()).toBe("f");
   });
 });
@@ -594,7 +650,9 @@ describe("the bot ring's card (window B), switch on", () => {
   const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
   const ring = (r: ReactTestRenderer) => r.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1");
 
-  test("temp: no mark for a reload, one press outside or Escape closes; pinned by a double-click: the mark, outside ignored; the pin icon on its head", async () => {
+  const botPinIcon = (r: ReactTestRenderer) => act(async () => r.root.findByType(BotPeek).props.pinCtl.onToggle());
+
+  test("temp: no mark for a reload, one press outside or Escape closes, the rail does not; pinned by the pin icon: the mark, outside ignored", async () => {
     const r = await mount({ unified: true });
     await act(async () => {
       publishBots([BOT] as never);
@@ -603,26 +661,40 @@ describe("the bot ring's card (window B), switch on", () => {
     expect(botCardState()).toMatchObject({ key: "b1", pinned: true, held: false });
     expect(botOpen()).toBeNull();
     expect(r.root.findByType(BotPeek).props.pinCtl.pinned).toBe(false);
+    // The rail and window A's card are the view.
+    await pressAt(onRail());
+    await pressAt(onRail(ringSelector(".claude-rail-chats", "a")));
+    await pressAt(at(".claude-rail-peek"));
+    expect(botCardState()).toMatchObject({ key: "b1", held: false });
     await pressAt(NOWHERE);
     expect(botCardState().key).toBeNull();
     // Escape's one rule: temp closes on it, pinned (below) does not.
     await press(ring(r));
     await escapeOnBody();
     expect(botCardState().key).toBeNull();
+    // A double-click is two clicks: open, then nothing — temp.
     await press(ring(r), 1);
     await press(ring(r), 2);
+    expect(botCardState()).toMatchObject({ key: "b1", held: false });
+    await botPinIcon(r);
     expect(botCardState()).toMatchObject({ key: "b1", held: true });
     await escapeOnBody();
     expect(botCardState()).toMatchObject({ key: "b1", held: true });
     expect(botOpen()).toBe("b1");
     await pressAt(NOWHERE);
     expect(botCardState().key).toBe("b1");
+    // Its ring: a pinned window stays pinned.
+    await press(ring(r), 1);
+    await press(ring(r), 2);
+    expect(botCardState()).toMatchObject({ key: "b1", held: true });
     // The pin icon again: temp, the mark gone.
-    await act(async () => r.root.findByType(BotPeek).props.pinCtl.onToggle());
+    await botPinIcon(r);
     expect(botCardState().held).toBe(false);
     expect(botOpen()).toBeNull();
-    // Its ring: closes.
+    // Its ring never closes it; an outside press does.
     await press(ring(r), 1);
+    expect(botCardState()).toMatchObject({ key: "b1", held: false });
+    await pressAt(NOWHERE);
     expect(botCardState().key).toBeNull();
   });
 
@@ -632,7 +704,8 @@ describe("the bot ring's card (window B), switch on", () => {
     await act(async () => {
       publishBots([BOT] as never);
     });
-    await press(ring(r), 2);
+    await press(ring(r));
+    await botPinIcon(r);
     loc.pathname = "/elsewhere";
     await act(async () => r.update(<><Rail /><Host n={2} /></>));
     await settle();
@@ -657,22 +730,29 @@ describe("the bot ring's card (window B), switch on", () => {
 });
 
 describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
-  test("Tasks: a press is temp, one press outside closes it; its own door is not outside; a double-click pins; the frame closes temp only", async () => {
+  test("Tasks: a press is temp, one press outside closes it; its own door and the rail are not outside; its door never closes nor pins it; the pin icon pins; the frame closes temp only", async () => {
     const off = registerTasksCard();
     const r = await mount({ unified: true });
     const door = () => byLabel(r, "Tasks")[0]!;
     expect(door().props["data-rail-door"]).toBe("tasks");
     await press(door());
     expect(tasksCardState()).toMatchObject({ up: true, pinned: true, held: false });
-    await pressAt(at(doorSelector("tasks")));
+    await pressAt(onRail(doorSelector("tasks")));
+    await pressAt(onRail());
+    await pressAt(onRail(ringSelector(".claude-rail-favs", "a")));
     expect(tasksCardState().up).toBe(true);
     await pressAt(NOWHERE);
     expect(tasksCardState().up).toBe(false);
     await press(door(), 1);
     await frameBlur();
     expect(tasksCardState().up).toBe(false);
+    // A double-click is two clicks: open, then nothing — temp.
     await press(door(), 1);
     await press(door(), 2);
+    expect(tasksCardState()).toMatchObject({ up: true, pinned: true, held: false });
+    expect(aPinned()).toBeNull();
+    // The pin icon (DoorCard `togglePin`).
+    await act(async () => tasksCardStore.setHeld(true));
     expect(tasksCardState()).toMatchObject({ up: true, held: true });
     await pressAt(NOWHERE);
     await frameBlur();
@@ -681,29 +761,39 @@ describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
     await escapeOnBody();
     expect(tasksCardState().up).toBe(true);
     expect(aPinned()).toBe("tasks");
-    // Its own door's click: a pinned window stays; unpinned, the door closes it.
+    // Its own door: a pinned window stays pinned, a click or a detail-2 one.
     await press(door(), 1);
-    expect(tasksCardState()).toMatchObject({ up: true, held: true });
-    // A double-click on its door is the unpin: the card stays, temp.
     await press(door(), 2);
+    expect(tasksCardState()).toMatchObject({ up: true, held: true });
+    // The pin icon again: temp; its door still leaves it up.
+    await act(async () => tasksCardStore.setHeld(false));
     expect(tasksCardState()).toMatchObject({ up: true, pinned: true, held: false });
     expect(aPinned()).toBeNull();
     await press(door(), 1);
+    expect(tasksCardState()).toMatchObject({ up: true, held: false });
+    await pressAt(NOWHERE);
     expect(tasksCardState().up).toBe(false);
     off();
   });
 
-  test("Bots: the same — temp closes outside, a double-click pins", async () => {
+  test("Bots: the same — temp closes outside only, its door never closes nor pins it, the pin icon pins", async () => {
     const off = registerBotsCard();
     const r = await mount({ unified: true });
-    await press(byLabel(r, "Bots")[0]!);
+    const door = () => byLabel(r, "Bots")[0]!;
+    await press(door());
     expect(botsCardState()).toMatchObject({ up: true, pinned: true, held: false });
+    await pressAt(onRail());
+    expect(botsCardState().up).toBe(true);
     await pressAt(NOWHERE);
     expect(botsCardState().up).toBe(false);
-    await press(byLabel(r, "Bots")[0]!, 2);
+    await press(door(), 1);
+    await press(door(), 2);
+    expect(botsCardState()).toMatchObject({ up: true, held: false });
+    await act(async () => botsCardStore.setHeld(true));
     expect(botsCardState()).toMatchObject({ up: true, held: true });
+    await press(door(), 2);
     await pressAt(NOWHERE);
-    expect(botsCardState().up).toBe(true);
+    expect(botsCardState()).toMatchObject({ up: true, held: true });
     off();
   });
 
@@ -796,6 +886,8 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
   /** The card as the shell's host would draw it: NewJobModal's props. */
   const drawn = () => (plusHostElement() as ReactElement<Record<string, never>> | null)?.props as Record<string, unknown> | undefined;
   const signal = () => (drawn()?.popover as { closeSignal: number } | undefined)?.closeSignal ?? 0;
+  /** The pin icon in the popover's head (NewJobModal's `pinNode`). */
+  const popPinIcon = () => act(async () => (drawn()!.pinNode as ReactElement<{ onToggle: () => void }>).props.onToggle());
   const pressPlus = async (r: ReactTestRenderer, detail: number) => {
     const plus = r.root.find((n) => n.type === "button" && n.props["data-rail-door"] === "plus");
     await act(async () => {
@@ -804,7 +896,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     });
   };
 
-  test("the +: a click is temp (the pin icon hollow, grips on), one press outside closes it the chassis' way; its own door is not outside", async () => {
+  test("the +: a click is temp (the pin icon hollow, grips on), one press outside closes it the chassis' way; its own door and the rail are not outside", async () => {
     answer();
     const off = registerPlusHost();
     const r = await mount({ unified: true });
@@ -815,7 +907,8 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     expect(pin.props.pinned).toBe(false);
     expect((drawn()!.popover as { resize?: unknown }).resize).toBeDefined();
     const before = signal();
-    await pressAt(at(doorSelector("plus")));
+    await pressAt(onRail(doorSelector("plus")));
+    await pressAt(onRail());
     expect(signal()).toBe(before);
     await pressAt(at(".modal-popover"));
     expect(signal()).toBe(before);
@@ -824,40 +917,41 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     off();
   });
 
-  test("the +: the pin icon holds (outside presses and the frame ignored), and a double-click opens it pinned", async () => {
+  test("the +: the pin icon holds (outside presses, the frame and its own door ignored); unpinned, its door still never closes it", async () => {
     answer();
     const off = registerPlusHost();
     const r = await mount({ unified: true });
     await pressPlus(r, 1);
-    await act(async () => (drawn()!.pinNode as ReactElement<{ onToggle: () => void }>).props.onToggle());
+    await popPinIcon();
     expect(card()!.held).toBe(true);
     const before = signal();
     await pressAt(NOWHERE);
     await frameBlur();
-    expect(signal()).toBe(before);
-    // Unpinned (temp again), then a double-click on its own door: the first
-    // click closes it (the chassis' fade), the second lands on the fade — and
-    // once the fade is done the card opens again, pinned (row 8's blink).
-    await act(async () => (drawn()!.pinNode as ReactElement<{ onToggle: () => void }>).props.onToggle());
-    expect(card()!.held).toBe(false);
-    const was = signal();
     await pressPlus(r, 1);
-    expect(signal()).toBe(was + 1);
     await pressPlus(r, 2);
-    await act(async () => {
-      (drawn()!.onClose as () => void)();
-      await tick(20);
-    });
-    expect(card()).toMatchObject({ pop: true, pinned: true, held: true });
+    expect(signal()).toBe(before);
+    expect(card()).toMatchObject({ pop: true, held: true });
+    // Unpinned (temp again): a double-click on its own door is two clicks
+    // on an open card — nothing; only an outside press closes it.
+    await popPinIcon();
+    expect(card()!.held).toBe(false);
+    await pressPlus(r, 1);
+    await pressPlus(r, 2);
+    expect(signal()).toBe(before);
+    expect(card()).toMatchObject({ pop: true, pinned: true });
+    expect(card()!.held).toBe(false);
+    await pressAt(NOWHERE);
+    expect(signal()).toBe(before + 1);
     off();
   });
 
-  test("the +: a lone second click (the first one closed it) opens it pinned", async () => {
+  test("the +: a lone detail-2 click opens it temp (no double-click pin)", async () => {
     answer();
     const off = registerPlusHost();
     const r = await mount({ unified: true });
     await pressPlus(r, 2);
-    expect(card()).toMatchObject({ pop: true, pinned: true, held: true });
+    expect(card()).toMatchObject({ pop: true, pinned: true, door: PLUS_DOOR });
+    expect(card()!.held).toBeFalsy();
     off();
   });
 
@@ -870,7 +964,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     off();
   });
 
-  test("a draft's ring: a click opens its popover temp, a double-click pinned; its ring is its own door", async () => {
+  test("a draft's ring: a click opens its popover temp; its ring is its own door and never closes nor pins it; the pin icon pins", async () => {
     answer();
     const off = registerPlusHost();
     const draft = chat("d", { kind: "draft", draft_kind: "chat", session_id: "" } as Partial<Task>);
@@ -882,12 +976,17 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     expect(card()).toMatchObject({ pop: true, pinned: true, door: "d" });
     expect(card()!.held).toBeFalsy();
     const before = signal();
-    await pressAt(at(ringSelector(".claude-rail-chats", "d")));
+    await pressAt(onRail(ringSelector(".claude-rail-chats", "d")));
     expect(signal()).toBe(before);
+    await press(listRing(r, "d"), 1);
     await press(listRing(r, "d"), 2);
     await act(async () => {
       await tick(20);
     });
+    expect(signal()).toBe(before);
+    expect(card()).toMatchObject({ pop: true, pinned: true, door: "d" });
+    expect(card()!.held).toBeFalsy();
+    await popPinIcon();
     expect(card()).toMatchObject({ door: "d", held: true });
     off();
   });
@@ -904,7 +1003,8 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
 
   test("row 16: pinned, the next page lists the chat — it stays on that ring, pinned", async () => {
     const r = await mount({ unified: true });
-    await press(listRing(r, "a"), 2);
+    await press(listRing(r, "a"));
+    await pinIcon(r);
     await act(async () => r.update(<><Rail railKey="next" /><BotCardHost /></>));
     await settle();
     expect(shownKey(r)).toBe("a");
@@ -926,7 +1026,8 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
     const off = registerPlusHost();
     answerSeed();
     const r = await mount({ unified: true, chats: [chat("a"), chat("o", { project: OTHER, target: OTHER })] });
-    await press(listRing(r, "a"), 2);
+    await press(listRing(r, "a"));
+    await pinIcon(r);
     expect(aPinned()).toBe("task:" + chat("a").key);
     await act(async () => r.update(<><Rail railKey="next" place={{ kind: "folder", dir: OTHER }} /><BotCardHost /></>));
     await act(async () => {
@@ -992,7 +1093,8 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
   test("row 17: the pinned task's ring drops out of the list with no change of view — the window closes, the pin with it", async () => {
     const off = registerPlusHost();
     const r = await mount({ unified: true });
-    await press(listRing(r, "a"), 2);
+    await press(listRing(r, "a"));
+    await pinIcon(r);
     await act(async () => {
       const moved = [chat("a", { project: OTHER, target: OTHER }), chat("b")];
       rememberListing(moved);
@@ -1008,7 +1110,8 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
   test("row 18: the pinned task archived — the window closes, the pin with it", async () => {
     const off = registerPlusHost();
     const r = await mount({ unified: true });
-    await press(listRing(r, "a"), 2);
+    await press(listRing(r, "a"));
+    await pinIcon(r);
     await act(async () => {
       const gone = [chat("a", { status: "archived" }), chat("b")];
       rememberListing(gone);
@@ -1066,18 +1169,18 @@ describe("the pin's seat in the shared head", () => {
     act(() => r.unmount());
   });
 
-  test("the list card's head, switch on: × then the pin, hollow, its hint the double-click", async () => {
+  test("the list card's head, switch on: the pin, hollow, its hint \"Pin\"; pressed, \"Unpin\"", async () => {
     const r = await mount({ unified: true });
     await press(listRing(r, "a"));
     const pins = peek(r)!.findAll((n) => n.type === "button" && String(n.props.className).includes("rail-pin-btn"));
     expect(pins).toHaveLength(1);
     expect(pins[0]!.props["aria-pressed"]).toBe(false);
-    expect(pins[0]!.props["data-hint"]).toBe("Pin (double-click the ring)");
+    expect(pins[0]!.props["data-hint"]).toBe("Pin");
     await act(async () => pins[0]!.props.onClick());
     const now = peek(r)!.findAll((n) => n.type === "button" && String(n.props.className).includes("rail-pin-btn"))[0]!;
     expect(now.props["aria-pressed"]).toBe(true);
     expect(now.props.className).toContain("is-pinned");
-    expect(now.props["data-hint"]).toBe("Unpin (double-click the ring)");
+    expect(now.props["data-hint"]).toBe("Unpin");
   });
 });
 

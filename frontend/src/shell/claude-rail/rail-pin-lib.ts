@@ -11,9 +11,19 @@
 //            the cone between them;
 //   temp     a click made it (a ring's click, any press inside the card): it
 //            stays through the pointer leaving, and ONE press outside closes it;
-//   pinned   the pin icon (or a double-click on the ring) made it: outside
-//            presses, Escape and its own ring's click are ignored; only the
-//            pin icon (back to temp) lets it go — or its Open (a hand-off).
+//   pinned   the pin icon made it: outside presses, Escape and its own
+//            ring's click are ignored; only the pin icon (back to temp) lets
+//            it go — or its Open (a hand-off).
+//
+// A RING OPENS, IT NEVER CLOSES, AND THE RAIL IS NOT "OUTSIDE" (owner,
+// 2026-11-17: "sidebar is part of the view, so windows and sidebar click
+// don't count. click on the task item itself shouldn't close it … toggle
+// behaviour shouldn't be present, when you click on it it opens, after that
+// nothing happens, if it is open it stays open. let's remove the double click
+// to pin as well"). So: the ring of an open card does nothing, however many
+// times it is clicked; the pin icon is the only pin; and a press on the rail
+// or in either window (A or B) closes no temp card — only a press on the
+// page, the left sidebar or a frame does.
 //
 // THE PIN IS THE WINDOW'S, NOT THE CARD'S (owner, 2026-11-16: "when we pin we
 // are pinning the window rather than the task … window A/B will not go away
@@ -28,8 +38,7 @@
 //
 // Everything here is the part that needs no DOM, so each rule can be proved
 // on its own (rail-pin-lib.test.ts): the transition table row by row, the
-// ring click's reading (a double-click is the click event's `detail`), and
-// what an outside press is.
+// ring click's reading, and what an outside press is.
 
 export type CardMode = "closed" | "hover" | "temp" | "pinned";
 
@@ -46,10 +55,8 @@ export type CardEvent =
   | "hover"
   /** The pointer left the ring, the card and the cone (after the grace). */
   | "leave"
-  /** A single click on THIS card's ring or door. */
+  /** A click on THIS card's ring or door. */
   | "click-ring"
-  /** The second click of a double-click on the ring (`detail >= 2`). */
-  | "dblclick-ring"
   /** Any press inside the card: its body, a grip, a head button, its menus. */
   | "press-inside"
   /** The pin icon in the head. */
@@ -72,11 +79,8 @@ export function cardStep(mode: CardMode, event: CardEvent): CardMode {
     case "leave":
       return mode === "hover" ? "closed" : mode;
     case "click-ring":
-      // Its own ring closes a temp card; a pinned window ignores it.
-      return mode === "temp" ? "closed" : mode === "pinned" ? "pinned" : "temp";
-    case "dblclick-ring":
-      // The double-click is the pin's toggle: it pins, and unpins a pinned one.
-      return mode === "pinned" ? "temp" : "pinned";
+      // It opens (a hover's card stays, temp); an open card ignores it.
+      return mode === "temp" || mode === "pinned" ? mode : "temp";
     case "press-inside":
       return mode === "hover" ? "temp" : mode;
     case "pin-icon":
@@ -92,31 +96,20 @@ export function cardStep(mode: CardMode, event: CardEvent): CardMode {
 }
 
 /** WHAT A CLICK ON A RING (OR DOOR) DOES. `own`: the ring is the one whose
- *  card is up (or showing its hover). `detail`: the click event's own count
- *  — 0 for the keyboard's Enter, 1 a single click, 2 the second of a
- *  double-click (the platform's own double-click timing, not ours).
- *  `windowPinned`: the ring's WINDOW (A or B) is pinned now, on any card.
- *    - "pin":  the second click of a double-click on a window that is not
- *              pinned on this ring — opening the card pinned if the first
- *              click closed it; it never closes (owner, 2026-11-16) — and any
- *              click that opens or swaps a card in a pinned window: the pin
+ *  card is up (or showing its hover). `windowPinned`: the ring's WINDOW (A or
+ *  B) is pinned now, on any card. The click's count is not read: a
+ *  double-click is two clicks, and the second lands on an open card.
+ *    - "keep": the ring of a card that is already open (temp or pinned) —
+ *              nothing. A ring is not a toggle (owner, 2026-11-17: "when you
+ *              click on it it opens, after that nothing happens");
+ *    - "pin":  a click that opens or swaps a card in a pinned window: the pin
  *              is the window's;
- *    - "unpin": the second click of a double-click on the ring a pinned
- *              window shows (same day: "double click to unpin as well") — the
- *              card stays, temp;
- *    - "keep": a single click on the ring of the card a pinned window shows —
- *              nothing: only the unpin lets a pinned window go — and any
- *              click past the second of a burst;
- *    - "close": a single click on the ring of a TEMP card — the toggle;
  *    - "open": anything else — the card opens (or a hover's card stays) as
  *              temp. */
-export type RingAct = "open" | "pin" | "unpin" | "close" | "keep";
+export type RingAct = "open" | "pin" | "keep";
 
-export function ringClick(o: { mode: CardMode; own: boolean; detail: number; windowPinned?: boolean }): RingAct {
-  if (o.detail > 2) return "keep";
-  if (o.detail === 2) return o.own && o.mode === "pinned" ? "unpin" : "pin";
-  if (o.own && o.mode === "pinned") return "keep";
-  if (o.own && o.mode === "temp") return "close";
+export function ringClick(o: { mode: CardMode; own: boolean; windowPinned?: boolean }): RingAct {
+  if (o.own && (o.mode === "temp" || o.mode === "pinned")) return "keep";
   return o.windowPinned ? "pin" : "open";
 }
 
@@ -151,15 +144,39 @@ export interface PressTarget {
  *      answer that last one (a portal is the body's child), so React's own
  *      capture phase does: `pressedInside`, set by the card's capture
  *      handler for any press that started in its tree.
- *    - "own": the card's own ring or door — its click is the toggle (or,
- *      doubled, the pin), so the press itself closes nothing.
- *    - "outside": everything else — the page, the left sidebar, the rail's
- *      blank, a terminal, a pane, a toast, the OTHER window's card and rings.
+ *    - "own": the card's own ring or door — its click opens and never
+ *      closes, so the press itself closes nothing.
+ *    - "view": the rest of the rail and the OTHER window's card — part of
+ *      the view the card belongs to, so it closes nothing either (owner,
+ *      2026-11-17: "rail and window a/b clicks don't count for closing the
+ *      windows that are in temp pin"). What the other window opened (its
+ *      menus, portaled to the body) is `viewPress`'s to say.
+ *    - "outside": everything else — the page, the left sidebar, a terminal,
+ *      a pane, a toast.
  *  `cardSelectors`: the card's own boxes (its id, its overlay); `ownSelectors`:
  *  its ring or door (`data-rail-door`, a ring's `data-task-key`). */
-export type PressWhere = "inside" | "own" | "outside";
+export type PressWhere = "inside" | "own" | "view" | "outside";
 
 export const BRIDGE_SELECTOR = ".claude-rail-peek-bridge";
+
+/** THE RAIL'S VIEW: the rail itself and every window off it — the fixed
+ *  wrapper every card stands in (`.claude-rail-peek`: a task's, a
+ *  favourite's, a bot's, Tasks / Bots / Git) and the + New task popover. */
+export const RAIL_VIEW_SELECTORS: readonly string[] = [".claude-rail", ".claude-rail-peek", ".modal-popover", BRIDGE_SELECTOR];
+
+/** Is this element in the rail's view (`RAIL_VIEW_SELECTORS`)? */
+export function inRailView(el: PressTarget | null): boolean {
+  if (!el) return false;
+  for (const s of RAIL_VIEW_SELECTORS) if (el.closest(s)) return true;
+  return false;
+}
+
+/** A PRESS THAT STARTED IN ANY RAIL WINDOW'S REACT TREE — its portaled menus
+ *  and pickers included, which the DOM cannot place. Every card's capture
+ *  handler raises it beside its own flag; every outside-press watcher lowers
+ *  it at the press (a native capture listener, so before React's) and reads
+ *  it a tick later. */
+export const viewPress: { inside: boolean } = { inside: false };
 
 export function pressVerdict(
   el: PressTarget | null,
@@ -170,7 +187,7 @@ export function pressVerdict(
   for (const s of o.cardSelectors) if (el.closest(s)) return "inside";
   if (el.closest(BRIDGE_SELECTOR)) return "inside";
   for (const s of o.ownSelectors) if (el.closest(s)) return "own";
-  return "outside";
+  return inRailView(el) ? "view" : "outside";
 }
 
 /** Does this press close the card? Only a temp card, only an outside press. */
@@ -203,7 +220,7 @@ function cssString(v: string): string {
 
 /** THE PIN BUTTON'S WORDS (design.md "Pin icon"). */
 export function pinWords(pinned: boolean): string {
-  return pinned ? "Unpin (double-click the ring)" : "Pin (double-click the ring)";
+  return pinned ? "Unpin" : "Pin";
 }
 
 /** WHERE A PINNED WINDOW A LANDS when the view changed under the task it

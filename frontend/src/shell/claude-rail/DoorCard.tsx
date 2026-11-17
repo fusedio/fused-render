@@ -55,6 +55,7 @@ import type { DoorCardStore } from "./door-card-store";
 import { useFavPeekState } from "./fav-peek-store";
 import { publishWindowABox, setSnapGuide } from "./card-snap";
 import { useCanvasRailPeek } from "./rail-peek-flag";
+import { viewPress } from "./rail-pin-lib";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import {
   PEEK_MIN_HEIGHT,
@@ -531,6 +532,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
           claim();
           // The rail's outside-press watcher reads it (rail-pin-lib).
           store.press.inside = true;
+          viewPress.inside = true;
           intent.pressStart();
         }}
         onClickCapture={claim}

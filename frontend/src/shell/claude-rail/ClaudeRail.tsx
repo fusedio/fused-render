@@ -269,7 +269,6 @@ import {
   taskWhen,
 } from "@shell/tasks-lib";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
-import { shortTaskId } from "@platform/lib/task-id";
 import NewJobModal, { chatHopSeed, reopenTime, type DraftSeed } from "@shell/NewJobModal";
 import { fetchDrafts } from "@platform/lib/drafts";
 import {
@@ -353,7 +352,7 @@ import {
 import { publishWindowABox, setSnapGuide } from "./card-snap";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import { taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
-import { aPinWord, cardMode, doorSelector, pinnedTaskLands, readAPin, ringClick, ringSelector } from "./rail-pin-lib";
+import { aPinWord, cardMode, doorSelector, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress } from "./rail-pin-lib";
 import { RailPinButton, useTempOutside, type PressFlag } from "./RailPin";
 import {
   dismissFavHover,
@@ -1460,6 +1459,7 @@ export function ClaudeRail({
   const insidePress = useRef(false);
   const onPressInside = useCallback(() => {
     insidePress.current = true;
+    viewPress.inside = true;
     intent.pressStart();
   }, [intent]);
   //
@@ -1480,15 +1480,24 @@ export function ClaudeRail({
       // A held card is not closed by any press outside it (header).
       if (heldRef.current) return;
       if (pinned) {
-        // WITH THE PIN the rail's blank is outside (design.md "Outside"):
-        // only a RING of the list is a door — its click toggles or swaps.
-        const list = railRef.current?.querySelector(".claude-rail-chats");
-        if (el && list?.contains(el) && (!pinModelRef.current || el.closest("[data-task-key]"))) return;
+        // WITH THE PIN THE RAIL AND ITS WINDOWS ARE THE VIEW, NOT OUTSIDE
+        // (rail-pin-lib `inRailView`; owner, 2026-11-17: "rail and window
+        // a/b clicks don't count for closing the windows that are in temp
+        // pin"): a press on the rail's blank, a ring of either window, or
+        // the other window's card closes nothing.
+        if (pinModelRef.current) {
+          if (inRailView(el)) return;
+        } else {
+          const list = railRef.current?.querySelector(".claude-rail-chats");
+          if (el && list?.contains(el)) return;
+        }
       } else if (railRef.current?.contains(t)) return;
       insidePress.current = false;
+      viewPress.inside = false;
       window.clearTimeout(tick);
       tick = window.setTimeout(() => {
-        if (!insidePress.current) intent.dismiss();
+        // …nor does a press in a menu the other window opened (`viewPress`).
+        if (!insidePress.current && !(pinModelRef.current && viewPress.inside)) intent.dismiss();
       }, 0);
     };
     const onUp = () => intent.pressEnd();
@@ -1689,14 +1698,20 @@ export function ClaudeRail({
       if (el?.closest(".claude-rail-peek-bridge")) return;
       if (botHeldRef.current) return;
       if (botPinned) {
-        // With the pin, only a bot's RING is a door (the list card's rule).
-        const list = railRef.current?.querySelector(".claude-rail-bots");
-        if (el && list?.contains(el) && (!pinModelRef.current || el.closest("[data-bot-id]"))) return;
+        // With the pin, the rail and its windows are the view (the list
+        // card's rule): nothing there closes a temp card.
+        if (pinModelRef.current) {
+          if (inRailView(el)) return;
+        } else {
+          const list = railRef.current?.querySelector(".claude-rail-bots");
+          if (el && list?.contains(el)) return;
+        }
       } else if (railRef.current?.contains(t)) return;
       botPress.inside = false;
+      viewPress.inside = false;
       window.clearTimeout(tick);
       tick = window.setTimeout(() => {
-        if (!botPress.inside) botIntent.dismiss();
+        if (!botPress.inside && !(pinModelRef.current && viewPress.inside)) botIntent.dismiss();
       }, 0);
     };
     const onUp = () => botIntent.pressEnd();
@@ -1776,27 +1791,22 @@ export function ClaudeRail({
     dismissFavHover();
     setFavRestore(null);
   };
-  const pressBotRing = (id: string, href: string, detail = 1) => {
-    // WITH THE PIN (rail-pin-lib `ringClick`): a click on the ring of the
-    // bot whose card a click made closes it, a double-click pins, anything
-    // else opens it temp.
+  const pressBotRing = (id: string, href: string) => {
+    // WITH THE PIN (rail-pin-lib `ringClick`): the ring of the bot whose
+    // card is open does nothing — a ring opens, it is not a toggle (owner,
+    // 2026-11-17); anything else opens the card temp.
     const own = botKey === id;
     const act = pinModelRef.current
-      ? ringClick({ mode: cardMode({ up: own, pinned: botPinned, held: botHeld }), own, detail, windowPinned: windowBPinned() })
+      ? ringClick({ mode: cardMode({ up: own, pinned: botPinned, held: botHeld }), own, windowPinned: windowBPinned() })
       : null;
     if (act === "keep") {
       hideHint();
       return;
     }
-    if (act === "unpin") {
-      hideHint();
-      setBotHeld(false);
-      return;
-    }
-    // A TOGGLE (owner, 2026-11-06: "a task item on the rail is also a toggle
-    // to open and close the window"): the ring of the bot whose card a press
-    // pinned closes it.
-    if (act === "close" || (act === null && botPinned && botKey === id)) {
+    // A TOGGLE, WITHOUT THE PIN (owner, 2026-11-06: "a task item on the rail
+    // is also a toggle to open and close the window"): the ring of the bot
+    // whose card a press pinned closes it.
+    if (act === null && botPinned && botKey === id) {
       hideHint();
       setBotHeld(false);
       botIntent.dismiss();
@@ -2355,9 +2365,10 @@ export function ClaudeRail({
     return () => document.removeEventListener("keydown", onKey);
   }, [popPinnedUp, tasksPinnedUp, botsPinnedUp, gitPinnedUp, shutPop]);
   // A TEMP CARD'S OUTSIDE PRESS (rail-pin-lib `pressVerdict`, RailPin
-  // `useTempOutside`; owner, 2026-11-16): one press anywhere but the card, its
-  // bridge, what it opened, or its own door closes it — the other window's
-  // card and rings included. A pinned card (held) ignores it. The list's card
+  // `useTempOutside`; owner, 2026-11-16): one press outside closes it. The
+  // card, its bridge, what it opened and its own door are not outside — and
+  // nor are the rail and the other window's card (2026-11-17: "rail and
+  // window a/b clicks don't count"). A pinned card (held) ignores it. The list's card
   // and the bot's keep their own watchers above, which already rule so.
   const doorTemp = (c: { up: boolean; pinned: boolean; held: boolean }) => pinModel && navDoors && c.up && c.pinned && !c.held;
   useTempOutside({
@@ -2545,62 +2556,29 @@ export function ClaudeRail({
       botsCardStore.state().held ||
       gitCardStore.state().held);
   // A POPOVER DOOR'S CLICK WITH THE PIN (rail-pin-lib `ringClick`; the + and a
-  // draft's ring): a click on the door of the card a click made closes it, a
-  // double-click pins — the card's close fades, so a second click landing on
-  // the fade waits for it and opens the card again, pinned —, anything else
-  // opens (or keeps) it temp.
-  const closingPop = useRef<string | null>(null);
-  const reopenPop = useRef<string | null>(null);
-  // …and only for as long as a double-click lasts: a close the card refused
-  // (unsaved work asked about) must not leave a wish that reopens it, pinned,
-  // at some later close.
-  const reopenAt = useRef(0);
-  const REOPEN_MS = 1500;
-  const pressPopDoor = (door: string, detail: number) => {
+  // draft's ring): the door of an open card does nothing — a door opens, it
+  // is not a toggle, and no double-click pins (owner, 2026-11-17) —, anything
+  // else opens (or keeps) it temp, or pinned in a pinned window.
+  const pressPopDoor = (door: string) => {
     const c = cardRef.current;
     const own = !!c?.pop && (c.door || PLUS_DOOR) === door;
     const act = ringClick({
       mode: cardMode({ up: own, pinned: !!c?.pinned, held: !!c?.held }),
       own,
-      detail,
       windowPinned: windowAPinned(),
     });
-    // Its own door, pinned: only the unpin lets a pinned window go…
     if (act === "keep") return;
-    // …and a double-click on it is the unpin: the card stays, temp.
-    if (act === "unpin") {
-      setCard((x) => (x?.pop ? { ...x, held: false } : x));
-      return;
-    }
-    if (act === "pin" && closingPop.current === door) {
-      reopenPop.current = door;
-      reopenAt.current = Date.now();
-      pendingHeld.current = door;
-      return;
-    }
-    closingPop.current = null;
-    reopenPop.current = null;
-    if (act === "close") {
-      if (!popBusy(railRef.current)) closingPop.current = door;
-      setCardCloseSignal((n) => n + 1);
-      return;
-    }
-    if (act === "pin" && own && c?.pinned) {
-      pendingHeld.current = null;
-      setCard((x) => (x ? { ...x, held: true } : x));
-      return;
-    }
     pendingHeld.current = act === "pin" ? door : null;
     plusIntent.press(door);
   };
-  const openNewTask = (e?: ReactMouseEvent<HTMLButtonElement>) => {
+  const openNewTask = () => {
     if (navDoors) {
       if (waiting || (card && !card.pop)) return;
       if (pinModelRef.current) {
-        pressPopDoor(PLUS_DOOR, e?.detail ?? 1);
+        pressPopDoor(PLUS_DOOR);
         return;
       }
-      // A TOGGLE (owner, 2026-11-10): a press on the + while ITS card stands
+      // A TOGGLE, WITHOUT THE PIN (owner, 2026-11-10): a press on the + while ITS card stands
       // pinned closes it, the chassis' way (busy / dirty guards, fade) — the
       // first press pinned the preview, the next one puts it down.
       if (card?.pop && card.pinned && (card.door || PLUS_DOOR) === PLUS_DOOR) {
@@ -2773,39 +2751,26 @@ export function ClaudeRail({
           if (c && !c.pop) return;
           if (c && c.door !== row.key && popBusy(railRef.current)) return;
           draftDoors.current.set(row.key, { row, href });
-          pressPopDoor(row.key, detail);
+          pressPopDoor(row.key);
           return;
         }
         openChat(href);
         return;
       }
-      // WITH THE PIN (rail-pin-lib `ringClick`): a click on the ring of the
-      // TEMP card closes it, of a pinned one does nothing; a double-click pins
-      // (opening it if the first click closed it); anything else opens it
-      // temp — or pinned, in a pinned window (the pin is the window's).
+      // WITH THE PIN (rail-pin-lib `ringClick`): the ring of an OPEN card
+      // (temp or pinned) does nothing — a ring opens, it is not a toggle,
+      // and no double-click pins (owner, 2026-11-17); anything else opens
+      // the card temp — or pinned, in a pinned window (the pin is the
+      // window's).
       if (pinModelRef.current) {
         const own = pinNow.current.peekKey === t.key;
         const act = ringClick({
           mode: cardMode({ up: own, pinned: pinNow.current.pinned, held: heldRef.current }),
           own,
-          detail,
           windowPinned: windowAPinned(),
         });
-        // Its own ring, pinned: only the unpin lets a pinned window go.
         if (act === "keep") {
           hideHint();
-          return;
-        }
-        // …and a double-click on it is the unpin: the card stays, temp.
-        if (act === "unpin") {
-          hideHint();
-          setHeld(false);
-          return;
-        }
-        if (act === "close") {
-          hideHint();
-          setHeld(false);
-          intent.dismiss();
           return;
         }
         setHeld(act === "pin");
@@ -2986,20 +2951,15 @@ export function ClaudeRail({
     e.preventDefault();
     hideHint();
     if (act === "navigate") void navigateUrl("/tasks");
-    // WITH THE PIN (rail-pin-lib `ringClick`): the second click of a
-    // double-click pins — opening the card if the first one closed it.
-    else if (pinModelRef.current && e.detail === 2 && tasksCardStore.state().up && tasksCardStore.state().held) {
-      // A double-click on the door of the pinned card: the unpin (temp).
-      tasksCardStore.setHeld(false);
-    } else if (pinModelRef.current && (e.detail === 2 || (act === "pin" && windowAPinned()))) {
-      // …and a click that opens it in a pinned window A: the pin is the window's.
+    // WITH THE PIN (rail-pin-lib header; owner, 2026-11-17): the door of
+    // the open card does nothing — a door opens, it is not a toggle, and no
+    // double-click pins. Only an outside press, Escape or the unpin close it.
+    else if (pinModelRef.current && act === "close") return;
+    else if (pinModelRef.current && act === "pin" && windowAPinned()) {
+      // A click that opens it in a pinned window A: the pin is the window's.
       tasksCardIntent().press(TASKS_CARD_KEY);
       tasksCardStore.setHeld(true);
-    } else if (act === "close") {
-      // Its own door, pinned: only the unpin lets a pinned window go.
-      if (pinModelRef.current && tasksCardStore.state().held) return;
-      closeTasksCard();
-    }
+    } else if (act === "close") closeTasksCard();
     else {
       tasksCardIntent().press(TASKS_CARD_KEY);
       // An Enter on the door (`detail` 0: no pointer) takes the keyboard into
@@ -3030,18 +2990,13 @@ export function ClaudeRail({
     e.preventDefault();
     hideHint();
     if (act === "navigate") void navigateUrl("/bots");
-    else if (pinModelRef.current && e.detail === 2 && botsCardStore.state().up && botsCardStore.state().held) {
-      // A double-click on the door of the pinned card: the unpin (temp).
-      botsCardStore.setHeld(false);
-    } else if (pinModelRef.current && (e.detail === 2 || (act === "pin" && windowAPinned()))) {
-      // …and a click that opens it in a pinned window A: the pin is the window's.
+    // With the pin the door of the open card does nothing (the Tasks door).
+    else if (pinModelRef.current && act === "close") return;
+    else if (pinModelRef.current && act === "pin" && windowAPinned()) {
+      // A click that opens it in a pinned window A: the pin is the window's.
       botsCardIntent().press(BOTS_CARD_KEY);
       botsCardStore.setHeld(true);
-    } else if (act === "close") {
-      // Its own door, pinned: only the unpin lets a pinned window go.
-      if (pinModelRef.current && botsCardStore.state().held) return;
-      closeBotsCard();
-    }
+    } else if (act === "close") closeBotsCard();
     else {
       botsCardIntent().press(BOTS_CARD_KEY);
       if (e.detail === 0) cardFocusSoon(BOTS_PEEK_ID, focusBotsCard);
@@ -3065,16 +3020,13 @@ export function ClaudeRail({
     const act = gitDoorAction({ ready: gitCard.ready, pinned: gitCard.up && gitCard.pinned });
     hideHint();
     if (act === "open") openGitRef.current?.();
-    else if (pinModelRef.current && e.detail === 2 && gitCardStore.state().up && gitCardStore.state().held) {
-      gitCardStore.setHeld(false);
-    } else if (pinModelRef.current && (e.detail === 2 || (act === "pin" && windowAPinned()))) {
+    // With the pin the door of the open card does nothing (the Tasks door).
+    else if (pinModelRef.current && act === "close") return;
+    else if (pinModelRef.current && act === "pin" && windowAPinned()) {
       setGitCardRail(railRef.current);
       gitCardIntent().press(GIT_CARD_KEY);
       gitCardStore.setHeld(true);
-    } else if (act === "close") {
-      if (pinModelRef.current && gitCardStore.state().held) return;
-      closeGitCard();
-    }
+    } else if (act === "close") closeGitCard();
     else {
       // This rail opens it (an explorer split's two rails, two repositories).
       setGitCardRail(railRef.current);
@@ -3259,27 +3211,32 @@ export function ClaudeRail({
                   // opt-out (hints.ts `hintOf`): the card is the caption.
                   data-hint={captionless && !noRoom ? "" : line.hint || label}
                   data-hint-title={line.hint || label}
-                  data-hint-reply={titleOnly && !pinModel ? "" : reply}
+                  data-hint-reply={titleOnly ? "" : reply}
                   // Beside the ring, not at the pointer (platform/lib/hints
                   // `placeBeside`): a 48px column at the window's edge.
                   data-hint-side="left"
-                  // THE TASK'S ROW, NOT A TITLE TOOLTIP (Akshil, 2026-11-16:
-                  // "when we hover we show a tooltip with the title of the
-                  // task — instead show this as is"; hints.ts
-                  // `renderRowHint`): the Tasks list's own line — ring,
-                  // number, title, reply, count, time — as wide as the window
-                  // this ring opens (A for the list, B for a favourite).
+                  // THE TASK'S NAME AND FACTS, NOT A TITLE TOOLTIP (Akshil,
+                  // 2026-11-16: "when we hover we show a tooltip with the
+                  // title of the task — instead show this as is"; hints.ts
+                  // `renderRowHint`): a panel as wide as the window this ring
+                  // opens (A for the list, B for a favourite), holding the
+                  // title whole, then the count and the time (2026-11-17:
+                  // "strip the left part, that is status and task id, keep
+                  // the time and count as is. And don't truncate it") —
+                  // the title is `data-hint-title` above.
                   // Behind the unified-head switch, like the windows' heads.
                   {...(pinModel
                     ? {
                         "data-hint-row": "",
-                        "data-hint-id": shortTaskId(merged.task_id),
                         "data-hint-count": row && !draft && (row.message_count ?? 0) > 0 ? String(row.message_count) : "",
                         "data-hint-when": draft
                           ? ""
                           : row
                             ? taskWhen(merged as Task).text
                             : relativeWhen(t.happened_at || t.last_active || 0),
+                        // The window this ring opens: the one the scrim dims
+                        // while the row is up (tasks.css), never the other.
+                        "data-hint-window": foot && favsOn ? "b" : "a",
                         // The window's own default when it was never dragged:
                         // B opens narrower than A (`FAV_WIDTH`).
                         // The window itself while it stands (its live width,
@@ -3398,29 +3355,16 @@ export function ClaudeRail({
                       // for the card's keyboard then — never for a close, or
                       // the wish would outlive it).
                       // WITH THE PIN (rail-pin-lib `ringClick`): the open
-                      // favourite's ring closes its card, a double-click
-                      // pins (opening it if the first click closed it),
-                      // anything else opens it temp.
+                      // favourite's ring does nothing — a ring opens, it
+                      // is not a toggle (owner, 2026-11-17) —, anything
+                      // else opens it temp.
                       if (pinModelRef.current) {
                         const act = ringClick({
                           mode: favRing ? (favPinned() === t.key ? "pinned" : "temp") : "closed",
                           own: favRing,
-                          detail: e.detail,
                           windowPinned: windowBPinned(),
                         });
                         if (act === "keep") return;
-                        if (act === "unpin") {
-                          setFavPinned(null);
-                          return;
-                        }
-                        if (act === "close") {
-                          // The pin goes with its card (FavouritePeek's own
-                          // effect says so too, a render later): the next
-                          // single click must open it temp.
-                          if (favPinned() === t.key) setFavPinned(null);
-                          clearFavOpen(t.key);
-                          return;
-                        }
                         requestFavFocus(t.key);
                         openFavourite(t, href);
                         if (act === "pin") setFavPinned(t.key);
@@ -3507,13 +3451,6 @@ export function ClaudeRail({
           // A preview nobody touched left nothing behind: the reader's
           // first act inside it pins it (plus-pop-lib.ts).
           if (!card.pop || card.pinned) refreshListing();
-          // WITH THE PIN: a double-click whose first click closed this card
-          // opens it again, pinned (`pressPopDoor`).
-          const again = Date.now() - reopenAt.current <= REOPEN_MS ? reopenPop.current : null;
-          if (reopenPop.current && !again) pendingHeld.current = null;
-          closingPop.current = null;
-          reopenPop.current = null;
-          if (again && card.pop) plusIntent.press(again);
         }}
         // "Something changed, re-read": the pulse will move the new row
         // onto the rail; the listing is re-read now so its caption and
@@ -3607,6 +3544,7 @@ export function ClaudeRail({
                 onPin: () => plusIntent.pinInside(),
                 onPressInside: () => {
                   plusPress.inside = true;
+                  viewPress.inside = true;
                 },
                 onPointerEnter: () => plusIntent.enterCard(),
                 onPointerLeave: () => plusIntent.leaveCard(),
@@ -4115,7 +4053,7 @@ export function ClaudeRail({
                           void navigateUrl(href);
                           return;
                         }
-                        pressBotRing(b.id, href, e.detail);
+                        pressBotRing(b.id, href);
                       }}
                     >
                       <span className="claude-rail-bot-face" aria-hidden="true">

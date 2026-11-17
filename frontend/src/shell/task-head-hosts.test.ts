@@ -221,3 +221,47 @@ test("a pinned rail card wears no accent: no edge on the card, no accent ink on 
   expect(css).not.toContain(".modal-dialog:has(.rail-pin-btn.is-pinned)");
   expect(css).not.toMatch(/\.rail-pin-btn\.is-pinned[^{]*\{[^}]*var\(--accent/);
 });
+
+test("a pinned rail window's first row wears the hover row's ground (2026-11-17)", () => {
+  // Owner: "for pin, make the first row same color hover task header". The
+  // ground is the ring hover row's own token, keyed off the pressed pin, and
+  // the row bleeds to the head's edges (the head's 10px side padding).
+  const head = read("../styles/task-head.css");
+  const tasks = read("../styles/tasks.css");
+  const rowRule = tasks.slice(tasks.indexOf(".hint-panel.is-row {"));
+  expect(rowRule.slice(0, rowRule.indexOf("}"))).toContain("background: var(--row-bg-hover);");
+  expect(head).toMatch(
+    /\.task-head:has\(\.rail-pin-btn\.is-pinned\) \.task-head-row \{\s*margin: 0 -10px;\s*padding: 0 10px;\s*background: var\(--row-bg-hover\);\s*\}/,
+  );
+  expect(head).toMatch(/\n\.task-head \{[^}]*padding: 0 10px;/);
+  // The legacy heads (a bot's card) have their own first row.
+  expect(head).toMatch(
+    /\.claude-rail-peek-head:has\(\.rail-pin-btn\.is-pinned\) > \.claude-rail-peek-row:first-child \{[^}]*background: var\(--row-bg-hover\);/,
+  );
+  // A one-row head is filled down to its rule (2026-11-17: "header line
+  // below black, not full fill?"): the head's 5px foot is the row's.
+  expect(head).toMatch(/:only-child \{\s*margin-bottom: -5px;\s*padding-bottom: 5px;\s*\}/);
+  expect(read("../styles/claude-rail.css")).toMatch(/\n\.claude-rail-peek-head \{[^}]*padding: 4px 8px 5px 6px;/);
+  // Still no accent anywhere on a pinned window.
+  expect(head).not.toMatch(/:has\(\.rail-pin-btn\.is-pinned\)[^{]*\{[^}]*var\(--accent/);
+});
+
+test("a rail window's two lines are evenly spaced: 10px in every band (2026-11-17)", () => {
+  // Owner, of a pinned head: "add a bit of padding on top and remove a bit
+  // of padding from bottom … uniform across top, middle and bottom". Row 1
+  // is 40px around its 20px tags; row 2 is 34px — the 22px archive seat
+  // between 6px above and the row's own 6px foot — around its 14px ring.
+  const head = read("../styles/task-head.css");
+  expect(head).toMatch(/\n\.task-head\.is-window\.is-two-line \.task-head-row \{\s*min-height: 40px;\s*\}/);
+  expect(head).toMatch(/\n\.task-head\.is-window\.is-two-line \.task-head-titlerow \{\s*min-height: 34px;\s*padding-top: 6px;\s*\}/);
+  // The foot the top now mirrors, and the seat between them.
+  expect(head).toMatch(/\n\.task-head-titlerow \{[^}]*min-height: 28px;\s*padding: 0 2px 6px 6px;/);
+  const row1 = 40;
+  const tags = 20;
+  const row2 = 34;
+  const ring = 14;
+  expect((row1 - tags) / 2).toBe(10);
+  expect((row2 - ring) / 2).toBe(10);
+  // Not keyed off the pin: pinning must not move the chat under the head.
+  expect(head).not.toMatch(/:has\(\.rail-pin-btn\.is-pinned\)[^{]*\{[^}]*min-height/);
+});

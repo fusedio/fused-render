@@ -327,16 +327,22 @@ function liveWidth(selector: string | null): number {
 const ROW_COUNT_ICON =
   '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
 
-/** THE TASK'S OWN ROW, IN ONE LINE (Akshil, 2026-11-16: "when we hover we
- *  show a tooltip with the title of the task — instead show this as is … the
- *  width is the same as window A/B's; the title shrinks, the others are fixed
- *  width"): the Tasks list's row — status, number, title, reply, message
- *  count, time — beside a rail ring whose hover opens no card. Opted into
- *  with `data-hint-row` beside the task form's `data-hint-title` /
- *  `data-hint-reply`; `data-hint-id`, `data-hint-count`, `data-hint-when` are
- *  the facts, `data-hint-width` the panel's width in px. The status mark is
- *  the host's own drawing, cloned, so the row wears the ring the reader is
- *  pointing at. */
+/** THE TASK'S NAME AND ITS FACTS, AS WIDE AS THE WINDOW (Akshil, 2026-11-16:
+ *  "when we hover we show a tooltip with the title of the task — instead show
+ *  this as is … the width is the same as window A/B's") beside a rail ring
+ *  whose hover opens no card. It began as the Tasks list's whole row —
+ *  status, number, title, reply, count, time. Since 2026-11-17 the LEFT part
+ *  is gone and the title is never clamped ("cut the left side, like icon and
+ *  task id … get rid of truncation and keep only title, not subtitle as
+ *  well"; then, of a build that had dropped the facts too: "I asked only to
+ *  strip the left part, that is status and task id, keep the time and count
+ *  as is. And don't truncate it as well"): the title, whole — it wraps when
+ *  it is longer than the room — then the message count and the time at the
+ *  right end, on the title's first line. No ring, no number, no reply.
+ *  Opted into with `data-hint-row` beside the task form's `data-hint-title`;
+ *  `data-hint-count` and `data-hint-when` are the facts, `data-hint-width`
+ *  the panel's width in px, `data-hint-window` the window the ring opens
+ *  ("a" | "b" — the one the scrim dims, tasks.css). */
 function renderRowHint(p: HTMLDivElement, el: Element): boolean {
   if (!el.hasAttribute("data-hint-row")) return false;
   const title = (el.getAttribute("data-hint-title") || "").trim();
@@ -349,16 +355,7 @@ function renderRowHint(p: HTMLDivElement, el: Element): boolean {
   };
   const row = document.createElement("div");
   row.className = "hint-row";
-  const mark = document.createElement("span");
-  mark.className = "hint-row-mark";
-  for (const kid of Array.from(el.children)) mark.append(kid.cloneNode(true));
-  row.append(mark);
-  const id = (el.getAttribute("data-hint-id") || "").trim();
-  if (id) row.append(span("hint-row-id", id));
   row.append(span("hint-row-title", title));
-  // The reply takes what the title leaves, and is the row's slack when there
-  // is none to print: the facts stay at the right end either way.
-  row.append(span("hint-row-reply", (el.getAttribute("data-hint-reply") || "").trim()));
   const count = (el.getAttribute("data-hint-count") || "").trim();
   if (count) {
     const c = span("hint-row-count", count);
@@ -368,6 +365,10 @@ function renderRowHint(p: HTMLDivElement, el: Element): boolean {
   const when = (el.getAttribute("data-hint-when") || "").trim();
   if (when) row.append(span("hint-row-time", when));
   p.replaceChildren(row);
+  // WHICH WINDOW THIS RING OPENS: only that one steps back under the scrim
+  // (Akshil, 2026-11-17: "it darkens both instead of only … one of the
+  // window"). A host that does not say is window A's.
+  p.setAttribute("data-row-window", el.getAttribute("data-hint-window") === "b" ? "b" : "a");
   // As wide as the window the ring opens, inside the room beside the column.
   // THE WINDOW'S WIDTH NOW, when it is on screen (`data-hint-width-of`, a
   // selector): the reader may have just dragged it wider, and the width the
@@ -423,7 +424,10 @@ function show(el: Element, x: number, y: number): void {
   const row = renderRowHint(p, el);
   p.classList.toggle("is-row", row);
   p.classList.toggle("is-passing", row && passing);
-  if (!row) p.style.width = "";
+  if (!row) {
+    p.style.width = "";
+    p.removeAttribute("data-row-window");
+  }
   const task = !row && renderTaskHint(p, el);
   if (!row && !task) renderHint(p, el.getAttribute("data-hint") || "");
   p.classList.toggle("is-task", task);
@@ -447,6 +451,7 @@ export function hideHint(): void {
     // that flashes on the next show, before its own text lands.
     panel.replaceChildren();
     panel.classList.remove("is-row");
+    panel.removeAttribute("data-row-window");
     panel.classList.remove("is-passing");
     panel.style.width = "";
   }
