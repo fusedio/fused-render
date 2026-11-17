@@ -16,11 +16,11 @@ import { Component, Suspense, lazy, type ComponentType, type ReactNode } from "r
 import { isChunkLoadError } from "@platform/lib/chunk-load";
 
 /** What every native view is given: the file (or folder) it is a view of,
- *  and where it stands — the content pane, the `_side` column, or a layout
- *  pane (an embed document's content pane). */
+ *  and where it stands — the content pane (a layout pane is an embed
+ *  document's content pane). */
 export interface NativeViewProps {
   path: string;
-  placement: "content" | "side";
+  placement: "content";
 }
 
 type Loader = () => Promise<{ default: ComponentType<NativeViewProps> }>;

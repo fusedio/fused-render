@@ -1,8 +1,8 @@
 // The canvas NODE VIEW (SPEC §53.3, §53.4): one node of a cloned canvas,
-// rendered live by the hosted workbench in a frame, beside the node file's own
-// editor. Mounted by the explorer's preview for the native `udf` mode — the
-// `_side` column, the content pane, a layout pane — through the shell's
-// native-view registry (platform/ui/NativeView), so this file loads with the
+// rendered live by the hosted workbench in a frame — the node file's default
+// content mode, its code one switch away. Mounted by the explorer's preview
+// for the native `udf` mode — the content pane, a layout pane — through the
+// shell's native-view registry (platform/ui/NativeView), so this file loads with the
 // rest of the canvases chunk and never with the main bundle.
 //
 // Nothing about how a canvas syncs changes: this is one more frame on the same
@@ -184,8 +184,9 @@ export default function NodeView({ path }: NativeViewProps) {
         } finally {
           if (!cancelled) setCloning(false);
         }
-        // The editor beside this pane watches its own file and rebases onto
-        // what the pull wrote; the listings re-read through this hook.
+        // An open editor of this file (another pane, or the Code mode)
+        // watches it and rebases onto what the pull wrote; the listings
+        // re-read through this hook.
         window._fusedFsChanged?.();
       }
       if (!cancelled) await ensureSync();
@@ -682,7 +683,7 @@ function NodeStrip({
   const showPull = !owned && (s2d === "stale" || pull.busy);
   return (
     <div className="node-view-head">
-      {/* Two rows, so the strip holds at the column's narrowest (380px): the
+      {/* Two rows, so the strip holds in a narrow pane (down to 380px): the
           node — its title, which takes the room and ellipsises last — its
           status and the way to the canvas; under it the canvas, the
           environment and the sync chip, which wrap. The kind badge and the

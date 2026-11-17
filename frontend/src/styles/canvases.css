@@ -703,7 +703,7 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
 
 /* ---- The canvas node view (apps/canvases/NodeView.tsx, SPEC §53.3) -------- */
 /* One node of a cloned canvas, live in the hosted workbench, in the explorer's
-   `_side` column, its content pane or a layout pane. A column: the header
+   content pane or a layout pane. A column: the header
    strip (NV-8), then the frame or the notice in its place. Palette tokens
    only, so both themes paint it. */
 .node-view {
@@ -720,8 +720,8 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   flex: none;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
-  /* The strip answers to its own width (the `_side` column is 380px at
-     its narrowest), not the window's. */
+  /* The strip answers to its own width (a layout pane can be narrow), not
+     the window's. */
   container-type: inline-size;
   container-name: node-view-head;
 }

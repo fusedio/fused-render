@@ -4,7 +4,10 @@
 drawn by the React shell (frontend/src/apps/canvases/NodeView.tsx), and this
 folder is only its registry name, this gate and its icon. It is bound to
 `.py`, `.json`, `.html` and `.md` after each key's default, and is
-conditional, so a file's default mode never changes (PT-8).
+conditional. On a path shaped like a node file, with Canvases on, stat marks
+it `prefer` (PT-8's one exception, `server.templates._mark_preferred`): the
+client then opens the node view as the default on this gate's yes, and the
+key's own default on anything else.
 
 Runs in the SERVER process when `/api/fs/conditions` resolves a file's gated
 modes in the background (CT-12). Cheap, and it never raises: a gate that

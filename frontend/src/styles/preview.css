@@ -256,16 +256,6 @@
   z-index: 1;
 }
 
-/* The column's native companion (PreviewSidebar `nativeView`, the canvas node
-   view): fills the column under its header, like the side frame. */
-.preview-side-native {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 /* ---- the preview SIDEBAR (`_side`) ---------------------------------------
    A file preview's right-hand column: the companion modes (`claude`,
    `git`) beside the content pane instead of in place of it

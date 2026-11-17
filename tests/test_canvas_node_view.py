@@ -384,3 +384,94 @@ def test_a_user_template_named_udf_cannot_shadow_the_node_view(tmp_path, monkeyp
     assert gate(plain) is False
     # And /render will not serve the user's page either.
     assert server_templates.is_native_template_path(str(udir / "udf" / "template.html"))
+
+
+# ------------------------------------- stat's default candidate (PT-8, NV-3)
+
+def _udf_entry(path):
+    entries, _ = server_templates._templates_for(str(path), False)
+    return next((e for e in entries if e["mode"] == "udf"), None)
+
+
+def _prefer(path):
+    entry = _udf_entry(path)
+    return None if entry is None else entry.get("prefer")
+
+
+def test_stat_marks_the_node_view_preferred_on_a_node_shaped_path(clone):
+    for name in ("udf_1.py", "chart.json", "page.html", "notes.md"):
+        entry = _udf_entry(clone / name)
+        assert entry["prefer"] is True, name
+        assert entry["native"] is True and entry["conditional"] is True
+    # Shape only: a .py with no canvas.toml row is still a candidate — the
+    # gate, not stat, says no (`orphan.py`); so is a file that is not there.
+    assert _prefer(clone / "orphan.py") is True
+    assert _prefer(clone / "not_yet.py") is True
+    # No other entry ever carries the flag.
+    entries, _ = server_templates._templates_for(str(clone / "udf_1.py"), False)
+    assert [e["mode"] for e in entries if "prefer" in e] == ["udf"]
+
+
+def test_stat_does_not_prefer_with_the_preference_off(clone):
+    _set_pref(False)
+    assert _prefer(clone / "udf_1.py") is None
+
+
+def test_stat_does_not_prefer_off_the_node_shape(base, clone, tmp_path):
+    for scope in ("team", "public"):
+        folder = _canvas(base / ENV / scope / "demo")
+        assert _prefer(folder / "udf_1.py") is None, scope
+    sub = _canvas(clone / "sub")
+    assert _prefer(sub / "udf_1.py") is None
+    assert _prefer(clone / "_helper.py") is None
+    assert _prefer(base / ENV / "demo" / "udf_1.py") is None  # pre-D1476 path
+    plain = tmp_path / "plain.py"
+    plain.write_text("x = 1\n", encoding="utf-8")
+    assert _prefer(plain) is None
+
+
+def test_stat_of_an_ordinary_file_is_unchanged(tmp_path, base):
+    """No `prefer` key at all — the payload is what it was before."""
+    plain = tmp_path / "plain.py"
+    plain.write_text("x = 1\n", encoding="utf-8")
+    entries, _ = server_templates._templates_for(str(plain), False)
+    assert all("prefer" not in e for e in entries)
+
+
+def test_stat_does_not_prefer_where_a_user_registry_drops_udf(tmp_path, monkeypatch, clone):
+    udir = tmp_path / "user-templates"
+    udir.mkdir()
+    (udir / "registry.json").write_text(json.dumps({".py": ["code"]}), encoding="utf-8")
+    monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(udir))
+    monkeypatch.setattr(server_templates, "USER_REGISTRY", str(udir / "registry.json"))
+    entries, _ = server_templates._templates_for(str(clone / "udf_1.py"), False)
+    assert [e["mode"] for e in entries] == ["code"]
+    assert all("prefer" not in e for e in entries)
+
+
+def test_stat_prefers_only_the_core_native_udf(tmp_path, monkeypatch, clone):
+    """A user template of its own, gated and bound on `.py`, is never marked;
+    a user `udf/` folder is ignored (D1310), so the entry that carries the
+    flag is still the core native one."""
+    udir = tmp_path / "user-templates"
+    for name in ("mynode", "udf"):
+        (udir / name).mkdir(parents=True)
+        (udir / name / "template.html").write_text("<html>mine</html>", encoding="utf-8")
+        (udir / name / "condition.py").write_text("def main(path):\n    return True\n",
+                                                  encoding="utf-8")
+    (udir / "registry.json").write_text(json.dumps({".py": ["mynode", "udf", "code"]}),
+                                        encoding="utf-8")
+    monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(udir))
+    monkeypatch.setattr(server_templates, "USER_REGISTRY", str(udir / "registry.json"))
+    monkeypatch.setattr(server_templates, "_WARNED_STALE", set())
+    entries, _ = server_templates._templates_for(str(clone / "udf_1.py"), False)
+    by_mode = {e["mode"]: e for e in entries}
+    assert by_mode["mynode"].get("conditional") is True and "prefer" not in by_mode["mynode"]
+    core = os.path.join(server_templates.TEMPLATES_DIR, "udf", server_templates.NATIVE_MARKER)
+    assert by_mode["udf"]["path"] == core and by_mode["udf"]["prefer"] is True
+
+
+def test_stat_route_carries_prefer(client, clone):
+    body = client.get("/api/fs/stat", params={"path": str(clone / "udf_1.py")}).json()
+    udf = next(e for e in body["templates"] if e["mode"] == "udf")
+    assert udf["prefer"] is True

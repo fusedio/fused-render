@@ -147,6 +147,11 @@ export interface TemplateEntry {
   /** A native template (PT-6 amendment): the shell draws it, there is no
    *  page to frame. Set by the server on the stat entry. */
   native?: boolean;
+  /** The file's DEFAULT CANDIDATE although it is conditional (SPEC PT-8's one
+   *  exception): set by the server on the core native `udf` entry of a path
+   *  shaped like a canvas node file, with Canvases on. The default only on
+   *  the gate's explicit yes (lib/mode-visibility `defaultMode`). */
+  prefer?: boolean;
 }
 
 export interface StatResult {
@@ -2242,9 +2247,6 @@ export interface UiLayoutDoc {
   /** The chat text zoom, 1 = 100 % (platform/lib/chat-zoom.ts): one factor for
    *  every chat, always one of `CHAT_TEXT_SCALES` (ui-layout.ts). */
   chatTextScale?: number;
-  /** The canvas node view's pane was shut by the user (SPEC §53.3 NV-4):
-   *  a node file no longer opens it by itself until it is opened again. */
-  node_view_shut?: boolean;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {

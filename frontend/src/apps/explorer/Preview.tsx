@@ -74,17 +74,15 @@ import {
 import {
   sideSplit,
   parseSide,
+  resolveSide,
+  sideFromMemory,
   sideParam,
   writeQueryParam,
   sideToggleTarget,
   reconcileSideSearch,
   sideReopenedByUrl,
-  fileSideState,
-  nodeViewShutAfter,
-  urlNamesSide,
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
-import { getNodeViewShut, setNodeViewShut } from "@platform/lib/node-view-shut";
 import { NativeView } from "@platform/ui/NativeView";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
@@ -1131,31 +1129,7 @@ function TemplatePreview({
   // than reconciled: a verdict that denies the open companion cannot leave this
   // paint framing it, because `activeSide` is recomputed from the lists every
   // render and an unhonourable request falls to the default (lib/preview-side).
-  // THE NODE PANE (SPEC §53.3 NV-4, lib/preview-side `nodePaneAuto`): a node
-  // file of a cloned canvas whose URL said nothing about the column opens it
-  // on the node view, unless the reader shut that pane (`node_view_shut`).
-  // `urlNamedSide` is the URL's word at mount, and any pick or close the
-  // reader makes here after (`applySide`) — either one wins over the auto-open.
-  // The gate's EXPLICIT answer is what counts (`conditions?.udf === true`):
-  // a failed conditions call is `{}`, and must not open anything.
-  // `sideDefault` is the default the URL's spelling is measured against — the
-  // node view itself where it opens by itself (lib/preview-side
-  // `fileSideState`), so a chosen `_side=claude` is written and survives a
-  // reload.
-  const [urlNamedSide, setUrlNamedSide] = useState<boolean>(() => urlNamesSide(location.search));
-  const {
-    activeSide,
-    defaultSide: sideDefault,
-    fromMemory: activeFromMemory,
-  } = fileSideState({
-    split,
-    splitCapable,
-    sideReq,
-    urlNamedSide,
-    nodeVerdict: conditions?.[NODE_MODE],
-    shut: getNodeViewShut(),
-    remembered: getSideTab(),
-  });
+  const activeSide = resolveSide(sideReq, split, getSideTab());
   // THE COLUMN SLIDES (platform/lib/pane-presence): held mounted through its
   // exit, still showing the companion it had, like the app page's pane.
   const heldSide = useRef(activeSide);
@@ -1335,12 +1309,6 @@ function TemplatePreview({
   // lands on a fallback, and recording that would overwrite the real pick.
   const applySide = (next: string | null, tab?: string) => {
     setSideHidden(next === null);
-    // The node pane's own memory (NV-4): closing it shuts it for every node
-    // file, opening it opens it again. Either way the reader has spoken on
-    // this file, so the auto-open stands down for the rest of this mount.
-    const shut = nodeViewShutAfter(activeSide, next);
-    if (shut !== undefined) setNodeViewShut(shut);
-    setUrlNamedSide(true);
     if (tab) setSideTab(tab);
     // A user click is always real, URL-worthy state now, whichever way it
     // went — the flag-only closed state `sideFromHiddenFlag` guards against
@@ -1352,7 +1320,7 @@ function TemplatePreview({
     const search = writeQueryParam(
       location.search.replace(/^\?/, ""),
       "_side",
-      sideParam(next, sideDefault)
+      sideParam(next, split.defaultSide)
     );
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     setSideReq({ open: next !== null, mode: next });
@@ -1630,9 +1598,7 @@ function TemplatePreview({
   // strip lives on for the recents store, lib/session-params.)
   // The tab on screen came only from the remembered store: the reconcile must not
   // write it (see `sideFromMemory`). Recomputed each render, so it is a dep.
-  // …and the node pane's auto-open is not written either: it is this file's
-  // own answer to a silent URL, as the default companion is
-  // (`activeFromMemory`, from `fileSideState` above).
+  const activeFromMemory = sideFromMemory(sideReq, activeSide, getSideTab());
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {
@@ -1646,9 +1612,7 @@ function TemplatePreview({
       // stays exactly as silent as it already was.
       open: sideFromHiddenFlag ? true : sideReq.open,
       activeSide,
-      // The node view where it is this file's own default (`sideDefault`), so
-      // an explicit `_side=claude` is not normalised away.
-      defaultSide: sideDefault,
+      defaultSide: split.defaultSide,
       fromMemory: activeFromMemory,
     });
     if (search === null) return; // already agrees
@@ -1658,7 +1622,7 @@ function TemplatePreview({
   }, [
     splitCapable,
     split.offered,
-    sideDefault,
+    split.defaultSide,
     sideReq.open,
     sideFromHiddenFlag,
     activeSide,
@@ -1943,9 +1907,7 @@ function TemplatePreview({
   const sideSrcFor = (m: string): string | null => {
     const t = sidebarModes.find((e) => e.mode === m);
     if (!t || t.path === null) return null;
-    // A native companion has no page: any non-null answer means its gate
-    // has resolved and the column may mount it.
-    if (m === CHAT_MODE || isNodeViewEntry(t)) return "";
+    if (m === CHAT_MODE) return "";
     const borrowed = isBorrowedMode(m);
     const target = borrowed ? parentDir : fsPath;
     return (
@@ -2096,9 +2058,6 @@ function TemplatePreview({
   // through to the content pane as any unsplit surface would take it.
   const openMode = (m: string) => {
     if (m === "mcp" && mcpSrc) setMcpOpen(true);
-    // The node view goes by its ENTRY (a bare "udf" is not a companion,
-    // mode-visibility `isSidebarMode`): Open With → Node opens the column.
-    else if (sideOn && templates.some((t) => t.mode === m && isNodeViewEntry(t))) setSide(m, m);
     else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };
@@ -2403,11 +2362,11 @@ function TemplatePreview({
              re-created by a switch away and back within the swap window. */}
             <div className="preview-frames">
             {frames.map((m) => {
-              // THE NODE VIEW AS THE CONTENT PANE (SPEC §53.3 NV-3: the mode on
-              // its own, and the layout pane's — an embed document is this same
-              // content pane). Native: drawn by apps/canvases through the
-              // shell's registry, never a frame of /render. It paints its own
-              // loading state, so it takes over from a held frame at once.
+              // THE NODE VIEW (SPEC §53.3 NV-3): a canvas node file's default
+              // content mode, and the layout pane's — an embed document is
+              // this same content pane. Native: drawn by apps/canvases through
+              // the shell's registry, never a frame of /render. It paints its
+              // own loading state, so it takes over from a held frame at once.
               if (m === NODE_MODE && contentModes.some((t) => t.mode === m && isNodeViewEntry(t))) return (
                 <NativePane
                   key={m}
@@ -2682,11 +2641,6 @@ function TemplatePreview({
                 {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
                 {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
               />
-            }
-            nativeView={
-              shownSide === NODE_MODE && sidebarModes.some(isNodeViewEntry) ? (
-                <NativeView mode={NODE_MODE} path={fsPath} placement="side" />
-              ) : undefined
             }
             onSelect={(m) => setSide(m, m ?? undefined)}
             onClose={() => setSide(null)}
@@ -3004,7 +2958,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   const templates = stat.templates.filter(
     (t) =>
       (t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)) &&
-      !(remoteUrl && (t.mode === "_render" || isSidebarMode(t)))
+      !(remoteUrl && (t.mode === "_render" || isSidebarMode(t.mode)))
   );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
   // The first unconditional template renders immediately — only an

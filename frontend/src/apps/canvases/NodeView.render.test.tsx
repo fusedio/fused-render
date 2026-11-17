@@ -118,7 +118,7 @@ function text(r: ReactTestRenderer): string {
 async function mount(): Promise<ReactTestRenderer> {
   let r!: ReactTestRenderer;
   await act(async () => {
-    r = create(createElement(NodeView, { path: "/Users/me/Fused/canvas/prod/user/demo/udf_1.py", placement: "side" }));
+    r = create(createElement(NodeView, { path: "/Users/me/Fused/canvas/prod/user/demo/udf_1.py", placement: "content" }));
   });
   await settle();
   return r;
@@ -263,7 +263,7 @@ describe("NodeView's frame and relay (NV-6, NV-7)", () => {
       let r!: ReactTestRenderer;
       await act(async () => {
         r = create(
-          createElement(NodeView, { path: "/Users/me/Fused/canvas/prod/user/demo/udf_1.py", placement: "side" }),
+          createElement(NodeView, { path: "/Users/me/Fused/canvas/prod/user/demo/udf_1.py", placement: "content" }),
           { createNodeMock: (el) => (el.type === "iframe" ? { contentWindow: frameWin } : null) },
         );
       });

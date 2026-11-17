@@ -2,8 +2,7 @@
 
 The layout the user arranges and would miss across a relaunch: the sidebar's
 width and collapse, the Bookmarks / Current apps section collapses, the
-explorer side panel (hidden / width / maximized), whether the canvas node
-view's pane was shut (`node_view_shut`), each folder's last view
+explorer side panel (hidden / width / maximized), each folder's last view
 query (`viewState`, path → "?view=…"), the Tasks page's view, calendar range,
 board lanes and collapsed groups, and the recently picked paths.
 
@@ -50,7 +49,7 @@ RAIL_CARD_KEYS = ("canvasRailPeek", "canvasRailFav")
 CHAT_TEXT_SCALES = (0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2)
 # Keys an OLDER bundle's whole-document PUT never names: carried forward from
 # the stored document rather than dropped (see put_ui_layout).
-CARRIED_KEYS = (*RAIL_CARD_KEYS, "chatTextScale", "node_view_shut")
+CARRIED_KEYS = (*RAIL_CARD_KEYS, "chatTextScale")
 _IDENT_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 
@@ -150,11 +149,6 @@ def _clean(doc) -> dict:
     if "rememberLastFolder" in doc:
         _check(isinstance(doc["rememberLastFolder"], bool))
         out["rememberLastFolder"] = doc["rememberLastFolder"]
-    # The canvas node view's pane (SPEC §53.3 NV-4): shut by the user, so a
-    # node file no longer opens it by itself until it is opened again.
-    if "node_view_shut" in doc:
-        _check(isinstance(doc["node_view_shut"], bool))
-        out["node_view_shut"] = doc["node_view_shut"]
     # The rail's pinned card (`canvasRailPeek`) and the favourite's card
     # (`canvasRailFav`): the size the reader dragged each to, same shape.
     for card in RAIL_CARD_KEYS:
@@ -203,7 +197,7 @@ def put_ui_layout(layout=Body(default=None), x_fused: str | None = Header(defaul
         return JSONResponse({"error": "invalid layout"}, status_code=400)
     # A document from an OLDER bundle (another window, the desktop app before
     # its relaunch) says nothing of `canvasRailPeek` / `canvasRailFav` /
-    # `chatTextScale` / `node_view_shut`; the whole-document PUT must not drop the value a newer
+    # `chatTextScale`; the whole-document PUT must not drop the value a newer
     # one saved (CodeRabbit on #2062).
     missing = [key for key in CARRIED_KEYS if key not in clean]
     if missing:

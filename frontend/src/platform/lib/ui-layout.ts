@@ -1,8 +1,7 @@
 // The shell's per-machine LAYOUT document — sidebar width and fold, the two
 // sidebar section folds, the explorer companion pane's shut / width / full
-// screen, the canvas node view's shut pane (`node_view_shut`), per-folder
-// listing sort, the Tasks page's view / calendar range / board lanes / group
-// folds, and the New task form's recent folders — persisted
+// screen, per-folder listing sort, the Tasks page's view / calendar range /
+// board lanes / group folds, and the New task form's recent folders — persisted
 // server-side at ~/.fused-render/ui_layout.json via GET/PUT /api/ui-layout
 // (shell/ui_layout.py). Pure data layer: no DOM beyond a guarded localStorage
 // read for the one-shot import, no React.
@@ -172,7 +171,6 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
     }
   }
   if (isNum(src.chatTextScale)) out.chatTextScale = snapChatTextScale(src.chatTextScale);
-  if (typeof src.node_view_shut === "boolean") out.node_view_shut = src.node_view_shut;
   return out;
 }
 

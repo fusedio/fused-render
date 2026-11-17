@@ -15,7 +15,7 @@ function Probe({ path }: NativeViewProps) {
 test("a native view is remounted when its pane moves to another file", async () => {
   registerNativeView("probe", async () => ({ default: Probe }));
   const at = (path: string) =>
-    createElement(NativeView, { mode: "probe", path, placement: "side" as const });
+    createElement(NativeView, { mode: "probe", path, placement: "content" as const });
   let tree!: ReturnType<typeof create>;
   await act(async () => {
     tree = create(at("/c/udf_1.py"));

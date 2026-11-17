@@ -1391,16 +1391,14 @@ NODE_FILE_KINDS = {".py": "udf", ".json": "widget", ".html": "html", ".md": "not
 NODE_TOML_MAX_BYTES = 2 * 1024 * 1024
 
 
-def canvas_node_file(path) -> dict | None:
-    """`{env, name, node, kind, file, title, clone_dir}` when `path` is a node's
-    source file at the root of a `user/<canvas>` folder (a clone or a
-    reference copy there, D1476), else None. Cheapest first: the path's
-    shape and suffix (no syscall), then the folder's canvas.toml (one stat,
-    one read of at most NODE_TOML_MAX_BYTES), then one listdir for the
-    suffix rule. `team/` and `public/` never pass (`clone_dir_for`). Never
-    raises. Shared by the `udf` template's condition.py and
-    GET /api/canvases/node, so the mode and the view agree on what a node is.
-    The `canvases_enabled` preference is the CALLER's question."""
+def node_file_shape(path) -> tuple[str, str, str, str, str] | None:
+    """`(env, name, clone_dir, stem, kind)` when `path` is SHAPED like a node's
+    source file — one of the four node suffixes (a `.py` stem not starting
+    with `_`), directly in a `user/<canvas>` folder of a canvases root — else
+    None. The path alone decides: no syscall on it, canvas.toml unread
+    (`clone_dir_for` resolves only the fixed roots). `canvas_node_file`'s
+    first step, and all that stat asks before it marks the `udf` entry as the
+    default candidate (SPEC PT-8, `prefer`). Never raises."""
     try:
         path = str(path or "")
         if not path or not os.path.isabs(path):
@@ -1426,6 +1424,30 @@ def canvas_node_file(path) -> dict | None:
         if (os.path.basename(folder) != name or clone_dir_for(folder) != found
                 or clone_dir_for(os.path.dirname(folder)) is not None):
             return None
+        return env, name, clone_dir, stem, kind
+    except Exception:  # noqa: BLE001 — a shape that cannot be read is no node
+        return None
+
+
+def canvas_node_file(path) -> dict | None:
+    """`{env, name, node, kind, file, title, clone_dir}` when `path` is a node's
+    source file at the root of a `user/<canvas>` folder (a clone or a
+    reference copy there, D1476), else None. Cheapest first: the path's
+    shape and suffix (`node_file_shape`, no syscall), then the folder's
+    canvas.toml (one stat, one read of at most NODE_TOML_MAX_BYTES), then
+    one listdir for the suffix rule. `team/` and `public/` never pass
+    (`clone_dir_for`). Never raises. Shared by the `udf` template's
+    condition.py and GET /api/canvases/node, so the mode and the view agree
+    on what a node is. The `canvases_enabled` preference is the CALLER's
+    question."""
+    try:
+        shape = node_file_shape(path)
+        if shape is None:
+            return None
+        env, name, clone_dir, stem, kind = shape
+        path = os.path.normpath(str(path))
+        base = os.path.basename(path)
+        folder = os.path.dirname(path)
         toml_path = os.path.join(folder, "canvas.toml")
         if os.path.getsize(toml_path) > NODE_TOML_MAX_BYTES:
             return None

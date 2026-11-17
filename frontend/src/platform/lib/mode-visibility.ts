@@ -42,21 +42,24 @@ import type { TemplateEntry } from "@platform/lib/api";
 export type ConditionVerdicts = Record<string, boolean> | null;
 
 // Gated and no verdict yet — the entry shows, but is not selectable.
-// An offered-only companion (the node view, below) is never pending: it is not
-// shown at all until its gate has said yes.
+// The node view (below) is pending only where it is the default candidate.
 export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
-  if (isNodeViewEntry(entry)) return false;
+  if (isNodeViewEntry(entry)) return isPreferred(entry) && verdicts === null;
   return !!entry.conditional && verdicts === null;
 }
 
 // THE ONE EXCEPTION TO "a missing verdict shows": the canvas node view
-// (`udf`). Its gate answers yes for a handful of files behind an opt-in
-// feature and no for every other `.py`/`.json`/`.html`/`.md`, so reading a
-// failed or in-flight conditions call as "visible" would offer a node view —
-// and auto-open it (preview-side `nodePaneAuto`) — on every such file, with
-// Canvases off. It needs an explicit YES.
+// (`udf`, SPEC §53.3). Its gate answers yes for a handful of files behind an
+// opt-in feature and no for every other `.py`/`.json`/`.html`/`.md`, so
+// reading a failed conditions call as "visible" would offer — and, where it is
+// the default candidate, open — a node view on files that are not nodes. It
+// needs an explicit YES. While the call is out it shows only where stat marked
+// it the default candidate (`prefer`), as the pending entry the content pane
+// waits on; anywhere else it is simply not listed until the yes.
 export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
-  if (isNodeViewEntry(entry)) return verdicts !== null && verdicts[entry.mode] === true;
+  if (isNodeViewEntry(entry)) {
+    return verdicts === null ? isPreferred(entry) : verdicts[entry.mode] === true;
+  }
   if (!entry.conditional) return true;
   if (verdicts === null) return true; // in flight — pending, not denied
   return verdicts[entry.mode] !== false; // absent verdict (failed call) shows
@@ -94,29 +97,9 @@ export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts)
 // and leave rather than work beside. Its `unavailableReason` below survives for
 // that kebab row's tooltip; `isSidebarMode("mcp")` is false, so a registry that
 // bound the template to a file would list it as an ordinary content mode.
-//
-// `udf` IS THE THIRD, AND THE ONE THAT IS NOT ALWAYS THERE (SPEC §53.3 NV-3):
-// the canvas node view — a node of a cloned canvas, live in the hosted
-// workbench, beside its own file's editor. Its gate (templates/udf/
-// condition.py) passes for a node file of a `user/` canvas only, with Canvases
-// on, so on nearly every file it does not exist at all. It is ranked LAST: the
-// default an absent `_side` opens stays the chat; a node file opens the node
-// pane by its own rule instead (lib/preview-side `nodePaneAuto`), so a file
-// that is not a node, or a reader with Canvases off, sees no change.
-export const SIDEBAR_MODES = ["claude", "git", "udf"] as const;
-
-/** The node view's mode (templates/udf, a native template). */
-export const NODE_MODE = "udf";
+export const SIDEBAR_MODES = ["claude", "git"] as const;
 
 const SIDEBAR_MODE_SET: ReadonlySet<string> = new Set(SIDEBAR_MODES);
-
-// Companions the switcher draws ONLY where they are on offer — no disabled
-// row explaining their absence (see below for why the others get one). The
-// node view belongs to a handful of files in one folder tree, behind an
-// opt-in feature: a "Not a canvas node" row on every other file would be a
-// question nobody asked, and it would change the sidebar for every reader who
-// never turned Canvases on.
-export const OFFERED_ONLY_SIDEBAR_MODES: ReadonlySet<string> = new Set([NODE_MODE]);
 
 // WHY A COMPANION IS NOT ON OFFER, in the words the switcher puts on it.
 //
@@ -144,7 +127,6 @@ const UNAVAILABLE_REASONS: Record<string, string> = {
   claude: "Claude is not available for this file",
   git: "Not inside a git repository",
   mcp: "Not a fused app folder (needs index.html and a main())",
-  udf: "Not a node of a canvas you work on",
 };
 
 // Deliberately total: a user registry can bind a mode of its own into either
@@ -154,26 +136,26 @@ export function unavailableReason(mode: string): string {
   return UNAVAILABLE_REASONS[mode] ?? "Not available here";
 }
 
+// The canvas node view's mode (templates/udf, a native template).
+export const NODE_MODE = "udf";
+
 // The node view's entry: the core NATIVE `udf` template (stat's `native:
 // true`). The server never lets a user folder shadow a core native template
-// (D1310: a stale `~/.fused-render/templates/udf/template.html` is ignored with
-// a warning), so a `udf` entry without the flag would come from another server
-// or a future rule; it is then an ordinary template, framed like any other —
-// never the node view, never a companion.
+// (D1310), so a `udf` entry without the flag would come from another server
+// or a future rule; it is then an ordinary template, framed like any other.
 export function isNodeViewEntry(entry: Pick<TemplateEntry, "mode" | "native">): boolean {
   return entry.mode === NODE_MODE && entry.native === true;
 }
 
-// A mode NAME alone is enough for every companion but the node view, which
-// needs its entry (`isNodeViewEntry`): a bare "udf" — a legacy `_mode=udf`, an
-// Open With row looked up by name — is not a companion until the entry says it
-// is the native one.
-export function isSidebarMode(modeOrEntry: string | Pick<TemplateEntry, "mode" | "native">): boolean {
-  if (typeof modeOrEntry === "string") {
-    return SIDEBAR_MODE_SET.has(modeOrEntry) && !OFFERED_ONLY_SIDEBAR_MODES.has(modeOrEntry);
-  }
-  if (OFFERED_ONLY_SIDEBAR_MODES.has(modeOrEntry.mode)) return isNodeViewEntry(modeOrEntry);
-  return SIDEBAR_MODE_SET.has(modeOrEntry.mode);
+// The default CANDIDATE although gated (SPEC PT-8's one exception): the node
+// view's entry where stat marked it `prefer` — a path shaped like a canvas
+// node file, Canvases on. Never any other entry, whatever the server sends.
+function isPreferred(entry: TemplateEntry): boolean {
+  return isNodeViewEntry(entry) && !!entry.conditional && entry.prefer === true;
+}
+
+export function isSidebarMode(mode: string): boolean {
+  return SIDEBAR_MODE_SET.has(mode);
 }
 
 // Split an ALREADY-VISIBLE list in two, order-preserving in both halves.
@@ -182,8 +164,8 @@ export function partitionModes(entries: TemplateEntry[]): {
   sidebar: TemplateEntry[];
 } {
   return {
-    content: entries.filter((e) => !isSidebarMode(e)),
-    sidebar: entries.filter((e) => isSidebarMode(e)),
+    content: entries.filter((e) => !isSidebarMode(e.mode)),
+    sidebar: entries.filter((e) => isSidebarMode(e.mode)),
   };
 }
 
@@ -230,8 +212,15 @@ export function visibleModes(
 // The default entry among an ALREADY-VISIBLE list: the first UNCONDITIONAL one
 // (CT-12 — a gated template is never the default while a normal one exists);
 // only an all-conditional list falls back to its first entry.
+//
+// Except a PREFERRED entry (the node view on a node-shaped path, `prefer`;
+// SPEC PT-8): it is the default whenever it is in the visible list, which by
+// `isModeVisible` is exactly "its verdict is pending, or yes". Pending, the
+// caller holds the pane on its "checking" placeholder (`isModePending`) rather
+// than painting another mode first; on a no, a missing verdict or a failed
+// call it has left the list, and the ordinary default stands.
 export function defaultMode(visible: TemplateEntry[]): TemplateEntry | null {
-  return visible.find((e) => !e.conditional) ?? visible[0] ?? null;
+  return visible.find(isPreferred) ?? visible.find((e) => !e.conditional) ?? visible[0] ?? null;
 }
 
 // The entry a surface should actually show for a requested `_mode`: the

@@ -262,6 +262,34 @@ def _mark_conditions(entries: list):
             entry["conditional"] = True
 
 
+# The one native template stat may mark as its file's DEFAULT CANDIDATE
+# (SPEC PT-8's `prefer` exception): the canvas node view.
+_PREFERRED_NATIVE = "udf"
+
+
+def _mark_preferred(entries: list, path: str) -> None:
+    """Flag the core native `udf` entry `"prefer": True` when `path` is shaped
+    like a canvas node file and the `canvases_enabled` preference is on (SPEC
+    PT-8, §53.3 NV-3). The client then holds the content pane on the "checking"
+    placeholder until the gate answers, and opens the node view on a yes —
+    rather than painting the code editor first. A cheap precheck only: the
+    path's shape decides with no syscall on it (`canvases.node_file_shape`),
+    then one prefs read; canvas.toml is the gate's business, not stat's. No
+    other entry is ever marked, so every other file's stat is unchanged."""
+    entry = next((e for e in entries if e.get("mode") == _PREFERRED_NATIVE), None)
+    if (entry is None or not entry.get("native") or not entry.get("conditional")
+            or entry.get("path") != os.path.join(TEMPLATES_DIR, _PREFERRED_NATIVE, NATIVE_MARKER)):
+        return
+    try:
+        from fused_render import canvases
+        from fused_render.shell import prefs
+
+        if canvases.node_file_shape(path) is not None and prefs.canvases_enabled():
+            entry["prefer"] = True
+    except Exception:  # noqa: BLE001 — no mark is the ordinary default, never an error
+        return
+
+
 def _evaluate_conditions(gated: list, target_path: str):
     """Evaluate `condition.py` gates: `gated` is [(key, condition_file)];
     returns {key: (allowed: bool, error: str|None)}.
@@ -629,4 +657,6 @@ def _templates_for(path: str, is_dir: bool, *, sniff_text: bool = True):
     # built-in or user, main path or text-sniff fallback. Evaluation is
     # deferred to /api/fs/conditions so a slow gate never stalls the stat.
     _mark_conditions(entries)
+    if not is_dir:
+        _mark_preferred(entries, path)
     return entries, error

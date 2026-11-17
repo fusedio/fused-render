@@ -1,9 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { TemplateEntry } from "@platform/lib/api";
 import {
-  OFFERED_ONLY_SIDEBAR_MODES,
-  isModeVisible,
-  isNodeViewEntry,
   SIDEBAR_MODES,
   unavailableReason,
   visibleModes,
@@ -14,6 +11,8 @@ import {
   defaultSidebarMode,
   defaultMode,
   effectiveActive,
+  isModeVisible,
+  isNodeViewEntry,
 } from "@platform/lib/mode-visibility";
 
 const t = (mode: string, conditional = false): TemplateEntry => ({
@@ -84,11 +83,6 @@ describe("partitionModes", () => {
   it("agrees with isSidebarMode", () => {
     expect(isSidebarMode("claude")).toBe(true);
     expect(isSidebarMode("git")).toBe(true);
-    // The canvas node view (SPEC §53.3 NV-3) pairs with the content mode too —
-    // by its ENTRY, the core native template; the bare name is not enough.
-    expect(isSidebarMode("udf")).toBe(false);
-    expect(isSidebarMode({ mode: "udf", native: true })).toBe(true);
-    expect(isSidebarMode({ mode: "udf" })).toBe(false);
     // MCP is a dialog off the bar's kebab now, not a companion.
     expect(isSidebarMode("mcp")).toBe(false);
     expect(isSidebarMode("claude_split")).toBe(false);
@@ -99,11 +93,8 @@ describe("partitionModes", () => {
   // template list can contain it, and borrowed from the parent folder instead.
   // `mcp` used to follow it here and is a dialog now (McpDialog); an unknown
   // mode in the input lands after the ranked ones.
-  // `udf` (the canvas node view, SPEC §53.3 NV-3) is ranked last: an absent
-  // `_side` still opens the chat; a node file opens the node pane by its own
-  // rule (preview-side `nodePaneAuto`).
-  it("ranks the companions chat, working tree, node view", () => {
-    expect(SIDEBAR_MODES).toEqual(["claude", "git", "udf"]);
+  it("ranks the companions chat, working tree", () => {
+    expect(SIDEBAR_MODES).toEqual(["claude", "git"]);
     expect(names(orderSidebarModes([t("mcp"), git, claude]))).toEqual([
       "claude",
       "git",
@@ -278,26 +269,79 @@ describe("effectiveActive", () => {
   });
 });
 
-describe("offered-only companions", () => {
-  it("is the node view alone: claude and git keep their disabled rows", () => {
-    expect([...OFFERED_ONLY_SIDEBAR_MODES]).toEqual(["udf"]);
-  });
-});
-
-describe("the node view's visibility needs an explicit yes", () => {
+// THE CANVAS NODE VIEW (`udf`, SPEC §53.3 NV-3, PT-8's `prefer` exception).
+describe("the node view needs an explicit yes", () => {
+  const code = t("code");
+  // As stat ships it on any `.py`: the core native template, gated.
   const udf: TemplateEntry = { mode: "udf", path: "/tpl/udf/native", icon: null, conditional: true, native: true };
-  it("hidden while the call is out, after a failed call, and on a no", () => {
+  // …and on a path shaped like a canvas node file, with Canvases on.
+  const preferred: TemplateEntry = { ...udf, prefer: true };
+
+  it("unmarked: hidden while the call is out, after a failed call, and on a no", () => {
     expect(isModeVisible(udf, null)).toBe(false);
     expect(isModePending(udf, null)).toBe(false);
     expect(isModeVisible(udf, {})).toBe(false);
     expect(isModeVisible(udf, { udf: false })).toBe(false);
     expect(isModeVisible(udf, { udf: true })).toBe(true);
-    expect(names(visibleModes([t("code"), udf], {}))).toEqual(["code"]);
+    // Offered on a yes, but never the default: no `prefer`, PT-8 as ever.
+    expect(defaultMode(visibleModes([code, udf], { udf: true }))?.mode).toBe("code");
   });
-  it("a `udf` that is not the native template follows the ordinary rules", () => {
-    const plain = { ...udf, native: undefined };
+
+  it("not a native template: the ordinary rules, and `prefer` means nothing", () => {
+    const plain: TemplateEntry = { ...preferred, native: undefined };
     expect(isNodeViewEntry(plain)).toBe(false);
     expect(isModeVisible(plain, {})).toBe(true);
     expect(isModePending(plain, null)).toBe(true);
+    expect(defaultMode(visibleModes([code, plain], null))?.mode).toBe("code");
+    expect(defaultMode(visibleModes([code, plain], { udf: true }))?.mode).toBe("code");
+    // Nor any other gated entry that says `prefer`.
+    const other: TemplateEntry = { ...t("app", true), prefer: true };
+    expect(defaultMode(visibleModes([code, other], { app: true }))?.mode).toBe("code");
+  });
+});
+
+describe("defaultMode with a preferred entry", () => {
+  const code = t("code");
+  const claudeGated = t("claude", true);
+  const preferred: TemplateEntry = {
+    mode: "udf",
+    path: "/tpl/udf/native",
+    icon: null,
+    conditional: true,
+    native: true,
+    prefer: true,
+  };
+  const list = [code, preferred, claudeGated];
+  const dflt = (v: Record<string, boolean> | null) => defaultMode(visibleModes(list, v));
+
+  it("pending: it is the default candidate, listed and pending", () => {
+    expect(names(visibleModes(list, null))).toEqual(["code", "udf", "claude"]);
+    expect(isModePending(preferred, null)).toBe(true);
+    expect(dflt(null)?.mode).toBe("udf");
+  });
+
+  it("the gate says yes: the default, settled", () => {
+    expect(isModePending(preferred, { udf: true })).toBe(false);
+    expect(dflt({ udf: true, claude: true })?.mode).toBe("udf");
+  });
+
+  it("a no, a missing verdict or a failed call ({}): the ordinary default, no udf", () => {
+    const cases: Record<string, boolean>[] = [{ udf: false, claude: true }, { claude: true }, {}];
+    for (const v of cases) {
+      expect(dflt(v)?.mode).toBe("code");
+      expect(names(visibleModes(list, v))).not.toContain("udf");
+    }
+  });
+
+  it("an explicit `_mode` still wins; an unknown one lands on the candidate", () => {
+    expect(effectiveActive(visibleModes(list, null), "code")?.mode).toBe("code");
+    expect(effectiveActive(visibleModes(list, { udf: true }), "nope")?.mode).toBe("udf");
+    expect(effectiveActive(visibleModes(list, {}), "udf")?.mode).toBe("code");
+  });
+
+  it("is a content mode, never a companion", () => {
+    expect(isSidebarMode("udf")).toBe(false);
+    expect(names(partitionModes(visibleModes(list, { udf: true, claude: true })).sidebar)).toEqual(["claude"]);
+    expect(SIDEBAR_MODES).toEqual(["claude", "git"]);
   });
 });
