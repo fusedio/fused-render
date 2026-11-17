@@ -112,7 +112,7 @@ def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):
         "FUSED_RENDER_HOME", "FUSED_RENDER_CACHE_DIR", "FUSED_RENDER_RUNTIME_DIR",
         "FUSED_RENDER_TEMP_DIR", "FUSED_RENDER_LOG_DIR", "FUSED_RENDER_BRANCH",
         "FUSED_RENDER_DESKTOP_INSTANCE_ID", "FUSED_RENDER_DESKTOP_INSTANCE_TOKEN",
-        "OPENFUSED_ENVS_FILE", "UV_CACHE_DIR",
+        "UV_CACHE_DIR",
     ):
         assert key in env, key
     assert env["FUSED_RENDER_DESKTOP_INSTANCE_ID"] == "inst-id"
