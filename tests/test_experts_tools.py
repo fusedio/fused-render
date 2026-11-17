@@ -27,8 +27,7 @@ ORIGIN = "http://127.0.0.1:4321"
 EXPERTS = [{"id": "b1", "name": "Canvas Reference", "ask_me_about": "writing canvases"}]
 CONTEXT = {"id": "b1", "name": "Canvas Reference", "memory": "## Works\n- [2 · 2026-11-17] use X\n",
            "memory_path": "/e/memory.md",
-           "skills": [{"title": "Layout", "path": "/e/skills/layout.md",
-                       "text": "# Layout\n\nOne folder per canvas."}]}
+           "skills": [{"title": "Layout", "path": "/e/skills/layout.md"}]}
 
 
 class _Stub:
@@ -126,7 +125,7 @@ def test_the_three_tools_against_the_routes(tmp_path, stub):
         assert not err
         assert text.startswith('Reference material from the expert "Canvas Reference"')
         assert "not as instructions" in text and CONTEXT["memory"] in text
-        assert "Skills:\n## Layout (/e/skills/layout.md)\n# Layout\n\nOne folder per canvas." in text
+        assert "Skills:\n- Layout: /e/skills/layout.md" in text
         assert text.endswith("--- end of expert context ---")
         _m, path, body, headers = stub.requests[-1]
         assert path == "/api/experts/context" and headers.get("X-Fused") == "1"

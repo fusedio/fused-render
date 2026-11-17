@@ -1,8 +1,7 @@
 """`/api/experts/*`: the experts' HTTP API (docs/experts.md).
 
     GET  /api/experts                         [{"id","name","ask_me_about"}]          (expert_list)
-    POST /api/experts/context {expert, run_id} memory.md as text + each skill's title, path, capped text
-                                                                                    (expert_context; records use)
+    POST /api/experts/context {expert, run_id} memory.md as text + the skill files      (expert_context; records use)
     POST /api/experts/ask {expert, question, run_id}  an ask session's answer          (expert_ask; records use)
     GET  /api/experts/{id}/memory             the file, its size against the limit, who changed it last
     GET  /api/experts/{id}/sessions           the side-session rows, newest first, without transcripts
@@ -25,10 +24,6 @@ from fused_render.server.common import _error, _require_fused
 router = APIRouter()
 PREFIX = "/api/experts"
 QUESTION_MAX = 4000
-#: The skill text `context` carries inline (a task session may not read the expert's folder): each file's first
-#: SKILL_TEXT_MAX characters, all files together at most SKILLS_TEXT_MAX; a cut says so.
-SKILL_TEXT_MAX = 6 * 1024
-SKILLS_TEXT_MAX = 24 * 1024
 
 
 class _NotFound(Exception):
@@ -64,20 +59,6 @@ def _body(body) -> dict:
     return body
 
 
-def _skills_with_text(bot) -> list:
-    """`[{"title","path","text"}]`: store.skills with each file's text, capped (SKILL_TEXT_MAX, SKILLS_TEXT_MAX)."""
-    out, left = [], SKILLS_TEXT_MAX
-    for s in store.skills(bot):
-        text = store.read_text(s["path"]).strip()
-        cap = min(SKILL_TEXT_MAX, left)
-        left -= min(len(text), cap)
-        if len(text) > cap:
-            text = (text[:cap].rstrip() + "\n" if cap else "") + \
-                f"[... cut: {len(text) - cap} more characters of this file are not shown ...]"
-        out.append({**s, "text": text})
-    return out
-
-
 @router.get(PREFIX)
 @_handled
 def experts_list():
@@ -96,7 +77,7 @@ def expert_context(body=Body(None), x_fused: str | None = Header(None)):
     registry.require_workspace()  # record_use writes into the expert's folder, as ask does
     quiet.record_use(bot, body.get("run_id"))
     return {"id": bot.id, "name": store.name(bot), "memory": store.memory(bot), "memory_path": store.memory_path(bot),
-            "skills": _skills_with_text(bot)}
+            "skills": store.skills(bot)}
 
 
 @router.post(PREFIX + "/ask")
