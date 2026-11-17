@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+import stat
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,15 @@ def make_handler(roots, on_tool=None):
         except Exception:  # noqa: BLE001
             return None
 
+    def bad_alias(full):
+        """A symlink whose target `read_file` would refuse: out of the fence, or a hidden / secret file (a
+        `notes.txt` that points at `.env`). Listing and search skip it like the target itself."""
+        if not os.path.islink(full):
+            return False
+        real = os.path.realpath(full)
+        root = allowed(real)
+        return root is None or _hidden_below(real, root)
+
     def resolve(raw):
         """(realpath, None) or (None, refusal)."""
         raw = str(raw or "").strip()
@@ -263,8 +273,8 @@ def make_handler(roots, on_tool=None):
             if secret_name(n):
                 continue
             full = os.path.join(real, n)
-            if os.path.islink(full) and allowed(os.path.realpath(full)) is None:
-                continue  # a link out of the fence is not shown
+            if bad_alias(full):
+                continue  # a link out of the fence, or to a hidden or secret file, is not shown
             rows.append(n + "/" if os.path.isdir(full) else n)
         more = len(rows) - LIST_MAX
         rows = rows[:LIST_MAX]
@@ -309,14 +319,17 @@ def make_handler(roots, on_tool=None):
                     if glob and not fnmatch.fnmatch(n, glob):
                         continue
                     full = os.path.join(cur, n)
-                    if os.path.islink(full) and allowed(os.path.realpath(full)) is None:
+                    if bad_alias(full):
                         continue
                     if not content:
                         if all(w in n.lower() for w in words):
                             hits.append(f"- {full}")
                         continue
                     try:
-                        if os.path.getsize(full) > SEARCH_FILE_MAX or filereader.kind(full) != "text":
+                        st = os.stat(full)
+                        # Only regular files: a FIFO would block `open` until a writer came (and hold the slot).
+                        if (not stat.S_ISREG(st.st_mode) or st.st_size > SEARCH_FILE_MAX
+                                or filereader.kind(full) != "text"):
                             continue
                         scanned += 1
                         with open(full, encoding="utf-8", errors="replace") as fh:

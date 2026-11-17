@@ -270,6 +270,12 @@ def open_gaps(bot) -> list:
 
 
 # ------------------------------------------------------------------ settle ---
+def snooze(bot, gid, until):
+    """Put gap `gid` off until `until` (epoch seconds): "open" again, off any card, neither researched nor asked
+    before then (`snoozed`). Returns the gap, or None when it is unknown."""
+    return _update(bot, str(gid or ""), status="open", card_seq=None, snoozed_until=float(until))
+
+
 def dismiss(bot, gid) -> dict:
     g = _update(bot, str(gid or ""), status="dismissed", resolution="dismissed", card_seq=None)
     if g is None:
@@ -536,21 +542,28 @@ def _research(bot, gid) -> dict:
     except Exception as e:  # noqa: BLE001 — a failed run counts as an attempt
         logger.warning("expert %s: research run for gap %s failed", getattr(bot, "id", "?"), gid, exc_info=True)
         finding, error = None, f"the research run failed: {str(e) or type(e).__name__}"
+    with store.lock(bot):
+        # The run took a while: the user may have answered or dismissed the gap meanwhile (a card, the API).
+        # Their decision stands; only a gap still "researching" takes this run's result.
+        cur = _find(_load(bot), gid)
+        if cur is None or cur.get("status") != "researching":
+            return get(bot, gid)
+        if finding:
+            # The finding is a lesson (trust "research": not in answers until its skill fix is approved) and,
+            # at once, a skill fix. When a proposal is already being prepared, `proposals.candidates` picks the
+            # lesson up on the next run.
+            item = memory.add(bot, lesson_text(g, finding), kind="lesson", trust="research",
+                              about=finding["refs"], gap=gid)
+            _update(bot, gid, status="proposed", finding=finding, error="")
+        else:
+            return _update(bot, gid, status="open", attempts=int(cur.get("attempts") or 0) + 1, card_seq=None,
+                           error=error or "not found")
     if finding:
-        # The finding is a lesson (trust "research": not in answers until its skill fix is approved) and,
-        # at once, a skill fix. When a proposal is already being prepared, `proposals.candidates` picks the
-        # lesson up on the next run.
-        item = memory.add(bot, lesson_text(g, finding), kind="lesson", trust="research",
-                          about=finding["refs"], gap=gid)
-        _update(bot, gid, status="proposed", finding=finding, error="")
         try:
             proposals.request(bot, [item], topic=f"Gap: {g['question']}"[:200], gap=gid)
         except ValueError as e:
             _update(bot, gid, error=f"skill fix waits for the next run: {e}")
-        return get(bot, gid)
-    cur = get(bot, gid) or g
-    return _update(bot, gid, status="open", attempts=int(cur.get("attempts") or 0) + 1, card_seq=None,
-                   error=error or "not found")
+    return get(bot, gid)
 
 
 # ------------------------------------------------------------------- asking ---

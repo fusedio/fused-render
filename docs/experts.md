@@ -181,6 +181,9 @@ make_handler(roots, on_tool=None) -> handler       # handler(name, input) -> (te
   secret denylist (`*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `.netrc`, `credentials`, `*.p12`, `*.pfx`;
   `secret_name(name)`) is refused by all three tools (`list_dir` and `search` leave them out). The one
   exception is the canvas marker `.fused-canvas.json`. `read_file` refuses a file over 20 MB (stat first).
+- `list_dir` and `search` judge a symlink by its RESOLVED target, as `read_file` does: a link out of the fence or to
+  a hidden / secret file (a `notes.txt` pointing at `.env`) is neither listed, found nor opened. Content search
+  opens regular files only (a FIFO, socket or device is skipped, never opened).
 - `on_tool(name, input, result_text)` is called after each call (chat uses it to emit `action` events).
 
 ### `experts/memory.py`
@@ -292,7 +295,7 @@ correction (§13) resolves the pair instead of only marking it. Archived with
 `outcome: {"op": "contradict", "item": <contradicted id>, "new": <lesson the rule landed on, if any>}`; dropped or
 omitted by the model it still counts the contradiction (not in `ignored`). Guards on the model path: an
 `advice_contradicted` observation is never bumped (`bump` is read as `add`), and no observation may bump a lesson
-the same batch contradicts (read as `add`).
+the same batch contradicts (read as `add`); a deterministic `confirms` of such a lesson is `nothing` (`ignored`).
 Observations with trust `gap` are never added as lessons; they are counted in `ignored` and folded into gap
 records (they stay visible in `done/`). A failed or unreadable call merges no gaps; with only gap observations
 pending it counts no failure.
@@ -421,7 +424,7 @@ trigger line) and asked for ops applied after its own (a `move`, and / or `trigg
 Still over → the material the ops added or replaced becomes a `create` of a separate new skill (title from its
 first heading, its own trigger words; `overflow_from` names the full skill), the existing skill untouched, and the
 card says "That skill is full, so this goes into a new skill …". Material that does not fit even a new skill is
-`failed` with the reason (a reorganise has no fallback: it fails).
+`failed` with the reason (a reorganise and a correction have no fallback: they fail).
 
 **Reorganise** (`kind: "reorganise"`, from tidy's skill pressure, §12): no lessons; the draft shows that skill in
 full, says it is nearly full (its size and the limit) and asks for ops that make it smaller without losing what
@@ -430,7 +433,9 @@ goes through the same rules, warnings and card ("The skill “X” is nearly ful
 to reorganise it: <why>").
 
 **Approve** re-applies the stored `ops` (and trigger changes) to the skill as it is NOW (another approval may have
-changed it since); if any op no longer applies it fails ("the skill changed since this was drafted"), then
+changed it since); if any op no longer applies, or a section an op replaces, removes, moves or adds differs from
+that section in `base_body` (the user or another approval edited it), it fails ("the skill changed since this was
+drafted", asking for a new draft) rather than overwrite that edit; sections no op names may have changed. Then it
 re-checks the limits, backs every file it writes up to `<expert_dir>/skill-backups/<name>.<unix ts>.md` (newest 20
 per skill kept), writes the edited skill (and a move's new skill), then reads each back through `bot.skills()` and
 compares the stored body and trigger with what was intended. A failed save or any mismatch restores EVERY backup
@@ -538,6 +543,10 @@ Pattern: `Bot.greet` (bot.py) — install a worker as `bot.thread` under `bot.lo
 (`detail` = diff, plus `expert_proposal: <id>`, `expert_warnings: [str]`, `score_before: null`, `score_after: null`), `set_status("waiting",
 waiting_on=seq)`, wait on the inbox, classify with the YES / NO regexes, then `proposals.approve` /
 `reject`, emit a `note`, set idle, release the thread, re-deliver any non-verdict text as a new task.
+A re-delivery (a card worker's or a chat task's hand-back, `chat.redeliver`) keeps each message object, so it runs
+under `chat._redeliver_via` (an outside message stays outside: no `remember_lesson` / `forget_lesson` /
+`propose_skill`), and `start_task` is called under the same `bot.lock` that released the slot, so no other card can
+take it in between and the messages are never dropped.
 
 ### `experts/gaps.py` (§11)
 ```
@@ -552,6 +561,7 @@ get(bot, gid) ; ids(bot) -> set
 record(bot, question, *, consult="", session="") -> Gap   # same normalised question bumps (once per consult)
 merge(bot, a, b) -> Gap | None        # into the older; counts summed, lists united; only open gaps
 dismiss(bot, gid) -> Gap
+snooze(bot, gid, until) -> Gap | None # "open", off any card, `snoozed_until` = until (cards' "later" reply)
 answer(bot, gid, text) -> Gap         # memory.add(trust="user"); status answered, resolution "user"
 repairable(bot, touched=()) -> [Gap]  # step c's gaps (may_research); [] when manifest gaps.research is false
 may_research(bot, gap) -> bool        # the research limits, every path (§11); research() raises ValueError otherwise
@@ -598,7 +608,8 @@ Watermark (`experts-captured.json`): `session_id -> {"size", "at", "experts": {e
 expert read the conversation and the consult ids it saw, §13). `capture_session` marks its (session, expert);
 `capture_due` skips experts that already read the session at this size, counts a raising capture
 (`note_failure`; after `MAX_FAILS` = 3 at one size it marks that expert `gave_up`), and sets the
-session-level `size` once every relevant expert has read it, so a failing capture cannot block the queue
+session-level `size` once every relevant expert has read it (an unavailable relevant expert is skipped but
+still counted, so the session stays due until it reads it once its engine is back), so a failing capture cannot block the queue
 and a resumed session is read again only once its transcript has grown.
 
 ### `experts/scheduler.py`
@@ -628,7 +639,11 @@ shipped_skill_path(bot, name) -> path | None   # the shipped file of that skill 
 restore_shipped_skill(bot, name) -> bool       # repair: shipped file copied over the skill
 skills_health(bot) -> [{name, shipped, body_chars, limit, damaged, reasons}]   # no model call
 ```
-Creates each shipped expert once (witness lists keys already seeded, so a deleted expert stays deleted).
+Creates each shipped expert once (witness lists keys already seeded, so a deleted expert stays deleted). The
+expert is created with `seed_pending: true` in its manifest and a `pending` witness row; its face, skills and
+`questions.md` are then copied, and only when every copy succeeded are both marks cleared. A start that finds a
+pending expert (or one with the mark and no witness row) copies only what is missing and completes it; a complete
+seed is never touched again (the user's edits stand), and a pending one the user deleted is marked done.
 `restore_shipped_skill` backs the current file up (as `approve` does), copies the shipped file over it byte for
 byte and clears that skill's entries from `learned-sections.json`; False when the expert is not shipped or has
 no such shipped skill. `skills_health` marks a skill `damaged` when it is shipped and its current body has fewer
@@ -672,6 +687,8 @@ raises `tool_timeout_sec`; `_appended_prompt` gains a note listing the experts o
 - Session lessons (trust `outcome`) reach every answer only after consolidation by a model and only once
   seen in two sessions (`memory.indexed`).
 - A consult with a `run_id` may only ask an expert in that run's recorded roster.
+- A session that pre-allowed `expert_consult` (every roster expert fenced at start) is refused a consult of an
+  expert whose reads are no longer fenced (`model.fenced` re-checked at consult time).
 - Capture extracts only: a pattern the user asked for, a user correction, an error then a fix that worked,
   expert advice confirmed or contradicted. Text the session merely read is never a lesson.
 - A skill is only ever written by `proposals.approve`, after the user's Approve on the card.
@@ -684,7 +701,7 @@ POSTs require the `X-Fused` header (`server.common._require_fused`). Errors are 
 | Route | Body / answer |
 |---|---|
 | `GET /api/experts` | `[{id, name, ask_me_about, engine, model, available, reason}]` |
-| `POST /api/experts/consult` | `{expert, question, context?, run_id?}` → `{id, answer, refs, used, unsure}`; 404 unknown expert; 409 `{error, reason:"unavailable"}`; 403 `{error: "that expert is not offered to this session"}` when `run_id` is given, `<run dir>/experts.json` exists and the expert is not in it (matched by `id` when the entry has one, else by name, case-insensitive). No `run_id` (a local call): any expert. |
+| `POST /api/experts/consult` | `{expert, question, context?, run_id?}` → `{id, answer, refs, used, unsure}`; 404 unknown expert; 409 `{error, reason:"unavailable"}`; 403 `{error: "that expert is not offered to this session"}` when `run_id` is given, `<run dir>/experts.json` exists and the expert is not in it (matched by `id` when the entry has one, else by name, case-insensitive). 403 `{error: "this expert's engine changed since this session started … needs your approval …"}` when that roster pre-allowed `expert_consult` (every entry `auto_allow`) but the expert is not fenced NOW (`model.fenced`, e.g. switched to Codex): a consult never runs without a card on an unfenced expert. No `run_id` (a local call): any expert. |
 | `GET /api/experts/{id}/memory` | `{items: [Item + {indexed: bool, uses: int}], index: str, limit: int, tidy_at: int, total: int, last_tidy: TidySummary \| null}`; every item carries `contradicted` (int), `contradicted_sessions` (0 / `[]` when absent), `cited` (int, 0 when absent), `last_used` (ts or null), `confirmed` (int), `via` (`""` / `"session"`), `history` (`[{claim, at}]`) and, when a merge made it, `merged_from` (§12) |
 | `GET /api/experts/{id}/memory/archive` | `{archived: [Item + {removed_at, reason, skill?, why?, into?}]}`, newest first, 100 (§12) |
 | `POST /api/experts/{id}/memory/forget` | `{id}` → `{removed}` |
@@ -764,6 +781,8 @@ skill fixes. Nothing else researches; the scheduler only decides WHEN consolidat
      starts). If a proposal is already being prepared, the lesson waits: `proposals.candidates` takes an
      un-proposed `research` lesson regardless of count on the next run.
    - **Not found** (or a failed run): `attempts += 1`, `error` says why, the gap stays `open`.
+   - Either result is applied under `store.lock(bot)` only while the gap is still `researching`: one the user
+     answered or dismissed during the run keeps that decision (no lesson, no proposal, no attempt counted).
 4. **Propose** (stage `proposing`): `proposals.propose_candidates` as before. Approve → gap `answered`
    (resolution `skill`) and the research lesson leaves memory for the archive (the skill now carries it, §12); reject or a failed proposal →
    `dismissed` (never researched or proposed again).
@@ -904,7 +923,9 @@ line with, this expert's advice in that session (the consult records are in the 
 
 **A verified user correction takes effect at once** (`consolidate.correction`: `by_user` with a quote, kind
 `user_correction` or `advice_contradicted`, not `after_advice`). Its lesson is stored with trust `user` and
-`via: "session"`, so it is indexed (used in answers) immediately, like chat teaching. When it contradicts a lesson
+`via: "session"`, so it is indexed (used in answers) immediately, like chat teaching; one that confirms an existing
+lesson (a deterministic `confirms` or a model `bump`) raises that lesson to trust `user` / `via: "session"` the same
+way, even when its session was already counted. When it contradicts a lesson
 in memory, ONE `model.text` call per (old, new) pair (`consolidate.resolve`) answers
 `{"resolution": "replace" | "narrow", "narrowed_claim"?}`: `replace` → the old lesson leaves memory with reason
 `corrected` and `into: <new id>`; `narrow` → `memory.narrow` rewrites its claim (the previous one appended to
@@ -918,8 +939,10 @@ before. A contradiction that is not a verified user statement keeps that behavio
 `skill`; capture lists such archived rules with their ids so `contradicts` may name them), the run requests
 `proposals.request([new lesson], correction={"skill","old","quote"})`: the record carries `reason: "correction"`, the
 draft is shown that skill in full and told to `replace` or `remove` the text stating the old rule (anything but an
-update of that skill fails the draft), and the card reads "You corrected something a skill says. I'd like to change
-it:". Single flight: while any proposal is open, the correction waits in `<expert_dir>/pending-corrections.json` and
+update of that skill with at least one `replace` or `remove` op fails the draft, as does an update that does not fit
+the skill: never a separate new skill), and the card reads "You corrected something a skill says. I'd like to change
+it:". Single flight: while any proposal is open, the correction waits in `<expert_dir>/pending-corrections.json` (one
+entry per (lesson, skill)) and
 is requested at the next consolidation when the slot is free (`drain_corrections`, one per run; entries whose lesson
 left memory are dropped). `run` returns their ids as `corrections` (also in `proposed`).
 

@@ -197,6 +197,25 @@ def offered_to_run(bot, run_id) -> bool:
     return False
 
 
+#: The refusal when a session that pre-allowed `expert_consult` asks an expert whose reads are no longer fenced.
+UNFENCED_NOW = ("this expert's engine changed since this session started and its reads are no longer limited to "
+                "its folders (Codex), so a consult now needs your approval: start a new session to consult it")
+
+
+def pre_allowed_for_run(run_id) -> bool:
+    """Whether the session `run_id` was started with `expert_consult` pre-allowed: its recorded roster is
+    non-empty and every entry was fenced then (`auto_allow`, agent `_expert_auto_allow`). Such a session's
+    consults run with no card, so the route re-checks the expert's engine now (`model.fenced`)."""
+    roster = _run_roster(run_id)
+    if not roster:
+        return False
+    try:
+        agent = _agent()
+        return bool(agent._expert_auto_allow([e for e in map(agent._expert_entry, roster) if e]))
+    except Exception:  # noqa: BLE001
+        return all(isinstance(e, dict) and e.get("auto_allow") is True for e in roster)
+
+
 def canvas_clone(path) -> str:
     """The canvas clone `path` sits inside, or "" (`canvases._clone_for_session`,
     which also follows a moved clone's old path)."""
@@ -232,6 +251,10 @@ def experts_consult(body: dict = Body(...), x_fused: str | None = Header(default
     ok, reason = _mod("model").available(bot)
     if not ok:
         raise _Unavailable(reason or "no engine is available for this expert")
+    if run_id and not _mod("model").fenced(bot) and pre_allowed_for_run(run_id):
+        # The session pre-allowed consults when every expert was fenced; this one no longer is (its engine is
+        # Codex now). A consult with no card would let it read outside its folders: refuse instead.
+        return _error(UNFENCED_NOW, 403)
     res = _mod("consult").consult(bot, question.strip(), context, caller_for_run(run_id))
     return {k: res.get(k) for k in ("id", "answer", "refs", "used", "unsure")}
 

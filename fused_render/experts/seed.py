@@ -5,7 +5,9 @@ Each folder under `SHIPPED_DIR` is one expert: `expert.json` (`{"name",
 `# Title`, `trigger: a, b`, blank line, body) and `questions.md` (the quality
 gate's questions). `seed()` creates each one ONCE: the witness
 `<home>/bots/experts-seeded.json` lists the keys seeded so far, so an expert the
-user deletes stays deleted. Called by the bots owner right after the Super Bot
+user deletes stays deleted. An install cut short (the app quit after the create,
+a skill that did not copy) is marked `seed_pending` on the expert and `pending`
+in the witness; the next start copies only what is missing, then marks it done. Called by the bots owner right after the Super Bot
 seed (registry `_become_owner`); never raises.
 """
 from __future__ import annotations
@@ -62,6 +64,11 @@ def _read_text(path) -> str:
         return ""
 
 
+#: Set in the expert's manifest (`meta["expert"]`) while its seed is still being installed; cleared once every
+#: skill and `questions.md` is in place. A start that finds it set finishes the install.
+PENDING = "seed_pending"
+
+
 def _existing(key):
     """An expert already carrying this shipped key (an import, or a seed whose witness write failed)."""
     try:
@@ -79,20 +86,40 @@ def _existing(key):
     return None
 
 
-def _seed_one(key: str):
-    from fused_render.bots import bot as bm
+def _spec(key):
     src = os.path.join(SHIPPED_DIR, key)
     with open(os.path.join(src, "expert.json"), encoding="utf-8") as f:
         spec = json.load(f)
     if not isinstance(spec, dict):
         raise ValueError(f"{key}/expert.json is not an object")
+    return src, spec
+
+
+def _seed_one(key: str):
+    from fused_render.bots import bot as bm
+    src, spec = _spec(key)
     manifest = dict(spec.get("manifest") or {}) if isinstance(spec.get("manifest"), dict) else {}
     manifest["shipped"] = key
+    manifest[PENDING] = True  # until `_install` has put every skill in place
     name = " ".join(str(spec.get("name") or key).split())[:80]
     instructions = _read_text(os.path.join(src, "instructions.md")).strip()
-    b = bm.create(name=name, instructions=instructions, kind="expert", greet=False, expert=manifest)
+    return bm.create(name=name, instructions=instructions, kind="expert", greet=False, expert=manifest)
+
+
+def _pending(b) -> bool:
+    raw = b.meta.get("expert")
+    return isinstance(raw, dict) and bool(raw.get(PENDING))
+
+
+def _install(b, key: str) -> bool:
+    """Put the shipped face, skills and `questions.md` on expert `b` (created by `_seed_one`): what is already
+    there is kept, only what is missing is copied, so an interrupted install resumes. True when everything is in
+    place: the pending mark is then cleared. False when a copy failed (the next start tries again)."""
+    from fused_render.bots import bot as bm
+    src, spec = _spec(key)
+    ok = True
     face = spec.get("face")
-    if isinstance(face, dict):
+    if isinstance(face, dict) and not isinstance(b.meta.get("face"), dict):
         with b.lock:
             b.meta["face"] = {k: face[k] for k in ("shape", "color", "icon") if k in face}
             b.save()
@@ -102,44 +129,78 @@ def _seed_one(key: str):
     except OSError:
         names = []
     for n in names:
+        if os.path.isfile(os.path.join(b.skills_dir, n)):
+            continue
         try:
             title, trigger, body = bm.Bot._parse_skill(_read_text(os.path.join(skills_dir, n)))
             b.skill_save(title or n[:-3], trigger, body, name=n[:-3])
         except Exception:  # noqa: BLE001 — one bad skill file never loses the expert
             logger.warning("expert seed %s: skill %s not copied", key, n, exc_info=True)
+            ok = False
     q = os.path.join(src, "questions.md")
-    if os.path.isfile(q):
+    dst = os.path.join(b.public_dir, "questions.md")
+    if os.path.isfile(q) and not os.path.isfile(dst):
         try:
-            shutil.copyfile(q, os.path.join(b.public_dir, "questions.md"))
+            shutil.copyfile(q, dst)
         except OSError:
             logger.warning("expert seed %s: questions.md not copied", key, exc_info=True)
-    return b
+            ok = False
+    if ok:
+        with b.lock:
+            raw = b.meta.get("expert")
+            if isinstance(raw, dict) and PENDING in raw:
+                raw = dict(raw)
+                raw.pop(PENDING, None)
+                b.meta["expert"] = raw
+                b.save()
+    return ok
+
+
+def _finish(bid, key) -> bool:
+    """Finish the install of an existing expert whose seed was interrupted. True when it is complete (or was
+    never a pending seed: an import, a seed done before)."""
+    from fused_render.bots import registry
+    b = registry.get(bid)
+    return _install(b, key) if _pending(b) else True
 
 
 def seed() -> list[str]:
-    """Create every shipped expert not seeded before. Returns the ids created now."""
+    """Create every shipped expert not seeded before, and finish any whose install was interrupted (the witness
+    row stays `pending` until it is complete). Returns the ids created now."""
     created: list[str] = []
     keys = shipped_keys()
     if not keys:
         return created
     seeded = _read_witness()
-    for key in keys:
-        if key in seeded:
-            continue
-        bid = _existing(key)
-        if bid is None:
-            try:
-                b = _seed_one(key)
-            except Exception:  # noqa: BLE001 — the next start tries again (no witness row)
-                logger.warning("expert seed %s failed", key, exc_info=True)
-                continue
-            bid = b.id
-            created.append(bid)
-        seeded[key] = {"id": bid, "at": time.time()}
+
+    def witness(key, bid, done):
+        seeded[key] = {"id": bid, "at": time.time(), **({} if done else {"pending": True})}
         try:
             _write_witness(seeded)
         except OSError:
             logger.warning("could not write %s", witness_path(), exc_info=True)
+
+    for key in keys:
+        row = seeded.get(key)
+        if isinstance(row, dict) and not row.get("pending"):
+            continue  # seeded and complete: the user's edits (and a delete) stand
+        bid = _existing(key)
+        if bid is None and row is not None:
+            witness(key, row.get("id") if isinstance(row, dict) else None, True)  # deleted mid-install: stays so
+            continue
+        try:
+            if bid is None:
+                b = _seed_one(key)
+                bid = b.id
+                created.append(bid)
+                witness(key, bid, False)
+                done = _install(b, key)
+            else:
+                done = _finish(bid, key)
+        except Exception:  # noqa: BLE001 — the next start tries again (no witness row, or a pending one)
+            logger.warning("expert seed %s failed", key, exc_info=True)
+            continue
+        witness(key, bid, done)
     return created
 
 

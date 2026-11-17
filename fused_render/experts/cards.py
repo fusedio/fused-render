@@ -142,7 +142,7 @@ def _worker(bot, proposal) -> None:
         bot.set_status("waiting", task="Skill proposal", step=0, note="", waiting_on=None)
         seq = raise_card(bot, proposal)
         verdict, others = wait_verdict(bot, seq, keep_live=False)
-        queued = [str(a) for a in others]
+        queued = list(others)  # the message objects: an outside one keeps its via (never local trust)
         if verdict is not None:
             settle(bot, proposal, verdict)
         elif queued:
@@ -156,22 +156,30 @@ def _worker(bot, proposal) -> None:
         except Exception:  # noqa: BLE001
             pass
     finally:
-        try:
-            with bot.lock:
-                queued += [str(a) for a in bot._drain_inbox()]
-                bot.set_status("idle", note="", waiting_on=None)
-                if bot.thread is threading.current_thread():
-                    bot.thread = None
-        except Exception:  # noqa: BLE001
-            logger.warning("expert %s: card slot not released cleanly", bot.id, exc_info=True)
-            with bot.lock:
-                if bot.thread is threading.current_thread():
-                    bot.thread = None
-        if queued:
-            try:
-                bot.start_task("\n".join(queued), label=queued[0])
-            except Exception:  # noqa: BLE001
-                logger.warning("expert %s: queued message not re-delivered", bot.id, exc_info=True)
+        _release_slot(bot, queued, "card")
+
+
+def _release_slot(bot, queued, what) -> None:
+    """A card worker's exit: drain the inbox, go idle, give up `bot.thread` and re-deliver the messages the card
+    put aside (`chat.redeliver`: under their own via, in the same lock as the release so no other worker takes
+    the slot first)."""
+    from fused_render.experts import chat
+    try:
+        with bot.lock:
+            queued += list(bot._drain_inbox())
+            bot.set_status("idle", note="", waiting_on=None)
+            if bot.thread is threading.current_thread():
+                bot.thread = None
+            if queued:
+                try:
+                    chat.redeliver(bot, queued)
+                except Exception:  # noqa: BLE001
+                    logger.warning("expert %s: queued message not re-delivered", bot.id, exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.warning("expert %s: %s slot not released cleanly", bot.id, what, exc_info=True)
+        with bot.lock:
+            if bot.thread is threading.current_thread():
+                bot.thread = None
 
 
 def _oldest_open(bot):
@@ -301,7 +309,7 @@ def snooze_gap(bot, gid, days=SNOOZE_DAYS):
     """Put a gap question off: the gap is "open" again with `snoozed_until` = now + `days`; nothing is saved to
     memory. Until then it is neither asked nor researched."""
     from fused_render.experts import gaps
-    return gaps._update(bot, gid, status="open", card_seq=None, snoozed_until=time.time() + days * 86400.0)
+    return gaps.snooze(bot, gid, time.time() + days * 86400.0)
 
 
 def _snoozed(gap) -> bool:
@@ -365,22 +373,5 @@ def _gap_worker(bot, gap) -> None:
                 gaps.put_aside(bot, gid, stopped=stopped)
             except Exception:  # noqa: BLE001
                 logger.warning("expert %s: gap %s not put aside", bot.id, gid, exc_info=True)
-        try:
-            with bot.lock:
-                queued += list(bot._drain_inbox())
-                bot.set_status("idle", note="", waiting_on=None)
-                if bot.thread is threading.current_thread():
-                    bot.thread = None
-        except Exception:  # noqa: BLE001
-            logger.warning("expert %s: gap card slot not released cleanly", bot.id, exc_info=True)
-            with bot.lock:
-                if bot.thread is threading.current_thread():
-                    bot.thread = None
         gaps.card_release(bot, gid)
-        if queued:
-            try:
-                from fused_render.experts import chat
-                bot.start_task("\n".join(str(a) for a in queued), label=str(queued[0]),
-                               via=chat._redeliver_via(queued))
-            except Exception:  # noqa: BLE001
-                logger.warning("expert %s: queued message not re-delivered", bot.id, exc_info=True)
+        _release_slot(bot, queued, "gap card")

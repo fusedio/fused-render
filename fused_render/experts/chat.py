@@ -346,6 +346,19 @@ def _redeliver_via(queued):
     return None
 
 
+def redeliver(bot, queued) -> bool:
+    """Start the messages a worker left in the inbox as one new task, under `_redeliver_via(queued)` (an outside
+    message keeps its outside posture). Call it holding `bot.lock`, right after this worker released the slot:
+    the lock is an RLock and `start_task` takes the slot under it, so no other worker (a card, a gap question)
+    can claim the slot in between and make `start_task` refuse (and the messages be lost). True when started."""
+    if not queued:
+        return False
+    ok = bot.start_task("\n".join(str(m) for m in queued), label=str(queued[0]), via=_redeliver_via(queued))
+    if not ok:
+        logger.warning("expert %s: queued message not re-delivered (refused)", getattr(bot, "id", "?"))
+    return bool(ok)
+
+
 def _hand_back(bot) -> None:
     """Release the bot the way `Bot.greet` does, then re-deliver what the turn left in the inbox as a new task,
     or show a skill proposal that became ready meanwhile (`cards.tick_one`). Never raises."""
@@ -353,21 +366,24 @@ def _hand_back(bot) -> None:
     queued = []
     try:
         with bot.lock:
-            # Drain and release under one lock: receive() queues into the inbox only while it sees this thread
-            # alive, so nothing can land between the drain and the hand-over.
+            # Drain, release and re-deliver under one lock: receive() queues into the inbox only while it sees
+            # this thread alive, so nothing can land between the drain and the hand-over, and no card worker can
+            # take the slot before the re-delivered task does.
             if bot.thread is not me:
                 return
             queued = list(bot._drain_inbox())
             bot.task_via = dict(chan.WEB)
             bot.thread = None
+            if queued:
+                try:
+                    redeliver(bot, queued)
+                except Exception:  # noqa: BLE001
+                    logger.warning("expert %s: queued message not re-delivered", bot.id, exc_info=True)
     except Exception:  # noqa: BLE001
         logger.warning("expert %s: task slot not released cleanly", getattr(bot, "id", "?"), exc_info=True)
         return
     try:
         if queued:
-            text = "\n".join(str(m) for m in queued)
-            if not bot.start_task(text, label=str(queued[0]), via=_redeliver_via(queued)):
-                logger.warning("expert %s: queued message not re-delivered (refused)", bot.id)
             return
         from fused_render.experts import cards
         cards.tick_one(bot)
