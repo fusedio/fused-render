@@ -568,8 +568,13 @@ button.tasks-caret,
   pointer-events: none;
   transition: opacity var(--dur-med) var(--ease-out);
 }
-body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after,
-body:has(.hint-panel.is-row.is-on) .modal-popover .modal-dialog.new-task-dialog::after {
+/* NOT FOR A ROW THE SCROLL BROUGHT (hints.ts `is-passing`; Akshil, 2026-11-17:
+   "when I scroll there is a little flash of the overlay that comes in and
+   goes out"): rings sliding under a resting pointer raise their rows and
+   each scroll tick takes them down again; the windows stay as they are until
+   the pointer itself moves onto a ring. */
+body:has(.hint-panel.is-row.is-on:not(.is-passing)) .claude-rail-peek > .claude-rail-peek-card::after,
+body:has(.hint-panel.is-row.is-on:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after {
   opacity: 1;
 }
 .hint-row {

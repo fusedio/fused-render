@@ -299,6 +299,35 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     expect(place).toContain("const left = Math.max(EDGE, edge - 8 - w);");
   });
 
+  it("a row raised by a scroll under a resting pointer is marked passing; a pointer somewhere new, or the keyboard, clears it", () => {
+    // The scroll that hides the hint also arms the mark…
+    expect(SRC).toContain('window.addEventListener("scroll", onScrolled, true);');
+    const scrolled = SRC.slice(SRC.indexOf("function onScrolled"));
+    expect(scrolled.slice(0, scrolled.indexOf("\n}"))).toContain("passing = true;");
+    // …a row shown while it is armed wears it, and only a row…
+    const show = SRC.slice(SRC.indexOf("function show("));
+    expect(show.slice(0, show.indexOf("\n}"))).toContain('p.classList.toggle("is-passing", row && passing);');
+    // …and it goes when a pointer event reports a NEW spot: the events a
+    // scroll causes under a pointer at rest carry the spot it already had.
+    const pointed = SRC.slice(SRC.indexOf("function pointed("));
+    const body = pointed.slice(0, pointed.indexOf("\n}"));
+    expect(body).toContain("if (e.clientX === pointerX && e.clientY === pointerY) return;");
+    expect(body.indexOf("return;")).toBeLessThan(body.indexOf("passing = false;"));
+    expect(body).toContain('panel.classList.remove("is-passing");');
+    for (const fn of ["function onOver(", "function onMove("]) {
+      const at = SRC.indexOf(fn);
+      expect(SRC.slice(at, at + 80)).toContain("pointed(e);");
+    }
+    // The keyboard's hint is the reader's own.
+    const focus = SRC.slice(SRC.indexOf("function onFocus("));
+    const fbody = focus.slice(0, focus.indexOf("\n}"));
+    expect(fbody.indexOf("passing = false;")).toBeGreaterThan(-1);
+    expect(fbody.indexOf("passing = false;")).toBeLessThan(fbody.indexOf("show(el"));
+    // A hide takes the mark down with the row.
+    const hide = SRC.slice(SRC.indexOf("export function hideHint"));
+    expect(hide.slice(0, hide.indexOf("\n}"))).toContain('panel.classList.remove("is-passing");');
+  });
+
   it("a hide takes the row form and its width with it", () => {
     // The panel is shared: a plain hint shown next must not come up a 420px
     // row-shaped box.
@@ -334,8 +363,12 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     // for + new button, bots and tasks as well"): window A in the Modal
     // chassis, named beside the cards. Its `::before` is the accent line.
     expect(TASKS_CSS).toContain(
-      "body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after,\nbody:has(.hint-panel.is-row.is-on) .modal-popover .modal-dialog.new-task-dialog::after {\n  opacity: 1;\n}",
+      "body:has(.hint-panel.is-row.is-on:not(.is-passing)) .claude-rail-peek > .claude-rail-peek-card::after,\nbody:has(.hint-panel.is-row.is-on:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after {\n  opacity: 1;\n}",
     );
+    // No scrim for a row the SCROLL brought (2026-11-17: "when I scroll there
+    // is a little flash of the overlay that comes in and goes out"): no rule
+    // dims on `.is-row.is-on` alone any more.
+    expect(TASKS_CSS).not.toContain("body:has(.hint-panel.is-row.is-on) ");
     const newTask = readFileSync(join(import.meta.dir, "../../styles/new-task.css"), "utf8");
     expect(newTask).toContain(".new-task-dialog::before {");
     expect(newTask).not.toContain(".new-task-dialog::after");
