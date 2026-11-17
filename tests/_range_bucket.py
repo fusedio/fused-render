@@ -1,6 +1,7 @@
 """A local stand-in for an S3 bucket that speaks Range, ETag and If-Match,
 plus the `bucket` fixture that serves it on loopback over plain http (which
-DuckDB's httpfs reads like any URL). Used by tests/test_duckdb_stream.py.
+DuckDB's httpfs and GDAL's /vsicurl/ read like any URL). Used by
+tests/test_duckdb_stream.py and tests/test_geotiff_stream.py.
 """
 import hashlib
 import threading
@@ -46,6 +47,20 @@ class _Bucket:
                     return self._send(206, data[a:b + 1], etag,
                                       f"bytes {a}-{b}/{len(data)}")
                 return self._send(200, data, etag)
+
+            def do_HEAD(self):
+                data = bucket.objects.get(self.path.split("?")[0])
+                bucket.log.append((self.path, "HEAD", None))
+                if data is None:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("ETag", f'"{hashlib.md5(data).hexdigest()}"')
+                self.end_headers()
 
             def _send(self, status, body, etag=None, cr=None):
                 self.send_response(status)
