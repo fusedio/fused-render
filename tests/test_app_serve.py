@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -66,6 +67,11 @@ def test_a_host_lists_and_calls_the_tool_over_stdio(app_dir):
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "fused_render.cli", "app", "serve", str(app_dir)],
+            # The SDK's default child env keeps only HOME/PATH/USER and a few
+            # more, which drops conftest's FUSED_RENDER_HOME redirect: the
+            # server would then stage core templates into the real
+            # ~/.fused-render. Pass this process's (redirected) env through.
+            env=dict(os.environ),
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
