@@ -17,18 +17,16 @@ _log = logging.getLogger("openfused.handler")
 # particular stores autoloaded/autoinstalled extensions under ~/.duckdb/extensions
 # and secrets under ~/.duckdb/stored_secrets, so a query that touches httpfs/spatial
 # (e.g. reading from s3://) tries to create ~/.duckdb and fails when HOME is not
-# writable. On AWS Lambda the whole root filesystem is read-only except /tmp, and
-# HOME points at a read-only path (or is unset), so such a UDF errors with
-# "Read-only file system" / "Permission denied" — with no way to fix it from user
-# code. Redirect HOME (and the XDG cache/config/data dirs, which default to subdirs
-# of HOME) to a writable directory so the UDF runs unchanged.
+# writable. When HOME points at a read-only path (a sandboxed or managed account)
+# or is unset, such a script errors with "Read-only file system" / "Permission
+# denied" — with no way to fix it from user code. Redirect HOME (and the XDG
+# cache/config/data dirs, which default to subdirs of HOME) to a writable
+# directory so the script runs unchanged.
 #
-# Self-detecting: when HOME is already a writable directory (the local backend on a
-# developer machine), this is a no-op, so the developer's real ~/.aws / ~/.config
-# keep resolving. The redirected dir lives under the temp dir (…/openfused-home),
-# is created on demand, and is shared for the container's lifetime so the DuckDB
-# extension cache is reused across warm invocations (each per-tenant Lambda serves
-# one tenant, so a container-lifetime home never crosses a tenant boundary).
+# Self-detecting: when HOME is already a writable directory (the usual case), this
+# is a no-op, so the user's real ~/.config and other dotfiles keep resolving. The
+# redirected dir lives under the temp dir (…/openfused-home), is created on demand,
+# and is reused across calls so the DuckDB extension cache is kept.
 #
 # Two operator escape hatches override the autodetection, for when it guesses wrong
 # or a read-only home is genuinely wanted:
@@ -45,10 +43,8 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 # --- Per-call working directory --------------------------------------------
-# This used to be the literal `f"/tmp/exec/{uuid4()}"`. On Lambda that is right:
-# `/tmp` is the function's own private scratch and this handler is the only thing
-# in the container. But the LOCAL backend runs this same file verbatim on a
-# developer's machine, where `/tmp` is MACHINE-WIDE — so the first account to make
+# This used to be the literal `f"/tmp/exec/{uuid4()}"`. But `/tmp` is
+# MACHINE-WIDE — so the first account to make
 # a call created `/tmp/exec` under its own umask (`drwxr-xr-x <that user>`) and
 # every other account on the host then failed EVERY call with
 #
@@ -76,13 +72,11 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 #      where a hard kill used to orphan `/tmp/exec/<uuid>` for good. `LocalPythonComputeBackend`
 #      sets it to the workspace it writes `run.py`/`handler.py`/`event.json` into.
 #   2. `{tempfile.gettempdir()}/openfused-exec-<uuid4>` — no intermediate directory.
-#      On Lambda `TMPDIR` is unset, so this is `/tmp/openfused-exec-<uuid4>`: one
-#      path component shallower than before, in the same `/tmp` it always used.
 #
 # The `openfused-exec-` prefix is the one thing the old `exec` parent bought that a
-# bare uuid would lose. `shutil.rmtree` in `lambda_handler`'s `finally` reclaims the
-# dir per call, so the only way to orphan one is a hard kill (SIGKILL, a Lambda
-# timeout) — and on a shared `/tmp` an orphan named nothing but a uuid is
+# bare uuid would lose. `shutil.rmtree` in `handle_call`'s `finally` reclaims the
+# dir per call, so the only way to orphan one is a hard kill (SIGKILL) — and on a
+# shared `/tmp` an orphan named nothing but a uuid is
 # unattributable, where `rm -rf $TMPDIR/openfused-exec-*` is not.
 #
 # A caller-supplied root is never modified. Its mode is the caller's business, and
@@ -148,8 +142,8 @@ def _point_home_at(env, home):
 
 def _with_writable_home(env):
     """Return `env` with HOME pointed at a writable dir when the current HOME is
-    missing or read-only (the Lambda case); unchanged when HOME is already writable
-    (the local backend). Never mutates the caller's dict. See the module note above
+    missing or read-only; unchanged when HOME is already writable (the usual
+    case). Never mutates the caller's dict. See the module note above
     for the OPENFUSED_RO_HOME / OPENFUSED_HOME operator overrides."""
     # Escape hatch: keep the environment's HOME untouched (even if read-only).
     if _env_flag(env.get("OPENFUSED_RO_HOME")):
@@ -204,7 +198,7 @@ def _write_sdk(call_dir, work_dir):
             _f.write(content)
 
 
-def lambda_handler(event, context):
+def handle_call(event, context):
     call_dir = _make_call_dir(event)
     try:
         # Input files the caller already wrote to disk, else the call dir itself.
@@ -232,16 +226,16 @@ def lambda_handler(event, context):
 
         # Export the execution bundle root so the openfused shim's project_root()/
         # asset_path() resolve against the dir user code runs in (sdk-openfused.md).
-        # On the local backend the per-call root (project dir) is already in the
-        # environment via _child_env; only fall back to work_dir when unset (the
-        # plain AWS/deployed-serve path), so a project's on-disk root is preserved.
+        # The per-call root (project dir) is normally already in the environment
+        # via the backend's _child_env; only fall back to work_dir when unset, so
+        # a project's on-disk root is preserved.
         runner_env = dict(os.environ)
         runner_env["OPENFUSED_PROJECT_ROOT"] = runner_env.get("OPENFUSED_PROJECT_ROOT") or work_dir
         # Point HOME at a writable dir so ~/.duckdb (extensions/secrets) and other
-        # home-rooted caches work on Lambda's read-only fs (no-op locally).
+        # home-rooted caches work when HOME is read-only (a no-op otherwise).
         runner_env = _with_writable_home(runner_env)
 
-        # Optional explicit entrypoint (runtime-lambda.md § Result logic rule 1):
+        # Optional explicit entrypoint (the runner's first resolution rule):
         # threaded to the runner as argv[3]. Meaningless in test mode (tests
         # import user_code and pick functions themselves), which returned above.
         runner_cmd = [sys.executable, runner_path, code_path, out_path]

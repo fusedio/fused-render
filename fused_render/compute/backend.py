@@ -57,12 +57,12 @@ import sys
 workspace = os.path.dirname(os.path.abspath(__file__))
 os.chdir(workspace)
 sys.path.insert(0, workspace)
-from handler import lambda_handler
+from handler import handle_call
 
 with open(os.path.join(workspace, "event.json")) as fh:
     event = json.load(fh)
 
-result = lambda_handler(event, None)
+result = handle_call(event, None)
 print(json.dumps(result))
 """
 

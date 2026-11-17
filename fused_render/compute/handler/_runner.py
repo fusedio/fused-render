@@ -55,7 +55,7 @@ def _coerce_param(value, annotation):
     Serve GET query params and other string channels deliver every value as a
     str; when the entrypoint annotates a param as int/float/bool the runner
     converts it, so the same function works from JSON-typed and string-typed
-    callers alike (spec/runtime/runtime-lambda.md § Parameter binding). Values
+    callers alike. Values
     already of the annotated type, and unannotated params, pass through as-is.
     """
     import inspect
@@ -135,8 +135,8 @@ def _load_params():
 def main():
     code_path = sys.argv[1]
     out_path = sys.argv[2]
-    # Optional explicit entrypoint name (argv[3], empty = unset): resolution
-    # rule 1 of spec/runtime/runtime-lambda.md § Result logic. When set it is a
+    # Optional explicit entrypoint name (argv[3], empty = unset): the first
+    # resolution rule. When set it is a
     # complete answer — the convention rules (result / @fused.udf) never run.
     _entrypoint_name = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
     with open(code_path, encoding="utf-8") as _f:
@@ -183,7 +183,7 @@ def main():
         _has_result = "result" in _local_vars
         if _has_result and _udfs:
             # A `result` variable and a registered @fused.udf are mutually exclusive
-            # return contracts (spec/runtime/runtime-lambda.md): a script must pick exactly
+            # return contracts: a script must pick exactly
             # one so the runner never has to guess the author's intent. Fail loudly
             # rather than silently preferring `result`.
             _error = (
