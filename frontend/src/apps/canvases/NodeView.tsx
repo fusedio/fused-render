@@ -27,7 +27,7 @@
 // fused_embed_v=3&fused_embed_node=<udfName>, `base` the env's `embed_url`
 // (the custom env's loopback proxy when that is on) else its `base_url`, as
 // the workspace frames it.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { IS_EMBED, navigateUrl } from "@platform/lib/router";
 import type { NativeViewProps } from "@platform/ui/NativeView";
 import { finishLoad as finishTimeline, markLoad as markTimeline } from "@platform/lib/load-timeline";
@@ -120,8 +120,10 @@ export default function NodeView({ path }: NativeViewProps) {
   // re-booted frame is not a load) and once the mount is gone (an async step
   // that lands after an unmount must not mark, or end, the timeline of the
   // next open of the same file).
+  // A LAYOUT effect: its cleanup runs in the unmount's own commit, not a
+  // tick later, so no response can land between the unmount and the guard.
   const recording = useRef(true);
-  useEffect(() => {
+  useLayoutEffect(() => {
     recording.current = true;
     return () => {
       recording.current = false;

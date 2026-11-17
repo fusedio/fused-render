@@ -13,6 +13,7 @@ installDomShim();
 
 import NodeView from "./NodeView";
 import { emptySyncState } from "./sync-state";
+import { beginLoad, finishLoad, loadTimelines, openTimeline, resetLoadTimelines } from "@platform/lib/load-timeline";
 
 type Reply = { status?: number; body: unknown } | (() => Promise<{ status?: number; body: unknown }>);
 
@@ -412,5 +413,95 @@ describe("NodeView's frame and relay (NV-6, NV-7)", () => {
     expect(text(r)).not.toContain("Connecting");
     expect(r.root.findAll((n) => n.props?.className === "node-view-sync")).toEqual([]);
     r.unmount();
+  });
+});
+
+// NV-12: the view records its own open only — never a step that lands after
+// it ended its timeline or after it unmounted.
+describe("NodeView's load timeline (NV-12)", () => {
+  const PATH = "/Users/me/Fused/canvas/prod/user/demo/udf_1.py";
+  const ORIGIN = "https://www.fused.io";
+
+  beforeEach(() => resetLoadTimelines());
+
+  test("a step that lands after unmount does not mark the next open of the file", async () => {
+    let releaseStart!: () => void;
+    route("GET", "/api/canvases/node", { body: NODE });
+    route("POST", "/api/canvases/sync/start", () =>
+      new Promise((res) => {
+        releaseStart = () => res({ body: { name: "demo", dir: "/x", error: null } });
+      }),
+    );
+    route("GET", "/api/canvases/status", { body: STATUS });
+    route("GET", "/api/canvases/sync/state", { body: SYNC });
+    const r = await mount();
+    expect(openTimeline(PATH)?.stages.map((s) => s.stage)).toEqual(["mount", "info", "status"]);
+    r.unmount();
+    // The file is opened again; then the first mount's sync/start answers.
+    beginLoad(PATH, "udf_1.py");
+    await act(async () => releaseStart());
+    await settle();
+    expect(openTimeline(PATH)?.stages).toEqual([]);
+  });
+
+  test("once ready, a later hello marks nothing — even after the record was evicted", async () => {
+    route("GET", "/api/canvases/node", { body: NODE });
+    route("POST", "/api/canvases/sync/start", { body: { name: "demo", dir: "/x", error: null } });
+    route("GET", "/api/canvases/status", { body: STATUS });
+    route("GET", "/api/canvases/sync/state", { body: SYNC });
+    route("GET", "/api/canvases/token", { body: { access_token: "tok" } });
+    route("GET", "/api/canvases/delta", { body: { rev: 1, base_rev: null, full: true, ops: [{ op: "upsert", name: "udf_1" }], gen: null, seq: null } });
+    route("POST", "/api/canvases/delta/ack", { body: { ok: true, rev: 1 } });
+
+    const listeners: Array<(e: unknown) => void> = [];
+    const win = window as unknown as { addEventListener: unknown; removeEventListener: unknown };
+    const realAdd = win.addEventListener;
+    const realRemove = win.removeEventListener;
+    win.addEventListener = (type: string, fn: (e: unknown) => void) => {
+      if (type === "message") listeners.push(fn);
+    };
+    win.removeEventListener = (type: string, fn: (e: unknown) => void) => {
+      const i = listeners.indexOf(fn);
+      if (type === "message" && i >= 0) listeners.splice(i, 1);
+    };
+    const frameWin = { postMessage() {} };
+    const send = async (data: unknown) => {
+      await act(async () => {
+        for (const fn of [...listeners]) fn({ data, source: frameWin, origin: ORIGIN });
+      });
+      await settle(4);
+    };
+    try {
+      beginLoad(PATH, "udf_1.py");
+      let r!: ReactTestRenderer;
+      await act(async () => {
+        r = create(createElement(NodeView, { path: PATH, placement: "content" }), {
+          createNodeMock: (el) => (el.type === "iframe" ? { contentWindow: frameWin } : null),
+        });
+      });
+      await settle();
+      await send({ type: "fused-embed-auth-ready" });
+      await send({ type: "fused-embed-hello" });
+      await send({ type: "fused-embed-node-state", udfName: "udf_1", present: true, kind: "udf", status: "ok" });
+      const done = loadTimelines().find((t) => t.key === PATH)!;
+      expect(done.end).toBe("ready");
+      expect(done.stages.map((s) => s.stage)).toEqual([
+        "mount", "info", "status", "sync", "frame", "token", "hello", "ready",
+      ]);
+
+      // Twenty-five later opens evict this finished record from the map.
+      for (let i = 0; i < 25; i++) {
+        beginLoad(`/other/${i}.py`, `${i}.py`);
+        finishLoad(`/other/${i}.py`, "ready");
+      }
+      // The frame re-boots (a reload, a re-sign-in) while the view stays mounted.
+      await send({ type: "fused-embed-hello" });
+      expect(openTimeline(PATH)).toBeNull();
+      expect(loadTimelines().filter((t) => t.end === null)).toEqual([]);
+      r.unmount();
+    } finally {
+      win.addEventListener = realAdd;
+      win.removeEventListener = realRemove;
+    }
   });
 });
