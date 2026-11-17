@@ -995,6 +995,14 @@ test("a two-line panel folds in its own order: the tools' words, then the tags, 
   // (the title's row) is never worn: the title is already on row 2.
   expect([...TASK_HEAD_PANEL_FIT]).toEqual([0, 0, 1, 2, 3, 5, 6, 7]);
   expect(TASK_HEAD_PANEL_FIT).toHaveLength(TASK_HEAD_PANEL_DROPS.length + 1);
+  // A settling walkthrough's status is not a `.c-lbl`: folded, the seat hides
+  // it and the mic and shows a spinner, so no words spill out of the icon.
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  expect(css).toContain(
+    ".chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec .c-annreclbl,\n" +
+      ".chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec .c-rec-mic {\n  display: none;",
+  );
+  expect(css).toContain(".c-anncta.busy .c-annrec::before {");
   // Wide: nothing folded, no class.
   const wide = render(head({ twoLine: true }), 2000);
   expect(headNode(wide).props["data-fit"]).toBe(0);

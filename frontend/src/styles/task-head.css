@@ -1152,3 +1152,38 @@
 .task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-a {
   justify-self: start;
 }
+
+/* A SETTLING WALKTHROUGH IN AN ICON-ONLY SEAT (Akshil, 2026-11-17: "instead
+   of mic icon we can just say … icon or loading icon, and on hover show
+   tooltip saying transcription"). While a recording settles the Annotate seat
+   swaps its word for a status ("Transcribing…"), which is not a `.c-lbl` — so
+   in the 28px seat it spilled over the Comment button and the count. Folded,
+   the seat shows a spinner where the mic stood and no words; the seat's own
+   title already says which tense it is in (ann/rec.ts `recSeatName`). */
+.chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec .c-annreclbl,
+.chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec .c-rec-mic {
+  display: none;
+}
+.chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec::before {
+  content: "";
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: task-head-seat-spin 0.8s linear infinite;
+}
+@keyframes task-head-seat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No turning: a dotted ring still reads as "working". */
+  .chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec::before {
+    animation: none;
+    border-style: dotted;
+    border-top-color: currentColor;
+  }
+}
