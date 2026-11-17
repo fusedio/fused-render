@@ -30,7 +30,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { IS_EMBED, navigateUrl } from "@platform/lib/router";
 import type { NativeViewProps } from "@platform/ui/NativeView";
-import { finishLoad, markLoad } from "@platform/lib/load-timeline";
+import { finishLoad as finishTimeline, markLoad as markTimeline } from "@platform/lib/load-timeline";
 import {
   CanvasOwnedError,
   ENV_NAMES,
@@ -115,9 +115,24 @@ function openInCanvas(env: WorkbenchEnv, name: string, file: string): void {
 export default function NodeView({ path }: NativeViewProps) {
   // The load timeline (NV-12, platform/lib/load-timeline): each step of the
   // open marks the file's timeline when it lands; the node on screen ends it.
-  // `mount` is this chunk loaded and drawing.
+  // `mount` is this chunk loaded and drawing. Marks stop when this mount
+  // goes: an async step that lands after an unmount must not mark (or end)
+  // the timeline of the next open of the same file.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const markLoad = useCallback((p: string, stage: string, label?: string) => {
+    if (alive.current) markTimeline(p, stage, label);
+  }, []);
+  const finishLoad = useCallback((p: string, stage: string) => {
+    if (alive.current) finishTimeline(p, stage);
+  }, []);
   const label = path.slice(path.lastIndexOf("/") + 1) || path;
-  useEffect(() => markLoad(path, "mount", label), [path, label]);
+  useEffect(() => markLoad(path, "mount", label), [path, label, markLoad]);
 
   // --- what this file is ---------------------------------------------------
   const [infoSeq, setInfoSeq] = useState(0);

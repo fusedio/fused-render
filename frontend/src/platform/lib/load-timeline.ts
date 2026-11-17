@@ -113,6 +113,18 @@ function archive(t: LoadTimeline): void {
   if (history.includes(t)) return;
   history.push(t);
   if (history.length > HISTORY_MAX) history.shift();
+  // Finished records stay in the map only so a stray late mark cannot begin
+  // a new load; keep at most HISTORY_MAX of them (oldest first — a Map
+  // iterates in insertion order).
+  let finished = 0;
+  for (const r of timelines.values()) if (r.end !== null) finished++;
+  for (const [k, r] of timelines) {
+    if (finished <= HISTORY_MAX) break;
+    if (r.end !== null) {
+      timelines.delete(k);
+      finished--;
+    }
+  }
 }
 
 /** Every timeline this page recorded: the archived ones, then any still open. */

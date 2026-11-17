@@ -83,6 +83,19 @@ describe("a load timeline", () => {
   });
 });
 
+it("keeps a bounded number of finished records", () => {
+  for (let i = 0; i < 50; i++) {
+    beginLoad(`f${i}`, `f${i}`);
+    finishLoad(`f${i}`, "ready");
+  }
+  expect(loadTimelines()).toHaveLength(20);
+  // The newest are kept and still refuse late marks; the oldest are gone.
+  markLoad("f49", "late");
+  expect(openTimeline("f49")).toBeNull();
+  const all = loadTimelines();
+  expect(all[all.length - 1].key).toBe("f49");
+});
+
 describe("formatTimeline", () => {
   const t = (over: Partial<LoadTimeline>): LoadTimeline => ({
     key: "k",

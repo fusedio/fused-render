@@ -2441,7 +2441,7 @@ function TemplatePreview({
               // A kept node pane whose mode left the list (a git snapshot,
               // NV-13) draws nothing until the retirement above drops it —
               // never an iframe of a mode with no page.
-              if (m === NODE_MODE && !nodeOffered && m !== activeMode) return null;
+              if (m === NODE_MODE && m !== activeMode && !contentModes.some((t) => t.mode === m)) return null;
               if (m === NODE_MODE && nodeOffered) return (
                 <NativePane
                   key={m}
