@@ -44,6 +44,7 @@ import {
   type RemoteStat,
 } from "@platform/lib/remote";
 import { notify } from "@platform/lib/notifications";
+import { isSidebarMode } from "@platform/lib/mode-visibility";
 import { BreadcrumbBar } from "@apps/explorer/Breadcrumb";
 import Listing from "@apps/explorer/Listing";
 import Preview, { type RemoteContent } from "@apps/explorer/Preview";
@@ -629,7 +630,10 @@ export function RemoteView({ location, home }: { location: string; home: string 
         </div>
       </div>
     );
-  } else if ((state.stat.templates ?? []).length > 0) {
+  } else if ((state.stat.templates ?? []).some((t) => !isSidebarMode(t.mode))) {
+    // Preview drops companion modes (claude, git) for a remote file, so a
+    // file bound only to one (a user's ungated `claude` fork) gets the
+    // download card below, not a viewer with nothing to show.
     content = (
       <RemoteUncachedFile
         key={state.stat.url}
