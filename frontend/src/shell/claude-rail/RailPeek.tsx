@@ -538,6 +538,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     movable: !!pinCtl?.pinned,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: shown?.pulse.key ?? null,
+    // The size `place` floats it at (CodeRabbit on #2329: the drag's size).
+    floatSize: () => (shownKey ? wishSize(wishFor(shownKey)) : null),
   });
   const floatingRef = useRef(false);
   floatingRef.current = move.floating;
@@ -741,10 +743,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
-    // A FLOATING card's left or top grip moved its corner: the window stands
-    // there now (rail-move-lib).
-    if (save && start?.floating && last && (last.left !== start.box.left || last.top !== start.box.top))
-      move.setPos({ left: last.left, top: last.top });
+    // A FLOATING card's resize that changed its box: the window stands at the
+    // box let go at — the corner a left or top grip moved, else the corner as
+    // DRAWN (squeezed by a smaller window, rail-move-lib `floatPlacement`), so
+    // the new size is not placed again from a stored spot it no longer
+    // matches and the card does not move on the release (CodeRabbit on
+    // #2329). A press that never moved changes nothing (`last` is null).
+    // …and only while it still floats: an unpin under the drag cleared the
+    // position, and the release must not write it back (CodeRabbit on #2329).
+    const moved =
+      !!start &&
+      !!last &&
+      (last.left !== start.box.left || last.top !== start.box.top || last.width !== start.box.width || last.height !== start.box.height);
+    if (save && start?.floating && floatingRef.current && last && moved) move.setPos({ left: last.left, top: last.top });
     // A press that never moved saves nothing — not the default size, not a
     // size the row clamped (reviewer).
     if (!save || !start || !last || !shownKey || (last.width === start.box.width && last.height === start.box.height)) return;
@@ -817,6 +828,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // `endDrag` reads refs; the flag and the key are what decide.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gripsOn, shownKey]);
+  // …and a FLOATING resize whose card stops floating under it (the pin icon
+  // by keyboard: a list card with favourites on keeps its grips unpinned)
+  // goes unsaved too (CodeRabbit on #2329).
+  useEffect(() => {
+    if (dragStart.current?.floating && !move.floating) endDrag(false);
+  }, [move.floating]);
   // A ui-layout hydrate that lands after the first render replaces the
   // cache without a render of ours: re-render, so a pinned card up at that
   // moment is re-placed at the saved size (CodeRabbit on #2062).

@@ -2185,6 +2185,9 @@ export function ClaudeRail({
     movable: popHeld,
     headSelector: POPOVER_HEAD_SELECTOR,
     shown: card?.pop ? String(card.seq) : null,
+    // The size the chassis asks `popPlace` to float it at (`popover.size`;
+    // CodeRabbit on #2329: the drag's size).
+    floatSize: () => railCardSize(getUiLayout().canvasRailPeek ?? null),
   });
   // A PRESS ON A RING OR DOOR BRINGS ITS WINDOW TO THE FRONT (rail-move-lib
   // `railPressWindow`; owner, 2026-11-17): the pinned window's own ring does
@@ -3630,6 +3633,9 @@ export function ClaudeRail({
                   : {}),
                 ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
                 place: popPlace,
+                // Floating, as tall as the viewport lets it (rail-move-lib
+                // `floatPlacement`): no docked inset (CodeRabbit on #2329).
+                ...(popMove.floating ? { fullHeight: true } : {}),
                 // Window A's box, for window B's grips to snap to — not
                 // while it floats (window B then places itself alone) —
                 // and, with the unified head, its live box for window B's

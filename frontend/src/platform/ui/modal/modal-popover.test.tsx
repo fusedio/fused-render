@@ -222,6 +222,27 @@ describe("the caller moves the card (popover.move) and owns its drag (resize.gri
     ]);
     act(() => m.r.unmount());
   });
+
+  test("`fullHeight` (the floating card, CodeRabbit on #2329): the max height is the viewport's, not less the docked inset", () => {
+    installPortalContainer();
+    const anchor = createRef<HTMLElement>();
+    const dialogOf = (fullHeight: boolean) => {
+      let r!: ReactTestRenderer;
+      act(() => {
+        r = create(
+          <Modal title="New task" onClose={() => {}} popover={{ anchor, size: { width: 420, height: 640 }, ...(fullHeight ? { fullHeight } : {}) }}>
+            <span>body</span>
+          </Modal>,
+        );
+      });
+      const maxHeight = r.root.find((n) => n.props.role === "dialog").props.style.maxHeight as string;
+      act(() => r.unmount());
+      return maxHeight;
+    };
+    expect(dialogOf(true)).toBe("100vh");
+    // Docked: the inset, as it always was.
+    expect(dialogOf(false)).toBe("calc(100vh - 16px)");
+  });
 });
 
 describe("popoverPlacement", () => {

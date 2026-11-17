@@ -40,6 +40,7 @@ import {
 } from "react";
 import {
   clampPos,
+  dragStartBox,
   headDocks,
   headPress,
   isFloating,
@@ -50,6 +51,7 @@ import {
   type MoveTarget,
   type Pos,
   type RailWindow,
+  type Size,
 } from "./rail-move-lib";
 import {
   commitWindowPos,
@@ -150,6 +152,14 @@ export function useCardMove(o: {
    *  window floating there (owner, 2026-11-17: "if there are two windows …
    *  they overlap"). */
   shown?: string | null;
+  /** The size the card FLOATS at — read from the same source its floating
+   *  placement draws with (rail-move-lib `floatPlacement`'s size, before the
+   *  viewport clamp), asked at the press. A drag starting from a DOCKED card
+   *  clamps and snaps a box of this size, not the docked one (CodeRabbit on
+   *  #2329: a card docked shorter or narrower than it floats jumped on the
+   *  first frame, and the magnet drew guides along edges it did not have).
+   *  Absent or null: the drawn box's. */
+  floatSize?: () => Size | null;
 }): CardMove {
   const { win, on, headSelector } = o;
   const shown = on ? (o.shown ?? null) : null;
@@ -176,8 +186,8 @@ export function useCardMove(o: {
   const [dragging, setDragging] = useState(false);
   const drag = useRef<Drag | null>(null);
   const stop = useRef<(() => void) | null>(null);
-  const now = useRef({ movable, floating, headSelector });
-  now.current = { movable, floating, headSelector };
+  const now = useRef({ movable, floating, headSelector, floatSize: o.floatSize });
+  now.current = { movable, floating, headSelector, floatSize: o.floatSize };
 
   const finish = (commit: boolean) => {
     const d = drag.current;
@@ -211,13 +221,23 @@ export function useCardMove(o: {
     const el = elementOf(e.target);
     if (!el || !box.contains(el) || headPress(el, now.current.headSelector) !== "head") return;
     const r = box.getBoundingClientRect();
+    // ONE SIZE FOR THE DRAG AND THE FLOATING CARD (CodeRabbit on #2329): a
+    // card already floating is drawn at it; a docked one floats at the
+    // chassis' size from the drag's first frame (rail-move-lib
+    // `dragStartBox`).
+    const start = dragStartBox(
+      { left: r.left, top: r.top, width: r.width, height: r.height },
+      e.clientX,
+      now.current.floating ? null : (now.current.floatSize?.() ?? null),
+      viewportOf(window),
+    );
     const d: Drag = {
       sx: e.clientX,
       sy: e.clientY,
-      left: r.left,
-      top: r.top,
-      width: r.width,
-      height: r.height,
+      left: start.left,
+      top: start.top,
+      width: start.width,
+      height: start.height,
       pointerId: e.pointerId,
       el: box,
       moved: false,

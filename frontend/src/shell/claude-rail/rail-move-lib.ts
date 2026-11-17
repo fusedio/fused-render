@@ -154,6 +154,23 @@ export function floatPlacement(pos: Pos, size: Size, viewport: Size): Box {
   return { left: at.left, top: at.top, width, height };
 }
 
+/** WHERE A HEAD DRAG STARTS FROM (CodeRabbit on #2329): `drawn` the card's
+ *  box at the press, `pointerX` the press, `float` the size the card floats
+ *  at (the chassis' own, the one its placement draws with) or null when the
+ *  drawn box already is that size (a floating card). The drag clamps and
+ *  snaps this box, so its first frame lands where the card is drawn and its
+ *  guides run along edges the card has. A docked card that floats at another
+ *  size keeps its top edge's offset to the pointer and the grabbed spot of
+ *  its head row at the same share of the width — the row stays under the
+ *  pointer, whatever the width becomes. */
+export function dragStartBox(drawn: Box, pointerX: number, float: Size | null, viewport: Size): Box {
+  if (!float) return drawn;
+  const width = Math.round(Math.max(0, Math.min(float.width, viewport.width)));
+  const height = Math.round(Math.max(0, Math.min(float.height, viewport.height)));
+  const share = drawn.width > 0 ? (pointerX - drawn.left) / drawn.width : 0;
+  return { left: Math.round(pointerX - share * width), top: drawn.top, width, height };
+}
+
 /** THE GRIPS OF A FLOATING CARD (owner, 2026-11-17: "same five grips plus
  *  right edge and right corners — the right edge is free now"). The docked
  *  card's five first; corners last so they paint over the edges' ends. */
@@ -180,33 +197,56 @@ export interface FloatLimits {
  *  edge (the right stays), a right grip the right edge; a top grip the top
  *  (the bottom stays), a bottom grip the bottom. The docked card's minimums
  *  and maximums, clamped to the viewport instead of the row — the viewport
- *  wins over the minimums, as the docked drag's row does. */
+ *  wins over the minimums, as the docked drag's row does.
+ *
+ *  THE START BOX MEETS THE VIEWPORT AS IT IS NOW (CodeRabbit on #2329): a
+ *  window shrunk under the drag must not leave a left or top grip keeping a
+ *  right or bottom edge past it. Per axis: the edge the grip holds still
+ *  follows the pointer; the opposite edge stays where it was while it is
+ *  inside the viewport, else at the viewport's edge; an axis no grip holds is
+ *  squeezed inside as the card is drawn (`floatPlacement`). */
 export function floatResize(edge: MoveEdge, start: Box, dx: number, dy: number, viewport: Size, limits: FloatLimits): Box {
   const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
-  const right = start.left + start.width;
-  const bottom = start.top + start.height;
+  // One axis: `lo`/`len` the start box's, `d` the travel, `view` the
+  // viewport's length, `grip` which of its two edges is held (null: none).
+  const axis = (
+    lo: number,
+    len: number,
+    d: number,
+    view: number,
+    min: number,
+    max: number,
+    grip: "lo" | "hi" | null,
+  ): { lo: number; len: number } => {
+    if (grip === "lo") {
+      const hi = Math.min(lo + len, view);
+      const size = clamp(hi - lo - d, min, Math.min(max, hi));
+      return { lo: hi - size, len: size };
+    }
+    if (grip === "hi") {
+      // The opposite edge stays while it is inside; a card wholly past the
+      // viewport comes back with its minimum in view.
+      const at = lo < view ? Math.max(0, lo) : Math.max(0, view - Math.min(min, view));
+      return { lo: at, len: clamp(lo + len + d - at, min, Math.min(max, view - at)) };
+    }
+    const size = Math.min(len, view);
+    return { lo: Math.max(0, Math.min(lo, view - size)), len: size };
+  };
   const leftGrip = edge === "l" || edge === "tl" || edge === "bl";
   const rightGrip = edge === "r" || edge === "tr" || edge === "br";
   const topGrip = edge === "t" || edge === "tl" || edge === "tr";
   const bottomGrip = edge === "b" || edge === "bl" || edge === "br";
-  let left = start.left;
-  let width = start.width;
-  if (leftGrip) {
-    width = clamp(start.width - dx, limits.minWidth, Math.min(limits.maxWidth, right));
-    left = right - width;
-  } else if (rightGrip) {
-    width = clamp(start.width + dx, limits.minWidth, Math.min(limits.maxWidth, viewport.width - start.left));
-  }
-  let top = start.top;
-  let height = start.height;
-  const cap = limits.maxHeight ?? Infinity;
-  if (topGrip) {
-    height = clamp(start.height - dy, limits.minHeight, Math.min(cap, bottom));
-    top = bottom - height;
-  } else if (bottomGrip) {
-    height = clamp(start.height + dy, limits.minHeight, Math.min(cap, viewport.height - start.top));
-  }
-  return { left: Math.round(left), top: Math.round(top), width, height };
+  const x = axis(start.left, start.width, dx, viewport.width, limits.minWidth, limits.maxWidth, leftGrip ? "lo" : rightGrip ? "hi" : null);
+  const y = axis(
+    start.top,
+    start.height,
+    dy,
+    viewport.height,
+    limits.minHeight,
+    limits.maxHeight ?? Infinity,
+    topGrip ? "lo" : bottomGrip ? "hi" : null,
+  );
+  return { left: Math.round(x.lo), top: Math.round(y.lo), width: x.len, height: y.len };
 }
 
 /** THE EDGE MAGNET (owner, 2026-11-17; design.md "Round 3 rulings" B9:
