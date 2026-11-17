@@ -775,10 +775,11 @@
 
 /* A RAIL WINDOW'S FACTS AND ACTS: TWO LAYERS OF ONE BOX (TaskHead
    `factsCluster`; Akshil, 2026-11-16: "too much space between message count
-   and time … star and Open do have a weird gap, keep them closer"). The box
-   is as wide as the wider layer, so the where-tag and the title never move;
-   each layer keeps its own two items side by side against the right edge,
-   so neither pair is spread to fill a box sized for the other. Only where
+   and time … star and Open do have a weird gap, keep them closer"). Each
+   layer keeps its own two items side by side against the right edge, so
+   neither pair is spread to fill a box sized for the other; the box wears
+   the width of the layer it shows ("THE BOX IS AS WIDE AS THE PAIR IT
+   SHOWS", below). Only where
    both facts trade (or neither): a head with one act alone keeps the two
    slots, so the fact that stays is one node that never moves. */
 .task-head-facts {
@@ -852,6 +853,55 @@
   .task-head-facts > .task-head-facts-layer.is-b {
     opacity: 1;
     pointer-events: auto;
+  }
+}
+
+/* THE BOX IS AS WIDE AS THE PAIR IT SHOWS (Akshil, 2026-11-17: "keep them the
+   width they are and it will shift things a bit"). One box sized for the
+   wider layer never moved anything, but it left a hole beside the narrower
+   pair: between the tags and the star where the count and the time are the
+   wider, between the tags and the count where the acts are. Here the pair
+   that is not showing leaves the flow, so the box is the count and the time
+   at rest and star · Open · ⋮ under the pointer, and the tags stand right
+   beside whichever it is. They slide by the difference as the pointer comes
+   and goes; the title (row 2) and the crumb do not. The fit ladder charges
+   the wider pair in both states (row-fit.ts `factsSpare`), so the slide
+   never folds a tag.
+
+   Out of flow rather than `display: none`: the acts stay in the tab order
+   at rest, and the ladder can still read both widths. The facts go AT ONCE
+   (`visibility`, no fade) — a pair fading out of flow would ghost over the
+   acts taking its place. */
+.task-head-facts.has-acts {
+  position: relative;
+  /* The acts' 22px, at rest too: the row is not taller under the pointer. */
+  min-height: 22px;
+}
+.task-head-facts.has-acts > .task-head-facts-layer.is-b {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+}
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+  position: absolute;
+  right: 0;
+  visibility: hidden;
+  transition: none;
+}
+.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-facts.has-acts > .task-head-facts-layer.is-b {
+  position: static;
+  transform: none;
+}
+@media (hover: none) {
+  .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+    position: absolute;
+    right: 0;
+    visibility: hidden;
+  }
+  .task-head-facts.has-acts > .task-head-facts-layer.is-b {
+    position: static;
+    transform: none;
   }
 }
 
@@ -1124,19 +1174,10 @@
   display: contents;
 }
 
-/* THE ACTS START WHERE THE FACTS STARTED (Akshil, 2026-11-17: "after +3 and
-   star there is unusual space … follow Annotate button padding, don't leave
-   weird gap"). The star and the door are narrower than the count and the
-   time, and right-aligned as a pair they left that difference as a hole
-   after the last tag. Now the pair starts at the box's LEFT edge — the star
-   the same gap from its neighbour the count had, the door right beside it
-   (2026-11-16: "keep them closer") — and what is left over stands before the
-   ⋮, the row's fixed end. Nothing outside the box moves. (A rail window's
-   acts carry the ⋮ itself — TaskHead `kebabInActs` — so there the layer keeps
-   the box's right edge and the ⋮ ends the row.) */
-.task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-b {
-  justify-self: start;
-}
+/* A LONE COUNT STARTS ITS SLOT (a head with one act alone; the paired facts
+   and acts stand in a box as wide as the pair it shows — "THE BOX IS AS
+   WIDE AS THE PAIR IT SHOWS", above — so there is no leftover width to
+   place). */
 .task-head.is-two-line .task-head-countslot {
   justify-items: start;
 }
@@ -1173,13 +1214,9 @@
    door, so its count and time stand in one box — `.task-head-facts`, no
    time slot for the rule above to fold; CodeRabbit on #2313). The time leaves
    on the panel's time rung; the door still comes under the pointer, its hint
-   carrying the time. What stays starts at the box's left edge, like the
-   acts, so no hole opens after the last tag. A rail window keeps both. */
+   carrying the time. A rail window keeps both. */
 .task-head.is-two-line:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-facts .task-head-time {
   display: none;
-}
-.task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-a {
-  justify-self: start;
 }
 
 /* A SETTLING WALKTHROUGH IN AN ICON-ONLY SEAT (Akshil, 2026-11-17: "instead
