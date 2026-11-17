@@ -139,3 +139,11 @@ def test_a_cut_short_seed_keeps_what_the_user_changed(tmp_path):
     [b] = store.all_experts()
     assert open(os.path.join(store.expert_dir(b), "instructions.md")).read() == "mine"
     assert b.folders() == [os.path.abspath(str(tmp_path))]
+
+
+def test_an_expert_is_not_exported(client, expert, tmp_path):
+    from fused_render.bots import package
+    with pytest.raises(ValueError, match="expert cannot be exported"):
+        package.write(expert.id, memory=True, apps=[], file_name=None, dest_dir=str(tmp_path))
+    st, out = j(client.get(f"/api/bots/{expert.id}/package"))
+    assert st == 400 and out["error"] == package.EXPERT_REFUSAL
