@@ -1,14 +1,14 @@
 """Skill proposals (docs/experts.md §4 `proposals.py`).
 
 Lessons seen often enough become a proposed skill change: one `model.text`
-call drafts it (updating an existing skill is preferred), the gate scores the
-expert before and after (a what-if run that writes nothing), and the draft is
-saved as "ready" for an approval card. Only `approve` writes a skill.
+call drafts it (updating an existing skill is preferred) and the draft is
+saved as "ready" for an approval card. Only `approve` writes a skill. A
+proposal never runs the quality gate (`gate.py` is the Checks tab's, run by
+the user); `score_before` / `score_after` stay on the record, always None.
 
 `request` is the asynchronous entry point (chat, routes, scheduler): it saves
 the record as "preparing" and marks its lessons `proposed` at once, then one
-daemon thread runs `_draft` (the draft and both gate runs; the "before" run is skipped, `before_reused`, when
-`gate.reusable_score` has the latest persisted run's score for exactly the current skills) and turns it
+daemon thread runs `_draft` (the draft) and turns it
 "ready" (and calls `cards.show`) or "failed" with an `error` (its lessons are
 un-marked). One proposal is prepared per expert at a time. `prepare` is the
 same work done synchronously.
@@ -25,7 +25,7 @@ import re
 import threading
 import time
 
-from fused_render.experts import gate, memory, model, store
+from fused_render.experts import memory, model, store
 from fused_render.experts.consolidate import parse_json
 
 logger = logging.getLogger(__name__)
@@ -173,29 +173,8 @@ def _resolve_items(bot, items) -> list:
     return out
 
 
-def _override(skills, name, title, trigger, body) -> list:
-    out, replaced = [], False
-    for s in skills:
-        if s.get("name") == name:
-            out.append({"name": name, "title": title, "trigger": trigger, "body": body})
-            replaced = True
-        else:
-            out.append(dict(s))
-    if not replaced:
-        out.append({"name": name, "title": title, "trigger": trigger, "body": body})
-    return out
-
-
-def _score(bot, skills_override):
-    try:
-        r = gate.run(bot, skills_override=skills_override)
-        return {"score": r["score"], "total": r["total"]}
-    except Exception:  # noqa: BLE001 — a failed gate is an unknown score, not a failed proposal
-        return None
-
-
 def _draft(bot, lessons) -> dict:
-    """The draft and both gate runs for `lessons`: the proposal's fields (no id, no status). Slow: model calls."""
+    """The draft for `lessons`: the proposal's fields (no id, no status). One model call."""
     skills = list(bot.skills())
     by_name = {s["name"]: s for s in skills}
     lessons_txt = "\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {i.get('count', 0)}×)" for i in lessons)
@@ -237,22 +216,13 @@ def _draft(bot, lessons) -> dict:
         fromfile=f"skills/{eff_name}.md" if action == "update" else "/dev/null",
         tofile=f"skills/{eff_name}.md"))
 
-    score_before = score_after = None
-    before_reused = False
-    if gate.questions(bot):
-        # The latest persisted run scored exactly these skills on this engine: its score is the "before".
-        score_before = gate.reusable_score(bot, skills)
-        before_reused = score_before is not None
-        if score_before is None:
-            score_before = _score(bot, skills)
-        score_after = _score(bot, _override(skills, eff_name, title, trigger, body))
     return {"action": action, "skill": skill, "title": title, "trigger": trigger, "body": body, "diff": diff,
             "items": [i["id"] for i in lessons], "claims": [i.get("claim", "") for i in lessons],
-            "score_before": score_before, "score_after": score_after, "before_reused": before_reused}
+            "score_before": None, "score_after": None}
 
 
 def prepare(bot, items) -> dict:
-    """`request`'s work, synchronously: draft, gate, save as "ready", mark the lessons proposed."""
+    """`request`'s work, synchronously: draft, save as "ready", mark the lessons proposed."""
     lessons = _resolve_items(bot, items)
     if not lessons:
         raise ValueError("no lessons to propose")
@@ -333,7 +303,7 @@ def request(bot, items, *, topic="", gap="") -> dict:
         p = {"id": store.new_id("p"), "ts": time.time(), "status": "preparing", "topic": str(topic or "")[:200],
              "action": None, "skill": None, "title": "", "trigger": "", "body": "", "diff": "",
              "items": [i["id"] for i in lessons], "claims": [i.get("claim", "") for i in lessons],
-             "score_before": None, "score_after": None, "before_reused": False, "card_seq": None, "error": ""}
+             "score_before": None, "score_after": None, "card_seq": None, "error": ""}
         linked = list(dict.fromkeys([str(gap)] * bool(gap) + [str(i["gap"]) for i in lessons if i.get("gap")]))
         if linked:
             p["gap"], p["gaps"] = linked[0], linked
@@ -455,8 +425,5 @@ def card_text(proposal) -> tuple[str, str]:
             text += f"\n- …and {len(claims) - 5} more"
     else:
         text += "."
-    b, a = p.get("score_before"), p.get("score_after")
-    if b and a:
-        text += f"\nChecks: {b['score']}/{b['total']} now → {a['score']}/{a['total']} with this change."
     text += "\nApprove?"
     return text, p.get("diff") or ""

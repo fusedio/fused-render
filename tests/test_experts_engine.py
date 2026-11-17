@@ -220,12 +220,13 @@ def _propose_in_chat(expert, monkeypatch, answer):
     # The task ends, then cards.tick_one raises the card on the now idle expert.
     assert _wait_for(lambda: expert.meta.get("status") == "waiting" and expert.meta.get("waiting_on"))
     assert got[0] == (chat.PROPOSE_STARTED, False)
+    assert chat.PROPOSE_STARTED == "Drafting the proposal. An approval card will appear in this chat shortly."
     evs = _events(expert)
     card = [e for e in evs if e["role"] == "approval"][-1]
     done_at = max(i for i, e in enumerate(evs) if e["role"] == "done" and e["text"] == "Done proposing.")
     assert evs.index(card) > done_at
     assert card["expert_proposal"] and ("Canvas tips" in card["text"] or "udfName" in card["detail"])
-    assert "score_before" in card and "score_after" in card
+    assert card["score_before"] is None and card["score_after"] is None and "check" not in card["text"].lower()
     assert expert.meta["waiting_on"] == card["seq"]
     assert proposals.get(expert, card["expert_proposal"])["status"] == "shown"
     expert.send(answer, answers=card["seq"])

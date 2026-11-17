@@ -46,7 +46,8 @@ export function ApprovalCard({ e, live, title, botName, answer }: { e: BotEvent;
 }
 
 /** An expert's skill proposal (docs/experts.md §4 cards.py): an ordinary approval event carrying `expert_proposal`. The
- *  unified diff (`detail`) is the collapsible body and the gate's scores before / after the change are the sub line;
+ *  unified diff (`detail`) is the collapsible body and the gate's scores before / after the change are the sub line
+ *  (only when both exist: proposals no longer run the checks, so new cards carry none);
  *  Approve / Reject ride the same data-approve / data-deny hooks (the thread sends "approve" / "deny"). Never an
  *  "Always approve": every skill change is its own decision. */
 function ProposalCard({ e, live, title, answer }: { e: BotEvent; live: boolean; title?: string; answer?: string | null }) {

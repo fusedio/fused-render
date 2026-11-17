@@ -37,8 +37,7 @@ logger = logging.getLogger(__name__)
 STOP_TEXT = "STOPPED by the user. Do not call any more tools; reply with one short line and the JSON block."
 UNTRUSTED_TEXT = ("error: {tool} is only for the user at this Mac. This chat turn {why}, so your memory and skills "
                   "were not changed. Tell the user they can ask for it in the expert's chat on the Mac.")
-PROPOSE_STARTED = ("Drafting the proposal and running the checks. An approval card will appear in this chat when "
-                   "it is ready (a few minutes).")
+PROPOSE_STARTED = "Drafting the proposal. An approval card will appear in this chat shortly."
 _TRUSTED_TOOLS = ("remember_lesson", "forget_lesson", "propose_skill")
 DETAIL_CAP = 1500
 SUMMARY_CAP = 160
@@ -60,9 +59,9 @@ CHAT_TOOLS = [
                     "appear on the Checks tab; this returns at once.",
      "parameters": {"type": "object", "properties": {}}},
     {"name": "propose_skill",
-     "description": "Start drafting a change to your skills from lessons. Returns at once; the draft and the "
-                    "quality checks run in the background and an approval card with the diff appears in this chat "
-                    "when ready (a few minutes). Pass `item_ids` (lesson ids) or a `topic`; with neither, the "
+     "description": "Start drafting a change to your skills from lessons. Returns at once; the draft is "
+                    "written in the background and an approval card with the diff appears in this chat "
+                    "shortly. Pass `item_ids` (lesson ids) or a `topic`; with neither, the "
                     "lessons that keep recurring are used.",
      "parameters": {"type": "object", "properties": {
          "item_ids": {"type": "array", "items": {"type": "string"}},

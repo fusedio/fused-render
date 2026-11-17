@@ -24,7 +24,7 @@ export function openProposals(ps: readonly ExpertProposal[] | null | undefined):
 
 /** One open proposal as the Memory panel says it ("" for a status it does not mention). */
 export function proposalLine(p: Pick<ExpertProposal, "status" | "error">): string {
-  if (p.status === "preparing") return "Drafting a skill proposal and running the checks…";
+  if (p.status === "preparing") return "Drafting a skill proposal…";
   if (p.status === "ready" || p.status === "shown") return "A skill proposal is waiting for your answer in the chat.";
   if (p.status === "failed") return `A skill proposal failed: ${p.error || "no reason given"}`;
   return "";

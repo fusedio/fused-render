@@ -809,41 +809,31 @@ def test_candidates_thresholds(bot):
     assert len(proposals.candidates(bot)) == 3
 
 
-def test_prepare_update_with_diff_and_scores_then_approve(bot, fake_text):
+def test_prepare_update_with_diff_runs_no_checks(bot, fake_text, monkeypatch):
     bot.skill_save("Reading UDFs", "udf, load", "Step one.\nStep two.", name="reading-udfs")
     with open(os.path.join(bot.public_dir, "questions.md"), "w") as f:
         f.write("## How do I read a UDF?\n- must: mentions fused.load\n")
     a = _seen(bot, "Use fused.load to read a UDF", 3)
     new_body = "Step one.\nStep two.\nUse fused.load(name)."
     fake_text.replies.append(json.dumps({"action": "update", "skill": "reading-udfs", "title": "Reading UDFs",
-                                         "trigger": "udf, load", "body": new_body}))
-    fake_text.replies.extend([_grader, _grader])  # before, after
-    overrides = []
-
-    def answer(b, q, override):
-        overrides.append(override)
-        body = next(s["body"] for s in override if s["name"] == "reading-udfs")
-        return "GOOD" if "fused.load" in body else "no idea"
-
-    import fused_render.experts.gate as gmod
-    orig = gmod._default_answer_fn
-    gmod._default_answer_fn = lambda: answer
-    try:
-        p = proposals.prepare(bot, [a])
-    finally:
-        gmod._default_answer_fn = orig
+                                         "trigger": "udf, load", "body": new_body}))  # the only model call
+    monkeypatch.setattr(gate, "run", lambda *a, **k: pytest.fail("a proposal never runs the quality gate"))
+    monkeypatch.setattr(gate, "_default_answer_fn", lambda: pytest.fail("a proposal never answers gate questions"))
+    p = proposals.prepare(bot, [a])
     assert p["status"] == "ready" and p["action"] == "update" and p["skill"] == "reading-udfs"
-    assert p["score_before"] == {"score": 0, "total": 1} and p["score_after"] == {"score": 1, "total": 1}
+    assert p["score_before"] is None and p["score_after"] is None and "before_reused" not in p
+    assert fake_text.replies == []
     assert "+Use fused.load(name)." in p["diff"] and "skills/reading-udfs.md" in p["diff"]
-    # the what-if runs wrote nothing: skill unchanged, no gate run persisted
+    text, _detail = proposals.card_text(p)
+    assert "check" not in text.lower() and text.endswith("Approve?")
+    # drafting wrote nothing: skill unchanged, no gate run persisted
     assert bot.skills()[0]["body"] == "Step one.\nStep two."
     assert gate.latest(bot) is None
-    assert len(overrides[1]) == 1
     assert memory.items(bot)[0]["proposed"] is True
     assert proposals.candidates(bot) == []
     assert proposals.get(bot, p["id"]) == p and proposals.listing(bot) == [p]
     text, detail = proposals.card_text(p)
-    assert "update the skill" in text and "0/1 now → 1/1" in text and detail == p["diff"]
+    assert "update the skill" in text and detail == p["diff"]
     shown = proposals.mark_shown(bot, p["id"], 42)
     assert shown["status"] == "shown" and shown["card_seq"] == 42
 

@@ -329,7 +329,7 @@ export interface ExpertRun { id: string; ts: number; score: number; total: numbe
 export interface ExpertCheckStatus { running: boolean; run_id: string | null; done: number; total: number }
 export interface ExpertChecks { latest: ExpertRun | null; status: ExpertCheckStatus; questions: number }
 export interface ExpertProposal {
-  /** preparing: a background worker is drafting it and running the checks; ready/shown: its card waits in the chat;
+  /** preparing: a background worker is drafting it (proposals no longer run the checks); ready/shown: its card waits in the chat;
    *  failed: the worker gave up (`error` says why). */
   id: string; ts: number; status: "preparing" | "ready" | "shown" | "approved" | "rejected" | "failed"; action: "update" | "create";
   error?: string;

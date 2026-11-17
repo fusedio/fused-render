@@ -417,7 +417,7 @@ export function ObservationsPanel({ pending, done, consolidating = null, proposa
 
 export function ChecksPanel({ checks, onRun, starting }: { checks: ExpertChecks | null; onRun: () => void; starting: boolean }) {
   if (checks == null) return <div className="xp-empty">Loading…</div>;
-  if (!checks.questions) return <div className="xp-empty">This expert has no check questions yet. Checks grade its answers to a fixed set of questions (its questions.md) before and after a skill change.</div>;
+  if (!checks.questions) return <div className="xp-empty">This expert has no check questions yet. Checks grade its answers to a fixed set of questions (its questions.md) whenever you run them.</div>;
   const st = checks.status, run = checks.latest, running = !!st?.running || starting;
   return (
     <>
