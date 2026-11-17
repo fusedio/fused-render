@@ -155,10 +155,14 @@ def _account(bot, stage, provider, model_, *, result, chars_in, chars_out, tool_
         from fused_render.experts import usage
         real = usage.tokens_from_result(result)
         if real is not None:
-            usage.record(bot, stage=stage, provider=provider, model=model_, input_tokens=real["input_tokens"],
+            # The gateway reports uncached input only and drops the cache counts, so a prompt served from cache
+            # reads as a handful of tokens. Without a cache figure, the characters sent are the floor.
+            inp, floor = real["input_tokens"], usage.estimate(chars_in)
+            guessed = real["cache_read_tokens"] is None and inp < floor
+            usage.record(bot, stage=stage, provider=provider, model=model_, input_tokens=floor if guessed else inp,
                          output_tokens=real["output_tokens"], cache_read_tokens=real["cache_read_tokens"],
                          rounds=real["rounds"] if real["rounds"] is not None else max(1, tool_calls),
-                         ms=ms, ok=ok, estimated=False)
+                         ms=ms, ok=ok, estimated=guessed)
         else:
             usage.record(bot, stage=stage, provider=provider, model=model_, input_tokens=usage.estimate(chars_in),
                          output_tokens=usage.estimate(chars_out), cache_read_tokens=None,

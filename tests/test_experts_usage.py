@@ -280,3 +280,13 @@ def test_usage_route(client, monkeypatch):
     assert data["days"] == 3 and data["total"]["calls"] == 1 and data["by_stage"][0]["stage"] == "consult"
     status, _h, _b = client.get("/api/experts/nope/usage")
     assert status == 404
+
+
+def test_cached_prompt_is_not_counted_as_a_handful_of_tokens(bot, monkeypatch):
+    # The gateway reports uncached input only: a prompt served from cache comes back as a few tokens and no
+    # cache figure. The ledger then falls back to the characters sent, and says the input is an estimate.
+    CountingAI.bodies = []
+    monkeypatch.setattr(botmod, "_fused_ai", lambda: CountingAI)
+    model.text(bot, "p" * 8000, system="s" * 12000)
+    (line,) = _lines(bot)
+    assert line["input_tokens"] == 5000 and line["estimated"] is True and line["output_tokens"] == 56
