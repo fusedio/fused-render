@@ -42,17 +42,40 @@ describe("paneModeChoice", () => {
 // The component itself, with the conditions call held open (udf pending):
 // picking Code from the pane bar's menu writes `?_mode=code`.
 
+// The stat and conditions answers each test sets (each test its own path:
+// resolveConditions shares an in-flight call per path).
+let statTemplates: TemplateEntry[] = [udf, code];
+let verdicts: Record<string, boolean> | null = null; // null: never answers
+
+async function mountBar(path: string, query: string, nav: string[]) {
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(
+      createElement(PaneModeMenu, { path, query, onNavigate: (q: string) => nav.push(q), variant: "bar" }),
+    );
+  });
+  for (let i = 0; i < 4; i += 1) {
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 0));
+    });
+  }
+  return r;
+}
+
 describe("PaneModeMenu (bar)", () => {
   const realFetch = globalThis.fetch;
   beforeEach(() => {
     installDomShim();
+    statTemplates = [udf, code];
+    verdicts = null;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = new URL(String(input), "http://127.0.0.1:1777");
+      const path = url.searchParams.get("path");
       if (url.pathname === "/api/fs/stat") {
-        return new Response(JSON.stringify({ path: "/x/udf_1.py", templates: [udf, code] }), { status: 200 });
+        return new Response(JSON.stringify({ path, templates: statTemplates }), { status: 200 });
       }
-      // /api/fs/conditions: never answers — the udf verdict stays out.
-      return new Promise<Response>(() => {});
+      if (verdicts === null) return new Promise<Response>(() => {});
+      return new Response(JSON.stringify({ path, conditions: verdicts }), { status: 200 });
     }) as typeof fetch;
   });
   afterEach(() => {
@@ -61,28 +84,48 @@ describe("PaneModeMenu (bar)", () => {
 
   test("Code picked while the preferred udf is pending pins ?_mode=code", async () => {
     const nav: string[] = [];
-    let r!: ReturnType<typeof create>;
-    await act(async () => {
-      r = create(
-        createElement(PaneModeMenu, {
-          path: "/x/canvas/prod/user/demo/udf_1.py",
-          query: "",
-          onNavigate: (q: string) => nav.push(q),
-          variant: "bar",
-        }),
-      );
-    });
-    for (let i = 0; i < 4; i += 1) {
-      await act(async () => {
-        await new Promise((res) => setTimeout(res, 0));
-      });
-    }
+    const r = await mountBar("/x/canvas/prod/user/demo/udf_1.py", "", nav);
     const menu = r.root.findByType(ModeMenu);
     expect(menu.props.active).toBe("code");
     await act(async () => {
       menu.props.onSelect("code");
     });
     expect(nav).toEqual(["?_mode=code"]);
+    r.unmount();
+  });
+
+  test("a pending non-preferred mode named in _mode: picking the default deletes _mode", async () => {
+    // `?_mode=reader` while reader's verdict is out: the label falls back to
+    // Code (reader has no icon yet), but reader is what the URL selects, so
+    // picking Code is a change — back to the default, `_mode` dropped.
+    const reader: TemplateEntry = { mode: "reader", path: "/tpl/reader/template.html", icon: null, conditional: true };
+    statTemplates = [code, reader];
+    const nav: string[] = [];
+    const r = await mountBar("/x/pending/notes.py", "?_mode=reader", nav);
+    const menu = r.root.findByType(ModeMenu);
+    expect(menu.props.active).toBe("code");
+    await act(async () => {
+      menu.props.onSelect("code");
+    });
+    expect(nav).toEqual([""]);
+    r.unmount();
+  });
+
+  test("a pane under a git snapshot never offers the node view", async () => {
+    const raw: TemplateEntry = { mode: "raw", path: "/tpl/raw/template.html", icon: null, conditional: false };
+    statTemplates = [udf, code, raw];
+    verdicts = { udf: true };
+    const live = await mountBar("/x/canvas/prod/user/demo/udf_2.py", "", []);
+    expect(live.root.findByType(ModeMenu).props.entries.map((e: { mode: string }) => e.mode)).toEqual([
+      "udf",
+      "code",
+      "raw",
+    ]);
+    live.unmount();
+    const r = await mountBar("/x/canvas/prod/user/demo/udf_3.py", "?_snapshot=abc1234", []);
+    const menu = r.root.findByType(ModeMenu);
+    expect(menu.props.entries.map((e: { mode: string }) => e.mode)).toEqual(["code", "raw"]);
+    expect(menu.props.active).toBe("code");
     r.unmount();
   });
 });

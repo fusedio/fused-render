@@ -15,8 +15,10 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { resolveConditions, statPath, type TemplateEntry } from "@platform/lib/api";
+import { isSha } from "@platform/lib/snapshot-param";
 import {
   isModePending,
+  modesUnderSnapshot,
   visibleModes,
   defaultMode,
   effectiveActive,
@@ -137,9 +139,17 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   // fallback) is `defaultMode`'s: the first UNCONDITIONAL entry (CT-12),
   // except a node file's preferred `udf` (PT-8), which is the default even
   // while its verdict is out.
-  const activeMode = new URLSearchParams(splitAtLayout(query)[0]).get("_mode");
+  const paneParams = new URLSearchParams(splitAtLayout(query)[0]);
+  const activeMode = paneParams.get("_mode");
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
-  const visible = visibleModes(templates, conditions);
+  // A pane can carry the shell's `_snapshot` (enterPanel hands the page's
+  // params to its panes): the node view is live, so its menu never offers it
+  // under a snapshot — the same rule as the pane's own Preview.
+  const snapshotRaw = paneParams.get("_snapshot");
+  const visible = visibleModes(
+    modesUnderSnapshot(templates, isSha(snapshotRaw) ? snapshotRaw : null),
+    conditions,
+  );
   if (visible.length < 2) return null;
 
   const { defaultEntry, active, selected } = paneModeChoice(visible, conditions, activeMode);
