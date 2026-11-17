@@ -186,11 +186,16 @@ export interface RemoteStat {
   /** The cached local copy — only when `cached`. */
   path: string | null;
   warn_bytes: number;
-  /** The file's templates that read the `s3://` address themselves (a
-   *  `stream-s3` marker in the template folder, D1484): the explorer opens
-   *  the object in the first of these with no download. Absent from a server
-   *  that predates streaming; empty for a folder. */
-  stream_templates?: TemplateEntry[];
+  /** The modes the object opens in before it is downloaded (D1492): the
+   *  registry's list for its name, without gated or native modes. `stream`
+   *  marks a template that reads the `s3://` address itself (its
+   *  pyproject.toml `[tool.fused-render.template] stream`); the others open
+   *  on a downloaded copy. Absent from an older server; empty for a folder. */
+  templates?: RemoteTemplateEntry[];
+}
+
+export interface RemoteTemplateEntry extends TemplateEntry {
+  stream: boolean;
 }
 
 export interface RemoteEntry {

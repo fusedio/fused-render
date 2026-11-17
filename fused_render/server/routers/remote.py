@@ -145,20 +145,21 @@ def _dir_payload(bucket: str, prefix: str) -> dict:
     return {"url": canonical_url(bucket, prefix), "bucket": bucket, "key": prefix,
             "name": _name(bucket, prefix), "kind": "dir", "size": None, "mtime": None,
             "etag": None, "cached": False, "path": None,
-            "warn_bytes": remote_fetch.WARN_BYTES, "stream_templates": []}
+            "warn_bytes": remote_fetch.WARN_BYTES, "templates": []}
 
 
-def _stream_templates(name: str) -> list:
-    """The file's templates that read the `s3://` address themselves (a
-    `stream-s3` marker, D1484): the explorer opens the object in these with
-    no download. Best-effort: a registry problem means no streaming, never a
-    failed stat."""
+def _templates(name: str) -> list:
+    """The modes the object opens in before it is downloaded, each marked
+    `stream` when its template reads the `s3://` address itself (D1492): the
+    explorer frames those on the address and downloads for the rest.
+    Best-effort: a registry problem means the download card, never a failed
+    stat."""
     from fused_render.server import templates as server_templates
 
     try:
-        return server_templates.remote_stream_templates(name)
+        return server_templates.remote_templates(name)
     except Exception:  # noqa: BLE001
-        logger.warning("stream template lookup failed for %r", name, exc_info=True)
+        logger.warning("template lookup failed for %r", name, exc_info=True)
         return []
 
 
@@ -195,7 +196,7 @@ def _stat(url) -> dict:
             "name": _name(bucket, key), "kind": "file", "size": info.size,
             "mtime": info.mtime, "etag": info.etag, "cached": path is not None,
             "path": path, "warn_bytes": remote_fetch.WARN_BYTES,
-            "stream_templates": _stream_templates(_name(bucket, key))}
+            "templates": _templates(_name(bucket, key))}
 
 
 def _list(url, cursor) -> dict:

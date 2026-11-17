@@ -300,33 +300,54 @@ def test_js_sign_rejects_with_status_and_code():
 
 
 # -------------------------------------------------- which templates stream
-# (D1485: the `stream-s3` marker and `/api/remote/stat`'s stream_templates)
+# (D1492: `[tool.fused-render.template] stream` in the template's pyproject.toml,
+# and `/api/remote/stat`'s `templates`, each marked `stream`)
+
+
+def _modes(entries):
+    return [(e["mode"], e["stream"]) for e in entries]
 
 
 def test_which_templates_stream_which_files():
     from fused_render.server import templates as server_templates
 
-    pq = server_templates.remote_stream_templates("t.parquet")
-    assert [e["mode"] for e in pq] == ["duckdb"]
+    pq = server_templates.remote_templates("t.parquet")
+    assert _modes(pq)[0] == ("duckdb", True)
     assert pq[0]["path"].endswith(os.path.join("duckdb", "template.html"))
-    assert [e["mode"] for e in server_templates.remote_stream_templates("T.PARQUET")] == ["duckdb"]
-    # duckdb is bound to CSV/JSON/.duckdb too, but its marker lists parquet only
-    for name in ("t.csv", "t.json", "t.duckdb", "Makefile"):  # no text sniff either
-        assert server_templates.remote_stream_templates(name) == [], name
+    # every other bound, ungated mode is listed too, to open on a download
+    assert all(not stream for mode, stream in _modes(pq)[1:])
+    assert "structure" in [m for m, _ in _modes(pq)]
+    assert _modes(server_templates.remote_templates("T.PARQUET"))[0] == ("duckdb", True)
+    assert _modes(server_templates.remote_templates("t.TIF"))[0] == ("geotiff", True)
+    # duckdb is bound to CSV/JSON too, but streams parquet only
+    for name in ("t.csv", "t.json"):
+        entries = server_templates.remote_templates(name)
+        assert entries and not any(e["stream"] for e in entries), name
+    # no text sniff (no local bytes), and no gated or native modes
+    assert server_templates.remote_templates("Makefile") == []
+    for e in server_templates.remote_templates("t.parquet"):
+        assert not e.get("conditional") and not e.get("native")
 
 
-def test_a_marker_lists_extensions_or_streams_everything(tmp_path):
+def test_the_stream_key_lists_extensions(tmp_path):
     from fused_render.server import templates as server_templates
 
-    m = tmp_path / "stream-s3"
-    m.write_text(".parquet .GeoParquet\nprose. not an extension line\n")
-    assert server_templates._streamed_extensions(str(m)) == (".parquet", ".geoparquet")
-    m.write_text("no extension lines at all\n")
-    assert server_templates._streamed_extensions(str(m)) is None
-    assert server_templates._streamed_extensions(str(tmp_path / "missing")) == ()
+    page = str(tmp_path / "template.html")
+    manifest = tmp_path / "pyproject.toml"
+    assert server_templates.streamed_extensions(page) == ()  # no manifest
+    manifest.write_text('[tool.fused-render.template]\nstream = [".parquet", ".GeoParquet", "csv", 3]\n')
+    assert server_templates.streamed_extensions(page) == (".parquet", ".geoparquet")
+    manifest.write_text('[tool.fused-render.app]\nmain = "reader.py"\n')
+    assert server_templates.streamed_extensions(page) == ()
+    manifest.write_text('[tool.fused-render.template]\nstream = ".parquet"\n')
+    assert server_templates.streamed_extensions(page) == ()  # a list, not a string
+    manifest.write_text("tool = 1\n")
+    assert server_templates.streamed_extensions(page) == ()
+    manifest.write_text("[not toml\n")
+    assert server_templates.streamed_extensions(page) == ()
 
 
-def test_remote_stat_reports_stream_templates(monkeypatch):
+def test_remote_stat_reports_templates(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -343,6 +364,7 @@ def test_remote_stat_reports_stream_templates(monkeypatch):
     app.include_router(remote_router.router)
     c = TestClient(app)
     pq = c.get("/api/remote/stat", params={"url": "s3://fused-asset/a/b.parquet"}).json()
-    assert [e["mode"] for e in pq["stream_templates"]] == ["duckdb"]
+    assert _modes(pq["templates"])[0] == ("duckdb", True)
+    assert len(pq["templates"]) > 1
     csv = c.get("/api/remote/stat", params={"url": "s3://fused-asset/a/b.csv"}).json()
-    assert csv["stream_templates"] == []
+    assert csv["templates"] and not any(e["stream"] for e in csv["templates"])
