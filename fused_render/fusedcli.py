@@ -481,7 +481,7 @@ def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
 
 def setup_cli_hint() -> str:
     """The command users type in a terminal for one-time CLI setup
-    (`fused env create`, `fused cloud setup`, `fused cloud login`).
+    (`fused cloud setup`, `fused cloud login`).
 
     Inside the packaged macOS app (py2app sets sys.frozen) there is no
     user-facing `fused` on PATH — but the bundle ships a terminal wrapper
