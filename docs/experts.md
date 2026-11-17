@@ -102,7 +102,8 @@ Undoing the lesson line alone stays allowed.
 ## Learn : one loop
 
 `consolidate.run(bot, force=False) -> dict` and `consolidate.status(bot) -> dict` keep their names.
-Due when: three inbox entries wait, or the oldest is a day old, or any waiting entry is from the user
+Due when: three inbox entries wait, or the oldest is a day old, or any waiting entry is a `failed` one (a failure
+is researched at once), or any waiting entry is from the user
 (`taught`, `forget`, or a correction with a verified quote), or `force`. Skipped entirely when the expert's manifest
 has `expert.learning == false`.
 
@@ -111,7 +112,7 @@ the loop applies them through `knowledge.apply` in order. Steps do not call each
 
 1. `lessons` : inbox entries into lesson changes (the evidence rules under "Capture"). `worked` -> a lesson of
    kind `worked`; `failed` -> a lesson of kind `failed` (a "does not work" lesson) AND an open question for step 2
-   through `gaps.record` ("How to <need>, given that <tried> does not work?"), under the gaps' own caps. Both are
+   through `gaps.record` ("What works for: <need>? Tried and failed: <tried>."), under the gaps' own caps. Both are
    trust `outcome`: counted once per session, used in answers after two sessions, bumped only onto a lesson of
    their own kind (nothing else is ever counted toward a `failed` lesson).
 2. `research` : open questions (an unsure consult, or what a `failed` entry left); found -> a lesson with its source; not found -> `note could_not_find`.

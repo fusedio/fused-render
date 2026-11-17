@@ -499,8 +499,9 @@ def test_what_failed_is_a_does_not_work_lesson_and_an_open_question(bot, fake_te
     assert noticed["evidence"]["source"] == {**SRC, "files": ["page.html"]}
     # The open question went through gaps, and the research step looked for what does work in the same run.
     (g,) = gaps.listing(bot)
-    assert g["question"] == ("How to load live stock prices, given that calling the quotes API from the page "
-                             "does not work?")
+    assert g["question"] == ("What works for: Load live stock prices? Tried and failed: Calling the quotes API "
+                             "from the page.")
+    assert g["origin"] == "failed"
     assert (g["status"], g["attempts"], g["sessions"]) == ("open", 1, ["s1"])
     assert (not_found["action"], not_found["stage"]) == ("could_not_find", "research")
     assert _done(bot)[0]["outcome"]["gap"] == g["id"]

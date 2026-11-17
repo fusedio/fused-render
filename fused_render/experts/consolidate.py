@@ -42,8 +42,8 @@ The lessons step, rule by rule (docs/experts.md "Capture"):
   become lessons of their own kind, trust `outcome`, under the same evidence rule: once per session, used in
   answers after two sessions; a `worked` that only repeats this expert's advice (`after_advice`) does not count.
   They are bumped only onto a lesson of the same kind. A `failed` entry that became (or was counted toward) a
-  lesson also leaves an open question for the research step (`gaps.record`: "How to <need>, given that <tried>
-  does not work?"), under the gaps' own caps. Its `contradicts`, when the failed approach was the expert's own
+  lesson also leaves an open question for the research step (`gaps.record`: "What works for: <need>? Tried and
+  failed: <tried>."), under the gaps' own caps. Its `contradicts`, when the failed approach was the expert's own
   advice, is handled like any contradiction.
 
 The activity label of a lesson change (`learned` / `noticed` / `counted`) is `knowledge.apply`'s, not this step's.
@@ -217,7 +217,7 @@ def due(bot, force=False, now=None) -> bool:
     mem = man["memory"]
     now = time.time() if now is None else now
     return (len(rows) >= mem["consolidate_at"] or now - float(rows[0].get("ts") or now) >= mem["consolidate_after_s"]
-            or any(from_user(o) for o in rows))
+            or any(from_user(o) or o.get("kind") == "failed" for o in rows))  # a failure is researched at once
 
 
 # ------------------------------------------------------------------ the loop ---
@@ -360,11 +360,11 @@ def _source(o) -> dict | None:
 
 
 def question_for(o) -> str:
-    """The open question a `failed` entry leaves for research: "How to <need>, given that <tried> does not
-    work?"; from the claim alone when capture named neither."""
+    """The open question a `failed` entry leaves for research: "What works for: <need>? Tried and failed:
+    <tried>."; from the claim alone when capture named neither."""
     need, tried = (" ".join(str(o.get(k) or "").split()).rstrip(".?! ")[:QUESTION_PART_MAX] for k in ("need", "tried"))
     if need and tried:
-        return f"How to {need[0].lower() + need[1:]}, given that {tried[0].lower() + tried[1:]} does not work?"
+        return f"What works for: {need}? Tried and failed: {tried}."
     claim = " ".join(str(o.get("claim") or "").split()).rstrip(".?! ")
     return f"What works instead, given this did not: {claim}?" if claim else ""
 
@@ -592,7 +592,7 @@ def lessons(bot, ctx):
     for o in failed:
         q = question_for(o)
         if q and (outcomes.get(o["id"]) or {}).get("op") in ("add", "bump", "confirm", "contradict"):
-            outcomes[o["id"]]["gap"] = gaps.record(bot, q, session=o.get("session") or "")["id"]
+            outcomes[o["id"]]["gap"] = gaps.record(bot, q, session=o.get("session") or "", origin="failed")["id"]
 
     # Unsure questions -> gap records (one count per distinct consult), grouped where the model said so.
     renamed: dict[str, str] = {}  # a gap id merged away this run -> the gap it went into

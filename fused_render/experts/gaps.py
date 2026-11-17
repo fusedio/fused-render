@@ -80,7 +80,7 @@ def _update(bot, gid, **fields) -> None:
 
 
 # ------------------------------------------------------------------- record ---
-def record(bot, question, *, consult="", session="") -> dict:
+def record(bot, question, *, consult="", session="", origin="") -> dict:
     """A question the expert could not answer. The same question after normalisation (lowercase, collapsed
     whitespace, no trailing punctuation) bumps that gap's count (once per distinct consult) instead of adding one."""
     q = " ".join(str(question or "").split())[:QUESTION_MAX]
@@ -97,6 +97,8 @@ def record(bot, question, *, consult="", session="") -> dict:
             g = {"id": store.new_id("g"), "question": q, "questions": [q], "count": 0, "consults": [],
                  "sessions": [], "created": now, "status": "open", "attempts": 0, "finding": None, "error": ""}
             rows.append(g)
+        if origin:
+            g["origin"] = str(origin)  # "failed": a task could not do this (the log line says so)
         if not consult or consult not in g.setdefault("consults", []):
             g["count"] = int(g.get("count") or 0) + 1
         for k, v in (("consults", consult), ("sessions", session)):
@@ -272,7 +274,8 @@ def step(bot, ctx):
         if finding:
             line = yield {"op": "lesson_add", "claim": f"When asked: {g['question']} Answer: {finding['answer']}",
                           "kind": "lesson", "trust": "research", "about": finding["refs"],
-                          "why": "A session asked this and I was not sure, so I looked it up.",
+                          "why": ("A task could not do this, so I looked for what works." if g.get("origin") == "failed"
+                                  else "A task asked this and I was not sure, so I looked it up."),
                           "evidence": {**evidence, "source": finding["refs"][0]}}
             if line.get("ok"):
                 _update(bot, g["id"], status="answered", finding=finding, error="")
