@@ -1139,3 +1139,16 @@
   width: 12px;
   height: 12px;
 }
+
+/* …AND THE PAIRED FACTS FOLLOW THE SAME RUNG (the Tasks panel: a star and a
+   door, so its count and time stand in one box — `.task-head-facts`, no
+   time slot for the rule above to fold; CodeRabbit on #2313). The time leaves
+   on the panel's time rung; the door still comes under the pointer, its hint
+   carrying the time. What stays starts at the box's left edge, like the
+   acts, so no hole opens after the last tag. A rail window keeps both. */
+.task-head.is-two-line:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-facts .task-head-time {
+  display: none;
+}
+.task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-a {
+  justify-self: start;
+}
