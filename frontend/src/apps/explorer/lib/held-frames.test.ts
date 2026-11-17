@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { retainedFrames } from "./held-frames";
 
-const NODE = "udf";
+const NODE = "_node";
 
 describe("retainedFrames", () => {
   it("keeps only the incoming mode for ordinary modes", () => {

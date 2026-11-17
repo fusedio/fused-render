@@ -9,11 +9,10 @@ import { ModeMenu } from "./BarMenu";
 const code: TemplateEntry = { mode: "code", path: "/tpl/code/template.html", icon: null, conditional: false };
 // A node file's preferred node view, as stat ships it (SPEC PT-8).
 const udf: TemplateEntry = {
-  mode: "udf",
-  path: "/tpl/udf/native",
+  mode: "_node",
+  path: null,
   icon: null,
   conditional: true,
-  native: true,
   prefer: true,
 };
 
@@ -22,8 +21,8 @@ describe("paneModeChoice", () => {
     const c = paneModeChoice([udf, code], null, null);
     expect(c.active.mode).toBe("code");
     // So picking Code is a change, and writes ?_mode=code.
-    expect(c.selected.mode).toBe("udf");
-    expect(c.defaultEntry.mode).toBe("udf");
+    expect(c.selected.mode).toBe("_node");
+    expect(c.defaultEntry.mode).toBe("_node");
   });
 
   test("an explicit _mode=code while pending is selected and labelled", () => {
@@ -33,9 +32,9 @@ describe("paneModeChoice", () => {
   });
 
   test("once the verdict is in, label and selection agree", () => {
-    const c = paneModeChoice([udf, code], { udf: true }, null);
-    expect(c.active.mode).toBe("udf");
-    expect(c.selected.mode).toBe("udf");
+    const c = paneModeChoice([udf, code], { _node: true }, null);
+    expect(c.active.mode).toBe("_node");
+    expect(c.selected.mode).toBe("_node");
   });
 });
 
@@ -114,10 +113,10 @@ describe("PaneModeMenu (bar)", () => {
   test("a pane under a git snapshot never offers the node view", async () => {
     const raw: TemplateEntry = { mode: "raw", path: "/tpl/raw/template.html", icon: null, conditional: false };
     statTemplates = [udf, code, raw];
-    verdicts = { udf: true };
+    verdicts = { _node: true };
     const live = await mountBar("/x/canvas/prod/user/demo/udf_2.py", "", []);
     expect(live.root.findByType(ModeMenu).props.entries.map((e: { mode: string }) => e.mode)).toEqual([
-      "udf",
+      "_node",
       "code",
       "raw",
     ]);

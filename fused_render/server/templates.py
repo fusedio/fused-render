@@ -1,4 +1,5 @@
 import codecs
+import functools
 import json
 import os
 import stat as stat_mod
@@ -30,8 +31,46 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 # folder behind them. The only `_`-prefixed names a registry mode list may
 # reference (D73); any other `_` name is invalid (CT-6). `_listing` is the
 # shell's built-in directory listing — the default of the universal `/`
-# directory key (D81).
-KNOWN_SENTINELS = {"_render", "_listing"}
+# directory key (D81). `_node` is the canvas node view (§53.3), drawn by the
+# shell's apps/canvases.
+KNOWN_SENTINELS = {"_render", "_listing", "_node"}
+
+
+def _node_view_gate(path) -> bool:
+    """The `_node` sentinel's gate — the node view (SPEC §53.3 NV-1, NV-2).
+
+    True only when, cheapest first:
+
+      * the `canvases_enabled` preference is on (a read of prefs.json — every
+        `.py`/`.json`/`.html`/`.md` pays only this while Canvases is off);
+      * the path is a node's source file at the root of a `user/<canvas>`
+        folder of the canvases root, with a node row of that name in the
+        folder's canvas.toml whose file is this one —
+        `canvases.canvas_node_file`, the one rule this gate and
+        GET /api/canvases/node share. `team/` and `public/` copies never pass;
+        a reference copy under `user/` does (the view clones it in place).
+
+    `fused_render.canvases` is imported only after the preference said yes.
+    Never raises: a gate that cannot decide denies (fail closed)."""
+    try:
+        from fused_render.shell import prefs
+
+        if not prefs.canvases_enabled():
+            return False
+        from fused_render import canvases
+
+        return canvases.canvas_node_file(path) is not None
+    except Exception:  # noqa: BLE001 — a broken gate must hide, never raise
+        return False
+
+
+# Conditional sentinels (SPEC PT-12, CT-12): a sentinel has no folder to ship
+# a `condition.py` in, so its gate is a function here, keyed by the sentinel's
+# name. It runs in the server process exactly where a folder's condition.py
+# would (/api/fs/conditions), with the same `main(path) -> bool` contract and
+# the same fail-closed posture; stat marks the entry `conditional` the same
+# way. A sentinel not listed here is unconditional, as every sentinel was.
+SENTINEL_CONDITIONS = {"_node": _node_view_gate}
 
 
 # /api/fs/conditions evaluates template condition.py gates, which can do real
@@ -44,7 +83,7 @@ _CONDITIONS_TTL_S = 60.0
 # path -> (inserted_monotonic, prefs_mtime, toml_stamp, payload). Gates may
 # read the preference store (the reader template's condition.py does), so a
 # cached verdict is only valid while prefs.json is unchanged — otherwise
-# flipping a Preferences toggle looks dead for a full TTL. The `udf` gate also
+# flipping a Preferences toggle looks dead for a full TTL. The `_node` gate also
 # reads a node file's canvas.toml (a row added there makes the file a node),
 # so for a path SHAPED like a node file `toml_stamp` is `(canvas.toml path,
 # its mtime)` and a hit re-stats that one file; for every other path it is
@@ -142,8 +181,8 @@ def _resolve_name(name):
     if name.startswith("_"):
         return None, (
             f"invalid template name: {name!r} — the '_' prefix is reserved "
-            "for shell sentinel modes (SPEC PT-12); the only referenceable "
-            "sentinel is '_render'"
+            "for shell sentinel modes (SPEC PT-12); the referenceable "
+            "sentinels are " + ", ".join(repr(n) for n in sorted(KNOWN_SENTINELS))
         )
     # A CORE NATIVE TEMPLATE CANNOT BE SHADOWED (D1310). The one there is
     # (`claude`) used to be an iframe page, so a user who once forked it has a
@@ -278,10 +317,21 @@ def _run_condition(condition_file: str, target_path: str):
         return False, f"{condition_file}: {e}"
 
 
+def _run_sentinel_condition(mode: str, target_path: str):
+    """Call a sentinel's in-process gate (`SENTINEL_CONDITIONS`). Returns
+    (allowed: bool, error: str|None) — `_run_condition`'s shape, and its
+    posture: anything raised denies with the reason."""
+    try:
+        return bool(SENTINEL_CONDITIONS[mode](target_path)), None
+    except BaseException as e:  # never let a bad gate tear down the call
+        return False, f"{mode}: {e}"
+
+
 def _mark_conditions(entries: list):
     """Flag resolved template entries whose folder carries a `condition.py`
-    gate with `"conditional": True` (SPEC PT-8/CT-12). Sentinel entries
-    (`path is None`, D73) and folders with no gate are left untouched.
+    gate — or, for a sentinel (`path is None`, D73), whose name has a gate in
+    `SENTINEL_CONDITIONS` — with `"conditional": True` (SPEC PT-8/CT-12).
+    Every other sentinel and folders with no gate are left untouched.
 
     Stat no longer *evaluates* gates — a gate may do real I/O (the H3 gate
     reads a parquet footer), and that stalled every stat
@@ -292,17 +342,20 @@ def _mark_conditions(entries: list):
     """
     for entry in entries:
         path = entry.get("path")
-        if path is not None and _condition_file(path) is not None:
+        if path is None:
+            if entry.get("mode") in SENTINEL_CONDITIONS:
+                entry["conditional"] = True
+        elif _condition_file(path) is not None:
             entry["conditional"] = True
 
 
-# The one native template stat may mark as its file's DEFAULT CANDIDATE
-# (SPEC PT-8's `prefer` exception): the canvas node view.
-_PREFERRED_NATIVE = "udf"
+# The one mode stat may mark as its file's DEFAULT CANDIDATE (SPEC PT-8's
+# `prefer` exception): the canvas node view, the `_node` sentinel.
+_PREFERRED_SENTINEL = "_node"
 
 
 def _mark_preferred(entries: list, path: str) -> None:
-    """Flag the core native `udf` entry `"prefer": True` when `path` is shaped
+    """Flag the `_node` sentinel entry `"prefer": True` when `path` is shaped
     like a canvas node file and the `canvases_enabled` preference is on (SPEC
     PT-8, §53.3 NV-3). The client then holds the content pane on the "checking"
     placeholder until the gate answers, and opens the node view on a yes —
@@ -310,9 +363,8 @@ def _mark_preferred(entries: list, path: str) -> None:
     path's shape decides with no syscall on it (`canvases.node_file_shape`),
     then one prefs read; canvas.toml is the gate's business, not stat's. No
     other entry is ever marked, so every other file's stat is unchanged."""
-    entry = next((e for e in entries if e.get("mode") == _PREFERRED_NATIVE), None)
-    if (entry is None or not entry.get("native") or not entry.get("conditional")
-            or entry.get("path") != os.path.join(TEMPLATES_DIR, _PREFERRED_NATIVE, NATIVE_MARKER)):
+    entry = next((e for e in entries if e.get("mode") == _PREFERRED_SENTINEL), None)
+    if entry is None or entry.get("path") is not None or not entry.get("conditional"):
         return
     try:
         from fused_render import canvases
@@ -325,8 +377,10 @@ def _mark_preferred(entries: list, path: str) -> None:
 
 
 def _evaluate_conditions(gated: list, target_path: str):
-    """Evaluate `condition.py` gates: `gated` is [(key, condition_file)];
-    returns {key: (allowed: bool, error: str|None)}.
+    """Evaluate gates: `gated` is [(key, gate)], where a gate is a
+    `condition.py` path (a template folder's) or a callable taking the target
+    path and returning (allowed, error) (a sentinel's, `_run_sentinel_condition`
+    bound to its name); returns {key: (allowed: bool, error: str|None)}.
 
     Gates are independent and may be slow (user code — filesystem reads,
     remote I/O), so they are evaluated **concurrently**: the cost is the
@@ -335,9 +389,14 @@ def _evaluate_conditions(gated: list, target_path: str):
     """
     results = {}  # key -> (allowed, error)
 
+    def _run(gate):
+        if callable(gate):
+            return gate(target_path)
+        return _run_condition(gate, target_path)
+
     def _serial():
-        for k, cf in gated:
-            results[k] = _run_condition(cf, target_path)
+        for k, gate in gated:
+            results[k] = _run(gate)
 
     if len(gated) == 1:
         _serial()
@@ -345,15 +404,15 @@ def _evaluate_conditions(gated: list, target_path: str):
         # Bounded fan-out — an extension has at most a handful of conditional
         # templates (SPEC CT-12), so one worker per gate is fine. The pool
         # machinery itself (thread creation, submit, result) lives OUTSIDE
-        # _run_condition's catch-all, so an OS refusing a new thread under load
+        # the runners' catch-alls, so an OS refusing a new thread under load
         # would otherwise escape and 500 the request — breaking the fail-closed
         # guarantee. Contain it: on any pool failure, fall back to serial
-        # evaluation, which is wholly inside _run_condition's catch-all.
+        # evaluation, which is wholly inside the runners' catch-alls.
         try:
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=len(gated)) as pool:
-                futures = {pool.submit(_run_condition, cf, target_path): k for k, cf in gated}
+                futures = {pool.submit(_run, gate): k for k, gate in gated}
                 for fut, k in futures.items():
                     results[k] = fut.result()
         except BaseException:
@@ -380,16 +439,22 @@ def _conditions_payload(path: str):
     is_dir = stat_mod.S_ISDIR(st.st_mode)
     entries, _ = _templates_for(path, is_dir)
 
-    gated = []  # [(mode, condition_file)] — mode keys are unique per list
+    gated = []  # [(mode, gate)] — mode keys are unique per list
     for entry in entries:
-        if entry.get("conditional"):
-            cf = _condition_file(entry["path"])
-            if cf is not None:
-                gated.append((entry["mode"], cf))
+        if not entry.get("conditional"):
+            continue
+        mode = entry["mode"]
+        if entry.get("path") is None:
+            if mode in SENTINEL_CONDITIONS:
+                gated.append((mode, functools.partial(_run_sentinel_condition, mode)))
+            continue
+        cf = _condition_file(entry["path"])
+        if cf is not None:
+            gated.append((mode, cf))
 
     results = _evaluate_conditions(gated, path)
     conditions, error = {}, None
-    for mode, _cf in gated:
+    for mode, _gate in gated:
         allowed, err = results[mode]
         conditions[mode] = allowed
         if err and error is None:

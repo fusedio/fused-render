@@ -1,6 +1,6 @@
 // Pure-helper tests for shell/app-files-lib.ts — no DOM required.
 import { describe, expect, it } from "bun:test";
-import { isAwaitingFile, renderSrc } from "@shell/app-files-lib";
+import { contentTemplates, isAwaitingFile, renderSrc } from "@shell/app-files-lib";
 import type { TemplateEntry } from "@platform/lib/api";
 
 const APP = "/repo/myapp";
@@ -94,4 +94,15 @@ describe("isAwaitingFile — the Files tab's right-pane loading gate (finding 2)
       expect(isAwaitingFile("main.py", null)).toBe(true);
     },
   );
+});
+
+describe("contentTemplates", () => {
+  it("drops the `_node` node view: the shell draws it, and this pane only frames pages", () => {
+    const list: TemplateEntry[] = [
+      { mode: "_render", path: null, icon: null },
+      { mode: "_node", path: null, icon: null, conditional: true, prefer: true },
+      { mode: "code", path: "/t/code/template.html", icon: null },
+    ];
+    expect(contentTemplates(list).map((t) => t.mode)).toEqual(["_render", "code"]);
+  });
 });
