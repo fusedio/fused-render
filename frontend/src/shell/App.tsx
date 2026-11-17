@@ -181,7 +181,7 @@ const Canvases = lazy(() =>
 const CanvasWorkspace = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
 );
-// …and the canvas NODE VIEW, the `_udf` sentinel mode (SPEC §53.3/§53.4): the
+// …and the canvas NODE VIEW, the `_node` sentinel mode (SPEC §53.3/§53.4): the
 // explorer's preview may not import apps/canvases, so it mounts whatever the
 // shell registered for the mode (platform/ui/NativeView). Same chunk as the
 // two routes above, loaded on the first node file shown.

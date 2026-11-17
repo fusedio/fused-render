@@ -766,7 +766,7 @@ def test_registry_view_lists_builtin_bindings(tmp_path, monkeypatch):
     # Pin the contract, not the whole shipped list: rendered-first default.
     # `udf` (the canvas node view, SPEC §53.3 NV-1) rides second: it is
     # conditional, so the default stays the rendered page.
-    assert _names(html)[:3] == ["_render", "_udf", "code"]
+    assert _names(html)[:3] == ["_render", "_node", "code"]
     assert html["resolvedSource"] == "core"
     assert html["overridesCore"] is False
     assert html["keyKind"] == "simple"
@@ -802,7 +802,7 @@ def test_registry_view_shows_user_bindings_and_overrides(tmp_path, monkeypatch):
     assert html["overridesCore"] is True
     assert _names(html) == ["code"]
     assert html["userValue"] == ["code"]
-    assert html["coreTemplates"][:3] == ["_render", "_udf", "code"]  # what a reset restores
+    assert html["coreTemplates"][:3] == ["_render", "_node", "code"]  # what a reset restores
 
     xyz = by_key[".xyz"]
     assert xyz["resolvedSource"] == "user"

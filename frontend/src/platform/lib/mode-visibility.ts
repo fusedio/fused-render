@@ -49,7 +49,7 @@ export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts)
 }
 
 // THE ONE EXCEPTION TO "a missing verdict shows": the canvas node view
-// (`_udf`, SPEC §53.3). Its gate answers yes for a handful of files behind an
+// (`_node`, SPEC §53.3). Its gate answers yes for a handful of files behind an
 // opt-in feature and no for every other `.py`/`.json`/`.html`/`.md`, so
 // reading a failed conditions call as "visible" would offer — and, where it is
 // the default candidate, open — a node view on files that are not nodes. It
@@ -136,12 +136,12 @@ export function unavailableReason(mode: string): string {
   return UNAVAILABLE_REASONS[mode] ?? "Not available here";
 }
 
-// The canvas node view's mode: the `_udf` shell sentinel (SPEC PT-12,
+// The canvas node view's mode: the `_node` shell sentinel (SPEC PT-12,
 // §53.3) — no template folder, drawn by apps/canvases through the shell's
 // native-view registry, gated server-side (`SENTINEL_CONDITIONS`).
-export const NODE_MODE = "_udf";
+export const NODE_MODE = "_node";
 
-// The node view's entry: the `_udf` sentinel (`path: null`). The sentinel
+// The node view's entry: the `_node` sentinel (`path: null`). The sentinel
 // namespace is shell-owned, so no folder can claim the name; a folder called
 // `udf` is an ordinary template, framed like any other.
 export function isNodeViewEntry(entry: Pick<TemplateEntry, "mode" | "path">): boolean {

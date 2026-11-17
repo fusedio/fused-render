@@ -9,7 +9,7 @@ import { snapshotFrameSrc, type ResolvedSnapshot } from "@platform/lib/snapshot-
 // The same set ModeSwitcher.tsx exports — repeated here rather than imported
 // because that module is JSX with a fetch-backed icon renderer, and this file
 // is meant to load in a bare test runtime. Only the sentinels this pane can
-// show: `_udf` (the canvas node view) is left out on purpose — the shell
+// show: `_node` (the canvas node view) is left out on purpose — the shell
 // draws it and this pane only frames /render pages, so it is filtered like an
 // unknown sentinel.
 const KNOWN_SENTINEL_MODES: ReadonlySet<string> = new Set(["_render", "_listing"]);
@@ -104,7 +104,7 @@ export function ancestorsOf(rel: string): string[] {
 /** The content templates on offer for a file: the server's list minus unknown
  *  sentinels (Preview does the same), minus the companions (claude/git/mcp —
  *  they talk ABOUT a file, and this pane shows one), minus `_listing` (a
- *  folder's view, never a file's), minus a NATIVE template and the `_udf`
+ *  folder's view, never a file's), minus a NATIVE template and the `_node`
  *  sentinel (the canvas node view): the shell draws those, and this pane only
  *  frames /render pages. */
 export function contentTemplates(templates: TemplateEntry[]): TemplateEntry[] {

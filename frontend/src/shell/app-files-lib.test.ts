@@ -97,10 +97,10 @@ describe("isAwaitingFile — the Files tab's right-pane loading gate (finding 2)
 });
 
 describe("contentTemplates", () => {
-  it("drops the `_udf` node view: the shell draws it, and this pane only frames pages", () => {
+  it("drops the `_node` node view: the shell draws it, and this pane only frames pages", () => {
     const list: TemplateEntry[] = [
       { mode: "_render", path: null, icon: null },
-      { mode: "_udf", path: null, icon: null, conditional: true, prefer: true },
+      { mode: "_node", path: null, icon: null, conditional: true, prefer: true },
       { mode: "code", path: "/t/code/template.html", icon: null },
     ];
     expect(contentTemplates(list).map((t) => t.mode)).toEqual(["_render", "code"]);

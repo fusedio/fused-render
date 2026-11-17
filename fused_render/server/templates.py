@@ -31,13 +31,13 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 # folder behind them. The only `_`-prefixed names a registry mode list may
 # reference (D73); any other `_` name is invalid (CT-6). `_listing` is the
 # shell's built-in directory listing — the default of the universal `/`
-# directory key (D81). `_udf` is the canvas node view (§53.3), drawn by the
+# directory key (D81). `_node` is the canvas node view (§53.3), drawn by the
 # shell's apps/canvases.
-KNOWN_SENTINELS = {"_render", "_listing", "_udf"}
+KNOWN_SENTINELS = {"_render", "_listing", "_node"}
 
 
 def _node_view_gate(path) -> bool:
-    """The `_udf` sentinel's gate — the node view (SPEC §53.3 NV-1, NV-2).
+    """The `_node` sentinel's gate — the node view (SPEC §53.3 NV-1, NV-2).
 
     True only when, cheapest first:
 
@@ -70,7 +70,7 @@ def _node_view_gate(path) -> bool:
 # would (/api/fs/conditions), with the same `main(path) -> bool` contract and
 # the same fail-closed posture; stat marks the entry `conditional` the same
 # way. A sentinel not listed here is unconditional, as every sentinel was.
-SENTINEL_CONDITIONS = {"_udf": _node_view_gate}
+SENTINEL_CONDITIONS = {"_node": _node_view_gate}
 
 
 # /api/fs/conditions evaluates template condition.py gates, which can do real
@@ -83,7 +83,7 @@ _CONDITIONS_TTL_S = 60.0
 # path -> (inserted_monotonic, prefs_mtime, toml_stamp, payload). Gates may
 # read the preference store (the reader template's condition.py does), so a
 # cached verdict is only valid while prefs.json is unchanged — otherwise
-# flipping a Preferences toggle looks dead for a full TTL. The `_udf` gate also
+# flipping a Preferences toggle looks dead for a full TTL. The `_node` gate also
 # reads a node file's canvas.toml (a row added there makes the file a node),
 # so for a path SHAPED like a node file `toml_stamp` is `(canvas.toml path,
 # its mtime)` and a hit re-stats that one file; for every other path it is
@@ -350,12 +350,12 @@ def _mark_conditions(entries: list):
 
 
 # The one mode stat may mark as its file's DEFAULT CANDIDATE (SPEC PT-8's
-# `prefer` exception): the canvas node view, the `_udf` sentinel.
-_PREFERRED_SENTINEL = "_udf"
+# `prefer` exception): the canvas node view, the `_node` sentinel.
+_PREFERRED_SENTINEL = "_node"
 
 
 def _mark_preferred(entries: list, path: str) -> None:
-    """Flag the `_udf` sentinel entry `"prefer": True` when `path` is shaped
+    """Flag the `_node` sentinel entry `"prefer": True` when `path` is shaped
     like a canvas node file and the `canvases_enabled` preference is on (SPEC
     PT-8, §53.3 NV-3). The client then holds the content pane on the "checking"
     placeholder until the gate answers, and opens the node view on a yes —

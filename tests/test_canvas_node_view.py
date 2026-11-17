@@ -1,4 +1,4 @@
-"""The node view's server half (SPEC §53.3 NV-1, NV-2): the `_udf`
+"""The node view's server half (SPEC §53.3 NV-1, NV-2): the `_node`
 sentinel — registry, resolution, its in-process gate
 (`server.templates.SENTINEL_CONDITIONS`) — and GET /api/canvases/node, which
 shares the gate's one rule (`canvases.canvas_node_file`).
@@ -122,7 +122,7 @@ def gate(path) -> bool:
     payload = server_templates._conditions_payload(str(path))
     assert isinstance(payload, dict), payload
     assert payload.get("error") is None, payload
-    return payload["conditions"]["_udf"]
+    return payload["conditions"]["_node"]
 
 
 def modes(path):
@@ -137,34 +137,34 @@ def test_udf_is_registered_after_the_default_of_the_four_node_kinds():
     with open(server_templates.BUILTIN_REGISTRY, encoding="utf-8") as fh:
         registry = json.load(fh)
     for key in (".py", ".json", ".html", ".md"):
-        assert registry[key][1] == "_udf", key
-        assert registry[key].count("_udf") == 1, key
+        assert registry[key][1] == "_node", key
+        assert registry[key].count("_node") == 1, key
     # Nowhere else — not `.*.json` either: a compound stem is never a node
     # name, so every such file would pay a gate evaluation for nothing.
-    others = [k for k, v in registry.items() if "_udf" in v
+    others = [k for k, v in registry.items() if "_node" in v
               and k not in (".py", ".json", ".html", ".md")]
     assert others == []
 
 
 def test_udf_is_conditional_so_no_default_moves(tmp_path):
-    assert "_udf" not in [e["mode"] for e in server_templates._templates_for(
+    assert "_node" not in [e["mode"] for e in server_templates._templates_for(
         str(tmp_path / "a.b.json"), False)[0]]
     for name, default in (("a.py", "code"), ("a.json", "tree"),
                           ("a.html", "_render"), ("a.md", "markdown")):
         entries, error = server_templates._templates_for(str(tmp_path / name), False)
         assert error is None
         assert entries[0]["mode"] == default, name
-        udf = next(e for e in entries if e["mode"] == "_udf")
-        assert udf == {"mode": "_udf", "path": None, "icon": None,
+        udf = next(e for e in entries if e["mode"] == "_node")
+        assert udf == {"mode": "_node", "path": None, "icon": None,
                        "conditional": True}, name
 
 
 def test_udf_is_a_gated_sentinel_with_no_folder():
-    assert "_udf" in server_templates.KNOWN_SENTINELS
-    assert server_templates.SENTINEL_CONDITIONS["_udf"] is server_templates._node_view_gate
+    assert "_node" in server_templates.KNOWN_SENTINELS
+    assert server_templates.SENTINEL_CONDITIONS["_node"] is server_templates._node_view_gate
     # No template folder backs it, and the retired `udf` folder is gone.
     assert not os.path.exists(os.path.join(server_templates.TEMPLATES_DIR, "udf"))
-    path, err = server_templates._resolve_name("_udf")
+    path, err = server_templates._resolve_name("_node")
     assert path is None and "sentinel" in err
 
 
@@ -173,13 +173,13 @@ def test_a_user_registry_may_reference_the_sentinel(tmp_path, monkeypatch, clone
     keeps its gate there: the entry is conditional wherever it is listed."""
     udir = tmp_path / "utemplates"
     udir.mkdir()
-    (udir / "registry.json").write_text(json.dumps({".py": ["_udf", "code"]}),
+    (udir / "registry.json").write_text(json.dumps({".py": ["_node", "code"]}),
                                         encoding="utf-8")
     monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(udir))
     monkeypatch.setattr(server_templates, "USER_REGISTRY", str(udir / "registry.json"))
     entries, err = server_templates._templates_for(str(clone / "udf_1.py"), False)
     assert err is None
-    assert [e["mode"] for e in entries] == ["_udf", "code"]
+    assert [e["mode"] for e in entries] == ["_node", "code"]
     assert entries[0]["conditional"] is True and entries[0]["prefer"] is True
     assert gate(clone / "udf_1.py") is True
 
@@ -189,7 +189,7 @@ def test_a_user_registry_may_reference_the_sentinel(tmp_path, monkeypatch, clone
 def test_gate_allows_every_node_kind_of_a_user_clone(clone):
     for name in ("udf_1.py", "chart.json", "page.html", "notes.md"):
         assert gate(clone / name) is True, name
-    assert modes(clone / "udf_1.py")[:2] == ["code", "_udf"]
+    assert modes(clone / "udf_1.py")[:2] == ["code", "_node"]
 
 
 def test_gate_is_off_with_the_preference(clone):
@@ -280,7 +280,7 @@ def test_gate_never_raises(monkeypatch):
 
     monkeypatch.setattr(prefs_mod, "canvases_enabled", lambda: True)
     monkeypatch.setattr(canvases_mod, "canvas_node_file", boom)
-    allowed, err = server_templates._run_sentinel_condition("_udf", "/x/y.py")
+    allowed, err = server_templates._run_sentinel_condition("_node", "/x/y.py")
     assert allowed is False and err is None
 
 
@@ -291,9 +291,9 @@ def test_a_sentinel_gate_that_raises_denies_with_the_reason(clone, monkeypatch):
     def boom(path):
         raise RuntimeError("boom")
 
-    monkeypatch.setitem(server_templates.SENTINEL_CONDITIONS, "_udf", boom)
+    monkeypatch.setitem(server_templates.SENTINEL_CONDITIONS, "_node", boom)
     payload = server_templates._conditions_payload(str(clone / "udf_1.py"))
-    assert payload["conditions"]["_udf"] is False
+    assert payload["conditions"]["_node"] is False
     assert "boom" in payload["error"]
 
 
@@ -381,14 +381,14 @@ def test_node_route_and_gate_agree(client, clone, base):
 
 
 def test_a_user_template_named_udf_is_an_ordinary_template(tmp_path, monkeypatch, base):
-    """The node view is the `_udf` sentinel, which no folder can shadow: a
+    """The node view is the `_node` sentinel, which no folder can shadow: a
     user folder `udf/` is a template like any other — its own page, its own
     gate, never the node view, never preferred."""
     udir = tmp_path / "user-templates"
     (udir / "udf").mkdir(parents=True)
     (udir / "udf" / "template.html").write_text("<html>mine</html>", encoding="utf-8")
     (udir / "udf" / "condition.py").write_text("def main(path):\n    return True\n", encoding="utf-8")
-    (udir / "registry.json").write_text(json.dumps({".py": ["udf", "_udf", "code"]}),
+    (udir / "registry.json").write_text(json.dumps({".py": ["udf", "_node", "code"]}),
                                         encoding="utf-8")
     monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(udir))
     monkeypatch.setattr(server_templates, "USER_REGISTRY", str(udir / "registry.json"))
@@ -399,9 +399,9 @@ def test_a_user_template_named_udf_is_an_ordinary_template(tmp_path, monkeypatch
     entries, _ = server_templates._templates_for(str(plain), False)
     by_mode = {e["mode"]: e for e in entries}
     assert by_mode["udf"]["path"] == path and "native" not in by_mode["udf"]
-    assert by_mode["_udf"]["path"] is None
+    assert by_mode["_node"]["path"] is None
     payload = server_templates._conditions_payload(str(plain))
-    assert payload["conditions"] == {"udf": True, "_udf": False}
+    assert payload["conditions"] == {"udf": True, "_node": False}
     assert not server_templates.is_native_template_path(str(udir / "udf" / "template.html"))
 
 
@@ -409,7 +409,7 @@ def test_a_user_template_named_udf_is_an_ordinary_template(tmp_path, monkeypatch
 
 def _udf_entry(path):
     entries, _ = server_templates._templates_for(str(path), False)
-    return next((e for e in entries if e["mode"] == "_udf"), None)
+    return next((e for e in entries if e["mode"] == "_node"), None)
 
 
 def _prefer(path):
@@ -428,7 +428,7 @@ def test_stat_marks_the_node_view_preferred_on_a_node_shaped_path(clone):
     assert _prefer(clone / "not_yet.py") is True
     # No other entry ever carries the flag.
     entries, _ = server_templates._templates_for(str(clone / "udf_1.py"), False)
-    assert [e["mode"] for e in entries if "prefer" in e] == ["_udf"]
+    assert [e["mode"] for e in entries if "prefer" in e] == ["_node"]
 
 
 def test_stat_does_not_prefer_with_the_preference_off(clone):
@@ -470,14 +470,14 @@ def test_stat_does_not_prefer_where_a_user_registry_drops_udf(tmp_path, monkeypa
 
 def test_stat_prefers_only_the_udf_sentinel(tmp_path, monkeypatch, clone):
     """A user template of its own, gated and bound on `.py`, is never marked
-    — not even one named `udf`: only the `_udf` sentinel carries the flag."""
+    — not even one named `udf`: only the `_node` sentinel carries the flag."""
     udir = tmp_path / "user-templates"
     for name in ("mynode", "udf"):
         (udir / name).mkdir(parents=True)
         (udir / name / "template.html").write_text("<html>mine</html>", encoding="utf-8")
         (udir / name / "condition.py").write_text("def main(path):\n    return True\n",
                                                   encoding="utf-8")
-    (udir / "registry.json").write_text(json.dumps({".py": ["mynode", "udf", "_udf", "code"]}),
+    (udir / "registry.json").write_text(json.dumps({".py": ["mynode", "udf", "_node", "code"]}),
                                         encoding="utf-8")
     monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(udir))
     monkeypatch.setattr(server_templates, "USER_REGISTRY", str(udir / "registry.json"))
@@ -485,12 +485,12 @@ def test_stat_prefers_only_the_udf_sentinel(tmp_path, monkeypatch, clone):
     by_mode = {e["mode"]: e for e in entries}
     for name in ("mynode", "udf"):
         assert by_mode[name].get("conditional") is True and "prefer" not in by_mode[name]
-    assert by_mode["_udf"]["path"] is None and by_mode["_udf"]["prefer"] is True
+    assert by_mode["_node"]["path"] is None and by_mode["_node"]["prefer"] is True
 
 
 def test_stat_route_carries_prefer(client, clone):
     body = client.get("/api/fs/stat", params={"path": str(clone / "udf_1.py")}).json()
-    udf = next(e for e in body["templates"] if e["mode"] == "_udf")
+    udf = next(e for e in body["templates"] if e["mode"] == "_node")
     assert udf["prefer"] is True
 
 
@@ -500,13 +500,13 @@ def test_conditions_cache_follows_the_canvas_toml_of_a_node_shaped_path(client, 
     canvas.toml mtime too."""
     orphan = str(clone / "orphan.py")
     ask = lambda: client.get("/api/fs/conditions", params={"path": orphan}).json()  # noqa: E731
-    assert ask()["conditions"]["_udf"] is False
+    assert ask()["conditions"]["_node"] is False
     toml = clone / "canvas.toml"
     toml.write_text(CANVAS_TOML + '\n[[canvas.nodes]]\nudfName = "orphan"\nx = 0.0\ny = 1200.0\n',
                     encoding="utf-8")
     st = os.stat(toml)
     os.utime(toml, (st.st_atime, st.st_mtime + 5))
-    assert ask()["conditions"]["_udf"] is True
+    assert ask()["conditions"]["_node"] is True
 
 
 def _syscalls_of(monkeypatch, fn):
