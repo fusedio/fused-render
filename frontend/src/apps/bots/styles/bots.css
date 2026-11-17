@@ -614,55 +614,79 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap
 .bots-page:not(.stage) .shotwrap.termup { display: none; }
 div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 /* An expert's preview column (components/ExpertPane.tsx): no browser; its Memory · Consults · Checks tabs ride the
-   Browser | Terminal strip (.viewsw .satab). The panels are also mounted in Settings › Expert (the dialog sits in the
-   page's portal host, so these rules reach it), hence nothing here leans on .preview. */
+   Browser | Terminal strip (.viewsw .satab). The panels (ExpertPanels, root .xpanels) are also mounted in Settings ›
+   Expert, and that dialog portals to <body>, OUTSIDE .bots-page, so every panel rule hangs off .xpanels itself and
+   reads its own --xp-* tokens: the page's tokens inside .bots-page, the shadcn/shell tokens the other Settings tabs
+   use elsewhere (both themes). Buttons are restyled here too, since `.bots-page button` never reaches the dialog. */
 .bots-page .xpane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden auto; padding-bottom: 14px; }
 .bots-page .xp-about { margin: 0 18px 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .bots-page .xp-warn { margin: 0 18px 10px; color: var(--err); font-size: 12px; }
-.bots-page .xpane .xp-panel { margin: 0 14px; }
-.bots-page [data-slot="dialog-content"] .xp-tabs.viewsw { margin: 4px 0 8px; }
-.bots-page .xp-panel { color: var(--muted); font-size: 12px; line-height: 1.5; }
-.bots-page .xp-bar { display: flex; align-items: center; gap: 10px; padding: 4px 4px 8px; }
-.bots-page .xp-bar .xp-line { flex: 1; min-width: 0; }
-.bots-page .xp-bar button { flex: none; display: inline-flex; align-items: center; gap: 6px; }
-.bots-page .xp-score { color: var(--text); font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.bots-page .xp-prog { height: 3px; margin: 0 4px 8px; border-radius: 2px; background: var(--raised); overflow: hidden; }
-.bots-page .xp-prog > div { height: 100%; background: var(--accent); transition: width .3s; }
-.bots-page .xp-list { list-style: none; margin: 0; padding: 0; }
-.bots-page .xp-proposals { list-style: none; margin: 0 0 6px; padding: 0 4px; display: flex; flex-direction: column; gap: 4px; }
-.bots-page .xp-proposal { color: var(--text); }
-.bots-page .xp-proposal.failed { color: var(--err); }
-.bots-page .xp-divider { margin: 10px 4px 2px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
-.bots-page .xp-seen-once .xp-claim { color: var(--muted); }
-.bots-page .xp-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 4px; border-top: 1px solid var(--line); }
-.bots-page .xp-row:first-child { border-top: none; }
-.bots-page .xp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.bots-page .xp-claim { color: var(--text); overflow-wrap: anywhere; }
-.bots-page .xp-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--muted); font-size: 11px; }
-.bots-page .xp-tag { font-size: 9.5px; letter-spacing: .03em; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
-.bots-page .xp-tag.user { color: var(--accent-text); border-color: color-mix(in srgb, var(--accent-text) 45%, transparent); }
-.bots-page .xp-tag.not-proposed-again { opacity: .8; }
-.bots-page .xp-tag.promoted { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
-.bots-page .xp-tag.unsure { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
-.bots-page .xp-row .xp-forget { flex: none; padding: 2px 8px; font-size: 11px; background: transparent; color: var(--muted); opacity: 0; }
-.bots-page .xp-row:hover .xp-forget, .bots-page .xp-row .xp-forget:focus-visible { opacity: 1; }
-.bots-page .xp-row .xp-forget:hover { background: var(--err); color: #fff; }
-@media (hover: none) { .bots-page .xp-row .xp-forget { opacity: 1; } }
-.bots-page .xp-fold > details { flex: 1; min-width: 0; }
-.bots-page .xp-fold summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; cursor: pointer; list-style: none; }
-.bots-page .xp-fold summary::-webkit-details-marker { display: none; }
-.bots-page .xp-fold summary .xp-claim { flex: 1 1 60%; min-width: 0; }
-.bots-page .xp-fold summary:hover .xp-claim { text-decoration: underline; }
-.bots-page .xp-why { flex-basis: 100%; }
-.bots-page .xp-mark { flex: none; width: 14px; font-weight: 600; }
-.bots-page .xp-mark.pass { color: var(--ok); }
-.bots-page .xp-mark.fail { color: var(--err); }
-.bots-page .xp-body { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-.bots-page .xp-body pre { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--inset); color: var(--text); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow: auto; }
-.bots-page .xp-ctx { margin: 0; font-style: italic; }
-.bots-page .xp-refs { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
-.bots-page .xp-refs code { font-size: 11px; padding: 0 5px; border-radius: 5px; background: var(--raised); color: var(--text); }
-.bots-page .xp-empty { padding: 20px 8px; text-align: center; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.xpanels { --xp-text: var(--foreground); --xp-muted: var(--muted-foreground); --xp-line: var(--sh-border); --xp-raised: var(--secondary);
+  --xp-hover: var(--secondary); --xp-on: var(--secondary); --xp-inset: var(--secondary); --xp-accent: var(--bots-shell-accent);
+  --xp-accent-text: var(--bots-shell-accent-text); --xp-ok: #38d591; --xp-warn: #ffb020; --xp-err: var(--destructive);
+  min-width: 0; color: var(--xp-text); }
+[data-theme="light"] .xpanels { --xp-ok: #1f9d5a; --xp-warn: #b7791a; }
+.bots-page .xpanels, [data-theme="light"] .bots-page .xpanels { --xp-text: var(--text); --xp-muted: var(--muted); --xp-line: var(--line); --xp-raised: var(--raised);
+  --xp-hover: var(--hover); --xp-on: var(--card); --xp-inset: var(--inset); --xp-accent: var(--accent); --xp-accent-text: var(--accent-text);
+  --xp-ok: var(--ok); --xp-warn: var(--warn); --xp-err: var(--err); }
+.xpanels, .xpanels * { box-sizing: border-box; }
+.xpanels button { background: var(--xp-raised); color: var(--xp-text); border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 300; }
+.xpanels button:hover { background: var(--xp-hover); }
+.xpanels button:disabled { opacity: .4; cursor: default; }
+.xpanels button:focus-visible { outline: 2px solid var(--xp-accent-text); outline-offset: 2px; }
+.xpanels button.busy { pointer-events: none; }
+.xpanels button.busy > svg { display: none; }
+.xpanels button.busy::before { content: ""; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: bots-spin .7s linear infinite; }
+.xpanels b { font-weight: 400; }
+.xpanels .xp-tabs { display: flex; gap: 4px; }
+.xpanels .xp-tabs .satab { font-size: 11.5px; padding: 4px 10px; border-radius: 999px; background: transparent; color: var(--xp-muted); }
+.xpanels .xp-tabs .satab.on { background: var(--xp-on); color: var(--xp-text); }
+.xpane .xp-panel { margin: 0 14px; }
+/* In the dialog: the tabs sit flush with the other sections; the dialog body (BotSettings' content column) scrolls. */
+.bots-dialog .xpanels .xp-tabs { margin: 4px 0 8px; }
+.xpanels .xp-panel { color: var(--xp-muted); font-size: 12px; line-height: 1.5; }
+.xpanels .xp-bar { display: flex; align-items: center; gap: 10px; padding: 4px 4px 8px; }
+.xpanels .xp-bar .xp-line { flex: 1; min-width: 0; }
+.xpanels .xp-bar button { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.xpanels .xp-score { color: var(--xp-text); font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.xpanels .xp-prog { height: 3px; margin: 0 4px 8px; border-radius: 2px; background: var(--xp-raised); overflow: hidden; }
+.xpanels .xp-prog > div { height: 100%; background: var(--xp-accent); transition: width .3s; }
+.xpanels .xp-list { list-style: none; margin: 0; padding: 0; }
+.xpanels .xp-proposals { list-style: none; margin: 0 0 6px; padding: 0 4px; display: flex; flex-direction: column; gap: 4px; }
+.xpanels .xp-proposal { color: var(--xp-text); }
+.xpanels .xp-proposal.failed { color: var(--xp-err); }
+.xpanels .xp-divider { margin: 10px 4px 2px; padding-top: 8px; border-top: 1px solid var(--xp-line); color: var(--xp-muted); font-size: 11px; }
+.xpanels .xp-seen-once .xp-claim { color: var(--xp-muted); }
+.xpanels .xp-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 4px; border-top: 1px solid var(--xp-line); }
+.xpanels .xp-row:first-child { border-top: none; }
+.xpanels .xp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.xpanels .xp-claim { color: var(--xp-text); overflow-wrap: anywhere; }
+.xpanels .xp-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--xp-muted); font-size: 11px; }
+.xpanels .xp-tag { font-size: 9.5px; letter-spacing: .03em; padding: 0 6px; border-radius: 6px; border: 1px solid var(--xp-line); color: var(--xp-muted); }
+.xpanels .xp-tag.user { color: var(--xp-accent-text); border-color: color-mix(in srgb, var(--xp-accent-text) 45%, transparent); }
+.xpanels .xp-tag.not-proposed-again { opacity: .8; }
+.xpanels .xp-tag.promoted { color: var(--xp-ok); border-color: color-mix(in srgb, var(--xp-ok) 45%, transparent); }
+.xpanels .xp-tag.unsure { color: var(--xp-warn); border-color: color-mix(in srgb, var(--xp-warn) 45%, transparent); }
+.xpanels .xp-row .xp-forget { flex: none; padding: 2px 8px; font-size: 11px; background: transparent; color: var(--xp-muted); opacity: 0; }
+.xpanels .xp-row:hover .xp-forget, .xpanels .xp-row .xp-forget:focus-visible { opacity: 1; }
+.xpanels .xp-row .xp-forget:hover { background: var(--xp-err); color: #fff; }
+@media (hover: none) { .xpanels .xp-row .xp-forget { opacity: 1; } }
+.xpanels .xp-fold > details { flex: 1; min-width: 0; }
+.xpanels .xp-fold summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; cursor: pointer; list-style: none; }
+.xpanels .xp-fold summary::-webkit-details-marker { display: none; }
+.xpanels .xp-fold summary .xp-claim { flex: 1 1 60%; min-width: 0; }
+.xpanels .xp-fold summary:hover .xp-claim { text-decoration: underline; }
+.xpanels .xp-why { flex-basis: 100%; }
+.xpanels .xp-mark { flex: none; width: 14px; font-weight: 600; }
+.xpanels .xp-mark.pass { color: var(--xp-ok); }
+.xpanels .xp-mark.fail { color: var(--xp-err); }
+.xpanels .xp-body { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.xpanels .xp-body pre { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--xp-inset); color: var(--xp-text); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow: auto; }
+.xpanels .xp-ctx { margin: 0; font-style: italic; }
+.xpanels .xp-refs { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+.xpanels .xp-refs code { font-size: 11px; padding: 0 5px; border-radius: 5px; background: var(--xp-raised); color: var(--xp-text); }
+.xpanels .xp-empty { padding: 20px 8px; text-align: center; font-size: 12.5px; line-height: 1.5; color: var(--xp-muted); }
+@media (prefers-reduced-motion: reduce) { .xpanels * { animation: none !important; transition: none !important; } }
 .bots-page .shotwrap img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
 .bots-page .shotwrap .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--card); text-align: center; padding: 20px; font-size: 12px; }
 /* Asleep: Chrome was closed after sitting idle. The last frame stays, dimmed, with a moon; clicking wakes it (take-over relaunches). */

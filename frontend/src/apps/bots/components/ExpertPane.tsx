@@ -265,7 +265,7 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
   };
 
   return (
-    <>
+    <div className="xpanels">
       <div className="viewsw xp-tabs" role="tablist" aria-label="Expert" onKeyDown={onKey}>
         {TABS.map(([t, l]) => (
           <button key={t} type="button" id={`${uid}-${t}`} role="tab" className={`satab${tab === t ? " on" : ""}`} aria-selected={tab === t}
@@ -278,7 +278,7 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
         {tab === "consults" ? <ConsultsPanel consults={data.consults} /> : null}
         {tab === "checks" ? <ChecksPanel checks={data.checks} starting={starting} onRun={() => { void onRun(); }} /> : null}
       </div>
-    </>
+    </div>
   );
 }
 
