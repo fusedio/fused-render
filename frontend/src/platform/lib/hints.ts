@@ -382,10 +382,47 @@ function renderRowHint(p: HTMLDivElement, el: Element): boolean {
   return true;
 }
 
+/** THE LIST MOVED, THE POINTER DID NOT (Akshil, 2026-11-17: "when I scroll
+ *  there is a little flash of the overlay that comes in and goes out"). A
+ *  scroll hides the hint; the browser then reports the element that slid
+ *  under the resting pointer, and its hint comes up — until the next scroll
+ *  tick hides it again. For a caption that is harmless. A rail ring's ROW
+ *  also dims the rail's windows (tasks.css, the scrim on `.is-row.is-on`), so
+ *  every tick of the wheel blinked the window. A row that came up this way is
+ *  marked `is-passing` and dims nothing; the mark goes the moment the pointer
+ *  is somewhere new — the reader pointing — or the keyboard brings a hint. */
+let passing = false;
+let pointerX = Number.NaN;
+let pointerY = Number.NaN;
+
+function onScrolled(): void {
+  passing = true;
+}
+
+/** A pointer event at a NEW spot is the reader pointing. The events a scroll
+ *  causes under a pointer at rest carry the spot it already had.
+ *
+ *  THE FIRST EVENT IS A BASELINE, NOT A MOVE (CodeRabbit on #2320): until one
+ *  has been seen there is no spot to compare with, and a pointer already
+ *  resting on the rail when the page loaded would have its first scroll-made
+ *  event read as "somewhere new" — clearing the mark and dimming the window
+ *  with nothing having moved. */
+function pointed(e: PointerEvent): void {
+  const known = !Number.isNaN(pointerX) && !Number.isNaN(pointerY);
+  if (known && e.clientX === pointerX && e.clientY === pointerY) return;
+  pointerX = e.clientX;
+  pointerY = e.clientY;
+  if (!known) return;
+  if (!passing) return;
+  passing = false;
+  if (panel) panel.classList.remove("is-passing");
+}
+
 function show(el: Element, x: number, y: number): void {
   const p = ensurePanel();
   const row = renderRowHint(p, el);
   p.classList.toggle("is-row", row);
+  p.classList.toggle("is-passing", row && passing);
   if (!row) p.style.width = "";
   const task = !row && renderTaskHint(p, el);
   if (!row && !task) renderHint(p, el.getAttribute("data-hint") || "");
@@ -410,11 +447,13 @@ export function hideHint(): void {
     // that flashes on the next show, before its own text lands.
     panel.replaceChildren();
     panel.classList.remove("is-row");
+    panel.classList.remove("is-passing");
     panel.style.width = "";
   }
 }
 
 function onOver(e: PointerEvent): void {
+  pointed(e);
   const el = hintAt(e.clientX, e.clientY, e.target);
   if (!el) {
     if (host) hideHint();
@@ -438,6 +477,7 @@ function throughAt(target: EventTarget | null): boolean {
 }
 
 function onMove(e: PointerEvent): void {
+  pointed(e);
   if (!host && !throughAt(e.target)) return;
   if (host && !throughAt(e.target)) {
     // The hint's own element is under the pointer (pointerout would have
@@ -475,6 +515,8 @@ function onFocus(e: FocusEvent): void {
   if (!el) return;
   const r = el.getBoundingClientRect();
   host = el;
+  // The keyboard brought this one: it is the reader's, whatever scrolled.
+  passing = false;
   show(el, r.left + r.width / 2 - OFFSET_X, r.bottom - OFFSET_Y + 6);
 }
 
@@ -497,5 +539,8 @@ export function installHints(): void {
   // Anything that moves the page out from under a fixed panel: the panel is
   // anchored to viewport coordinates the scroll has just invalidated.
   window.addEventListener("scroll", hideHint, true);
+  // …and whatever comes up next under a pointer that has not moved is the
+  // list passing, not the reader pointing (`passing`).
+  window.addEventListener("scroll", onScrolled, true);
   window.addEventListener("blur", hideHint);
 }

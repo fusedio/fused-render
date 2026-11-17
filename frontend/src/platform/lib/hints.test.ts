@@ -299,6 +299,46 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     expect(place).toContain("const left = Math.max(EDGE, edge - 8 - w);");
   });
 
+  it("a row raised by a scroll under a resting pointer is marked passing; a pointer somewhere new, or the keyboard, clears it", () => {
+    // The scroll that hides the hint also arms the mark…
+    expect(SRC).toContain('window.addEventListener("scroll", onScrolled, true);');
+    const scrolled = SRC.slice(SRC.indexOf("function onScrolled"));
+    expect(scrolled.slice(0, scrolled.indexOf("\n}"))).toContain("passing = true;");
+    // …a row shown while it is armed wears it, and only a row…
+    const show = SRC.slice(SRC.indexOf("function show("));
+    expect(show.slice(0, show.indexOf("\n}"))).toContain('p.classList.toggle("is-passing", row && passing);');
+    // …and it goes when a pointer event reports a NEW spot: the events a
+    // scroll causes under a pointer at rest carry the spot it already had.
+    const pointed = SRC.slice(SRC.indexOf("function pointed("));
+    const body = pointed.slice(0, pointed.indexOf("\n}"));
+    expect(body).toContain("if (known && e.clientX === pointerX && e.clientY === pointerY) return;");
+    expect(body.indexOf("return;")).toBeLessThan(body.indexOf("passing = false;"));
+    // The FIRST event seen is a baseline, not a move (CodeRabbit on #2320): a
+    // pointer resting on the rail at load has no earlier spot to compare
+    // with, so its first scroll-made event must record the spot and leave
+    // the mark armed.
+    expect(SRC).toContain("let pointerX = Number.NaN;");
+    expect(body).toContain("const known = !Number.isNaN(pointerX) && !Number.isNaN(pointerY);");
+    const record = body.indexOf("pointerY = e.clientY;");
+    const baseline = body.indexOf("if (!known) return;");
+    expect(record).toBeGreaterThan(-1);
+    expect(baseline).toBeGreaterThan(record);
+    expect(baseline).toBeLessThan(body.indexOf("passing = false;"));
+    expect(body).toContain('panel.classList.remove("is-passing");');
+    for (const fn of ["function onOver(", "function onMove("]) {
+      const at = SRC.indexOf(fn);
+      expect(SRC.slice(at, at + 80)).toContain("pointed(e);");
+    }
+    // The keyboard's hint is the reader's own.
+    const focus = SRC.slice(SRC.indexOf("function onFocus("));
+    const fbody = focus.slice(0, focus.indexOf("\n}"));
+    expect(fbody.indexOf("passing = false;")).toBeGreaterThan(-1);
+    expect(fbody.indexOf("passing = false;")).toBeLessThan(fbody.indexOf("show(el"));
+    // A hide takes the mark down with the row.
+    const hide = SRC.slice(SRC.indexOf("export function hideHint"));
+    expect(hide.slice(0, hide.indexOf("\n}"))).toContain('panel.classList.remove("is-passing");');
+  });
+
   it("a hide takes the row form and its width with it", () => {
     // The panel is shared: a plain hint shown next must not come up a 420px
     // row-shaped box.
@@ -325,12 +365,25 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     // (2026-11-17: "let's do scrim 30"): 55% of the app's modal scrim token —
     // 30% black dark, 22% light — over the card, taking no pointer.
     expect(TASKS_CSS).toContain(
-      '.claude-rail-peek > .claude-rail-peek-card::after {\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: 50;\n  border-radius: inherit;\n  background: color-mix(in srgb, var(--scrim) 55%, transparent);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity var(--dur-med) var(--ease-out);\n}',
+      '.claude-rail-peek > .claude-rail-peek-card::after,\n.modal-popover .modal-dialog.new-task-dialog::after {\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: 50;\n  border-radius: inherit;\n  background: color-mix(in srgb, var(--scrim) 55%, transparent);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity var(--dur-med) var(--ease-out);\n}',
     );
     // It fades in and out ("a transition fade for this scrim"): only its
     // opacity moves, and the card is never made a positioned box for it — its
     // resize grips are earlier siblings and would end up under it.
-    expect(TASKS_CSS).toContain("body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after {\n  opacity: 1;\n}");
+    // …and the + New task popover with them (2026-11-17: "scrim should apply
+    // for + new button, bots and tasks as well"): window A in the Modal
+    // chassis, named beside the cards. Its `::before` is the accent line.
+    expect(TASKS_CSS).toContain(
+      "body:has(.hint-panel.is-row.is-on:not(.is-passing)) .claude-rail-peek > .claude-rail-peek-card::after,\nbody:has(.hint-panel.is-row.is-on:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after {\n  opacity: 1;\n}",
+    );
+    // No scrim for a row the SCROLL brought (2026-11-17: "when I scroll there
+    // is a little flash of the overlay that comes in and goes out"): no rule
+    // dims on `.is-row.is-on` alone any more.
+    expect(TASKS_CSS).not.toContain("body:has(.hint-panel.is-row.is-on) ");
+    const newTask = readFileSync(join(import.meta.dir, "../../styles/new-task.css"), "utf8");
+    expect(newTask).toContain(".new-task-dialog::before {");
+    expect(newTask).not.toContain(".new-task-dialog::after");
+    expect(newTask).toMatch(/\n\.new-task-dialog \{[^}]*overflow: hidden;/);
     expect(TASKS_CSS).not.toContain(".claude-rail-peek-card {\n  position: relative;");
     const rail = readFileSync(join(import.meta.dir, "../../styles/claude-rail.css"), "utf8");
     expect(rail).toMatch(/\n\.claude-rail-peek \{[^}]*position: fixed;/);
