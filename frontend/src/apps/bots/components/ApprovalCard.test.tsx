@@ -100,6 +100,15 @@ describe("ApprovalCard: an expert's skill proposal", () => {
     expect(html(prop({ score_before: null, score_after: null }))).not.toContain("Checks:");
     expect(html(prop({ score_after: null }))).not.toContain("Checks:");
   });
+  test("warnings: a short Heads up line, kept out of the summary; none for a pure addition", () => {
+    const text = "I'd like to update the skill “Canvas”.\nWarning: this change removes the section “Keys”.\nApprove?";
+    const out = html(prop({ text, score_before: null, score_after: null, expert_warnings: ["removes the section “Keys”", "removes 1 code block"] } as Partial<BotEvent>));
+    expect(out).toContain("Heads up: this change removes the section “Keys” · removes 1 code block");
+    expect(out).not.toContain("Warning: this change");
+    const fromText = html(prop({ text, score_before: null, score_after: null }));
+    expect(fromText).toContain("Heads up: this change removes the section “Keys”");
+    expect(html(prop({ score_before: null, score_after: null, expert_warnings: [] } as Partial<BotEvent>))).not.toContain("Heads up");
+  });
   test("settled: no buttons, the verdict says Rejected or Approved", () => {
     expect(html(prop(), false, { answer: "deny" })).toContain("✗ Rejected");
     expect(html(prop(), false, { answer: "approve" })).toContain("✓ Approved");

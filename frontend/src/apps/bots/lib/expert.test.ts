@@ -4,7 +4,7 @@ import { gapNote, gapProposal, observationText } from "./expert";
 import { CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, filterConsults, formatDuration, groupConsultsByDay, isLongContext, usedLessons } from "./expert";
 import { filterLessons, filterObservations, LESSON_STATUS_LABEL, lessonFacts, lessonSource, lessonStatus, observationFacts, observationSource, observationTone } from "./expert";
 import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, observationGaps, observationResultLabel, observationTypeLabel,
-  researchingGap, sortObservations, unresolvedGapCount, checkProgress, engineNote, engineOptions, modelOptions, openProposals, proposalLine, proposalText, scoreText,
+  researchingGap, sortObservations, unresolvedGapCount, checkProgress, engineNote, engineOptions, modelOptions, openProposals, proposalLine, proposalText, proposalWarnings, warningsLine, scoreText,
   scoresLine, sortConsults, sortLessons } from "./expert";
 import { budgetState, lessonUses, removedReasonLabel, tidySummary, usedLabel, usesLine } from "./expert";
 
@@ -364,5 +364,20 @@ describe("observations", () => {
     expect(researchingGap({ running: true, stage: "researching", gap: "g1" })).toBe("g1");
     expect(researchingGap({ running: true, stage: "lessons", gap: null })).toBe(null);
     expect(researchingGap({ running: false, stage: "researching", gap: "g1" })).toBe(null);
+  });
+});
+
+describe("proposalWarnings / warningsLine", () => {
+  test("from the event field, else from the text's Warning lines", () => {
+    expect(proposalWarnings(["removes 2 code blocks", "", 3])).toEqual(["removes 2 code blocks"]);
+    expect(proposalWarnings(undefined, "Hi.\nWarning: this change shrinks this skill by 40%.\nApprove?")).toEqual(["shrinks this skill by 40%"]);
+    expect(proposalWarnings(null, "Hi.\nApprove?")).toEqual([]);
+  });
+  test("one line, empty for none", () => {
+    expect(warningsLine(["a", "b"])).toBe("Heads up: this change a · b");
+    expect(warningsLine([])).toBe("");
+  });
+  test("proposalText drops the warning lines", () => {
+    expect(proposalText("Hi.\nWarning: this change removes 1 code block.\nApprove?")).toBe("Hi.");
   });
 });

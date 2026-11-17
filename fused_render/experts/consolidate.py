@@ -19,7 +19,9 @@ c. repair: up to `gaps.REPAIR_PER_RUN` open gaps are researched
 d. proposing: every due lesson as one proposal (`proposals.propose_candidates`).
 e. tidying: the memory budget (`tidy.run`): above `tidy_at` lessons, one model
    review deletes stale, rarely used lessons and promotes heavily used ones
-   (code-enforced guard rails); above `limit`, the least used leave.
+   (code-enforced guard rails); above `limit`, the least used leave. Then
+   skill pressure (`tidy.skill_pressure`): a skill over 80% of the body limit
+   gets ONE "reorganise" proposal when none is open.
 
 A contradiction (an observation whose `contradicts` names an existing lesson)
 is never a bump of that lesson: `memory.contradict` counts it, and the

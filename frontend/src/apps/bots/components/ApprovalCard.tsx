@@ -3,7 +3,7 @@ import { approvalVerdict } from "@platform/lib/risk";
 import { GateCard, type GateStatus } from "@platform/ui/GateCard";
 
 import type { BotEvent } from "../lib/api";
-import { proposalText, scoresLine } from "../lib/expert";
+import { proposalText, proposalWarnings, scoresLine, warningsLine } from "../lib/expert";
 
 /** The settled card's caption, from the user line that answered it (null while that line is unknown). */
 function verdictStatus(answer: string | null | undefined): GateStatus | undefined {
@@ -46,8 +46,8 @@ export function ApprovalCard({ e, live, title, botName, answer }: { e: BotEvent;
 }
 
 /** An expert's skill proposal (docs/experts.md §4 cards.py): an ordinary approval event carrying `expert_proposal`. The
- *  unified diff (`detail`) is the collapsible body and the gate's scores before / after the change are the sub line
- *  (only when both exist: proposals no longer run the checks, so new cards carry none);
+ *  unified diff (`detail`) is the collapsible body; the sub line holds the change's warnings (`expert_warnings`) and
+ *  the gate's scores before / after (only when both exist: proposals no longer run the checks, so new cards carry none);
  *  Approve / Reject ride the same data-approve / data-deny hooks (the thread sends "approve" / "deny"). Never an
  *  "Always approve": every skill change is its own decision. */
 function ProposalCard({ e, live, title, answer }: { e: BotEvent; live: boolean; title?: string; answer?: string | null }) {
@@ -60,13 +60,16 @@ function ProposalCard({ e, live, title, answer }: { e: BotEvent; live: boolean; 
   const text = proposalText(e.text);
   const what = diff ? text : "";
   const scores = scoresLine(e.score_before, e.score_after);
+  // Code-computed warnings (a section removed, code blocks lost, a big shrink, sections moved): one short line.
+  const warn = warningsLine(proposalWarnings((e as BotEvent & { expert_warnings?: unknown[] }).expert_warnings, e.text));
+  const sub = [warn, scores].filter(Boolean).join(" — ");
   return (
     <GateCard
       className={`msg approval proposal${live ? "" : " settled"}`}
       rootProps={{ "data-seq": e.seq, "data-proposal": e.expert_proposal, title }}
       head="Proposed skill change"
       riskSummary={what || undefined}
-      sub={scores || undefined}
+      sub={sub || undefined}
       body={diff || text}
       bodyWhat="diff"
       resolved={!live}

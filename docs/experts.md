@@ -243,7 +243,7 @@ observation: `add` / `bump` name the memory item, `gap` names the gap record it 
 run(bot, *, force=False) -> {"ran": bool, "added": [ids], "bumped": [ids], "ignored": int, "reason"?: str,
                               # when ran:
                               "contradicted": [ids], "gaps": [gap ids touched], "researched": [gap ids],
-                              "proposed": [proposal ids],
+                              "proposed": [proposal ids], "reorganise": pid | None,   # §12 skill pressure
                               "tidied": {"deleted": [ids], "merged": [{"into","claim","from":[ids]}],
                                          "promoting": [ids], "over_limit": [ids]}}   # §12
 start(bot, *, force=False) -> bool    # run in a daemon thread; False when one runs or would_run is False
@@ -305,32 +305,44 @@ runs it automatically; skill proposals never do.
 ### `experts/proposals.py`
 ```
 Proposal = {"id","ts","status": "preparing"|"ready"|"shown"|"approved"|"rejected"|"failed",
+            "kind": "lessons"|"reorganise",
             "action": "update"|"create"|None,"skill": name|None,"name": target file name,
             "title","trigger","body",          # the FINAL trigger line and body the draft would write
-            "heading","section","triggers_added":[str],"replaced": bool,   # an update's patch
-            "overflow_from"?: name,"overflow_title"?: str,"note": str,     # a patch too big for its skill
+            "base_body","base_trigger",        # the skill as the draft saw it ("" for a create)
+            "ops":[op as applied],"dropped_ops":[{"op","reason"}],      # an update's section edits
+            "triggers_added":[str],"triggers_removed":[str],
+            "moved": {"name","title","trigger","body","headings"} | None,   # a move's new skill
+            "warnings":[str],"why": str,       # warnings computed by code; why from the model
+            "overflow_from"?: name,"overflow_title"?: str,"note": str,     # added material too big for its skill
+            "moved_to"?: name,                 # set on approve of a move
             "diff": str,"items":[item ids],"claims":[str],"topic": str,"error": str,
             "score_before": None,"score_after": None,"card_seq": int|None}   # scores: always None (compat)
 STATUSES = ("preparing", "ready", "shown", "approved", "rejected", "failed")
 BUSY = "a skill proposal is already being prepared"
+NO_SECTION = "the draft named no section that exists"
 candidates(bot) -> list[Item]       # (count >= propose_at, or trust "research" whose gap is not closed),
                                     # not proposed/promoted/rejected, trust != gap,
                                     # and not in any open (preparing/ready/shown) proposal
 request(bot, items, *, topic="", gap="") -> Proposal   # asynchronous; see below
+request_reorganise(bot, skill) -> Proposal             # asynchronous, no lessons; ValueError(BUSY) when any is open
 propose_candidates(bot) -> [pid]    # all candidates as ONE request; [] when none or one is preparing
 prepare(bot, items) -> Proposal     # the same work synchronously (tests): the draft; "ready"
-get(bot, pid) -> Proposal | None ; listing(bot) -> list[Proposal]      # every status, newest first
-approve(bot, pid) -> Proposal       # backup, bot.skill_save(...), read back + verify, then its items leave
-                                    # memory for the archive (reason "promoted", skill = the saved name; §12)
+get(bot, pid) -> Proposal | None ; listing(bot) -> list[Proposal] ; any_open(bot) -> bool
+approve(bot, pid) -> Proposal       # backup, bot.skill_save(...), read back + verify (both skills of a move),
+                                    # then its items leave memory (reason "promoted", skill = the edited skill; §12)
 body_cap() / trigger_cap() / skill_max()   # the limits Bot.skill_save enforces (SKILL_BODY_CAP, 300, SKILL_MAX)
-patch_body(old_body, heading, section, *, replace=False) -> str ; headings(body) ; fenced_blocks(body)
-learned_sections(bot) -> [{"skill","heading"}] ; forget_learned(bot, skill) -> int
+parse_sections(body) -> (preamble, [{"heading","text"}]) ; serialise(preamble, sections) -> str
+apply_ops(body, ops, *, title="") -> {"body","applied","dropped","moved","renamed","added"}
+apply_triggers(trigger, add, remove) -> {"trigger","added","removed","dropped"}
+warnings_for(old_body, new_body, *, moved=None, renamed=()) -> [str]
+headings(body) ; fenced_blocks(body)
+learned_sections(bot) -> [{"skill","heading"}] ; forget_learned(bot, skill) -> int   # a record of added headings
 backup_skill(bot, name) -> path | None ; backups(bot, name) -> [paths, oldest first]
 reject(bot, pid) -> Proposal        # items marked rejected
 card_text(proposal) -> tuple[str, str]   # (text, detail) for the approval event; detail is the unified diff
 ```
 `request` is how chat, routes and the scheduler propose. Under `store.lock(bot)` it saves the record as
-`preparing` and marks its items `proposed` at once, then one daemon thread drafts (one `model.text` call) and
+`preparing` and marks its items `proposed` at once, then one daemon thread drafts and
 sets `ready` (then calls `cards.show` at once; a False return is fine, a tick shows
 it later) or `failed` with `error` (its items' `proposed` flag is cleared). Single flight per expert: while a
 proposal is `preparing`, `request` raises `ValueError(BUSY)`. A `preparing` record this process is not
@@ -341,39 +353,79 @@ A proposal whose items include a `research` lesson (or given `gap`) records `gap
 `gaps: [ids]`; `request` marks those gaps `proposed` with the proposal id. `approve` → each such gap
 `answered` (resolution `skill`); `reject` and the failed path (`_fail`, also a failed approve) → `dismissed`.
 `card_text` says the expert looked into a question it could not answer when the proposal has a `gap`.
-Updating an existing skill is preferred to creating one.
+Changing an existing skill is preferred to creating one.
 
-**A proposal patches a skill; it never rewrites it.** The draft prompt shows each existing skill's name,
-title, trigger, its `## ` headings and the first 600 characters of its body, only so the model can choose
-where the material belongs. For an update the model answers ONLY the new material:
-`{"action": "update", "skill", "heading", "section", "triggers": [..]}`; for a new skill
-`{"action": "create", "title", "trigger", "body"}`. Code builds the new body: the existing body unchanged with
-`\n\n## <heading>\n\n<section>` appended. When a section with the same heading (case-insensitive) exists in that
-skill AND an earlier approved proposal added it (`<expert_dir>/learned-sections.json` lists those
-`{skill, heading}` pairs; the last section with that heading is the learned one), its content is replaced
-instead; a section proposals did not add is never replaced or moved. `#` / `##` headings inside the section
-(outside fenced code) become `###`, and copied metadata lines or a repeated heading are dropped. New trigger
-words are appended to the existing list (deduplicated case-insensitively); none is removed or reordered. A
-`create` whose name is taken gets a free name (`<slug>-2`, …): it never overwrites a skill. `diff` is the
-unified diff of old vs new body, with the `trigger:` line when it changes.
+**Skill changes are section edits.** A skill body is a *preamble* (the text before the first `## ` heading) and
+*sections* (a `## Heading` line plus everything up to the next `## ` heading or the end). A `## ` line inside
+fenced code (```` ``` ```` / `~~~`, CommonMark closing rules) is not a heading. `parse_sections` / `serialise`
+split and rejoin a body with a round-trip guarantee: `serialise(*parse_sections(b)) == b` for every string.
 
-**Nothing is ever truncated.** Before a proposal is `ready`, the final body and trigger are checked against
-`Bot.skill_save`'s limits (`Bot.SKILL_BODY_CAP` characters of body, 300 of trigger line, `Bot.SKILL_MAX` skills).
-A patch that would not fit becomes a `create` of a separate new skill (title from the heading, its own trigger
-words; `overflow_from` names the full skill) and the card says "That skill is full, so this goes into a new
-skill …". Material that does not fit even a new skill is `failed` with the reason.
+The model never returns a whole skill. The draft prompt shows the lessons, ONE skill in full (the skill whose
+title / trigger / headings / body share the most words with the lessons, or the only skill), and every other
+skill's name, title, trigger and `## ` headings. When the model answers an update of a skill it was not shown in
+full, it is asked once more with that skill shown (a failed re-ask keeps the first answer). It answers
+```
+{"action": "update", "skill": name, "ops": [...], "triggers_add": [..], "triggers_remove": [..], "why": str}
+{"action": "create", "title", "trigger", "body", "why"}
+ops: {"op": "add", "heading", "section"}                    # a new section at the end
+     {"op": "replace", "heading": <existing>, "section", "new_heading"?}   # the section's new full content
+     {"op": "remove", "heading": <existing>}
+     {"op": "move", "headings": [<existing>, ...], "to": {"title", "trigger"}}  # into a new skill, unchanged
+```
+and is told plainly: prefer changing the section that already covers the topic over adding one; replace or
+remove text a lesson supersedes or contradicts; merge overlapping sections; keep code blocks unless they are
+wrong; keep the skill focused and short; return only the sections you change. (The earlier one-section shape
+`{"heading", "section", "triggers"}` is still read, as one `add`.)
 
-**Approve** rebuilds the patch against the skill as it is now (another approval may have patched it since),
-re-checks the limits, backs the skill file up to `<expert_dir>/skill-backups/<name>.<unix ts>.md` (newest 20 per
-skill kept), writes it, then reads it back through `bot.skills()` and compares the stored body and trigger with
-what was intended (after `skill_save`'s whitespace normalisation). A failed save or any mismatch restores the
-backup byte for byte (a new skill's file is removed), fails the proposal ("the skill could not be saved
-intact"), un-marks its lessons and raises `ValueError`; lessons leave memory only after the check passes. An
-`update` record from before patches (no `heading` / `section`) is never written: approving it fails it.
+Code applies the ops (`apply_ops`) deterministically and strictly, in order (a later op sees the earlier ones'
+result). A `replace` / `remove` / `move` must name an existing heading (trimmed, `#`s stripped, case-insensitive
+exact match); a missing or ambiguous (several sections) heading drops that op, recorded in `dropped_ops` with the
+reason; a `move` with any bad heading or no title drops whole; only one `move` per change. An `add` whose
+heading exists becomes a `replace` of that section. A replace keeps the original heading line byte for byte unless
+`new_heading` renames it. `#` / `##` headings inside a section's content (outside fenced code) become `###`;
+copied metadata lines and a repeated heading are dropped; an empty content drops the op. The preamble and every
+section no op names stay byte for byte as they were (only the body's trailing whitespace is normalised by
+`skill_save`). Any section may be edited, including ones the shipped skill came with: the user's approval of the
+diff is the safeguard. Trigger words: `triggers_add` appended (deduplicated case-insensitively),
+`triggers_remove` taken out, unless that would leave none (then the removal is dropped and recorded). If no section
+op survives, the proposal is `failed` with `NO_SECTION`; a change that alters nothing fails too.
 
-A proposal never runs the quality gate (one model call
-drafts it, then it is `ready`); `score_before` / `score_after` stay on the record for compatibility, always
-`None`, and `card_text` says nothing about checks.
+**Warnings** (code, from old vs new body; stored as `warnings`, one `Warning: this change …` line each in the card
+text, and `expert_warnings` on the card event): `removes the section “X”` (not for a renamed or moved one),
+`removes N code block(s)` (blocks that left this skill and did not move), `shrinks this skill by N%` (more than
+25% smaller), `moves N section(s) into a new skill “Y”`. A pure addition has none.
+
+`diff` is the unified diff of old vs new body, with the `trigger:` line when it changes; for a `move`, the new
+skill follows as an added file (`--- /dev/null` / `+++ skills/<new>.md`). A `create` whose name is taken gets a
+free name (`<slug>-2`, …): it never overwrites a skill.
+
+**Nothing is ever truncated.** Before a proposal is `ready`, the final body and trigger (and a move's new skill)
+are checked against `Bot.skill_save`'s limits (`Bot.SKILL_BODY_CAP` characters of body, 300 of trigger line,
+`Bot.SKILL_MAX` skills). Over a limit → ONE retry: the model is given the sizes (each section's length, the
+trigger line) and asked for ops applied after its own (a `move`, and / or `triggers_remove`) that bring it under.
+Still over → the material the ops added or replaced becomes a `create` of a separate new skill (title from its
+first heading, its own trigger words; `overflow_from` names the full skill), the existing skill untouched, and the
+card says "That skill is full, so this goes into a new skill …". Material that does not fit even a new skill is
+`failed` with the reason (a reorganise has no fallback: it fails).
+
+**Reorganise** (`kind: "reorganise"`, from tidy's skill pressure, §12): no lessons; the draft shows that skill in
+full, says it is nearly full (its size and the limit) and asks for ops that make it smaller without losing what
+matters (merge overlapping sections, remove what is superseded, or `move` a coherent group into a new skill). It
+goes through the same rules, warnings and card ("The skill “X” is nearly full (N of M characters), so I'd like
+to reorganise it: <why>").
+
+**Approve** re-applies the stored `ops` (and trigger changes) to the skill as it is NOW (another approval may have
+changed it since); if any op no longer applies it fails ("the skill changed since this was drafted"), then
+re-checks the limits, backs every file it writes up to `<expert_dir>/skill-backups/<name>.<unix ts>.md` (newest 20
+per skill kept), writes the edited skill (and a move's new skill), then reads each back through `bot.skills()` and
+compares the stored body and trigger with what was intended. A failed save or any mismatch restores EVERY backup
+byte for byte (a new skill's file is removed), fails the proposal ("the skill could not be saved intact" / "could
+not save the skill: …"), un-marks its lessons and raises `ValueError`; lessons leave memory only after the check
+passes. An append-era record (`heading` / `section`, no `ops`) is applied as one `add`; an `update` record from
+before patches (none of these) is never written: approving it fails it.
+
+A proposal never runs the quality gate; `score_before` / `score_after` stay on the record for compatibility,
+always `None`, and `card_text` says nothing about checks.
 
 ### `experts/engine.py` — one run of the expert
 ```
@@ -468,7 +520,7 @@ tick() -> None                       # tick_one for every expert
 ```
 A `failed` (or `preparing`) proposal is never shown.
 Pattern: `Bot.greet` (bot.py) — install a worker as `bot.thread` under `bot.lock`, emit `approval`
-(`detail` = diff, plus `expert_proposal: <id>`, `score_before: null`, `score_after: null`), `set_status("waiting",
+(`detail` = diff, plus `expert_proposal: <id>`, `expert_warnings: [str]`, `score_before: null`, `score_after: null`), `set_status("waiting",
 waiting_on=seq)`, wait on the inbox, classify with the YES / NO regexes, then `proposals.approve` /
 `reject`, emit a `note`, set idle, release the thread, re-deliver any non-verdict text as a new task.
 
@@ -649,7 +701,7 @@ proposals carry `status` (`preparing` … `failed`) and `error`. Observation typ
 "advice contradicted" ("advice checked" only for the legacy `answer_contradicted` with no outcome); result tag
 "contradicted a lesson" for `outcome.op === "contradict"`; a lesson with `contradicted > 0` shows a warning-style
 tag "contradicted N×" in the Memory panel. Proposal cards are ordinary `approval` events
-with `expert_proposal`, `score_before: null`, `score_after: null` (proposals run no checks); the diff is the card body. Approve / Reject go
+with `expert_proposal`, `expert_warnings`, `score_before: null`, `score_after: null` (proposals run no checks); the diff is the card body, the warnings a short "Heads up" line under the summary (the text's `Warning: this change …` lines are dropped from the summary). Approve / Reject go
 through the existing `/api/bots/<id>/send`.
 
 ## 11. Gap repair: one learning loop
@@ -746,6 +798,14 @@ unsure, keep. It answers a JSON list of `{"id", "do": "delete"|"promote"|"keep",
    are not proposed again.
 4. Each lesson belongs to the first action in the answer that names it; a later action naming it is ignored.
    A failed call or an answer that cannot be read deletes, merges and promotes nothing.
+
+**Skill pressure** (`tidy.skill_pressure`, in the tidying stage after the memory tidy; no model call decides it):
+when a skill's body is over 80% (`PRESSURE`) of the body limit and no proposal is open (preparing, ready or shown),
+ONE `proposals.request_reorganise` is started for the largest such skill (§4 `proposals.py`, "Reorganise"). A skill
+whose reorganise the user rejected less than 7 days ago (`REORGANISE_COOLDOWN_S`) is skipped, and one whose
+reorganise failed less than a day ago (`REORGANISE_FAILED_COOLDOWN_S`), so a draft that keeps failing does not cost a
+model call every run. `consolidate.run` returns the new proposal's id as `reorganise` (None when none); it is
+skipped outright when this run already requested a proposal.
 
 **The hard limit**, enforced after the review with no model: while memory holds more than `limit`, lessons leave as
 `over_limit`: first those not taught by the user and not in an open proposal (fewest uses first, then longest idle),

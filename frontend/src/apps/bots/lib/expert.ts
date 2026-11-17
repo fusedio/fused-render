@@ -216,10 +216,27 @@ export function scoresLine(before: ExpertScore | null | undefined, after: Expert
   return `Checks: ${before.score}/${before.total} → ${after.score}/${after.total}`;
 }
 
-/** A proposal event's text as the card shows it: without its "Checks: …" lines (the card's scores line says that) and
+/** The prefix of each warning line in a proposal card's text (proposals.card_text, for channels without the card UI). */
+const WARNING_PREFIX = "Warning: this change ";
+
+/** A proposal card's warnings: cards.py `expert_warnings`, else read back from the text's "Warning: this change …"
+ *  lines. */
+export function proposalWarnings(warnings: readonly unknown[] | null | undefined, text?: string | null): string[] {
+  if (Array.isArray(warnings)) return warnings.filter((w): w is string => typeof w === "string" && !!w.trim());
+  return (text || "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith(WARNING_PREFIX))
+    .map((l) => l.slice(WARNING_PREFIX.length).replace(/\.$/, ""));
+}
+
+/** The card's one-line list of warnings, "Heads up: this change removes the section “X” · removes 2 code blocks";
+ *  "" when there are none (a pure addition). */
+export function warningsLine(warnings: readonly string[]): string {
+  return warnings.length ? `Heads up: this change ${warnings.join(" · ")}` : "";
+}
+
+/** A proposal event's text as the card shows it: without its "Checks: …" and "Warning: …" lines (the sub line says those) and
  *  a trailing "Approve?" line (the buttons ask it). */
 export function proposalText(text: string | null | undefined): string {
-  const lines = (text || "").split("\n").filter((l) => !l.trim().startsWith("Checks:"));
+  const lines = (text || "").split("\n").filter((l) => !l.trim().startsWith("Checks:") && !l.trim().startsWith(WARNING_PREFIX));
   while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
   if (lines.length && lines[lines.length - 1].trim() === "Approve?") lines.pop();
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
