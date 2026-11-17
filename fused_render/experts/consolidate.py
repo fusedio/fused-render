@@ -17,6 +17,9 @@ c. repair: up to `gaps.REPAIR_PER_RUN` open gaps are researched
    (`gaps.research`); a grounded finding is a `research` lesson plus a skill
    proposal.
 d. proposing: every due lesson as one proposal (`proposals.propose_candidates`).
+e. tidying: the memory budget (`tidy.run`): above `tidy_at` lessons, one model
+   review deletes stale, rarely used lessons and promotes heavily used ones
+   (code-enforced guard rails); above `limit`, the least used leave.
 
 A contradiction (an observation whose `contradicts` names an existing lesson)
 is never a bump of that lesson: `memory.contradict` counts it, and the
@@ -118,7 +121,7 @@ def _set_failures(bot, n: int, error: str = "") -> None:
 
 #: bot id -> {"stage", "gap"} while a run is in flight.
 _STAGE: dict[str, dict] = {}
-STAGES = ("lessons", "gaps", "researching", "proposing")
+STAGES = ("lessons", "gaps", "researching", "proposing", "tidying")
 _GAP_PREFIX = re.compile(r"^\s*could not answer:\s*", re.I)
 
 GAP_SECTION = """
@@ -138,7 +141,7 @@ def _stage(bot, stage, gap=None) -> None:
 
 
 def status(bot) -> dict:
-    """`{"running": bool, "stage": "lessons"|"gaps"|"researching"|"proposing"|"", "gap": gid|None}`."""
+    """`{"running": bool, "stage": "lessons"|"gaps"|"researching"|"proposing"|"tidying"|"", "gap": gid|None}`."""
     key = str(bot.id)
     with _RUNNING_GUARD:
         if key not in _RUNNING:
@@ -165,12 +168,12 @@ def _release(bot) -> None:
 
 
 def would_run(bot, force=False) -> bool:
-    """Whether a run would do anything: observations due (or, with `force`, any pending observation or a gap
-    the repair step would research)."""
+    """Whether a run would do anything: observations due (or, with `force`, any pending observation, a gap
+    the repair step would research, or memory over its `tidy_at`)."""
     if not force:
         return observations.due(bot)
-    from fused_render.experts import gaps
-    return bool(observations.pending(bot)) or bool(gaps.repairable(bot))
+    from fused_render.experts import gaps, tidy
+    return bool(observations.pending(bot)) or bool(gaps.repairable(bot)) or tidy.needed(bot)
 
 
 def run(bot, *, force=False) -> dict:
@@ -216,8 +219,9 @@ def _run(bot, force):
     from fused_render.experts import gaps as gapmod
     if not force and not observations.due(bot):
         return _result(False)
+    from fused_render.experts import tidy as tidymod
     pend = observations.pending(bot)
-    if not pend and not (force and gapmod.repairable(bot)):
+    if not pend and not (force and (gapmod.repairable(bot) or tidymod.needed(bot))):
         return _result(False)
     ok, why = model.available(bot)
     if not ok:
@@ -423,9 +427,17 @@ def _run(bot, force):
     except Exception:  # noqa: BLE001
         logger.warning("expert %s: proposing failed", bot.id, exc_info=True)
         proposed = []
+    # The memory budget: last, after lessons, gaps and the normal proposals.
+    _stage(bot, "tidying")
+    try:
+        tidied = tidymod.run(bot)
+    except Exception:  # noqa: BLE001 — a failed tidy never undoes the run
+        logger.warning("expert %s: tidying failed", bot.id, exc_info=True)
+        tidied = {"deleted": [], "promoting": [], "over_limit": []}
     out = _result(True, added, bumped, ignored)
-    out.update(contradicted=list(dict.fromkeys(contradicted)), gaps=touched, researched=researched, proposed=proposed)
-    if (researched or touched) and not proposed:
+    out.update(contradicted=list(dict.fromkeys(contradicted)), gaps=touched, researched=researched, proposed=proposed,
+               tidied=tidied)
+    if (researched or touched) and not proposed and not tidied["promoting"]:
         # A gap research could not answer may now be asked (the scheduler's cards.tick would, later).
         try:
             from fused_render.experts import cards

@@ -294,7 +294,12 @@ export interface ExpertManifest {
 export interface ExpertItem {
   id: string; claim: string; kind: string; trust: "user" | "outcome" | "gap" | "research" | (string & {}); count: number;
   sessions: string[]; about: string[]; created: number; updated: number;
-  proposed: boolean; promoted: boolean; rejected: boolean;
+  /** `promoted`: an older server only (a lesson that goes into a skill now leaves memory); read it as absent. */
+  proposed: boolean; promoted?: boolean; rejected: boolean;
+  /** Answers that relied on this lesson (absent on an older server: 0). `count + cited` is how often it was used. */
+  cited?: number;
+  /** When an answer last relied on it, or it was last seen (unix seconds; absent on an older server). */
+  last_used?: number;
   /** False for a lesson seen once, or a research finding waiting for approval: kept, but not in the index answers draw on until it comes up again. Absent (an
    *  older server) reads as indexed. */
   indexed?: boolean;
@@ -302,6 +307,24 @@ export interface ExpertItem {
    *  proposed as a skill fix, and flagged in the index answers draw on. */
   contradicted?: number;
   contradicted_sessions?: string[];
+}
+/** A lesson named by the last tidy (GET …/memory `last_tidy`). */
+export interface ExpertTidyRef { id: string; claim: string; why?: string }
+/** The last tidy a consolidation did above `tidy_at`: lessons removed, proposed as skills, cut for being over the limit. */
+export interface ExpertLastTidy { at: number; deleted?: ExpertTidyRef[]; promoting?: ExpertTidyRef[]; over_limit?: ExpertTidyRef[] }
+/** GET …/memory. The budget fields are newer servers only (absent: no budget line). */
+export interface ExpertMemory {
+  items: ExpertItem[]; index: string;
+  /** At most this many lessons; above `tidy_at` each consolidation tidies; `total`: lessons held now. */
+  limit?: number; tidy_at?: number; total?: number;
+  last_tidy?: ExpertLastTidy | null;
+}
+export type ExpertRemovedReason = "stale" | "promoted" | "over_limit" | "forgotten";
+/** A lesson that left memory (GET …/memory/archive, newest first). `skill`: the skill it moved into (promoted);
+ *  `why`: the model's reason, when it gave one. */
+export interface ExpertArchived extends Omit<ExpertItem, "proposed" | "rejected"> {
+  proposed?: boolean; rejected?: boolean;
+  removed_at: number; reason: ExpertRemovedReason | (string & {}); skill?: string; why?: string;
 }
 /** A pending observation (not yet consolidated into memory). */
 /** One observation (observations.jsonl): something noted from a consult or a session, waiting to be consolidated
@@ -352,7 +375,7 @@ export interface ExpertGap {
 export interface ExpertConsolidateReply { started: boolean }
 /** A background consolidation (GET …/observations `consolidating`): lessons first, then the open gaps (sort, research
  *  one, draft a skill fix). `gap`: the gap it is on, if any. */
-export interface ExpertConsolidating { running: boolean; stage: "lessons" | "gaps" | "researching" | "proposing" | ""; gap: string | null }
+export interface ExpertConsolidating { running: boolean; stage: "lessons" | "tidying" | "gaps" | "researching" | "proposing" | ""; gap: string | null }
 /** `note`: a caveat to show under the Engine menu when this engine is picked (non-empty for Codex, whose reads are not
  *  fenced by the app). */
 export interface ExpertEngineRow { id: string; label: string; enabled: boolean; models: { id: string; label: string }[]; default_model: string; note?: string }
@@ -643,7 +666,8 @@ const XP = "/api/experts";
 const xid = (id: string) => `${XP}/${encodeURIComponent(id)}`;
 /** /api/experts/<id>/… (docs/experts.md §8). An expert's id is its bot id. */
 export const expertApi = {
-  memory: (id: string) => get<{ items: ExpertItem[]; index: string }>(`${xid(id)}/memory`, "expert memory"),
+  memory: (id: string) => get<ExpertMemory>(`${xid(id)}/memory`, "expert memory"),
+  memoryArchive: (id: string) => get<{ archived: ExpertArchived[] }>(`${xid(id)}/memory/archive`, "expert memory archive"),
   forgetMemory: (id: string, itemId: string) => post<{ removed: number }>(`${xid(id)}/memory/forget`, { id: itemId }, "expert forget"),
   observations: (id: string) => get<{ pending: ExpertObs[]; done?: ExpertObs[]; due: boolean; consolidating?: ExpertConsolidating }>(`${xid(id)}/observations`, "expert observations"),
   consults: (id: string) => get<{ consults: ExpertConsult[] }>(`${xid(id)}/consults`, "expert consults"),

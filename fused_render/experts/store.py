@@ -24,7 +24,10 @@ DEFAULT_MANIFEST = {
     "engine": "auto",
     "model": "",
     "memory": {"consolidate_at": 3, "consolidate_after_s": 86400, "propose_at": 3,
-               "index_lines": 200},
+               "index_lines": 200,
+               # The memory budget (docs/experts.md "Memory budget"): at most `limit` lessons; above `tidy_at`
+               # consolidation also tidies (deletes stale, rarely used lessons; promotes heavily used ones).
+               "limit": 50, "tidy_at": 30, "stale_days": 14, "rare_uses": 2, "heavy_uses": 5},
     "shipped": "",
     "gaps": {"research": True, "ask_after": 2, "max_attempts": 2, "ask_every_s": 86400},
 }
@@ -81,6 +84,11 @@ def manifest(bot) -> dict:
         "consolidate_after_s": _int(mem.get("consolidate_after_s"), d["consolidate_after_s"], 0),
         "propose_at": _int(mem.get("propose_at"), d["propose_at"], 1),
         "index_lines": _int(mem.get("index_lines"), d["index_lines"], 1),
+        "limit": _int(mem.get("limit"), d["limit"], 1),
+        "tidy_at": _int(mem.get("tidy_at"), d["tidy_at"], 0),
+        "stale_days": _int(mem.get("stale_days"), d["stale_days"], 0),
+        "rare_uses": _int(mem.get("rare_uses"), d["rare_uses"], 0),
+        "heavy_uses": _int(mem.get("heavy_uses"), d["heavy_uses"], 1),
     }
     gaps = raw.get("gaps") if isinstance(raw.get("gaps"), dict) else {}
     g = DEFAULT_MANIFEST["gaps"]

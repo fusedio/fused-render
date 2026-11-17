@@ -5,7 +5,8 @@ import { CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, filte
 import { filterLessons, filterObservations, LESSON_STATUS_LABEL, lessonFacts, lessonSource, lessonStatus, observationFacts, observationSource, observationTone } from "./expert";
 import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, observationGaps, observationResultLabel, observationTypeLabel,
   researchingGap, sortObservations, unresolvedGapCount, checkProgress, engineNote, engineOptions, modelOptions, openProposals, proposalLine, proposalText, scoreText,
-  scoresLine, seenLabel, sortConsults, sortLessons } from "./expert";
+  scoresLine, sortConsults, sortLessons } from "./expert";
+import { budgetState, lessonUses, removedReasonLabel, tidySummary, usedLabel, usesLine } from "./expert";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
   created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...p });
@@ -20,9 +21,50 @@ describe("lessons", () => {
     sortLessons(xs);
     expect(xs[0].id).toBe("a");
   });
-  test("seen N×", () => {
-    expect(seenLabel(3)).toBe("seen 3×");
-    expect(seenLabel(0)).toBe("seen 1×");
+  test("most used first: sessions seen plus answers relied on", () => {
+    const out = sortLessons([item({ id: "a", count: 3 }), item({ id: "b", count: 1, cited: 4 })]);
+    expect(out.map((x) => x.id)).toEqual(["b", "a"]);
+  });
+  test("lessonUses: count + cited (cited absent reads 0)", () => {
+    expect(lessonUses(item({ count: 2, cited: 3 }))).toBe(5);
+    expect(lessonUses(item({ count: 2 }))).toBe(2);
+    expect(lessonUses({ count: undefined as unknown as number, cited: undefined })).toBe(0);
+  });
+  test("used N×; the opened card's line", () => {
+    expect(usedLabel(item({ count: 2, cited: 3 }))).toBe("used 5×");
+    expect(usedLabel(item({ count: 0 }))).toBe("used 1×");
+    expect(usesLine(item({ count: 2, cited: 1 }))).toBe("Seen in 2 sessions · relied on in 1 answer");
+    expect(usesLine(item({ count: 1 }))).toBe("Seen in 1 session");
+  });
+  test("budgetState: null without a limit; the sentence and the meter by state", () => {
+    expect(budgetState(null)).toBeNull();
+    expect(budgetState({ tidy_at: 30, total: 3 })).toBeNull();
+    expect(budgetState({ limit: 0, total: 3 })).toBeNull();
+    const below = budgetState({ limit: 50, tidy_at: 30, total: 30 })!;
+    expect(below).toMatchObject({ label: "30 of 50 lessons", above: false, note: "Tidying starts above 30.", fill: 60, over: 0 });
+    const above = budgetState({ limit: 50, tidy_at: 30, total: 32 })!;
+    expect(above).toMatchObject({ label: "32 of 50 lessons", above: true, fill: 60, over: 4 });
+    expect(above.note).toBe("Above 30: each consolidation removes old, rarely used lessons and proposes heavily used ones as skills.");
+    // total missing: the lessons listed; tidy_at missing: the limit; over the limit: the bar is the total.
+    expect(budgetState({ limit: 50 }, 7)).toMatchObject({ total: 7, tidyAt: 50, note: "Tidying starts above 50." });
+    expect(budgetState({ limit: 50, tidy_at: 30, total: 60 })).toMatchObject({ fill: 50, over: 50 });
+  });
+  test("removedReasonLabel", () => {
+    expect(removedReasonLabel({ reason: "stale" })).toBe("removed: old and rarely used");
+    expect(removedReasonLabel({ reason: "promoted", skill: "h3-maps" })).toBe("moved into the skill h3-maps");
+    expect(removedReasonLabel({ reason: "promoted" })).toBe("moved into a skill");
+    expect(removedReasonLabel({ reason: "over_limit" })).toBe("removed: memory was over its limit");
+    expect(removedReasonLabel({ reason: "forgotten" })).toBe("forgotten by you");
+    expect(removedReasonLabel({ reason: "whatever" })).toBe("removed");
+  });
+  test("tidySummary: under a day old, zero parts left out", () => {
+    const now = 1_800_000_000_000, at = now / 1000 - 3600, r = (id: string) => ({ id, claim: id });
+    expect(tidySummary(null, now)).toBe("");
+    expect(tidySummary({ at, deleted: [r("a"), r("b")], promoting: [r("c")], over_limit: [r("d")] }, now)).toBe("Last tidy: removed 3, proposing 1 as skill.");
+    expect(tidySummary({ at, deleted: [r("a")], promoting: [] , over_limit: [] }, now)).toBe("Last tidy: removed 1.");
+    expect(tidySummary({ at, promoting: [r("a"), r("b")] }, now)).toBe("Last tidy: proposing 2 as skills.");
+    expect(tidySummary({ at, deleted: [], promoting: [], over_limit: [] }, now)).toBe("");
+    expect(tidySummary({ at: now / 1000 - 86400, deleted: [r("a")] }, now)).toBe("");
   });
   test("status: contradicted wins, then in use / not used yet", () => {
     expect(lessonStatus(item({}))).toBe("in-use");
@@ -39,7 +81,8 @@ describe("lessons", () => {
   });
   test("facts: skill state, contradicted, why not used", () => {
     expect(lessonFacts(item({}))).toEqual([]);
-    expect(lessonFacts(item({ promoted: true, proposed: true }))).toEqual(["in a skill"]);
+    // An older server's promoted lesson: no skill fact (a lesson in a skill now leaves memory).
+    expect(lessonFacts(item({ promoted: true, proposed: true }))).toEqual([]);
     expect(lessonFacts(item({ proposed: true }))).toEqual(["skill proposal pending"]);
     expect(lessonFacts(item({ proposed: true, rejected: true }))).toEqual(["not proposed again"]);
     expect(lessonFacts(item({ contradicted: 2 }))).toEqual(["contradicted 2×"]);
@@ -236,6 +279,7 @@ describe("consolidating", () => {
     expect(consolidatingLine(null)).toBe("");
     expect(consolidatingLine({ running: false, stage: "lessons", gap: null })).toBe("");
     expect(consolidatingLine({ running: true, stage: "lessons", gap: null })).toBe("Consolidating lessons…");
+    expect(consolidatingLine({ running: true, stage: "tidying", gap: null })).toBe("Tidying memory…");
     expect(consolidatingLine({ running: true, stage: "gaps", gap: null })).toBe("Sorting open questions…");
     expect(consolidatingLine({ running: true, stage: "researching", gap: "g" })).toBe("Researching an open question…");
     expect(consolidatingLine({ running: true, stage: "proposing", gap: "g" })).toBe("Drafting a skill fix…");

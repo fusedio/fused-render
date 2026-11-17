@@ -1,10 +1,15 @@
 // Pure helpers for an expert's panels (components/ExpertPane.tsx) and its proposal card (components/ApprovalCard.tsx):
 // ordering and the short strings the rows show. The shapes are docs/experts.md §4 (Item, Consult, Run, Proposal).
-import type { ExpertCheckStatus, ExpertConsolidating, ExpertConsult, ExpertEngineRow, ExpertGap, ExpertObs, ExpertItem, ExpertProposal, ExpertScore } from "./api";
+import type { ExpertArchived, ExpertCheckStatus, ExpertConsolidating, ExpertConsult, ExpertEngineRow, ExpertGap, ExpertLastTidy, ExpertMemory, ExpertObs, ExpertItem, ExpertProposal,
+  ExpertScore } from "./api";
 
-/** Memory as the expert's own index reads it: most seen first, then the most recently touched. */
+/** How often a lesson was used: the sessions that showed it plus the answers that relied on it (`cited`, absent on an
+ *  older server: 0). */
+export const lessonUses = (it: Pick<ExpertItem, "count" | "cited">): number => Math.max(0, it.count || 0) + Math.max(0, it.cited || 0);
+
+/** Memory as the expert's own index reads it: most used first, then the most recently touched. */
 export function sortLessons(items: readonly ExpertItem[]): ExpertItem[] {
-  return [...items].sort((a, b) => (b.count || 0) - (a.count || 0) || (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id));
+  return [...items].sort((a, b) => lessonUses(b) - lessonUses(a) || (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id));
 }
 
 /** The proposals the Memory panel mentions (in progress, waiting on the user, or failed), newest first. */
@@ -23,8 +28,54 @@ export function proposalLine(p: Pick<ExpertProposal, "status" | "error">): strin
 /** Whether a proposal is still being prepared (the pane polls while one is). */
 export const anyPreparing = (ps: readonly ExpertProposal[] | null | undefined): boolean => !!ps?.some((p) => p.status === "preparing");
 
-/** "seen 3×" (a lesson seen once still says so: the count is what earns a proposal). */
-export const seenLabel = (count: number | null | undefined): string => `seen ${Math.max(1, count || 0)}×`;
+/** "used 3×" (lessonUses; a lesson in memory was seen at least once, so never "used 0×"). */
+export const usedLabel = (it: Pick<ExpertItem, "count" | "cited">): string => `used ${Math.max(1, lessonUses(it))}×`;
+
+/** The opened lesson card's counts: "Seen in 2 sessions · relied on in 5 answers" (the second part only when the
+ *  server reports `cited`). */
+export function usesLine(it: Pick<ExpertItem, "count" | "cited">): string {
+  const seen = Math.max(1, it.count || 0), parts = [`Seen in ${seen} session${seen === 1 ? "" : "s"}`];
+  if (typeof it.cited === "number") parts.push(`relied on in ${it.cited} answer${it.cited === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
+/** The Memory tab's budget line, or null when the server sends no `limit` (an older server). `total` falls back to
+ *  the lessons listed, `tidy_at` to the limit. `fill` / `over`: the meter's neutral part (up to `tidy_at`) and its
+ *  warning part (beyond it), as percentages of the bar. */
+export interface BudgetState { total: number; limit: number; tidyAt: number; above: boolean; label: string; note: string; fill: number; over: number }
+export function budgetState(m: Pick<ExpertMemory, "limit" | "tidy_at" | "total"> | null | undefined, listed = 0): BudgetState | null {
+  const limit = m?.limit;
+  if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) return null;
+  const total = Math.max(0, typeof m?.total === "number" && Number.isFinite(m.total) ? m.total : listed);
+  const tidyAt = typeof m?.tidy_at === "number" && Number.isFinite(m.tidy_at) ? Math.min(Math.max(0, m.tidy_at), limit) : limit;
+  const above = total > tidyAt, bar = Math.max(limit, total), pct = (n: number) => Math.round((n / bar) * 1000) / 10;
+  return {
+    total, limit, tidyAt, above, label: `${total} of ${limit} lessons`,
+    note: above ? `Above ${tidyAt}: each consolidation removes old, rarely used lessons and proposes heavily used ones as skills.`
+      : `Tidying starts above ${tidyAt}.`,
+    fill: pct(Math.min(total, tidyAt)), over: pct(Math.max(0, total - tidyAt)),
+  };
+}
+
+/** Why a lesson left memory, in plain words (the "Recently removed" rows). */
+export function removedReasonLabel(a: Pick<ExpertArchived, "reason" | "skill">): string {
+  switch (a.reason) {
+    case "stale": return "removed: old and rarely used";
+    case "promoted": return a.skill ? `moved into the skill ${a.skill}` : "moved into a skill";
+    case "over_limit": return "removed: memory was over its limit";
+    case "forgotten": return "forgotten by you";
+    default: return "removed";
+  }
+}
+
+/** "Last tidy: removed 3, proposing 2 as skills." for a tidy under a day old ("" when older, absent, or it did
+ *  nothing). Lessons cut for being over the limit count as removed. */
+export function tidySummary(t: ExpertLastTidy | null | undefined, nowMs: number = Date.now()): string {
+  if (!t || typeof t.at !== "number" || nowMs / 1000 - t.at >= 86400) return "";
+  const removed = (t.deleted?.length || 0) + (t.over_limit?.length || 0), promoting = t.promoting?.length || 0;
+  const parts = [removed ? `removed ${removed}` : "", promoting ? `proposing ${promoting} as skill${promoting === 1 ? "" : "s"}` : ""].filter(Boolean);
+  return parts.length ? `Last tidy: ${parts.join(", ")}.` : "";
+}
 
 export type LessonStatus = "in-use" | "not-used" | "contradicted";
 export type LessonFilter = "all" | "in-use" | "not-used";
@@ -43,10 +94,11 @@ export function lessonSource(it: Pick<ExpertItem, "trust">): string {
 }
 
 /** A lesson card's footer facts: where it stands on the way to a skill, "contradicted N×", and why a lesson is not
- *  used yet ("waiting for your approval" for a research finding, "seen once" otherwise). */
+ *  used yet ("waiting for your approval" for a research finding, "seen once" otherwise). A lesson that goes into a
+ *  skill leaves memory, so an older server's `promoted` lesson just shows no skill fact. */
 export function lessonFacts(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed" | "contradicted">): string[] {
   const out: string[] = [];
-  if (it.promoted) out.push("in a skill");
+  if (it.promoted) { /* nothing: never "in a skill" any more */ }
   else if (it.rejected) out.push("not proposed again");
   else if (it.proposed) out.push("skill proposal pending");
   if ((it.contradicted || 0) > 0) out.push(`contradicted ${it.contradicted}×`);
@@ -339,6 +391,7 @@ export function consolidatingLine(c: ExpertConsolidating | null | undefined): st
   if (!c?.running) return "";
   switch (c.stage) {
     case "lessons": return "Consolidating lessons…";
+    case "tidying": return "Tidying memory…";
     case "gaps": return "Sorting open questions…";
     case "researching": return "Researching an open question…";
     case "proposing": return "Drafting a skill fix…";

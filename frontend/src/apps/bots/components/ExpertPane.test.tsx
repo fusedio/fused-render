@@ -3,7 +3,7 @@ installDomShim();
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import type { ExpertChecks, ExpertConsult, ExpertGap, ExpertItem, ExpertObs, ExpertProposal } from "../lib/api";
+import type { ExpertArchived, ExpertChecks, ExpertConsult, ExpertGap, ExpertItem, ExpertObs, ExpertProposal } from "../lib/api";
 
 const { MemoryPanel, LessonCard, ConsultsPanel, ConsultCard, ChecksPanel, ObservationsPanel, ObsCard } = await import("./ExpertPane");
 
@@ -13,9 +13,9 @@ const noop = () => {};
 
 describe("MemoryPanel", () => {
   const now = new Date(2026, 10, 17, 15, 0).getTime();
-  test("lesson cards most seen first: status, source, seen N×, claim, facts; no Forget while closed", () => {
+  test("lesson cards most used first: status, source, used N×, claim, facts; no Forget while closed", () => {
     const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Alpha", count: 1, indexed: false }),
-      item({ id: "b", claim: "Beta", count: 5, trust: "user", promoted: true }), item({ id: "c", claim: "Gamma", count: 2, contradicted: 1 })], onForget: noop }));
+      item({ id: "b", claim: "Beta", count: 2, cited: 3, trust: "user", promoted: true }), item({ id: "c", claim: "Gamma", count: 2, contradicted: 1 })], onForget: noop }));
     expect(out.indexOf("Beta")).toBeLessThan(out.indexOf("Gamma"));
     expect(out.indexOf("Gamma")).toBeLessThan(out.indexOf("Alpha"));
     expect(out).toContain('aria-expanded="false"');
@@ -25,8 +25,9 @@ describe("MemoryPanel", () => {
     expect(out).toContain("tone-warn");
     expect(out).toContain(">taught by you<");
     expect(out).toContain(">from sessions<");
-    expect(out).toContain("seen 5×");
-    expect(out).toContain(">in a skill<");
+    expect(out).toContain("used 5×");
+    expect(out).not.toContain("seen 5×");
+    expect(out).not.toContain("in a skill");
     expect(out).toContain(">contradicted 1×<");
     expect(out).toContain(">seen once<");
     expect(out).not.toContain(">Forget<");
@@ -35,6 +36,44 @@ describe("MemoryPanel", () => {
     expect(out).toMatch(/Not used yet <span class="xp-n">1</);
     expect(out).not.toContain("Not used in answers yet");
     expect(out).not.toContain("Consolidate");
+    // An older server: no budget line, no removed section.
+    expect(out).not.toContain("xp-budget");
+    expect(out).not.toContain("Recently removed");
+  });
+  test("budget line on top: count, meter, the sentence for the state; the last tidy when recent", () => {
+    const items = [item({ id: "a", claim: "Alpha" }), item({ id: "b", claim: "Beta" })];
+    const below = renderToStaticMarkup(createElement(MemoryPanel, { items, onForget: noop, nowMs: now, budget: { limit: 50, tidy_at: 30, total: 12, last_tidy: null } }));
+    expect(below).toContain("12 of 50 lessons");
+    expect(below).toContain("Tidying starts above 30.");
+    expect(below).toContain('role="meter"');
+    expect(below).not.toContain("xp-meter-over");
+    expect(below).not.toContain("Last tidy");
+    expect(below.indexOf("12 of 50 lessons")).toBeLessThan(below.indexOf("xp-filters"));
+    const above = renderToStaticMarkup(createElement(MemoryPanel, { items, onForget: noop, nowMs: now,
+      budget: { limit: 50, tidy_at: 30, total: 32, last_tidy: { at: now / 1000 - 3600, deleted: [{ id: "x", claim: "X" }], promoting: [{ id: "y", claim: "Y" }, { id: "z", claim: "Z" }], over_limit: [] } } }));
+    expect(above).toContain("32 of 50 lessons");
+    expect(above).toContain("Above 30: each consolidation removes old, rarely used lessons and proposes heavily used ones as skills.");
+    expect(above).toContain("xp-meter-over");
+    expect(above).toContain("Last tidy: removed 1, proposing 2 as skills.");
+    // No limit: no line at all.
+    expect(renderToStaticMarkup(createElement(MemoryPanel, { items, onForget: noop, budget: { tidy_at: 30, total: 2 } }))).not.toContain("xp-budget");
+  });
+  test("recently removed: collapsed, counted, at most 20, the reason in words and the model's why", () => {
+    const arch = (p: Partial<ExpertArchived>): ExpertArchived => ({ id: "r", claim: "Old", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
+      created: 0, updated: 0, removed_at: now / 1000 - 7200, reason: "stale", ...p });
+    const archived = [arch({ id: "a", claim: "Gone stale", why: "not used in months" }), arch({ id: "b", claim: "Now a skill", reason: "promoted", skill: "h3-maps" }),
+      arch({ id: "c", reason: "over_limit" }), arch({ id: "d", reason: "forgotten" }), ...Array.from({ length: 30 }, (_, i) => arch({ id: `z${i}` }))];
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [], onForget: noop, nowMs: now, archived }));
+    expect(out).toContain("<details");
+    expect(out).not.toContain("<details open");
+    expect(out).toContain("Recently removed (20)");
+    expect(out).toContain("removed: old and rarely used · 2 h ago");
+    expect(out).toContain("not used in months");
+    expect(out).toContain("moved into the skill h3-maps");
+    expect(out).toContain("removed: memory was over its limit");
+    expect(out).toContain("forgotten by you");
+    expect(out.match(/xp-removed-row/g)?.length).toBe(20);
+    expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [], onForget: noop, archived: [] }))).not.toContain("Recently removed");
   });
   test("open proposals above the list; a single lesson has no filter row", () => {
     const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Researched", trust: "research", indexed: false })], onForget: noop,
@@ -45,13 +84,19 @@ describe("MemoryPanel", () => {
     expect(out).toContain(">waiting for your approval<");
     expect(out).not.toContain("xp-filters");
   });
-  test("opened lesson: about chips, first / last seen, sessions, Forget (not on the phone)", () => {
-    const it = item({ id: "a", claim: "Use H3", about: ["maps", "h3"], created: now / 1000 - 3 * 86400, updated: now / 1000 - 7200, sessions: ["s1", "s2"] });
+  test("opened lesson: about chips, sessions / answers, first seen / last used, Forget (not on the phone)", () => {
+    const it = item({ id: "a", claim: "Use H3", about: ["maps", "h3"], count: 2, cited: 4, created: now / 1000 - 3 * 86400, updated: now / 1000 - 7200,
+      last_used: now / 1000 - 600, sessions: ["s1", "s2"] });
     const out = renderToStaticMarkup(createElement(LessonCard, { it, onForget: noop, initialOpen: true, nowMs: now }));
     expect(out).toContain('aria-expanded="true"');
     expect(out).toContain(">About<");
     expect(out).toContain(">maps<");
-    expect(out).toContain("first seen 3 d ago · last seen 2 h ago · in 2 sessions");
+    expect(out).toContain("Seen in 2 sessions · relied on in 4 answers");
+    expect(out).toContain("first seen 3 d ago · last used 10 min ago");
+    // An older server (no cited / last_used): the sessions alone and the last seen time.
+    const old = renderToStaticMarkup(createElement(LessonCard, { it: item({ count: 1, updated: now / 1000 - 7200 }), onForget: noop, initialOpen: true, nowMs: now }));
+    expect(old).toContain("Seen in 1 session<");
+    expect(old).toContain("last seen 2 h ago");
     expect(out).toContain(">Forget<");
     expect(renderToStaticMarkup(createElement(LessonCard, { it, onForget: noop, initialOpen: true, lan: true, nowMs: now }))).not.toContain(">Forget<");
   });

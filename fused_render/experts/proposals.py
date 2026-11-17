@@ -379,8 +379,13 @@ def approve(bot, pid) -> dict:
             raise ValueError(reason) from e
         p.update(status="approved", skill=name, decided=time.time())
         _save(bot, p)
-        for iid in p.get("items") or []:
-            memory.mark(bot, iid, promoted=True)
+        # The skill carries these lessons now: they leave memory for the archive (reason "promoted").
+        try:
+            memory.remove(bot, p.get("items") or [], "promoted", skill=name)
+        except Exception:  # noqa: BLE001 — the skill is written; a lesson left behind is swept by tidy
+            logger.warning("expert %s: promoted lessons not archived", getattr(bot, "id", "?"), exc_info=True)
+            for iid in p.get("items") or []:
+                memory.mark(bot, iid, promoted=True)
         _gap_settled(bot, p, True)
         return p
 

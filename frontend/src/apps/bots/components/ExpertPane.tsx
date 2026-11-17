@@ -1,8 +1,10 @@
 // An expert's preview column (docs/experts.md §10): no browser, so in place of the screenshot, live view and info
 // sections it shows what the expert knows and how it is doing, on four tabs in the Browser | Terminal strip's style:
-//   Memory       the lessons it keeps (most seen first), each a card: In use / Not used yet / Contradicted, where it came
-//                from, how often seen; opened: what it is about, first / last seen, sessions, and Forget. The skill
-//                proposals in progress above them; filter chips by status
+//   Memory       the budget line on top ("32 of 50 lessons", a meter, what tidying does, the last tidy), then the
+//                lessons it keeps (most used first), each a card: In use / Not used yet / Contradicted, where it came
+//                from, how often used; opened: what it is about, sessions seen in / answers relied on, first seen /
+//                last used, and Forget. The skill proposals in progress above them; filter chips by status; at the
+//                bottom a collapsed "Recently removed" list (the archive: what left memory and why)
 //   Observations everything it noted from consults and sessions: "Waiting" (oldest first) and "Consolidated" (newest
 //                first, under day dividers, each with what came of it); "Consolidate now", its live stage line and the
 //                proposal status lines on top; an unsure row opens to what research found and can be dropped while it is
@@ -20,12 +22,13 @@
 // the Memory and Observations tabs) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on
 // every refresh while it keeps failing).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { expertApi, type Bot, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem, type ExpertObs,
-  type ExpertProposal } from "../lib/api";
-import { anyPreparing, basename, checkProgress, consolidatingLine, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, filterConsults,
+import { expertApi, type Bot, type ExpertArchived, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem,
+  type ExpertMemory, type ExpertObs, type ExpertProposal } from "../lib/api";
+import { anyPreparing, basename, budgetState, checkProgress, consolidatingLine, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, filterConsults,
   filterLessons, filterObservations, gapNote, gapProposal, gapUnresolved, groupByDay, groupConsultsByDay, isLongContext, LESSON_STATUS_LABEL, lessonFacts,
   lessonSource, lessonStatus, OBS_EMPTY, OBS_INTRO, observationFacts, observationGaps, observationSource, observationText, observationTone,
-  observationTypeLabel, openProposals, proposalLine, researchingGap, scoreText, seenLabel, sortLessons, sortObservations, unresolvedGapCount, usedLessons,
+  observationTypeLabel, openProposals, proposalLine, removedReasonLabel, researchingGap, scoreText, sortLessons, sortObservations, tidySummary, unresolvedGapCount,
+  usedLabel, usedLessons, usesLine,
   type ConsultFilter, type ConsultStatus, type LessonFilter, type LessonStatus, type ObservationFilter } from "../lib/expert";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
@@ -35,12 +38,18 @@ import { isLanHost } from "@platform/lib/host";
 
 export type ExpertTab = "memory" | "observations" | "consults" | "checks";
 const TABS: [ExpertTab, string][] = [["memory", "Memory"], ["observations", "Observations"], ["consults", "Consults"], ["checks", "Checks"]];
-const REFRESH_MS = 10_000, CHECKS_MS = 2_000, PROPOSALS_MS = 5_000, WORK_MS = 5_000;
+const REFRESH_MS = 10_000, CHECKS_MS = 2_000, PROPOSALS_MS = 5_000, WORK_MS = 5_000, ARCHIVE_SHOWN = 20;
+
+/** The memory route's budget fields (all absent on an older server). */
+export type MemoryBudget = Pick<ExpertMemory, "limit" | "tidy_at" | "total" | "last_tidy">;
 
 type Confirm = (title: string, text: string, okLabel?: string, danger?: boolean) => Promise<boolean>;
 
 interface Data {
   memory: ExpertItem[] | null;
+  /** The memory's budget (from the memory route) and what recently left it (the archive route, fetched with it). */
+  budget: MemoryBudget | null;
+  archive: ExpertArchived[] | null;
   pending: ExpertObs[] | null;
   done: ExpertObs[] | null;
   consults: ExpertConsult[] | null;
@@ -49,7 +58,11 @@ interface Data {
   /** A background consolidation's progress (from the observations route). */
   consolidating: ExpertConsolidating | null;
 }
-const EMPTY: Data = { memory: null, pending: null, done: null, consults: null, checks: null, proposals: null, consolidating: null };
+const EMPTY: Data = { memory: null, budget: null, archive: null, pending: null, done: null, consults: null, checks: null, proposals: null, consolidating: null };
+
+/** The memory route's reply as Data: the lessons and the budget fields (whatever of them the server sent). */
+const fromMemory = (m: ExpertMemory): Pick<Data, "memory" | "budget"> =>
+  ({ memory: m.items || [], budget: { limit: m.limit, tidy_at: m.tidy_at, total: m.total, last_tidy: m.last_tidy ?? null } });
 
 /** The open tab's data for expert `id`, kept fresh (see the header). `reload` refetches the tab now. */
 function useExpertData(id: string, seq: number, tab: ExpertTab) {
@@ -89,19 +102,22 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
   const load = useCallback(async (which: ExpertTab, loud = false) => {
     const want = id;
     if (which === "memory") {
-      const [m, p] = await Promise.all([guard(() => expertApi.memory(want), loud), guard(() => expertApi.proposals(want), loud)]);
+      // The archive quietly: an older server (or the LAN door) has no such route, and then there is just no section.
+      const [m, p, a] = await Promise.all([guard(() => expertApi.memory(want), loud), guard(() => expertApi.proposals(want), loud),
+        expertApi.memoryArchive(want).catch(() => undefined)]);
       if (live.current !== want) return;
-      setData((d) => ({ ...d, ...(m ? { memory: m.items || [] } : {}), ...(p ? { proposals: p.proposals || [] } : {}) }));
+      setData((d) => ({ ...d, ...(m ? fromMemory(m) : {}), ...(p ? { proposals: p.proposals || [] } : {}),
+        ...(a ? { archive: Array.isArray(a.archived) ? a.archived : [] } : {}) }));
     } else if (which === "observations") {
       // The proposals too (their status lines show here, and a proposed gap says where its proposal stands), and the
       // memory (an opened row names the lesson it landed on).
       const [, , m] = await Promise.all([loadObs(loud), loadProposals(loud), guard(() => expertApi.memory(want), loud)]);
-      if (live.current === want && m) setData((d) => ({ ...d, memory: m.items || [] }));
+      if (live.current === want && m) setData((d) => ({ ...d, ...fromMemory(m) }));
     } else if (which === "consults") {
       // The memory too: an opened consult names the lessons it used by their claims.
       const [c, m] = await Promise.all([guard(() => expertApi.consults(want), loud), guard(() => expertApi.memory(want), loud)]);
       if (live.current !== want) return;
-      setData((d) => ({ ...d, ...(c ? { consults: c.consults || [] } : {}), ...(m ? { memory: m.items || [] } : {}) }));
+      setData((d) => ({ ...d, ...(c ? { consults: c.consults || [] } : {}), ...(m ? fromMemory(m) : {}) }));
     } else {
       const k = await guard(() => expertApi.checks(want), loud);
       if (live.current === want && k) setData((d) => ({ ...d, checks: k }));
@@ -248,17 +264,22 @@ const LESSON_TONE: Record<LessonStatus, CardTone> = { "in-use": "ok", "not-used"
 export function LessonCard({ it, onForget, lan = false, initialOpen = false, nowMs }: {
   it: ExpertItem; onForget: (it: ExpertItem) => void; lan?: boolean; initialOpen?: boolean; nowMs?: number;
 }) {
-  const st = lessonStatus(it), sessions = it.sessions?.length || 0;
+  const st = lessonStatus(it);
+  // Last used: when an answer last relied on it (a newer server), else when it was last seen.
+  const used = typeof it.last_used === "number" && it.last_used > 0 ? it.last_used : 0;
+  const when = [it.created ? `first seen ${fmtAgo(it.created, nowMs)}` : "",
+    used ? `last used ${fmtAgo(used, nowMs)}` : it.updated ? `last seen ${fmtAgo(it.updated, nowMs)}` : ""].filter(Boolean).join(" · ");
   return (
-    <XCard tone={LESSON_TONE[st]} mark={LESSON_STATUS_LABEL[st]} source={lessonSource(it)} right={seenLabel(it.count)}
-      rightTitle={it.updated ? `last seen ${fmtWhen(it.updated)}` : undefined} text={it.claim} facts={lessonFacts(it)} initialOpen={initialOpen}
+    <XCard tone={LESSON_TONE[st]} mark={LESSON_STATUS_LABEL[st]} source={lessonSource(it)} right={usedLabel(it)}
+      rightTitle={used ? `last used ${fmtWhen(used)}` : it.updated ? `last seen ${fmtWhen(it.updated)}` : undefined} text={it.claim} facts={lessonFacts(it)}
+      initialOpen={initialOpen}
       detail={() => (
         <>
           {it.about?.length ? <Part label="About"><div className="xp-files">{it.about.map((a) => <span key={a} className="xp-about-chip">{a}</span>)}</div></Part> : null}
-          <p className="xp-facts">
-            {[it.created ? `first seen ${fmtAgo(it.created, nowMs)}` : "", it.updated ? `last seen ${fmtAgo(it.updated, nowMs)}` : "",
-              sessions ? `in ${sessions} session${sessions === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ")}
-          </p>
+          <div>
+            <p className="xp-facts">{usesLine(it)}</p>
+            {when ? <p className="xp-facts">{when}</p> : null}
+          </div>
           {lan ? null : (
             <div className="xp-acts">
               <button type="button" className="xp-forget" title="Forget this lesson" onClick={() => onForget(it)}>Forget</button>
@@ -271,8 +292,54 @@ export function LessonCard({ it, onForget, lan = false, initialOpen = false, now
 
 const LESSON_FILTERS: [LessonFilter, string][] = [["all", "All"], ["in-use", "In use"], ["not-used", "Not used yet"]];
 
-export function MemoryPanel({ items, onForget, proposals = null, lan = false, nowMs }: {
+/** "32 of 50 lessons", a thin meter (neutral up to `tidy_at`, warning beyond it), what tidying does at this size, and
+ *  a recent tidy's summary. Nothing without a `limit` (an older server). */
+export function MemoryBudgetLine({ budget, listed, nowMs }: { budget: MemoryBudget | null | undefined; listed: number; nowMs?: number }) {
+  const b = budgetState(budget, listed);
+  if (!b) return null;
+  const tidy = tidySummary(budget?.last_tidy, nowMs);
+  return (
+    <div className={`xp-budget${b.above ? " above" : ""}`}>
+      <div className="xp-budget-head"><span className="xp-budget-n">{b.label}</span></div>
+      <div className="xp-meter" role="meter" aria-label="Lessons in memory" aria-valuemin={0} aria-valuemax={b.limit} aria-valuenow={Math.min(b.total, b.limit)}
+        aria-valuetext={b.label}>
+        <span className="xp-meter-fill" style={{ width: `${b.fill}%` }} />
+        {b.over ? <span className="xp-meter-over" style={{ width: `${b.over}%` }} /> : null}
+        {b.tidyAt < b.limit ? <span className="xp-meter-tick" style={{ left: `${(b.tidyAt / Math.max(b.limit, b.total)) * 100}%` }} aria-hidden="true" /> : null}
+      </div>
+      <p className="xp-facts">{b.note}</p>
+      {tidy ? <p className="xp-facts xp-tidy">{tidy}</p> : null}
+    </div>
+  );
+}
+
+/** "Recently removed (N)", collapsed: what left memory (newest first, at most ARCHIVE_SHOWN), each its claim (two lines)
+ *  and why and when it went. Nothing while the archive is empty or not loaded. */
+export function RemovedLessons({ archived, nowMs }: { archived: ExpertArchived[] | null | undefined; nowMs?: number }) {
+  const rows = (archived || []).filter((a) => a && typeof a.claim === "string").slice(0, ARCHIVE_SHOWN);
+  if (!rows.length) return null;
+  return (
+    <details className="xp-removed">
+      <summary className="xp-h">{CHEVRON}Recently removed ({rows.length})</summary>
+      <ul className="xp-removed-list">
+        {rows.map((a, i) => (
+          <li key={`${a.id}-${a.removed_at || i}`} className="xp-removed-row">
+            <span className="xp-removed-claim">{a.claim}</span>
+            <span className="xp-facts" title={a.removed_at ? fmtWhen(a.removed_at) : undefined}>
+              {[removedReasonLabel(a), a.removed_at ? fmtAgo(a.removed_at, nowMs) : ""].filter(Boolean).join(" · ")}
+            </span>
+            {a.why ? <span className="xp-facts xp-note">{a.why}</span> : null}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+export function MemoryPanel({ items, onForget, proposals = null, budget = null, archived = null, lan = false, nowMs }: {
   items: ExpertItem[] | null; onForget: (it: ExpertItem) => void; proposals?: ExpertProposal[] | null;
+  /** The memory route's budget fields (the line on top) and the archive (the "Recently removed" section). */
+  budget?: MemoryBudget | null; archived?: ExpertArchived[] | null;
   /** On the phone: the LAN door does not serve `forget` (it writes memory), so the button is hidden. */
   lan?: boolean; nowMs?: number;
 }) {
@@ -282,6 +349,7 @@ export function MemoryPanel({ items, onForget, proposals = null, lan = false, no
   const counts = { all: items.length, "in-use": filterLessons(items, "in-use").length, "not-used": filterLessons(items, "not-used").length };
   return (
     <>
+      <MemoryBudgetLine budget={budget} listed={items.length} nowMs={nowMs} />
       <ProposalLines open={open} />
       {items.length ? (
         <>
@@ -292,6 +360,7 @@ export function MemoryPanel({ items, onForget, proposals = null, lan = false, no
       ) : (
         <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that consult it, appears here once consolidated.</div>
       )}
+      <RemovedLessons archived={archived} nowMs={nowMs} />
     </>
   );
 }
@@ -558,7 +627,7 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
         ))}
       </div>
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
-        {tab === "memory" ? <MemoryPanel items={data.memory} proposals={data.proposals} lan={isLanHost()} onForget={(it) => { void onForget(it); }} /> : null}
+        {tab === "memory" ? <MemoryPanel items={data.memory} proposals={data.proposals} budget={data.budget} archived={data.archive} lan={isLanHost()} onForget={(it) => { void onForget(it); }} /> : null}
         {tab === "observations" ? <ObservationsPanel pending={data.pending} done={data.done} consolidating={data.consolidating} proposals={data.proposals} items={data.memory} busy={consolidating}
           lan={isLanHost()} onConsolidate={() => { void onConsolidate(); }} onDrop={(g) => { void onDrop(g); }} /> : null}
         {tab === "consults" ? <ConsultsPanel consults={data.consults} items={data.memory} /> : null}
