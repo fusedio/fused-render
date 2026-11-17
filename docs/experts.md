@@ -236,7 +236,10 @@ pending it counts no failure.
 questions(bot) -> list[{"q": str, "must": [str]}]      # parsed from <folder>/questions.md, section 9
 run(bot, *, skills_override=None, answer_fn=None) -> Run
 Run = {"id","ts","score": int,"total": int,"results":[{"q","passed": bool,"why": str,"answer": str}],
-       "engine": str}
+       "engine": str, "skills_hash": str}   # skills_hash only on persisted runs
+skills_hash(skills, engine) -> str   # sha256 over each skill's name, title, trigger, body (sorted by name) + engine
+reusable_score(bot, skills) -> {"score","total"} | None   # latest(bot)'s score when its skills_hash matches
+                                                          # (skills, current engine) and it has no error
 start(bot) -> str            # run in a background thread; returns run id; one at a time per bot (else returns the running id)
 status(bot) -> {"running": bool, "run_id": str|None, "done": int, "total": int}
 latest(bot) -> Run | None
@@ -244,13 +247,16 @@ latest(bot) -> Run | None
 `answer_fn(bot, question, skills_override) -> str` defaults to `experts.engine.answer_question`. Each answer
 is graded by one `model.text` call that must return JSON `{"passed": bool, "why": str}` against the `must`
 points. Up to 3 questions run in parallel. `run` persists the finished run unless `skills_override` is set.
+Every persisted run (also a crashed `start` run, which carries `error`) records `skills_hash` of the expert's
+skills (`bot.skills()`, read when the run starts) and the engine string; what-if runs carry none.
 
 ### `experts/proposals.py`
 ```
 Proposal = {"id","ts","status": "preparing"|"ready"|"shown"|"approved"|"rejected"|"failed",
             "action": "update"|"create"|None,"skill": name|None,"title","trigger","body","diff": str,
             "items":[item ids],"claims":[str],"topic": str,"error": str,
-            "score_before": {"score","total"}|None,"score_after": {"score","total"}|None,"card_seq": int|None}
+            "score_before": {"score","total"}|None,"score_after": {"score","total"}|None,
+            "before_reused": bool,"card_seq": int|None}
 STATUSES = ("preparing", "ready", "shown", "approved", "rejected", "failed")
 BUSY = "a skill proposal is already being prepared"
 candidates(bot) -> list[Item]       # (count >= propose_at, or trust "research" whose gap is not closed),
@@ -277,7 +283,9 @@ A proposal whose items include a `research` lesson (or given `gap`) records `gap
 `answered` (resolution `skill`); `reject` and the failed path (`_fail`, also a failed approve) → `dismissed`.
 `card_text` says the expert looked into a question it could not answer when the proposal has a `gap`.
 Updating an existing skill is preferred to creating one. The gate scores are skipped (None) when the expert
-has no questions.
+has no questions. The "before" run is skipped too when `gate.reusable_score(bot, skills)` returns the latest
+persisted run's score (same `skills_hash` over the current skills and engine, no `error`); `before_reused`
+records that. Approving a proposal changes the skills, so the hash stops matching on its own.
 
 ### `experts/engine.py` — one run of the expert
 ```
@@ -369,6 +377,7 @@ Gap = {"id","question","questions":[str],"count": int,"consults":[consult ids],"
        "attempts": int,"finding": {"answer": str,"refs":[str]} | None,"proposal": pid | None,
        "card_seq": int | None,"resolution": "" | "skill" | "user" | "dismissed","error": str}
 listing(bot) -> list[Gap]             # not closed first, most asked first
+with_proposal(bot, rows) -> list      # copies for HTTP + "proposal_status", "proposal_error" (below)
 get(bot, gid) ; ids(bot) -> set
 record(bot, question, *, consult="", session="") -> Gap   # same normalised question bumps (once per consult)
 merge(bot, a, b) -> Gap | None        # into the older; counts summed, lists united; only open gaps
@@ -499,7 +508,7 @@ POSTs require the `X-Fused` header (`server.common._require_fused`). Errors are 
 | `POST /api/experts/{id}/checks/run` | `{run_id}` |
 | `GET /api/experts/{id}/proposals` | `{proposals: [Proposal]}` (every status, newest first, with `error`) |
 | `POST /api/experts/{id}/consolidate` | `{force?: bool}` → `{started: bool}`: `consolidate.start` in the background (false when one runs or there is nothing to do); 409 `unavailable` without an engine. Progress: `consolidating` on `GET …/observations` |
-| `GET /api/experts/{id}/gaps` | `{gaps: [Gap], researching: gid \| null}` (`researching` from `consolidate.status`) |
+| `GET /api/experts/{id}/gaps` | `{gaps: [Gap], researching: gid \| null}` (`researching` from `consolidate.status`). Every Gap returned over HTTP (here, the `gap` on observations, dismiss) adds `proposal_status` (its proposal's status: preparing \| ready \| shown \| approved \| rejected \| failed, or `""` when it has none or it cannot be found) and `proposal_error` (that proposal's `error`, else `""`), read from the proposals store at request time and never stored on the gap. A gap is `proposed` while its proposal is still `preparing`: only `proposal_status` says whether a card can be up |
 | `POST /api/experts/{id}/gaps/{gid}/dismiss` | → Gap; 404 `{"error": "no such gap"}` unless `gid` is a stored gap id (never used in a path) |
 | `POST /api/experts/{id}/capture` | `{session_id}` → `{observations: [Obs]}` |
 | `POST /api/experts/{id}/settings` | `{engine?, model?}` → manifest |

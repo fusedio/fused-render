@@ -5,7 +5,9 @@
 //   Observations everything it noted from consults and sessions: "Waiting" (oldest first) and "Consolidated" (newest
 //                first, each with what came of it); "Consolidate now" and its live stage line on top; an unsure consult
 //                (a gap) opens to what research found and can be dropped while it is unresolved
-//   Consults     the questions agent sessions asked it (newest first), each opening to the full answer and its file refs
+//   Consults     the questions agent sessions asked it (newest first, under day dividers, filterable by outcome), each a
+//                card (status, source, when, the question, small facts) opening to the context, the answer as markdown,
+//                the files (click copies the path) and the lessons it used
 //   Checks       its fixed questions (questions.md) graded on the last run; "Run checks" starts one and shows it move
 // Settings' "Expert" tab mounts the same panels (ExpertPanels) so the phone, which hides this column, reaches them.
 // Data: /api/experts/<id>/… (lib/api.ts expertApi), fetched for the open tab on a bot change, again when the bot's
@@ -18,8 +20,8 @@ import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } f
 import { expertApi, type Bot, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem, type ExpertObs,
   type ExpertProposal } from "../lib/api";
 import { anyPreparing, askedLabel, basename, checkProgress, consolidatingLine, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus,
-  filterConsults, gapUnresolved, groupConsultsByDay, isLongContext, lessonTagClass, lessonTags, OBS_EMPTY, OBS_INTRO,
-  observationGaps, observationMeta, observationResultLabel, observationTypeLabel, openProposals, proposalLine, researchingGap, scoreText, seenLabel,
+  filterConsults, gapNote, gapProposal, gapUnresolved, groupConsultsByDay, isLongContext, lessonTagClass, lessonTags, OBS_EMPTY, OBS_INTRO,
+  observationGaps, observationMeta, observationResultLabel, observationText, observationTypeLabel, openProposals, proposalLine, researchingGap, scoreText, seenLabel,
   SEEN_ONCE_LINE, sortObservations, splitLessons, unresolvedGapCount, usedLessons, type ConsultFilter } from "../lib/expert";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
@@ -87,15 +89,18 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
       if (live.current !== want) return;
       setData((d) => ({ ...d, ...(m ? { memory: m.items || [] } : {}), ...(p ? { proposals: p.proposals || [] } : {}) }));
     } else if (which === "observations") {
-      await loadObs(loud);
+      // The proposals too: their status lines show here, and a proposed gap says where its proposal stands.
+      await Promise.all([loadObs(loud), loadProposals(loud)]);
     } else if (which === "consults") {
-      const c = await guard(() => expertApi.consults(want), loud);
-      if (live.current === want && c) setData((d) => ({ ...d, consults: c.consults || [] }));
+      // The memory too: an opened consult names the lessons it used by their claims.
+      const [c, m] = await Promise.all([guard(() => expertApi.consults(want), loud), guard(() => expertApi.memory(want), loud)]);
+      if (live.current !== want) return;
+      setData((d) => ({ ...d, ...(c ? { consults: c.consults || [] } : {}), ...(m ? { memory: m.items || [] } : {}) }));
     } else {
       const k = await guard(() => expertApi.checks(want), loud);
       if (live.current === want && k) setData((d) => ({ ...d, checks: k }));
     }
-  }, [id, guard, loadObs]);
+  }, [id, guard, loadObs, loadProposals]);
   /** The open tab, plus (off the Observations tab) the observations, so a consolidation started or running is noticed
    *  and followed whichever tab is open. */
   const refresh = useCallback((which: ExpertTab) => {
@@ -308,12 +313,14 @@ export function ConsultsPanel({ consults, items = null, nowMs }: { consults: Exp
   );
 }
 
-function ObsRow({ o, consolidated, researching, lan, onDrop }: {
-  o: ExpertObs; consolidated: boolean; researching: string | null; lan: boolean; onDrop: (g: ExpertGap) => void;
+function ObsRow({ o, consolidated, researching, proposals, lan, onDrop }: {
+  o: ExpertObs; consolidated: boolean; researching: string | null; proposals: ExpertProposal[] | null; lan: boolean; onDrop: (g: ExpertGap) => void;
 }) {
-  const g = o.gap || null, result = consolidated || g ? observationResultLabel(o, researching) : "";
+  const g = o.gap || null, result = consolidated || g ? observationResultLabel(o, researching, proposals) : "";
   const status = g ? (researching === g.id && gapUnresolved(g) ? "researching" : g.status) : o.outcome?.op || "";
-  const text = o.claim || g?.question || "";
+  const text = observationText(o);
+  const prop = g?.status === "proposed" ? gapProposal(g, proposals) : null;
+  const propErr = prop?.status === "failed" ? prop.error : "";
   const meta = (
     <span className="xp-meta">
       <span className={`xp-tag kind-${(o.kind || "learning").replace(/[^a-z_]/gi, "")}`}>{observationTypeLabel(o.kind, o.outcome)}</span>
@@ -322,7 +329,13 @@ function ObsRow({ o, consolidated, researching, lan, onDrop }: {
       {g && (g.count || 0) > 1 ? <span>{askedLabel(g.count)}</span> : null}
     </span>
   );
-  const err = g?.error ? <span className="xp-meta xp-gap-err">{g.error}</span> : null;
+  const note = gapNote(g?.error);
+  const err = note || propErr ? (
+    <>
+      {note ? <span className="xp-meta xp-gap-err">{note}</span> : null}
+      {propErr ? <span className="xp-meta xp-gap-err">{propErr}</span> : null}
+    </>
+  ) : null;
   const f = g?.finding;
   return (
     <li className={`xp-row${f ? " xp-fold" : ""}`}>
@@ -357,8 +370,10 @@ function ObsRow({ o, consolidated, researching, lan, onDrop }: {
   );
 }
 
-export function ObservationsPanel({ pending, done, consolidating = null, busy = false, onConsolidate, onDrop, lan = false }: {
+export function ObservationsPanel({ pending, done, consolidating = null, proposals = null, busy = false, onConsolidate, onDrop, lan = false }: {
   pending: ExpertObs[] | null; done: ExpertObs[] | null; consolidating?: ExpertConsolidating | null;
+  /** The skill proposals (as on the Memory tab): their status lines under the intro, and what a proposed gap says. */
+  proposals?: ExpertProposal[] | null;
   busy?: boolean; onConsolidate: () => void; onDrop: (g: ExpertGap) => void;
   /** On the phone: the LAN door does not serve `consolidate` or `dismiss` (they write memory), so the buttons are hidden. */
   lan?: boolean;
@@ -367,13 +382,19 @@ export function ObservationsPanel({ pending, done, consolidating = null, busy = 
   const { waiting, done: folded } = sortObservations(pending, done), running = !!consolidating?.running;
   const researching = researchingGap(consolidating), work = waiting.length > 0 || unresolvedGapCount(observationGaps(waiting, folded)) > 0;
   const row = (consolidated: boolean) => (o: ExpertObs) =>
-    <ObsRow key={o.id} o={o} consolidated={consolidated} researching={researching} lan={lan} onDrop={onDrop} />;
+    <ObsRow key={o.id} o={o} consolidated={consolidated} researching={researching} proposals={proposals} lan={lan} onDrop={onDrop} />;
+  const open = openProposals(proposals);
   return (
     <>
       <div className="xp-bar">
         <span className="xp-line">{OBS_INTRO}{running ? <span className="xp-status">{consolidatingLine(consolidating)}</span> : null}</span>
         {lan ? null : <ConsolidateButton busy={busy} running={running} work={work} onClick={onConsolidate} />}
       </div>
+      {open.length ? (
+        <ul className="xp-proposals">
+          {open.map((p) => <li key={p.id} className={`xp-proposal ${p.status}`}>{proposalLine(p)}</li>)}
+        </ul>
+      ) : null}
       {!waiting.length && !folded.length ? <div className="xp-empty">{OBS_EMPTY}</div> : (
         <>
           {waiting.length ? (
@@ -486,9 +507,9 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
       </div>
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
         {tab === "memory" ? <MemoryPanel items={data.memory} proposals={data.proposals} onForget={(it) => { void onForget(it); }} /> : null}
-        {tab === "observations" ? <ObservationsPanel pending={data.pending} done={data.done} consolidating={data.consolidating} busy={consolidating}
+        {tab === "observations" ? <ObservationsPanel pending={data.pending} done={data.done} consolidating={data.consolidating} proposals={data.proposals} busy={consolidating}
           lan={isLanHost()} onConsolidate={() => { void onConsolidate(); }} onDrop={(g) => { void onDrop(g); }} /> : null}
-        {tab === "consults" ? <ConsultsPanel consults={data.consults} /> : null}
+        {tab === "consults" ? <ConsultsPanel consults={data.consults} items={data.memory} /> : null}
         {tab === "checks" ? <ChecksPanel checks={data.checks} starting={starting} onRun={() => { void onRun(); }} /> : null}
       </div>
     </div>

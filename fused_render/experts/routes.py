@@ -270,7 +270,7 @@ def experts_observations(eid: str):
     bot = _expert(eid)
     obs = _mod("observations")
     gaps = _mod("gaps")
-    by_id = {g["id"]: g for g in gaps.listing(bot)}
+    by_id = {g["id"]: g for g in gaps.with_proposal(bot, gaps.listing(bot))}
     by_consult = {c: g for g in by_id.values() for c in (g.get("consults") or [])}
 
     def join(o):
@@ -358,7 +358,8 @@ def propose(bot) -> list:
 def experts_gaps(eid: str):
     bot = _expert(eid)
     st = _mod("consolidate").status(bot)
-    return {"gaps": _mod("gaps").listing(bot),
+    gaps = _mod("gaps")
+    return {"gaps": gaps.with_proposal(bot, gaps.listing(bot)),
             "researching": st.get("gap") if st.get("stage") == "researching" else None}
 
 
@@ -373,7 +374,7 @@ def experts_gap_dismiss(eid: str, gid: str, x_fused: str | None = Header(default
     if gid not in gaps.ids(bot):  # never used in a path; only a stored id is accepted
         raise _NotFound("no such gap")
     _writable()
-    return gaps.dismiss(bot, gid)
+    return gaps.with_proposal(bot, [gaps.dismiss(bot, gid)])[0]
 
 
 # ------------------------------------------------------------------ capture ---

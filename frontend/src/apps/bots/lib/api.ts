@@ -344,6 +344,9 @@ export interface ExpertGap {
   created: number; updated: number; status: ExpertGapStatus; attempts: number;
   finding: { answer: string; refs: string[] } | null; proposal: string | null; card_seq: number | null;
   resolution: "" | "skill" | "user" | "dismissed"; error: string;
+  /** Where the gap's skill-fix proposal stands (its ExpertProposal status; "" without one) and why it failed. Newer
+   *  servers only: without them the pane looks `proposal` up in the proposals it fetched. */
+  proposal_status?: ExpertProposal["status"] | ""; proposal_error?: string;
 }
 /** POST …/consolidate answers at once; the work runs in the background (follow it through ExpertConsolidating). */
 export interface ExpertConsolidateReply { started: boolean }

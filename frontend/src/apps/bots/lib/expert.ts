@@ -196,19 +196,49 @@ export const gapUnresolved = (g: Pick<ExpertGap, "status">): boolean => UNRESOLV
 /** How many gaps still wait on something (open questions; the Consolidate button counts them as work). */
 export const unresolvedGapCount = (gs: readonly Pick<ExpertGap, "status">[] | null | undefined): number => (gs || []).filter(gapUnresolved).length;
 
+/** The gap's skill-fix proposal status and error: the gap's own `proposal_status` / `proposal_error` when the server
+ *  sends them, else its `proposal` looked up in `proposals`; status "" when neither says. */
+export function gapProposal(g: Pick<ExpertGap, "proposal" | "proposal_status" | "proposal_error">,
+  proposals: readonly Pick<ExpertProposal, "id" | "status" | "error">[] | null | undefined = null): { status: ExpertProposal["status"] | ""; error: string } {
+  if (g.proposal_status) return { status: g.proposal_status, error: g.proposal_error || "" };
+  const p = g.proposal ? (proposals || []).find((x) => x.id === g.proposal) : undefined;
+  return p ? { status: p.status, error: p.error || g.proposal_error || "" } : { status: "", error: g.proposal_error || "" };
+}
+
 /** A gap's status tag in plain words. `researching`: the gap id the server says it is researching now (that gap reads
- *  "researching…" whatever its stored status). */
-export function gapStatusLabel(g: Pick<ExpertGap, "id" | "status" | "resolution">, researching: string | null = null): string {
+ *  "researching…" whatever its stored status). A `proposed` gap says where its proposal stands (gapProposal): a
+ *  proposal is requested long before its card is up (drafting and two check runs), so "proposed in chat" waits for it. */
+export function gapStatusLabel(g: Pick<ExpertGap, "id" | "status" | "resolution"> & Partial<Pick<ExpertGap, "proposal" | "proposal_status" | "proposal_error">>,
+  researching: string | null = null, proposals: readonly Pick<ExpertProposal, "id" | "status" | "error">[] | null = null): string {
   if (researching && g.id === researching && gapUnresolved(g)) return "researching…";
   switch (g.status) {
     case "open": return "waiting";
     case "researching": return "researching…";
-    case "proposed": return "skill fix proposed in chat";
+    case "proposed": {
+      const st = gapProposal({ proposal: g.proposal ?? null, proposal_status: g.proposal_status, proposal_error: g.proposal_error }, proposals).status;
+      if (st === "preparing") return "drafting a skill fix…";
+      if (st === "ready") return "skill fix ready, card coming";
+      if (st === "failed") return "skill fix failed";
+      return "skill fix proposed in chat";
+    }
     case "asked": return "asked you in chat";
     case "answered": return g.resolution === "user" ? "answered by you" : g.resolution === "skill" ? "answered by a new skill" : "answered";
     case "dismissed": return "dropped";
     default: return String(g.status || "");
   }
+}
+
+/** A gap's research note as shown: "not found: why" reads "Looked into it: why" (a bare "not found" too). */
+export function gapNote(error: string | null | undefined): string {
+  const t = (error || "").trim();
+  if (t === "not found") return "Looked into it: nothing found";
+  return /^not found: /.test(t) ? `Looked into it: ${t.slice("not found: ".length)}` : t;
+}
+
+/** An observation's text as its row shows it: an unsure row without its "Could not answer: " lead (its tag says so). */
+export function observationText(o: Pick<ExpertObs, "kind" | "claim"> & { gap?: Pick<ExpertGap, "question"> | null }): string {
+  const t = o.claim || o.gap?.question || "";
+  return o.kind === "gap" ? t.replace(/^Could not answer:\s*/, "") : t;
 }
 
 /** "asked 3×". */
@@ -234,8 +264,9 @@ export function observationTypeLabel(kind: string | null | undefined, outcome?: 
 
 /** A consolidated observation's result tag: what consolidation made of it. A gap row says where its gap stands
  *  (gapStatusLabel; `researching` as there); "" when there is nothing to say (still pending, unknown op). */
-export function observationResultLabel(o: Pick<ExpertObs, "kind" | "outcome" | "gap">, researching: string | null = null): string {
-  if (o.gap) return gapStatusLabel(o.gap, researching);
+export function observationResultLabel(o: Pick<ExpertObs, "kind" | "outcome" | "gap">, researching: string | null = null,
+  proposals: readonly Pick<ExpertProposal, "id" | "status" | "error">[] | null = null): string {
+  if (o.gap) return gapStatusLabel(o.gap, researching, proposals);
   switch (o.outcome?.op) {
     case "add": return "new lesson";
     case "bump": return "counted toward a lesson";

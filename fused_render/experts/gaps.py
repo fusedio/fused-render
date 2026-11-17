@@ -116,6 +116,29 @@ def _view(bot, g) -> dict:
     return g
 
 
+def with_proposal(bot, rows) -> list:
+    """Copies of the Gaps `rows` (None entries kept) for HTTP, each with `proposal_status` (its linked
+    proposal's status, "" when it has none or the proposal cannot be found) and `proposal_error` (that
+    proposal's `error`, else ""). Read from the proposals store now; never persisted on the gap."""
+    from fused_render.experts import proposals
+    cache: dict = {}
+    out = []
+    for g in rows:
+        if not isinstance(g, dict):
+            out.append(g)
+            continue
+        pid = g.get("proposal")
+        if pid and pid not in cache:
+            try:
+                cache[pid] = proposals.get(bot, pid)
+            except Exception:  # noqa: BLE001 — an unreadable proposal reads as none
+                cache[pid] = None
+        p = cache.get(pid) if pid else None
+        out.append(dict(g, proposal_status=str((p or {}).get("status") or ""),
+                        proposal_error=str((p or {}).get("error") or "")))
+    return out
+
+
 def _rank(g) -> tuple:
     return (g.get("status") in CLOSED, -int(g.get("count") or 0), -float(g.get("updated") or 0))
 
