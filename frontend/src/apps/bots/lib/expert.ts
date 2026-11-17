@@ -1,6 +1,6 @@
 // Pure helpers for an expert's panels (components/ExpertPane.tsx) and its proposal card (components/ApprovalCard.tsx):
 // ordering and the short strings the rows show. The shapes are docs/experts.md §4 (Item, Consult, Run, Proposal).
-import type { ExpertCheckStatus, ExpertConsult, ExpertEngineRow, ExpertGap, ExpertItem, ExpertProposal, ExpertScore } from "./api";
+import type { ExpertCheckStatus, ExpertConsolidating, ExpertConsult, ExpertEngineRow, ExpertGap, ExpertItem, ExpertProposal, ExpertScore } from "./api";
 import { fmtAgo } from "./format";
 
 /** Memory as the expert's own index reads it: most seen first, then the most recently touched. */
@@ -8,14 +8,14 @@ export function sortLessons(items: readonly ExpertItem[]): ExpertItem[] {
   return [...items].sort((a, b) => (b.count || 0) - (a.count || 0) || (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id));
 }
 
-/** Memory split for the panel: the lessons answers draw on, then the ones seen once (`indexed === false`), which wait
- *  under their own divider until they come up again. Each part sorted as `sortLessons`. */
+/** Memory split for the panel: the lessons answers draw on, then the ones not used yet (`indexed === false`: seen once,
+ *  or a research finding waiting for its proposal's approval) under their own divider. Each part sorted as `sortLessons`. */
 export function splitLessons(items: readonly ExpertItem[]): { indexed: ExpertItem[]; seenOnce: ExpertItem[] } {
   const sorted = sortLessons(items);
   return { indexed: sorted.filter((it) => it.indexed !== false), seenOnce: sorted.filter((it) => it.indexed === false) };
 }
 
-export const SEEN_ONCE_LINE = "Seen once. Not used in answers until it comes up again.";
+export const SEEN_ONCE_LINE = "Not used in answers yet";
 
 /** The proposals the Memory panel mentions (in progress, waiting on the user, or failed), newest first. */
 export function openProposals(ps: readonly ExpertProposal[] | null | undefined): ExpertProposal[] {
@@ -36,11 +36,14 @@ export const anyPreparing = (ps: readonly ExpertProposal[] | null | undefined): 
 /** "seen 3×" (a lesson seen once still says so: the count is what earns a proposal). */
 export const seenLabel = (count: number | null | undefined): string => `seen ${Math.max(1, count || 0)}×`;
 
-/** The markers after a lesson's claim: who said it (only `user` is called out) and where it stands on the way to a skill
- *  (one of "promoted", "not proposed again" for a rejected proposal, or "proposed", in that priority). */
-export function lessonTags(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected">): string[] {
+/** The markers after a lesson's claim: who said it (`user`, or "found by research"), why it is not used in answers yet
+ *  (`indexed === false`: "waiting for your approval" for a research finding, "seen once" otherwise) and where it stands
+ *  on the way to a skill (one of "promoted", "not proposed again" for a rejected proposal, or "proposed", in that priority). */
+export function lessonTags(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed">): string[] {
   const out: string[] = [];
   if (it.trust === "user") out.push("user");
+  else if (it.trust === "research") out.push("found by research");
+  if (it.indexed === false) out.push(it.trust === "research" ? "waiting for your approval" : "seen once");
   if (it.promoted) out.push("promoted");
   else if (it.rejected) out.push("not proposed again");
   else if (it.proposed) out.push("proposed");
@@ -124,8 +127,10 @@ export const gapUnresolved = (g: Pick<ExpertGap, "status">): boolean => UNRESOLV
 /** The number the Gaps tab label shows (0 = no number). */
 export const unresolvedGapCount = (gs: readonly Pick<ExpertGap, "status">[] | null | undefined): number => (gs || []).filter(gapUnresolved).length;
 
-/** A gap's status tag in plain words. */
-export function gapStatusLabel(g: Pick<ExpertGap, "status" | "resolution">): string {
+/** A gap's status tag in plain words. `researching`: the gap id the server says it is researching now (that gap reads
+ *  "researching…" whatever its stored status). */
+export function gapStatusLabel(g: Pick<ExpertGap, "id" | "status" | "resolution">, researching: string | null = null): string {
+  if (researching && g.id === researching && gapUnresolved(g)) return "researching…";
   switch (g.status) {
     case "open": return "waiting";
     case "researching": return "researching…";
@@ -150,5 +155,17 @@ export function splitGaps(gs: readonly ExpertGap[] | null | undefined): { unreso
 /** "asked 3×". */
 export const askedLabel = (count: number | null | undefined): string => `asked ${Math.max(1, count || 0)}×`;
 
-export const GAPS_INTRO = "Questions sessions asked that I could not answer. I research each one, then propose a skill or ask you.";
+export const GAPS_INTRO = "Questions sessions asked that I could not answer. When I consolidate what I have learned, I look into each one, then propose a skill fix or ask you.";
+
+/** While a consolidation runs: what it is doing, by stage ("" when it is not running). */
+export function consolidatingLine(c: ExpertConsolidating | null | undefined): string {
+  if (!c?.running) return "";
+  switch (c.stage) {
+    case "lessons": return "Consolidating lessons…";
+    case "gaps": return "Sorting open questions…";
+    case "researching": return "Researching an open question…";
+    case "proposing": return "Drafting a skill fix…";
+    default: return "Consolidating…";
+  }
+}
 export const GAPS_EMPTY = "No gaps yet. When a session asks something I cannot answer, it shows up here.";

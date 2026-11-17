@@ -14,8 +14,8 @@ import time
 
 from fused_render.experts import store
 
-KINDS_TRUST = ("user", "outcome", "gap")
-_TRUST_RANK = {"gap": 0, "outcome": 1, "user": 2}
+KINDS_TRUST = ("user", "outcome", "research", "gap")
+_TRUST_RANK = {"gap": 0, "research": 1, "outcome": 1, "user": 2}
 FLAGS = ("proposed", "promoted", "rejected")
 CLAIM_MAX = 1000
 
@@ -55,7 +55,8 @@ def _bump_in(item, session, now) -> None:
         sessions.append(session)
 
 
-def add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None) -> dict:
+def add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, gap="") -> dict:
+    """`gap`: the gap id a `research` lesson answers (stored as `gap`)."""
     claim = " ".join(str(claim or "").split())[:CLAIM_MAX]
     if not claim:
         raise ValueError("a lesson needs a claim")
@@ -75,11 +76,15 @@ def add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None) -
                 for a in about:
                     if a not in it.setdefault("about", []):
                         it["about"].append(a)
+                if gap and not it.get("gap"):
+                    it["gap"] = str(gap)
                 _save(bot, data)
                 return dict(it)
         it = {"id": store.new_id("m"), "claim": claim, "kind": str(kind or "lesson"), "trust": trust,
               "count": 1, "sessions": [session] if session else [], "about": about,
               "created": now, "updated": now, "proposed": False, "promoted": False, "rejected": False}
+        if gap:
+            it["gap"] = str(gap)
         data["items"].append(it)
         _save(bot, data)
         return dict(it)
@@ -147,6 +152,9 @@ def indexed(item) -> bool:
         return True
     if trust == "outcome":
         return int(item.get("count") or 0) >= OUTCOME_MIN_COUNT
+    if trust == "research":
+        # A gap's finding reaches answers only once its skill fix was approved (the skill carries it then).
+        return bool(item.get("promoted"))
     return False
 
 

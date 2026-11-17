@@ -123,8 +123,11 @@ def open_item_ids(bot) -> set:
 def candidates(bot) -> list:
     at = store.manifest(bot)["memory"]["propose_at"]
     busy = open_item_ids(bot)
+    from fused_render.experts import gaps
+    closed = gaps.closed_ids(bot)  # a research lesson whose gap was dismissed or answered is not proposed again
     rows = [i for i in memory.items(bot)
-            if int(i.get("count") or 0) >= at and i.get("trust") != "gap" and i.get("id") not in busy
+            if (int(i.get("count") or 0) >= at or i.get("trust") == "research") and i.get("trust") != "gap"
+            and not (i.get("trust") == "research" and i.get("gap") in closed) and i.get("id") not in busy
             and not i.get("proposed") and not i.get("promoted") and not i.get("rejected")]
     rows.sort(key=lambda i: -int(i.get("count") or 0))
     return rows
@@ -178,8 +181,7 @@ def _draft(bot, lessons) -> dict:
     """The draft and both gate runs for `lessons`: the proposal's fields (no id, no status). Slow: model calls."""
     skills = list(bot.skills())
     by_name = {s["name"]: s for s in skills}
-    lessons_txt = "\n".join(f"- [{i['id']}] {i.get('claim', '')}" + ("" if i.get("free") else f" (seen {i.get('count', 0)}×)")
-                            for i in lessons)
+    lessons_txt = "\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {i.get('count', 0)}×)" for i in lessons)
     skills_txt = "\n\n".join(f"### name: {s['name']}\ntitle: {s.get('title', '')}\ntrigger: {s.get('trigger', '')}\n"
                              f"{(s.get('body') or '')[:BODY_CAP]}" for s in skills) or "(none)"
     draft = None
@@ -223,8 +225,8 @@ def _draft(bot, lessons) -> dict:
         score_before = _score(bot, skills)
         score_after = _score(bot, _override(skills, eff_name, title, trigger, body))
     return {"action": action, "skill": skill, "title": title, "trigger": trigger, "body": body, "diff": diff,
-            "items": [i["id"] for i in lessons if not i.get("free")],
-            "claims": [i.get("claim", "") for i in lessons], "score_before": score_before, "score_after": score_after}
+            "items": [i["id"] for i in lessons], "claims": [i.get("claim", "") for i in lessons],
+            "score_before": score_before, "score_after": score_after}
 
 
 def prepare(bot, items) -> dict:
@@ -242,32 +244,19 @@ def prepare(bot, items) -> dict:
     return p
 
 
-LESSON_MAX = 4000
-
-
-def _free_lesson(text) -> dict:
-    """A free-standing lesson (a gap's finding) shaped like a memory item for `_draft`; never stored in memory."""
-    return {"id": "gap", "claim": str(text or "").strip()[:LESSON_MAX], "count": 1, "about": [], "free": True}
-
-
-def _lessons_of(bot, p) -> list:
-    """The lessons proposal `p` is drafted from: its memory items, plus its free-standing `lesson` if any."""
-    lessons = _resolve_items(bot, p.get("items"))
-    if str(p.get("lesson") or "").strip():
-        lessons.append(_free_lesson(p["lesson"]))
-    return lessons
+def _gap_ids(p) -> list:
+    out = [g for g in ([(p or {}).get("gap")] + list((p or {}).get("gaps") or [])) if g]
+    return list(dict.fromkeys(out))
 
 
 def _gap_settled(bot, p, approved) -> None:
-    """A proposal drafted from a gap's finding settled: tell `gaps` (answered on approve, dismissed otherwise)."""
-    gid = (p or {}).get("gap")
-    if not gid:
-        return
-    try:
-        from fused_render.experts import gaps
-        gaps.proposal_settled(bot, gid, p.get("id"), approved=approved)
-    except Exception:  # noqa: BLE001 — the proposal's own outcome stands either way
-        logger.warning("expert %s: gap %s not settled", getattr(bot, "id", "?"), gid, exc_info=True)
+    """A proposal that carries research lessons settled: tell `gaps` (answered on approve, dismissed otherwise)."""
+    for gid in _gap_ids(p):
+        try:
+            from fused_render.experts import gaps
+            gaps.proposal_settled(bot, gid, p.get("id"), approved=approved)
+        except Exception:  # noqa: BLE001 — the proposal's own outcome stands either way
+            logger.warning("expert %s: gap %s not settled", getattr(bot, "id", "?"), gid, exc_info=True)
 
 
 def _unmark(bot, item_ids) -> None:
@@ -307,33 +296,34 @@ def _preparing(bot) -> list:
     return out
 
 
-def request(bot, items, *, topic="", lesson="", gap="") -> dict:
+def request(bot, items, *, topic="", gap="") -> dict:
     """Start a proposal for `items` in the background and return its record at once (status "preparing"; its
-    lessons are marked `proposed` now). `lesson` is a free-standing lesson text drafted beside (or instead of)
-    the items: a gap's finding, never a memory item; `gap` records the gap id it answers. ValueError when one is
-    already being prepared for this expert, or no lesson is left to propose."""
-    lesson = str(lesson or "").strip()[:LESSON_MAX]
+    lessons are marked `proposed` now). `gap` (or the `gap` link of a `research` lesson among the items) records
+    the gap the proposal fixes; those gaps turn "proposed". ValueError when one is already being prepared for this
+    expert, or no lesson is left to propose."""
     with store.lock(bot):
         if _preparing(bot):
             raise ValueError(BUSY)
         busy = open_item_ids(bot)
         lessons = [i for i in _resolve_items(bot, items) if i["id"] not in busy]
-        if not lessons and not lesson:
+        if not lessons:
             raise ValueError("no lessons to propose")
         p = {"id": store.new_id("p"), "ts": time.time(), "status": "preparing", "topic": str(topic or "")[:200],
              "action": None, "skill": None, "title": "", "trigger": "", "body": "", "diff": "",
-             "items": [i["id"] for i in lessons],
-             "claims": [i.get("claim", "") for i in lessons] + ([lesson] if lesson else []),
+             "items": [i["id"] for i in lessons], "claims": [i.get("claim", "") for i in lessons],
              "score_before": None, "score_after": None, "card_seq": None, "error": ""}
-        if lesson:
-            p["lesson"] = lesson
-        if gap:
-            p["gap"] = str(gap)
+        linked = list(dict.fromkeys([str(gap)] * bool(gap) + [str(i["gap"]) for i in lessons if i.get("gap")]))
+        if linked:
+            p["gap"], p["gaps"] = linked[0], linked
         _save(bot, p)
         for i in lessons:
             memory.mark(bot, i["id"], proposed=True)
         with _PREPARING_GUARD:
             _PREPARING.add(p["id"])
+        if linked:
+            from fused_render.experts import gaps
+            for gid in linked:
+                gaps.mark_proposed(bot, gid, p["id"])
     t = threading.Thread(target=_prepare_bg, args=(bot, p["id"]), daemon=True,
                          name=f"expert-proposal-{getattr(bot, 'id', '?')}")
     t.start()
@@ -346,7 +336,7 @@ def _prepare_bg(bot, pid) -> None:
         p = get(bot, pid)
         if p is None:
             return
-        lessons = _lessons_of(bot, p)
+        lessons = _resolve_items(bot, p.get("items"))
         if not lessons:
             raise ValueError("its lessons were forgotten")
         fields = _draft(bot, lessons)
@@ -428,19 +418,14 @@ def mark_shown(bot, pid, card_seq=None):
 
 def card_text(proposal) -> tuple[str, str]:
     p = proposal or {}
-    if p.get("gap"):
-        what = (f"update the skill “{p.get('title', '')}”" if p.get("action") == "update"
-                else f"add a new skill “{p.get('title', '')}”")
-        text = (f"Sessions asked me something I could not answer, so I looked into it and found the answer. "
-                f"I'd like to {what} with it:\n{p.get('lesson') or ''}")
-        b, a = p.get("score_before"), p.get("score_after")
-        if b and a:
-            text += f"\nChecks: {b['score']}/{b['total']} now → {a['score']}/{a['total']} with this change."
-        return text + "\nApprove?", p.get("diff") or ""
     n = len(p.get("items") or [])
     what = (f"update the skill “{p.get('title', '')}”" if p.get("action") == "update"
             else f"add a new skill “{p.get('title', '')}”")
-    text = f"I'd like to {what} from {n} lesson{'s' if n != 1 else ''} I keep seeing"
+    if p.get("gap"):
+        text = (f"Sessions asked me something I could not answer, so I looked into it and found the answer. "
+                f"I'd like to {what} with it")
+    else:
+        text = f"I'd like to {what} from {n} lesson{'s' if n != 1 else ''} I keep seeing"
     claims = [c for c in (p.get("claims") or []) if c]
     if claims:
         text += ":\n" + "\n".join(f"- {c}" for c in claims[:5])

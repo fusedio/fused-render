@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExpertEngineRow, ExpertGap, ExpertItem, ExpertProposal } from "./api";
-import { anyPreparing, askedLabel, basename, gapStatusLabel, splitGaps, unresolvedGapCount, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, pendingLine, proposalLine, proposalText, scoreText,
+import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, splitGaps, unresolvedGapCount, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, pendingLine, proposalLine, proposalText, scoreText,
   scoresLine, seenLabel, sortConsults, sortLessons, splitLessons } from "./expert";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
@@ -28,6 +28,9 @@ describe("lessons", () => {
     expect(lessonTags(item({ proposed: true, rejected: true }))).toEqual(["not proposed again"]);
     expect(lessonTags(item({ proposed: true, rejected: true, promoted: true }))).toEqual(["promoted"]);
     expect(lessonTags(item({ rejected: true }))).toEqual(["not proposed again"]);
+    expect(lessonTags(item({ trust: "research", indexed: false, proposed: true }))).toEqual(["found by research", "waiting for your approval", "proposed"]);
+    expect(lessonTags(item({ trust: "research" }))).toEqual(["found by research"]);
+    expect(lessonTags(item({ trust: "outcome", indexed: false }))).toEqual(["seen once"]);
   });
   test("the pending line", () => {
     expect(pendingLine(0, false)).toBe("No observations waiting.");
@@ -140,6 +143,9 @@ describe("gaps", () => {
     expect(gapStatusLabel(gap({ status: "answered", resolution: "skill" }))).toBe("answered by a new skill");
     expect(gapStatusLabel(gap({ status: "answered", resolution: "user" }))).toBe("answered by you");
     expect(gapStatusLabel(gap({ status: "dismissed", resolution: "dismissed" }))).toBe("dropped");
+    expect(gapStatusLabel(gap({ id: "x", status: "open" }), "x")).toBe("researching…");
+    expect(gapStatusLabel(gap({ id: "x", status: "open" }), "y")).toBe("waiting");
+    expect(gapStatusLabel(gap({ id: "x", status: "dismissed" }), "x")).toBe("dropped");
   });
   test("unresolved first, most asked first; resolved after, newest first", () => {
     const { unresolved, resolved } = splitGaps([
@@ -158,5 +164,16 @@ describe("gaps", () => {
   test("asked N×", () => {
     expect(askedLabel(3)).toBe("asked 3×");
     expect(askedLabel(0)).toBe("asked 1×");
+  });
+});
+
+describe("consolidating", () => {
+  test("a line per stage, none when idle", () => {
+    expect(consolidatingLine(null)).toBe("");
+    expect(consolidatingLine({ running: false, stage: "lessons", gap: null })).toBe("");
+    expect(consolidatingLine({ running: true, stage: "lessons", gap: null })).toBe("Consolidating lessons…");
+    expect(consolidatingLine({ running: true, stage: "gaps", gap: null })).toBe("Sorting open questions…");
+    expect(consolidatingLine({ running: true, stage: "researching", gap: "g" })).toBe("Researching an open question…");
+    expect(consolidatingLine({ running: true, stage: "proposing", gap: "g" })).toBe("Drafting a skill fix…");
   });
 });

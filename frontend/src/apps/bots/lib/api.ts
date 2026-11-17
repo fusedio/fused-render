@@ -289,12 +289,13 @@ export interface ExpertManifest {
   shipped?: string;
   [k: string]: unknown;
 }
-/** One lesson in memory.json. `trust`: user (said in chat), outcome (from a session), gap (an unanswered consult). */
+/** One lesson in memory.json. `trust`: user (said in chat), outcome (from a session), gap (an unanswered consult),
+ *  research (found by the expert looking into a gap; not indexed until its skill proposal is approved). */
 export interface ExpertItem {
-  id: string; claim: string; kind: string; trust: "user" | "outcome" | "gap" | (string & {}); count: number;
+  id: string; claim: string; kind: string; trust: "user" | "outcome" | "gap" | "research" | (string & {}); count: number;
   sessions: string[]; about: string[]; created: number; updated: number;
   proposed: boolean; promoted: boolean; rejected: boolean;
-  /** False for a lesson seen once: kept, but not in the index answers draw on until it comes up again. Absent (an
+  /** False for a lesson seen once, or a research finding waiting for approval: kept, but not in the index answers draw on until it comes up again. Absent (an
    *  older server) reads as indexed. */
   indexed?: boolean;
 }
@@ -329,7 +330,11 @@ export interface ExpertGap {
   finding: { answer: string; refs: string[] } | null; proposal: string | null; card_seq: number | null;
   resolution: "" | "skill" | "user" | "dismissed"; error: string;
 }
-export interface ExpertConsolidateReply { ran: boolean; added: string[]; bumped: string[]; ignored: number; proposed: string[] }
+/** POST …/consolidate answers at once; the work runs in the background (follow it through ExpertConsolidating). */
+export interface ExpertConsolidateReply { started: boolean }
+/** A background consolidation (GET …/observations `consolidating`): lessons first, then the open gaps (sort, research
+ *  one, draft a skill fix). `gap`: the gap it is on, if any. */
+export interface ExpertConsolidating { running: boolean; stage: "lessons" | "gaps" | "researching" | "proposing" | ""; gap: string | null }
 /** `note`: a caveat to show under the Engine menu when this engine is picked (non-empty for Codex, whose reads are not
  *  fenced by the app). */
 export interface ExpertEngineRow { id: string; label: string; enabled: boolean; models: { id: string; label: string }[]; default_model: string; note?: string }
@@ -622,10 +627,9 @@ const xid = (id: string) => `${XP}/${encodeURIComponent(id)}`;
 export const expertApi = {
   memory: (id: string) => get<{ items: ExpertItem[]; index: string }>(`${xid(id)}/memory`, "expert memory"),
   forgetMemory: (id: string, itemId: string) => post<{ removed: number }>(`${xid(id)}/memory/forget`, { id: itemId }, "expert forget"),
-  observations: (id: string) => get<{ pending: ExpertObs[]; due: boolean }>(`${xid(id)}/observations`, "expert observations"),
+  observations: (id: string) => get<{ pending: ExpertObs[]; due: boolean; consolidating?: ExpertConsolidating }>(`${xid(id)}/observations`, "expert observations"),
   consults: (id: string) => get<{ consults: ExpertConsult[] }>(`${xid(id)}/consults`, "expert consults"),
   gaps: (id: string) => get<{ gaps: ExpertGap[]; researching: string | null }>(`${xid(id)}/gaps`, "expert gaps"),
-  researchGap: (id: string, gid: string) => post<{ started: boolean }>(`${xid(id)}/gaps/${encodeURIComponent(gid)}/research`, {}, "expert research gap"),
   dismissGap: (id: string, gid: string) => post<ExpertGap>(`${xid(id)}/gaps/${encodeURIComponent(gid)}/dismiss`, {}, "expert drop gap"),
   checks: (id: string) => get<ExpertChecks>(`${xid(id)}/checks`, "expert checks"),
   runChecks: (id: string) => post<{ run_id: string }>(`${xid(id)}/checks/run`, {}, "expert run checks"),

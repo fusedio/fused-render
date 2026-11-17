@@ -2,18 +2,19 @@
 // sections it shows what the expert knows and how it is doing, on four tabs in the Browser | Terminal strip's style:
 //   Memory   the lessons it keeps (most seen first; Forget per row) and the observations still waiting to be folded in
 //   Consults the questions agent sessions asked it (newest first), each opening to the full answer and its file refs
-//   Gaps     questions it could not answer, which it researches by itself (then a skill proposal or a question in the
-//            chat); unresolved first, most asked first; "Research now" and "Drop" per row (not on the phone)
+//   Gaps     questions it could not answer, which consolidation looks into (then a skill proposal or a question in the
+//            chat); unresolved first, most asked first; "Consolidate now" on top and "Drop" per row (not on the phone)
 //   Checks   its fixed questions (questions.md) graded on the last run; "Run checks" starts one and shows it move
 // Settings' "Expert" tab mounts the same panels (ExpertPanels) so the phone, which hides this column, reaches them.
 // Data: /api/experts/<id>/… (lib/api.ts expertApi), fetched for the open tab on a bot change, again when the bot's
 // `seq` moves (a chat turn may have taught it something) and every 10 s while the page is visible; the checks every
-// 2 s while a run is going; the gaps with every refresh whichever tab is open (the tab label counts the unresolved
-// ones), and every 5 s while one is being researched; the proposals (shown on the Memory tab) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on every refresh while it keeps failing).
+// 2 s while a run is going; the gaps and the observations (which carry the consolidation's progress) with every refresh
+// whichever tab is open (the tab label counts the unresolved gaps), and both every 5 s while a consolidation runs or a
+// gap is being researched; the proposals (shown on the Memory tab) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on every refresh while it keeps failing).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { expertApi, type Bot, type ExpertChecks, type ExpertConsult, type ExpertGap, type ExpertItem, type ExpertObs, type ExpertProposal } from "../lib/api";
-import { anyPreparing, askedLabel, basename, checkProgress, consultMeta, gapStatusLabel, GAPS_EMPTY, GAPS_INTRO, lessonTags, openProposals, pendingLine, proposalLine, scoreText, seenLabel, SEEN_ONCE_LINE,
-  sortConsults, splitGaps, splitLessons, unresolvedGapCount } from "../lib/expert";
+import { expertApi, type Bot, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem, type ExpertObs, type ExpertProposal } from "../lib/api";
+import { anyPreparing, askedLabel, basename, checkProgress, consolidatingLine, consultMeta, gapStatusLabel, GAPS_EMPTY, GAPS_INTRO, lessonTags, openProposals, pendingLine, proposalLine, scoreText, seenLabel, SEEN_ONCE_LINE,
+  gapUnresolved, sortConsults, splitGaps, splitLessons, unresolvedGapCount } from "../lib/expert";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { errMsg, getState, hideBanner, showBanner } from "../state/store";
 import { askConfirm } from "../dialogs/ask";
@@ -35,8 +36,10 @@ interface Data {
   gaps: ExpertGap[] | null;
   /** The gap the background worker is researching now (one at a time), if any. */
   researching: string | null;
+  /** A background consolidation's progress (from the observations route). */
+  consolidating: ExpertConsolidating | null;
 }
-const EMPTY: Data = { memory: null, pending: null, due: false, consults: null, checks: null, proposals: null, gaps: null, researching: null };
+const EMPTY: Data = { memory: null, pending: null, due: false, consults: null, checks: null, proposals: null, gaps: null, researching: null, consolidating: null };
 
 /** The open tab's data for expert `id`, kept fresh (see the header). `reload` refetches the tab now. */
 function useExpertData(id: string, seq: number, tab: ExpertTab) {
@@ -71,6 +74,12 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
     if (live.current === want && g) setData((d) => ({ ...d, gaps: g.gaps || [], researching: g.researching || null }));
   }, [id, guard]);
 
+  const loadObs = useCallback(async (loud = false) => {
+    const want = id;
+    const o = await guard(() => expertApi.observations(want), loud);
+    if (live.current === want && o) setData((d) => ({ ...d, pending: o.pending || [], due: !!o.due, consolidating: o.consolidating || null }));
+  }, [id, guard]);
+
   const load = useCallback(async (which: ExpertTab, loud = false) => {
     const want = id;
     if (which === "gaps") {
@@ -79,7 +88,7 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
       const [m, o, p] = await Promise.all([guard(() => expertApi.memory(want), loud), guard(() => expertApi.observations(want), loud),
         guard(() => expertApi.proposals(want), loud)]);
       if (live.current !== want) return;
-      setData((d) => ({ ...d, ...(m ? { memory: m.items || [] } : {}), ...(o ? { pending: o.pending || [], due: !!o.due } : {}),
+      setData((d) => ({ ...d, ...(m ? { memory: m.items || [] } : {}), ...(o ? { pending: o.pending || [], due: !!o.due, consolidating: o.consolidating || null } : {}),
         ...(p ? { proposals: p.proposals || [] } : {}) }));
     } else if (which === "consults") {
       const c = await guard(() => expertApi.consults(want), loud);
@@ -89,8 +98,13 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
       if (live.current === want && k) setData((d) => ({ ...d, checks: k }));
     }
   }, [id, guard, loadGaps]);
-  /** The open tab plus the gaps (their count labels the Gaps tab whichever tab is open). */
-  const refresh = useCallback((which: ExpertTab) => { void load(which); if (which !== "gaps") void loadGaps(); }, [load, loadGaps]);
+  /** The open tab plus the gaps (their count labels the Gaps tab whichever tab is open) and the observations (a
+   *  consolidation's progress disables "Consolidate now" on both the Memory and the Gaps tab). */
+  const refresh = useCallback((which: ExpertTab) => {
+    void load(which);
+    if (which !== "gaps") void loadGaps();
+    if (which !== "memory") void loadObs();
+  }, [load, loadGaps, loadObs]);
 
   // A new bot starts empty (never another expert's rows under this one's name).
   useEffect(() => { setData(EMPTY); lastErr.current = ""; }, [id]);
@@ -99,13 +113,18 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
     const t = window.setInterval(() => { if (!document.hidden) refresh(tab); }, REFRESH_MS);
     return () => window.clearInterval(t);
   }, [refresh, tab]);
-  // A gap being researched: follow it until it lands (a proposal card, a question in the chat, or back to open).
-  const researching = !!data.researching || !!data.gaps?.some((g) => g.status === "researching");
+  // A consolidation running in the background, or a gap being researched: follow it until it is done (lessons folded,
+  // a proposal card or a question in the chat). When it ends, the open tab refetches (new lessons, new proposals).
+  const working = !!data.consolidating?.running || !!data.researching || !!data.gaps?.some((g) => g.status === "researching");
+  const wasWorking = useRef(false);
   useEffect(() => {
-    if (!researching) return;
-    const t = window.setInterval(() => { if (!document.hidden) void loadGaps(); }, GAPS_MS);
+    if (wasWorking.current && !working) refresh(tab);
+    wasWorking.current = working;
+    if (!working) return;
+    const t = window.setInterval(() => { if (!document.hidden) { void loadObs(); void loadGaps(); } }, GAPS_MS);
     return () => window.clearInterval(t);
-  }, [researching, loadGaps]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the start/end of the work matters here, not tab changes
+  }, [working, loadObs, loadGaps]);
   // A gate run in progress: follow it closely, whichever tab is open (the Checks tab shows it; the others do not mind).
   const running = !!data.checks?.status?.running;
   useEffect(() => {
@@ -141,24 +160,38 @@ function LessonRow({ it, onForget }: { it: ExpertItem; onForget: (it: ExpertItem
   );
 }
 
-export function MemoryPanel({ items, pending, due, onForget, onConsolidate, busy, proposals = null, lan = false }: {
+/** "Consolidate now" (the Memory and the Gaps tab). Off while a consolidation runs or there is nothing to fold in or
+ *  look into; `lan`: the LAN door does not serve `consolidate` (it writes memory). */
+function ConsolidateButton({ busy, running, work, lan, onClick }: { busy: boolean; running: boolean; work: boolean; lan: boolean; onClick: () => void }) {
+  const on = busy || running;
+  return (
+    <button type="button" className={on ? "busy" : undefined} disabled={on || !work || lan} onClick={onClick}
+      title={lan ? "Consolidate on the Mac" : running ? "A consolidation is running" : work
+        ? "Fold the waiting observations into lessons and look into the open questions now" : "Nothing is waiting"}>
+      {on ? "Consolidating…" : "Consolidate now"}
+    </button>
+  );
+}
+
+export function MemoryPanel({ items, pending, due, onForget, onConsolidate, busy, proposals = null, lan = false, consolidating = null, openGaps = 0 }: {
   items: ExpertItem[] | null; pending: ExpertObs[] | null; due: boolean;
   onForget: (it: ExpertItem) => void; onConsolidate: () => void; busy: boolean;
   proposals?: ExpertProposal[] | null;
+  /** A background consolidation's progress: while it runs the button waits and the line says what it is doing. */
+  consolidating?: ExpertConsolidating | null;
+  /** Unresolved gaps: consolidation looks into them too, so they are work even with no observation waiting. */
+  openGaps?: number;
   /** On the phone: the LAN door does not serve `consolidate` (it writes memory), so the button stays off. */
   lan?: boolean;
 }) {
   if (items == null) return <div className="xp-empty">Loading…</div>;
   const { indexed, seenOnce } = splitLessons(items), n = pending?.length || 0;
-  const open = openProposals(proposals);
+  const open = openProposals(proposals), running = !!consolidating?.running;
   return (
     <>
       <div className="xp-bar">
-        <span className="xp-line">{pending == null ? "" : pendingLine(n, due)}</span>
-        <button type="button" className={busy ? "busy" : undefined} disabled={busy || !n || lan}
-          title={lan ? "Consolidate on the Mac" : n ? "Fold the waiting observations into lessons now" : "Nothing is waiting"} onClick={onConsolidate}>
-          {busy ? "Consolidating…" : "Consolidate now"}
-        </button>
+        <span className="xp-line">{running ? consolidatingLine(consolidating) : pending == null ? "" : pendingLine(n, due)}</span>
+        <ConsolidateButton busy={busy} running={running} work={!!n || openGaps > 0} lan={lan} onClick={onConsolidate} />
       </div>
       {open.length ? (
         <ul className="xp-proposals">
@@ -215,15 +248,12 @@ export function ConsultsPanel({ consults }: { consults: ExpertConsult[] | null }
   );
 }
 
-function GapRow({ g, researching, lan, onResearch, onDrop }: {
-  g: ExpertGap; researching: string | null; lan: boolean; onResearch: (g: ExpertGap) => void; onDrop: (g: ExpertGap) => void;
-}) {
-  const open = g.status === "open" || g.status === "researching" || g.status === "proposed" || g.status === "asked";
-  const busy = g.status === "researching" || researching === g.id, other = !!researching && researching !== g.id;
+function GapRow({ g, researching, lan, onDrop }: { g: ExpertGap; researching: string | null; lan: boolean; onDrop: (g: ExpertGap) => void }) {
+  const open = gapUnresolved(g), status = researching === g.id && open ? "researching" : g.status;
   const meta = (
     <span className="xp-meta">
       <span title={g.updated ? `last asked ${fmtWhen(g.updated)}` : undefined}>{askedLabel(g.count)}</span>
-      <span className={`xp-tag gap-${g.status}`}>{gapStatusLabel(g)}</span>
+      <span className={`xp-tag gap-${status}`}>{gapStatusLabel(g, researching)}</span>
     </span>
   );
   const err = g.error ? <span className="xp-meta xp-gap-err">{g.error}</span> : null;
@@ -254,28 +284,28 @@ function GapRow({ g, researching, lan, onResearch, onDrop }: {
         </div>
       )}
       {open && !lan ? (
-        <span className="xp-acts">
-          <button type="button" className="xp-forget xp-research" disabled={busy || other}
-            title={busy ? "Researching this now" : other ? "Another gap is being researched" : "Research this question now"}
-            onClick={() => onResearch(g)}>Research now</button>
-          <button type="button" className="xp-forget" title="Drop this gap" onClick={() => onDrop(g)}>Drop</button>
-        </span>
+        <button type="button" className="xp-forget" title="Drop this question: it is not looked into again" onClick={() => onDrop(g)}>Drop</button>
       ) : null}
     </li>
   );
 }
 
-export function GapsPanel({ gaps, researching, onResearch, onDrop, lan = false }: {
-  gaps: ExpertGap[] | null; researching: string | null; onResearch: (g: ExpertGap) => void; onDrop: (g: ExpertGap) => void;
+export function GapsPanel({ gaps, researching, onDrop, onConsolidate, busy = false, consolidating = null, lan = false }: {
+  gaps: ExpertGap[] | null; researching: string | null; onDrop: (g: ExpertGap) => void;
+  onConsolidate: () => void; busy?: boolean; consolidating?: ExpertConsolidating | null;
   /** On the phone: the buttons are hidden (the LAN door does not serve these writes). */
   lan?: boolean;
 }) {
   if (gaps == null) return <div className="xp-empty">Loading…</div>;
   const { unresolved, resolved } = splitGaps(gaps);
-  const row = (g: ExpertGap) => <GapRow key={g.id} g={g} researching={researching} lan={lan} onResearch={onResearch} onDrop={onDrop} />;
+  const row = (g: ExpertGap) => <GapRow key={g.id} g={g} researching={researching} lan={lan} onDrop={onDrop} />;
+  const running = !!consolidating?.running;
   return (
     <>
-      <div className="xp-bar"><span className="xp-line">{GAPS_INTRO}</span></div>
+      <div className="xp-bar">
+        <span className="xp-line">{GAPS_INTRO}{running ? <span className="xp-status">{consolidatingLine(consolidating)}</span> : null}</span>
+        {lan ? null : <ConsolidateButton busy={busy} running={running} work={unresolved.length > 0} lan={lan} onClick={onConsolidate} />}
+      </div>
       {!gaps.length ? <div className="xp-empty">{GAPS_EMPTY}</div> : (
         <>
           {unresolved.length ? <ul className="xp-list">{unresolved.map(row)}</ul> : null}
@@ -344,21 +374,21 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
     if (r) setData((d) => ({ ...d, memory: (d.memory || []).filter((x) => x.id !== it.id) }));
     void reload("memory");
   };
-  // Consolidation answers at once (a proposal it raises is drafted in the background: the panel shows it as
+  // Consolidation answers at once and runs in the background (observations' `consolidating` follows it; a proposal it
+  // raises is drafted in the background too: the panel shows it as
   // "preparing" and polls), so the button is busy only for the request itself; then the memory and proposals refetch.
   const onConsolidate = async () => {
     setConsolidating(true);
-    try { await guard(() => expertApi.consolidate(id, true), true); } finally { setConsolidating(false); }
+    try {
+      const r = await guard(() => expertApi.consolidate(id, true), true);
+      if (r?.started) setData((d) => ({ ...d, consolidating: d.consolidating?.running ? d.consolidating : { running: true, stage: "", gap: null } }));
+    } finally { setConsolidating(false); }
     void reload("memory");
+    void reload("gaps");
   };
   const onRun = async () => {
     setStarting(true);
     try { await guard(() => expertApi.runChecks(id), true); await reload("checks"); } finally { setStarting(false); }
-  };
-  const onResearch = async (g: ExpertGap) => {
-    setData((d) => ({ ...d, researching: d.researching || g.id }));
-    await guard(() => expertApi.researchGap(id, g.id), true);
-    void reload("gaps");
   };
   const onDrop = async (g: ExpertGap) => {
     const r = await guard(() => expertApi.dismissGap(id, g.id), true);
@@ -387,10 +417,11 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
       </div>
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
         {tab === "memory" ? <MemoryPanel items={data.memory} pending={data.pending} due={data.due} busy={consolidating} proposals={data.proposals} lan={isLanHost()}
+          consolidating={data.consolidating} openGaps={gapCount}
           onForget={(it) => { void onForget(it); }} onConsolidate={() => { void onConsolidate(); }} /> : null}
         {tab === "consults" ? <ConsultsPanel consults={data.consults} /> : null}
-        {tab === "gaps" ? <GapsPanel gaps={data.gaps} researching={data.researching} lan={isLanHost()}
-          onResearch={(g) => { void onResearch(g); }} onDrop={(g) => { void onDrop(g); }} /> : null}
+        {tab === "gaps" ? <GapsPanel gaps={data.gaps} researching={data.researching} lan={isLanHost()} busy={consolidating}
+          consolidating={data.consolidating} onConsolidate={() => { void onConsolidate(); }} onDrop={(g) => { void onDrop(g); }} /> : null}
         {tab === "checks" ? <ChecksPanel checks={data.checks} starting={starting} onRun={() => { void onRun(); }} /> : null}
       </div>
     </div>
