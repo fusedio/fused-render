@@ -521,3 +521,139 @@ def test_idle_override_makes_a_shorter_idle_session_due(env, monkeypatch):
     assert capture.due_sessions(NOW) == []
     monkeypatch.setenv("FUSED_RENDER_EXPERT_IDLE_S", "60")
     assert [s["session_id"] for s in capture.due_sessions(NOW)] == ["recent"]
+
+
+# ------------------------------------------------------------- grounding (part 1) ---
+@pytest.mark.parametrize("quote,ok", [
+    ("That is wrong for regional canvases.", True),
+    ("That is   wrong for\nregional canvases.", True),           # whitespace collapsed
+    ("USER| That is wrong for regional canvases.", True),        # a copied speaker tag is ignored
+    ('"title is just the region name"', True),                   # quote marks around it are ignored
+    ("that is wrong for regional canvases.", False),             # case-sensitive
+    ("wrong", False),                                            # under 12 characters
+    ("Always use a bar chart for regions.", False),              # not something the user said
+    ("Sure, I will use the region name.", False),                # the agent said it
+    ("", False), (None, False),
+])
+def test_grounded_checks_the_quote_against_user_lines_only(quote, ok):
+    md = capture.render_turns([
+        {"role": "user", "text": "That is wrong for regional canvases. A chart node's title is just the region name."},
+        {"role": "assistant", "text": "Sure, I will use the region name."}])
+    assert capture.grounded(quote, capture.user_texts(md)) is ok
+
+
+def test_capture_an_unverifiable_quote_is_not_the_users(env, tmp_path):
+    bot = _Bot(tmp_path)
+    old = memory.add(bot, "A chart node's title is '<Region> — Monthly revenue'.")
+    env["turns"] = [{"role": "assistant", "text": "I titled it 'West — Monthly revenue'."},
+                    {"role": "user", "text": "Looks fine, thanks."}]
+    env["add"]("idle", age=3600, canvas=True)
+    session = capture.due_sessions(NOW)[0]
+    env["answers"] = [json.dumps([
+        # The model claims the user said it, but the quote is the agent's / made up.
+        {"kind": "advice_contradicted", "claim": "A chart node's title is just the region name.",
+         "contradicts": old["id"], "by": "user", "quote": "I titled it 'West — Monthly revenue'."},
+        {"kind": "user_correction", "claim": "Use region names as titles.", "quote": "Use region names as titles"},
+        {"kind": "repeated_request", "claim": "The user asks for regional charts."},       # no quote at all
+        {"kind": "user_correction", "claim": "Say thanks.", "quote": "Looks fine, thanks."}])]
+    obs = capture.capture_session(bot, session)
+    assert [o["by_user"] for o in obs] == [False, False, False, True]
+    assert all("quote" not in o for o in obs[:3]) and obs[3]["quote"] == "Looks fine, thanks."
+    assert obs[0]["contradicts"] == old["id"]  # still a contradiction, as ordinary session evidence
+    prompt = env["prompts"][-1]
+    assert '"quote"' in prompt and "at least 12 characters" in prompt and '"after_advice"' in prompt
+
+
+def test_parse_keeps_quote_and_after_advice_on_their_kinds():
+    rows = capture.parse(json.dumps([
+        {"kind": "repeated_request", "claim": "A", "quote": " q1 ", "after_advice": True},
+        {"kind": "error_then_fix", "claim": "B", "quote": "q2", "after_advice": True},
+        {"kind": "advice_contradicted", "claim": "C", "quote": "q3", "after_advice": True, "by": "user",
+         "contradicts": "mskill"},
+        {"kind": "user_correction", "claim": "D", "after_advice": "yes"}]), skill_ids={"mskill"})
+    assert rows == [{"kind": "repeated_request", "claim": "A", "about": [], "quote": "q1", "after_advice": True},
+                    {"kind": "error_then_fix", "claim": "B", "about": []},
+                    {"kind": "advice_contradicted", "claim": "C", "about": [], "contradicts": "mskill",
+                     "by_user": True, "quote": "q3"},
+                    {"kind": "user_correction", "claim": "D", "about": []}]
+
+
+# ------------------------------------------------------ incremental capture (part 3) ---
+def _turns(n_user):
+    out = []
+    for k in range(n_user):
+        out += [{"role": "user", "text": f"user turn number {k} asks for a regional chart"},
+                {"role": "assistant", "text": f"agent reply {k}"}]
+    return out
+
+
+def test_incremental_capture_sends_only_new_turns_and_lists_what_was_reported(env, tmp_path):
+    bot = _Bot(tmp_path)
+    env["turns"] = _turns(3)
+    env["add"]("s", age=3600, size=100, canvas=True)
+    session = capture.due_sessions(NOW)[0]
+    first = {"kind": "repeated_request", "claim": "The user asks for a regional chart.",
+             "quote": "user turn number 0 asks for a regional chart"}
+    env["answers"] = [json.dumps([first])]
+    assert len(capture.capture_session(bot, session)) == 1
+    p1 = env["prompts"][-1]
+    assert "user turn number 0" in p1 and "(earlier, already processed)" not in p1
+    assert json.load(open(tmp_path / "experts-captured.json"))["s"]["experts"][bot.id]["turns"] == 6
+    # The session grows by two turns.
+    env["turns"] = _turns(4)
+    env["add"]("s", age=3600, size=200, canvas=True)
+    session = capture.due_sessions(NOW)[0]
+    env["answers"] = [json.dumps([
+        dict(first, quote="user turn number 3 asks for a regional chart"),       # reported again: dropped
+        {"kind": "user_correction", "claim": "Title a regional chart node with the region name only.",
+         "quote": "user turn number 3 asks"}])]
+    obs = capture.capture_session(bot, session)
+    assert [o["claim"] for o in obs] == ["Title a regional chart node with the region name only."]
+    p2 = env["prompts"][-1]
+    body = p2.split("<<<BEGIN SESSION TRANSCRIPT>>>", 1)[1]
+    assert "user turn number 3" in body and "user turn number 2" not in body and "agent reply 2" not in body
+    earlier = p2.split("<<<BEGIN EARLIER TURNS>>>", 1)[1].split("<<<END EARLIER TURNS>>>", 1)[0]
+    assert "user turn number 2" in earlier and "agent reply 2" in earlier and "turn number 1" not in earlier
+    assert "(earlier, already processed)" in p2 and "Extract lessons ONLY from the conversation section" in p2
+    reported = p2.split("already produced (do not report these again)", 1)[1].split("##", 1)[0]
+    assert "The user asks for a regional chart." in reported
+    assert len(p2) < len(p1) + 2500
+    assert json.load(open(tmp_path / "experts-captured.json"))["s"]["experts"][bot.id]["turns"] == 8
+
+
+def test_incremental_capture_without_a_user_turn_makes_no_call(env, tmp_path):
+    bot = _Bot(tmp_path)
+    env["turns"] = _turns(1)
+    env["add"]("s", age=3600, size=100, canvas=True)
+    capture.capture_session(bot, capture.due_sessions(NOW)[0])
+    assert len(env["prompts"]) == 1
+    env["turns"] = _turns(1) + [{"role": "assistant", "text": "more agent work"}, {"role": "tool", "text": "x"}]
+    env["add"]("s", age=3600, size=180, canvas=True)
+    session = capture.due_sessions(NOW)[0]
+    assert capture.capture_session(bot, session) == [] and len(env["prompts"]) == 1  # free pre-check
+    assert capture.expert_captured(session, bot)
+    assert capture.read_state(session, bot)["turns"] == 4
+    # A new consult by this session is worth a read even without a user turn.
+    env["log"] = [{"id": "c1", "question": "q", "answer": "a", "caller": {"session_id": "s"}}]
+    env["turns"].append({"role": "assistant", "text": "after the consult"})
+    env["add"]("s", age=3600, size=200, canvas=True)
+    capture.capture_session(bot, capture.due_sessions(NOW)[0])
+    assert len(env["prompts"]) == 2
+    # A first read with no user turn and no consult is skipped too.
+    other = _Bot(tmp_path, "o2")
+    env["log"] = []
+    env["turns"] = [{"role": "assistant", "text": "only the agent"}]
+    env["add"]("t", age=3600, size=50, canvas=True)
+    capture.capture_session(other, [s for s in capture.due_sessions(NOW) if s["session_id"] == "t"][0])
+    assert len(env["prompts"]) == 2
+
+
+def test_due_sessions_reads_tails_only_up_to_the_limit(env, tmp_path, monkeypatch):
+    for k in range(5):
+        env["add"](f"s{k}", age=3600 + k * 60, canvas=True)
+    reads = []
+    real = capture._last_active
+    monkeypatch.setattr(capture, "_last_active", lambda path, mtime: reads.append(path) or real(path, mtime))
+    got = capture.due_sessions(NOW, limit=2)
+    assert [s["session_id"] for s in got] == ["s0", "s1"] and len(reads) == 2
+    assert len(capture.due_sessions(NOW)) == 5

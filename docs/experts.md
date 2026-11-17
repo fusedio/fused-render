@@ -189,29 +189,37 @@ Item = {"id","claim","kind","trust","count","sessions":[...],"about":[...],"crea
         "proposed": bool, "promoted": bool, "rejected": bool,
         "contradicted": int, "contradicted_sessions": [...],      # absent on older items: 0 / []
         "cited": int, "last_used": ts | None,                     # absent on older items: 0 / None
-        "merged_from"?: [{"id","claim"}]}                         # a lesson a tidy merge made (§12)
-items(bot) -> list[Item]
-add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, gap="") -> Item   # gap: stored as `gap`
-        # a claim equal after normalisation (lowercase, collapsed whitespace, no trailing punctuation) bumps instead
+        "merged_from"?: [{"id","claim"}],                         # a lesson a tidy merge made (§12)
+        "confirmed": int, "confirmed_sessions": [...],            # non-independent sightings (§13); absent: 0 / []
+        "via": "" | "session", "history": [{"claim","at"}]}       # §13; absent: "" / []
+items(bot) -> list[Item]                              # confirmed / via / history filled in when absent
+add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, gap="", via="", counted=True) -> Item
+        # gap: stored as `gap`; a claim equal after normalisation (lowercase, collapsed whitespace, no trailing
+        # punctuation) bumps instead; counted=False: confirm instead of bump, and a new item starts at count 0,
+        # confirmed 1
 bump(bot, item_id, *, session="") -> Item | None      # count += 1 only when `session` is new or empty; sets last_used
 cite(bot, ids) -> [ids]                               # cited += 1, last_used = now, per existing id (once per call)
 cited(item) -> int ; uses(item) -> int                # uses = count + cited
 age_days(item, now=None) ; idle_days(item, now=None)  # from created ; from max(updated, last_used)
-remove(bot, ids, reason, *, skill="", whys=None) -> [Item]   # out of memory into the archive
+remove(bot, ids, reason, *, skill="", whys=None, into="") -> [Item]   # out of memory into the archive
 merge(bot, ids, claim, *, why="") -> (Item, [archived]) | None   # tidy's merge (§12)
 archived(bot, limit=100) -> list                      # the archive, newest first
 contradict(bot, item_id, *, session="") -> Item | None  # contradicted += 1 only when `session` is new to
                                                       # contradicted_sessions or empty; never touches count
 contradicted(item) -> int                             # 0 when absent
+confirm(bot, item_id, *, session="") -> Item | None   # confirmed += 1 once per session; sets last_used; never count
+narrow(bot, item_id, claim) -> Item | None            # new claim, old one appended to history; contradiction cleared
+promoted(bot) -> [archived] ; promoted_ids(bot) -> set   # archived lessons with reason promoted and a skill
 forget(bot, id_or_text) -> int                        # removed count; archived with reason "forgotten"
 mark(bot, item_id, **flags) -> Item | None
 indexed(item) -> bool      # part of the always-loaded index: trust user, or trust outcome with count >= 2
 index_text(bot) -> str     # "- [<id>] <claim> (seen N×)" for indexed items, most seen first, capped at index_lines;
                            # a contradicted item's line ends " (contradicted in N session(s); prefer newer lessons on this)"
 ```
-`trust`: `user` (said directly in chat, or the user's answer to a gap question), `outcome` (from a session),
+`trust`: `user` (said directly in chat, the user's answer to a gap question, or a user correction capture verified in
+a session, `via: "session"`, §13), `outcome` (from a session),
 `research` (a gap's grounded finding, §11; carries `gap: <gap id>`), `gap` (an unanswered consult). An `outcome`
-lesson enters the index (and so every answer) only once seen in two sessions; a `user` lesson at once; a
+lesson enters the index (and so every answer) only once seen in two sessions (`count >= 2`; `confirmed` never counts); a `user` lesson at once; a
 `research` lesson never while it is in memory (`GET …/memory` reports `indexed: false`): once its skill fix is
 approved the skill carries it and the lesson leaves memory (§12). Only an old item still flagged `promoted` (stored
 before approval removed lessons) is indexed, until the next tidy archives it; `gap` never.
@@ -222,11 +230,12 @@ as above, and is never a `proposals.candidates` item.
 ```
 Obs = {"id","ts","kind","claim","trust","session","about":[...],"consult": "",
        "source"?: {"target": str, "backend": str},          # where it came from, when known
-       "confirms"?: item id, "contradicts"?: item id, "by_user"?: true,
-       "outcome"?: {"op": "add"|"bump"|"nothing"|"gap"|"contradict", "item"?: memory item id, "gap"?: gap id,
-                    "new"?: memory item id, "at": ts}}
+       "confirms"?: item id, "contradicts"?: item id, "by_user"?: bool, "quote"?: str, "after_advice"?: true,
+       "outcome"?: {"op": "add"|"bump"|"confirm"|"nothing"|"gap"|"contradict", "item"?: memory item id,
+                    "gap"?: gap id, "new"?: memory item id, "resolution"?: "replace"|"narrow", "at": ts}}
 write(bot, *, kind, claim, trust, session="", about=None, consult="", source=None, confirms="", contradicts="",
-      by_user=False) -> Obs
+      by_user=None, quote="", after_advice=False) -> Obs
+for_session(bot, session) -> list[Obs]     # pending and done from one task session, oldest first
 pending(bot) -> list[Obs]                  # oldest first
 done(bot, limit=200) -> list[Obs]          # archived, NEWEST first (limit None: all)
 archive(bot, ids, outcomes=None) -> None   # pending/ -> done/, writing outcomes[id] (default op "nothing") as `outcome`
@@ -234,9 +243,11 @@ due(bot, now=None) -> bool                 # len(pending) >= consolidate_at, or 
 ```
 `kind` is a capture kind (`repeated_request`, `user_correction`, `error_then_fix`, `advice_confirmed`,
 `advice_contradicted`), or `"gap"`. `confirms` / `contradicts` are kept only when they name an existing memory
-item (else dropped); `by_user` (only on `advice_contradicted`) says a USER line called the advice wrong. `source` is set by `consult.py` (the caller's
+item (else dropped; `contradicts` may also name a lesson archived as `promoted`, §13); `by_user` says capture proved
+the statement is the user's (a verified `quote`, kept only then; §13): stored true or false by capture, absent on
+observations written before grounding existed; `after_advice`: said only after this expert's advice. `source` is set by `consult.py` (the caller's
 `target` / `backend`) and `capture.py` (the session's). `outcome` is set by consolidation when it archives the
-observation: `add` / `bump` name the memory item, `gap` names the gap record it was folded into (after any merge),
+observation: `add` / `bump` / `confirm` name the memory item (`confirm`: noted, count not raised), `gap` names the gap record it was folded into (after any merge),
 `contradict` names the contradicted lesson (`item`) and the lesson its corrected rule landed on (`new`, when any).
 
 ### `experts/consolidate.py`
@@ -244,6 +255,8 @@ observation: `add` / `bump` name the memory item, `gap` names the gap record it 
 run(bot, *, force=False) -> {"ran": bool, "added": [ids], "bumped": [ids], "ignored": int, "reason"?: str,
                               # when ran:
                               "contradicted": [ids], "gaps": [gap ids touched], "researched": [gap ids],
+                              "confirmed": [ids], "resolved": [{"item","resolution","into"}],   # §13
+                              "corrections": [proposal ids],                                    # §13
                               "proposed": [proposal ids], "reorganise": pid | None,   # §12 skill pressure
                               "tidied": {"deleted": [ids], "merged": [{"into","claim","from":[ids]}],
                                          "promoting": [ids], "over_limit": [ids]}}   # §12
@@ -274,7 +287,8 @@ or an observation the answer omitted is `nothing` (archived, counted in `ignored
 model as a lesson observation of its own: added as kind `user_correction` when `by_user`, else
 `advice_contradicted`, unless the model answers `{"obs": id, "op": "same", "as": <other observation id>}` (another
 observation in the batch already states that rule: it is counted toward that one's lesson, once per session, not
-added again). A "corrected rule" equal to the contradicted lesson's own text is not added. Archived with
+added again). A "corrected rule" equal to the contradicted lesson's own text is not added. A VERIFIED user
+correction (§13) resolves the pair instead of only marking it. Archived with
 `outcome: {"op": "contradict", "item": <contradicted id>, "new": <lesson the rule landed on, if any>}`; dropped or
 omitted by the model it still counts the contradiction (not in `ignored`). Guards on the model path: an
 `advice_contradicted` observation is never bumped (`bump` is read as `add`), and no observation may bump a lesson
@@ -549,13 +563,16 @@ askable(bot, gap) -> bool ; to_ask(bot) -> Gap | None
 ### `experts/capture.py`
 ```
 capture_session(bot, session) -> list[Obs]
-due_sessions(now=None) -> list[session]       # idle >= IDLE_S (1800), not captured at this length, not a bot session
+due_sessions(now=None, limit=None) -> list[session]   # idle >= IDLE_S (1800), not captured at this length, not a
+                                              # bot session; tails read newest mtime first, only up to `limit`
+grounded(quote, user_texts) -> bool ; user_texts(rendered) -> [str] ; read_state(session, bot) -> {turns, consults}
 relevant(bot, session) -> bool                # consulted this expert, or matches offered_to
 IDLE_S = 1800
 ```
 `session` = `{"session_id","backend","target","canvas","path","last_active"}`. One `model.text` call per
 (session, expert): the transcript (tail, capped at 30k chars), that session's consults, current memory
-claims, each with its id → JSON list of `{"kind","claim","about","confirms"?,"contradicts"?,"by"?}`. Zero
+claims, each with its id → JSON list of `{"kind","claim","about","confirms"?,"contradicts"?,"by"?,"quote"?,
+"after_advice"?}`. Only the part of the transcript that is new is sent, and the quote is checked by code (§13). Zero
 observations is a normal result. Kinds (`CAPTURE_KINDS`): `repeated_request`, `user_correction`, `error_then_fix`,
 `advice_confirmed` (the session followed this expert's advice and it held in practice) and `advice_contradicted`
 (the user, or what actually happened, showed the advice wrong or too broad; the claim is the corrected rule, not the
@@ -577,7 +594,8 @@ a line inside agent / tool text that starts like a speaker tag is prefixed `(quo
 user turn reads as the user.
 
 Watermark (`experts-captured.json`): `session_id -> {"size", "at", "experts": {expert id: {"size", "at",
-"gave_up"?}}, "fails": {expert id: {"size", "count"}}}`. `capture_session` marks its (session, expert);
+"gave_up"?, "turns", "consults"}}, "fails": {expert id: {"size", "count"}}}` (`turns` / `consults`: how far this
+expert read the conversation and the consult ids it saw, §13). `capture_session` marks its (session, expert);
 `capture_due` skips experts that already read the session at this size, counts a raising capture
 (`note_failure`; after `MAX_FAILS` = 3 at one size it marks that expert `gave_up`), and sets the
 session-level `size` once every relevant expert has read it, so a failing capture cannot block the queue
@@ -667,10 +685,10 @@ POSTs require the `X-Fused` header (`server.common._require_fused`). Errors are 
 |---|---|
 | `GET /api/experts` | `[{id, name, ask_me_about, engine, model, available, reason}]` |
 | `POST /api/experts/consult` | `{expert, question, context?, run_id?}` → `{id, answer, refs, used, unsure}`; 404 unknown expert; 409 `{error, reason:"unavailable"}`; 403 `{error: "that expert is not offered to this session"}` when `run_id` is given, `<run dir>/experts.json` exists and the expert is not in it (matched by `id` when the entry has one, else by name, case-insensitive). No `run_id` (a local call): any expert. |
-| `GET /api/experts/{id}/memory` | `{items: [Item + {indexed: bool, uses: int}], index: str, limit: int, tidy_at: int, total: int, last_tidy: TidySummary \| null}`; every item carries `contradicted` (int), `contradicted_sessions` (0 / `[]` when absent), `cited` (int, 0 when absent), `last_used` (ts or null) and, when a merge made it, `merged_from` (§12) |
+| `GET /api/experts/{id}/memory` | `{items: [Item + {indexed: bool, uses: int}], index: str, limit: int, tidy_at: int, total: int, last_tidy: TidySummary \| null}`; every item carries `contradicted` (int), `contradicted_sessions` (0 / `[]` when absent), `cited` (int, 0 when absent), `last_used` (ts or null), `confirmed` (int), `via` (`""` / `"session"`), `history` (`[{claim, at}]`) and, when a merge made it, `merged_from` (§12) |
 | `GET /api/experts/{id}/memory/archive` | `{archived: [Item + {removed_at, reason, skill?, why?, into?}]}`, newest first, 100 (§12) |
 | `POST /api/experts/{id}/memory/forget` | `{id}` → `{removed}` |
-| `GET /api/experts/{id}/observations` | `{pending: [Obs] (oldest first), done: [Obs] (newest first, 200), due: bool, consolidating: consolidate.status}`; every observation of kind `gap` carries `gap`: its Gap record (by `outcome.gap`, else by consult id), `null` when none yet |
+| `GET /api/experts/{id}/observations` | `{pending: [Obs] (oldest first), done: [Obs] (newest first, 200), due: bool, consolidating: consolidate.status}`; every observation of kind `gap` carries `gap`: its Gap record (by `outcome.gap`, else by consult id), `null` when none yet; a captured observation carries `by_user`, `quote` (only when verified) and `after_advice` (when true) |
 | `GET /api/experts/{id}/consults` | `{consults: [Consult]}` (newest first, 100) |
 | `GET /api/experts/{id}/usage?days=7` | `usage.summary(bot, days)`: `{days, by_stage: [{stage, calls, input_tokens, output_tokens, cache_read_tokens, estimated_share}], by_day: [{day, calls, input_tokens, output_tokens}], total}` (no model call) |
 | `GET /api/experts/{id}/checks` | `{latest: Run|null, status, questions: int}` |
@@ -705,7 +723,10 @@ column renders `ExpertPane` with tabs Memory · Consults · Checks (also reachab
 proposals carry `status` (`preparing` … `failed`) and `error`. Observation type tags: "advice confirmed" /
 "advice contradicted" ("advice checked" only for the legacy `answer_contradicted` with no outcome); result tag
 "contradicted a lesson" for `outcome.op === "contradict"`; a lesson with `contradicted > 0` shows a warning-style
-tag "contradicted N×" in the Memory panel. Proposal cards are ordinary `approval` events
+tag "contradicted N×" in the Memory panel. §13: a `user` lesson with `via: "session"` reads "you said this in a
+session"; `confirmed > 0` adds the footer fact "confirmed N×"; an opened lesson with `history` shows "Earlier wording";
+result `confirm` reads "noted as confirmed; does not raise the count"; an opened observation with `by_user` shows its
+`quote` under "You said"; removed reason `corrected` reads "replaced by your correction". Proposal cards are ordinary `approval` events
 with `expert_proposal`, `expert_warnings`, `score_before: null`, `score_after: null` (proposals run no checks); the diff is the card body, the warnings a short "Heads up" line under the summary (the text's `Warning: this change …` lines are dropped from the summary). Approve / Reject go
 through the existing `/api/bots/<id>/send`.
 
@@ -758,8 +779,12 @@ skill fixes. Nothing else researches; the scheduler only decides WHEN consolidat
     "expert_gap": "<gid>", "options": ["Skip"], "seq": …}
    ```
    Only a message typed at the Mac counts (`not channels.base.is_texted(msg)`); an outside message leaves the card
-   up (a note says so) and is re-delivered as an untrusted task once the card settles. "skip" (or a short reply
-   matching the NO regex, under 4 words) → `gaps.dismiss`. Any other text → `gaps.answer`: a `user` lesson
+   up (a note says so) and is re-delivered as an untrusted task once the card settles. The reply is classified by
+   code first (`cards.classify_reply`): "skip" / "drop" (or a short reply matching the NO regex, under 4 words) →
+   `gaps.dismiss`; "later", "not now", "ask me later", "remind me", "I don't know", "not sure", "no idea" and close
+   variants (case-insensitive, under 8 words) → snoozed (`cards.snooze_gap`): the gap is `open` again with
+   `snoozed_until` = now + 7 days, nothing is saved, and it is neither asked nor researched until then. Any other
+   text → `gaps.answer`: a `user` lesson
    `When asked "<question>": <text>`, gap `answered` (resolution `user`), a note `Thanks. Saved as a lesson: …`.
    A Stop or an error puts the card aside (gap `open` again); `bot.thread` and the status are always released.
 
@@ -785,6 +810,7 @@ The reasons:
   it). This happens in `proposals.approve`, right after the skill is written. An old lesson still flagged
   `promoted` from before this rule is archived the next time tidy runs.
 - `forgotten`: the user's own Forget (chat `forget_lesson`, `POST …/memory/forget`).
+- `corrected`: a user correction verified in a session replaced it (`into` is the correction's lesson, §13).
 - `stale`: tidy deleted it (`why` is the model's reason).
 - `merged`: tidy folded it into a broader lesson (`into` is that lesson's id).
 - `over_limit`: memory was over its limit.
@@ -861,3 +887,54 @@ TidySummary = {"at": ts, "reviewed": bool, "model_called": bool, "skipped": "" |
                "swept": [{"id","claim"}],
                "counts": {"deleted","merged","promoting","over_limit","swept"}}
 ```
+
+## 13. How the loop learns: corrections, independent evidence, only what is new
+
+Findings from an audit of real test data: a user's correction in a session was stored as a session lesson seen once
+(so not used), the old lesson stayed in use and the skill kept the old rule; about 60% of count increases were
+sessions repeating the expert's own advice; one session was captured five times as it grew, mostly duplicates.
+
+**Grounding** (`capture.py`). For `repeated_request`, `user_correction` and an `advice_contradicted` that claims the
+user said so, the model must return `quote`: a verbatim excerpt (at least `QUOTE_MIN` = 12 characters) of a USER line.
+`capture.grounded` checks it is a substring of one of the user turns the model was shown (whitespace collapsed,
+case-sensitive otherwise; a copied `USER| ` tag and surrounding quote marks are ignored). Verified → `by_user: true`
+and the quote is kept; not verified → `by_user: false`, no quote, ordinary session evidence. The model's own `by` is
+never trusted alone. `after_advice` (on `repeated_request` / `user_correction`): the user said it only after, and in
+line with, this expert's advice in that session (the consult records are in the prompt).
+
+**A verified user correction takes effect at once** (`consolidate.correction`: `by_user` with a quote, kind
+`user_correction` or `advice_contradicted`, not `after_advice`). Its lesson is stored with trust `user` and
+`via: "session"`, so it is indexed (used in answers) immediately, like chat teaching. When it contradicts a lesson
+in memory, ONE `model.text` call per (old, new) pair (`consolidate.resolve`) answers
+`{"resolution": "replace" | "narrow", "narrowed_claim"?}`: `replace` → the old lesson leaves memory with reason
+`corrected` and `into: <new id>`; `narrow` → `memory.narrow` rewrites its claim (the previous one appended to
+`history: [{claim, at}]`) and clears its `contradicted` mark, the corrected rule standing beside it. A failed call or
+an unreadable answer (including `narrow` without a claim) assumes nothing: the old lesson is marked contradicted as
+before. A contradiction that is not a verified user statement keeps that behaviour too. The outcome records
+`resolution`; `consolidate.run` returns `resolved: [{"item","resolution","into"}]`.
+
+**Skills follow.** When the contradicted rule was written into a skill (`consolidate.skill_of`: a live lesson's
+`skill`, the approved proposal of a lesson still flagged `promoted`, or its archive record with reason `promoted` and a
+`skill`; capture lists such archived rules with their ids so `contradicts` may name them), the run requests
+`proposals.request([new lesson], correction={"skill","old","quote"})`: the record carries `reason: "correction"`, the
+draft is shown that skill in full and told to `replace` or `remove` the text stating the old rule (anything but an
+update of that skill fails the draft), and the card reads "You corrected something a skill says. I'd like to change
+it:". Single flight: while any proposal is open, the correction waits in `<expert_dir>/pending-corrections.json` and
+is requested at the next consolidation when the slot is free (`drain_corrections`, one per run; entries whose lesson
+left memory are dropped). `run` returns their ids as `corrections` (also in `proposed`).
+
+**Only independent evidence raises `count`** (`consolidate.counts`, once per distinct session as before): a grounded
+`repeated_request` or `user_correction` (or user-stated `advice_contradicted`) that is not `after_advice`, an
+`error_then_fix`, and teaching in the expert's chat. Anything else, chiefly `advice_confirmed` and `after_advice`, is
+credited with `memory.confirm` (`confirmed += 1` once per session, `last_used` set) and archived with
+`outcome: {"op": "confirm", "item": id}`; a new lesson from it starts at `count` 0. An observation stored before
+grounding existed (no `by_user` key) keeps the old rule. The index rule (`count >= 2`) and `proposals.candidates`
+(`count >= propose_at`) read `count` only; `cited` and `uses` are unchanged.
+
+**Capture only what is new.** Per (session, expert) the watermark keeps `turns` (how many turns were read) and
+`consults` (consult ids seen). A later capture sends only the turns after that point, preceded by at most 2 earlier
+turns in their own data section marked "(earlier, already processed)", and the prompt says to extract only from the
+new part. Free pre-check: when the new part holds no USER turn and the session made no new consult, the session is
+marked read with no model call. The prompt lists the lessons this session already produced (its observations,
+pending and done) as not to be reported again, and code drops a returned claim equal to one of them.
+`due_sessions` reads transcript tails newest mtime first and only up to the `limit` the scheduler will process.

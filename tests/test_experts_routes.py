@@ -150,6 +150,24 @@ def test_observations_consults_proposals(client, expert, monkeypatch):
     assert _json(client.get(f"/api/experts/{BID}/proposals")) == (200, {"proposals": [{"id": "p1"}]})
 
 
+def test_memory_and_observations_carry_the_learning_fields(client, expert):
+    from fused_render.experts import observations
+    plain = memory.add(expert, "Read canvas.toml first.", session="s1")
+    said = memory.add(expert, "Title regional charts with the region name.", trust="user", via="session")
+    memory.confirm(expert, plain["id"], session="s2")
+    memory.narrow(expert, said["id"], "Title regional chart nodes with the region name only.")
+    status, body = _json(client.get(f"/api/experts/{BID}/memory"))
+    rows = {i["id"]: i for i in body["items"]}
+    assert (rows[plain["id"]]["confirmed"], rows[plain["id"]]["via"], rows[plain["id"]]["history"]) == (1, "", [])
+    assert rows[said["id"]]["via"] == "session" and rows[said["id"]]["confirmed"] == 0
+    assert [h["claim"] for h in rows[said["id"]]["history"]] == ["Title regional charts with the region name."]
+    observations.write(expert, kind="user_correction", claim="c", trust="outcome", by_user=True,
+                       quote="use the region name", after_advice=True)
+    status, body = _json(client.get(f"/api/experts/{BID}/observations"))
+    o = body["pending"][0]
+    assert (o["by_user"], o["quote"], o["after_advice"]) == (True, "use the region name", True)
+
+
 def test_checks(client, expert, monkeypatch):
     status, body = _json(client.get(f"/api/experts/{BID}/checks"))
     assert status == 200 and body["latest"] is None and body["questions"] == 0

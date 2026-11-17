@@ -292,3 +292,29 @@ describe("ObservationsPanel", () => {
     expect(renderToStaticMarkup(createElement(ObservationsPanel, { ...base, pending: [], done: [] }))).toContain("Nothing noted yet.");
   });
 });
+
+describe("learning details on cards", () => {
+  const base: ExpertObs = { id: "o", ts: 0, kind: "user_correction", claim: "Title regional charts with the region name.", trust: "outcome",
+    session: "s", about: [], consult: "" };
+  test("an opened lesson shows its earlier wording and a session-said source", () => {
+    const out = renderToStaticMarkup(createElement(LessonCard, { it: item({ trust: "user", via: "session", confirmed: 2,
+      history: [{ claim: "Old wording here", at: 1 }] }), onForget: noop, initialOpen: true, nowMs: 0 }));
+    expect(out).toContain("Earlier wording");
+    expect(out).toContain("Old wording here");
+    expect(out).toContain("you said this in a session");
+    expect(out).toContain("confirmed 2×");
+  });
+  test("an opened observation shows what the user said, only when grounded", () => {
+    const said = renderToStaticMarkup(createElement(ObsCard, { o: { ...base, by_user: true, quote: "use the region name" }, consolidated: false,
+      researching: null, proposals: null, items: [], lan: false, onDrop: noop, initialOpen: true }));
+    expect(said).toContain("You said");
+    expect(said).toContain("use the region name");
+    const not = renderToStaticMarkup(createElement(ObsCard, { o: { ...base, by_user: false }, consolidated: false,
+      researching: null, proposals: null, items: [], lan: false, onDrop: noop, initialOpen: true }));
+    expect(not).not.toContain("You said");
+    const conf = renderToStaticMarkup(createElement(ObsCard, { o: { ...base, kind: "advice_confirmed", outcome: { op: "confirm", item: "m1" } },
+      consolidated: true, researching: null, proposals: null, items: [item({ id: "m1", claim: "Lesson one" })], lan: false, onDrop: noop, initialOpen: true }));
+    expect(conf).toContain("noted as confirmed; does not raise the count");
+    expect(conf).toContain("Lesson one");
+  });
+});

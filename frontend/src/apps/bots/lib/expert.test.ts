@@ -381,3 +381,16 @@ describe("proposalWarnings / warningsLine", () => {
     expect(proposalText("Hi.\nWarning: this change removes 1 code block.\nApprove?")).toBe("Hi.");
   });
 });
+
+describe("learning wording (corrections, confirmations)", () => {
+  test("a user lesson from a session says so; confirmed N× is a fact; corrected removals", () => {
+    expect(lessonSource(item({ trust: "user", via: "session" }))).toBe("you said this in a session");
+    expect(lessonSource(item({ trust: "user" }))).toBe("taught by you");
+    expect(lessonFacts(item({ confirmed: 3 }))).toContain("confirmed 3×");
+    expect(lessonFacts(item({ confirmed: 0 })).some((f) => f.startsWith("confirmed"))).toBe(false);
+    expect(removedReasonLabel({ reason: "corrected", into: "m2" })).toBe("replaced by your correction");
+  });
+  test("a confirm outcome does not raise the count", () => {
+    expect(observationResultLabel({ kind: "advice_confirmed", outcome: { op: "confirm", item: "m1" } })).toBe("noted as confirmed; does not raise the count");
+  });
+});

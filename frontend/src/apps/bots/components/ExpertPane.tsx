@@ -275,6 +275,11 @@ export function LessonCard({ it, onForget, lan = false, initialOpen = false, now
       initialOpen={initialOpen}
       detail={() => (
         <>
+          {Array.isArray(it.history) && it.history.length ? (
+            <Part label="Earlier wording">
+              <ul className="xp-used xp-merged">{it.history.map((h, i) => <li key={i}>{h.claim}</li>)}</ul>
+            </Part>
+          ) : null}
           {Array.isArray(it.merged_from) && it.merged_from.length ? (
             <Part label="Merged from">
               <ul className="xp-used xp-merged">{it.merged_from.map((m, i) => <li key={m.id || i}>{m.claim}</li>)}</ul>
@@ -468,9 +473,10 @@ export function ObsCard({ o, consolidated, researching, proposals, items, lan, o
               {o.outcome?.item ? <Part label="Contradicted"><p className="xp-txt">{claimOf(items, o.outcome.item)}</p></Part> : null}
               {o.outcome?.new ? <Part label="Corrected rule"><p className="xp-txt">{claimOf(items, o.outcome.new)}</p></Part> : null}
             </>
-          ) : (op === "add" || op === "bump") && o.outcome?.item ? (
+          ) : (op === "add" || op === "bump" || op === "confirm") && o.outcome?.item ? (
             <Part label="Lesson"><p className="xp-txt">{claimOf(items, o.outcome.item)}</p></Part>
           ) : null}
+          {o.by_user && o.quote ? <Part label="You said"><p className="xp-txt">“{o.quote}”</p></Part> : null}
           {note ? <p className="xp-facts">{note}</p> : null}
           {f ? (
             <>

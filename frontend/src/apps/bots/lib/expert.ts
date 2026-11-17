@@ -70,6 +70,7 @@ export function removedReasonLabel(a: Pick<ExpertArchived, "reason" | "skill" | 
     case "promoted": return a.skill ? `moved into the skill ${a.skill}` : "moved into a skill";
     case "over_limit": return "removed: memory was over its limit";
     case "forgotten": return "forgotten by you";
+    case "corrected": return "replaced by your correction";
     default: return "removed";
   }
 }
@@ -96,15 +97,19 @@ export function lessonStatus(it: Pick<ExpertItem, "indexed" | "contradicted">): 
   return it.indexed === false ? "not-used" : "in-use";
 }
 
-/** Where a lesson came from, by its trust: "taught by you", "from sessions", "found by research" ("" otherwise). */
-export function lessonSource(it: Pick<ExpertItem, "trust">): string {
-  return it.trust === "user" ? "taught by you" : it.trust === "outcome" ? "from sessions" : it.trust === "research" ? "found by research" : "";
+/** Where a lesson came from, by its trust: "taught by you" ("you said this in a session" for a correction verified in
+ *  a task session, `via: "session"`), "from sessions", "found by research" ("" otherwise). */
+export function lessonSource(it: Pick<ExpertItem, "trust"> & Partial<Pick<ExpertItem, "via">>): string {
+  if (it.trust === "user") return it.via === "session" ? "you said this in a session" : "taught by you";
+  return it.trust === "outcome" ? "from sessions" : it.trust === "research" ? "found by research" : "";
 }
 
-/** A lesson card's footer facts: where it stands on the way to a skill, "contradicted N×", and why a lesson is not
+/** A lesson card's footer facts: where it stands on the way to a skill, "contradicted N×", "confirmed N×" (sessions
+ *  that echoed the expert's own advice; they do not raise its count), and why a lesson is not
  *  used yet ("waiting for your approval" for a research finding, "seen once" otherwise). A lesson that goes into a
  *  skill leaves memory, so an older server's `promoted` lesson just shows no skill fact. */
-export function lessonFacts(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed" | "contradicted" | "merged_from">): string[] {
+export function lessonFacts(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed" | "contradicted" | "merged_from">
+  & Partial<Pick<ExpertItem, "confirmed">>): string[] {
   const out: string[] = [];
   const merged = Array.isArray(it.merged_from) ? it.merged_from.length : 0;
   if (merged) out.push(`merged from ${merged}`);
@@ -112,6 +117,7 @@ export function lessonFacts(it: Pick<ExpertItem, "trust" | "promoted" | "propose
   else if (it.rejected) out.push("not proposed again");
   else if (it.proposed) out.push("skill proposal pending");
   if ((it.contradicted || 0) > 0) out.push(`contradicted ${it.contradicted}×`);
+  if ((it.confirmed || 0) > 0) out.push(`confirmed ${it.confirmed}×`);
   if (it.indexed === false) out.push(it.trust === "research" ? "waiting for your approval" : "seen once");
   return out;
 }
@@ -354,6 +360,7 @@ export function observationResultLabel(o: Pick<ExpertObs, "kind" | "outcome" | "
   switch (o.outcome?.op) {
     case "add": return "new lesson";
     case "bump": return "counted toward a lesson";
+    case "confirm": return "noted as confirmed; does not raise the count";
     case "contradict": return "contradicted a lesson";
     case "nothing": return "nothing new";
     case "gap": return o.kind === "gap" ? "waiting" : "";

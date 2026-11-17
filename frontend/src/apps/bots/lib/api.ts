@@ -309,6 +309,13 @@ export interface ExpertItem {
    *  proposed as a skill fix, and flagged in the index answers draw on. */
   contradicted?: number;
   contradicted_sessions?: string[];
+  /** Sessions that showed it again without independent evidence (the expert's own advice echoed back); never raises
+   *  `count` (absent on an older server: 0). */
+  confirmed?: number;
+  /** Where a `user` lesson was said: "session" for a correction verified in a task session ("" / absent: chat). */
+  via?: string;
+  /** Earlier wordings, oldest first, when a user correction narrowed the claim. */
+  history?: { claim: string; at: number }[];
 }
 /** A lesson named by the last tidy (GET …/memory `last_tidy`). */
 export interface ExpertTidyRef { id: string; claim: string; why?: string }
@@ -325,13 +332,13 @@ export interface ExpertMemory {
   limit?: number; tidy_at?: number; total?: number;
   last_tidy?: ExpertLastTidy | null;
 }
-export type ExpertRemovedReason = "stale" | "promoted" | "over_limit" | "forgotten" | "merged";
+export type ExpertRemovedReason = "stale" | "promoted" | "over_limit" | "forgotten" | "merged" | "corrected";
 /** A lesson that left memory (GET …/memory/archive, newest first). `skill`: the skill it moved into (promoted);
  *  `why`: the model's reason, when it gave one. */
 export interface ExpertArchived extends Omit<ExpertItem, "proposed" | "rejected"> {
   proposed?: boolean; rejected?: boolean;
   removed_at: number; reason: ExpertRemovedReason | (string & {}); skill?: string; why?: string;
-  /** `merged`: the id of the lesson it was merged into. */
+  /** `merged` / `corrected`: the id of the lesson it was merged into / replaced by. */
   into?: string;
 }
 /** A pending observation (not yet consolidated into memory). */
@@ -343,8 +350,14 @@ export interface ExpertObs {
   id: string; ts: number; kind: string; claim: string; trust: string; session: string; about: string[]; consult: string;
   source?: { target?: string; backend?: string } | null;
   confirms?: string; contradicts?: string;
-  /** `contradict`: `item` is the lesson contradicted, `new` the lesson its corrected rule landed on. */
-  outcome?: { op: "add" | "bump" | "nothing" | "gap" | "contradict" | (string & {}); item?: string; gap?: string; new?: string; at?: number } | null;
+  /** Capture proved the statement is the user's: `quote` is the verbatim excerpt of their line it was checked against. */
+  by_user?: boolean; quote?: string;
+  /** The user said it only after, and in line with, this expert's advice (it does not raise a lesson's count). */
+  after_advice?: boolean;
+  /** `contradict`: `item` is the lesson contradicted, `new` the lesson its corrected rule landed on, `resolution` what a
+   *  verified user correction did to the old lesson. `confirm`: noted on `item`, its count not raised. */
+  outcome?: { op: "add" | "bump" | "confirm" | "nothing" | "gap" | "contradict" | (string & {}); item?: string; gap?: string; new?: string;
+    resolution?: "replace" | "narrow" | (string & {}); at?: number } | null;
   gap?: ExpertGap | null;
 }
 export interface ExpertCaller { run_id?: string; session_id?: string; backend?: string; target?: string; canvas?: string }
