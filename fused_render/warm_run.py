@@ -144,8 +144,11 @@ except OSError:
     pass
 # Default close_fds=True on purpose: B' (and anything user code spawns) must not
 # inherit the parent's pipes.
+# Decoded exactly as the handler's cold `subprocess.run` decodes the runner's
+# output (utf-8, errors="replace"); `_run` only takes calls that ask for that.
 _b = subprocess.Popen([sys.executable, "-c", B_BOOT], stdin=subprocess.PIPE,
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                      encoding="utf-8", errors="replace")
 _real_run = subprocess.run
 # B' booted with this process's environment; the interpreter has already read
 # every PYTHON* setting (PYTHONPATH, PYTHONHOME, PYTHONSAFEPATH, PYTHONIOENCODING,
@@ -159,7 +162,7 @@ def _same_startup(env):
     return {k: v for k, v in env.items() if k.startswith("PYTHON")} == _B_STARTUP
 
 
-_ALLOWED = {"capture_output", "text", "timeout", "cwd", "env"}
+_ALLOWED = {"capture_output", "text", "encoding", "errors", "timeout", "cwd", "env"}
 
 
 def _run(args, **kw):
@@ -168,6 +171,7 @@ def _run(args, **kw):
     if (b is not None and isinstance(args, (list, tuple)) and len(args) >= 2
             and args[0] == sys.executable and os.path.basename(str(args[1])) == "_runner.py"
             and set(kw) <= _ALLOWED and kw.get("capture_output") and kw.get("text")
+            and kw.get("encoding") == "utf-8" and kw.get("errors") == "replace"
             and kw.get("cwd") and kw.get("env") is not None and _same_startup(kw["env"])
             and b.poll() is None):
         _b = None
