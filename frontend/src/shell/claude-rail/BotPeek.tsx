@@ -77,6 +77,18 @@ import { publishFavBox } from "./fav-peek-store";
 import { RailPinButton } from "./RailPin";
 import { setSnapGuide, windowABox } from "./card-snap";
 import {
+  FLOAT_GRIPS,
+  RAIL_HEAD_SELECTOR,
+  floatPlacement,
+  floatResize,
+  isDockEdge,
+  viewportOf,
+  wishSize,
+  type MoveEdge,
+} from "./rail-move-lib";
+import { useWindowBox, windowPos } from "./rail-move-store";
+import { useCardMove } from "./useCardMove";
+import {
   FAV_HEIGHT,
   FAV_WIDTH,
   PEEK_MAX_WIDTH,
@@ -182,6 +194,18 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
+  // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): this card is
+  // window B's, as the favourite's is. Pinned and dragged by its head, it
+  // FLOATS at the window's position — kept through a swap to a favourite.
+  const move = useCardMove({
+    win: "b",
+    on: !!pinCtl,
+    movable: !!pinCtl?.pinned,
+    headSelector: RAIL_HEAD_SELECTOR,
+    shown: shown?.id ?? null,
+  });
+  const floatingRef = useRef(false);
+  floatingRef.current = move.floating;
   // The last bot shown, so the fade-out has something to fade.
   const last = useRef<BotPulseRow | null>(null);
   if (shown) last.current = shown;
@@ -202,7 +226,10 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   }, [shownKey]);
 
   // A PRESS INSIDE (ClaudeRail's outside-press rule reads the flag).
-  const onPressInsideCapture = () => onPressInside();
+  const onPressInsideCapture = () => {
+    move.notePress();
+    onPressInside();
+  };
   // ONE SIZE, hovered or pinned, the favourite card's (header).
   const wish = () => favCardWish(FAV_SIZE, storedPeekSize(), window.innerHeight);
   const railLeft = useRef(0);
@@ -211,6 +238,10 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   // "bottom"` the card's bottom lands on the rail's, clamped inside the row
   // — bottom right, whichever ring opened it (FavouritePeek `anchorOf`).
   const place = (key: string): Box | null => {
+    // FLOATING: at the window's position, its size, inside the viewport;
+    // never "no room" (rail-move-lib).
+    const at = floatingRef.current ? windowPos("b") : null;
+    if (at) return floatPlacement(at, wishSize(wish()), viewportOf(window));
     if (!anchorOf(key) || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
@@ -219,25 +250,61 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
 
   // THE GRIPS AND THEIR DRAG (RailPeek; the favourite card's key,
   // `canvasRailFav` — header).
-  const [resizing, setResizing] = useState<ResizeEdge | null>(null);
-  const resizingRef = useRef<ResizeEdge | null>(null);
+  const [resizing, setResizing] = useState<MoveEdge | null>(null);
+  const resizingRef = useRef<MoveEdge | null>(null);
   resizingRef.current = resizing;
-  const dragStart = useRef<{ x: number; y: number; box: Box; pointerId: number; corner: ResizeEdge; el: HTMLElement; floor: number | undefined; cap: number } | null>(null);
+  const dragStart = useRef<{
+    x: number;
+    y: number;
+    box: Box;
+    pointerId: number;
+    corner: MoveEdge;
+    el: HTMLElement;
+    floating: boolean;
+    floor: number | undefined;
+    cap: number;
+  } | null>(null);
   const dragLast = useRef<Box | null>(null);
-  const onGripDown = (corner: ResizeEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
+  const onGripDown = (corner: MoveEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || !box) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
+    const floating = move.floating;
     // The card stands on the rail's bottom: a bottom drag stops there, and
     // the height never passes half the window (RailPeek, the favourite's).
-    const floor = railEl ? railEl.getBoundingClientRect().bottom : undefined;
-    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floor, cap: favMaxHeight(window.innerHeight) };
+    // Floating: the viewport's bottom.
+    const floor = !floating && railEl ? railEl.getBoundingClientRect().bottom : undefined;
+    const cap = favMaxHeight(window.innerHeight);
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      box,
+      pointerId: e.pointerId,
+      corner,
+      el: e.currentTarget,
+      floating,
+      floor,
+      cap,
+    };
     dragLast.current = null;
     setResizing(corner);
   };
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
-    if (!start || start.pointerId !== e.pointerId || !row) return;
+    if (!start || start.pointerId !== e.pointerId) return;
+    // FLOATING (rail-move-lib `floatResize`): inside the viewport, no magnet.
+    if (start.floating || !isDockEdge(start.corner)) {
+      const fl = floatResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, viewportOf(window), {
+        minWidth: PEEK_MIN_WIDTH,
+        minHeight: PEEK_MIN_HEIGHT,
+        maxWidth: PEEK_MAX_WIDTH,
+        maxHeight: start.cap,
+      });
+      dragLast.current = fl;
+      setBox((prev) => (prev && prev.left === fl.left && prev.top === fl.top && prev.width === fl.width && prev.height === fl.height ? prev : fl));
+      return;
+    }
+    if (!row) return;
     const bounds = row.getBoundingClientRect();
     const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, start.floor, start.cap);
     // THE WIDTH MAGNET (card-snap.ts): to window A's card.
@@ -255,6 +322,10 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     const lastBox = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    // A FLOATING card's left or top grip moved its corner: the window stands
+    // there now (rail-move-lib).
+    if (save && start?.floating && lastBox && (lastBox.left !== start.box.left || lastBox.top !== start.box.top))
+      move.setPos({ left: lastBox.left, top: lastBox.top });
     if (!save || !start || !lastBox || !shownKey || (lastBox.width === start.box.width && lastBox.height === start.box.height)) return;
     // Only a dimension the drag changed, and only past the grips' minimums
     // (RailPeek `endDrag`); the other keeps what was remembered.
@@ -277,10 +348,13 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   // WINDOW B'S BOX (header): published while PINNED — what the rail's own
   // card keeps clear of; a hover overlaps, as the favourite's does. As the
   // bot owner: a close here never clears a box the favourite's card holds.
+  // …but not where it FLOATS: window A places itself as if it were not there.
   useEffect(() => {
-    publishFavBox(visible && pinned ? box : null, "bot");
-  }, [visible, pinned, box]);
+    publishFavBox(visible && pinned && !move.floating ? box : null, "bot");
+  }, [visible, pinned, box, move.floating]);
   useEffect(() => () => publishFavBox(null, "bot"), []);
+  // Its live box for window A's head drag (rail-move-store `windowBox`).
+  useWindowBox("b", !!pinCtl && visible ? box : null);
   const dragKey = useRef<string | null>(null);
   useEffect(() => {
     if (dragStart.current && (!gripsOn || dragKey.current !== shownKey)) endDrag(false);
@@ -345,7 +419,8 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     onCone(inside);
   };
   useEffect(() => {
-    if (!on || !box || !shownKey) return;
+    // None for a FLOATING card: it is pinned, and stands nowhere near its ring.
+    if (!on || !box || !shownKey || move.floating) return;
     const anchor = anchorOf(shownKey);
     if (!anchor) return;
     const r = anchor.getBoundingClientRect();
@@ -360,7 +435,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
       setCone(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [on, box, shownKey]);
+  }, [on, box, shownKey, move.floating]);
 
   // INERT WHILE HIDDEN (RailPeek).
   useLayoutEffect(() => {
@@ -444,8 +519,9 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   );
   const words = view ? botStatusWords(view.status) : "";
   // THE BRIDGE over the gap to the rail (RailPeek).
+  // None while FLOATING.
   const bridge =
-    box && railLeft.current > box.left + box.width + 1
+    !move.floating && box && railLeft.current > box.left + box.width + 1
       ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
       : null;
 
@@ -463,19 +539,22 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
       <div
         ref={cardRef}
         id={id}
-        className={"claude-rail-peek claude-rail-bot-peek favs-on" + (visible ? " is-on" : "") + (resizing ? " is-resizing" : "")}
+        className={"claude-rail-peek claude-rail-bot-peek favs-on" + (visible ? " is-on" : "") + (resizing ? " is-resizing" : "") + move.className}
         role="dialog"
         aria-label={view ? `${name} — chat` : "Bot chat"}
         style={box ? { left: box.left, top: box.top, width: box.width, height: box.height } : undefined}
         onPointerEnter={onPointerEnter}
         onPointerLeave={onPointerLeave}
         onPointerDownCapture={onPressInsideCapture}
+        onPointerDown={move.onPointerDown}
+        onDoubleClick={move.onDoubleClick}
         onFocusCapture={onFocusCapture}
         onBlurCapture={onBlurCapture}
         onKeyDown={onKeyDown}
       >
         {gripsOn &&
-          ALL_GRIPS.map((corner) => (
+          // …and, FLOATING, the right edge and corners too (rail-move-lib).
+          (move.floating ? FLOAT_GRIPS : ALL_GRIPS).map((corner) => (
             <div
               key={corner}
               className={"claude-rail-peek-grip is-" + corner + (resizing === corner ? " is-active" : "")}
@@ -487,7 +566,8 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
               onLostPointerCapture={() => dragStart.current && endDrag(true)}
             />
           ))}
-        {gripsOn && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
+        {gripsOn &&
+          (move.floating ? FLOAT_GRIPS : ALL_GRIPS).map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
         <div className="claude-rail-peek-card">
           {view && subject && (
             <div className="claude-rail-peek-head">

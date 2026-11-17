@@ -350,6 +350,9 @@ import {
   PEEK_WIDTH,
 } from "./rail-peek-lib";
 import { publishWindowABox, setSnapGuide } from "./card-snap";
+import { FLOAT_GRIPS, POPOVER_HEAD_SELECTOR, floatPlacement, floatResize, railPressWindow, viewportOf } from "./rail-move-lib";
+import { noteFrontWindow, publishWindowBox, windowPos } from "./rail-move-store";
+import { useCardMove } from "./useCardMove";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import { taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
 import { aPinWord, cardMode, doorSelector, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress } from "./rail-pin-lib";
@@ -670,6 +673,16 @@ function popBusy(rail: HTMLElement | null): boolean {
  *  publish effect runs only when the box moves. */
 function publishPlusBox(box: Box | null): void {
   publishWindowABox("plus", box);
+}
+
+/** …and its live box, docked or floating, for window B's head drag to snap
+ *  its edges to (rail-move-store `windowBox`; owner, 2026-11-17). */
+function publishPlusLiveBox(box: Box | null): void {
+  publishWindowBox("a", "plus", box);
+}
+function publishPlusBoxes(box: Box | null): void {
+  publishPlusBox(box);
+  publishPlusLiveBox(box);
 }
 
 export function ClaudeRail({
@@ -2152,6 +2165,31 @@ export function ClaudeRail({
   }, [listWord]);
   const popUp = !!card?.pop;
   const popHeld = pinModel && popUp && !!card?.held;
+  // THE + CARD MOVES WHEN PINNED (rail-move-lib; owner, 2026-11-17): it is
+  // window A's, and floats at window A's position — the one the list's card
+  // and the door cards read too, so a swap between them keeps it. The drag
+  // is the chassis' (Modal `popover.move`); where it then stands, `popPlace`.
+  const popMove = useCardMove({
+    win: "a",
+    on: pinModel,
+    movable: popHeld,
+    headSelector: POPOVER_HEAD_SELECTOR,
+    shown: card?.pop ? String(card.seq) : null,
+  });
+  // A PRESS ON A RING OR DOOR BRINGS ITS WINDOW TO THE FRONT (rail-move-lib
+  // `railPressWindow`; owner, 2026-11-17): the pinned window's own ring does
+  // nothing else (rail-pin-lib `ringClick` "keep"), and with two windows
+  // floating one can lie under the other — its ring is how it is found again.
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!pinModel || !rail) return;
+    const onDown = (e: PointerEvent) => {
+      const win = railPressWindow(e.target instanceof Element ? e.target : null);
+      if (win) noteFrontWindow(win);
+    };
+    rail.addEventListener("pointerdown", onDown, true);
+    return () => rail.removeEventListener("pointerdown", onDown, true);
+  }, [pinModel]);
   const popHeldSeen = useRef(false);
   useEffect(() => {
     const was = popHeldSeen.current;
@@ -2324,8 +2362,20 @@ export function ClaudeRail({
   // …up OR still a hover's pending read (CodeRabbit on #2189: the pointer
   // resting on the Tasks door while the + pins by keyboard): `dismiss` is a
   // no-op on a card that is not up, and cancels the open that was coming.
+  // …ON ITS ARRIVAL ONLY (owner, 2026-11-17: "sometimes when i switch between
+  // bots, task, + etc window jumps"): the list's card or the + COMING puts the
+  // door cards down, never one of them GOING. Until then this ran on any
+  // change with either still up, so a quick + → ring → Bots closed the Bots
+  // card it had just opened: the ring's card going (the Bots card's own rule)
+  // re-ran this while the + was still fading out, and window A was left with
+  // nothing up and its pin gone.
+  const aCameSeen = useRef<{ peekKey: string | null; popSeq: number | null }>({ peekKey: null, popSeq: null });
   useEffect(() => {
-    if ((peekKey ?? popSeq) !== null) {
+    const was = aCameSeen.current;
+    aCameSeen.current = { peekKey, popSeq };
+    const listCame = peekKey !== null && peekKey !== was.peekKey;
+    const popCame = popSeq !== null && popSeq !== was.popSeq;
+    if (listCame || popCame) {
       closeTasksCard();
       closeBotsCard();
       closeGitCard();
@@ -2517,6 +2567,14 @@ export function ClaudeRail({
   // (`favBox`): above it when there is room, beside it otherwise.
   const popPlace = useCallback(
     (want: { width: number; height: number }) => {
+      // FLOATING (rail-move-lib): at window A's position, inside the viewport.
+      // …from its FIRST placement: opened by a swap inside the pinned window,
+      // the card is up a render before it is held, and placed beside the rail
+      // for that render it slid across the page to where the window floats
+      // (owner, 2026-11-17: "window jumps"). The window is pinned while its
+      // mark stands, whichever card the mark still names.
+      const floatAt = popMove.floating || (pinModel && aPinned() !== null) ? windowPos("a") : null;
+      if (floatAt) return floatPlacement(floatAt, want, viewportOf(window));
       const rail = railRef.current;
       const row = rail && rowOf(rail);
       const door = cardRef.current?.door;
@@ -2527,7 +2585,7 @@ export function ClaudeRail({
         maxHeight: want.height,
       });
     },
-    [favBox, draftCardBox],
+    [favBox, draftCardBox, popMove.floating],
   );
   // A DRAFT'S RING IS A POPOVER DOOR (owner, 2026-11-07: a draft "behaves
   // exactly like the +"): its hover previews the New task popover on its
@@ -3412,7 +3470,8 @@ export function ClaudeRail({
   // this rail publishes how — its anchor, placement and doors — on every
   // render, and draws it itself only with no host (a rail rendered alone).
   const hosted = usePlusHosted();
-  const popPlaceKey = useMemo(() => ({ favBox }), [favBox]);
+  // …and where window A floats: a drag or a dock re-places the card.
+  const popPlaceKey = useMemo(() => ({ favBox, at: popMove.pos }), [favBox, popMove.pos]);
   const renderCard = (card: Card) => (
         <NewJobModal
         // Keyed on the press: the card reads its props in `useState`
@@ -3505,7 +3564,28 @@ export function ClaudeRail({
                 // pinned alike, a grip's press a press inside.
                 ...(card.pinned || pinModel
                   ? {
-                      resize: {
+                      resize: popMove.floating
+                        ? {
+                            // FLOATING (rail-move-lib `floatResize`): inside
+                            // the viewport, the right edge and corners too, no
+                            // magnet; a left or top grip moves window A's
+                            // position.
+                            minWidth: PEEK_MIN_WIDTH,
+                            minHeight: PEEK_MIN_HEIGHT,
+                            maxWidth: PEEK_MAX_WIDTH,
+                            grips: FLOAT_GRIPS,
+                            drag: (edge, start, dx, dy) =>
+                              floatResize(edge, start, dx, dy, viewportOf(window), {
+                                minWidth: PEEK_MIN_WIDTH,
+                                minHeight: PEEK_MIN_HEIGHT,
+                                maxWidth: PEEK_MAX_WIDTH,
+                              }),
+                            onResize: (size, changed, box) => {
+                              popMove.setPos({ left: box.left, top: box.top });
+                              savePopSize(size, changed);
+                            },
+                          }
+                        : {
                         minWidth: PEEK_MIN_WIDTH,
                         minHeight: PEEK_MIN_HEIGHT,
                         maxWidth: PEEK_MAX_WIDTH,
@@ -3527,10 +3607,23 @@ export function ClaudeRail({
                       },
                     }
                   : {}),
+                // The head moves the card while pinned (`popMove`).
+                ...(pinModel
+                  ? {
+                      move: {
+                        className: popMove.className,
+                        onPointerDown: popMove.onPointerDown,
+                        onDoubleClick: popMove.onDoubleClick,
+                      },
+                    }
+                  : {}),
                 ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
                 place: popPlace,
-                // Window A's box, for window B's grips to snap to.
-                onBox: publishPlusBox,
+                // Window A's box, for window B's grips to snap to — not
+                // while it floats (window B then places itself alone) —
+                // and, with the unified head, its live box for window B's
+                // head drag, docked or floating (rail-move-store).
+                onBox: !pinModel ? publishPlusBox : popMove.floating ? publishPlusLiveBox : publishPlusBoxes,
                 // Per rail (a hop re-places the card beside the new rail).
                 placeKey: popPlaceKey,
                 // The row reshaping (the sidebar collapsing) re-places it.
@@ -3545,6 +3638,7 @@ export function ClaudeRail({
                 onPressInside: () => {
                   plusPress.inside = true;
                   viewPress.inside = true;
+                  popMove.notePress();
                 },
                 onPointerEnter: () => plusIntent.enterCard(),
                 onPointerLeave: () => plusIntent.leaveCard(),

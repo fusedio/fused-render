@@ -198,6 +198,18 @@ import {
 } from "./rail-peek-lib";
 import { publishWindowABox, setSnapGuide, windowABox } from "./card-snap";
 import { PinAngle, RailPinButton } from "./RailPin";
+import {
+  FLOAT_GRIPS,
+  RAIL_HEAD_SELECTOR,
+  floatPlacement,
+  floatResize,
+  isDockEdge,
+  viewportOf,
+  wishSize,
+  type MoveEdge,
+} from "./rail-move-lib";
+import { useWindowBox, windowPos } from "./rail-move-store";
+import { useCardMove } from "./useCardMove";
 
 /** Where a card's dragged size is kept in the ui-layout document: the
  *  rail's pinned card, or the favourite's (RailPeekProps `resizeKey`). */
@@ -516,6 +528,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
+  // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): the list's card
+  // is window A's, the favourite's (`resizeKey`) window B's. Pinned and
+  // dragged, it FLOATS: placed at the window's position, not beside the rail.
+  const moveWin = resizeKey === "canvasRailFav" ? "b" : "a";
+  const move = useCardMove({
+    win: moveWin,
+    on: !!pinCtl,
+    movable: !!pinCtl?.pinned,
+    headSelector: RAIL_HEAD_SELECTOR,
+    shown: shown?.pulse.key ?? null,
+  });
+  const floatingRef = useRef(false);
+  floatingRef.current = move.floating;
   // The last seat shown, so the fade-out has something to fade — the head
   // AND the chat: both key on `view`, so the transcript stays visible through
   // the fade rather than vanishing under a fading empty frame (Bugbot).
@@ -558,6 +583,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const growAfterPress = useRef(false);
   const onPressInsideCapture = () => {
     pressingInside.current = true;
+    move.notePress();
     onPressInside();
   };
   useEffect(() => {
@@ -603,6 +629,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // style, and `place` runs on every scroll of the rail's list.
   const row = useMemo(() => rowOf(railEl), [railEl]);
   const place = (key: string): Box | null => {
+    // FLOATING: at the window's position (read live — a drag moves it between
+    // renders), at the card's size, inside the viewport; never "no room".
+    const floatAt = floatingRef.current ? windowPos(moveWin) : null;
+    if (floatAt) return floatPlacement(floatAt, wishSize(wishFor(key)), viewportOf(window));
     const anchor = anchorOf(key);
     if (!anchor || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
@@ -618,16 +648,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // THE CORNER AND EDGE DRAG (header). `resizing` names the held grip while
   // a drag is on: the card drops its glide transitions and the placement
   // effects stand back so the box follows the pointer alone.
-  const [resizing, setResizing] = useState<ResizeEdge | null>(null);
-  const resizingRef = useRef<ResizeEdge | null>(null);
+  const [resizing, setResizing] = useState<MoveEdge | null>(null);
+  const resizingRef = useRef<MoveEdge | null>(null);
   resizingRef.current = resizing;
   const dragStart = useRef<{
     x: number;
     y: number;
     box: Box;
     pointerId: number;
-    corner: ResizeEdge;
+    corner: MoveEdge;
     el: HTMLElement;
+    /** The card floats (rail-move-lib): the drag is clamped to the viewport,
+     *  with no magnet, and a left or top grip moves the window's position. */
+    floating: boolean;
     /** The bottom the drag may not pass (rail-peek-lib `bottomClear`). */
     floor: number | undefined;
     /** The height the drag may not pass (the favourite's card, header). */
@@ -637,23 +670,45 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // `box`: the move's state write may not have committed when the pointer
   // comes up (reviewer).
   const dragLast = useRef<Box | null>(null);
-  const onGripDown = (corner: ResizeEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
+  const onGripDown = (corner: MoveEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || !box) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
+    const floating = move.floating;
     // A bottom drag stops a gap over the favourite's card when this card
     // stands above it (`avoid`); the favourite's own card, standing on the
-    // rail's bottom, stops there (header).
-    const floor = size?.align === "bottom" && railEl ? railEl.getBoundingClientRect().bottom : bottomClear(box, avoid);
-    // The favourite's card: never past half the window (header).
+    // rail's bottom, stops there (header). Floating: the viewport's bottom.
+    const floor = floating
+      ? undefined
+      : size?.align === "bottom" && railEl
+        ? railEl.getBoundingClientRect().bottom
+        : bottomClear(box, avoid);
+    // The favourite's card: never past half the window (header), docked or
+    // floating.
     const cap = resizeKey === "canvasRailFav" ? favMaxHeight(window.innerHeight) : undefined;
-    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floor, cap };
+    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floating, floor, cap };
     dragLast.current = null;
     setResizing(corner);
   };
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
-    if (!start || start.pointerId !== e.pointerId || !row) return;
+    if (!start || start.pointerId !== e.pointerId) return;
+    // FLOATING (rail-move-lib `floatResize`): inside the viewport, not the
+    // row; the same minimums and maximums; no magnet (it needs the shared
+    // right edge a floating card no longer has).
+    if (start.floating || !isDockEdge(start.corner)) {
+      const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
+      const fl = floatResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, viewportOf(window), {
+        ...lim,
+        ...(start.cap !== undefined ? { maxHeight: start.cap } : {}),
+      });
+      dragLast.current = fl;
+      setBox((prev) =>
+        prev && prev.left === fl.left && prev.top === fl.top && prev.width === fl.width && prev.height === fl.height ? prev : fl,
+      );
+      return;
+    }
+    if (!row) return;
     const bounds = row.getBoundingClientRect();
     const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, start.floor, start.cap);
     // THE WIDTH MAGNET (card-snap.ts): the other window's card — window A's
@@ -682,6 +737,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    // A FLOATING card's left or top grip moved its corner: the window stands
+    // there now (rail-move-lib).
+    if (save && start?.floating && last && (last.left !== start.box.left || last.top !== start.box.top))
+      move.setPos({ left: last.left, top: last.top });
     // A press that never moved saves nothing — not the default size, not a
     // size the row clamped (reviewer).
     if (!save || !start || !last || !shownKey || (last.width === start.box.width && last.height === start.box.height)) return;
@@ -720,6 +779,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the follow-the-ring paths would stand back for good (reviewer), and a
   // release would save a size that was about the old chat (CodeRabbit).
   const visible = on && box !== null && shownKey !== null;
+  // Its live box, docked or floating, for the other window's head drag to
+  // snap to (rail-move-store `windowBox`).
+  useWindowBox(moveWin, !!pinCtl && visible ? box : null);
   // OPEN, SO READ (task-open-read `useHoldOpenTask`): a chat the reader
   // pressed open here — pinned or held, not a passing hover — is a chat on
   // screen; what lands in it while it shows is read, and raises no notice.
@@ -727,17 +789,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // The host that places another card around this one hears where it is.
   const onBoxRef = useRef(onBox);
   onBoxRef.current = onBox;
+  // …but not where it FLOATS (rail-move-lib): the other window places itself
+  // as if this one were not there.
   useEffect(() => {
-    onBoxRef.current?.(visible ? box : null);
-  }, [visible, box, onBox]);
+    onBoxRef.current?.(visible && !move.floating ? box : null);
+  }, [visible, box, onBox, move.floating]);
   useEffect(() => () => onBoxRef.current?.(null), []);
   // The list's card is window A's: the box window B's grips snap to
   // (card-snap.ts).
   useEffect(() => {
-    if (resizeKey || !visible || !box) return;
+    if (resizeKey || !visible || !box || move.floating) return;
     publishWindowABox("list", box);
     return () => publishWindowABox("list", null);
-  }, [resizeKey, visible, box]);
+  }, [resizeKey, visible, box, move.floating]);
   // A pinned list card — any list card with favourites on (`oneSize`) — or
   // a card sized by the reader whatever its pin (the favourite's,
   // `resizeKey`); a fixed-size card never.
@@ -864,7 +928,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onCone(inside);
   };
   useEffect(() => {
-    if (!on || !box || !shownKey) return;
+    // None for a FLOATING card (rail-move-lib): it is pinned, and stands
+    // nowhere near its ring.
+    if (!on || !box || !shownKey || move.floating) return;
     const anchor = (coneOf ?? anchorOf)(shownKey);
     if (!anchor) return;
     // The apex is read per move, not once: with the card anchored on the
@@ -884,7 +950,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     };
     // `onCone` is the host's stable callback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [on, box, shownKey]);
+  }, [on, box, shownKey, move.floating]);
 
   // INERT WHILE HIDDEN (React 18 has no `inert` prop): the fading card and
   // the warm mounts behind it take no focus, no hit, and are out of the
@@ -1270,8 +1336,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // frame on enter). It stops 3px short of the rail so the rail's seam (the
   // drag that opens the pane) keeps its own hit area. Only while the card is
   // up (`.is-on`), like the card itself.
+  // None while FLOATING (rail-move-lib): a pinned card never closes on leave.
   const bridge =
-    box && railLeft.current > box.left + box.width + 1
+    !move.floating && box && railLeft.current > box.left + box.width + 1
       ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
       : null;
 
@@ -1576,7 +1643,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         (held && !favsOn ? " is-held" : "") +
         (favsOn ? " favs-on" : "") +
         (resizing ? " is-resizing" : "") +
-        (view && !view.pulse.session_id ? " is-plain" : "")
+        (view && !view.pulse.session_id ? " is-plain" : "") +
+        move.className
       }
       role="dialog"
       // Ours: never makes the canvas screenshot refuse (canvas-shot-native).
@@ -1592,6 +1660,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
       onPointerDownCapture={onPressInsideCapture}
+      onPointerDown={move.onPointerDown}
+      onDoubleClick={move.onDoubleClick}
       onFocusCapture={onFocusCapture}
       onBlurCapture={onBlurCapture}
       onInputCapture={onTyped}
@@ -1602,7 +1672,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         // chat card (or the favourite's). `aria-hidden`: a pointer-only
         // affordance; the card's size is a preference, not a control the
         // keyboard needs.
-        ALL_GRIPS.map((corner) => (
+        // …and, FLOATING, the right edge and corners too (rail-move-lib).
+        (move.floating ? FLOAT_GRIPS : ALL_GRIPS).map((corner) => (
           <div
             key={corner}
             className={"claude-rail-peek-grip is-" + corner + (resizing === corner ? " is-active" : "")}
@@ -1614,7 +1685,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             onLostPointerCapture={() => dragStart.current && endDrag(true)}
           />
         ))}
-      {gripsOn && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
+      {gripsOn &&
+        (move.floating ? FLOAT_GRIPS : ALL_GRIPS).map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
       <div className="claude-rail-peek-card">
         {head && unified ? (
           // THE SHARED HEAD (flag on; shell/TaskHead), TWO LINES AT EVERY
