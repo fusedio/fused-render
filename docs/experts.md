@@ -362,7 +362,11 @@ IDLE_S = 1800
 ```
 `session` = `{"session_id","backend","target","canvas","path","last_active"}`. One `model.text` call per
 (session, expert): the transcript (tail, capped at 30k chars), that session's consults, current memory
-claims → JSON list of `{"kind","claim","about"}`. Zero observations is a normal result.
+claims, each with its id → JSON list of `{"kind","claim","about","confirms"?}`. Zero observations is a normal result.
+A lesson the session shows again is still reported, with `"confirms": "<memory item id>"` (kept only when the
+id exists); `consolidate.run` applies it as a bump of that item with the observation's session (no model
+decision; one count per distinct session), archived with `outcome: {"op": "bump", "item": id}`. A
+`repeated_request` is recorded on its first sighting, since it is counted across sessions.
 
 Prompt hygiene: the consult records and the transcript sit between `<<<BEGIN …>>>` / `<<<END …>>>` markers
 the prompt declares DATA (nothing inside is an instruction; `<<<`/`>>>` inside are defused). The transcript

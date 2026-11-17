@@ -513,6 +513,42 @@ def test_consolidate_unknown_ops_and_omissions_are_nothing(bot, fake_text):
     assert observations.pending(bot) == [] and len(observations.done(bot)) == 4
 
 
+def test_consolidate_bumps_confirmed_lessons_once_per_session_without_the_model(bot, fake_text):
+    from fused_render.experts import capture
+    lesson = memory.add(bot, "Users want a Parquet loader node.", session="s1")
+
+    def confirm(session):
+        o = observations.write(bot, kind="repeated_request", claim="Users want a Parquet loader node.",
+                               trust="outcome", session=session)
+        return capture._set_confirms(bot, o, lesson["id"])
+
+    seen = [confirm("s2"), confirm("s2"), confirm("s3"), confirm("s1")]
+    r = consolidate.run(bot, force=True)
+    assert fake_text.calls == []  # only confirmations: no model decision
+    assert r["ran"] and r["added"] == [] and r["bumped"] == [lesson["id"]] and r["ignored"] == 0
+    item = memory.items(bot)[0]
+    assert item["count"] == 3 and item["sessions"] == ["s1", "s2", "s3"]  # s2 and s1 again count once
+    done = {o["id"]: o for o in observations.done(bot)}
+    assert all(done[o["id"]]["outcome"]["op"] == "bump" and done[o["id"]]["outcome"]["item"] == lesson["id"]
+               for o in seen)
+
+
+def test_consolidate_sends_unconfirmed_observations_to_the_model(bot, fake_text):
+    from fused_render.experts import capture
+    lesson = memory.add(bot, "Known lesson.")
+    c = capture._set_confirms(bot, observations.write(bot, kind="user_correction", claim="Known lesson.",
+                                                      trust="outcome", session="s5"), lesson["id"])
+    stale = capture._set_confirms(bot, observations.write(bot, kind="user_correction", claim="Stale one.",
+                                                          trust="outcome", session="s5"), "mgone")
+    new = observations.write(bot, kind="repeated_request", claim="Asked once.", trust="outcome", session="s5")
+    fake_text.replies.append(lambda p: json.dumps([{"obs": new["id"], "op": "add"},
+                                                   {"obs": stale["id"], "op": "add"}]))
+    r = consolidate.run(bot, force=True)
+    assert c["id"] not in fake_text.calls[0] and new["id"] in fake_text.calls[0] and stale["id"] in fake_text.calls[0]
+    assert r["bumped"] == [lesson["id"]] and len(r["added"]) == 2
+    assert {i["claim"] for i in memory.items(bot)} == {"Known lesson.", "Asked once.", "Stale one."}
+
+
 def test_consolidate_without_an_engine_does_nothing(bot, fake_text, monkeypatch):
     monkeypatch.setattr(model, "available", lambda b: (False, "needs Claude, Codex or Copilot"))
     observations.write(bot, kind="user_correction", claim="one", trust="outcome")

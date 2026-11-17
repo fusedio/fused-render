@@ -2,7 +2,9 @@
 
 observations -> consolidation -> memory -> skill fixes. One `run`:
 
-a. lessons: one `model.text` call proposes an edit per lesson observation
+a. lessons: an observation whose `confirms` names an existing lesson is a
+   bump of it with the observation's session, no model decision; for the
+   rest one `model.text` call proposes an edit per lesson observation
    (add / bump / nothing); code applies them. The model is the filter between
    transcript text and memory, so a failed call or an unreadable answer adds
    nothing: the observations stay pending and a failure is counted
@@ -210,6 +212,11 @@ def _run(bot, force):
     _stage(bot, "lessons")
     gap_obs = [o for o in pend if o.get("trust") == "gap" or o.get("kind") == "gap"]
     real = [o for o in pend if o not in gap_obs]
+    # An observation that `confirms` an existing lesson (capture validated the id) is a deterministic bump of
+    # it, applied below once the model step has not bailed out; it never reaches the model.
+    item_ids = {i["id"] for i in memory.items(bot)}
+    confirmed = [o for o in real if str(o.get("confirms") or "") in item_ids]
+    real = [o for o in real if o not in confirmed]
     added, bumped, ignored = [], [], len(gap_obs)
     open_gaps = gapmod.open_gaps(bot) if gap_obs else []
     offer = gap_obs if open_gaps else []  # gap observations reach the model only to be merged into a gap
@@ -298,6 +305,14 @@ def _run(bot, force):
             ignored += 1  # "nothing", or an op we do not know
     if not fallback:
         ignored += len([o for o in real if o["id"] not in handled])  # omitted by the answer: nothing
+    for o in confirmed:
+        # memory.bump counts a session once, so a repeat from the same session does not inflate the count.
+        it = memory.bump(bot, str(o["confirms"]), session=o.get("session") or "")
+        if it is not None:
+            bumped.append(it["id"])
+            outcomes[o["id"]] = {"op": "bump", "item": it["id"]}
+        else:
+            ignored += 1  # forgotten between the check above and now
 
     # Gap observations -> gap records (one count per distinct consult), merged where the model said so.
     _stage(bot, "gaps")
