@@ -504,11 +504,24 @@ button.tasks-caret,
    the reply give; every mark and fact keeps its width. */
 .hint-panel.is-row {
   box-sizing: border-box;
-  /* The window's own ground (claude-rail.css `.claude-rail-peek-card`), not
-     the tooltip's lighter popover tone: the row stands over that window's
-     head and reads as one of its lines (Akshil, 2026-11-16: "make bg colour
-     same as header"). */
-  background: var(--bg);
+  /* THE TASKS ROW UNDER THE POINTER, IN THE APP'S OWN POPOVER DRESS (Akshil,
+     2026-11-17: "hard to read because of bg/contrast" → "check other places
+     in our platform, we don't want it to change too much from current
+     design, just make sure it is visible enough, doesn't mix in with the
+     bg"). On the window's own ground (2026-11-16) the row sank into the
+     head and the chat it lands on. Nothing new is invented for it:
+       ground  `--row-bg-hover` — a Tasks row under the pointer (`.tasks-row
+               :hover`), the composer's surface in the same window;
+       edge    the chat popovers' strong border (composer.css `.c-kebabpop`,
+               `.c-ctxpop`, `.c-selpop`… `--c-border-strong`; the same value
+               at the root is `--nt-card-border-strong`);
+       shadow  those popovers' `0 6px 24px`.
+     (Tried the same day and dropped: fading the window's content to half —
+     "feels a bit off" — and a lighter grey ground with a moat — "not good
+     enough". What stayed is the light scrim below.) */
+  background: var(--row-bg-hover);
+  border-color: var(--nt-card-border-strong);
+  box-shadow: 0 6px 24px var(--shadow-md);
   max-width: none;
   padding: 0 12px;
   font-size: 13px;
@@ -516,6 +529,39 @@ button.tasks-caret,
   white-space: nowrap;
   overflow-wrap: normal;
   border-radius: 8px;
+}
+/* …AND THE RAIL'S WINDOWS STEP BACK UNDER A SCRIM WHILE THE ROW IS UP (Akshil,
+   2026-11-17, after trying window opacity, content dimming, a blur and six
+   scrim strengths on a live build: "let's do scrim 30"). The app's own modal
+   scrim (`--scrim`: 55% black dark, 40% light) is "quite high intensity"
+   here, so the window takes 55% of it — 30% black in a dark theme, 22% in a
+   light one — and follows every theme's token.
+
+   IT FADES IN AND OUT ("a transition fade for this scrim, fade in and out"):
+   the layer is always there at opacity 0 and only its opacity moves, so a
+   pointer crossing from ring to ring dips it instead of blinking it — at
+   `--dur-med`, the rail window's own fade (claude-rail.css `.claude-rail-peek`;
+   reduced motion collapses it). The row itself stays instant (base.css
+   `.hint-panel`).
+
+   NOTHING IN THE WINDOW IS REPOSITIONED FOR IT. The card is not made a
+   positioned box (its resize grips are earlier siblings and would end up
+   under it); the layer is laid out against the card's wrapper, the fixed
+   `.claude-rail-peek`, which is the card's own box — hence the child
+   selector and the inherited radius. It takes no pointer. */
+.claude-rail-peek > .claude-rail-peek-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--scrim) 55%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after {
+  opacity: 1;
 }
 .hint-row {
   display: flex;

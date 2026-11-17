@@ -190,13 +190,14 @@ test("the rail card: its pulse's facts ride the head's own slots, its star and a
   // The reply line: a hover preview's only — a pressed card shows none.
   expect(shared).toContain("{...(head.reply && !pinned && !held");
   // TWO LINES (2026-11-16): row 1 reads `folder › file` in every card — the
-  // place's name is no longer the favourite window's alone — and the ⋮ comes
-  // with the click: a hover preview has none, a pressed card (temp, pinned,
-  // the favourite's window opened by a press) has it.
+  // place's name is no longer the favourite window's alone — and every card
+  // hands the ⋮ over (2026-11-17: "show the kebab when we show fav and open
+  // icon"): the head shows it with the star and the door.
   expect(shared).toContain('place={favsOn ? placeEl(head, "place") : placeEl(head)}');
   expect(shared).not.toContain("placeName ? placeEl");
   expect(shared).toContain('{...(favsOn && hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}');
-  expect(shared).toContain("kebab={head.t.session_id && shownKey && (pinned || held) ? kebabFor(head) : null}");
+  expect(shared).toContain("kebab={head.t.session_id && shownKey ? kebabFor(head) : null}");
+  expect(shared).not.toContain("(pinned || held) ? kebabFor(head)");
   expect(shared).toContain('reveal="window"');
   expect(shared).toContain("starNode: starButton(head)");
   expect(shared).toContain("statusOverlay: archiveButton(head)");

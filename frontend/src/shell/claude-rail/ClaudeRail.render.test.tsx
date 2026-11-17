@@ -1197,6 +1197,41 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
     }
   });
 
+  test("flag on: the open favourite's ring says nothing, like window A's open ring; the other favourites keep their row (2026-11-17)", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    const open = { ...row, starred: true } as Task;
+    const other = { ...chat("b", { task_id: "TASK-043", title: "Another favourite" }), starred: true } as Task;
+    setFavOpen(open.key);
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: true, chats: [open, other] });
+      const mine = ringsOf(r, open.key).find(inFoot);
+      const theirs = ringsOf(r, other.key).find(inFoot);
+      expect(mine).toBeDefined();
+      expect(theirs).toBeDefined();
+      // The empty hint is the opt-out (hints.ts `hintOf`): no row, no tooltip.
+      expect(mine!.props["data-hint"]).toBe("");
+      expect(theirs!.props["data-hint"]).toBe("Another favourite");
+      expect(theirs!.props["data-hint-row"]).toBe("");
+    } finally {
+      setFavOpen(null);
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag off: the open favourite's ring keeps its title caption", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    const open = { ...row, starred: true } as Task;
+    setFavOpen(open.key);
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: true, chats: [open] });
+      const [mine] = ringsOf(r, "a").filter(inFoot);
+      expect(mine!.props["data-hint"]).toBe("Rename the pane noun");
+    } finally {
+      setFavOpen(null);
+    }
+  });
+
   test("flag on: a chat with no count prints none — the seat is left out, not zeroed", async () => {
     resetTaskHeadUnifiedFlagForTests();
     publishTaskHeadUnified({ enabled: true });

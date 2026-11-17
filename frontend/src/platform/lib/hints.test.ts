@@ -312,9 +312,34 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
   it("the stylesheet: one line, only the title and the reply give", () => {
     const panel = rule(".hint-panel.is-row");
     expect(panel).toContain("box-sizing: border-box;");
-    // The rail window's own ground, not the tooltip's lighter popover tone
-    // (2026-11-16: "make bg colour same as header").
-    expect(panel).toContain("background: var(--bg);");
+    // The app's own popover dress, not the window's ground (2026-11-17:
+    // "check other places in our platform … just make sure it is visible
+    // enough, doesn't mix in with the bg"): a hovered Tasks row's ground, the
+    // chat popovers' strong edge and shadow. No dimming of the window behind.
+    expect(panel).toContain("background: var(--row-bg-hover);");
+    expect(panel).not.toContain("background: var(--bg);");
+    expect(panel).toContain("border-color: var(--nt-card-border-strong);");
+    expect(panel).toContain("box-shadow: 0 6px 24px var(--shadow-md);");
+    expect(TASKS_CSS).not.toContain("is-spot");
+    // While the row is up the rail's windows stand under a light scrim
+    // (2026-11-17: "let's do scrim 30"): 55% of the app's modal scrim token —
+    // 30% black dark, 22% light — over the card, taking no pointer.
+    expect(TASKS_CSS).toContain(
+      '.claude-rail-peek > .claude-rail-peek-card::after {\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: 50;\n  border-radius: inherit;\n  background: color-mix(in srgb, var(--scrim) 55%, transparent);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity var(--dur-med) var(--ease-out);\n}',
+    );
+    // It fades in and out ("a transition fade for this scrim"): only its
+    // opacity moves, and the card is never made a positioned box for it — its
+    // resize grips are earlier siblings and would end up under it.
+    expect(TASKS_CSS).toContain("body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after {\n  opacity: 1;\n}");
+    expect(TASKS_CSS).not.toContain(".claude-rail-peek-card {\n  position: relative;");
+    const rail = readFileSync(join(import.meta.dir, "../../styles/claude-rail.css"), "utf8");
+    expect(rail).toMatch(/\n\.claude-rail-peek \{[^}]*position: fixed;/);
+    const tokens = readFileSync(join(import.meta.dir, "../../styles/tokens.css"), "utf8");
+    expect(tokens).toContain("--scrim: rgba(0, 0, 0, 0.55);");
+    expect(tokens).toContain("--scrim: rgba(0, 0, 0, 0.4);");
+    // The same recipe the chat's popovers wear.
+    const composer = readFileSync(join(import.meta.dir, "../../apps/claude/styles/composer.css"), "utf8");
+    expect(composer).toMatch(/\.c-kebabpop \{[^}]*border: 1px solid var\(--c-border-strong\);[^}]*box-shadow: 0 6px 24px var\(--c-shadow\);/);
     expect(panel).toContain("max-width: none;");
     expect(panel).toContain("white-space: nowrap;");
     expect(rule(".hint-row")).toContain("display: flex;");

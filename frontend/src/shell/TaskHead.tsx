@@ -71,9 +71,11 @@
 // Row 1 is where the task lives (the place, a chevron, where in it) and its
 // facts; row 2 is the task. The three slots trade as everywhere, and nothing
 // folds to an icon: the where-tag and the door keep their words, and a long
-// place gives width instead (task-head.css `.is-two-line`). The ⋮ is the
-// host's to withhold — the rail card hands it over only once the card has
-// been pressed (RailPeek). A panel or a pane keeps the one row above.
+// place gives width instead (task-head.css `.is-two-line`). THE ⋮ COMES WITH
+// THE STAR AND THE DOOR (Akshil, 2026-11-17: "show the kebab when we show fav
+// and open icon"): it sits in the acts' layer, so the count and the time end
+// the row at rest and the pointer on the card brings star · Open · ⋮ in the
+// same box. A panel or a pane keeps the one row above.
 //
 // WHAT THE HOST OWNS. The ⋮ is the host's `<Kebab …/>` handed in whole, because
 // what it does on Archive and Delete (advance to the next task, go back to the
@@ -235,8 +237,9 @@ export interface TaskHeadProps {
   /** WHAT BRINGS THE b ITEMS (Akshil, 2026-11-16). `"window"` — a card off
    *  the rail: the pointer anywhere on the card (or the keyboard inside it)
    *  shows them, except the Archive, which waits for the pointer on the
-   *  head; the facts and the ⋮ stand at rest, and a head with a task is two
-   *  lines at every width (where it lives and its facts, then the task). `"slot"` (default) — a panel or
+   *  head; the facts stand at rest and the ⋮ comes with the star and the
+   *  door; a head with a task is two lines at every width (where it lives
+   *  and its facts, then the task). `"slot"` (default) — a panel or
    *  a pane: the pointer on the head shows them, the facts and the ⋮ stand
    *  at rest, and the head stays one row. */
   reveal?: "window" | "slot";
@@ -624,6 +627,13 @@ export function TaskHead({
   // and the other trades in a box of its own.
   const hasActs = !!(starEl || openLink);
   const clustered = isWindow && !!who && (!hasActs || (!!starEl && !!openLink));
+  // THE ⋮ IS ONE OF THE ACTS in a two-line head (Akshil, 2026-11-17): seated
+  // in the acts' layer where there is one, so it shows and hides with the
+  // star and the door and the facts keep the row's end at rest. A head with
+  // one act alone has no such layer: its ⋮ keeps its seat after the slots and
+  // hides there (task-head.css `.is-two-line .task-head-marks > .task-head-kebab`).
+  const kebabEl = kebabNode ? <span className="task-head-kebab">{kebabNode}</span> : null;
+  const kebabInActs = twoLine && clustered && hasActs && !!kebabEl;
   const factsCluster =
     clustered && (countFact || whenFact || hasActs) ? (
       <span className={"task-head-facts" + (hasActs ? " has-acts" : "")}>
@@ -637,6 +647,7 @@ export function TaskHead({
           <span className="task-head-facts-layer is-b">
             {starEl}
             {openLink}
+            {kebabInActs ? kebabEl : null}
           </span>
         ) : null}
       </span>
@@ -796,7 +807,7 @@ export function TaskHead({
               {timeSlot}
             </>
           )}
-          {kebabNode ? <span className="task-head-kebab">{kebabNode}</span> : null}
+          {kebabInActs ? null : kebabEl}
         </div>
       </div>
       {stackedNow && (identity || line || status || statusRef) ? (
