@@ -4,7 +4,7 @@
 //             the summary and why; opened: what it rests on (your words, where it came from, the file). A change that
 //             can be taken back has Undo; one taken back says "undone"; one that failed shows its error. On top: how
 //             many things wait to be learned, "Learn now" (its step while it runs), filter chips All / Skills / Memory
-//             and "Show everything" (the quiet lines too). Opening the tab marks the activity as seen.
+//             and "Show everything" (the quiet lines too). Once it has loaded into the open tab, the activity is seen.
 //   Memory    the budget line on top ("32 of 50 lessons", a meter, what tidying does, the last tidy), then the lessons
 //             it keeps (most used first), each a card: In use / Not used yet / Contradicted, where it came from, how
 //             often used; opened: earlier wording, the lessons it was merged from, what it is about, tasks / answers
@@ -54,10 +54,21 @@ export const fromMemory = (m: ExpertMemory): Pick<Data, "memory" | "budget"> => 
   return { memory: m.items || [], budget: { limit: b.limit, tidy_at: b.tidy_at, total: b.total ?? (m.items || []).length, last_tidy: b.last_tidy ?? null } };
 };
 
-/** A fresh first page laid over the lines already loaded: the page first, then the older lines it does not hold. */
+/** A fresh first page laid over the lines already loaded: the page first, then the older lines it does not hold.
+ *  A page that shares no line with what was loaded may be a whole page or more ahead of it: the older lines are
+ *  dropped (keeping them would leave a hole "Show earlier" can never reach), and paging goes on from the page. */
 export function mergeActivity(page: readonly ExpertActivity[], had: readonly ExpertActivity[] | null): ExpertActivity[] {
   const ids = new Set(page.map((a) => a.id)), oldest = page.length ? page[page.length - 1].ts : Infinity;
+  if (!(had || []).some((a) => ids.has(a.id))) return [...page];
   return [...page, ...(had || []).filter((a) => !ids.has(a.id) && a.ts <= oldest)];
+}
+
+/** An older page (the lines before line `before`) put under the lines loaded, and whether more may remain. null: the
+ *  list no longer ends at `before` (it started again since the page was asked for), so the page is not for it. */
+export function appendActivity(had: readonly ExpertActivity[] | null, page: readonly ExpertActivity[], before: string): { activity: ExpertActivity[]; more: boolean } | null {
+  if (!had || had[had.length - 1]?.id !== before) return null;
+  const ids = new Set(had.map((a) => a.id)), fresh = page.filter((a) => !ids.has(a.id));
+  return { activity: [...had, ...fresh], more: fresh.length > 0 && page.length >= PAGE };
 }
 
 /** The open tab's data for expert `id`, kept fresh (see the header). `everything`: the quiet lines too. */
@@ -68,6 +79,9 @@ function useExpertData(id: string, seq: number, tab: ExpertTab, everything: bool
   live.current = id;
   const tabRef = useRef(tab);
   tabRef.current = tab;
+  // Which "Show everything" setting the list belongs to: a reply asked for under an earlier one is dropped.
+  const gen = useRef(0), genFor = useRef(everything);
+  if (genFor.current !== everything) { genFor.current = everything; gen.current++; }
   // A failed fetch shows the banner once per distinct error; a success after it takes the banner down again.
   const guard = useCallback(async <T,>(call: () => Promise<T>, loud = false): Promise<T | undefined> => {
     try {
@@ -83,15 +97,18 @@ function useExpertData(id: string, seq: number, tab: ExpertTab, everything: bool
     }
   }, []);
 
-  /** The newest page of the activity. With the Activity tab open it is seen at once: the server is told, and the dot
-   *  on the expert's row goes. */
+  /** The newest page of the activity. Loaded with the Activity tab open and the page visible, it is seen: the server
+   *  is told, and the dot on the expert's row goes. A load that failed marks nothing. */
   const loadActivity = useCallback(async (loud = false) => {
-    const want = id;
+    const want = id, at = gen.current;
     const r = await guard(() => expertApi.activity(want, { limit: PAGE, quiet: everything }), loud);
-    if (live.current !== want || !r) return;
+    if (live.current !== want || gen.current !== at || !r) return;
     const page = Array.isArray(r.items) ? r.items : [];
-    setData((d) => ({ ...d, activity: mergeActivity(page, d.activity), more: d.activity && d.activity.length > page.length ? d.more : page.length >= PAGE,
-      waiting: r.waiting || 0, learning: r.learning || null }));
+    setData((d) => {
+      const activity = mergeActivity(page, d.activity);
+      // Older lines kept under the page: what was known about still older ones stands.
+      return { ...d, activity, more: activity.length > page.length ? d.more : page.length >= PAGE, waiting: r.waiting || 0, learning: r.learning || null };
+    });
     const unread = r.unread || 0;
     if (tabRef.current === "activity" && !document.hidden) {
       setExpertUnread(want, 0);
@@ -100,13 +117,13 @@ function useExpertData(id: string, seq: number, tab: ExpertTab, everything: bool
   }, [id, guard, everything]);
 
   const loadMore = useCallback(async (before: string) => {
-    const want = id;
+    const want = id, at = gen.current;
     const r = await guard(() => expertApi.activity(want, { limit: PAGE, before, quiet: everything }), true);
-    if (live.current !== want || !r) return;
+    if (live.current !== want || gen.current !== at || !r) return;
     const page = Array.isArray(r.items) ? r.items : [];
     setData((d) => {
-      const ids = new Set((d.activity || []).map((a) => a.id)), fresh = page.filter((a) => !ids.has(a.id));
-      return { ...d, activity: [...(d.activity || []), ...fresh], more: fresh.length > 0 && page.length >= PAGE };
+      const next = appendActivity(d.activity, page, before);
+      return next ? { ...d, ...next } : d;
     });
   }, [id, guard, everything]);
 
@@ -478,13 +495,6 @@ export function ExpertPanels({ b }: { b: Bot }) {
   const [undoing, setUndoing] = useState<string | null>(null);
   const [undoErrors, setUndoErrors] = useState<Record<string, string>>({});
   const id = b.id, uid = useId();  // Settings may mount these panels while the preview column shows them too
-
-  // Opening the Activity tab marks what is there as seen (the dot on the expert's row goes). Silent: a nicety.
-  useEffect(() => {
-    if (tab !== "activity") return;
-    setExpertUnread(id, 0);
-    void expertApi.seen(id).catch(() => {});
-  }, [id, tab]);
 
   // Learning answers at once and runs in the background (the activity's `learning` follows it, polled while it runs),
   // so the button is busy only for the request itself.

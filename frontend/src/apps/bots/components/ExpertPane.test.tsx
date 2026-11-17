@@ -1,11 +1,13 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import type { ExpertActivity, ExpertConsult, ExpertItem } from "../lib/api";
+import type { Bot, ExpertActivity, ExpertActivityReply, ExpertConsult, ExpertItem } from "../lib/api";
 
-const { ActivityPanel, ActivityCard, MemoryPanel, LessonCard, ConsultsPanel, ConsultCard, fromMemory, mergeActivity } = await import("./ExpertPane");
+const { ActivityPanel, ActivityCard, MemoryPanel, LessonCard, ConsultsPanel, ConsultCard, fromMemory, mergeActivity, appendActivity, ExpertPanels } = await import("./ExpertPane");
+const { expertApi } = await import("../lib/api");
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
   created: 0, updated: 0, ...p });
@@ -148,6 +150,19 @@ describe("activity data", () => {
   test("a fresh first page lies over the older lines already loaded", () => {
     expect(mergeActivity([l("d", 4), l("c", 3)], [l("c", 3), l("b", 2), l("a", 1)]).map((x) => x.id)).toEqual(["d", "c", "b", "a"]);
     expect(mergeActivity([l("b", 2)], null).map((x) => x.id)).toEqual(["b"]);
+  });
+  test("a fresh page that shares no line with the loaded ones replaces them (no hole to page past)", () => {
+    // Loaded 4..1; a page's worth and more arrived since, so the fresh page is 9..8 and 7..5 are on neither.
+    expect(mergeActivity([l("i", 9), l("h", 8)], [l("d", 4), l("c", 3), l("b", 2), l("a", 1)]).map((x) => x.id)).toEqual(["i", "h"]);
+    expect(mergeActivity([], [l("a", 1)])).toEqual([]);
+  });
+  test("an older page goes under the list only while the list still ends where it was asked from", () => {
+    const had = [l("d", 4), l("c", 3)];
+    expect(appendActivity(had, [l("c", 3), l("b", 2)], "c")).toEqual({ activity: [l("d", 4), l("c", 3), l("b", 2)], more: false });
+    expect(appendActivity(had, Array.from({ length: 100 }, (_, i) => l(`o${i}`, 2)), "c")?.more).toBe(true);
+    // The list started again since (a refresh without overlap, another filter): the page is not for it.
+    expect(appendActivity([l("i", 9), l("h", 8)], [l("b", 2)], "c")).toBeNull();
+    expect(appendActivity(null, [l("b", 2)], "c")).toBeNull();
   });
   test("the memory reply: the budget object, or the same fields beside the lessons", () => {
     expect(fromMemory({ items: [item({})], budget: { limit: 50, tidy_at: 30, total: 1 } }).budget).toMatchObject({ limit: 50, tidy_at: 30, total: 1, last_tidy: null });
@@ -308,5 +323,63 @@ describe("ConsultsPanel", () => {
   test("empty and loading", () => {
     expect(renderToStaticMarkup(createElement(ConsultsPanel, { consults: [] }))).toContain("No consults yet.");
     expect(renderToStaticMarkup(createElement(ConsultsPanel, { consults: null }))).toContain("Loading…");
+  });
+});
+
+describe("ExpertPanels: the Activity tab's loading", () => {
+  const real = { activity: expertApi.activity, seen: expertApi.seen };
+  const mounted: ReactTestRenderer[] = [];
+  afterEach(() => {
+    for (const r of mounted.splice(0)) act(() => r.unmount());
+    Object.assign(expertApi, real);
+  });
+  type Ask = { o: { before?: string; quiet?: boolean }; ok: (r: ExpertActivityReply) => void; fail: (e: Error) => void };
+  /** expertApi.activity and .seen replaced: each activity call waits to be answered by the test. */
+  const stub = () => {
+    const asks: Ask[] = [], seen: string[] = [];
+    expertApi.activity = ((_id: string, o = {}) => new Promise<ExpertActivityReply>((ok, fail) => { asks.push({ o, ok, fail }); })) as typeof expertApi.activity;
+    expertApi.seen = (async (id: string) => { seen.push(id); return {}; }) as typeof expertApi.seen;
+    return { asks, seen };
+  };
+  const mount = async () => {
+    let r!: ReactTestRenderer;
+    await act(async () => { r = create(createElement(ExpertPanels, { b: { id: "x1", seq: 0 } as unknown as Bot })); });
+    mounted.push(r);
+    return r;
+  };
+  const press = (r: ReactTestRenderer, label: string) => act(async () => {
+    r.root.findAll((n) => n.type === "button" && n.children.join("") === label)[0].props.onClick();
+  });
+  const rows = (p: string) => Array.from({ length: 100 }, (_, i): ExpertActivity => ({ id: `${p}${i}`, ts: 1000 - i, action: "learned", target: "",
+    summary: `${p} line ${i}`, why: "", ok: true, undoable: false, undone: false }));
+  const reply = (items: ExpertActivity[], unread = 0): ExpertActivityReply => ({ items, unread, waiting: 0 });
+
+  test("an older page asked for under another Show everything setting is dropped", async () => {
+    const { asks } = stub(), r = await mount();
+    await act(async () => { asks[0].ok(reply(rows("n"))); });
+    await press(r, "Show earlier");
+    expect(asks[1].o.before).toBe("n99");
+    await press(r, "Show everything");
+    const fresh = asks.findIndex((a) => a.o.quiet);
+    expect(fresh).toBeGreaterThan(1);
+    // The new setting's first page ends on the same line the old request paged from.
+    await act(async () => { asks[fresh].ok(reply(rows("n"))); });
+    await act(async () => { asks[1].ok(reply(rows("old"))); });
+    const out = JSON.stringify(r.toJSON());
+    expect(out).toContain("n line 99");
+    expect(out).not.toContain("old line");
+  });
+
+  test("the activity is marked seen only once it has loaded into the open tab", async () => {
+    const { asks, seen } = stub(), r = await mount();
+    await act(async () => { asks[0].fail(new Error("offline")); });
+    expect(seen).toEqual([]);
+    // The next load (here: after leaving the tab and coming back) succeeds.
+    await press(r, "Memory");
+    await press(r, "Activity");
+    const again = asks.length - 1;
+    expect(again).toBeGreaterThan(0);
+    await act(async () => { asks[again].ok(reply(rows("n").slice(0, 2), 2)); });
+    expect(seen).toEqual(["x1"]);
   });
 });
