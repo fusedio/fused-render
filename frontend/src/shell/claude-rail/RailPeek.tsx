@@ -610,7 +610,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   }, [pinned]);
   const wishFor = (key: string): PeekWish => {
     if (size) {
-      if (resizeKey === "canvasRailFav") return favCardWish(size, storedPeekSize(resizeKey), window.innerHeight);
+      // A PINNED window has no height limit but its room (owner, 2026-11-17:
+      // "remove the restrictions of height only from pin window"): the half-
+      // window ceiling is the hover's and the temp card's. No window height
+      // handed over is no ceiling (`favMaxHeight`).
+      if (resizeKey === "canvasRailFav") return favCardWish(size, storedPeekSize(resizeKey), pinCtl?.pinned ? Infinity : window.innerHeight);
       const stored = resizeKey ? storedPeekSize(resizeKey) : null;
       return stored ? { ...size, width: stored.width, maxHeight: stored.height } : size;
     }
@@ -683,9 +687,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       : size?.align === "bottom" && railEl
         ? railEl.getBoundingClientRect().bottom
         : bottomClear(box, avoid);
-    // The favourite's card: never past half the window (header), docked or
-    // floating.
-    const cap = resizeKey === "canvasRailFav" ? favMaxHeight(window.innerHeight) : undefined;
+    // The favourite's card: never past half the window (header) — unless it
+    // is PINNED, which has no height limit but its room (owner, 2026-11-17).
+    const cap = resizeKey === "canvasRailFav" && !pinCtl?.pinned ? favMaxHeight(window.innerHeight) : undefined;
     dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floating, floor, cap };
     dragLast.current = null;
     setResizing(corner);

@@ -231,7 +231,9 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     onPressInside();
   };
   // ONE SIZE, hovered or pinned, the favourite card's (header).
-  const wish = () => favCardWish(FAV_SIZE, storedPeekSize(), window.innerHeight);
+  // …and no half-window ceiling once PINNED (owner, 2026-11-17: "remove the
+  // restrictions of height only from pin window"; RailPeek's `wishFor`).
+  const wish = () => favCardWish(FAV_SIZE, storedPeekSize(), pinCtl?.pinned ? Infinity : window.innerHeight);
   const railLeft = useRef(0);
   const row = useMemo(() => rowOf(railEl), [railEl]);
   // WHERE IT STANDS (header): the rail is the anchor — with `align:
@@ -262,7 +264,8 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     el: HTMLElement;
     floating: boolean;
     floor: number | undefined;
-    cap: number;
+    /** The height the drag may not pass; none once pinned. */
+    cap: number | undefined;
   } | null>(null);
   const dragLast = useRef<Box | null>(null);
   const onGripDown = (corner: MoveEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -274,7 +277,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     // the height never passes half the window (RailPeek, the favourite's).
     // Floating: the viewport's bottom.
     const floor = !floating && railEl ? railEl.getBoundingClientRect().bottom : undefined;
-    const cap = favMaxHeight(window.innerHeight);
+    const cap = pinCtl?.pinned ? undefined : favMaxHeight(window.innerHeight);
     dragStart.current = {
       x: e.clientX,
       y: e.clientY,
