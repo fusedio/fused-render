@@ -900,6 +900,9 @@ def _draft(bot, lessons, *, reorganise=None, correction=None) -> dict:
         plan = _update(skill, ops, add, remove, by_name)
         if not plan["ops"]:
             raise Unfit(NO_SECTION)
+        if fix and not any(o["op"] in ("replace", "remove") for o in plan["ops"]):
+            # Only adding a rule would leave the corrected one standing beside it.
+            raise Unfit(f"the draft did not replace or remove the section of “{fix}” that states the corrected rule")
         why = _plan_fits(plan, by_name)
         if why:
             # One retry: ask for a move (and / or trigger removals) that brings it under the limits.
@@ -911,7 +914,8 @@ def _draft(bot, lessons, *, reorganise=None, correction=None) -> dict:
                 if retry["ops"] and not _plan_fits(retry, by_name):
                     plan, why = retry, ""
         if why:
-            if reorganise or not plan["_added"]:
+            if reorganise or fix or not plan["_added"]:
+                # A correction must change the skill that states the old rule: never a separate skill beside it.
                 raise Unfit(f"the change does not fit the skill: {why}")
             # Never cut: the added material goes into a separate new skill; the existing skill stays untouched.
             first = plan["_added"][0]["heading"]
@@ -1138,6 +1142,23 @@ def _decide(bot, pid):
     return p
 
 
+def _edited_since(base_body, body, ops) -> str:
+    """The first heading `ops` replace, remove, move or add whose section differs between `base_body` (what the
+    draft was made against) and `body` (the skill now), else "". Sections no op names may differ freely."""
+    _pre, base = parse_sections(norm_body(base_body))
+    _pre, now = parse_sections(norm_body(body))
+    for op in norm_ops(ops):
+        kind = str(op.get("op") or "").strip().lower()
+        names = op.get("headings") if kind == "move" else [op.get("heading") or (DEFAULT_HEADING if kind == "add"
+                                                                                  else "")]
+        for h in names if isinstance(names, list) else []:
+            key = _hkey(h) if isinstance(h, str) else ""
+            if key and [s["text"].rstrip() for s in base if _hkey(s["heading"]) == key] != \
+                    [s["text"].rstrip() for s in now if _hkey(s["heading"]) == key]:
+                return _clean_heading(h)
+    return ""
+
+
 def _final(bot, p) -> list:
     """What `approve` writes for `p`, rebuilt against the skills as they are NOW (another approval may have changed
     them since the draft): `[{"name","title","trigger","body","added": [headings]}]`, the edited skill first and the
@@ -1155,6 +1176,11 @@ def _final(bot, p) -> list:
         cur = by_name.get(p.get("skill"))
         if cur is None:
             raise ValueError(f"the skill “{p.get('skill')}” no longer exists")
+        if isinstance(p.get("base_body"), str):
+            stale = _edited_since(p["base_body"], cur.get("body") or "", ops)
+            if stale:
+                raise ValueError(f"the skill changed since this was drafted: its section “{stale}” was edited, so "
+                                 "this change is not applied over it; ask for a new draft")
         plan = _update(cur, ops, p.get("triggers_added") or [], p.get("triggers_removed") or [], by_name)
         if plan["dropped_ops"] or len(plan["ops"]) != len(ops):
             raise ValueError("the skill changed since this was drafted: "

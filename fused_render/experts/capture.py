@@ -717,13 +717,15 @@ def capture_due(now=None, limit: int = 4, stop=None) -> dict:
     first, `capture_session` for every available expert the session is
     relevant to and that has not read it at this size yet; a failure is
     counted (`note_failure`, given up after `MAX_FAILS`). The session is marked
-    read once every relevant expert has read it, or at once when no expert
-    wants it. Never raises."""
+    read once every relevant expert (available or not) has read it, or at once
+    when no expert wants it: a relevant expert without an engine leaves it due,
+    so it reads the session once it is available again. Never raises."""
     from fused_render.experts import model
     result = {"sessions": 0, "observations": 0, "errors": 0}
     try:
-        experts = [b for b in store.all_experts() if model.available(b)[0]]
-        if not experts:
+        experts = list(store.all_experts())
+        ready = {b.id for b in experts if model.available(b)[0]}
+        if not ready:
             return result
         sessions = due_sessions(now, limit=max(0, int(limit)))
     except Exception:  # noqa: BLE001
@@ -742,8 +744,8 @@ def capture_due(now=None, limit: int = 4, stop=None) -> dict:
             except Exception:  # noqa: BLE001
                 logger.warning("experts capture: relevance check failed", exc_info=True)
         for bot in wanted:
-            if expert_captured(session, bot):
-                continue
+            if bot.id not in ready or expert_captured(session, bot):
+                continue  # an unavailable expert reads it later: it still counts below, so the session stays due
             try:
                 result["observations"] += len(capture_session(bot, session))
             except Exception:  # noqa: BLE001

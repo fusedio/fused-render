@@ -515,6 +515,9 @@ def test_consolidate_unknown_ops_and_omissions_are_nothing(bot, fake_text):
 
 
 def test_consolidate_bumps_confirmed_lessons_once_per_session_without_the_model(bot, fake_text):
+    # count 3 would reach the default propose_at and start a drafting thread (a model call of its own, racing the
+    # assertion below): this test is about consolidation's own calls only.
+    bot.meta["expert"] = {"memory": {"propose_at": 9}}
     lesson = memory.add(bot, "Users want a Parquet loader node.", kind="repeated_request", session="s1")
 
     def confirm(session):
@@ -524,6 +527,7 @@ def test_consolidate_bumps_confirmed_lessons_once_per_session_without_the_model(
     seen = [confirm("s2"), confirm("s2"), confirm("s3"), confirm("s1")]
     r = consolidate.run(bot, force=True)
     assert fake_text.calls == []  # only confirmations: no model decision
+    assert r["proposed"] == []
     assert r["ran"] and r["added"] == [] and r["bumped"] == [lesson["id"]] and r["ignored"] == 0
     item = memory.items(bot)[0]
     assert item["count"] == 3 and item["sessions"] == ["s1", "s2", "s3"]  # s2 and s1 again count once

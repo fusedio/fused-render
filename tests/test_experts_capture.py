@@ -374,6 +374,30 @@ def test_capture_due_without_available_experts_reads_nothing(env, tmp_path, monk
     assert capture.due_sessions(NOW)  # not marked
 
 
+def test_an_unavailable_relevant_expert_keeps_the_session_due_and_reads_it_later(env, tmp_path, monkeypatch):
+    up = _Bot(tmp_path, "up", targets=["canvas"])
+    down = _Bot(tmp_path, "down", targets=["canvas"])
+    monkeypatch.setattr(store, "all_experts", lambda: [up, down])
+    ready = {"up"}
+    monkeypatch.setattr(model, "available", lambda bot: (bot.id in ready, ""))
+    calls = []
+
+    def text(bot, prompt, **kw):
+        calls.append(bot.id)
+        return json.dumps([{"kind": "user_correction", "claim": "Use X."}])
+
+    monkeypatch.setattr(model, "text", text)
+    env["add"]("s", age=3600, canvas=True)
+    assert capture.capture_due(NOW)["observations"] == 1 and calls == ["up"]
+    assert [s["session_id"] for s in capture.due_sessions(NOW)] == ["s"]  # not complete: "down" has not read it
+    capture.capture_due(NOW)
+    assert calls == ["up"]  # "up" is not asked again at this size
+    ready.add("down")
+    capture.capture_due(NOW)
+    assert calls == ["up", "down"] and len(observations.pending(down)) == 1
+    assert capture.due_sessions(NOW) == []
+
+
 # ------------------------------------------------------------------ scheduler ---
 @pytest.fixture
 def sched(monkeypatch, tmp_path):

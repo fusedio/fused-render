@@ -299,6 +299,52 @@ def test_approve_fails_when_a_named_section_is_gone_since_the_draft(bot, replies
     assert _skill(bot, "canvas-layout")["body"] == "Intro only."
 
 
+def test_approve_never_overwrites_a_section_edited_since_the_draft(bot, replies):
+    bot.skill_save("Canvas layout", "canvas", FENCED, name="canvas-layout")
+    for _ in range(2):
+        replies.append({"action": "update", "skill": "canvas-layout",
+                        "ops": [{"op": "replace", "heading": "Rules", "section": "- rows, files and index agree"}]})
+    p = proposals.prepare(bot, [_lesson(bot, "rules")])
+    edited = FENCED.replace("- rows and files agree", "- rows and files agree (the user's own edit)")
+    bot.skill_save("Canvas layout", "canvas", edited, name="canvas-layout")
+    with pytest.raises(ValueError, match="section “Rules” was edited.*new draft"):
+        proposals.approve(bot, p["id"])
+    assert _skill(bot, "canvas-layout")["body"] == edited and proposals.get(bot, p["id"])["status"] == "failed"
+    # An unrelated section edited since the draft: the change still applies on top of it.
+    bot.skill_save("Canvas layout", "canvas", FENCED, name="canvas-layout")
+    p = proposals.prepare(bot, [_lesson(bot, "rules again")])
+    other = FENCED.replace("Intro line.", "Intro line, edited.").replace('name = "x"', 'name = "y"')
+    bot.skill_save("Canvas layout", "canvas", other, name="canvas-layout")
+    proposals.approve(bot, p["id"])
+    assert _skill(bot, "canvas-layout")["body"] == other.replace("- rows and files agree",
+                                                                 "- rows, files and index agree")
+
+
+def test_a_correction_draft_that_only_adds_a_rule_fails(bot, replies):
+    bot.skill_save("Canvas layout", "canvas", FENCED, name="canvas-layout")
+    fix = {"skill": "canvas-layout", "old": "rows and files agree", "quote": "no, the index must agree too"}
+    replies.append({"action": "update", "skill": "canvas-layout",
+                    "ops": [{"op": "add", "heading": "Correction", "section": "- the index agrees too"}]})
+    with pytest.raises(proposals.Unfit, match="replace or remove"):
+        proposals._draft(bot, [_lesson(bot, "the index agrees too")], correction=fix)
+    replies.append({"action": "update", "skill": "canvas-layout",
+                    "ops": [{"op": "remove", "heading": "Rules"},
+                            {"op": "add", "heading": "Agreement", "section": "- rows, files and the index agree"}]})
+    out = proposals._draft(bot, [_lesson(bot, "the index agrees too")], correction=fix)
+    assert out["reason"] == "correction" and [o["op"] for o in out["ops"]] == ["remove", "add"]
+
+
+def test_a_correction_that_does_not_fit_fails_instead_of_becoming_a_new_skill(bot, replies):
+    cap = Bot.SKILL_BODY_CAP
+    bot.skill_save("Full", "full", _near_full(cap), name="full")
+    replies.append({"action": "update", "skill": "full",
+                    "ops": [{"op": "replace", "heading": "A", "section": "n" * int(cap * 0.7)}]})
+    replies.append({"ops": [{"op": "move", "headings": ["Nope"], "to": {"title": "X", "trigger": "x"}}]})
+    with pytest.raises(proposals.Unfit, match="does not fit the skill"):
+        proposals._draft(bot, [_lesson(bot, "new stuff")], correction={"skill": "full", "old": "a", "quote": "q"})
+    assert len(replies.prompts) == 2 and _skill(bot, "full")["body"] == _near_full(cap)
+
+
 # ---------------------------------------------------------------- warnings ---
 
 WBODY = ("Intro.\n\n## A\n\n" + "a" * 100 + "\n\n## B\n\n```py\nx = 1\n```\n\n" + "b" * 100 + "\n\n## C\n\n"

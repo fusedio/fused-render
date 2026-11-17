@@ -386,16 +386,23 @@ def queued_corrections(bot) -> list:
     return [r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict) and r.get("item")]
 
 
+def _queue_correction(bot, corr: dict) -> None:
+    """Queue `corr`, replacing a queued entry for the same (lesson, skill): one lesson may correct several skills.
+    The caller holds `store.lock(bot)`."""
+    import time
+    key = (corr.get("item"), corr.get("skill") or "")
+    rows = [r for r in queued_corrections(bot) if (r.get("item"), r.get("skill") or "") != key]
+    store.write_json(_corrections_path(bot), [*rows, dict(corr, at=time.time())])
+
+
 def request_correction(bot, corr: dict) -> str | None:
     """Request a skill proposal that changes skill `corr["skill"]` to follow the user's correction (lesson
     `corr["item"]`), or queue it when a proposal is open (single flight). Returns the proposal id, or None when it
     was queued or its lesson is gone."""
-    import time
     from fused_render.experts import proposals
     with store.lock(bot):
         if proposals.any_open(bot):
-            rows = [r for r in queued_corrections(bot) if r.get("item") != corr.get("item")]
-            store.write_json(_corrections_path(bot), rows + [dict(corr, at=time.time())])
+            _queue_correction(bot, corr)
             return None
     try:
         p = proposals.request(bot, [corr["item"]], topic=f"Correction: {corr.get('old') or ''}"[:200],
@@ -404,8 +411,7 @@ def request_correction(bot, corr: dict) -> str | None:
     except ValueError as e:
         if str(e) == proposals.BUSY:
             with store.lock(bot):
-                rows = [r for r in queued_corrections(bot) if r.get("item") != corr.get("item")]
-                store.write_json(_corrections_path(bot), rows + [dict(corr, at=time.time())])
+                _queue_correction(bot, corr)
         return None
     return p.get("id") if isinstance(p, dict) else None
 
@@ -429,6 +435,23 @@ def drain_corrections(bot) -> list:
         return []
     pid = request_correction(bot, nxt)
     return [pid] if pid else []
+
+
+def _credit_correction(bot, o, item_id):
+    """Credit verified user correction `o` to lesson `item_id`: counted once per session like a bump, and the
+    lesson raised to trust `user` via `session` (memory.add on its own claim, which upgrades the trust of the equal
+    lesson). None when the lesson is gone."""
+    with store.lock(bot):
+        live = memory.items(bot)
+        target = next((i for i in live if i.get("id") == item_id), None)
+        if target is None:
+            return None
+        key = memory.normalise(target.get("claim"))
+        first = next((i for i in live if memory.normalise(i.get("claim")) == key), None)
+        if first is not None and first.get("id") != item_id:
+            return memory.bump(bot, item_id, session=o.get("session") or "")  # an equal claim shadows it: count only
+        return memory.add(bot, target.get("claim") or "", kind=target.get("kind") or "lesson", trust="user",
+                          session=o.get("session") or "", via="session", counted=counts(o))
 
 
 def _question_of(obs) -> str:
@@ -483,7 +506,14 @@ def _run(bot, force):
 
     def credit(o, item_id):
         # Independent evidence raises the count (once per session); an echo of the expert's advice, or a statement
-        # not grounded in a user line, is only noted as confirmed.
+        # not grounded in a user line, is only noted as confirmed. A verified user correction also raises the
+        # lesson to trust "user" (via "session"), so it is indexed at once (§13).
+        if correction(o):
+            it = _credit_correction(bot, o, item_id)
+            if it is not None:
+                bumped.append(it["id"])
+                outcomes[o["id"]] = {"op": "bump", "item": it["id"]}
+            return it
         if counts(o):
             it, op = memory.bump(bot, item_id, session=o.get("session") or ""), "bump"
         else:
@@ -642,6 +672,9 @@ def _run(bot, force):
                                 "old_id": old_id})
     for o in confirmed:
         # memory.bump counts a session once, so a repeat from the same session does not inflate the count.
+        if str(o["confirms"]) in contra_items:
+            ignored += 1  # never a bump of a lesson this batch contradicts (the model path's guard too)
+            continue
         if credit(o, str(o["confirms"])) is None:
             ignored += 1  # forgotten between the check above and now
 

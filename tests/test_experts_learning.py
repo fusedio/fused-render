@@ -201,6 +201,55 @@ def test_a_correction_waits_in_the_queue_while_a_proposal_is_open(bot, fake_text
     assert consolidate.queued_corrections(bot) == []
 
 
+def test_queued_corrections_are_kept_per_lesson_and_skill(bot, monkeypatch):
+    proposals._save(bot, {"id": "pbusy", "ts": time.time(), "status": "ready", "items": []})
+    for skill in ("charts", "titles", "charts"):
+        assert consolidate.request_correction(bot, {"item": "m1", "skill": skill, "old": OLD}) is None
+    assert sorted(q["skill"] for q in consolidate.queued_corrections(bot)) == ["charts", "titles"]
+    # The BUSY path (another proposal claimed the slot between the check and the request) keeps the same identity.
+    p = proposals.get(bot, "pbusy")
+    p["status"] = "rejected"
+    proposals._save(bot, p)
+
+    def busy(*a, **k):
+        raise ValueError(proposals.BUSY)
+
+    monkeypatch.setattr(proposals, "request", busy)
+    assert consolidate.request_correction(bot, {"item": "m1", "skill": "loaders", "old": OLD}) is None
+    assert consolidate.request_correction(bot, {"item": "m1", "skill": "titles", "old": OLD}) is None
+    assert sorted(q["skill"] for q in consolidate.queued_corrections(bot)) == ["charts", "loaders", "titles"]
+
+
+def test_a_confirmation_never_bumps_a_lesson_the_batch_contradicts(bot, fake_text):
+    old = memory.add(bot, OLD, kind="lesson", session="s0")
+    contra = observations.write(bot, kind="advice_contradicted", claim=NEW, trust="outcome", session="live",
+                                contradicts=old["id"], by_user=False)
+    observations.write(bot, kind="error_then_fix", claim=OLD, trust="outcome", session="other",
+                       confirms=old["id"])
+    fake_text.replies.append(lambda p: json.dumps([{"obs": contra["id"], "op": "add"}]))
+    r = consolidate.run(bot, force=True)
+    kept = next(i for i in memory.items(bot) if i["id"] == old["id"])
+    assert kept["count"] == 1 and kept["contradicted"] == 1 and not memory.indexed(kept)
+    assert old["id"] not in r["bumped"] and r["contradicted"] == [old["id"]]
+
+
+def test_a_verified_correction_confirming_a_lesson_makes_it_a_user_lesson(bot, fake_text):
+    # Seen once in this same session: the count cannot rise, yet the user's statement must take effect at once.
+    lesson = memory.add(bot, NEW, kind="user_correction", session="live")
+    _correction(bot, confirms=lesson["id"])
+    r = consolidate.run(bot, force=True)
+    item = memory.items(bot)[0]
+    assert (item["trust"], item["via"], item["count"]) == ("user", "session", 1)
+    assert memory.indexed(item) and r["bumped"] == [lesson["id"]] and fake_text.calls == []
+    # The model-chosen bump of another lesson upgrades it too.
+    other = memory.add(bot, "Region charts use one line per region.", session="s0")
+    o = _correction(bot, session="s9")
+    fake_text.replies.append(lambda p: json.dumps([{"obs": o["id"], "op": "bump", "item": other["id"]}]))
+    consolidate.run(bot, force=True)
+    item = next(i for i in memory.items(bot) if i["id"] == other["id"])
+    assert (item["trust"], item["via"], item["count"]) == ("user", "session", 2) and memory.indexed(item)
+
+
 def test_a_correction_draft_targets_the_skill_and_its_card_says_so(bot, fake_text):
     bot.skill_save("Charts", "chart, title", "## Titles\n\nA chart node's title is '<Region> — Monthly revenue'.\n\n"
                                              "## Colours\n\nUse the brand palette.", name="charts")
