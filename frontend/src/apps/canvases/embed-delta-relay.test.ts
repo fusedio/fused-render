@@ -743,4 +743,62 @@ describe("review round", () => {
     await r.retryToken();
     expect(tokens).toBe(0);
   });
+  test("a hello's full cut that failed through its window is asked again as a FULL cut on the re-arm", async () => {
+    let failing = true;
+    const t = fakeTransport();
+    t.getDelta = async (full) => {
+      t.asked.push(full);
+      if (failing) {
+        const e = new Error("down") as Error & { status: number };
+        e.status = 503;
+        throw e;
+      }
+      return { rev: 5, base_rev: null, full: true, ops: ops(1) };
+    };
+    const r = createEmbedDeltaRelay(t);
+    r.onSyncState(state(5)); // first sight: the cursor is at rev 5
+    r.handleMessage({ type: "fused-embed-hello" });
+    await r.idle();
+    expect(t.posted).toEqual([]);
+    expect(t.asked.every((f) => f)).toBe(true);
+    const asked = t.asked.length;
+    failing = false;
+    t.advance(2_000); // the re-arm
+    r.onSyncState(state(5)); // the same rev, seen again
+    await r.idle();
+    expect(t.asked.slice(asked)).toEqual([true]);
+    expect(t.posted.map((m) => [m.rev, m.full])).toEqual([[5, true]]);
+    // Delivered: nothing more is owed.
+    t.advance(60_000);
+    r.onSyncState(state(5));
+    r.onSyncState(state(5));
+    await r.idle();
+    expect(t.asked.length).toBe(asked + 1);
+  });
+
+  test("a full cut still owed is asked as FULL on the next rev too, and a persistent failure still stops", async () => {
+    const t = fakeTransport();
+    t.getDelta = async (full) => {
+      t.asked.push(full);
+      const e = new Error("down") as Error & { status: number };
+      e.status = 503;
+      throw e;
+    };
+    const r = createEmbedDeltaRelay(t);
+    r.onSyncState(state(5));
+    r.handleMessage({ type: "fused-embed-hello" });
+    await r.idle();
+    const perWindow = t.asked.length;
+    for (let i = 0; i < 10; i += 1) {
+      t.advance(60_000);
+      r.onSyncState(state(5));
+      await r.idle();
+    }
+    expect(t.asked.length).toBe(perWindow * (1 + REARMS_PER_REV));
+    r.onSyncState(state(6));
+    await r.idle();
+    expect(t.asked.length).toBe(perWindow * (2 + REARMS_PER_REV));
+    expect(t.asked.every((f) => f)).toBe(true);
+    r.dispose();
+  });
 });

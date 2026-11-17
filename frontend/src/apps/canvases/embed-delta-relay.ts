@@ -301,12 +301,20 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
   // than 409) re-arms nothing.
   let rearmRev: number | null = null;
   let rearms = 0;
+  // A FULL cut (a hello's, a heal's) that never reached the frame for a
+  // transient reason: the frame holds no picture the server knows, so an
+  // incremental cut would not do — and the cursor may already sit on the
+  // rev (`deltaOwed` would ask nothing). Until a full cut is delivered, the
+  // next state that is not a repeat (a re-armed rev, or a new one) asks for
+  // a FULL cut. Bounded like any re-arm; a permanent refusal drops it.
+  let fullOwed = false;
   let rearmTimer: unknown = null;
   const stopRearmTimer = () => {
     if (rearmTimer !== null) clearT(rearmTimer);
     rearmTimer = null;
   };
-  const unfinished = () => {
+  const unfinished = (full: boolean) => {
+    if (full) fullOwed = true;
     const rev = cursor.seenRev;
     if (rev === null || disposed) return;
     if (rev !== rearmRev) {
@@ -330,7 +338,7 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
         try {
           const delta = await t.getDelta(full);
           if (delta.held !== undefined) {
-            if (now() - started > DELTA_RETRY_WINDOW_MS) return unfinished();
+            if (now() - started > DELTA_RETRY_WINDOW_MS) return unfinished(full);
             await sleep(DELTA_RETRY_MS);
             continue;
           }
@@ -343,7 +351,7 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
           if (!delta.full && ops.length === 0) return;
           // No frame to tell: the cut is dropped, unacked. Its hello asks for
           // a full state whatever the server thinks it holds.
-          t.post({
+          const posted = t.post({
             type: "fused-embed-delta",
             rev: delta.rev,
             base_rev: delta.base_rev ?? null,
@@ -352,6 +360,7 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
             gen: delta.gen ?? null,
             seq: delta.seq ?? null,
           });
+          if (posted && delta.full) fullOwed = false;
           return;
         } catch (e) {
           const status = (e as { status?: number }).status;
@@ -359,12 +368,15 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
           // asked again within the window — a full state (a hello, a heal)
           // is asked once and nothing else re-asks it if it is lost. Any
           // other 4xx is a refusal another ask would only repeat.
-          if (!transientFailure(status)) return;
+          if (!transientFailure(status)) {
+            if (full) fullOwed = false;
+            return;
+          }
           if (now() - started <= DELTA_RETRY_WINDOW_MS) {
             await sleep(DELTA_RETRY_MS);
             continue;
           }
-          return unfinished();
+          return unfinished(full);
         }
       }
     });
@@ -493,7 +505,11 @@ export function createEmbedDeltaRelay(t: RelayTransport, hooks: RelayHooks = {})
     handleMessage,
     onSyncState(state) {
       if (disposed) return;
-      if (deltaOwed(cursor, state.disk_rev, state.watcher_epoch)) void relayDelta(false);
+      const epoch = typeof state.watcher_epoch === "string" ? state.watcher_epoch : null;
+      const repeat = cursor.seenRev === state.disk_rev && cursor.seenEpoch === epoch;
+      const owed = deltaOwed(cursor, state.disk_rev, state.watcher_epoch);
+      if (fullOwed && !repeat && typeof state.disk_rev === "number") void relayDelta(true);
+      else if (owed) void relayDelta(false);
     },
     relayDelta,
     retryToken: seedToken,
