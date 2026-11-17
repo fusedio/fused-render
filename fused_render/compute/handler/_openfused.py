@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see ../NOTICE.
 # _WORK_DIR is injected as the leading line of this file by handler._write_sdk()
 # when it is written to the execution directory.
 import json as _json

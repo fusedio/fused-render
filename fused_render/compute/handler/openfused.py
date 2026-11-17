@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see ../NOTICE.
 # Injected shim: shadowing any real `openfused` package on sys.path so that
 # `import openfused` inside user code always resolves to this thin client.
 #
