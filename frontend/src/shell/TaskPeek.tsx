@@ -139,6 +139,7 @@ import { breakoutOpener } from "@platform/lib/breakouts";
 // flag: with it on, this panel's head is `TaskHead` and its ⋮ is the chat's own
 // `Kebab`; with it off, the head below is the one this panel has always drawn.
 import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { TaskHead } from "./TaskHead";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
@@ -697,6 +698,7 @@ export function TaskPeek({
   // never a breakpoint, and armed only while the panel is actually up.
   const [headFit, headRef] = useStripFit(PEEK_HEAD_DROPS, key !== null);
   const unified = useTaskHeadUnified();
+  const favsOn = useTaskFavourites();
   /** The shared head's chip seat, for the chat's worktree menu to portal into
    *  (ChatMount `headChipsHost`). State, so the chat re-renders once it lands. */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
@@ -1330,6 +1332,10 @@ export function TaskPeek({
             lead={{ kind: "close", label: "Close the task panel", hint: "Close · Esc", onPress: () => closePeek() }}
             nav={{ prev: ends.prev, next: ends.next, step: (d) => void step(d), keyHints: true }}
             task={task}
+            // Two lines, the rail window's layout (Akshil, 2026-11-17) — and
+            // no star seat while favourites are off, so the count stays put.
+            twoLine
+            star={favsOn}
             fitEnabled={key !== null}
             chipsRef={setChipsHost}
             statusRef={setStatusHost}

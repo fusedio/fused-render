@@ -756,6 +756,34 @@ export const PEEK_HEAD_DROPS = [
  * component's own layout. `taskHeadNeed` below is what the rungs are measured
  * by: both rows, so a rung can answer either row's overflow.
  */
+/**
+ * A TWO-LINE PANEL OR PANE HAS ITS OWN ORDER (TaskHead `twoLine`; Akshil,
+ * 2026-11-17: "first expand PR tags and WT tags, then if space expand these
+ * icon + word buttons"). Its title is on row 2, so row 1 is the place, the
+ * tags, a pane's tools and the facts — and what gives, cumulatively, is:
+ *
+ *   1. the tools' WORDS (Screenshot, Comment, Annotate become icon buttons);
+ *   2. the worktree pill (the chat's portaled seat);  3. the other tags;
+ *   4. the time;  5. the tools themselves;  6. the ↑↓ chevrons;
+ *   7. the place and the where-tag are cut.
+ *
+ * The stylesheet still folds off the one-row ladder's `data-fit`, so each rung
+ * here names the one-row rung whose folds it wears (`TASK_HEAD_PANEL_FIT`);
+ * rung 1 has none and is a class of its own (`is-seats-tight`).
+ */
+export const TASK_HEAD_PANEL_DROPS = [
+  ".task-head-seats .c-lbl",
+  ".task-head-chips-host",
+  ".task-head-chips",
+  ".task-head-time",
+  ".task-head-seats",
+  ".task-head-nav",
+  ".task-head-place, .task-head-where",
+] as const;
+
+/** The one-row rung (`data-fit`) each two-line panel rung wears, by level. */
+export const TASK_HEAD_PANEL_FIT = [0, 0, 1, 2, 3, 5, 6, 7] as const;
+
 export const TASK_HEAD_DROPS = [
   ".task-head-where .place-tag-word, .task-head-chips-host",
   ".task-head-chips",

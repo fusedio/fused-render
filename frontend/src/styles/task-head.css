@@ -262,8 +262,6 @@
   max-width: 100%;
   margin-left: 0;
   overflow: hidden;
-  color: var(--c-fg);
-  border-color: var(--c-border-strong);
 }
 /* The usage limit's word ("paused · resumes 4:00 AM"), portaled in by the chat
    after its worktree pieces — the slim line's own `.c-tb-paused`, kept whole. */
@@ -481,7 +479,9 @@
 /* …AND IN A PANEL OR A PANE, THE TIME ALONE GIVES (Akshil, 2026-11-16: "7d
    ago can hide here, no need if no space"): where the title cannot be read
    whole beside it, the time leaves; the count stays. Its door, where there is
-   one, comes back as the ↗ while the head is pointed at. */
+   one, comes back as the ↗ while the head is pointed at. (A two-line panel
+   reaches this rung only after its tools' words and its tags have gone —
+   row-fit `TASK_HEAD_PANEL_DROPS`.) */
 .task-head:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-timeslot {
   width: 0;
   overflow: hidden;
@@ -831,17 +831,17 @@
   opacity: 1;
   pointer-events: auto;
 }
-.task-head.is-two-line .task-head-marks > .task-head-kebab {
+.task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.08s ease;
 }
-.task-head.is-two-line:is(.is-hot, :hover, :has(.task-head-kebab :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-marks > .task-head-kebab {
+.task-head.is-window.is-two-line:is(.is-hot, :hover, :has(.task-head-kebab :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-marks > .task-head-kebab {
   opacity: 1;
   pointer-events: auto;
 }
 @media (hover: none) {
-  .task-head.is-two-line .task-head-marks > .task-head-kebab {
+  .task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {
     opacity: 1;
     pointer-events: auto;
   }
@@ -1066,4 +1066,153 @@
 .task-head.is-two-line .task-head-titlerow {
   gap: 8px;
   padding-left: 4px;
+}
+
+/* -- THE SAME TWO LINES IN A PANEL OR A PANE (TaskHead `twoLine`; Akshil,
+   2026-11-17: "try that same in expanded sidebar in tasks page and other
+   pages") ---------------------------------------------------------------------
+   The Tasks page's panel and the chat panes ask for the rail window's layout
+   and keep their own reveal (the pointer on the head). One difference: row 1
+   here also seats the worktree pill, the PR chip and a pane's tools, so the
+   crumb HOLDS ITS WIDTH instead of giving it — a crumb that shrank was cut to
+   "fu…" while a PR chip stood whole beside it, and the ladder never saw an
+   overflow to fold (the one-row head's rule for `.task-head-place`). Held,
+   the row overflows honestly and the ladder folds the chips, then the time,
+   then the seats. A long tag is capped and ellipsises inside its pill. */
+.task-head.is-two-line:not(.is-window) .task-head-crumb {
+  flex: 0 0 auto;
+}
+.task-head.is-two-line:not(.is-window) .task-head-crumb > :is(.task-head-place, .task-head-where) {
+  flex: 0 0 auto;
+  max-width: 180px;
+}
+/* …UNTIL THE LAST RUNG (7), where the one-row head caps its place: the crumb's
+   tags are cut to the same 96px, and the crumb itself may give, so a pane at
+   its narrowest (a small window's canvas pane, a long node name) clips the
+   tag rather than pushing the ⋮ past the edge. */
+.task-head.is-two-line:not(.is-window)[data-fit="7"] .task-head-crumb {
+  flex: 0 1 auto;
+}
+.task-head.is-two-line:not(.is-window)[data-fit="7"] .task-head-crumb > :is(.task-head-place, .task-head-where) {
+  flex: 0 1 auto;
+  max-width: 96px;
+}
+
+/* ROW 1'S FOLD ORDER IN A PANEL (row-fit `TASK_HEAD_PANEL_DROPS`; Akshil,
+   2026-11-17: "when we used to shrink the sidebar we gave icon button instead
+   of icon + word buttons … first expand PR tags and WT tags, then if space
+   expand these icon + word buttons"). The tools' WORDS go first — Screenshot,
+   Comment, Annotate become icon buttons, square like the ⋮ — and only then
+   the tags, the time, and the tools themselves. */
+.chat-root .task-head.is-seats-tight .task-head-seats .c-anncta,
+.task-head.is-seats-tight .task-head-seats .c-anncta {
+  --c-annlbl: none;
+}
+.chat-root .task-head.is-seats-tight .task-head-seats .c-anncta button,
+.task-head.is-seats-tight .task-head-seats .c-anncta button {
+  width: var(--peek-icon-w);
+  padding: 0;
+  justify-content: center;
+}
+
+/* THE SEATS COST NO GAP OF THEIR OWN in two lines: the box lays out as its
+   children, so a pane whose tools are all withheld (a folder chat: the one
+   seat it has is hidden) leaves no hole between the tags and the facts
+   (Akshil, 2026-11-17: "weird gap between tags and fav icon"). Until the
+   ladder folds the box itself (rung 5 on). */
+.task-head.is-two-line:not([data-fit="5"]):not([data-fit="6"]):not([data-fit="7"]) .task-head-seats {
+  display: contents;
+}
+
+/* THE ACTS START WHERE THE FACTS STARTED (Akshil, 2026-11-17: "after +3 and
+   star there is unusual space … follow Annotate button padding, don't leave
+   weird gap"). The star and the door are narrower than the count and the
+   time, and right-aligned as a pair they left that difference as a hole
+   after the last tag. Now the pair starts at the box's LEFT edge — the star
+   the same gap from its neighbour the count had, the door right beside it
+   (2026-11-16: "keep them closer") — and what is left over stands before the
+   ⋮, the row's fixed end. Nothing outside the box moves. (A rail window's
+   acts carry the ⋮ itself — TaskHead `kebabInActs` — so there the layer keeps
+   the box's right edge and the ⋮ ends the row.) */
+.task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-b {
+  justify-self: start;
+}
+.task-head.is-two-line .task-head-countslot {
+  justify-items: start;
+}
+
+/* ONE TAG SIZE ON ROW 1 (Akshil, 2026-11-17: "why is the Fused label small
+   but the other two seem big … the worktree icon is so small and its text
+   colour is also different"). The folder chip was 11px in a 21px box beside
+   an 11.5px worktree pill and PR chip in 24px ones, and the worktree hint
+   wore brighter ink than either. All of them: 11.5px, 22px tall, muted ink,
+   the same hairline; the branch glyph at its full 12px. */
+.task-head.is-two-line .task-head-place > .schedule-tv-id {
+  min-height: 22px;
+  box-sizing: border-box;
+  padding-block: 0;
+}
+.task-head.is-two-line .task-head-place .schedule-tv-id-name {
+  font-size: 11.5px;
+}
+.task-head.is-two-line .task-head-chips :is(.chat-worktree-btn, .task-pr-chip, .task-pr-more) {
+  box-sizing: border-box;
+  height: 22px;
+  padding-block: 0;
+  font-size: 11.5px;
+  line-height: 20px;
+  color: var(--fg-muted);
+}
+.task-head.is-two-line .task-head-chips .chat-worktree-btn > svg {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+}
+
+/* …AND THE PAIRED FACTS FOLLOW THE SAME RUNG (the Tasks panel: a star and a
+   door, so its count and time stand in one box — `.task-head-facts`, no
+   time slot for the rule above to fold; CodeRabbit on #2313). The time leaves
+   on the panel's time rung; the door still comes under the pointer, its hint
+   carrying the time. What stays starts at the box's left edge, like the
+   acts, so no hole opens after the last tag. A rail window keeps both. */
+.task-head.is-two-line:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-facts .task-head-time {
+  display: none;
+}
+.task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-a {
+  justify-self: start;
+}
+
+/* A SETTLING WALKTHROUGH IN AN ICON-ONLY SEAT (Akshil, 2026-11-17: "instead
+   of mic icon we can just say … icon or loading icon, and on hover show
+   tooltip saying transcription"). While a recording settles the Annotate seat
+   swaps its word for a status ("Transcribing…"), which is not a `.c-lbl` — so
+   in the 28px seat it spilled over the Comment button and the count. Folded,
+   the seat shows a spinner where the mic stood and no words; the seat's own
+   title already says which tense it is in (ann/rec.ts `recSeatName`). */
+.chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec .c-annreclbl,
+.chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec .c-rec-mic {
+  display: none;
+}
+.chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec::before {
+  content: "";
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: task-head-seat-spin 0.8s linear infinite;
+}
+@keyframes task-head-seat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No turning: a dotted ring still reads as "working". */
+  .chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec::before {
+    animation: none;
+    border-style: dotted;
+    border-top-color: currentColor;
+  }
 }

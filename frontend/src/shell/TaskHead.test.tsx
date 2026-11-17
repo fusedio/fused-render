@@ -535,12 +535,66 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(css).toContain('.task-head:has(.task-head-kebab [aria-expanded="true"]) .task-head-facts > .task-head-facts-layer.is-b {\n  opacity: 1;');
   // A two-line head with one act alone has no acts' layer: its ⋮ keeps its
   // seat and shows on the same trigger.
-  expect(css).toContain(".task-head.is-two-line .task-head-marks > .task-head-kebab {\n  opacity: 0;");
+  expect(css).toContain(".task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {\n  opacity: 0;");
   expect(css).toContain(`.task-head${from(5)} .task-head-seats {`);
   expect(css).toContain(`.task-head${from(6)} .task-head-nav {`);
   // The last rung caps the place; the id slot (and its Archive) never goes.
   expect(css).toContain(`.task-head[data-fit="7"] .task-head-place {\n  max-width: 96px;`);
   expect(css).not.toContain(".task-head-idslot {\n  display: none;");
+});
+
+test("a panel or a pane that asks wears the rail window's two lines, keeping its own reveal (2026-11-17)", async () => {
+  const props = {
+    twoLine: true,
+    place: createElement("span", { className: "my-place" }, "app"),
+    where: createElement("span", { className: "my-where" }, "hex"),
+    open: { href: "/x", label: "Open in Explorer", onOpen: () => {} },
+    kebab: createElement("button", { className: "my-kebab" }, "⋮"),
+  };
+  const r = render(head(props), 2000);
+  expect(cls(headNode(r))).toContain("is-two-line");
+  expect(cls(headNode(r))).toContain("is-stacked");
+  // Still a panel: the pointer on the head is what trades the slots.
+  expect(cls(headNode(r))).not.toContain("is-window");
+  // ROW 1: the lead, `folder › file`, the facts as one box, the ⋮.
+  const row1 = byClass(r, "task-head-row")[0]!;
+  const kids = (row1.children ?? []) as ReactTestRendererJSON[];
+  expect(kids.map((k) => cls(k).split(" ")[0])).toEqual(["task-head-acts", "task-head-crumb", "task-head-marks"]);
+  expect(byClass(r, "task-head-where")).toHaveLength(1);
+  expect(byClass(r, "task-head-facts")).toHaveLength(1);
+  expect(JSON.stringify(row1)).not.toContain("Rename the pane noun");
+  // ROW 2: the ring, the id slot, the title.
+  const two = JSON.stringify(byClass(r, "task-head-titlerow")[0]!);
+  const order = ["task-side-peek-status", "task-head-idslot", "Rename the pane noun"].map((w) => two.indexOf(w));
+  expect(order.every((i) => i > -1)).toBe(true);
+  expect([...order].sort((x, y) => x - y)).toEqual(order);
+
+  // A chat with no task row yet keeps the two lines (its fallback title on
+  // row 2, the place once), so the head does not grow when the task lands…
+  const fallback = render(head({ ...props, task: null, title: "Claude" }), 2000);
+  expect(cls(headNode(fallback))).toContain("is-two-line");
+  expect(JSON.stringify(byClass(fallback, "task-head-titlerow")[0]!)).toContain("Claude");
+  expect(byClass(fallback, "task-head-place")).toHaveLength(1);
+  // …and a head with nothing to name (a pane's landing) stays one row.
+  const landing = render(head({ twoLine: true, task: null }), 2000);
+  expect(cls(headNode(landing))).not.toContain("is-two-line");
+  expect(byClass(landing, "task-head-titlerow")).toHaveLength(0);
+
+  // One act alone (favourites off: the host passes `star={false}`): the
+  // facts keep a slot each, so the count stays under the pointer.
+  const noStar = render(head({ ...props, star: false }), 2000);
+  expect(byClass(noStar, "task-head-facts")).toHaveLength(0);
+  expect(byClass(noStar, "task-head-timeslot")).toHaveLength(1);
+
+  // THE CRUMB HOLDS ITS WIDTH in a panel (the ladder folds the chips and the
+  // seats instead), is cut only on the last rung, and the time never folds.
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\) \.task-head-crumb \{\s*flex: 0 0 auto;/);
+  expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\)\[data-fit="7"\] \.task-head-crumb > :is\(\.task-head-place, \.task-head-where\) \{\s*flex: 0 1 auto;\s*max-width: 96px;/);
+  // The tools' words go first (a class, not a rung of `data-fit`), and the
+  // acts start at the facts' left edge so no hole follows the last tag.
+  expect(css).toMatch(/\.task-head\.is-seats-tight \.task-head-seats \.c-anncta \{\s*--c-annlbl: none;/);
+  expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\) \.task-head-facts-layer\.is-b \{\s*justify-self: start;/);
 });
 
 test("reveal: a rail window says so in its class; a panel or a pane does not", () => {
@@ -935,4 +989,37 @@ test("a rail window's facts and acts are two layers of one box; a panel keeps th
   expect(byClass(pane, "task-head-facts")).toHaveLength(0);
   expect(byClass(pane, "task-head-countslot")).toHaveLength(1);
   expect(byClass(pane, "task-head-timeslot")).toHaveLength(1);
+});
+
+test("a two-line panel folds in its own order: the tools' words, then the tags, the time, the tools (2026-11-17)", async () => {
+  const { TASK_HEAD_PANEL_DROPS, TASK_HEAD_PANEL_FIT } = await import("./row-fit");
+  expect([...TASK_HEAD_PANEL_DROPS]).toEqual([
+    ".task-head-seats .c-lbl",
+    ".task-head-chips-host",
+    ".task-head-chips",
+    ".task-head-time",
+    ".task-head-seats",
+    ".task-head-nav",
+    ".task-head-place, .task-head-where",
+  ]);
+  // One `data-fit` per level (rung 0 included); the words' rung wears no
+  // one-row fold — it is the `is-seats-tight` class — and the one-row rung 4
+  // (the title's row) is never worn: the title is already on row 2.
+  expect([...TASK_HEAD_PANEL_FIT]).toEqual([0, 0, 1, 2, 3, 5, 6, 7]);
+  expect(TASK_HEAD_PANEL_FIT).toHaveLength(TASK_HEAD_PANEL_DROPS.length + 1);
+  // A settling walkthrough's status is not a `.c-lbl`: folded, the seat hides
+  // it and the mic and shows a spinner, so no words spill out of the icon.
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  expect(css).toContain(
+    ".chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec .c-annreclbl,\n" +
+      ".chat-root .task-head.is-seats-tight .task-head-seats .c-anncta.busy .c-annrec .c-rec-mic {\n  display: none;",
+  );
+  expect(css).toContain(".c-anncta.busy .c-annrec::before {");
+  // Wide: nothing folded, no class.
+  const wide = render(head({ twoLine: true }), 2000);
+  expect(headNode(wide).props["data-fit"]).toBe(0);
+  expect(cls(headNode(wide))).not.toContain("is-seats-tight");
+  // A rail window keeps the one-row ladder and never wears the class.
+  const win = render(head({ reveal: "window" }), 100);
+  expect(cls(headNode(win))).not.toContain("is-seats-tight");
 });

@@ -4307,8 +4307,13 @@ function ChatBody(props: ChatBodyProps) {
   /** A worktree menu is MOUNTED and has said this folder is in a repo
    *  (`WorktreeMenu.onReady`). Compact mounts none, and a peek only with `headerInPeek`; a non-repo says false. */
   const worktreeReady = useRef(false);
+  // The same answer as state, for what is DRAWN off it: the menu's element
+  // exists before (and whether or not) its pill does — it renders nothing for
+  // a folder outside any repo.
+  const [worktreePill, setWorktreePill] = useState(false);
   const onWorktreeReady = useCallback((isRepo: boolean) => {
     worktreeReady.current = isRepo;
+    setWorktreePill(isRepo);
   }, []);
   // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
   // own head and by `/tasks`, and remembered globally (`useTasksOpen`). An empty
@@ -5984,6 +5989,27 @@ function ChatBody(props: ChatBodyProps) {
         ) : null}
       </span>
     ) : null;
+  // ONE TAG, THEN "+x", BESIDE A PANE'S TOOLS (Akshil, 2026-11-17: "in this
+  // view where we have buttons we directly do 1 +x — we don't show PR and WT
+  // tags more than one because we also have buttons"): where the head seats
+  // tools and already shows the worktree tag, every pull request goes behind
+  // one "+N". With no worktree tag the first PR is the tag ("PR #12 +2") —
+  // so the tag has to be on screen, not merely mounted: the menu draws no
+  // pill outside a repo (`worktreePill`; CodeRabbit on #2313).
+  // Tools that are DRAWN: the strip's own gate (`stripSeatsShown` — a target
+  // that cannot be annotated seats none; CodeRabbit on #2313), or the canvas
+  // camera that stands in for it.
+  const headHasTools = stripSeatsShown || !!canvasShotSeat;
+  const headWorktreeTag = !!shownHint || (!!worktreeMenu && worktreePill);
+  const headChipsExtra =
+    props.prChip && head.task ? (
+      <>
+        <TaskPrChip task={head.task} collapsed={headHasTools && headWorktreeTag} />
+        {props.headerExtra}
+      </>
+    ) : (
+      props.headerExtra
+    );
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
@@ -6003,6 +6029,11 @@ function ChatBody(props: ChatBodyProps) {
             : null
       }
       task={inChat ? head.task : null}
+      // Two lines, the rail window's layout (Akshil, 2026-11-17) — but one row
+      // in full screen, where the head is a seat inside the pane's own header.
+      twoLine={inChat && !leadHost}
+      // No star seat while favourites are off (`placeTagOn` is that switch).
+      star={placeTagOn}
       {...(fallbackTitle ? { title: fallbackTitle } : {})}
       pending={inChat && head.pending && !headLine}
       running={running}
@@ -6019,7 +6050,7 @@ function ChatBody(props: ChatBodyProps) {
           <>
             {shownHint ? null : worktreeMenu}
             <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
-            {headerExtra}
+            {headChipsExtra}
           </>
         ) : null
       }
