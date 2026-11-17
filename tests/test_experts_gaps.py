@@ -470,3 +470,42 @@ def test_observations_route_shape(client, expert, monkeypatch):
     assert done[lesson["id"]]["outcome"]["op"] == "nothing" and "gap" not in done[lesson["id"]]
     assert body["pending"][0]["id"] == pending["id"] and body["pending"][0]["gap"] is None
     assert body["consolidating"] == {"running": False, "stage": "", "gap": None}
+
+
+def test_gaps_over_http_carry_their_proposal_state(client, expert):
+    plain = gaps.record(expert, "Where do canvases live?", consult="c0")
+    linked = gaps.record(expert, "What is ANSWER?", consult="c1")
+    lost = gaps.record(expert, "Who wrote this?", consult="c2")
+    rec = {"id": "pprep", "ts": time.time(), "status": "preparing", "items": [], "error": ""}
+    proposals._save(expert, rec)
+    gaps.mark_proposed(expert, linked["id"], "pprep")
+    gaps.mark_proposed(expert, lost["id"], "pgone")  # its proposal cannot be found
+    for o, c in ((plain, "c0"), (linked, "c1")):
+        _gap_obs(expert, o["question"], c)
+    stored = json.load(open(os.path.join(store.expert_dir(expert), "gaps.json")))
+    assert not any("proposal_status" in g or "proposal_error" in g for g in stored["gaps"])  # never persisted
+
+    def http():
+        _s, _h, body = client.get(f"/api/experts/{expert.id}/gaps")
+        by_id = {g["id"]: g for g in json.loads(body)["gaps"]}
+        _s, _h, body = client.get(f"/api/experts/{expert.id}/observations")
+        joined = {o["gap"]["id"]: o["gap"] for o in json.loads(body)["pending"] if o.get("gap")}
+        return by_id, joined
+
+    def state(g):
+        return g["status"], g["proposal_status"], g["proposal_error"]
+
+    # the observation's gap is joined by consult id
+    by_id, joined = http()
+    assert state(by_id[plain["id"]]) == ("open", "", "")
+    assert state(by_id[linked["id"]]) == ("proposed", "preparing", "")
+    assert state(by_id[lost["id"]]) == ("proposed", "", "")
+    assert state(joined[plain["id"]]) == ("open", "", "") and state(joined[linked["id"]]) == ("proposed", "preparing", "")
+
+    proposals._save(expert, dict(rec, status="failed", error="the draft failed"))
+    by_id, joined = http()
+    assert state(by_id[linked["id"]]) == ("proposed", "failed", "the draft failed")
+    assert state(joined[linked["id"]]) == ("proposed", "failed", "the draft failed")
+    proposals._save(expert, dict(rec, status="ready"))
+    by_id, joined = http()
+    assert by_id[linked["id"]]["proposal_status"] == "ready" == joined[linked["id"]]["proposal_status"]

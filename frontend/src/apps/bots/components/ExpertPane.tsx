@@ -16,13 +16,14 @@
 // consolidation runs or a gap is being researched; the checks every 2 s while a run is going; the proposals (shown on
 // the Memory tab) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on
 // every refresh while it keeps failing).
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { expertApi, type Bot, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem, type ExpertObs,
   type ExpertProposal } from "../lib/api";
-import { anyPreparing, askedLabel, basename, checkProgress, consolidatingLine, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus,
-  filterConsults, gapNote, gapProposal, gapUnresolved, groupConsultsByDay, isLongContext, lessonTagClass, lessonTags, OBS_EMPTY, OBS_INTRO,
-  observationGaps, observationMeta, observationResultLabel, observationText, observationTypeLabel, openProposals, proposalLine, researchingGap, scoreText, seenLabel,
-  SEEN_ONCE_LINE, sortObservations, splitLessons, unresolvedGapCount, usedLessons, type ConsultFilter } from "../lib/expert";
+import { anyPreparing, basename, checkProgress, consolidatingLine, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, filterConsults,
+  filterLessons, filterObservations, gapNote, gapProposal, gapUnresolved, groupByDay, groupConsultsByDay, isLongContext, LESSON_STATUS_LABEL, lessonFacts,
+  lessonSource, lessonStatus, OBS_EMPTY, OBS_INTRO, observationFacts, observationGaps, observationSource, observationText, observationTone,
+  observationTypeLabel, openProposals, proposalLine, researchingGap, scoreText, seenLabel, sortLessons, sortObservations, unresolvedGapCount, usedLessons,
+  type ConsultFilter, type ConsultStatus, type LessonFilter, type LessonStatus, type ObservationFilter } from "../lib/expert";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { errMsg, getState, hideBanner, showBanner } from "../state/store";
@@ -89,8 +90,10 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
       if (live.current !== want) return;
       setData((d) => ({ ...d, ...(m ? { memory: m.items || [] } : {}), ...(p ? { proposals: p.proposals || [] } : {}) }));
     } else if (which === "observations") {
-      // The proposals too: their status lines show here, and a proposed gap says where its proposal stands.
-      await Promise.all([loadObs(loud), loadProposals(loud)]);
+      // The proposals too (their status lines show here, and a proposed gap says where its proposal stands), and the
+      // memory (an opened row names the lesson it landed on).
+      const [, , m] = await Promise.all([loadObs(loud), loadProposals(loud), guard(() => expertApi.memory(want), loud)]);
+      if (live.current === want && m) setData((d) => ({ ...d, memory: m.items || [] }));
     } else if (which === "consults") {
       // The memory too: an opened consult names the lessons it used by their claims.
       const [c, m] = await Promise.all([guard(() => expertApi.consults(want), loud), guard(() => expertApi.memory(want), loud)]);
@@ -148,66 +151,50 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
 
 // ------------------------------------------------------------------ panels ----
 
-function LessonRow({ it, onForget }: { it: ExpertItem; onForget: (it: ExpertItem) => void }) {
-  return (
-    <li className="xp-row">
-      <div className="xp-main">
-        <span className="xp-claim">{it.claim}</span>
-        <span className="xp-meta">
-          <span title={it.updated ? `last seen ${fmtWhen(it.updated)}` : undefined}>{seenLabel(it.count)}</span>
-          {lessonTags(it).map((t) => <span key={t} className={`xp-tag ${lessonTagClass(t)}`}>{t}</span>)}
-        </span>
-      </div>
-      <button type="button" className="xp-forget" title="Forget this lesson" onClick={() => onForget(it)}>Forget</button>
-    </li>
-  );
-}
-
-/** "Consolidate now" (the Observations tab). Off while a consolidation runs or there is nothing to fold in or look into. */
-function ConsolidateButton({ busy, running, work, onClick }: { busy: boolean; running: boolean; work: boolean; onClick: () => void }) {
-  const on = busy || running;
-  return (
-    <button type="button" className={on ? "busy" : undefined} disabled={on || !work} onClick={onClick}
-      title={running ? "A consolidation is running" : work ? "Fold the waiting observations into lessons and look into the open questions now" : "Nothing is waiting"}>
-      {on ? "Consolidating…" : "Consolidate now"}
-    </button>
-  );
-}
-
-export function MemoryPanel({ items, onForget, proposals = null }: {
-  items: ExpertItem[] | null; onForget: (it: ExpertItem) => void; proposals?: ExpertProposal[] | null;
-}) {
-  if (items == null) return <div className="xp-empty">Loading…</div>;
-  const { indexed, seenOnce } = splitLessons(items), open = openProposals(proposals);
-  return (
-    <>
-      {open.length ? (
-        <ul className="xp-proposals">
-          {open.map((p) => <li key={p.id} className={`xp-proposal ${p.status}`}>{proposalLine(p)}</li>)}
-        </ul>
-      ) : null}
-      {indexed.length || seenOnce.length ? (
-        <>
-          {indexed.length ? <ul className="xp-list">{indexed.map((it) => <LessonRow key={it.id} it={it} onForget={onForget} />)}</ul> : null}
-          {seenOnce.length ? (
-            <>
-              <div className="xp-divider" role="separator">{SEEN_ONCE_LINE}</div>
-              <ul className="xp-list xp-seen-once">{seenOnce.map((it) => <LessonRow key={it.id} it={it} onForget={onForget} />)}</ul>
-            </>
-          ) : null}
-        </>
-      ) : (
-        <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that consult it, appears here once consolidated.</div>
-      )}
-    </>
-  );
-}
-
 const CHEVRON = (
   <svg className="xp-chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="m6 9 6 6 6-6" />
   </svg>
 );
+
+export type CardTone = "ok" | "warn" | "muted" | "accent";
+
+/** The one card all three list tabs use: a header button (status marker, source, time or count, a chevron that turns
+ *  when open; `aria-expanded`), the text clamped to two lines while closed, a footer of small facts, and `detail()`
+ *  rendered only while open. `note`: a muted line under the facts (a failed proposal's error). */
+export function XCard({ tone, mark, source, sourceTitle, right, rightTitle, text, facts, note, initialOpen = false, className = "", detail }: {
+  tone: CardTone; mark: string; source: string; sourceTitle?: string; right: string; rightTitle?: string; text: string; facts: string[];
+  note?: string; initialOpen?: boolean; className?: string; detail: () => ReactNode;
+}) {
+  const [open, setOpen] = useState(initialOpen);
+  const bodyId = useId();
+  return (
+    <li className={`xp-card${open ? " open" : ""}${className ? ` ${className}` : ""}`}>
+      <button type="button" className="xp-card-head" aria-expanded={open} aria-controls={open ? bodyId : undefined} onClick={() => setOpen((o) => !o)}>
+        <span className="xp-card-line">
+          <span className={`xp-cstat tone-${tone}`}><span className="xp-dot" aria-hidden="true" />{mark}</span>
+          {source ? <span className="xp-src" title={sourceTitle || undefined}>{source}</span> : null}
+          {right ? <span className="xp-when" title={rightTitle || undefined}>{right}</span> : null}
+          {CHEVRON}
+        </span>
+        <span className="xp-q">{text}</span>
+        {facts.length ? <span className="xp-facts">{facts.join(" · ")}</span> : null}
+        {note ? <span className="xp-facts xp-note">{note}</span> : null}
+      </button>
+      {open ? <div className="xp-card-body" id={bodyId}>{detail()}</div> : null}
+    </li>
+  );
+}
+
+/** A labelled part of an opened card. */
+function Part({ label, children }: { label: string; children: ReactNode }) {
+  return <section className="xp-part"><h5 className="xp-lbl">{label}</h5>{children}</section>;
+}
+
+/** Markdown through md() (the chat's renderer and its sanitiser). */
+function Md({ text }: { text: string }) {
+  return text ? <div className="xp-md" dangerouslySetInnerHTML={{ __html: md(text) }} /> : <p className="xp-none">(no answer)</p>;
+}
 
 /** A file chip: the ref's basename (full path as the title); a click copies the full path and says "Copied" briefly. */
 function FileChip({ path }: { path: string }) {
@@ -230,60 +217,125 @@ function FileChip({ path }: { path: string }) {
   );
 }
 
-/** One consult as a card: status, source, when and a chevron; the question (two lines while closed); small facts.
- *  Opened: the session's context, the answer as markdown (md(): the chat's renderer and sanitiser), files, lessons used.
- *  Closed, it shows none of the answer. */
-export function ConsultCard({ c, items, initialOpen = false, nowMs }: {
-  c: ExpertConsult; items: ExpertItem[] | null; initialOpen?: boolean; nowMs?: number;
+function Files({ refs }: { refs: readonly string[] }) {
+  return <div className="xp-files">{refs.map((r) => <FileChip key={r} path={r} />)}</div>;
+}
+
+/** "All N" · … filter chips; hidden under 2 items. A chip with nothing to show is off (unless it is the one on). */
+function Filters<F extends string>({ label, options, counts, value, onChange, total }: {
+  label: string; options: [F, string][]; counts: Record<F, number>; value: F; onChange: (f: F) => void; total: number;
 }) {
-  const [open, setOpen] = useState(initialOpen);
-  const [allCtx, setAllCtx] = useState(false);
-  const bodyId = useId();
-  const status = consultStatus(c), facts = consultFacts(c), source = consultSource(c), longCtx = isLongContext(c.context);
+  if (total < 2) return null;
   return (
-    <li className={`xp-card ${status}${open ? " open" : ""}`}>
-      <button type="button" className="xp-card-head" aria-expanded={open} aria-controls={open ? bodyId : undefined} onClick={() => setOpen((o) => !o)}>
-        <span className="xp-card-line">
-          <span className={`xp-cstat ${status}`}><span className="xp-dot" aria-hidden="true" />{CONSULT_STATUS_LABEL[status]}</span>
-          <span className="xp-src" title={c.caller?.target || undefined}>{source}</span>
-          <span className="xp-when" title={fmtWhen(c.ts)}>{fmtAgo(c.ts, nowMs)}</span>
-          {CHEVRON}
-        </span>
-        <span className="xp-q">{c.question}</span>
-        {facts.length ? <span className="xp-facts">{facts.join(" · ")}</span> : null}
-      </button>
-      {open ? (
-        <div className="xp-card-body" id={bodyId}>
-          {c.context ? (
-            <section className="xp-part">
-              <h5 className="xp-lbl">Context from the session</h5>
-              <p className={`xp-ctx${longCtx && !allCtx ? " clamp" : ""}`}>{c.context}</p>
-              {longCtx ? <button type="button" className="xp-more" aria-expanded={allCtx} onClick={() => setAllCtx((v) => !v)}>{allCtx ? "Show less" : "Show all"}</button> : null}
-            </section>
-          ) : null}
-          <section className="xp-part">
-            <h5 className="xp-lbl">Answer</h5>
-            {c.answer ? <div className="xp-md" dangerouslySetInnerHTML={{ __html: md(c.answer) }} /> : <p className="xp-none">(no answer)</p>}
-          </section>
-          {c.refs?.length ? (
-            <section className="xp-part">
-              <h5 className="xp-lbl">Files</h5>
-              <div className="xp-files">{c.refs.map((r) => <FileChip key={r} path={r} />)}</div>
-            </section>
-          ) : null}
-          {c.used?.length ? (
-            <section className="xp-part">
-              <h5 className="xp-lbl">Lessons used</h5>
-              <ul className="xp-used">{usedLessons(c.used, items).map((l) => <li key={l.id}>{l.text}</li>)}</ul>
-            </section>
-          ) : null}
-        </div>
-      ) : null}
-    </li>
+    <div className="xp-filters" role="group" aria-label={label}>
+      {options.map(([f, l], i) => (
+        <button key={f} type="button" className={`xp-chip${value === f ? " on" : ""}`} aria-pressed={value === f}
+          disabled={i > 0 && !counts[f] && value !== f} onClick={() => onChange(f)}>
+          {l} <span className="xp-n">{counts[f]}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 
-const FILTERS: [ConsultFilter, string][] = [["all", "All"], ["answered", "Answered"], ["unsure", "Unsure"]];
+// ---- Memory ----
+
+const LESSON_TONE: Record<LessonStatus, CardTone> = { "in-use": "ok", "not-used": "muted", contradicted: "warn" };
+
+export function LessonCard({ it, onForget, lan = false, initialOpen = false, nowMs }: {
+  it: ExpertItem; onForget: (it: ExpertItem) => void; lan?: boolean; initialOpen?: boolean; nowMs?: number;
+}) {
+  const st = lessonStatus(it), sessions = it.sessions?.length || 0;
+  return (
+    <XCard tone={LESSON_TONE[st]} mark={LESSON_STATUS_LABEL[st]} source={lessonSource(it)} right={seenLabel(it.count)}
+      rightTitle={it.updated ? `last seen ${fmtWhen(it.updated)}` : undefined} text={it.claim} facts={lessonFacts(it)} initialOpen={initialOpen}
+      detail={() => (
+        <>
+          {it.about?.length ? <Part label="About"><div className="xp-files">{it.about.map((a) => <span key={a} className="xp-about-chip">{a}</span>)}</div></Part> : null}
+          <p className="xp-facts">
+            {[it.created ? `first seen ${fmtAgo(it.created, nowMs)}` : "", it.updated ? `last seen ${fmtAgo(it.updated, nowMs)}` : "",
+              sessions ? `in ${sessions} session${sessions === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ")}
+          </p>
+          {lan ? null : (
+            <div className="xp-acts">
+              <button type="button" className="xp-forget" title="Forget this lesson" onClick={() => onForget(it)}>Forget</button>
+            </div>
+          )}
+        </>
+      )} />
+  );
+}
+
+const LESSON_FILTERS: [LessonFilter, string][] = [["all", "All"], ["in-use", "In use"], ["not-used", "Not used yet"]];
+
+export function MemoryPanel({ items, onForget, proposals = null, lan = false, nowMs }: {
+  items: ExpertItem[] | null; onForget: (it: ExpertItem) => void; proposals?: ExpertProposal[] | null;
+  /** On the phone: the LAN door does not serve `forget` (it writes memory), so the button is hidden. */
+  lan?: boolean; nowMs?: number;
+}) {
+  const [filter, setFilter] = useState<LessonFilter>("all");
+  if (items == null) return <div className="xp-empty">Loading…</div>;
+  const open = openProposals(proposals), sorted = sortLessons(items), shown = filterLessons(sorted, filter);
+  const counts = { all: items.length, "in-use": filterLessons(items, "in-use").length, "not-used": filterLessons(items, "not-used").length };
+  return (
+    <>
+      <ProposalLines open={open} />
+      {items.length ? (
+        <>
+          <Filters label="Show lessons" options={LESSON_FILTERS} counts={counts} value={filter} onChange={setFilter} total={items.length} />
+          {shown.length ? <ul className="xp-cards">{shown.map((it) => <LessonCard key={it.id} it={it} onForget={onForget} lan={lan} nowMs={nowMs} />)}</ul>
+            : <div className="xp-empty">No lessons match this filter.</div>}
+        </>
+      ) : (
+        <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that consult it, appears here once consolidated.</div>
+      )}
+    </>
+  );
+}
+
+function ProposalLines({ open }: { open: ExpertProposal[] }) {
+  return open.length ? (
+    <ul className="xp-proposals">
+      {open.map((p) => <li key={p.id} className={`xp-proposal ${p.status}`}>{proposalLine(p)}</li>)}
+    </ul>
+  ) : null;
+}
+
+// ---- Consults ----
+
+const CONSULT_TONE: Record<ConsultStatus, CardTone> = { answered: "ok", unsure: "warn" };
+
+/** One consult: status, source, when; the question; small facts. Opened: the session's context, the answer as markdown,
+ *  files, lessons used. Closed, it shows none of the answer. */
+export function ConsultCard({ c, items, initialOpen = false, nowMs }: {
+  c: ExpertConsult; items: ExpertItem[] | null; initialOpen?: boolean; nowMs?: number;
+}) {
+  const [allCtx, setAllCtx] = useState(false);
+  const status = consultStatus(c), longCtx = isLongContext(c.context);
+  return (
+    <XCard tone={CONSULT_TONE[status]} mark={CONSULT_STATUS_LABEL[status]} className={status} source={consultSource(c)} sourceTitle={c.caller?.target}
+      right={fmtAgo(c.ts, nowMs)} rightTitle={fmtWhen(c.ts)} text={c.question} facts={consultFacts(c)} initialOpen={initialOpen}
+      detail={() => (
+        <>
+          {c.context ? (
+            <Part label="Context from the session">
+              <p className={`xp-ctx${longCtx && !allCtx ? " clamp" : ""}`}>{c.context}</p>
+              {longCtx ? <button type="button" className="xp-more" aria-expanded={allCtx} onClick={() => setAllCtx((v) => !v)}>{allCtx ? "Show less" : "Show all"}</button> : null}
+            </Part>
+          ) : null}
+          <Part label="Answer"><Md text={c.answer} /></Part>
+          {c.refs?.length ? <Part label="Files"><Files refs={c.refs} /></Part> : null}
+          {c.used?.length ? (
+            <Part label="Lessons used">
+              <ul className="xp-used">{usedLessons(c.used, items).map((l) => <li key={l.id}>{l.text}</li>)}</ul>
+            </Part>
+          ) : null}
+        </>
+      )} />
+  );
+}
+
+const CONSULT_FILTERS: [ConsultFilter, string][] = [["all", "All"], ["answered", "Answered"], ["unsure", "Unsure"]];
 
 export function ConsultsPanel({ consults, items = null, nowMs }: { consults: ExpertConsult[] | null; items?: ExpertItem[] | null; nowMs?: number }) {
   const [filter, setFilter] = useState<ConsultFilter>("all");
@@ -293,16 +345,7 @@ export function ConsultsPanel({ consults, items = null, nowMs }: { consults: Exp
   const groups = groupConsultsByDay(filterConsults(consults, filter), nowMs);
   return (
     <>
-      {consults.length >= 2 ? (
-        <div className="xp-filters" role="group" aria-label="Show consults">
-          {FILTERS.map(([f, l]) => (
-            <button key={f} type="button" className={`xp-chip${filter === f ? " on" : ""}`} aria-pressed={filter === f}
-              disabled={f !== "all" && !counts[f] && filter !== f} onClick={() => setFilter(f)}>
-              {l} <span className="xp-n">{counts[f]}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <Filters label="Show consults" options={CONSULT_FILTERS} counts={counts} value={filter} onChange={setFilter} total={consults.length} />
       {groups.length ? groups.map((g) => (
         <section key={g.key} className="xp-dayg" aria-label={g.label}>
           <h4 className="xp-day">{g.label}</h4>
@@ -313,102 +356,108 @@ export function ConsultsPanel({ consults, items = null, nowMs }: { consults: Exp
   );
 }
 
-function ObsRow({ o, consolidated, researching, proposals, lan, onDrop }: {
-  o: ExpertObs; consolidated: boolean; researching: string | null; proposals: ExpertProposal[] | null; lan: boolean; onDrop: (g: ExpertGap) => void;
-}) {
-  const g = o.gap || null, result = consolidated || g ? observationResultLabel(o, researching, proposals) : "";
-  const status = g ? (researching === g.id && gapUnresolved(g) ? "researching" : g.status) : o.outcome?.op || "";
-  const text = observationText(o);
-  const prop = g?.status === "proposed" ? gapProposal(g, proposals) : null;
-  const propErr = prop?.status === "failed" ? prop.error : "";
-  const meta = (
-    <span className="xp-meta">
-      <span className={`xp-tag kind-${(o.kind || "learning").replace(/[^a-z_]/gi, "")}`}>{observationTypeLabel(o.kind, o.outcome)}</span>
-      <span title={o.ts ? fmtWhen(o.ts) : undefined}>{observationMeta(o)}</span>
-      {result ? <span className={`xp-tag res-${status}`}>{result}</span> : null}
-      {g && (g.count || 0) > 1 ? <span>{askedLabel(g.count)}</span> : null}
-    </span>
-  );
-  const note = gapNote(g?.error);
-  const err = note || propErr ? (
-    <>
-      {note ? <span className="xp-meta xp-gap-err">{note}</span> : null}
-      {propErr ? <span className="xp-meta xp-gap-err">{propErr}</span> : null}
-    </>
-  ) : null;
-  const f = g?.finding;
+// ---- Observations ----
+
+/** "Consolidate now" (the Observations tab). Off while a consolidation runs or there is nothing to fold in or look into. */
+function ConsolidateButton({ busy, running, work, onClick }: { busy: boolean; running: boolean; work: boolean; onClick: () => void }) {
+  const on = busy || running;
   return (
-    <li className={`xp-row${f ? " xp-fold" : ""}`}>
-      {f ? (
-        <details>
-          <summary>
-            <span className="xp-claim">{text}</span>
-            {meta}
-            {err}
-          </summary>
-          <div className="xp-body">
-            <pre>{f.answer || "(no answer)"}</pre>
-            {f.refs?.length ? (
-              <div className="xp-refs">
-                <span className="xp-meta">Files</span>
-                {f.refs.map((r) => <code key={r} title={r}>{basename(r) || r}</code>)}
-              </div>
-            ) : null}
-          </div>
-        </details>
-      ) : (
-        <div className="xp-main">
-          <span className="xp-claim">{text}</span>
-          {meta}
-          {err}
-        </div>
-      )}
-      {g && gapUnresolved(g) && !lan ? (
-        <button type="button" className="xp-forget" title="Drop this question: it is not looked into again" onClick={() => onDrop(g)}>Drop</button>
-      ) : null}
-    </li>
+    <button type="button" className={on ? "busy" : undefined} disabled={on || !work} onClick={onClick}
+      title={running ? "A consolidation is running" : work ? "Fold the waiting observations into lessons and look into the open questions now" : "Nothing is waiting"}>
+      {on ? "Consolidating…" : "Consolidate now"}
+    </button>
   );
 }
 
-export function ObservationsPanel({ pending, done, consolidating = null, proposals = null, busy = false, onConsolidate, onDrop, lan = false }: {
+const claimOf = (items: ExpertItem[] | null, id: string | undefined): string => (id ? items?.find((it) => it.id === id)?.claim || id : "");
+
+export function ObsCard({ o, consolidated, researching, proposals, items, lan, onDrop, initialOpen = false, nowMs }: {
+  o: ExpertObs; consolidated: boolean; researching: string | null; proposals: ExpertProposal[] | null; items: ExpertItem[] | null;
+  lan: boolean; onDrop: (g: ExpertGap) => void; initialOpen?: boolean; nowMs?: number;
+}) {
+  const g = o.gap || null, op = o.outcome?.op || "";
+  const prop = g?.status === "proposed" ? gapProposal(g, proposals) : null;
+  const note = gapNote(g?.error), f = g?.finding;
+  return (
+    <XCard tone={observationTone(o.kind, o.outcome)} mark={observationTypeLabel(o.kind, o.outcome)} source={observationSource(o)} sourceTitle={o.source?.target}
+      right={fmtAgo(o.ts, nowMs)} rightTitle={o.ts ? fmtWhen(o.ts) : undefined} text={observationText(o)}
+      facts={observationFacts(o, consolidated, researching, proposals)} note={prop?.status === "failed" ? prop.error : ""} initialOpen={initialOpen}
+      detail={() => (
+        <>
+          {op === "contradict" ? (
+            <>
+              {o.outcome?.item ? <Part label="Contradicted"><p className="xp-txt">{claimOf(items, o.outcome.item)}</p></Part> : null}
+              {o.outcome?.new ? <Part label="Corrected rule"><p className="xp-txt">{claimOf(items, o.outcome.new)}</p></Part> : null}
+            </>
+          ) : (op === "add" || op === "bump") && o.outcome?.item ? (
+            <Part label="Lesson"><p className="xp-txt">{claimOf(items, o.outcome.item)}</p></Part>
+          ) : null}
+          {note ? <p className="xp-facts">{note}</p> : null}
+          {f ? (
+            <>
+              <Part label="Found"><Md text={f.answer} /></Part>
+              {f.refs?.length ? <Part label="Files"><Files refs={f.refs} /></Part> : null}
+            </>
+          ) : null}
+          {g && gapUnresolved(g) && !lan ? (
+            <div className="xp-acts">
+              <button type="button" className="xp-forget" title="Drop this question: it is not looked into again" onClick={() => onDrop(g)}>Drop</button>
+            </div>
+          ) : null}
+        </>
+      )} />
+  );
+}
+
+const OBS_FILTERS: [ObservationFilter, string][] = [["all", "All"], ["unsure", "Unsure"], ["learnings", "Learnings"]];
+
+export function ObservationsPanel({ pending, done, consolidating = null, proposals = null, items = null, busy = false, onConsolidate, onDrop, lan = false, nowMs }: {
   pending: ExpertObs[] | null; done: ExpertObs[] | null; consolidating?: ExpertConsolidating | null;
   /** The skill proposals (as on the Memory tab): their status lines under the intro, and what a proposed gap says. */
   proposals?: ExpertProposal[] | null;
+  /** The memory items: an opened row names the lesson it landed on by its claim. */
+  items?: ExpertItem[] | null;
   busy?: boolean; onConsolidate: () => void; onDrop: (g: ExpertGap) => void;
   /** On the phone: the LAN door does not serve `consolidate` or `dismiss` (they write memory), so the buttons are hidden. */
-  lan?: boolean;
+  lan?: boolean; nowMs?: number;
 }) {
+  const [filter, setFilter] = useState<ObservationFilter>("all");
   if (pending == null) return <div className="xp-empty">Loading…</div>;
   const { waiting, done: folded } = sortObservations(pending, done), running = !!consolidating?.running;
   const researching = researchingGap(consolidating), work = waiting.length > 0 || unresolvedGapCount(observationGaps(waiting, folded)) > 0;
-  const row = (consolidated: boolean) => (o: ExpertObs) =>
-    <ObsRow key={o.id} o={o} consolidated={consolidated} researching={researching} proposals={proposals} lan={lan} onDrop={onDrop} />;
-  const open = openProposals(proposals);
+  const all = [...waiting, ...folded];
+  const counts = { all: all.length, unsure: filterObservations(all, "unsure").length, learnings: filterObservations(all, "learnings").length };
+  const w = filterObservations(waiting, filter), d = filterObservations(folded, filter);
+  const card = (consolidated: boolean) => (o: ExpertObs) =>
+    <ObsCard key={o.id} o={o} consolidated={consolidated} researching={researching} proposals={proposals} items={items} lan={lan} onDrop={onDrop} nowMs={nowMs} />;
   return (
     <>
       <div className="xp-bar">
         <span className="xp-line">{OBS_INTRO}{running ? <span className="xp-status">{consolidatingLine(consolidating)}</span> : null}</span>
         {lan ? null : <ConsolidateButton busy={busy} running={running} work={work} onClick={onConsolidate} />}
       </div>
-      {open.length ? (
-        <ul className="xp-proposals">
-          {open.map((p) => <li key={p.id} className={`xp-proposal ${p.status}`}>{proposalLine(p)}</li>)}
-        </ul>
-      ) : null}
-      {!waiting.length && !folded.length ? <div className="xp-empty">{OBS_EMPTY}</div> : (
+      <ProposalLines open={openProposals(proposals)} />
+      {!all.length ? <div className="xp-empty">{OBS_EMPTY}</div> : (
         <>
-          {waiting.length ? (
+          <Filters label="Show observations" options={OBS_FILTERS} counts={counts} value={filter} onChange={setFilter} total={all.length} />
+          {w.length ? (
             <section className="xp-sec" aria-label="Waiting">
               <h4 className="xp-h">Waiting</h4>
-              <ul className="xp-list">{waiting.map(row(false))}</ul>
+              <ul className="xp-cards">{w.map(card(false))}</ul>
             </section>
           ) : null}
-          {folded.length ? (
+          {d.length ? (
             <section className="xp-sec" aria-label="Consolidated">
               <h4 className="xp-h">Consolidated</h4>
-              <ul className="xp-list">{folded.map(row(true))}</ul>
+              {groupByDay(d, nowMs).map((g) => (
+                <section key={g.key} className="xp-dayg" aria-label={g.label}>
+                  <h5 className="xp-day">{g.label}</h5>
+                  <ul className="xp-cards">{g.items.map(card(true))}</ul>
+                </section>
+              ))}
             </section>
           ) : null}
+          {!w.length && !d.length ? <div className="xp-empty">No observations match this filter.</div> : null}
         </>
       )}
     </>
@@ -506,8 +555,8 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
         ))}
       </div>
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
-        {tab === "memory" ? <MemoryPanel items={data.memory} proposals={data.proposals} onForget={(it) => { void onForget(it); }} /> : null}
-        {tab === "observations" ? <ObservationsPanel pending={data.pending} done={data.done} consolidating={data.consolidating} proposals={data.proposals} busy={consolidating}
+        {tab === "memory" ? <MemoryPanel items={data.memory} proposals={data.proposals} lan={isLanHost()} onForget={(it) => { void onForget(it); }} /> : null}
+        {tab === "observations" ? <ObservationsPanel pending={data.pending} done={data.done} consolidating={data.consolidating} proposals={data.proposals} items={data.memory} busy={consolidating}
           lan={isLanHost()} onConsolidate={() => { void onConsolidate(); }} onDrop={(g) => { void onDrop(g); }} /> : null}
         {tab === "consults" ? <ConsultsPanel consults={data.consults} items={data.memory} /> : null}
         {tab === "checks" ? <ChecksPanel checks={data.checks} starting={starting} onRun={() => { void onRun(); }} /> : null}

@@ -1,21 +1,11 @@
 // Pure helpers for an expert's panels (components/ExpertPane.tsx) and its proposal card (components/ApprovalCard.tsx):
 // ordering and the short strings the rows show. The shapes are docs/experts.md §4 (Item, Consult, Run, Proposal).
 import type { ExpertCheckStatus, ExpertConsolidating, ExpertConsult, ExpertEngineRow, ExpertGap, ExpertObs, ExpertItem, ExpertProposal, ExpertScore } from "./api";
-import { fmtAgo } from "./format";
 
 /** Memory as the expert's own index reads it: most seen first, then the most recently touched. */
 export function sortLessons(items: readonly ExpertItem[]): ExpertItem[] {
   return [...items].sort((a, b) => (b.count || 0) - (a.count || 0) || (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id));
 }
-
-/** Memory split for the panel: the lessons answers draw on, then the ones not used yet (`indexed === false`: seen once,
- *  or a research finding waiting for its proposal's approval) under their own divider. Each part sorted as `sortLessons`. */
-export function splitLessons(items: readonly ExpertItem[]): { indexed: ExpertItem[]; seenOnce: ExpertItem[] } {
-  const sorted = sortLessons(items);
-  return { indexed: sorted.filter((it) => it.indexed !== false), seenOnce: sorted.filter((it) => it.indexed === false) };
-}
-
-export const SEEN_ONCE_LINE = "Not used in answers yet";
 
 /** The proposals the Memory panel mentions (in progress, waiting on the user, or failed), newest first. */
 export function openProposals(ps: readonly ExpertProposal[] | null | undefined): ExpertProposal[] {
@@ -36,23 +26,39 @@ export const anyPreparing = (ps: readonly ExpertProposal[] | null | undefined): 
 /** "seen 3×" (a lesson seen once still says so: the count is what earns a proposal). */
 export const seenLabel = (count: number | null | undefined): string => `seen ${Math.max(1, count || 0)}×`;
 
-/** The markers after a lesson's claim: who said it (`user`, or "found by research"), why it is not used in answers yet
- *  (`indexed === false`: "waiting for your approval" for a research finding, "seen once" otherwise) and where it stands
- *  on the way to a skill (one of "promoted", "not proposed again" for a rejected proposal, or "proposed", in that priority). */
-export function lessonTags(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed" | "contradicted">): string[] {
+export type LessonStatus = "in-use" | "not-used" | "contradicted";
+export type LessonFilter = "all" | "in-use" | "not-used";
+export const LESSON_STATUS_LABEL: Record<LessonStatus, string> = { "in-use": "In use", "not-used": "Not used yet", contradicted: "Contradicted" };
+
+/** A lesson card's status marker: "contradicted" when any session showed it wrong (wins), else whether answers draw on
+ *  it (`indexed === false`: not used yet; absent reads as in use). */
+export function lessonStatus(it: Pick<ExpertItem, "indexed" | "contradicted">): LessonStatus {
+  if ((it.contradicted || 0) > 0) return "contradicted";
+  return it.indexed === false ? "not-used" : "in-use";
+}
+
+/** Where a lesson came from, by its trust: "taught by you", "from sessions", "found by research" ("" otherwise). */
+export function lessonSource(it: Pick<ExpertItem, "trust">): string {
+  return it.trust === "user" ? "taught by you" : it.trust === "outcome" ? "from sessions" : it.trust === "research" ? "found by research" : "";
+}
+
+/** A lesson card's footer facts: where it stands on the way to a skill, "contradicted N×", and why a lesson is not
+ *  used yet ("waiting for your approval" for a research finding, "seen once" otherwise). */
+export function lessonFacts(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed" | "contradicted">): string[] {
   const out: string[] = [];
-  if (it.trust === "user") out.push("user");
-  else if (it.trust === "research") out.push("found by research");
+  if (it.promoted) out.push("in a skill");
+  else if (it.rejected) out.push("not proposed again");
+  else if (it.proposed) out.push("skill proposal pending");
   if ((it.contradicted || 0) > 0) out.push(`contradicted ${it.contradicted}×`);
   if (it.indexed === false) out.push(it.trust === "research" ? "waiting for your approval" : "seen once");
-  if (it.promoted) out.push("promoted");
-  else if (it.rejected) out.push("not proposed again");
-  else if (it.proposed) out.push("proposed");
   return out;
 }
 
-/** A lesson tag's class name: "contradicted" for every "contradicted N×", else the tag with dashes for spaces. */
-export const lessonTagClass = (tag: string): string => /^contradicted /.test(tag) ? "contradicted" : tag.replace(/ /g, "-");
+/** The lessons one filter chip keeps ("in-use": what answers draw on, contradicted ones included), in the order given. */
+export function filterLessons(items: readonly ExpertItem[], f: LessonFilter): ExpertItem[] {
+  if (f === "all") return [...items];
+  return items.filter((it) => (it.indexed === false ? "not-used" : "in-use") === f);
+}
 
 /** Consults newest first (the route already sends them so; a merge or an older server may not). */
 export const sortConsults = (cs: readonly ExpertConsult[]): ExpertConsult[] => [...cs].sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -61,12 +67,6 @@ export const sortConsults = (cs: readonly ExpertConsult[]): ExpertConsult[] => [
 export function basename(p: string | null | undefined): string {
   const t = (p || "").replace(/[\\/]+$/, "");
   return t.slice(Math.max(t.lastIndexOf("/"), t.lastIndexOf("\\")) + 1);
-}
-
-/** A consult's quiet meta line: when, the caller's target folder and its backend, when known. */
-export function consultMeta(c: Pick<ExpertConsult, "ts" | "caller">, nowMs: number = Date.now()): string {
-  const target = basename(c.caller?.target), backend = c.caller?.backend || "";
-  return [fmtAgo(c.ts, nowMs), target, backend].filter(Boolean).join(" · ");
 }
 
 // ------------------------------------------------------------------ consult cards ----
@@ -112,12 +112,17 @@ export function filterConsults(cs: readonly ExpertConsult[], f: ConsultFilter): 
 /** Consults newest first, under day dividers: "Today", "Yesterday", else a short date ("Sep 8", with the year when it
  *  is not this year). `key` is the local calendar day. Timestamps are epoch seconds. */
 export function groupConsultsByDay(cs: readonly ExpertConsult[], nowMs: number = Date.now()): { key: string; label: string; items: ExpertConsult[] }[] {
+  return groupByDay(sortConsults(cs), nowMs);
+}
+
+/** Items (already in display order) under day dividers, as groupConsultsByDay; a day split by other days opens again. */
+export function groupByDay<T extends { ts: number }>(xs: readonly T[], nowMs: number = Date.now()): { key: string; label: string; items: T[] }[] {
   const now = new Date(nowMs), yest = new Date(now);
   yest.setDate(now.getDate() - 1);
   const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
   const today = dayKey(now), yesterday = dayKey(yest);
-  const out: { key: string; label: string; items: ExpertConsult[] }[] = [];
-  for (const c of sortConsults(cs)) {
+  const out: { key: string; label: string; items: T[] }[] = [];
+  for (const c of xs) {
     const d = new Date((c.ts || 0) * 1000), key = dayKey(d);
     let g = out[out.length - 1];
     if (!g || g.key !== key) {
@@ -277,11 +282,40 @@ export function observationResultLabel(o: Pick<ExpertObs, "kind" | "outcome" | "
   }
 }
 
-/** A row's meta line: when, then where it came from (the source folder and backend when known, else "consult"). */
-export function observationMeta(o: Pick<ExpertObs, "ts" | "source" | "consult">, nowMs: number = Date.now()): string {
+/** Where an observation came from: the source folder and backend when known, else "consult" for one from a consult. */
+export function observationSource(o: Pick<ExpertObs, "source" | "consult">): string {
   const target = basename(o.source?.target), backend = o.source?.backend || "";
-  const where = target || backend ? [target, backend].filter(Boolean).join(" · ") : o.consult ? "consult" : "";
-  return [fmtAgo(o.ts, nowMs), where].filter(Boolean).join(" · ");
+  return target || backend ? [target, backend].filter(Boolean).join(" · ") : o.consult ? "consult" : "";
+}
+
+/** An observation type marker's tone: the warning token for an unsure answer or contradicted advice, the positive one
+ *  for what worked or held up, the accent for your correction, muted for the rest. */
+export function observationTone(kind: string | null | undefined, outcome?: ExpertObs["outcome"]): "warn" | "ok" | "accent" | "muted" {
+  const label = observationTypeLabel(kind, outcome);
+  if (label === "unsure" || label === "advice contradicted") return "warn";
+  if (label === "fix that worked" || label === "advice confirmed") return "ok";
+  if (label === "correction") return "accent";
+  return "muted";
+}
+
+/** An observation card's footer: for a waiting row "waiting to be consolidated" (a gap already past "open" says where
+ *  it stands instead); for a consolidated one what came of it (observationResultLabel); then "asked N×" for a gap asked
+ *  more than once. */
+export function observationFacts(o: Pick<ExpertObs, "kind" | "outcome" | "gap">, consolidated: boolean, researching: string | null = null,
+  proposals: readonly Pick<ExpertProposal, "id" | "status" | "error">[] | null = null): string[] {
+  const out: string[] = [], g = o.gap;
+  const gapMoved = !!g && (g.status !== "open" || (researching != null && researching === g.id));
+  const result = !consolidated && !gapMoved ? "waiting to be consolidated" : observationResultLabel(o, researching, proposals);
+  if (result) out.push(result);
+  if (g && (g.count || 0) > 1) out.push(askedLabel(g.count));
+  return out;
+}
+
+export type ObservationFilter = "all" | "unsure" | "learnings";
+/** The observations one filter chip keeps: "unsure" (the expert could not answer), "learnings" (everything else). */
+export function filterObservations(os: readonly ExpertObs[], f: ObservationFilter): ExpertObs[] {
+  if (f === "all") return [...os];
+  return os.filter((o) => (o.kind === "gap") === (f === "unsure"));
 }
 
 /** The tab's two sections: waiting (oldest first) and consolidated (newest first). */

@@ -17,7 +17,8 @@ A third bot kind, `expert`, beside `bot` and `super` (`fused_render/bots/bot.py`
     parallel, short run of the expert and returns a structured answer. Consults never touch the chat thread.
 - It learns in ONE loop: observations → consolidation → memory → skill fixes. Observations come from idle task
   sessions (lessons) and unsure consults (gaps). Consolidation folds lessons into memory and gaps into gap
-  records, researches open gaps, and proposes skill fixes on an approval card (§11).
+  records, researches open gaps, and proposes skill fixes on an approval card (§11). The loop never runs the
+  quality gate (§9): that is the user's, from the Checks tab.
 - Engines: `claude`, `codex`, `copilot` only (`agent_backends.registry`). Selected per expert. `auto` is
   Claude when enabled, else Copilot; it NEVER resolves to Codex. Codex keeps its own shell in a tools turn
   (`codex exec -s read-only`), so its reads are not fenced by `readtools`; it runs an expert only when the
@@ -236,10 +237,7 @@ pending it counts no failure.
 questions(bot) -> list[{"q": str, "must": [str]}]      # parsed from <folder>/questions.md, section 9
 run(bot, *, skills_override=None, answer_fn=None) -> Run
 Run = {"id","ts","score": int,"total": int,"results":[{"q","passed": bool,"why": str,"answer": str}],
-       "engine": str, "skills_hash": str}   # skills_hash only on persisted runs
-skills_hash(skills, engine) -> str   # sha256 over each skill's name, title, trigger, body (sorted by name) + engine
-reusable_score(bot, skills) -> {"score","total"} | None   # latest(bot)'s score when its skills_hash matches
-                                                          # (skills, current engine) and it has no error
+       "engine": str}
 start(bot) -> str            # run in a background thread; returns run id; one at a time per bot (else returns the running id)
 status(bot) -> {"running": bool, "run_id": str|None, "done": int, "total": int}
 latest(bot) -> Run | None
@@ -247,16 +245,15 @@ latest(bot) -> Run | None
 `answer_fn(bot, question, skills_override) -> str` defaults to `experts.engine.answer_question`. Each answer
 is graded by one `model.text` call that must return JSON `{"passed": bool, "why": str}` against the `must`
 points. Up to 3 questions run in parallel. `run` persists the finished run unless `skills_override` is set.
-Every persisted run (also a crashed `start` run, which carries `error`) records `skills_hash` of the expert's
-skills (`bot.skills()`, read when the run starts) and the engine string; what-if runs carry none.
+The gate runs only when the user asks: the Checks tab (`checks/run`) or the chat tool `run_checks`. Nothing
+runs it automatically; skill proposals never do.
 
 ### `experts/proposals.py`
 ```
 Proposal = {"id","ts","status": "preparing"|"ready"|"shown"|"approved"|"rejected"|"failed",
             "action": "update"|"create"|None,"skill": name|None,"title","trigger","body","diff": str,
             "items":[item ids],"claims":[str],"topic": str,"error": str,
-            "score_before": {"score","total"}|None,"score_after": {"score","total"}|None,
-            "before_reused": bool,"card_seq": int|None}
+            "score_before": None,"score_after": None,"card_seq": int|None}   # scores: always None (compat)
 STATUSES = ("preparing", "ready", "shown", "approved", "rejected", "failed")
 BUSY = "a skill proposal is already being prepared"
 candidates(bot) -> list[Item]       # (count >= propose_at, or trust "research" whose gap is not closed),
@@ -264,7 +261,7 @@ candidates(bot) -> list[Item]       # (count >= propose_at, or trust "research" 
                                     # and not in any open (preparing/ready/shown) proposal
 request(bot, items, *, topic="", gap="") -> Proposal   # asynchronous; see below
 propose_candidates(bot) -> [pid]    # all candidates as ONE request; [] when none or one is preparing
-prepare(bot, items) -> Proposal     # the same work synchronously (tests): draft + gate before/after; "ready"
+prepare(bot, items) -> Proposal     # the same work synchronously (tests): the draft; "ready"
 get(bot, pid) -> Proposal | None ; listing(bot) -> list[Proposal]      # every status, newest first
 approve(bot, pid) -> Proposal       # bot.skill_save(...), items marked promoted
 reject(bot, pid) -> Proposal        # items marked rejected
@@ -272,7 +269,7 @@ card_text(proposal) -> tuple[str, str]   # (text, detail) for the approval event
 ```
 `request` is how chat, routes and the scheduler propose. Under `store.lock(bot)` it saves the record as
 `preparing` and marks its items `proposed` at once, then one daemon thread drafts (one `model.text` call) and
-runs both gate runs, and sets `ready` (then calls `cards.show` at once; a False return is fine, a tick shows
+sets `ready` (then calls `cards.show` at once; a False return is fine, a tick shows
 it later) or `failed` with `error` (its items' `proposed` flag is cleared). Single flight per expert: while a
 proposal is `preparing`, `request` raises `ValueError(BUSY)`. A `preparing` record this process is not
 working on and older than an hour (the app quit mid-draft) is failed as "interrupted". When `approve`'s
@@ -282,10 +279,9 @@ A proposal whose items include a `research` lesson (or given `gap`) records `gap
 `gaps: [ids]`; `request` marks those gaps `proposed` with the proposal id. `approve` → each such gap
 `answered` (resolution `skill`); `reject` and the failed path (`_fail`, also a failed approve) → `dismissed`.
 `card_text` says the expert looked into a question it could not answer when the proposal has a `gap`.
-Updating an existing skill is preferred to creating one. The gate scores are skipped (None) when the expert
-has no questions. The "before" run is skipped too when `gate.reusable_score(bot, skills)` returns the latest
-persisted run's score (same `skills_hash` over the current skills and engine, no `error`); `before_reused`
-records that. Approving a proposal changes the skills, so the hash stops matching on its own.
+Updating an existing skill is preferred to creating one. A proposal never runs the quality gate (one model call
+drafts it, then it is `ready`); `score_before` / `score_after` stay on the record for compatibility, always
+`None`, and `card_text` says nothing about checks.
 
 ### `experts/engine.py` — one run of the expert
 ```
@@ -339,8 +335,7 @@ become `action` events. Chat-only tools, executed in-process:
 `run_checks {}` (gate.start), `propose_skill {item_ids?: [..], topic?: str}`.
 
 - `propose_skill` raises no card inside the task: it calls `proposals.request(...)` and returns at once
-  "Drafting the proposal and running the checks. An approval card will appear in this chat when it is
-  ready (a few minutes)." A `ValueError` (single flight, nothing to propose) is an error result with its
+  "Drafting the proposal. An approval card will appear in this chat shortly." A `ValueError` (single flight, nothing to propose) is an error result with its
   sentence. The `topic` path skips lessons that are `proposed`, `promoted` or `rejected`.
 - Rules (system prompt): when the user explicitly asks to remember something, ALWAYS call `remember_lesson`
   with their statement restated as a general lesson; how the user wants canvases, UDFs, charts and data
@@ -366,7 +361,7 @@ tick() -> None                       # tick_one for every expert
 ```
 A `failed` (or `preparing`) proposal is never shown.
 Pattern: `Bot.greet` (bot.py) — install a worker as `bot.thread` under `bot.lock`, emit `approval`
-(`detail` = diff, plus `expert_proposal: <id>`, `score_before`, `score_after`), `set_status("waiting",
+(`detail` = diff, plus `expert_proposal: <id>`, `score_before: null`, `score_after: null`), `set_status("waiting",
 waiting_on=seq)`, wait on the inbox, classify with the YES / NO regexes, then `proposals.approve` /
 `reject`, emit a `note`, set idle, release the thread, re-deliver any non-verdict text as a new task.
 
@@ -535,7 +530,7 @@ proposals carry `status` (`preparing` … `failed`) and `error`. Observation typ
 "advice contradicted" ("advice checked" only for the legacy `answer_contradicted` with no outcome); result tag
 "contradicted a lesson" for `outcome.op === "contradict"`; a lesson with `contradicted > 0` shows a warning-style
 tag "contradicted N×" in the Memory panel. Proposal cards are ordinary `approval` events
-with `expert_proposal`, `score_before`, `score_after`; the diff is the card body. Approve / Reject go
+with `expert_proposal`, `score_before: null`, `score_after: null` (proposals run no checks); the diff is the card body. Approve / Reject go
 through the existing `/api/bots/<id>/send`.
 
 ## 11. Gap repair: one learning loop
