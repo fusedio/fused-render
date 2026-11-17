@@ -212,7 +212,7 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     expect(show).toContain("const task = !row && renderTaskHint(p, el);");
     expect(show).toContain('if (!row && !task) renderHint(p, el.getAttribute("data-hint") || "");');
     // A host that is NOT a row must not inherit the last row's width.
-    expect(show).toContain('p.style.width = "";');
+    expect(show).toContain('p.style.removeProperty("--hint-row-room");');
     expect(show.indexOf("renderRowHint(p, el)")).toBeLessThan(show.indexOf("renderTaskHint(p, el)"));
   });
 
@@ -250,51 +250,33 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     expect(fn("hideHint")).toContain('panel.removeAttribute("data-row-window");');
   });
 
-  it("is as wide as the window the ring opens — clamped to the room beside the column, never under 120px", () => {
+  it("is as wide as its words, not as the window — up to the caption's measure and the room beside the column (2026-11-18)", () => {
+    // "the width, make it not the same width as the window, we can have it
+    // less or more … basically it is fine if it is coincidence".
     const row = fn("renderRowHint");
-    // The window's width NOW when it is on screen (a drag included), the
-    // stamped one otherwise.
-    expect(row).toContain('const live = liveWidth(el.getAttribute("data-hint-width-of"));');
-    expect(row).toContain('const want = live || Number(el.getAttribute("data-hint-width")) || 0;');
-    expect(fn("liveWidth")).toContain("if (!selector) return 0;");
-    expect(fn("liveWidth")).toContain("return Math.round(box.getBoundingClientRect().width);");
+    // No inline width, no window to copy one from.
+    expect(row).not.toContain("p.style.width");
+    expect(row).not.toContain("data-hint-width");
+    expect(SRC).not.toContain("liveWidth");
+    // All it says is the room: the panel never runs past the column's edge.
     expect(row).toContain("const room = rowEdge(el) - 8 - EDGE;");
-    expect(row).toContain('p.style.width = want > 0 ? `${Math.max(120, Math.min(want, room))}px` : "";');
-    // The clamp, worked: a 420px window beside a column at x=1452 keeps its
-    // 420; the same window in a 300px-wide viewport gets the room; a column
-    // hard against the left edge still gets the floor.
+    expect(row).toContain('p.style.setProperty("--hint-row-room", `${Math.max(120, Math.round(room))}px`);');
+    // …and the mark goes with the row.
+    expect(fn("show")).toContain('p.style.removeProperty("--hint-row-room");');
+    expect(fn("hideHint")).toContain('panel.style.removeProperty("--hint-row-room");');
+    // The measure is the stylesheet's: the task caption's 90ch, or the room.
+    const at = TASKS_CSS.indexOf(".hint-panel.is-row {");
+    const panel = TASKS_CSS.slice(at, TASKS_CSS.indexOf("\n}\n", at));
+    expect(panel).toContain("max-width: min(90ch, var(--hint-row-room, 80vw));");
+    expect(panel).not.toMatch(/\n  width:/);
+    // The room, worked: beside a column at x=1452 there is plenty; in a
+    // 300px-wide viewport the room rules; hard against the left edge, the floor.
     const EDGE = Number(SRC.match(/const EDGE = (\d+);/)?.[1]);
     expect(EDGE).toBeGreaterThan(0);
-    const width = (want: number, edge: number) => Math.max(120, Math.min(want, edge - 8 - EDGE));
-    expect(width(420, 1452)).toBe(420);
-    expect(width(420, 252)).toBe(252 - 8 - EDGE);
-    expect(width(420, 60)).toBe(120);
-  });
-
-  it("prefers the window's LIVE width over the stamped one, and falls back when the window is not up", () => {
-    // The host stamps `data-hint-width` at its last render; a card the reader
-    // has just dragged is wider than that (2026-11-16: "we click a task ring,
-    // then resize and hover over another — the hover row's size doesn't
-    // change"). `data-hint-width-of` names the window; its box wins while it
-    // is on screen.
-    const row = fn("renderRowHint");
-    expect(row).toContain('const live = liveWidth(el.getAttribute("data-hint-width-of"));');
-    expect(row.indexOf("const live = liveWidth(")).toBeLessThan(row.indexOf("const want = live ||"));
-    // The live width goes through the same clamp as the stamped one.
-    expect(row.indexOf("const want = live ||")).toBeLessThan(row.indexOf("Math.max(120, Math.min(want, room))"));
-    // Every way of having no live window answers 0, which `||` passes over:
-    // no attribute, a selector the engine refuses, nothing matching it.
-    const live = fn("liveWidth");
-    expect(live).toContain("if (!selector) return 0;");
-    expect(live).toMatch(/try \{\s*box = document\.querySelector\(selector\);\s*\} catch \{\s*return 0;\s*\}/);
-    expect(live).toContain('if (!box || typeof box.getBoundingClientRect !== "function") return 0;');
-    // The preference, worked: a 515px window up beats a stamped 360; no
-    // window up, the stamped 360 stands; neither, no inline width at all.
-    const want = (liveW: number, stamped: string | null) => liveW || Number(stamped) || 0;
-    expect(want(515, "360")).toBe(515);
-    expect(want(0, "360")).toBe(360);
-    expect(want(0, null)).toBe(0);
-    expect(want(0, "")).toBe(0);
+    const room = (edge: number) => Math.max(120, Math.round(edge - 8 - EDGE));
+    expect(room(1452)).toBe(1452 - 8 - EDGE);
+    expect(room(252)).toBe(252 - 8 - EDGE);
+    expect(room(60)).toBe(120);
   });
 
   it("stands against the column's edge, where its windows stand — not against the one ring", () => {
@@ -352,7 +334,7 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     const body = hide.slice(0, hide.indexOf("\n}"));
     expect(body).toContain("panel.replaceChildren();");
     expect(body).toContain('panel.classList.remove("is-row");');
-    expect(body).toContain('panel.style.width = "";');
+    expect(body).toContain('panel.style.removeProperty("--hint-row-room");');
   });
 
   it("the stylesheet: one line, only the title and the reply give", () => {
@@ -402,7 +384,7 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     // The same recipe the chat's popovers wear.
     const composer = readFileSync(join(import.meta.dir, "../../apps/claude/styles/composer.css"), "utf8");
     expect(composer).toMatch(/\.c-kebabpop \{[^}]*border: 1px solid var\(--c-border-strong\);[^}]*box-shadow: 0 6px 24px var\(--c-shadow\);/);
-    expect(panel).toContain("max-width: none;");
+    expect(panel).not.toContain("max-width: none;");
     // THE NAME IS NEVER CLAMPED (2026-11-17: "get rid of truncation … don't
     // truncate it"): the panel wraps, the title has no ellipsis and is the
     // row's slack; the count and the time keep their width at the right end.

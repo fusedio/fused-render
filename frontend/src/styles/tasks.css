@@ -499,8 +499,8 @@ button.tasks-caret,
 }
 /* THE TASK'S NAME AND FACTS BESIDE ITS RING (hints.ts `renderRowHint`;
    Akshil, 2026-11-16): a rail ring whose hover opens no card shows the task
-   in a panel as wide as the window that ring opens (the panel's inline
-   width). Since 2026-11-17 the left part is gone and nothing is clamped
+   in a panel beside the rail, as wide as its own words (2026-11-18; it was
+   as wide as the window the ring opens). Since 2026-11-17 the left part is gone and nothing is clamped
    ("strip the left part, that is status and task id, keep the time and count
    as is. And don't truncate it"): the title, whole — wrapping when it is
    longer than its room — then the count and the time, fixed, at the right
@@ -525,7 +525,12 @@ button.tasks-caret,
   background: var(--row-bg-hover);
   border-color: var(--nt-card-border-strong);
   box-shadow: 0 6px 24px var(--shadow-md);
-  max-width: none;
+  /* AS WIDE AS ITS WORDS (Akshil, 2026-11-18: "make it not the same width as
+     the window, we can have it less or more … fine if it is coincidence"):
+     the panel shrinks to its content, up to the task caption's own measure
+     (`.is-task`, 90ch) and never past the room beside the rail, which
+     hints.ts measures (`--hint-row-room`). A longer title wraps. */
+  max-width: min(90ch, var(--hint-row-room, 80vw));
   /* One line is the 36px row it always was (17.5px of text + 18); more
      lines keep the same air above and below. */
   padding: 9px 12px;
