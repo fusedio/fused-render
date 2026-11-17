@@ -47,7 +47,7 @@ _REAL_ENSURE_DUTIES_WAITER = queue_manager.ensure_duties_waiter
 
 
 @pytest.fixture(autouse=True)
-def _join_event_posts(monkeypatch):
+def _join_event_posts(monkeypatch, _release_dead_origins):
     """Every `_post_event` / `card_raised` post runs `_send_event` on a daemon
     thread, and only the `exited` one is joined by the code under test. An
     unjoined `turn_ended` that outlives its test loses the test's patched
@@ -55,7 +55,9 @@ def _join_event_posts(monkeypatch):
     in whatever FUSED_RENDER_HOME_DIR is set NOW (the next test's), and lands
     on the next test's live server as a stray post. Wait for them here.
     Requesting `monkeypatch` makes this teardown run before the patches are
-    undone, so a thread still in flight finishes against its own test."""
+    undone, so a thread still in flight finishes against its own test; and
+    requesting `_release_dead_origins` keeps the test's dead ports reserved
+    (refusing, not reissued) until those threads are done."""
     before = set(threading.enumerate())
     yield
     deadline = time.monotonic() + 10
@@ -419,15 +421,43 @@ class _LiveServer:
         self.httpd.server_close()
 
 
+#: Sockets `_dead_origin` keeps bound for the current test, by origin.
+_RESERVED = {}
+
+
+@pytest.fixture(autouse=True)
+def _release_dead_origins():
+    """Close every port `_dead_origin` reserved, after the test (and after
+    `_join_event_posts`, which depends on this, has waited out the posts)."""
+    yield
+    while _RESERVED:
+        _RESERVED.popitem()[1].close()
+
+
 def _dead_origin():
-    """A loopback origin nothing listens on (bound, then released)."""
+    """A loopback origin nothing listens on — and nothing else CAN listen on.
+
+    The port stays bound (never `listen()`ed, no SO_REUSEADDR) until the test
+    ends: a connect to it is refused at once, and no other process can be
+    handed it. Binding and then releasing it, as this used to, raced the
+    other xdist workers: the kernel reissues a freed port to the next
+    `bind(0)` readily, so another worker's `live_server` could come up on it
+    and receive this test's "dead" `turn_ended` retries — failing THAT test
+    with `['turn_ended', 'card_raised'] == ['card_raised']`."""
     import socket
 
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return "http://127.0.0.1:%d" % port
+    origin = "http://127.0.0.1:%d" % s.getsockname()[1]
+    _RESERVED[origin] = s
+    return origin
+
+
+def _release(origin):
+    """Give a `_dead_origin` port up so this test's own server can bind it."""
+    s = _RESERVED.pop(origin, None)
+    if s is not None:
+        s.close()
 
 
 @pytest.fixture()
@@ -529,6 +559,7 @@ def _boots_late(origin, after):
 
     def boot():
         time.sleep(after)
+        _release(origin)
         holder["server"] = _LiveServer(port=int(origin.rsplit(":", 1)[1]))
 
     threading.Thread(target=boot, daemon=True).start()
