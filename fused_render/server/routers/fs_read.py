@@ -46,8 +46,10 @@ from fused_render.server.fs_stat import _fs_stat
 from fused_render.server.proxy import _harden_raw, _is_document_load
 from fused_render.server import templates as _server_templates
 from fused_render.server.templates import (
-    _conditions_key,
     _conditions_payload,
+    _conditions_toml_stamp,
+    _conditions_toml_unchanged,
+    _prefs_mtime,
 )
 from fused_render.server import walk as _server_walk
 from fused_render.server.walk import (
@@ -87,16 +89,21 @@ def api_fs_conditions(path: str):
     # recent verdict. Only success payloads (plain dicts) are cached; error
     # responses (_error -> JSONResponse) are always recomputed.
     # Keyed on prefs.json's mtime, and on a node-shaped path's canvas.toml
-    # mtime too (`_conditions_key`): a row added there makes the file a node.
-    pm = _conditions_key(path)
+    # mtime too (`_CONDITIONS_CACHE`'s comment): a row added there makes the
+    # file a node. The shape is worked out on a miss only.
+    pm = _prefs_mtime()
     cached = _server_templates._CONDITIONS_CACHE.get(path)
     if (cached is not None
             and time.monotonic() - cached[0] < _server_templates._CONDITIONS_TTL_S
-            and cached[1] == pm):
-        return cached[2]
+            and cached[1] == pm
+            and _conditions_toml_unchanged(cached[2])):
+        return cached[3]
+    # Stamped BEFORE the gates run: a canvas.toml written while they do
+    # makes the stored verdict miss next time rather than outlive the write.
+    stamp = _conditions_toml_stamp(path)
     result = _conditions_payload(path)
     if isinstance(result, dict):
-        _server_templates._CONDITIONS_CACHE[path] = (time.monotonic(), pm, result)
+        _server_templates._CONDITIONS_CACHE[path] = (time.monotonic(), pm, stamp, result)
     return result
 
 @router.get("/api/fs/list")

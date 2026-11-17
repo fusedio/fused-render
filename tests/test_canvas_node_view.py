@@ -493,9 +493,38 @@ def test_conditions_cache_follows_the_canvas_toml_of_a_node_shaped_path(client, 
     assert ask()["conditions"]["udf"] is True
 
 
-def test_conditions_key_stats_nothing_more_for_a_path_that_is_no_node_shape(tmp_path, monkeypatch):
+def _syscalls_of(monkeypatch, fn):
     seen = []
-    real = os.path.getmtime
-    monkeypatch.setattr(os.path, "getmtime", lambda p: (seen.append(str(p)), real(p))[1])
-    server_templates._conditions_key(str(tmp_path / "x.py"))
-    assert [p for p in seen if p.endswith("canvas.toml")] == []
+    real_stat, real_lstat = os.stat, os.lstat
+    monkeypatch.setattr(os, "stat", lambda p, *a, **k: (seen.append(str(p)), real_stat(p, *a, **k))[1])
+    monkeypatch.setattr(os, "lstat", lambda p, *a, **k: (seen.append(str(p)), real_lstat(p, *a, **k))[1])
+    try:
+        fn()
+    finally:
+        monkeypatch.setattr(os, "stat", real_stat)
+        monkeypatch.setattr(os, "lstat", real_lstat)
+    return seen
+
+
+def test_a_conditions_cache_hit_for_an_ordinary_file_costs_one_stat(base, tmp_path, monkeypatch):
+    """The node shape (which resolves the canvases roots, a dozen syscalls)
+    is worked out on a miss only: a hit for a plain `.py` pays the prefs.json
+    stat and nothing else, as before the canvas.toml key."""
+    from fused_render.server.routers import fs_read
+
+    monkeypatch.setattr(fs_read, "_conditions_payload", lambda p: {"path": p, "conditions": {}})
+    plain = str(tmp_path / "x.py")
+    fs_read.api_fs_conditions(plain)                       # the miss
+    hit = _syscalls_of(monkeypatch, lambda: fs_read.api_fs_conditions(plain))
+    assert len(hit) == 1 and hit[0].endswith("prefs.json"), hit
+
+
+def test_a_conditions_cache_hit_for_a_node_file_stats_its_canvas_toml_only(clone, monkeypatch):
+    from fused_render.server.routers import fs_read
+
+    monkeypatch.setattr(fs_read, "_conditions_payload", lambda p: {"path": p, "conditions": {}})
+    node = str(clone / "udf_1.py")
+    fs_read.api_fs_conditions(node)
+    hit = _syscalls_of(monkeypatch, lambda: fs_read.api_fs_conditions(node))
+    assert len(hit) == 2, hit
+    assert hit[1] == str(clone / "canvas.toml"), hit

@@ -6642,7 +6642,7 @@ class _SyncManager:
         write that changed something and acked after it is read as stale:
         the frame applied that delta and then wrote on top of it, and this
         view already describes the result."""
-        self._note_frame_write(fr)
+        self._note_disk()
         fr.view_rev = self.disk_rev
         fr.seen = True
         # The frame's own post describes what it shows now: nothing held over.
@@ -6661,16 +6661,15 @@ class _SyncManager:
             disk, names, edges=edges, ids=ids, bodies=bodies, embed_rows=embed_rows)
 
     def _note_frame_write(self, fr: _FrameState) -> None:
-        """`_note_disk` after `fr`'s snapshot or rename landed: when it moved
-        `disk_rev`, every OTHER record is told the rev of that write (FP-6),
-        so a snapshot one of them built before it is bounced, not applied.
-        With one record there is no other, and nothing changes."""
-        before = self.disk_rev
-        self._note_disk()
-        if self.disk_rev != before:
-            for other in list(self._frames.values()):
-                if other is not fr:
-                    other.other_write_rev = max(other.other_write_rev, self.disk_rev)
+        """`fr`'s snapshot or rename CHANGED the clone (its result says so):
+        every OTHER record is told the rev of that write (FP-6), so a
+        snapshot one of them built before it is bounced, not applied. Called
+        after the write's `_note_disk()`, so `disk_rev` already counts it —
+        whichever thread (the 1 s tick, the watcher, the refresh) noted it
+        first. With one record there is no other, and nothing changes."""
+        for other in list(self._frames.values()):
+            if other is not fr:
+                other.other_write_rev = max(other.other_write_rev, self.disk_rev)
 
     def _owes_frame(self, fr: _FrameState) -> bool:
         """Whether the next cut for `fr` would carry anything: its view is
@@ -7015,13 +7014,15 @@ class _SyncManager:
         # was cut for it yet, so `cut_rev` above cannot see it. Applied,
         # nodes and row keys are kept by this frame's view, but its edge set
         # would replace the other frame's. Only while the frame is owed a
-        # delta (its view is older than that write and differs from disk):
-        # a re-cut is forced once per write, so the frame has a delta with
-        # ops at or past the acked rev to apply before it posts again.
+        # delta (its view differs from disk; the frame's own body or rename
+        # since does not count as having seen the write): a re-cut is forced
+        # once per write, so the frame has a delta with ops at or past the
+        # acked rev; once it applied one, its `body.rev` is past the write
+        # and nothing bounces.
         owed_rev = fr.other_write_rev
         if (isinstance(snap_rev, int) and not isinstance(snap_rev, bool)
                 and snap_rev <= self.disk_rev and snap_rev < owed_rev
-                and fr.view_rev < owed_rev and self._owes_frame(fr)):
+                and self._owes_frame(fr)):
             if fr.recut_for < owed_rev:
                 self._force_recut()
                 fr.recut_for = self.disk_rev
@@ -7060,6 +7061,8 @@ class _SyncManager:
             self._body_written.pop(gone, None)
         self._refresh_view_after_write(fr, held, edges=new["edges"], ids=new["ids"],
                                        bodies=bodies, embed_rows=new["nodes"])
+        if result["changed"]:
+            self._note_frame_write(fr)
         view = fr.embed_view
         if view is not None:
             # Keys the frame still shows from before a delta it skipped
@@ -7301,7 +7304,7 @@ class _SyncManager:
             # Nothing known before the rename, nothing known after: the next
             # delta is a full state. `_view_rev` follows the rev as in the
             # refresh.
-            self._note_frame_write(fr)
+            self._note_disk()
             fr.view_rev = self.disk_rev
             fr.seen = True
             self._bump()
@@ -7309,6 +7312,8 @@ class _SyncManager:
             self._refresh_view_after_write(
                 fr, renamed["nodes"], edges=renamed.get("edges", []), ids=renamed.get("ids", {}),
                 bodies=renamed.get("bodies", {}), embed_rows=renamed.get("embed_rows"))
+        if result["changed"]:
+            self._note_frame_write(fr)
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "renamed": result["renamed"], "moved": result["moved"],
                "push_seq": self.push_seq}

@@ -384,3 +384,49 @@ def test_another_frames_write_forces_one_recut_however_many_stale_posts(m, harne
     assert first["rev"] == second["rev"] == rev_after_first
     assert m.disk_rev == rev_after_first           # the second forced nothing
     assert _edges(harness) == [["a", "b"]] and _row(harness, "b")["x"] == 0
+
+
+def test_a_body_of_its_own_does_not_let_a_stale_snapshot_through(m, harness):
+    """B's own body post moves its view's rev past A's write, but B has still
+    not seen A's edge: its stale full state is bounced all the same."""
+    a = _hello(m, "A")
+    b = _hello(m, "B")
+    m.apply_snapshot(1, 1, _body(["a", "b"], edges=[("a", "b")], rev=a["rev"]), frame="A")
+    cur = (harness.clones / "alpha" / "a.py").read_text()
+    r = m.apply_body("a", "a.py", canvas_snapshot.body_hash(canvas_snapshot.normalize_newlines(cur)),
+                     "edited\n", frame="B")
+    assert r["ok"], r
+    res = m.apply_snapshot(9, 1, _body(["a", "b"], x={"b": 70}, rev=b["rev"]), frame="B")
+    assert res.get("rebuild") is True, res
+    assert _edges(harness) == [["a", "b"]] and _row(harness, "b")["x"] == 0
+
+
+def test_a_rename_of_its_own_does_not_let_a_stale_snapshot_through(m, harness):
+    a = _hello(m, "A")
+    b = _hello(m, "B")
+    m.apply_snapshot(1, 1, _body(["a", "b"], edges=[("a", "b")], rev=a["rev"]), frame="A")
+    ren = m.apply_rename(9, 1, "b", "bb", "b.py", "bb.py", frame="B")
+    assert ren["changed"], ren
+    res = m.apply_snapshot(9, 2, _body(["a", "bb"], x={"bb": 70}, rev=b["rev"]), frame="B")
+    assert res.get("rebuild") is True, res
+    assert _edges(harness) == [["a", "bb"]]
+
+
+def test_another_frames_write_noted_first_by_the_watcher_still_bounces(m, harness, monkeypatch):
+    """The 1 s tick or the watcher thread can note A's write before A's own
+    refresh does: the other records are told all the same."""
+    a = _hello(m, "A")
+    b = _hello(m, "B")
+    real = canvas_snapshot.apply_snapshot
+
+    def noted_first(*args, **kw):
+        out = real(*args, **kw)
+        m._note_disk()
+        return out
+
+    monkeypatch.setattr(canvas_snapshot, "apply_snapshot", noted_first)
+    m.apply_snapshot(1, 1, _body(["a", "b"], edges=[("a", "b")], rev=a["rev"]), frame="A")
+    monkeypatch.setattr(canvas_snapshot, "apply_snapshot", real)
+    res = m.apply_snapshot(9, 1, _body(["a", "b"], x={"b": 70}, rev=b["rev"]), frame="B")
+    assert res.get("rebuild") is True, res
+    assert _edges(harness) == [["a", "b"]]

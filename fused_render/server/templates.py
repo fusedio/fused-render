@@ -41,12 +41,19 @@ KNOWN_SENTINELS = {"_render", "_listing"}
 # never stored. No background eviction — a stale entry is overwritten on the next
 # miss. _CONDITIONS_TTL_S is a module attribute so tests can monkeypatch it.
 _CONDITIONS_TTL_S = 60.0
-# path -> (inserted_monotonic, key, payload), `key` from `_conditions_key`.
-# Gates may read the preference store (the reader template's condition.py
-# does), so a cached verdict is only valid while prefs.json is unchanged —
-# otherwise flipping a Preferences toggle looks dead for a full TTL — and the
-# `udf` gate reads a node file's canvas.toml, whose mtime keys that path too.
-_CONDITIONS_CACHE: dict[str, tuple[float, tuple, dict]] = {}
+# path -> (inserted_monotonic, prefs_mtime, toml_stamp, payload). Gates may
+# read the preference store (the reader template's condition.py does), so a
+# cached verdict is only valid while prefs.json is unchanged — otherwise
+# flipping a Preferences toggle looks dead for a full TTL. The `udf` gate also
+# reads a node file's canvas.toml (a row added there makes the file a node),
+# so for a path SHAPED like a node file `toml_stamp` is `(canvas.toml path,
+# its mtime)` and a hit re-stats that one file; for every other path it is
+# None and a hit costs what it always did (the prefs stat). The shape is
+# worked out on a miss only (`_conditions_toml_stamp`): it resolves the
+# canvases roots, a dozen syscalls no hit should pay. Not in the key: a
+# file APPEARING beside a path (a sibling `foo.json` another gate might
+# look for) — that waits out the TTL, as before.
+_CONDITIONS_CACHE: dict[str, tuple[float, float, tuple | None, dict]] = {}
 
 
 def _prefs_mtime() -> float:
@@ -58,26 +65,30 @@ def _prefs_mtime() -> float:
         return 0.0
 
 
-def _conditions_key(path: str) -> tuple:
-    """What a cached `/api/fs/conditions` verdict is valid for: the prefs.json
-    mtime, plus — for a path SHAPED like a canvas node file only — its canvas
-    folder's `canvas.toml` mtime, which the `udf` gate reads (a row added to
-    it turns a file into a node). The shape is decided from the path alone
-    (`canvases.node_file_shape`, no syscall), so every other file pays no
-    extra stat."""
-    pm = _prefs_mtime()
+def _mtime_or_none(path: str) -> float | None:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _conditions_toml_stamp(path: str) -> tuple | None:
+    """On a miss: `(canvas.toml path, mtime)` when `path` is shaped like a
+    canvas node file (`canvases.node_file_shape`), else None."""
     try:
         from fused_render import canvases
 
-        shape = canvases.node_file_shape(path)
+        if canvases.node_file_shape(path) is None:
+            return None
     except Exception:  # noqa: BLE001 — no shape: the prefs key alone, as before
-        shape = None
-    if shape is None:
-        return (pm,)
-    try:
-        return (pm, os.path.getmtime(os.path.join(os.path.dirname(path), "canvas.toml")))
-    except OSError:
-        return (pm, None)
+        return None
+    toml = os.path.join(os.path.dirname(path), "canvas.toml")
+    return (toml, _mtime_or_none(toml))
+
+
+def _conditions_toml_unchanged(stamp: tuple | None) -> bool:
+    """On a hit: the recorded canvas.toml (if any) has not moved."""
+    return stamp is None or _mtime_or_none(stamp[0]) == stamp[1]
 
 
 # User templates + their registry live under the shell home dir's templates/
