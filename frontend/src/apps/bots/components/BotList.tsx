@@ -64,6 +64,7 @@ export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
       <div className="name">
         {b.pinned ? <span className="pin">📌</span> : null}{b.name}
         {b.kind === "super" ? <span className="super" title="Super Bot: Claude Code's own tools on this Mac">SUPER</span> : null}
+        {b.kind === "expert" ? <span className="expert" title={b.expert?.ask_me_about ? `Expert: ${b.expert.ask_me_about}` : "Expert: keeps a memory, answers tasks"}>EXPERT</span> : null}
         {glyph ? <span className={`rt ${glyph.warn ? "warn" : ""}`} title={glyph.title}>{MI.routines}</span> : null}
       </div>
       <div className="meta">

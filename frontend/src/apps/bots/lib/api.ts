@@ -197,8 +197,11 @@ export interface Bot {
   /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).
    *  Plain absolute paths, the user's own: the bot never writes there and only the dialog edits the list. */
   folders?: string[];
-  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); absent for an ordinary bot. */
-  kind?: "bot" | "super";
+  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": no browser, one
+   *  memory file it keeps itself, tapped by task sessions (docs/experts.md); absent for an ordinary bot. */
+  kind?: "bot" | "super" | "expert";
+  /** Expert only: its settings (experts.store.manifest). */
+  expert?: ExpertManifest | null;
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
   super_access?: "ask" | "full";
   face?: Face | null;
@@ -259,6 +262,23 @@ export interface Bot {
   viewport?: [number, number];
   /** Events past the page's cursor for this bot (merged into the store, then dropped). */
   events: BotEvent[];
+}
+
+// ------------------------------------------------------------------ experts (docs/experts.md) ----
+/** bot.meta["expert"] (experts.store.manifest): the one-line description expert_list shows, and the shipped key ("" if none). */
+export interface ExpertManifest { ask_me_about?: string; shipped?: string }
+/** GET /api/experts/<id>/memory: memory.md as it stands, where it is, and its size against the compaction limit. */
+export interface ExpertMemory { text: string; path: string; lines: number; bytes: number; limit_lines: number; limit_bytes: number }
+export type ExpertSessionKind = "ask" | "task-quiet" | "compact";
+export type ExpertSessionStatus = "running" | "done" | "error" | "interrupted";
+/** One line of a side session's transcript. */
+export interface ExpertTurn { role: "prompt" | "expert" | "tool" | "refused" | (string & {}); text: string }
+/** One side session (`.fused/expert/sessions/<id>.json`). The list leaves `transcript` out; `memory_diff` is the
+ *  unified diff of memory.md before / after ("" when it changed nothing). Times are unix seconds. */
+export interface ExpertSession {
+  id: string; kind: ExpertSessionKind | (string & {}); started: number; ended: number | null;
+  status: ExpertSessionStatus | (string & {}); trigger?: Record<string, unknown> | null;
+  transcript?: ExpertTurn[]; memory_diff?: string; answer?: string; error?: string; cost_usd?: number;
 }
 
 export interface UsageBotRow { id: string; name: string; today: number; week: number; models: Record<string, number>; errors: number; last: number; live: boolean }
@@ -452,6 +472,8 @@ export interface SettingsBody {
   allow_rules_remove?: AllowRule[];
   /** The whole list of folders the bot may read (the dialog is its only writer). */
   folders?: string[];
+  /** Expert only: the one-line description task sessions see in expert_list. */
+  ask_me_about?: string;
   /** "" or the bot's own id = a browser of its own; another bot's `browser_id` = share its logins. Refused while a task runs. */
   browser_id?: string;
 }
@@ -541,6 +563,14 @@ export const api = {
   workspaceTake: () => post<{ taken: boolean; error: string }>(`${B}/workspace/take`, {}, "workspace/take"),
   /** Slow (runs each installed starter's setup tool): call after the strip is drawn. null = could not tell. */
   starterStatus: () => get<{ ok: true; ready: Record<string, boolean | null>; why: Record<string, string> }>("/api/bot-apps/starters/status", "starter_status"),
+};
+
+const xid = (id: string) => `/api/experts/${encodeURIComponent(id)}`;
+/** /api/experts/<id>/… (experts/routes.py). An expert's id is its bot id. */
+export const expertApi = {
+  memory: (id: string) => get<ExpertMemory>(`${xid(id)}/memory`, "expert memory"),
+  sessions: (id: string) => get<{ sessions: ExpertSession[] }>(`${xid(id)}/sessions`, "expert sessions"),
+  session: (id: string, sid: string) => get<ExpertSession>(`${xid(id)}/sessions/${encodeURIComponent(sid)}`, "expert session"),
 };
 
 /** POST /api/bots/<id>/seen {seq}: the unread mark (Bot.seen_seq). Silent: no banner, no poll after it (store.ts
