@@ -1011,18 +1011,17 @@ SMOKE_CANVAS="$BUILD_DIR/smoke-canvas"
 rm -rf "$SMOKE_CANVAS"
 mkdir -p "$SMOKE_CANVAS"
 printf '[canvas]\nname = "smoke"\n' > "$SMOKE_CANVAS/canvas.toml"
-for probe in "--help" "share --help" "workbench canvas validate"; do
-  read -r -a PROBE_ARGV <<< "$probe"
-  if [ "$probe" = "workbench canvas validate" ]; then
-    PROBE_ARGV+=("$SMOKE_CANVAS")
-  fi
-  if ! PROBE_OUT="$("$WRAPPER_PATH" "${PROBE_ARGV[@]}" 2>&1)"; then
-    echo "FATAL: bundled fused CLI failed on: fused ${PROBE_ARGV[*]}" >&2
+smoke_probe() {
+  if ! PROBE_OUT="$("$WRAPPER_PATH" "$@" 2>&1)"; then
+    echo "FATAL: bundled fused CLI failed on: fused $*" >&2
     echo "$PROBE_OUT" >&2
     echo "(a py2app packaging gap? see setup_py2app.py's fused packages block)" >&2
     exit 1
   fi
-done
+}
+smoke_probe --help
+smoke_probe share --help
+smoke_probe workbench canvas validate "$SMOKE_CANVAS"
 rm -rf "$SMOKE_CANVAS"
 echo "    fused --help / share --help / workbench canvas validate OK"
 
