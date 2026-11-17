@@ -249,6 +249,8 @@ class LocalPythonComputeBackend:
                     [venv_python, str(run_py)],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=self._timeout_seconds,
                     env=self._child_env(
                         dispatcher.host_dir, invoke_depth, interpreter, project_root

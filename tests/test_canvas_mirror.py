@@ -49,7 +49,7 @@ def _default_env_and_fresh_layout(monkeypatch):
 
 
 def _mirror_calls(harness):
-    return [c for c in harness.calls() if c[:6] == MIRROR_ARGV]
+    return [c for c in harness.calls() if c[:len(MIRROR_ARGV)] == MIRROR_ARGV]
 
 
 def _scope(ok=True, listed=0, error=None, unavailable=False):
@@ -110,7 +110,7 @@ def test_a_clean_run_is_ok_and_keeps_what_the_command_said(harness):
     # The command ran once, on the environment's ROOT, against ITS Fused.
     assert _mirror_calls(harness) == [[*MIRROR_ARGV, str(harness.root)]]
     assert [fused_env for fused_env, argv in harness.env_calls()
-            if argv[:6] == MIRROR_ARGV] == [ENV]
+            if argv[:len(MIRROR_ARGV)] == MIRROR_ARGV] == [ENV]
     # All three scope folders exist afterwards, whatever the command wrote.
     assert sorted(p.name for p in harness.root.iterdir()) == [".sync", "public", "team", "user"]
 

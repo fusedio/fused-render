@@ -331,11 +331,19 @@ def test_every_exclusion_is_declared_and_reasoned():
         )
 
 
+_BETA_UNTIL_RELEASE = "2.9.3b16"
+
+
 def test_the_base_does_not_depend_on_fused_and_the_extra_pins_a_release():
     """`fused` is the CLI behind canvases and sharing, not the compute engine
     (that is vendored in `fused_render.compute`), so only `[fused]` asks for
-    it, and for a release: a pre-release pin would let a resolve land on a
-    build whose `fused.cli` layout differs from the one this app drives.
+    it, and exactly: a range would let a resolve land on a build whose
+    `fused.cli` layout differs from the one this app drives.
+
+    The pin is the 2.9.3 beta until a fused-py release ships `canvas lease`
+    and `canvas mirror` (D1495). Once one does, the pin moves to it and this
+    test should require a release again; `_BETA_UNTIL_RELEASE` is the only
+    pre-release it accepts.
     """
     from packaging.requirements import Requirement
     from packaging.version import Version
@@ -348,9 +356,10 @@ def test_the_base_does_not_depend_on_fused_and_the_extra_pins_a_release():
     assert len(in_extra) == 1, f"`[fused]` must declare `fused` exactly once; got {in_extra}"
     req = Requirement(in_extra[0])
     (spec,) = req.specifier
-    assert spec.operator == "==" and not Version(spec.version).is_prerelease, (
-        f"`[fused]` must pin a released `fused` exactly; got {in_extra[0]!r}"
-    )
+    version = Version(spec.version)
+    assert spec.operator == "==" and (
+        not version.is_prerelease or version == Version(_BETA_UNTIL_RELEASE)
+    ), f"`[fused]` must pin `fused` exactly, to a release or {_BETA_UNTIL_RELEASE}; got {in_extra[0]!r}"
     # `anthropic` travels with the full engine. It sits only in fused's `verify`
     # extra, next to `ty`, which this app does not ship, so `[fused]` declares
     # it directly, and the bundle reaches it through `[all]`.

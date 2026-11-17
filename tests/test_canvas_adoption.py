@@ -395,7 +395,7 @@ def test_a_clone_stops_this_processs_mirror_run_first(harness, tmp_path, monkeyp
     assert again != pid
     assert _wait_for(lambda: canvas_mirror.status(ENV)["state"] == "ok", timeout=15)
     assert (folder / "a.py").read_text() == "a1\n"
-    assert len([c for c in harness.calls() if c[:6] == MIRROR_ARGV]) == 2
+    assert len([c for c in harness.calls() if c[:len(MIRROR_ARGV)] == MIRROR_ARGV]) == 2
 
 
 def test_sync_start_on_a_clone_still_at_its_old_path_stops_the_mirror_run_and_moves_it(
@@ -513,7 +513,7 @@ def test_rename_and_delete_run_with_the_mirror_held(harness, tmp_path, monkeypat
 
     def run_cli(args, timeout, env):
         if args[:2] in (["canvas", "rename"], ["canvas", "delete"]):
-            held[args[2]] = canvas_mirror.status(ENV)["held"]
+            held[args[1]] = canvas_mirror.status(ENV)["held"]
         return real(args, timeout, env)
 
     monkeypatch.setattr(canvases_mod, "_run_cli", run_cli)
