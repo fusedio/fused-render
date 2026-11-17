@@ -19,7 +19,7 @@ DEFAULT_MANIFEST = {
     "ask_me_about": "",
     "reads": [],
     "offered_to": {"targets": []},
-    "learns_from": ["repeated_request", "user_correction", "error_then_fix",
+    "learns_from": ["worked", "failed", "repeated_request", "user_correction", "error_then_fix",
                     "answer_contradicted", "unanswered"],
     "engine": "auto",
     "model": "",

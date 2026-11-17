@@ -96,7 +96,7 @@ def needed(bot) -> bool:
 
 
 def _line(i, now) -> str:
-    claim = " ".join(str(i.get("claim") or "").split())[:300]
+    claim = " ".join(memory.shown(i).split())[:300]
     return (f"{i['id']} | {claim} | {_SOURCES.get(i.get('trust'), 'from sessions')} | "
             f"seen {int(i.get('count') or 0)} | cited {memory.cited(i)} | age {int(memory.age_days(i, now))} | "
             f"idle {int(memory.idle_days(i, now))} | contradicted {memory.contradicted(i)}")
@@ -169,7 +169,10 @@ def _about(i) -> frozenset:
 def related(a, b) -> float:
     """How plausibly two lessons are about the same subject, 0 when not: 1.0 for a shared `about` tag, else the
     claims' shared content words over the shorter claim's, when at least `MERGE_MIN_SHARED` words are shared and
-    that share reaches `MERGE_OVERLAP`."""
+    that share reaches `MERGE_OVERLAP`. A "does not work" lesson (kind `failed`) is related only to another one:
+    merged with advice it would stop reading as what does not work."""
+    if (a.get("kind") == "failed") != (b.get("kind") == "failed"):
+        return 0.0
     if _about(a) & _about(b):
         return 1.0
     wa, wb = _words(a.get("claim")), _words(b.get("claim"))

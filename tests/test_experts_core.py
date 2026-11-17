@@ -502,11 +502,14 @@ def test_consolidate_applies_parsed_edits(bot, fake_text):
     assert "could not answer X" not in fake_text.calls[0]  # gaps are not offered as lessons
     assert observations.pending(bot) == [] and len(_done(bot)) == 4
     # Everything it did is on the activity log, each line with its stage, a reason and where it came from.
-    assert _acts(bot) == [("learned", claims["A crisp new lesson."]["id"]), ("counted", old["id"]), ("noticed", ""),
+    # Honest labels: the new lesson was seen in one session (`noticed`, not used yet); the old one is now seen in
+    # two, so it is used in answers for the first time (`learned`).
+    assert _acts(bot) == [("noticed", claims["A crisp new lesson."]["id"]), ("learned", old["id"]), ("noticed", ""),
                           ("could_not_find", "")]
     first = knowledge.activity(bot)[-1]
     assert first["stage"] == "lessons" and first["why"] and first["evidence"] == {"session": "s9", "item": o1["id"]}
-    assert _acts(bot, quiet=False) == [("learned", claims["A crisp new lesson."]["id"]), ("could_not_find", "")]
+    assert _acts(bot, quiet=False) == [("noticed", claims["A crisp new lesson."]["id"]), ("learned", old["id"]),
+                                       ("could_not_find", "")]
 
 
 def test_consolidate_unparsable_keeps_pending_and_falls_back_after_three(bot, fake_text):
@@ -547,7 +550,7 @@ def test_consolidate_unknown_ops_and_omissions_are_nothing(bot, fake_text):
                                          {"obs": o3["id"], "op": "bump", "item": old["id"]}]))
     assert consolidate.run(bot, force=True)["ran"]
     assert [(i["claim"], i["count"]) for i in memory.items(bot)] == [("existing", 2)]
-    assert _acts(bot) == [("counted", old["id"])]  # a bump of a lesson that does not exist is not even tried
+    assert _acts(bot) == [("learned", old["id"])]  # a bump of a lesson that does not exist is not even tried
     assert observations.pending(bot) == [] and len(_done(bot)) == 4
 
 
@@ -567,7 +570,11 @@ def test_consolidate_bumps_confirmed_lessons_once_per_session_without_the_model(
     done = {o["id"]: o for o in _done(bot)}
     assert all(done[o["id"]]["outcome"]["op"] == "bump" and done[o["id"]]["outcome"]["item"] == lesson["id"]
                for o in seen)
-    assert knowledge.activity(bot, quiet=False) == []  # counting is quiet
+    # Counting is quiet, except the one bump that makes the lesson used in answers for the first time.
+    shown = knowledge.activity(bot, quiet=False)
+    assert [(ln["action"], ln["target"], ln["why"]) for ln in shown] == [
+        ("learned", lesson["id"], "Seen in a second task. Now used in answers.")]
+    assert [ln["action"] for ln in knowledge.activity(bot)].count("counted") == 3
 
 
 def test_consolidate_sends_unconfirmed_observations_to_the_model(bot, fake_text):

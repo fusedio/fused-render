@@ -38,6 +38,15 @@ The lessons step, rule by rule (docs/experts.md "Capture"):
   `corrected`) or narrowed (`lesson_edit`). Without a decision the old lesson is only marked contradicted. When
   the old rule already lives in a skill, the pair goes to distill (`ctx["corrections"]`).
 - Unsure questions (`gap` entries) are recorded and grouped (`gaps.record`, `gaps.merge`); never lessons.
+- `worked` (the need and the approach that satisfied it) and `failed` (the need, what was tried, why it failed)
+  become lessons of their own kind, trust `outcome`, under the same evidence rule: once per session, used in
+  answers after two sessions; a `worked` that only repeats this expert's advice (`after_advice`) does not count.
+  They are bumped only onto a lesson of the same kind. A `failed` entry that became (or was counted toward) a
+  lesson also leaves an open question for the research step (`gaps.record`: "How to <need>, given that <tried>
+  does not work?"), under the gaps' own caps. Its `contradicts`, when the failed approach was the expert's own
+  advice, is handled like any contradiction.
+
+The activity label of a lesson change (`learned` / `noticed` / `counted`) is `knowledge.apply`'s, not this step's.
 """
 from __future__ import annotations
 
@@ -76,6 +85,8 @@ For EACH observation decide one edit:
 
 An observation of kind "repeated_request" describes what the user asks for, and is counted across sessions: it may only be bumped onto a lesson that is itself a request pattern (kind repeated_request) describing the same request; otherwise "add" it as its own lesson.
 
+An observation of kind "worked" states a need and the approach that satisfied it in a session; one of kind "failed" states a need, the approach that was tried and why it did NOT work. Both are lessons worth keeping: "add" them unless they are noise. A "worked" observation may only be bumped onto a lesson of kind worked that states the same need AND the same approach; a "failed" one only onto a lesson of kind failed about the same approach. Nothing else is ever bumped onto a lesson of kind failed (it says what does not work). Keep the claim's reference to the file, dataset or call.
+
 An observation of kind "advice_contradicted" states a CORRECTED rule: the session showed earlier advice wrong or too broad ("contradicts [id]" names that lesson). It is never "bump": "add" it as its own lesson, or, when another of the new observations above already states the same corrected rule, answer {{"obs": "<its id>", "op": "same", "as": "<that other observation's id>"}} so it is counted once. A lesson named after "contradicts" is never the target of a "bump" by any observation.
 
 Current lessons (id, kind, claim):
@@ -98,9 +109,15 @@ Open gaps:
 {gaps}"""
 
 _GAP_PREFIX = re.compile(r"^\s*could not answer:\s*", re.I)
-_WHY = {"taught": "You taught this in chat.", "error_then_fix": "An error in a session was fixed this way.",
-        "repeated_request": "You asked for this in a session.",
-        "advice_confirmed": "A session followed this advice and it held."}
+_WHY = {"taught": "You taught this in chat.", "error_then_fix": "An error in a task was fixed this way.",
+        "repeated_request": "You asked for this in a task.", "worked": "This worked in a task.",
+        "failed": "This did not work in a task.",
+        "advice_confirmed": "A task followed this advice and it held."}
+#: Kinds that are counted across sessions only within their own kind (a request onto a request, what worked onto
+#: what worked, what failed onto what failed), and the kinds whose outcome is evidence in itself.
+OWN_KIND = ("repeated_request", "worked", "failed")
+OUTCOME_KINDS = ("error_then_fix", "worked", "failed")
+QUESTION_PART_MAX = 300
 
 _GUARD = threading.Lock()
 #: bot id -> the stage of the run in flight.
@@ -127,7 +144,8 @@ def waiting(bot) -> list:
 
 def _archive(bot, ids, outcomes) -> None:
     """pending/ -> done/, each entry with what the run did with it: `outcome` = `{"op": "add" | "bump" | "confirm"
-    | "nothing" | "gap" | "contradict" | "forget", "at", "item"?, "new"?, "resolution"?, "gap"?}`."""
+    | "nothing" | "gap" | "contradict" | "forget", "at", "item"?, "new"?, "resolution"?, "gap"?}` (`gap` also on
+    a `failed` entry: the open question it left)."""
     now = time.time()
     os.makedirs(_dir(bot, "done"), exist_ok=True)
     with store.lock(bot):
@@ -158,14 +176,23 @@ def echo(o) -> bool:
 
 def counts(o) -> bool:
     """Whether entry `o` is independent evidence that raises a lesson's `count` (once per session): an
-    `error_then_fix`, or a grounded `repeated_request` / `user_correction` (or a user-stated `advice_contradicted`)
+    `error_then_fix`, a `worked` (not `after_advice`) or a `failed`, or a grounded `repeated_request` / `user_correction` (or a user-stated `advice_contradicted`)
     that is not `after_advice`. Never an `advice_confirmed`. An entry stored before grounding existed (no
     `by_user` key) keeps the old rule (anything but an echo counts)."""
     if echo(o):
         return False
-    if o.get("kind") == "error_then_fix" or "by_user" not in o:
+    if o.get("kind") in OUTCOME_KINDS or "by_user" not in o:
         return True
     return verified(o)
+
+
+def same_kind(o, lesson_kind) -> bool:
+    """Whether entry `o` may be counted toward a lesson of kind `lesson_kind`: a request pattern, what worked and
+    what failed only toward their own kind, and nothing else toward a "does not work" lesson."""
+    kind = o.get("kind")
+    if kind in OWN_KIND:
+        return lesson_kind == kind
+    return lesson_kind != "failed"
 
 
 def correction(o) -> bool:
@@ -317,11 +344,34 @@ def resolve(bot, old, new_claim, quote) -> dict | None:
     return None
 
 
+def _source(o) -> dict | None:
+    """Where a task's entry came from, as the activity line keeps it: `{"canvas", "target", "backend"}` (always
+    all three; `canvas` is the canvas folder's name, "" when the task was not in one) plus `files` when the entry
+    names the files that show it. None for an entry that names no task."""
+    src = o.get("source")
+    if not isinstance(src, dict) or not any(src.values()):
+        return None
+    out = {k: str(src.get(k) or "") for k in ("canvas", "target", "backend")}
+    files = [str(f) for f in (src.get("files") or []) if isinstance(f, str) and f.strip()] \
+        if isinstance(src.get("files"), list) else []
+    if files:
+        out["files"] = files
+    return out
+
+
+def question_for(o) -> str:
+    """The open question a `failed` entry leaves for research: "How to <need>, given that <tried> does not
+    work?"; from the claim alone when capture named neither."""
+    need, tried = (" ".join(str(o.get(k) or "").split()).rstrip(".?! ")[:QUESTION_PART_MAX] for k in ("need", "tried"))
+    if need and tried:
+        return f"How to {need[0].lower() + need[1:]}, given that {tried[0].lower() + tried[1:]} does not work?"
+    claim = " ".join(str(o.get("claim") or "").split()).rstrip(".?! ")
+    return f"What works instead, given this did not: {claim}?" if claim else ""
+
+
 def _because(o) -> dict:
     """The `why` and `evidence` every change made for inbox entry `o` carries."""
-    src = o.get("source") if isinstance(o.get("source"), dict) else {}
-    ev = {"session": o.get("session") or "", "quote": o.get("quote") or "", "source": src.get("target") or "",
-          "item": o["id"]}
+    ev = {"session": o.get("session") or "", "quote": o.get("quote") or "", "source": _source(o), "item": o["id"]}
     why = "You said so in a session." if correction(o) else _WHY.get(o.get("kind"), "Seen in a session.")
     return {"why": why, "evidence": {k: v for k, v in ev.items() if v}}
 
@@ -378,9 +428,10 @@ def lessons(bot, ctx):
     contradicting = [o for o in real if str(o.get("contradicts") or "") in item_claims]
     contra_items = {str(o["contradicts"]) for o in contradicting}
     # An entry that `confirms` an existing lesson is credited to it with no model decision (a request pattern
-    # confirms only a request pattern, the same guard as a model "bump" below).
+    # confirms only a request pattern, what worked / failed only its own kind: the guard of a model "bump" below).
     confirmed = [o for o in real if o not in contradicting and str(o.get("confirms") or "") in item_kinds
-                 and (o.get("kind") != "repeated_request" or item_kinds[o["confirms"]] == "repeated_request")]
+                 and same_kind(o, item_kinds[o["confirms"]])]
+    failed = [o for o in real if o.get("kind") == "failed"]
     real = [o for o in real if o not in confirmed]
     open_gaps = gaps.open_gaps(bot) if gap_obs else []
     offer = gap_obs if open_gaps else []  # gap entries reach the model only to be grouped with an open gap
@@ -488,9 +539,8 @@ def lessons(bot, ctx):
                 op, claim = "add", None
         elif op == "bump" and str(e.get("item") or "") in contra_items:
             op, claim = "add", None  # never a bump of a lesson this batch contradicts
-        if op == "bump" and o.get("kind") == "repeated_request" \
-                and (_live(bot, str(e.get("item") or "")) or {}).get("kind") != "repeated_request":
-            op, claim = "add", None  # a request pattern is bumped only onto a request pattern
+        if op == "bump" and not same_kind(o, (_live(bot, str(e.get("item") or "")) or {}).get("kind")):
+            op, claim = "add", None  # a request / what worked / what failed is bumped only onto its own kind
         if op == "bump" and e.get("item"):
             yield from credit(o, str(e["item"]))
         elif op == "add":
@@ -538,6 +588,12 @@ def lessons(bot, ctx):
         if str(o["confirms"]) not in contra_items:  # never a bump of a lesson this batch contradicts
             yield from credit(o, str(o["confirms"]))
 
+    # What failed -> an open question, so the research step looks for what does work (the gaps' own caps apply).
+    for o in failed:
+        q = question_for(o)
+        if q and (outcomes.get(o["id"]) or {}).get("op") in ("add", "bump", "confirm", "contradict"):
+            outcomes[o["id"]]["gap"] = gaps.record(bot, q, session=o.get("session") or "")["id"]
+
     # Unsure questions -> gap records (one count per distinct consult), grouped where the model said so.
     renamed: dict[str, str] = {}  # a gap id merged away this run -> the gap it went into
     for o in gap_obs:
@@ -551,7 +607,7 @@ def lessons(bot, ctx):
             renamed.update({gone: kept["id"] for gone in (g["id"], target) if gone != kept["id"]})
             g = kept
         outcomes[o["id"]] = {"op": "gap", "gap": g["id"]}
-        yield {"op": "note", "action": "noticed", "summary": f"Could not answer: {q[:300]}",
+        yield {"op": "note", "action": "noticed", "quiet": True, "summary": f"Could not answer: {q[:300]}",
                "why": "A session asked this and I was not sure.", "evidence": _because(o)["evidence"]}
     for oc in outcomes.values():
         while oc.get("gap") in renamed:

@@ -151,7 +151,8 @@ def test_the_approval_routes_are_gone(client, expert, method, path):
 
 def test_activity_undo_and_seen(client, expert, monkeypatch):
     monkeypatch.setattr(consolidate, "status", lambda bot: {"running": True, "stage": "lessons", "waiting": 2})
-    a = knowledge.apply(expert, {"op": "lesson_add", "claim": "Read canvas.toml first.", "why": "Seen twice."})
+    a = knowledge.apply(expert, {"op": "lesson_add", "claim": "Read canvas.toml first.", "trust": "user",
+                                 "why": "You taught this in chat."})
     b = knowledge.apply(expert, {"op": "lesson_bump", "id": a["target"], "session": "s2", "why": "Seen again."})
     status, body = _json(client.get(f"/api/experts/{BID}/activity"))
     assert status == 200 and set(body) == {"items", "unread", "waiting", "learning"}

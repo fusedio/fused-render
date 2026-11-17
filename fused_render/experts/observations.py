@@ -2,7 +2,7 @@
 
 One JSON file per entry in `<expert>/observations/pending/`; Learn (`consolidate.py`) reads it there and moves
 it to `observations/done/` with an `outcome`. Kinds: capture's (`repeated_request`, `user_correction`,
-`error_then_fix`, `advice_confirmed`, `advice_contradicted`), and from Answer `gap` (an unsure consult), `taught`
+`error_then_fix`, `advice_confirmed`, `advice_contradicted`, `worked`, `failed`), and from Answer `gap` (an unsure consult), `taught`
 and `forget` (chat; written by `consult.inbox_write`, the same file shape).
 """
 from __future__ import annotations
@@ -27,9 +27,11 @@ QUOTE_MAX = 500
 
 
 def write(bot, *, kind, claim, trust, session="", about=None, consult="", source=None, confirms="",
-          contradicts="", by_user=None, quote="", after_advice=False) -> dict:
+          contradicts="", by_user=None, quote="", after_advice=False, need="", tried="") -> dict:
     """`source`: where it came from when known, `{"target": str, "backend": str}` (the consulting or captured
-    session's folder and engine). `confirms`: the memory item id this observation sees again; stored only when
+    session's folder and engine), plus `canvas` (the canvas folder's name) and `files` (the paths that show a
+    `worked` / `failed` entry) when given. `need` / `tried`: what a `failed` entry was after and the approach that
+    did not work (stored only when given). `confirms`: the memory item id this observation sees again; stored only when
     that item exists (Learn then credits it without a model decision). `contradicts`: the memory item id
     this observation shows wrong or too broad (its claim is the corrected rule); validated the same way, except that
     a lesson already written into a skill (archived as `promoted`) may be named too (its skill then follows). `by_user`: capture proved the statement is the user's (its `quote` is a
@@ -59,8 +61,17 @@ def write(bot, *, kind, claim, trust, session="", about=None, consult="", source
         obs["quote"] = quote
     if after_advice:
         obs["after_advice"] = True
+    for key, val in (("need", need), ("tried", tried)):
+        val = " ".join(str(val or "").split())
+        if val:
+            obs[key] = val
     if isinstance(source, dict):
         src = {k: str(source.get(k) or "") for k in ("target", "backend")}
+        if source.get("canvas"):
+            src["canvas"] = str(source["canvas"])
+        files = [str(f) for f in (source.get("files") or []) if isinstance(f, str) and f.strip()]
+        if files:
+            src["files"] = files
         if any(src.values()):
             obs["source"] = src
     with store.lock(bot):

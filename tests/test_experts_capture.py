@@ -141,7 +141,8 @@ def test_capture_session_prompt_parse_cap_and_trust(env, tmp_path):
     assert memory.items(bot)[0]["count"] == 1  # capture never writes memory
 
     prompt = env["prompts"][-1]
-    for must in ("stated generally as a request pattern", "Record it even when it has only been asked once",
+    for must in ("stated generally as a request pattern", "whose outcome is unknown", '"worked"', '"failed"',
+                 "never as copied code", "never a bare \"repeated_request\" beside it", 'is "error_then_fix", never "failed"',
                  "user corrected", "fix demonstrably worked", '"advice_confirmed"', '"advice_contradicted"',
                  "held in practice", "wrong or too broad", "the corrected rule", "NOT the old advice",
                  '"contradicts": "<that lesson\'s id>"', 'NEVER put "confirms" on an advice_contradicted',
@@ -677,3 +678,49 @@ def test_due_sessions_reads_tails_only_up_to_the_limit(env, tmp_path, monkeypatc
     got = capture.due_sessions(NOW, limit=2)
     assert [s["session_id"] for s in got] == ["s0", "s1"] and len(reads) == 2
     assert len(capture.due_sessions(NOW)) == 5
+
+
+# ------------------------------------------------------------------ what worked, what failed ---
+def test_parse_worked_and_failed():
+    answer = json.dumps([
+        {"kind": "worked", "claim": "For YC data by month, loading yc.parquet with fused.load in loader.py worked.",
+         "about": ["yc"], "source": ["loader.py", " ", "loader.py", 7], "after_advice": True, "need": "dropped",
+         "contradicts": "m1"},
+        {"kind": "failed", "claim": "For live prices, calling the quotes API from the page does not work: CORS.",
+         "source": "page.html", "need": "Load  live prices.", "tried": "calling the quotes API from the page",
+         "contradicts": "[m1]", "after_advice": True},
+        {"kind": "failed", "claim": "Bare.", "contradicts": "mgone"}])
+    assert capture.parse(answer, item_ids={"m1"}) == [
+        {"kind": "worked", "claim": "For YC data by month, loading yc.parquet with fused.load in loader.py worked.",
+         "about": ["yc"], "after_advice": True, "source": ["loader.py"]},
+        {"kind": "failed", "claim": "For live prices, calling the quotes API from the page does not work: CORS.",
+         "about": [], "contradicts": "m1", "source": ["page.html"], "need": "Load live prices.",
+         "tried": "calling the quotes API from the page"},
+        {"kind": "failed", "claim": "Bare.", "about": []}]
+
+
+@pytest.mark.parametrize("learns,expected", [
+    (["repeated_request"], ("worked", "repeated_request")),
+    (["error_then_fix"], ("failed", "error_then_fix")),
+    (["failed", "user_correction"], ("failed", "user_correction")),
+])
+def test_old_manifests_also_learn_what_worked_and_failed(learns, expected):
+    assert capture.allowed_kinds(learns) == expected
+
+
+def test_capture_writes_worked_and_failed_with_the_files_that_show_them(env, tmp_path):
+    bot = _Bot(tmp_path)  # the default learns_from
+    env["add"]("idle", age=3600, canvas=True)
+    session = capture.due_sessions(NOW)[0]
+    env["answers"] = [json.dumps([
+        {"kind": "worked", "claim": "For YC data by month, loading yc.parquet with fused.load in loader.py worked.",
+         "source": ["loader.py"]},
+        {"kind": "failed", "claim": "For live prices, calling the quotes API from the page does not work: CORS.",
+         "need": "load live prices", "tried": "calling the quotes API from the page", "source": ["page.html"]}])]
+    worked, failed = capture.capture_session(bot, session)
+    src = {"target": session["target"], "backend": "claude", "canvas": "clone"}
+    assert (worked["kind"], worked["trust"], worked["source"]) == ("worked", "outcome", {**src, "files": ["loader.py"]})
+    assert "need" not in worked and worked["by_user"] is False
+    assert (failed["kind"], failed["source"]) == ("failed", {**src, "files": ["page.html"]})
+    assert (failed["need"], failed["tried"]) == ("load live prices", "calling the quotes API from the page")
+    assert sorted(o["id"] for o in observations.pending(bot)) == sorted([worked["id"], failed["id"]])

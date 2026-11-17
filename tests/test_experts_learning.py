@@ -11,7 +11,7 @@ import pytest
 
 from test_experts_core import FakeBot, _acts, _done, fake_text  # noqa: F401  (fixture)
 
-from fused_render.experts import consolidate, distill, knowledge, memory, observations
+from fused_render.experts import consolidate, distill, gaps, knowledge, memory, observations
 
 
 @pytest.fixture
@@ -412,3 +412,131 @@ def test_repeated_silent_edits_leave_untouched_sections_and_code_blocks_byte_for
     assert _section(text, "Colours") == _section(original, "Colours")
     assert 'PALETTE = ["#113355", "#aa3300"]   # two   spaces, kept' in text
     assert '```json\n{"rows": 1}\n```' in text and knowledge.fenced_blocks(bot.skills()[0]["body"]) == 2
+
+
+# ----------------------------------------------------------- what worked, what failed ---
+WORKED = "For YC investment data filtered by month, loading yc.parquet with fused.load in loader.py worked."
+FAILED = "For live stock prices, calling the quotes API from the page does not work: the request is blocked by CORS."
+SRC = {"target": "/w/canvases/yc", "backend": "claude", "canvas": "yc"}
+
+
+def _outcome(bot, kind, claim, session, files=(), **kw):
+    return observations.write(bot, kind=kind, claim=claim, trust="outcome", session=session, by_user=False,
+                              source={**SRC, "files": list(files)}, **kw)
+
+
+def _add_all(prompt_ids):
+    return lambda p: json.dumps([{"obs": i, "op": "add"} for i in prompt_ids])
+
+
+def test_what_worked_is_noticed_then_learned_in_a_second_session(bot, fake_text):
+    o1 = _outcome(bot, "worked", WORKED, "s1", files=["loader.py"])
+    fake_text.replies.append(_add_all([o1["id"]]))
+    consolidate.run(bot, force=True)
+    (item,) = memory.items(bot)
+    assert (item["kind"], item["trust"], item["count"]) == ("worked", "outcome", 1)
+    assert not memory.indexed(item) and memory.index_text(bot) == ""  # one session: not used in answers
+    (line,) = knowledge.activity(bot)
+    assert (line["action"], line["target"], line.get("quiet")) == ("noticed", item["id"], None)
+    assert line["why"] == "This worked in a task. Not used in answers until a second task shows it."
+    assert line["evidence"] == {"session": "s1", "item": o1["id"], "source": {**SRC, "files": ["loader.py"]}}
+    assert knowledge.unread(bot) == 1  # the user sees it
+
+    o2 = _outcome(bot, "worked", WORKED, "s2")
+    fake_text.replies.append(lambda p: json.dumps([{"obs": o2["id"], "op": "bump", "item": item["id"]}]))
+    consolidate.run(bot, force=True)
+    (item,) = memory.items(bot)
+    assert item["count"] == 2 and memory.indexed(item) and WORKED in memory.index_text(bot)
+    line = knowledge.activity(bot)[0]
+    assert (line["action"], line["target"], line.get("quiet")) == ("learned", item["id"], None)
+    assert line["why"] == "Seen in a second task. Now used in answers."
+    assert line["evidence"]["source"] == SRC  # no files named: the three keys stay
+
+    o3 = _outcome(bot, "worked", WORKED, "s3")
+    fake_text.replies.append(lambda p: json.dumps([{"obs": o3["id"], "op": "bump", "item": item["id"]}]))
+    bot.meta["expert"] = {"memory": {"propose_at": 9}}  # (count 3 would otherwise earn a skill)
+    consolidate.run(bot, force=True)
+    line = knowledge.activity(bot)[0]
+    assert (line["action"], line["quiet"], line["why"]) == ("counted", True, "This worked in a task.")
+
+
+def test_a_bare_request_is_noticed_quietly(bot, fake_text):
+    said = "The user asks for a UDF that shows YC company data."
+    o = observations.write(bot, kind="repeated_request", claim=said, trust="outcome", session="s1", by_user=True,
+                           quote="show YC company data", source=SRC)
+    fake_text.replies.append(_add_all([o["id"]]))
+    consolidate.run(bot, force=True)
+    (line,) = knowledge.activity(bot)
+    assert (line["action"], line["quiet"]) == ("noticed", True)
+    assert line["why"] == "You asked for this in a task. Not used in answers until a second task shows it."
+    assert knowledge.activity(bot, quiet=False) == [] and knowledge.unread(bot) == 0
+
+
+def test_what_worked_only_after_the_experts_advice_does_not_count(bot, fake_text):
+    o = _outcome(bot, "worked", WORKED, "s1", after_advice=True)
+    fake_text.replies.append(_add_all([o["id"]]))
+    consolidate.run(bot, force=True)
+    (item,) = memory.items(bot)
+    assert (item["kind"], item["count"], item["confirmed"]) == ("worked", 0, 1)
+    assert knowledge.activity(bot)[0]["action"] == "noticed"
+    o2 = _outcome(bot, "worked", WORKED, "s2", after_advice=True)
+    fake_text.replies.append(lambda p: json.dumps([{"obs": o2["id"], "op": "bump", "item": item["id"]}]))
+    consolidate.run(bot, force=True)
+    (item,) = memory.items(bot)
+    assert (item["count"], item["confirmed"]) == (0, 2) and not memory.indexed(item)
+
+
+def test_what_failed_is_a_does_not_work_lesson_and_an_open_question(bot, fake_text):
+    o = _outcome(bot, "failed", FAILED, "s1", files=["page.html"], need="Load live stock prices.",
+                 tried="Calling the quotes API from the page")
+    fake_text.replies.append(_add_all([o["id"]]))
+    r = consolidate.run(bot, force=True)
+    (item,) = memory.items(bot)
+    assert (item["kind"], item["trust"], item["count"]) == ("failed", "outcome", 1) and not memory.indexed(item)
+    noticed, not_found = r["lines"]
+    assert (noticed["action"], noticed["target"], noticed.get("quiet")) == ("noticed", item["id"], None)
+    assert noticed["why"] == "This did not work in a task. I will look for what does."
+    assert noticed["evidence"]["source"] == {**SRC, "files": ["page.html"]}
+    # The open question went through gaps, and the research step looked for what does work in the same run.
+    (g,) = gaps.listing(bot)
+    assert g["question"] == ("How to load live stock prices, given that calling the quotes API from the page "
+                             "does not work?")
+    assert (g["status"], g["attempts"], g["sessions"]) == ("open", 1, ["s1"])
+    assert (not_found["action"], not_found["stage"]) == ("could_not_find", "research")
+    assert _done(bot)[0]["outcome"]["gap"] == g["id"]
+
+    # A second session: used in answers now, and shown as something that does NOT work.
+    o2 = _outcome(bot, "failed", FAILED, "s2", need="Load live stock prices.",
+                  tried="Calling the quotes API from the page")
+    fake_text.replies.append(lambda p: json.dumps([{"obs": o2["id"], "op": "bump", "item": item["id"]}]))
+    consolidate.run(bot, force=True)
+    (item,) = memory.items(bot)
+    assert item["count"] == 2 and memory.indexed(item)
+    assert memory.index_text(bot) == f"- [{item['id']}] Does not work: {FAILED} (seen 2×)"
+    assert len(gaps.listing(bot)) == 1 and gaps.listing(bot)[0]["count"] == 2  # the same question, not a new one
+
+
+def test_what_failed_is_never_counted_toward_advice(bot, fake_text):
+    advice = memory.add(bot, "Call the quotes API from the page.", kind="lesson", session="s0")
+    o = _outcome(bot, "failed", FAILED, "s1", contradicts=advice["id"])
+    fake_text.replies.append(lambda p: json.dumps([{"obs": o["id"], "op": "bump", "item": advice["id"]}]))
+    consolidate.run(bot, force=True)
+    rows = {i["claim"]: i for i in memory.items(bot)}
+    assert rows[FAILED]["kind"] == "failed" and rows[advice["claim"]]["count"] == 1
+    assert rows[advice["claim"]]["contradicted"] == 1  # the expert's own advice failed: marked, as before
+    assert gaps.listing(bot)[0]["question"] == f"What works instead, given this did not: {FAILED[:-1]}?"
+    # An error fixed elsewhere is never a sighting of the "does not work" lesson either.
+    o2 = observations.write(bot, kind="error_then_fix", claim="Fixed it.", trust="outcome", session="s2")
+    fake_text.replies.append(lambda p: json.dumps([{"obs": o2["id"], "op": "bump", "item": rows[FAILED]["id"]}]))
+    consolidate.run(bot, force=True)
+    assert {i["claim"]: i["count"] for i in memory.items(bot)}[FAILED] == 1
+
+
+def test_a_taught_lesson_is_learned_at_once(bot, fake_text):
+    from fused_render.experts import consult
+    consult.inbox_write(bot, "taught", "Name nodes with hyphens.", by_user=True)
+    consolidate.run(bot, force=True)
+    (item,) = memory.items(bot)
+    (line,) = knowledge.activity(bot)
+    assert (line["action"], line["target"], line["why"]) == ("learned", item["id"], "You taught this in chat.")
+    assert "quiet" not in line and memory.indexed(item)

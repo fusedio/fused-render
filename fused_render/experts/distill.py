@@ -120,7 +120,7 @@ def _prompt(skills, chosen, lessons, correction) -> str:
                        f"{'; '.join(knowledge.headings(s.get('body') or '')) or '(no sections)'}"
                        for s in skills if s is not chosen) or "(none)"
     out = DRAFT_PROMPT.format(
-        lessons="\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {i.get('count', 0)}×)" for i in lessons),
+        lessons="\n".join(f"- [{i['id']}] {memory.shown(i)} (seen {i.get('count', 0)}×)" for i in lessons),
         chosen=shown, skills=others)
     if correction:
         out = CORRECTION_NOTE.format(skill=correction["skill"], old=" ".join(str(correction.get("old") or "").split()),
@@ -160,7 +160,7 @@ def draft(bot, lessons, correction=None) -> dict:
         about = [str(a) for i in lessons for a in (i.get("about") or [])]
         words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", first) if w.lower() not in _STOP]
         d = {"action": "create", "title": "Lessons: " + first, "trigger": (about + words)[:5] or ["lessons"],
-             "body": "\n".join(f"- {i.get('claim', '')}" for i in lessons)}
+             "body": "\n".join(f"- {memory.shown(i)}" for i in lessons)}
     why = " ".join(d["why"].split())[:300] if isinstance(d.get("why"), str) else ""
     if d.get("action") == "update" and name in by_name:
         ops = [o for o in (d.get("ops") if isinstance(d.get("ops"), list) else []) if isinstance(o, dict)]

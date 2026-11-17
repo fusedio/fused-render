@@ -22,8 +22,15 @@ SEEN_FILE = "activity-seen.json"
 HISTORY_DIR = "history"
 SHIPPED_DIR = "skills-shipped"
 NOTE_ACTIONS = ("noticed", "researched", "could_not_find", "skipped")
-#: Lines the UI hides unless asked.
-QUIET_ACTIONS = ("counted", "noticed")
+#: Lines the UI hides unless asked, by action. Any other line is quiet only when it says so itself (`quiet: true`):
+#: a `noticed` line is quiet for a bare request seen once, and visible for something that worked or failed.
+QUIET_ACTIONS = ("counted",)
+#: A first sighting of a lesson of one of these kinds is logged quiet.
+QUIET_NOTICED_KINDS = ("repeated_request",)
+NOT_USED_YET = "Not used in answers until a second task shows it."
+NOT_COUNTED_YET = "Not used in answers until two tasks show it on their own."
+WILL_LOOK = "I will look for what does."
+NOW_USED = "Seen in a second task. Now used in answers."
 EVIDENCE_KEYS = ("session", "quote", "source", "item")
 TRIGGER_CAP = 300
 TITLE_CAP = 80
@@ -440,16 +447,40 @@ def _need(item, what="no such lesson"):
     return item
 
 
+def _sighting(was, item, c) -> dict:
+    """The honest label for a lesson seen (`was`: the lesson before, None when it is new). `learned` only when this
+    change makes the lesson used in answers for the first time (`memory.indexed`): added already in use (taught by
+    the user, a verified correction, research), or taken over the two-session threshold. Otherwise a first sighting
+    is `noticed` (quiet for a bare request) and a later one `counted`. `why` says what it rests on (the change's
+    own sentence) and whether it is used yet."""
+    basis = " ".join(str(c.get("why") or "").split())
+    if memory.indexed(item) and not memory.indexed(was):
+        if was is not None and was.get("trust") == item.get("trust") == "outcome":
+            return {"action": "learned", "why": NOW_USED}
+        return {"action": "learned"}
+    if was is not None:
+        return {"action": "counted"}
+    if item.get("kind") == "failed":
+        tail = WILL_LOOK
+    else:
+        tail = NOT_USED_YET if int(item.get("count") or 0) else NOT_COUNTED_YET
+    out = {"action": "noticed", "why": f"{basis} {tail}".strip()}
+    if item.get("kind") in QUIET_NOTICED_KINDS:
+        out["quiet"] = True
+    return out
+
+
 def _lesson_add(bot, c):
-    known = {i["id"] for i in memory.items(bot)}
+    before = {i["id"]: i for i in memory.items(bot)}
     kw = {k: c[k] for k in ("kind", "trust", "via", "session", "about", "counted") if c.get(k) is not None}
     item, hist = _lesson(bot, lambda: memory.add(bot, c.get("claim"), **kw))
-    return ("counted" if item["id"] in known else "learned"), item["id"], item.get("claim", ""), hist
+    return _sighting(before.get(item["id"]), item, c), item["id"], item.get("claim", ""), hist
 
 
 def _lesson_bump(bot, c):
+    was = next((i for i in memory.items(bot) if i["id"] == c.get("id")), None)
     item, hist = _lesson(bot, lambda: _need(memory.bump(bot, c.get("id"), session=c.get("session") or "")))
-    return "counted", item["id"], item.get("claim", ""), hist
+    return _sighting(was, item, c), item["id"], item.get("claim", ""), hist
 
 
 def _lesson_confirm(bot, c):
@@ -527,7 +558,9 @@ def _log(bot, line) -> dict:
 def apply(bot, change: dict) -> dict:
     """Make one change (docs/experts.md, the ops table) and return the activity line written for it.
     Never raises for a bad change: the line has `ok: false` and `error`. A change may carry `summary` (replaces the
-    line's own) and `quiet: true` (the UI hides the line unless asked)."""
+    line's own) and `quiet: true` (the UI hides the line unless asked). A lesson seen (`lesson_add`,
+    `lesson_bump`) is labelled by `_sighting`: `learned` only when it becomes used in answers, else `noticed` /
+    `counted`, with a `why` that says whether it is used yet."""
     c = change if isinstance(change, dict) else {}
     ev = c.get("evidence") if isinstance(c.get("evidence"), dict) else {}
     fn, action = _OPS.get(c.get("op"), (None, "skipped"))
@@ -547,6 +580,9 @@ def apply(bot, change: dict) -> dict:
             if fn is None:
                 raise ValueError(f"unknown op: {c.get('op')}")
             action, target, summary, hist = fn(bot, c)
+            if isinstance(action, dict):  # a lesson sighting: its action, and its own `why` / `quiet` when it has them
+                line.update({k: v for k, v in action.items() if k != "action"})
+                action = action["action"]
             line.update(action=action, target=target, summary=c.get("summary") and line["summary"] or summary)
             if hist:
                 # ASCII JSON: a skill file's stray bytes (kept as lone surrogates) survive it.

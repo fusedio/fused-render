@@ -129,15 +129,18 @@ def test_lesson_ops_and_the_activity_line(bot):
                               "why": "A session  did this.",
                               "evidence": {"session": "s1", "quote": "read it first", "junk": 1}})
     assert LINE_KEYS <= set(a) and "quiet" not in a
-    assert (a["action"], a["ok"], a["undoable"], a["undone"], a["error"]) == ("learned", True, True, False, "")
-    assert a["summary"] == "Read canvas.toml first." and a["why"] == "A session did this." and a["stage"] == "lessons"
+    # Seen in one session: noticed, not learned (it is not used in answers yet), and the line says so.
+    assert (a["action"], a["ok"], a["undoable"], a["undone"], a["error"]) == ("noticed", True, True, False, "")
+    assert a["summary"] == "Read canvas.toml first." and a["stage"] == "lessons"
+    assert a["why"] == "A session did this. Not used in answers until a second task shows it."
     assert a["evidence"] == {"session": "s1", "quote": "read it first"}
     lid = a["target"]
     assert [(i["id"], i["count"], i["about"]) for i in memory.items(bot)] == [(lid, 1, ["canvas"])]
 
     again = knowledge.apply(bot, {"op": "lesson_add", "claim": "read canvas.toml first", "trust": "user",
                                   "via": "session", "session": "s2", "why": "w"})  # the equal one, upgraded
-    assert (again["action"], again["target"], again.get("quiet")) == ("counted", lid, True)
+    # The user's own statement makes it used in answers: that is when it is learned.
+    assert (again["action"], again["target"], again.get("quiet"), again["why"]) == ("learned", lid, None, "w")
     assert [(i["count"], i["trust"], i["via"]) for i in memory.items(bot)] == [(2, "user", "session")]
 
     b = knowledge.apply(bot, {"op": "lesson_bump", "id": lid, "session": "s3", "why": "w"})
@@ -154,7 +157,8 @@ def test_lesson_ops_and_the_activity_line(bot):
     assert memory.items(bot)[0]["contradicted"] == 0
     echo = knowledge.apply(bot, {"op": "lesson_add", "claim": "An echo.", "counted": False, "session": "s1",
                                  "why": "w"})
-    assert echo["action"] == "learned" and memory.items(bot)[1]["count"] == 0
+    assert echo["action"] == "noticed" and memory.items(bot)[1]["count"] == 0
+    assert echo["why"] == "w Not used in answers until two tasks show it on their own."
 
     e = knowledge.apply(bot, {"op": "lesson_edit", "id": lid, "claim": "Read canvas.toml before nodes.", "why": "w"})
     assert (e["action"], e["summary"]) == ("corrected", "Read canvas.toml before nodes.")
@@ -194,7 +198,9 @@ def test_notes_change_nothing(bot):
                                      "why": "w", "stage": "research"})
         assert (line["action"], line["ok"], line["undoable"], line["summary"]) == (
             action, True, False, "Looked for the answer.")
-        assert bool(line.get("quiet")) is (action == "noticed")
+        assert "quiet" not in line  # a note is quiet only when it says so itself
+    quiet = knowledge.apply(bot, {"op": "note", "action": "noticed", "summary": "Seen.", "why": "w", "quiet": True})
+    assert quiet["quiet"] is True
     assert memory.items(bot) == [] and bot.skills() == []
     with pytest.raises(knowledge.Refused, match="cannot be undone"):
         knowledge.undo(bot, line["id"])
@@ -335,7 +341,7 @@ def test_skill_restore_and_its_undo(bot):
 def test_activity_unread_and_seen(bot):
     assert knowledge.activity(bot) == [] and knowledge.unread(bot) == 0
     knowledge.seen(bot)
-    a = knowledge.apply(bot, {"op": "lesson_add", "claim": "One.", "why": "w"})
+    a = knowledge.apply(bot, {"op": "lesson_add", "claim": "One.", "trust": "user", "why": "w"})
     b = knowledge.apply(bot, {"op": "lesson_bump", "id": a["target"], "session": "s", "why": "w"})  # quiet
     c = knowledge.apply(bot, {"op": "note", "action": "could_not_find", "summary": "No answer.", "why": "w"})
     assert [r["id"] for r in knowledge.activity(bot)] == [c["id"], b["id"], a["id"]]  # newest first

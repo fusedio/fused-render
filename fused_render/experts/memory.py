@@ -349,8 +349,8 @@ def remove(bot, ids, reason, *, skill="", whys=None, into="") -> list:
 
 def merge(bot, ids, claim, *, why="") -> tuple[dict, list] | None:
     """Generalise 2-3 lessons into one (the tidy step's `merge`). `claim` equal to one original after
-    normalisation keeps that item and folds the others into it; otherwise a new lesson (kind "lesson") holds the
-    merged claim. Either way: sessions = union (kept for the record), count = the LARGEST original count (never
+    normalisation keeps that item and folds the others into it; otherwise a new lesson (kind "lesson"; "failed"
+    when every original was) holds the merged claim. Either way: sessions = union (kept for the record), count = the LARGEST original count (never
     the size of the union: two lessons each seen once are not a lesson seen twice, and two sightings is what makes
     a session lesson usable in answers; a later bump still counts only a session not in the union), cited = sum,
     created =
@@ -387,7 +387,8 @@ def merge(bot, ids, claim, *, why="") -> tuple[dict, list] | None:
                 {"id": i["id"], "claim": i.get("claim", "")} for i in folded]
             target = keep
         else:
-            target = {"id": store.new_id("m"), "claim": claim, "kind": "lesson", **fields,
+            kind = "failed" if all(i.get("kind") == "failed" for i in orig) else "lesson"
+            target = {"id": store.new_id("m"), "claim": claim, "kind": kind, **fields,
                       "contradicted": 0, "contradicted_sessions": [],
                       "merged_from": [{"id": i["id"], "claim": i.get("claim", "")} for i in orig]}
         gone_ids = {i["id"] for i in folded}
@@ -432,16 +433,28 @@ def indexed(item) -> bool:
     return trust == "research"  # grounded in a file the research run actually read
 
 
+#: What a lesson of kind `failed` is prefixed with wherever lessons are put into a prompt: it states what does NOT
+#: work, and must never read as advice to follow.
+FAILED_PREFIX = "Does not work: "
+
+
+def shown(item) -> str:
+    """A lesson's claim as a prompt shows it: a `failed` lesson is prefixed "Does not work: "."""
+    claim = str((item or {}).get("claim") or "")
+    return FAILED_PREFIX + claim if (item or {}).get("kind") == "failed" else claim
+
+
 def index_text(bot) -> str:
     """`- [<id>] <claim> (seen N×)`, most seen first, capped at the manifest's index_lines. Only `indexed`
-    items: user and research lessons, and outcome lessons seen in two sessions. A contradicted item's line ends with
+    items: user and research lessons, and outcome lessons seen in two sessions. A lesson of kind `failed` reads
+    `- [<id>] Does not work: <claim> …`. A contradicted item's line ends with
     " (contradicted in N session(s); prefer newer lessons on this)"."""
     cap = store.manifest(bot)["memory"]["index_lines"]
     rows = [i for i in items(bot) if indexed(i)]
     rows.sort(key=lambda i: (-int(i.get("count") or 0), -float(i.get("updated") or 0)))
 
     def line(i):
-        text = f"- [{i['id']}] {i.get('claim', '')} (seen {int(i.get('count') or 0)}×)"
+        text = f"- [{i['id']}] {shown(i)} (seen {int(i.get('count') or 0)}×)"
         n = contradicted(i)
         if n:
             text += f" (contradicted in {n} session(s); prefer newer lessons on this)"

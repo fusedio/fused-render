@@ -30,7 +30,8 @@ There are no proposals, approval cards, checks or questions to the user anywhere
 
 - `inbox` : the observations store (`observations/pending/*.json`, handled entries in `observations/done/`),
   fields (`id, ts, kind, claim, session, source, by_user, quote,
-  after_advice, confirms, contradicts, outcome`). New kinds from chat: `taught` (claim), `forget` (lesson id or text).
+  after_advice, confirms, contradicts, need, tried, outcome`). `source` is `{target, backend}` plus, from capture,
+  `canvas` (the canvas folder's name) and `files` (the paths that show a `worked` / `failed` entry). New kinds from chat: `taught` (claim), `forget` (lesson id or text).
 - `memory.json` : the lessons. `memory-archive.jsonl` : lessons that left memory, with the reason.
 - `<expert dir>/skills/*.md` : one kind of skill; the expert may edit any of them.
 - `skills-shipped/<name>.md` : the untouched version Fused shipped, written at seed time. Used for reset and updates.
@@ -48,12 +49,13 @@ unread(bot) -> int ; seen(bot) -> None
 ```
 
 `change` always carries `op`, `why` (one sentence, shown to the user) and optional `evidence`
-(`{session, quote, source, item}`), `stage`, and `because` (the id of the activity line this change follows; see
+(`{session, quote, source, item}`; `source` is an object `{canvas, target, backend, files?}` when the entry came
+from a task, and the file path when research found the lesson), `stage`, and `because` (the id of the activity line this change follows; see
 Undo). Ops:
 
 | op | fields | effect |
 |---|---|---|
-| `lesson_add` | `claim, kind, trust, via, session, about` | new lesson (or the existing equal one, upgraded) |
+| `lesson_add` | `claim, kind, trust, via, session, about` | new lesson (or the existing equal one, upgraded); `kind` is the inbox kind, so `worked` and `failed` ("does not work") are lesson kinds |
 | `lesson_bump` | `id, session` | count +1, once per session |
 | `lesson_confirm` | `id, session` | `confirmed` +1; count unchanged |
 | `lesson_contradict` | `id, session` | `contradicted` +1, once per session; count unchanged; logged quiet as `counted` |
@@ -70,9 +72,23 @@ the activity line. It never raises for a bad change: it logs `ok: false` with th
 
 Activity line: `{id, ts, action, target, summary, why, evidence, stage, ok, undoable, undone, error}`, plus
 `because` when the change carried one.
-`action` is what the user reads: `learned`, `counted`, `corrected`, `forgot`, `merged`, `removed`, `skill_updated`,
-`skill_created`, `skill_restored`, `noticed`, `researched`, `could_not_find`, `skipped`, `undo`.
-`counted` and `noticed` lines are `quiet: true`; the UI hides quiet lines unless asked.
+`action` is what the user reads: `learned`, `noticed`, `counted`, `corrected`, `forgot`, `merged`, `removed`,
+`skill_updated`, `skill_created`, `skill_restored`, `researched`, `could_not_find`, `skipped`, `undo`.
+
+Honest labels for a lesson seen (`lesson_add`, `lesson_bump`); `knowledge.py` decides them, not the caller:
+
+- `learned` : only when the change makes the lesson used in answers for the first time (`memory.indexed` turns
+  true): a lesson added already in use (taught by the user, a verified correction, research), or the bump that
+  takes a session lesson over the two-session threshold (`why`: "Seen in a second task. Now used in answers.").
+- `noticed` : a first sighting that is not used in answers yet. `why` is the change's own sentence plus whether it
+  is used: "You asked for this in a task. Not used in answers until a second task shows it." / "This worked in a
+  task. Not used in answers until a second task shows it." / "This did not work in a task. I will look for what
+  does."
+- `counted` : every later sighting that changes nothing about use.
+
+Quiet lines (`quiet: true`; the UI hides them unless asked): every `counted` line; a `noticed` line only when it
+says so itself. `noticed` is quiet for a bare `repeated_request` and for an unsure question's note, and NOT quiet
+for `worked`, `failed` and the other kinds. Read the line's `quiet` field, never the action name.
 
 Undo: a lesson change restores that lesson as it was (item level). A skill change restores the whole file as it was,
 and is refused if the file no longer equals what that change left ("changed since; undo the later change first").
@@ -93,8 +109,12 @@ has `expert.learning == false`.
 A run is a list of independent steps. Each step takes the inbox and current knowledge and returns a list of changes;
 the loop applies them through `knowledge.apply` in order. Steps do not call each other:
 
-1. `lessons` : inbox entries into lesson changes (the evidence rules under "Capture").
-2. `research` : open unsure questions; found -> a lesson with its source; not found -> `note could_not_find`.
+1. `lessons` : inbox entries into lesson changes (the evidence rules under "Capture"). `worked` -> a lesson of
+   kind `worked`; `failed` -> a lesson of kind `failed` (a "does not work" lesson) AND an open question for step 2
+   through `gaps.record` ("How to <need>, given that <tried> does not work?"), under the gaps' own caps. Both are
+   trust `outcome`: counted once per session, used in answers after two sessions, bumped only onto a lesson of
+   their own kind (nothing else is ever counted toward a `failed` lesson).
+2. `research` : open questions (an unsure consult, or what a `failed` entry left); found -> a lesson with its source; not found -> `note could_not_find`.
    At most `gaps.max_attempts` runs per question and one per day; at the cap, one more only when the skills or
    read roots changed. A question skipped because it is out of attempts gets ONE visible `note could_not_find`,
    once (`reported` on the gap), so it is never left as only a quiet "noticed" line.
@@ -183,7 +203,8 @@ All JSON writes are atomic (temp file + `os.replace`). Every read-modify-write o
   "ask_me_about": "Writing canvases, the canvas APIs, examples from existing canvases",
   "reads": [{"kind": "canvas-mirror", "scopes": ["team", "public", "user"]}],
   "offered_to": {"targets": ["canvas"]},
-  "learns_from": ["repeated_request", "user_correction", "error_then_fix", "answer_contradicted", "unanswered"],
+  "learns_from": ["worked", "failed", "repeated_request", "user_correction", "error_then_fix",
+                  "answer_contradicted", "unanswered"],
   "engine": "auto",
   "model": "",
   "learning": true,
@@ -200,7 +221,9 @@ All JSON writes are atomic (temp file + `os.replace`). Every read-modify-write o
   exist) and `folder` (`{"kind": "folder", "path": "/abs"}`).
 - `offered_to.targets`: `"canvas"` = sessions whose target is inside a canvas clone; `"*"` = every session.
 - `learns_from`: the capture kinds plus `unanswered`. The legacy name `answer_contradicted` enables both
-  `advice_confirmed` and `advice_contradicted`; either may also be named on its own.
+  `advice_confirmed` and `advice_contradicted`; either may also be named on its own. A manifest written before
+  `worked` / `failed` existed still learns them: `repeated_request` also enables `worked`, `error_then_fix` also
+  `failed`.
 - `learning: false`: sessions are still noticed, the Learn loop never runs.
 - `memory`: when a run is due (`consolidate_at`, `consolidate_after_s`), when a lesson has earned a skill
   (`propose_at`), the index cap, and the memory budget (below).
@@ -280,15 +303,33 @@ description says so.
 - Text in files the expert reads is data, never a reason to remember something.
 - A lesson from a session (trust `outcome`) is used in answers only once seen in two sessions (`count >= 2`;
   `confirmed` never counts). A `user` lesson is used at once.
-- Capture extracts only: a pattern the user asked for, a user correction, an error then a fix that worked, expert
-  advice confirmed or contradicted. Text the session merely read is never a lesson.
+- Wherever lessons are put into a prompt (`memory.index_text`, the distill and tidy prompts) a lesson of kind
+  `failed` reads "Does not work: <claim>" (`memory.shown`), so it is never taken for advice. Tidy never merges a
+  `failed` lesson with one that is not.
+- Capture extracts only: what the user asked for and whether it worked or failed, a user correction, an error
+  then a fix that worked, expert advice confirmed or contradicted. Text the session merely read is never a lesson.
 
 ## Capture (`experts/capture.py`)
 
 `capture_session(bot, session)` reads one idle task session (idle for `IDLE_S` = 1800 s, not a bot session,
 relevant to the expert: it consulted this expert or matches `offered_to`) with one `model.text` call and writes
-inbox entries. Kinds: `repeated_request`, `user_correction`, `error_then_fix`, `advice_confirmed`,
-`advice_contradicted`; only the manifest's `learns_from` kinds are kept. Zero entries is a normal result.
+inbox entries. Kinds: `worked`, `failed`, `repeated_request`, `user_correction`, `error_then_fix`,
+`advice_confirmed`, `advice_contradicted`; only the manifest's `learns_from` kinds are kept. Zero entries is a
+normal result.
+
+**What happened to the request.** One entry per request, by its outcome:
+
+- `worked` : the task did what the user asked and it held (ran, a check passed, the user accepted or did not
+  object). The claim is the need together with the approach that satisfied it, written as a reference (which
+  file, dataset or call), never copied code; `source.files` names the files in the canvas that show it.
+  `after_advice` when the approach is only what this expert advised in that session.
+- `failed` : the task could not do what was asked, or an approach was tried, did not work, and no fix was found
+  in the session (an error that WAS fixed stays `error_then_fix`). The claim is the need, what was tried and why
+  it failed; `need` and `tried` carry the two parts for the research question. It may carry `contradicts` when
+  the failed approach was the expert's own advice (handled like `advice_contradicted` by outcome: the old lesson
+  is marked contradicted).
+- `repeated_request` : only for a request whose outcome is unknown. The prompt asks for ONE `worked` or `failed`
+  entry instead whenever the outcome is known.
 
 **Prompt hygiene.** The consult records and the transcript sit between `<<<BEGIN …>>>` / `<<<END …>>>` markers
 the prompt declares DATA. Every transcript line carries its speaker (`USER| `, `AGENT| `, `TOOL| `, `NOTE| `),
@@ -311,7 +352,8 @@ alone. `after_advice`: the user said it only after, and in line with, this exper
   readable decision: the old lesson is only marked contradicted. When the old rule lives in a skill, distill
   rewrites that skill's section (a draft that only adds a rule is refused).
 - **Only independent evidence raises `count`**, once per session: a grounded `repeated_request` or
-  `user_correction` that is not `after_advice`, an `error_then_fix`, and teaching in chat. Anything else, chiefly
+  `user_correction` that is not `after_advice`, an `error_then_fix`, a `worked` that is not `after_advice`, a
+  `failed`, and teaching in chat. Anything else, chiefly
   `advice_confirmed` and `after_advice`, is a `lesson_confirm`; a new lesson from it starts at count 0.
 - A failed or unreadable model answer in the lessons step adds nothing: the entries stay waiting.
 
