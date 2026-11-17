@@ -70,24 +70,68 @@ Answer with ONLY a JSON list, one object per observation:
 [{{"obs": "<observation id>", "op": "add" | "bump" | "nothing" | "same", "item": "<lesson id, for bump>", "claim": "<for add>", "as": "<observation id, for same>"}}]"""
 
 
-def _strip_fences(text: str) -> str:
-    return re.sub(r"```[a-zA-Z]*", "", text or "")
+_OUTER_OPEN = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*$")
+
+
+def _unwrap(text: str) -> str:
+    """`text` without ONE outer code-fence wrapper around the whole answer (a leading ```json / ``` line and a
+    trailing ``` line). Nothing inside is touched: a fence inside a JSON string survives."""
+    s = (text or "").strip()
+    lines = s.split("\n")
+    if len(lines) >= 2 and _OUTER_OPEN.match(lines[0].strip()) and lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1])
+    return s
+
+
+def _balanced_end(s: str, i: int) -> int:
+    """The index of the bracket closing the JSON value opened at `s[i]`, scanning with string / escape awareness
+    (a bracket inside a string does not count); -1 when it never closes."""
+    depth, in_str, esc = 0, False, False
+    for j in range(i, len(s)):
+        c = s[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c in "[{":
+            depth += 1
+        elif c in "]}":
+            depth -= 1
+            if depth == 0:
+                return j
+    return -1
 
 
 def parse_json(text, want=list):
-    """The first JSON value of type `want` (list or dict) in `text`, code fences
-    stripped; None when there is none."""
-    s = _strip_fences(text)
-    dec = json.JSONDecoder()
+    """The JSON value of type `want` (list or dict) in a model's answer; None when there is none.
+
+    The contents of JSON strings are never altered: only an outer fence wrapper around the whole answer is removed
+    before parsing; failing that, the first balanced JSON value of type `want` (found with string / escape
+    awareness, so a code fence or bracket inside a string value survives byte for byte) is parsed."""
+    s = _unwrap(text)
+    try:
+        val = json.loads(s)
+    except ValueError:
+        val = None
+    if isinstance(val, want):
+        return val
     opener = "[" if want is list else "{"
     i = s.find(opener)
     while i != -1:
-        try:
-            val, _ = dec.raw_decode(s, i)
-        except ValueError:
-            val = None
-        if isinstance(val, want):
-            return val
+        j = _balanced_end(s, i)
+        if j != -1:
+            try:
+                val = json.loads(s[i:j + 1])
+            except ValueError:
+                val = None
+            if isinstance(val, want):
+                return val
         i = s.find(opener, i + 1)
     return None
 

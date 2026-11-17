@@ -108,6 +108,7 @@ def test_consult_errors(client, expert, monkeypatch):
     (f"/api/experts/{BID}/consolidate", {}),
     (f"/api/experts/{BID}/capture", {"session_id": "s"}),
     (f"/api/experts/{BID}/settings", {"engine": "auto"}),
+    (f"/api/experts/{BID}/skills/canvas-folder-layout/restore", {}),
 ])
 def test_every_post_needs_x_fused(client, expert, path, body):
     status, _h, _b = client._do(__import__("urllib.request").request.Request(

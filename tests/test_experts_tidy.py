@@ -22,11 +22,25 @@ class FakeBot:
         self.dir = os.path.join(self.public_dir, ".fused")
         os.makedirs(self.dir, exist_ok=True)
 
+    @property
+    def skills_dir(self):
+        return os.path.join(self.public_dir, "skills")
+
     def skills(self):
-        return []
+        out = []
+        for n in sorted(os.listdir(self.skills_dir)) if os.path.isdir(self.skills_dir) else []:
+            with open(os.path.join(self.skills_dir, n), encoding="utf-8") as f:
+                lines = f.read().split("\n")
+            out.append({"name": n[:-3], "title": lines[0][2:], "trigger": lines[1].split(":", 1)[1].strip(),
+                        "body": "\n".join(lines[2:]).strip()})
+        return out
 
     def skill_save(self, title, trigger, body, name=None):
-        return name or "-".join(str(title).lower().split())
+        name = name or "-".join(str(title).lower().split())
+        os.makedirs(self.skills_dir, exist_ok=True)
+        with open(os.path.join(self.skills_dir, name + ".md"), "w", encoding="utf-8") as f:
+            f.write(f"# {title}\ntrigger: {trigger}\n\n{body}\n")
+        return name
 
 
 @pytest.fixture
@@ -280,11 +294,11 @@ def test_merge_two_and_three(bot, answer):
     items = {i["id"]: i for i in memory.items(bot)}
     n1, n2 = items[m1["into"]], items[m2["into"]]
     assert a["id"] not in items and b["id"] not in items and n1["kind"] == "lesson"
-    assert n1["sessions"] == ["s1", "s2", "s3"] and n1["count"] == 3 and n1["cited"] == 3
+    assert n1["sessions"] == ["s1", "s2", "s3"] and n1["count"] == 2 and n1["cited"] == 3
     assert n1["trust"] == "outcome" and n1["about"] == ["/x"]
     assert abs(n1["created"] - a["created"]) < 1 and abs(n1["updated"] - b["updated"]) < 1
     assert n1["merged_from"] == [{"id": a["id"], "claim": a["claim"]}, {"id": b["id"], "claim": b["claim"]}]
-    assert n2["trust"] == "user" and n2["count"] == 3 and len(n2["merged_from"]) == 3
+    assert n2["trust"] == "user" and n2["count"] == 1 and len(n2["merged_from"]) == 3
     arch = {x["id"]: x for x in memory.archived(bot)}
     assert arch[a["id"]]["reason"] == "merged" and arch[a["id"]]["into"] == n1["id"]
     assert arch[e["id"]]["into"] == n2["id"]
@@ -301,6 +315,21 @@ def test_merge_count_takes_the_largest_original_when_bigger(bot, answer):
     assert next(i for i in memory.items(bot) if i["id"] == into)["count"] == 4
 
 
+def test_merged_count_is_the_largest_original_not_the_session_union(bot, answer):
+    _fill(bot, 30)
+    a = _lesson(bot, "Charts use the dark theme", count=1, idle=1, sessions=["s1"])
+    b = _lesson(bot, "Charts are dark", count=1, idle=1, sessions=["s2"])
+    answer.value = [{"do": "merge", "ids": [a["id"], b["id"]], "claim": "Canvas charts use the dark theme"}]
+    into = tidy.run(bot)["merged"][0]["into"]
+    merged = next(i for i in memory.items(bot) if i["id"] == into)
+    assert merged["count"] == 1 and merged["sessions"] == ["s1", "s2"]
+    assert not memory.indexed(merged)  # two lessons seen once each are not a lesson seen twice
+    # The once-per-session bump rule still holds against the session union.
+    assert memory.bump(bot, into, session="s2")["count"] == 1
+    bumped = memory.bump(bot, into, session="s9")
+    assert bumped["count"] == 2 and memory.indexed(bumped)
+
+
 def test_merge_equal_to_an_original_folds_into_it(bot, answer):
     _fill(bot, 30)
     a = _lesson(bot, "Charts use the dark theme", count=1, idle=1, sessions=["s1"])
@@ -309,7 +338,7 @@ def test_merge_equal_to_an_original_folds_into_it(bot, answer):
     r = tidy.run(bot)
     assert r["merged"][0]["into"] == a["id"]
     kept = next(i for i in memory.items(bot) if i["id"] == a["id"])
-    assert kept["claim"] == "Charts use the dark theme" and kept["count"] == 2
+    assert kept["claim"] == "Charts use the dark theme" and kept["count"] == 1
     assert kept["merged_from"] == [{"id": b["id"], "claim": "Dark charts"}]
     assert b["id"] not in _ids(bot) and memory.archived(bot)[0]["into"] == a["id"]
 

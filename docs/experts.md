@@ -248,6 +248,10 @@ the same batch contradicts (read as `add`).
 Observations with trust `gap` are never added as lessons; they are counted in `ignored` and folded into gap
 records (they stay visible in `done/`). A failed or unreadable call merges no gaps; with only gap observations
 pending it counts no failure.
+`parse_json(text, want)` (used here, by `gate`, `tidy` and `proposals`) never alters the contents of a JSON
+string: it removes only an outer wrapper around the whole answer (a leading ```` ```json ```` / ```` ``` ```` line
+and a trailing ```` ``` ```` line) and parses; failing that it parses the first balanced JSON value of type `want`,
+found by scanning with string / escape awareness. A fenced code block inside a string value survives byte for byte.
 
 ### `experts/gate.py` — the quality gate
 ```
@@ -268,8 +272,11 @@ runs it automatically; skill proposals never do.
 ### `experts/proposals.py`
 ```
 Proposal = {"id","ts","status": "preparing"|"ready"|"shown"|"approved"|"rejected"|"failed",
-            "action": "update"|"create"|None,"skill": name|None,"title","trigger","body","diff": str,
-            "items":[item ids],"claims":[str],"topic": str,"error": str,
+            "action": "update"|"create"|None,"skill": name|None,"name": target file name,
+            "title","trigger","body",          # the FINAL trigger line and body the draft would write
+            "heading","section","triggers_added":[str],"replaced": bool,   # an update's patch
+            "overflow_from"?: name,"overflow_title"?: str,"note": str,     # a patch too big for its skill
+            "diff": str,"items":[item ids],"claims":[str],"topic": str,"error": str,
             "score_before": None,"score_after": None,"card_seq": int|None}   # scores: always None (compat)
 STATUSES = ("preparing", "ready", "shown", "approved", "rejected", "failed")
 BUSY = "a skill proposal is already being prepared"
@@ -280,8 +287,12 @@ request(bot, items, *, topic="", gap="") -> Proposal   # asynchronous; see below
 propose_candidates(bot) -> [pid]    # all candidates as ONE request; [] when none or one is preparing
 prepare(bot, items) -> Proposal     # the same work synchronously (tests): the draft; "ready"
 get(bot, pid) -> Proposal | None ; listing(bot) -> list[Proposal]      # every status, newest first
-approve(bot, pid) -> Proposal       # bot.skill_save(...), then its items leave memory for the archive
-                                    # (reason "promoted", skill = the saved name; §12)
+approve(bot, pid) -> Proposal       # backup, bot.skill_save(...), read back + verify, then its items leave
+                                    # memory for the archive (reason "promoted", skill = the saved name; §12)
+body_cap() / trigger_cap() / skill_max()   # the limits Bot.skill_save enforces (SKILL_BODY_CAP, 300, SKILL_MAX)
+patch_body(old_body, heading, section, *, replace=False) -> str ; headings(body) ; fenced_blocks(body)
+learned_sections(bot) -> [{"skill","heading"}] ; forget_learned(bot, skill) -> int
+backup_skill(bot, name) -> path | None ; backups(bot, name) -> [paths, oldest first]
 reject(bot, pid) -> Proposal        # items marked rejected
 card_text(proposal) -> tuple[str, str]   # (text, detail) for the approval event; detail is the unified diff
 ```
@@ -297,7 +308,37 @@ A proposal whose items include a `research` lesson (or given `gap`) records `gap
 `gaps: [ids]`; `request` marks those gaps `proposed` with the proposal id. `approve` → each such gap
 `answered` (resolution `skill`); `reject` and the failed path (`_fail`, also a failed approve) → `dismissed`.
 `card_text` says the expert looked into a question it could not answer when the proposal has a `gap`.
-Updating an existing skill is preferred to creating one. A proposal never runs the quality gate (one model call
+Updating an existing skill is preferred to creating one.
+
+**A proposal patches a skill; it never rewrites it.** The draft prompt shows each existing skill's name,
+title, trigger, its `## ` headings and the first 600 characters of its body, only so the model can choose
+where the material belongs. For an update the model answers ONLY the new material:
+`{"action": "update", "skill", "heading", "section", "triggers": [..]}`; for a new skill
+`{"action": "create", "title", "trigger", "body"}`. Code builds the new body: the existing body unchanged with
+`\n\n## <heading>\n\n<section>` appended. When a section with the same heading (case-insensitive) exists in that
+skill AND an earlier approved proposal added it (`<expert_dir>/learned-sections.json` lists those
+`{skill, heading}` pairs; the last section with that heading is the learned one), its content is replaced
+instead; a section proposals did not add is never replaced or moved. `#` / `##` headings inside the section
+(outside fenced code) become `###`, and copied metadata lines or a repeated heading are dropped. New trigger
+words are appended to the existing list (deduplicated case-insensitively); none is removed or reordered. A
+`create` whose name is taken gets a free name (`<slug>-2`, …): it never overwrites a skill. `diff` is the
+unified diff of old vs new body, with the `trigger:` line when it changes.
+
+**Nothing is ever truncated.** Before a proposal is `ready`, the final body and trigger are checked against
+`Bot.skill_save`'s limits (`Bot.SKILL_BODY_CAP` characters of body, 300 of trigger line, `Bot.SKILL_MAX` skills).
+A patch that would not fit becomes a `create` of a separate new skill (title from the heading, its own trigger
+words; `overflow_from` names the full skill) and the card says "That skill is full, so this goes into a new
+skill …". Material that does not fit even a new skill is `failed` with the reason.
+
+**Approve** rebuilds the patch against the skill as it is now (another approval may have patched it since),
+re-checks the limits, backs the skill file up to `<expert_dir>/skill-backups/<name>.<unix ts>.md` (newest 20 per
+skill kept), writes it, then reads it back through `bot.skills()` and compares the stored body and trigger with
+what was intended (after `skill_save`'s whitespace normalisation). A failed save or any mismatch restores the
+backup byte for byte (a new skill's file is removed), fails the proposal ("the skill could not be saved
+intact"), un-marks its lessons and raises `ValueError`; lessons leave memory only after the check passes. An
+`update` record from before patches (no `heading` / `section`) is never written: approving it fails it.
+
+A proposal never runs the quality gate (one model call
 drafts it, then it is `ready`); `score_before` / `score_after` stay on the record for compatibility, always
 `None`, and `card_text` says nothing about checks.
 
@@ -460,8 +501,16 @@ malformed or non-positive values leave the defaults in place; each is read when 
 ```
 seed() -> list[str]          # ids of experts created now
 SHIPPED_DIR                  # fused_render/experts/shipped/<key>/{expert.json, instructions.md, skills/*.md, questions.md}
+shipped_skill_path(bot, name) -> path | None   # the shipped file of that skill (manifest `shipped`), else None
+restore_shipped_skill(bot, name) -> bool       # repair: shipped file copied over the skill
+skills_health(bot) -> [{name, shipped, body_chars, limit, damaged, reasons}]   # no model call
 ```
 Creates each shipped expert once (witness lists keys already seeded, so a deleted expert stays deleted).
+`restore_shipped_skill` backs the current file up (as `approve` does), copies the shipped file over it byte for
+byte and clears that skill's entries from `learned-sections.json`; False when the expert is not shipped or has
+no such shipped skill. `skills_health` marks a skill `damaged` when it is shipped and its current body has fewer
+fenced code blocks than the shipped original or lacks one of its `## ` headings, or (any skill) when its body
+length is at the body limit (it was most likely cut there); `reasons` says which.
 
 ### `experts/routes.py` (FastAPI router, section 8)
 
@@ -521,6 +570,8 @@ POSTs require the `X-Fused` header (`server.common._require_fused`). Errors are 
 | `GET /api/experts/{id}/checks` | `{latest: Run|null, status, questions: int}` |
 | `POST /api/experts/{id}/checks/run` | `{run_id}` |
 | `GET /api/experts/{id}/proposals` | `{proposals: [Proposal]}` (every status, newest first, with `error`) |
+| `GET /api/experts/{id}/skills/health` | `[{name, shipped: bool, body_chars: int, limit: int, damaged: bool, reasons: [str]}]` (`seed.skills_health`, no model call) |
+| `POST /api/experts/{id}/skills/{name}/restore` | → `{restored: true}` (`seed.restore_shipped_skill`); 404 `{"error": "no such shipped skill"}` for an unknown skill or an expert not seeded from a shipped package |
 | `POST /api/experts/{id}/consolidate` | `{force?: bool}` → `{started: bool}`: `consolidate.start` in the background (false when one runs or there is nothing to do); 409 `unavailable` without an engine. Progress: `consolidating` on `GET …/observations` |
 | `GET /api/experts/{id}/gaps` | `{gaps: [Gap], researching: gid \| null}` (`researching` from `consolidate.status`). Every Gap returned over HTTP (here, the `gap` on observations, dismiss) adds `proposal_status` (its proposal's status: preparing \| ready \| shown \| approved \| rejected \| failed, or `""` when it has none or it cannot be found) and `proposal_error` (that proposal's `error`, else `""`), read from the proposals store at request time and never stored on the gap. A gap is `proposed` while its proposal is still `preparing`: only `proposal_status` says whether a card can be up |
 | `POST /api/experts/{id}/gaps/{gid}/dismiss` | → Gap; 404 `{"error": "no such gap"}` unless `gid` is a stored gap id (never used in a path) |
@@ -634,8 +685,10 @@ unsure, keep. It answers a JSON list of `{"id", "do": "delete"|"promote"|"keep",
 2. **Merge** (at most 5 per tidy) only 2 or 3 distinct existing lessons, none in an open proposal, none
    contradicted, none used enough to promote (`uses >= heavy_uses`), with a merged claim of 1-400 characters that
    is not another lesson's claim. Some detail may be lost; that is the price of a smaller memory. The merged lesson
-   (kind `lesson`) takes the union of the sessions and `about`, `count` = the size of that union (or the largest
-   original count if bigger), the summed `cited`, the earliest `created`, the latest `updated` / `last_used`, trust
+   (kind `lesson`) takes the union of the sessions (for the record) and `about`, `count` = the LARGEST original
+   count (never the size of the session union: two lessons each seen once are not a lesson seen twice, and two
+   sightings is what makes a session lesson usable in answers; a later bump still counts only a session not
+   already in the union), the summed `cited`, the earliest `created`, the latest `updated` / `last_used`, trust
    `user` only when every original was the user's (else `outcome`), and `merged_from: [{"id","claim"}]`. A merged
    claim equal to one of the originals keeps that lesson and folds the others into it.
 3. **Promote** only a lesson with `uses >= heavy_uses` (5), not contradicted, not rejected and not in an open

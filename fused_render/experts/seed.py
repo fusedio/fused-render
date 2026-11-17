@@ -141,3 +141,66 @@ def seed() -> list[str]:
         except OSError:
             logger.warning("could not write %s", witness_path(), exc_info=True)
     return created
+
+
+# ------------------------------------------------------- repairing a skill ---
+def shipped_skill_path(bot, name) -> str | None:
+    """The shipped file of skill `name` for an expert seeded from a shipped package (manifest `shipped`), or
+    None (not a shipped expert, or no such shipped skill)."""
+    from fused_render.experts import store
+    key = str(store.manifest(bot).get("shipped") or "")
+    name = str(name or "")
+    if not key or not name or os.path.basename(name) != name or name.startswith(".") \
+            or os.path.basename(key) != key or key.startswith("."):
+        return None
+    path = os.path.join(SHIPPED_DIR, key, "skills", name + ".md")
+    return path if os.path.isfile(path) else None
+
+
+def restore_shipped_skill(bot, name) -> bool:
+    """Copy skill `name`'s shipped file over the bot's skill (the current file is backed up first, as an approve
+    does) and clear that skill's entries from `learned-sections.json`. False when `name` is not a shipped skill of
+    this expert."""
+    from fused_render.experts import proposals, store
+    src = shipped_skill_path(bot, name)
+    if src is None:
+        return False
+    with open(src, "rb") as f:
+        data = f.read()
+    with store.lock(bot):
+        proposals.backup_skill(bot, name)
+        os.makedirs(bot.skills_dir, exist_ok=True)
+        dst = os.path.join(bot.skills_dir, name + ".md")
+        with open(dst + ".restore.tmp", "wb") as f:
+            f.write(data)
+        os.replace(dst + ".restore.tmp", dst)
+        proposals.forget_learned(bot, name)
+    return True
+
+
+def skills_health(bot) -> list:
+    """`[{name, shipped, body_chars, limit, damaged, reasons}]` for every skill of `bot`, no model call. A shipped
+    skill is damaged when its current file has fewer fenced code blocks than the shipped original or lacks one of
+    its `## ` headings; any skill whose body is at the body limit is damaged too (it was most likely cut there)."""
+    from fused_render.bots.bot import Bot
+    from fused_render.experts import proposals
+    limit = proposals.body_cap()
+    out = []
+    for s in bot.skills():
+        body = s.get("body") or ""
+        src = shipped_skill_path(bot, s["name"])
+        reasons = []
+        if src is not None:
+            _t, _tr, orig = Bot._parse_skill(_read_text(src))
+            have, had = proposals.fenced_blocks(body), proposals.fenced_blocks(orig)
+            if have < had:
+                reasons.append(f"{had - have} of the shipped skill's {had} fenced code blocks are missing")
+            now = {h.casefold() for h in proposals.headings(body)}
+            missing = [h for h in proposals.headings(orig) if h.casefold() not in now]
+            if missing:
+                reasons.append("missing sections: " + ", ".join(f"“{h}”" for h in missing))
+        if len(body) >= limit:
+            reasons.append(f"the body is at the {limit}-character limit, so it was probably cut short")
+        out.append({"name": s["name"], "shipped": src is not None, "body_chars": len(body), "limit": limit,
+                    "damaged": bool(reasons), "reasons": reasons})
+    return out

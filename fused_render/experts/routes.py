@@ -374,6 +374,29 @@ def experts_gaps(eid: str):
             "researching": st.get("gap") if st.get("stage") == "researching" else None}
 
 
+@router.get(PREFIX + "/{eid}/skills/health")
+@_handled
+def experts_skills_health(eid: str):
+    bot = _expert(eid)
+    return _mod("seed").skills_health(bot)
+
+
+@router.post(PREFIX + "/{eid}/skills/{name}/restore")
+@_handled
+def experts_skill_restore(eid: str, name: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    bot = _expert(eid)
+    seed = _mod("seed")
+    if seed.shipped_skill_path(bot, name) is None:
+        raise _NotFound("no such shipped skill")
+    _writable()
+    if not seed.restore_shipped_skill(bot, name):
+        raise _NotFound("no such shipped skill")
+    return {"restored": True}
+
+
 @router.post(PREFIX + "/{eid}/gaps/{gid}/dismiss")
 @_handled
 def experts_gap_dismiss(eid: str, gid: str, x_fused: str | None = Header(default=None)):

@@ -270,7 +270,10 @@ def remove(bot, ids, reason, *, skill="", whys=None) -> list:
 def merge(bot, ids, claim, *, why="") -> tuple[dict, list] | None:
     """Generalise 2-3 lessons into one (the tidy step's `merge`). `claim` equal to one original after
     normalisation keeps that item and folds the others into it; otherwise a new lesson (kind "lesson") holds the
-    merged claim. Either way: sessions = union, count = max(len(union), largest count), cited = sum, created =
+    merged claim. Either way: sessions = union (kept for the record), count = the LARGEST original count (never
+    the size of the union: two lessons each seen once are not a lesson seen twice, and two sightings is what makes
+    a session lesson usable in answers; a later bump still counts only a session not in the union), cited = sum,
+    created =
     earliest, updated / last_used = latest, about = union, trust "user" only when every original was, else
     "outcome", `merged_from` = the originals folded in ({"id","claim"}). The others are archived with reason
     "merged" and `into`. Returns (the merged item, the archived originals) or None when fewer than 2 of `ids`
@@ -291,7 +294,7 @@ def merge(bot, ids, claim, *, why="") -> tuple[dict, list] | None:
         last = max((max(_f(i.get("updated")), _f(i.get("last_used"))) for i in orig), default=0.0)
         fields = {
             "sessions": sessions, "about": about,
-            "count": max(len(sessions), max(_n(i.get("count")) for i in orig)),
+            "count": max(_n(i.get("count")) for i in orig),
             "cited": sum(cited(i) for i in orig),
             "created": min(_f(i.get("created")) or time.time() for i in orig),
             "updated": last or time.time(), "last_used": last or None,

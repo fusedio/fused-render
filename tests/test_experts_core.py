@@ -815,9 +815,9 @@ def test_prepare_update_with_diff_runs_no_checks(bot, fake_text, monkeypatch):
     with open(os.path.join(bot.public_dir, "questions.md"), "w") as f:
         f.write("## How do I read a UDF?\n- must: mentions fused.load\n")
     a = _seen(bot, "Use fused.load to read a UDF", 3)
-    new_body = "Step one.\nStep two.\nUse fused.load(name)."
-    fake_text.replies.append(json.dumps({"action": "update", "skill": "reading-udfs", "title": "Reading UDFs",
-                                         "trigger": "udf, load", "body": new_body}))  # the only model call
+    new_body = "Step one.\nStep two.\n\n## Loading\n\nUse fused.load(name)."
+    fake_text.replies.append(json.dumps({"action": "update", "skill": "reading-udfs", "heading": "Loading",
+                                         "section": "Use fused.load(name).", "triggers": []}))  # the only model call
     monkeypatch.setattr(gate, "run", lambda *a, **k: pytest.fail("a proposal never runs the quality gate"))
     monkeypatch.setattr(gate, "_default_answer_fn", lambda: pytest.fail("a proposal never answers gate questions"))
     p = proposals.prepare(bot, [a])
@@ -858,7 +858,7 @@ def test_prepare_create_fallback_and_reject(bot, fake_text):
     p = proposals.prepare(bot, [a["id"], b])
     assert p["action"] == "create" and p["skill"] is None and p["title"].startswith("Lessons: ")
     assert p["trigger"] and "- Canvases live under the user folder" in p["body"]
-    assert p["diff"].startswith("--- /dev/null") and p["score_before"] is None and p["score_after"] is None
+    assert p["diff"].startswith("--- /dev/null") and "+trigger: " + p["trigger"] in p["diff"] and p["score_before"] is None and p["score_after"] is None
     assert len(fake_text.calls) == 1 and bot.skills() == []
     r = proposals.reject(bot, p["id"])
     assert r["status"] == "rejected" and all(i["rejected"] for i in memory.items(bot))
@@ -866,15 +866,16 @@ def test_prepare_create_fallback_and_reject(bot, fake_text):
     with pytest.raises(ValueError):
         proposals.prepare(bot, [])
 
-    # a "create" naming an existing skill's slug is an update of that skill
+    # a "create" naming an existing skill's slug never overwrites that skill: it gets a free name
     bot.skill_save("Canvas Basics", "canvas", "Old body.")
     c = _seen(bot, "Clones sit in user/", 3)
     fake_text.replies.append(json.dumps({"action": "create", "title": "Canvas Basics", "trigger": "canvas",
-                                         "body": "Old body.\nClones sit in user/."}))
+                                         "body": "Clones sit in user/."}))
     p2 = proposals.prepare(bot, [c])
-    assert p2["action"] == "update" and p2["skill"] == "canvas-basics"
-    assert proposals.approve(bot, p2["id"])["skill"] == "canvas-basics"
-    assert len(bot.skills()) == 1 and "Clones sit" in bot.skills()[0]["body"]
+    assert p2["action"] == "create" and p2["skill"] is None and p2["name"] == "canvas-basics-2"
+    assert proposals.approve(bot, p2["id"])["skill"] == "canvas-basics-2"
+    assert {s["name"]: s["body"] for s in bot.skills()} == {"canvas-basics": "Old body.",
+                                                           "canvas-basics-2": "Clones sit in user/."}
 
 
 # ------------------------------------------------- readtools: secrets, size, broad roots
@@ -1043,16 +1044,17 @@ def test_draft_body_loses_copied_metadata_lines_on_create(bot, fake_text):
     p = proposals.prepare(bot, [a])
     assert p["action"] == "create"
     assert p["body"] == "## Sales charts\n\n- Monthly revenue as a bar chart."
-    assert "name:" not in p["diff"] and "trigger:" not in p["diff"]
+    assert "name:" not in p["diff"] and "+trigger: chart, sales chart" in p["diff"]
 
 
 def test_draft_body_loses_copied_metadata_lines_on_update(bot, fake_text):
-    bot.skill_save("Chart type conventions", "chart", "## Sales charts", name="chart-type-conventions")
+    bot.skill_save("Chart type conventions", "chart", "Intro.", name="chart-type-conventions")
     a = _seen(bot, "Sales charts show monthly revenue as bars", 3)
     fake_text.replies.append(json.dumps({"action": "update", "skill": "chart-type-conventions",
-                                         "title": "Chart type conventions", "trigger": "chart", "body": STRAY}))
+                                         "heading": "Sales charts", "section": STRAY}))
     p = proposals.prepare(bot, [a])
     assert p["action"] == "update" and p["skill"] == "chart-type-conventions"
-    assert p["body"] == "## Sales charts\n\n- Monthly revenue as a bar chart."
+    # metadata lines, the copied "# title" and the repeated heading dropped: only the new material is appended
+    assert p["body"] == "Intro.\n\n## Sales charts\n\n- Monthly revenue as a bar chart."
     assert proposals._clean_body("title: x\n\n", "x") == ""
     assert proposals._clean_body("# Other heading\nbody", "Title") == "# Other heading\nbody"
