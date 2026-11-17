@@ -5996,7 +5996,10 @@ function ChatBody(props: ChatBodyProps) {
   // one "+N". With no worktree tag the first PR is the tag ("PR #12 +2") —
   // so the tag has to be on screen, not merely mounted: the menu draws no
   // pill outside a repo (`worktreePill`; CodeRabbit on #2313).
-  const headHasTools = (!!annTarget && !props.noAnnTools) || !!canvasShotSeat;
+  // Tools that are DRAWN: the strip's own gate (`stripSeatsShown` — a target
+  // that cannot be annotated seats none; CodeRabbit on #2313), or the canvas
+  // camera that stands in for it.
+  const headHasTools = stripSeatsShown || !!canvasShotSeat;
   const headWorktreeTag = !!shownHint || (!!worktreeMenu && worktreePill);
   const headChipsExtra =
     props.prChip && head.task ? (
