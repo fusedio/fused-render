@@ -27,6 +27,7 @@ import os
 import threading
 import time
 import urllib.request
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -177,7 +178,9 @@ class _FakeCli:
 
 @pytest.fixture()
 def host_run(tmp_path):
-    run_dir = tmp_path / "runs" / "20260917-120000-abcd"
+    # Unique per test: a `_LiveServer` keys on it to tell this test's posts
+    # from a stranger's (`_LiveServer.ours`).
+    run_dir = tmp_path / "runs" / ("20260917-120000-" + uuid.uuid4().hex[:8])
     run_dir.mkdir(parents=True)
     (run_dir / "out.jsonl").write_text("")
     (run_dir / "meta.json").write_text(json.dumps({"session_id": "sess-1"}))
@@ -215,7 +218,7 @@ def test_the_host_posts_turn_ended_once_when_a_result_row_lands(
     ended = posts.wait_for("turn_ended")
     assert len(ended) == 1, "the closed turn was announced on every idle tick"
     body = ended[0]["body"]
-    assert body["run_id"] == "20260917-120000-abcd"
+    assert body["run_id"] == host_run.name
     assert body["session_id"] == "sess-1"
     assert ended[0]["url"] == "http://127.0.0.1:9/api/tasks/queue/event"
     assert ended[0]["method"] == "POST"
@@ -255,7 +258,7 @@ def test_the_host_posts_turn_started_when_the_cli_reopens_a_turn(
     started = posts.wait_for("turn_started")
     assert len(started) == 1, "the open turn was announced on every tick"
     body = started[0]["body"]
-    assert body["run_id"] == "20260917-120000-abcd"
+    assert body["run_id"] == host_run.name
     assert body["session_id"] == "sess-1"
     assert isinstance(body["at"], float)
     assert abs(body["at"] - time.time()) < 5.0
@@ -284,7 +287,7 @@ def test_the_host_posts_exited_with_the_childs_return_code(
     assert len(exited) == 1
     assert exited[0]["body"]["code"] == 7
     assert exited[0]["body"]["pid"] == 4242
-    assert exited[0]["body"]["run_id"] == "20260917-120000-abcd"
+    assert exited[0]["body"]["run_id"] == host_run.name
     assert isinstance(exited[0]["body"]["at"], float)
     assert abs(exited[0]["body"]["at"] - time.time()) < 5.0
 
@@ -416,6 +419,22 @@ class _LiveServer:
         self.origin = "http://127.0.0.1:%d" % self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
+    def ours(self, run_id):
+        """The posts that carry `run_id` — this test's own.
+
+        The server listens on an ephemeral port, and a port is reissued the
+        moment its last owner lets go. Host processes OTHER suites spawned
+        (detached, outliving their test by design) keep posting to the
+        origin they were spawned with; once that server is gone, its freed
+        port can come back as this one, and their `turn_ended` lands here
+        (`['turn_ended', 'card_raised'] == ['card_raised']`). Nothing in
+        this file can stop a stranger dialling the port, so every
+        assertion reads only the posts its own run id is on."""
+        return [p for p in self.seen if p["body"].get("run_id") == run_id]
+
+    def kinds(self, run_id):
+        return [p["body"]["kind"] for p in self.ours(run_id)]
+
     def close(self):
         self.httpd.shutdown()
         self.httpd.server_close()
@@ -494,9 +513,9 @@ def test_a_host_whose_server_moved_posts_to_the_relaunched_one(
 
     host._post_event(str(host_run), "exited", code=0).join(10)
 
-    assert [p["body"]["kind"] for p in live_server.seen] == ["exited"]
-    assert live_server.seen[0]["path"] == host._EVENT_PATH
-    assert live_server.seen[0]["fused"] == "1"
+    assert live_server.kinds(host_run.name) == ["exited"]
+    assert live_server.ours(host_run.name)[0]["path"] == host._EVENT_PATH
+    assert live_server.ours(host_run.name)[0]["fused"] == "1"
 
 
 def test_after_the_switch_later_events_go_straight_to_the_live_server(
@@ -518,7 +537,7 @@ def test_after_the_switch_later_events_go_straight_to_the_live_server(
 
     assert tries == [live_server.origin + host._EVENT_PATH], \
         "the cached live origin is tried first, not the dead spawn-time one"
-    assert [p["body"]["kind"] for p in live_server.seen] == ["turn_ended", "exited"]
+    assert live_server.kinds(host_run.name) == ["turn_ended", "exited"]
 
 
 @pytest.mark.parametrize("case", ["dead_pid", "same_origin", "absent",
@@ -548,7 +567,7 @@ def test_no_switch_without_a_live_different_server_of_this_install(
     host._post_event(str(host_run), "exited").join(10)
 
     assert tries == [dead + host._EVENT_PATH] * 2, "the old two tries, no third"
-    assert live_server.seen == []
+    assert live_server.ours(host_run.name) == []
 
 
 def _boots_late(origin, after):
@@ -580,7 +599,7 @@ def test_the_fallback_waits_for_a_relaunched_server_still_booting(
     late = _boots_late(new_origin, 0.4)
     try:
         host._post_event(str(host_run), "turn_ended").join(10)
-        assert [p["body"]["kind"] for p in late["server"].seen] == ["turn_ended"]
+        assert late["server"].kinds(host_run.name) == ["turn_ended"]
     finally:
         if "server" in late:
             late["server"].close()
@@ -624,7 +643,7 @@ def test_the_exiting_host_waits_for_the_fallback_before_it_returns(
     try:
         _drive_host(monkeypatch, host, host_run, [])
         assert "server" in late, "the host returned before the fallback landed"
-        assert "exited" in [p["body"]["kind"] for p in late["server"].seen]
+        assert "exited" in late["server"].kinds(host_run.name)
     finally:
         if "server" in late:
             late["server"].close()
@@ -636,15 +655,16 @@ def test_the_permission_server_posts_its_card_to_the_relaunched_server(
     reaches the live server the same way the hosts' own events do."""
     srv = _load("permission_server")
     monkeypatch.setattr(srv, "_EVENT_RETRY_SECONDS", 0.01)
-    perm = tmp_path / "runs" / "20260917-130000-beef" / "perm"
+    run_id = "20260917-130000-" + uuid.uuid4().hex[:8]
+    perm = tmp_path / "runs" / run_id / "perm"
     perm.mkdir(parents=True)
     monkeypatch.setattr(srv, "PERM_DIR", str(perm))
     relaunched(live_server.origin)
 
     srv._send_event(srv._event_origin().current() + srv._EVENT_PATH,
-                    {"kind": "card_raised", "run_id": "r", "request_id": "q"})
+                    {"kind": "card_raised", "run_id": run_id, "request_id": "q"})
 
-    assert [p["body"]["kind"] for p in live_server.seen] == ["card_raised"]
+    assert live_server.kinds(run_id) == ["card_raised"]
     assert srv._event_origin().current() == live_server.origin
 
 
