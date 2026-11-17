@@ -241,7 +241,11 @@ def experts_consult(body: dict = Body(...), x_fused: str | None = Header(default
 def experts_memory(eid: str):
     bot = _expert(eid)
     memory = _mod("memory")
-    items = [dict(i, indexed=bool(memory.indexed(i))) for i in memory.items(bot)]
+    def row(i):
+        seen = i.get("contradicted_sessions")
+        return dict(i, indexed=bool(memory.indexed(i)), contradicted=memory.contradicted(i),
+                    contradicted_sessions=[str(x) for x in seen] if isinstance(seen, list) else [])
+    items = [row(i) for i in memory.items(bot)]
     return {"items": items, "index": memory.index_text(bot)}
 
 

@@ -123,6 +123,11 @@ def test_memory_and_forget(client, expert):
     assert status == 200 and [i["id"] for i in body["items"]] == [item["id"], once["id"]]
     assert [i["indexed"] for i in body["items"]] == [True, False]  # an outcome lesson seen once is not loaded
     assert item["id"] in body["index"] and once["id"] not in body["index"]
+    assert [(i["contradicted"], i["contradicted_sessions"]) for i in body["items"]] == [(0, []), (0, [])]
+    memory.contradict(expert, item["id"], session="s7")
+    status, body = _json(client.get(f"/api/experts/{BID}/memory"))
+    assert (body["items"][0]["contradicted"], body["items"][0]["contradicted_sessions"]) == (1, ["s7"])
+    assert "(contradicted in 1 session(s); prefer newer lessons on this)" in body["index"]
     client.post(f"/api/experts/{BID}/memory/forget", {"id": once["id"]})
     status, body = _json(client.post(f"/api/experts/{BID}/memory/forget", {"id": item["id"]}))
     assert status == 200 and body == {"removed": 1}

@@ -69,6 +69,8 @@ under `experts.store.lock(bot)` (one `threading.RLock` per bot id).
 }
 ```
 
+- `learns_from`: the capture kinds (§4 `capture.py`) plus `unanswered`. The legacy name `answer_contradicted` (still
+  the default) enables both `advice_confirmed` and `advice_contradicted`; either may also be named on its own.
 - `gaps` (§11): `research: false` skips the repair step (gaps are still recorded and may still be asked);
   `ask_after` = times a gap is asked before the user may be asked about it; `max_attempts` = research runs per gap
   before the user may be asked; `ask_every_s` = at most one new gap question per expert per this many seconds.
@@ -144,42 +146,56 @@ make_handler(roots, on_tool=None) -> handler       # handler(name, input) -> (te
 ### `experts/memory.py`
 ```
 Item = {"id","claim","kind","trust","count","sessions":[...],"about":[...],"created","updated",
-        "proposed": bool, "promoted": bool, "rejected": bool}
+        "proposed": bool, "promoted": bool, "rejected": bool,
+        "contradicted": int, "contradicted_sessions": [...]}      # absent on older items: 0 / []
 items(bot) -> list[Item]
 add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, gap="") -> Item   # gap: stored as `gap`
         # a claim equal after normalisation (lowercase, collapsed whitespace, no trailing punctuation) bumps instead
 bump(bot, item_id, *, session="") -> Item | None      # count += 1 only when `session` is new or empty
+contradict(bot, item_id, *, session="") -> Item | None  # contradicted += 1 only when `session` is new to
+                                                      # contradicted_sessions or empty; never touches count
+contradicted(item) -> int                             # 0 when absent
 forget(bot, id_or_text) -> int                        # removed count
 mark(bot, item_id, **flags) -> Item | None
 indexed(item) -> bool      # part of the always-loaded index: trust user, or trust outcome with count >= 2
-index_text(bot) -> str     # "- [<id>] <claim> (seen N×)" for indexed items, most seen first, capped at index_lines
+index_text(bot) -> str     # "- [<id>] <claim> (seen N×)" for indexed items, most seen first, capped at index_lines;
+                           # a contradicted item's line ends " (contradicted in N session(s); prefer newer lessons on this)"
 ```
 `trust`: `user` (said directly in chat, or the user's answer to a gap question), `outcome` (from a session),
 `research` (a gap's grounded finding, §11; carries `gap: <gap id>`), `gap` (an unanswered consult). An `outcome`
 lesson enters the index (and so every answer) only once seen in two sessions; a `user` lesson at once; a
 `research` lesson only once `promoted` (its skill fix was approved; `GET …/memory` reports `indexed: false`
 until then); `gap` never.
+A lesson with `contradicted > 0` (a session showed it wrong or too broad) stays in memory and in the index, flagged
+as above, and is never a `proposals.candidates` item.
 
 ### `experts/observations.py`
 ```
 Obs = {"id","ts","kind","claim","trust","session","about":[...],"consult": "",
        "source"?: {"target": str, "backend": str},          # where it came from, when known
-       "outcome"?: {"op": "add"|"bump"|"nothing"|"gap", "item"?: memory item id, "gap"?: gap id, "at": ts}}
-write(bot, *, kind, claim, trust, session="", about=None, consult="", source=None) -> Obs
+       "confirms"?: item id, "contradicts"?: item id, "by_user"?: true,
+       "outcome"?: {"op": "add"|"bump"|"nothing"|"gap"|"contradict", "item"?: memory item id, "gap"?: gap id,
+                    "new"?: memory item id, "at": ts}}
+write(bot, *, kind, claim, trust, session="", about=None, consult="", source=None, confirms="", contradicts="",
+      by_user=False) -> Obs
 pending(bot) -> list[Obs]                  # oldest first
 done(bot, limit=200) -> list[Obs]          # archived, NEWEST first (limit None: all)
 archive(bot, ids, outcomes=None) -> None   # pending/ -> done/, writing outcomes[id] (default op "nothing") as `outcome`
 due(bot, now=None) -> bool                 # len(pending) >= consolidate_at, or oldest older than consolidate_after_s
 ```
-`kind` is one of the manifest's `learns_from` values, or `"gap"`. `source` is set by `consult.py` (the caller's
+`kind` is a capture kind (`repeated_request`, `user_correction`, `error_then_fix`, `advice_confirmed`,
+`advice_contradicted`), or `"gap"`. `confirms` / `contradicts` are kept only when they name an existing memory
+item (else dropped); `by_user` (only on `advice_contradicted`) says a USER line called the advice wrong. `source` is set by `consult.py` (the caller's
 `target` / `backend`) and `capture.py` (the session's). `outcome` is set by consolidation when it archives the
-observation: `add` / `bump` name the memory item, `gap` names the gap record it was folded into (after any merge).
+observation: `add` / `bump` name the memory item, `gap` names the gap record it was folded into (after any merge),
+`contradict` names the contradicted lesson (`item`) and the lesson its corrected rule landed on (`new`, when any).
 
 ### `experts/consolidate.py`
 ```
 run(bot, *, force=False) -> {"ran": bool, "added": [ids], "bumped": [ids], "ignored": int, "reason"?: str,
                               # when ran:
-                              "gaps": [gap ids touched], "researched": [gap ids], "proposed": [proposal ids]}
+                              "contradicted": [ids], "gaps": [gap ids touched], "researched": [gap ids],
+                              "proposed": [proposal ids]}
 start(bot, *, force=False) -> bool    # run in a daemon thread; False when one runs or would_run is False
 status(bot) -> {"running": bool, "stage": "lessons"|"gaps"|"researching"|"proposing"|"", "gap": gid|None}
 would_run(bot, force=False) -> bool   # not force: observations.due; force: anything pending or gaps.repairable
@@ -201,6 +217,16 @@ pending, the failure is counted (`consolidate-failures.json`) and `{"ran": False
 on the `FALLBACK_AFTER`-th consecutive failure does it fall back to `memory.add` per observation
 (exact-match dedupe); a success resets the count. An unknown op, a bump of a lesson that does not exist,
 or an observation the answer omitted is `nothing` (archived, counted in `ignored`, not added).
+**Contradictions.** An observation whose `contradicts` names an existing lesson is applied deterministically:
+`memory.contradict(that item, session=…)`, NEVER a bump of it. Its claim (the corrected rule) still goes to the
+model as a lesson observation of its own: added as kind `user_correction` when `by_user`, else
+`advice_contradicted`, unless the model answers `{"obs": id, "op": "same", "as": <other observation id>}` (another
+observation in the batch already states that rule: it is counted toward that one's lesson, once per session, not
+added again). A "corrected rule" equal to the contradicted lesson's own text is not added. Archived with
+`outcome: {"op": "contradict", "item": <contradicted id>, "new": <lesson the rule landed on, if any>}`; dropped or
+omitted by the model it still counts the contradiction (not in `ignored`). Guards on the model path: an
+`advice_contradicted` observation is never bumped (`bump` is read as `add`), and no observation may bump a lesson
+the same batch contradicts (read as `add`).
 Observations with trust `gap` are never added as lessons; they are counted in `ignored` and folded into gap
 records (they stay visible in `done/`). A failed or unreadable call merges no gaps; with only gap observations
 pending it counts no failure.
@@ -362,10 +388,19 @@ IDLE_S = 1800
 ```
 `session` = `{"session_id","backend","target","canvas","path","last_active"}`. One `model.text` call per
 (session, expert): the transcript (tail, capped at 30k chars), that session's consults, current memory
-claims, each with its id → JSON list of `{"kind","claim","about","confirms"?}`. Zero observations is a normal result.
+claims, each with its id → JSON list of `{"kind","claim","about","confirms"?,"contradicts"?,"by"?}`. Zero
+observations is a normal result. Kinds (`CAPTURE_KINDS`): `repeated_request`, `user_correction`, `error_then_fix`,
+`advice_confirmed` (the session followed this expert's advice and it held in practice) and `advice_contradicted`
+(the user, or what actually happened, showed the advice wrong or too broad; the claim is the corrected rule, not the
+old one). Only the manifest's `learns_from` kinds are kept (`allowed_kinds`; `answer_contradicted` there enables
+both advice kinds).
 A lesson the session shows again is still reported, with `"confirms": "<memory item id>"` (kept only when the
-id exists); `consolidate.run` applies it as a bump of that item with the observation's session (no model
-decision; one count per distinct session), archived with `outcome: {"op": "bump", "item": id}`. A
+id exists, and never on `advice_contradicted`); `consolidate.run` applies it as a bump of that item with the
+observation's session (no model decision; one count per distinct session), archived with
+`outcome: {"op": "bump", "item": id}`. An `advice_contradicted` names the lesson it shows wrong with
+`"contradicts": "<memory item id>"` (kept only on that kind, only when the id exists) and `"by": "user"` when a
+USER line said so (stored as `by_user`). The legacy kind `answer_contradicted` is read as `advice_confirmed` when
+the row carries `confirms`, else `advice_contradicted`. A
 `repeated_request` is recorded on its first sighting, since it is counted across sessions.
 
 Prompt hygiene: the consult records and the transcript sit between `<<<BEGIN …>>>` / `<<<END …>>>` markers
@@ -456,7 +491,7 @@ POSTs require the `X-Fused` header (`server.common._require_fused`). Errors are 
 |---|---|
 | `GET /api/experts` | `[{id, name, ask_me_about, engine, model, available, reason}]` |
 | `POST /api/experts/consult` | `{expert, question, context?, run_id?}` → `{id, answer, refs, used, unsure}`; 404 unknown expert; 409 `{error, reason:"unavailable"}`; 403 `{error: "that expert is not offered to this session"}` when `run_id` is given, `<run dir>/experts.json` exists and the expert is not in it (matched by `id` when the entry has one, else by name, case-insensitive). No `run_id` (a local call): any expert. |
-| `GET /api/experts/{id}/memory` | `{items: [Item + {indexed: bool}], index: str}` |
+| `GET /api/experts/{id}/memory` | `{items: [Item + {indexed: bool}], index: str}`; every item carries `contradicted` (int) and `contradicted_sessions` (0 / `[]` when absent) |
 | `POST /api/experts/{id}/memory/forget` | `{id}` → `{removed}` |
 | `GET /api/experts/{id}/observations` | `{pending: [Obs] (oldest first), done: [Obs] (newest first, 200), due: bool, consolidating: consolidate.status}`; every observation of kind `gap` carries `gap`: its Gap record (by `outcome.gap`, else by consult id), `null` when none yet |
 | `GET /api/experts/{id}/consults` | `{consults: [Consult]}` (newest first, 100) |
@@ -487,7 +522,10 @@ A `## ` line starts a question; each `- must:` line is one required point.
 `kind: "expert"`; an EXPERT badge; no browser pane, live view, tabs or "browser off" wording. The preview
 column renders `ExpertPane` with tabs Memory · Consults · Checks (also reachable from Settings as an
 "Expert" tab, which additionally holds Engine and Model). Memory items carry `indexed`; engines carry `note`;
-proposals carry `status` (`preparing` … `failed`) and `error`. Proposal cards are ordinary `approval` events
+proposals carry `status` (`preparing` … `failed`) and `error`. Observation type tags: "advice confirmed" /
+"advice contradicted" ("advice checked" only for the legacy `answer_contradicted` with no outcome); result tag
+"contradicted a lesson" for `outcome.op === "contradict"`; a lesson with `contradicted > 0` shows a warning-style
+tag "contradicted N×" in the Memory panel. Proposal cards are ordinary `approval` events
 with `expert_proposal`, `score_before`, `score_after`; the diff is the card body. Approve / Reject go
 through the existing `/api/bots/<id>/send`.
 

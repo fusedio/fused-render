@@ -4,7 +4,9 @@
 A claim equal to an existing one after normalisation (lowercase, collapsed
 whitespace, no trailing punctuation) bumps that item instead of adding a
 second. A bump counts once per session: `count` grows only when the session
-is new or empty.
+is new or empty. `contradict` is the opposite count (`contradicted`, once per
+session, sessions in `contradicted_sessions`): a session showed the lesson
+wrong or too broad. It never raises `count`.
 """
 from __future__ import annotations
 
@@ -82,7 +84,8 @@ def add(bot, claim, *, kind="lesson", trust="outcome", session="", about=None, g
                 return dict(it)
         it = {"id": store.new_id("m"), "claim": claim, "kind": str(kind or "lesson"), "trust": trust,
               "count": 1, "sessions": [session] if session else [], "about": about,
-              "created": now, "updated": now, "proposed": False, "promoted": False, "rejected": False}
+              "created": now, "updated": now, "proposed": False, "promoted": False, "rejected": False,
+              "contradicted": 0, "contradicted_sessions": []}
         if gap:
             it["gap"] = str(gap)
         data["items"].append(it)
@@ -99,6 +102,35 @@ def bump(bot, item_id, *, session="") -> dict | None:
                 _save(bot, data)
                 return dict(it)
     return None
+
+
+def contradict(bot, item_id, *, session="") -> dict | None:
+    """A session showed this lesson wrong or too broad: `contradicted += 1` only when `session` is new to
+    `contradicted_sessions` or empty (the rule `bump` follows). Never touches `count`."""
+    session = str(session or "")
+    with store.lock(bot):
+        data = _load(bot)
+        for it in data["items"]:
+            if it.get("id") == item_id:
+                seen = it.get("contradicted_sessions")
+                if not isinstance(seen, list):
+                    seen = it["contradicted_sessions"] = []
+                if not session or session not in seen:
+                    it["contradicted"] = int(it.get("contradicted") or 0) + 1
+                    it["updated"] = time.time()
+                if session and session not in seen:
+                    seen.append(session)
+                _save(bot, data)
+                return dict(it)
+    return None
+
+
+def contradicted(item) -> int:
+    """How many sessions contradicted `item` (0 for an item stored before the field existed)."""
+    try:
+        return max(0, int((item or {}).get("contradicted") or 0))
+    except (TypeError, ValueError, AttributeError):
+        return 0
 
 
 def forget(bot, id_or_text) -> int:
@@ -160,9 +192,16 @@ def indexed(item) -> bool:
 
 def index_text(bot) -> str:
     """`- [<id>] <claim> (seen N×)`, most seen first, capped at the manifest's index_lines. Only `indexed`
-    items: user lessons, and outcome lessons seen in two sessions."""
+    items: user lessons, and outcome lessons seen in two sessions. A contradicted item's line ends with
+    " (contradicted in N session(s); prefer newer lessons on this)"."""
     cap = store.manifest(bot)["memory"]["index_lines"]
     rows = [i for i in items(bot) if indexed(i)]
     rows.sort(key=lambda i: (-int(i.get("count") or 0), -float(i.get("updated") or 0)))
-    return "\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {int(i.get('count') or 0)}×)"
-                     for i in rows[:cap])
+
+    def line(i):
+        text = f"- [{i['id']}] {i.get('claim', '')} (seen {int(i.get('count') or 0)}×)"
+        n = contradicted(i)
+        if n:
+            text += f" (contradicted in {n} session(s); prefer newer lessons on this)"
+        return text
+    return "\n".join(line(i) for i in rows[:cap])

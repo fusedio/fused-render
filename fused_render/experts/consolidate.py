@@ -18,6 +18,15 @@ c. repair: up to `gaps.REPAIR_PER_RUN` open gaps are researched
    proposal.
 d. proposing: every due lesson as one proposal (`proposals.propose_candidates`).
 
+A contradiction (an observation whose `contradicts` names an existing lesson)
+is never a bump of that lesson: `memory.contradict` counts it, and the
+observation's claim (the corrected rule) goes to the model like any other
+lesson observation, except that an `advice_contradicted` observation may never
+be bumped (an answer that does is read as `add`) and may be answered
+`{"op": "same", "as": <observation id>}` when another observation in the batch
+already states that corrected rule. No observation in the batch may bump a
+lesson the batch contradicts.
+
 Each archived observation records what happened to it (`outcome`). `start`
 runs it in a background thread; `status` says which stage is running.
 """
@@ -46,6 +55,8 @@ For EACH observation decide one edit:
 
 An observation of kind "repeated_request" describes what the user asks for, and is counted across sessions: it may only be bumped onto a lesson that is itself a request pattern (kind repeated_request) describing the same request; otherwise "add" it as its own lesson.
 
+An observation of kind "advice_contradicted" states a CORRECTED rule: the session showed earlier advice wrong or too broad ("contradicts [id]" names that lesson). It is never "bump": "add" it as its own lesson, or, when another of the new observations above already states the same corrected rule, answer {{"obs": "<its id>", "op": "same", "as": "<that other observation's id>"}} so it is counted once. A lesson named after "contradicts" is never the target of a "bump" by any observation.
+
 Current lessons (id, kind, claim):
 {items}
 
@@ -53,7 +64,7 @@ New observations:
 {obs}
 
 Answer with ONLY a JSON list, one object per observation:
-[{{"obs": "<observation id>", "op": "add" | "bump" | "nothing", "item": "<lesson id, for bump>", "claim": "<for add>"}}]"""
+[{{"obs": "<observation id>", "op": "add" | "bump" | "nothing" | "same", "item": "<lesson id, for bump>", "claim": "<for add>", "as": "<observation id, for same>"}}]"""
 
 
 def _strip_fences(text: str) -> str:
@@ -218,10 +229,15 @@ def _run(bot, force):
     # it, applied below once the model step has not bailed out; it never reaches the model.
     # A request pattern confirms only a request pattern (the same guard as a model "bump" below).
     item_kinds = {i["id"]: i.get("kind") for i in memory.items(bot)}
-    confirmed = [o for o in real if str(o.get("confirms") or "") in item_kinds
+    item_claims = {i["id"]: memory.normalise(i.get("claim")) for i in memory.items(bot)}
+    # An observation that `contradicts` an existing lesson: a contradiction of it (applied below, never a bump),
+    # while its claim, the corrected rule, goes to the model as a lesson of its own.
+    contradicting = [o for o in real if str(o.get("contradicts") or "") in item_kinds]
+    contra_items = {str(o["contradicts"]) for o in contradicting}
+    confirmed = [o for o in real if o not in contradicting and str(o.get("confirms") or "") in item_kinds
                  and (o.get("kind") != "repeated_request" or item_kinds[o["confirms"]] == "repeated_request")]
     real = [o for o in real if o not in confirmed]
-    added, bumped, ignored = [], [], len(gap_obs)
+    added, bumped, contradicted, ignored = [], [], [], len(gap_obs)
     open_gaps = gapmod.open_gaps(bot) if gap_obs else []
     offer = gap_obs if open_gaps else []  # gap observations reach the model only to be merged into a gap
 
@@ -234,10 +250,20 @@ def _run(bot, force):
         (bumped if op == "bump" else added).append(item["id"])
         outcomes[o["id"]] = {"op": op, "item": item["id"]}
 
+    def lesson_kind(o):
+        # The corrected rule of a contradiction is a user correction when a USER line said so (capture's `by_user`).
+        if o.get("kind") == "advice_contradicted" and o.get("by_user"):
+            return "user_correction"
+        return o.get("kind") or "lesson"
+
     def add(o, claim=None):
+        claim = claim if claim is not None else o.get("claim")
+        old = str(o.get("contradicts") or "")
+        if old in item_claims and memory.normalise(claim) == item_claims[old]:
+            return True  # the "corrected rule" is the contradicted lesson's own text: never a bump of it
         before = {i["id"] for i in memory.items(bot)}
         try:
-            note(o, memory.add(bot, claim if claim is not None else o.get("claim"), kind=o.get("kind") or "lesson",
+            note(o, memory.add(bot, claim, kind=lesson_kind(o),
                                trust=o.get("trust") or "outcome", session=o.get("session") or "",
                                about=o.get("about")), before)
             return True
@@ -282,6 +308,7 @@ def _run(bot, force):
     open_ids = {g["id"] for g in open_gaps}
     merges: dict[str, str] = {}
     handled: set[str] = set()
+    same: dict[str, str] = {}  # an advice_contradicted observation id -> the observation that states its rule
     for e in (edits or []) if not fallback else []:
         if not isinstance(e, dict):
             continue
@@ -295,6 +322,14 @@ def _run(bot, force):
             continue
         handled.add(o["id"])
         op = str(e.get("op") or "").lower()
+        if o.get("kind") == "advice_contradicted":
+            if op == "same" and str(e.get("as") or "") in by_id and str(e.get("as")) != o["id"]:
+                same[o["id"]] = str(e["as"])
+                continue
+            if op == "bump":  # a contradiction never raises confidence in anything: its rule is a lesson of its own
+                op, e = "add", {**e, "claim": None}
+        elif op == "bump" and str(e.get("item") or "") in contra_items:
+            op, e = "add", {**e, "claim": None}  # never a bump of a lesson this batch contradicts
         if op == "bump" and o.get("kind") == "repeated_request":
             # A request pattern is its own lesson: bumped only onto a request pattern, else added.
             target = next((i for i in memory.items(bot) if i.get("id") == str(e.get("item") or "")), None)
@@ -312,10 +347,25 @@ def _run(bot, force):
             claim = e["claim"] if isinstance(e.get("claim"), str) and e["claim"].strip() else o.get("claim")
             if not add(o, claim):
                 ignored += 1
-        else:
+        elif o not in contradicting:
             ignored += 1  # "nothing", or an op we do not know
     if not fallback:
-        ignored += len([o for o in real if o["id"] not in handled])  # omitted by the answer: nothing
+        # Omitted by the answer: nothing (a contradiction still counts below).
+        ignored += len([o for o in real if o["id"] not in handled and o not in contradicting])
+    for oid, other in same.items():
+        # The corrected rule another observation of this batch states: counted toward that lesson, not added again.
+        target = (outcomes.get(other) or {}).get("item")
+        if target and target not in contra_items:
+            it = memory.bump(bot, target, session=by_id[oid].get("session") or "")
+            if it is not None:
+                outcomes[oid] = {"op": "bump", "item": it["id"]}
+    for o in contradicting:
+        it = memory.contradict(bot, str(o["contradicts"]), session=o.get("session") or "")
+        if it is None:
+            continue  # forgotten between the check above and now
+        contradicted.append(it["id"])
+        new = (outcomes.get(o["id"]) or {}).get("item")
+        outcomes[o["id"]] = {"op": "contradict", "item": it["id"], **({"new": new} if new and new != it["id"] else {})}
     for o in confirmed:
         # memory.bump counts a session once, so a repeat from the same session does not inflate the count.
         it = memory.bump(bot, str(o["confirms"]), session=o.get("session") or "")
@@ -374,7 +424,7 @@ def _run(bot, force):
         logger.warning("expert %s: proposing failed", bot.id, exc_info=True)
         proposed = []
     out = _result(True, added, bumped, ignored)
-    out.update(gaps=touched, researched=researched, proposed=proposed)
+    out.update(contradicted=list(dict.fromkeys(contradicted)), gaps=touched, researched=researched, proposed=proposed)
     if (researched or touched) and not proposed:
         # A gap research could not answer may now be asked (the scheduler's cards.tick would, later).
         try:

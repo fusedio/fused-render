@@ -39,16 +39,20 @@ export const seenLabel = (count: number | null | undefined): string => `seen ${M
 /** The markers after a lesson's claim: who said it (`user`, or "found by research"), why it is not used in answers yet
  *  (`indexed === false`: "waiting for your approval" for a research finding, "seen once" otherwise) and where it stands
  *  on the way to a skill (one of "promoted", "not proposed again" for a rejected proposal, or "proposed", in that priority). */
-export function lessonTags(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed">): string[] {
+export function lessonTags(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed" | "contradicted">): string[] {
   const out: string[] = [];
   if (it.trust === "user") out.push("user");
   else if (it.trust === "research") out.push("found by research");
+  if ((it.contradicted || 0) > 0) out.push(`contradicted ${it.contradicted}×`);
   if (it.indexed === false) out.push(it.trust === "research" ? "waiting for your approval" : "seen once");
   if (it.promoted) out.push("promoted");
   else if (it.rejected) out.push("not proposed again");
   else if (it.proposed) out.push("proposed");
   return out;
 }
+
+/** A lesson tag's class name: "contradicted" for every "contradicted N×", else the tag with dashes for spaces. */
+export const lessonTagClass = (tag: string): string => /^contradicted /.test(tag) ? "contradicted" : tag.replace(/ /g, "-");
 
 /** Consults newest first (the route already sends them so; a merge or an older server may not). */
 export const sortConsults = (cs: readonly ExpertConsult[]): ExpertConsult[] => [...cs].sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -145,9 +149,17 @@ export const OBS_INTRO = "Everything I noted from consults and sessions. Consoli
 export const OBS_EMPTY = "Nothing noted yet. Unsure answers and things I learn from sessions show up here.";
 
 const OBS_TYPES: Record<string, string> = { gap: "unsure", repeated_request: "asked for", user_correction: "correction",
-  error_then_fix: "fix that worked", answer_contradicted: "advice checked" };
-/** An observation's type tag. */
-export const observationTypeLabel = (kind: string | null | undefined): string => OBS_TYPES[kind || ""] || "learning";
+  error_then_fix: "fix that worked", advice_confirmed: "advice confirmed", advice_contradicted: "advice contradicted" };
+/** An observation's type tag. The legacy kind `answer_contradicted` covered both outcomes of expert advice: it reads
+ *  "advice contradicted" when consolidation counted it as a contradiction, "advice confirmed" for any other outcome,
+ *  and "advice checked" while it has none. */
+export function observationTypeLabel(kind: string | null | undefined, outcome?: ExpertObs["outcome"]): string {
+  if (kind === "answer_contradicted") {
+    if (!outcome?.op) return "advice checked";
+    return outcome.op === "contradict" ? "advice contradicted" : "advice confirmed";
+  }
+  return OBS_TYPES[kind || ""] || "learning";
+}
 
 /** A consolidated observation's result tag: what consolidation made of it. A gap row says where its gap stands
  *  (gapStatusLabel; `researching` as there); "" when there is nothing to say (still pending, unknown op). */
@@ -156,6 +168,7 @@ export function observationResultLabel(o: Pick<ExpertObs, "kind" | "outcome" | "
   switch (o.outcome?.op) {
     case "add": return "new lesson";
     case "bump": return "counted toward a lesson";
+    case "contradict": return "contradicted a lesson";
     case "nothing": return "nothing new";
     case "gap": return o.kind === "gap" ? "waiting" : "";
     default: return "";

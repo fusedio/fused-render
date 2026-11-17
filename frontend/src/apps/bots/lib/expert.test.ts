@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ExpertEngineRow, ExpertGap, ExpertItem, ExpertObs, ExpertProposal } from "./api";
 import { anyPreparing, askedLabel, basename, consolidatingLine, gapStatusLabel, observationGaps, observationMeta, observationResultLabel, observationTypeLabel,
-  researchingGap, sortObservations, unresolvedGapCount, checkProgress, consultMeta, engineNote, engineOptions, lessonTags, modelOptions, openProposals, proposalLine, proposalText, scoreText,
+  researchingGap, sortObservations, unresolvedGapCount, checkProgress, consultMeta, engineNote, engineOptions, lessonTagClass, lessonTags, modelOptions, openProposals, proposalLine, proposalText, scoreText,
   scoresLine, seenLabel, sortConsults, sortLessons, splitLessons } from "./expert";
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
@@ -28,6 +28,10 @@ describe("lessons", () => {
     expect(lessonTags(item({ trust: "gap" }))).toEqual([]);
     expect(lessonTags(item({ proposed: true, rejected: true }))).toEqual(["not proposed again"]);
     expect(lessonTags(item({ proposed: true, rejected: true, promoted: true }))).toEqual(["promoted"]);
+    expect(lessonTags(item({ trust: "user", contradicted: 2 }))).toEqual(["user", "contradicted 2×"]);
+    expect(lessonTags(item({ contradicted: 0 }))).toEqual([]);
+    expect(lessonTagClass("contradicted 2×")).toBe("contradicted");
+    expect(lessonTagClass("seen once")).toBe("seen-once");
     expect(lessonTags(item({ rejected: true }))).toEqual(["not proposed again"]);
     expect(lessonTags(item({ trust: "research", indexed: false, proposed: true }))).toEqual(["found by research", "waiting for your approval", "proposed"]);
     expect(lessonTags(item({ trust: "research" }))).toEqual(["found by research"]);
@@ -173,7 +177,13 @@ describe("observations", () => {
     expect(observationTypeLabel("repeated_request")).toBe("asked for");
     expect(observationTypeLabel("user_correction")).toBe("correction");
     expect(observationTypeLabel("error_then_fix")).toBe("fix that worked");
+    expect(observationTypeLabel("advice_confirmed")).toBe("advice confirmed");
+    expect(observationTypeLabel("advice_contradicted")).toBe("advice contradicted");
+    // The legacy kind: "advice checked" only while it has no outcome.
     expect(observationTypeLabel("answer_contradicted")).toBe("advice checked");
+    expect(observationTypeLabel("answer_contradicted", null)).toBe("advice checked");
+    expect(observationTypeLabel("answer_contradicted", { op: "contradict" })).toBe("advice contradicted");
+    expect(observationTypeLabel("answer_contradicted", { op: "bump" })).toBe("advice confirmed");
     expect(observationTypeLabel("something_new")).toBe("learning");
     expect(observationTypeLabel(undefined)).toBe("learning");
   });
@@ -181,6 +191,7 @@ describe("observations", () => {
     expect(observationResultLabel(obs({ outcome: { op: "add" } }))).toBe("new lesson");
     expect(observationResultLabel(obs({ outcome: { op: "bump" } }))).toBe("counted toward a lesson");
     expect(observationResultLabel(obs({ outcome: { op: "nothing" } }))).toBe("nothing new");
+    expect(observationResultLabel(obs({ kind: "advice_contradicted", outcome: { op: "contradict", item: "m1", new: "m2" } }))).toBe("contradicted a lesson");
     expect(observationResultLabel(obs({}))).toBe("");
     expect(observationResultLabel(obs({ kind: "gap", outcome: { op: "gap" }, gap: gap({ status: "proposed" }) }))).toBe("skill fix proposed in chat");
     expect(observationResultLabel(obs({ kind: "gap", gap: gap({ id: "x", status: "open" }) }), "x")).toBe("researching…");

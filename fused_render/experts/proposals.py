@@ -128,7 +128,8 @@ def candidates(bot) -> list:
     rows = [i for i in memory.items(bot)
             if (int(i.get("count") or 0) >= at or i.get("trust") == "research") and i.get("trust") != "gap"
             and not (i.get("trust") == "research" and i.get("gap") in closed) and i.get("id") not in busy
-            and not i.get("proposed") and not i.get("promoted") and not i.get("rejected")]
+            and not i.get("proposed") and not i.get("promoted") and not i.get("rejected")
+            and not memory.contradicted(i)]  # a session showed it wrong: never written into a skill
     rows.sort(key=lambda i: -int(i.get("count") or 0))
     return rows
 

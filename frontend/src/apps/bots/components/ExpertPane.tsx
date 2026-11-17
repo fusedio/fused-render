@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { expertApi, type Bot, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem, type ExpertObs,
   type ExpertProposal } from "../lib/api";
-import { anyPreparing, askedLabel, basename, checkProgress, consolidatingLine, consultMeta, gapUnresolved, lessonTags, OBS_EMPTY, OBS_INTRO,
+import { anyPreparing, askedLabel, basename, checkProgress, consolidatingLine, consultMeta, gapUnresolved, lessonTagClass, lessonTags, OBS_EMPTY, OBS_INTRO,
   observationGaps, observationMeta, observationResultLabel, observationTypeLabel, openProposals, proposalLine, researchingGap, scoreText, seenLabel,
   SEEN_ONCE_LINE, sortConsults, sortObservations, splitLessons, unresolvedGapCount } from "../lib/expert";
 import { fmtAgo, fmtWhen } from "../lib/format";
@@ -148,7 +148,7 @@ function LessonRow({ it, onForget }: { it: ExpertItem; onForget: (it: ExpertItem
         <span className="xp-claim">{it.claim}</span>
         <span className="xp-meta">
           <span title={it.updated ? `last seen ${fmtWhen(it.updated)}` : undefined}>{seenLabel(it.count)}</span>
-          {lessonTags(it).map((t) => <span key={t} className={`xp-tag ${t.replace(/ /g, "-")}`}>{t}</span>)}
+          {lessonTags(it).map((t) => <span key={t} className={`xp-tag ${lessonTagClass(t)}`}>{t}</span>)}
         </span>
       </div>
       <button type="button" className="xp-forget" title="Forget this lesson" onClick={() => onForget(it)}>Forget</button>
@@ -237,7 +237,7 @@ function ObsRow({ o, consolidated, researching, lan, onDrop }: {
   const text = o.claim || g?.question || "";
   const meta = (
     <span className="xp-meta">
-      <span className={`xp-tag kind-${(o.kind || "learning").replace(/[^a-z_]/gi, "")}`}>{observationTypeLabel(o.kind)}</span>
+      <span className={`xp-tag kind-${(o.kind || "learning").replace(/[^a-z_]/gi, "")}`}>{observationTypeLabel(o.kind, o.outcome)}</span>
       <span title={o.ts ? fmtWhen(o.ts) : undefined}>{observationMeta(o)}</span>
       {result ? <span className={`xp-tag res-${status}`}>{result}</span> : null}
       {g && (g.count || 0) > 1 ? <span>{askedLabel(g.count)}</span> : null}

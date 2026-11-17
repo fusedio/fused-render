@@ -141,8 +141,10 @@ def test_capture_session_prompt_parse_cap_and_trust(env, tmp_path):
 
     prompt = env["prompts"][-1]
     for must in ("stated generally as a request pattern", "Record it even when it has only been asked once",
-                 "user corrected", "fix demonstrably worked", "either outcome", "confirmed it worked",
-                 "contradicted it", "merely read", "NOT a lesson", "still report it",
+                 "user corrected", "fix demonstrably worked", '"advice_confirmed"', '"advice_contradicted"',
+                 "held in practice", "wrong or too broad", "the corrected rule", "NOT the old advice",
+                 '"contradicts": "<that lesson\'s id>"', 'NEVER put "confirms" on an advice_contradicted',
+                 "merely read", "NOT a lesson", "still report it",
                  '"confirms": "<that lesson\'s id>"', "already reported for THIS session",
                  "Zero is a normal", '"kind"', '"claim"', '"about"', "Writing canvases",
                  f"- [{lesson['id']}] Prefer fused.load over HTTP calls.", "Q: How to chain?", "A (unsure): Use fused.load.",
@@ -171,7 +173,8 @@ def test_capture_session_prompt_parse_cap_and_trust(env, tmp_path):
     ("no lessons here", []),
     ('{"observations": [{"kind": "repeated_request", "claim": "A", "about": ["x", ""]}]}',
      [{"kind": "repeated_request", "claim": "A", "about": ["x"]}]),
-    ('{"kind": "answer_contradicted", "claim": "B"}', [{"kind": "answer_contradicted", "claim": "B", "about": []}]),
+    ('{"kind": "answer_contradicted", "claim": "B"}', [{"kind": "advice_contradicted", "claim": "B", "about": []}]),
+    ('{"kind": "advice confirmed", "claim": "B"}', [{"kind": "advice_confirmed", "claim": "B", "about": []}]),
     ('noise [not json] then [{"kind": "user-correction", "claim": "C"}]',
      [{"kind": "user_correction", "claim": "C", "about": []}]),
     ('[{"kind": "unanswered", "claim": "gap"}, {"kind": "user_correction", "claim": ""}, 3]', []),
@@ -218,6 +221,59 @@ def test_kinds_follow_learns_from(env, tmp_path):
     env["answers"] = [json.dumps([{"kind": "error_then_fix", "claim": "x"},
                                   {"kind": "user_correction", "claim": "y"}])]
     assert [o["claim"] for o in capture.capture_session(bot, session)] == ["y"]
+
+
+def test_parse_advice_kinds_confirms_and_contradicts():
+    answer = json.dumps([
+        {"kind": "advice_confirmed", "claim": "A", "confirms": "m1", "contradicts": "m1"},
+        {"kind": "advice_contradicted", "claim": "B", "confirms": "m1", "contradicts": "[m1]", "by": "User"},
+        {"kind": "advice_contradicted", "claim": "C", "contradicts": "mgone", "by": "outcome"},
+        {"kind": "user_correction", "claim": "D", "contradicts": "m1"},
+        # Legacy kind: with confirms it is a confirmation, without it a contradiction.
+        {"kind": "answer_contradicted", "claim": "E", "confirms": "m1"},
+        {"kind": "answer_contradicted", "claim": "F", "contradicts": "m1"}])
+    out = capture.parse(answer, item_ids={"m1"})
+    assert out == [
+        {"kind": "advice_confirmed", "claim": "A", "about": [], "confirms": "m1"},
+        {"kind": "advice_contradicted", "claim": "B", "about": [], "contradicts": "m1", "by_user": True},
+        {"kind": "advice_contradicted", "claim": "C", "about": []},
+        {"kind": "user_correction", "claim": "D", "about": []},
+        {"kind": "advice_confirmed", "claim": "E", "about": [], "confirms": "m1"}]  # MAX_OBS: F is cut
+    assert capture.parse(json.dumps([{"kind": "answer_contradicted", "claim": "E", "confirms": "m1"},
+                                     {"kind": "answer_contradicted", "claim": "F", "contradicts": "m1"}]),
+                         item_ids={"m1"}) == [
+        {"kind": "advice_confirmed", "claim": "E", "about": [], "confirms": "m1"},
+        {"kind": "advice_contradicted", "claim": "F", "about": [], "contradicts": "m1"}]
+
+
+@pytest.mark.parametrize("learns,expected", [
+    (["answer_contradicted"], ("advice_confirmed", "advice_contradicted")),
+    (["advice_confirmed", "user_correction"], ("user_correction", "advice_confirmed")),
+    (list(store.DEFAULT_MANIFEST["learns_from"]), capture.CAPTURE_KINDS),
+    ([], ()),
+])
+def test_allowed_kinds_reads_the_legacy_name(learns, expected):
+    assert capture.allowed_kinds(learns) == expected
+
+
+def test_capture_live_case_a_contradiction_names_the_lesson_it_contradicts(env, tmp_path):
+    """The live run: the user said the expert's bar-chart advice was wrong for regional canvases."""
+    bot = _Bot(tmp_path)  # default learns_from: still the legacy "answer_contradicted"
+    old = memory.add(bot, "For a sales chart always show monthly revenue as a bar chart, never a line chart.")
+    env["add"]("idle", age=3600, canvas=True)
+    session = capture.due_sessions(NOW)[0]
+    rule = ("For regional sales canvases use a line chart with one line per region; bar charts are only for the "
+            "company-wide Sales Dashboard.")
+    env["answers"] = [json.dumps([
+        {"kind": "advice_contradicted", "claim": rule, "contradicts": old["id"], "by": "user",
+         "about": ["charts"]},
+        {"kind": "user_correction", "claim": rule, "about": ["charts"]}])]
+    obs = capture.capture_session(bot, session)
+    assert [o["kind"] for o in obs] == ["advice_contradicted", "user_correction"]
+    assert obs[0]["contradicts"] == old["id"] and "confirms" not in obs[0] and obs[0]["by_user"] is True
+    assert obs[0]["claim"] == rule
+    stored = {o["id"]: o for o in observations.pending(bot)}
+    assert stored[obs[0]["id"]]["contradicts"] == old["id"] and "contradicts" not in stored[obs[1]["id"]]
 
 
 def test_a_model_failure_writes_nothing_and_retries_later(env, tmp_path, monkeypatch):

@@ -35,6 +35,10 @@ describe("MemoryPanel", () => {
     expect(out).toContain(">found by research<");
     expect(out).toContain(">waiting for your approval<");
   });
+  test("a contradicted lesson carries its warning tag", () => {
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Bar charts only", count: 2, contradicted: 1, contradicted_sessions: ["s"] })], onForget: noop }));
+    expect(out).toContain('xp-tag contradicted">contradicted 1×<');
+  });
   test("no divider when every lesson is indexed", () => {
     const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a" })], onForget: noop }));
     expect(out).not.toContain("Not used in answers yet");
@@ -89,6 +93,8 @@ describe("ObservationsPanel", () => {
     obs({ id: "p1", ts: 10, claim: "Older waiting", kind: "gap", consult: "c1", gap: gap({ id: "g1", count: 3, error: "engine timed out",
       finding: { answer: "Found it", refs: ["/x/y/z.py"] } }) })];
   const done = [obs({ id: "d1", ts: 5, claim: "Old done", outcome: { op: "add" } }), obs({ id: "d2", ts: 9, claim: "New done", kind: "error_then_fix", outcome: { op: "bump" } }),
+    obs({ id: "d4", ts: 6, claim: "Line charts for regional canvases", kind: "advice_contradicted", outcome: { op: "contradict", item: "m1", new: "m2" } }),
+    obs({ id: "d5", ts: 6, claim: "Held up", kind: "advice_confirmed", outcome: { op: "bump", item: "m3" } }),
     obs({ id: "d3", ts: 7, claim: "Settled gap", kind: "gap", outcome: { op: "gap" }, gap: gap({ id: "g2", status: "answered", resolution: "user" }) })];
   const base = { pending, done, onConsolidate: noop, onDrop: noop };
   test("intro and Consolidate on top; Waiting oldest first, then Consolidated newest first, with tags and results", () => {
@@ -108,6 +114,9 @@ describe("ObservationsPanel", () => {
     expect(out).toContain(">new lesson<");
     expect(out).toContain(">counted toward a lesson<");
     expect(out).toContain(">answered by you<");
+    expect(out).toContain('xp-tag kind-advice_contradicted">advice contradicted<');
+    expect(out).toContain('xp-tag res-contradict">contradicted a lesson<');
+    expect(out).toContain(">advice confirmed<");
     expect(out).toContain("sales · claude");
     expect(out).toContain(" · consult<");
     expect(out).toContain("asked 3×");

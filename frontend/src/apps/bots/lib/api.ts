@@ -298,15 +298,22 @@ export interface ExpertItem {
   /** False for a lesson seen once, or a research finding waiting for approval: kept, but not in the index answers draw on until it comes up again. Absent (an
    *  older server) reads as indexed. */
   indexed?: boolean;
+  /** Sessions that showed this lesson wrong or too broad (once per session; absent on an older server: 0). Never
+   *  proposed as a skill fix, and flagged in the index answers draw on. */
+  contradicted?: number;
+  contradicted_sessions?: string[];
 }
 /** A pending observation (not yet consolidated into memory). */
 /** One observation (observations.jsonl): something noted from a consult or a session, waiting to be consolidated
  *  (`pending`) or already folded in (`done`, with its `outcome`). `kind`: gap (an unsure consult; `claim` is the
- *  question and `gap` the joined gap), repeated_request, user_correction, error_then_fix, answer_contradicted. */
+ *  question and `gap` the joined gap), repeated_request, user_correction, error_then_fix, advice_confirmed, advice_contradicted (and the legacy answer_contradicted).
+ *  `confirms` / `contradicts`: the lesson it sees again / shows wrong (its claim is then the corrected rule). */
 export interface ExpertObs {
   id: string; ts: number; kind: string; claim: string; trust: string; session: string; about: string[]; consult: string;
   source?: { target?: string; backend?: string } | null;
-  outcome?: { op: "add" | "bump" | "nothing" | "gap" | (string & {}); item?: string; gap?: string; at?: number } | null;
+  confirms?: string; contradicts?: string;
+  /** `contradict`: `item` is the lesson contradicted, `new` the lesson its corrected rule landed on. */
+  outcome?: { op: "add" | "bump" | "nothing" | "gap" | "contradict" | (string & {}); item?: string; gap?: string; new?: string; at?: number } | null;
   gap?: ExpertGap | null;
 }
 export interface ExpertCaller { run_id?: string; session_id?: string; backend?: string; target?: string; canvas?: string }

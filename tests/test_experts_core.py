@@ -548,7 +548,8 @@ def test_consolidate_sends_unconfirmed_observations_to_the_model(bot, fake_text)
     assert kinds == {"Known lesson.": "lesson", "Asked once.": "repeated_request", "Stale one.": "user_correction"}
 
 
-@pytest.mark.parametrize("kind", ["repeated_request", "user_correction", "error_then_fix", "answer_contradicted"])
+@pytest.mark.parametrize("kind", ["repeated_request", "user_correction", "error_then_fix", "advice_confirmed",
+                                  "advice_contradicted"])
 def test_consolidate_add_stores_the_observation_kind(bot, fake_text, kind):
     o = observations.write(bot, kind=kind, claim=f"A {kind} lesson.", trust="outcome", session="s1")
     fake_text.replies.append(lambda p: json.dumps([{"obs": o["id"], "op": "add"}]))
@@ -586,6 +587,111 @@ def test_a_request_pattern_is_never_bumped_onto_a_non_request_lesson(bot, fake_t
     assert sorted(r["bumped"]) == sorted([naming["id"], req["id"]]) and len(r["added"]) == 2
     done = {o["id"]: o["outcome"] for o in observations.done(bot)}
     assert done[o1["id"]]["op"] == "add" and done[o2["id"]] == {**done[o2["id"]], "op": "bump", "item": req["id"]}
+
+
+# ---------------------------------------------------------- contradictions
+
+def test_memory_contradict_counts_once_per_session_and_marks_the_index(bot):
+    a = memory.add(bot, "Show monthly revenue as a bar chart.", trust="user")
+    assert a["contradicted"] == 0 and a["contradicted_sessions"] == []
+    assert memory.contradict(bot, "mnope", session="s1") is None
+    for s in ("s1", "s1", "s2", ""):
+        it = memory.contradict(bot, a["id"], session=s)
+    assert it["contradicted"] == 3 and it["contradicted_sessions"] == ["s1", "s2"]
+    assert it["count"] == 1  # never a bump
+    assert memory.index_text(bot) == (f"- [{a['id']}] Show monthly revenue as a bar chart. (seen 1×) "
+                                      "(contradicted in 3 session(s); prefer newer lessons on this)")
+    # An item stored before the field existed reads as never contradicted.
+    assert memory.contradicted({"id": "mold"}) == 0
+
+
+def test_observation_contradicts_is_validated_like_confirms(bot):
+    lesson = memory.add(bot, "Known lesson.")
+    o = observations.write(bot, kind="advice_contradicted", claim="Corrected.", trust="outcome",
+                           contradicts=lesson["id"], by_user=True)
+    stale = observations.write(bot, kind="advice_contradicted", claim="Corrected.", trust="outcome",
+                               contradicts="mgone")
+    assert o["contradicts"] == lesson["id"] and o["by_user"] is True
+    assert "contradicts" not in stale and "by_user" not in stale
+    observations.archive(bot, [o["id"]], {o["id"]: {"op": "contradict", "item": lesson["id"], "new": "mx"}})
+    assert observations.done(bot)[0]["outcome"] == {**observations.done(bot)[0]["outcome"], "op": "contradict",
+                                                    "item": lesson["id"], "new": "mx"}
+
+
+BAR = "For a sales chart always show monthly revenue as a bar chart, never a line chart."
+REGIONAL = ("For regional sales canvases use a line chart with one line per region; bar charts are only for the "
+            "company-wide Sales Dashboard.")
+
+
+def test_consolidate_live_case_a_contradiction_never_bumps_the_lesson_it_contradicts(bot, fake_text):
+    """The live run: lesson m64e724f4 (count 2) was contradicted by the user; it used to be bumped to 3."""
+    old = memory.add(bot, BAR, session="s0")
+    memory.bump(bot, old["id"], session="s1")
+    assert memory.items(bot)[0]["count"] == 2
+    contra = observations.write(bot, kind="advice_contradicted", claim=REGIONAL, trust="outcome", session="live",
+                                contradicts=old["id"], by_user=True, about=["charts"])
+    corr = observations.write(bot, kind="user_correction", claim=REGIONAL, trust="outcome", session="live",
+                              about=["charts"])
+    fake_text.replies.append(lambda p: json.dumps([
+        {"obs": contra["id"], "op": "same", "as": corr["id"]},
+        {"obs": corr["id"], "op": "add", "claim": REGIONAL}]))
+    r = consolidate.run(bot, force=True)
+    prompt = fake_text.calls[0]
+    assert contra["id"] in prompt and '"same"' in prompt and "never" in prompt
+    items = {i["id"]: i for i in memory.items(bot)}
+    assert items[old["id"]]["count"] == 2  # unchanged
+    assert items[old["id"]]["contradicted"] == 1 and items[old["id"]]["contradicted_sessions"] == ["live"]
+    new = [i for i in items.values() if i["id"] != old["id"]]
+    assert [(i["claim"], i["kind"], i["count"]) for i in new] == [(REGIONAL, "user_correction", 1)]  # added once
+    assert r["ran"] and r["added"] == [new[0]["id"]] and old["id"] not in r["bumped"]
+    assert r["contradicted"] == [old["id"]]
+    done = {o["id"]: o["outcome"] for o in observations.done(bot)}
+    assert {k: done[contra["id"]][k] for k in ("op", "item", "new")} == {
+        "op": "contradict", "item": old["id"], "new": new[0]["id"]}
+    assert done[corr["id"]]["op"] == "add"
+    # The contradicted lesson is flagged in every answer and never proposed as a skill fix.
+    assert "(contradicted in 1 session(s); prefer newer lessons on this)" in memory.index_text(bot)
+    memory.bump(bot, old["id"], session="s9")
+    assert old["id"] not in [i["id"] for i in proposals.candidates(bot)]
+
+
+def test_consolidate_a_model_bump_of_a_contradiction_is_an_add(bot, fake_text):
+    old = memory.add(bot, BAR, session="s0")
+    other = memory.add(bot, "Some other lesson.", session="s0")
+    contra = observations.write(bot, kind="advice_contradicted", claim=REGIONAL, trust="outcome", session="live",
+                                contradicts=old["id"])
+    loose = observations.write(bot, kind="advice_contradicted", claim="Never trust X.", trust="outcome",
+                               session="live")
+    corr = observations.write(bot, kind="user_correction", claim="Bar charts are fine.", trust="outcome",
+                              session="live")
+    fake_text.replies.append(lambda p: json.dumps([
+        {"obs": contra["id"], "op": "bump", "item": old["id"]},
+        {"obs": loose["id"], "op": "bump", "item": other["id"]},
+        {"obs": corr["id"], "op": "bump", "item": old["id"]}]))  # bumps a lesson this batch contradicts
+    r = consolidate.run(bot, force=True)
+    items = {i["claim"]: i for i in memory.items(bot)}
+    assert items[BAR]["count"] == 1 and items[BAR]["contradicted"] == 1
+    assert items["Some other lesson."]["count"] == 1
+    assert items[REGIONAL]["kind"] == "advice_contradicted"  # no USER line said so
+    assert items["Never trust X."]["kind"] == "advice_contradicted"
+    assert items["Bar charts are fine."]["kind"] == "user_correction"
+    assert r["bumped"] == [] and len(r["added"]) == 3
+    done = {o["id"]: o["outcome"] for o in observations.done(bot)}
+    assert done[contra["id"]]["op"] == "contradict" and done[contra["id"]]["new"] == items[REGIONAL]["id"]
+    assert done[loose["id"]]["op"] == "add"
+
+
+def test_consolidate_a_contradiction_the_model_drops_still_counts(bot, fake_text):
+    old = memory.add(bot, BAR, session="s0")
+    contra = observations.write(bot, kind="advice_contradicted", claim=BAR, trust="outcome", session="live",
+                                contradicts=old["id"])
+    fake_text.replies.append(lambda p: json.dumps([{"obs": contra["id"], "op": "add"}]))  # the old text itself
+    r = consolidate.run(bot, force=True)
+    item = memory.items(bot)[0]
+    assert len(memory.items(bot)) == 1 and item["count"] == 1 and item["contradicted"] == 1
+    assert r["ignored"] == 0 and r["added"] == [] and r["bumped"] == []
+    out = observations.done(bot)[0]["outcome"]
+    assert out["op"] == "contradict" and out["item"] == old["id"] and "new" not in out
 
 
 def test_consolidate_without_an_engine_does_nothing(bot, fake_text, monkeypatch):
