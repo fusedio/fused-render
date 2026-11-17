@@ -46,6 +46,29 @@ _build_failed() {
 }
 trap _build_failed ERR
 
+# Apple's timestamp server (codesign --timestamp) and the notarization-ticket
+# CDN (stapler) are network services that drop a connection now and then:
+# "The timestamp service is not available", "The network connection was lost"
+# (NSURLErrorDomain -1005). Each one killed an otherwise good ~25 min release
+# build, most often the Intel DMG at stapler. Retry the call a few times, with
+# a growing wait, before letting the failure through. A real failure (a bad
+# identity, a rejected ticket) fails identically every time and still aborts,
+# located by the trap above, after about two minutes of retries.
+apple_retry() {
+  local attempt=1 max=5 delay="${FUSED_RENDER_APPLE_RETRY_DELAY:-15}" rc
+  until "$@"; do
+    rc=$?
+    if (( attempt >= max )); then
+      echo "    giving up on '$1 ${2:-}' after $attempt attempts (exit $rc)" >&2
+      return "$rc"
+    fi
+    echo "    '$1 ${2:-}' failed (exit $rc); retry $attempt/$((max - 1)) in ${delay}s" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2 > 120 ? 120 : delay * 2))
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -1400,12 +1423,12 @@ PLIST
 PLIST
     CEF_FW="$CHROMIUM_DEST/Chromium Embedded Framework.framework"
     while IFS= read -r -d '' lib; do
-      codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$lib"
+      apple_retry codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$lib"
     done < <(find "$CEF_FW/Versions/A/Libraries" -type f -name '*.dylib' -print0 2>/dev/null)
-    codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CEF_FW"
-    codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CHROMIUM_DEST/FusedChromium.framework"
+    apple_retry codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CEF_FW"
+    apple_retry codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CHROMIUM_DEST/FusedChromium.framework"
     for helper in "$CHROMIUM_DEST"/*.app; do
-      codesign --force --options runtime --timestamp --entitlements "$CHROMIUM_ENTITLEMENTS" \
+      apple_retry codesign --force --options runtime --timestamp --entitlements "$CHROMIUM_ENTITLEMENTS" \
         $KC_OPT -s "$SIGN_IDENTITY" "$helper"
     done
     codesign --verify --strict "$CHROMIUM_DEST/FusedChromium.framework"
@@ -1422,7 +1445,7 @@ PLIST
   # ID certificate" / "does not include a secure timestamp").
   signed_count=0
   while IFS= read -r -d '' macho; do
-    codesign --force --options runtime --timestamp \
+    apple_retry codesign --force --options runtime --timestamp \
       --entitlements "$ENTITLEMENTS" $KC_OPT -s "$SIGN_IDENTITY" "$macho"
     signed_count=$((signed_count + 1))
   done < <(
@@ -1442,7 +1465,7 @@ PLIST
     exit 1
   fi
   echo "==> sealing the app bundle"
-  codesign --force --options runtime --timestamp \
+  apple_retry codesign --force --options runtime --timestamp \
     --entitlements "$ENTITLEMENTS" $KC_OPT -s "$SIGN_IDENTITY" "$APP_DIR"
   codesign --verify --strict --verbose=2 "$APP_DIR"
 else
@@ -1565,8 +1588,8 @@ if [[ -n "${FUSED_RENDER_NOTARY_PROFILE:-}" ]]; then
   xcrun notarytool submit "$DMG_PATH" \
     --keychain-profile "$FUSED_RENDER_NOTARY_PROFILE" --wait
   echo "==> stapling notarization ticket"
-  xcrun stapler staple "$DMG_PATH"
-  xcrun stapler validate "$DMG_PATH"
+  apple_retry xcrun stapler staple "$DMG_PATH"
+  apple_retry xcrun stapler validate "$DMG_PATH"
 else
   echo "==> skipping notarization (FUSED_RENDER_NOTARY_PROFILE unset)"
 fi
