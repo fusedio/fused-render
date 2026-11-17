@@ -801,7 +801,7 @@ function usePreviewFileMenu(
 // or unknown/stale value falls back to the default silently. The default is
 // the first UNCONDITIONAL entry (CT-12: a gated template is never the default
 // while a normal one exists), with one exception: a node file's preferred
-// `udf` (PT-8 `prefer`), which is the default and holds the pane on the
+// `_node` (PT-8 `prefer`), which is the default and holds the pane on the
 // checking placeholder until its verdict. An all-conditional list falls back
 // to its first (by then verdict-allowed) entry.
 // Both rules live in lib/mode-visibility so every mode surface resolves the
@@ -937,7 +937,7 @@ function TemplatePreview({
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
   // switcher as a disabled spinner, not selectable, never the default except
-  // a preferred `udf` (PT-8), which holds the pane on the checking placeholder.
+  // a preferred `_node` (PT-8), which holds the pane on the checking placeholder.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
 
   // The shell's git snapshot (`_snapshot`): see "the shell's git snapshot"
@@ -1791,7 +1791,8 @@ function TemplatePreview({
   // "_render" sentinel (PT-12): render the target file itself, no _file param.
   // Ordinary entries: target file rides on the iframe's own URL as _file —
   // the shell URL's pathname already names the file, so no duplication there.
-  // `_listing` builds no src — it renders a shell component, not an iframe.
+  // `_listing` and `_node` build no src — each renders a shell component, not
+  // an iframe.
   //
   // `_snapshot` rides here and on the shell's OWN url, unlike the deleted
   // `_rev` design (lib/preview-rev.ts, deleted): a snapshot is a
@@ -1852,7 +1853,7 @@ function TemplatePreview({
   // stamps the nested render too.
   const thumbFlags = IS_PREVIEW ? "&_preview=1&_nofocus=1" : "";
   const srcFor = (m: string): string | null => {
-    if (m === "_listing") return null;
+    if (m === "_listing" || m === NODE_MODE) return null;
     // Both branches below route through the shared `snapshotFrameSrc`
     // (platform/lib/snapshot-param.ts) rather than composing the src by
     // hand — the app page's own copy of this logic (AppPage.tsx, AppFiles.tsx)
@@ -2380,8 +2381,8 @@ function TemplatePreview({
             {frames.map((m) => {
               // THE NODE VIEW (SPEC §53.3 NV-3): a canvas node file's default
               // content mode, and the layout pane's — an embed document is
-              // this same content pane. Native: drawn by apps/canvases through
-              // the shell's registry, never a frame of /render. It paints its
+              // this same content pane. The `_node` sentinel (PT-12): drawn by
+              // apps/canvases through the shell's registry, never a frame. It paints its
               // own loading state, so it takes over from a held frame at once.
               if (m === NODE_MODE && contentModes.some((t) => t.mode === m && isNodeViewEntry(t))) return (
                 <NativePane
@@ -2962,7 +2963,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   const ownsBar = !!actionsInTopbar && !stat.is_dir;
   const fileSearchField = <FileSearchField active={ownsBar && !remoteUrl} fsPath={fsPath} />;
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
-  // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
+  // a recognized sentinel (`_render`, `_listing`, `_node`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
   // A remote location's cache copy (`remoteUrl`) is untrusted bucket content:

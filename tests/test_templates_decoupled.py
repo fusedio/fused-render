@@ -41,18 +41,6 @@ ALLOWED = {
     # this site does not depend on the package being reachable.
     os.path.join("reader", "condition.py"):
         "in-server-only prefs read, with a stdlib fallback (not a mount fact)",
-    # The node view's gate (SPEC §53.3 NV-2) asks one question — is this file a
-    # node of a cloned canvas? — and the answer is the sync engine's:
-    # `canvases.canvas_node_file`, the rule GET /api/canvases/node also
-    # answers with, built on `canvas_snapshot.node_files` (which file IS a
-    # node's source). A stdlib copy here would be a second definition of that
-    # rule, free to drift from the route the view then calls. `udf` is a
-    # NATIVE template: it has no page and no child process, so this gate is
-    # its only .py and it only ever runs in-process (server._run_condition).
-    # Were the package ever unreachable the gate denies (fail closed): the
-    # mode is not offered, nothing reads wrong.
-    os.path.join("udf", "condition.py"):
-        "in-server-only: the canvas sync engine's own node-file rule, fail closed",
 }
 
 
