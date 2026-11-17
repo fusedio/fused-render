@@ -64,7 +64,6 @@ import shlex
 import subprocess
 import sys
 import threading
-import time
 import traceback
 
 from . import warm_run

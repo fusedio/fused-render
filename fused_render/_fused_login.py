@@ -43,9 +43,8 @@ def main() -> int:
 
     raise_request_timeout()
 
-    from fused import _auth
-
     import requests
+    from fused import _auth
 
     options = _auth.OPTIONS
 
