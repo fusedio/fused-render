@@ -14,7 +14,6 @@ import type { RailPlace } from "./claude-rail-lib";
 
 const { ClaudeRail } = await import("./ClaudeRail");
 const { RailPeek } = await import("./RailPeek");
-const { FAV_PEEK_ID } = await import("./FavouritePeek");
 const { publishTaskFavourites, publishFavouritesParent, resetTaskFavouritesFlagForTests } = await import(
   "@platform/lib/favourites-flag"
 );
@@ -34,7 +33,7 @@ const { gitCardRail, gitCardState, registerGitCard, resetGitCardForTests } = awa
 const { resetRailGitCacheForTests } = await import("./rail-git");
 const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
 const { DoorCard } = await import("./DoorCard");
-const { PEEK_OPEN_MS, PEEK_WIDTH, FAV_WIDTH } = await import("./rail-peek-lib");
+const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
 const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("@shell/task-head-flag");
@@ -1139,10 +1138,12 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
     return false;
   };
   const row = chat("a", { task_id: "TASK-042", title: "Rename the pane noun", message_count: 7, last_reply: "Done — renamed in three files." });
-  const ROW_ATTRS = ["data-hint-row", "data-hint-count", "data-hint-when", "data-hint-window", "data-hint-width", "data-hint-width-of"];
+  const ROW_ATTRS = ["data-hint-row", "data-hint-count", "data-hint-when", "data-hint-window"];
   // The row's left part, gone since 2026-11-17 ("strip the left part, that
   // is status and task id").
-  const GONE_ATTRS = ["data-hint-id"];
+  // …and the window's width, gone since 2026-11-18 ("make it not the same
+  // width as the window"): the row is as wide as its words.
+  const GONE_ATTRS = ["data-hint-id", "data-hint-width", "data-hint-width-of"];
 
   test("flag on: a list ring carries the title, count, time and window A's width — no number; the rail names the edge", async () => {
     resetTaskHeadUnifiedFlagForTests();
@@ -1162,11 +1163,6 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
       for (const a of GONE_ATTRS) expect(a in ring!.props).toBe(false);
       // …and the window it opens, the one the scrim dims: A.
       expect(ring!.props["data-hint-window"]).toBe("a");
-      // …and the width of the window this ring opens: A's, never dragged.
-      expect(ring!.props["data-hint-width"]).toBe(String(PEEK_WIDTH));
-      // …or, while that window stands, its width on screen — a drag included
-      // (hints.ts `liveWidth`): the selector names window A, shown.
-      expect(ring!.props["data-hint-width-of"]).toBe("#claude-rail-peek.is-on, #claude-rail-tasks-peek.is-on, #claude-rail-bots-peek.is-on, #claude-rail-git-peek.is-on, .modal-popover .modal-dialog");
       expect(ring!.props["data-hint-side"]).toBe("left");
       // The row stands against the rail's own edge, where its windows do.
       expect(aside(r).props["data-hint-edge"]).toBe("");
@@ -1175,7 +1171,7 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
     }
   });
 
-  test("flag on: a favourite's ring asks for window B's width, the list's ring for window A's", async () => {
+  test("flag on: a favourite's ring names window B, the list's ring window A — and neither asks for a width", async () => {
     resetTaskHeadUnifiedFlagForTests();
     publishTaskHeadUnified({ enabled: true });
     try {
@@ -1186,19 +1182,10 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
       const list = rings.filter((n) => !inFoot(n));
       expect(foot).toHaveLength(1);
       expect(foot[0]!.props["data-hint-row"]).toBe("");
-      // B opens narrower than A until it is dragged.
-      expect(FAV_WIDTH).not.toBe(PEEK_WIDTH);
-      expect(foot[0]!.props["data-hint-width"]).toBe(String(FAV_WIDTH));
-      expect(foot[0]!.props["data-hint-width-of"]).toBe(`#${FAV_PEEK_ID}.is-on`);
-      // …and names window B as the one its row dims; the list's rings name A.
+      // It names window B as the one its row dims; the list's rings name A.
       expect(foot[0]!.props["data-hint-window"]).toBe("b");
       for (const ring of list) expect(ring.props["data-hint-window"]).toBe("a");
-      for (const ring of list) {
-        expect(ring.props["data-hint-width"]).toBe(String(PEEK_WIDTH));
-        expect(ring.props["data-hint-width-of"]).toBe("#claude-rail-peek.is-on, #claude-rail-tasks-peek.is-on, #claude-rail-bots-peek.is-on, #claude-rail-git-peek.is-on, .modal-popover .modal-dialog");
-      }
-      // The two selectors name two different windows.
-      expect(FAV_PEEK_ID).not.toBe("claude-rail-peek");
+      for (const ring of [...foot, ...list]) for (const a of GONE_ATTRS) expect(a in ring.props).toBe(false);
     } finally {
       resetTaskHeadUnifiedFlagForTests();
     }

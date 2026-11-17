@@ -346,8 +346,6 @@ import {
   dragMaxWidth,
   snapWidth,
   type Box,
-  FAV_WIDTH,
-  PEEK_WIDTH,
 } from "./rail-peek-lib";
 import { publishWindowABox, setSnapGuide } from "./card-snap";
 import { FLOAT_GRIPS, POPOVER_HEAD_SELECTOR, floatPlacement, floatResize, railPressWindow, viewportOf } from "./rail-move-lib";
@@ -381,7 +379,7 @@ import { PLUS_DOOR, PlusPopIntent } from "./plus-pop-lib";
 import { publishPlusRender, usePlusCard, usePlusHosted, withdrawPlusRender } from "./plus-card-store";
 import { useLauncherOpen } from "./launcher-open";
 import { timeAgo } from "@platform/lib/format";
-import { RailPeek, storedPeekSize, type RailPeekHandle } from "./RailPeek";
+import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platform/lib/botsPulse";
 import { navigateUrl } from "@platform/lib/router";
 import { Face } from "@apps/bots/components/Face";
@@ -472,13 +470,7 @@ export { paneHomeHref } from "./claude-rail-lib";
 
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
 const PEEK_ID = "claude-rail-peek";
-/** Whichever card stands in window A right now (the row hint's live width,
- *  platform/lib/hints `data-hint-width-of`): the task card, a door's card, or
- *  the + popover. One at a time, so the first match is the window. */
-const WINDOW_A_LIVE = [PEEK_ID, TASKS_PEEK_ID, BOTS_PEEK_ID, GIT_PEEK_ID]
-  .map((id) => `#${id}.is-on`)
-  .concat(".modal-popover .modal-dialog")
-  .join(", ");
+
 
 /** The rail's width (claude-rail.css `.claude-rail`): what a shut pane leaves
  *  at the edge, and what a pull to reopen it is measured past (the `closedWidth`
@@ -3287,9 +3279,10 @@ export function ClaudeRail({
                   // THE TASK'S NAME AND FACTS, NOT A TITLE TOOLTIP (Akshil,
                   // 2026-11-16: "when we hover we show a tooltip with the
                   // title of the task — instead show this as is"; hints.ts
-                  // `renderRowHint`): a panel as wide as the window this ring
-                  // opens (A for the list, B for a favourite), holding the
-                  // title whole, then the count and the time (2026-11-17:
+                  // `renderRowHint`): a panel as wide as its own words
+                  // (2026-11-18: "make it not the same width as the window"),
+                  // holding the title whole, then the count and the time
+                  // (2026-11-17:
                   // "strip the left part, that is status and task id, keep
                   // the time and count as is. And don't truncate it") —
                   // the title is `data-hint-title` above.
@@ -3306,21 +3299,6 @@ export function ClaudeRail({
                         // The window this ring opens: the one the scrim dims
                         // while the row is up (tasks.css), never the other.
                         "data-hint-window": foot && favsOn ? "b" : "a",
-                        // The window's own default when it was never dragged:
-                        // B opens narrower than A (`FAV_WIDTH`).
-                        // The window itself while it stands (its live width,
-                        // a drag included); the remembered size otherwise.
-                        // WINDOW A IS WHICHEVER CARD HOLDS IT: a task's, or the
-                        // Tasks / Bots / Git door's, or the + popover — a list
-                        // ring hovered over a pinned Tasks card read the task
-                        // card's remembered width (Akshil, 2026-11-16: "window
-                        // A pinned, I resized, it showed the previous width").
-                        "data-hint-width-of": foot && favsOn ? `#${FAV_PEEK_ID}.is-on` : WINDOW_A_LIVE,
-                        "data-hint-width": String(
-                          foot && favsOn
-                            ? (storedPeekSize("canvasRailFav")?.width ?? FAV_WIDTH)
-                            : (storedPeekSize("canvasRailPeek")?.width ?? PEEK_WIDTH),
-                        ),
                       }
                     : {})}
                   {...(popDoor
