@@ -1,75 +1,73 @@
-// An expert's preview column (docs/experts.md §10): no browser, so in place of the screenshot, live view and info
-// sections it shows what the expert knows and how it is doing, on four tabs in the Browser | Terminal strip's style:
-//   Memory       the budget line on top ("32 of 50 lessons", a meter, what tidying does, the last tidy), then the
-//                lessons it keeps (most used first), each a card: In use / Not used yet / Contradicted, where it came
-//                from, how often used (and "merged from N"); opened: the lessons it was merged from, what it is about, sessions seen in / answers relied on, first seen /
-//                last used, and Forget. The skill proposals in progress above them; filter chips by status; at the
-//                bottom a collapsed "Recently removed" list (the archive: what left memory and why)
-//   Observations everything it noted from consults and sessions: "Waiting" (oldest first) and "Consolidated" (newest
-//                first, under day dividers, each with what came of it); "Consolidate now", its live stage line and the
-//                proposal status lines on top; an unsure row opens to what research found and can be dropped while it is
-//                unresolved; a lesson row opens to the lesson it landed on; filter chips Unsure / Learnings
-//   Consults     the questions agent sessions asked it (newest first, under day dividers, filterable by outcome), each a
-//                card (status, source, when, the question, small facts) opening to the context, the answer as markdown,
-//                the files (click copies the path) and the lessons it used
-//   Checks       its fixed questions (questions.md) graded on the last run; "Run checks" starts one and shows it move
-// All three list tabs draw the same card (XCard); its detail renders only when the card is open.
+// An expert's preview column (docs/experts-autonomous.md "UI"): no browser, so in place of the screenshot, live view
+// and info sections it shows what the expert did and knows, on three tabs in the Browser | Terminal strip's style:
+//   Activity  (default) everything it did by itself, newest first under day dividers, each a card: what it did, when,
+//             the summary and why; opened: what it rests on (your words, where it came from, the file). A change that
+//             can be taken back has Undo; one taken back says "undone"; one that failed shows its error. On top: how
+//             many things wait to be learned, "Learn now" (its step while it runs), filter chips All / Skills / Memory
+//             and "Show everything" (the quiet lines too). Opening the tab marks the activity as seen.
+//   Memory    the budget line on top ("32 of 50 lessons", a meter, what tidying does, the last tidy), then the lessons
+//             it keeps (most used first), each a card: In use / Not used yet / Contradicted, where it came from, how
+//             often used; opened: earlier wording, the lessons it was merged from, what it is about, sessions / answers
+//   Consults  the questions agent sessions asked it (newest first, under day dividers, filterable by outcome), each a
+//             card (status, source, when, the question, small facts) opening to the context, the answer as markdown,
+//             the files (click copies the path) and the lessons it used
+// All three tabs draw the same card (XCard); its detail renders only when the card is open.
 // Settings' "Expert" tab mounts the same panels (ExpertPanels) so the phone, which hides this column, reaches them.
 // Data: /api/experts/<id>/… (lib/api.ts expertApi), fetched for the open tab on a bot change, again when the bot's
-// `seq` moves (a chat turn may have taught it something) and every 10 s while the page is visible; the observations
-// (which carry a consolidation's progress) with every refresh whichever tab is open, and every 5 s while a
-// consolidation runs or a gap is being researched; the checks every 2 s while a run is going; the proposals (shown on
-// the Memory and Observations tabs) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on
-// every refresh while it keeps failing).
+// `seq` moves (a chat turn may have taught it something) and every 10 s while the page is visible; the activity (which
+// carries the learning run's progress) with every refresh whichever tab is open, and every 5 s while it learns. A
+// failed call shows the page banner once (not again on every refresh while it keeps failing).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { expertApi, type Bot, type ExpertArchived, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem,
-  type ExpertMemory, type ExpertObs, type ExpertProposal } from "../lib/api";
-import { anyPreparing, basename, budgetState, checkProgress, consolidatingLine, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, filterConsults,
-  filterLessons, filterObservations, gapNote, gapProposal, gapUnresolved, groupByDay, groupConsultsByDay, isLongContext, LESSON_STATUS_LABEL, lessonFacts,
-  lessonSource, lessonStatus, OBS_EMPTY, OBS_INTRO, observationFacts, observationGaps, observationSource, observationText, observationTone,
-  observationTypeLabel, openProposals, proposalLine, removedReasonLabel, researchingGap, scoreText, sortLessons, sortObservations, tidySummary, unresolvedGapCount,
-  usedLabel, usedLessons, usesLine,
-  type ConsultFilter, type ConsultStatus, type LessonFilter, type LessonStatus, type ObservationFilter } from "../lib/expert";
+import { expertApi, type Bot, type ExpertActivity, type ExpertBudget, type ExpertConsult, type ExpertItem, type ExpertLearning, type ExpertMemory } from "../lib/api";
+import { actionLabel, actionTone, activityGroup, basename, budgetState, canUndo, CONSULT_STATUS_LABEL, consultFacts, consultSource, consultStatus, evidenceParts,
+  filterActivity, filterConsults, filterLessons, groupByDay, groupConsultsByDay, isLongContext, learningLine, LESSON_STATUS_LABEL, lessonFacts, lessonSource,
+  lessonStatus, shownActivity, sortLessons, tidySummary, undoError, usedLabel, usedLessons, usesLine, waitingLine,
+  type ActivityFilter, type ConsultFilter, type ConsultStatus, type LessonFilter, type LessonStatus } from "../lib/expert";
+import { setExpertUnread } from "../lib/expertUnread";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { errMsg, getState, hideBanner, showBanner } from "../state/store";
-import { askConfirm } from "../dialogs/ask";
 import { isLanHost } from "@platform/lib/host";
 
-export type ExpertTab = "memory" | "observations" | "consults" | "checks";
-const TABS: [ExpertTab, string][] = [["memory", "Memory"], ["observations", "Observations"], ["consults", "Consults"], ["checks", "Checks"]];
-const REFRESH_MS = 10_000, CHECKS_MS = 2_000, PROPOSALS_MS = 5_000, WORK_MS = 5_000, ARCHIVE_SHOWN = 20;
+export type ExpertTab = "activity" | "memory" | "consults";
+const TABS: [ExpertTab, string][] = [["activity", "Activity"], ["memory", "Memory"], ["consults", "Consults"]];
+const REFRESH_MS = 10_000, WORK_MS = 5_000, PAGE = 100;
 
-/** The memory route's budget fields (all absent on an older server). */
-export type MemoryBudget = Pick<ExpertMemory, "limit" | "tidy_at" | "total" | "last_tidy">;
-
-type Confirm = (title: string, text: string, okLabel?: string, danger?: boolean) => Promise<boolean>;
+/** The memory's budget fields (all absent on a server that sends none: no budget line). */
+export type MemoryBudget = ExpertBudget;
 
 interface Data {
   memory: ExpertItem[] | null;
-  /** The memory's budget (from the memory route) and what recently left it (the archive route, fetched with it). */
   budget: MemoryBudget | null;
-  archive: ExpertArchived[] | null;
-  pending: ExpertObs[] | null;
-  done: ExpertObs[] | null;
   consults: ExpertConsult[] | null;
-  checks: ExpertChecks | null;
-  proposals: ExpertProposal[] | null;
-  /** A background consolidation's progress (from the observations route). */
-  consolidating: ExpertConsolidating | null;
+  /** The activity lines loaded so far (newest first), whether older ones may remain, and what rode with them. */
+  activity: ExpertActivity[] | null;
+  more: boolean;
+  waiting: number;
+  learning: ExpertLearning | null;
 }
-const EMPTY: Data = { memory: null, budget: null, archive: null, pending: null, done: null, consults: null, checks: null, proposals: null, consolidating: null };
+const EMPTY: Data = { memory: null, budget: null, consults: null, activity: null, more: false, waiting: 0, learning: null };
 
-/** The memory route's reply as Data: the lessons and the budget fields (whatever of them the server sent). */
-const fromMemory = (m: ExpertMemory): Pick<Data, "memory" | "budget"> =>
-  ({ memory: m.items || [], budget: { limit: m.limit, tidy_at: m.tidy_at, total: m.total, last_tidy: m.last_tidy ?? null } });
+/** The memory route's reply as Data: the lessons and the budget (`budget`, else the same fields beside `items`). */
+export const fromMemory = (m: ExpertMemory): Pick<Data, "memory" | "budget"> => {
+  const b = m.budget || m;
+  return { memory: m.items || [], budget: { limit: b.limit, tidy_at: b.tidy_at, total: b.total ?? (m.items || []).length, last_tidy: b.last_tidy ?? null } };
+};
 
-/** The open tab's data for expert `id`, kept fresh (see the header). `reload` refetches the tab now. */
-function useExpertData(id: string, seq: number, tab: ExpertTab) {
+/** A fresh first page laid over the lines already loaded: the page first, then the older lines it does not hold. */
+export function mergeActivity(page: readonly ExpertActivity[], had: readonly ExpertActivity[] | null): ExpertActivity[] {
+  const ids = new Set(page.map((a) => a.id)), oldest = page.length ? page[page.length - 1].ts : Infinity;
+  return [...page, ...(had || []).filter((a) => !ids.has(a.id) && a.ts <= oldest)];
+}
+
+/** The open tab's data for expert `id`, kept fresh (see the header). `everything`: the quiet lines too. */
+function useExpertData(id: string, seq: number, tab: ExpertTab, everything: boolean) {
   const [data, setData] = useState<Data>(EMPTY);
   const lastErr = useRef("");
   const live = useRef(id);
   live.current = id;
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   // A failed fetch shows the banner once per distinct error; a success after it takes the banner down again.
   const guard = useCallback(async <T,>(call: () => Promise<T>, loud = false): Promise<T | undefined> => {
     try {
@@ -85,61 +83,58 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
     }
   }, []);
 
-  const loadProposals = useCallback(async (loud = false) => {
+  /** The newest page of the activity. With the Activity tab open it is seen at once: the server is told, and the dot
+   *  on the expert's row goes. */
+  const loadActivity = useCallback(async (loud = false) => {
     const want = id;
-    const p = await guard(() => expertApi.proposals(want), loud);
-    if (live.current === want && p) setData((d) => ({ ...d, proposals: p.proposals || [] }));
-  }, [id, guard]);
+    const r = await guard(() => expertApi.activity(want, { limit: PAGE, quiet: everything }), loud);
+    if (live.current !== want || !r) return;
+    const page = Array.isArray(r.items) ? r.items : [];
+    setData((d) => ({ ...d, activity: mergeActivity(page, d.activity), more: d.activity && d.activity.length > page.length ? d.more : page.length >= PAGE,
+      waiting: r.waiting || 0, learning: r.learning || null }));
+    const unread = r.unread || 0;
+    if (tabRef.current === "activity" && !document.hidden) {
+      setExpertUnread(want, 0);
+      if (unread > 0) void expertApi.seen(want).catch(() => {});
+    } else setExpertUnread(want, unread);
+  }, [id, guard, everything]);
 
-  const loadObs = useCallback(async (loud = false) => {
+  const loadMore = useCallback(async (before: string) => {
     const want = id;
-    const o = await guard(() => expertApi.observations(want), loud);
-    if (live.current === want && o) {
-      setData((d) => ({ ...d, pending: o.pending || [], done: o.done || [], consolidating: o.consolidating || null }));
-    }
-  }, [id, guard]);
+    const r = await guard(() => expertApi.activity(want, { limit: PAGE, before, quiet: everything }), true);
+    if (live.current !== want || !r) return;
+    const page = Array.isArray(r.items) ? r.items : [];
+    setData((d) => {
+      const ids = new Set((d.activity || []).map((a) => a.id)), fresh = page.filter((a) => !ids.has(a.id));
+      return { ...d, activity: [...(d.activity || []), ...fresh], more: fresh.length > 0 && page.length >= PAGE };
+    });
+  }, [id, guard, everything]);
 
   const load = useCallback(async (which: ExpertTab, loud = false) => {
     const want = id;
-    if (which === "memory") {
-      // The archive quietly: an older server (or the LAN door) has no such route, and then there is just no section.
-      const [m, p, a] = await Promise.all([guard(() => expertApi.memory(want), loud), guard(() => expertApi.proposals(want), loud),
-        expertApi.memoryArchive(want).catch(() => undefined)]);
-      if (live.current !== want) return;
-      setData((d) => ({ ...d, ...(m ? fromMemory(m) : {}), ...(p ? { proposals: p.proposals || [] } : {}),
-        ...(a ? { archive: Array.isArray(a.archived) ? a.archived : [] } : {}) }));
-    } else if (which === "observations") {
-      // The proposals too (their status lines show here, and a proposed gap says where its proposal stands), and the
-      // memory (an opened row names the lesson it landed on).
-      const [, , m] = await Promise.all([loadObs(loud), loadProposals(loud), guard(() => expertApi.memory(want), loud)]);
-      if (live.current === want && m) setData((d) => ({ ...d, ...fromMemory(m) }));
-    } else if (which === "consults") {
-      // The memory too: an opened consult names the lessons it used by their claims.
-      const [c, m] = await Promise.all([guard(() => expertApi.consults(want), loud), guard(() => expertApi.memory(want), loud)]);
-      if (live.current !== want) return;
-      setData((d) => ({ ...d, ...(c ? { consults: c.consults || [] } : {}), ...(m ? fromMemory(m) : {}) }));
-    } else {
-      const k = await guard(() => expertApi.checks(want), loud);
-      if (live.current === want && k) setData((d) => ({ ...d, checks: k }));
-    }
-  }, [id, guard, loadObs, loadProposals]);
-  /** The open tab, plus (off the Observations tab) the observations, so a consolidation started or running is noticed
-   *  and followed whichever tab is open. */
+    if (which === "activity") { await loadActivity(loud); return; }
+    // The Consults tab reads the memory too: an opened consult names the lessons it used by their claims.
+    const [m, c] = await Promise.all([guard(() => expertApi.memory(want), loud), which === "consults" ? guard(() => expertApi.consults(want), loud) : undefined]);
+    if (live.current !== want) return;
+    setData((d) => ({ ...d, ...(m ? fromMemory(m) : {}), ...(c ? { consults: c.consults || [] } : {}) }));
+  }, [id, guard, loadActivity]);
+  /** The open tab, plus (off the Activity tab) the activity, so a learning run is noticed whichever tab is open. */
   const refresh = useCallback((which: ExpertTab) => {
     void load(which);
-    if (which !== "observations") void loadObs();
-  }, [load, loadObs]);
+    if (which !== "activity") void loadActivity();
+  }, [load, loadActivity]);
 
   // A new bot starts empty (never another expert's rows under this one's name).
   useEffect(() => { setData(EMPTY); lastErr.current = ""; }, [id]);
+  // "Show everything" changes which lines the server sends: start the list again.
+  useEffect(() => { setData((d) => ({ ...d, activity: null, more: false })); }, [everything]);
   useEffect(() => { refresh(tab); }, [refresh, tab, seq]);
   useEffect(() => {
     const t = window.setInterval(() => { if (!document.hidden) refresh(tab); }, REFRESH_MS);
     return () => window.clearInterval(t);
   }, [refresh, tab]);
-  // A consolidation running in the background, or a gap being researched: follow it until it is done (lessons folded,
-  // a proposal card or a question in the chat). When it ends, the open tab refetches (new lessons, new proposals).
-  const working = !!data.consolidating?.running || observationGaps(data.pending, data.done).some((g) => g.status === "researching");
+  // Learning in the background: follow it until it is done; when it ends, the open tab refetches (new lessons).
+  const working = !!data.learning?.running;
   const wasWorking = useRef(false);
   const latest = useRef({ refresh, tab });
   latest.current = { refresh, tab };
@@ -147,25 +142,11 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
     if (wasWorking.current && !working) latest.current.refresh(latest.current.tab);
     wasWorking.current = working;
     if (!working) return;
-    const t = window.setInterval(() => { if (!document.hidden) void loadObs(); }, WORK_MS);
+    const t = window.setInterval(() => { if (!document.hidden) void loadActivity(); }, WORK_MS);
     return () => window.clearInterval(t);
-  }, [working, loadObs]);
-  // A gate run in progress: follow it closely, whichever tab is open (the Checks tab shows it; the others do not mind).
-  const running = !!data.checks?.status?.running;
-  useEffect(() => {
-    if (!running) return;
-    const t = window.setInterval(() => { if (!document.hidden) void load("checks"); }, CHECKS_MS);
-    return () => window.clearInterval(t);
-  }, [running, load]);
-  // A skill proposal is drafted and checked by a background worker: follow it until its card is up (or it failed).
-  const preparing = anyPreparing(data.proposals);
-  useEffect(() => {
-    if (!preparing) return;
-    const t = window.setInterval(() => { if (!document.hidden) void loadProposals(); }, PROPOSALS_MS);
-    return () => window.clearInterval(t);
-  }, [preparing, loadProposals]);
+  }, [working, loadActivity]);
 
-  return { data, setData, reload: load, guard };
+  return { data, setData, reload: load, loadMore, guard };
 }
 
 // ------------------------------------------------------------------ panels ----
@@ -178,12 +159,13 @@ const CHEVRON = (
 
 export type CardTone = "ok" | "warn" | "muted" | "accent";
 
-/** The one card all three list tabs use: a header button (status marker, source, time or count, a chevron that turns
+/** The one card all three tabs use: a header button (status marker, source, time or count, a chevron that turns
  *  when open; `aria-expanded`), the text clamped to two lines while closed, a footer of small facts, and `detail()`
- *  rendered only while open. `note`: a muted line under the facts (a failed proposal's error). */
-export function XCard({ tone, mark, source, sourceTitle, right, rightTitle, text, facts, note, initialOpen = false, className = "", detail }: {
+ *  rendered only while open. `note`: a muted line under the facts. `foot`: a row under the header that shows open or
+ *  closed (it holds what a header button cannot: the Activity card's Undo). */
+export function XCard({ tone, mark, source, sourceTitle, right, rightTitle, text, facts, note, initialOpen = false, className = "", detail, foot }: {
   tone: CardTone; mark: string; source: string; sourceTitle?: string; right: string; rightTitle?: string; text: string; facts: string[];
-  note?: string; initialOpen?: boolean; className?: string; detail: () => ReactNode;
+  note?: string; initialOpen?: boolean; className?: string; detail: () => ReactNode; foot?: ReactNode;
 }) {
   const [open, setOpen] = useState(initialOpen);
   const bodyId = useId();
@@ -200,6 +182,7 @@ export function XCard({ tone, mark, source, sourceTitle, right, rightTitle, text
         {facts.length ? <span className="xp-facts">{facts.join(" · ")}</span> : null}
         {note ? <span className="xp-facts xp-note">{note}</span> : null}
       </button>
+      {foot ? <div className="xp-card-foot">{foot}</div> : null}
       {open ? <div className="xp-card-body" id={bodyId}>{detail()}</div> : null}
     </li>
   );
@@ -261,9 +244,7 @@ function Filters<F extends string>({ label, options, counts, value, onChange, to
 
 const LESSON_TONE: Record<LessonStatus, CardTone> = { "in-use": "ok", "not-used": "muted", contradicted: "warn" };
 
-export function LessonCard({ it, onForget, lan = false, initialOpen = false, nowMs }: {
-  it: ExpertItem; onForget: (it: ExpertItem) => void; lan?: boolean; initialOpen?: boolean; nowMs?: number;
-}) {
+export function LessonCard({ it, initialOpen = false, nowMs }: { it: ExpertItem; initialOpen?: boolean; nowMs?: number }) {
   const st = lessonStatus(it);
   // Last used: when an answer last relied on it (a newer server), else when it was last seen.
   const used = typeof it.last_used === "number" && it.last_used > 0 ? it.last_used : 0;
@@ -290,11 +271,6 @@ export function LessonCard({ it, onForget, lan = false, initialOpen = false, now
             <p className="xp-facts">{usesLine(it)}</p>
             {when ? <p className="xp-facts">{when}</p> : null}
           </div>
-          {lan ? null : (
-            <div className="xp-acts">
-              <button type="button" className="xp-forget" title="Forget this lesson" onClick={() => onForget(it)}>Forget</button>
-            </div>
-          )}
         </>
       )} />
   );
@@ -323,66 +299,29 @@ export function MemoryBudgetLine({ budget, listed, nowMs }: { budget: MemoryBudg
   );
 }
 
-/** "Recently removed (N)", collapsed: what left memory (newest first, at most ARCHIVE_SHOWN), each its claim (two lines)
- *  and why and when it went. Nothing while the archive is empty or not loaded. */
-export function RemovedLessons({ archived, items = null, nowMs }: {
-  archived: ExpertArchived[] | null | undefined; items?: ExpertItem[] | null; nowMs?: number;
-}) {
-  const rows = (archived || []).filter((a) => a && typeof a.claim === "string").slice(0, ARCHIVE_SHOWN);
-  if (!rows.length) return null;
-  return (
-    <details className="xp-removed">
-      <summary className="xp-h">{CHEVRON}Recently removed ({rows.length})</summary>
-      <ul className="xp-removed-list">
-        {rows.map((a, i) => (
-          <li key={`${a.id}-${a.removed_at || i}`} className="xp-removed-row">
-            <span className="xp-removed-claim">{a.claim}</span>
-            <span className="xp-facts" title={a.removed_at ? fmtWhen(a.removed_at) : undefined}>
-              {[removedReasonLabel(a, items), a.removed_at ? fmtAgo(a.removed_at, nowMs) : ""].filter(Boolean).join(" · ")}
-            </span>
-            {a.why ? <span className="xp-facts xp-note">{a.why}</span> : null}
-          </li>
-        ))}
-      </ul>
-    </details>
-  );
-}
-
-export function MemoryPanel({ items, onForget, proposals = null, budget = null, archived = null, lan = false, nowMs }: {
-  items: ExpertItem[] | null; onForget: (it: ExpertItem) => void; proposals?: ExpertProposal[] | null;
-  /** The memory route's budget fields (the line on top) and the archive (the "Recently removed" section). */
-  budget?: MemoryBudget | null; archived?: ExpertArchived[] | null;
-  /** On the phone: the LAN door does not serve `forget` (it writes memory), so the button is hidden. */
-  lan?: boolean; nowMs?: number;
+export function MemoryPanel({ items, budget = null, nowMs }: {
+  items: ExpertItem[] | null;
+  /** The memory route's budget (the line on top). */
+  budget?: MemoryBudget | null; nowMs?: number;
 }) {
   const [filter, setFilter] = useState<LessonFilter>("all");
   if (items == null) return <div className="xp-empty">Loading…</div>;
-  const open = openProposals(proposals), sorted = sortLessons(items), shown = filterLessons(sorted, filter);
+  const sorted = sortLessons(items), shown = filterLessons(sorted, filter);
   const counts = { all: items.length, "in-use": filterLessons(items, "in-use").length, "not-used": filterLessons(items, "not-used").length };
   return (
     <>
       <MemoryBudgetLine budget={budget} listed={items.length} nowMs={nowMs} />
-      <ProposalLines open={open} />
       {items.length ? (
         <>
           <Filters label="Show lessons" options={LESSON_FILTERS} counts={counts} value={filter} onChange={setFilter} total={items.length} />
-          {shown.length ? <ul className="xp-cards">{shown.map((it) => <LessonCard key={it.id} it={it} onForget={onForget} lan={lan} nowMs={nowMs} />)}</ul>
+          {shown.length ? <ul className="xp-cards">{shown.map((it) => <LessonCard key={it.id} it={it} nowMs={nowMs} />)}</ul>
             : <div className="xp-empty">No lessons match this filter.</div>}
         </>
       ) : (
-        <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that consult it, appears here once consolidated.</div>
+        <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that ask it questions, appears here. To make it forget something, tell it in the chat.</div>
       )}
-      <RemovedLessons archived={archived} items={items} nowMs={nowMs} />
     </>
   );
-}
-
-function ProposalLines({ open }: { open: ExpertProposal[] }) {
-  return open.length ? (
-    <ul className="xp-proposals">
-      {open.map((p) => <li key={p.id} className={`xp-proposal ${p.status}`}>{proposalLine(p)}</li>)}
-    </ul>
-  ) : null;
 }
 
 // ---- Consults ----
@@ -440,192 +379,137 @@ export function ConsultsPanel({ consults, items = null, nowMs }: { consults: Exp
   );
 }
 
-// ---- Observations ----
+// ---- Activity ----
 
-/** "Consolidate now" (the Observations tab). Off while a consolidation runs or there is nothing to fold in, look into
- *  or tidy (memory over its `tidy_at`: a forced consolidation tidies it even with nothing waiting). */
-function ConsolidateButton({ busy, running, work, onClick }: { busy: boolean; running: boolean; work: boolean; onClick: () => void }) {
-  const on = busy || running;
-  return (
-    <button type="button" className={on ? "busy" : undefined} disabled={on || !work} onClick={onClick}
-      title={running ? "A consolidation is running" : work ? "Fold the waiting observations into lessons, look into the open questions and tidy memory now" : "Nothing is waiting"}>
-      {on ? "Consolidating…" : "Consolidate now"}
-    </button>
-  );
-}
-
-const claimOf = (items: ExpertItem[] | null, id: string | undefined): string => (id ? items?.find((it) => it.id === id)?.claim || id : "");
-
-export function ObsCard({ o, consolidated, researching, proposals, items, lan, onDrop, initialOpen = false, nowMs }: {
-  o: ExpertObs; consolidated: boolean; researching: string | null; proposals: ExpertProposal[] | null; items: ExpertItem[] | null;
-  lan: boolean; onDrop: (g: ExpertGap) => void; initialOpen?: boolean; nowMs?: number;
+/** One thing the expert did: what, when, the summary, why. Under the header: Undo (a change that can be taken back),
+ *  "undone", or the error of a change that failed; `undoError`: why this line's Undo was refused. Opened: what it
+ *  rests on. `onUndo` absent (the phone): no button. */
+export function ActivityCard({ a, onUndo, undoing = false, undoError: refused = "", initialOpen = false, nowMs }: {
+  a: ExpertActivity; onUndo?: (a: ExpertActivity) => void; undoing?: boolean; undoError?: string; initialOpen?: boolean; nowMs?: number;
 }) {
-  const g = o.gap || null, op = o.outcome?.op || "";
-  const prop = g?.status === "proposed" ? gapProposal(g, proposals) : null;
-  const note = gapNote(g?.error), f = g?.finding;
+  const ev = evidenceParts(a.evidence), failed = a.ok === false, undo = !!onUndo && canUndo(a);
+  const foot = undo || a.undone || failed || refused ? (
+    <>
+      <span className="xp-foot-msg">
+        {a.undone ? <span className="xp-undone">undone</span> : null}
+        {failed ? <span className="xp-err">{a.error ? `This did not work: ${a.error}` : "This did not work."}</span> : null}
+        {refused ? <span className="xp-err" role="alert">{refused}</span> : null}
+      </span>
+      {undo ? <button type="button" className={`xp-undo${undoing ? " busy" : ""}`} disabled={undoing} title="Put this back the way it was" onClick={() => onUndo!(a)}>Undo</button> : null}
+    </>
+  ) : null;
   return (
-    <XCard tone={observationTone(o.kind, o.outcome)} mark={observationTypeLabel(o.kind, o.outcome)} source={observationSource(o)} sourceTitle={o.source?.target}
-      right={fmtAgo(o.ts, nowMs)} rightTitle={o.ts ? fmtWhen(o.ts) : undefined} text={observationText(o)}
-      facts={observationFacts(o, consolidated, researching, proposals)} note={prop?.status === "failed" ? prop.error : ""} initialOpen={initialOpen}
+    <XCard tone={actionTone(a)} mark={actionLabel(a.action)} className={`act-${activityGroup(a) || "note"}${a.undone ? " undone" : ""}${failed ? " failed" : ""}`}
+      source={a.target || ""} right={fmtAgo(a.ts, nowMs)} rightTitle={a.ts ? fmtWhen(a.ts) : undefined} text={a.summary} facts={a.why ? [a.why] : []}
+      initialOpen={initialOpen} foot={foot}
       detail={() => (
         <>
-          {op === "contradict" ? (
-            <>
-              {o.outcome?.item ? <Part label="Contradicted"><p className="xp-txt">{claimOf(items, o.outcome.item)}</p></Part> : null}
-              {o.outcome?.new ? <Part label="Corrected rule"><p className="xp-txt">{claimOf(items, o.outcome.new)}</p></Part> : null}
-            </>
-          ) : (op === "add" || op === "bump" || op === "confirm") && o.outcome?.item ? (
-            <Part label="Lesson"><p className="xp-txt">{claimOf(items, o.outcome.item)}</p></Part>
-          ) : null}
-          {o.by_user && o.quote ? <Part label="You said"><p className="xp-txt">“{o.quote}”</p></Part> : null}
-          {note ? <p className="xp-facts">{note}</p> : null}
-          {f ? (
-            <>
-              <Part label="Found"><Md text={f.answer} /></Part>
-              {f.refs?.length ? <Part label="Files"><Files refs={f.refs} /></Part> : null}
-            </>
-          ) : null}
-          {g && gapUnresolved(g) && !lan ? (
-            <div className="xp-acts">
-              <button type="button" className="xp-forget" title="Drop this question: it is not looked into again" onClick={() => onDrop(g)}>Drop</button>
-            </div>
-          ) : null}
+          {ev.quote ? <Part label="You said"><p className="xp-txt">“{ev.quote}”</p></Part> : null}
+          {ev.from ? <Part label="Came from"><p className="xp-txt" title={ev.fromTitle || undefined}>{ev.from}</p></Part> : null}
+          {ev.file ? <Part label="Read in"><Files refs={[ev.file]} /></Part> : null}
+          {!ev.quote && !ev.from && !ev.file ? <p className="xp-facts">Nothing more is recorded for this.</p> : null}
         </>
       )} />
   );
 }
 
-const OBS_FILTERS: [ObservationFilter, string][] = [["all", "All"], ["unsure", "Unsure"], ["learnings", "Learnings"]];
+const ACTIVITY_FILTERS: [ActivityFilter, string][] = [["all", "All"], ["skills", "Skills"], ["memory", "Memory"]];
 
-export function ObservationsPanel({ pending, done, consolidating = null, proposals = null, items = null, budget = null, busy = false, onConsolidate, onDrop, lan = false, nowMs }: {
-  pending: ExpertObs[] | null; done: ExpertObs[] | null; consolidating?: ExpertConsolidating | null;
-  /** The memory's budget (the memory route, as the Memory tab's budget line): memory over `tidy_at` counts as work. */
-  budget?: MemoryBudget | null;
-  /** The skill proposals (as on the Memory tab): their status lines under the intro, and what a proposed gap says. */
-  proposals?: ExpertProposal[] | null;
-  /** The memory items: an opened row names the lesson it landed on by its claim. */
-  items?: ExpertItem[] | null;
-  busy?: boolean; onConsolidate: () => void; onDrop: (g: ExpertGap) => void;
-  /** On the phone: the LAN door does not serve `consolidate` or `dismiss` (they write memory), so the buttons are hidden. */
-  lan?: boolean; nowMs?: number;
+export function ActivityPanel({ items, waiting = 0, learning = null, everything = false, onEverything, onLearn, onUndo, onMore, more = false, busy = false,
+  undoing = null, undoErrors = {}, lan = false, off = false, nowMs }: {
+  items: ExpertActivity[] | null; waiting?: number; learning?: ExpertLearning | null;
+  /** "Show everything": the quiet lines too. */
+  everything?: boolean; onEverything: (on: boolean) => void;
+  onLearn: () => void; onUndo: (a: ExpertActivity) => void;
+  /** Older lines may remain: "Show earlier" asks for them. */
+  more?: boolean; onMore?: () => void;
+  busy?: boolean; undoing?: string | null; undoErrors?: Record<string, string>;
+  /** On the phone: nothing that changes the expert (no Learn now, no Undo). `off`: learning is switched off in Settings. */
+  lan?: boolean; off?: boolean; nowMs?: number;
 }) {
-  const [filter, setFilter] = useState<ObservationFilter>("all");
-  if (pending == null) return <div className="xp-empty">Loading…</div>;
-  const { waiting, done: folded } = sortObservations(pending, done), running = !!consolidating?.running;
-  const researching = researchingGap(consolidating), work = waiting.length > 0 || unresolvedGapCount(observationGaps(waiting, folded)) > 0
-    || !!budgetState(budget, items?.length || 0)?.above;
-  const all = [...waiting, ...folded];
-  const counts = { all: all.length, unsure: filterObservations(all, "unsure").length, learnings: filterObservations(all, "learnings").length };
-  const w = filterObservations(waiting, filter), d = filterObservations(folded, filter);
-  const card = (consolidated: boolean) => (o: ExpertObs) =>
-    <ObsCard key={o.id} o={o} consolidated={consolidated} researching={researching} proposals={proposals} items={items} lan={lan} onDrop={onDrop} nowMs={nowMs} />;
-  return (
-    <>
-      <div className="xp-bar">
-        <span className="xp-line">{OBS_INTRO}{running ? <span className="xp-status">{consolidatingLine(consolidating)}</span> : null}</span>
-        {lan ? null : <ConsolidateButton busy={busy} running={running} work={work} onClick={onConsolidate} />}
-      </div>
-      <ProposalLines open={openProposals(proposals)} />
-      {!all.length ? <div className="xp-empty">{OBS_EMPTY}</div> : (
-        <>
-          <Filters label="Show observations" options={OBS_FILTERS} counts={counts} value={filter} onChange={setFilter} total={all.length} />
-          {w.length ? (
-            <section className="xp-sec" aria-label="Waiting">
-              <h4 className="xp-h">Waiting</h4>
-              <ul className="xp-cards">{w.map(card(false))}</ul>
-            </section>
-          ) : null}
-          {d.length ? (
-            <section className="xp-sec" aria-label="Consolidated">
-              <h4 className="xp-h">Consolidated</h4>
-              {groupByDay(d, nowMs).map((g) => (
-                <section key={g.key} className="xp-dayg" aria-label={g.label}>
-                  <h5 className="xp-day">{g.label}</h5>
-                  <ul className="xp-cards">{g.items.map(card(true))}</ul>
-                </section>
-              ))}
-            </section>
-          ) : null}
-          {!w.length && !d.length ? <div className="xp-empty">No observations match this filter.</div> : null}
-        </>
-      )}
-    </>
-  );
-}
-
-export function ChecksPanel({ checks, onRun, starting }: { checks: ExpertChecks | null; onRun: () => void; starting: boolean }) {
-  if (checks == null) return <div className="xp-empty">Loading…</div>;
-  if (!checks.questions) return <div className="xp-empty">This expert has no check questions yet. Checks grade its answers to a fixed set of questions (its questions.md) whenever you run them.</div>;
-  const st = checks.status, run = checks.latest, running = !!st?.running || starting;
+  const [filter, setFilter] = useState<ActivityFilter>("all");
+  if (items == null) return <div className="xp-empty">Loading…</div>;
+  const all = shownActivity(items, everything), shown = filterActivity(all, filter), running = !!learning?.running, on = busy || running;
+  const counts = { all: all.length, skills: filterActivity(all, "skills").length, memory: filterActivity(all, "memory").length };
+  const wait = waitingLine(waiting);
   return (
     <>
       <div className="xp-bar">
         <span className="xp-line">
-          {running ? checkProgress(st) || "Starting checks…"
-            : run ? <><b className="xp-score">{scoreText(run)}</b> passed · {fmtAgo(run.ts)}{run.engine ? ` · ${run.engine}` : ""}</>
-            : `${checks.questions} question${checks.questions === 1 ? "" : "s"}, not run yet.`}
+          {running ? <span className="xp-status">{learningLine(learning)}</span>
+            : off ? "Learning is off. It still answers and notes what happens, and changes nothing."
+            : wait || "Nothing is waiting to be learned."}
+          {running && wait ? <span className="xp-wait">{wait}</span> : null}
         </span>
-        <button type="button" className={running ? "busy" : undefined} disabled={running} onClick={onRun}
-          title="Ask the expert every check question and grade the answers">{running ? "Running…" : "Run checks"}</button>
+        {lan || off ? null : (
+          <button type="button" className={on ? "busy" : undefined} disabled={on} onClick={onLearn}
+            title={running ? "It is learning now" : "Learn from what is waiting now, and tidy memory"}>{on ? "Learning…" : "Learn now"}</button>
+        )}
       </div>
-      {running && st?.total ? <div className="xp-prog"><div style={{ width: `${Math.round((100 * st.done) / st.total)}%` }} /></div> : null}
-      {run?.results?.length ? (
-        <ul className="xp-list">
-          {run.results.map((r, i) => (
-            <li key={`${i}:${r.q}`} className="xp-row xp-fold">
-              <details>
-                <summary>
-                  <span className={`xp-mark ${r.passed ? "pass" : "fail"}`} aria-label={r.passed ? "passed" : "failed"}>{r.passed ? "✓" : "✗"}</span>
-                  <span className="xp-claim">{r.q}</span>
-                  {r.why ? <span className="xp-meta xp-why">{r.why}</span> : null}
-                </summary>
-                <div className="xp-body"><pre>{r.answer || "(no answer)"}</pre></div>
-              </details>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      <div className="xp-toolbar">
+        <Filters label="Show activity" options={ACTIVITY_FILTERS} counts={counts} value={filter} onChange={setFilter} total={all.length} />
+        <button type="button" className={`xp-chip xp-every${everything ? " on" : ""}`} aria-pressed={everything}
+          title="Also show the small things: what it noticed and what it saw again" onClick={() => onEverything(!everything)}>Show everything</button>
+      </div>
+      {!all.length ? <div className="xp-empty">Nothing yet. Everything this expert learns, changes in its skills or looks into by itself is listed here, and you can undo it.</div>
+        : !shown.length ? <div className="xp-empty">Nothing matches this filter.</div>
+        : groupByDay(shown, nowMs).map((g) => (
+          <section key={g.key} className="xp-dayg" aria-label={g.label}>
+            <h4 className="xp-day">{g.label}</h4>
+            <ul className="xp-cards">
+              {g.items.map((a) => <ActivityCard key={a.id} a={a} onUndo={lan ? undefined : onUndo} undoing={undoing === a.id} undoError={undoErrors[a.id] || ""} nowMs={nowMs} />)}
+            </ul>
+          </section>
+        ))}
+      {more && onMore && all.length ? <div className="xp-acts xp-earlier"><button type="button" onClick={onMore}>Show earlier</button></div> : null}
     </>
   );
 }
 
 // ------------------------------------------------------------------ tabs + data ----
 
-/** The tab strip and the open panel, with their data. `confirm`: the Settings dialog passes its own (it must hold
- *  itself open while the confirm is up); the preview column uses the page's. */
-export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Confirm }) {
-  const [tab, setTab] = useState<ExpertTab>("memory");
-  const { data, setData, reload, guard } = useExpertData(b.id, b.seq, tab);
-  const [consolidating, setConsolidating] = useState(false);
+/** The tab strip and the open panel, with their data. */
+export function ExpertPanels({ b }: { b: Bot }) {
+  const [tab, setTab] = useState<ExpertTab>("activity");
+  const [everything, setEverything] = useState(false);
+  const { data, setData, reload, loadMore, guard } = useExpertData(b.id, b.seq, tab, everything);
   const [starting, setStarting] = useState(false);
+  const [undoing, setUndoing] = useState<string | null>(null);
+  const [undoErrors, setUndoErrors] = useState<Record<string, string>>({});
   const id = b.id, uid = useId();  // Settings may mount these panels while the preview column shows them too
 
-  const onForget = async (it: ExpertItem) => {
-    if (!(await confirm("Forget this lesson?", `“${it.claim}” leaves ${b.name}'s memory. It may learn it again later.`, "Forget"))) return;
-    const r = await guard(() => expertApi.forgetMemory(id, it.id), true);
-    if (r) setData((d) => ({ ...d, memory: (d.memory || []).filter((x) => x.id !== it.id) }));
-    void reload("memory");
-  };
-  // Consolidation answers at once and runs in the background (observations' `consolidating` follows it, polled while it
-  // runs; a proposal it raises is drafted in the background too and shows on the Memory tab as "preparing"), so the
-  // button is busy only for the request itself.
-  const onConsolidate = async () => {
-    setConsolidating(true);
-    try {
-      const r = await guard(() => expertApi.consolidate(id, true), true);
-      if (r?.started) setData((d) => ({ ...d, consolidating: d.consolidating?.running ? d.consolidating : { running: true, stage: "", gap: null } }));
-    } finally { setConsolidating(false); }
-    void reload("observations");
-  };
-  const onRun = async () => {
+  // Opening the Activity tab marks what is there as seen (the dot on the expert's row goes). Silent: a nicety.
+  useEffect(() => {
+    if (tab !== "activity") return;
+    setExpertUnread(id, 0);
+    void expertApi.seen(id).catch(() => {});
+  }, [id, tab]);
+
+  // Learning answers at once and runs in the background (the activity's `learning` follows it, polled while it runs),
+  // so the button is busy only for the request itself.
+  const onLearn = async () => {
     setStarting(true);
-    try { await guard(() => expertApi.runChecks(id), true); await reload("checks"); } finally { setStarting(false); }
+    try {
+      const r = await guard(() => expertApi.learn(id), true);
+      if (r?.started) setData((d) => ({ ...d, learning: d.learning?.running ? d.learning : { running: true, stage: "" } }));
+    } finally { setStarting(false); }
+    void reload("activity");
   };
-  const onDrop = async (g: ExpertGap) => {
-    const r = await guard(() => expertApi.dismissGap(id, g.id), true);
-    const swap = (os: ExpertObs[] | null) => os && os.map((o) => (o.gap?.id === g.id ? { ...o, gap: r || o.gap } : o));
-    if (r) setData((d) => ({ ...d, pending: swap(d.pending), done: swap(d.done) }));
-    void reload("observations");
+  // A refusal (409: the skill changed since, undo the later change first) stays on that card, never the page banner.
+  const onUndo = async (a: ExpertActivity) => {
+    setUndoing(a.id);
+    setUndoErrors(({ [a.id]: _gone, ...rest }) => rest);
+    try {
+      await expertApi.undo(id, a.id);
+      setData((d) => ({ ...d, activity: (d.activity || []).map((x) => (x.id === a.id ? { ...x, undone: true } : x)) }));
+    } catch (e) {
+      setUndoErrors((m) => ({ ...m, [a.id]: undoError(e) }));
+    } finally { setUndoing(null); }
+    void reload("activity");
+  };
+  const onMore = () => {
+    const last = data.activity?.[data.activity.length - 1];
+    if (last) void loadMore(last.id);
   };
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -644,11 +528,11 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
         ))}
       </div>
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
-        {tab === "memory" ? <MemoryPanel items={data.memory} proposals={data.proposals} budget={data.budget} archived={data.archive} lan={isLanHost()} onForget={(it) => { void onForget(it); }} /> : null}
-        {tab === "observations" ? <ObservationsPanel pending={data.pending} done={data.done} consolidating={data.consolidating} proposals={data.proposals} items={data.memory} budget={data.budget} busy={consolidating}
-          lan={isLanHost()} onConsolidate={() => { void onConsolidate(); }} onDrop={(g) => { void onDrop(g); }} /> : null}
+        {tab === "activity" ? <ActivityPanel items={data.activity} waiting={data.waiting} learning={data.learning} everything={everything} onEverything={setEverything}
+          more={data.more} onMore={onMore} busy={starting} undoing={undoing} undoErrors={undoErrors} lan={isLanHost()} off={b.expert?.learning === false}
+          onLearn={() => { void onLearn(); }} onUndo={(a) => { void onUndo(a); }} /> : null}
+        {tab === "memory" ? <MemoryPanel items={data.memory} budget={data.budget} /> : null}
         {tab === "consults" ? <ConsultsPanel consults={data.consults} items={data.memory} /> : null}
-        {tab === "checks" ? <ChecksPanel checks={data.checks} starting={starting} onRun={() => { void onRun(); }} /> : null}
       </div>
     </div>
   );

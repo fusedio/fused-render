@@ -1,7 +1,6 @@
-// Pure helpers for an expert's panels (components/ExpertPane.tsx) and its proposal card (components/ApprovalCard.tsx):
-// ordering and the short strings the rows show. The shapes are docs/experts.md §4 (Item, Consult, Run, Proposal).
-import type { ExpertArchived, ExpertCheckStatus, ExpertConsolidating, ExpertConsult, ExpertEngineRow, ExpertGap, ExpertLastTidy, ExpertMemory, ExpertObs, ExpertItem, ExpertProposal,
-  ExpertScore } from "./api";
+// Pure helpers for an expert's panels (components/ExpertPane.tsx): ordering and the short strings the cards show.
+// The shapes are docs/experts-autonomous.md (the activity line, the lesson, the consult).
+import type { ExpertActivity, ExpertBudget, ExpertConsult, ExpertEngineRow, ExpertEvidence, ExpertItem, ExpertLastTidy, ExpertLearning } from "./api";
 
 /** How often a lesson was used: the sessions that showed it plus the answers that relied on it (`cited`, absent on an
  *  older server: 0). */
@@ -11,22 +10,6 @@ export const lessonUses = (it: Pick<ExpertItem, "count" | "cited">): number => M
 export function sortLessons(items: readonly ExpertItem[]): ExpertItem[] {
   return [...items].sort((a, b) => lessonUses(b) - lessonUses(a) || (b.updated || 0) - (a.updated || 0) || a.id.localeCompare(b.id));
 }
-
-/** The proposals the Memory panel mentions (in progress, waiting on the user, or failed), newest first. */
-export function openProposals(ps: readonly ExpertProposal[] | null | undefined): ExpertProposal[] {
-  return (ps || []).filter((p) => ["preparing", "ready", "shown", "failed"].includes(p.status)).sort((a, b) => (b.ts || 0) - (a.ts || 0));
-}
-
-/** One open proposal as the Memory panel says it ("" for a status it does not mention). */
-export function proposalLine(p: Pick<ExpertProposal, "status" | "error">): string {
-  if (p.status === "preparing") return "Drafting a skill proposal…";
-  if (p.status === "ready" || p.status === "shown") return "A skill proposal is waiting for your answer in the chat.";
-  if (p.status === "failed") return `A skill proposal failed: ${p.error || "no reason given"}`;
-  return "";
-}
-
-/** Whether a proposal is still being prepared (the pane polls while one is). */
-export const anyPreparing = (ps: readonly ExpertProposal[] | null | undefined): boolean => !!ps?.some((p) => p.status === "preparing");
 
 /** "used 3×" (lessonUses; a lesson in memory was seen at least once, so never "used 0×"). */
 export const usedLabel = (it: Pick<ExpertItem, "count" | "cited">): string => `used ${Math.max(1, lessonUses(it))}×`;
@@ -43,7 +26,7 @@ export function usesLine(it: Pick<ExpertItem, "count" | "cited">): string {
  *  the lessons listed, `tidy_at` to the limit. `fill` / `over`: the meter's neutral part (up to `tidy_at`) and its
  *  warning part (beyond it), as percentages of the bar. */
 export interface BudgetState { total: number; limit: number; tidyAt: number; above: boolean; label: string; note: string; fill: number; over: number }
-export function budgetState(m: Pick<ExpertMemory, "limit" | "tidy_at" | "total"> | null | undefined, listed = 0): BudgetState | null {
+export function budgetState(m: Pick<ExpertBudget, "limit" | "tidy_at" | "total"> | null | undefined, listed = 0): BudgetState | null {
   const limit = m?.limit;
   if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) return null;
   const total = Math.max(0, typeof m?.total === "number" && Number.isFinite(m.total) ? m.total : listed);
@@ -51,38 +34,20 @@ export function budgetState(m: Pick<ExpertMemory, "limit" | "tidy_at" | "total">
   const above = total > tidyAt, bar = Math.max(limit, total), pct = (n: number) => Math.round((n / bar) * 1000) / 10;
   return {
     total, limit, tidyAt, above, label: `${total} of ${limit} lessons`,
-    note: above ? `Above ${tidyAt}: each consolidation removes old, rarely used lessons, merges related ones, and proposes heavily used ones as skills.`
+    note: above ? `Above ${tidyAt}: it removes old, rarely used lessons, merges related ones, and moves heavily used ones into skills.`
       : `Tidying starts above ${tidyAt}.`,
     fill: pct(Math.min(total, tidyAt)), over: pct(Math.max(0, total - tidyAt)),
   };
 }
 
-/** Why a lesson left memory, in plain words (the "Recently removed" rows). `merged` names the lesson it went into by
- *  its claim, looked up in `items` (the current memory; "another lesson" when it is not there). */
-export function removedReasonLabel(a: Pick<ExpertArchived, "reason" | "skill" | "into">,
-  items: readonly Pick<ExpertItem, "id" | "claim">[] | null | undefined = null): string {
-  switch (a.reason) {
-    case "merged": {
-      const into = a.into ? (items || []).find((it) => it.id === a.into) : undefined;
-      return `merged into: ${into?.claim || "another lesson"}`;
-    }
-    case "stale": return "removed: old and rarely used";
-    case "promoted": return a.skill ? `moved into the skill ${a.skill}` : "moved into a skill";
-    case "over_limit": return "removed: memory was over its limit";
-    case "forgotten": return "forgotten by you";
-    case "corrected": return "replaced by your correction";
-    default: return "removed";
-  }
-}
-
-/** "Last tidy: removed 3, merged 4 into 2, proposing 2 as skills." for a tidy under a day old ("" when older, absent,
+/** "Last tidy: removed 3, merged 4 into 2, moved 2 into skills." for a tidy under a day old ("" when older, absent,
  *  or it did nothing). Lessons cut for being over the limit count as removed; merged: the originals into the lessons
  *  they became. */
 export function tidySummary(t: ExpertLastTidy | null | undefined, nowMs: number = Date.now()): string {
   if (!t || typeof t.at !== "number" || nowMs / 1000 - t.at >= 86400) return "";
   const removed = (t.deleted?.length || 0) + (t.over_limit?.length || 0), promoting = t.promoting?.length || 0;
   const merges = (t.merged || []).filter(Boolean), into = merges.length, merged = merges.reduce((n, m) => n + (m.from?.length || 0), 0);
-  const parts = [removed ? `removed ${removed}` : "", into && merged ? `merged ${merged} into ${into}` : "", promoting ? `proposing ${promoting} as skill${promoting === 1 ? "" : "s"}` : ""].filter(Boolean);
+  const parts = [removed ? `removed ${removed}` : "", into && merged ? `merged ${merged} into ${into}` : "", promoting ? `moved ${promoting} into skill${promoting === 1 ? "" : "s"}` : ""].filter(Boolean);
   return parts.length ? `Last tidy: ${parts.join(", ")}.` : "";
 }
 
@@ -104,21 +69,15 @@ export function lessonSource(it: Pick<ExpertItem, "trust"> & Partial<Pick<Expert
   return it.trust === "outcome" ? "from sessions" : it.trust === "research" ? "found by research" : "";
 }
 
-/** A lesson card's footer facts: where it stands on the way to a skill, "contradicted N×", "confirmed N×" (sessions
- *  that echoed the expert's own advice; they do not raise its count), and why a lesson is not
- *  used yet ("waiting for your approval" for a research finding, "seen once" otherwise). A lesson that goes into a
- *  skill leaves memory, so an older server's `promoted` lesson just shows no skill fact. */
-export function lessonFacts(it: Pick<ExpertItem, "trust" | "promoted" | "proposed" | "rejected" | "indexed" | "contradicted" | "merged_from">
-  & Partial<Pick<ExpertItem, "confirmed">>): string[] {
+/** A lesson card's footer facts: "merged from N", "contradicted N×", "confirmed N×" (sessions that echoed the expert's
+ *  own advice; they do not raise its count), and "seen once" for a lesson answers do not draw on yet. */
+export function lessonFacts(it: Pick<ExpertItem, "indexed" | "contradicted" | "merged_from"> & Partial<Pick<ExpertItem, "confirmed">>): string[] {
   const out: string[] = [];
   const merged = Array.isArray(it.merged_from) ? it.merged_from.length : 0;
   if (merged) out.push(`merged from ${merged}`);
-  if (it.promoted) { /* nothing: never "in a skill" any more */ }
-  else if (it.rejected) out.push("not proposed again");
-  else if (it.proposed) out.push("skill proposal pending");
   if ((it.contradicted || 0) > 0) out.push(`contradicted ${it.contradicted}×`);
   if ((it.confirmed || 0) > 0) out.push(`confirmed ${it.confirmed}×`);
-  if (it.indexed === false) out.push(it.trust === "research" ? "waiting for your approval" : "seen once");
+  if (it.indexed === false) out.push("seen once");
   return out;
 }
 
@@ -213,50 +172,12 @@ export function usedLessons(used: readonly string[] | null | undefined, items: r
   return (used || []).map((id) => ({ id, text: by.get(id) || id }));
 }
 
-/** "11 / 14" (the Checks tab's headline). */
-export const scoreText = (s: ExpertScore | null | undefined): string => (s ? `${s.score} / ${s.total}` : "");
-
-/** The proposal card's scores line, "Checks: 11/14 → 12/14"; "" unless both runs exist (no questions = no gate). */
-export function scoresLine(before: ExpertScore | null | undefined, after: ExpertScore | null | undefined): string {
-  if (!before || !after) return "";
-  return `Checks: ${before.score}/${before.total} → ${after.score}/${after.total}`;
-}
-
-/** The prefix of each warning line in a proposal card's text (proposals.card_text, for channels without the card UI). */
-const WARNING_PREFIX = "Warning: this change ";
-
-/** A proposal card's warnings: cards.py `expert_warnings`, else read back from the text's "Warning: this change …"
- *  lines. */
-export function proposalWarnings(warnings: readonly unknown[] | null | undefined, text?: string | null): string[] {
-  if (Array.isArray(warnings)) return warnings.filter((w): w is string => typeof w === "string" && !!w.trim());
-  return (text || "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith(WARNING_PREFIX))
-    .map((l) => l.slice(WARNING_PREFIX.length).replace(/\.$/, ""));
-}
-
-/** The card's one-line list of warnings, "Heads up: this change removes the section “X” · removes 2 code blocks";
- *  "" when there are none (a pure addition). */
-export function warningsLine(warnings: readonly string[]): string {
-  return warnings.length ? `Heads up: this change ${warnings.join(" · ")}` : "";
-}
-
-/** A proposal event's text as the card shows it: without its "Checks: …" and "Warning: …" lines (the sub line says those) and
- *  a trailing "Approve?" line (the buttons ask it). */
-export function proposalText(text: string | null | undefined): string {
-  const lines = (text || "").split("\n").filter((l) => !l.trim().startsWith("Checks:") && !l.trim().startsWith(WARNING_PREFIX));
-  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-  if (lines.length && lines[lines.length - 1].trim() === "Approve?") lines.pop();
-  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-/** While a gate run is going: "Running checks · 3 of 14". */
-export function checkProgress(st: ExpertCheckStatus | null | undefined): string {
-  if (!st?.running) return "";
-  return st.total ? `Running checks · ${st.done} of ${st.total}` : "Running checks…";
-}
-
 /** The Engine field's helper text: how Auto resolves (model.py `AUTO_ENGINES`: Claude if on, else Copilot; never
  *  Codex, whose reads Fused does not fence). */
 export const ENGINE_HELP = "Who answers for this expert. Auto uses Claude when it is on, otherwise Copilot; it never picks Codex. Saved at once.";
+
+/** The Learning switch's one line of help (Settings › Expert). */
+export const LEARNING_HELP = "Off: it still answers and notes what happens, and changes nothing.";
 
 const ENGINE_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", copilot: "Copilot" };
 
@@ -285,158 +206,80 @@ export function engineNote(rows: readonly ExpertEngineRow[], engine: string): st
   return (rows.find((r) => r.id === engine)?.note || "").trim();
 }
 
-// ------------------------------------------------------------------ gaps ----
+// ------------------------------------------------------------------ activity ----
 
-const UNRESOLVED = new Set<string>(["open", "researching", "proposed", "asked"]);
-/** Whether a gap still waits on something (open, researching, or its proposal / question is up in the chat). */
-export const gapUnresolved = (g: Pick<ExpertGap, "status">): boolean => UNRESOLVED.has(g.status);
-
-/** How many gaps still wait on something (open questions; the Consolidate button counts them as work). */
-export const unresolvedGapCount = (gs: readonly Pick<ExpertGap, "status">[] | null | undefined): number => (gs || []).filter(gapUnresolved).length;
-
-/** The gap's skill-fix proposal status and error: the gap's own `proposal_status` / `proposal_error` when the server
- *  sends them, else its `proposal` looked up in `proposals`; status "" when neither says. */
-export function gapProposal(g: Pick<ExpertGap, "proposal" | "proposal_status" | "proposal_error">,
-  proposals: readonly Pick<ExpertProposal, "id" | "status" | "error">[] | null | undefined = null): { status: ExpertProposal["status"] | ""; error: string } {
-  if (g.proposal_status) return { status: g.proposal_status, error: g.proposal_error || "" };
-  const p = g.proposal ? (proposals || []).find((x) => x.id === g.proposal) : undefined;
-  return p ? { status: p.status, error: p.error || g.proposal_error || "" } : { status: "", error: g.proposal_error || "" };
+const ACTION_LABEL: Record<string, string> = { learned: "Learned", counted: "Seen again", corrected: "Corrected", forgot: "Forgot", merged: "Merged",
+  removed: "Removed", skill_updated: "Skill updated", skill_created: "Skill created", skill_restored: "Skill restored", noticed: "Noticed",
+  researched: "Researched", could_not_find: "Could not find out", skipped: "Skipped", undo: "Undone" };
+/** What the expert did, in plain words ("Skill updated"; an action this page does not know reads as itself, spaced). */
+export function actionLabel(action: string | null | undefined): string {
+  const a = action || "";
+  if (ACTION_LABEL[a]) return ACTION_LABEL[a];
+  const t = a.replace(/_/g, " ").trim();
+  return t ? t[0].toUpperCase() + t.slice(1) : "Did something";
 }
 
-/** A gap's status tag in plain words. `researching`: the gap id the server says it is researching now (that gap reads
- *  "researching…" whatever its stored status). A `proposed` gap says where its proposal stands (gapProposal): a
- *  proposal is requested long before its card is up (drafting and two check runs), so "proposed in chat" waits for it. */
-export function gapStatusLabel(g: Pick<ExpertGap, "id" | "status" | "resolution"> & Partial<Pick<ExpertGap, "proposal" | "proposal_status" | "proposal_error">>,
-  researching: string | null = null, proposals: readonly Pick<ExpertProposal, "id" | "status" | "error">[] | null = null): string {
-  if (researching && g.id === researching && gapUnresolved(g)) return "researching…";
-  switch (g.status) {
-    case "open": return "waiting";
-    case "researching": return "researching…";
-    case "proposed": {
-      const st = gapProposal({ proposal: g.proposal ?? null, proposal_status: g.proposal_status, proposal_error: g.proposal_error }, proposals).status;
-      if (st === "preparing") return "drafting a skill fix…";
-      if (st === "ready") return "skill fix ready, card coming";
-      if (st === "failed") return "skill fix failed";
-      return "skill fix proposed in chat";
-    }
-    case "asked": return "asked you in chat";
-    case "answered": return g.resolution === "user" ? "answered by you" : g.resolution === "skill" ? "answered by a new skill" : "answered";
-    case "dismissed": return "dropped";
-    default: return String(g.status || "");
+/** The marker's tone: the warning token for a change that failed or something it could not do, the positive one for
+ *  what it now knows, the accent for a skill change, muted for the rest (and for anything undone). */
+export function actionTone(a: Pick<ExpertActivity, "action" | "ok"> & Partial<Pick<ExpertActivity, "undone">>): "ok" | "warn" | "muted" | "accent" {
+  if (a.ok === false || a.action === "could_not_find") return "warn";
+  if (a.undone) return "muted";
+  if (a.action.startsWith("skill_")) return "accent";
+  return a.action === "learned" || a.action === "corrected" || a.action === "researched" ? "ok" : "muted";
+}
+
+export type ActivityFilter = "all" | "skills" | "memory";
+const MEMORY_ACTIONS = new Set(["learned", "counted", "corrected", "forgot", "merged", "removed"]);
+/** Which chip a line belongs under: a skill change, a memory change, or neither (notes and undos show under All only). */
+export function activityGroup(a: Pick<ExpertActivity, "action">): "skills" | "memory" | "" {
+  return a.action.startsWith("skill_") ? "skills" : MEMORY_ACTIONS.has(a.action) ? "memory" : "";
+}
+export function filterActivity(xs: readonly ExpertActivity[], f: ActivityFilter): ExpertActivity[] {
+  return f === "all" ? [...xs] : xs.filter((a) => activityGroup(a) === f);
+}
+
+/** A quiet line (seen again, noticed): hidden unless "Show everything" is on. */
+export const isQuiet = (a: Pick<ExpertActivity, "action"> & Partial<Pick<ExpertActivity, "quiet">>): boolean =>
+  a.quiet === true || (a.quiet == null && (a.action === "counted" || a.action === "noticed"));
+/** The lines as listed: newest first, without the quiet ones unless `everything`. */
+export function shownActivity(xs: readonly ExpertActivity[], everything: boolean): ExpertActivity[] {
+  return [...xs].filter((a) => everything || !isQuiet(a)).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+}
+
+/** Whether a line still has an Undo: it changed something, worked, and was not taken back (an undo is never undone). */
+export const canUndo = (a: Pick<ExpertActivity, "action" | "ok" | "undoable" | "undone">): boolean =>
+  !!a.undoable && !a.undone && a.ok !== false && a.action !== "undo";
+
+/** "3 things waiting to be learned" ("" for none). */
+export function waitingLine(n: number | null | undefined): string {
+  const w = Math.max(0, Math.floor(n || 0));
+  return w ? `${w} thing${w === 1 ? "" : "s"} waiting to be learned` : "";
+}
+
+/** While it learns: what it is doing, by step ("" when it is not). */
+export function learningLine(l: ExpertLearning | null | undefined): string {
+  if (!l?.running) return "";
+  switch (l.stage) {
+    case "lessons": return "Going through what it noticed…";
+    case "research": return "Looking into open questions…";
+    case "distill": return "Updating skills…";
+    case "tidy": return "Tidying memory…";
+    default: return "Learning…";
   }
 }
 
-/** A gap's research note as shown: "not found: why" reads "Looked into it: why" (a bare "not found" too). */
-export function gapNote(error: string | null | undefined): string {
-  const t = (error || "").trim();
-  if (t === "not found") return "Looked into it: nothing found";
-  return /^not found: /.test(t) ? `Looked into it: ${t.slice("not found: ".length)}` : t;
+/** A line's evidence as the opened card shows it: the user's words, where it came from (the session's folder or canvas
+ *  and what ran it; "a session" when only the session is known), and the file it was read in. */
+export function evidenceParts(e: ExpertEvidence | null | undefined): { quote: string; from: string; fromTitle: string; file: string } {
+  const src = e?.source, o = src && typeof src === "object" ? src : null;
+  const file = typeof src === "string" ? src.trim() : (o?.path || "").trim();
+  const where = basename(o?.canvas) || basename(o?.target), from = [where, o?.backend || ""].filter(Boolean).join(" · ") || (e?.session ? "a session" : "");
+  return { quote: (e?.quote || "").trim(), from, fromTitle: [o?.canvas || o?.target || "", e?.session ? `session ${e.session}` : ""].filter(Boolean).join("\n"), file };
 }
 
-/** An observation's text as its row shows it: an unsure row without its "Could not answer: " lead (its tag says so). */
-export function observationText(o: Pick<ExpertObs, "kind" | "claim"> & { gap?: Pick<ExpertGap, "question"> | null }): string {
-  const t = o.claim || o.gap?.question || "";
-  return o.kind === "gap" ? t.replace(/^Could not answer:\s*/, "") : t;
-}
-
-/** "asked 3×". */
-export const askedLabel = (count: number | null | undefined): string => `asked ${Math.max(1, count || 0)}×`;
-
-// ------------------------------------------------------------------ observations ----
-
-export const OBS_INTRO = "Everything I noted from consults and sessions. Consolidating turns these into lessons and skill fixes.";
-export const OBS_EMPTY = "Nothing noted yet. Unsure answers and things I learn from sessions show up here.";
-
-const OBS_TYPES: Record<string, string> = { gap: "unsure", repeated_request: "asked for", user_correction: "correction",
-  error_then_fix: "fix that worked", advice_confirmed: "advice confirmed", advice_contradicted: "advice contradicted" };
-/** An observation's type tag. The legacy kind `answer_contradicted` covered both outcomes of expert advice: it reads
- *  "advice contradicted" when consolidation counted it as a contradiction, "advice confirmed" for any other outcome,
- *  and "advice checked" while it has none. */
-export function observationTypeLabel(kind: string | null | undefined, outcome?: ExpertObs["outcome"]): string {
-  if (kind === "answer_contradicted") {
-    if (!outcome?.op) return "advice checked";
-    return outcome.op === "contradict" ? "advice contradicted" : "advice confirmed";
-  }
-  return OBS_TYPES[kind || ""] || "learning";
-}
-
-/** A consolidated observation's result tag: what consolidation made of it. A gap row says where its gap stands
- *  (gapStatusLabel; `researching` as there); "" when there is nothing to say (still pending, unknown op). */
-export function observationResultLabel(o: Pick<ExpertObs, "kind" | "outcome" | "gap">, researching: string | null = null,
-  proposals: readonly Pick<ExpertProposal, "id" | "status" | "error">[] | null = null): string {
-  if (o.gap) return gapStatusLabel(o.gap, researching, proposals);
-  switch (o.outcome?.op) {
-    case "add": return "new lesson";
-    case "bump": return "counted toward a lesson";
-    case "confirm": return "noted as confirmed; does not raise the count";
-    case "contradict": return "contradicted a lesson";
-    case "nothing": return "nothing new";
-    case "gap": return o.kind === "gap" ? "waiting" : "";
-    default: return "";
-  }
-}
-
-/** Where an observation came from: the source folder and backend when known, else "consult" for one from a consult. */
-export function observationSource(o: Pick<ExpertObs, "source" | "consult">): string {
-  const target = basename(o.source?.target), backend = o.source?.backend || "";
-  return target || backend ? [target, backend].filter(Boolean).join(" · ") : o.consult ? "consult" : "";
-}
-
-/** An observation type marker's tone: the warning token for an unsure answer or contradicted advice, the positive one
- *  for what worked or held up, the accent for your correction, muted for the rest. */
-export function observationTone(kind: string | null | undefined, outcome?: ExpertObs["outcome"]): "warn" | "ok" | "accent" | "muted" {
-  const label = observationTypeLabel(kind, outcome);
-  if (label === "unsure" || label === "advice contradicted") return "warn";
-  if (label === "fix that worked" || label === "advice confirmed") return "ok";
-  if (label === "correction") return "accent";
-  return "muted";
-}
-
-/** An observation card's footer: for a waiting row "waiting to be consolidated" (a gap already past "open" says where
- *  it stands instead); for a consolidated one what came of it (observationResultLabel); then "asked N×" for a gap asked
- *  more than once. */
-export function observationFacts(o: Pick<ExpertObs, "kind" | "outcome" | "gap">, consolidated: boolean, researching: string | null = null,
-  proposals: readonly Pick<ExpertProposal, "id" | "status" | "error">[] | null = null): string[] {
-  const out: string[] = [], g = o.gap;
-  const gapMoved = !!g && (g.status !== "open" || (researching != null && researching === g.id));
-  const result = !consolidated && !gapMoved ? "waiting to be consolidated" : observationResultLabel(o, researching, proposals);
-  if (result) out.push(result);
-  if (g && (g.count || 0) > 1) out.push(askedLabel(g.count));
-  return out;
-}
-
-export type ObservationFilter = "all" | "unsure" | "learnings";
-/** The observations one filter chip keeps: "unsure" (the expert could not answer), "learnings" (everything else). */
-export function filterObservations(os: readonly ExpertObs[], f: ObservationFilter): ExpertObs[] {
-  if (f === "all") return [...os];
-  return os.filter((o) => (o.kind === "gap") === (f === "unsure"));
-}
-
-/** The tab's two sections: waiting (oldest first) and consolidated (newest first). */
-export function sortObservations(pending: readonly ExpertObs[] | null | undefined, done: readonly ExpertObs[] | null | undefined): { waiting: ExpertObs[]; done: ExpertObs[] } {
-  return { waiting: [...(pending || [])].sort((a, b) => (a.ts || 0) - (b.ts || 0)), done: [...(done || [])].sort((a, b) => (b.ts || 0) - (a.ts || 0)) };
-}
-
-/** The gaps joined into the observations (each once), for "is an open question left". */
-export function observationGaps(...lists: (readonly ExpertObs[] | null | undefined)[]): ExpertGap[] {
-  const seen = new Map<string, ExpertGap>();
-  for (const l of lists) for (const o of l || []) if (o.gap && !seen.has(o.gap.id)) seen.set(o.gap.id, o.gap);
-  return [...seen.values()];
-}
-
-/** The gap a running consolidation is researching now, if any. */
-export const researchingGap = (c: ExpertConsolidating | null | undefined): string | null =>
-  c?.running && (c.stage === "researching" || c.stage === "proposing") ? c.gap || null : null;
-
-/** While a consolidation runs: what it is doing, by stage ("" when it is not running). */
-export function consolidatingLine(c: ExpertConsolidating | null | undefined): string {
-  if (!c?.running) return "";
-  switch (c.stage) {
-    case "lessons": return "Consolidating lessons…";
-    case "tidying": return "Tidying memory…";
-    case "gaps": return "Sorting open questions…";
-    case "researching": return "Researching an open question…";
-    case "proposing": return "Drafting a skill fix…";
-    default: return "Consolidating…";
-  }
+/** The message a failed undo shows on its card: the server's `detail` (a 409 says why), else the error's own text. */
+export function undoError(e: unknown): string {
+  const body = (e as { body?: Record<string, unknown> | null } | null)?.body;
+  const d = body && typeof body.detail === "string" ? body.detail.trim() : "";
+  return d || (e instanceof Error ? e.message : String(e || "")) || "Could not undo this.";
 }

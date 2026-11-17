@@ -3,7 +3,6 @@ import { approvalVerdict } from "@platform/lib/risk";
 import { GateCard, type GateStatus } from "@platform/ui/GateCard";
 
 import type { BotEvent } from "../lib/api";
-import { proposalText, proposalWarnings, scoresLine, warningsLine } from "../lib/expert";
 
 /** The settled card's caption, from the user line that answered it (null while that line is unknown). */
 function verdictStatus(answer: string | null | undefined): GateStatus | undefined {
@@ -16,7 +15,6 @@ function verdictStatus(answer: string | null | undefined): GateStatus | undefine
  *  `.msg.approval:not(.settled)`; a settled card keeps the pill, summary and command, only the buttons go.
  *  `answer`: the user line that settled this card (normalized), for the verdict caption. */
 export function ApprovalCard({ e, live, title, botName, answer }: { e: BotEvent; live: boolean; title?: string; botName?: string; answer?: string | null }) {
-  if (e.expert_proposal) return <ProposalCard e={e} live={live} title={title} answer={answer} />;
   const who = botName || "The bot";
   const { body, bodyWhat, sub } = approvalParts(e);
   return (
@@ -40,43 +38,6 @@ export function ApprovalCard({ e, live, title, botName, answer }: { e: BotEvent;
           ? [{ key: "forever", text: "Always approve", kind: "default" as const, title: `Never ask again when this bot ${e.forever.label}. Undo it in Settings › ${e.forever.kind === "connect" ? "Connections" : "Permissions"}.`, attrs: { "data-forever": "1" } }]
           : []),
         { key: "deny", text: "Deny", kind: "default", attrs: { "data-deny": "1" } },
-      ]}
-    />
-  );
-}
-
-/** An expert's skill proposal (docs/experts.md §4 cards.py): an ordinary approval event carrying `expert_proposal`. The
- *  unified diff (`detail`) is the collapsible body; the sub line holds the change's warnings (`expert_warnings`) and
- *  the gate's scores before / after (only when both exist: proposals no longer run the checks, so new cards carry none);
- *  Approve / Reject ride the same data-approve / data-deny hooks (the thread sends "approve" / "deny"). Never an
- *  "Always approve": every skill change is its own decision. */
-function ProposalCard({ e, live, title, answer }: { e: BotEvent; live: boolean; title?: string; answer?: string | null }) {
-  const diff = typeof e.detail === "string" && e.detail.trim() ? e.detail : "";
-  const v = approvalVerdict(answer);
-  const status: GateStatus | undefined = live ? undefined
-    : v === "Approved" ? { tone: "allow", text: "✓ Approved" } : v === "Denied" ? { tone: "deny", text: "✗ Rejected" } : undefined;
-  // The event text (cards.py card_text) says what changes; it leads when there is a diff to show under it.
-  // Its "Checks: …" line repeats `scores` and its "Approve?" the buttons, so both are dropped.
-  const text = proposalText(e.text);
-  const what = diff ? text : "";
-  const scores = scoresLine(e.score_before, e.score_after);
-  // Code-computed warnings (a section removed, code blocks lost, a big shrink, sections moved): one short line.
-  const warn = warningsLine(proposalWarnings((e as BotEvent & { expert_warnings?: unknown[] }).expert_warnings, e.text));
-  const sub = [warn, scores].filter(Boolean).join(" — ");
-  return (
-    <GateCard
-      className={`msg approval proposal${live ? "" : " settled"}`}
-      rootProps={{ "data-seq": e.seq, "data-proposal": e.expert_proposal, title }}
-      head="Proposed skill change"
-      riskSummary={what || undefined}
-      sub={sub || undefined}
-      body={diff || text}
-      bodyWhat="diff"
-      resolved={!live}
-      status={status}
-      actions={[
-        { key: "approve", text: "Approve", kind: "primary", title: "Write this change into the expert's skills", attrs: { "data-approve": "1" } },
-        { key: "deny", text: "Reject", kind: "default", title: "Leave the skills as they are; these lessons are not proposed again", attrs: { "data-deny": "1" } },
       ]}
     />
   );

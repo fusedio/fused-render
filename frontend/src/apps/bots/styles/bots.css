@@ -257,6 +257,8 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot .name .rt svg { width: 12px; height: 12px; display: block; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
 /* An expert (docs/experts.md): SUPER's badge on the page's accent. */
+/* An expert that did something by itself since its Activity tab was last opened. */
+.bots-page .bot .name .xunread { display: inline-block; width: 6px; height: 6px; margin-left: 5px; border-radius: 50%; background: var(--accent); vertical-align: 2px; }
 .bots-page .bot .name .expert { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); vertical-align: 1px; letter-spacing: .04em; }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */
 .bots-page .bot .name .rt.warn, .bots-page .bot .sub .warn, .bots-page .r .s .warn { color: var(--err); }
@@ -648,30 +650,6 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-bar { display: flex; align-items: center; gap: 10px; padding: 4px 4px 8px; }
 .xpanels .xp-bar .xp-line { flex: 1; min-width: 0; }
 .xpanels .xp-bar button { flex: none; display: inline-flex; align-items: center; gap: 6px; }
-.xpanels .xp-score { color: var(--xp-text); font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.xpanels .xp-prog { height: 3px; margin: 0 4px 8px; border-radius: 2px; background: var(--xp-raised); overflow: hidden; }
-.xpanels .xp-prog > div { height: 100%; background: var(--xp-accent); transition: width .3s; }
-.xpanels .xp-list { list-style: none; margin: 0; padding: 0; }
-.xpanels .xp-proposals { list-style: none; margin: 0 0 6px; padding: 0 4px; display: flex; flex-direction: column; gap: 4px; }
-.xpanels .xp-proposal { color: var(--xp-text); }
-.xpanels .xp-proposal.failed { color: var(--xp-err); }
-.xpanels .xp-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 4px; border-top: 1px solid var(--xp-line); }
-.xpanels .xp-row:first-child { border-top: none; }
-.xpanels .xp-claim { color: var(--xp-text); overflow-wrap: anywhere; }
-.xpanels .xp-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--xp-muted); font-size: 11px; }
-.xpanels .xp-fold > details { flex: 1; min-width: 0; }
-.xpanels .xp-fold summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; cursor: pointer; list-style: none; }
-.xpanels .xp-fold summary::-webkit-details-marker { display: none; }
-.xpanels .xp-fold summary .xp-claim { flex: 1 1 60%; min-width: 0; }
-.xpanels .xp-fold summary:hover .xp-claim { text-decoration: underline; }
-.xpanels .xp-why { flex-basis: 100%; }
-.xpanels .xp-mark { flex: none; width: 14px; font-weight: 600; }
-.xpanels .xp-mark.pass { color: var(--xp-ok); }
-.xpanels .xp-mark.fail { color: var(--xp-err); }
-.xpanels .xp-body { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-.xpanels .xp-body pre { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--xp-inset); color: var(--xp-text); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow: auto; }
-.xpanels .xp-sec + .xp-sec { margin-top: 12px; }
-.xpanels .xp-h { margin: 0; padding: 4px 4px 2px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--xp-muted); opacity: .8; }
 .xpanels .xp-status { display: block; color: var(--xp-text); }
 /* The list tabs' cards (XCard: lessons, observations, consults): filter chips, day dividers, one bordered card per row.
    The header button is the whole click target; detail (a consult's answer, a finding, Forget / Drop) shows only when open. */
@@ -682,8 +660,6 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-chip .xp-n { margin-left: 3px; font-variant-numeric: tabular-nums; opacity: .75; }
 .xpanels .xp-day { margin: 12px 2px 6px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--xp-muted); }
 .xpanels .xp-dayg:first-of-type > .xp-day { margin-top: 2px; }
-.xpanels .xp-sec .xp-dayg:first-of-type > .xp-day { margin-top: 4px; }
-.xpanels .xp-sec .xp-cards { margin-top: 4px; }
 .xpanels .xp-cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .xpanels .xp-card { min-width: 0; border: 1px solid var(--xp-line); border-radius: 8px; transition: border-color .15s; }
 .xpanels .xp-card:hover { border-color: color-mix(in srgb, var(--xp-muted) 45%, var(--xp-line)); }
@@ -709,8 +685,22 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-txt { margin: 0; color: var(--xp-text); overflow-wrap: anywhere; }
 .xpanels .xp-about-chip { padding: 1px 8px; border-radius: 6px; background: var(--xp-raised); color: var(--xp-text); font-size: 11px; }
 .xpanels .xp-acts { display: flex; justify-content: flex-end; }
-.xpanels .xp-acts .xp-forget { padding: 3px 10px; font-size: 11px; background: transparent; color: var(--xp-muted); border: 1px solid var(--xp-line); }
-.xpanels .xp-acts .xp-forget:hover { background: var(--xp-err); color: #fff; border-color: transparent; }
+/* The Activity tab: a card's foot (always shown, under its header: "undone", a failed change's error, a refused undo's
+   reason, and the Undo button on the right), the chips row with "Show everything" at its end, "Show earlier". */
+.xpanels .xp-card-foot { display: flex; align-items: center; gap: 10px; padding: 0 11px 9px; min-width: 0; font-size: 11px; }
+.xpanels .xp-foot-msg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.xpanels .xp-undone { color: var(--xp-muted); font-style: italic; }
+.xpanels .xp-err { color: var(--xp-err); }
+.xpanels .xp-card.undone .xp-q { color: var(--xp-muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--xp-muted) 60%, transparent); }
+.xpanels button.xp-undo { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: 11px; background: transparent; color: var(--xp-text); border: 1px solid var(--xp-line); }
+.xpanels button.xp-undo:hover { background: var(--xp-hover); }
+.xpanels .xp-toolbar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; padding: 2px 0 8px; }
+.xpanels .xp-toolbar .xp-filters { padding: 0; }
+.xpanels .xp-toolbar .xp-every { margin-left: auto; padding: 3px 10px; font-size: 11.5px; background: transparent; color: var(--xp-muted); border: 1px solid var(--xp-line); }
+.xpanels .xp-toolbar .xp-every:hover { background: var(--xp-hover); color: var(--xp-text); }
+.xpanels .xp-toolbar .xp-every.on { background: var(--xp-on); color: var(--xp-text); border-color: transparent; }
+.xpanels .xp-wait { display: block; }
+.xpanels .xp-earlier { justify-content: center; margin-top: 10px; }
 .xpanels .xp-card-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 11px 11px; min-width: 0; }
 .xpanels .xp-part { min-width: 0; }
 .xpanels .xp-lbl { margin: 0 0 4px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--xp-muted); }
@@ -746,14 +736,8 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-md :is(th, td) { padding: .3em .6em; border-bottom: 1px solid var(--xp-line); vertical-align: top; text-align: left; overflow-wrap: normal; }
 .xpanels .xp-md th { font-weight: 500; color: var(--xp-muted); }
 .xpanels .xp-md .wide .tfoot { display: none; }  /* the thread's table buttons are handled only there */
-.xpanels .xp-tag.kind-gap, .xpanels .xp-tag.kind-advice_contradicted, .xpanels .xp-tag.res-contradict,
-.xpanels .xp-tag.contradicted { color: var(--xp-warn); border-color: color-mix(in srgb, var(--xp-warn) 45%, transparent); }
-.xpanels .xp-tag.res-researching, .xpanels .xp-tag.res-proposed, .xpanels .xp-tag.res-asked { color: var(--xp-accent-text); border-color: color-mix(in srgb, var(--xp-accent-text) 45%, transparent); }
-.xpanels .xp-tag.res-answered, .xpanels .xp-tag.res-add { color: var(--xp-ok); border-color: color-mix(in srgb, var(--xp-ok) 45%, transparent); }
-.xpanels .xp-tag.res-dismissed, .xpanels .xp-tag.res-nothing { opacity: .8; }
 /* The Memory tab's budget line (MemoryBudgetLine): "32 of 50 lessons", a thin meter (neutral up to tidy_at, the warning
-   tone beyond it, a tick where tidying starts) and a muted sentence or two. "Recently removed" (RemovedLessons): a
-   collapsed list at the bottom, plain rows (claim clamped to two lines, a muted reason line), not cards. */
+   tone beyond it, a tick where tidying starts) and a muted sentence or two. */
 .xpanels .xp-budget { display: flex; flex-direction: column; gap: 4px; padding: 2px 4px 10px; }
 .xpanels .xp-budget-head { display: flex; align-items: baseline; gap: 8px; }
 .xpanels .xp-budget-n { color: var(--xp-text); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -763,17 +747,6 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-meter-tick { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -1px; background: var(--xp-text); opacity: .35; }
 .xpanels .xp-tidy { color: var(--xp-text); opacity: .85; }
 .xpanels .xp-used.xp-merged { color: var(--xp-muted); font-size: 11.5px; }
-.xpanels .xp-removed { margin-top: 14px; }
-.xpanels .xp-removed > summary { display: flex; align-items: center; gap: 4px; width: fit-content; max-width: 100%; cursor: pointer; list-style: none; border-radius: 4px; }
-.xpanels .xp-removed > summary::-webkit-details-marker { display: none; }
-.xpanels .xp-removed > summary:hover { color: var(--xp-text); }
-.xpanels .xp-removed > summary:focus-visible { outline: 2px solid var(--xp-accent-text); outline-offset: 2px; }
-.xpanels .xp-removed > summary .xp-chev { order: -1; margin-left: 0; transform: rotate(-90deg); }
-.xpanels .xp-removed[open] > summary .xp-chev { transform: none; }
-.xpanels .xp-removed-list { list-style: none; margin: 4px 0 0; padding: 0; }
-.xpanels .xp-removed-row { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 7px 4px; border-top: 1px solid var(--xp-line); }
-.xpanels .xp-removed-row:first-child { border-top: none; }
-.xpanels .xp-removed-claim { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--xp-text); overflow-wrap: anywhere; }
 .xpanels .xp-empty { padding: 20px 8px; text-align: center; font-size: 12.5px; line-height: 1.5; color: var(--xp-muted); }
 @media (prefers-reduced-motion: reduce) { .xpanels * { animation: none !important; transition: none !important; } }
 .bots-page .shotwrap img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }

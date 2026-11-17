@@ -27,7 +27,7 @@ import { Face } from "../components/Face";
 import { FolderPlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { ApiError, api, expertApi, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type ExpertEngineRow, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
-import { ENGINE_HELP, engineNote, engineOptions, modelOptions } from "../lib/expert";
+import { ENGINE_HELP, LEARNING_HELP, engineNote, engineOptions, modelOptions } from "../lib/expert";
 import { faceOf } from "../lib/face";
 import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
 import { exportBotFile, type BotDialogValue } from "./actions";
@@ -438,7 +438,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
               </Rows>
             ) : null}
 
-            {tab === "expert" && isExpert ? <ExpertSection bot={bot} confirm={confirm} /> : null}
+            {tab === "expert" && isExpert ? <ExpertSection bot={bot} /> : null}
 
             {tab === "skills" ? <SkillsSection b={bot} confirm={confirm} /> : null}
             {tab === "routines" ? <RoutinesSection b={bot} confirm={confirm} /> : null}
@@ -470,12 +470,13 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
 }
 
 /** Settings › Expert: the engine and model (saved at once through /api/experts/<id>/settings, like the page-wide
- *  switches: never part of Save), then the same Memory · Consults · Checks panels as the preview column. The engine
+ *  switches: never part of Save), the Learning switch (saved the same way), then the same Activity · Memory · Consults panels as the preview column. The engine
  *  menu offers Auto and the engines that are switched on (GET …/engines); a new engine resets the model to its default. */
-function ExpertSection({ bot, confirm }: { bot: Bot; confirm: (title: string, text: string, okLabel?: string, danger?: boolean) => Promise<boolean> }) {
+function ExpertSection({ bot }: { bot: Bot }) {
   const [rows, setRows] = useState<ExpertEngineRow[]>([]);
   const [engine, setEngine] = useState<string>(bot.expert?.engine || "auto");
   const [model, setModel] = useState<string>(bot.expert?.model || "");
+  const [learning, setLearning] = useState<boolean>(bot.expert?.learning !== false);
   const [saving, setSaving] = useState(false);
   // The LAN door serves the panels but not …/settings (lan.py): on the phone the two menus show, read-only.
   const lan = isLanHost(), locked = saving || lan;
@@ -484,15 +485,17 @@ function ExpertSection({ bot, confirm }: { bot: Bot; confirm: (title: string, te
     void act(() => expertApi.engines(bot.id), true).then((r) => { if (live && Array.isArray(r)) setRows(r); });
     return () => { live = false; };
   }, [bot.id]);
-  const save = async (body: { engine?: string; model?: string }) => {
-    const was = { engine, model };
+  const save = async (body: { engine?: string; model?: string; learning?: boolean }) => {
+    const was = { engine, model, learning };
     if (body.engine !== undefined) setEngine(body.engine);
     if (body.model !== undefined) setModel(body.model);
+    if (body.learning !== undefined) setLearning(body.learning);
     setSaving(true);
     try {
       const m = await act(() => expertApi.settings(bot.id, body));
       // The server's manifest is the truth (it may resolve or refuse a value); a failure puts the menus back.
-      if (m) { setEngine(m.engine || "auto"); setModel(m.model || ""); } else { setEngine(was.engine); setModel(was.model); }
+      if (m) { setEngine(m.engine || "auto"); setModel(m.model || ""); setLearning(m.learning !== false); }
+      else { setEngine(was.engine); setModel(was.model); setLearning(was.learning); }
     } finally { setSaving(false); }
   };
   return (
@@ -511,7 +514,10 @@ function ExpertSection({ bot, confirm }: { bot: Bot; confirm: (title: string, te
           {modelOptions(rows, engine, model).map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
         </NativeSelect>
       </Row>
-      <div className="py-4 last:pb-0"><ExpertPanels b={bot} confirm={confirm} /></div>
+      <Row title="Learning" text={LEARNING_HELP} htmlFor="bmxlearning">
+        <Switch id="bmxlearning" checked={learning} disabled={locked} onCheckedChange={(c) => { void save({ learning: !!c }); }} />
+      </Row>
+      <div className="py-4 last:pb-0"><ExpertPanels b={bot} /></div>
     </Rows>
   );
 }

@@ -8,6 +8,7 @@ import { activeHandoff, expertIdleNote, lastBotMsg, lastTs, lastUserTs, routineG
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
 import { botOrder } from "../lib/order";
+import { useExpertUnread, useExpertUnreadPoll } from "../lib/expertUnread";
 import { waitingUnread } from "../lib/unread";
 import { needsYou, openBot, openDialog, setShowHidden, unreadCount, useBots, type BotsState } from "../state/store";
 import { Face } from "./Face";
@@ -53,6 +54,8 @@ export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
   // The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. Only on the
   // page (`onContextMenu` present): the card mounts no dialogs.
   const settings = sel && !!onContextMenu;
+  // An expert that did something by itself since you last opened its Activity tab: a dot beside its badge.
+  const xcounts = useExpertUnread(), xnew = b.kind === "expert" ? xcounts[b.id] || 0 : 0;
   return (
     <div className={`bot${sel ? " sel" : ""}`} data-id={b.id} title={onContextMenu ? "Right-click for options" : undefined}
       onClick={() => (onOpen ?? openBot)(b.id)}
@@ -67,6 +70,7 @@ export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
         {b.pinned ? <span className="pin">📌</span> : null}<span className="nm">{b.name}</span>
         {b.kind === "super" ? <span className="super" title="Super Bot: Claude Code's own tools on this Mac">SUPER</span> : null}
         {b.kind === "expert" ? <span className="expert" title={b.expert?.ask_me_about ? `Expert: ${b.expert.ask_me_about}` : "Expert: answers questions from what it reads, and learns"}>EXPERT</span> : null}
+        {xnew ? <span className="xunread" role="img" aria-label="New activity" title={`${xnew} new thing${xnew > 1 ? "s" : ""} in its activity`} /> : null}
         {glyph ? <span className={`rt ${glyph.warn ? "warn" : ""}`} title={glyph.title}>{MI.routines}</span> : null}
       </div>
       <div className="meta">
@@ -132,6 +136,7 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
   }, []);
 
   const { shown, hidden, query } = listRows(S, q);
+  useExpertUnreadPoll(S.bots.some((b) => b.kind === "expert"));
 
   const u = S.usage, chip = S.buildsChip;
   return (

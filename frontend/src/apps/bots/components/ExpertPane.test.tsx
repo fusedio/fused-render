@@ -3,19 +3,135 @@ installDomShim();
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import type { ExpertArchived, ExpertChecks, ExpertConsult, ExpertGap, ExpertItem, ExpertObs, ExpertProposal } from "../lib/api";
+import type { ExpertActivity, ExpertConsult, ExpertItem } from "../lib/api";
 
-const { MemoryPanel, LessonCard, ConsultsPanel, ConsultCard, ChecksPanel, ObservationsPanel, ObsCard } = await import("./ExpertPane");
+const { ActivityPanel, ActivityCard, MemoryPanel, LessonCard, ConsultsPanel, ConsultCard, fromMemory, mergeActivity } = await import("./ExpertPane");
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
-  created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...p });
+  created: 0, updated: 0, ...p });
 const noop = () => {};
+
+describe("ActivityPanel", () => {
+  const now = new Date(2026, 10, 17, 15, 0).getTime(), at = (d: number, h: number) => new Date(2026, 10, d, h).getTime() / 1000;
+  const line = (p: Partial<ExpertActivity>): ExpertActivity => ({ id: "a", ts: at(17, 14), action: "learned", target: "", summary: "Use H3 for hex maps.",
+    why: "You said so in a session.", ok: true, undoable: true, undone: false, ...p });
+  const base = { onEverything: noop, onLearn: noop, onUndo: noop };
+  const lines = [
+    line({ id: "a1", ts: at(17, 14), action: "skill_updated", target: "maps.md", summary: "Added a rule about hex sizes.", why: "Three sessions needed it." }),
+    line({ id: "a2", ts: at(17, 9), action: "learned" }),
+    line({ id: "a3", ts: at(16, 20), action: "could_not_find", summary: "Which tile server to use.", why: "No file says.", undoable: false }),
+    line({ id: "a4", ts: at(16, 18), action: "counted", summary: "Seen once more.", quiet: true, undoable: false }),
+    line({ id: "a5", ts: at(12, 8), action: "forgot", summary: "Old colour rule.", undone: true }),
+    line({ id: "a6", ts: at(12, 7), action: "skill_created", summary: "A new skill.", ok: false, error: "the file exists", undoable: false }),
+  ];
+  test("newest first under day dividers; label, time, summary and why; Undo only where it can be taken back", () => {
+    const out = renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, nowMs: now }));
+    expect(out.indexOf(">Today<")).toBeLessThan(out.indexOf(">Yesterday<"));
+    expect(out.indexOf(">Yesterday<")).toBeLessThan(out.indexOf(">Nov 12<"));
+    expect(out.indexOf("Added a rule about hex sizes.")).toBeLessThan(out.indexOf("Use H3 for hex maps."));
+    expect(out).toContain(">Skill updated<");
+    expect(out).toContain(">Learned<");
+    expect(out).toContain(">Could not find out<");
+    expect(out).toContain(">Forgot<");
+    expect(out).toContain(">maps.md<");
+    expect(out).toContain(">1 h ago<");
+    expect(out).toContain(">Three sessions needed it.<");
+    expect(out).toContain('aria-expanded="false"');
+    // a1 and a2 can be undone; a3 is a note, a5 is undone already, a6 failed.
+    expect(out.match(/>Undo</g)?.length).toBe(2);
+    expect(out).toContain(">undone<");
+    expect(out).toContain("This did not work: the file exists");
+    // Quiet lines stay out until asked for.
+    expect(out).not.toContain("Seen once more.");
+    expect(out).toMatch(/All <span class="xp-n">5</);
+    expect(out).toMatch(/Skills <span class="xp-n">2</);
+    expect(out).toMatch(/Memory <span class="xp-n">2</);
+    expect(out).toContain('aria-pressed="false" title="Also show the small things');
+    expect(out).not.toMatch(/consolidat|inbox|proposal/i);
+  });
+  test("Show everything brings the quiet lines in", () => {
+    const out = renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, everything: true, nowMs: now }));
+    expect(out).toContain("Seen once more.");
+    expect(out).toContain(">Seen again<");
+    expect(out).toMatch(/All <span class="xp-n">6</);
+    expect(out).toMatch(/Memory <span class="xp-n">3</);
+  });
+  test("on top: what waits, Learn now; while it learns the step and a waiting button", () => {
+    const idle = renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, waiting: 3, nowMs: now }));
+    expect(idle).toContain("3 things waiting to be learned");
+    expect(idle).toContain(">Learn now<");
+    expect(idle).not.toContain("disabled");
+    expect(idle.indexOf("3 things waiting")).toBeLessThan(idle.indexOf("xp-filters"));
+    expect(renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, waiting: 1 }))).toContain("1 thing waiting to be learned");
+    expect(renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, waiting: 0 }))).toContain("Nothing is waiting to be learned.");
+    const run = renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, waiting: 2, learning: { running: true, stage: "distill" }, nowMs: now }));
+    expect(run).toContain("Updating skills…");
+    expect(run).toContain("2 things waiting to be learned");
+    expect(run).toMatch(/<button type="button" class="busy" disabled=""[^>]*>Learning…</);
+    expect(run).not.toContain(">Learn now<");
+    expect(renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, busy: true }))).toContain(">Learning…<");
+  });
+  test("a refused undo says why on its own card; the one being undone waits", () => {
+    const out = renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, nowMs: now, undoing: "a2",
+      undoErrors: { a1: "changed since; undo the later change first" } }));
+    expect(out).toMatch(/role="alert">changed since; undo the later change first</);
+    expect(out.indexOf("changed since")).toBeLessThan(out.indexOf("Use H3 for hex maps."));
+    expect(out).toMatch(/class="xp-undo busy" disabled=""/);
+  });
+  test("phone: no Learn now, no Undo; learning off says so; more to load; empty and loading", () => {
+    const lan = renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, lan: true, nowMs: now }));
+    expect(lan).not.toContain(">Learn now<");
+    expect(lan).not.toContain(">Undo<");
+    const off = renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, off: true, waiting: 2 }));
+    expect(off).toContain("Learning is off.");
+    expect(off).not.toContain(">Learn now<");
+    expect(renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines, more: true, onMore: noop }))).toContain(">Show earlier<");
+    expect(renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: lines }))).not.toContain(">Show earlier<");
+    expect(renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: [] }))).toContain("Nothing yet.");
+    expect(renderToStaticMarkup(createElement(ActivityPanel, { ...base, items: null }))).toContain("Loading…");
+  });
+  test("opened card: your words, where it came from, the file", () => {
+    const a = line({ evidence: { quote: "always use H3", session: "s1", source: { target: "/x/canvases/Airbnb/", backend: "claude" } } });
+    const out = renderToStaticMarkup(createElement(ActivityCard, { a, onUndo: noop, initialOpen: true, nowMs: now }));
+    expect(out).toContain('aria-expanded="true"');
+    expect(out).toContain(">You said<");
+    expect(out).toContain("“always use H3”");
+    expect(out).toContain(">Came from<");
+    expect(out).toContain(">Airbnb · claude<");
+    expect(out).not.toContain(">Read in<");
+    const file = renderToStaticMarkup(createElement(ActivityCard, { a: line({ action: "researched", evidence: { source: "/x/docs/tiles.md" } }), initialOpen: true }));
+    expect(file).toContain(">Read in<");
+    expect(file).toContain(">tiles.md<");
+    expect(file).not.toContain(">You said<");
+    expect(file).not.toContain(">Undo<");  // no handler (the phone)
+    expect(renderToStaticMarkup(createElement(ActivityCard, { a: line({ evidence: null }), initialOpen: true }))).toContain("Nothing more is recorded for this.");
+    // Closed: none of the evidence.
+    expect(renderToStaticMarkup(createElement(ActivityCard, { a }))).not.toContain("always use H3");
+  });
+  test("an undo line is never itself undoable", () => {
+    const out = renderToStaticMarkup(createElement(ActivityCard, { a: line({ action: "undo", summary: "Put the lesson back.", undoable: true }), onUndo: noop }));
+    expect(out).toContain(">Undone<");
+    expect(out).not.toContain(">Undo<");
+  });
+});
+
+describe("activity data", () => {
+  const l = (id: string, ts: number): ExpertActivity => ({ id, ts, action: "learned", summary: id, ok: true });
+  test("a fresh first page lies over the older lines already loaded", () => {
+    expect(mergeActivity([l("d", 4), l("c", 3)], [l("c", 3), l("b", 2), l("a", 1)]).map((x) => x.id)).toEqual(["d", "c", "b", "a"]);
+    expect(mergeActivity([l("b", 2)], null).map((x) => x.id)).toEqual(["b"]);
+  });
+  test("the memory reply: the budget object, or the same fields beside the lessons", () => {
+    expect(fromMemory({ items: [item({})], budget: { limit: 50, tidy_at: 30, total: 1 } }).budget).toMatchObject({ limit: 50, tidy_at: 30, total: 1, last_tidy: null });
+    expect(fromMemory({ items: [item({})], limit: 40, tidy_at: 20 }).budget).toMatchObject({ limit: 40, tidy_at: 20, total: 1 });
+  });
+});
 
 describe("MemoryPanel", () => {
   const now = new Date(2026, 10, 17, 15, 0).getTime();
-  test("lesson cards most used first: status, source, used N×, claim, facts; no Forget while closed", () => {
+  test("lesson cards most used first: status, source, used N×, claim, facts; never a Forget button", () => {
     const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Alpha", count: 1, indexed: false }),
-      item({ id: "b", claim: "Beta", count: 2, cited: 3, trust: "user", promoted: true }), item({ id: "c", claim: "Gamma", count: 2, contradicted: 1 })], onForget: noop }));
+      item({ id: "b", claim: "Beta", count: 2, cited: 3, trust: "user" }), item({ id: "c", claim: "Gamma", count: 2, contradicted: 1 })] }));
     expect(out.indexOf("Beta")).toBeLessThan(out.indexOf("Gamma"));
     expect(out.indexOf("Gamma")).toBeLessThan(out.indexOf("Alpha"));
     expect(out).toContain('aria-expanded="false"');
@@ -27,7 +143,6 @@ describe("MemoryPanel", () => {
     expect(out).toContain(">from sessions<");
     expect(out).toContain("used 5×");
     expect(out).not.toContain("seen 5×");
-    expect(out).not.toContain("in a skill");
     expect(out).toContain(">contradicted 1×<");
     expect(out).toContain(">seen once<");
     expect(out).not.toContain(">Forget<");
@@ -35,80 +150,63 @@ describe("MemoryPanel", () => {
     expect(out).toMatch(/In use <span class="xp-n">2</);
     expect(out).toMatch(/Not used yet <span class="xp-n">1</);
     expect(out).not.toContain("Not used in answers yet");
-    expect(out).not.toContain("Consolidate");
-    // An older server: no budget line, no removed section.
+    expect(out).not.toMatch(/consolidat|proposal|Recently removed/i);
+    // No budget sent: no budget line.
     expect(out).not.toContain("xp-budget");
-    expect(out).not.toContain("Recently removed");
   });
   test("budget line on top: count, meter, the sentence for the state; the last tidy when recent", () => {
     const items = [item({ id: "a", claim: "Alpha" }), item({ id: "b", claim: "Beta" })];
-    const below = renderToStaticMarkup(createElement(MemoryPanel, { items, onForget: noop, nowMs: now, budget: { limit: 50, tidy_at: 30, total: 12, last_tidy: null } }));
+    const below = renderToStaticMarkup(createElement(MemoryPanel, { items, nowMs: now, budget: { limit: 50, tidy_at: 30, total: 12, last_tidy: null } }));
     expect(below).toContain("12 of 50 lessons");
     expect(below).toContain("Tidying starts above 30.");
     expect(below).toContain('role="meter"');
     expect(below).not.toContain("xp-meter-over");
     expect(below).not.toContain("Last tidy");
     expect(below.indexOf("12 of 50 lessons")).toBeLessThan(below.indexOf("xp-filters"));
-    const above = renderToStaticMarkup(createElement(MemoryPanel, { items, onForget: noop, nowMs: now,
+    const above = renderToStaticMarkup(createElement(MemoryPanel, { items, nowMs: now,
       budget: { limit: 50, tidy_at: 30, total: 32, last_tidy: { at: now / 1000 - 3600, deleted: [{ id: "x", claim: "X" }], promoting: [{ id: "y", claim: "Y" }, { id: "z", claim: "Z" }], over_limit: [] } } }));
     expect(above).toContain("32 of 50 lessons");
-    expect(above).toContain("Above 30: each consolidation removes old, rarely used lessons, merges related ones, and proposes heavily used ones as skills.");
+    expect(above).toContain("Above 30: it removes old, rarely used lessons, merges related ones, and moves heavily used ones into skills.");
     expect(above).toContain("xp-meter-over");
-    expect(above).toContain("Last tidy: removed 1, proposing 2 as skills.");
+    expect(above).toContain("Last tidy: removed 1, moved 2 into skills.");
     // No limit: no line at all.
-    expect(renderToStaticMarkup(createElement(MemoryPanel, { items, onForget: noop, budget: { tidy_at: 30, total: 2 } }))).not.toContain("xp-budget");
+    expect(renderToStaticMarkup(createElement(MemoryPanel, { items, budget: { tidy_at: 30, total: 2 } }))).not.toContain("xp-budget");
   });
-  test("recently removed: collapsed, counted, at most 20, the reason in words and the model's why", () => {
-    const arch = (p: Partial<ExpertArchived>): ExpertArchived => ({ id: "r", claim: "Old", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
-      created: 0, updated: 0, removed_at: now / 1000 - 7200, reason: "stale", ...p });
-    const archived = [arch({ id: "a", claim: "Gone stale", why: "not used in months" }), arch({ id: "b", claim: "Now a skill", reason: "promoted", skill: "h3-maps" }),
-      arch({ id: "c", reason: "over_limit" }), arch({ id: "d", reason: "forgotten" }), arch({ id: "e", reason: "merged", into: "new" }), ...Array.from({ length: 30 }, (_, i) => arch({ id: `z${i}` }))];
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "new", claim: "General rule" })], onForget: noop, nowMs: now, archived }));
-    expect(out).toContain("merged into: General rule");
-    expect(out).toContain("<details");
-    expect(out).not.toContain("<details open");
-    expect(out).toContain("Recently removed (20)");
-    expect(out).toContain("removed: old and rarely used · 2 h ago");
-    expect(out).toContain("not used in months");
-    expect(out).toContain("moved into the skill h3-maps");
-    expect(out).toContain("removed: memory was over its limit");
-    expect(out).toContain("forgotten by you");
-    expect(out.match(/xp-removed-row/g)?.length).toBe(20);
-    expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [], onForget: noop, archived: [] }))).not.toContain("Recently removed");
-  });
-  test("open proposals above the list; a single lesson has no filter row", () => {
-    const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Researched", trust: "research", indexed: false })], onForget: noop,
-      proposals: [{ id: "p", ts: 1, status: "preparing", action: "create", skill: null, title: "", trigger: "", body: "", diff: "", items: [], score_before: null, score_after: null, card_seq: null }] }));
-    expect(out).toContain("Drafting a skill proposal…");
-    expect(out.indexOf("Drafting a skill proposal…")).toBeLessThan(out.indexOf("Researched"));
-    expect(out).toContain(">found by research<");
-    expect(out).toContain(">waiting for your approval<");
-    expect(out).not.toContain("xp-filters");
-  });
-  test("opened lesson: about chips, sessions / answers, first seen / last used, Forget (not on the phone)", () => {
+  test("opened lesson: about chips, sessions / answers, first seen / last used; no Forget (it is taught in chat)", () => {
     const it = item({ id: "a", claim: "Use H3", about: ["maps", "h3"], count: 2, cited: 4, created: now / 1000 - 3 * 86400, updated: now / 1000 - 7200,
       last_used: now / 1000 - 600, sessions: ["s1", "s2"] });
-    const out = renderToStaticMarkup(createElement(LessonCard, { it, onForget: noop, initialOpen: true, nowMs: now }));
+    const out = renderToStaticMarkup(createElement(LessonCard, { it, initialOpen: true, nowMs: now }));
     expect(out).toContain('aria-expanded="true"');
     expect(out).toContain(">About<");
     expect(out).toContain(">maps<");
     expect(out).toContain("Seen in 2 sessions · relied on in 4 answers");
     expect(out).toContain("first seen 3 d ago · last used 10 min ago");
     // An older server (no cited / last_used): the sessions alone and the last seen time.
-    const old = renderToStaticMarkup(createElement(LessonCard, { it: item({ count: 1, updated: now / 1000 - 7200 }), onForget: noop, initialOpen: true, nowMs: now }));
+    const old = renderToStaticMarkup(createElement(LessonCard, { it: item({ count: 1, updated: now / 1000 - 7200 }), initialOpen: true, nowMs: now }));
     expect(old).toContain("Seen in 1 session<");
     expect(old).toContain("last seen 2 h ago");
-    expect(out).toContain(">Forget<");
+    expect(out).not.toContain(">Forget<");
     expect(out).not.toContain("Merged from");
     const m = renderToStaticMarkup(createElement(LessonCard, { it: item({ merged_from: [{ id: "a", claim: "Orig one" }, { id: "b", claim: "Orig two" }] }),
-      onForget: noop, initialOpen: true, nowMs: now }));
+      initialOpen: true, nowMs: now }));
     expect(m).toContain(">merged from 2<");
     expect(m).toContain(">Merged from<");
     expect(m).toContain("<li>Orig one</li><li>Orig two</li>");
-    expect(renderToStaticMarkup(createElement(LessonCard, { it, onForget: noop, initialOpen: true, lan: true, nowMs: now }))).not.toContain(">Forget<");
+  });
+  test("a single lesson has no filter row", () => {
+    expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ trust: "research", indexed: false })] }))).not.toContain("xp-filters");
+  });
+  test("an opened lesson shows its earlier wording and a session-said source", () => {
+    const out = renderToStaticMarkup(createElement(LessonCard, { it: item({ trust: "user", via: "session", confirmed: 2,
+      history: [{ claim: "Old wording here", at: 1 }] }), initialOpen: true, nowMs: 0 }));
+    expect(out).toContain("Earlier wording");
+    expect(out).toContain("Old wording here");
+    expect(out).toContain("you said this in a session");
+    expect(out).toContain("confirmed 2×");
   });
   test("empty: says what will appear", () => {
-    expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [], onForget: noop }))).toContain("No lessons yet.");
+    expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [] }))).toContain("No lessons yet.");
+    expect(renderToStaticMarkup(createElement(MemoryPanel, { items: [] }))).toContain("tell it in the chat");
   });
 });
 
@@ -172,159 +270,5 @@ describe("ConsultsPanel", () => {
   test("empty and loading", () => {
     expect(renderToStaticMarkup(createElement(ConsultsPanel, { consults: [] }))).toContain("No consults yet.");
     expect(renderToStaticMarkup(createElement(ConsultsPanel, { consults: null }))).toContain("Loading…");
-  });
-});
-
-describe("ChecksPanel", () => {
-  const checks = (p: Partial<ExpertChecks>): ExpertChecks => ({ latest: null, status: { running: false, run_id: null, done: 0, total: 0 }, questions: 2, ...p });
-  test("the latest score and each question's verdict", () => {
-    const out = renderToStaticMarkup(createElement(ChecksPanel, { starting: false, onRun: noop, checks: checks({ latest: { id: "r", ts: 1, score: 1, total: 2, engine: "claude",
-      results: [{ q: "Q one", passed: true, why: "named it", answer: "A1" }, { q: "Q two", passed: false, why: "no example", answer: "A2" }] } }) }));
-    expect(out).toContain("1 / 2");
-    expect(out).toContain("Q one");
-    expect(out).toContain("no example");
-    expect(out).toContain("xp-mark pass");
-    expect(out).toContain("xp-mark fail");
-    expect(out).toContain(">Run checks<");
-  });
-  test("running: progress, the button waits", () => {
-    const out = renderToStaticMarkup(createElement(ChecksPanel, { starting: false, onRun: noop, checks: checks({ status: { running: true, run_id: "r", done: 1, total: 2 } }) }));
-    expect(out).toContain("Running checks · 1 of 2");
-    expect(out).toContain("disabled");
-  });
-  test("no questions: the empty state", () => {
-    const out = renderToStaticMarkup(createElement(ChecksPanel, { starting: false, onRun: noop, checks: checks({ questions: 0 }) }));
-    expect(out).toContain("no check questions yet");
-    expect(out).not.toContain("Run checks");
-  });
-});
-
-describe("ObservationsPanel", () => {
-  const gap = (p: Partial<ExpertGap>): ExpertGap => ({ id: "g", question: "q", questions: [], count: 1, consults: [], sessions: [], created: 0, updated: 0,
-    status: "open", attempts: 0, finding: null, proposal: null, card_seq: null, resolution: "", error: "", ...p });
-  const obs = (p: Partial<ExpertObs>): ExpertObs => ({ id: "o", ts: 1, kind: "user_correction", claim: "c", trust: "user", session: "", about: [], consult: "", ...p });
-  const pending = [obs({ id: "p2", ts: 20, claim: "Newer waiting", kind: "repeated_request", source: { target: "/x/canvases/sales", backend: "claude" } }),
-    obs({ id: "p1", ts: 10, claim: "Older waiting", kind: "gap", consult: "c1", gap: gap({ id: "g1", count: 3, error: "engine timed out",
-      finding: { answer: "Found it", refs: ["/x/y/z.py"] } }) })];
-  const done = [obs({ id: "d1", ts: 5, claim: "Old done", outcome: { op: "add" } }), obs({ id: "d2", ts: 9, claim: "New done", kind: "error_then_fix", outcome: { op: "bump" } }),
-    obs({ id: "d4", ts: 6, claim: "Line charts for regional canvases", kind: "advice_contradicted", outcome: { op: "contradict", item: "m1", new: "m2" } }),
-    obs({ id: "d5", ts: 6, claim: "Held up", kind: "advice_confirmed", outcome: { op: "bump", item: "m3" } }),
-    obs({ id: "d3", ts: 7, claim: "Settled gap", kind: "gap", outcome: { op: "gap" }, gap: gap({ id: "g2", status: "answered", resolution: "user" }) })];
-  const base = { pending, done, onConsolidate: noop, onDrop: noop };
-  test("intro and Consolidate on top; Waiting oldest first, then Consolidated newest first; markers, sources, facts", () => {
-    const out = renderToStaticMarkup(createElement(ObservationsPanel, base));
-    expect(out).toContain("Everything I noted from consults and sessions.");
-    expect(out.split(">Consolidate now<").length - 1).toBe(1);
-    const w = out.indexOf(">Waiting<"), c = out.indexOf(">Consolidated<");
-    expect(w).toBeGreaterThan(-1);
-    expect(c).toBeGreaterThan(w);
-    expect(out.indexOf("Older waiting")).toBeLessThan(out.indexOf("Newer waiting"));
-    expect(out.indexOf("Newer waiting")).toBeLessThan(c);
-    expect(out.indexOf("New done")).toBeLessThan(out.indexOf("Settled gap"));
-    expect(out.indexOf("Settled gap")).toBeLessThan(out.indexOf("Old done"));
-    expect(out).toMatch(/xp-cstat tone-warn"><span class="xp-dot" aria-hidden="true"><\/span>unsure</);
-    expect(out).toContain(">asked for<");
-    expect(out).toContain(">fix that worked<");
-    expect(out).toContain(">waiting to be consolidated<");
-    expect(out).toContain(">new lesson<");
-    expect(out).toContain(">counted toward a lesson<");
-    expect(out).toContain(">answered by you<");
-    expect(out).toMatch(/tone-warn"><span class="xp-dot" aria-hidden="true"><\/span>advice contradicted</);
-    expect(out).toContain(">contradicted a lesson<");
-    expect(out).toContain(">advice confirmed<");
-    expect(out).toContain(">sales · claude<");
-    expect(out).toContain(">consult<");
-    expect(out).toContain("asked 3×");
-    expect(out).not.toContain("Found it");  // a finding only when opened
-    expect(out).not.toContain(">Drop<");
-    expect(out).toMatch(/All <span class="xp-n">7</);
-    expect(out).toMatch(/Unsure <span class="xp-n">2</);
-    expect(out).toMatch(/Learnings <span class="xp-n">5</);
-    expect(out).toContain("xp-day");
-  });
-  test("opened: the lesson it landed on, both sides of a contradiction, a gap's note, finding, files and Drop", () => {
-    const items = [item({ id: "m1", claim: "Old rule" }), item({ id: "m2", claim: "New rule" })];
-    const contra = renderToStaticMarkup(createElement(ObsCard, { o: done[2], consolidated: true, researching: null, proposals: null, items, lan: false, onDrop: noop, initialOpen: true }));
-    expect(contra).toContain(">Contradicted<");
-    expect(contra).toContain("Old rule");
-    expect(contra).toContain(">Corrected rule<");
-    expect(contra).toContain("New rule");
-    const bump = renderToStaticMarkup(createElement(ObsCard, { o: obs({ outcome: { op: "bump", item: "m2" } }), consolidated: true, researching: null, proposals: null, items, lan: false, onDrop: noop, initialOpen: true }));
-    expect(bump).toContain(">Lesson<");
-    expect(bump).toContain("New rule");
-    const g = obs({ kind: "gap", claim: "Q", gap: gap({ error: "not found: nothing on it", finding: { answer: "Found it", refs: ["/x/y/z.py"] } }) });
-    const unsure = renderToStaticMarkup(createElement(ObsCard, { o: g, consolidated: false, researching: null, proposals: null, items, lan: false, onDrop: noop, initialOpen: true }));
-    expect(unsure).toContain("Looked into it: nothing on it");
-    expect(unsure).toContain("Found it");
-    expect(unsure).toContain(">z.py<");
-    expect(unsure).toContain(">Drop<");
-    expect(renderToStaticMarkup(createElement(ObsCard, { o: g, consolidated: false, researching: null, proposals: null, items, lan: true, onDrop: noop, initialOpen: true }))).not.toContain(">Drop<");
-  });
-  test("while consolidating: the stage line, the button waits, the researched gap says so", () => {
-    const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, consolidating: { running: true, stage: "researching", gap: "g1" } }));
-    expect(out).toContain("Researching an open question…");
-    expect(out).toContain(">Consolidating…<");
-    expect(out).toContain(">researching… · asked 3×<");
-  });
-  test("nothing waiting and no open question: the button is off", () => {
-    const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, pending: [], done: [done[0]] }));
-    expect(out).toMatch(/disabled=""[^>]*>Consolidate now</);
-  });
-  test("Consolidate stays on with nothing waiting when memory is over its tidy threshold (a forced run tidies)", () => {
-    const quiet = { ...base, pending: [], done: [done[0]] };
-    const over = renderToStaticMarkup(createElement(ObservationsPanel, { ...quiet, budget: { limit: 50, tidy_at: 30, total: 32 } }));
-    expect(over).not.toMatch(/disabled=""[^>]*>Consolidate now</);
-    expect(over).toContain(">Consolidate now<");
-    const at = renderToStaticMarkup(createElement(ObservationsPanel, { ...quiet, budget: { limit: 50, tidy_at: 30, total: 30 } }));
-    expect(at).toMatch(/disabled=""[^>]*>Consolidate now</);
-    const old = renderToStaticMarkup(createElement(ObservationsPanel, { ...quiet, budget: { tidy_at: 30, total: 32 } }));
-    expect(old).toMatch(/disabled=""[^>]*>Consolidate now</);
-  });
-  test("proposals: status lines under the intro, a proposed gap's wording, its failure muted; text and note cleaned", () => {
-    const prop = (id: string, status: ExpertProposal["status"], error = ""): ExpertProposal => ({ id, ts: 1, status, error, action: "create", skill: null, title: "", trigger: "", body: "",
-      diff: "", items: [], score_before: null, score_after: null, card_seq: null });
-    const pend = [obs({ id: "u", kind: "gap", claim: "Could not answer: Which basemap?", gap: gap({ id: "g5", status: "proposed", proposal: "p1", error: "not found: no doc on it" }) }),
-      obs({ id: "v", kind: "gap", claim: "Other", gap: gap({ id: "g6", status: "proposed", proposal_status: "failed", proposal_error: "diff did not apply" }) })];
-    const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, pending: pend, done: [], proposals: [prop("p1", "preparing")] }));
-    expect(out).toContain("Drafting a skill proposal…");
-    expect(out.indexOf("Drafting a skill proposal…")).toBeGreaterThan(out.indexOf("Everything I noted"));
-    expect(out).toContain(">drafting a skill fix…<");
-    expect(out).toContain(">skill fix failed<");
-    expect(out).toContain("diff did not apply");
-    expect(out).toContain(">Which basemap?<");
-    expect(out).not.toContain("Could not answer:");
-    expect(out).not.toContain("no doc on it");  // the research note shows only when the card is opened
-    expect(out).not.toContain("proposed in chat");
-  });
-  test("phone: no Consolidate; empty state", () => {
-    const out = renderToStaticMarkup(createElement(ObservationsPanel, { ...base, lan: true }));
-    expect(out).not.toContain("Consolidate now");
-    expect(renderToStaticMarkup(createElement(ObservationsPanel, { ...base, pending: [], done: [] }))).toContain("Nothing noted yet.");
-  });
-});
-
-describe("learning details on cards", () => {
-  const base: ExpertObs = { id: "o", ts: 0, kind: "user_correction", claim: "Title regional charts with the region name.", trust: "outcome",
-    session: "s", about: [], consult: "" };
-  test("an opened lesson shows its earlier wording and a session-said source", () => {
-    const out = renderToStaticMarkup(createElement(LessonCard, { it: item({ trust: "user", via: "session", confirmed: 2,
-      history: [{ claim: "Old wording here", at: 1 }] }), onForget: noop, initialOpen: true, nowMs: 0 }));
-    expect(out).toContain("Earlier wording");
-    expect(out).toContain("Old wording here");
-    expect(out).toContain("you said this in a session");
-    expect(out).toContain("confirmed 2×");
-  });
-  test("an opened observation shows what the user said, only when grounded", () => {
-    const said = renderToStaticMarkup(createElement(ObsCard, { o: { ...base, by_user: true, quote: "use the region name" }, consolidated: false,
-      researching: null, proposals: null, items: [], lan: false, onDrop: noop, initialOpen: true }));
-    expect(said).toContain("You said");
-    expect(said).toContain("use the region name");
-    const not = renderToStaticMarkup(createElement(ObsCard, { o: { ...base, by_user: false }, consolidated: false,
-      researching: null, proposals: null, items: [], lan: false, onDrop: noop, initialOpen: true }));
-    expect(not).not.toContain("You said");
-    const conf = renderToStaticMarkup(createElement(ObsCard, { o: { ...base, kind: "advice_confirmed", outcome: { op: "confirm", item: "m1" } },
-      consolidated: true, researching: null, proposals: null, items: [item({ id: "m1", claim: "Lesson one" })], lan: false, onDrop: noop, initialOpen: true }));
-    expect(conf).toContain("noted as confirmed; does not raise the count");
-    expect(conf).toContain("Lesson one");
   });
 });

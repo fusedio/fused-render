@@ -48,8 +48,6 @@ export interface BotEvent {
   /** action: the full raw tool result (<= 1500 chars), shown when the chip is opened. Notes may carry one too (unused). */
   detail?: unknown;
   options?: string[];
-  /** question: the expert asking the user about one of its knowledge gaps (ExpertGap.id); renders as any question. */
-  expert_gap?: string;
   /** Several options may be ticked; the answer is a comma-separated list (or "None"). */
   multi?: boolean;
   /** approval: the rule the card's third button writes (send with `forever: true`); absent when this call may never
@@ -87,11 +85,6 @@ export interface BotEvent {
   error?: string;
   trace?: unknown;
   artifacts?: unknown;
-  /** approval: an expert's skill proposal card (docs/experts.md §4 cards.py): the proposal id; `detail` is its unified
-   *  diff. The two gate scores are null when the expert has no questions. */
-  expert_proposal?: string;
-  score_before?: ExpertScore | null;
-  score_after?: ExpertScore | null;
 }
 
 export interface Tab { i: number; id: string; title: string; url: string; active: boolean; ws: string }
@@ -274,7 +267,7 @@ export interface Bot {
   events: BotEvent[];
 }
 
-// ------------------------------------------------------------------ experts (docs/experts.md §3, §4, §8) ----
+// ------------------------------------------------------------------ experts (docs/experts-autonomous.md) ----
 export type ExpertEngine = "auto" | "claude" | "codex" | "copilot";
 /** bot.meta["expert"] with every default filled (experts.store.manifest). */
 export interface ExpertManifest {
@@ -285,28 +278,28 @@ export interface ExpertManifest {
   engine?: ExpertEngine | (string & {});
   /** "" = the engine's default. */
   model?: string;
+  /** Off: it still answers and notes what happens, and changes nothing (absent reads as on). */
+  learning?: boolean;
   memory?: { consolidate_at?: number; consolidate_after_s?: number; propose_at?: number; index_lines?: number };
   shipped?: string;
   [k: string]: unknown;
 }
 /** One lesson in memory.json. `trust`: user (said in chat), outcome (from a session), gap (an unanswered consult),
- *  research (found by the expert looking into a gap; not indexed until its skill proposal is approved). */
+ *  research (found by the expert looking into a question it could not answer). */
 export interface ExpertItem {
   id: string; claim: string; kind: string; trust: "user" | "outcome" | "gap" | "research" | (string & {}); count: number;
   sessions: string[]; about: string[]; created: number; updated: number;
-  /** `promoted`: an older server only (a lesson that goes into a skill now leaves memory); read it as absent. */
-  proposed: boolean; promoted?: boolean; rejected: boolean;
   /** Answers that relied on this lesson (absent on an older server: 0). `count + cited` is how often it was used. */
   cited?: number;
   /** When an answer last relied on it, or it was last seen (unix seconds; absent on an older server). */
   last_used?: number;
   /** The lessons a tidy merged into this one (generalised; newer servers only). */
   merged_from?: { id: string; claim: string }[];
-  /** False for a lesson seen once, or a research finding waiting for approval: kept, but not in the index answers draw on until it comes up again. Absent (an
+  /** False for a lesson seen once: kept, but not in the index answers draw on until it comes up again. Absent (an
    *  older server) reads as indexed. */
   indexed?: boolean;
   /** Sessions that showed this lesson wrong or too broad (once per session; absent on an older server: 0). Never
-   *  proposed as a skill fix, and flagged in the index answers draw on. */
+   *  moved into a skill, and flagged in the index answers draw on. */
   contradicted?: number;
   contradicted_sessions?: string[];
   /** Sessions that showed it again without independent evidence (the expert's own advice echoed back); never raises
@@ -317,86 +310,44 @@ export interface ExpertItem {
   /** Earlier wordings, oldest first, when a user correction narrowed the claim. */
   history?: { claim: string; at: number }[];
 }
-/** A lesson named by the last tidy (GET …/memory `last_tidy`). */
+/** A lesson named by the last tidy (the memory budget's `last_tidy`). */
 export interface ExpertTidyRef { id: string; claim: string; why?: string }
-/** The last tidy a consolidation did above `tidy_at`: lessons removed, proposed as skills, cut for being over the limit. */
+/** The last tidy above `tidy_at`: lessons removed, moved into skills, cut for being over the limit. */
 export interface ExpertLastTidy {
   at: number; deleted?: ExpertTidyRef[]; promoting?: ExpertTidyRef[]; over_limit?: ExpertTidyRef[];
   /** Related lessons generalised into one: `into` the new lesson's id, `claim` its claim, `from` the originals. */
   merged?: { into: string; claim: string; from?: { id: string; claim: string }[] }[];
 }
-/** GET …/memory. The budget fields are newer servers only (absent: no budget line). */
-export interface ExpertMemory {
-  items: ExpertItem[]; index: string;
-  /** At most this many lessons; above `tidy_at` each consolidation tidies; `total`: lessons held now. */
-  limit?: number; tidy_at?: number; total?: number;
-  last_tidy?: ExpertLastTidy | null;
-}
-export type ExpertRemovedReason = "stale" | "promoted" | "over_limit" | "forgotten" | "merged" | "corrected";
-/** A lesson that left memory (GET …/memory/archive, newest first). `skill`: the skill it moved into (promoted);
- *  `why`: the model's reason, when it gave one. */
-export interface ExpertArchived extends Omit<ExpertItem, "proposed" | "rejected"> {
-  proposed?: boolean; rejected?: boolean;
-  removed_at: number; reason: ExpertRemovedReason | (string & {}); skill?: string; why?: string;
-  /** `merged` / `corrected`: the id of the lesson it was merged into / replaced by. */
-  into?: string;
-}
-/** A pending observation (not yet consolidated into memory). */
-/** One observation (observations.jsonl): something noted from a consult or a session, waiting to be consolidated
- *  (`pending`) or already folded in (`done`, with its `outcome`). `kind`: gap (an unsure consult; `claim` is the
- *  question and `gap` the joined gap), repeated_request, user_correction, error_then_fix, advice_confirmed, advice_contradicted (and the legacy answer_contradicted).
- *  `confirms` / `contradicts`: the lesson it sees again / shows wrong (its claim is then the corrected rule). */
-export interface ExpertObs {
-  id: string; ts: number; kind: string; claim: string; trust: string; session: string; about: string[]; consult: string;
-  source?: { target?: string; backend?: string } | null;
-  confirms?: string; contradicts?: string;
-  /** Capture proved the statement is the user's: `quote` is the verbatim excerpt of their line it was checked against. */
-  by_user?: boolean; quote?: string;
-  /** The user said it only after, and in line with, this expert's advice (it does not raise a lesson's count). */
-  after_advice?: boolean;
-  /** `contradict`: `item` is the lesson contradicted, `new` the lesson its corrected rule landed on, `resolution` what a
-   *  verified user correction did to the old lesson. `confirm`: noted on `item`, its count not raised. */
-  outcome?: { op: "add" | "bump" | "confirm" | "nothing" | "gap" | "contradict" | (string & {}); item?: string; gap?: string; new?: string;
-    resolution?: "replace" | "narrow" | (string & {}); at?: number } | null;
-  gap?: ExpertGap | null;
-}
+/** The memory's budget: at most `limit` lessons; above `tidy_at` each learning run tidies; `total`: lessons held now. */
+export interface ExpertBudget { limit?: number; tidy_at?: number; total?: number; last_tidy?: ExpertLastTidy | null }
+/** GET …/memory: the lessons and the budget. (A server that sends the budget fields beside `items` is read too.) */
+export interface ExpertMemory extends ExpertBudget { items: ExpertItem[]; budget?: ExpertBudget | null }
 export interface ExpertCaller { run_id?: string; session_id?: string; backend?: string; target?: string; canvas?: string }
 /** One consult from an agent session (consults.jsonl). `ms`: how long it took. */
 export interface ExpertConsult {
   id: string; ts: number; question: string; context: string; answer: string; refs: string[]; used: string[]; unsure: boolean;
   caller?: ExpertCaller | null; ms: number;
 }
-export interface ExpertScore { score: number; total: number }
-export interface ExpertRunResult { q: string; passed: boolean; why: string; answer: string }
-/** One quality-gate run (gate.Run). */
-export interface ExpertRun { id: string; ts: number; score: number; total: number; results: ExpertRunResult[]; engine: string }
-export interface ExpertCheckStatus { running: boolean; run_id: string | null; done: number; total: number }
-export interface ExpertChecks { latest: ExpertRun | null; status: ExpertCheckStatus; questions: number }
-export interface ExpertProposal {
-  /** preparing: a background worker is drafting it (proposals no longer run the checks); ready/shown: its card waits in the chat;
-   *  failed: the worker gave up (`error` says why). */
-  id: string; ts: number; status: "preparing" | "ready" | "shown" | "approved" | "rejected" | "failed"; action: "update" | "create";
-  error?: string;
-  skill: string | null; title: string; trigger: string; body: string; diff: string; items: string[];
-  score_before: ExpertScore | null; score_after: ExpertScore | null; card_seq: number | null;
+/** What a change rests on: the session it came from, the user's own words, the file it was read in, the lesson it is
+ *  about. `source` is a path, or where an observation came from (`target` folder, `backend`, `canvas`). */
+export interface ExpertEvidence {
+  session?: string; quote?: string; item?: string;
+  source?: string | { target?: string; backend?: string; canvas?: string; path?: string } | null;
 }
-/** A question agent sessions asked that the expert could not answer (gaps.jsonl). The expert researches it in the
- *  background: a finding becomes a skill proposal card (`proposed`); none, a question to the user in the chat (`asked`). */
-export type ExpertGapStatus = "open" | "researching" | "proposed" | "asked" | "answered" | "dismissed";
-export interface ExpertGap {
-  id: string; question: string; questions: string[]; count: number; consults: string[]; sessions: string[];
-  created: number; updated: number; status: ExpertGapStatus; attempts: number;
-  finding: { answer: string; refs: string[] } | null; proposal: string | null; card_seq: number | null;
-  resolution: "" | "skill" | "user" | "dismissed"; error: string;
-  /** Where the gap's skill-fix proposal stands (its ExpertProposal status; "" without one) and why it failed. Newer
-   *  servers only: without them the pane looks `proposal` up in the proposals it fetched. */
-  proposal_status?: ExpertProposal["status"] | ""; proposal_error?: string;
+export type ExpertAction = "learned" | "counted" | "corrected" | "forgot" | "merged" | "removed" | "skill_updated" | "skill_created" | "skill_restored"
+  | "noticed" | "researched" | "could_not_find" | "skipped" | "undo";
+/** One line of activity.jsonl: one thing the expert did. `summary`: what; `why`: one sentence; `ok: false` with
+ *  `error` for a change that was refused; `quiet` for the lines hidden unless asked (counted, noticed). */
+export interface ExpertActivity {
+  id: string; ts: number; action: ExpertAction | (string & {}); target?: string; summary: string; why?: string;
+  evidence?: ExpertEvidence | null; stage?: string; ok: boolean; undoable?: boolean; undone?: boolean; error?: string; quiet?: boolean;
 }
-/** POST …/consolidate answers at once; the work runs in the background (follow it through ExpertConsolidating). */
-export interface ExpertConsolidateReply { started: boolean }
-/** A background consolidation (GET …/observations `consolidating`): lessons first, then the open gaps (sort, research
- *  one, draft a skill fix). `gap`: the gap it is on, if any. */
-export interface ExpertConsolidating { running: boolean; stage: "lessons" | "tidying" | "gaps" | "researching" | "proposing" | ""; gap: string | null }
+/** A learning run in the background, and the step it is on ("" when idle). */
+export interface ExpertLearning { running: boolean; stage: "lessons" | "research" | "distill" | "tidy" | (string & {}) }
+/** GET …/activity: the lines newest first, how many are new since `seen`, how many things wait to be learned. */
+export interface ExpertActivityReply { items: ExpertActivity[]; unread: number; waiting: number; learning?: ExpertLearning | null }
+/** One row of GET /api/experts. `unread`: activity lines since the user last opened its Activity tab. */
+export interface ExpertRow { id: string; name: string; ask_me_about?: string; engine?: string; model?: string; available?: boolean; reason?: string; unread?: number }
 /** `note`: a caveat to show under the Engine menu when this engine is picked (non-empty for Codex, whose reads are not
  *  fenced by the app). */
 export interface ExpertEngineRow { id: string; label: string; enabled: boolean; models: { id: string; label: string }[]; default_model: string; note?: string }
@@ -685,19 +636,20 @@ export const api = {
 
 const XP = "/api/experts";
 const xid = (id: string) => `${XP}/${encodeURIComponent(id)}`;
-/** /api/experts/<id>/… (docs/experts.md §8). An expert's id is its bot id. */
+/** /api/experts/… (docs/experts-autonomous.md "HTTP"). An expert's id is its bot id. */
 export const expertApi = {
+  list: () => get<ExpertRow[]>(XP, "experts"),
+  activity: (id: string, o: { limit?: number; before?: string; quiet?: boolean } = {}) => {
+    const q = [o.limit ? `limit=${o.limit}` : "", o.before ? `before=${encodeURIComponent(o.before)}` : "", o.quiet ? "quiet=1" : ""].filter(Boolean).join("&");
+    return get<ExpertActivityReply>(`${xid(id)}/activity${q ? `?${q}` : ""}`, "expert activity");
+  },
+  /** Take one change back. A 409 (ApiError, `body.detail`) says why it cannot be undone. */
+  undo: (id: string, aid: string) => post<{ ok: boolean; item: ExpertActivity }>(`${xid(id)}/activity/${encodeURIComponent(aid)}/undo`, {}, "expert undo"),
+  seen: (id: string) => post<Record<string, never>>(`${xid(id)}/activity/seen`, {}, "expert activity seen"),
+  learn: (id: string) => post<{ started: boolean }>(`${xid(id)}/learn`, { force: true }, "expert learn"),
   memory: (id: string) => get<ExpertMemory>(`${xid(id)}/memory`, "expert memory"),
-  memoryArchive: (id: string) => get<{ archived: ExpertArchived[] }>(`${xid(id)}/memory/archive`, "expert memory archive"),
-  forgetMemory: (id: string, itemId: string) => post<{ removed: number }>(`${xid(id)}/memory/forget`, { id: itemId }, "expert forget"),
-  observations: (id: string) => get<{ pending: ExpertObs[]; done?: ExpertObs[]; due: boolean; consolidating?: ExpertConsolidating }>(`${xid(id)}/observations`, "expert observations"),
   consults: (id: string) => get<{ consults: ExpertConsult[] }>(`${xid(id)}/consults`, "expert consults"),
-  dismissGap: (id: string, gid: string) => post<ExpertGap>(`${xid(id)}/gaps/${encodeURIComponent(gid)}/dismiss`, {}, "expert drop gap"),
-  checks: (id: string) => get<ExpertChecks>(`${xid(id)}/checks`, "expert checks"),
-  runChecks: (id: string) => post<{ run_id: string }>(`${xid(id)}/checks/run`, {}, "expert run checks"),
-  proposals: (id: string) => get<{ proposals: ExpertProposal[] }>(`${xid(id)}/proposals`, "expert proposals"),
-  consolidate: (id: string, force = false) => post<ExpertConsolidateReply>(`${xid(id)}/consolidate`, force ? { force: true } : {}, "expert consolidate"),
-  settings: (id: string, body: { engine?: string; model?: string }) => post<ExpertManifest>(`${xid(id)}/settings`, body, "expert settings"),
+  settings: (id: string, body: { engine?: string; model?: string; learning?: boolean }) => post<ExpertManifest>(`${xid(id)}/settings`, body, "expert settings"),
   engines: (id: string) => get<ExpertEngineRow[]>(`${xid(id)}/engines`, "expert engines"),
 };
 
