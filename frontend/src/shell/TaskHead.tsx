@@ -682,8 +682,13 @@ export function TaskHead({
         {hasActs ? (
           <span className="task-head-facts-layer is-b">
             {starEl}
-            {openLink}
-            {kebabInActs ? kebabEl : null}
+            {/* The door and the ⋮ are one seat: together they stand over
+                the time's cell, as the star stands over the count's
+                (task-head.css, "EVERY COUNT ONE WIDTH"). */}
+            <span className="task-head-facts-door">
+              {openLink}
+              {kebabInActs ? kebabEl : null}
+            </span>
           </span>
         ) : null}
       </span>

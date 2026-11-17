@@ -591,10 +591,45 @@ test("a panel or a pane that asks wears the rail window's two lines, keeping its
   const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
   expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\) \.task-head-crumb \{\s*flex: 0 0 auto;/);
   expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\)\[data-fit="7"\] \.task-head-crumb > :is\(\.task-head-place, \.task-head-where\) \{\s*flex: 0 1 auto;\s*max-width: 96px;/);
-  // The tools' words go first (a class, not a rung of `data-fit`), and the
-  // acts start at the facts' left edge so no hole follows the last tag.
+  // The tools' words go first (a class, not a rung of `data-fit`).
   expect(css).toMatch(/\.task-head\.is-seats-tight \.task-head-seats \.c-anncta \{\s*--c-annlbl: none;/);
-  expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\) \.task-head-facts-layer\.is-b \{\s*justify-self: start;/);
+});
+
+test("two lines: every count has one cell and every time one cell; the acts stand centred over them (2026-11-17)", async () => {
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  // Both layers are the same two fixed columns, so nothing moves under the
+  // pointer and the box is one width on every task.
+  expect(css).toMatch(
+    /\.task-head\.is-two-line \.task-head-facts-layer \{\s*display: grid;\s*grid-template-columns: var\(--task-head-count-w\) var\(--task-head-time-w\);/,
+  );
+  expect(css).toMatch(/\.task-head\.is-two-line \{\s*--task-head-count-w: 36px;\s*--task-head-time-w: 54px;/);
+  // The facts read from their cells' right edges; the acts are centred.
+  expect(css).toMatch(/\.task-head\.is-two-line \.task-head-facts-layer\.is-b \{\s*justify-items: center;/);
+  expect(css).toMatch(/\.task-head\.is-two-line \.task-head-facts-layer > \.task-head-time \{\s*grid-column: 2;/);
+  expect(css).toMatch(/\.task-head\.is-two-line \.task-head-facts-layer\.is-b > \.task-head-facts-door \{\s*grid-column: 2;/);
+  // The old left-aligned pair (a hole before the ⋮ as wide as that task's
+  // count and time made it) is gone.
+  expect(css).not.toContain(".task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-b {\n  justify-self: start;");
+  // A rail window's ⋮ stands with the door over the time's cell, which is
+  // sized for the pair there; a panel short on width keeps only the door's.
+  expect(css).toMatch(/\.task-head\.is-two-line \.task-head-facts:has\(\.task-head-facts-door > \.task-head-kebab\) \{\s*--task-head-time-w: 64px;/);
+  // The door and the ⋮ are one seat in the acts' layer; a panel's ⋮ keeps its
+  // own seat after the box.
+  const props = {
+    task: task({ message_count: 6 }),
+    open: { href: "/x", label: "Open in Explorer", onOpen: () => {} },
+    kebab: createElement("button", { className: "my-kebab" }, "⋮"),
+  };
+  const win = render(head({ ...props, reveal: "window" }));
+  const winDoor = JSON.stringify(byClass(win, "task-head-facts-door")[0]);
+  expect(winDoor).toContain("task-head-open");
+  expect(winDoor).toContain("my-kebab");
+  const panel = render(head({ ...props, twoLine: true }));
+  const panelDoor = JSON.stringify(byClass(panel, "task-head-facts-door")[0]);
+  expect(panelDoor).toContain("task-head-open");
+  expect(panelDoor).not.toContain("my-kebab");
+  // One act alone keeps a slot per fact, in the same two cells.
+  expect(css).toMatch(/\.task-head\.is-two-line \.task-head-countslot \{\s*min-width: var\(--task-head-count-w\);/);
 });
 
 test("reveal: a rail window says so in its class; a panel or a pane does not", () => {

@@ -855,6 +855,72 @@
   }
 }
 
+/* EVERY COUNT ONE WIDTH, EVERY TIME ONE WIDTH (Akshil, 2026-11-17: "make all
+   count and date time same width and on hover we center it width and height
+   so it doesn't move"). A box sized for the wider of ITS OWN two layers was
+   a different width on every task — "3 · 2m ago" against "128 · 11mo ago" —
+   so the star and the door stood in a different place from one head to the
+   next, with a hole beside whichever pair was the narrower (in a panel:
+   between the door and the ⋮, as wide as that task's count and time made
+   it). Here the count has one cell and the time has one cell, the same two
+   on every task: the facts read from their cells' right edges (a column of
+   numbers), the star stands centred over the count's cell and the door
+   centred over the time's. Nothing moves under the pointer, and nothing
+   differs between two tasks.
+
+   The cells are sized for the widest thing either will hold (measured):
+   three digits and the bubble, 36px; the longest time ("11mo ago"), 53px —
+   the door alone is 34.5px. In a rail window the ⋮ is one of the acts and
+   stands with the door over the time's cell (34.5 + 28px). */
+.task-head.is-two-line {
+  --task-head-count-w: 36px;
+  --task-head-time-w: 54px;
+}
+.task-head.is-two-line .task-head-facts:has(.task-head-facts-door > .task-head-kebab) {
+  --task-head-time-w: 64px;
+}
+.task-head.is-two-line .task-head-facts-layer {
+  display: grid;
+  grid-template-columns: var(--task-head-count-w) var(--task-head-time-w);
+  column-gap: 6px;
+  justify-items: end;
+}
+.task-head.is-two-line .task-head-facts-layer > .task-head-count {
+  grid-column: 1;
+}
+.task-head.is-two-line .task-head-facts-layer > .task-head-time {
+  grid-column: 2;
+}
+.task-head.is-two-line .task-head-facts-layer.is-b {
+  justify-items: center;
+}
+.task-head-facts-door {
+  display: inline-flex;
+  align-items: center;
+}
+.task-head.is-two-line .task-head-facts-layer.is-b > .task-head-facts-door {
+  grid-column: 2;
+}
+/* A PANEL SHORT ON WIDTH GIVES UP THE TIME (the rung below, "…AND THE PAIRED
+   FACTS FOLLOW THE SAME RUNG"): its cell is then only the door's. */
+.task-head.is-two-line:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) {
+  --task-head-time-w: 36px;
+}
+/* A head with one act alone keeps a slot per fact (TaskHead `clustered`):
+   the same two cells, the act centred over its fact's. */
+.task-head.is-two-line .task-head-countslot {
+  min-width: var(--task-head-count-w);
+}
+.task-head.is-two-line:is(.is-window, [data-fit="0"], [data-fit="1"], [data-fit="2"]) .task-head-timeslot {
+  min-width: var(--task-head-time-w);
+}
+.task-head.is-two-line :is(.task-head-countslot, .task-head-timeslot) > .task-head-slot-a {
+  justify-self: end;
+}
+.task-head.is-two-line :is(.task-head-countslot, .task-head-timeslot) > .task-head-slot-b {
+  justify-self: center;
+}
+
 /* THE ID SLOT'S BUTTON (shell/TaskFileSeat; the rail card's
    `.claude-rail-peek-archive`): 22px to aim at, a quiet wash on hover. */
 .task-head-idslot :is(.task-head-file, .claude-rail-peek-archive) {
@@ -1124,23 +1190,6 @@
   display: contents;
 }
 
-/* THE ACTS START WHERE THE FACTS STARTED (Akshil, 2026-11-17: "after +3 and
-   star there is unusual space … follow Annotate button padding, don't leave
-   weird gap"). The star and the door are narrower than the count and the
-   time, and right-aligned as a pair they left that difference as a hole
-   after the last tag. Now the pair starts at the box's LEFT edge — the star
-   the same gap from its neighbour the count had, the door right beside it
-   (2026-11-16: "keep them closer") — and what is left over stands before the
-   ⋮, the row's fixed end. Nothing outside the box moves. (A rail window's
-   acts carry the ⋮ itself — TaskHead `kebabInActs` — so there the layer keeps
-   the box's right edge and the ⋮ ends the row.) */
-.task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-b {
-  justify-self: start;
-}
-.task-head.is-two-line .task-head-countslot {
-  justify-items: start;
-}
-
 /* ONE TAG SIZE ON ROW 1 (Akshil, 2026-11-17: "why is the Fused label small
    but the other two seem big … the worktree icon is so small and its text
    colour is also different"). The folder chip was 11px in a 21px box beside
@@ -1173,13 +1222,9 @@
    door, so its count and time stand in one box — `.task-head-facts`, no
    time slot for the rule above to fold; CodeRabbit on #2313). The time leaves
    on the panel's time rung; the door still comes under the pointer, its hint
-   carrying the time. What stays starts at the box's left edge, like the
-   acts, so no hole opens after the last tag. A rail window keeps both. */
+   carrying the time. A rail window keeps both. */
 .task-head.is-two-line:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-facts .task-head-time {
   display: none;
-}
-.task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-a {
-  justify-self: start;
 }
 
 /* A SETTLING WALKTHROUGH IN AN ICON-ONLY SEAT (Akshil, 2026-11-17: "instead
