@@ -195,8 +195,9 @@ def test_launcher_remote_rows_skip_keys_the_explorer_cannot_address(monkeypatch)
     hit = lambda key: {"url": "s3://fused-asset/" + key, "key": key, "is_dir": key.endswith("/"),
                        "size": None, "mtime": None}
     monkeypatch.setattr(remote_index, "rank", lambda *a, **k: {
-        "ready": True, "hits": [hit("data//tile.parquet"), hit("data/tile.parquet"), hit("x//")],
-        "total": 3, "truncated": False})
+        "ready": True, "hits": [hit("data//tile.parquet"), hit("data/tile.parquet"), hit("x//"),
+                                hit("/tile.parquet"), hit("/x/")],
+        "total": 5, "truncated": False})
     assert [r["path"] for r in launcher.remote_results("tile")] == [
         "s3://fused-asset/data/tile.parquet"]
 
