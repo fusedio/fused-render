@@ -9,6 +9,7 @@ import {
   POPOVER_HEAD_SELECTOR,
   RAIL_HEAD_SELECTOR,
   clampPos,
+  dragStartBox,
   floatPlacement,
   floatResize,
   headDocks,
@@ -153,6 +154,23 @@ describe("floatResize: the docked grips plus the right side, clamped to the view
   test("a height ceiling (the favourite's card: half the window) holds", () => {
     expect(floatResize("b", start, 0, 300, VIEW, { ...lim, maxHeight: 450 }).height).toBe(450);
   });
+  test("a viewport shrunk under the drag (CodeRabbit on #2329): the held edge follows the pointer, the opposite one stays only while inside", () => {
+    const narrow = { width: 500, height: 900 };
+    // The right edge (620) is past the viewport's 500: it comes back to it,
+    // and the left edge goes where the pointer took it (200 - 100)…
+    expect(floatResize("l", start, -100, 0, narrow, lim)).toEqual({ left: 100, top: 100, width: 400, height: 500 });
+    // …short of the minimum width.
+    expect(floatResize("l", start, -50, 0, narrow, lim)).toEqual({ left: 140, top: 100, width: 360, height: 500 });
+    expect(floatResize("l", start, -150, 0, narrow, lim)).toEqual({ left: 50, top: 100, width: 450, height: 500 });
+    // The bottom (600) past a 450 viewport: the same for a top grip.
+    const short = { width: 1400, height: 450 };
+    expect(floatResize("t", start, 0, -60, short, lim)).toEqual({ left: 200, top: 40, width: 420, height: 410 });
+    // An opposite edge still inside stays where it was.
+    expect(floatResize("l", start, -50, 0, { width: 700, height: 900 }, lim)).toEqual({ left: 150, top: 100, width: 470, height: 500 });
+    expect(floatResize("r", start, -30, 0, narrow, lim)).toEqual({ left: 200, top: 100, width: 300, height: 500 });
+    // An axis no grip holds is squeezed inside, as the card is drawn.
+    expect(floatResize("b", start, 0, 20, narrow, lim)).toEqual({ left: 80, top: 100, width: 420, height: 520 });
+  });
 });
 
 describe("last pressed on top", () => {
@@ -248,5 +266,21 @@ describe("snapEdges: the edge magnet of a head drag (round 3, owner 2026-11-17)"
     // A viewport nobody knows (a test shim) snaps to the other card alone.
     const open = { width: Infinity, height: Infinity };
     expect(snapEdges({ left: 4, top: 560 }, size, null, open)).toEqual({ pos: { left: 4, top: 560 }, x: null, y: null });
+  });
+});
+
+describe("dragStartBox: the head drag's box is the one the card floats at (CodeRabbit on #2329)", () => {
+  const drawn = { left: 900, top: 100, width: 400, height: 300 };
+  test("a floating card (no float size given): the drawn box", () => {
+    expect(dragStartBox(drawn, 950, null, VIEW)).toBe(drawn);
+  });
+  test("a docked card floating at another size: the top keeps its offset, the grabbed spot its share of the width", () => {
+    // Grabbed a quarter in: a quarter in of the 600-wide card too.
+    expect(dragStartBox(drawn, 1000, { width: 600, height: 700 }, VIEW)).toEqual({ left: 850, top: 100, width: 600, height: 700 });
+    // The same size: the drawn box.
+    expect(dragStartBox(drawn, 1000, { width: 400, height: 300 }, VIEW)).toEqual(drawn);
+  });
+  test("the float size is clamped to the viewport, as the card is drawn (`floatPlacement`)", () => {
+    expect(dragStartBox(drawn, 900, { width: 600, height: 2000 }, VIEW)).toEqual({ left: 900, top: 100, width: 600, height: 900 });
   });
 });

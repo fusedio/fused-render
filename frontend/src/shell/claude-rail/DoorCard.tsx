@@ -212,6 +212,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     movable: card.held,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: up ? String(card.seq) : null,
+    // The size `place` floats it at (CodeRabbit on #2329: the drag's size).
+    floatSize: cardSize,
   });
   const floatingRef = useRef(false);
   floatingRef.current = move.floating;
@@ -309,10 +311,10 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
-    // A FLOATING card's left or top grip moved its corner: the window stands
-    // there now (rail-move-lib).
-    if (save && start?.floating && last && (last.left !== start.box.left || last.top !== start.box.top))
-      move.setPos({ left: last.left, top: last.top });
+    // A FLOATING card's resize that changed its box: the window stands at the
+    // box let go at, its corner as drawn — and only while it still floats
+    // (RailPeek `endDrag`; CodeRabbit on #2329).
+    if (save && start?.floating && floatingRef.current && last && !sameBox(last, start.box)) move.setPos({ left: last.left, top: last.top });
     if (!save || !start || !last || (last.width === start.box.width && last.height === start.box.height)) return;
     // Only a dimension the drag changed, past the grips' minimums (RailPeek
     // `endDrag`); the other keeps what was remembered.
@@ -332,6 +334,11 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   useEffect(() => {
     if (dragStart.current && !visible) endDrag(false);
   }, [visible]);
+  // A FLOATING resize whose card stops floating under it (its unpin) goes
+  // unsaved (RailPeek; CodeRabbit on #2329).
+  useEffect(() => {
+    if (dragStart.current?.floating && !move.floating) endDrag(false);
+  }, [move.floating]);
   // Its live box for window B's head drag (rail-move-store `windowBox`).
   useWindowBox("a", pinModel && visible ? box : null);
   // Window A's box, for window B's grips to snap to (card-snap.ts).

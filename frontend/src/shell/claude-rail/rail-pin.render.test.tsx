@@ -971,6 +971,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
       onBox?: unknown;
       move?: { className: string };
       resize?: { grips?: readonly string[] };
+      fullHeight?: boolean;
     };
     const pop = () => drawn()!.popover as Pop;
     // Temp: the head does not grab.
@@ -989,12 +990,15 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     expect(windowABox()).toBeNull();
     expect(windowBox("a")).toEqual({ left: 150, top: 90, width: 420, height: 640 });
     expect(pop().resize!.grips).toContain("br");
+    // As tall as the viewport, as it is placed (CodeRabbit on #2329).
+    expect(pop().fullHeight).toBe(true);
     // The unpin: docked again, the position gone with the pin.
     await act(async () => (drawn()!.pinNode as ReactElement<{ onToggle: () => void }>).props.onToggle());
     await settle();
     expect(windowPosMark("a")).toBeNull();
     expect(pop().move!.className).not.toContain("is-floating");
     expect(pop().resize!.grips).toBeUndefined();
+    expect(pop().fullHeight).toBeUndefined();
     off();
   });
 
@@ -1498,6 +1502,121 @@ describe("floating windows (round 3 B; owner, 2026-11-17)", () => {
     await resize(1400, 900);
     expect(listStyle(r)).toMatchObject({ left: 900, top: 200 });
     expect(JSON.parse(windowPosMark("a") ?? "null")).toEqual({ left: 900, top: 200 });
+  });
+
+  const listNode = (r: ReactTestRenderer) =>
+    r.root.find((n) => n.type === "div" && n.props.id === peek(r)!.props.id && n.props.role === "dialog");
+  const fireWin = (type: string, e: Record<string, unknown>) => {
+    for (const fn of [...(winL.get(type) ?? [])]) fn({ type, ...e });
+  };
+  const resizeWindow = async (w: number, h: number) => {
+    win.innerWidth = w;
+    win.innerHeight = h;
+    await act(async () => {
+      for (const fn of [...(winL.get("resize") ?? [])]) fn({ type: "resize" });
+      await tick();
+    });
+  };
+  /** The list card's grip `edge` (RailPeek's grips). */
+  const grip = (r: ReactTestRenderer, edge: string) =>
+    r.root.find(
+      (n) =>
+        n.type === "div" &&
+        typeof n.props.className === "string" &&
+        n.props.className.split(" ").includes("claude-rail-peek-grip") &&
+        n.props.className.split(" ").includes("is-" + edge),
+    );
+  const gripEl = { setPointerCapture() {}, hasPointerCapture: () => false, releasePointerCapture() {} };
+  async function pinFloating(r: ReactTestRenderer, pos: { left: number; top: number }) {
+    await press(listRing(r, "a"));
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    await settle();
+    await act(async () => commitWindowPos("a", pos));
+    await settle();
+  }
+
+  test("a docked card drags at the size it FLOATS at (CodeRabbit on #2329): its first frame, its clamp and its release", async () => {
+    win.innerWidth = 1400;
+    win.innerHeight = 900;
+    const r = await mount({ unified: true });
+    await press(listRing(r, "a"));
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    await settle();
+    const docked = { ...listStyle(r) } as Required<Style>;
+    // Drawn docked SMALLER than it floats (a row or window B pressing it):
+    // 300×400 where it floats at 420×640.
+    const el = {
+      contains: () => true,
+      getBoundingClientRect: () => rect(docked.left, docked.top, 300, 400),
+      addEventListener() {},
+      removeEventListener() {},
+      setPointerCapture() {},
+      hasPointerCapture: () => false,
+      releasePointerCapture() {},
+    };
+    const HEAD = { closest: (sel: string) => (sel === RAIL_HEAD_SELECTOR ? {} : null) };
+    // Grabbed a quarter of the way across the head.
+    const x = docked.left + 75;
+    const y = docked.top + 10;
+    await act(async () => {
+      listNode(r).props.onPointerDown({ button: 0, pointerId: 4, clientX: x, clientY: y, currentTarget: el, target: HEAD });
+    });
+    // Down 400px: room for the docked 400 (to 900), not for the floating 640.
+    await act(async () => {
+      fireWin("pointermove", { pointerId: 4, clientX: x - 200, clientY: y + 400 });
+      await tick();
+    });
+    // The grabbed spot stays a quarter across the 420-wide card; the bottom
+    // stops at the viewport's, for the height the card is drawn at.
+    const want = { left: x - 200 - 105, top: 900 - 640 };
+    expect(listStyle(r)).toMatchObject({ ...want, width: 420, height: 640 });
+    await act(async () => {
+      fireWin("pointerup", { pointerId: 4 });
+      await tick();
+    });
+    expect(JSON.parse(windowPosMark("a") ?? "null")).toEqual(want);
+    expect(listStyle(r)).toMatchObject({ ...want, width: 420, height: 640 });
+  });
+
+  test("a squeezed floating card resized by its right edge stays where it is drawn on the release (CodeRabbit on #2329)", async () => {
+    win.innerWidth = 1400;
+    win.innerHeight = 900;
+    const r = await mount({ unified: true });
+    await pinFloating(r, { left: 900, top: 200 });
+    await resizeWindow(1000, 700);
+    expect(listStyle(r)).toMatchObject({ left: 580, top: 60, width: 420, height: 640 });
+    // A press that never moves changes nothing: the stored spot stands.
+    await act(async () => grip(r, "r").props.onPointerDown({ button: 0, pointerId: 5, clientX: 1000, clientY: 300, currentTarget: gripEl, preventDefault() {} }));
+    await act(async () => grip(r, "r").props.onPointerUp({ pointerId: 5 }));
+    await settle();
+    expect(JSON.parse(windowPosMark("a") ?? "null")).toEqual({ left: 900, top: 200 });
+    // 20px narrower from the right: the left edge stays at 580.
+    await act(async () => grip(r, "r").props.onPointerDown({ button: 0, pointerId: 6, clientX: 1000, clientY: 300, currentTarget: gripEl, preventDefault() {} }));
+    await act(async () => grip(r, "r").props.onPointerMove({ pointerId: 6, clientX: 980, clientY: 300 }));
+    expect(listStyle(r)).toMatchObject({ left: 580, top: 60, width: 400 });
+    await act(async () => grip(r, "r").props.onPointerUp({ pointerId: 6 }));
+    await settle();
+    expect(JSON.parse(windowPosMark("a") ?? "null")).toEqual({ left: 580, top: 60 });
+    expect(listStyle(r)).toMatchObject({ left: 580, top: 60, width: 400 });
+  });
+
+  test("an unpin under a floating resize ends it unsaved: the release writes no position back (CodeRabbit on #2329)", async () => {
+    win.innerWidth = 1400;
+    win.innerHeight = 900;
+    const r = await mount({ unified: true });
+    await pinFloating(r, { left: 400, top: 100 });
+    await act(async () => grip(r, "l").props.onPointerDown({ button: 0, pointerId: 8, clientX: 400, clientY: 300, currentTarget: gripEl, preventDefault() {} }));
+    await act(async () => grip(r, "l").props.onPointerMove({ pointerId: 8, clientX: 350, clientY: 300 }));
+    expect(listStyle(r)).toMatchObject({ left: 350, width: 470 });
+    // The pin icon (by keyboard, the pointer still down on the grip).
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    await settle();
+    expect(windowPosMark("a")).toBeNull();
+    // The list card keeps its grips unpinned (favourites on): its release.
+    await act(async () => grip(r, "l").props.onPointerUp({ pointerId: 8 }));
+    await settle();
+    expect(windowPosMark("a")).toBeNull();
+    expect(listNode(r).props.className).not.toContain("is-floating");
   });
 
   test("the edge magnet: a head drag within 12px of window B's card lands flush with it, the guide along the edge until the release", async () => {

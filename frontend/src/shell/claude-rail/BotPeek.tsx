@@ -203,6 +203,8 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     movable: !!pinCtl?.pinned,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: shown?.id ?? null,
+    // The size `place` floats it at (CodeRabbit on #2329: the drag's size).
+    floatSize: () => wishSize(wish()),
   });
   const floatingRef = useRef(false);
   floatingRef.current = move.floating;
@@ -325,10 +327,17 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     const lastBox = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
-    // A FLOATING card's left or top grip moved its corner: the window stands
-    // there now (rail-move-lib).
-    if (save && start?.floating && lastBox && (lastBox.left !== start.box.left || lastBox.top !== start.box.top))
-      move.setPos({ left: lastBox.left, top: lastBox.top });
+    // A FLOATING card's resize that changed its box: the window stands at the
+    // box let go at, its corner as drawn — and only while it still floats
+    // (RailPeek `endDrag`; CodeRabbit on #2329).
+    const moved =
+      !!start &&
+      !!lastBox &&
+      (lastBox.left !== start.box.left ||
+        lastBox.top !== start.box.top ||
+        lastBox.width !== start.box.width ||
+        lastBox.height !== start.box.height);
+    if (save && start?.floating && floatingRef.current && lastBox && moved) move.setPos({ left: lastBox.left, top: lastBox.top });
     if (!save || !start || !lastBox || !shownKey || (lastBox.width === start.box.width && lastBox.height === start.box.height)) return;
     // Only a dimension the drag changed, and only past the grips' minimums
     // (RailPeek `endDrag`); the other keeps what was remembered.
@@ -364,6 +373,11 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     dragKey.current = shownKey;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gripsOn, shownKey]);
+  // A FLOATING resize whose card stops floating under it (its unpin) goes
+  // unsaved (RailPeek; CodeRabbit on #2329).
+  useEffect(() => {
+    if (dragStart.current?.floating && !move.floating) endDrag(false);
+  }, [move.floating]);
   const [, setLayoutTick] = useState(0);
   useEffect(() => subscribeUiLayout(() => setLayoutTick((n) => n + 1)), []);
 

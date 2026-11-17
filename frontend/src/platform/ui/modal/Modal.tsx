@@ -281,6 +281,12 @@ export interface ModalProps {
      *  above. `placeKey` re-measures when it changes (window B's box). */
     place?: (want: { width: number; height: number }) => PopoverBox | null;
     placeKey?: unknown;
+    /** AS TALL AS THE VIEWPORT (CodeRabbit on #2329): a card the caller has
+     *  let go of its anchor and keeps inside the whole viewport itself
+     *  (`place`, `resize.drag`; the rail's floating window) drops the docked
+     *  card's 16px inset from its max height, so it is drawn at the height it
+     *  is placed, dragged and reported (`onBox`) at. Absent: the inset. */
+    fullHeight?: boolean;
     /** An element whose resize re-measures the placement — the workspace
      *  row, which a sidebar collapsing reshapes while the dialog and the
      *  window keep their sizes (CodeRabbit on #2189). */
@@ -831,7 +837,7 @@ export function Modal({
         left: dragBox?.left ?? place?.left ?? 0,
         top: dragBox?.top ?? place?.top ?? 0,
         width: dragBox?.width ?? place?.width ?? wantWidth,
-        maxHeight: "calc(100vh - 16px)",
+        maxHeight: popover.fullHeight ? "100vh" : "calc(100vh - 16px)",
         ...(dragBox ? { height: dragBox.height } : sized && place?.height !== undefined ? { height: place.height } : {}),
       }
     : width !== undefined
