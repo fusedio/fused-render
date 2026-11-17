@@ -685,7 +685,12 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .xpanels .xp-ctx { margin: 0; font-style: italic; }
 .xpanels .xp-refs { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
 .xpanels .xp-refs code { font-size: 11px; padding: 0 5px; border-radius: 5px; background: var(--xp-raised); color: var(--xp-text); }
-.xpanels .xp-tabs .xp-count { font-variant-numeric: tabular-nums; color: var(--xp-accent-text); }
+.xpanels .xp-sec + .xp-sec { margin-top: 12px; }
+.xpanels .xp-h { margin: 0; padding: 4px 4px 2px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--xp-muted); opacity: .8; }
+.xpanels .xp-note { margin: 0; padding: 0 4px 4px; color: var(--xp-muted); font-size: 11.5px; }
+.xpanels .xp-divider-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.xpanels .xp-toggle { padding: 2px 8px; font-size: 11px; background: transparent; color: var(--xp-muted); }
+.xpanels .xp-toggle:hover { color: var(--xp-text); }
 .xpanels .xp-status { display: block; color: var(--xp-text); }
 .xpanels .xp-gap-err { flex-basis: 100%; opacity: .85; overflow-wrap: anywhere; }
 .xpanels .xp-resolved > .xp-row { opacity: .6; }

@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import type { ExpertChecks, ExpertGap, ExpertItem } from "../lib/api";
 
-const { MemoryPanel, ConsultsPanel, ChecksPanel, GapsPanel } = await import("./ExpertPane");
+const { MemoryPanel, ConsultsPanel, ChecksPanel, GapsSection } = await import("./ExpertPane");
 
 const item = (p: Partial<ExpertItem>): ExpertItem => ({ id: "m", claim: "c", kind: "lesson", trust: "outcome", count: 1, sessions: [], about: [],
   created: 0, updated: 0, proposed: false, promoted: false, rejected: false, ...p });
@@ -22,6 +22,7 @@ describe("MemoryPanel", () => {
     expect(out.split(">Forget<").length - 1).toBe(2);
     expect(out).toContain("1 observation waiting to be consolidated.");
     expect(out).toContain(">Consolidate now<");
+    expect(out.split(">Consolidate now<").length - 1).toBe(1);
   });
   test("seen-once lessons under their divider, open proposals above", () => {
     const out = renderToStaticMarkup(createElement(MemoryPanel, { items: [item({ id: "a", claim: "Indexed one", count: 2 }), item({ id: "b", claim: "Once only", indexed: false })],
@@ -80,30 +81,43 @@ describe("ChecksPanel", () => {
   });
 });
 
-describe("GapsPanel", () => {
+describe("Memory panel: open questions", () => {
   const gap = (p: Partial<ExpertGap>): ExpertGap => ({ id: "g", question: "q", questions: [], count: 1, consults: [], sessions: [], created: 0, updated: 0,
     status: "open", attempts: 0, finding: null, proposal: null, card_seq: null, resolution: "", error: "", ...p });
-  test("unresolved first, resolved under the divider; the researched one says so; Drop per open row; consolidate waits while running", () => {
-    const out = renderToStaticMarkup(createElement(GapsPanel, { researching: "b", onDrop: noop, onConsolidate: noop,
-      consolidating: { running: true, stage: "researching", gap: "b" },
-      gaps: [gap({ id: "a", question: "Rare one", count: 1 }), gap({ id: "b", question: "Common one", count: 4, finding: { answer: "Found it", refs: ["/x/y/z.py"] } }),
-        gap({ id: "c", question: "Done one", status: "answered", resolution: "user", error: "" })] }));
-    expect(out).toContain("When I consolidate what I have learned");
+  const gaps = [gap({ id: "a", question: "Rare one", count: 1, error: "engine timed out" }),
+    gap({ id: "b", question: "Common one", count: 4, finding: { answer: "Found it", refs: ["/x/y/z.py"] } }),
+    gap({ id: "c", question: "Done one", status: "answered", resolution: "user" })];
+  const base = { items: [item({ id: "l", claim: "A lesson", count: 2 })], pending: [], due: false, busy: false, onForget: noop, onConsolidate: noop };
+  test("three sections in order; one Consolidate button; the stage line while running; resolved folded away", () => {
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { ...base, gaps, researching: "b", consolidating: { running: true, stage: "researching", gap: "b" } }));
+    const w = out.indexOf("Waiting to be consolidated"), q = out.indexOf(">Open questions<"), l = out.indexOf(">Lessons<");
+    expect(w).toBeGreaterThan(-1);
+    expect(q).toBeGreaterThan(w);
+    expect(l).toBeGreaterThan(q);
+    expect(out).toContain("Consolidating looks into each one");
     expect(out).toContain("Researching an open question…");
-    expect(out.indexOf("Common one")).toBeLessThan(out.indexOf("Rare one"));
-    expect(out.indexOf("Resolved")).toBeGreaterThan(out.indexOf("Rare one"));
-    expect(out).toContain("researching…");
-    expect(out).toContain("answered by you");
-    expect(out).toContain(">z.py<");
-    expect(out.split(">Drop<").length - 1).toBe(2);
+    expect(out.split("Consolidat").length).toBeGreaterThan(1);
+    expect(out.split("<button").length - 1).toBe(1 + 2 + 1 + 1); // consolidate, 2× Drop, Show resolved, Forget
     expect(out).toContain(">Consolidating…<");
+    expect(out.indexOf("Common one")).toBeLessThan(out.indexOf("Rare one"));
+    expect(out).toContain("researching…");
+    expect(out).toContain("engine timed out");
+    expect(out).toContain(">z.py<");
+    expect(out).toContain("Show 1 resolved");
+    expect(out).not.toContain("Done one");
     expect(out).not.toContain("Research now");
   });
-  test("phone: no buttons; empty state", () => {
-    const out = renderToStaticMarkup(createElement(GapsPanel, { researching: null, onDrop: noop, onConsolidate: noop, lan: true, gaps: [gap({})] }));
+  test("resolved ones, once shown, are dimmed under their divider", () => {
+    const out = renderToStaticMarkup(createElement(GapsSection, { gaps, researching: null, onDrop: noop, showResolved: true }));
+    expect(out.indexOf("Done one")).toBeGreaterThan(out.indexOf(">Resolved<"));
+    expect(out).toContain("xp-list xp-resolved");
+    expect(out).toContain("answered by you");
+    expect(out).toContain("Hide resolved");
+  });
+  test("no gaps: no section; phone: no Consolidate, no Drop", () => {
+    expect(renderToStaticMarkup(createElement(MemoryPanel, { ...base, gaps: [] }))).not.toContain("Open questions");
+    const out = renderToStaticMarkup(createElement(MemoryPanel, { ...base, gaps, lan: true }));
     expect(out).not.toContain(">Drop<");
     expect(out).not.toContain("Consolidate now");
-    const empty = renderToStaticMarkup(createElement(GapsPanel, { researching: null, onDrop: noop, onConsolidate: noop, gaps: [] }));
-    expect(empty).toContain("No gaps yet.");
   });
 });

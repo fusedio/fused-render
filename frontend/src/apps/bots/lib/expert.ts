@@ -124,7 +124,7 @@ const UNRESOLVED = new Set<string>(["open", "researching", "proposed", "asked"])
 /** Whether a gap still waits on something (open, researching, or its proposal / question is up in the chat). */
 export const gapUnresolved = (g: Pick<ExpertGap, "status">): boolean => UNRESOLVED.has(g.status);
 
-/** The number the Gaps tab label shows (0 = no number). */
+/** How many gaps still wait on something (open questions; the Consolidate button counts them as work). */
 export const unresolvedGapCount = (gs: readonly Pick<ExpertGap, "status">[] | null | undefined): number => (gs || []).filter(gapUnresolved).length;
 
 /** A gap's status tag in plain words. `researching`: the gap id the server says it is researching now (that gap reads
@@ -155,7 +155,7 @@ export function splitGaps(gs: readonly ExpertGap[] | null | undefined): { unreso
 /** "asked 3×". */
 export const askedLabel = (count: number | null | undefined): string => `asked ${Math.max(1, count || 0)}×`;
 
-export const GAPS_INTRO = "Questions sessions asked that I could not answer. When I consolidate what I have learned, I look into each one, then propose a skill fix or ask you.";
+export const GAPS_INTRO = "Questions sessions asked that I could not answer. Consolidating looks into each one, then proposes a skill fix or asks you.";
 
 /** While a consolidation runs: what it is doing, by stage ("" when it is not running). */
 export function consolidatingLine(c: ExpertConsolidating | null | undefined): string {
@@ -168,4 +168,3 @@ export function consolidatingLine(c: ExpertConsolidating | null | undefined): st
     default: return "Consolidating…";
   }
 }
-export const GAPS_EMPTY = "No gaps yet. When a session asks something I cannot answer, it shows up here.";

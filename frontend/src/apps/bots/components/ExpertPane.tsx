@@ -1,27 +1,27 @@
 // An expert's preview column (docs/experts.md §10): no browser, so in place of the screenshot, live view and info
-// sections it shows what the expert knows and how it is doing, on four tabs in the Browser | Terminal strip's style:
-//   Memory   the lessons it keeps (most seen first; Forget per row) and the observations still waiting to be folded in
+// sections it shows what the expert knows and how it is doing, on three tabs in the Browser | Terminal strip's style:
+//   Memory   three sections: what waits to be consolidated (the observations, "Consolidate now", the live stage line);
+//            the open questions (gaps: questions it could not answer, which consolidation looks into, then proposes a
+//            skill fix or asks you; most asked first, "Drop" per row, the resolved ones folded away); the lessons it
+//            keeps (most seen first; Forget per row)
 //   Consults the questions agent sessions asked it (newest first), each opening to the full answer and its file refs
-//   Gaps     questions it could not answer, which consolidation looks into (then a skill proposal or a question in the
-//            chat); unresolved first, most asked first; "Consolidate now" on top and "Drop" per row (not on the phone)
 //   Checks   its fixed questions (questions.md) graded on the last run; "Run checks" starts one and shows it move
 // Settings' "Expert" tab mounts the same panels (ExpertPanels) so the phone, which hides this column, reaches them.
 // Data: /api/experts/<id>/… (lib/api.ts expertApi), fetched for the open tab on a bot change, again when the bot's
 // `seq` moves (a chat turn may have taught it something) and every 10 s while the page is visible; the checks every
-// 2 s while a run is going; the gaps and the observations (which carry the consolidation's progress) with every refresh
-// whichever tab is open (the tab label counts the unresolved gaps), and both every 5 s while a consolidation runs or a
-// gap is being researched; the proposals (shown on the Memory tab) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on every refresh while it keeps failing).
+// 2 s while a run is going; the observations (which carry the consolidation's progress) and the gaps with every
+// refresh whichever tab is open, and both every 5 s while a consolidation runs or a gap is being researched; the proposals (shown on the Memory tab) every 5 s while one is still being prepared. A failed call shows the page banner once (not again on every refresh while it keeps failing).
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { expertApi, type Bot, type ExpertChecks, type ExpertConsolidating, type ExpertConsult, type ExpertGap, type ExpertItem, type ExpertObs, type ExpertProposal } from "../lib/api";
-import { anyPreparing, askedLabel, basename, checkProgress, consolidatingLine, consultMeta, gapStatusLabel, GAPS_EMPTY, GAPS_INTRO, lessonTags, openProposals, pendingLine, proposalLine, scoreText, seenLabel, SEEN_ONCE_LINE,
+import { anyPreparing, askedLabel, basename, checkProgress, consolidatingLine, consultMeta, gapStatusLabel, GAPS_INTRO, lessonTags, openProposals, pendingLine, proposalLine, scoreText, seenLabel, SEEN_ONCE_LINE,
   gapUnresolved, sortConsults, splitGaps, splitLessons, unresolvedGapCount } from "../lib/expert";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { errMsg, getState, hideBanner, showBanner } from "../state/store";
 import { askConfirm } from "../dialogs/ask";
 import { isLanHost } from "@platform/lib/host";
 
-export type ExpertTab = "memory" | "consults" | "gaps" | "checks";
-const TABS: [ExpertTab, string][] = [["memory", "Memory"], ["consults", "Consults"], ["gaps", "Gaps"], ["checks", "Checks"]];
+export type ExpertTab = "memory" | "consults" | "checks";
+const TABS: [ExpertTab, string][] = [["memory", "Memory"], ["consults", "Consults"], ["checks", "Checks"]];
 const REFRESH_MS = 10_000, CHECKS_MS = 2_000, PROPOSALS_MS = 5_000, GAPS_MS = 5_000;
 
 type Confirm = (title: string, text: string, okLabel?: string, danger?: boolean) => Promise<boolean>;
@@ -82,14 +82,12 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
 
   const load = useCallback(async (which: ExpertTab, loud = false) => {
     const want = id;
-    if (which === "gaps") {
-      await loadGaps(loud);
-    } else if (which === "memory") {
-      const [m, o, p] = await Promise.all([guard(() => expertApi.memory(want), loud), guard(() => expertApi.observations(want), loud),
-        guard(() => expertApi.proposals(want), loud)]);
+    if (which === "memory") {
+      const [m, o, p, g] = await Promise.all([guard(() => expertApi.memory(want), loud), guard(() => expertApi.observations(want), loud),
+        guard(() => expertApi.proposals(want), loud), guard(() => expertApi.gaps(want), loud)]);
       if (live.current !== want) return;
       setData((d) => ({ ...d, ...(m ? { memory: m.items || [] } : {}), ...(o ? { pending: o.pending || [], due: !!o.due, consolidating: o.consolidating || null } : {}),
-        ...(p ? { proposals: p.proposals || [] } : {}) }));
+        ...(p ? { proposals: p.proposals || [] } : {}), ...(g ? { gaps: g.gaps || [], researching: g.researching || null } : {}) }));
     } else if (which === "consults") {
       const c = await guard(() => expertApi.consults(want), loud);
       if (live.current === want && c) setData((d) => ({ ...d, consults: c.consults || [] }));
@@ -97,13 +95,12 @@ function useExpertData(id: string, seq: number, tab: ExpertTab) {
       const k = await guard(() => expertApi.checks(want), loud);
       if (live.current === want && k) setData((d) => ({ ...d, checks: k }));
     }
-  }, [id, guard, loadGaps]);
-  /** The open tab plus the gaps (their count labels the Gaps tab whichever tab is open) and the observations (a
-   *  consolidation's progress disables "Consolidate now" on both the Memory and the Gaps tab). */
+  }, [id, guard]);
+  /** The open tab, plus (off the Memory tab) the observations and gaps, so a consolidation started or running is
+   *  noticed and followed whichever tab is open. */
   const refresh = useCallback((which: ExpertTab) => {
     void load(which);
-    if (which !== "gaps") void loadGaps();
-    if (which !== "memory") void loadObs();
+    if (which !== "memory") { void loadObs(); void loadGaps(); }
   }, [load, loadGaps, loadObs]);
 
   // A new bot starts empty (never another expert's rows under this one's name).
@@ -160,7 +157,7 @@ function LessonRow({ it, onForget }: { it: ExpertItem; onForget: (it: ExpertItem
   );
 }
 
-/** "Consolidate now" (the Memory and the Gaps tab). Off while a consolidation runs or there is nothing to fold in or
+/** "Consolidate now" (the Memory panel's first section). Off while a consolidation runs or there is nothing to fold in or
  *  look into; `lan`: the LAN door does not serve `consolidate` (it writes memory). */
 function ConsolidateButton({ busy, running, work, lan, onClick }: { busy: boolean; running: boolean; work: boolean; lan: boolean; onClick: () => void }) {
   const on = busy || running;
@@ -173,44 +170,53 @@ function ConsolidateButton({ busy, running, work, lan, onClick }: { busy: boolea
   );
 }
 
-export function MemoryPanel({ items, pending, due, onForget, onConsolidate, busy, proposals = null, lan = false, consolidating = null, openGaps = 0 }: {
+export function MemoryPanel({ items, pending, due, onForget, onConsolidate, busy, proposals = null, lan = false, consolidating = null,
+  gaps = null, researching = null, onDrop = () => {} }: {
   items: ExpertItem[] | null; pending: ExpertObs[] | null; due: boolean;
   onForget: (it: ExpertItem) => void; onConsolidate: () => void; busy: boolean;
   proposals?: ExpertProposal[] | null;
   /** A background consolidation's progress: while it runs the button waits and the line says what it is doing. */
   consolidating?: ExpertConsolidating | null;
-  /** Unresolved gaps: consolidation looks into them too, so they are work even with no observation waiting. */
-  openGaps?: number;
-  /** On the phone: the LAN door does not serve `consolidate` (it writes memory), so the button stays off. */
+  /** The open questions (gaps) and the one being researched now; `onDrop` drops one. */
+  gaps?: ExpertGap[] | null; researching?: string | null; onDrop?: (g: ExpertGap) => void;
+  /** On the phone: the LAN door does not serve `consolidate` or `dismiss` (they write memory), so the buttons are hidden. */
   lan?: boolean;
 }) {
   if (items == null) return <div className="xp-empty">Loading…</div>;
   const { indexed, seenOnce } = splitLessons(items), n = pending?.length || 0;
-  const open = openProposals(proposals), running = !!consolidating?.running;
+  const open = openProposals(proposals), running = !!consolidating?.running, openGaps = unresolvedGapCount(gaps);
   return (
     <>
-      <div className="xp-bar">
-        <span className="xp-line">{running ? consolidatingLine(consolidating) : pending == null ? "" : pendingLine(n, due)}</span>
-        <ConsolidateButton busy={busy} running={running} work={!!n || openGaps > 0} lan={lan} onClick={onConsolidate} />
-      </div>
-      {open.length ? (
-        <ul className="xp-proposals">
-          {open.map((p) => <li key={p.id} className={`xp-proposal ${p.status}`}>{proposalLine(p)}</li>)}
-        </ul>
-      ) : null}
-      {indexed.length || seenOnce.length ? (
-        <>
-          {indexed.length ? <ul className="xp-list">{indexed.map((it) => <LessonRow key={it.id} it={it} onForget={onForget} />)}</ul> : null}
-          {seenOnce.length ? (
-            <>
-              <div className="xp-divider" role="separator">{SEEN_ONCE_LINE}</div>
-              <ul className="xp-list xp-seen-once">{seenOnce.map((it) => <LessonRow key={it.id} it={it} onForget={onForget} />)}</ul>
-            </>
-          ) : null}
-        </>
-      ) : (
-        <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that consult it, appears here once consolidated.</div>
-      )}
+      <section className="xp-sec" aria-label="Waiting to be consolidated">
+        <h4 className="xp-h">Waiting to be consolidated</h4>
+        <div className="xp-bar">
+          <span className="xp-line">{pending == null ? "" : pendingLine(n, due)}
+            {running ? <span className="xp-status">{consolidatingLine(consolidating)}</span> : null}</span>
+          {lan ? null : <ConsolidateButton busy={busy} running={running} work={!!n || openGaps > 0} lan={lan} onClick={onConsolidate} />}
+        </div>
+        {open.length ? (
+          <ul className="xp-proposals">
+            {open.map((p) => <li key={p.id} className={`xp-proposal ${p.status}`}>{proposalLine(p)}</li>)}
+          </ul>
+        ) : null}
+      </section>
+      {gaps?.length ? <GapsSection gaps={gaps} researching={researching} lan={lan} onDrop={onDrop} /> : null}
+      <section className="xp-sec" aria-label="Lessons">
+        <h4 className="xp-h">Lessons</h4>
+        {indexed.length || seenOnce.length ? (
+          <>
+            {indexed.length ? <ul className="xp-list">{indexed.map((it) => <LessonRow key={it.id} it={it} onForget={onForget} />)}</ul> : null}
+            {seenOnce.length ? (
+              <>
+                <div className="xp-divider" role="separator">{SEEN_ONCE_LINE}</div>
+                <ul className="xp-list xp-seen-once">{seenOnce.map((it) => <LessonRow key={it.id} it={it} onForget={onForget} />)}</ul>
+              </>
+            ) : null}
+          </>
+        ) : (
+          <div className="xp-empty">No lessons yet. What you teach it in chat, and what it learns from the sessions that consult it, appears here once consolidated.</div>
+        )}
+      </section>
     </>
   );
 }
@@ -290,34 +296,35 @@ function GapRow({ g, researching, lan, onDrop }: { g: ExpertGap; researching: st
   );
 }
 
-export function GapsPanel({ gaps, researching, onDrop, onConsolidate, busy = false, consolidating = null, lan = false }: {
-  gaps: ExpertGap[] | null; researching: string | null; onDrop: (g: ExpertGap) => void;
-  onConsolidate: () => void; busy?: boolean; consolidating?: ExpertConsolidating | null;
-  /** On the phone: the buttons are hidden (the LAN door does not serve these writes). */
+/** The Memory panel's "Open questions": unresolved gaps most asked first, then the resolved ones (dimmed) folded behind
+ *  "Show N resolved". The caller hides it when there are no gaps at all. */
+export function GapsSection({ gaps, researching, onDrop, lan = false, showResolved = false }: {
+  gaps: ExpertGap[]; researching: string | null; onDrop: (g: ExpertGap) => void;
+  /** On the phone: "Drop" is hidden (the LAN door does not serve it). */
   lan?: boolean;
+  /** Start with the resolved ones shown (tests). */
+  showResolved?: boolean;
 }) {
-  if (gaps == null) return <div className="xp-empty">Loading…</div>;
+  const [shown, setShown] = useState(showResolved);
   const { unresolved, resolved } = splitGaps(gaps);
   const row = (g: ExpertGap) => <GapRow key={g.id} g={g} researching={researching} lan={lan} onDrop={onDrop} />;
-  const running = !!consolidating?.running;
   return (
-    <>
-      <div className="xp-bar">
-        <span className="xp-line">{GAPS_INTRO}{running ? <span className="xp-status">{consolidatingLine(consolidating)}</span> : null}</span>
-        {lan ? null : <ConsolidateButton busy={busy} running={running} work={unresolved.length > 0} lan={lan} onClick={onConsolidate} />}
-      </div>
-      {!gaps.length ? <div className="xp-empty">{GAPS_EMPTY}</div> : (
+    <section className="xp-sec" aria-label="Open questions">
+      <h4 className="xp-h">Open questions</h4>
+      <p className="xp-note">{GAPS_INTRO}</p>
+      {unresolved.length ? <ul className="xp-list">{unresolved.map(row)}</ul> : null}
+      {resolved.length ? (
         <>
-          {unresolved.length ? <ul className="xp-list">{unresolved.map(row)}</ul> : null}
-          {resolved.length ? (
-            <>
-              <div className="xp-divider" role="separator">Resolved</div>
-              <ul className="xp-list xp-resolved">{resolved.map(row)}</ul>
-            </>
-          ) : null}
+          <div className="xp-divider xp-divider-row" role="separator">
+            <span>Resolved</span>
+            <button type="button" className="xp-toggle" aria-expanded={shown} onClick={() => setShown((v) => !v)}>
+              {shown ? "Hide resolved" : `Show ${resolved.length} resolved`}
+            </button>
+          </div>
+          {shown ? <ul className="xp-list xp-resolved">{resolved.map(row)}</ul> : null}
         </>
-      )}
-    </>
+      ) : null}
+    </section>
   );
 }
 
@@ -384,7 +391,6 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
       if (r?.started) setData((d) => ({ ...d, consolidating: d.consolidating?.running ? d.consolidating : { running: true, stage: "", gap: null } }));
     } finally { setConsolidating(false); }
     void reload("memory");
-    void reload("gaps");
   };
   const onRun = async () => {
     setStarting(true);
@@ -393,9 +399,8 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
   const onDrop = async (g: ExpertGap) => {
     const r = await guard(() => expertApi.dismissGap(id, g.id), true);
     if (r) setData((d) => ({ ...d, gaps: (d.gaps || []).map((x) => (x.id === g.id ? r : x)) }));
-    void reload("gaps");
+    void reload("memory");
   };
-  const gapCount = unresolvedGapCount(data.gaps);
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
@@ -409,19 +414,14 @@ export function ExpertPanels({ b, confirm = askConfirm }: { b: Bot; confirm?: Co
       <div className="viewsw xp-tabs" role="tablist" aria-label="Expert" onKeyDown={onKey}>
         {TABS.map(([t, l]) => (
           <button key={t} type="button" id={`${uid}-${t}`} role="tab" className={`satab${tab === t ? " on" : ""}`} aria-selected={tab === t}
-            aria-controls={`${uid}-panel`} tabIndex={tab === t ? 0 : -1} onClick={() => setTab(t)}
-            aria-label={t === "gaps" && gapCount ? `Gaps, ${gapCount} unresolved` : undefined}>
-            {l}{t === "gaps" && gapCount ? <span className="xp-count"> {gapCount}</span> : null}
-          </button>
+            aria-controls={`${uid}-panel`} tabIndex={tab === t ? 0 : -1} onClick={() => setTab(t)}>{l}</button>
         ))}
       </div>
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
         {tab === "memory" ? <MemoryPanel items={data.memory} pending={data.pending} due={data.due} busy={consolidating} proposals={data.proposals} lan={isLanHost()}
-          consolidating={data.consolidating} openGaps={gapCount}
+          consolidating={data.consolidating} gaps={data.gaps} researching={data.researching} onDrop={(g) => { void onDrop(g); }}
           onForget={(it) => { void onForget(it); }} onConsolidate={() => { void onConsolidate(); }} /> : null}
         {tab === "consults" ? <ConsultsPanel consults={data.consults} /> : null}
-        {tab === "gaps" ? <GapsPanel gaps={data.gaps} researching={data.researching} lan={isLanHost()} busy={consolidating}
-          consolidating={data.consolidating} onConsolidate={() => { void onConsolidate(); }} onDrop={(g) => { void onDrop(g); }} /> : null}
         {tab === "checks" ? <ChecksPanel checks={data.checks} starting={starting} onRun={() => { void onRun(); }} /> : null}
       </div>
     </div>
