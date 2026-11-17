@@ -199,13 +199,24 @@ type FetchPhase =
 function RemoteDownload({
   stat,
   onDone,
+  autoStart = false,
+  onStarted,
+  onCancelled,
 }: {
   stat: RemoteStat;
   /** The download finished: the caller re-stats and renders the cache. */
   onDone: () => void;
+  /** Start (or join) the download at once, even past `warn_bytes`: the
+   *  reader already asked for it, in this card or another mode's. */
+  autoStart?: boolean;
+  /** The download was asked for (Download, or an automatic start). */
+  onStarted?: () => void;
+  /** The server reports the download cancelled. */
+  onCancelled?: () => void;
 }) {
   const big = stat.size === null || stat.size > stat.warn_bytes;
-  const [phase, setPhase] = useState<FetchPhase>(() => (big ? { kind: "confirm" } : { kind: "starting" }));
+  const confirmFirst = big && !autoStart;
+  const [phase, setPhase] = useState<FetchPhase>(() => (confirmFirst ? { kind: "confirm" } : { kind: "starting" }));
   // A cancel request is out (or was accepted and the poll has yet to see it).
   const [cancelling, setCancelling] = useState(false);
   const reach = useNavReach();
@@ -249,7 +260,10 @@ function RemoteDownload({
         (s) => {
           if (!alive.current || watching.current !== watch) return;
           if (s.state === "done") finish(s.total ?? s.done, s.total ?? stat.size);
-          else if (s.state === "cancelled") setPhase({ kind: "cancelled" });
+          else if (s.state === "cancelled") {
+            setPhase({ kind: "cancelled" });
+            onCancelled?.();
+          }
           else if (s.state === "error")
             setPhase({
               kind: "failed",
@@ -277,6 +291,7 @@ function RemoteDownload({
   };
 
   const start = () => {
+    onStarted?.();
     const watch = ++watching.current;
     window.clearTimeout(timer.current);
     setCancelling(false);
@@ -296,10 +311,11 @@ function RemoteDownload({
     );
   };
 
-  // A file under the threshold starts at once.
+  // A file under the threshold starts at once, and so does a download the
+  // reader already asked for (`autoStart`): a running one is joined.
   const startedRef = useRef(false);
   useEffect(() => {
-    if (big || startedRef.current) return;
+    if (confirmFirst || startedRef.current) return;
     startedRef.current = true;
     start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -469,9 +485,15 @@ function RemoteCachedFile({
  *  template streams the object gets the address as `_file` and reads only the
  *  byte ranges it shows, through a URL the server signs (`fused.s3.sign` /
  *  `fused_s3`). Any other mode shows the download card in its pane; once the
- *  copy lands the page re-stats and opens it, on the same `_mode`. The bar's
- *  Download turns the streaming modes into the download card too (the duckdb
- *  grid asks for it on a sort that would scan most of the file). */
+ *  copy lands the page re-stats and opens it, on the same `_mode`.
+ *
+ *  Once a download is asked for — a pane's Download or automatic start, or
+ *  the bar's Download (the duckdb grid points at it on a sort that would
+ *  scan most of the file) — the whole file is downloading: every mode,
+ *  streaming ones included, shows the card, and a card mounted by a mode
+ *  switch joins the running download instead of asking again. So the shown
+ *  pane is always the one watching when the copy lands. A cancelled
+ *  download puts the modes back. */
 function RemoteUncachedFile({
   stat,
   onRenderedTitle,
@@ -485,7 +507,16 @@ function RemoteUncachedFile({
   const templates = stat.templates ?? [];
   const streams = (mode: string) => !downloading && templates.some((t) => t.mode === mode && t.stream);
   const remoteContent: RemoteContent = {
-    pane: (mode) => (streams(mode) ? null : <RemoteDownload stat={stat} onDone={onDone} />),
+    pane: (mode) =>
+      streams(mode) ? null : (
+        <RemoteDownload
+          stat={stat}
+          onDone={onDone}
+          autoStart={downloading}
+          onStarted={() => setDownloading(true)}
+          onCancelled={() => setDownloading(false)}
+        />
+      ),
     banner: (mode) =>
       streams(mode) ? (
         <div className="listing-snapshot-banner">
