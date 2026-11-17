@@ -456,7 +456,7 @@ def _row_state(row: dict, staged: str | None) -> dict:
 # The public settings an install applies beyond name/model/effort/instructions, and the ones an update replaces
 # (a key the package lacks is removed from the bot). `kind` is left out: a non-Super bot is "bot" or unset, and
 # the Super Bot never matches. Permissions (approval/build_access/terminal) never travel (_public_fields).
-_APPLIED_KEYS = ("face", "preset", "engine", "max_steps", "step_cap")
+_APPLIED_KEYS = ("face", "preset", "engine", "max_steps", "step_cap", "expert")
 _ROUTINE_DIGEST_KEYS = ("id", "task", "kind", "minutes", "time", "weekdays", "at")
 _PERMISSION_KEYS = frozenset({"approval", "build_access", "terminal", "super_access"})
 
@@ -812,12 +812,27 @@ def _public_fields(meta: dict, pub: dict) -> dict:
                 out[k] = int(v)
             elif k == "step_cap" and isinstance(v, int) and not isinstance(v, bool) and v >= 0:
                 out[k] = v
-            elif k == "kind" and v == "bot":
-                out[k] = v
+            elif k == "kind" and v in ("bot", "expert"):
+                out[k] = v  # an expert keeps its kind (docs/experts.md §5); "super" never travels
+            elif k == "expert" and isinstance(v, dict) and pub.get("kind") == "expert":
+                out[k] = _imported_expert(v)  # the expert's manifest (experts.store.manifest fills defaults on read)
             elif v not in (None, "", 0):
                 logger.info("bot package: %s=%r not applied", k, v)
         except ValueError as e:
             logger.info("bot package: %s refused: %s", k, e)
+    return out
+
+
+def _imported_expert(manifest: dict) -> dict:
+    """An imported expert's manifest, made safe to arrive (docs/experts.md §5): `shipped` is dropped (that key
+    names an expert this app ships, and a file must not claim to be one), and an offer to every session
+    (`offered_to.targets` holding "*") narrows to canvas sessions; the importer widens it in Settings. `reads`
+    is kept: it is what the expert is for."""
+    out = copy.deepcopy(manifest)
+    out.pop("shipped", None)
+    offered = out.get("offered_to")
+    if isinstance(offered, dict) and isinstance(offered.get("targets"), list) and "*" in offered["targets"]:
+        offered["targets"] = ["canvas"]
     return out
 
 
@@ -1234,6 +1249,8 @@ def _install_update(path: str, idx: dict, pub: dict, target, apps, memory: bool)
         raise NoSuchBot(f"no such bot {os.path.basename(target)}") from None
     if bm.is_super(b.meta):
         raise BotFileError("Super Bot is never updated from a package")
+    if (pub.get("kind") == "expert") != bm.is_expert(b.meta):
+        raise BotFileError("this package is a different kind of bot; install it as a new bot")
     _refuse_busy(b)
     rows = _app_rows(idx)
     # Every read from the file happens before any app installs or the bot is touched (as _install_new).
@@ -1326,8 +1343,10 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     bid = pkg_id if pkg_id and pkg_id not in bpaths.raw_ids() and not _has_folder(pkg_id) else _mint_id()
     warnings: list[str] = []
     try:
+        expert = pub.get("kind") == "expert"
         b = bm.create(name, _str(pub.get("model")), _str(pub.get("effort")), _str(pub.get("instructions")),
-                      greet=False, bot_id=bid)
+                      greet=False, bot_id=bid, kind="expert" if expert else "",
+                      expert=settings.get("expert") if expert else None)
     except bm.BotIdTaken:
         raise BotFileError("could not create the bot: id taken, retry") from None
     except Exception as e:  # noqa: BLE001 - see above
@@ -1395,5 +1414,6 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     if mem_text:
         step("memory", lambda: b.set_memory(mem_text))
     step("transcript", lambda: b.emit("system", f"Imported from {os.path.basename(path)}"))
-    step("greeting", b.greet)
+    if not bm.is_expert(b.meta):  # an expert's fixed greeting was written by create()
+        step("greeting", b.greet)
     return {"ok": True, "bot_id": b.id, "updated": False, "apps": results, "warnings": warnings}

@@ -1,0 +1,14 @@
+{
+  "name": "Canvas Reference",
+  "manifest": {
+    "ask_me_about": "Writing canvases, the canvas APIs, examples from existing canvases",
+    "reads": [{"kind": "canvas-mirror", "scopes": ["team", "public", "user"]}],
+    "offered_to": {"targets": ["canvas"]},
+    "learns_from": ["worked", "failed", "repeated_request", "user_correction", "error_then_fix", "answer_contradicted", "unanswered"],
+    "engine": "auto",
+    "model": "",
+    "memory": {"consolidate_at": 3, "consolidate_after_s": 86400, "propose_at": 3, "index_lines": 200},
+    "shipped": "canvas-reference"
+  },
+  "face": {"shape": "hexagon", "color": "#2a9a86", "icon": ""}
+}

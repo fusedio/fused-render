@@ -1364,6 +1364,42 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         from fused_render.bots import registry as bots_registry
 
         await asyncio.to_thread(bots_registry.shutdown)
+
+    # Experts (fused_render/experts/, docs/experts.md): `/api/experts/*`, the
+    # consult door task sessions reach through the `expert_consult` MCP tool,
+    # plus the learning pass's timer (experts/scheduler.py: capture idle
+    # sessions, consolidate, propose). The router imports the expert modules
+    # lazily. The timer is `@on_startup` (a lean `open` never learns) and only
+    # ticks in the process that owns the bots and holds its machine-wide lease.
+    from fused_render.experts.routes import router as experts_router
+
+    app.include_router(experts_router)
+
+    @on_startup
+    async def _startup_experts():
+        # The spawn-side roster (agent._expert_roster_live) reads these two
+        # off sys.modules and never imports them itself (SPEC PY-15), so they
+        # are loaded here, before the first session spawns, not on the first
+        # `/api/experts` request.
+        try:
+            import fused_render.experts.model  # noqa: F401
+            import fused_render.experts.store  # noqa: F401
+        except Exception:  # noqa: BLE001 — no experts offered, never a failed startup
+            logger.warning("could not load the experts modules", exc_info=True)
+        if _platform.IS_WINDOWS:
+            return
+        try:
+            from fused_render.experts import scheduler as experts_scheduler
+
+            experts_scheduler.start()
+        except Exception:  # noqa: BLE001 — never worth failing startup
+            logger.warning("could not start the experts scheduler", exc_info=True)
+
+    @on_shutdown_always
+    async def _shutdown_experts():
+        from fused_render.experts import scheduler as experts_scheduler
+
+        await asyncio.to_thread(experts_scheduler.shutdown)
     # Share an app as a public link (share_app.py): the .fused export handed
     # to the user's Fused account as a one-node canvas, through the same
     # `fused login` provider canvases.py owns (credentials-file presence,

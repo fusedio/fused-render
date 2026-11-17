@@ -37,7 +37,9 @@ router = APIRouter()
 
 # One owner per machine (registry module docstring): every request under these prefixes is answered by the
 # process that holds the bots and forwarded there by every other one (`forward_middleware`).
-OWNED_PREFIXES = ("/api/bots", "/api/bot-apps")
+# `/api/experts` (experts/routes.py) builds Bots (registry.get / all, which require the owner) and runs ask sessions
+# against the owner's Bot objects, so it is owned and forwarded exactly like `/api/bots`.
+OWNED_PREFIXES = ("/api/bots", "/api/bot-apps", "/api/experts")
 FORWARD_TIMEOUT_S = 120.0  # a tool call or an app send may wait on the model; the page's own timeouts are shorter
 _SKIP_REQUEST_HEADERS = {"host", "content-length", "connection", "transfer-encoding"}
 _SKIP_RESPONSE_HEADERS = {"content-length", "connection", "transfer-encoding", "content-encoding"}
@@ -372,10 +374,15 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     browser = body.get("browser_id") or ""
     if not isinstance(browser, str):
         raise ValueError("browser_id must be a browser id")
-    terminal = _check_terminal(bm, body, kind == "super")  # before the bot exists: a 400 leaves nothing behind
+    expert = body.get("expert") if kind == "expert" else None
+    if expert is not None and not isinstance(expert, dict):
+        raise ValueError("expert must be a manifest object")
+    if kind == "expert":
+        browser, preset = "", ""  # an expert has no browser and takes no preset
+    terminal = None if kind == "expert" else _check_terminal(bm, body, kind == "super")  # before the bot exists: a 400 leaves nothing behind
     registry.require_workspace()  # its greeting thread may start a preset's setup task (bot.greet)
     b = registry.create(body.get("name") or "", body.get("model") or "", body.get("effort") or "", body.get("instructions") or "",
-                        preset=preset, kind=kind, browser=browser)
+                        preset=preset, kind=kind, browser=browser, **({"expert": expert} if kind == "expert" else {}))
     if body.get("approval") in ("ask", "auto"):
         b.meta["approval"] = body["approval"]
     if body.get("build_access") in bm.BUILD_MODES:
@@ -388,12 +395,12 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
         b.meta["connections"] = _apptools().clean_connections(body["connections"])
     if isinstance(body.get("allow_rules"), list):
         b.meta["allow_rules"] = _tools().clean_allow_rules(body["allow_rules"])
-    if body.get("engine") in bm.ENGINES and not bm.is_super(b.meta):
+    if body.get("engine") in bm.ENGINES and not bm.is_super(b.meta) and not bm.is_expert(b.meta):
         b.meta["engine"] = body["engine"]
     if bm.is_super(b.meta) and body.get("super_access") in bm.SUPER_ACCESS:
         b.meta["super_access"] = body["super_access"]
     b.save()
-    if body.get("encrypt"):
+    if body.get("encrypt") and not bm.is_expert(b.meta):
         b.set_encrypt(True)
     return {"ok": True, "id": b.id}
 
@@ -416,7 +423,7 @@ def _check_terminal(bm, body, is_super_bot):
 def bots_browsers():
     """Every browser (set of logins) a bot uses, with the bots on it (docs §5)."""
     from fused_render.bots import browsers
-    return {"ok": True, "browsers": browsers.listing(registry.all())}
+    return {"ok": True, "browsers": browsers.listing([b for b in registry.all() if not _botmod().is_expert(b.meta)])}
 
 
 @router.post("/api/bots/browsers/{bid}")
@@ -720,6 +727,23 @@ _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "t
 _WS_OPS = frozenset({"takeover", "giveback", "popout", "wake", "clear"})
 
 
+# The browser's own ops: refused for an expert (docs/experts.md §5) with a sentence, before anything touches Chrome.
+_BROWSER_OPS = {"takeover": "taking over the browser", "giveback": "handing the browser back",
+                "popout": "opening the browser as a window", "dock": "docking the browser", "wake": "waking the browser",
+                "goto": "opening a page", "nav": "browser navigation", "tab": "browser tabs",
+                "viewport": "the browser's viewport", "profile": "importing a Chrome profile"}
+
+
+def _is_expert_bot(bid) -> bool:
+    return _botmod().is_expert(_bot(bid).meta)  # an unknown bot raises "no such bot" (404) as before
+
+
+def _refuse_expert(bid, op) -> None:
+    """The browser helpers are also called directly (the phone's door): the same refusal, as a 400."""
+    if _is_expert_bot(bid):
+        raise ValueError(f"This bot is an expert and has no browser, so {_BROWSER_OPS[op]} does not apply.")
+
+
 @router.post("/api/bots/{bid}/{op}")
 @_handled
 def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None),
@@ -738,6 +762,8 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
             # Super Bot's first task starts from here, but the page calls `open` on every landing and asks again
             # while setup is "pending": without the workspace claim it waits quietly instead of a 409 per click.
             return {"ok": True, "setup": "pending"}
+    if op in _BROWSER_OPS and _is_expert_bot(bid):
+        return _error(f"This bot is an expert and has no browser, so {_BROWSER_OPS[op]} does not apply.", 400)
     if op in _WS_OPS:
         _ws(bid)
     if op in _CONTROL:
@@ -753,6 +779,7 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
 
 
 def _goto(bid, body):
+    _refuse_expert(bid, "goto")
     url = (body.get("url") or "").strip()
     if not url:
         raise ValueError("no url")
@@ -763,6 +790,7 @@ def _goto(bid, body):
 
 
 def _nav(bid, body):
+    _refuse_expert(bid, "nav")
     op = body.get("op")
     if op not in ("back", "forward", "reload"):
         raise ValueError("op must be back|forward|reload")
@@ -771,6 +799,7 @@ def _nav(bid, body):
 
 
 def _tab(bid, body):
+    _refuse_expert(bid, "tab")
     b = _ws(bid)
     tab, index = body.get("tab"), body.get("index")
     if tab == "new":
@@ -866,8 +895,16 @@ def _settings(bid, body):
     # Validate before any key lands on the live meta: a ValueError past this line would leave half the dialog's
     # edits in memory for the next save() to persist.
     folders = bm.clean_folders(body["folders"]) if isinstance(body.get("folders"), list) else None  # ValueError -> 400
+    if bm.is_expert(b.meta):
+        # No browser, no engine choice of the bots kind (an expert always runs on the agent engine),
+        # no terminal: the dialog may still send these keys; they are ignored.
+        body = {k: v for k, v in body.items() if k not in ("engine", "browser_id", "encrypt", "terminal")}
     terminal = _check_terminal(bm, body, bm.is_super(b.meta))
     b.meta["name"] = name or b.meta.get("name")
+    if bm.is_expert(b.meta) and isinstance(body.get("ask_me_about"), str):
+        # The one-line description `expert_list` shows task sessions (docs/experts.md).
+        b.meta["expert"] = {**(b.meta.get("expert") if isinstance(b.meta.get("expert"), dict) else {}),
+                            "ask_me_about": " ".join(body["ask_me_about"].split())[:240]}
     if body.get("instructions") is not None:
         b.meta["instructions"] = str(body["instructions"]).strip()
     if body.get("approval") in ("ask", "auto"):
@@ -987,6 +1024,9 @@ def _skills(bid, body):
     elif op == "delete":
         b.skill_delete(body.get("rid") or "")
     elif op == "learn":
+        if _botmod().is_expert(b.meta):
+            # An expert's skills are static (docs/experts.md): what it learns goes to memory.md.
+            raise ValueError("An expert's skills are static; what it learns goes to its memory. Edit a skill here.")
         b.learn_from_last()
     else:
         raise ValueError("op must be save|delete|learn")
@@ -1024,6 +1064,7 @@ def _tool(bid, body):
 
 
 def _viewport(bid, body):
+    _refuse_expert(bid, "viewport")
     """The live view's stage size: the bot's Chrome window follows it (stored for the next launch when asleep)."""
     try:
         w, h = int(body.get("w")), int(body.get("h"))
@@ -1086,7 +1127,7 @@ def _app_bot(b):
     m = b.meta
     row = {k: m.get(k) for k in _APP_FIELDS}
     row["id"] = b.id
-    row["kind"] = "super" if bm.is_super(m) else "bot"
+    row["kind"] = "super" if bm.is_super(m) else "expert" if bm.is_expert(m) else "bot"
     row["description"] = " ".join(str(m.get("instructions") or "").split())[:_APP_DESC]
     a = bm.activity(b.id, m, b)  # the one reading of "busy" / "blocked", shared with Super Bot's BOTS NOW block
     row["status"] = "idle" if a["status"] == "ended" else a["status"]  # a word that outlived its thread is idle to an app
