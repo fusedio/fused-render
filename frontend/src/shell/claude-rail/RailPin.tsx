@@ -5,7 +5,7 @@
 //   - `RailPinButton`: ONE component for every rail card's head — the shared
 //     head's first seat (TaskHead `pinNode`; with the pin no card has a ×), and the legacy
 //     Bots / Git / bot heads' row after their ×. Hollow while the card is a
-//     hover or temp, filled in the accent once pinned; `aria-pressed` says
+//     hover or temp, filled in the head's muted ink once pinned; `aria-pressed` says
 //     which. Its press is a press inside the card first (the card's capture
 //     handler makes a hover temp), then the toggle.
 //   - `useTempOutside`: ONE watcher for a temp card's outside press, the

@@ -211,17 +211,13 @@ test("the rail card: its pulse's facts ride the head's own slots, its star and a
   expect(read("../styles/claude-rail.css")).not.toContain(".claude-rail-peek-open.has-icon");
 });
 
-test("a pinned rail card wears a half-pixel accent hairline, not the full 1px border (2026-11-16)", () => {
+test("a pinned rail card wears no accent: no edge on the card, no accent ink on the pin (2026-11-17)", () => {
   const css = read("../styles/claude-rail.css");
-  const rule = between(
-    css,
-    ".claude-rail-peek:has(.rail-pin-btn.is-pinned) .claude-rail-peek-card,\n.modal-popover .modal-dialog:has(.rail-pin-btn.is-pinned) {",
-    "}",
-  );
-  // The 1px border box stays (nothing moves on pin) but goes clear; the line
-  // is a half-pixel outline drawn on its outer half.
-  expect(rule).toContain("border-color: transparent;");
-  expect(rule).toContain("outline: 0.5px solid var(--accent);");
-  expect(rule).toContain("outline-offset: -0.5px;");
-  expect(rule).not.toContain("border-color: var(--accent)");
+  // The filled glyph alone says pinned (owner, 2026-11-17: "remove accent
+  // border when pinned, and make the pin subtle color fill when pinned
+  // instead of accent color"): no rule keys the card's edge or the pin's
+  // colour off the pressed pin.
+  expect(css).not.toContain(":has(.rail-pin-btn.is-pinned) .claude-rail-peek-card");
+  expect(css).not.toContain(".modal-dialog:has(.rail-pin-btn.is-pinned)");
+  expect(css).not.toMatch(/\.rail-pin-btn\.is-pinned[^{]*\{[^}]*var\(--accent/);
 });

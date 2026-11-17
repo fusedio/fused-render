@@ -1120,26 +1120,12 @@
   color: var(--fg);
 }
 /* THE PIN (RailPin.tsx; owner, 2026-11-16): hollow and muted while the card is
-   a hover or temp, filled in the accent once pinned — on the shared head's
-   icon button and on the legacy heads' row alike. */
-.rail-pin-btn.is-pinned,
-.rail-pin-btn.is-pinned:hover:not(:disabled) {
-  color: var(--accent-soft);
-}
-/* A PINNED WINDOW wears a very thin accent edge (owner, 2026-11-16: "when pin
-   have a very thin accent color border around"): the card's own 1px border,
-   in the accent — every rail card, and the +'s popover, told by the pressed
-   pin in its head. */
-.claude-rail-peek:has(.rail-pin-btn.is-pinned) .claude-rail-peek-card,
-.modal-popover .modal-dialog:has(.rail-pin-btn.is-pinned) {
-  /* A HAIRLINE, not the full 1px (owner, 2026-11-16: "make border accent
-     thinner when pin"): the card keeps its 1px border box, so nothing moves
-     on pin, but the border itself goes clear and a half-pixel accent line is
-     drawn on its outer half. */
-  border-color: transparent;
-  outline: 0.5px solid var(--accent);
-  outline-offset: -0.5px;
-}
+   a hover or temp, the same glyph FILLED once pinned. The fill is the head's
+   own muted ink, not the accent, and a pinned window wears no accent edge
+   (owner, 2026-11-17: "remove accent border when pinned, and make the pin
+   subtle color fill when pinned instead of accent color"): the filled glyph
+   alone says pinned, so there is no rule here — `.task-head-btn` /
+   `.claude-rail-peek-btn` colour it, hover included. */
 /* The chats: every kept mount stacked in the same box, the shown one visible.
    `visibility`, not `display`: a hidden chat keeps its layout and its scroll
    position, which is what makes coming back to it instant. */
