@@ -129,6 +129,13 @@ export interface SyncState {
   /** Epoch seconds when sync stops because no canvas page has it open
    *  (server IDLE_STOP_S after the last page socket closed); null while one is. */
   idle_stop_at?: number | null;
+  /** The frame keeps skipping these nodes in delta after delta with no edit
+   *  of its own posted (the disk→canvas leg reads "held" meanwhile); null
+   *  while it takes what it is sent. */
+  embed_skipping?: { names: string[]; since: number; count: number } | null;
+  /** Moves once per such streak: the page answers with a full state for the
+   *  frame (CanvasWorkspace's delta leg). */
+  embed_heal_seq?: number;
 }
 
 /** One sync/log ring entry. */
@@ -435,4 +442,25 @@ export function formatClock(t: number): string {
 /** Whether a server state means no watcher runs here (re-arm it). */
 export function noWatcher(s: SyncState): boolean {
   return s.watching === false || s.watcher_epoch == null;
+}
+
+/** What the page last saw of `embed_heal_seq`, per watcher. */
+export interface HealMark {
+  epoch: string | null;
+  seq: number;
+}
+
+/** Whether a sync state's `embed_heal_seq` asks the page to send the frame a
+ *  full state now: it moved past the last value seen from the SAME watcher.
+ *  The first sight of a watcher's value is a baseline, not a move (a page
+ *  that loads mid-streak sends a full state on the frame's hello anyway).
+ *  Returns the decision and the mark to keep. Pure; test surface. */
+export function healWanted(
+  prev: HealMark | null,
+  epoch: string | null,
+  seq: number | undefined,
+): { heal: boolean; mark: HealMark | null } {
+  if (typeof seq !== "number") return { heal: false, mark: prev };
+  const mark = { epoch, seq };
+  return { heal: prev !== null && prev.epoch === epoch && seq > prev.seq, mark };
 }

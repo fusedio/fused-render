@@ -2248,6 +2248,116 @@ def test_a_stop_overtaken_by_the_sessions_next_turn_does_not_publish(
     assert len(_push_argvs(harness)) == 1
 
 
+def test_a_stop_while_another_sessions_turn_is_open_does_not_publish(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """Two agents in one clone. A's Stop arrives while B is mid-turn: B's
+    change set may be half-done (a file without its row), and publishing it
+    reconciles default rows for B's files at the canvas's edge. Neither
+    merge nor push; B's own Stop publishes — its own run still reading open
+    when its Stop lands must not hold it."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    fake_agent.live = "run-b"
+    m.agent_run_id(fresh=True)
+    m._lease_next_at = time.time() + 3600
+    runs = [{"run_id": "run-b", "backend": "claude", "sessions": {"sess-b"}},
+            {"run_id": "run-a", "backend": "claude", "sessions": {"sess-a", "sess-a0"}}]
+    fake_agent._live_runs_in = lambda folder: iter(list(runs))
+    m.tool_hook("sess-a")
+    m.tool_hook("sess-b")
+    (harness.clones / "alpha" / "fresh.py").write_text("B's new node, row not written yet\n")
+    assert m.turn_end("sess-a", m._tool_hooks["sess-a"]) == "held"
+    assert not _push_argvs(harness)
+    last = m._log.since(0)["events"][-1]
+    assert last["action"] == "turn end" and not last["ok"]
+    assert "another session's turn is still open" in last["detail"]
+    toml = (harness.clones / "alpha" / "canvas.toml").read_text()
+    assert "fresh" not in toml, "no row was reconciled for B's file"
+    # B ends its turn: A's run is gone, B's own still reads open at its Stop.
+    runs[:] = [runs[0]]
+    assert m.turn_end("sess-b", m._tool_hooks["sess-b"]) == "pushed"
+    assert len(_push_argvs(harness)) == 1
+
+
+def test_a_turn_end_publishes_when_the_other_turns_cannot_be_told_apart(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """Fail open: a lookup that raises, a run naming no session, or a Stop
+    naming none publishes exactly as before the cross-session hold."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    m._lease_next_at = time.time() + 3600
+    clone = harness.clones / "alpha"
+
+    def broken(folder):
+        raise OSError("runs dir unreadable")
+        yield  # pragma: no cover — a generator, as the real one is
+
+    fake_agent._live_runs_in = broken
+    (clone / "a.py").write_text("a2\n")
+    assert m.turn_end("sess-a", None) == "pushed"
+    fake_agent._live_runs_in = lambda folder: iter(
+        [{"run_id": "run-x", "backend": "claude", "sessions": set()}])
+    (clone / "a.py").write_text("a3\n")
+    assert m.turn_end("sess-a", None) == "pushed"
+    fake_agent._live_runs_in = lambda folder: iter(
+        [{"run_id": "run-b", "backend": "claude", "sessions": {"sess-b"}}])
+    (clone / "a.py").write_text("a4\n")
+    assert m.turn_end("", None) == "pushed"
+    assert len(_push_argvs(harness)) == 3
+
+
+def test_a_frame_that_keeps_skipping_with_no_edit_of_its_own_is_flagged_once(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """The workbench acks delta after delta with the same names skipped
+    ("kept its own newer change") and never posts that change: after
+    EMBED_SKIP_STREAK_ACKS such acks the disk→canvas leg reads held with
+    the names, the log says so once, and `embed_heal_seq` moves once so the
+    page sends a full state. A delta it takes in full ends the streak."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    clone = harness.clones / "alpha"
+
+    def write_rows(title):
+        rows = [{"udfName": "a", "x": 0, "y": 0}, {"udfName": "b", "x": 0, "y": 400, "title": title}]
+        (clone / "canvas.toml").write_text(
+            rtoml.dumps({"type": "canvas", "canvas": {"nodes": rows, "edges": []}}))
+
+    write_rows("t0")
+    first = m.cut_delta(full=True)
+    m.ack_delta(first["rev"], True)
+    assert m.sync_state()["embed_skipping"] is None and m.sync_state()["embed_heal_seq"] == 0
+    for i in range(1, canvases_mod.EMBED_SKIP_STREAK_ACKS + 2):
+        write_rows(f"t{i}")
+        cut = m.cut_delta(full=False)
+        assert any(o.get("name") == "b" for o in cut["ops"]), cut
+        m.ack_delta(cut["rev"], True, skipped=["b"])
+        state = m.sync_state()
+        if i < canvases_mod.EMBED_SKIP_STREAK_ACKS:
+            assert state["embed_skipping"] is None, (i, state)
+    assert state["embed_skipping"]["names"] == ["b"]
+    assert state["embed_heal_seq"] == 1                  # once, not per ack
+    leg = state["legs"]["disk_to_embed"]
+    assert leg["state"] == "held" and "b" in leg["reason"], leg
+    held = [e for e in m._log.since(0)["events"] if e["action"] == "workbench holding back"]
+    assert len(held) == 1 and held[0]["detail"].startswith("b:"), held
+    # The frame takes the next change in full: caught up, logged, leg clear.
+    write_rows("taken")
+    cut = m.cut_delta(full=False)
+    m.ack_delta(cut["rev"], True)
+    state = m.sync_state()
+    assert state["embed_skipping"] is None
+    assert state["legs"]["disk_to_embed"]["state"] != "held"
+    assert [e["action"] for e in m._log.since(0)["events"]].count("workbench caught up") == 1
+    # The time half: one skip, then quiet past EMBED_SKIP_STREAK_S.
+    write_rows("late")
+    cut = m.cut_delta(full=False)
+    m.ack_delta(cut["rev"], True, skipped=["b"])
+    assert m.sync_state()["embed_skipping"] is None
+    m._skip_streak["since"] -= canvases_mod.EMBED_SKIP_STREAK_S + 1
+    m._tick()
+    assert m.sync_state()["embed_skipping"]["names"] == ["b"]
+    assert m.sync_state()["embed_heal_seq"] == 2
+
+
 def test_a_stop_overtaken_during_the_merge_download_applies_nothing(
         harness, tmp_path, monkeypatch, fake_agent):
     """The next turn starts while a stale turn end downloads the server's

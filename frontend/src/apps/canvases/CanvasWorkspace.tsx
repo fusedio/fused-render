@@ -261,9 +261,11 @@ import { CHAT_PARAMS, placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
+  healWanted,
   mergeLogEvents,
   noWatcher,
   type EmbedFailure,
+  type HealMark,
   type MergedSyncState,
   type RelayEntry,
   type SyncLogEvent,
@@ -2239,6 +2241,17 @@ export default function CanvasWorkspace({
     }
     relayDelta(false);
   }, [sync?.disk_rev, sync?.watcher_epoch, relayDelta]);
+
+  // The server saw the frame skip the same nodes delta after delta with no
+  // edit of its own posted (`embed_heal_seq` moves once per such streak):
+  // send it a full state, as a hello would. Per watcher, like the counter
+  // above; the first sight of a watcher's value is a baseline, not a move.
+  const healMarkRef = useRef<HealMark | null>(null);
+  useEffect(() => {
+    const { heal, mark } = healWanted(healMarkRef.current, sync?.watcher_epoch ?? null, sync?.embed_heal_seq);
+    healMarkRef.current = mark;
+    if (heal) relayDelta(true);
+  }, [sync?.embed_heal_seq, sync?.watcher_epoch, relayDelta]);
 
   // The node this page currently shows, readable from the message handler
   // without re-subscribing it on every selection.

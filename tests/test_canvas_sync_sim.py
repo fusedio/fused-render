@@ -219,6 +219,46 @@ def test_trace_2_nodeless_push_waits_for_the_turn(sim):
     _assert_invariants(w)
 
 
+def test_two_sessions_one_ends_while_the_others_change_set_is_half_done(sim):
+    """Two agents in one clone (a user's canvas sync log, 2026-11-16): A's
+    Stop published B's half-done change set — a source file whose row B had
+    not written yet got a default row at the canvas's edge, then B's own row
+    made a duplicate. A's turn end now holds while B's turn is open; B's
+    Stop publishes file and row together."""
+    from canvas_sim.world import Session
+
+    w = sim.world()
+    a, b = w.session, Session(w, sid="sim-session-b")
+    a.start_turn()
+    b.start_turn()
+    path = os.path.join(w.dir, "s2.py")
+    write_file(path, body_text("s2.py", "tk_s2"))
+    w.ledger.write("session", "body:s2", "tk_s2", None)
+    w.names.add("s2")
+    b._hook(path)
+    w.follow()
+    a.end_turn()
+    w.tick(4)
+    assert w.server.imports == 0, "A's turn end published B's half-done change set"
+    rows = canvas_snapshot.rows_of_doc(b._doc())["nodes"]
+    assert "s2" not in rows, "a default row was reconciled for B's file mid-turn"
+    assert any("another session's turn is still open" in (e.get("detail") or "")
+               for e in _events(w))
+    doc = b._doc()
+    doc["canvas"]["nodes"].append(make_row("s2", 4000, "tk_st2"))
+    w.ledger.write("session", "x:s2", 4000, None)
+    w.ledger.write("session", "title:s2", "tk_st2", None)
+    b._write_doc(doc)
+    w.follow()
+    b.end_turn()
+    w.tick(4)
+    assert "s2" in w.server.udfs and "s2" in w.server.rows()
+    for imp in w.server.import_log:
+        assert set(imp["files"]) <= set(imp["rows"]), f"a node-less file was pushed: {imp}"
+    assert [r["udfName"] for r in b._doc()["canvas"]["nodes"]].count("s2") == 1
+    _assert_invariants(w)
+
+
 def test_trace_3_two_watchers_one_canvas(sim, monkeypatch):
     """Incident 3, two watchers: two fused-renders sync one canvas (here two
     clones of the same server canvas). The lease names the first; the second
