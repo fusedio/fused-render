@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see NOTICE.
 """Host-side broker for local fan-out (`fused.load` / `udf.map`).
 
 A local compute call cannot spawn siblings itself, so child invocations are

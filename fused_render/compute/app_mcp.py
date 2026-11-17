@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see NOTICE.
 """App-folder MCP assembly (spec/serve/app-mcp.md).
 
 A *fused-render app* is a plain folder — `index.html` plus the `.py` entrypoints

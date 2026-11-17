@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see ../NOTICE.
 import functools as _functools
 
 _registered_udfs = []

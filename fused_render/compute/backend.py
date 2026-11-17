@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see NOTICE.
 """Local compute: run one script in a host subprocess on a given interpreter.
 
 `LocalPythonComputeBackend` writes the handler files (`handler/`) into a private

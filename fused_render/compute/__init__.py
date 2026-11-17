@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see NOTICE.
 """The local compute engine: runs one Python script on a given interpreter.
 
 `LocalPythonComputeBackend` (backend.py) writes the handler files (`handler/`)

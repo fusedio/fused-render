@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see NOTICE.
 """Signature → MCP tool schema for the app MCP assembly.
 
 An MCP assembly that publishes *user Python* as tools faces a problem:

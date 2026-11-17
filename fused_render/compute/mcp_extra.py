@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see NOTICE.
 """Lazy loader for the opt-in `mcp` package (`pip install 'fused-render[fused]'`).
 
 `fused-render app serve` builds a `mcp.server.fastmcp.FastMCP` stdio server

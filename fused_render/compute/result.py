@@ -1,4 +1,3 @@
-# Derived from openfused (MIT, Copyright (c) 2026 Fused Labs, Inc.); see NOTICE.
 """What one call returns: the runner's wire result, parsed."""
 
 from __future__ import annotations
