@@ -12715,7 +12715,9 @@ today; one node fills the frame.
   finished timeline prints one console line, each stage with its time since
   the one before. Recording only: no step waits on it.
 - **NV-13 Kept across mode switches.** Once mounted, the node view stays
-  mounted, hidden (`inert`, `aria-hidden`), while its file stays open and the
+  mounted, hidden (no pointer, focus or assistive-tech reach: `visibility:
+  hidden` and `pointer-events: none` from the paint it is hidden on), while
+  its file stays open and the
   mode is on offer: switching to Code, Api or any other content mode and back
   shows the same view, its workbench frame, sync and relay untouched, with no
   second open. Every other mode's frame is still retired after the swap

@@ -256,6 +256,21 @@
   z-index: 1;
 }
 
+/* A native pane that is NOT shown — the node view kept mounted behind
+   another mode (SPEC §53.3 NV-13) — takes no pointer, focus or
+   assistive-tech hit from the paint it is hidden on: a full-size box at
+   z-index 0 would otherwise sit over a mode that is not itself stacked
+   (the content pane's chat mount). `visibility` flips only once the fade-out
+   is over (the 0s transition delayed by --dur-med), and back at once when
+   shown; hiding an iframe this way does not reload it. */
+.preview-frames .preview-native.preview-frame:not(.is-shown) {
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    visibility 0s linear var(--dur-med);
+}
+
 /* ---- the preview SIDEBAR (`_side`) ---------------------------------------
    A file preview's right-hand column: the companion modes (`claude`,
    `git`) beside the content pane instead of in place of it

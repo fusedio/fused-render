@@ -908,18 +908,17 @@ const annotateTargetFrame = (): HTMLIFrameElement | null =>
 // is to an iframe, its mount is to this — the view draws its own loading
 // state, so there is nothing to wait for before showing it.
 //
-// `shown` false is a pane kept mounted behind another mode (the node view,
-// NV-13): it is `inert` and hidden from assistive tech, so neither focus nor a
-// screen reader reaches a view nobody can see. (`inert` is set on the node:
-// React 18 does not know the attribute.)
+// A pane without `is-shown` — the node view kept mounted behind another mode
+// (NV-13) — is taken out of pointer, focus and assistive-tech reach by CSS
+// (`.preview-native.preview-frame:not(.is-shown)`, preview.css), on the very
+// paint the class changes: an effect would leave a frame in which the hidden
+// pane still caught clicks over the mode in front of it.
 function NativePane({
   className,
-  shown,
   onReady,
   children,
 }: {
   className: string;
-  shown: boolean;
   onReady: () => void;
   children: ReactNode;
 }) {
@@ -928,12 +927,8 @@ function NativePane({
   useEffect(() => {
     ready.current();
   }, []);
-  const box = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    box.current?.toggleAttribute("inert", !shown);
-  }, [shown]);
   return (
-    <div ref={box} className={className + " preview-native"} aria-hidden={shown ? undefined : true}>
+    <div className={className + " preview-native"}>
       {children}
     </div>
   );
@@ -2445,7 +2440,6 @@ function TemplatePreview({
               if (m === NODE_MODE && nodeOffered) return (
                 <NativePane
                   key={m}
-                  shown={m === shown}
                   className={"preview-frame" + (m === shown ? " is-shown" : "")}
                   onReady={() => {
                     loadedFrames.current.add(m);
