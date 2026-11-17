@@ -11,6 +11,9 @@ import {
   defaultSidebarMode,
   defaultMode,
   effectiveActive,
+  isModeVisible,
+  isNodeViewEntry,
+  modesUnderSnapshot,
 } from "@platform/lib/mode-visibility";
 
 const t = (mode: string, conditional = false): TemplateEntry => ({
@@ -264,5 +267,109 @@ describe("effectiveActive", () => {
     const visible = visibleModes([listing, split], { claude_split: false });
     expect(visible.length).toBe(1);
     expect(effectiveActive(visible, "claude_split")?.mode).toBe(visible[0].mode);
+  });
+});
+
+// THE CANVAS NODE VIEW (`udf`, SPEC §53.3 NV-3, PT-8's `prefer` exception).
+describe("the node view needs an explicit yes", () => {
+  const code = t("code");
+  // As stat ships it on any `.py`: the core native template, gated.
+  const udf: TemplateEntry = { mode: "udf", path: "/tpl/udf/native", icon: null, conditional: true, native: true };
+  // …and on a path shaped like a canvas node file, with Canvases on.
+  const preferred: TemplateEntry = { ...udf, prefer: true };
+
+  it("unmarked: hidden while the call is out, after a failed call, and on a no", () => {
+    expect(isModeVisible(udf, null)).toBe(false);
+    expect(isModePending(udf, null)).toBe(false);
+    expect(isModeVisible(udf, {})).toBe(false);
+    expect(isModeVisible(udf, { udf: false })).toBe(false);
+    expect(isModeVisible(udf, { udf: true })).toBe(true);
+    // Offered on a yes, but never the default: no `prefer`, PT-8 as ever.
+    expect(defaultMode(visibleModes([code, udf], { udf: true }))?.mode).toBe("code");
+  });
+
+  it("not a native template: the ordinary rules, and `prefer` means nothing", () => {
+    const plain: TemplateEntry = { ...preferred, native: undefined };
+    expect(isNodeViewEntry(plain)).toBe(false);
+    expect(isModeVisible(plain, {})).toBe(true);
+    expect(isModePending(plain, null)).toBe(true);
+    expect(defaultMode(visibleModes([code, plain], null))?.mode).toBe("code");
+    expect(defaultMode(visibleModes([code, plain], { udf: true }))?.mode).toBe("code");
+    // Nor any other gated entry that says `prefer`.
+    const other: TemplateEntry = { ...t("app", true), prefer: true };
+    expect(defaultMode(visibleModes([code, other], { app: true }))?.mode).toBe("code");
+  });
+});
+
+describe("defaultMode with a preferred entry", () => {
+  const code = t("code");
+  const claudeGated = t("claude", true);
+  const preferred: TemplateEntry = {
+    mode: "udf",
+    path: "/tpl/udf/native",
+    icon: null,
+    conditional: true,
+    native: true,
+    prefer: true,
+  };
+  const list = [code, preferred, claudeGated];
+  const dflt = (v: Record<string, boolean> | null) => defaultMode(visibleModes(list, v));
+
+  it("pending: it is the default candidate, listed and pending", () => {
+    expect(names(visibleModes(list, null))).toEqual(["code", "udf", "claude"]);
+    expect(isModePending(preferred, null)).toBe(true);
+    expect(dflt(null)?.mode).toBe("udf");
+  });
+
+  it("the gate says yes: the default, settled", () => {
+    expect(isModePending(preferred, { udf: true })).toBe(false);
+    expect(dflt({ udf: true, claude: true })?.mode).toBe("udf");
+  });
+
+  it("a no, a missing verdict or a failed call ({}): the ordinary default, no udf", () => {
+    const cases: Record<string, boolean>[] = [{ udf: false, claude: true }, { claude: true }, {}];
+    for (const v of cases) {
+      expect(dflt(v)?.mode).toBe("code");
+      expect(names(visibleModes(list, v))).not.toContain("udf");
+    }
+  });
+
+  it("an explicit `_mode` still wins; an unknown one lands on the candidate", () => {
+    expect(effectiveActive(visibleModes(list, null), "code")?.mode).toBe("code");
+    expect(effectiveActive(visibleModes(list, { udf: true }), "nope")?.mode).toBe("udf");
+    expect(effectiveActive(visibleModes(list, {}), "udf")?.mode).toBe("code");
+  });
+
+  it("is a content mode, never a companion", () => {
+    expect(isSidebarMode("udf")).toBe(false);
+    expect(names(partitionModes(visibleModes(list, { udf: true, claude: true })).sidebar)).toEqual(["claude"]);
+    expect(SIDEBAR_MODES).toEqual(["claude", "git"]);
+  });
+});
+
+// SPEC §53.3: the node view is live; a git snapshot preview never offers it.
+describe("modesUnderSnapshot", () => {
+  const code = t("code");
+  const udf: TemplateEntry = {
+    mode: "udf",
+    path: "/tpl/udf/native",
+    icon: null,
+    conditional: true,
+    native: true,
+    prefer: true,
+  };
+  it("drops the node view under a snapshot, so the default falls to a mode that honours it", () => {
+    const under = modesUnderSnapshot([udf, code], "abc123");
+    expect(under.map((e) => e.mode)).toEqual(["code"]);
+    expect(defaultMode(visibleModes(under, { udf: true }))?.mode).toBe("code");
+    expect(effectiveActive(visibleModes(under, { udf: true }), "udf")?.mode).toBe("code");
+  });
+  it("keeps every mode when there is no snapshot", () => {
+    expect(modesUnderSnapshot([udf, code], null)).toEqual([udf, code]);
+    expect(modesUnderSnapshot([udf, code], "")).toEqual([udf, code]);
+  });
+  it("keeps a non-native `udf` (an ordinary framed template, not the node view)", () => {
+    const framed: TemplateEntry = { mode: "udf", path: "/u/udf/template.html", icon: null, conditional: false };
+    expect(modesUnderSnapshot([framed, code], "abc123").map((e) => e.mode)).toEqual(["udf", "code"]);
   });
 });
