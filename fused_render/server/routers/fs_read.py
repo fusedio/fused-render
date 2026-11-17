@@ -46,8 +46,8 @@ from fused_render.server.fs_stat import _fs_stat
 from fused_render.server.proxy import _harden_raw, _is_document_load
 from fused_render.server import templates as _server_templates
 from fused_render.server.templates import (
+    _conditions_key,
     _conditions_payload,
-    _prefs_mtime,
 )
 from fused_render.server import walk as _server_walk
 from fused_render.server.walk import (
@@ -86,7 +86,9 @@ def api_fs_conditions(path: str):
     # gate-evaluation cost, so a short check-on-read TTL cache serves a
     # recent verdict. Only success payloads (plain dicts) are cached; error
     # responses (_error -> JSONResponse) are always recomputed.
-    pm = _prefs_mtime()
+    # Keyed on prefs.json's mtime, and on a node-shaped path's canvas.toml
+    # mtime too (`_conditions_key`): a row added there makes the file a node.
+    pm = _conditions_key(path)
     cached = _server_templates._CONDITIONS_CACHE.get(path)
     if (cached is not None
             and time.monotonic() - cached[0] < _server_templates._CONDITIONS_TTL_S

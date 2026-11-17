@@ -3325,6 +3325,14 @@ class _FrameState:
         # (apply_snapshot): nothing written, the frame applies the delta and
         # posts again. The frame stays the one merge engine.
         self.cut_rev = 0
+        # SPEC 53.1 FP-6: the disk_rev of the latest snapshot or rename write
+        # made by ANOTHER frame. A snapshot of this frame's built on a rev
+        # below it predates that write; `cut_rev` cannot tell (no delta with
+        # it may have been cut for this frame yet), and applied, its edge set
+        # would replace the other frame's. `recut_for`: the rev of the re-cut
+        # forced for such a bounce, so one write forces one re-cut.
+        self.other_write_rev = 0
+        self.recut_for = 0
         # The snapshot seq the last skip-triggered re-cut was made at (see
         # ack_delta): never two re-cuts for one seq, so a frame that keeps
         # skipping cannot drive a delta loop.
@@ -6198,12 +6206,22 @@ class _SyncManager:
         """Forget a frame. The rows it sent whose file never came are the
         ones its own next generation would have dropped (`_embed_enter`)."""
         fr = self._frames.pop(frame, None)
-        if fr is not None and fr.fileless:
+        drop = self._fileless_only_of(fr) if fr is not None else set()
+        if drop:
             try:
-                self._reconcile_rows("embed_to_disk", self.dir, drop=fr.fileless, add=False)
+                self._reconcile_rows("embed_to_disk", self.dir, drop=drop, add=False)
             except Exception as exc:  # noqa: BLE001 — a row kept is no harm
                 logger.warning("canvas %s: could not drop a gone frame's rows: %s",
                                _sync_key(self.env, self.name), exc)
+
+    def _fileless_only_of(self, fr: _FrameState) -> set[str]:
+        """`fr`'s fileless rows that NO OTHER frame still owes a file for:
+        the ones `fr` may drop when it goes (or moves to a new generation).
+        Two frames can each have sent a row for one name (two windows that
+        both made `udf_3`); the row is the other frame's too until its file
+        lands or it lets go of it."""
+        others = set().union(*(f.fileless for f in list(self._frames.values()) if f is not fr))
+        return fr.fileless - others
 
     def _all_rowless(self) -> set[str]:
         return set().union(*(f.rowless for f in list(self._frames.values())))
@@ -6256,9 +6274,10 @@ class _SyncManager:
             # node — overwriting a drag the frame has not had acked (sim B).
             fr.view_reset_pending = not fr.view_from_hello
             fr.rowless = set()
-            if fr.fileless:
-                self._reconcile_rows("embed_to_disk", self.dir, drop=fr.fileless, add=False)
-                fr.fileless = set()
+            drop = self._fileless_only_of(fr)
+            if drop:
+                self._reconcile_rows("embed_to_disk", self.dir, drop=drop, add=False)
+            fr.fileless = set()
             # `_embed_applied` and `_gen_applied_max` are NOT cleared: (gen,
             # seq) pairs never repeat (a fresh tab's gen is its clock, a
             # refetch bumps it by one and restarts seq), and keeping them is
@@ -6623,7 +6642,7 @@ class _SyncManager:
         write that changed something and acked after it is read as stale:
         the frame applied that delta and then wrote on top of it, and this
         view already describes the result."""
-        self._note_disk()
+        self._note_frame_write(fr)
         fr.view_rev = self.disk_rev
         fr.seen = True
         # The frame's own post describes what it shows now: nothing held over.
@@ -6640,6 +6659,30 @@ class _SyncManager:
             return
         fr.embed_view = canvas_snapshot.held_view(
             disk, names, edges=edges, ids=ids, bodies=bodies, embed_rows=embed_rows)
+
+    def _note_frame_write(self, fr: _FrameState) -> None:
+        """`_note_disk` after `fr`'s snapshot or rename landed: when it moved
+        `disk_rev`, every OTHER record is told the rev of that write (FP-6),
+        so a snapshot one of them built before it is bounced, not applied.
+        With one record there is no other, and nothing changes."""
+        before = self.disk_rev
+        self._note_disk()
+        if self.disk_rev != before:
+            for other in list(self._frames.values()):
+                if other is not fr:
+                    other.other_write_rev = max(other.other_write_rev, self.disk_rev)
+
+    def _owes_frame(self, fr: _FrameState) -> bool:
+        """Whether the next cut for `fr` would carry anything: its view is
+        unknown, or differs from disk. A bounce for another frame's write is
+        made only then, so the delta the frame waits for always has ops."""
+        if fr.embed_view is None:
+            return True
+        try:
+            disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
+        except Exception:  # noqa: BLE001 — no reading: nothing to bounce for
+            return False
+        return bool(canvas_snapshot.diff_views(disk, fr.embed_view, pending=self._owed_files()))
 
     def cut_delta(self, full: bool, frame: str = "", scope: str | None = None) -> dict:
         """diff(disk, embed_view) for the page to post to the frame. Under
@@ -6967,6 +7010,28 @@ class _SyncManager:
                    "rebuild": True, "rev": fr.cut_rev, "upserted": [], "deleted": [],
                    "created": [], "push_seq": self.push_seq}
             return self._embed_record(fr, gen, seq, ack)
+        # The same bounce for a write by ANOTHER frame (FP-6): the frame
+        # built this body before that write reached it, and no delta with it
+        # was cut for it yet, so `cut_rev` above cannot see it. Applied,
+        # nodes and row keys are kept by this frame's view, but its edge set
+        # would replace the other frame's. Only while the frame is owed a
+        # delta (its view is older than that write and differs from disk):
+        # a re-cut is forced once per write, so the frame has a delta with
+        # ops at or past the acked rev to apply before it posts again.
+        owed_rev = fr.other_write_rev
+        if (isinstance(snap_rev, int) and not isinstance(snap_rev, bool)
+                and snap_rev <= self.disk_rev and snap_rev < owed_rev
+                and fr.view_rev < owed_rev and self._owes_frame(fr)):
+            if fr.recut_for < owed_rev:
+                self._force_recut()
+                fr.recut_for = self.disk_rev
+            self.log_event("embed_to_disk", "snapshot bounced",
+                           detail=f"{gen}/{seq} built on rev {snap_rev}, before another "
+                                  f"frame's write at rev {owed_rev}: the workbench re-sends")
+            ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                   "rebuild": True, "rev": fr.recut_for, "upserted": [], "deleted": [],
+                   "created": [], "push_seq": self.push_seq}
+            return self._embed_record(fr, gen, seq, ack)
         self._embed_commit_gen(fr)
         prev = fr.embed_view
         result = canvas_snapshot.apply_snapshot(self.dir, new, prev, backup=backup,
@@ -7236,7 +7301,7 @@ class _SyncManager:
             # Nothing known before the rename, nothing known after: the next
             # delta is a full state. `_view_rev` follows the rev as in the
             # refresh.
-            self._note_disk()
+            self._note_frame_write(fr)
             fr.view_rev = self.disk_rev
             fr.seen = True
             self._bump()

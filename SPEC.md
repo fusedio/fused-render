@@ -12494,7 +12494,21 @@ is never sent it, and every alternation of their generations resets the view
   re-read from disk (its own edit never comes back), every other record's
   view is untouched, so the next cut for each of them carries the change.
   No broadcast is added: each page already cuts a delta when `disk_rev`
-  moves.
+  moves. Until a frame has that delta, its own snapshot must not land: a
+  snapshot or rename of one frame that moves `disk_rev` records that rev on
+  every OTHER record (`other_write_rev`), and a snapshot whose `body.rev`
+  (the rev the frame had applied) is below it is bounced exactly like the
+  `cut_rev` bounce (ack `stale` + `rebuild` + `rev`, nothing written) while
+  the record's view is older than that write and differs from disk — its
+  edge set would otherwise replace the other frame's (nodes and row keys
+  are already kept by its view). The first such bounce per write forces a
+  re-cut, and the ack's `rev` is that re-cut's, so the frame always has a
+  delta with ops to apply before it posts again; once it acks one at or
+  past the write, nothing bounces. A snapshot with no `body.rev` (an older
+  workbench) is applied as before, and with one record nothing changes. A
+  row a frame sent whose file never came (`fileless`) is dropped with that
+  record (FP-8) or its new generation only when no other record still owes
+  a file for the same name.
 - **FP-7 Aggregates.** `_push` reads the union of every record's `rowless`
   and `fileless`; a file that lands, or a node that is deleted, settles
   `fileless` on every record. `sync_state`'s disk → embed leg is the calling

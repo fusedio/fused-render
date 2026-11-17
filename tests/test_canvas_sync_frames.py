@@ -39,13 +39,14 @@ def _hello(m, frame, **kw):
     return cut
 
 
-def _body(names, x=None, rev=None):
+def _body(names, x=None, rev=None, edges=()):
     body = {
         "dashboard_body": {"studioState": {"nodes": [
             {"id": f"n-{n}", "type": "simple-udf",
              "position": {"x": (x or {}).get(n, 0), "y": 400 * i},
              "width": 300, "height": 200, "data": {"udfName": n}}
-            for i, n in enumerate(names)]}},
+            for i, n in enumerate(names)],
+            "edges": [{"source": f"n-{s}", "target": f"n-{t}"} for s, t in edges]}},
         "udfs": [{"slug": n, "file": f"{n}.py"} for n in names],
         "body_channel": True,
     }
@@ -289,3 +290,97 @@ def test_a_skip_streak_is_one_frames_and_heals_only_that_frame(m):
     assert b["embed_skipping"] is None
     # With no frame named, the stuck frame is the one reported.
     assert m.sync_state()["legs"]["disk_to_embed"]["state"] == "held"
+
+
+def _two_frames_each_add_c(m, harness):
+    """A and B each make a node named c (two windows, one next name); its file
+    has not landed. Both records owe c's file."""
+    a = _hello(m, "A")
+    _hello(m, "B")
+    m.apply_snapshot(1, 1, _body(["a", "b", "c"], rev=a["rev"]), frame="A")
+    # B never saw A's c (no rev: an older workbench, nothing bounces it).
+    m.apply_snapshot(9, 1, _body(["a", "b", "c"]), frame="B")
+    assert m._frames["A"].fileless == {"c"} and m._frames["B"].fileless == {"c"}
+    assert _row(harness, "c")["udfName"] == "c"
+
+
+def test_a_dropped_frame_keeps_a_fileless_row_another_frame_still_owes(m, harness):
+    _two_frames_each_add_c(m, harness)
+    m._drop_frame("A")
+    # B still owes c's file: its row stays.
+    assert _row(harness, "c")["udfName"] == "c"
+    # Once B lets go too, the row goes, as before.
+    m._drop_frame("B")
+    doc = rtoml.loads((harness.clones / "alpha" / "canvas.toml").read_text())
+    assert "c" not in [r["udfName"] for r in doc["canvas"]["nodes"]]
+
+
+def test_a_new_generation_keeps_a_fileless_row_another_frame_still_owes(m, harness):
+    _two_frames_each_add_c(m, harness)
+    # A re-hydrates (a new generation) and posts without c.
+    m.apply_snapshot(2, 1, _body(["a", "b"]), frame="A")
+    assert m._frames["A"].fileless == set()
+    assert _row(harness, "c")["udfName"] == "c"
+
+
+def _edges(harness):
+    doc = rtoml.loads((harness.clones / "alpha" / "canvas.toml").read_text())
+    return [list(e) for e in doc["canvas"].get("edges") or []]
+
+
+def test_a_frame_that_has_not_seen_another_frames_edge_is_bounced_not_applied(m, harness):
+    """SPEC 53.1 FP-6: A adds an edge; B, built on a rev from before it (no
+    delta with it cut for B yet), posts its full state. Applied, B's edge
+    set (without a->b) would replace A's. It is bounced instead, and B is
+    owed the delta that brings the edge."""
+    a = _hello(m, "A")
+    b = _hello(m, "B")
+    res = m.apply_snapshot(1, 1, _body(["a", "b"], edges=[("a", "b")], rev=a["rev"]), frame="A")
+    assert res["changed"], res
+    assert _edges(harness) == [["a", "b"]]
+    stale = m.apply_snapshot(9, 1, _body(["a", "b"], x={"b": 70}, rev=b["rev"]), frame="B")
+    assert stale.get("rebuild") is True and stale["changed"] is False, stale
+    assert _edges(harness) == [["a", "b"]]
+    assert _row(harness, "b")["x"] == 0
+    # B is owed the edge; once it applied that delta its re-post lands.
+    cut = m.cut_delta(False, frame="B")
+    assert cut["rev"] >= stale["rev"], (cut, stale)
+    edge_op = next(o for o in cut["ops"] if o.get("op") == "edges")
+    assert edge_op["set"] == [["a", "b"]]
+    m.ack_delta(cut["rev"], True, frame="B")
+    again = m.apply_snapshot(9, 2, _body(["a", "b"], x={"b": 70}, edges=[("a", "b")],
+                                         rev=cut["rev"]), frame="B")
+    assert again["changed"] and not again.get("rebuild"), again
+    assert _edges(harness) == [["a", "b"]] and _row(harness, "b")["x"] == 70
+
+
+def test_a_frame_with_no_rev_is_not_bounced_by_another_frames_write(m, harness):
+    """An older workbench sends no `body.rev`: applied as today."""
+    a = _hello(m, "A")
+    _hello(m, "B")
+    m.apply_snapshot(1, 1, _body(["a", "b"], x={"a": 5}, rev=a["rev"]), frame="A")
+    res = m.apply_snapshot(9, 1, _body(["a", "b"], x={"b": 70}), frame="B")
+    assert res["changed"] and not res.get("rebuild"), res
+    assert _row(harness, "b")["x"] == 70
+
+
+def test_a_frames_own_write_never_bounces_its_next_snapshot(m, harness):
+    a = _hello(m, "A")
+    _hello(m, "B")
+    m.apply_snapshot(1, 1, _body(["a", "b"], edges=[("a", "b")], rev=a["rev"]), frame="A")
+    again = m.apply_snapshot(1, 2, _body(["a", "b"], x={"a": 9}, rev=a["rev"]), frame="A")
+    assert again["changed"] and not again.get("rebuild"), again
+    assert _row(harness, "a")["x"] == 9
+
+
+def test_another_frames_write_forces_one_recut_however_many_stale_posts(m, harness):
+    a = _hello(m, "A")
+    b = _hello(m, "B")
+    m.apply_snapshot(1, 1, _body(["a", "b"], edges=[("a", "b")], rev=a["rev"]), frame="A")
+    first = m.apply_snapshot(9, 1, _body(["a", "b"], x={"b": 1}, rev=b["rev"]), frame="B")
+    rev_after_first = m.disk_rev
+    second = m.apply_snapshot(9, 2, _body(["a", "b"], x={"b": 2}, rev=b["rev"]), frame="B")
+    assert first.get("rebuild") and second.get("rebuild"), (first, second)
+    assert first["rev"] == second["rev"] == rev_after_first
+    assert m.disk_rev == rev_after_first           # the second forced nothing
+    assert _edges(harness) == [["a", "b"]] and _row(harness, "b")["x"] == 0

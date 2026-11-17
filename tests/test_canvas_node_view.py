@@ -103,7 +103,8 @@ def base(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", str(tmp_path / "creds.json"))
     canvases_mod._cli_cache_clear()
     # A verdict cached by an earlier test of this worker must not answer
-    # for this one (the cache is keyed by path and prefs mtime only).
+    # for this one (the cache is keyed by path, prefs mtime and, for a node-
+    # shaped path, canvas.toml mtime).
     server_templates._CONDITIONS_CACHE.clear()
     _set_pref(True)
     yield root
@@ -475,3 +476,26 @@ def test_stat_route_carries_prefer(client, clone):
     body = client.get("/api/fs/stat", params={"path": str(clone / "udf_1.py")}).json()
     udf = next(e for e in body["templates"] if e["mode"] == "udf")
     assert udf["prefer"] is True
+
+
+def test_conditions_cache_follows_the_canvas_toml_of_a_node_shaped_path(client, clone):
+    """A row added to canvas.toml makes a file a node at once, not after the
+    conditions cache's TTL: a node-shaped path's verdict is keyed on its
+    canvas.toml mtime too."""
+    orphan = str(clone / "orphan.py")
+    ask = lambda: client.get("/api/fs/conditions", params={"path": orphan}).json()  # noqa: E731
+    assert ask()["conditions"]["udf"] is False
+    toml = clone / "canvas.toml"
+    toml.write_text(CANVAS_TOML + '\n[[canvas.nodes]]\nudfName = "orphan"\nx = 0.0\ny = 1200.0\n',
+                    encoding="utf-8")
+    st = os.stat(toml)
+    os.utime(toml, (st.st_atime, st.st_mtime + 5))
+    assert ask()["conditions"]["udf"] is True
+
+
+def test_conditions_key_stats_nothing_more_for_a_path_that_is_no_node_shape(tmp_path, monkeypatch):
+    seen = []
+    real = os.path.getmtime
+    monkeypatch.setattr(os.path, "getmtime", lambda p: (seen.append(str(p)), real(p))[1])
+    server_templates._conditions_key(str(tmp_path / "x.py"))
+    assert [p for p in seen if p.endswith("canvas.toml")] == []

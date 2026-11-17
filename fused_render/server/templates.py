@@ -41,11 +41,12 @@ KNOWN_SENTINELS = {"_render", "_listing"}
 # never stored. No background eviction — a stale entry is overwritten on the next
 # miss. _CONDITIONS_TTL_S is a module attribute so tests can monkeypatch it.
 _CONDITIONS_TTL_S = 60.0
-# path -> (inserted_monotonic, prefs_mtime, payload). Gates may read the
-# preference store (the reader template's condition.py does), so a cached
-# verdict is only valid while prefs.json is unchanged — otherwise flipping a
-# Preferences toggle looks dead for a full TTL.
-_CONDITIONS_CACHE: dict[str, tuple[float, float, dict]] = {}
+# path -> (inserted_monotonic, key, payload), `key` from `_conditions_key`.
+# Gates may read the preference store (the reader template's condition.py
+# does), so a cached verdict is only valid while prefs.json is unchanged —
+# otherwise flipping a Preferences toggle looks dead for a full TTL — and the
+# `udf` gate reads a node file's canvas.toml, whose mtime keys that path too.
+_CONDITIONS_CACHE: dict[str, tuple[float, tuple, dict]] = {}
 
 
 def _prefs_mtime() -> float:
@@ -55,6 +56,28 @@ def _prefs_mtime() -> float:
         return os.path.getmtime(os.path.join(storage.home_dir(), "prefs.json"))
     except OSError:
         return 0.0
+
+
+def _conditions_key(path: str) -> tuple:
+    """What a cached `/api/fs/conditions` verdict is valid for: the prefs.json
+    mtime, plus — for a path SHAPED like a canvas node file only — its canvas
+    folder's `canvas.toml` mtime, which the `udf` gate reads (a row added to
+    it turns a file into a node). The shape is decided from the path alone
+    (`canvases.node_file_shape`, no syscall), so every other file pays no
+    extra stat."""
+    pm = _prefs_mtime()
+    try:
+        from fused_render import canvases
+
+        shape = canvases.node_file_shape(path)
+    except Exception:  # noqa: BLE001 — no shape: the prefs key alone, as before
+        shape = None
+    if shape is None:
+        return (pm,)
+    try:
+        return (pm, os.path.getmtime(os.path.join(os.path.dirname(path), "canvas.toml")))
+    except OSError:
+        return (pm, None)
 
 
 # User templates + their registry live under the shell home dir's templates/
