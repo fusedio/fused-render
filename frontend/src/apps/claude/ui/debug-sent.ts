@@ -11,12 +11,10 @@
 // Nothing else changes: an attachment's receipt row still opens the picture
 // viewer (`Receipts` falls back to `onOpenShot` when there is no `onShowSent`),
 // and the wire itself is still recorded on every turn (`UserTurn.raw`).
-export const DEBUG_KEY = "fused-render.debug";
+import { DEBUG_KEY, debugEnabled } from "@platform/lib/debug-flag";
+
+export { DEBUG_KEY };
 
 export function debugSentEnabled(): boolean {
-  try {
-    return typeof localStorage !== "undefined" && localStorage.getItem(DEBUG_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return debugEnabled();
 }

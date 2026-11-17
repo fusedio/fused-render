@@ -30,6 +30,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { IS_EMBED, navigateUrl } from "@platform/lib/router";
 import type { NativeViewProps } from "@platform/ui/NativeView";
+import { finishLoad, markLoad } from "@platform/lib/load-timeline";
 import {
   CanvasOwnedError,
   ENV_NAMES,
@@ -112,6 +113,12 @@ function openInCanvas(env: WorkbenchEnv, name: string, file: string): void {
 }
 
 export default function NodeView({ path }: NativeViewProps) {
+  // The load timeline (NV-12, platform/lib/load-timeline): each step of the
+  // open marks the file's timeline when it lands; the node on screen ends it.
+  // `mount` is this chunk loaded and drawing.
+  const label = path.slice(path.lastIndexOf("/") + 1) || path;
+  useEffect(() => markLoad(path, "mount", label), [path, label]);
+
   // --- what this file is ---------------------------------------------------
   const [infoSeq, setInfoSeq] = useState(0);
   const [info, setInfo] = useState<CanvasNodeInfo | null>(null);
@@ -121,10 +128,16 @@ export default function NodeView({ path }: NativeViewProps) {
     setInfoError(null);
     getCanvasNode(path).then(
       (i) => {
-        if (!cancelled) setInfo(i);
+        if (cancelled) return;
+        markLoad(path, "info");
+        if (!isNode(i)) finishLoad(path, "not a node");
+        else if (!i.signed_in) finishLoad(path, "signed out");
+        setInfo(i);
       },
       (e) => {
-        if (!cancelled) setInfoError((e as Error).message);
+        if (cancelled) return;
+        finishLoad(path, "error");
+        setInfoError((e as Error).message);
       },
     );
     return () => {
@@ -153,17 +166,19 @@ export default function NodeView({ path }: NativeViewProps) {
     if (!env || !name) return;
     try {
       await startSync(env, name);
+      markLoad(path, "sync");
       setOwned(null);
       setStartError(null);
       setStarted(true);
     } catch (e) {
       if (e instanceof CanvasOwnedError) {
+        finishLoad(path, "owned elsewhere");
         setOwned(e.owner);
         return;
       }
       setStartError((e as Error).message);
     }
-  }, [env, name]);
+  }, [env, name, path]);
 
   const [cloneSeq, setCloneSeq] = useState(0);
   useEffect(() => {
@@ -178,6 +193,7 @@ export default function NodeView({ path }: NativeViewProps) {
         setCloneError(null);
         try {
           await cloneCanvas(node.env, node.name);
+          markLoad(path, "clone");
         } catch (e) {
           if (!cancelled) setCloneError((e as Error).message);
           return;
@@ -238,6 +254,7 @@ export default function NodeView({ path }: NativeViewProps) {
         // up (canvases.py `_apply_embed_proxy`).
         const status = await getCanvasesStatus(env);
         if (cancelled) return;
+        markLoad(path, "status");
         const base = status.envs[env].embed_url ?? status.envs[env].base_url;
         baseOriginRef.current = new URL(base).origin;
         workbenchBaseRef.current = status.envs[env].base_url;
@@ -246,6 +263,7 @@ export default function NodeView({ path }: NativeViewProps) {
         if (!h) {
           const who = await getWhoami(env);
           h = who.handle;
+          markLoad(path, "whoami");
         }
         if (cancelled) return;
         if (!h) {
@@ -260,7 +278,7 @@ export default function NodeView({ path }: NativeViewProps) {
     return () => {
       cancelled = true;
     };
-  }, [env, signedIn, node?.handle]);
+  }, [env, signedIn, node?.handle, path]);
 
   // --- the frame and its relay ---------------------------------------------
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -309,14 +327,27 @@ export default function NodeView({ path }: NativeViewProps) {
           }
         },
         onAuthReady: () => setRepostSeq((n) => n + 1),
-        onHello: () => setRepostSeq((n) => n + 1),
+        onHello: () => {
+          markLoad(path, "hello");
+          setRepostSeq((n) => n + 1);
+        },
         // The strip's status; NV-9 reads `onPresence`, which waits out a
         // `present: false` until 2 s after the first delta ack.
         onNodeState: setNodeState,
-        onPresence: setPresence,
-        onNoNodeMode: () => setNoNodeMode(true),
+        onPresence: (p) => {
+          if (p === "present") finishLoad(path, "ready");
+          else if (p === "absent") finishLoad(path, "node absent");
+          setPresence(p);
+        },
+        onNoNodeMode: () => {
+          finishLoad(path, "no node mode");
+          setNoNodeMode(true);
+        },
         onError: (m) => setTokenError(m),
-        onToken: () => setTokenError(null),
+        onToken: () => {
+          markLoad(path, "token");
+          setTokenError(null);
+        },
       },
     );
     relayRef.current = relay;
@@ -332,7 +363,7 @@ export default function NodeView({ path }: NativeViewProps) {
       relay.dispose();
       if (relayRef.current === relay) relayRef.current = null;
     };
-  }, [env, name, udfName, frameId]);
+  }, [env, name, udfName, frameId, path]);
 
   // --- the sync state (socket, poll while it is down) ----------------------
   const [sync, setSync] = useState<SyncState | null>(null);
@@ -373,10 +404,11 @@ export default function NodeView({ path }: NativeViewProps) {
       : null;
   // A new document owes its node state again.
   useEffect(() => {
+    if (frameSrc) markLoad(path, "frame");
     setNodeState(null);
     setPresence("pending");
     setNoNodeMode(false);
-  }, [frameSrc]);
+  }, [frameSrc, path]);
 
   const postSyncState = useCallback((state: unknown) => relayRef.current?.postSyncState(state), []);
 
@@ -624,6 +656,7 @@ export default function NodeView({ path }: NativeViewProps) {
           // NV-6 / NM-1: the workbench keys its stored node flag by its
           // window name, so this frame's flag is never another frame's.
           name={`fused-node-${frameId}`}
+          onLoad={() => markLoad(path, "frame-load")}
           className="node-view-frame"
           style={missing || waiting ? { visibility: "hidden" } : undefined}
         />
