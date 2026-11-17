@@ -535,18 +535,33 @@ button.tasks-caret,
    scrim strengths on a live build: "let's do scrim 30"). The app's own modal
    scrim (`--scrim`: 55% black dark, 40% light) is "quite high intensity"
    here, so the window takes 55% of it — 30% black in a dark theme, 22% in a
-   light one — and follows every theme's token. Laid over the card's content
-   and under the row; it takes no pointer. No transition: a hint is instant. */
-body:has(.hint-panel.is-row.is-on) .claude-rail-peek-card {
-  position: relative;
-}
-body:has(.hint-panel.is-row.is-on) .claude-rail-peek-card::after {
+   light one — and follows every theme's token.
+
+   IT FADES IN AND OUT ("a transition fade for this scrim, fade in and out"):
+   the layer is always there at opacity 0 and only its opacity moves, so a
+   pointer crossing from ring to ring dips it instead of blinking it — at
+   `--dur-med`, the rail window's own fade (claude-rail.css `.claude-rail-peek`;
+   reduced motion collapses it). The row itself stays instant (base.css
+   `.hint-panel`).
+
+   NOTHING IN THE WINDOW IS REPOSITIONED FOR IT. The card is not made a
+   positioned box (its resize grips are earlier siblings and would end up
+   under it); the layer is laid out against the card's wrapper, the fixed
+   `.claude-rail-peek`, which is the card's own box — hence the child
+   selector and the inherited radius. It takes no pointer. */
+.claude-rail-peek > .claude-rail-peek-card::after {
   content: "";
   position: absolute;
   inset: 0;
   z-index: 50;
+  border-radius: inherit;
   background: color-mix(in srgb, var(--scrim) 55%, transparent);
+  opacity: 0;
   pointer-events: none;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after {
+  opacity: 1;
 }
 .hint-row {
   display: flex;
