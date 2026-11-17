@@ -4105,6 +4105,8 @@ def check_settings(meta, model="", effort="", max_steps=None):
         raise ValueError(f"unknown model {model!r}; choose one of {', '.join(MODELS)}")
     if model and model in LOCAL_MODELS and is_super(meta):
         raise ValueError("Super Bot runs on Claude Code; pick a Claude model")
+    if model and model in LOCAL_MODELS and is_expert(meta):
+        raise ValueError("An expert runs on Claude Code; pick a Claude model")
     if effort and effort not in EFFORTS:
         raise ValueError(f"unknown effort {effort!r}; choose one of {', '.join(EFFORTS)}")
     if isinstance(max_steps, bool):
@@ -4537,6 +4539,8 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
         preset = ""
         if model in LOCAL_MODELS:
             model = DEFAULT_MODEL
+    if kind == "expert" and model in LOCAL_MODELS:
+        model = DEFAULT_MODEL  # an expert runs on Claude Code (agent_engine, experts.sessions.harness)
     if preset:
         from fused_render.bots import presets as presets_mod
         if presets_mod.get(preset) is None:  # refuse before bot.json exists: no orphan bot

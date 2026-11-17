@@ -281,3 +281,9 @@ def test_codex_and_copilot_get_the_tools_and_the_ceiling(agent, tmp_path, monkey
     assert "fused_render-expert_context" in body and "mcp__fused_render__expert" not in body
     env = json.load(open(os.path.join(rd, "mcp.json")))["mcpServers"]["fused_render"]["env"]
     assert env["FUSED_RENDER_EXPERT_ORIGIN"] == ORIGIN
+    # A raised harness timeout rides along: the MCP child sees only this env.
+    assert "FUSED_RENDER_EXPERT_TIMEOUT" not in env
+    monkeypatch.setenv("FUSED_RENDER_EXPERT_TIMEOUT", "1800")
+    agent._copilot_argv(str(rd), False, None, "", "", "", [], target)
+    env = json.load(open(os.path.join(rd, "mcp.json")))["mcpServers"]["fused_render"]["env"]
+    assert env["FUSED_RENDER_EXPERT_TIMEOUT"] == "1800"

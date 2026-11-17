@@ -147,3 +147,12 @@ def test_an_expert_is_not_exported(client, expert, tmp_path):
         package.write(expert.id, memory=True, apps=[], file_name=None, dest_dir=str(tmp_path))
     st, out = j(client.get(f"/api/bots/{expert.id}/package"))
     assert st == 400 and out["error"] == package.EXPERT_REFUSAL
+
+
+def test_an_expert_never_takes_a_local_model(client, expert):
+    from fused_render.bots import bot as bm
+    local = next(iter(bm.LOCAL_MODELS))
+    made = registry.create(name="Local Expert", kind="expert", model=local)
+    assert made.meta["model"] == bm.DEFAULT_MODEL
+    with pytest.raises(ValueError, match="Claude model"):
+        bm.check_settings(expert.meta, model=local)

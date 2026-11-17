@@ -2901,6 +2901,11 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
     if experts and _origin():
         # The switch for the expert tools (permission_server.EXPERT_TOOLS).
         server_env["FUSED_RENDER_EXPERT_ORIGIN"] = _origin()
+        # The MCP child sees only this env, so a raised harness timeout must
+        # ride along or `expert_ask`'s HTTP wait (permission_server
+        # EXPERT_TIMEOUT) stays at the default while the ask runs longer.
+        if os.environ.get("FUSED_RENDER_EXPERT_TIMEOUT"):
+            server_env["FUSED_RENDER_EXPERT_TIMEOUT"] = os.environ["FUSED_RENDER_EXPERT_TIMEOUT"]
     servers =_plugin_mcp_servers(CLAUDE_DIR) if strict else {}
     with _private_open(path) as fh:
         json.dump({"mcpServers": {**servers, PERMISSION_SERVER: {
