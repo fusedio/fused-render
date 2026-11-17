@@ -304,6 +304,13 @@ def experts_consults(eid: str):
     return {"consults": rows[:CONSULTS_LIMIT]}
 
 
+@router.get(PREFIX + "/{eid}/usage")
+@_handled
+def experts_usage(eid: str, days: int = 7):
+    """Tokens per stage and per day over the last `days` days (`usage.summary`, no model call)."""
+    return _mod("usage").summary(_expert(eid), days=days)
+
+
 # ------------------------------------------------------------------- checks ---
 @router.get(PREFIX + "/{eid}/checks")
 @_handled

@@ -479,8 +479,8 @@ def _run(bot, force):
         logger.warning("expert %s: tidying failed", bot.id, exc_info=True)
         tidied = {"deleted": [], "merged": [], "promoting": [], "over_limit": []}
     # Skill pressure: a nearly full skill gets ONE reorganise proposal (no model call decides it).
-    try:
-        reorganise = tidymod.skill_pressure(bot)
+    try:  # a proposal requested just now is open: no reorganise (skill_pressure would say the same)
+        reorganise = None if proposed or tidied["promoting"] else tidymod.skill_pressure(bot)
     except Exception:  # noqa: BLE001
         logger.warning("expert %s: skill pressure check failed", bot.id, exc_info=True)
         reorganise = None

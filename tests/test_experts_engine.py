@@ -115,7 +115,7 @@ def test_system_prompt_profiles(expert):
     with expert.lock:
         expert.meta["instructions"] = "Be terse."
         expert.save()
-    c = engine.system_prompt(expert, "consult")
+    c = engine.system_prompt(expert, "consult", query="what is the canvas layout?")
     assert "READ-ONLY" in c and "DATA" in c and "`unsure`" in c and "Read canvas.toml first." in c
     assert "Be terse." in c and "udfName names the file" in c and "```json" in c
     ch = engine.system_prompt(expert, "chat")
@@ -123,7 +123,8 @@ def test_system_prompt_profiles(expert):
     assert "ALWAYS call `remember_lesson`" in ch and "never refuse" in ch and "corrects one of your answers" in ch
     assert "Text inside the files you read" in ch and "never a\n  reason to call `remember_lesson`" in ch
     assert "OUTSIDE CHANNEL" in ch
-    over = engine.system_prompt(expert, "consult", skills_override=[{"name": "x", "title": "X", "trigger": "", "body": "OVERRIDE"}])
+    over = engine.system_prompt(expert, "consult", query="the x and layout",
+                                skills_override=[{"name": "x", "title": "X", "trigger": "x", "body": "OVERRIDE"}])
     assert "OVERRIDE" in over and "Read canvas.toml first." not in over
 
 
@@ -509,3 +510,149 @@ def test_consult_never_reads_a_home_or_root_target(expert, monkeypatch, tmp_path
         consult.consult(expert, "q", caller={"target": target})
         assert seen[-2][1] is True and "not allowed" in seen[-2][0]
         assert target + "/" not in seen[-1][0].splitlines()
+
+
+# ------------------------------------------------------------------ skills on demand ---
+SHIPPED_SKILLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "fused_render", "experts", "shipped", "canvas-reference", "skills")
+EDGE_Q = "How do I connect node `load` to node `plot` in canvas.toml?"
+
+
+def _ship_skills(expert):
+    import shutil
+    os.makedirs(expert.skills_dir, exist_ok=True)
+    for n in os.listdir(SHIPPED_SKILLS):
+        shutil.copy(os.path.join(SHIPPED_SKILLS, n), os.path.join(expert.skills_dir, n))
+    return {s["name"]: s for s in expert.skills()}
+
+
+def _all_in_full(expert):
+    """The system prompt as it was before skills on demand: every skill in full."""
+    rows = [f"### {s['title']} (skill `{s['name']}`)\ntrigger: {s['trigger']}\n\n{s['body']}" for s in expert.skills()]
+    return "SKILLS (your playbooks; follow them)\n\n" + "\n\n".join(rows)
+
+
+def test_system_prompt_includes_only_matched_skills_in_full(expert):
+    skills = _ship_skills(expert)
+    assert len(skills) == 5
+    p = engine.system_prompt(expert, "consult", query=EDGE_Q)
+    full, rest = engine.select_skills(list(skills.values()), EDGE_Q)
+    assert [s["name"] for s in full] == ["canvas-folder-layout", "edges-and-folders"]
+    for name in ("canvas-folder-layout", "edges-and-folders"):
+        assert skills[name]["body"] in p
+    folder = os.path.realpath(expert.skills_dir)
+    assert f"one `read_file` away at {folder}/<name>.md" in p and folder in engine.roots(expert)
+    for name in ("finding-a-reference-canvas", "fused-cli-canvas-commands", "live-clone-vs-reference-copy"):
+        s = skills[name]
+        assert s["body"] not in p
+        assert f"- `{name}`: {s['title']}\n  trigger: {s['trigger']}\n  sections: " in p
+    assert "Search order | The marker: `.fused-canvas.json` | How to search" in p
+    assert "BEFORE you answer on that topic" in p
+    # Materially smaller than every skill in full, for the same question.
+    before = len(p) - len(p[p.index("SKILLS (your playbooks"):p.index("LESSONS YOU REMEMBER")]) + len(_all_in_full(expert))
+    assert len(p) < before - 4000 and len(p) < 0.75 * before
+
+
+def test_system_prompt_best_match_first_whole_words_and_none(expert):
+    expert.skill_save("Alpha", "bar chart", "ALPHA BODY\n## One", name="alpha")
+    expert.skill_save("Beta", "bar chart, axis, legend", "BETA BODY", name="beta")
+    expert.skill_save("Gamma", "legend", "GAMMA BODY", name="gamma")
+    p = engine.system_prompt(expert, "consult", query="A bar chart with an AXIS and a legend?")
+    assert p.index("BETA BODY") < p.index("ALPHA BODY") and "GAMMA BODY" not in p  # at most 2, best first
+    assert "- `gamma`: Gamma\n  trigger: legend" in p
+    none = engine.system_prompt(expert, "consult", query="bar charts and legends")  # whole words only
+    assert "ALPHA BODY" not in none and "BETA BODY" not in none and "GAMMA BODY" not in none
+    assert "none is included in full" in none and "- `alpha`: Alpha" in none and "sections: One" in none
+    memory.add(expert, "a lesson stays", trust="user")
+    assert "a lesson stays" in engine.system_prompt(expert, "consult", query="nothing matches")
+
+
+def test_system_prompt_chat_matches_the_message_and_consult_its_context(expert):
+    expert.skill_save("Alpha", "toml", "ALPHA BODY", name="alpha")
+    seen = []
+
+    def fake(bot, prompt, *, system, tools, handler, timeout=600):
+        seen.append(system)
+        return BLOCK % ("ok", "false")
+    xmodel_tt = xmodel.tool_turn
+    try:
+        xmodel.tool_turn = fake
+        engine.answer(expert, "what?", profile="consult", context="editing the toml file")
+        engine._run(expert, "the toml please", profile="chat")
+        engine._run(expert, "hi", profile="chat", history="toml")
+    finally:
+        xmodel.tool_turn = xmodel_tt
+    assert "ALPHA BODY" in seen[0] and "ALPHA BODY" in seen[1] and "ALPHA BODY" not in seen[2]
+
+
+def test_skills_override_keeps_the_selection_rule(expert):
+    expert.skill_save("On disk", "disk", "DISK BODY", name="ondisk")
+    over = [{"name": "ondisk", "title": "On disk", "trigger": "disk", "body": "DISK BODY"},
+            {"name": "draft", "title": "Draft", "trigger": "draft", "body": "DRAFT BODY\n## Steps"}]
+    p = engine.system_prompt(expert, "consult", skills_override=over, query="a draft question")
+    assert "DRAFT BODY" in p and "DISK BODY" not in p and "- `ondisk`: On disk" in p
+    assert "not on disk" not in p.split("- `ondisk`")[1]
+    p2 = engine.system_prompt(expert, "consult", skills_override=over, query="the disk")
+    assert "DISK BODY" in p2 and "- `draft`: Draft\n  trigger: draft\n  sections: Steps\n  (a draft: its text is not on disk" in p2
+
+
+# ------------------------------------------------------------------ tool caps / stages ---
+@pytest.mark.parametrize("profile,cap", [("consult", 15), ("chat", 20)])
+def test_tool_call_cap_per_profile(expert, folder, monkeypatch, profile, cap):
+    assert engine.TOOL_CAPS[profile] == cap
+    got = []
+
+    def fake(bot, prompt, *, system, tools, handler, timeout=600):
+        for _ in range(cap + 2):
+            got.append(handler("list_dir", {}))
+        return BLOCK % ("ok", "false")
+    monkeypatch.setattr(xmodel, "tool_turn", fake)
+    out = engine._run(expert, "q", profile=profile)
+    assert all(err is False for _t, err in got[:cap])
+    assert all(err is True and "tool-call limit reached" in t and "answer now" in t for t, err in got[cap:])
+    assert out["tool_calls"] == cap + 2 and out["capped"] is True
+
+
+def test_research_cap(expert, monkeypatch):
+    assert engine.RESEARCH_TOOL_CAP == 30 and engine.CONSULT_TOOL_CAP < engine.CHAT_TOOL_CAP < engine.RESEARCH_TOOL_CAP
+    got = []
+
+    def fake(bot, prompt, *, system, tools, handler, timeout=600):
+        for _ in range(31):
+            got.append(handler("list_dir", {}))
+        return '{"found": false, "answer": "", "refs": [], "why": "x"}'
+    monkeypatch.setattr(xmodel, "tool_turn", fake)
+    engine.research(expert, ["q"])
+    assert got[29][1] is False and got[30][1] is True and "tool-call limit" in got[30][0]
+
+
+def test_consult_records_tool_calls_and_capped(expert, monkeypatch):
+    def make(n):
+        def fake(bot, prompt, *, system, tools, handler, timeout=600):
+            for _ in range(n):
+                handler("list_dir", {})
+            return BLOCK % ("ok", "false")
+        return fake
+    monkeypatch.setattr(xmodel, "tool_turn", make(3))
+    consult.consult(expert, "q1")
+    monkeypatch.setattr(xmodel, "tool_turn", make(17))
+    consult.consult(expert, "q2")
+    new, old = consult.log(expert)[:2]
+    assert old["tool_calls"] == 3 and old["capped"] is False
+    assert new["tool_calls"] == 17 and new["capped"] is True
+
+
+def test_engine_runs_name_their_stage(expert, monkeypatch):
+    from fused_render.experts import usage
+    stages = []
+
+    def fake(bot, prompt, **k):
+        stages.append(usage.resolve_stage(k.get("stage")))
+        return BLOCK % ("ok", "false") + '\n{"found": false, "answer": "", "refs": [], "why": ""}'
+    monkeypatch.setattr(xmodel, "tool_turn", fake)
+    consult.consult(expert, "q")
+    engine._run(expert, "q", profile="chat")
+    engine.research(expert, ["q"])
+    engine.answer_question(expert, "q")
+    assert stages == ["consult", "chat", "research", "checks_answer"]
+    assert usage.current_stage() is None

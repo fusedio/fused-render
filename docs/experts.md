@@ -117,8 +117,8 @@ ENGINE_NOTES = {"codex": "On Codex the expert can read files outside its folders
 provider_for(bot) -> tuple[str, str]       # (provider, model) after resolving "auto"; raises Unavailable
 available(bot) -> tuple[bool, str]         # (False, "needs Claude, Codex or Copilot") when none is enabled
 fenced(bot) -> bool                        # reads fenced by readtools: False on codex, False on Unavailable
-text(bot, prompt, *, system="", timeout=180) -> str
-tool_turn(bot, prompt, *, system, tools, handler, timeout=600) -> str
+text(bot, prompt, *, system="", timeout=180, stage=None) -> str
+tool_turn(bot, prompt, *, system, tools, handler, timeout=600, stage=None) -> str
 class Unavailable(RuntimeError)
 ```
 - `text` goes through `bot._ai_call(botmod._fused_ai(), prompt, provider=..., model=..., system_prompt=...)`
@@ -130,6 +130,39 @@ class Unavailable(RuntimeError)
   `FUSED_RENDER_ORIGIN`; header `X-Fused: 1`. `server/ai.py` is NOT modified.
 - `tools` is the gateway shape: `[{"name", "description", "parameters": <JSON Schema>}]`.
 - Tests replace `model.text` / `model.tool_turn` with fakes (monkeypatch). Nothing else may call a model.
+- Every call writes one line of the expert's token ledger (`usage.py` below), success or failure. `stage`
+  labels it; left out, it is the engine's `usage.stage(...)` scope, else the calling module's name
+  (`usage.infer_stage`). Accounting never fails the call.
+- `text` still goes through `bot._ai_call` (the bots ledger), but hands it a wrapper that makes the same
+  non-streaming `POST /api/ai` as `fused_ai.text` through the client's `_post_json`, so the result frame's
+  `usage` is kept. A client without `_post_json` (a test fake) is called as is.
+
+### `experts/usage.py` — what the model calls cost
+```
+USAGE_FILE = "usage.jsonl"                 # <expert_dir>/usage.jsonl, one line per model call
+STAGES = ("consult", "chat", "research", "checks_answer", "checks_grade", "capture", "consolidate", "tidy",
+          "draft", "other")
+stage(name)                                # context manager: calls inside are labelled `name`
+current_stage() -> str | None ; resolve_stage(explicit=None) -> str ; infer_stage() -> str
+record(bot, *, stage, provider, model, input_tokens, output_tokens, cache_read_tokens=None, rounds=1, ms=0,
+       ok=True, estimated=False) -> dict | None            # never raises
+tokens_from_result(result) -> {input_tokens, output_tokens, cache_read_tokens, rounds} | None
+summary(bot, days=7) -> {"days", "by_stage": [{stage, calls, input_tokens, output_tokens, cache_read_tokens,
+       estimated_share}], "by_day": [{day, calls, input_tokens, output_tokens}], "total": {...}}
+```
+- Line: `{ts, stage, provider, model, input_tokens, output_tokens, cache_read_tokens, rounds, ms, ok, estimated}`.
+- Stage by module when none is given: `capture` → capture, `consolidate` → consolidate, `tidy` → tidy,
+  `proposals` → draft, `gate` → checks_grade, `gaps` → research, anything else → other. The engine labels
+  its own runs: consult / chat / research by profile, the gate's answer run (`answer_question`) checks_answer.
+- What the gateway reports: the Claude tier's result frame carries `usage: {inputTokens, outputTokens,
+  totalTokens}` (from the CLI's `result` event, non-streaming and in the stream's `done` frame alike); it
+  drops the CLI's cache-read and cache-creation counts, `modelUsage` and `num_turns`, so `cache_read_tokens`
+  is null and the Claude CLI's `input_tokens` leaves out cached input. The Copilot and Codex tiers report
+  `usage: null`. Without counts the line is an estimate (`estimated: true`): characters / 4, where a tools
+  turn's input is every round re-sending system prompt + prompt + the tool traffic so far.
+- `rounds` is the gateway's turn count when it reports one, else the tool calls the turn answered (1 for
+  `text`). `summary` counts local calendar days, today included; `estimated_share` is the share of calls
+  whose counts are estimates.
 
 ### `experts/readtools.py` — the only way an expert touches the disk
 ```
@@ -345,12 +378,26 @@ drafts it, then it is `ready`); `score_before` / `score_after` stay on the recor
 ### `experts/engine.py` — one run of the expert
 ```
 answer(bot, question, *, profile, context="", extra_roots=(), skills_override=None,
-       on_tool=None, history="") -> {"answer": str, "refs": [str], "used": [item ids], "unsure": bool}
+       on_tool=None, history="", stats=None) -> {"answer": str, "refs": [str], "used": [item ids], "unsure": bool}
+                                             # stats (a dict) receives the run's tool_calls and capped
 answer_question(bot, question, skills_override=None) -> str       # for the gate; profile "consult", no logging
-system_prompt(bot, profile, skills_override=None) -> str
+system_prompt(bot, profile, skills_override=None, query="") -> str
+select_skills(skills, text, limit=FULL_SKILLS_MAX) -> (in full, the rest)
+FULL_SKILLS_MAX = 2 ; CONSULT_TOOL_CAP = 15 ; CHAT_TOOL_CAP = 20 ; RESEARCH_TOOL_CAP = 30
 ```
-`profile` is `"chat"`, `"consult"` or `"research"` (used only by `research` below). The system prompt = role and rules, the bot's instructions, every
-skill in full (or `skills_override`: a list of `{name,title,trigger,body}`), and `memory.index_text`.
+`profile` is `"chat"`, `"consult"` or `"research"` (used only by `research` below). The system prompt = role and rules, the bot's instructions, the
+skills (or `skills_override`: a list of `{name,title,trigger,body}`, same rule), and `memory.index_text` (always).
+Skills on demand: the skills whose trigger words match `query` (whole words, case-insensitive, the
+`Bot.skills_for` rule) go in full, at most `FULL_SKILLS_MAX` (2), most distinct matched phrases first (then the
+longest matched text); every other skill is a SKILL INDEX entry (name, title, trigger line, its `## ` headings),
+with the real absolute path of the skills folder (one of the read roots) and the rule to open a listed skill with
+`read_file` before answering on its topic when the included ones do not cover it. No match: none in full.
+`query` is the question plus the consult's context, the chat message, or the research questions. With an
+override, an index entry whose body is not the one on disk says so. Tool calls per run are capped by profile
+(`TOOL_CAPS`: consult 15, chat 20, research 30); past the cap every call returns an error result telling the
+model to answer now. `_run` returns `tool_calls` and `capped` beside the answer. The consult rules tell the
+expert to answer from the included skills and lessons when they cover the question, to open files only for what
+they do not cover, and not to re-verify what a skill states.
 The model is told to finish with a fenced JSON block `{"answer","refs","used","unsure"}`. `parse(text)` is
 lenient: `json.loads(..., strict=False)` (raw newlines inside strings are fine); the LAST ```` ```json ````
 block that parses wins (decoded from its opener, so an answer that holds a code fence survives); a bare
@@ -374,7 +421,8 @@ between `<<<BEGIN …>>>` / `<<<END …>>>` markers declared DATA. It must finis
 ```
 consult(bot, question, context="", caller=None) -> {"id","answer","refs","used","unsure"}
 log(bot, limit=100) -> list[Consult]
-Consult = {"id","ts","question","context","answer","refs","used","unsure","caller": {...}, "ms": int}
+Consult = {"id","ts","question","context","answer","refs","used","unsure","caller": {...}, "ms": int,
+           "tool_calls": int, "capped": bool}     # tool calls this run made; whether it hit CONSULT_TOOL_CAP
 ```
 `caller` = `{"run_id","session_id","backend","target","canvas"}` as far as known. Its `target` folder is
 added to `extra_roots` when it exists and is not `/`, the home folder or an ancestor of it
@@ -567,6 +615,7 @@ POSTs require the `X-Fused` header (`server.common._require_fused`). Errors are 
 | `POST /api/experts/{id}/memory/forget` | `{id}` → `{removed}` |
 | `GET /api/experts/{id}/observations` | `{pending: [Obs] (oldest first), done: [Obs] (newest first, 200), due: bool, consolidating: consolidate.status}`; every observation of kind `gap` carries `gap`: its Gap record (by `outcome.gap`, else by consult id), `null` when none yet |
 | `GET /api/experts/{id}/consults` | `{consults: [Consult]}` (newest first, 100) |
+| `GET /api/experts/{id}/usage?days=7` | `usage.summary(bot, days)`: `{days, by_stage: [{stage, calls, input_tokens, output_tokens, cache_read_tokens, estimated_share}], by_day: [{day, calls, input_tokens, output_tokens}], total}` (no model call) |
 | `GET /api/experts/{id}/checks` | `{latest: Run|null, status, questions: int}` |
 | `POST /api/experts/{id}/checks/run` | `{run_id}` |
 | `GET /api/experts/{id}/proposals` | `{proposals: [Proposal]}` (every status, newest first, with `error`) |

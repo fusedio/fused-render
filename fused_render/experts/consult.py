@@ -7,7 +7,9 @@ the question and context are data from an agent. An unsure answer leaves a
 run at once in this process; the rest wait up to `SLOT_WAIT_S` for a turn and
 then fail with "the expert is busy". The caller's target folder becomes
 readable for the consult, unless it is `/`, the home folder or an ancestor of
-it (`readtools.too_broad`).
+it (`readtools.too_broad`). A consult may make at most `engine.CONSULT_TOOL_CAP`
+tool calls; the record keeps how many it made (`tool_calls`) and whether it hit
+the cap (`capped`).
 """
 from __future__ import annotations
 
@@ -59,13 +61,15 @@ def consult(bot, question, context="", caller=None) -> dict:
     if not _SLOTS.acquire(timeout=SLOT_WAIT_S):
         raise RuntimeError(BUSY)
     try:
-        out = engine.answer(bot, question, profile="consult", context=context, extra_roots=extra)
+        stats: dict = {}
+        out = engine.answer(bot, question, profile="consult", context=context, extra_roots=extra, stats=stats)
     finally:
         _SLOTS.release()
     ms = int((time.monotonic() - t0) * 1000)
     cid = store.new_id("c")
     rec = {"id": cid, "ts": time.time(), "question": question, "context": context, "answer": out["answer"],
-           "refs": list(out["refs"]), "used": list(out["used"]), "unsure": bool(out["unsure"]), "caller": who, "ms": ms}
+           "refs": list(out["refs"]), "used": list(out["used"]), "unsure": bool(out["unsure"]), "caller": who, "ms": ms,
+           "tool_calls": int(stats.get("tool_calls") or 0), "capped": bool(stats.get("capped"))}
     try:
         with store.lock(bot):
             store.append_jsonl(_path(bot), rec)
