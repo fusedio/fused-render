@@ -474,16 +474,6 @@ def parse(text: str, allowed=CAPTURE_KINDS, item_ids=None) -> list:
     return out
 
 
-def _set_confirms(bot, obs: dict, item_id: str) -> dict:
-    """Store `confirms` (a validated memory item id) on the pending observation `obs`: consolidation bumps that
-    item for the observation's session without a model decision."""
-    from fused_render.experts import observations
-    obs = {**obs, "confirms": str(item_id)}
-    with store.lock(bot):
-        store.write_json(os.path.join(observations._dir(bot, "pending"), obs["id"] + ".json"), obs)
-    return obs
-
-
 def capture_session(bot, session: dict) -> list:
     """One extraction call for (session, expert); returns the observations it
     wrote (often none). Marks the session captured by this expert at its
@@ -502,13 +492,11 @@ def capture_session(bot, session: dict) -> list:
     written = []
     item_ids = {i.get("id") for i in memory.items(bot)}
     for row in parse(answer, allowed, item_ids):
-        obs = observations.write(bot, kind=row["kind"], claim=row["claim"], trust="outcome",
-                                 session=session["session_id"], about=row["about"],
-                                 source={"target": session.get("target") or "",
-                                         "backend": session.get("backend") or ""})
-        if row.get("confirms"):
-            obs = _set_confirms(bot, obs, row["confirms"])
-        written.append(obs)
+        written.append(observations.write(bot, kind=row["kind"], claim=row["claim"], trust="outcome",
+                                          session=session["session_id"], about=row["about"],
+                                          confirms=row.get("confirms") or "",
+                                          source={"target": session.get("target") or "",
+                                                  "backend": session.get("backend") or ""}))
     mark_captured(session, bot)
     return written
 

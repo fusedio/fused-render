@@ -40,11 +40,13 @@ _RUNNING_GUARD = threading.Lock()
 
 PROMPT = """You keep an expert's memory of lessons. Below are its current lessons and new observations.
 For EACH observation decide one edit:
-- "bump": it repeats an existing lesson; give that lesson's id as "item".
-- "add": it is a new, durable, reusable lesson; give the lesson as one short sentence in "claim".
-- "nothing": it is a one-off, noise, or not a lesson.
+- "bump": it states the SAME lesson as an existing one (same subject AND same advice), not merely a related one; give that lesson's id as "item".
+- "add": it is a new, durable, reusable lesson; give the lesson as one short sentence in "claim". When in doubt between "bump" and "add", choose "add".
+- "nothing": it is noise or not a lesson.
 
-Current lessons:
+An observation of kind "repeated_request" describes what the user asks for, and is counted across sessions: it may only be bumped onto a lesson that is itself a request pattern (kind repeated_request) describing the same request; otherwise "add" it as its own lesson.
+
+Current lessons (id, kind, claim):
 {items}
 
 New observations:
@@ -214,8 +216,10 @@ def _run(bot, force):
     real = [o for o in pend if o not in gap_obs]
     # An observation that `confirms` an existing lesson (capture validated the id) is a deterministic bump of
     # it, applied below once the model step has not bailed out; it never reaches the model.
-    item_ids = {i["id"] for i in memory.items(bot)}
-    confirmed = [o for o in real if str(o.get("confirms") or "") in item_ids]
+    # A request pattern confirms only a request pattern (the same guard as a model "bump" below).
+    item_kinds = {i["id"]: i.get("kind") for i in memory.items(bot)}
+    confirmed = [o for o in real if str(o.get("confirms") or "") in item_kinds
+                 and (o.get("kind") != "repeated_request" or item_kinds[o["confirms"]] == "repeated_request")]
     real = [o for o in real if o not in confirmed]
     added, bumped, ignored = [], [], len(gap_obs)
     open_gaps = gapmod.open_gaps(bot) if gap_obs else []
@@ -243,7 +247,8 @@ def _run(bot, force):
     edits, fallback = None, False
     if real or offer:
         current = memory.items(bot)
-        items_txt = "\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {i.get('count', 0)}×)"
+        items_txt = "\n".join(f"- [{i['id']}] ({i.get('kind', 'lesson')}) {i.get('claim', '')} "
+                              f"(seen {i.get('count', 0)}×)"
                               for i in current) or "(none yet)"
         obs_txt = "\n".join(f"- [{o['id']}] ({o.get('kind', '')}, trust {o.get('trust', '')}) {o.get('claim', '')}"
                             for o in real + offer)
@@ -290,6 +295,12 @@ def _run(bot, force):
             continue
         handled.add(o["id"])
         op = str(e.get("op") or "").lower()
+        if op == "bump" and o.get("kind") == "repeated_request":
+            # A request pattern is its own lesson: bumped only onto a request pattern, else added.
+            target = next((i for i in memory.items(bot) if i.get("id") == str(e.get("item") or "")), None)
+            if target is None or target.get("kind") != "repeated_request":
+                op = "add"
+                e = {**e, "claim": None}
         if op == "bump" and e.get("item"):
             it = memory.bump(bot, str(e["item"]), session=o.get("session") or "")
             if it is not None:

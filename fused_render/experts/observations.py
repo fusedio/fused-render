@@ -21,13 +21,21 @@ def _safe(obs_id) -> str:
     return os.path.basename(str(obs_id or ""))
 
 
-def write(bot, *, kind, claim, trust, session="", about=None, consult="", source=None) -> dict:
+def write(bot, *, kind, claim, trust, session="", about=None, consult="", source=None, confirms="") -> dict:
     """`source`: where it came from when known, `{"target": str, "backend": str}` (the consulting or captured
-    session's folder and engine)."""
+    session's folder and engine). `confirms`: the memory item id this observation sees again; stored only when
+    that item exists (consolidation then bumps it without a model decision)."""
+    confirms = str(confirms or "").strip()
+    if confirms:
+        from fused_render.experts import memory
+        if confirms not in {i.get("id") for i in memory.items(bot)}:
+            confirms = ""
     obs = {"id": store.new_id("o"), "ts": time.time(), "kind": str(kind or ""),
            "claim": " ".join(str(claim or "").split()), "trust": str(trust or "outcome"),
            "session": str(session or ""), "about": [str(a) for a in (about or []) if str(a).strip()],
            "consult": str(consult or "")}
+    if confirms:
+        obs["confirms"] = confirms
     if isinstance(source, dict):
         src = {k: str(source.get(k) or "") for k in ("target", "backend")}
         if any(src.values()):

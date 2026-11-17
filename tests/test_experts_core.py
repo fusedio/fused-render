@@ -454,7 +454,7 @@ def test_observations_write_due_archive(bot):
 def test_consolidate_applies_parsed_edits(bot, fake_text):
     old = memory.add(bot, "existing lesson")
     o1 = observations.write(bot, kind="user_correction", claim="new thing learned", trust="outcome", session="s9")
-    o2 = observations.write(bot, kind="repeated_request", claim="existing again", trust="outcome", session="s9")
+    o2 = observations.write(bot, kind="error_then_fix", claim="existing again", trust="outcome", session="s9")
     o3 = observations.write(bot, kind="unanswered", claim="noise", trust="outcome")
     g = observations.write(bot, kind="gap", claim="could not answer X", trust="gap")
     fake_text.replies.append(lambda p: "Sure!\n```json\n" + json.dumps([
@@ -514,13 +514,11 @@ def test_consolidate_unknown_ops_and_omissions_are_nothing(bot, fake_text):
 
 
 def test_consolidate_bumps_confirmed_lessons_once_per_session_without_the_model(bot, fake_text):
-    from fused_render.experts import capture
-    lesson = memory.add(bot, "Users want a Parquet loader node.", session="s1")
+    lesson = memory.add(bot, "Users want a Parquet loader node.", kind="repeated_request", session="s1")
 
     def confirm(session):
-        o = observations.write(bot, kind="repeated_request", claim="Users want a Parquet loader node.",
-                               trust="outcome", session=session)
-        return capture._set_confirms(bot, o, lesson["id"])
+        return observations.write(bot, kind="repeated_request", claim="Users want a Parquet loader node.",
+                                  trust="outcome", session=session, confirms=lesson["id"])
 
     seen = [confirm("s2"), confirm("s2"), confirm("s3"), confirm("s1")]
     r = consolidate.run(bot, force=True)
@@ -534,19 +532,60 @@ def test_consolidate_bumps_confirmed_lessons_once_per_session_without_the_model(
 
 
 def test_consolidate_sends_unconfirmed_observations_to_the_model(bot, fake_text):
-    from fused_render.experts import capture
     lesson = memory.add(bot, "Known lesson.")
-    c = capture._set_confirms(bot, observations.write(bot, kind="user_correction", claim="Known lesson.",
-                                                      trust="outcome", session="s5"), lesson["id"])
-    stale = capture._set_confirms(bot, observations.write(bot, kind="user_correction", claim="Stale one.",
-                                                          trust="outcome", session="s5"), "mgone")
+    c = observations.write(bot, kind="user_correction", claim="Known lesson.", trust="outcome", session="s5",
+                           confirms=lesson["id"])
+    stale = observations.write(bot, kind="user_correction", claim="Stale one.", trust="outcome", session="s5",
+                               confirms="mgone")
+    assert c["confirms"] == lesson["id"] and "confirms" not in stale  # write validates the id
     new = observations.write(bot, kind="repeated_request", claim="Asked once.", trust="outcome", session="s5")
     fake_text.replies.append(lambda p: json.dumps([{"obs": new["id"], "op": "add"},
                                                    {"obs": stale["id"], "op": "add"}]))
     r = consolidate.run(bot, force=True)
     assert c["id"] not in fake_text.calls[0] and new["id"] in fake_text.calls[0] and stale["id"] in fake_text.calls[0]
     assert r["bumped"] == [lesson["id"]] and len(r["added"]) == 2
-    assert {i["claim"] for i in memory.items(bot)} == {"Known lesson.", "Asked once.", "Stale one."}
+    kinds = {i["claim"]: i["kind"] for i in memory.items(bot)}
+    assert kinds == {"Known lesson.": "lesson", "Asked once.": "repeated_request", "Stale one.": "user_correction"}
+
+
+@pytest.mark.parametrize("kind", ["repeated_request", "user_correction", "error_then_fix", "answer_contradicted"])
+def test_consolidate_add_stores_the_observation_kind(bot, fake_text, kind):
+    o = observations.write(bot, kind=kind, claim=f"A {kind} lesson.", trust="outcome", session="s1")
+    fake_text.replies.append(lambda p: json.dumps([{"obs": o["id"], "op": "add"}]))
+    consolidate.run(bot, force=True)
+    assert [(i["claim"], i["kind"]) for i in memory.items(bot)] == [(f"A {kind} lesson.", kind)]
+
+
+def test_a_request_pattern_is_never_bumped_onto_a_non_request_lesson(bot, fake_text):
+    naming = memory.add(bot, "A UDF node that loads data is named load_<thing>; a chart node plot_<thing>.",
+                        kind="user_correction", session="s0")
+    req = memory.add(bot, "The user asks for a CSV export node.", kind="repeated_request", session="s0")
+    o1 = observations.write(bot, kind="repeated_request", trust="outcome", session="s1",
+                            claim="The user asks for a Parquet loader node wired to a monthly-revenue chart node.")
+    o2 = observations.write(bot, kind="repeated_request", claim="The user asks for a CSV export node.",
+                            trust="outcome", session="s1")
+    o3 = observations.write(bot, kind="user_correction", claim="Name loaders load_<thing>.",
+                            trust="outcome", session="s1")
+    o4 = observations.write(bot, kind="repeated_request", claim="The user asks for a map node.",
+                            trust="outcome", session="s1", confirms=naming["id"])
+    fake_text.replies.append(lambda p: json.dumps([{"obs": o1["id"], "op": "bump", "item": naming["id"]},
+                                                   {"obs": o2["id"], "op": "bump", "item": req["id"]},
+                                                   {"obs": o3["id"], "op": "bump", "item": naming["id"]},
+                                                   {"obs": o4["id"], "op": "bump", "item": naming["id"]}]))
+    r = consolidate.run(bot, force=True)
+    prompt = fake_text.calls[0]
+    assert "SAME lesson" in prompt and "When in doubt" in prompt and "may only be bumped onto" in prompt
+    assert f"[{naming['id']}] (user_correction)" in prompt
+    assert o4["id"] in prompt  # a request pattern "confirming" a non-request lesson goes to the model
+    items = {i["id"]: i for i in memory.items(bot)}
+    assert items[naming["id"]]["count"] == 2 and items[req["id"]]["count"] == 2  # o3 and o2 bumped
+    new = [i for i in items.values() if i["id"] not in (naming["id"], req["id"])]
+    assert sorted(i["claim"] for i in new) == ["The user asks for a Parquet loader node wired to a "
+                                               "monthly-revenue chart node.", "The user asks for a map node."]
+    assert all(i["kind"] == "repeated_request" and i["trust"] == "outcome" for i in new)
+    assert sorted(r["bumped"]) == sorted([naming["id"], req["id"]]) and len(r["added"]) == 2
+    done = {o["id"]: o["outcome"] for o in observations.done(bot)}
+    assert done[o1["id"]]["op"] == "add" and done[o2["id"]] == {**done[o2["id"]], "op": "bump", "item": req["id"]}
 
 
 def test_consolidate_without_an_engine_does_nothing(bot, fake_text, monkeypatch):
