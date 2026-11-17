@@ -325,12 +325,21 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     // (2026-11-17: "let's do scrim 30"): 55% of the app's modal scrim token —
     // 30% black dark, 22% light — over the card, taking no pointer.
     expect(TASKS_CSS).toContain(
-      '.claude-rail-peek > .claude-rail-peek-card::after {\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: 50;\n  border-radius: inherit;\n  background: color-mix(in srgb, var(--scrim) 55%, transparent);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity var(--dur-med) var(--ease-out);\n}',
+      '.claude-rail-peek > .claude-rail-peek-card::after,\n.modal-popover .modal-dialog.new-task-dialog::after {\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: 50;\n  border-radius: inherit;\n  background: color-mix(in srgb, var(--scrim) 55%, transparent);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity var(--dur-med) var(--ease-out);\n}',
     );
     // It fades in and out ("a transition fade for this scrim"): only its
     // opacity moves, and the card is never made a positioned box for it — its
     // resize grips are earlier siblings and would end up under it.
-    expect(TASKS_CSS).toContain("body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after {\n  opacity: 1;\n}");
+    // …and the + New task popover with them (2026-11-17: "scrim should apply
+    // for + new button, bots and tasks as well"): window A in the Modal
+    // chassis, named beside the cards. Its `::before` is the accent line.
+    expect(TASKS_CSS).toContain(
+      "body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after,\nbody:has(.hint-panel.is-row.is-on) .modal-popover .modal-dialog.new-task-dialog::after {\n  opacity: 1;\n}",
+    );
+    const newTask = readFileSync(join(import.meta.dir, "../../styles/new-task.css"), "utf8");
+    expect(newTask).toContain(".new-task-dialog::before {");
+    expect(newTask).not.toContain(".new-task-dialog::after");
+    expect(newTask).toMatch(/\n\.new-task-dialog \{[^}]*overflow: hidden;/);
     expect(TASKS_CSS).not.toContain(".claude-rail-peek-card {\n  position: relative;");
     const rail = readFileSync(join(import.meta.dir, "../../styles/claude-rail.css"), "utf8");
     expect(rail).toMatch(/\n\.claude-rail-peek \{[^}]*position: fixed;/);

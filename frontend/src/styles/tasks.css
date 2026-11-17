@@ -548,8 +548,16 @@ button.tasks-caret,
    positioned box (its resize grips are earlier siblings and would end up
    under it); the layer is laid out against the card's wrapper, the fixed
    `.claude-rail-peek`, which is the card's own box — hence the child
-   selector and the inherited radius. It takes no pointer. */
-.claude-rail-peek > .claude-rail-peek-card::after {
+   selector and the inherited radius. It takes no pointer.
+
+   THE + NEW TASK POPOVER IS A RAIL WINDOW TOO (Akshil, 2026-11-17: "scrim
+   should apply for + new button, bots and tasks as well, because we are
+   viewing another task" — it worked on every card but the +). It is window A
+   in the Modal chassis, not a `.claude-rail-peek-card`, so it is named here:
+   the dialog is its own positioned, clipped box, and its `::before` is the
+   accent line on its top edge, so the layer is its `::after`. */
+.claude-rail-peek > .claude-rail-peek-card::after,
+.modal-popover .modal-dialog.new-task-dialog::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -560,7 +568,8 @@ button.tasks-caret,
   pointer-events: none;
   transition: opacity var(--dur-med) var(--ease-out);
 }
-body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after {
+body:has(.hint-panel.is-row.is-on) .claude-rail-peek > .claude-rail-peek-card::after,
+body:has(.hint-panel.is-row.is-on) .modal-popover .modal-dialog.new-task-dialog::after {
   opacity: 1;
 }
 .hint-row {
