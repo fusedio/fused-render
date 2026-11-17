@@ -446,3 +446,49 @@ def test_an_install_from_before_skills_shipped_keeps_its_copies(shipped):
     assert xseed.seed() == []
     assert b.skills()[0]["body"] == "My own body." and len(knowledge.activity(b)) == n
     assert knowledge.shipped_path(b, "layout") and knowledge.shipped_path(b, "naming")
+
+
+def test_a_failed_shipped_update_keeps_the_old_baseline_and_is_tried_again(shipped, monkeypatch):
+    (bid,) = xseed.seed()
+    b = registry.get(bid)
+    kept = os.path.join(store.expert_dir(b), knowledge.SHIPPED_DIR, "layout.md")
+    old = open(kept, "rb").read()
+    (shipped / "layout.md").write_text("# Folder layout\ntrigger: layout\n\nThe NEW body.\n")
+    real = knowledge.apply
+    with monkeypatch.context() as m:
+        m.setattr(knowledge, "apply", lambda bot, c: {"ok": False} if c.get("op") == "skill_restore" else real(bot, c))
+        assert xseed.seed() == []
+    assert b.skills()[0]["body"] == "The body."  # the write failed: still the old version
+    assert open(kept, "rb").read() == old  # ... and the baseline still says so, so the update is still due
+    assert xseed.seed() == []  # the failure is fixed: the next start updates the skill
+    assert b.skills()[0]["body"] == "The NEW body." and b"NEW" in open(kept, "rb").read()
+    line = knowledge.activity(b, quiet=False)[0]
+    assert (line["action"], line["target"], line["ok"]) == ("skill_restored", "layout", True)
+
+
+def test_a_lesson_change_that_fails_after_it_wrote_is_logged_failed_and_still_undoable(bot, monkeypatch):
+    """`memory.remove` saves memory, then appends to the archive. When the append raises the lesson is already
+    gone: the line says `ok: false` and can be undone, because the snapshot was saved before the mutator ran."""
+    it = memory.add(bot, "Keep me.", trust="user")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as m:
+        m.setattr(memory, "_archive", boom)
+        line = knowledge.apply(bot, {"op": "lesson_remove", "id": it["id"], "reason": "forgotten", "why": "w"})
+    assert (line["ok"], line["undoable"], line["error"]) == (False, True, "disk full")
+    assert memory.items(bot) == []
+    hist = json.load(open(knowledge._history_path(bot, line["id"])))
+    assert list(hist["before"]) == [it["id"]]  # item level: only the lesson that changed
+    knowledge.undo(bot, line["id"])
+    assert _claims(bot) == ["Keep me."]
+    # A change that failed before it wrote anything leaves nothing to undo, and no history file.
+    line = knowledge.apply(bot, {"op": "lesson_bump", "id": "mnope", "why": "w"})
+    assert (line["ok"], line["undoable"]) == (False, False)
+    assert not os.path.exists(knowledge._history_path(bot, line["id"]))
+    # An ordinary change is undoable as before, with only its own lesson in the record.
+    other = memory.add(bot, "Another.", trust="user")
+    line = knowledge.apply(bot, {"op": "lesson_edit", "id": other["id"], "claim": "Another, narrower.", "why": "w"})
+    assert line["ok"] and line["undoable"]
+    assert list(json.load(open(knowledge._history_path(bot, line["id"])))["before"]) == [other["id"]]

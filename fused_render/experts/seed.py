@@ -144,7 +144,20 @@ def _sync_skills(b, key: str, installing: bool) -> bool:
     except OSError:
         names = []
     ok = True
+
+    def baseline(name, data):
+        path = os.path.join(kept, name + ".md")
+        if data is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        os.makedirs(kept, exist_ok=True)
+        with open(path + ".tmp", "wb") as f:
+            f.write(data)
+        os.replace(path + ".tmp", path)
+
     for name in names:
+        replaced, old, done = False, None, False
         try:
             new = _bytes(os.path.join(src, name + ".md"))
             old = _bytes(os.path.join(kept, name + ".md"))
@@ -152,14 +165,13 @@ def _sync_skills(b, key: str, installing: bool) -> bool:
             if new is None or (old == new and not (installing and mine is None)):
                 continue
             if old != new:
-                os.makedirs(kept, exist_ok=True)
-                with open(os.path.join(kept, name + ".md.tmp"), "wb") as f:
-                    f.write(new)
-                os.replace(os.path.join(kept, name + ".md.tmp"), os.path.join(kept, name + ".md"))
+                baseline(name, new)  # `skill_restore` reads the shipped version from here
+                replaced = True
             change = {"op": "skill_restore", "skill": name, "stage": "seed"}
             if mine is None and (installing or old is None):
                 change.update(why="This skill ships with Fused.", summary=f"Installed “{name}”", quiet=True)
             elif old is None:
+                done = True
                 continue  # installed before `skills-shipped/` existed: the expert's copy stands
             elif _same_skill(mine, old):
                 change.update(why="Fused shipped a new version of this skill and the expert had not changed it.",
@@ -169,10 +181,19 @@ def _sync_skills(b, key: str, installing: bool) -> bool:
                           "summary": f"Kept this expert's own “{name}”",
                           "why": "Fused shipped a new version of this skill, but the expert's copy was changed, "
                                  "so it was left alone."}
-            ok = bool(knowledge.apply(b, change).get("ok")) and ok
+            done = bool(knowledge.apply(b, change).get("ok"))
+            ok = done and ok
         except Exception:  # noqa: BLE001 — one bad skill file never loses the expert
             logger.warning("expert seed %s: skill %s not synced", key, name, exc_info=True)
             ok = False
+        finally:
+            if replaced and not done:
+                # The update did not land: keep the OLD baseline, so the next start still sees a new shipped
+                # version (with the new one kept, `old == new` would skip this skill for good).
+                try:
+                    baseline(name, old)
+                except OSError:
+                    logger.warning("expert seed %s: baseline of %s not put back", key, name, exc_info=True)
     return ok
 
 

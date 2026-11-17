@@ -177,7 +177,9 @@ class _Turn:
             text = " ".join(str(inp.get(key) or "").split())
             if not text:
                 return f"error: {name} needs `{key}`", True
-            if name == "forget_lesson" and not memory.match(bot, text):
+            if name == "forget_lesson" and not memory.match(bot, text) and not any(
+                    memory.text_matches(text, o.get("claim")) for o in consult.inbox_waiting(bot, "taught")):
+                # (a lesson taught a moment ago may still wait in the inbox: Learn then drops both entries)
                 return f"No lesson matches \"{text}\".", False
             consult.inbox_write(bot, "taught" if name == "remember_lesson" else "forget", text, by_user=True)
             learn_now(bot)

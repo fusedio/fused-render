@@ -289,6 +289,10 @@ def step(bot, ctx):
         del_ids = {i["id"] for i in deletes_c}
         for a in actions or []:
             if a["do"] == "delete" and a["ids"][0] in del_ids:
+                # The review took a while and held no lock: a consult or chat may have cited the lesson since.
+                current = next((i for i in memory.items(bot) if i["id"] == a["ids"][0]), None)
+                if current is None or not can_delete(current, b, time.time()):
+                    continue
                 line = yield {"op": "lesson_remove", "id": a["ids"][0], "reason": "stale",
                               "why": a["why"] or "Old and rarely used."}
                 changed += bool(line.get("ok"))

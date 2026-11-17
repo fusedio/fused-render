@@ -346,3 +346,22 @@ def test_merge_candidates_group_related_lessons_only(bot):
     flat = {i for g in groups for i in g}
     assert unrelated["id"] not in flat and other["id"] not in flat and contra["id"] not in flat
     assert tidy.related(unrelated, other) == 0.0 and tidy.related(x, y) >= tidy.MERGE_OVERLAP
+
+
+def test_a_lesson_cited_while_the_review_ran_is_not_deleted(bot, answer, monkeypatch):
+    """The delete candidates are picked before the model call, which holds no lock: a consult that cites one
+    meanwhile makes it used, and the deletion is checked again against memory as it is now."""
+    _fill(bot, 30)
+    cited = _lesson(bot, "Zzz qqq www", idle=40)
+    stale = _lesson(bot, "Yyy ppp vvv", idle=40)
+    review = model.text
+
+    def text(b, prompt, **kw):
+        memory.cite(b, [cited["id"]])  # an answer relies on it during the review
+        return review(b, prompt, **kw)
+
+    monkeypatch.setattr(model, "text", text)
+    answer.value = [{"id": cited["id"], "do": "delete"}, {"id": stale["id"], "do": "delete"}]
+    lines = _tidy(bot)
+    assert [(ln["action"], ln["target"]) for ln in lines] == [("removed", stale["id"])]
+    assert cited["id"] in _ids(bot) and stale["id"] not in _ids(bot)

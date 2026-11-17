@@ -204,7 +204,7 @@ def routed(client, monkeypatch, tmp_path):
                              "status": "idle", "instructions": "", "created": time.time(), "task": "",
                              "step": 0, "url": None, "title": None,
                              "expert": {"ask_me_about": "Writing canvases", "offered_to": {"targets": ["*"]}}})
-    monkeypatch.setattr(consult, "consult", lambda bot, q, c="", caller=None: {
+    monkeypatch.setattr(consult, "consult", lambda bot, q, c="", caller=None, **k: {
         "id": "c1", "answer": "A", "refs": [], "used": [], "unsure": False})
     from fused_render.claude_agent import agent_module
     monkeypatch.setattr(agent_module(), "RUNS", str(tmp_path / "runs"))
@@ -238,3 +238,25 @@ def test_a_pre_allowed_session_cannot_consult_an_expert_no_longer_fenced(client,
     # A local call (no run id) is the user's own.
     status, _h, _b = client.post("/api/experts/consult", {"expert": RBID, "question": "q"})
     assert status == 200
+
+
+def test_a_pre_allowed_consult_must_run_fenced(client, routed, monkeypatch, tmp_path):
+    """The route's own check can pass on one engine and the consult run on another (the settings change while it
+    waits for a slot): a pre-allowed consult is told to run fenced, and its refusal is the same 403."""
+    from fused_render.experts import routes
+    entry = {"id": RBID, "name": "Canvas Expert", "ask_me_about": "x", "auto_allow": True}
+    monkeypatch.setattr(xmodel, "fenced", lambda bot: True)
+    seen = []
+
+    def fake(bot, q, c="", caller=None, **kw):
+        seen.append(kw)
+        return {"id": "c1", "answer": "A", "refs": [], "used": [], "unsure": False}
+    monkeypatch.setattr(consult, "consult", fake)
+    assert _consult(client, _run(tmp_path, [entry]))[0] == 200 and seen == [{"fenced_only": True}]
+    assert _consult(client, _run(tmp_path, [dict(entry, auto_allow=False)]))[0] == 200 and seen[-1] == {}
+
+    def switched(*a, **kw):
+        raise consult.Unfenced("codex")
+    monkeypatch.setattr(consult, "consult", switched)
+    status, body = _consult(client, _run(tmp_path, [entry]))
+    assert status == 403 and body == {"error": routes.UNFENCED_NOW}

@@ -379,7 +379,8 @@ def test_a_correction_must_replace_or_remove_the_old_rule_in_its_skill(bot, fake
     new = memory.add(bot, NEW, trust="user", via="session")
     fake_text.replies.append(reply if isinstance(reply, str) else json.dumps(reply))
     lines = []
-    gen = distill.step(bot, {"corrections": [{"item": new["id"], "skill": "charts", "old": OLD, "quote": SAID}]})
+    distill.remember_correction(bot, new["id"], "charts", OLD, SAID)
+    gen = distill.step(bot, {})
     for change in gen:
         lines.append(change)
     (note,) = lines  # a failed draft is one skipped line, never a pending state
@@ -541,3 +542,182 @@ def test_a_taught_lesson_is_learned_at_once(bot, fake_text):
     (line,) = knowledge.activity(bot)
     assert (line["action"], line["target"], line["why"]) == ("learned", item["id"], "You taught this in chat.")
     assert "quiet" not in line and memory.indexed(item)
+
+
+# ------------------------------------------------------ part 4: failed changes and retries ---
+
+def _distill(bot):
+    """Drive the distill step the way the Learn loop does; returns the activity lines it produced."""
+    gen, line, lines = distill.step(bot, {}), None, []
+    try:
+        while True:
+            line = knowledge.apply(bot, {"stage": "distill", **gen.send(line)})
+            lines.append(line)
+    except StopIteration:
+        return lines
+
+
+def _taught(bot, claim):
+    from fused_render.experts import consult
+    return consult.inbox_write(bot, "taught", claim, by_user=True)
+
+
+def _disk_full(*a, **k):
+    raise OSError("disk full")
+
+
+def test_an_entry_whose_change_failed_stays_waiting_and_is_tried_again(bot, fake_text, monkeypatch):
+    o = _taught(bot, "Use tabs.")
+    with monkeypatch.context() as m:
+        m.setattr(memory, "add", _disk_full)
+        consolidate.run(bot)
+    assert [w["id"] for w in consolidate.waiting(bot)] == [o["id"]] and _done(bot) == []  # not consumed
+    (line,) = knowledge.activity(bot)
+    assert (line["ok"], line["error"]) == (False, "disk full")
+    assert consolidate.due(bot)  # still the user's entry: the next run takes it at once
+    consolidate.run(bot)
+    assert [i["claim"] for i in memory.items(bot)] == ["Use tabs."] and consolidate.waiting(bot) == []
+    assert _done(bot)[0]["outcome"]["op"] == "add"
+    from fused_render.experts import store
+    assert store.read_json(consolidate._retries_path(bot), None) == {}  # the count went with the entry
+
+
+def test_an_entry_that_keeps_failing_is_archived_as_failed_after_three_tries(bot, fake_text, monkeypatch):
+    o = _taught(bot, "Use tabs.")
+    good = observations.write(bot, kind="error_then_fix", claim="Close the file.", trust="outcome", session="s1")
+    monkeypatch.setattr(memory, "add", _disk_full)
+    for n in range(consolidate.MAX_TRIES):
+        fake_text.replies.append(json.dumps([{"obs": good["id"], "op": "add"}]))
+        assert [w["id"] for w in consolidate.waiting(bot)] == [o["id"], good["id"]], n
+        consolidate.run(bot)
+    assert consolidate.waiting(bot) == []  # one bad entry does not make every run fail on it forever
+    done = {d["id"]: d["outcome"] for d in _done(bot)}
+    assert (done[o["id"]]["op"], done[o["id"]]["tries"], done[o["id"]]["error"]) == ("failed", 3, "disk full")
+    assert done[good["id"]]["op"] == "failed"
+    notes = [ln for ln in knowledge.activity(bot) if ln["action"] == "skipped"]
+    assert sorted(ln["summary"] for ln in notes) == ["Gave up on “Close the file.” after 3 tries.",
+                                                     "Gave up on “Use tabs.” after 3 tries."]
+    # An explicit "nothing" is a decision, not a failure: archived at once, as before.
+    noise = observations.write(bot, kind="error_then_fix", claim="Noise.", trust="outcome", session="s2")
+    fake_text.replies.append(json.dumps([{"obs": noise["id"], "op": "nothing"}]))
+    consolidate.run(bot, force=True)
+    assert consolidate.waiting(bot) == [] and _done(bot)[-1]["outcome"]["op"] == "nothing"
+
+
+def test_a_forget_cancels_a_taught_entry_still_waiting_in_the_same_inbox(bot, fake_text):
+    from fused_render.experts import consult
+    t = _taught(bot, "Canvas names use underscores.")
+    f = consult.inbox_write(bot, "forget", "underscores", by_user=True)
+    later = _taught(bot, "Use underscores in file names.")  # taught AFTER the forget: it stands
+    consolidate.run(bot)
+    assert [i["claim"] for i in memory.items(bot)] == ["Use underscores in file names."]
+    done = {d["id"]: d["outcome"] for d in _done(bot)}
+    assert done[t["id"]]["op"] == "forget" and done[t["id"]]["by"] == f["id"]
+    assert done[f["id"]]["op"] == "forget" and done[later["id"]]["op"] == "add"
+    lines = list(reversed(knowledge.activity(bot)))
+    assert [(ln["action"], ln["summary"]) for ln in lines] == [
+        ("skipped", "Did not learn “Canvas names use underscores.”."),
+        ("learned", "Use underscores in file names.")]  # and no "No lesson matches" line for the forget
+
+
+def test_an_entry_worded_like_a_contradicted_lesson_never_raises_its_count(bot, fake_text):
+    old = memory.add(bot, OLD, kind="lesson", session="s0")  # seen once: one more sighting would put it in answers
+    c = _correction(bot, contradicts=old["id"])
+    echo = observations.write(bot, kind="error_then_fix", claim=OLD, trust="outcome", session="s9")
+    fake_text.replies += [json.dumps([{"obs": c["id"], "op": "add"},
+                                      {"obs": echo["id"], "op": "bump", "item": old["id"]}]),
+                          "no decision"]
+    consolidate.run(bot)
+    was = next(i for i in memory.items(bot) if i["id"] == old["id"])
+    assert was["count"] == 1 and was["contradicted"] == 1 and not memory.indexed(was)
+    assert consolidate.waiting(bot) == []
+
+
+def _promoted_rule(bot):
+    _skill(bot)
+    rule = memory.add(bot, "Chart titles follow '<Region> — Monthly revenue'.", session="s0")
+    knowledge.apply(bot, {"op": "lesson_remove", "id": rule["id"], "reason": "promoted", "skill": "charts",
+                          "why": "setup"})
+    return rule
+
+
+_FIX = json.dumps({"action": "update", "skill": "charts",
+                   "ops": [{"op": "replace", "heading": "Titles", "section": "Just the region name."}]})
+
+
+def test_a_failed_skill_correction_is_kept_on_disk_and_tried_again_by_the_next_run(bot, fake_text):
+    rule = _promoted_rule(bot)
+    c = _correction(bot, contradicts=rule["id"])
+    fake_text.replies += [json.dumps([{"obs": c["id"], "op": "add"}]), "not json"]
+    consolidate.run(bot)
+    (new,) = memory.items(bot)
+    assert consolidate.waiting(bot) == [] and "Monthly revenue" in _file(bot)  # the entry is archived, the skill not fixed
+    (corr,) = distill.corrections(bot)
+    assert (corr["item"], corr["skill"], corr["quote"], corr["tries"]) == (new["id"], "charts", SAID, 1)
+    fake_text.replies.append(_FIX)
+    consolidate.run(bot, force=True)  # nothing in the inbox: the correction comes from the file
+    assert fake_text.calls[-1].startswith('THE USER CORRECTED A RULE THAT THE SKILL "charts" STATES')
+    assert "Monthly revenue" not in _file(bot) and memory.items(bot) == [] and distill.corrections(bot) == []
+
+
+def test_a_failed_correction_is_never_drafted_without_its_constraint_and_is_given_up_after_three_tries(bot, fake_text):
+    bot.meta["expert"] = {"memory": {"propose_at": 1}}  # the corrected lesson alone would earn an ordinary draft
+    _skill(bot)
+    new = memory.add(bot, NEW, trust="user", via="session", session="live")
+    distill.remember_correction(bot, new["id"], "charts", OLD, SAID)
+    distill.remember_correction(bot, new["id"], "charts", OLD, SAID)  # one entry per (lesson, skill)
+    assert distill.candidates(bot) and len(distill.corrections(bot)) == 1
+    for n in (1, 2):
+        fake_text.replies.append("not json")
+        (note,) = _distill(bot)  # one skipped line; no second, unconstrained draft (it would make a new skill)
+        assert note["action"] == "skipped" and distill.corrections(bot)[0]["tries"] == n
+        assert len(fake_text.calls) == n and [s["name"] for s in bot.skills()] == ["charts"]
+    fake_text.replies.append("not json")
+    note, gave_up = _distill(bot)
+    assert gave_up["action"] == "skipped" and gave_up["summary"] == "Gave up correcting the skill “charts” after 3 tries."
+    assert distill.corrections(bot) == [] and [i["id"] for i in memory.items(bot)] == [new["id"]]
+    assert len(fake_text.calls) == 3 and [s["name"] for s in bot.skills()] == ["charts"]
+
+
+def test_one_lesson_that_corrects_two_skills_updates_both_before_it_leaves_memory(bot, fake_text):
+    _skill(bot)
+    _skill(bot, name="reports", title="Reports", trigger="report", body=f"Reports.\n\n## Titles\n\n{OLD}\n")
+    new = memory.add(bot, NEW, trust="user", via="session")
+    for name in ("charts", "reports"):
+        distill.remember_correction(bot, new["id"], name, OLD, SAID)
+    fake_text.replies += [_FIX, "not json"]
+    lines = _distill(bot)  # the first skill is fixed, the second draft fails: the lesson must stay for it
+    assert [(ln["action"], ln["target"], ln["ok"]) for ln in lines] == [("skill_updated", "charts", True),
+                                                                      ("skipped", "", True)]
+    assert [i["id"] for i in memory.items(bot)] == [new["id"]]
+    assert [(c["skill"], c["tries"]) for c in distill.corrections(bot)] == [("reports", 1)]
+    fake_text.replies.append(_FIX.replace("charts", "reports"))
+    lines = _distill(bot)
+    assert [(ln["action"], ln["target"]) for ln in lines] == [("skill_updated", "reports"), ("removed", new["id"])]
+    assert lines[1]["because"] == lines[0]["id"]
+    assert "Monthly revenue" not in _file(bot) + _file(bot, "reports")
+    assert memory.items(bot) == [] and distill.corrections(bot) == []
+
+
+def test_a_correction_draft_must_change_the_section_that_states_the_old_rule(bot, fake_text):
+    assert distill.rule_section(CHARTS, OLD) == "Titles"
+    assert distill.rule_section(CHARTS, "Chart titles follow '<Region> — Monthly revenue'.") == "Titles"  # by words
+    assert distill.rule_section(CHARTS, "Deploy on Fridays only.") is None
+    assert distill.rule_section(CHARTS + "\n## Again\n\n" + OLD, OLD) is None  # two sections: not located
+    _skill(bot)
+    new = memory.add(bot, NEW, trust="user", via="session")
+    distill.remember_correction(bot, new["id"], "charts", OLD, SAID)
+    before = _file(bot)
+    fake_text.replies.append(json.dumps({"action": "update", "skill": "charts", "ops": [
+        {"op": "replace", "heading": "Colours", "section": "A chart's title is just the region name."}]}))
+    (note,) = _distill(bot)
+    assert note["action"] == "skipped" and "“Titles”" in note["why"]
+    assert _file(bot) == before and [i["id"] for i in memory.items(bot)] == [new["id"]]
+    # A rule that cannot be located in one section: any replace / remove in that skill is accepted, as before.
+    other = memory.add(bot, "Deploy on Mondays.", trust="user", via="session")
+    distill.remember_correction(bot, other["id"], "charts", "Deploy on Fridays only.", "")
+    fake_text.replies += [_FIX, json.dumps({"action": "update", "skill": "charts", "ops": [
+        {"op": "replace", "heading": "Axes", "section": "- Label both axes.\n- Deploy on Mondays."}]})]
+    lines = _distill(bot)
+    assert [ln["action"] for ln in lines] == ["skill_updated", "removed", "skill_updated", "removed"]
+    assert memory.items(bot) == [] and distill.corrections(bot) == []

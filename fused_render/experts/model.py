@@ -99,7 +99,12 @@ def fenced(bot) -> bool:
         provider, _model = provider_for(bot)
     except Exception:  # noqa: BLE001 — Unavailable, or a broken registry
         return False
-    return provider != "codex"
+    return provider_fenced(provider)
+
+
+def provider_fenced(provider) -> bool:
+    """Whether a run on `provider` reads only through `readtools` (everything but Codex)."""
+    return bool(provider) and provider != "codex"
 
 
 def _safe_enabled(backends, bid) -> bool:
@@ -278,12 +283,13 @@ def _ledger(bot, model, ok, err):
         pass
 
 
-def tool_turn(bot, prompt, *, system, tools, handler, timeout=600, stage=None) -> str:
+def tool_turn(bot, prompt, *, system, tools, handler, timeout=600, stage=None, provider=None) -> str:
     """One `/api/ai` tools turn. Returns the final text; RuntimeError with the
     server's sentence on any failure (Unavailable when no engine is on). `stage`
-    labels the usage line, as for `text`."""
+    labels the usage line, as for `text`. `provider`: a `(provider, model)` pair the caller resolved earlier
+    (`provider_for`); the turn then runs on exactly that engine instead of resolving it again now."""
     st = _stage(stage)
-    provider, model = provider_for(bot)
+    provider, model = provider if provider else provider_for(bot)
     origin = _origin()
     body = {"prompt": prompt, "stream": True, "tools": list(tools or []), "provider": provider}
     if model:

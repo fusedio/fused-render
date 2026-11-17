@@ -184,6 +184,11 @@ def _hkey(heading) -> str:
     return _clean_heading(heading).casefold()
 
 
+def heading_key(heading) -> str:
+    """A section heading as section ops compare it (trimmed, `#` dropped, case-insensitive)."""
+    return _hkey(heading)
+
+
 def _clean_section(section, heading, title="") -> str:
     """A section's markdown from the model: copied metadata lines, a copied "# <skill title>" and a repeated heading
     dropped, and its own `#` / `##` headings (outside fenced code) demoted to `###` so it stays one section."""
@@ -417,12 +422,41 @@ def _memory_path(bot) -> str:
 
 
 def _lesson(bot, fn):
-    """Run one `memory` mutator; returns (its result, the history record: every lesson it touched, as it was)."""
-    before = {i["id"]: i for i in memory.items(bot)}
-    out = fn()
-    after = {i["id"]: i for i in memory.items(bot)}
-    was = {k: before.get(k) for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
-    return out, ({"kind": "lesson", "before": was} if was else None)
+    """Run one `memory` mutator; returns (its result, None). The history record of a lesson change is `apply`'s:
+    it snapshots memory before the mutator runs, so a mutator that raises after writing is still undoable."""
+    return fn(), None
+
+
+def _snapshot(bot) -> dict:
+    return {i["id"]: i for i in memory.items(bot)}
+
+
+def _save_history(bot, aid, hist) -> None:
+    # ASCII JSON: a skill file's stray bytes (kept as lone surrogates) survive it.
+    path = _history_path(bot, aid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w", encoding="ascii") as f:
+        json.dump(hist, f)
+    os.replace(path + ".tmp", path)
+
+
+def _settle_lesson_history(bot, aid, before) -> bool:
+    """After a lesson mutator ran (or raised): cut the snapshot saved before it down to the lessons that
+    actually changed, so undo stays item level. True when the change is undoable; with nothing changed the
+    snapshot is removed."""
+    try:
+        after = _snapshot(bot)
+        was = {k: before.get(k) for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
+        if was:
+            _save_history(bot, aid, {"kind": "lesson", "before": was})
+            return True
+    except Exception:  # noqa: BLE001 — the change stays made; it just cannot be undone
+        pass
+    try:
+        os.remove(_history_path(bot, aid))
+    except OSError:
+        pass
+    return False
 
 
 def _restore_lessons(bot, was: dict) -> None:
@@ -576,6 +610,17 @@ def apply(bot, change: dict) -> dict:
         line["because"] = str(c["because"])
     hist = None
     with store.lock(bot):
+        # A lesson change: what undo needs is saved BEFORE the mutator runs (all of memory, cut down to the lessons
+        # that changed once it is done). A mutator may raise after it wrote (`memory.remove` saves, then archives):
+        # the line is then `ok: false` and still undoable, because the change is in memory.
+        before = None
+        if fn is not None and str(c.get("op") or "").startswith("lesson_"):
+            try:
+                snap = _snapshot(bot)
+                _save_history(bot, line["id"], {"kind": "lesson", "before": snap})
+                before = snap
+            except Exception:  # noqa: BLE001 — (a change whose history cannot be saved is still made)
+                before = None
         try:
             if fn is None:
                 raise ValueError(f"unknown op: {c.get('op')}")
@@ -585,17 +630,15 @@ def apply(bot, change: dict) -> dict:
                 action = action["action"]
             line.update(action=action, target=target, summary=c.get("summary") and line["summary"] or summary)
             if hist:
-                # ASCII JSON: a skill file's stray bytes (kept as lone surrogates) survive it.
-                path = _history_path(bot, line["id"])
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w", encoding="ascii") as f:
-                    json.dump(hist, f)
+                _save_history(bot, line["id"], hist)
                 line["undoable"] = True
         except OSError as e:
             if not hist:  # (a change made whose history could not be saved stays made; it just cannot be undone)
                 line.update(ok=False, error=str(e) or type(e).__name__)
         except Exception as e:  # noqa: BLE001 — a bad change is logged, never raised
             line.update(ok=False, error=str(e) or type(e).__name__)
+        if before is not None:
+            line["undoable"] = _settle_lesson_history(bot, line["id"], before)
         return _log(bot, line)
 
 

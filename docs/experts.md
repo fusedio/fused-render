@@ -38,6 +38,8 @@ There are no proposals, approval cards, checks or questions to the user anywhere
 - `activity.jsonl` : one line per thing the expert did (below).
 - `history/<activity id>.json` : what `undo` needs for that line.
 - `usage.jsonl` : the token ledger. `consults.jsonl` : the consult log. `gaps.json` : Learn's open questions.
+- `corrections.json` : Learn's skill corrections not yet written into their skill (below, step 3).
+  `inbox-retries.json` : how often an inbox entry's change failed.
 
 ## `knowledge.py` : the only writer
 
@@ -69,6 +71,8 @@ Undo). Ops:
 
 `apply` saves what undo needs, makes the change, reads a skill back to verify it (restoring on mismatch), and appends
 the activity line. It never raises for a bad change: it logs `ok: false` with the reason and returns that line.
+For a lesson change the snapshot is saved BEFORE the change is made, so a change that failed half way (the
+lesson already written, a later step raised) is logged `ok: false` and still `undoable: true`.
 
 Activity line: `{id, ts, action, target, summary, why, evidence, stage, ok, undoable, undone, error}`, plus
 `because` when the change carried one.
@@ -121,7 +125,12 @@ the loop applies them through `knowledge.apply` in order. Steps do not call each
    once (`reported` on the gap), so it is never left as only a quiet "noticed" line.
 3. `distill` : lessons that have earned a skill (count >= `propose_at`, or a verified correction of a rule a skill
    states) -> one model call drafting section ops -> `skill_edit` or `skill_create`, then `lesson_remove` with
-   `reason: "promoted"` and `because: <the skill line's id>`. Applied at once.
+   `reason: "promoted"` and `because: <the skill line's id>`. Applied at once. A correction of a skill rule is
+   kept in `corrections.json`, one entry per (lesson, skill), until that skill's update succeeded; the lesson
+   leaves memory only when no correction of it is left. A correction whose draft or update fails is tried again
+   by the next run, at most 3 times, then dropped with one `note skipped` (the lesson stays in memory). A
+   correction's lesson is never part of the ordinary draft of the same run. When the old rule's text is found
+   in exactly one section of the skill, the draft must replace or remove THAT section.
 4. `tidy` : the memory budget (limit 50, above 30; "Memory budget"); promotion goes through `distill`.
 
 The drafting prompt tells the model how to write skills (guidance only, nothing enforces it): prefer a reference to a
@@ -136,6 +145,7 @@ caps.
 
 Tools: `remember_lesson` and `forget_lesson` write an inbox entry (`taught` / `forget`, `by_user` true only for a
 message typed at the computer) and tell the wiring to run Learn now (`scheduler.poke(bot)`); `list_memory` stays.
+`forget_lesson` writes its entry when a stored lesson OR a `taught` entry still waiting in the inbox matches.
 Nothing is ever posted into the chat by the learning loop.
 
 ## HTTP (`/api/experts/{eid}/…`)
@@ -177,7 +187,9 @@ A third bot kind, `expert`, beside `bot` and `super` (`fused_render/bots/bot.py`
 
 - It lives on the Bots page and has the normal chat thread.
 - It has **no browser** and is **read-only**: it reads, lists and searches inside the folders its manifest names,
-  plus its own `skills/`. It never writes outside its own bot folder.
+  plus its own `skills/`. Two exceptions: a consult can also read its caller's target folder ("The consult
+  tool"), and on the Codex engine reads are not limited to those folders at all, only by Codex's own read-only
+  sandbox ("Engines"). It never writes outside its own bot folder.
 - Two ways in, sharing skills and memory. **Chat**: the user talks to it on the Bots page (one task at a time).
   **Consult**: a task session calls the MCP tool `expert_consult`; the server runs a separate, parallel, short
   run of the expert. Consults never touch the chat thread.
@@ -287,7 +299,9 @@ description says so.
   appends a note listing those experts (name + `ask_me_about`). A consult with a `run_id` may only ask an expert
   in that run's recorded roster (403 otherwise).
 - **Fencing.** A session that pre-allowed the tool (every roster expert fenced at start) is refused a consult of
-  an expert whose reads are no longer fenced (`model.fenced` re-checked at consult time).
+  an expert whose reads are no longer fenced (`model.fenced` re-checked at consult time). The consult resolves
+  its engine ONCE, before it waits for a slot, and runs on exactly that engine (`provider=` down to
+  `model.tool_turn`), so a settings change during the wait cannot move a pre-allowed consult onto Codex.
 - `consult.consult(bot, question, context="", caller=None) -> {"id", "answer", "refs", "used", "unsure"}`. The
   caller's `target` folder is added to the read roots when it exists and is not too broad. At most 3 consults run
   at once per process; the others wait up to 120 s, then fail with "the expert is busy; try again in a minute".
@@ -356,7 +370,16 @@ alone. `after_advice`: the user said it only after, and in line with, this exper
   `user_correction` that is not `after_advice`, an `error_then_fix`, a `worked` that is not `after_advice`, a
   `failed`, and teaching in chat. Anything else, chiefly
   `advice_confirmed` and `after_advice`, is a `lesson_confirm`; a new lesson from it starts at count 0.
-- A failed or unreadable model answer in the lessons step adds nothing: the entries stay waiting.
+- A failed or unreadable model answer in the lessons step adds nothing: the entries stay waiting and the
+  failure is counted (`consolidate-failures.json`, one `note skipped` line per try). After 3 consecutive failed
+  or unreadable answers (`FALLBACK_AFTER`) the waiting entries are added WITHOUT the model's filtering decision:
+  each claim becomes a lesson, or is counted toward the lesson with exactly the same text (the evidence rules
+  above still apply), so the queue cannot grow forever. A usable answer resets the count.
+- An entry whose change `knowledge.apply` could not make (`ok: false`) is not archived: it stays waiting and is
+  tried again by the next run, at most 3 times (`inbox-retries.json`); then it is archived with outcome
+  `failed` and one `note skipped` line says so.
+- A `forget` entry also cancels every older `taught` entry still waiting in the inbox whose text it matches:
+  both are archived and the lesson is never added.
 
 **Only what is new.** Per (session, expert) the watermark keeps how many turns were read and which consult ids
 were seen. A later capture sends only the turns after that point (preceded by at most 2 earlier turns marked as

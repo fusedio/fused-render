@@ -378,14 +378,15 @@ def idle_s() -> float:
     return float(IDLE_S)
 
 
-def due_sessions(now=None, limit=None) -> list:
+def due_sessions(now=None, limit=None, want=None) -> list:
     """Task sessions idle for at least `idle_s()` (and active within
     `LOOKBACK_S`) whose transcript was not yet captured at its current size.
     Bot sessions are not tasks (`_collect` drops them). Newest first.
 
     The cheap filters run on the file's stat; the candidates are then taken
     newest mtime first, and the transcript tail (`_session_of`, for the last
-    real activity) is read only until `limit` sessions are found (None: all)."""
+    real activity) is read only until `limit` sessions are found (None: all).
+    `want(session) -> bool`: a due session it refuses is left out and does not count toward `limit`."""
     now = time.time() if now is None else now
     idle_min = idle_s()
     tasks = _tasks()
@@ -416,6 +417,8 @@ def due_sessions(now=None, limit=None) -> list:
             continue
         idle = now - session["last_active"]
         if idle < idle_min or idle > LOOKBACK_S:
+            continue
+        if want is not None and not want(session):
             continue
         out.append(session)
     out.sort(key=lambda s: -s["last_active"])
@@ -773,12 +776,22 @@ def capture_due(now=None, limit: int = 4, stop=None) -> dict:
     so it reads the session once it is available again. Never raises."""
     from fused_render.experts import model
     result = {"sessions": 0, "observations": 0, "errors": 0}
+
+    def has_work(session) -> bool:
+        # False for a session that only waits for experts without an engine: it stays due, but must not take one
+        # of the `limit` places on every pass and keep the available experts from the sessions behind it.
+        try:
+            left = [b for b in experts if relevant(b, session) and not expert_captured(session, b)]
+        except Exception:  # noqa: BLE001 — judged again, and logged, in the loop below
+            return True
+        return not left or any(b.id in ready for b in left)
+
     try:
         experts = list(store.all_experts())
         ready = {b.id for b in experts if model.available(b)[0]}
         if not ready:
             return result
-        sessions = due_sessions(now, limit=max(0, int(limit)))
+        sessions = due_sessions(now, limit=max(0, int(limit)), want=has_work)
     except Exception:  # noqa: BLE001
         logger.warning("experts capture: could not list due sessions", exc_info=True)
         result["errors"] += 1

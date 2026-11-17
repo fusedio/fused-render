@@ -478,10 +478,11 @@ def parse_json(text, want=list):
 # ------------------------------------------------------------------ runs
 
 def _run(bot, question, *, profile, context="", extra_roots=(), skills_override=None, on_tool=None, history="",
-         extra_tools=None, extra_handler=None, guard=None) -> dict:
+         extra_tools=None, extra_handler=None, guard=None, provider=None) -> dict:
     """`answer` plus the chat engine's hooks: `extra_tools` (gateway specs) answered by
     `extra_handler(name, input) -> (text, is_error)`, and `guard(name, input, call) -> (text, is_error)`
-    wrapped around EVERY tool call (`call()` runs it)."""
+    wrapped around EVERY tool call (`call()` runs it). `provider`: the `(provider, model)` the caller already
+    resolved; the run uses exactly it (`model.tool_turn`)."""
     profile = profile if profile in PROFILES else "consult"
     folders = roots(bot, extra_roots)
     base = readtools.make_handler(folders, on_tool=on_tool)
@@ -516,7 +517,7 @@ def _run(bot, question, *, profile, context="", extra_roots=(), skills_override=
         raw = model.tool_turn(bot, _user_prompt(question, profile=profile, context=context, history=history,
                                                 folders=folders),
                               system=system_prompt(bot, profile, skills_override, query=query), tools=tools,
-                              handler=handler)
+                              handler=handler, **({"provider": provider} if provider else {}))
     out = parse(raw)
     out["raw"] = raw
     out["tool_calls"] = count["calls"]
@@ -532,10 +533,11 @@ def _run(bot, question, *, profile, context="", extra_roots=(), skills_override=
 
 
 def answer(bot, question, *, profile, context="", extra_roots=(), skills_override=None, on_tool=None,
-           history="", stats=None) -> dict:
-    """`stats`, when a dict, receives the run's `tool_calls` (int) and `capped` (bool)."""
+           history="", stats=None, provider=None) -> dict:
+    """`stats`, when a dict, receives the run's `tool_calls` (int) and `capped` (bool). `provider`: a
+    `(provider, model)` pair resolved by the caller, so the engine cannot change between its check and the run."""
     out = _run(bot, question, profile=profile, context=context, extra_roots=extra_roots,
-               skills_override=skills_override, on_tool=on_tool, history=history)
+               skills_override=skills_override, on_tool=on_tool, history=history, provider=provider)
     if isinstance(stats, dict):
         stats["tool_calls"], stats["capped"] = out["tool_calls"], out["capped"]
     return {k: out[k] for k in ("answer", "refs", "used", "unsure")}

@@ -249,6 +249,13 @@ def match(bot, id_or_text) -> list:
             or ([i for i in rows if key in normalise(i.get("claim"))] if len(key) >= 3 else []))
 
 
+def text_matches(needle, claim) -> bool:
+    """Whether the text `needle` names a lesson worded `claim`, as `match` judges text: equal after
+    normalisation, or contained in it (at least 3 characters)."""
+    key, have = normalise(needle), normalise(claim)
+    return bool(key) and (key == have or (len(key) >= 3 and key in have))
+
+
 def forget(bot, id_or_text) -> int:
     """Remove the lessons `match` finds (archived as `forgotten`). Returns how many were removed."""
     with store.lock(bot):

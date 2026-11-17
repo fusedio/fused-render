@@ -724,3 +724,30 @@ def test_capture_writes_worked_and_failed_with_the_files_that_show_them(env, tmp
     assert (failed["kind"], failed["source"]) == ("failed", {**src, "files": ["page.html"]})
     assert (failed["need"], failed["tried"]) == ("load live prices", "calling the quotes API from the page")
     assert sorted(o["id"] for o in observations.pending(bot)) == sorted([worked["id"], failed["id"]])
+
+
+def test_sessions_waiting_for_an_unavailable_expert_do_not_block_the_sessions_behind_them(env, tmp_path, monkeypatch):
+    """Four sessions that only wait for an expert without an engine must not take the pass's four places every
+    time: the available expert still reaches the fifth session, and the waiting ones stay due."""
+    up = _Bot(tmp_path, "up", targets=["canvas"])
+    down = _Bot(tmp_path, "down", targets=["canvas"])
+    monkeypatch.setattr(store, "all_experts", lambda: [up, down])
+    ready = {"up"}
+    monkeypatch.setattr(model, "available", lambda bot: (bot.id in ready, ""))
+    calls = []
+    monkeypatch.setattr(model, "text", lambda bot, prompt, **kw: calls.append(bot.id) or "[]")
+    for k in range(5):
+        env["add"](f"s{k}", age=3600 + k * 60, canvas=True)  # s0 is the newest
+
+    def read_by(bot):
+        return sorted(s["session_id"] for s in capture.due_sessions(NOW) if capture.expert_captured(s, bot))
+
+    assert capture.capture_due(NOW, limit=4)["sessions"] == 4
+    assert read_by(up) == ["s0", "s1", "s2", "s3"]
+    assert capture.capture_due(NOW, limit=4)["sessions"] == 1  # only s4 has work for an available expert
+    assert read_by(up) == ["s0", "s1", "s2", "s3", "s4"] and calls == ["up"] * 5
+    assert capture.capture_due(NOW, limit=4)["sessions"] == 0 and len(capture.due_sessions(NOW)) == 5
+    ready.add("down")  # its engine is back: the deferred sessions were kept for it
+    capture.capture_due(NOW, limit=4)
+    capture.capture_due(NOW, limit=4)
+    assert calls.count("down") == 5 and capture.due_sessions(NOW) == []

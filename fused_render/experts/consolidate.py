@@ -11,19 +11,22 @@ applies every change through `knowledge.apply` (the step receives the activity l
 4. `tidy` (`tidy.step`): the memory budget.
 
 A step that raises is logged as a `note skipped` line and the next step still runs. Steps share one dict, `ctx`:
-`inbox` (the entries waiting when the run began) and `corrections` (the lessons step's hand-over to distill: a
-verified user correction of a rule a skill states).
+`inbox` (the entries waiting when the run began). The lessons step's hand-over to distill (a verified user
+correction of a rule a skill states) is kept on disk (`distill.remember_correction`), so it survives a failed run.
 
 Due (`due`): `consolidate_at` entries wait, or the oldest is `consolidate_after_s` old, or any waiting entry is
 from the user (`taught`, `forget`, or a correction with a verified quote), or `force`. Never when the manifest
 says `learning: false`.
 
 The inbox is `<expert>/observations/pending/*.json`; a handled entry moves to `observations/done/` with what
-happened to it (`outcome`).
+happened to it (`outcome`). An entry whose change `knowledge.apply` could not make (`ok: false`) is NOT handled:
+it stays waiting for the next run, at most `MAX_TRIES` times (`inbox-retries.json`), then it is archived with
+outcome `failed` and one `note skipped`.
 
 The lessons step, rule by rule (docs/experts.md "Capture"):
 
 - `taught` / `forget` (chat, `by_user` true only): a `user` lesson, or the matching lessons leave. No model.
+  A `forget` also cancels every older `taught` entry of the same inbox whose text it matches: neither is applied.
 - An entry whose `confirms` names an existing lesson is credited to it with no model decision. For the rest ONE
   `model.text` call answers an edit per entry (add / bump / nothing). The model is the filter between transcript
   text and memory, so a failed call or an unreadable answer adds nothing: the entries stay waiting and the
@@ -36,7 +39,7 @@ The lessons step, rule by rule (docs/experts.md "Capture"):
   is a lesson of its own. A verified user correction (`correction`) takes effect at once: its lesson is trust
   `user`, and ONE model call per pair (`resolve`) decides whether the old lesson is replaced (removed, reason
   `corrected`) or narrowed (`lesson_edit`). Without a decision the old lesson is only marked contradicted. When
-  the old rule already lives in a skill, the pair goes to distill (`ctx["corrections"]`).
+  the old rule already lives in a skill, the pair goes to distill (`distill.remember_correction`).
 - Unsure questions (`gap` entries) are recorded and grouped (`gaps.record`, `gaps.merge`); never lessons.
 - `worked` (the need and the approach that satisfied it) and `failed` (the need, what was tried, why it failed)
   become lessons of their own kind, trust `outcome`, under the same evidence rule: once per session, used in
@@ -63,6 +66,8 @@ logger = logging.getLogger(__name__)
 
 FALLBACK_AFTER = 3
 FAILURES_FILE = "consolidate-failures.json"
+RETRIES_FILE = "inbox-retries.json"
+MAX_TRIES = 3
 USER_KINDS = ("taught", "forget")
 
 RESOLVE_PROMPT = """The user corrected one of an expert's lessons in a session. Decide what happens to the OLD lesson.
@@ -144,8 +149,9 @@ def waiting(bot) -> list:
 
 def _archive(bot, ids, outcomes) -> None:
     """pending/ -> done/, each entry with what the run did with it: `outcome` = `{"op": "add" | "bump" | "confirm"
-    | "nothing" | "gap" | "contradict" | "forget", "at", "item"?, "new"?, "resolution"?, "gap"?}` (`gap` also on
-    a `failed` entry: the open question it left)."""
+    | "nothing" | "gap" | "contradict" | "forget" | "failed", "at", "item"?, "new"?, "resolution"?, "gap"?}`
+    (`gap` also on a `failed` entry: the open question it left; op `failed`: its change could not be made, with
+    `error` and `tries`; `forget` with `by` on a `taught` entry: the forget entry that cancelled it)."""
     now = time.time()
     os.makedirs(_dir(bot, "done"), exist_ok=True)
     with store.lock(bot):
@@ -161,6 +167,36 @@ def _archive(bot, ids, outcomes) -> None:
                 os.remove(src)
             except OSError:
                 logger.warning("expert %s: inbox entry %s not archived", bot.id, oid, exc_info=True)
+
+
+def _retries_path(bot) -> str:
+    return os.path.join(store.expert_dir(bot), RETRIES_FILE)
+
+
+def _settle(bot, entries, outcomes, failed):
+    """Archive the handled `entries`. One whose change could not be made (`failed`: entry id -> the error) stays
+    waiting for the next run instead, at most `MAX_TRIES` times; then it is archived as `failed` with one
+    `note skipped`, so a bad entry cannot make every run fail on it forever."""
+    data = store.read_json(_retries_path(bot), {})
+    still = {o["id"] for o in waiting(bot)}
+    tries = {k: v for k, v in (data if isinstance(data, dict) else {}).items() if k in still and isinstance(v, int)}
+    done = []
+    for o in entries:
+        oid = o["id"]
+        if oid in failed:
+            n = tries.get(oid, 0) + 1
+            if n < MAX_TRIES:
+                tries[oid] = n
+                continue
+            outcomes[oid] = {"op": "failed", "error": str(failed[oid])[:300], "tries": n}
+            yield {"op": "note", "action": "skipped", "evidence": {"item": oid},
+                   "summary": f"Gave up on “{' '.join(str(o.get('claim') or '').split())[:200]}” after {n} tries.",
+                   "why": (str(failed[oid]) or "The change could not be made.")[:300]}
+        tries.pop(oid, None)
+        done.append(oid)
+    _archive(bot, done, outcomes)
+    if tries or data:
+        store.write_json(_retries_path(bot), tries)
 
 
 # ------------------------------------------------------------------ evidence rules ---
@@ -282,7 +318,7 @@ def _run(bot, force) -> dict:
     ok, why = model.available(bot)
     if not ok:
         return {"ran": False, "reason": why or "no engine is available for this expert"}
-    ctx = {"inbox": waiting(bot), "corrections": []}
+    ctx = {"inbox": waiting(bot)}
     lines = []
     for name, step in (("lessons", lessons), ("research", gaps.step), ("distill", distill.step),
                        ("tidy", tidy.step)):
@@ -388,31 +424,52 @@ def _lesson_kind(o) -> str:
 
 
 def lessons(bot, ctx):
-    """Step 1 (module docstring). Yields lesson changes and notes; archives every entry it handled."""
+    """Step 1 (module docstring). Yields lesson changes and notes; archives every entry it handled (`_settle`:
+    an entry whose change failed stays waiting)."""
     pend = ctx["inbox"]
     outcomes: dict[str, dict] = {}  # inbox entry id -> what this run did with it
+    failed_apply: dict[str, str] = {}  # inbox entry id -> why its change could not be made
+
+    def applied(o, line) -> bool:
+        if not line.get("ok"):
+            failed_apply[o["id"]] = str(line.get("error") or "")
+        return bool(line.get("ok"))
 
     # What the user said in chat: no model, and never held back by a failed model call below.
     said = [o for o in pend if o.get("kind") in USER_KINDS]
+    texts = {o["id"]: " ".join(str(o.get("claim") or "").split()) for o in said}
+    # A forget that names a lesson still waiting here (taught a moment before, not learned yet) cancels it.
+    cancelled: dict[str, str] = {}  # a waiting `taught` entry id -> the later `forget` entry that names it
+    for n, o in enumerate(said):
+        if o["kind"] == "forget" and o.get("by_user") is True and texts[o["id"]]:
+            for t in said[:n]:
+                if t["kind"] == "taught" and t.get("by_user") is True and t["id"] not in cancelled \
+                        and memory.text_matches(texts[o["id"]], texts[t["id"]]):
+                    cancelled[t["id"]] = o["id"]
     for o in said:
-        text = " ".join(str(o.get("claim") or "").split())
+        text = texts[o["id"]]
         if o.get("by_user") is not True or not text:
             continue  # only a message typed at the computer may teach or forget
+        if o["id"] in cancelled:
+            outcomes[o["id"]] = {"op": "forget", "by": cancelled[o["id"]]}
+            yield {"op": "note", "action": "skipped", "summary": f"Did not learn “{text[:200]}”.",
+                   "why": "You asked to forget it before it was learned.", "evidence": {"item": o["id"]}}
+            continue
         if o["kind"] == "taught":
             line = yield {"op": "lesson_add", "claim": text, "kind": "lesson", "trust": "user", **_because(o)}
-            it = memory.find(bot, text) if line.get("ok") else None
+            it = memory.find(bot, text) if applied(o, line) else None
             if it:
                 outcomes[o["id"]] = {"op": "add", "item": it["id"]}
             continue
         rows = memory.match(bot, text)
         outcomes[o["id"]] = {"op": "forget"}
-        if not rows:
+        if not rows and o["id"] not in cancelled.values():
             yield {"op": "note", "action": "skipped", "summary": f"No lesson matches “{text[:200]}”.",
                    "why": "You asked to forget it in chat.", "evidence": {"item": o["id"]}}
         for i in rows:
-            yield {"op": "lesson_remove", "id": i["id"], "reason": "forgotten",
-                   "why": "You asked to forget this in chat.", "evidence": {"item": o["id"]}}
-    _archive(bot, [o["id"] for o in said], outcomes)
+            applied(o, (yield {"op": "lesson_remove", "id": i["id"], "reason": "forgotten",
+                               "why": "You asked to forget this in chat.", "evidence": {"item": o["id"]}}))
+    yield from _settle(bot, said, outcomes, failed_apply)
 
     gap_obs = [o for o in pend if o not in said and (o.get("trust") == "gap" or o.get("kind") == "gap")]
     real = [o for o in pend if o not in said and o not in gap_obs]
@@ -439,9 +496,10 @@ def lessons(bot, ctx):
     def add(o, claim=None):
         """The entry's claim as a lesson (or the equal existing one, credited). False when nothing was stored."""
         claim = claim if claim is not None else o.get("claim")
-        old = str(o.get("contradicts") or "")
-        if old in item_claims and memory.normalise(claim) == item_claims[old]:
-            return True  # the "corrected rule" is the contradicted lesson's own text: never a bump of it
+        if memory.normalise(claim) in {item_claims[c] for c in contra_items}:
+            # The text of a lesson this batch contradicts (the entry's own "corrected rule", or any other entry's
+            # claim): adding it would find that lesson and raise its count. Never a bump of it.
+            return True
         if not str(claim or "").strip():
             return False
         before = {i["id"] for i in memory.items(bot)}
@@ -450,7 +508,7 @@ def lessons(bot, ctx):
                       "trust": "user" if user else (o.get("trust") or "outcome"), "via": "session" if user else "",
                       "session": o.get("session") or "", "about": o.get("about") or [], "counted": counts(o),
                       **_because(o)}
-        it = memory.find(bot, claim) if line.get("ok") else None
+        it = memory.find(bot, claim) if applied(o, line) else None
         if it is None:
             return False
         op = "add" if it["id"] not in before else "bump" if counts(o) else "confirm"
@@ -475,7 +533,7 @@ def lessons(bot, ctx):
             line, op = (yield {"op": "lesson_bump", **ref}), "bump"
         else:
             line, op = (yield {"op": "lesson_confirm", **ref}), "confirm"
-        if not line.get("ok"):
+        if not applied(o, line):
             return False
         outcomes[o["id"]] = {"op": op, "item": item_id}
         return True
@@ -580,10 +638,10 @@ def lessons(bot, ctx):
             oc["resolution"] = res["resolution"]
         outcomes[o["id"]] = oc
         skill = (in_skills.get(old_id) or {}).get("skill")
-        if skill and user and new and not any(c["item"] == new and c["skill"] == skill for c in ctx["corrections"]):
-            # The old rule lives in a skill: distill rewrites that section from the corrected lesson.
-            ctx["corrections"].append({"item": new, "skill": skill, "old": in_skills[old_id].get("claim", ""),
-                                       "quote": quote or ""})
+        if skill and user and new:
+            # The old rule lives in a skill: distill rewrites that section from the corrected lesson. Kept on disk
+            # (one entry per lesson and skill) until that skill was updated: this entry is archived below.
+            distill.remember_correction(bot, new, skill, in_skills[old_id].get("claim", ""), quote or "")
     for o in confirmed:
         if str(o["confirms"]) not in contra_items:  # never a bump of a lesson this batch contradicts
             yield from credit(o, str(o["confirms"]))
@@ -612,4 +670,4 @@ def lessons(bot, ctx):
     for oc in outcomes.values():
         while oc.get("gap") in renamed:
             oc["gap"] = renamed[oc["gap"]]
-    _archive(bot, [o["id"] for o in pend if o not in said], outcomes)
+    yield from _settle(bot, [o for o in pend if o not in said], outcomes, failed_apply)

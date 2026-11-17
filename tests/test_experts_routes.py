@@ -249,7 +249,7 @@ def _run_dir(monkeypatch, tmp_path, roster):
 
 
 def test_consult_only_an_expert_offered_to_the_session(client, expert, monkeypatch, tmp_path):
-    monkeypatch.setattr(consult, "consult", lambda bot, q, c="", caller=None: {
+    monkeypatch.setattr(consult, "consult", lambda bot, q, c="", caller=None, **k: {
         "id": "c1", "answer": "A", "refs": [], "used": [], "unsure": False})
     cases = [([{"id": "someone-else", "name": "Canvas Expert"}], 403),
              ([{"id": BID, "name": "Renamed"}], 200),

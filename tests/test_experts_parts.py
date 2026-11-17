@@ -29,8 +29,13 @@ def _imports(tree) -> set:
             out |= {a.name[len(PKG) + 1:].split(".")[0] for a in node.names if a.name.startswith(PKG + ".")}
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
-            if node.level:  # relative: `from . import x`, `from .x import y`
-                out |= {mod.split(".")[0]} if mod else {a.name for a in node.names}
+            if node.level:  # relative: `from . import x`, `from .x import y`, `from ..experts import x`
+                base = PKG.split(".")[:len(PKG.split(".")) - node.level + 1]
+                full = ".".join(base + ([mod] if mod else []))
+                if full == PKG:
+                    out |= {a.name for a in node.names}
+                elif full.startswith(PKG + "."):
+                    out.add(full[len(PKG) + 1:].split(".")[0])
             elif mod == PKG:
                 out |= {a.name for a in node.names}
             elif mod.startswith(PKG + "."):
@@ -59,4 +64,9 @@ def test_the_checker_sees_late_relative_and_named_imports():
     src = ("def f():\n    from fused_render.experts import chat, store\n    from . import tidy\n"
            "    import fused_render.experts.gaps as g\n    from fused_render.experts.capture import x\n"
            "    importlib.import_module('fused_render.experts.consult')\n")
-    assert _imports(ast.parse(src)) == {"chat", "store", "tidy", "gaps", "capture", "consult"}
+    want = {"chat", "store", "tidy", "gaps", "capture", "consult"}
+    assert _imports(ast.parse(src)) == want
+    # A parent-relative import names the same modules: resolved against the package, never recorded as "experts".
+    src += "    from ..experts import chat\n    from ..experts.capture import y\n    from .. import other\n"
+    assert _imports(ast.parse(src)) == want
+    assert _imports(ast.parse("from ..experts import distill\n")) == {"distill"}

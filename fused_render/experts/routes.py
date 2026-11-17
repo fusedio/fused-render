@@ -250,11 +250,19 @@ def experts_consult(body: dict = Body(...), x_fused: str | None = Header(default
     ok, reason = _mod("model").available(bot)
     if not ok:
         raise _Unavailable(reason or "no engine is available for this expert")
-    if run_id and not _mod("model").fenced(bot) and pre_allowed_for_run(run_id):
+    pre_allowed = bool(run_id) and pre_allowed_for_run(run_id)
+    if pre_allowed and not _mod("model").fenced(bot):
         # The session pre-allowed consults when every expert was fenced; this one no longer is (its engine is
         # Codex now). A consult with no card would let it read outside its folders: refuse instead.
         return _error(UNFENCED_NOW, 403)
-    res = _mod("consult").consult(bot, question.strip(), context, caller_for_run(run_id))
+    consult = _mod("consult")
+    try:
+        # `fenced_only`: the consult resolves its engine once and runs on exactly that one, so the check above
+        # cannot be passed on one engine and the run made on another (a settings change while it waits).
+        res = consult.consult(bot, question.strip(), context, caller_for_run(run_id),
+                              **({"fenced_only": True} if pre_allowed else {}))
+    except getattr(consult, "Unfenced", ()):
+        return _error(UNFENCED_NOW, 403)
     return {k: res.get(k) for k in ("id", "answer", "refs", "used", "unsure")}
 
 

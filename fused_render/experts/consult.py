@@ -30,6 +30,11 @@ CONSULTS_FILE = "consults.jsonl"
 CALLER_KEYS = ("run_id", "session_id", "backend", "target", "canvas")
 
 
+class Unfenced(RuntimeError):
+    """A consult that must run fenced (`fenced_only`) would run on an engine that reads outside the expert's
+    folders."""
+
+
 def _path(bot) -> str:
     return os.path.join(store.expert_dir(bot), CONSULTS_FILE)
 
@@ -49,15 +54,37 @@ def inbox_write(bot, kind, claim, **fields) -> dict:
     return obs
 
 
-def consult(bot, question, context="", caller=None) -> dict:
+def inbox_waiting(bot, kind) -> list:
+    """The inbox entries of `kind` Learn has not handled yet (chat asks: is a `taught` lesson still waiting?)."""
+    path = os.path.join(store.expert_dir(bot), "observations", "pending")
+    try:
+        names = sorted(n for n in os.listdir(path) if n.endswith(".json"))
+    except OSError:
+        return []
+    rows = [store.read_json(os.path.join(path, n), None) for n in names]
+    return [o for o in rows if isinstance(o, dict) and o.get("id") and o.get("kind") == kind]
+
+
+def consult(bot, question, context="", caller=None, *, fenced_only=False) -> dict:
     """{"id","answer","refs","used","unsure"}. Raises model.Unavailable when no engine is on; a model failure
-    raises (RuntimeError) and is not logged as a consult."""
+    raises (RuntimeError) and is not logged as a consult.
+
+    The engine is resolved ONCE, here, before the wait for a slot, and the run uses exactly that
+    `(provider, model)`: a change of the expert's engine while the consult waits cannot move it to another one.
+    `fenced_only` (the calling session pre-allowed consults, so no card is shown): raises `Unfenced` when that
+    engine is not fenced by `readtools` (Codex), or when it cannot be resolved."""
     question = str(question or "").strip()
     context = str(context or "")
     who = _caller(caller)
     ok, reason = model.available(bot)
     if not ok:
         raise model.Unavailable(reason)
+    try:
+        pinned = model.provider_for(bot)
+    except Exception:  # noqa: BLE001 — the run resolves it and fails as before; never unfenced, see below
+        pinned = None
+    if fenced_only and not (pinned and model.provider_fenced(pinned[0])):
+        raise Unfenced("this expert's reads are not limited to its folders on its current engine")
     extra = []
     target = who.get("target")
     if isinstance(target, str):
@@ -72,7 +99,8 @@ def consult(bot, question, context="", caller=None) -> dict:
         raise RuntimeError(BUSY)
     try:
         stats: dict = {}
-        out = engine.answer(bot, question, profile="consult", context=context, extra_roots=extra, stats=stats)
+        out = engine.answer(bot, question, profile="consult", context=context, extra_roots=extra, stats=stats,
+                            **({"provider": pinned} if pinned else {}))
     finally:
         _SLOTS.release()
     ms = int((time.monotonic() - t0) * 1000)
