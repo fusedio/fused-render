@@ -504,11 +504,23 @@ button.tasks-caret,
    the reply give; every mark and fact keeps its width. */
 .hint-panel.is-row {
   box-sizing: border-box;
-  /* The window's own ground (claude-rail.css `.claude-rail-peek-card`), not
-     the tooltip's lighter popover tone: the row stands over that window's
-     head and reads as one of its lines (Akshil, 2026-11-16: "make bg colour
-     same as header"). */
-  background: var(--bg);
+  /* THE TASKS ROW UNDER THE POINTER, IN THE APP'S OWN POPOVER DRESS (Akshil,
+     2026-11-17: "hard to read because of bg/contrast" → "check other places
+     in our platform, we don't want it to change too much from current
+     design, just make sure it is visible enough, doesn't mix in with the
+     bg"). On the window's own ground (2026-11-16) the row sank into the
+     head and the chat it lands on. Nothing new is invented for it:
+       ground  `--row-bg-hover` — a Tasks row under the pointer (`.tasks-row
+               :hover`), the composer's surface in the same window;
+       edge    the chat popovers' strong border (composer.css `.c-kebabpop`,
+               `.c-ctxpop`, `.c-selpop`… `--c-border-strong`; the same value
+               at the root is `--nt-card-border-strong`);
+       shadow  those popovers' `0 6px 24px`.
+     (Tried the same day and dropped: dimming the window behind — "feels a
+     bit off" — and a lighter grey ground with a moat — "not good enough".) */
+  background: var(--row-bg-hover);
+  border-color: var(--nt-card-border-strong);
+  box-shadow: 0 6px 24px var(--shadow-md);
   max-width: none;
   padding: 0 12px;
   font-size: 13px;

@@ -817,7 +817,34 @@
   opacity: 1;
   pointer-events: auto;
 }
+/* THE ⋮ IS ONE OF THE ACTS IN A TWO-LINE HEAD (TaskHead `kebabInActs`;
+   Akshil, 2026-11-17: "show the kebab when we show fav and open icon"). It
+   sits in the acts' layer after the door, so the rules above show and hide
+   it; while its menu is open the layer stays, wherever the pointer went. A
+   head with one act alone has no such layer: its ⋮ holds its seat after the
+   slots and shows on the same trigger. */
+.task-head:has(.task-head-kebab [aria-expanded="true"]) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+  opacity: 0;
+  pointer-events: none;
+}
+.task-head:has(.task-head-kebab [aria-expanded="true"]) .task-head-facts > .task-head-facts-layer.is-b {
+  opacity: 1;
+  pointer-events: auto;
+}
+.task-head.is-two-line .task-head-marks > .task-head-kebab {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s ease;
+}
+.task-head.is-two-line:is(.is-hot, :hover, :has(.task-head-kebab :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-marks > .task-head-kebab {
+  opacity: 1;
+  pointer-events: auto;
+}
 @media (hover: none) {
+  .task-head.is-two-line .task-head-marks > .task-head-kebab {
+    opacity: 1;
+    pointer-events: auto;
+  }
   .task-head-facts.has-acts > .task-head-facts-layer.is-a {
     opacity: 0;
     pointer-events: none;

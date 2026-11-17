@@ -312,9 +312,18 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
   it("the stylesheet: one line, only the title and the reply give", () => {
     const panel = rule(".hint-panel.is-row");
     expect(panel).toContain("box-sizing: border-box;");
-    // The rail window's own ground, not the tooltip's lighter popover tone
-    // (2026-11-16: "make bg colour same as header").
-    expect(panel).toContain("background: var(--bg);");
+    // The app's own popover dress, not the window's ground (2026-11-17:
+    // "check other places in our platform … just make sure it is visible
+    // enough, doesn't mix in with the bg"): a hovered Tasks row's ground, the
+    // chat popovers' strong edge and shadow. No dimming of the window behind.
+    expect(panel).toContain("background: var(--row-bg-hover);");
+    expect(panel).not.toContain("background: var(--bg);");
+    expect(panel).toContain("border-color: var(--nt-card-border-strong);");
+    expect(panel).toContain("box-shadow: 0 6px 24px var(--shadow-md);");
+    expect(TASKS_CSS).not.toContain("is-spot");
+    // The same recipe the chat's popovers wear.
+    const composer = readFileSync(join(import.meta.dir, "../../apps/claude/styles/composer.css"), "utf8");
+    expect(composer).toMatch(/\.c-kebabpop \{[^}]*border: 1px solid var\(--c-border-strong\);[^}]*box-shadow: 0 6px 24px var\(--c-shadow\);/);
     expect(panel).toContain("max-width: none;");
     expect(panel).toContain("white-space: nowrap;");
     expect(rule(".hint-row")).toContain("display: flex;");

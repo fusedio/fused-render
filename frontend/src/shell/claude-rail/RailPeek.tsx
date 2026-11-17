@@ -1731,11 +1731,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     }
                   : null
               }
-              // THE ⋮ COMES WITH THE CLICK (Akshil, 2026-11-16: "kebab menu not
-              // shown on hover, only when we click"): a hover preview has
-              // none; a card the reader pressed (temp, pinned, the favourite's
-              // window opened by a press) has it.
-              kebab={head.t.session_id && shownKey && (pinned || held) ? kebabFor(head) : null}
+              // THE ⋮ COMES WITH THE STAR AND THE DOOR (Akshil, 2026-11-17:
+              // "show the kebab when we show fav and open icon"): every card
+              // has it — hover preview, temp, pinned — and the head shows it
+              // with its other acts (TaskHead, the acts' layer).
+              kebab={head.t.session_id && shownKey ? kebabFor(head) : null}
             />
             {askedKey.current === head.t.key && archiveAsk.node}
           </div>
