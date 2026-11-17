@@ -84,6 +84,7 @@ export function useFileOps({
   pendingSelectRef,
   ownsBar,
   folderMenuRef,
+  readOnly = false,
 }: {
   base: string;
   clipboard: Clipboard | null;
@@ -105,6 +106,15 @@ export function useFileOps({
   // returned the groups it composes from; read at click time, never captured.
   // Absent, the bar falls back to this hook's groups alone.
   folderMenuRef?: React.MutableRefObject<(() => MenuEntry[]) | null>;
+  /**
+   * A folder nothing here may change — an `s3://` prefix (the bucket is
+   * public and read-only). The menus keep only what reads (Open, Open in New
+   * Tab, Copy Path, Refresh), and every write this hook returns is a no-op,
+   * so the listing's own shortcuts (⌘⌫, ⌘V, ⌘D, rename, new folder, undo)
+   * reach nothing either. Nothing local applies (Reveal in Finder, Open
+   * With, Claude), so those go too.
+   */
+  readOnly?: boolean;
 }) {
   // Whether a folder row's menu offers Share (the sheet) or the plain
   // "Export App File" — see share-app-flag.ts; default off. Read here, at the
@@ -822,6 +832,23 @@ export function useFileOps({
   const rowMenu = (row: RowCtx, rows: RowCtx[]): MenuEntry[] => {
     const dir = targetDirOf(row);
     const n = rows.length;
+    if (readOnly) {
+      if (n > 1) {
+        return [
+          {
+            label: `Copy ${n} Paths`,
+            icon: MenuIcons.copyPath,
+            onClick: () => doCopyPaths(rows.map((r) => r.path)),
+          },
+        ];
+      }
+      return [
+        { label: "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
+        { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(row.path) },
+        "separator",
+        { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
+      ];
+    }
     if (n > 1) {
       return [
         { label: `Delete ${n} items`, icon: MenuIcons.trash, onClick: () => doTrash(rows) },
@@ -919,8 +946,16 @@ export function useFileOps({
   // and mount roots never get it. Rebuilt per call, which is how Paste's
   // enabled state tracks the clipboard.
   const folderGroups = (): Pick<FolderMenuGroups, "create" | "folder" | "open" | "copy"> => {
-    loadRenameGuard(); // a failed mount-time read gets another go on every open
     const dir = normDir(base);
+    if (readOnly) {
+      return {
+        create: [],
+        folder: [{ label: "Refresh", icon: MenuIcons.refresh, onClick: refetch }],
+        open: [{ label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(dir) }],
+        copy: [{ label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(dir) }],
+      };
+    }
+    loadRenameGuard(); // a failed mount-time read gets another go on every open
     return {
       create: [
         { label: "New Folder…", icon: MenuIcons.newFolder, onClick: () => startNewFolder(base) },
@@ -983,7 +1018,9 @@ export function useFileOps({
       x,
       y,
       items: crumb
-        ? crumbMenu({
+        ? readOnly
+          ? [{ label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(crumb) }]
+          : crumbMenu({
             onReveal: () => doReveal(crumb),
             onOpenInNewTab: () => doOpenInNewTab(crumb),
           })
@@ -993,6 +1030,29 @@ export function useFileOps({
     if (!ownsBar) return;
     return publishTopbarMenu((x, y, crumb) => openBarMenuRef.current(x, y, crumb));
   }, [ownsBar]);
+
+  if (readOnly) {
+    // Every write is a no-op (see `readOnly`): the shortcuts and drops that
+    // call these find nothing to do.
+    const none = () => {};
+    return {
+      menu,
+      setMenu,
+      dialog,
+      setDialog,
+      doPaste: none as unknown as typeof doPaste,
+      doMove: none as unknown as typeof doMove,
+      doUndo: none as unknown as typeof doUndo,
+      doRedo: none as unknown as typeof doRedo,
+      doDuplicate: none as unknown as typeof doDuplicate,
+      doTrash: none as unknown as typeof doTrash,
+      startRename: none as unknown as typeof startRename,
+      startRenameFolder: none as unknown as typeof startRenameFolder,
+      startNewFolder: none as unknown as typeof startNewFolder,
+      rowMenu,
+      folderGroups,
+    };
+  }
 
   return {
     menu,

@@ -266,13 +266,16 @@ export function remoteFetchCancel(id: string): Promise<{ ok: boolean }> {
 }
 
 /** Ranked search over the `fused-asset` index. Flag off or no store answers
- *  200 `{ready:false, hits:[]}`, not an error. */
+ *  200 `{ready:false, hits:[]}`, not an error. `under` (an `s3://` folder
+ *  address) scopes it to that folder's subtree — the S3 folder view's own
+ *  search box; hit keys stay whole bucket keys. */
 export function remoteRank(
   query: string,
-  opts: { signal?: AbortSignal; limit?: number; ranked?: boolean } = {},
+  opts: { signal?: AbortSignal; limit?: number; ranked?: boolean; under?: string } = {},
 ): Promise<RemoteRankResult> {
   const params = new URLSearchParams({ q: query });
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
   if (opts.ranked !== undefined) params.set("ranked", String(opts.ranked));
+  if (opts.under) params.set("under", opts.under);
   return wrap(getJson<RemoteRankResult>("/api/remote-index/rank?" + params.toString(), { signal: opts.signal }));
 }

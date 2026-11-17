@@ -6,7 +6,10 @@
 // ordinary BreadcrumbBar, which draws S3 crumbs for a remote location.
 //
 // Three bodies, by the server's stat:
-//   - a prefix (`kind: "dir"`) → a read-only, one-level table (RemoteListing);
+//   - a prefix (`kind: "dir"`) → the explorer's own folder view (Listing), the
+//     same component a local folder gets: it lists, searches, completes and
+//     resolves typed addresses from the bucket index (listing/source.ts), with
+//     every write and the side pane switched off (Listing's `remote`);
 //   - a cached file → the EXISTING viewer (Preview) on the cached local copy,
 //     with `remoteUrl` set so the viewer keeps every local-file affordance
 //     (rename, delete, reveal, share, splits, sidebar, app rows) out of reach
@@ -22,8 +25,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@platform/shadcn/ui/button";
 import { canonFsPath } from "@platform/lib/path-url";
-import { IS_PREVIEW, navHintIsDir, navigate, navigateUrl, spaLinkProps } from "@platform/lib/router";
-import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
+import { IS_PREVIEW, navHintIsDir, navigate, navigateUrl } from "@platform/lib/router";
+import { basename, formatSize } from "@platform/lib/format";
 import { useDocumentTitle, useNavReach } from "@platform/lib/hooks";
 import { goBack } from "@platform/lib/nav-history";
 import { statPath, type StatResult } from "@platform/lib/api";
@@ -33,14 +36,12 @@ import {
   remoteFetch,
   remoteFetchCancel,
   remoteFetchStatus,
-  remoteList,
   remoteStat,
-  type RemoteEntry,
   type RemoteStat,
 } from "@platform/lib/remote";
 import { notify } from "@platform/lib/notifications";
-import { iconForEntry } from "@platform/ui/FileIcons";
 import { BreadcrumbBar } from "@apps/explorer/Breadcrumb";
+import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
 
@@ -171,124 +172,6 @@ function RemoteErrorBody({ error, onRetry }: { error: RemoteApiError; onRetry?: 
                 Retry
               </Button>
             )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// -- folder (prefix) listing --------------------------------------------------
-
-function RemoteListing({ url }: { url: string }) {
-  const [entries, setEntries] = useState<RemoteEntry[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<RemoteApiError | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const ctl = useRef<AbortController | null>(null);
-
-  const load = (from: string | null) => {
-    ctl.current?.abort();
-    const c = new AbortController();
-    ctl.current = c;
-    setLoading(true);
-    setError(null);
-    retryWhileIndexLoads(() => remoteList(asPrefix(url), { cursor: from, signal: c.signal }), c.signal).then(
-      (r) => {
-        if (c.signal.aborted) return;
-        setEntries((prev) => (from ? [...prev, ...r.entries] : r.entries));
-        setCursor(r.cursor);
-        setLoading(false);
-      },
-      (err) => {
-        if (c.signal.aborted || isAbort(err)) return;
-        setError(asRemoteError(err));
-        setLoading(false);
-      },
-    );
-  };
-
-  useEffect(() => {
-    setEntries([]);
-    setCursor(null);
-    load(null);
-    return () => ctl.current?.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, attempt]);
-
-  if (error && entries.length === 0) {
-    return <RemoteErrorBody error={error} onRetry={() => setAttempt((n) => n + 1)} />;
-  }
-  return (
-    <div className="listing">
-      <div className="listing-scroll">
-        <table className="listing-table">
-          <thead className={entries.length === 0 ? "listing-head-empty" : undefined}>
-            <tr>
-              <th className="col-name">
-                <span className="col-label">Name</span>
-              </th>
-              <th className="col-size">
-                <span className="col-label">Size</span>
-              </th>
-              <th className="col-mtime">
-                <span className="col-label">Modified</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => {
-              const link = spaLinkProps(entry.url, { isDir: entry.is_dir });
-              return (
-                <tr
-                  key={entry.url}
-                  className="row"
-                  onClick={() => navigate(entry.url, { isDir: entry.is_dir })}
-                >
-                  <td className="name">
-                    <a
-                      className="row-handle"
-                      href={link.href}
-                      onClick={(e) => {
-                        // The row's own click would navigate a second time.
-                        e.stopPropagation();
-                        link.onClick(e);
-                      }}
-                      style={{ color: "inherit", textDecoration: "none", cursor: "pointer" }}
-                    >
-                      <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
-                      <span className="name-text">{entry.name}</span>
-                    </a>
-                  </td>
-                  <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
-                  <td className="mtime" title={formatMtimeFull(entry.mtime)}>
-                    {formatMtime(entry.mtime)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {loading && entries.length === 0 && (
-          <div className="preview-resolving">
-            <span className="mode-icon-spinner" />
-            Listing…
-          </div>
-        )}
-        {(cursor || (error && entries.length > 0)) && (
-          <div className="listing-truncated">
-            <div className="status-message">
-              {error ? `Could not load more: ${error.message}` : `${entries.length} shown.`}
-              <button
-                type="button"
-                className="listing-load-more"
-                disabled={loading}
-                onClick={() => load(cursor)}
-              >
-                {loading ? "Loading…" : error ? "Retry" : "Load more"}
-              </button>
-            </div>
           </div>
         )}
       </div>
@@ -660,7 +543,9 @@ export function RemoteView({ location, home }: { location: string; home: string 
   } else if (state.status === "error") {
     content = <RemoteErrorBody error={state.error} onRetry={retry} />;
   } else if (state.stat.kind === "dir") {
-    content = <RemoteListing url={state.stat.url} />;
+    // `location`, not the stat's url: the folder is addressed exactly as the
+    // address bar spells it, so its rows, crumbs and saved sort agree.
+    content = <Listing fsPath={location} barChrome />;
   } else if (state.stat.cached && state.stat.path) {
     content = (
       <RemoteCachedFile

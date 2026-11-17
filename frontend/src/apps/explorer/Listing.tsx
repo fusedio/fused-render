@@ -124,7 +124,7 @@ import { modeTitle } from "@platform/lib/mode-name";
 import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
-import { canonFsPath } from "@platform/lib/path-url";
+import { canonFsPath, isRemoteLocation } from "@platform/lib/path-url";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { unavailableReason } from "@platform/lib/mode-visibility";
@@ -206,6 +206,15 @@ export default function Listing({
   // selection writes reach a mounted Listing even though neither writer is
   // Listing's own state, and Listing's own `backToLive` reaches a mounted
   // Preview the same way.
+  // An `s3://` folder (RemoteView.tsx mounts this same view for a bucket
+  // prefix): the rows, the search, the completion and the typed-address check
+  // come from the bucket index (listing/source.ts), so everything about
+  // browsing it is this component unchanged. What it gives up is what a
+  // read-only bucket with nothing on this disk cannot have — every write
+  // (useFileOps `readOnly`, no move-drag), the side pane and its companions
+  // (Claude, Git, MCP — `paneEnabled`), the app rows and the index-scan
+  // caveat, each gated on this below.
+  const remote = isRemoteLocation(fsPath);
   const urlVersion = useUrlVersion();
   const { resolvedSnapshot, backToLive } = useSnapshotForFolder(fsPath, urlVersion);
   // Under an active snapshot whose app folder actually ENCLOSES this folder,
@@ -324,7 +333,8 @@ export default function Listing({
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
   // so an idle listing never polls.
-  const indexScan = useIndexStatus(searching, indexNonce);
+  // Never for an S3 folder: the local index's scans say nothing about it.
+  const indexScan = useIndexStatus(searching && !remote, indexNonce);
 
   // Search hits vs. the folder's own rows (listing/search-body-mode) — the
   // one place this choice is made, computed once here (not re-derived per
@@ -424,7 +434,10 @@ export default function Listing({
   // ROWS changes: a pane's listing still selects, arrow-keys, and opens on a
   // single click/Enter — opening a file in a pane replaces that pane's
   // document, which is the point.
-  const paneEnabled = !IS_SNAPSHOT && !IS_PANEL_PANE;
+  // …and an S3 folder (`remote`, above) has no pane at all: every companion
+  // is about a folder on this disk, and a selected bucket object is opened,
+  // never previewed beside the list (it would have to be downloaded first).
+  const paneEnabled = !IS_SNAPSHOT && !IS_PANEL_PANE && !remote;
   // Drag-to-close hands off to the same `_side=off` the pane header's close
   // button writes (`closeSide`, below) — one vocabulary for "the pane is shut",
   // whichever gesture said it. A closure, called only from pointer events, so
@@ -733,7 +746,15 @@ export default function Listing({
     startNewFolder,
     rowMenu,
     folderGroups,
-  } = useFileOps({ base, clipboard, refetch, pendingSelectRef, ownsBar: ownsBarChrome, folderMenuRef });
+  } = useFileOps({
+    base,
+    clipboard,
+    refetch,
+    pendingSelectRef,
+    ownsBar: ownsBarChrome,
+    folderMenuRef,
+    readOnly: remote,
+  });
 
   overlayOpenRef.current = menu !== null || dialog !== null;
   // Also publish this view's overlay state to the shared registry (lib/
@@ -959,6 +980,8 @@ export default function Listing({
   useEffect(() => {
     let alive = true;
     setAppEntryPath(null);
+    // A bucket prefix is never an app folder on this machine.
+    if (remote) return;
     // `opened`: a folder visit is an app open for git auto-sync (the listing
     // never renders the entry page, so /render's trigger cannot fire).
     getAppEntry(base, { opened: true }).then(
@@ -970,7 +993,7 @@ export default function Listing({
     return () => {
       alive = false;
     };
-  }, [base]);
+  }, [base, remote]);
 
   // "Open as project" itself — desk add, then `/apps/<folder>` — is
   // useAppActionRows' row now, in the folder menu, gated on this answer.
@@ -1014,7 +1037,7 @@ export default function Listing({
     // hopping to the folder's app entry (the same stamp the file preview's row
     // writes). Only where this listing owns the bar: a panel pane or a snapshot
     // is not a page of its own to open.
-    onOpenEmbed: ownsBarChrome
+    onOpenEmbed: ownsBarChrome && !remote
       ? () => {
           const search = location.search;
           const stamped = new URLSearchParams(search).has("_mode")
@@ -1033,6 +1056,9 @@ export default function Listing({
   // listing owns the bar — a panel pane already IS a split.
   const buildFolderMenu = (): MenuEntry[] => {
     const own = folderGroups();
+    // An S3 folder: the read-only groups alone — no app rows, no terminal
+    // (there is no directory to open one in), no splits.
+    if (remote) return folderMenu({ folder: own.folder, open: own.open, copy: own.copy });
     return folderMenu({
       app: [...appRows.app, ...appRows.doctor],
       create: own.create,
@@ -1323,7 +1349,9 @@ export default function Listing({
     navRows,
     selectedPaths: sel.paths,
     selectPaths,
-    startMoveDrag,
+    // Nothing in a bucket can be moved: a press that would drag sweeps nothing
+    // and moves nothing (the click, the selection and the sweep are unchanged).
+    startMoveDrag: remote ? () => {} : startMoveDrag,
     suppressPressUntilRef,
   });
 

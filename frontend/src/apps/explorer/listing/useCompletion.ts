@@ -6,7 +6,7 @@
 // client-side instead of re-listing, and a trailing "/" (a new directory)
 // is what actually refreshes it, same as the spec asks for.
 import { useEffect, useState } from "react";
-import { listDir } from "@platform/lib/api";
+import { listFolder as listDir } from "@apps/explorer/listing/source";
 import { INSTANT_DEBOUNCE_MS } from "@platform/lib/instant-search";
 import {
   applyQueryNotation,
