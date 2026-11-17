@@ -591,10 +591,24 @@ test("a panel or a pane that asks wears the rail window's two lines, keeping its
   const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
   expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\) \.task-head-crumb \{\s*flex: 0 0 auto;/);
   expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\)\[data-fit="7"\] \.task-head-crumb > :is\(\.task-head-place, \.task-head-where\) \{\s*flex: 0 1 auto;\s*max-width: 96px;/);
-  // The tools' words go first (a class, not a rung of `data-fit`), and the
-  // acts start at the facts' left edge so no hole follows the last tag.
+  // The tools' words go first (a class, not a rung of `data-fit`).
   expect(css).toMatch(/\.task-head\.is-seats-tight \.task-head-seats \.c-anncta \{\s*--c-annlbl: none;/);
-  expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\) \.task-head-facts-layer\.is-b \{\s*justify-self: start;/);
+});
+
+test("the paired facts box is as wide as the pair it shows; the other pair is out of flow (2026-11-17)", async () => {
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  // At rest the acts are out of flow (still in the tab order), so the box is
+  // the count and the time; under the pointer they trade places.
+  expect(css).toMatch(/\.task-head-facts\.has-acts > \.task-head-facts-layer\.is-b \{\s*position: absolute;/);
+  const hot =
+    '.task-head:is(.is-hot, :hover, :has(.task-head-facts-layer.is-b :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-facts.has-acts > .task-head-facts-layer';
+  // The facts go at once — never faded out of flow over the acts.
+  expect(css).toContain(`${hot}.is-a {\n  position: absolute;\n  right: 0;\n  visibility: hidden;\n  transition: none;\n}`);
+  expect(css).toContain(`${hot}.is-b {\n  position: static;`);
+  // The row is as tall at rest as under the pointer.
+  expect(css).toMatch(/\.task-head-facts\.has-acts \{\s*position: relative;[^}]*min-height: 22px;/);
+  // The old left-aligned pair (a hole before the ⋮) is gone.
+  expect(css).not.toContain(".task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-b {\n  justify-self: start;");
 });
 
 test("reveal: a rail window says so in its class; a panel or a pane does not", () => {

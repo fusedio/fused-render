@@ -839,15 +839,37 @@ export function taskHeadNeed(head: HTMLElement): number {
       // What opens only under the pointer is charged the same either way.
       if (level < TASK_HEAD_FACTS_LEVEL) rowWants += titleWants(row, TASK_HEAD_TITLE_MAX);
       else if (level === TASK_HEAD_FACTS_LEVEL && isWindow) rowWants += titleWants(row, TASK_HEAD_TITLE_ROOM);
-      // A RAIL WINDOW IS THE SAME WIDTH AT REST AND UNDER THE POINTER
-      // (task-head.css, "IN A RAIL WINDOW NOTHING MOVES", 2026-11-16): every
-      // seat holds its box, so what is measured is what it needs. A panel's
-      // folded time slot still opens under the pointer and is charged for it.
+      // A RAIL WINDOW'S SEATS HOLD THEIR BOXES AT REST AND UNDER THE POINTER
+      // (task-head.css, "IN A RAIL WINDOW NOTHING MOVES", 2026-11-16), so
+      // what is measured is what it needs. A panel's folded time slot still
+      // opens under the pointer and is charged for it. The paired facts box
+      // — a window's or a panel's — wears the pair it shows (2026-11-17) and
+      // is charged for the wider one either way.
+      rowWants += factsSpare(row);
       if (!isWindow && level >= TASK_HEAD_FACTS_LEVEL) rowWants += hoverDelta(row, ".task-head-timeslot");
     }
     need = Math.max(need, rowWants);
   }
   return need + pad;
+}
+
+/**
+ * THE FACTS BOX IS CHARGED FOR ITS WIDER PAIR (task-head.css, "THE BOX IS AS
+ * WIDE AS THE PAIR IT SHOWS"): it is the count and the time at rest and
+ * star · Open · ⋮ under the pointer, two different widths. Measured as it
+ * stands, a read at rest and a read mid-hover would disagree and a tag could
+ * fold on the way in and come back on the way out. What the wider pair needs
+ * past the box as it is now goes on, in both states.
+ */
+function factsSpare(row: HTMLElement): number {
+  const box = row.querySelector<HTMLElement>(".task-head-facts.has-acts");
+  if (!box) return 0;
+  const now = box.getBoundingClientRect().width;
+  let widest = now;
+  for (const layer of Array.from(box.children) as HTMLElement[]) {
+    widest = Math.max(widest, layer.getBoundingClientRect().width);
+  }
+  return widest - now;
 }
 
 /** The b control a folded fact slot shows while the head is pointed at: one glyph. */
