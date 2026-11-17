@@ -46,13 +46,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fused_render.bots import paths as _bpaths
-
 from fused_render.compute.app_mcp import (  # noqa: F401
     AppManifestError,
     _run_app_tool,
     build_app_tool_spec,
     load_app_manifest,
 )
+from fused_render.compute.mcp_params import ParamSpec
 
 logger = logging.getLogger(__name__)
 
