@@ -478,10 +478,16 @@ def _run(bot, force):
     except Exception:  # noqa: BLE001 — a failed tidy never undoes the run
         logger.warning("expert %s: tidying failed", bot.id, exc_info=True)
         tidied = {"deleted": [], "merged": [], "promoting": [], "over_limit": []}
+    # Skill pressure: a nearly full skill gets ONE reorganise proposal (no model call decides it).
+    try:
+        reorganise = tidymod.skill_pressure(bot)
+    except Exception:  # noqa: BLE001
+        logger.warning("expert %s: skill pressure check failed", bot.id, exc_info=True)
+        reorganise = None
     out = _result(True, added, bumped, ignored)
     out.update(contradicted=list(dict.fromkeys(contradicted)), gaps=touched, researched=researched, proposed=proposed,
-               tidied=tidied)
-    if (researched or touched) and not proposed and not tidied["promoting"]:
+               tidied=tidied, reorganise=reorganise)
+    if (researched or touched) and not proposed and not tidied["promoting"] and not reorganise:
         # A gap research could not answer may now be asked (the scheduler's cards.tick would, later).
         try:
             from fused_render.experts import cards

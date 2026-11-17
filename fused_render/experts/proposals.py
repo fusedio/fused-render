@@ -1,28 +1,35 @@
 """Skill proposals (docs/experts.md §4 `proposals.py`).
 
 Lessons seen often enough become a proposed skill change: one `model.text`
-call drafts it (adding to an existing skill is preferred) and the draft is
+call drafts it (changing an existing skill is preferred) and the draft is
 saved as "ready" for an approval card. Only `approve` writes a skill. A
 proposal never runs the quality gate (`gate.py` is the Checks tab's, run by
 the user); `score_before` / `score_after` stay on the record, always None.
 
-A proposal PATCHES a skill; it never rewrites one. For an update the model
-writes only the new material (`heading`, `section`, extra `triggers`); code
-builds the new body deterministically: the existing body unchanged with
-`\n\n## <heading>\n\n<section>` appended (or, when an earlier proposal
-added a section with that heading, that section's content replaced), and the
-new trigger words appended to the existing trigger list. Nothing is ever
-truncated: a patch that would not fit the limits `Bot.skill_save` enforces
-becomes a separate new skill, and one that does not fit even there fails.
-`approve` backs the skill file up, writes, reads the skill back and restores
-the backup byte for byte when what was stored is not what was intended.
+A proposal EDITS a skill by section; it never rewrites one. A skill body is a
+preamble (the text before the first `## ` heading) and sections (`## Heading`
++ its content up to the next `## ` heading or the end); `parse_sections` /
+`serialise` split and rejoin it exactly. The model answers a list of section
+operations on ONE skill (add / replace / remove / move, plus trigger words to
+add or remove) and never returns the whole skill; code applies them
+(`apply_ops`), strictly: an operation naming no existing section is dropped
+and recorded, and every section no operation names stays byte for byte as it
+was. Code also computes warnings from old vs new (a section removed, code
+blocks lost, a large shrink, sections moved to a new skill) for the card.
+
+Nothing is ever truncated: a result over `Bot.skill_save`'s limits gets one
+retry asking the model to `move` sections out, then falls back to a separate
+new skill for the added material. `approve` backs the skill(s) up, writes,
+reads them back and restores every backup byte for byte when what was stored
+is not what was intended.
 
 `request` is the asynchronous entry point (chat, routes, scheduler): it saves
 the record as "preparing" and marks its lessons `proposed` at once, then one
-daemon thread runs `_draft` (the draft) and turns it
-"ready" (and calls `cards.show`) or "failed" with an `error` (its lessons are
-un-marked). One proposal is prepared per expert at a time. `prepare` is the
-same work done synchronously.
+daemon thread runs `_draft` and turns it "ready" (and calls `cards.show`) or
+"failed" with an `error` (its lessons are un-marked). One proposal is
+prepared per expert at a time. `prepare` is the same work done synchronously.
+`request_reorganise` asks for a change that makes a nearly full skill smaller
+(tidy's skill pressure); it carries no lessons.
 
 Statuses: preparing | ready | shown | approved | rejected | failed. A failed
 approve (the skill could not be saved) is "failed" too, never re-shown.
@@ -49,45 +56,93 @@ PREPARE_STALE_S = 3600
 #: `Bot.skill_save` cuts the trigger line at this many characters. It is a literal inside that method (not an
 #: importable constant), so it is mirrored here; `trigger_cap()` prefers `Bot.SKILL_TRIGGER_CAP` should one appear.
 TRIGGER_CAP = 300
-#: How much of each existing skill's body the draft prompt shows (for choosing where material belongs only).
-EXCERPT_CHARS = 600
 LEARNED_FILE = "learned-sections.json"
 BACKUP_DIR = "skill-backups"
 BACKUPS_KEPT = 20
 DEFAULT_HEADING = "Learned lessons"
 FULL_NOTE = "That skill is full, so this goes into a new skill"
+NO_SECTION = "the draft named no section that exists"
+#: A body that gets more than this much smaller is warned about on the card.
+SHRINK_WARN = 0.25
+OPS = ("add", "replace", "remove", "move")
 
 _PREPARING: set[str] = set()
 _PREPARING_GUARD = threading.Lock()
 
+_OPS_HELP = """How to change a skill: you NEVER return the whole skill. You name its `## ` sections and give operations;
+every section you do not name stays exactly as it is. Operations, applied in order:
+{{"op": "add", "heading": "<new heading>", "section": "<markdown content of the new section>"}}
+{{"op": "replace", "heading": "<an existing heading>", "section": "<the new FULL content of that section>",
+  "new_heading": "<optional: a new heading for it>"}}
+{{"op": "remove", "heading": "<an existing heading>"}}
+{{"op": "move", "headings": ["<existing heading>", ...], "to": {{"title": "<new skill title>",
+  "trigger": "<comma-separated trigger words>"}}}}   (takes those sections out, unchanged, into a new skill)
+Headings must be copied exactly from the skill. `section` is ONLY the markdown under the heading: it must NOT contain
+name, title or trigger lines, the section's own heading, nor the "### name: …" header used in the listing.
+
+Rules:
+- Prefer changing the section that already covers the topic over adding a new one.
+- When a lesson supersedes or contradicts existing text, replace or remove that text.
+- Merge overlapping sections (replace one with the merged content and remove the other).
+- Keep code blocks unless they are wrong.
+- Keep the skill focused and short.
+- Return only the sections you change."""
+
 DRAFT_PROMPT = """You maintain an expert's skills (playbooks). These lessons keep recurring and should become part of
-a skill. PREFER adding them to an existing skill whose subject fits; create a new skill only when none fits.
+a skill. PREFER changing an existing skill whose subject fits; create a new skill only when none fits.
 
 Lessons:
 {lessons}
 
-Existing skills (shown ONLY so you can choose where the lessons belong; never copy or rewrite them):
+{chosen}
+
+Other skills (name | title | trigger | sections):
 {skills}
 
-You never rewrite an existing skill. To add to one, write ONLY the new material as one new section: it is appended
-to the end of that skill and everything already in the skill stays exactly as it is.
+""" + _OPS_HELP + """
 
 Answer with ONLY a JSON object, one of:
-{{"action": "update", "skill": "<existing skill name>", "heading": "<short section heading>",
-  "section": "<markdown for the new section only>", "triggers": ["extra trigger words", ...]}}
+{{"action": "update", "skill": "<existing skill name>", "ops": [...], "triggers_add": ["new trigger words"],
+  "triggers_remove": ["trigger words that no longer fit"], "why": "<one short sentence>"}}
 {{"action": "create", "title": "<skill title>", "trigger": "<comma-separated trigger words>",
-  "body": "<the new skill's markdown body>"}}
+  "body": "<the new skill's markdown body>", "why": "<one short sentence>"}}
+`body` must NOT contain name, title or trigger lines either. `triggers_add` lists only trigger words the skill does
+not have yet (it may be empty)."""
 
-`section` and `body` are ONLY markdown content (steps and advice). They must NOT contain name, title or trigger
-lines, the section heading, nor the "### name: …" header used in the listing above: those go in their own JSON
-fields. `triggers` lists only NEW trigger words the skill does not have yet (it may be empty)."""
+REORGANISE_PROMPT = """You maintain an expert's skills (playbooks). The skill below is nearly full: its body is {size}
+characters and the limit is {cap}. Change it so it is clearly smaller WITHOUT losing what matters: merge overlapping
+sections, remove what is superseded or repeated, or `move` a coherent group of sections into a new skill.
+
+{chosen}
+
+Other skills (name | title | trigger | sections):
+{skills}
+
+""" + _OPS_HELP + """
+
+Answer with ONLY a JSON object:
+{{"action": "update", "skill": "{name}", "ops": [...], "triggers_add": [], "triggers_remove": [],
+  "why": "<one short sentence>"}}"""
+
+RETRY_PROMPT = """The change you proposed to the skill "{name}" does not fit: {why}.
+Nothing may be cut, so give operations, applied AFTER yours, that bring it under the limits: a `move` of a coherent
+group of sections into a new skill (with its own title and trigger words), and/or `triggers_remove` for trigger
+words that no longer fit.
+
+The skill's sections after your change (heading: characters):
+{sizes}
+Its trigger line would be: {trigger}
+
+Answer with ONLY a JSON object: {{"ops": [...], "triggers_remove": [...]}}
+""" + _OPS_HELP
 
 _META_LINE = re.compile(r"^(#+\s*)?(name|title|trigger)\s*:", re.I)
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_LINE = re.compile(r"[^\n]*\n|[^\n]+\Z")
 
 
 class Unfit(ValueError):
-    """The material cannot be saved without cutting it, not even as a new skill."""
+    """The material cannot be saved without cutting it, not even as a new skill (or the draft is unusable)."""
 
 
 # ------------------------------------------------------------------ limits ---
@@ -141,38 +196,67 @@ def _dedupe(words, have=()) -> list:
     return out
 
 
-def _sections(body) -> list:
-    """The `## ` headings of `body` outside fenced code: [(line index, heading text)]."""
-    out, fence = [], None
-    for n, line in enumerate(str(body or "").split("\n")):
-        m = _FENCE.match(line)
-        if fence is None:
-            if m:
-                fence = m.group(1)
-            elif line.startswith("## "):
-                out.append((n, line[3:].strip()))
-        elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and \
-                not line.strip()[len(m.group(1)):].strip():
-            fence = None
+# ---------------------------------------------------------------- sections ---
+def _fence_step(fence, line):
+    """One line of fence tracking: (the fence open after `line`, whether `line` is a `## ` heading)."""
+    bare = line.rstrip("\n").rstrip("\r")
+    m = _FENCE.match(bare)
+    if fence is None:
+        if m:
+            return m.group(1), False
+        return None, bare.startswith("## ")
+    if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and \
+            not bare.strip()[len(m.group(1)):].strip():
+        return None, False
+    return fence, False
+
+
+def parse_sections(body) -> tuple[str, list]:
+    """Split a skill body into its preamble (the text before the first `## ` heading) and its sections
+    `[{"heading": str, "text": str}]`, where `text` is the section verbatim: its `## ` line and everything up to the
+    next `## ` heading or the end. A `## ` line inside fenced code is not a heading.
+    `serialise(*parse_sections(b)) == b` for every string `b`."""
+    pre, secs, fence = [], [], None
+    for line in _LINE.findall(str(body or "")):
+        fence, is_heading = _fence_step(fence, line)
+        if is_heading:
+            secs.append({"heading": line.rstrip("\n").rstrip("\r")[3:].strip(), "text": line})
+        elif secs:
+            secs[-1]["text"] += line
+        else:
+            pre.append(line)
+    return "".join(pre), secs
+
+
+def serialise(preamble, sections) -> str:
+    """The body `parse_sections` split: the preamble and each section's text, joined as they are."""
+    return str(preamble or "") + "".join(s["text"] for s in sections)
+
+
+def _join(preamble, sections) -> str:
+    """Like `serialise`, but a piece that does not end with a newline (the old last section, followed now by another)
+    gets a blank line after it. Pieces that already end with a newline are joined untouched."""
+    out = str(preamble or "")
+    for s in sections:
+        if out and not out.endswith("\n"):
+            out += "\n\n"
+        out += s["text"]
     return out
 
 
 def headings(body) -> list:
     """The `## ` headings of a skill body (outside fenced code), in order."""
-    return [h for _n, h in _sections(body)]
+    return [s["heading"] for s in parse_sections(body)[1]]
 
 
 def fenced_blocks(body) -> int:
     """How many fenced code blocks `body` opens."""
     count, fence = 0, None
-    for line in str(body or "").split("\n"):
-        m = _FENCE.match(line)
-        if fence is None:
-            if m:
-                fence, count = m.group(1), count + 1
-        elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and \
-                not line.strip()[len(m.group(1)):].strip():
-            fence = None
+    for line in _LINE.findall(str(body or "")):
+        was = fence
+        fence, _h = _fence_step(fence, line)
+        if was is None and fence is not None:
+            count += 1
     return count
 
 
@@ -200,10 +284,13 @@ def _clean_heading(heading) -> str:
     return " ".join(first.strip().lstrip("#").split())
 
 
+def _hkey(heading) -> str:
+    return _clean_heading(heading).casefold()
+
+
 def _clean_section(section, heading, title="") -> str:
-    """The new section's markdown: copied metadata lines, a copied "# <skill title>" and a repeated heading
-    dropped, and its own `#` / `##` headings (outside fenced code) demoted to `###` so the section stays one
-    section of the skill."""
+    """A section's markdown from the model: copied metadata lines, a copied "# <skill title>" and a repeated heading
+    dropped, and its own `#` / `##` headings (outside fenced code) demoted to `###` so it stays one section."""
     lines = _clean_body(section, title).split("\n")
     want = heading.casefold()
     while lines and (not lines[0].strip() or (re.match(r"^#{1,6}\s", lines[0])
@@ -211,36 +298,178 @@ def _clean_section(section, heading, title="") -> str:
         lines = lines[1:]
     fence = None
     for n, line in enumerate(lines):
-        m = _FENCE.match(line)
-        if fence is None:
-            if m:
-                fence = m.group(1)
-            elif re.match(r"^#{1,2}\s", line):
-                lines[n] = "### " + line.lstrip("#").strip()
-        elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and \
-                not line.strip()[len(m.group(1)):].strip():
-            fence = None
+        was = fence
+        fence, _h = _fence_step(fence, line)
+        if was is None and fence is None and re.match(r"^#{1,2}\s", line):
+            lines[n] = "### " + line.lstrip("#").strip()
     return norm_body("\n".join(lines))
 
 
-def patch_body(old_body, heading, section, *, replace=False) -> str:
-    """`old_body` with the section `## <heading>` + `section` appended at the end, or (`replace`, and a section
-    with that heading exists) the LAST such section's content replaced. Nothing else in `old_body` changes."""
-    old = norm_body(old_body)
-    if replace:
-        found = [(n, h) for n, h in _sections(old) if h.casefold() == heading.casefold()]
-        if found:
-            lines = old.split("\n")
-            start = found[-1][0]
-            nxt = [n for n, _h in _sections(old) if n > start]
-            end = nxt[0] if nxt else len(lines)
-            new = lines[:start] + [lines[start], ""] + section.split("\n")
-            if end < len(lines):
-                new += [""] + lines[end:]
-            return norm_body("\n".join(new))
-    return norm_body((old + "\n\n" if old else "") + f"## {heading}\n\n{section}")
+def _section_text(heading_line, content) -> str:
+    """A new section's text: its heading line, a blank line, the content, a blank line after."""
+    head = heading_line if heading_line.endswith("\n") else heading_line + "\n"
+    return f"{head}\n{content}\n\n"
 
 
+# ---------------------------------------------------------------- ops ---
+def norm_ops(raw) -> list:
+    """The model's `ops` as dicts with a known `op` (anything else kept, to be dropped with a reason)."""
+    return [o for o in (raw if isinstance(raw, list) else []) if isinstance(o, dict)]
+
+
+def _find(sections, heading) -> tuple[list, str]:
+    """The indexes of the sections whose heading matches `heading` (trimmed, case-insensitive), and why not one."""
+    key = _hkey(heading)
+    if not key:
+        return [], "no heading was named"
+    hits = [n for n, s in enumerate(sections) if _hkey(s["heading"]) == key]
+    if not hits:
+        return hits, f"no section “{_clean_heading(heading)}” in this skill"
+    if len(hits) > 1:
+        return hits, f"“{_clean_heading(heading)}” names {len(hits)} sections"
+    return hits, ""
+
+
+def apply_ops(body, ops, *, title="") -> dict:
+    """Apply section `ops` to `body`, in order, deterministically and strictly. Returns
+    `{"body", "applied": [ops as applied], "dropped": [{"op", "reason"}], "moved": {"headings", "title", "trigger",
+    "body"} | None, "renamed": [old headings], "added": [{"heading", "section"}]}`.
+    A replace / remove / move must name an existing section (one match, after trimming, case-insensitive), else it
+    is dropped with a reason; an add whose heading exists replaces that section. Untouched sections and the preamble
+    stay byte for byte as they were."""
+    pre, secs = parse_sections(norm_body(body))
+    applied, dropped, renamed, added = [], [], [], []
+    moved = None
+
+    def drop(op, reason):
+        dropped.append({"op": op, "reason": reason})
+
+    for op in norm_ops(ops):
+        kind = str(op.get("op") or "").strip().lower()
+        if kind not in OPS:
+            drop(op, f"unknown operation “{op.get('op')}”")
+            continue
+        if kind == "move":
+            names = op.get("headings")
+            names = [h for h in names if isinstance(h, str)] if isinstance(names, list) else []
+            to = op.get("to") if isinstance(op.get("to"), dict) else {}
+            to_title = _short_title(_clean_heading(to.get("title")))
+            if moved is not None:
+                drop(op, "only one move per change")
+                continue
+            if not names:
+                drop(op, "the move named no sections")
+                continue
+            if not to_title:
+                drop(op, "the move gave the new skill no title")
+                continue
+            idx, why = [], ""
+            for h in names:
+                hits, why = _find(secs, h)
+                if why:
+                    break
+                if hits[0] not in idx:
+                    idx.append(hits[0])
+            if why:
+                drop(op, why)
+                continue
+            idx.sort()
+            taken = [secs[n] for n in idx]
+            secs = [s for n, s in enumerate(secs) if n not in idx]
+            moved = {"headings": [s["heading"] for s in taken], "title": to_title,
+                     "trigger": norm_trigger(trigger_words(to.get("trigger"))) or norm_trigger(
+                         _dedupe([_clean_heading(s["heading"]) for s in taken])[:5]),
+                     "body": norm_body(_join("", taken))}
+            applied.append({"op": "move", "headings": moved["headings"],
+                            "to": {"title": moved["title"], "trigger": moved["trigger"]}})
+            continue
+        heading = _clean_heading(op.get("heading"))
+        hits, why = _find(secs, heading)
+        if kind == "remove":
+            if why:
+                drop(op, why)
+                continue
+            gone = secs.pop(hits[0])
+            applied.append({"op": "remove", "heading": gone["heading"]})
+            continue
+        # add / replace
+        if kind == "add" and not heading:
+            heading = DEFAULT_HEADING
+            hits, why = _find(secs, heading)
+        if kind == "add" and not hits:
+            content = _clean_section(op.get("section"), heading, title)
+            if not content:
+                drop(op, "the new section has no content")
+                continue
+            secs.append({"heading": heading, "text": _section_text(f"## {heading}", content)})
+            applied.append({"op": "add", "heading": heading, "section": content})
+            added.append({"heading": heading, "section": content})
+            continue
+        if why:  # a replace naming nothing, or an add / replace naming several sections
+            drop(op, why)
+            continue
+        old = secs[hits[0]]
+        new_heading = _clean_heading(op.get("new_heading")) if kind == "replace" else ""
+        if new_heading and _hkey(new_heading) != _hkey(old["heading"]) and _find(secs, new_heading)[0]:
+            drop(op, f"a section “{new_heading}” already exists")
+            continue
+        shown_heading = new_heading or old["heading"]
+        content = _clean_section(op.get("section"), shown_heading, title)
+        if not content:
+            drop(op, "the section's new content is empty (use remove to drop a section)")
+            continue
+        first = _LINE.findall(old["text"])[0]
+        line = f"## {new_heading}" if new_heading and new_heading != old["heading"] else first
+        secs[hits[0]] = {"heading": shown_heading, "text": _section_text(line, content)}
+        if new_heading and new_heading != old["heading"]:
+            renamed.append(old["heading"])
+        rec = {"op": "replace", "heading": old["heading"], "section": content}
+        if new_heading and new_heading != old["heading"]:
+            rec["new_heading"] = new_heading
+        applied.append(rec)
+        added.append({"heading": shown_heading, "section": content})
+    return {"body": norm_body(_join(pre, secs)), "applied": applied, "dropped": dropped, "moved": moved,
+            "renamed": renamed, "added": added}
+
+
+def apply_triggers(trigger, add=(), remove=()) -> dict:
+    """`{"trigger", "added", "removed", "dropped"}`: `add` appended (deduplicated case-insensitively), `remove`d
+    words that exist taken out; a removal that would leave no trigger word at all is dropped."""
+    words = trigger_words(trigger)
+    added = _dedupe(trigger_words(list(add or [])), words)
+    rm = {w.casefold() for w in trigger_words(list(remove or []))}
+    removed = [w for w in words if w.casefold() in rm]
+    kept = [w for w in words if w.casefold() not in rm] + added
+    dropped = []
+    if not kept:
+        kept, removed = words + added, []
+        dropped.append({"op": {"triggers_remove": sorted(rm)}, "reason": "it would leave the skill no trigger words"})
+    return {"trigger": norm_trigger(kept), "added": added, "removed": removed, "dropped": dropped}
+
+
+def warnings_for(old_body, new_body, *, moved=None, renamed=()) -> list:
+    """The card's warnings for a change from `old_body` to `new_body` (code, not the model): a section removed, code
+    blocks lost, the body more than `SHRINK_WARN` smaller, sections moved to a new skill. None for a pure addition."""
+    old, new = norm_body(old_body), norm_body(new_body)
+    out = []
+    moved_keys = {_hkey(h) for h in ((moved or {}).get("headings") or [])}
+    skip = moved_keys | {_hkey(h) for h in renamed}
+    have = {_hkey(h) for h in headings(new)}
+    for h in headings(old):
+        if _hkey(h) not in have and _hkey(h) not in skip:
+            out.append(f"removes the section “{h}”")
+    lost = fenced_blocks(old) - fenced_blocks(new) - fenced_blocks((moved or {}).get("body") or "")
+    if lost > 0:
+        out.append(f"removes {lost} code block{'s' if lost != 1 else ''}")
+    if old and (len(old) - len(new)) / len(old) > SHRINK_WARN:
+        out.append(f"shrinks this skill by {round(100 * (len(old) - len(new)) / len(old))}%")
+    if moved:
+        k = len(moved.get("headings") or [])
+        out.append(f"moves {k} section{'s' if k != 1 else ''} into a new skill “{moved.get('title', '')}”")
+    return out
+
+
+# ------------------------------------------------------------------ storage ---
 def _dir(bot) -> str:
     p = os.path.join(store.expert_dir(bot), "proposals")
     os.makedirs(p, exist_ok=True)
@@ -281,6 +510,11 @@ def listing(bot) -> list:
 def open_item_ids(bot) -> set:
     """The lesson ids inside any open proposal (preparing, ready or shown)."""
     return {iid for p in listing(bot) if p.get("status") in OPEN_STATUSES for iid in (p.get("items") or [])}
+
+
+def any_open(bot) -> bool:
+    """Whether any proposal is preparing, ready or shown."""
+    return any(p.get("status") in OPEN_STATUSES for p in listing(bot))
 
 
 def candidates(bot) -> list:
@@ -370,7 +604,7 @@ def _learned_path(bot) -> str:
 
 
 def learned_sections(bot) -> list:
-    """`[{"skill", "heading"}]`: the sections approved proposals added (`learned-sections.json`)."""
+    """`[{"skill", "heading"}]`: the sections approved proposals added (`learned-sections.json`; a record only)."""
     rows = store.read_json(_learned_path(bot), [])
     return [{"skill": str(r["skill"]), "heading": str(r["heading"])} for r in (rows if isinstance(rows, list) else [])
             if isinstance(r, dict) and r.get("skill") and r.get("heading")]
@@ -476,22 +710,8 @@ def _diff(old_body, new_body, old_trigger, new_trigger, name, created) -> str:
         fromfile="/dev/null" if created else f"skills/{name}.md", tofile=f"skills/{name}.md"))
 
 
-def _update_plan(bot, old, heading, section, words) -> dict:
-    """The patched skill: `old` (a `bot.skills()` row) + the section, the new trigger words appended."""
-    name = old["name"]
-    replaced = is_learned(bot, name, heading) and any(
-        h.casefold() == heading.casefold() for h in headings(old.get("body") or ""))
-    body = patch_body(old.get("body") or "", heading, section, replace=replaced)
-    old_trigger = norm_trigger(old.get("trigger"))
-    added = _dedupe(words, trigger_words(old_trigger))
-    trigger = norm_trigger([old_trigger] + added)
-    return {"action": "update", "skill": name, "name": name, "title": old.get("title") or name,
-            "trigger": trigger, "body": body, "heading": heading, "section": section, "triggers_added": added,
-            "replaced": replaced, "_old_body": norm_body(old.get("body")), "_old_trigger": old_trigger}
-
-
 def _fits(plan) -> str:
-    """"" when `plan` fits `skill_save`'s limits, else why not."""
+    """"" when `plan` ({"body", "trigger"}) fits `skill_save`'s limits, else why not."""
     if len(plan["body"]) > body_cap():
         return f"the skill body would be {len(plan['body'])} characters (the limit is {body_cap()})"
     if len(plan["trigger"]) > trigger_cap():
@@ -511,67 +731,199 @@ def _create_plan(bot, title, trigger, body, taken, lessons) -> dict:
     if len(taken) >= skill_max():
         raise Unfit(f"this expert already has {skill_max()} skills, so a new skill cannot be added")
     plan = {"action": "create", "skill": None, "name": _free_name(title, taken), "title": title,
-            "trigger": trigger, "body": body, "heading": "", "section": "", "triggers_added": [],
-            "replaced": False, "_old_body": "", "_old_trigger": ""}
+            "trigger": trigger, "body": body, "ops": [], "dropped_ops": [], "triggers_added": [],
+            "triggers_removed": [], "moved": None, "warnings": [], "_old_body": "", "_old_trigger": ""}
     why = _fits(plan)
     if why:
         raise Unfit(f"the material does not fit even a new skill: {why}")
     return plan
 
 
-def _skills_listing(skills) -> str:
-    rows = []
+def _update(skill, ops, add, remove, taken) -> dict:
+    """Apply `ops` and trigger changes to `skill` (a `bot.skills()` row): the plan, unchecked against the limits."""
+    res = apply_ops(skill.get("body") or "", ops, title=skill.get("title") or "")
+    old_trigger = norm_trigger(skill.get("trigger"))
+    trig = apply_triggers(old_trigger, add, remove)
+    moved = res["moved"]
+    if moved is not None:
+        moved = {**moved, "name": _free_name(moved["title"], set(taken) | {skill["name"]})}
+    old_body = norm_body(skill.get("body"))
+    return {"action": "update", "skill": skill["name"], "name": skill["name"],
+            "title": skill.get("title") or skill["name"], "trigger": trig["trigger"], "body": res["body"],
+            "ops": res["applied"], "dropped_ops": res["dropped"] + trig["dropped"],
+            "triggers_added": trig["added"], "triggers_removed": trig["removed"], "moved": moved,
+            "warnings": warnings_for(old_body, res["body"], moved=moved, renamed=res["renamed"]),
+            "_added": res["added"], "_old_body": old_body, "_old_trigger": old_trigger}
+
+
+def _plan_fits(plan, taken) -> str:
+    why = _fits(plan)
+    if why:
+        return why
+    moved = plan.get("moved")
+    if moved:
+        if len(taken) >= skill_max():
+            return f"this expert already has {skill_max()} skills, so the moved sections have nowhere to go"
+        why = _fits(moved)
+        if why:
+            return "the new skill for the moved sections: " + why
+    return ""
+
+
+def _section_listing(skills) -> str:
+    rows = [f"- {s['name']} | {s.get('title', '')} | {s.get('trigger', '')} | "
+            f"{'; '.join(headings(s.get('body') or '')) or '(no sections)'}" for s in skills]
+    return "\n".join(rows) or "(none)"
+
+
+def _chosen_block(skill) -> str:
+    if skill is None:
+        return "No existing skill looks like a close fit (their sections are listed below)."
+    body = norm_body(skill.get("body"))
+    return (f"The skill most likely to fit, in full ({len(body)} of {body_cap()} characters):\n"
+            f"name: {skill['name']}\ntitle: {skill.get('title', '')}\ntrigger: {skill.get('trigger', '')}\n"
+            f"<<<BEGIN SKILL BODY>>>\n{body}\n<<<END SKILL BODY>>>")
+
+
+def _stems(text) -> set:
+    return {w.lower()[:5] for w in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", str(text or ""))
+            if w.lower() not in _STOP}
+
+
+def _best_skill(skills, lessons):
+    """The skill whose words overlap the lessons' most (title / trigger count most, then headings, then body);
+    the only skill when there is just one; None when nothing overlaps."""
+    if len(skills) == 1:
+        return skills[0]
+    want = _stems(" ".join(str(i.get("claim", "")) + " " + " ".join(str(a) for a in (i.get("about") or []))
+                           for i in lessons))
+    best, score = None, 0
     for s in skills:
-        body = s.get("body") or ""
-        rows.append(f"### name: {s['name']}\ntitle: {s.get('title', '')}\ntrigger: {s.get('trigger', '')}\n"
-                    f"sections: {'; '.join(headings(body)) or '(none)'}\n"
-                    f"beginning:\n{body[:EXCERPT_CHARS]}{' …' if len(body) > EXCERPT_CHARS else ''}")
-    return "\n\n".join(rows) or "(none)"
+        sc = (3 * len(want & _stems(f"{s.get('title', '')} {s.get('trigger', '')}"))
+              + 2 * len(want & _stems(" ".join(headings(s.get("body") or ""))))
+              + len(want & _stems(s.get("body"))))
+        if sc > score:
+            best, score = s, sc
+    return best
 
 
-def _draft(bot, lessons) -> dict:
-    """The draft for `lessons`: the proposal's fields (no id, no status). One model call. Raises `Unfit` when the
-    material cannot be saved uncut, not even as a new skill."""
+def _ask(bot, prompt):
+    try:
+        out = parse_json(model.text(bot, prompt, system="You answer with JSON only."), dict)
+    except Exception:  # noqa: BLE001
+        return None
+    return out if isinstance(out, dict) else None
+
+
+def _answer_ops(draft) -> tuple[list, list, list]:
+    """(ops, triggers_add, triggers_remove) from an update answer. The earlier answer shape (one `heading` +
+    `section`, `triggers`) is read as one add."""
+    ops = norm_ops(draft.get("ops"))
+    if not ops and (draft.get("heading") or draft.get("section")):
+        ops = [{"op": "add", "heading": draft.get("heading"), "section": draft.get("section")}]
+    add = trigger_words(draft.get("triggers_add")) or trigger_words(draft.get("triggers"))
+    return ops, add, trigger_words(draft.get("triggers_remove"))
+
+
+def _sizes(body) -> str:
+    pre, secs = parse_sections(body)
+    rows = ([f"(text before the first section): {len(pre.strip())}"] if pre.strip() else []) + \
+        [f"{s['heading']}: {len(s['text'].strip())}" for s in secs]
+    return "\n".join(rows) or "(none)"
+
+
+def _draft(bot, lessons, *, reorganise=None) -> dict:
+    """The draft for `lessons` (or, with `reorganise` = a skill name, a change that makes that skill smaller): the
+    proposal's fields (no id, no status). One model call, plus at most one re-ask showing a different skill the
+    model chose and one retry when the result is over the limits. Raises `Unfit` when the material cannot be saved
+    uncut, or the draft changes nothing."""
     skills = list(bot.skills())
     by_name = {s["name"]: s for s in skills}
-    lessons_txt = "\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {i.get('count', 0)}×)" for i in lessons)
-    draft = None
-    try:
-        draft = parse_json(model.text(bot, DRAFT_PROMPT.format(lessons=lessons_txt, skills=_skills_listing(skills)),
-                                      system="You answer with JSON only."), dict)
-    except Exception:  # noqa: BLE001
-        draft = None
-    if not isinstance(draft, dict):
-        draft = _fallback_draft(lessons)
     claims_md = "\n".join(f"- {i.get('claim', '')}" for i in lessons)
-    name = draft.get("skill") if isinstance(draft.get("skill"), str) else None
-    action = str(draft.get("action") or "").strip().lower()
+
+    def prompt_for(chosen):
+        others = [s for s in skills if chosen is None or s["name"] != chosen["name"]]
+        if reorganise:
+            body = norm_body(chosen.get("body"))
+            return REORGANISE_PROMPT.format(size=len(body), cap=body_cap(), chosen=_chosen_block(chosen),
+                                            skills=_section_listing(others), name=chosen["name"])
+        lessons_txt = "\n".join(f"- [{i['id']}] {i.get('claim', '')} (seen {i.get('count', 0)}×)" for i in lessons)
+        return DRAFT_PROMPT.format(lessons=lessons_txt, chosen=_chosen_block(chosen), skills=_section_listing(others))
+
+    if reorganise:
+        chosen = by_name.get(reorganise)
+        if chosen is None:
+            raise Unfit(f"the skill “{reorganise}” no longer exists")
+    else:
+        chosen = _best_skill(skills, lessons)
+    draft = _ask(bot, prompt_for(chosen))
+    name = draft.get("skill") if isinstance(draft, dict) and isinstance(draft.get("skill"), str) else None
+    action = str((draft or {}).get("action") or "").strip().lower()
+    if reorganise:
+        if draft is None or name not in (None, reorganise) or action not in ("", "update"):
+            raise Unfit("the draft did not answer with changes to that skill")
+        name, action = reorganise, "update"
+    elif action == "update" and name in by_name and (chosen is None or name != chosen["name"]):
+        # It chose a skill whose body it was not shown: ask once more, showing that one in full.
+        again = _ask(bot, prompt_for(by_name[name]))
+        if isinstance(again, dict) and str(again.get("action") or "").strip().lower() in ("update", "create"):
+            draft = again
+            name = draft.get("skill") if isinstance(draft.get("skill"), str) else None
+            action = str(draft.get("action") or "").strip().lower()
+    if not isinstance(draft, dict):
+        draft, action, name = _fallback_draft(lessons), "create", None
     note = ""
+    why_text = " ".join(str(draft.get("why") or "").split())[:300] if isinstance(draft.get("why"), str) else ""
     if action == "update" and name in by_name:
-        heading = _clean_heading(draft.get("heading")) or DEFAULT_HEADING
-        section = _clean_section(draft.get("section"), heading, by_name[name].get("title")) or claims_md
-        words = trigger_words(draft.get("triggers")) or trigger_words(draft.get("trigger"))
-        plan = _update_plan(bot, by_name[name], heading, section, words)
         if _slug(name) != name:
             raise Unfit(f"the skill file “{name}” cannot be saved under its own name")
-        if _fits(plan):
-            # Never cut: the material goes into a separate new skill instead.
-            note = f"{FULL_NOTE} “{_short_title(heading)}” instead."
-            new_words = _dedupe(plan["triggers_added"] or words) or _fallback_trigger(lessons, heading)
-            full = by_name[name]
-            plan = _create_plan(bot, heading, new_words, section, by_name, lessons)
-            plan["overflow_from"] = name
-            plan["overflow_title"] = full.get("title") or name
+        skill = by_name[name]
+        ops, add, remove = _answer_ops(draft)
+        plan = _update(skill, ops, add, remove, by_name)
+        if not plan["ops"]:
+            raise Unfit(NO_SECTION)
+        why = _plan_fits(plan, by_name)
+        if why:
+            # One retry: ask for a move (and / or trigger removals) that brings it under the limits.
+            extra = _ask(bot, RETRY_PROMPT.format(name=name, why=why, sizes=_sizes(plan["body"]),
+                                                  trigger=plan["trigger"]))
+            if isinstance(extra, dict):
+                e_ops, e_add, e_remove = _answer_ops(extra)
+                retry = _update(skill, ops + e_ops, add + e_add, remove + e_remove, by_name)
+                if retry["ops"] and not _plan_fits(retry, by_name):
+                    plan, why = retry, ""
+        if why:
+            if reorganise or not plan["_added"]:
+                raise Unfit(f"the change does not fit the skill: {why}")
+            # Never cut: the added material goes into a separate new skill; the existing skill stays untouched.
+            first = plan["_added"][0]["heading"]
+            if len(plan["_added"]) == 1:
+                body = plan["_added"][0]["section"]
+            else:
+                body = "\n\n".join(f"## {a['heading']}\n\n{a['section']}" for a in plan["_added"])
+            words = _dedupe(plan["triggers_added"] or add) or _fallback_trigger(lessons, first)
+            note = f"{FULL_NOTE} “{_short_title(first)}” instead."
+            new = _create_plan(bot, first, words, body, by_name, lessons)
+            new.update(overflow_from=name, overflow_title=skill.get("title") or name)
+            plan = new
     else:
         title = (draft.get("title") if isinstance(draft.get("title"), str) else "") or \
             _clean_heading(draft.get("heading")) or (name or "")
         body = _clean_body(draft.get("body") or draft.get("section") or "", title) or claims_md
         trigger = draft.get("trigger") if draft.get("trigger") else draft.get("triggers")
         plan = _create_plan(bot, title, trigger_words(trigger), body, by_name, lessons)
+    if plan["action"] == "update" and plan["body"] == plan["_old_body"] and plan["trigger"] == plan["_old_trigger"] \
+            and not plan.get("moved"):
+        raise Unfit("the draft changed nothing")
     diff = _diff(plan["_old_body"], plan["body"], plan["_old_trigger"], plan["trigger"], plan["name"],
                  plan["action"] == "create")
+    if plan.get("moved"):
+        m = plan["moved"]
+        diff += _diff("", m["body"], "", m["trigger"], m["name"], True)
     out = {k: v for k, v in plan.items() if not k.startswith("_")}
-    out.update(diff=diff, note=note, items=[i["id"] for i in lessons], claims=[i.get("claim", "") for i in lessons],
+    out.update(diff=diff, note=note, why=why_text, kind="reorganise" if reorganise else "lessons",
+               base_body=plan["_old_body"], base_trigger=plan["_old_trigger"],
+               items=[i["id"] for i in lessons], claims=[i.get("claim", "") for i in lessons],
                score_before=None, score_after=None)
     return out
 
@@ -652,6 +1004,15 @@ def _preparing(bot) -> list:
     return out
 
 
+def _start(bot, p) -> dict:
+    with _PREPARING_GUARD:
+        _PREPARING.add(p["id"])
+    t = threading.Thread(target=_prepare_bg, args=(bot, p["id"]), daemon=True,
+                         name=f"expert-proposal-{getattr(bot, 'id', '?')}")
+    t.start()
+    return dict(p)
+
+
 def request(bot, items, *, topic="", gap="") -> dict:
     """Start a proposal for `items` in the background and return its record at once (status "preparing"; its
     lessons are marked `proposed` now). `gap` (or the `gap` link of a `research` lesson among the items) records
@@ -664,9 +1025,9 @@ def request(bot, items, *, topic="", gap="") -> dict:
         lessons = [i for i in _resolve_items(bot, items) if i["id"] not in busy]
         if not lessons:
             raise ValueError("no lessons to propose")
-        p = {"id": store.new_id("p"), "ts": time.time(), "status": "preparing", "topic": str(topic or "")[:200],
-             "action": None, "skill": None, "title": "", "trigger": "", "body": "", "diff": "",
-             "items": [i["id"] for i in lessons], "claims": [i.get("claim", "") for i in lessons],
+        p = {"id": store.new_id("p"), "ts": time.time(), "status": "preparing", "kind": "lessons",
+             "topic": str(topic or "")[:200], "action": None, "skill": None, "title": "", "trigger": "", "body": "",
+             "diff": "", "items": [i["id"] for i in lessons], "claims": [i.get("claim", "") for i in lessons],
              "score_before": None, "score_after": None, "card_seq": None, "error": ""}
         linked = list(dict.fromkeys([str(gap)] * bool(gap) + [str(i["gap"]) for i in lessons if i.get("gap")]))
         if linked:
@@ -675,15 +1036,33 @@ def request(bot, items, *, topic="", gap="") -> dict:
         for i in lessons:
             memory.mark(bot, i["id"], proposed=True)
         with _PREPARING_GUARD:
-            _PREPARING.add(p["id"])
+            _PREPARING.add(p["id"])  # before the lock is released: never seen as a stale "preparing"
         if linked:
             from fused_render.experts import gaps
             for gid in linked:
                 gaps.mark_proposed(bot, gid, p["id"])
-    t = threading.Thread(target=_prepare_bg, args=(bot, p["id"]), daemon=True,
-                         name=f"expert-proposal-{getattr(bot, 'id', '?')}")
-    t.start()
-    return dict(p)
+    return _start(bot, p)
+
+
+def request_reorganise(bot, skill) -> dict:
+    """Start a "reorganise" proposal for skill `skill` (nearly full) in the background: no lessons, one draft call
+    asking for ops that make it smaller. ValueError when any proposal is open (preparing, ready or shown) or the
+    skill does not exist."""
+    with store.lock(bot):
+        _preparing(bot)  # fails a stale record first
+        if any_open(bot):
+            raise ValueError(BUSY)
+        cur = next((s for s in bot.skills() if s.get("name") == skill), None)
+        if cur is None:
+            raise ValueError(f"no skill “{skill}”")
+        p = {"id": store.new_id("p"), "ts": time.time(), "status": "preparing", "kind": "reorganise",
+             "topic": "reorganise", "action": None, "skill": skill, "title": cur.get("title") or skill,
+             "trigger": "", "body": "", "diff": "", "items": [], "claims": [], "score_before": None,
+             "score_after": None, "card_seq": None, "error": ""}
+        _save(bot, p)
+        with _PREPARING_GUARD:
+            _PREPARING.add(p["id"])
+    return _start(bot, p)
 
 
 def _prepare_bg(bot, pid) -> None:
@@ -692,10 +1071,13 @@ def _prepare_bg(bot, pid) -> None:
         p = get(bot, pid)
         if p is None:
             return
-        lessons = _resolve_items(bot, p.get("items"))
-        if not lessons:
-            raise ValueError("its lessons were forgotten")
-        fields = _draft(bot, lessons)
+        if p.get("kind") == "reorganise":
+            fields = _draft(bot, [], reorganise=p.get("skill"))
+        else:
+            lessons = _resolve_items(bot, p.get("items"))
+            if not lessons:
+                raise ValueError("its lessons were forgotten")
+            fields = _draft(bot, lessons)
         with store.lock(bot):
             p = get(bot, pid)
             if p is None or p.get("status") != "preparing":
@@ -730,25 +1112,37 @@ def _decide(bot, pid):
     return p
 
 
-def _final(bot, p) -> dict:
-    """What `approve` writes for `p`, rebuilt against the skill as it is NOW (another approval may have patched it
-    since the draft): `{"name","title","trigger","body","heading"}`. ValueError when it cannot be written uncut."""
+def _final(bot, p) -> list:
+    """What `approve` writes for `p`, rebuilt against the skills as they are NOW (another approval may have changed
+    them since the draft): `[{"name","title","trigger","body","added": [headings]}]`, the edited skill first and the
+    new skill of a `move` second. ValueError when it cannot be written as drafted, or uncut."""
     skills = list(bot.skills())
     by_name = {s["name"]: s for s in skills}
     if p.get("action") == "update":
-        if not p.get("heading") or not p.get("section"):
-            # A record drafted before proposals became patches carries a whole rewritten body: never written.
-            raise ValueError("this proposal rewrote the whole skill (an older draft) and is not applied; "
-                             "its lessons will be proposed again")
+        ops = p.get("ops")
+        if not isinstance(ops, list):
+            if not p.get("heading") or not p.get("section"):
+                # A record drafted before proposals became patches carries a whole rewritten body: never written.
+                raise ValueError("this proposal rewrote the whole skill (an older draft) and is not applied; "
+                                 "its lessons will be proposed again")
+            ops = [{"op": "add", "heading": p["heading"], "section": p["section"]}]  # an append-only era record
         cur = by_name.get(p.get("skill"))
         if cur is None:
             raise ValueError(f"the skill “{p.get('skill')}” no longer exists")
-        plan = _update_plan(bot, cur, p["heading"], p["section"], list(p.get("triggers_added") or []))
-        why = _fits(plan)
+        plan = _update(cur, ops, p.get("triggers_added") or [], p.get("triggers_removed") or [], by_name)
+        if plan["dropped_ops"] or len(plan["ops"]) != len(ops):
+            raise ValueError("the skill changed since this was drafted: "
+                             + "; ".join(d["reason"] for d in plan["dropped_ops"]))
+        why = _plan_fits(plan, by_name)
         if why:
             raise ValueError(f"the skill changed since this was drafted and no longer has room: {why}")
-        return {"name": cur["name"], "title": plan["title"], "trigger": plan["trigger"], "body": plan["body"],
-                "heading": p["heading"]}
+        out = [{"name": cur["name"], "title": plan["title"], "trigger": plan["trigger"], "body": plan["body"],
+                "added": [o["heading"] for o in plan["ops"] if o["op"] == "add"]}]
+        m = plan["moved"]
+        if m:
+            out.append({"name": m["name"], "title": m["title"], "trigger": m["trigger"], "body": m["body"],
+                        "added": []})
+        return out
     name = p.get("name") if p.get("name") and p.get("name") not in by_name else _free_name(p.get("title"), by_name)
     plan = {"body": norm_body(p.get("body")), "trigger": norm_trigger(p.get("trigger"))}
     why = _fits(plan)
@@ -756,8 +1150,8 @@ def _final(bot, p) -> dict:
         raise ValueError(why)
     if len(by_name) >= skill_max():
         raise ValueError(f"this expert already has {skill_max()} skills")
-    return {"name": name, "title": p.get("title") or name, "trigger": plan["trigger"], "body": plan["body"],
-            "heading": ""}
+    return [{"name": name, "title": p.get("title") or name, "trigger": plan["trigger"], "body": plan["body"],
+             "added": []}]
 
 
 def _stored(bot, name):
@@ -765,38 +1159,56 @@ def _stored(bot, name):
 
 
 def approve(bot, pid) -> dict:
-    """Write the skill: back its file up, save, read it back and verify the stored body and trigger are exactly
-    what was intended. On a failed save or a mismatch the file is restored byte for byte from the backup, the
-    proposal becomes "failed" (lessons un-marked) and ValueError says why; it is never shown again. Only after the
-    verification passes do the lessons leave memory."""
+    """Write the skill (two for a `move`): back each file up, save, read each back and verify the stored body and
+    trigger are exactly what was intended. On a failed save or a mismatch EVERY file is restored byte for byte from
+    its backup (a new skill's file is removed), the proposal becomes "failed" (lessons un-marked) and ValueError
+    says why; it is never shown again. Only after the verification passes do the lessons leave memory."""
     with store.lock(bot):
         p = _decide(bot, pid)
         try:
-            want = _final(bot, p)
+            writes = _final(bot, p)
         except ValueError as e:
             _fail(bot, pid, str(e))
             raise ValueError(str(e)) from e
-        name = want["name"]
-        backup = backup_skill(bot, name)
+        saved_backups = [(w["name"], backup_skill(bot, w["name"])) for w in writes]
+
+        def restore_all():
+            for name, backup in saved_backups:
+                try:
+                    _restore(bot, name, backup)
+                except Exception:  # noqa: BLE001
+                    logger.warning("expert %s: skill %s not restored", getattr(bot, "id", "?"), name, exc_info=True)
+
+        mismatch = False
         try:
-            saved = bot.skill_save(want["title"], want["trigger"], want["body"], name=name)
+            for w in writes:
+                saved = bot.skill_save(w["title"], w["trigger"], w["body"], name=w["name"])
+                if saved != w["name"]:
+                    logger.warning("expert %s: skill saved as %s, not %s", getattr(bot, "id", "?"), saved, w["name"])
+                    mismatch = True
+                    break
         except Exception as e:  # noqa: BLE001
-            _restore(bot, name, backup)
+            restore_all()
             reason = f"could not save the skill: {str(e) or type(e).__name__}"
             _fail(bot, pid, reason)
             raise ValueError(reason) from e
-        got = _stored(bot, name)
-        if saved != name or got is None or got.get("body") != want["body"] \
-                or norm_trigger(got.get("trigger")) != want["trigger"]:
-            _restore(bot, name, backup)
-            if saved and saved != name:
-                logger.warning("expert %s: skill saved as %s, not %s", getattr(bot, "id", "?"), saved, name)
+        if not mismatch:
+            for w in writes:
+                got = _stored(bot, w["name"])
+                if got is None or got.get("body") != w["body"] or norm_trigger(got.get("trigger")) != w["trigger"]:
+                    mismatch = True
+                    break
+        if mismatch:
+            restore_all()
             reason = "the skill could not be saved intact; it was restored from its backup"
             _fail(bot, pid, reason)
             raise ValueError(reason)
-        if want["heading"]:
-            _add_learned(bot, name, want["heading"])
+        name = writes[0]["name"]
+        for h in writes[0]["added"]:
+            _add_learned(bot, name, h)
         p.update(status="approved", skill=name, decided=time.time())
+        if len(writes) > 1:
+            p["moved_to"] = writes[1]["name"]
         _save(bot, p)
         # The skill carries these lessons now (verified): they leave memory for the archive (reason "promoted").
         try:
@@ -832,13 +1244,22 @@ def mark_shown(bot, pid, card_seq=None):
         return p
 
 
+WARNING_PREFIX = "Warning: this change "
+
+
 def card_text(proposal) -> tuple[str, str]:
+    """(text, detail): what changes, the lessons, one "Warning: this change …" line per warning (for channels
+    without the card UI), "Approve?"; detail is the unified diff."""
     p = proposal or {}
     n = len(p.get("items") or [])
     what = (f"update the skill “{p.get('title', '')}”" if p.get("action") == "update"
             else f"update the skill “{p.get('overflow_title') or p.get('overflow_from')}”" if p.get("overflow_from")
             else f"add a new skill “{p.get('title', '')}”")
-    if p.get("gap"):
+    if p.get("kind") == "reorganise":
+        size = len(p.get("base_body") or "")
+        text = (f"The skill “{p.get('title', '')}” is nearly full ({size} of {body_cap()} characters), so I'd like "
+                f"to reorganise it" + (f": {p['why']}" if p.get("why") else "."))
+    elif p.get("gap"):
         text = (f"Sessions asked me something I could not answer, so I looked into it and found the answer. "
                 f"I'd like to {what} with it")
     else:
@@ -850,7 +1271,9 @@ def card_text(proposal) -> tuple[str, str]:
         text += ":\n" + "\n".join(f"- {c}" for c in claims[:5])
         if len(claims) > 5:
             text += f"\n- …and {len(claims) - 5} more"
-    else:
+    elif p.get("kind") != "reorganise":
         text += "."
+    for w in p.get("warnings") or []:
+        text += f"\n{WARNING_PREFIX}{w}."
     text += "\nApprove?"
     return text, p.get("diff") or ""

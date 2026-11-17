@@ -35,10 +35,12 @@ def _verdict_res():
 def raise_card(bot, proposal) -> int:
     """Emit the approval card for `proposal` and record it as shown. Returns the card's seq. The card's fields:
     `text` (what changes, the lessons, "Approve?"), `detail` = the unified diff, `expert_proposal` = the proposal
-    id, `score_before` / `score_after` = always None (kept for compatibility: proposals run no checks)."""
+    id, `expert_warnings` = the proposal's warnings (also lines of `text`, for channels without the card UI),
+    `score_before` / `score_after` = always None (kept for compatibility: proposals run no checks)."""
     from fused_render.experts import proposals
     text, detail = proposals.card_text(proposal)
     ev = bot.emit("approval", text, detail=detail, expert_proposal=proposal["id"],
+                  expert_warnings=[str(w) for w in (proposal.get("warnings") or [])],
                   score_before=None, score_after=None)
     seq = ev.get("seq")
     try:

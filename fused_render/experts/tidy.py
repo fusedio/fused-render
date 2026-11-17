@@ -27,6 +27,13 @@ lesson only when nothing else is left.
 
 Old data: an item still flagged `promoted` (from before promoted lessons left
 memory on approval) is archived as `promoted` whenever tidy runs.
+
+Skill pressure (`skill_pressure`, also in the tidy stage, after `run`; no
+model call decides it): when a skill's body is over `PRESSURE` (80%) of the
+body limit and no proposal is open, ONE "reorganise" proposal is requested for
+the largest such skill (`proposals.request_reorganise`). A skill whose
+reorganise was rejected in the last `REORGANISE_COOLDOWN_S` (7 days), or
+failed in the last `REORGANISE_FAILED_COOLDOWN_S` (1 day), is skipped.
 """
 from __future__ import annotations
 
@@ -40,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 LAST_FILE = "tidy-last.json"
 MAX_MERGES = 5
+#: A skill body over this share of the body limit asks for a reorganise.
+PRESSURE = 0.8
+REORGANISE_COOLDOWN_S = 7 * 86400
+REORGANISE_FAILED_COOLDOWN_S = 86400
 _SOURCES = {"user": "taught by you", "outcome": "from sessions", "research": "found by research",
             "gap": "an unanswered question"}
 
@@ -274,3 +285,33 @@ def run(bot) -> dict:
         except OSError:
             logger.warning("expert %s: tidy summary not saved", getattr(bot, "id", "?"), exc_info=True)
     return result
+
+
+def skill_pressure(bot, now=None) -> str | None:
+    """Request ONE "reorganise" proposal for the largest skill whose body is over `PRESSURE` of the body limit, when
+    no proposal is open and that skill is not cooling down after a rejected (7 days) or failed (1 day) reorganise.
+    Returns the new proposal's id, or None. No model call decides it; the draft itself is one call."""
+    from fused_render.experts import proposals
+    now = time.time() if now is None else now
+    if proposals.any_open(bot):
+        return None
+    limit = PRESSURE * proposals.body_cap()
+    full = [s for s in bot.skills() if len(proposals.norm_body(s.get("body"))) > limit]
+    if not full:
+        return None
+    cooling = set()
+    for p in proposals.listing(bot):
+        if p.get("kind") != "reorganise":
+            continue
+        wait = {"rejected": REORGANISE_COOLDOWN_S, "failed": REORGANISE_FAILED_COOLDOWN_S}.get(p.get("status"))
+        if wait and now - float(p.get("decided") or p.get("ts") or 0) < wait:
+            cooling.add(p.get("skill"))
+    full = [s for s in full if s["name"] not in cooling]
+    if not full:
+        return None
+    target = max(full, key=lambda s: len(proposals.norm_body(s.get("body"))))
+    try:
+        return proposals.request_reorganise(bot, target["name"])["id"]
+    except ValueError as e:  # single flight
+        logger.info("expert %s: reorganise not requested: %s", getattr(bot, "id", "?"), e)
+        return None
