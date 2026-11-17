@@ -527,10 +527,15 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot .task-head-open-word,`);
   expect(css).toContain(`.task-head.is-window:not(.is-two-line)${from(5)} :is(.task-head-facts, .task-head-timeslot) .task-head-open-word {`);
   expect(css).not.toContain(`.task-head.is-window${from(5)} :is(.task-head-facts, .task-head-timeslot)`);
-  // A rail window's ⋮ always stands (2026-11-16): no rule hides it or holds
-  // its seat open, and nothing is moved over it at rest.
+  // A rail window's ⋮ is one of the acts (2026-11-17): it shows with the star
+  // and the door, in their layer — no seat held open at the row's end, and
+  // nothing is moved over it at rest. Its open menu keeps the layer up.
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {");
   expect(css).not.toContain("translateX(");
+  expect(css).toContain('.task-head:has(.task-head-kebab [aria-expanded="true"]) .task-head-facts > .task-head-facts-layer.is-b {\n  opacity: 1;');
+  // A two-line head with one act alone has no acts' layer: its ⋮ keeps its
+  // seat and shows on the same trigger.
+  expect(css).toContain(".task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {\n  opacity: 0;");
   expect(css).toContain(`.task-head${from(5)} .task-head-seats {`);
   expect(css).toContain(`.task-head${from(6)} .task-head-nav {`);
   // The last rung caps the place; the id slot (and its Archive) never goes.
@@ -589,7 +594,7 @@ test("a panel or a pane that asks wears the rail window's two lines, keeping its
   // The tools' words go first (a class, not a rung of `data-fit`), and the
   // acts start at the facts' left edge so no hole follows the last tag.
   expect(css).toMatch(/\.task-head\.is-seats-tight \.task-head-seats \.c-anncta \{\s*--c-annlbl: none;/);
-  expect(css).toMatch(/\.task-head\.is-two-line \.task-head-facts-layer\.is-b \{\s*justify-self: start;/);
+  expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\) \.task-head-facts-layer\.is-b \{\s*justify-self: start;/);
 });
 
 test("reveal: a rail window says so in its class; a panel or a pane does not", () => {
@@ -633,6 +638,13 @@ test("a rail window's task head is two lines at every width: where it lives and 
   expect(right).not.toContain("my-where");
   expect(right.indexOf("my-chip")).toBeLessThan(right.indexOf("task-head-facts"));
   expect(right.indexOf("task-head-facts")).toBeLessThan(right.indexOf("my-kebab"));
+  // THE ⋮ COMES WITH THE STAR AND THE DOOR (2026-11-17): it is the last item
+  // of the acts' layer, not a seat of its own after the facts.
+  const marks = (kids[2]!.children ?? []) as ReactTestRendererJSON[];
+  expect(marks.some((k) => cls(k) === "task-head-kebab")).toBe(false);
+  const acts = JSON.stringify(byClass(r, "task-head-facts-layer").find((l) => cls(l).includes("is-b")));
+  expect(acts).toContain("my-kebab");
+  expect(acts.indexOf("task-head-open")).toBeLessThan(acts.indexOf("my-kebab"));
   const one = JSON.stringify(row1);
   for (const gone of ["task-side-peek-status", "task-head-idslot", "T042", "Rename the pane noun"]) expect(one).not.toContain(gone);
   // ROW 2: the ring, the id slot, the title — in that order, once each.

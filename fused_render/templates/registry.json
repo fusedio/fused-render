@@ -42,6 +42,7 @@
   ],
   ".json": [
     "tree",
+    "udf",
     "code",
     "duckdb",
     "claude",
@@ -138,6 +139,7 @@
   ],
   ".md": [
     "markdown",
+    "udf",
     "code",
     "claude",
     "reader"
@@ -264,6 +266,7 @@
   ],
   ".py": [
     "code",
+    "udf",
     "api",
     "claude",
     "reader"
@@ -402,6 +405,7 @@
   ],
   ".html": [
     "_render",
+    "udf",
     "code",
     "claude",
     "reader"

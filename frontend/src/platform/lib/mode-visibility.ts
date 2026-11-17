@@ -42,11 +42,24 @@ import type { TemplateEntry } from "@platform/lib/api";
 export type ConditionVerdicts = Record<string, boolean> | null;
 
 // Gated and no verdict yet — the entry shows, but is not selectable.
+// The node view (below) is pending only where it is the default candidate.
 export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
+  if (isNodeViewEntry(entry)) return isPreferred(entry) && verdicts === null;
   return !!entry.conditional && verdicts === null;
 }
 
+// THE ONE EXCEPTION TO "a missing verdict shows": the canvas node view
+// (`udf`, SPEC §53.3). Its gate answers yes for a handful of files behind an
+// opt-in feature and no for every other `.py`/`.json`/`.html`/`.md`, so
+// reading a failed conditions call as "visible" would offer — and, where it is
+// the default candidate, open — a node view on files that are not nodes. It
+// needs an explicit YES. While the call is out it shows only where stat marked
+// it the default candidate (`prefer`), as the pending entry the content pane
+// waits on; anywhere else it is simply not listed until the yes.
 export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
+  if (isNodeViewEntry(entry)) {
+    return verdicts === null ? isPreferred(entry) : verdicts[entry.mode] === true;
+  }
   if (!entry.conditional) return true;
   if (verdicts === null) return true; // in flight — pending, not denied
   return verdicts[entry.mode] !== false; // absent verdict (failed call) shows
@@ -123,6 +136,36 @@ export function unavailableReason(mode: string): string {
   return UNAVAILABLE_REASONS[mode] ?? "Not available here";
 }
 
+// The canvas node view's mode (templates/udf, a native template).
+export const NODE_MODE = "udf";
+
+// The node view's entry: the core NATIVE `udf` template (stat's `native:
+// true`). The server never lets a user folder shadow a core native template
+// (D1310), so a `udf` entry without the flag would come from another server
+// or a future rule; it is then an ordinary template, framed like any other.
+export function isNodeViewEntry(entry: Pick<TemplateEntry, "mode" | "native">): boolean {
+  return entry.mode === NODE_MODE && entry.native === true;
+}
+
+// The modes a pane may offer while it previews a git snapshot (`_snapshot`):
+// every one but the node view, which is live by nature — it draws the canvas
+// as the workbench holds it now, never as of a commit, so under "Showing this
+// file as of commit …" it would show the wrong era. Without a snapshot the
+// list is returned as is.
+export function modesUnderSnapshot<T extends Pick<TemplateEntry, "mode" | "native">>(
+  entries: T[],
+  snapshotSha: string | null | undefined
+): T[] {
+  return snapshotSha ? entries.filter((e) => !isNodeViewEntry(e)) : entries;
+}
+
+// The default CANDIDATE although gated (SPEC PT-8's one exception): the node
+// view's entry where stat marked it `prefer` — a path shaped like a canvas
+// node file, Canvases on. Never any other entry, whatever the server sends.
+function isPreferred(entry: TemplateEntry): boolean {
+  return isNodeViewEntry(entry) && !!entry.conditional && entry.prefer === true;
+}
+
 export function isSidebarMode(mode: string): boolean {
   return SIDEBAR_MODE_SET.has(mode);
 }
@@ -181,8 +224,15 @@ export function visibleModes(
 // The default entry among an ALREADY-VISIBLE list: the first UNCONDITIONAL one
 // (CT-12 — a gated template is never the default while a normal one exists);
 // only an all-conditional list falls back to its first entry.
+//
+// Except a PREFERRED entry (the node view on a node-shaped path, `prefer`;
+// SPEC PT-8): it is the default whenever it is in the visible list, which by
+// `isModeVisible` is exactly "its verdict is pending, or yes". Pending, the
+// caller holds the pane on its "checking" placeholder (`isModePending`) rather
+// than painting another mode first; on a no, a missing verdict or a failed
+// call it has left the list, and the ordinary default stands.
 export function defaultMode(visible: TemplateEntry[]): TemplateEntry | null {
-  return visible.find((e) => !e.conditional) ?? visible[0] ?? null;
+  return visible.find(isPreferred) ?? visible.find((e) => !e.conditional) ?? visible[0] ?? null;
 }
 
 // The entry a surface should actually show for a requested `_mode`: the

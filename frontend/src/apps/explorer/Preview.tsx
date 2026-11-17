@@ -54,8 +54,11 @@ import { dismissNotification, dismissPopup, notify } from "@platform/lib/notific
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
+  NODE_MODE,
+  isNodeViewEntry,
   isModePending,
   isSidebarMode,
+  modesUnderSnapshot,
   partitionModes,
   unavailableReason,
   visibleModes,
@@ -81,6 +84,7 @@ import {
   sideReopenedByUrl,
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
+import { NativeView } from "@platform/ui/NativeView";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
@@ -796,8 +800,10 @@ function usePreviewFileMenu(
 // `_mode` (shell URL) selects among stat.templates by name (SPEC PT-9): absent
 // or unknown/stale value falls back to the default silently. The default is
 // the first UNCONDITIONAL entry (CT-12: a gated template is never the default
-// while a normal one exists) — only an all-conditional list falls back to its
-// first (by then verdict-allowed) entry.
+// while a normal one exists), with one exception: a node file's preferred
+// `udf` (PT-8 `prefer`), which is the default and holds the pane on the
+// checking placeholder until its verdict. An all-conditional list falls back
+// to its first (by then verdict-allowed) entry.
 // Both rules live in lib/mode-visibility so every mode surface resolves the
 // same way; `templates` here is already the visible list, so a gate-denied
 // `_mode` lands on the default exactly like an unknown one.
@@ -868,6 +874,30 @@ const FRAME_SWAP_TIMEOUT_MS = 4000;
 const annotateTargetFrame = (): HTMLIFrameElement | null =>
   document.querySelector<HTMLIFrameElement>("iframe[data-fused-annotate-target]");
 
+// A NATIVE content mode's box in the held-frame swap: what a frame's `load`
+// is to an iframe, its mount is to this — the view draws its own loading
+// state, so there is nothing to wait for before showing it.
+function NativePane({
+  className,
+  onReady,
+  children,
+}: {
+  className: string;
+  onReady: () => void;
+  children: ReactNode;
+}) {
+  const ready = useRef(onReady);
+  ready.current = onReady;
+  useEffect(() => {
+    ready.current();
+  }, []);
+  return (
+    <div className={className + " preview-native"}>
+      {children}
+    </div>
+  );
+}
+
 // THIS FILE ONCE HOSTED NO SNAPSHOT INDICATOR OF ITS OWN — the reasoning was
 // that a content pane is the ordinary template rendering ordinary bytes, the
 // code editor looks exactly like the code editor, with no room to say "these
@@ -906,8 +936,28 @@ function TemplatePreview({
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
-  // switcher as a disabled spinner, not selectable, never the default.
+  // switcher as a disabled spinner, not selectable, never the default except
+  // a preferred `udf` (PT-8), which holds the pane on the checking placeholder.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
+
+  // The shell's git snapshot (`_snapshot`): see "the shell's git snapshot"
+  // below for the whole story.
+  const urlVersion = useUrlVersion();
+  const {
+    sha: snapshotSha,
+    snap: snapshotResolved,
+    pending: snapshotPending,
+    error: snapshotError,
+    retry: retrySnapshot,
+    backToLive,
+    applySelected: applySelectedSnapshot,
+  } = usePreviewSnapshot(fsPath, urlVersion);
+  // THE NODE VIEW IS LIVE BY NATURE (SPEC §53.3): it draws the canvas as the
+  // workbench holds it now, never as of a commit. Under a snapshot it is not
+  // offered at all, so the pane falls back to a mode that honours the commit
+  // (Code) instead of drawing the live node under "Showing this file as of
+  // commit …"; Back to live brings it back.
+  const offered = modesUnderSnapshot(templates, snapshotSha);
 
   // --- the content/sidebar split (`_side`) ----------------------------------
   // ONE surface splits: a single FILE opened on the explorer route in its own
@@ -924,7 +974,7 @@ function TemplatePreview({
   // (Claude chat, git, the parent's MCP) and the rail would all be about the
   // cache folder, not the `s3://` object the reader opened.
   const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !remoteUrl;
-  const parts = partitionModes(templates);
+  const parts = partitionModes(offered);
 
   // --- the BORROWED companion `git`, and the parent's `mcp`, from this file's parent folder -
   // A working tree belongs to the FOLDER (templates/git/condition.py), and so does
@@ -1007,7 +1057,7 @@ function TemplatePreview({
   // the pending entry for the deep link's sake.
   // A remote cache copy never gets here with a companion in `templates`
   // (Preview drops them upstream), so this needs no remote case.
-  const contentModes = split.offered ? parts.content : templates;
+  const contentModes = split.offered ? parts.content : offered;
   const sidebarModes = split.offered ? split.all : [];
   // What the sidebar's switcher DRAWS, which is a longer list than the one above:
   // all three companions, the ones this file cannot show disabled and explaining
@@ -1166,16 +1216,9 @@ function TemplatePreview({
   // AND the git sidebar hop — round 3 findings 2 and 7), and `snapshotError`
   // is the round 3 finding 8 fix: a non-404 resolve failure used to leave
   // this pane pending forever with no way out.
-  const urlVersion = useUrlVersion();
-  const {
-    sha: snapshotSha,
-    snap: snapshotResolved,
-    pending: snapshotPending,
-    error: snapshotError,
-    retry: retrySnapshot,
-    backToLive,
-    applySelected: applySelectedSnapshot,
-  } = usePreviewSnapshot(fsPath, urlVersion);
+  // (The hook itself is called at the top of this component: the node view's
+  // snapshot rule, below `isPending`, needs `snapshotSha` before the mode
+  // lists are built.)
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
     // git sidebar to select in, and two instances racing for one window global
@@ -2034,7 +2077,7 @@ function TemplatePreview({
     else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };
-  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
+  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(offered, openMode));
   const fileMenuRef = useRef<(() => MenuEntry[]) | null>(null);
   const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef, remoteUrl);
 
@@ -2335,6 +2378,23 @@ function TemplatePreview({
              re-created by a switch away and back within the swap window. */}
             <div className="preview-frames">
             {frames.map((m) => {
+              // THE NODE VIEW (SPEC §53.3 NV-3): a canvas node file's default
+              // content mode, and the layout pane's — an embed document is
+              // this same content pane. Native: drawn by apps/canvases through
+              // the shell's registry, never a frame of /render. It paints its
+              // own loading state, so it takes over from a held frame at once.
+              if (m === NODE_MODE && contentModes.some((t) => t.mode === m && isNodeViewEntry(t))) return (
+                <NativePane
+                  key={m}
+                  className={"preview-frame" + (m === shown ? " is-shown" : "")}
+                  onReady={() => {
+                    loadedFrames.current.add(m);
+                    if (m === activeMode) setShown(m);
+                  }}
+                >
+                  <NativeView mode={NODE_MODE} path={fsPath} placement="content" />
+                </NativePane>
+              );
               // THE CONTENT PANE'S CHAT (`_mode=claude` as the main body): the
               // FULL split variant, `chatOnly` false, because the chat's own
               // left pane IS this target's preview and that is the whole point

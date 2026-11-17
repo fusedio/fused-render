@@ -817,7 +817,34 @@
   opacity: 1;
   pointer-events: auto;
 }
+/* THE ⋮ IS ONE OF THE ACTS IN A TWO-LINE HEAD (TaskHead `kebabInActs`;
+   Akshil, 2026-11-17: "show the kebab when we show fav and open icon"). It
+   sits in the acts' layer after the door, so the rules above show and hide
+   it; while its menu is open the layer stays, wherever the pointer went. A
+   head with one act alone has no such layer: its ⋮ holds its seat after the
+   slots and shows on the same trigger. */
+.task-head:has(.task-head-kebab [aria-expanded="true"]) .task-head-facts.has-acts > .task-head-facts-layer.is-a {
+  opacity: 0;
+  pointer-events: none;
+}
+.task-head:has(.task-head-kebab [aria-expanded="true"]) .task-head-facts > .task-head-facts-layer.is-b {
+  opacity: 1;
+  pointer-events: auto;
+}
+.task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s ease;
+}
+.task-head.is-window.is-two-line:is(.is-hot, :hover, :has(.task-head-kebab :focus-visible), :has(.task-head-kebab [aria-expanded="true"])) .task-head-marks > .task-head-kebab {
+  opacity: 1;
+  pointer-events: auto;
+}
 @media (hover: none) {
+  .task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {
+    opacity: 1;
+    pointer-events: auto;
+  }
   .task-head-facts.has-acts > .task-head-facts-layer.is-a {
     opacity: 0;
     pointer-events: none;
@@ -1104,8 +1131,10 @@
    after the last tag. Now the pair starts at the box's LEFT edge — the star
    the same gap from its neighbour the count had, the door right beside it
    (2026-11-16: "keep them closer") — and what is left over stands before the
-   ⋮, the row's fixed end. Nothing outside the box moves. */
-.task-head.is-two-line .task-head-facts-layer.is-b {
+   ⋮, the row's fixed end. Nothing outside the box moves. (A rail window's
+   acts carry the ⋮ itself — TaskHead `kebabInActs` — so there the layer keeps
+   the box's right edge and the ⋮ ends the row.) */
+.task-head.is-two-line:not(.is-window) .task-head-facts-layer.is-b {
   justify-self: start;
 }
 .task-head.is-two-line .task-head-countslot {

@@ -101,10 +101,11 @@ export function ancestorsOf(rel: string): string[] {
 /** The content templates on offer for a file: the server's list minus unknown
  *  sentinels (Preview does the same), minus the companions (claude/git/mcp —
  *  they talk ABOUT a file, and this pane shows one), minus `_listing` (a
- *  folder's view, never a file's). */
+ *  folder's view, never a file's), minus a NATIVE template (the canvas node
+ *  view): the shell draws it, and this pane only frames /render pages. */
 export function contentTemplates(templates: TemplateEntry[]): TemplateEntry[] {
   return partitionModes(
-    templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)),
+    templates.filter((t) => (t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)) && !t.native),
   ).content.filter((t) => t.mode !== "_listing");
 }
 
