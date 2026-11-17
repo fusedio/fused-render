@@ -799,8 +799,10 @@ function usePreviewFileMenu(
 // `_mode` (shell URL) selects among stat.templates by name (SPEC PT-9): absent
 // or unknown/stale value falls back to the default silently. The default is
 // the first UNCONDITIONAL entry (CT-12: a gated template is never the default
-// while a normal one exists) — only an all-conditional list falls back to its
-// first (by then verdict-allowed) entry.
+// while a normal one exists), with one exception: a node file's preferred
+// `udf` (PT-8 `prefer`), which is the default and holds the pane on the
+// checking placeholder until its verdict. An all-conditional list falls back
+// to its first (by then verdict-allowed) entry.
 // Both rules live in lib/mode-visibility so every mode surface resolves the
 // same way; `templates` here is already the visible list, so a gate-denied
 // `_mode` lands on the default exactly like an unknown one.
@@ -933,7 +935,8 @@ function TemplatePreview({
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
-  // switcher as a disabled spinner, not selectable, never the default.
+  // switcher as a disabled spinner, not selectable, never the default except
+  // a preferred `udf` (PT-8), which holds the pane on the checking placeholder.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
 
   // --- the content/sidebar split (`_side`) ----------------------------------

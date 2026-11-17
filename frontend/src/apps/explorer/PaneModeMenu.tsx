@@ -115,8 +115,9 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   // Visibility/pending policy lives in lib/mode-visibility, shared with
   // Preview, ListingPreviewPane and Open With so every surface offers the
   // same mode set for the same path. The default (and the trigger's
-  // fallback) is the first UNCONDITIONAL entry — a gated template is never
-  // the default while a normal one exists (CT-12).
+  // fallback) is `defaultMode`'s: the first UNCONDITIONAL entry (CT-12),
+  // except a node file's preferred `udf` (PT-8), which is the default even
+  // while its verdict is out.
   const activeMode = new URLSearchParams(splitAtLayout(query)[0]).get("_mode");
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
   const visible = visibleModes(templates, conditions);
@@ -124,9 +125,12 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
 
   const defaultEntry = defaultMode(visible) as TemplateEntry;
   // A pending entry can't be the trigger's label (it has no icon yet), so it
-  // falls back to the default too — otherwise this is the shared resolution.
+  // falls back to the first entry that is not pending — the preferred `udf`
+  // is the default while pending, so the default alone is not enough.
   const requested = effectiveActive(visible, activeMode);
-  const active = requested && !isPending(requested) ? requested : defaultEntry;
+  const settled = visible.find((t) => !isPending(t)) ?? defaultEntry;
+  const active =
+    requested && !isPending(requested) ? requested : isPending(defaultEntry) ? settled : defaultEntry;
 
   const toggle = (e: MouseEvent) => {
     e.stopPropagation();
