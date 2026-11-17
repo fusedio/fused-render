@@ -42,6 +42,27 @@ on_err() {
 }
 trap 'on_err "$LINENO" "$BASH_COMMAND"' ERR
 
+# Apple's timestamp server (productsign --timestamp) and the notarization-ticket
+# CDN (stapler) drop connections, and have been down for 25+ minutes at a time.
+# Same helper as build_dmg.sh: retry with a growing wait (20+40+80+160+240 s)
+# before letting the failure through; a real failure still aborts, located by
+# the trap above. v0.7.80 lost its arm64 pkg to productsign and v0.7.81 its
+# Intel pkg to stapler validate, both with no retry here.
+apple_retry() {
+  local attempt=1 max=6 delay="${FUSED_RENDER_APPLE_RETRY_DELAY:-20}" rc
+  until "$@"; do
+    rc=$?
+    if (( attempt >= max )); then
+      echo "    giving up on '$1 ${2:-}' after $attempt attempts (exit $rc)" >&2
+      return "$rc"
+    fi
+    echo "    '$1 ${2:-}' failed (exit $rc); retry $attempt/$((max - 1)) in ${delay}s" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2 > 240 ? 240 : delay * 2))
+  done
+}
+
 if [[ $# -ne 2 ]]; then
   echo "usage: bash scripts/build_pkg.sh <stapled-dmg> <public-dmg-url>" >&2
   exit 2
@@ -251,9 +272,14 @@ pkgutil --flatten "$EXPANDED" "$PATCHED_PKG"
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
   echo "==> productsign: $SIGN_IDENTITY"
-  productsign \
-    --sign "$SIGN_IDENTITY" --timestamp $KC_OPT \
-    "$PATCHED_PKG" "$PKG_PATH"
+  # productsign refuses to overwrite an existing output, so clear a partial
+  # file left by a failed attempt before each try.
+  _sign_pkg() {
+    rm -f "$PKG_PATH"
+    productsign --sign "$SIGN_IDENTITY" --timestamp $KC_OPT \
+      "$PATCHED_PKG" "$PKG_PATH"
+  }
+  apple_retry _sign_pkg
   pkgutil --check-signature "$PKG_PATH"
 else
   echo "==> UNSIGNED (no 'Developer ID Installer' identity; local inspection only)"
@@ -275,8 +301,8 @@ if [[ -n "${FUSED_RENDER_NOTARY_PROFILE:-}" ]]; then
     xcrun notarytool submit "$PKG_PATH" \
       --keychain-profile "$FUSED_RENDER_NOTARY_PROFILE" --wait
     echo "==> stapling notarization ticket"
-    xcrun stapler staple "$PKG_PATH"
-    xcrun stapler validate "$PKG_PATH"
+    apple_retry xcrun stapler staple "$PKG_PATH"
+    apple_retry xcrun stapler validate "$PKG_PATH"
   fi
 else
   echo "==> skipping notarization (FUSED_RENDER_NOTARY_PROFILE unset)"

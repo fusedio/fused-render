@@ -51,11 +51,12 @@ trap _build_failed ERR
 # "The timestamp service is not available", "The network connection was lost"
 # (NSURLErrorDomain -1005). Each one killed an otherwise good ~25 min release
 # build, most often the Intel DMG at stapler. Retry the call a few times, with
-# a growing wait, before letting the failure through. A real failure (a bad
+# a growing wait (20+40+80+160+240 s, about 9 minutes: Apple's timestamp
+# service has been down for 25+ minutes at a time), before letting the failure through. A real failure (a bad
 # identity, a rejected ticket) fails identically every time and still aborts,
 # located by the trap above, after about two minutes of retries.
 apple_retry() {
-  local attempt=1 max=5 delay="${FUSED_RENDER_APPLE_RETRY_DELAY:-15}" rc
+  local attempt=1 max=6 delay="${FUSED_RENDER_APPLE_RETRY_DELAY:-20}" rc
   until "$@"; do
     rc=$?
     if (( attempt >= max )); then
@@ -65,7 +66,7 @@ apple_retry() {
     echo "    '$1 ${2:-}' failed (exit $rc); retry $attempt/$((max - 1)) in ${delay}s" >&2
     sleep "$delay"
     attempt=$((attempt + 1))
-    delay=$((delay * 2 > 120 ? 120 : delay * 2))
+    delay=$((delay * 2 > 240 ? 240 : delay * 2))
   done
 }
 
