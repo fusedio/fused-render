@@ -2279,6 +2279,86 @@ def test_a_stop_while_another_sessions_turn_is_open_does_not_publish(
     assert len(_push_argvs(harness)) == 1
 
 
+def _two_sessions(harness, tmp_path, monkeypatch, fake_agent):
+    """A clone with sessions A and B both mid-turn (B's run is the live one
+    the watcher sees), and a file of B's with no row yet."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    fake_agent.live = "run-b"
+    m.agent_run_id(fresh=True)
+    m._lease_next_at = time.time() + 3600
+    runs = [{"run_id": "run-b", "backend": "claude", "sessions": {"sess-b"}},
+            {"run_id": "run-a", "backend": "claude", "sessions": {"sess-a"}}]
+    fake_agent._live_runs_in = lambda folder: iter(list(runs))
+    m.tool_hook("sess-a")
+    m.tool_hook("sess-b")
+    (harness.clones / "alpha" / "fresh.py").write_text("B's new node, row not written yet\n")
+    return m, runs
+
+
+def test_a_held_turn_end_publishes_anyway_once_the_hold_is_too_old(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """The hold is capped: turns that keep overlapping, or one that never
+    reads as ended, must not keep the folder unpublished for good. Under
+    TURN_END_HOLD_MAX_S a turn end holds (and the strip says why, offering
+    Publish now); past it the next turn end publishes, and the push clears
+    the hold."""
+    m, runs = _two_sessions(harness, tmp_path, monkeypatch, fake_agent)
+    assert m.turn_end("sess-a", m._tool_hooks["sess-a"]) == "held"
+    m._tick()                                # notes the dirty clone, as every second
+    leg = m.sync_state()["legs"]["disk_to_server"]
+    assert leg["state"] == "pending" and leg["waiting_on_session"] is True, leg
+    assert "another Claude session" in leg["reason"] and "publishing anyway in" in leg["reason"]
+    # A second Stop under the cap holds too, and does not restart the clock.
+    since = m._publish_held["since"]
+    assert m.turn_end("sess-a", m._tool_hooks["sess-a"]) == "held"
+    assert m._publish_held["since"] == since
+    assert not _push_argvs(harness)
+    m._publish_held["since"] -= canvases_mod.TURN_END_HOLD_MAX_S + 1
+    assert m.turn_end("sess-a", m._tool_hooks["sess-a"]) == "pushed"
+    assert len(_push_argvs(harness)) == 1
+    assert m._publish_held is None
+    assert any("publishing although another session's turn is still open" in (e["detail"] or "")
+               for e in m._log.since(0)["events"])
+
+
+def test_the_watcher_publishes_a_hold_past_the_cap_with_no_further_stop(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """No turn end comes after the cap runs out (B's turn goes on): the
+    watcher's debounce publishes, although a run is live."""
+    m, runs = _two_sessions(harness, tmp_path, monkeypatch, fake_agent)
+    assert m.turn_end("sess-a", m._tool_hooks["sess-a"]) == "held"
+    m._tick()                                # notes the dirty clone
+    m._dirty_since = time.time() - canvases_mod.DEBOUNCE_S - 1
+    m._tick()
+    assert not _push_argvs(harness), "under the cap, a live run still holds the debounce"
+    m._publish_held["since"] -= canvases_mod.TURN_END_HOLD_MAX_S + 1
+    m._tick()
+    assert len(_push_argvs(harness)) == 1
+    assert m._publish_held is None
+
+
+def test_a_turn_that_starts_after_the_check_still_holds_the_publish(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """B's turn opens after A's turn end checked (during the merge download
+    or the pre-push probe): the fence at the push's freeze re-checks other
+    sessions, so B's half-done files are not published."""
+    m, runs = _two_sessions(harness, tmp_path, monkeypatch, fake_agent)
+    calls = {"n": 0}
+
+    def opens_late(folder):
+        calls["n"] += 1
+        return iter([] if calls["n"] == 1 else list(runs))
+
+    fake_agent._live_runs_in = opens_late
+    assert m.turn_end("sess-a", m._tool_hooks["sess-a"]) == "held"
+    assert calls["n"] >= 2
+    assert not _push_argvs(harness)
+    assert m._publish_held is not None
+    toml = (harness.clones / "alpha" / "canvas.toml").read_text()
+    assert "fresh" not in toml
+
+
 def test_a_turn_end_publishes_when_the_other_turns_cannot_be_told_apart(
         harness, tmp_path, monkeypatch, fake_agent):
     """Fail open: a lookup that raises, a run naming no session, or a Stop

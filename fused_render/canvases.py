@@ -302,6 +302,11 @@ SNAPSHOT_LOCK_WAIT_S = 1.0
 # the disk→canvas leg reads "held" with the names, the log says so once, and
 # the page is asked to send the frame a full state (`embed_heal_seq`).
 EMBED_SKIP_STREAK_ACKS = 3
+# A turn end held because ANOTHER session's turn is open in the clone
+# (`turn_end`) publishes anyway once the hold is this old — at the next turn
+# end or watcher tick. Turns that keep overlapping, or a turn that never
+# reads as ended, would otherwise keep the folder unpublished for good.
+TURN_END_HOLD_MAX_S = 180.0
 EMBED_SKIP_STREAK_S = 10.0
 # stop()'s bound on joining the watcher thread. A push still inside its CLI
 # can hold that thread for up to PUSH_TIMEOUT; the quit rung terminates the
@@ -3317,6 +3322,10 @@ class _SyncManager:
         # page answers a move with a full state for the frame.
         self._skip_streak: dict | None = None
         self._embed_heal_seq = 0
+        # A turn end held for another session's open turn: {since, run_id},
+        # or None. Cleared by the next push; past TURN_END_HOLD_MAX_S the
+        # watcher publishes even while a run is live (`_tick`).
+        self._publish_held: dict | None = None
         self._embed_applied: dict[tuple[int, int], dict] = {}
         self._gen_applied_max: dict[int, int] = {}
         # Causality between the two legs (audit 2026-11-10): the highest delta
@@ -5129,6 +5138,8 @@ class _SyncManager:
                 self._dirty_since = self._dirty_since or time.time()
             self._push_started_at = None
             self.push_state = "pending" if moved else "idle"
+            # Published: a turn end held for another session's turn is moot.
+            self._publish_held = None
             # Last: `status()` reads without the lock, so a reader that sees
             # the new push_seq must already see the push settled, not
             # push_seq 1 with push_state still "pushing".
@@ -5304,7 +5315,10 @@ class _SyncManager:
             # a hosted tab does not save over a server it has not looked
             # at, and neither does this one; or while another owner has the
             # canvas checked out (its lease).
-            if not live and self.server_stale is None and not self._leased_elsewhere():
+            # A turn end held for another session's turn past
+            # TURN_END_HOLD_MAX_S publishes now, live run or not.
+            if ((not live or self._publish_hold_expired())
+                    and self.server_stale is None and not self._leased_elsewhere()):
                 # Non-blocking: a manual push or a pull in flight already
                 # owns the network leg; this tick just skips. The pause
                 # count is re-read UNDER the flight lock — pause() raises
@@ -5606,6 +5620,16 @@ class _SyncManager:
                            detail="a newer turn started in this folder; its own turn end publishes")
             return "superseded"
 
+        def held_for(other: str) -> str:
+            if self._publish_held is None:
+                self._publish_held = {"since": time.time(), "run_id": other}
+                self._bump()
+            self.log_event("disk_to_server", "turn end", ok=False,
+                           detail="publish held: another session's turn is still open "
+                                  "in this folder; its turn end publishes (or the watcher, "
+                                  f"after {TURN_END_HOLD_MAX_S / 60:g} min)")
+            return "held"
+
         self.agent_run_id(fresh=True)
         if not self._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
             self.log_event("disk_to_server", "turn end", ok=False,
@@ -5616,25 +5640,45 @@ class _SyncManager:
                 return "busy"
             if superseded():
                 return gave_way()
-            if self._other_live_turn(session_id):
+            other = self._other_live_turn(session_id)
+            if other and not self._publish_hold_expired():
                 # Another session is mid-turn in this folder: its change set
-                # is half-done (a file without its row, a rename without its
-                # canvas.toml edit), and publishing now would ship it — rows
-                # reconciled for its new files at the canvas's edge, old
+                # may be half-done (a file without its row, a rename without
+                # its canvas.toml edit), and publishing now would ship it —
+                # rows reconciled for its new files at the canvas's edge, old
                 # names removed from the server. Neither merge nor push: the
-                # other session's own Stop publishes, and the debounce
-                # backstop does once no run is live (`_tick`).
+                # other session's own Stop publishes, the debounce backstop
+                # does once no run is live, and either publishes anyway once
+                # the hold is TURN_END_HOLD_MAX_S old (`_tick`): a turn that
+                # never ends, or turns that keep overlapping, must not keep
+                # the folder unpublished for good.
+                return held_for(other)
+            if other:
                 self.log_event("disk_to_server", "turn end", ok=False,
-                               detail="publish held: another session's turn is still open "
-                                      "in this folder; its turn end publishes")
-                return "held"
+                               detail=f"publishing although another session's turn is still "
+                                      f"open: held for over {TURN_END_HOLD_MAX_S / 60:g} min")
+            else:
+                self._publish_held = None
+            capped = bool(other)
+
+            def fenced() -> bool:
+                # Re-checked after the network legs, at the merge and at the
+                # push's freeze: another session's turn may have started since
+                # the check above (unless the hold already ran out).
+                return superseded() or (not capped and bool(self._other_live_turn(session_id)))
+
+            def fenced_out() -> str:
+                if superseded():
+                    return gave_way()
+                return held_for(self._other_live_turn(session_id) or "unknown")
+
             what = "idle"
             if self.server_stale is not None:
                 cli = fused_cli()
                 if cli is not None and _shim_manifest_command(cli) is not None:
-                    merged = self._merge_now(fence=superseded)
+                    merged = self._merge_now(fence=fenced)
                     if merged.get("code") == "superseded":
-                        return gave_way()
+                        return fenced_out()
                     if merged.get("ok"):
                         what = "merged"
             if self.server_stale is not None or self._leased_elsewhere():
@@ -5646,15 +5690,21 @@ class _SyncManager:
             dirty = (self._dirty_since is not None
                      or self._take_fingerprint() != self._fingerprint)
             if dirty:
-                if superseded():
-                    return gave_way()
+                if fenced():
+                    return fenced_out()
                 self.log_event("disk_to_server", "turn end", detail="publishing the folder")
-                if self._push(fence=superseded) == "busy" and superseded():
-                    return gave_way()
+                if self._push(fence=fenced) == "busy" and fenced():
+                    return fenced_out()
                 return "pushed"
             return what
         finally:
             self._flight_lock.release()
+
+    def _publish_hold_expired(self) -> bool:
+        """A turn end held for another session's open turn (`_publish_held`)
+        TURN_END_HOLD_MAX_S ago or more: publish anyway."""
+        held = self._publish_held
+        return held is not None and time.time() - held["since"] >= TURN_END_HOLD_MAX_S
 
     def _other_live_turn(self, session_id: str) -> str:
         """The run id of a turn open in this clone that belongs to a session
@@ -6996,11 +7046,21 @@ class _SyncManager:
             d2s = {"state": "held", "oldest_age_ms": age(dirty), "reason": self._lease_reason()}
         elif ps == "pending" or dirty is not None:
             reason = None
+            waiting = False
             if self._paused():
                 reason = "sync is paused"
+            elif self._publish_held is not None:
+                left = max(0, int(TURN_END_HOLD_MAX_S - (time.time() - self._publish_held["since"])))
+                reason = ("waiting for another Claude session in this folder to finish its "
+                          f"turn; publishing anyway in {left // 60}:{left % 60:02d}")
+                waiting = True
             elif self._agent_run_id:
                 reason = "waiting for the Claude session in this folder to finish"
-            d2s = {"state": "pending", "oldest_age_ms": age(dirty), "reason": reason}
+                waiting = True
+            d2s = {"state": "pending", "oldest_age_ms": age(dirty), "reason": reason,
+                   # The page offers "Publish now" (sync/push) while a session
+                   # is what the publish waits on.
+                   "waiting_on_session": waiting}
         else:
             d2s = {"state": "idle", "oldest_age_ms": None, "reason": None}
         d2s["last_push_at"] = self.last_push_at

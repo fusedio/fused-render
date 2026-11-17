@@ -238,6 +238,7 @@ import {
   type AiToolDefinition,
   type AiStreamError,
   checkRemote,
+  publishCanvas,
   pullCanvas,
   startSync,
   takeoverSync,
@@ -1270,6 +1271,21 @@ export default function CanvasWorkspace({
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [nodePath, nodeFileOnDisk, sync?.disk_rev]);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const onPublish = useCallback(async () => {
+    setPublishBusy(true);
+    setPublishError(null);
+    try {
+      const s = await publishCanvas(env, name);
+      if (!s.ok) setPublishError(s.error ?? "Publish failed");
+      void getSyncState(env, name).then(applyState, () => undefined);
+    } catch (e) {
+      setPublishError((e as Error).message);
+    } finally {
+      setPublishBusy(false);
+    }
+  }, [env, name]);
   const onPull = useCallback(async (hard = false) => {
     setPullBusy(true);
     setPullError(null);
@@ -2202,7 +2218,10 @@ export default function CanvasWorkspace({
             return;
           } catch (e) {
             const status = (e as { status?: number }).status;
-            if (status === 409 && Date.now() - started <= DELTA_RETRY_WINDOW_MS) {
+            // A full state is asked once (a hello, a heal on `embed_heal_seq`)
+            // and nothing re-asks it if it is lost: any failure retries
+            // within the window, not only a busy clone.
+            if ((status === 409 || full) && Date.now() - started <= DELTA_RETRY_WINDOW_MS) {
               await new Promise((r) => window.setTimeout(r, DELTA_RETRY_MS));
               continue;
             }
@@ -3377,6 +3396,7 @@ export default function CanvasWorkspace({
           disabled: pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
           onPull: () => void onPull(),
         }}
+        publish={{ busy: publishBusy, error: publishError, onPublish: () => void onPublish() }}
       />
       {drawerOpen && (sync || owned) && (
         <SyncDrawer
