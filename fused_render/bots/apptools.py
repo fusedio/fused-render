@@ -24,8 +24,7 @@ second file, `linked_apps.json`, has no fused-render counterpart.
 Connected services (SPEC-connect-oauth §4, §11 "Bots bridge") sit in the same
 roster: `registry()` appends one ToolRec per `fused_render.connect.tools.
 list_tools(key)` entry of every provider, with `app_dir = "connect:<key>"`
-(there is no folder) and `spec` the connect ToolSpec. They are not gated by
-`available()` (that is about the bundled runner for LOCAL apps) and not held
+(there is no folder) and `spec` the connect ToolSpec. They are not held
 in this module's cache (connect caches its own tools/list for 60 s; a second,
 longer cache here would keep a disconnected service's tools callable).
 `run_tool` sends them to `connect.tools.call_tool`, `is_write` reads the
