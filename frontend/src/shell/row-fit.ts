@@ -756,6 +756,34 @@ export const PEEK_HEAD_DROPS = [
  * component's own layout. `taskHeadNeed` below is what the rungs are measured
  * by: both rows, so a rung can answer either row's overflow.
  */
+/**
+ * A TWO-LINE PANEL OR PANE HAS ITS OWN ORDER (TaskHead `twoLine`; Akshil,
+ * 2026-11-17: "first expand PR tags and WT tags, then if space expand these
+ * icon + word buttons"). Its title is on row 2, so row 1 is the place, the
+ * tags, a pane's tools and the facts — and what gives, cumulatively, is:
+ *
+ *   1. the tools' WORDS (Screenshot, Comment, Annotate become icon buttons);
+ *   2. the worktree pill (the chat's portaled seat);  3. the other tags;
+ *   4. the time;  5. the tools themselves;  6. the ↑↓ chevrons;
+ *   7. the place and the where-tag are cut.
+ *
+ * The stylesheet still folds off the one-row ladder's `data-fit`, so each rung
+ * here names the one-row rung whose folds it wears (`TASK_HEAD_PANEL_FIT`);
+ * rung 1 has none and is a class of its own (`is-seats-tight`).
+ */
+export const TASK_HEAD_PANEL_DROPS = [
+  ".task-head-seats .c-lbl",
+  ".task-head-chips-host",
+  ".task-head-chips",
+  ".task-head-time",
+  ".task-head-seats",
+  ".task-head-nav",
+  ".task-head-place, .task-head-where",
+] as const;
+
+/** The one-row rung (`data-fit`) each two-line panel rung wears, by level. */
+export const TASK_HEAD_PANEL_FIT = [0, 0, 1, 2, 3, 5, 6, 7] as const;
+
 export const TASK_HEAD_DROPS = [
   ".task-head-where .place-tag-word, .task-head-chips-host",
   ".task-head-chips",
@@ -797,7 +825,6 @@ export function taskHeadNeed(head: HTMLElement): number {
   // (A measured stand-in in a test has no attributes; it reads as rung 0.)
   const level = typeof head.getAttribute === "function" ? Number(head.getAttribute("data-fit")) || 0 : 0;
   const isWindow = !!head.classList?.contains?.("is-window");
-  const twoLine = !!head.classList?.contains?.("is-two-line");
   let need = 0;
   for (const row of Array.from(head.children) as HTMLElement[]) {
     const cls = typeof row.className === "string" ? row.className.split(" ") : [];
@@ -816,8 +843,7 @@ export function taskHeadNeed(head: HTMLElement): number {
       // (task-head.css, "IN A RAIL WINDOW NOTHING MOVES", 2026-11-16): every
       // seat holds its box, so what is measured is what it needs. A panel's
       // folded time slot still opens under the pointer and is charged for it.
-      // (Nor does a two-line panel fold its time: task-head.css.)
-      if (!isWindow && !twoLine && level >= TASK_HEAD_FACTS_LEVEL) rowWants += hoverDelta(row, ".task-head-timeslot");
+      if (!isWindow && level >= TASK_HEAD_FACTS_LEVEL) rowWants += hoverDelta(row, ".task-head-timeslot");
     }
     need = Math.max(need, rowWants);
   }

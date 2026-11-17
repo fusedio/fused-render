@@ -31,9 +31,37 @@ export function PrPopList({ refs }: { refs: PrRef[] }) {
   );
 }
 
-export function TaskPrChip({ task }: { task: Task }) {
+/**
+ * `collapsed`: every pull request behind one "+N" (Akshil, 2026-11-17: "in
+ * this view where we have buttons we directly do 1 +x, we don't show PR and
+ * WT tags more than one") — for a head that already shows a tag (the worktree
+ * pill) beside a pane's tools.
+ */
+export function TaskPrChip({ task, collapsed = false }: { task: Task; collapsed?: boolean }) {
   const refs = prRefsOf(task).filter((r) => r.repo);
   if (!refs.length) return null;
+  if (collapsed) {
+    return (
+      <span className="task-pr-chips">
+        <Popover>
+          <PopoverTrigger
+            render={
+              <button
+                type="button"
+                className="task-pr-more"
+                aria-label={`${refs.length} pull request${refs.length === 1 ? "" : "s"}`}
+              />
+            }
+          >
+            +{refs.length}
+          </PopoverTrigger>
+          <PopoverContent className="task-pr-pop" align="start">
+            <PrPopList refs={refs} />
+          </PopoverContent>
+        </Popover>
+      </span>
+    );
+  }
   const head = refs[0];
   const rest = refs.slice(1);
   const href = prUrl(head) ?? undefined;

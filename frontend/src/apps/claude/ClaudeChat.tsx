@@ -5984,6 +5984,21 @@ function ChatBody(props: ChatBodyProps) {
         ) : null}
       </span>
     ) : null;
+  // ONE TAG, THEN "+x", BESIDE A PANE'S TOOLS (Akshil, 2026-11-17: "in this
+  // view where we have buttons we directly do 1 +x — we don't show PR and WT
+  // tags more than one because we also have buttons"): where the head seats
+  // tools and already shows the worktree tag, every pull request goes behind
+  // one "+N". With no worktree tag the first PR is the tag ("PR #12 +2").
+  const headHasTools = (!!annTarget && !props.noAnnTools) || !!canvasShotSeat;
+  const headChipsExtra =
+    props.prChip && head.task ? (
+      <>
+        <TaskPrChip task={head.task} collapsed={headHasTools && !!(shownHint || worktreeMenu)} />
+        {props.headerExtra}
+      </>
+    ) : (
+      props.headerExtra
+    );
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
@@ -6024,7 +6039,7 @@ function ChatBody(props: ChatBodyProps) {
           <>
             {shownHint ? null : worktreeMenu}
             <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
-            {headerExtra}
+            {headChipsExtra}
           </>
         ) : null
       }

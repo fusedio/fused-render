@@ -520,11 +520,11 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(css).not.toContain(`.task-head.is-window:not(.is-stacked)${from(3)} ${facts} {\n  width: 0;`);
   expect(css).not.toContain(".task-head.is-window .task-head-kebab {\n  width: 0;");
   // A panel or a pane gives the time alone; the count stays.
-  expect(css).toContain(`.task-head:not(.is-window):not(.is-two-line)${from(3)} .task-head-timeslot {\n  width: 0;`);
+  expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot {\n  width: 0;`);
   // Short on width, a panel's or a pane's door is its ↗ alone; a rail
   // window's two-line head keeps the word at every width (2026-11-16) — only
   // a window head that is not two lines (no task) folds it, from rung 5.
-  expect(css).toContain(`.task-head:not(.is-window):not(.is-two-line)${from(3)} .task-head-timeslot .task-head-open-word,`);
+  expect(css).toContain(`.task-head:not(.is-window)${from(3)} .task-head-timeslot .task-head-open-word,`);
   expect(css).toContain(`.task-head.is-window:not(.is-two-line)${from(5)} :is(.task-head-facts, .task-head-timeslot) .task-head-open-word {`);
   expect(css).not.toContain(`.task-head.is-window${from(5)} :is(.task-head-facts, .task-head-timeslot)`);
   // A rail window's ⋮ always stands (2026-11-16): no rule hides it or holds
@@ -586,7 +586,10 @@ test("a panel or a pane that asks wears the rail window's two lines, keeping its
   const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
   expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\) \.task-head-crumb \{\s*flex: 0 0 auto;/);
   expect(css).toMatch(/\.task-head\.is-two-line:not\(\.is-window\)\[data-fit="7"\] \.task-head-crumb > :is\(\.task-head-place, \.task-head-where\) \{\s*flex: 0 1 auto;\s*max-width: 96px;/);
-  expect(css).not.toContain('.task-head:not(.is-window):is([data-fit="3"]');
+  // The tools' words go first (a class, not a rung of `data-fit`), and the
+  // acts start at the facts' left edge so no hole follows the last tag.
+  expect(css).toMatch(/\.task-head\.is-seats-tight \.task-head-seats \.c-anncta \{\s*--c-annlbl: none;/);
+  expect(css).toMatch(/\.task-head\.is-two-line \.task-head-facts-layer\.is-b \{\s*justify-self: start;/);
 });
 
 test("reveal: a rail window says so in its class; a panel or a pane does not", () => {
@@ -974,4 +977,29 @@ test("a rail window's facts and acts are two layers of one box; a panel keeps th
   expect(byClass(pane, "task-head-facts")).toHaveLength(0);
   expect(byClass(pane, "task-head-countslot")).toHaveLength(1);
   expect(byClass(pane, "task-head-timeslot")).toHaveLength(1);
+});
+
+test("a two-line panel folds in its own order: the tools' words, then the tags, the time, the tools (2026-11-17)", async () => {
+  const { TASK_HEAD_PANEL_DROPS, TASK_HEAD_PANEL_FIT } = await import("./row-fit");
+  expect([...TASK_HEAD_PANEL_DROPS]).toEqual([
+    ".task-head-seats .c-lbl",
+    ".task-head-chips-host",
+    ".task-head-chips",
+    ".task-head-time",
+    ".task-head-seats",
+    ".task-head-nav",
+    ".task-head-place, .task-head-where",
+  ]);
+  // One `data-fit` per level (rung 0 included); the words' rung wears no
+  // one-row fold — it is the `is-seats-tight` class — and the one-row rung 4
+  // (the title's row) is never worn: the title is already on row 2.
+  expect([...TASK_HEAD_PANEL_FIT]).toEqual([0, 0, 1, 2, 3, 5, 6, 7]);
+  expect(TASK_HEAD_PANEL_FIT).toHaveLength(TASK_HEAD_PANEL_DROPS.length + 1);
+  // Wide: nothing folded, no class.
+  const wide = render(head({ twoLine: true }), 2000);
+  expect(headNode(wide).props["data-fit"]).toBe(0);
+  expect(cls(headNode(wide))).not.toContain("is-seats-tight");
+  // A rail window keeps the one-row ladder and never wears the class.
+  const win = render(head({ reveal: "window" }), 100);
+  expect(cls(headNode(win))).not.toContain("is-seats-tight");
 });

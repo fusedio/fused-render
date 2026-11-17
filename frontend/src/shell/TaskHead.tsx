@@ -90,7 +90,14 @@ import { IdentityChip } from "./ScheduleTaskViews";
 import { QueuedCaption, TaskPeekWho } from "./TaskPeekWho";
 import { TaskFileSeat, type FiledKind } from "./TaskFileSeat";
 import { basename, taskColumn, taskWhen } from "./tasks-lib";
-import { TASK_HEAD_DROPS, TASK_HEAD_STACK_LEVEL, taskHeadNeed, useStripFit } from "./row-fit";
+import {
+  TASK_HEAD_DROPS,
+  TASK_HEAD_PANEL_DROPS,
+  TASK_HEAD_PANEL_FIT,
+  TASK_HEAD_STACK_LEVEL,
+  taskHeadNeed,
+  useStripFit,
+} from "./row-fit";
 
 export interface TaskHeadLead {
   kind: "close" | "back";
@@ -282,6 +289,8 @@ const DROPS_ALL: readonly string[] = TASK_HEAD_DROPS;
 /** `stacked: false`: the same rungs less the id slot's; the title's rung
  *  folds nothing (the component never stacks), so the ladder walks past it. */
 const DROPS_NO_STACK: readonly string[] = TASK_HEAD_DROPS.slice(0, TASK_HEAD_DROPS.length - 1);
+/** A two-line panel's own order: the tools' words first, then the tags. */
+const DROPS_PANEL: readonly string[] = TASK_HEAD_PANEL_DROPS;
 
 export function TaskHead({
   lead,
@@ -332,15 +341,36 @@ export function TaskHead({
   // The icon picker is open (the marks half tells the title half, which holds
   // the id slot once the head is stacked).
   const [picking, setPicking] = useState(false);
+  const isWindow = reveal === "window";
+  // A RAIL WINDOW'S TASK HEAD IS ALWAYS TWO LINES (Akshil, 2026-11-16: "in
+  // rail every task layout is a simple two-liner"), at every width:
+  //
+  //   [pin][←]  folder › file ……………… [chips] count · time  [⋮]
+  //   status · id · title · reply
+  //
+  // Row 1 says where the task lives and its facts; row 2 is the task itself.
+  // Nothing in it folds to an icon: the where-tag and the door keep their
+  // words (task-head.css `.is-two-line`).
+  //
+  // A PANEL OR A PANE THAT ASKS (`twoLine`, 2026-11-17) wears the same two
+  // lines — and keeps them for a chat with no task row yet (the fallback
+  // title, the skeleton), so the head does not grow a row when the task lands.
+  const twoLine = isWindow ? !!task : twoLineAsked && !!(task || title || pending);
+  // …and folds in its own order (row-fit `TASK_HEAD_PANEL_DROPS`): the tools'
+  // words, then the tags, then the time, then the tools.
+  const panelLadder = twoLine && !isWindow;
   // Measured on the whole head — both rows — so a rung can answer either.
-  const [fit, headRef] = useStripFit(
-    stacked === false ? DROPS_NO_STACK : DROPS_ALL,
+  const [level, headRef] = useStripFit(
+    panelLadder ? DROPS_PANEL : stacked === false ? DROPS_NO_STACK : DROPS_ALL,
     fitEnabled,
     taskHeadNeed,
-    // A new title (or another task) is a new row to measure from rung 0.
-    `${task?.key ?? ""}\n${queue?.title ?? task?.title ?? ""}`,
+    // A new title (or another task) is a new row to measure from rung 0 — and
+    // so is the other ladder.
+    `${task?.key ?? ""}\n${queue?.title ?? task?.title ?? ""}\n${panelLadder ? "panel" : ""}`,
   );
-  const isWindow = reveal === "window";
+  // The one-row rung whose folds the stylesheet draws (`data-fit`).
+  const fit = panelLadder ? (TASK_HEAD_PANEL_FIT[level] ?? 7) : level;
+  const seatsTight = panelLadder && level >= 1;
   // THE WHOLE WINDOW IS THE TRIGGER (Akshil, 2026-11-15): the b items show
   // while the pointer is anywhere on the card the head tops — not only on the
   // 44px line — or the keyboard is inside it (2026-11-16).
@@ -421,21 +451,6 @@ export function TaskHead({
   // is only for small windows, not for expanded sidebar") — the ladder never
   // stacks a panel or a pane; one is two lines only when its host asks
   // (`twoLine`, 2026-11-17).
-  //
-  // A RAIL WINDOW'S TASK HEAD IS ALWAYS TWO LINES (Akshil, 2026-11-16: "in
-  // rail every task layout is a simple two-liner"), at every width:
-  //
-  //   [pin][←]  folder › file ……………… [chips] count · time  [⋮]
-  //   status · id · title · reply
-  //
-  // Row 1 says where the task lives and its facts; row 2 is the task itself.
-  // Nothing in it folds to an icon: the where-tag and the door keep their
-  // words (task-head.css `.is-two-line`).
-  //
-  // A PANEL OR A PANE THAT ASKS (`twoLine`, 2026-11-17) wears the same two
-  // lines — and keeps them for a chat with no task row yet (the fallback
-  // title, the skeleton), so the head does not grow a row when the task lands.
-  const twoLine = isWindow ? !!task : twoLineAsked && !!(task || title || pending);
   const stackedNow =
     twoLine || stacked === true || (stacked === "auto" && isWindow && fit >= TASK_HEAD_STACK_LEVEL);
   /** The heading the dialog is named by, when there is a dialog (`titleId`). */
@@ -686,6 +701,7 @@ export function TaskHead({
         (stackedNow ? " is-stacked" : "") +
         (isWindow ? " is-window" : "") +
         (twoLine ? " is-two-line" : "") +
+        (seatsTight ? " is-seats-tight" : "") +
         (hot ? " is-hot" : "") +
         (refiled ? " is-refiled" : "") +
         (className ? ` ${className}` : "")
