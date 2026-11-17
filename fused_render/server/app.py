@@ -1377,6 +1377,13 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     @on_startup
     async def _startup_experts():
+        # The spawn side (claude_agent/agent.py) reads these two off sys.modules and never imports them itself:
+        # task sessions are offered the expert tools only once both are loaded, so load them before any spawn.
+        try:
+            import fused_render.bots.registry  # noqa: F401
+            import fused_render.experts.store  # noqa: F401
+        except Exception:  # noqa: BLE001 — no expert tools offered, never a failed startup
+            logger.warning("could not load the experts modules", exc_info=True)
         if _platform.IS_WINDOWS:
             return
         try:
