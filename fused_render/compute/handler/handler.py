@@ -264,6 +264,8 @@ def lambda_handler(event, context):
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=child_timeout,
                 env=runner_env,
             )

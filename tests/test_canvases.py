@@ -736,7 +736,7 @@ def test_create_canvas_seeds_the_starter_udf_on_the_server(harness, tmp_path):
     harness.set_scenario({"push_capture": str(shipped), "pull_files": {"canvas.toml": ""}})
     res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
     assert res.status_code == 200
-    pushes = [c for c in harness.calls() if c[1:3] == ["canvas", "push"]]
+    pushes = [c for c in harness.calls() if c[:2] == ["canvas", "push"]]
     assert len(pushes) == 1 and pushes[0][-2:] == ["--canvas", "gamma"]
     assert "@fused.udf" in (shipped / "udf.py").read_text(encoding="utf-8")
     doc = canvas_snapshot._load_toml(str(shipped / "canvas.toml"))
@@ -757,7 +757,7 @@ def test_create_canvas_does_not_seed_a_canvas_that_has_nodes(harness):
         harness.set_scenario({"pull_files": files})
         res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
         assert res.status_code == 200
-        assert not [c for c in harness.calls() if c[1:3] == ["canvas", "push"]], files
+        assert not [c for c in harness.calls() if c[:2] == ["canvas", "push"]], files
 
 
 def test_create_canvas_succeeds_when_seeding_fails(harness):
@@ -769,7 +769,7 @@ def test_create_canvas_succeeds_when_seeding_fails(harness):
         res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
         assert res.status_code == 200
         assert res.json() == {"ok": True, "name": "gamma"}
-        assert bool([c for c in harness.calls() if c[1:3] == ["canvas", "push"]]) is pushed
+        assert bool([c for c in harness.calls() if c[:2] == ["canvas", "push"]]) is pushed
 
 
 def test_create_canvas_rejects_bad_names(harness):
