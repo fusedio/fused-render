@@ -701,6 +701,110 @@
   border-color: color-mix(in srgb, var(--fg) 75%, transparent);
   transition-delay: 0s;
 }
+/* …AND THE RIGHT SIDE, ON A FLOATING WINDOW ONLY (rail-move-lib; owner,
+   2026-11-17: "the right edge is free now"): the left grips mirrored. */
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br {
+  right: -6px;
+  width: 18px;
+  height: 18px;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr {
+  top: -6px;
+  cursor: nesw-resize;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br {
+  bottom: -6px;
+  cursor: nwse-resize;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-r {
+  z-index: 2;
+  right: -4px;
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
+  cursor: ew-resize;
+}
+.rail-grip-ring.is-r {
+  -webkit-mask-image: linear-gradient(to left, black 11px, transparent 24px);
+  mask-image: linear-gradient(to left, black 11px, transparent 24px);
+}
+.rail-grip-ring.is-tr {
+  -webkit-mask-image: radial-gradient(circle at 100% 0, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 100% 0, black 14px, transparent 44px);
+}
+.rail-grip-ring.is-br {
+  -webkit-mask-image: radial-gradient(circle at 100% 100%, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 100% 100%, black 14px, transparent 44px);
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-r:hover ~ .rail-grip-ring.is-r,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr:hover ~ .rail-grip-ring.is-tr,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br:hover ~ .rail-grip-ring.is-br {
+  opacity: 1;
+  transition-delay: 80ms;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-r.is-active ~ .rail-grip-ring.is-r,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr.is-active ~ .rail-grip-ring.is-tr,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br.is-active ~ .rail-grip-ring.is-br {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--fg) 75%, transparent);
+  transition-delay: 0s;
+}
+/* A PINNED WINDOW MOVES BY ITS HEAD'S FIRST ROW (useCardMove; owner,
+   2026-11-17: "instead of whole header draggable now the colored part 1st of
+   the header is draggable for pinned chats"): `.is-movable` on the card's box
+   while it is pinned, and the grab is the row the pin colours (task-head.css
+   "A PINNED RAIL WINDOW'S FIRST ROW"; rail-move-lib `RAIL_HEAD_SELECTOR`,
+   `POPOVER_HEAD_SELECTOR`) — the shared head's row 1, or a one-row head's
+   row. The title's row keeps its text cursor's ways. Its controls keep their
+   own cursor: a zero-specificity reset that any rule of theirs outranks. */
+:is(.claude-rail-peek, .modal-popover).is-movable
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
+  cursor: grab;
+  touch-action: none;
+}
+:where(:is(.claude-rail-peek, .modal-popover).is-movable :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *))
+  :where(button, input, textarea, select, [contenteditable]) {
+  cursor: auto;
+}
+:where(:is(.claude-rail-peek, .modal-popover).is-movable :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *))
+  :where(a[href]) {
+  cursor: pointer;
+}
+/* …under the drag: no glide (the box follows the pointer every frame), no
+   text selection; and the page's frames take no pointer, so a drag over the
+   canvas or an app keeps its pointer stream (`.rail-card-moving` on <html>;
+   the app page seam's own trick, app-page.css). */
+.claude-rail-peek.is-dragging,
+.claude-rail-peek.is-dragging .claude-rail-peek-card,
+.modal-popover.is-dragging .modal-dialog {
+  transition: none;
+}
+:is(.claude-rail-peek, .modal-popover).is-dragging
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
+  cursor: grabbing;
+}
+html.rail-card-moving {
+  user-select: none;
+  -webkit-user-select: none;
+}
+html.rail-card-moving iframe {
+  pointer-events: none;
+}
+/* LAST PRESSED ON TOP (rail-move-lib `raised`; owner, 2026-11-17): with
+   either window floating, the one pressed last steps over the other — the
+   top of the rail cards' band (45–48), never over a dialog, the hint panel
+   or the magnet's guide. The door cards' own ids are named so their rule
+   (46) does not outrank it. */
+.claude-rail-peek.is-front,
+#claude-rail-tasks-peek.is-front,
+#claude-rail-bots-peek.is-front,
+#claude-rail-git-peek.is-front,
+#claude-rail-fav-peek.is-front,
+#claude-rail-bot-peek.is-front,
+.modal-popover.is-front {
+  z-index: 48;
+}
 /* THE WIDTH MAGNET'S GUIDE (card-snap.ts, owner 2026-11-10): one line on
    <body> along the left edge two stacked cards share once a width drag
    snapped them level — a quiet grey, dashed (owner, 2026-11-10: "shouldn't
@@ -717,6 +821,15 @@
 }
 .rail-snap-guide.is-on {
   opacity: 1;
+}
+/* …AND ITS HORIZONTAL TWIN, for the edge magnet of a pinned window's head
+   drag (card-snap `setSnapGuideH`; owner, 2026-11-17): the same dashed line
+   laid along a top or bottom edge. */
+.rail-snap-guide.is-h {
+  width: auto;
+  height: 0;
+  border-left: 0;
+  border-top: 1px dashed color-mix(in srgb, var(--fg) 35%, transparent);
 }
 .claude-rail-peek-card {
   flex: 1 1 auto;
