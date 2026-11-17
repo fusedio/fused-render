@@ -66,8 +66,10 @@ def test_chat_row_only_when_memory_changed(expert):
     assert sessions.note_chat(expert, before, "hello") is None
     assert sessions.rows(expert) == []
     append_memory(expert, "- [1 · 2026-11-17] Told in chat.")
-    row = sessions.note_chat(expert, before, "remember: told in chat " + "x" * 600)
+    t0 = time.time() - 30  # the turn began before the row is noted at its end
+    row = sessions.note_chat(expert, before, "remember: told in chat " + "x" * 600, t0)
     assert row["kind"] == "chat" and row["status"] == "done" and row["transcript"] == []
+    assert row["started"] == t0 and row["started"] < row["ended"]
     assert "Told in chat" in row["memory_diff"] and len(row["trigger"]["message"]) == 500
     assert [r["kind"] for r in sessions.rows(expert)] == ["chat"]
 

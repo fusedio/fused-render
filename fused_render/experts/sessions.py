@@ -237,8 +237,8 @@ def _shown(row: dict) -> dict:
     return row
 
 
-def _new_row(kind: str, trigger) -> dict:
-    started = time.time()
+def _new_row(kind: str, trigger, started=None) -> dict:
+    started = started if isinstance(started, (int, float)) and started > 0 else time.time()
     return {"id": f"{int(started * 1000):013d}-{uuid.uuid4().hex[:6]}", "kind": kind, "started": started,
             "ended": None, "status": "running", "trigger": trigger if isinstance(trigger, dict) else {},
             "transcript": [], "memory_diff": ""}
@@ -276,16 +276,17 @@ def changes(bot, limit: int = CHANGES_SHOWN) -> list:
     return out
 
 
-def note_chat(bot, before, message: str) -> dict | None:
+def note_chat(bot, before, message: str, started=None) -> dict | None:
     """After a chat turn (bots/agent_engine.run, under the write lock): a `chat` row when memory.md changed from
-    `before`, else nothing (and then memory.md's "as a session left it" mark stays where it was)."""
+    `before`, else nothing (and then memory.md's "as a session left it" mark stays where it was). `started`: when
+    the turn began (`bot.task_started`); the row is noted at its end, which is `ended`."""
     if before is None:
         return None
     d = diff(before, store.memory(bot))
     if not d:
         return None
     _mark_left(bot)
-    rec = _new_row("chat", {"message": str(message or "")[:500]})
+    rec = _new_row("chat", {"message": str(message or "")[:500]}, started)
     rec.update(ended=time.time(), status="done", memory_diff=d)
     _save(bot, rec)
     return rec

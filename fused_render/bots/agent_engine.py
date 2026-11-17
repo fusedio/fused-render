@@ -1146,7 +1146,8 @@ def run(bot, task: str, label: str | None = None) -> None:
             _end_session(sess)
         _terminate(proc)
         if wlock is not None:
-            _call(xsessions.note_chat, None, bot, mem_before, task)  # a "chat" row when memory.md changed
+            # A "chat" row when memory.md changed, started when the turn did.
+            _call(xsessions.note_chat, None, bot, mem_before, task, getattr(bot, "task_started", None))
             wlock.release()
             _call(xsessions.after_write, None, bot)
         fresh = getattr(bot, "_fresh_downloads", None)
