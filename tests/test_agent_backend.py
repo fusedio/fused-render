@@ -3409,11 +3409,12 @@ def cursor_send(agent, home, send_env):
     return send_env
 
 
-def test_a_cursor_model_change_respawns_and_nothing_else_does_but_a_new_dir(
+def test_a_cursor_model_change_respawns_and_nothing_else_does(
         agent, tmp_path, cursor_send):
     """`--model` is a spawn flag: a changed model respawns (""/"auto" are one
     model); an effort says nothing; a mode change is live; a directory the
-    spawn never saw respawns like Gemini's."""
+    spawn never saw is no respawn either (`_cursor_argv` grants none: the
+    tools are not workspace-bound), as OpenCode's."""
     run_dir = _live_run(agent, tmp_path, backend="cursor", mode="default", model="auto")
     assert agent._send("run-1", "m", model="gpt-5") == {"respawn": True}
     assert cursor_send == ["run-1"] and _inbox_rows(run_dir) == []
@@ -3427,7 +3428,8 @@ def test_a_cursor_model_change_respawns_and_nothing_else_does_but_a_new_dir(
         assert _inbox_rows(run_dir)[-2]["request"] == {
             "subtype": "set_permission_mode", "mode": wire}
     assert cursor_send == ["run-1"]
-    assert agent._send("run-1", "m", read_dirs=json.dumps([str(tmp_path)])) == {"respawn": True}
+    assert agent._send("run-1", "m", read_dirs=json.dumps([str(tmp_path)])) == {"sent": True}
+    assert cursor_send == ["run-1"]
     assert agent._send("run-1", "m", permission_mode="plan") == {
         "error": "plan mode is not available for Cursor",
         "reason": "unsupported", "backend": "cursor"}

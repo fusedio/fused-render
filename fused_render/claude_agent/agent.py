@@ -8295,11 +8295,12 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # OpenCode never respawns from here (OPENCODE §7): its tools are not
     # workspace-bound (D9), its model is live (D7), it has no effort; the
     # one respawn it has — a mode change (D5) — is `_set_mode`'s below.
-    # Cursor respawns for a model change and a new directory; its mode is
-    # live and host-side, and it has no effort to differ on.
+    # Cursor respawns for a model change only: a new directory names no flag
+    # (`_cursor_argv` ignores the read dirs), its mode is live and host-side,
+    # and it has no effort to differ on.
     effort_respawn = bool(effort) and effort != host.get("effort", "") \
         and backend not in ("gemini", "opencode", "cursor")
-    dir_respawn = not wanted <= granted and backend != "opencode"
+    dir_respawn = not wanted <= granted and backend not in ("opencode", "cursor")
     if backend != "codex" and (dir_respawn or effort_respawn or model_respawn):
         # interrupt_first=False: unlike the stop button, this call means the
         # session can no longer serve this caller as it stands — leaving the

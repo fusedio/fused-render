@@ -18,10 +18,14 @@ the registry row, `perm/`, the inbox). Cursor's own transcripts under
 ## 1. Decisions
 
 - **D1 Spawn.** `cursor-agent --approve-mcps --trust [--model <id>] acp`
-  (`agent._cursor_argv`). The binary ladder is `cursor-agent`, then `agent`
-  (accepted only when `--version` has the `YYYY.MM.DD-hash` shape, since `agent`
-  is a generic name). The model is a spawn flag, so a model change respawns
-  (`live_model_switch=False`). Effort: Cursor has none.
+  (`agent._cursor_argv`). The binary ladder is one order for the spawn and the
+  health read (`agent._cursor_bin`, `cursor_health.resolve`): the override,
+  `cursor-agent` on PATH, the known `cursor-agent` install paths, then an
+  `agent` (accepted only when `--version` has the `YYYY.MM.DD-hash` shape,
+  since `agent` is a generic name). The model is a spawn flag, so a model
+  change respawns (`live_model_switch=False`). A new attached directory does
+  not: `_cursor_argv` names no flag for it and Cursor's tools are not
+  workspace-bound. Effort: Cursor has none.
 - **D2 Session id.** Cursor's own: `session/new` mints it. A resume is
   `session/load`, whose replay is backfilled into the transcript after a quiet
   period (as Gemini D3).
