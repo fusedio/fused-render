@@ -5189,7 +5189,9 @@ def _appended_prompt(file: str, pane: bool, backend: str = "",
             + _canvas_reference_note(file, backend)
             + _canvas_shot_note(file) + _fused_cli_note(backend)
             + _origin_note() + (_s3_note(file, backend) if s3 else "")
-            + (_expert_note() if experts else "")
+            # Only a task in a canvas folder is told to consult experts (for now):
+            # elsewhere the tools are there if the user asks for them, unprompted.
+            + (_expert_note() if experts and _expert_note_applies(file) else "")
             + _blocked_note(backend)
             + (_breakout_note(file) if breakout else ""))
 
@@ -5331,9 +5333,16 @@ def _s3_note(file: str, backend: str = "") -> str:
     return note
 
 
+def _expert_note_applies(file: str) -> bool:
+    """Whether a task on `file` is told to consult experts: only in a canvas
+    folder, for now (the user's call). Elsewhere it still has the tools."""
+    return _in_workbench_root(file)
+
+
 def _expert_note() -> str:
     """The expert tools' standing instruction, appended only when the spawn put
-    them in the roster: list once at the start, read an expert's context when
+    them in the roster AND the task is in a canvas folder
+    (`_expert_note_applies`): list once at the start, read an expert's context when
     the work reaches its subject, ask only what the memory does not answer.
     Worded as a rule ("your first tool call ... must be"): a softer "call it
     once before you start" was ignored by a small model in a live check.

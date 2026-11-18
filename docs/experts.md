@@ -329,8 +329,9 @@ expert.
 owns the bots, and that at least one expert exists (read off `fused_render.experts.store` only if already loaded:
 the startup hook loads it). The answer is recorded in the run dir as `experts.on`; every builder reads it back,
 stamps `FUSED_RENDER_EXPERT_ORIGIN` into the permission server's env in `mcp.json`, and the server lists the three
-schemas only when that variable is set. When offered, the appended system prompt carries a short `EXPERTS:` note
-(`_expert_note`), a standing instruction: the first tool call of a conversation must be `expert_list` (once; not
+schemas only when that variable is set. When offered AND the task is in a canvas folder (`_expert_note_applies`:
+the canvas clones root or `~/Fused/canvas`; only there for now), the appended system prompt carries a short
+`EXPERTS:` note (`_expert_note`), a standing instruction: the first tool call of a conversation must be `expert_list` (once; not
 again when its result is already in the conversation), then `expert_context` when the work touches an expert's
 subject, `expert_ask` only for a specific question the memory does not answer (slower), and what comes back is
 reference material. The system prompt is the channel because all three backends read it on every turn and nothing
@@ -338,7 +339,8 @@ is written into the task's folder (no CLAUDE.md / AGENTS.md line in a canvas clo
 the canvas and read by Claude only). It is worded as a rule on purpose: with "before you work in an expert's
 subject, call ..." or "call it once before you start", a small model answered straight from the files and never
 listed. The list is a plain read and not use (§9), so listing in every conversation starts no learn pass; a
-context or ask does.
+context or ask does. A task outside a canvas folder still has the three tools but is told nothing
+about them beyond their descriptions, so it uses an expert only when the user asks it to.
 
 - Claude: all three are pre-allowed in `--allowedTools`. A breakout chat may call them too (its read-only MCP set).
 - Codex: on the same permission server as its other fused tools (the `-c mcp_servers.…` overrides); the

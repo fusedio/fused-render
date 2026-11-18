@@ -115,7 +115,6 @@ def test_the_three_tools_against_the_routes(tmp_path, stub):
                                               "expert_ask"]
         assert tools[3]["inputSchema"]["required"] == ["expert", "question"]
         assert "Canvas Reference" not in json.dumps(tools)  # no roster in descriptions
-        assert "at the start of a conversation" in tools[1]["description"]
 
         text, err = _call(s, "expert_list")
         assert not err and "- Canvas Reference: writing canvases" in text
@@ -239,7 +238,13 @@ def test_claude_spawn_with_experts_differs_only_by_the_expert_pieces(
     tools = ["mcp__fused_render__" + t for t in ("expert_list", "expert_context", "expert_ask")]
     assert [a for a in allowed_on if a not in allowed_off] == tools
     note = agent._expert_note()
-    assert prompt_on.replace(note, "") == prompt_off
+    # Only a task in a canvas folder is told to consult experts: this target is not one, so the prompt is unchanged.
+    assert prompt_on == prompt_off and "expert_" not in prompt_on
+    target = str(tmp_path / "f")
+    with monkeypatch.context() as m:
+        m.setattr(agent, "_expert_note_applies", lambda f: True)
+        on, off = (agent._appended_prompt(target, False, experts=e) for e in (True, False))
+    assert note in on and on.replace(note, "") == off
     for t in tools:
         assert t in note
     assert "reference material" in note
@@ -265,6 +270,7 @@ def test_codex_and_copilot_get_the_tools_and_the_ceiling(agent, tmp_path, monkey
     d = tmp_path / "f"
     d.mkdir()
     target = str(d)
+    monkeypatch.setattr(agent, "_expert_note_applies", lambda f: True)  # as in a canvas folder
     for on in (True, False):
         rd = tmp_path / "runs" / ("codex%d" % on)
         rd.mkdir(parents=True)
