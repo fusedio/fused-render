@@ -1,0 +1,7 @@
+{
+  "name": "Canvas",
+  "subject": "Fused canvases: canvas.toml, nodes, edges and folders, the fused CLI, running UDFs, live clones and reference copies",
+  "face": {"shape": "hexagon", "color": "#2a9a86", "icon": ""},
+  "from": "fused_render/experts/shipped/canvas-reference",
+  "triggers": {"folders": [], "keywords": ["canvas", "canvas.toml"]}
+}
