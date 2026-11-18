@@ -229,10 +229,7 @@ function buildGeojson(){
 }
 
 // ---------------- coloring ----------------
-function numericCols(){
-  return Object.keys(data.attrs).filter(c =>
-    data.attrs[c].some(v => typeof v === 'number'));
-}
+function numericCols(){ return data.numeric; }
 function activeColorCol(){
   const want = P.colorBy();
   const nums = numericCols();
@@ -287,7 +284,7 @@ let histSel = null;
 
 function viewportStats(){
   const col = activeColorCol();
-  if (!col || !centers) return null;
+  if (!centers || !(col in data.attrs)) return null;
   const b = map.getBounds();
   const w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
   const vals = [];
@@ -475,7 +472,7 @@ function renderMeta(){
   const res = data.cells.length ? h3.getResolution(data.cells[0]) : '—';
   els.metaBody.innerHTML =
     `<h2>File <a id="metaClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><table>${rows({
-      file: esc(data.file.split('/').pop()),
+      file: esc(P.file().split('/').pop()),
       size: human(data.file_size),
       rows: data.count.toLocaleString() + (data.truncated ? ` (showing ${data.shown.toLocaleString()})` : ''),
       'h3 column': esc(data.h3_col),
@@ -488,18 +485,32 @@ function renderMeta(){
 
 // ---------------- load ----------------
 let loadedKey = null;
+let signed = null;
+async function readSource(file){
+  if (!/^s3:\/\//i.test(file)) return file;
+  const fresh = signed && signed.address === file && (!signed.expires_at
+    || Date.parse(signed.expires_at) - Date.now() > 60_000);
+  if (!fresh) signed = {address: file, ...(await fused.s3.sign(file))};
+  return signed.url;
+}
+const readCells = params => fused.daemon.run(params).catch(e => {
+  if (e && e.type) throw e;
+  return fused.runPython('./h3_reader.py', params);
+});
+const colorMissing = () => data && activeColorCol() && !(activeColorCol() in data.attrs);
 
 async function loadFile(){
   const file = P.file();
+  els.browse.hidden = /^s3:\/\//i.test(file);
   if (!file){ status('no file — use Browse or enter a .parquet path'); hideMapSkeleton(); return; }
   const key = file + '|' + P.h3Col();
-  if (key === loadedKey) return;
+  if (key === loadedKey && !colorMissing()) return;
   showMapSkeleton();
   try {
     status('Reading parquet…');
-    await styleReady();
-    const r = await fused.runPython('./h3_reader.py', {file, h3_col: P.h3Col()})
-      .catch(e => ({error: String(e.message || e)}));
+    const [r] = await Promise.all([readSource(file)
+      .then(src => readCells({file: src, h3_col: P.h3Col(), color_by: P.colorBy()}))
+      .catch(e => ({error: String(e.message || e)})), styleReady()]);
     if (!r || r.error){
       if (r && r.no_h3 && r.columns){
         els.h3Col.innerHTML = '<option value="">— pick H3 column —</option>' +
@@ -509,12 +520,12 @@ async function loadFile(){
       return;
     }
     data = r;
-    loadedKey = key;
     status(`Building ${r.shown.toLocaleString()} hexagons…`);
     gj = buildGeojson();
     syncControls();
     addLayers();
-    fitToData();
+    if (key !== loadedKey) fitToData();
+    loadedKey = key;
     renderMeta();
     refreshHist();
     status(r.truncated ? `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} cells` : '');
@@ -551,7 +562,7 @@ els.metaBtn.onclick = () => els.metaPanel.style.display = els.metaPanel.style.di
 els.fitBtn.onclick = () => fitToData(false);
 
 function onParamsChanged(){
-  if (P.file() + '|' + P.h3Col() !== loadedKey){ loadFile(); return; }
+  if (P.file() + '|' + P.h3Col() !== loadedKey || colorMissing()){ loadFile(); return; }
   if (data && map.getLayer('hex-fill')){
     map.setPaintProperty('hex-fill', 'fill-color', fillColorExpr());
     renderLegend();
