@@ -7,6 +7,7 @@
       .fused/expert/
         sessions/<id>.json        one row per side session (sessions.py)
         read.json                 which task sessions used it, and how much of each it has read (learn.py)
+      .fused/udfs/                throwaway UDF files the expert writes to run them (`udfs_dir`); not memory
 
 Nothing here reads or writes memory.md's content beyond seeding an empty one:
 the expert edits it with the harness's file tools, the user by hand.
@@ -31,7 +32,8 @@ EMPTY_MEMORY = "## Works\n\n## Does not work\n"
 MEMORY_RULES = """## Your memory
 
 `memory.md` in your folder is your memory. Read it before you answer. It is the only file you may write: never
-edit `instructions.md` or anything under `skills/`, and never create other files.
+edit `instructions.md` or anything under `skills/`, and never create other files (the one exception: throwaway
+UDF files in `.fused/udfs/`, when a session lets you run UDFs).
 
 What is worth remembering: what worked, what failed and why, corrections from the user, and facts that are not
 in your skills. Not worth remembering: one-off details of a single task, and anything a skill already says.
@@ -103,6 +105,25 @@ def memory_path(bot) -> str:
     return os.path.join(expert_dir(bot), MEMORY)
 
 
+def udfs_dir(bot) -> str:
+    """The scratch folder for throwaway UDF files (`<expert dir>/.fused/udfs`, made now): the one place besides
+    memory.md a session that runs UDFs may write (sessions.fence). Not memory: no row, no diff, nothing prunes it."""
+    p = os.path.join(expert_dir(bot), ".fused", "udfs")
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def free_write(bot, path, cwd: str = "") -> bool:
+    """`path` is one the expert's chat writes without an approval card: memory.md, or a file inside the scratch
+    folder when the expert may run UDFs. Judged on real paths (a symlink out of the scratch folder is not in it)."""
+    if not isinstance(path, str) or not path:
+        return False
+    real = os.path.realpath(os.path.join(cwd or expert_dir(bot), os.path.expanduser(path)))
+    if real == os.path.realpath(memory_path(bot)):
+        return True
+    return bool(run_envs(bot)) and real.startswith(os.path.realpath(udfs_dir(bot)) + os.sep)
+
+
 def where(bot, run: bool = False) -> str:
     """The absolute paths a session's prompt states, so the harness never guesses where memory.md or a granted
     folder is. `run` (a chat or an ask, the sessions whose fence lets them run UDFs): also which Fused environment
@@ -118,15 +139,17 @@ def where(bot, run: bool = False) -> str:
 def run_note(bot) -> str:
     """The one line a session that may run UDFs is told ("" when it may not): which Fused environment each folder
     of canvas copies belongs to and the command prefix that runs a UDF there. Stated once, with the paths (`where`),
-    in an ask's prompt and a fresh chat's first message; the rest (the exact form, `--help`, what happens to a
-    command outside the rules) is the skill's, read when it runs."""
+    in an ask's prompt and a fresh chat's first message, with where a throwaway UDF file goes (`udfs_dir`); the
+    rest (the exact form, `--help`, what happens to a command outside the rules) is the skill's, read when it
+    runs."""
     envs = run_envs(bot)
     if not envs:
         return ""
     skill = os.path.join(expert_dir(bot), "skills", RUN_SKILL)
     return ("You may run UDFs on Fused" + (f" (read {skill} first)" if os.path.isfile(skill) else "") + ": "
             + "; ".join(f"copies under {d} are environment `{env}`, run with `{run_prefix(env)} <canvas> <udf>`"
-                        for env, d in envs) + ".")
+                        for env, d in envs)
+            + f". Throwaway UDFs: `.py` files you keep in {udfs_dir(bot)}, run by giving the path as `<udf>`.")
 
 
 #: The Fused environments an expert may run UDFs in. `custom` is not one: it is reached with FUSED_ENV unset from

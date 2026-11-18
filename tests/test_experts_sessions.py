@@ -231,14 +231,50 @@ def test_fence_lets_a_chat_and_an_ask_run_udfs_per_environment(expert, tmp_path,
             "Bash(fused workbench --env unstable udf-schema:*)", "Bash(fused workbench --env unstable whoami)",
             "Bash(fused workbench --help)", "Bash(fused workbench run --help)",
             "Bash(fused workbench udf-schema --help)"]
-    chat = sessions.fence(expert, write=True, run=True)
+    chat = sessions.fence(expert, write=True, run=True)  # a routine's chat turn: nobody at the card
     assert chat[1] == "Read,Glob,Grep,Edit,Write,Bash" and [x for x in chat if x.startswith("Bash(")] == bash
     ask = sessions.fence(expert, write=False, run=True)
-    assert ask[1] == "Read,Glob,Grep,Bash" and [x for x in ask if x.startswith("Bash(")] == bash
+    assert ask[1] == "Read,Glob,Grep,Edit,Write,Bash" and [x for x in ask if x.startswith("Bash(")] == bash
     assert "--permission-prompt-tool" not in chat + ask and "--disallowedTools" not in chat + ask
+    # The scratch folder of throwaway UDF files is the one write an ask has; memory.md stays the chat's and the writers'.
+    scratch = f"Edit(//{store.udfs_dir(expert).lstrip('/')}/**)"
+    mem = f"Edit(//{store.memory_path(expert).lstrip('/')})"
+    assert os.path.isdir(store.udfs_dir(expert)) and store.udfs_dir(expert).endswith(os.path.join(".fused", "udfs"))
+    assert [x for x in ask if x.startswith("Edit(")] == [scratch]
+    assert [x for x in chat if x.startswith("Edit(")] == [mem, scratch]
+    assert chat[2:4] == ask[2:4] == ["--permission-mode", "default"] and "--settings" not in chat + ask
     # task-learn and dream (and any caller that does not ask for it) get no Bash at all
     for flags in (sessions.fence(expert, write=True), sessions.fence(expert, write=False)):
         assert "Bash" not in flags[1] and not any(x.startswith("Bash(") for x in flags)
+
+
+def test_the_attended_chat_runs_in_auto_mode_and_every_edit_asks(expert, tmp_path, monkeypatch):
+    _canvases(expert, tmp_path, monkeypatch, envs=("prod",))
+    auto = sessions.fence(expert, write=True, run=True, auto=True)
+    assert auto[:5] == ["--tools", "Read,Glob,Grep,Edit,Write,Bash", "--permission-mode", "auto", "--settings"]
+    settings = json.loads(auto[5])
+    # An ask rule beats an allow rule and auto mode's own approval of edits in the working directory: every edit
+    # reaches the chat's permission tool, so no Edit allow rule is passed.
+    assert settings["permissions"] == {"ask": ["Edit(//**)"]} and not any(x.startswith("Edit(") for x in auto)
+    mode = settings["autoMode"]
+    assert all(mode[k][0] == "$defaults" and len(mode[k]) > 1 for k in ("environment", "allow", "soft_deny"))
+    assert "fused workbench --env <env> run" in mode["allow"][1] and store.expert_dir(expert) in mode["soft_deny"][1]
+    assert auto[6] == "--allowedTools" and "Bash(fused workbench --env prod run:*)" in auto
+    chat = agent_engine.argv("claude", "sonnet", "low", "/sp", "/mcp.json", fence=auto)
+    assert chat[chat.index("--permission-prompt-tool") + 1] == "mcp__bot__permission"
+    # What that tool lets through without a card: memory.md and files inside the scratch folder, by real path.
+    d, scratch = store.expert_dir(expert), store.udfs_dir(expert)
+    assert store.free_write(expert, store.memory_path(expert)) and store.free_write(expert, "memory.md", d)
+    assert store.free_write(expert, os.path.join(scratch, "a.py")) and store.free_write(expert, ".fused/udfs/b/c.py", d)
+    for other in ("instructions.md", "skills/a.md", "notes.md", ".fused/expert/read.json", ".fused/udfs/../x.py",
+                  ".fused/udfs", "/etc/hosts", "", None):
+        assert not store.free_write(expert, other, d), other
+    os.symlink(str(tmp_path), os.path.join(scratch, "out"))
+    assert not store.free_write(expert, os.path.join(scratch, "out", "x.py"))  # a symlink out of the folder
+    monkeypatch.delenv(__import__("fused_render.fusedcli", fromlist=["x"]).CLI_DIR_ENV)  # may not run: no scratch
+    assert not store.free_write(expert, os.path.join(scratch, "a.py")) and store.free_write(expert, "memory.md", d)
+    plain = sessions.fence(expert, write=True, run=True, auto=True)
+    assert plain[1] == "Read,Glob,Grep,Edit,Write" and plain[3] == "auto"
 
 
 def test_fence_has_no_bash_without_an_environment_folder_or_the_cli(expert, tmp_path, monkeypatch):
@@ -272,10 +308,14 @@ def test_side_sessions_run_udfs_only_in_an_ask(expert, tmp_path, monkeypatch):
     monkeypatch.setattr(claude_cli, "runnable", lambda: "claude")
     monkeypatch.setattr(sessions.subprocess, "Popen", Proc)
     res = sessions.harness(expert, "q", False)  # an ask
-    assert "Read,Glob,Grep,Bash" in cmds[-1] and "Bash(fused workbench --env prod run:*)" in cmds[-1]
+    assert "Read,Glob,Grep,Edit,Write,Bash" in cmds[-1] and "Bash(fused workbench --env prod run:*)" in cmds[-1]
+    assert cmds[-1][cmds[-1].index("--permission-mode") + 1] == "default"  # nobody to ask: never auto mode
+    assert [x for x in cmds[-1] if x.startswith("Edit(")] == [f"Edit(//{store.udfs_dir(expert).lstrip('/')}/**)"]
     assert {"role": "tool", "text": "Bash fused workbench --env prod whoami"} in res["transcript"]  # the row shows it
     sessions.harness(expert, "q", True)  # a task-learn or a dream
     assert "Read,Glob,Grep,Edit,Write" in cmds[-1] and not any(x.startswith("Bash(") for x in cmds[-1])
+    assert [x for x in cmds[-1] if x.startswith("Edit(")] == [f"Edit(//{store.memory_path(expert).lstrip('/')})"]
+    assert cmds[-1][cmds[-1].index("--permission-mode") + 1] == "default"
 
 
 def test_only_a_chat_and_an_ask_are_told_how_to_run(expert, tmp_path, monkeypatch):
@@ -949,6 +989,7 @@ def test_how_to_run_is_stated_once_and_the_rest_is_the_skill(expert, tmp_path, m
     skill = open(os.path.join(os.path.dirname(store.__file__), "shipped", "canvas-reference", "skills",
                               store.RUN_SKILL), encoding="utf-8").read()
     assert "Approve / Deny card" in skill and "nobody can approve it" in skill and "run --help" in skill
+    assert ".fused/udfs/" in skill and store.udfs_dir(expert) in note  # the scratch folder: the skill, and its path once
     monkeypatch.delenv(__import__("fused_render.fusedcli", fromlist=["x"]).CLI_DIR_ENV)
     assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={})[0]
     assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={"session_id": "s"})[0]

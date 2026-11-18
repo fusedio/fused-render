@@ -23,7 +23,8 @@ The canvases the user can reach are the canvas copies in the folders you were gr
 ## Your memory
 
 `memory.md` in your folder is your memory. Read it before you answer. It is the only file you may write: never
-edit `instructions.md` or anything under `skills/`, and never create other files.
+edit `instructions.md` or anything under `skills/`, and never create other files (the one exception: throwaway
+UDF files in `.fused/udfs/`, when a session lets you run UDFs).
 
 What is worth remembering: what worked, what failed and why, corrections from the user, and facts that are not
 in your skills. Not worth remembering: one-off details of a single task, and anything a skill already says.

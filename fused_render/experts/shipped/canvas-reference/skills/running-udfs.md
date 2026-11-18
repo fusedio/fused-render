@@ -1,7 +1,7 @@
 # Running UDFs on Fused
-trigger: run a udf, fused run, fused workbench run, execute, try it, test a udf, what does it return, output, result, throwaway udf, scratch udf, explore data, parameters, udf-schema, --stdin, --env, environment, prod, unstable, cache, --no-cache
+trigger: run a udf, fused run, fused workbench run, execute, try it, test a udf, what does it return, output, result, throwaway udf, scratch udf, .fused/udfs, explore data, parameters, udf-schema, --stdin, --env, environment, prod, unstable, cache, --no-cache
 
-In your chat with the user and when a task session asks you a question, you have a Bash tool that accepts a few `fused` commands and nothing else. Use it to run a UDF you found in a canvas copy, or a short throwaway UDF of your own, and report what came back. When you learn from a task transcript or tidy your memory you have no Bash.
+In your chat with the user and when a task session asks you a question, you have a Bash tool for the `fused` commands below. Use it to run a UDF you found in a canvas copy, or a short throwaway UDF of your own, and report what came back. When you learn from a task transcript or tidy your memory you have no Bash.
 
 ## When to run
 
@@ -19,7 +19,7 @@ Every command names the environment right after `fused workbench`:
     fused workbench --env prod run --engine remote <canvas> <udf>
     fused workbench --env unstable run --engine remote <canvas> <udf>
 
-The command must start exactly like that. One without `--env`, or with an environment you were not given, is outside what you may run (see "What the fence refuses"). Copies under a `custom/` folder cannot be run from here: say so. If the user asks for a throwaway run and names no environment, use the environment of the canvas you are talking about; if there is none, ask in the chat, or tell a task session which one you used.
+The command must start exactly like that. One without `--env`, or with an environment you were not given, is outside what you may run (see "Outside these forms"). Copies under a `custom/` folder cannot be run from here: say so. If the user asks for a throwaway run and names no environment, use the environment of the canvas you are talking about; if there is none, ask in the chat, or tell a task session which one you used.
 
 ## Always the remote engine
 
@@ -49,34 +49,31 @@ Keep runs small: pass a limit, a small area or a short date range when the UDF t
 
 ## A throwaway UDF
 
-For exploration, send source on standard input with a quoted heredoc. `<canvas>` is still required; use the canvas you are exploring, or any placeholder such as `scratch`:
+For exploration, write the UDF as a `.py` file in your scratch folder, `.fused/udfs/` inside your own folder (the message that starts your session gives its full path), and run that file. `<canvas>` is still required; use the canvas you are exploring, or any placeholder such as `scratch`:
 
-    fused workbench --env prod run --engine remote scratch --stdin <<'EOF'
-    @fused.udf
-    def udf(n: int = 5):
-        import pandas as pd
-        return pd.DataFrame({"x": range(n)})
-    EOF
+    fused workbench --env prod run --engine remote scratch /full/path/to/.fused/udfs/raster_stats.py --n 5
 
-- The source needs exactly one function decorated with `@fused.udf`.
-- Nothing is saved: the source is sent for this one run and appears on no canvas.
-- Always quote the heredoc word (`<<'EOF'`). An unquoted one is outside the rules.
-- You cannot create files, so there is no scratch file: stdin is the way.
+- The file needs exactly one function decorated with `@fused.udf`.
+- The scratch folder is yours: create and edit `.py` files there with the Write and Edit tools, with no approval. It is a throwaway cache. Before writing a new UDF, look there for one you wrote earlier (Glob `.fused/udfs/*.py`) and reuse or adapt it; give files names that say what they do.
+- Nothing in it is saved to Fused or to any canvas: the file's source is sent for that one run. The files may be deleted at any time, so never rely on one being there.
+- It is not your memory. What you learn from a run still goes into `memory.md`, never into these files, and you write nowhere else.
 - Inside throwaway source, load another UDF by its full name (`fused.load("<owner>/<udf>")`): a bare name may not resolve to the canvas you mean.
-- `--stdin` cannot be combined with `--team`, `--id` or a shared `fc_...` token.
+- A file path cannot be combined with `--team`, `--id` or a shared `fc_...` token.
+
+Source on standard input also works, with a quoted heredoc (`... run --engine remote scratch --stdin <<'EOF'`, the source, `EOF`). Prefer the file: when a task session asks, a heredoc whose source has a `{` followed by a quote character before its `}` (a dict or set literal with a string in it, such as `{"a": 1}`) is refused by Claude Code's own shell check, however harmless, and so is an unquoted heredoc word. A file has no such limit.
 
 ## Caching
 
 Results are cached on Fused. The same UDF with the same parameters may return an earlier result at once. Pass `--no-cache` when the point is to see a fresh run (after a change, or when timing it), or `--cache-max-age 5m` to accept only a recent one. Say in your answer when a result may have come from the cache.
 
-## What the fence refuses
+## Outside these forms
 
-One `fused` command per Bash call. Chaining (`;`, `&&`), writing output to a file (`>`, `tee`), command substitution (`$(...)`, backticks) and every other program are refused, as are all other `fused` commands (push, pull, create, delete, login). `fused workbench --env <env> whoami` is allowed and shows who is signed in. Do not use `--output-file`: read the result from the command's output. To read a command's flags, these three are allowed as written: `fused workbench --help`, `fused workbench run --help`, `fused workbench udf-schema --help`.
+One `fused` command per Bash call, in the forms above. `fused workbench --env <env> whoami` shows who is signed in. Do not use `--output-file`: read the result from the command's output. To read a command's flags: `fused workbench --help`, `fused workbench run --help`, `fused workbench udf-schema --help`. Never run a `fused` command that changes something (push, pull, create, delete, login).
 
-What happens to a command outside these rules depends on who you are talking to:
+What happens to anything else (another program, chaining with `;` or `&&`, writing output to a file, command substitution, a write outside `memory.md` and the scratch folder) depends on who you are talking to:
 
 - A task session's question: it is refused, and nobody can approve it. A refusal is final; do not try another spelling. Change the command to one of the forms above, or say what you could not run.
-- Your chat with the user: it is not refused outright. When you call it, the user gets an Approve / Deny card in the chat and the call waits for their answer. The same goes for a read outside your folders. So never tell the user to approve something you have not called; keep to the forms above whenever they do the job; and when the user denies a call, do not retry it.
+- Your chat with the user: Claude Code judges each call by itself. Routine, harmless ones run; one it judges risky or irreversible is refused with a reason, or the user gets an Approve / Deny card in the chat and the call waits for their answer. Writing any file other than `memory.md` and your scratch files always raises that card. So never tell the user to approve something you have not called; keep to the forms above whenever they do the job; when a call is refused, say what you could not do instead of trying another spelling, and when the user denies a call, do not retry it.
 
 ## Reporting
 

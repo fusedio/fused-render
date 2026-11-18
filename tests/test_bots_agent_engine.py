@@ -1317,7 +1317,8 @@ def test_expert_chat_argv_and_roster(server, fake_cli, monkeypatch, tmp_path):
     argv = fake_cli("argv")[0]["argv"]
     assert argv[argv.index("--permission-prompt-tool") + 1] == "mcp__bot__permission"
     assert argv[argv.index("--tools") + 1] == "Read,Glob,Grep,Edit,Write" and "--tools=" not in argv
-    assert argv[argv.index("--permission-mode") + 1] == "default" and "--setting-sources=" in argv
+    assert argv[argv.index("--permission-mode") + 1] == "auto" and "--setting-sources=" in argv  # a user is at hand
+    assert json.loads(argv[argv.index("--settings") + 1])["permissions"] == {"ask": ["Edit(//**)"]}
     assert f"mcp__{agent_engine.MCP_SERVER}__*" not in argv  # the prompt is not a tool the model may call
     assert fake_cli("tools")[0]["tools"] == ["permission"]  # no browser, none of the bot tools
 
@@ -1339,6 +1340,32 @@ def test_expert_chat_card_denied_then_approved(server, fake_cli, monkeypatch, tm
     assert stub_risk == []  # no model call of ours for an expert, so no risk score
     assert "allow_rules" not in bot.meta and bot.roles()[-1] == "done"
     assert any(e["text"] == "Denied; the expert will try something else." for e in bot.events)
+
+
+def test_expert_chat_memory_edit_needs_no_card(server, fake_cli, monkeypatch, tmp_path):
+    bot = expert_bot(tmp_path)
+    mem = os.path.join(bot.public_dir, "memory.md")
+    # Every edit asks (the fence's ask rule): memory.md is answered at once, another file in the folder is a card.
+    t = start(bot, [_perm("Edit", file_path=mem, old_string="a", new_string="b"),
+                    _perm("Write", file_path=os.path.join(bot.public_dir, "skills", "x.md"), content="hi"),
+                    {"result": "ok"}], monkeypatch)
+    card = bot.wait_event("approval")
+    assert "skills/x.md" in card["text"] and bot.roles().count("approval") == 1
+    bot.say("no")
+    finish(t)
+    assert _answer(fake_cli, 0)["behavior"] == "allow" and _answer(fake_cli, 1)["behavior"] == "deny"
+
+
+def test_expert_chat_says_once_when_the_cli_has_no_auto_mode(server, fake_cli, monkeypatch, tmp_path):
+    bot = expert_bot(tmp_path)
+    monkeypatch.setattr(agent_engine, "_NO_AUTO", set())
+    said = lambda: [e for e in bot.events if "not auto" in str(e.get("text"))]
+    run_task(bot, [{"result": "ok"}], monkeypatch)  # the CLI reports the mode it was asked for
+    assert not said()
+    monkeypatch.setenv("BOTS_FAKE_MODE", "default")  # an older CLI or model: it starts in `default` by itself
+    run_task(bot, [{"result": "ok"}], monkeypatch)
+    run_task(bot, [{"result": "ok"}], monkeypatch)
+    assert len(said()) == 1 and "permission mode `default`" in said()[0]["text"]
 
 
 def test_expert_chat_forever_answer_writes_no_rule(server, fake_cli, monkeypatch, tmp_path):
@@ -1366,6 +1393,7 @@ def test_expert_routine_turn_has_no_card_path(server, fake_cli, monkeypatch, tmp
     run_task(bot, [{"result": "ok"}], monkeypatch)
     argv = fake_cli("argv")[0]["argv"]
     assert "--permission-prompt-tool" not in argv and argv[-len(agent_engine.NO_MCP):] == agent_engine.NO_MCP
+    assert argv[argv.index("--permission-mode") + 1] == "default" and "--settings" not in argv  # never auto mode
 
 
 def test_super_reads_never_ask(server, fake_cli, monkeypatch, tmp_path):

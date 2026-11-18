@@ -17,13 +17,16 @@ file that differs from it was edited by hand since (`edited_by_hand`).
 
 The fence is the harness's own (`fence`): only Read / Glob / Grep (plus Edit /
 Write when the kind writes, plus Bash limited to the `fused` commands that run a
-UDF for a chat and an ask) exist, the one pre-allowed write is memory.md, and
-with no permission prompt tool every other write, and every read outside the
+UDF, and Edit / Write for the scratch folder of throwaway UDF files, for a chat
+and an ask) exist, the pre-allowed writes are memory.md and that scratch folder,
+and with no permission prompt tool every other write, and every read outside the
 expert's folder and its granted folders, is refused by Claude Code itself
-(verified on claude 2.1.326). The chat (bots/agent_engine.py) uses the same
-`fence` and adds a permission prompt tool: there a user is at hand, so what the
-fence does not cover raises an approval card instead of a refusal (side
-sessions have nobody to ask and never get one). Nothing here reads the model's words to decide anything: the transcript
+(verified on claude 2.1.327). The chat (bots/agent_engine.py) uses the same
+`fence` in Claude Code's auto permission mode (`auto=True`) and adds a permission
+prompt tool: there a user is at hand, so routine actions run, the classifier
+refuses what it judges risky, and a write outside memory.md and the scratch
+folder raises an approval card (side sessions have nobody to ask and stay in the
+default mode). Nothing here reads the model's words to decide anything: the transcript
 is kept for the user to look at.
 """
 from __future__ import annotations
@@ -95,18 +98,60 @@ def _spellings(path: str) -> list:
 _GLOB_CHARS = frozenset("*?[]{}")
 
 
-def fence(bot, write: bool, run: bool = False) -> list:
+def _auto_settings(bot) -> str:
+    """The `--settings` JSON of the attended chat (`fence(auto=True)`). `permissions.ask`: every Edit / Write asks,
+    whatever auto mode would have allowed (it approves edits inside the working directory, which is the expert's
+    own folder), so the call reaches the chat's permission tool, which lets memory.md and the scratch folder
+    through and cards the rest (agent_engine._expert_permission). `autoMode`: standing guidance, in prose, for
+    Claude Code's own classifier (the only settings scope besides the user's and managed ones it reads this
+    from): the `fused` CLI is trusted here, running a UDF is routine, what is irreversible is not."""
+    d = store.expert_dir(bot)
+    return json.dumps({
+        "permissions": {"ask": ["Edit(//**)"]},
+        "autoMode": {
+            "environment": ["$defaults",
+                            f"This session is a Fused expert: an assistant that answers questions about the user's "
+                            f"Fused canvases from its folder {d}. Org-specific CLIs: `fused` is the user's own "
+                            "signed-in Fused CLI and is trusted here."],
+            "allow": ["$defaults",
+                      "Running a UDF on Fused: any `fused workbench --env <env> run ...` command (a saved UDF, a "
+                      ".py file, or source on standard input in a heredoc, whatever the source holds), and `fused "
+                      "workbench` with `udf-schema`, `whoami` or `--help`. Routine: it runs remotely on Fused under "
+                      "the user's account and needs no approval."],
+            "soft_deny": ["$defaults",
+                          f"Expert Folder: creating, changing or deleting anything under {d} other than memory.md "
+                          "and .fused/udfs/ (so instructions.md, skills/, bot.json, .fused/expert/) with a shell "
+                          "command.",
+                          "Irreversible Actions: deleting or overwriting files outside the expert's folder, and any "
+                          "`fused` command that changes or deletes something on Fused (push, delete, create, share "
+                          "and the like)."]}})
+
+
+def fence(bot, write: bool, run: bool = False, auto: bool = False) -> list:
     """The harness flags that fence an expert's session. Reads inside the working directory (the expert's
     folder) are the harness's default; each granted folder gets a Read rule (a folder whose path has glob
-    characters gets none); memory.md gets the one Edit rule (which covers Write) when `write`. `run` (a chat or
+    characters gets none); memory.md gets an Edit rule (which covers Write) when `write`. `run` (a chat or
     an ask) adds Bash with allow rules for exactly the `fused` commands that run a UDF on Fused, print a UDF's
     parameters or say who is signed in, per environment the expert may run in (`store.run_envs`; with none, no
-    Bash at all). The rules name the command and its environment only: running on the remote engine is an
-    instruction to the expert (its skill, `store.where`), not something a rule enforces. Everything else has nobody
-    to ask and is refused, unless the caller adds a permission prompt tool (the chat, agent_engine.argv). The rule list is variadic: callers put another `--flag` (or nothing) after it."""
+    Bash at all), and Edit / Write with an Edit rule for the scratch folder of throwaway UDF files
+    (`store.udfs_dir`), so an ask can write a file there and nowhere else. The rules name the command and its
+    environment only: running on the remote engine is an instruction to the expert (its skill, `store.where`),
+    not something a rule enforces. In the default permission mode everything else has nobody to ask and is
+    refused, unless the caller adds a permission prompt tool.
+
+    `auto` (the chat with a user at hand, agent_engine.argv, which adds that prompt tool): Claude Code's auto
+    permission mode. What no rule covers is judged by Claude Code's classifier instead of asked about (a `fused`
+    run whatever its heredoc holds, other shell commands, reads outside the folders), with `_auto_settings` as
+    its guidance; every Edit / Write asks (no Edit allow rule here: an ask rule beats it), which the chat answers
+    for memory.md and the scratch folder and turns into a card for anything else. A CLI or model without auto
+    mode starts in `default` by itself (its `init` event says so): the same flags then ask about everything the
+    rules do not cover, as before auto mode. The rule list is variadic: callers put another `--flag` (or nothing)
+    after it."""
     rules = []
-    if write:
-        rules += [f"Edit({_rule_path(p)})" for p in _spellings(store.memory_path(bot))]
+    envs = [env for env, _ in store.run_envs(bot)] if run else []
+    edits = ([store.memory_path(bot)] if write else []) + ([store.udfs_dir(bot) + "/**"] if envs else [])
+    if not auto:
+        rules += [f"Edit({_rule_path(p)})" for e in edits for p in _spellings(e)]
     for folder in store.read_folders(bot):
         if any(_GLOB_CHARS & set(p) for p in _spellings(folder)):
             # The rule is a glob and the CLI has no escape for these: such a folder is not granted (refused
@@ -114,15 +159,14 @@ def fence(bot, write: bool, run: bool = False) -> list:
             logger.warning("expert %s: folder %r has glob characters; not granted", getattr(bot, "id", "?"), folder)
             continue
         rules += [f"Read({_rule_path(p)}/**)" for p in _spellings(folder)]
-    envs = [env for env, _ in store.run_envs(bot)] if run else []
     for env in envs:
         rules += [f"Bash(fused workbench --env {env} run:*)", f"Bash(fused workbench --env {env} udf-schema:*)",
                   f"Bash(fused workbench --env {env} whoami)"]
     if envs:  # reading the flags is harmless, and an expert that may not will guess them or ask to be approved
         rules += ["Bash(fused workbench --help)", "Bash(fused workbench run --help)",
                   "Bash(fused workbench udf-schema --help)"]
-    out = ["--tools", "Read,Glob,Grep" + (",Edit,Write" if write else "") + (",Bash" if envs else ""),
-           "--permission-mode", "default"]
+    out = ["--tools", "Read,Glob,Grep" + (",Edit,Write" if edits else "") + (",Bash" if envs else ""),
+           "--permission-mode", "auto" if auto else "default"] + (["--settings", _auto_settings(bot)] if auto else [])
     return out + (["--allowedTools", *rules] if rules else [])
 
 
@@ -193,7 +237,7 @@ def harness(bot, prompt: str, write: bool) -> dict:
     cmd = [bin_path, "-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
            "--model", bot.meta.get("model") or agent_engine.DEFAULT_MODEL,
            "--effort", bot.meta.get("effort") or agent_engine.DEFAULT_EFFORT,
-           # A side session that only reads is an ask, which may run UDFs; the writers (task-learn, dream) may not.
+           # A side session that does not write memory is an ask, which may run UDFs; the writers (task-learn, dream) may not.
            "--system-prompt-file", sp_file, *agent_engine.NO_MCP, *fence(bot, write, run=not write)]
     proc = None
     gen = getattr(_LOCAL, "gen", None)

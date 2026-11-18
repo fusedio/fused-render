@@ -28,13 +28,15 @@ An expert (docs/experts.md) runs here too, with none of Super Bot's extras: its
 folder is the working directory, instructions.md (experts.store.instructions)
 the system prompt, no browser, none of the bot tools, and Claude Code's own
 fence (experts.sessions.fence: Read/Glob/Grep/Edit/Write, Bash for the `fused`
-commands that run a UDF, the one pre-allowed write memory.md). What the fence
-does not cover asks the user: the chat gets `--permission-prompt-tool
-mcp__bot__permission` on a bot MCP server whose roster is that one tool
-(`roster_for`), and the call becomes Super Bot's approval card (`_permission`),
-with no auto-allow, no "approve forever" and no risk score. A routine's turn has
-nobody at the card and keeps the side sessions' prompt-less fence (`NO_MCP`:
-everything else is refused by the CLI). Its first message is the conversation summary plus the
+commands that run a UDF). The chat runs in Claude Code's auto permission mode:
+routine actions run, its classifier refuses what it judges risky. Every edit
+asks: the chat gets `--permission-prompt-tool mcp__bot__permission` on a bot MCP
+server whose roster is that one tool (`roster_for`); memory.md and the scratch
+folder of throwaway UDFs are answered `allow`, any other write (and whatever
+else the CLI hands to a person) becomes Super Bot's approval card
+(`_permission`), with no "approve forever" and no risk score. A routine's turn has
+nobody at the card and keeps the side sessions' prompt-less fence in the default
+mode (`NO_MCP`: everything else is refused by the CLI). Its first message is the conversation summary plus the
 date and the MESSAGE (`_expert_message`); built-in calls become `action` rows as
 Super Bot's do. A chat turn writes memory, so it holds the expert's write lock
 and ends with experts.sessions.note_chat (a "chat" session row when memory.md
@@ -112,6 +114,7 @@ WINDOW_DEFAULT = 200_000
 #: An expert's session (chat here, side sessions in experts/sessions.py): nothing from the user's own Claude Code
 #: setup, no MCP server at all (inline JSON is accepted by the CLI, verified on 2.1.326), no slash commands.
 NO_MCP = ["--setting-sources=", "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config", "--disable-slash-commands"]
+_NO_AUTO: set = set()  # experts whose chat was told once that the CLI has no auto mode (the `init` event)
 WINDOW_1M = 1_000_000
 _MILLION = re.compile(r"\[1m\]|fable|opus-?5|sonnet-?5|haiku-?5|opus-?4-?[78](?!\d)|^(?:opus|sonnet|haiku)$", re.I)  # the frontend's rule (context-window.ts): every 5.x model and Opus 4.7+ run 1M (CLI 2.1.300, measured 2026-10-15)
 
@@ -587,9 +590,9 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
     passes none and its chat is left to the CLI's own compaction. `fence`
     (an expert: experts.sessions.fence) replaces the tool, permission and MCP
     flags with the expert's own. With an `mcp_file` (its chat, `expert_cards`)
-    what the fence does not cover goes to our `permission` MCP tool, the only
-    tool that server lists for an expert (`roster_for`), and becomes an approval
-    card; with none (a routine's turn) it is `NO_MCP` and the CLI refuses."""
+    what the CLI asks about goes to our `permission` MCP tool, the only
+    tool that server lists for an expert (`roster_for`): `_expert_permission`;
+    with none (a routine's turn) it is `NO_MCP` and the CLI refuses."""
     out = [bin_path, "-p",
            "--input-format", "stream-json",
            "--output-format", "stream-json",
@@ -861,6 +864,14 @@ def _drive(bot, sess: Turn, proc) -> tuple:
         t = ev.get("type")
         if t == "system" and ev.get("subtype") == "init":
             sess.saw_init = True
+            if sess.is_expert and expert_cards(bot) and ev.get("permissionMode") not in (None, "auto") \
+                    and bot.id not in _NO_AUTO:
+                # The CLI starts in `default` by itself when auto mode is not there (an older CLI or model, an
+                # organization that turned it off): the fence then asks about everything its rules do not cover.
+                _NO_AUTO.add(bot.id)  # said once per expert per server run
+                bot.emit("note", f"Claude Code started in permission mode `{ev.get('permissionMode')}`, not auto (its "
+                                 "auto mode is not available for this model or account), so this expert asks before "
+                                 "anything outside its rules.")
             if ev.get("session_id"):
                 sess.session_id = str(ev["session_id"])
         if t == "assistant":
@@ -1066,7 +1077,9 @@ def run(bot, task: str, label: str | None = None) -> None:
             proc = _spawn(argv(bin_path, model, effort, sp_file, mcp_file, super_mode=mode,
                                # An expert: no --autocompact, the CLI compacts its chat by itself (_conversation_plan).
                                resume=resume, window=None if expert else context_window(model),
-                               fence=xsessions.fence(bot, write=True, run=True) if expert else None), cwd)
+                               # A user at the card: Claude Code's auto mode. A routine's turn: the default mode.
+                               fence=(xsessions.fence(bot, write=True, run=True, auto=expert_cards(bot))
+                                      if expert else None)), cwd)
             sess.proc = proc
             threading.Thread(target=_drain_stderr, args=(sess, proc), daemon=True, name=f"bot-stderr-{bot.id}").start()
             if bot.stop_flag.is_set():  # Stop landed while we were spawning
@@ -1665,13 +1678,17 @@ EXPERT_CARD_WHY = "It is outside what this expert may do without asking."
 
 
 def _expert_permission(bot, sess: Turn, args: dict, name: str, inp: dict):
-    """An expert's chat (docs/experts.md §6): whatever Claude Code's fence does not allow (a shell command outside
-    the `fused` rules, a read outside its granted folders, a write other than memory.md) is the user's to decide,
-    on the same card. Nothing is allowed without the card, there is no "approve forever" (the rule would live in
-    bot.json, where no side session could use it and no setting shows it) and no risk score (that is a model
-    call, and fused makes none for an expert)."""
+    """An expert's chat (docs/experts.md §6): whatever Claude Code asks about is the user's to decide, on the same
+    card: every write other than memory.md and the scratch folder of throwaway UDF files (the fence's ask rule
+    sends all edits here; those two are answered `allow` by their path, `store.free_write`), and what auto mode
+    hands back to a person (after its classifier has refused several calls in a row, or when the CLI has no auto
+    mode and runs in `default`). There is no "approve forever" (the rule would live in bot.json, where no side
+    session could use it and no setting shows it) and no risk score (that is a model call, and fused makes none
+    for an expert)."""
     if name.startswith("mcp__"):  # the only MCP tool is this prompt: the model called it as if it were a tool
         return _permission_answer(False, args, "That is Claude Code's own permission prompt, not a tool for you.")
+    if name in ("Edit", "Write") and xstore.free_write(bot, inp.get("file_path"), sess.cwd):
+        return _permission_answer(True, args)  # memory.md and the scratch folder: every edit asks (the fence's ask rule)
     return _permission_card(bot, sess, args, name, inp, builtin_label(name, inp), None, EXPERT_CARD_WHY)
 
 
