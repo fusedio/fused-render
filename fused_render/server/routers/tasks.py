@@ -3221,7 +3221,8 @@ def _collect() -> dict[str, dict]:
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
             and not _breakout(task, breakouts)
-            and not _bot_session(task) and not _merge_session(task)}
+            and not _bot_session(task) and not _merge_session(task)
+            and not _specialist_session(task)}
 
 
 def _bot_session(task: dict) -> bool:
@@ -3242,6 +3243,23 @@ def _bot_session(task: dict) -> bool:
     from fused_render.bots import paths as bot_paths  # noqa: PLC0415
     cwd = tasks_store.head(task["path"])[0]
     return bot_paths.is_bot_workdir(cwd)
+
+
+def _specialist_session(task: dict) -> bool:
+    """A transcript of a specialist's own session (its main chat or a breakout; docs/specialists/PLAN.md A.5): a
+    conversation on the specialists page or a breakout card, not a task. Same cwd test as `_bot_session`, behind
+    the flag (`paths.flag_on_and_inside`: a pure string test first). Read off `sys.modules`: with specialists
+    never loaded this is one dict lookup."""
+    if not task["path"]:
+        return False
+    import sys  # noqa: PLC0415
+    mod = sys.modules.get("fused_render.specialists.paths")
+    if mod is None:
+        return False
+    try:
+        return bool(mod.flag_on_and_inside(tasks_store.head(task["path"])[0]))
+    except Exception:  # noqa: BLE001 — "cannot tell" must not hide a task
+        return False
 
 
 def _merge_session(task: dict) -> bool:

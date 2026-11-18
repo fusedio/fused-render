@@ -21,6 +21,7 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putChatRecapEnabled,
   putBreakoutEnabled,
+  putSpecialistsEnabled,
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
@@ -35,6 +36,7 @@ import { publishTaskIcons } from "@platform/lib/task-icons-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
+import { publishSpecialistsEnabled } from "@platform/lib/specialists-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
@@ -77,6 +79,20 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.breakout?.enabled === true}
       put={putBreakoutEnabled}
       after={(next) => publishBreakoutEnabled(next.breakout?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// Specialists (docs/specialists): the nav entry, the page and the task-side
+// tools. Published so the sidebar beside this page shows or drops its row at once.
+export function SpecialistsControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="specialists"
+      checked={prefs.specialists?.enabled === true}
+      put={putSpecialistsEnabled}
+      after={(next) => publishSpecialistsEnabled(next.specialists?.enabled === true)}
       onChange={onChange}
     />
   );

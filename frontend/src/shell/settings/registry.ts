@@ -543,6 +543,17 @@ const ENTRIES = [
     description: "One header for every task view: the Tasks page panel, the chat panes, the rail cards and the New task card.",
     keywords: "task header unified head close back prev next status star open kebab card panel rail",
   },
+  // SPECIALISTS (docs/specialists): the nav entry, the page, and the task-side
+  // tools and cards. Off by default; off, nothing of it exists.
+  {
+    id: "specialists",
+    group: "features",
+    section: "Sidebar",
+    label: "Specialists",
+    description: "Experts on one subject each, with their own memory and skills. Chat with one on its own page, and tasks can borrow its guidance or hand it a problem in a breakout. Each one learns from what happened overnight.",
+    keywords: "specialist expert memory skills breakout learn nightly inbox",
+    badge: "Beta",
+  },
   {
     id: "monitor",
     group: "general",

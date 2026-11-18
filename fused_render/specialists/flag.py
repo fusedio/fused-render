@@ -28,8 +28,22 @@ def on() -> bool:
         return False
 
 
+class Off(HTTPException):
+    """Raised by `require`. A subclass so app.py can answer it as `{"error": "not found"}` (every specialists
+    error is `{"error": sentence}`) without touching how any other route's HTTPException is answered."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=404, detail="not found")
+
+
+async def off_handler(request, exc):  # noqa: ARG001 — FastAPI's handler signature
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
 def require() -> None:
     """FastAPI dependency for every `/api/specialists*` route: with the flag off the routes do not exist, so they
     answer exactly what an unknown route answers (404), not a 403 that would advertise the feature."""
     if not on():
-        raise HTTPException(status_code=404, detail="not found")
+        raise Off()

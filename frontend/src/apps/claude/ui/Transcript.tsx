@@ -22,6 +22,7 @@
 //     that only takes up room once it loads — so a ResizeObserver answers all
 //     of them with the one flag.
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -166,6 +167,10 @@ export interface TranscriptProps {
    *  whatever the reader scrolled to, and read as a ghost of a message already
    *  answered above it (Akshil, 2026-10-04). */
   trailing?: ReactNode;
+  /** SPECIALISTS (docs/specialists): drawn right after a turn — the task's
+   *  event chips placed there by time, and "Send to a specialist". Absent with
+   *  the flag off, and the log is what it was. */
+  afterTurn?: (turn: ChatState["turns"][number]) => ReactNode;
   /** The chat's working folder (ClaudeChat `chatWorkdir`), threaded down to
    *  every `Turn` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first instead of running wherever the terminal drawer happens to
@@ -196,6 +201,7 @@ export const Transcript = memo(function Transcript({
   recap,
   trailing,
   cwd,
+  afterTurn,
 }: TranscriptProps) {
   const port = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLDivElement>(null);
@@ -1007,7 +1013,8 @@ export const Transcript = memo(function Transcript({
               const after = plan?.after.size
                 ? new Map(Array.from(plan.after, ([i, ids]) => [i, stack(ids)]))
                 : null;
-              return (
+              const extra = afterTurn ? afterTurn(turn) : null;
+              const row = (
                 <Turn
                   key={turn.key}
                   turn={turn}
@@ -1041,6 +1048,14 @@ export const Transcript = memo(function Transcript({
                       their own to sit under, so they go at the turn's tail. */}
                   {plan?.tail.length ? stack(plan.tail) : null}
                 </Turn>
+              );
+              return extra ? (
+                <Fragment key={turn.key}>
+                  {row}
+                  {extra}
+                </Fragment>
+              ) : (
+                row
               );
             })}
             {/* THE ROW AND THE CARD, both (#27). T appends a red row per failure

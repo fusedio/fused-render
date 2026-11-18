@@ -103,6 +103,25 @@ def shell_bots_page(path: str, shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 
+# The Specialists page (`/specialists`, `/specialists/<id>`; frontend apps/specialists/routes.ts), served only
+# while the `specialists` flag is on. Off, it answers exactly what an unknown path does (FastAPI's own 404), so
+# the flag-off app is unchanged. The flag is read per request: it can be switched while the server runs.
+def _specialists_page_on() -> None:
+    from fastapi import HTTPException
+
+    from fused_render.specialists import flag
+
+    if not flag.on():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+@router.get("/specialists")
+@router.get("/specialists/{path:path}")
+def shell_specialists_page(path: str = "", _on: None = Depends(_specialists_page_on),
+                           shell_path: str = Depends(get_shell_path)):
+    return FileResponse(shell_path)
+
+
 # The canvas workspace is `/canvases/<env>/<name>` (frontend
 # apps/canvases/api.ts canvasNameFromPath): the environment is a path segment
 # because the clone is one on disk (`~/Fused/canvas/<env>/user/<name>`), and a prod

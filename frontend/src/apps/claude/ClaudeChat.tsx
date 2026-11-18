@@ -173,6 +173,8 @@ import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { isLanHost } from "@platform/lib/host";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
+import { SpecialistCardContext } from "./specialists/context";
+import { useSpecialistTaskSide } from "./specialists/TaskSide";
 import { PlaceTags } from "@shell/claude-rail/PlaceTags";
 // THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"),
 // behind its flag: with it on, the strip and the identity line below are one
@@ -384,6 +386,16 @@ export interface ClaudeChatProps {
     /** Send `text` as a new message in this chat, the way a typed one goes. */
     send?: (text: string) => void;
   }) => void;
+  /** SPECIALISTS (docs/specialists PLAN B.9): fields merged into every
+   *  `start` body — `{specialist: "<id>:main"}` / `"<id>:breakout:<bid>"`. */
+  extraParams?: Record<string, string>;
+  /** `/clear` (and the host's own Clear) call this instead of going back to
+   *  Chats: a specialist's one chat starts a fresh session in place. */
+  onClear?: () => void;
+  /** This chat IS a specialist session: a chat from its first frame, no plain
+   *  Breakout control, no specialist task UI; `breakoutPrompt` is sent once and
+   *  `onBreakoutState` reports up, as in a breakout card. */
+  specialist?: { id: string; kind: "main" | "breakout" };
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -1437,6 +1449,7 @@ function ChatBody(props: ChatBodyProps) {
         params,
         ...(props.breakout ? { breakout: true } : {}),
         ...(props.breakout && props.breakoutContext ? { breakoutContext: props.breakoutContext.block } : {}),
+        ...(props.extraParams ? { extraStartParams: props.extraParams } : {}),
         // The transcript restore takes its own road (owner E2E R1, F5):
         // `/api/claude-sessions/history`. See `fetchHistory`.
         history: (f, s) => fetchHistory(f, s),
@@ -2173,6 +2186,8 @@ function ChatBody(props: ChatBodyProps) {
         // A BREAKOUT CARD IS A CHAT FROM ITS FIRST FRAME: it has no landing to
         // show, and a Home row would load another conversation into it.
         props.breakout ||
+        // …and so is a specialist's chat: it has no landing, no list of chats.
+        !!props.specialist ||
         params.get("session_id") ||
         // A CHAT THAT HAS NEVER RUN IS STILL A CHAT (`QUEUED_PARAM`): it has a
         // waiting bubble, a task number and a line to be in, and landing on the
@@ -3913,6 +3928,8 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
+  /** The specialist side's draft-label seat, filled once its hook has run below. */
+  const spxNoteDraft = useRef<(label: string | undefined) => void>(() => {});
   /** SEND BACK lands here: a breakout card's summary arrives as a window event
    *  addressed to this chat's session + folder, and goes through the same seat a
    *  stranded line uses (appended to what the reader has typed, draft in step). */
@@ -3925,6 +3942,8 @@ function ChatBody(props: ChatBodyProps) {
       if (!sid || d.sessionId !== sid || d.file !== file) return;
       strandSeq.current += 1;
       setStranded({ text: d.text, seq: strandSeq.current });
+      // A specialist breakout's summary says who it is from (docs/specialists).
+      spxNoteDraft.current(d.label);
       // Handled: the breakout must not also write the persisted draft.
       e.preventDefault();
     };
@@ -3938,7 +3957,7 @@ function ChatBody(props: ChatBodyProps) {
   /** Set once `onFollowUp` exists (it is defined further down this body). */
   const breakoutSendRef = useRef<((text: string) => void) | null>(null);
   useEffect(() => {
-    if (props.breakout && onBreakoutState) {
+    if ((props.breakout || props.specialist) && onBreakoutState) {
       onBreakoutState({
         sessionId: state.sessionId || "",
         turns: state.turns,
@@ -3948,7 +3967,7 @@ function ChatBody(props: ChatBodyProps) {
         send: (text: string) => breakoutSendRef.current?.(text),
       });
     }
-  }, [props.breakout, onBreakoutState, controller, state.sessionId, state.turns, state.status]);
+  }, [props.breakout, !!props.specialist, onBreakoutState, controller, state.sessionId, state.turns, state.status]);
 
   /** The title this chat's header names it by, for the breakout chip. Written
    *  where the header's task row is read. */
@@ -4385,6 +4404,11 @@ function ChatBody(props: ChatBodyProps) {
             notify({ title: "Breakout chats cannot be cleared; close the card instead", tone: "info" });
             return false;
           }
+          // A specialist's one chat clears in place (its host folds the session).
+          if (props.onClear) {
+            props.onClear();
+            return true;
+          }
           // THE SAME DOOR AS `← Chats`: a new conversation in this folder.
           onBack();
           return true;
@@ -4407,7 +4431,7 @@ function ChatBody(props: ChatBodyProps) {
       }
     },
     [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk,
-     defaults.model, props.breakout],
+     defaults.model, props.breakout, props.onClear],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the
@@ -5580,12 +5604,12 @@ function ChatBody(props: ChatBodyProps) {
   // strict-mode replay; the store forgets it so a remount cannot resend.
   const breakoutPromptSent = useRef(false);
   useEffect(() => {
-    const text = props.breakout ? props.breakoutPrompt : undefined;
+    const text = props.breakout || props.specialist ? props.breakoutPrompt : undefined;
     if (!text || breakoutPromptSent.current) return;
     breakoutPromptSent.current = true;
     props.onBreakoutPromptSent?.();
     onSend(text, { model: defaults.model, effort: defaults.effort, permission: defaults.permission });
-  }, [props.breakout, props.breakoutPrompt, props.onBreakoutPromptSent, onSend, defaults.model, defaults.effort, defaults.permission]);
+  }, [props.breakout, !!props.specialist, props.breakoutPrompt, props.onBreakoutPromptSent, onSend, defaults.model, defaults.effort, defaults.permission]);
   const headsup = useHeadsUp({
     runId: state.runId || state.lastRunId || "",
     running,
@@ -5815,11 +5839,25 @@ function ChatBody(props: ChatBodyProps) {
   // on a message both start a breakout under it.
   const breakoutGate = !!(
     breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file
-  );
+  ) && !props.specialist;
   gateRef.current = breakoutGate;
   const togglePickingRef = useRef(togglePicking);
   togglePickingRef.current = togglePicking;
   const stableToggle = useCallback(() => togglePickingRef.current(), []);
+  // SPECIALISTS (docs/specialists): the task side of the feature — offer card,
+  // chips, Send to a specialist, the Breakout control, the draft label — and
+  // the services card in a specialist's own chat. Inert with the flag off.
+  const spx = useSpecialistTaskSide({
+    claude: chatBackend === "claude",
+    sessionId: state.sessionId || "",
+    file: file || "",
+    ...(state.runId ? { runId: state.runId } : {}),
+    ...(breakoutTitle.current ? { title: breakoutTitle.current } : {}),
+    turns: state.turns,
+    ...(props.specialist ? { specialist: props.specialist } : {}),
+    ...(breakoutGate ? { onCopyOfChat: stableToggle } : {}),
+  });
+  spxNoteDraft.current = spx.noteDraft;
   const { onBreakoutControl } = props;
   useEffect(() => {
     onBreakoutControl?.({ available: breakoutGate, picking, toggle: stableToggle });
@@ -6413,6 +6451,7 @@ function ChatBody(props: ChatBodyProps) {
               </>
             ) : null}
             <TasksContext.Provider value={tasksById}>
+            <SpecialistCardContext.Provider value={spx.cards}>
             <AllowDeniedContext.Provider value={allowDenied}>
             <Transcript
               followRef={transcriptFollow}
@@ -6432,6 +6471,7 @@ function ChatBody(props: ChatBodyProps) {
               {...(chatBackend === "claude" && !running && !props.breakout ? { onFork } : {})}
               {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}
               {...(breakoutGate ? { onBreakoutContext: onContextTurn } : {})}
+              {...(spx.afterTurn ? { afterTurn: spx.afterTurn } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
@@ -6486,10 +6526,12 @@ function ChatBody(props: ChatBodyProps) {
                       onStopRepeat={() => void deleteWaiting(row.entryId, row.stopId)}
                     />
                   ))}
+                {spx.tail}
                 </>
               }
             />
             </AllowDeniedContext.Provider>
+            </SpecialistCardContext.Provider>
             </TasksContext.Provider>
             {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
                 the box: one line until opened. Not in the compact cut — a tile
@@ -6565,6 +6607,8 @@ function ChatBody(props: ChatBodyProps) {
                 </button>
               </div>
             ) : null}
+            {/* SPECIALISTS: the draft label and the Breakout control. */}
+            {!compact ? spx.dock : null}
             {/* BREAKOUT PICK MODE: the picked exchanges, above the composer. */}
             {breakoutGate && picking ? (
               <BreakoutSelectionBar

@@ -46,6 +46,7 @@ import importlib.util
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import traceback
@@ -343,6 +344,23 @@ def _mark_breakout(params: dict, envelope: dict) -> None:
         logger.exception("claude agent: could not mark the breakout")
 
 
+def _specialist_after(params: dict, envelope: dict) -> None:
+    """Tell the specialists task side what an agent call did (docs/specialists/PLAN.md A.5): a main-chat or
+    breakout start records its session, a deny / cancel / snapshot_revert is a behaviour signal. Read off
+    `sys.modules` and never imported here: with specialists never loaded (flag off) it is one dict lookup.
+    Best-effort: it must never fail or slow the call it follows."""
+    try:
+        mod = sys.modules.get("fused_render.specialists.agent_hooks")
+        flag = sys.modules.get("fused_render.specialists.flag")
+        if mod is None or flag is None or not flag.on():
+            return
+        hook = getattr(mod, "after_agent_call", None)
+        if callable(hook):
+            hook(str(params.get("action") or ""), params, envelope if isinstance(envelope, dict) else {})
+    except Exception:  # noqa: BLE001
+        logger.exception("claude agent: the specialists hook failed")
+
+
 async def agent_dispatch(body: dict, call: dict | None) -> Response:
     """Everything after the transport's guard: the POST route's body, shared
     with the `/api/claude/agent/ws` socket (whose guard is its origin check).
@@ -408,6 +426,7 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
         gate._file_owner(params, _envelope_of(fut), body,
                          late=(action == "start"))
         _mark_breakout(params, _envelope_of(fut))
+        _specialist_after(params, _envelope_of(fut))
         git_status.invalidate_status_cache()
 
     def _on_cancel(fut):
@@ -455,6 +474,7 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
         # placeholder dropped, a send's spent claim restored) with no `_late`.
         gate._file_owner(params, envelope, body)
         _mark_breakout(params, envelope)
+        _specialist_after(params, envelope)
     if action == "cancel" and status == 200:
         # THE TASKS PAGE HEARS THE STOP NOW. Its own readers (the CLI's
         # registry row, the transcript tail) only notice a stop once the CLI

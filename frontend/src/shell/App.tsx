@@ -120,6 +120,8 @@ import {
   isAiModelsPath,
 } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
+import { isSpecialistsPath } from "@apps/specialists/routes";
+import { useSpecialistsFlagAnswer } from "@platform/lib/specialists-flag";
 
 // The boot-time "send a fresh install to the wizard" decision is made once
 // per page load (App's render below), not on every re-render — a user who
@@ -189,6 +191,9 @@ registerNativeView(NODE_MODE, () => import("@apps/canvases").then((m) => ({ defa
 // Bots (ported from FusedBot): browser bots, each driving its own Chrome
 // window. The page carries its own scoped stylesheet in the lazy chunk.
 const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
+// Specialists (docs/specialists): experts on one subject, each with one chat.
+// Behind the `specialists` flag; the page and its stylesheet are their own chunk.
+const Specialists = lazy(() => import("@apps/specialists").then((m) => ({ default: m.Specialists })));
 
 type StatState =
   | { status: "loading" }
@@ -550,6 +555,9 @@ export default function App({ config }: { config: Config }) {
   // is how a reader lost their search text, their filters, their expanded rows
   // and their scroll position by pressing Back once.
   const epoch = useNavEpoch(taskPeekOn ? PAGE_PARAMS : NO_PAGE_PARAMS);
+  // The `specialists` flag: null until the prefs read answers, so a bookmark
+  // of /specialists is not sent home before the server has said.
+  const specialistsAnswer = useSpecialistsFlagAnswer();
 
   // TERMINAL JOBS, ON THEIR WAY FROM Activity TO Notifications (D586,
   // broadened by D662 to every terminal state — done/error/cancelled, not
@@ -734,6 +742,10 @@ export default function App({ config }: { config: Config }) {
   if (!botsOn && isBotsPath(location.pathname)) {
     history.replaceState(null, "", "/home");
   }
+  // Same for /specialists once the flag is known to be off.
+  if (specialistsAnswer === false && isSpecialistsPath(location.pathname)) {
+    history.replaceState(null, "", "/home");
+  }
   // A fresh install's first load lands on the setup wizard instead (its own
   // route, shell/onboarding). Once per page load and only from the front
   // door: a deep link (a bookmark, an app URL from the CLI) is honoured, and
@@ -829,6 +841,8 @@ export default function App({ config }: { config: Config }) {
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
   const isBots = isBotsPath(pathname) && botsOn;
+  // Specialists: a prefix like Bots (apps/specialists/routes.ts); flag-gated.
+  const isSpecialists = isSpecialistsPath(pathname) && specialistsAnswer !== false;
   // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
   // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
   // branch below, deliberately unredirected.
@@ -868,6 +882,7 @@ export default function App({ config }: { config: Config }) {
     isHome ||
     isCanvases ||
     isBots ||
+    isSpecialists ||
     canvasWorkspace !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // An `s3://bucket/key` LOCATION (platform/lib/remote.ts) decodes through
@@ -921,6 +936,8 @@ export default function App({ config }: { config: Config }) {
                               ? "Workbench Canvases"
                               : isBots
                                 ? "Bots"
+                              : isSpecialists
+                                ? "Specialists"
                               : canvasWorkspace
                                 ? `Canvas: ${canvasWorkspace.name} · ${ENV_NAMES[canvasWorkspace.env].label}`
                                 : fsPath
@@ -1116,6 +1133,20 @@ export default function App({ config }: { config: Config }) {
         <Suspense fallback={<RouteFallback />}>
           <Bots />
         </Suspense>
+      </div>
+    );
+  } else if (isSpecialists) {
+    // Specialists — chrome-free like Bots; the page owns its three columns.
+    // Not keyed on `epoch`: picking a specialist is a path hop inside one page.
+    main = (
+      <div id="content">
+        {specialistsAnswer ? (
+          <Suspense fallback={<RouteFallback />}>
+            <Specialists />
+          </Suspense>
+        ) : (
+          <RouteFallback />
+        )}
       </div>
     );
   } else if (canvasWorkspace !== null) {

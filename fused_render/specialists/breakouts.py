@@ -1,19 +1,335 @@
-"""Specialist breakouts opened from a task (stub)."""
+"""Specialist breakouts opened from a task (PRODUCT §3.3; PLAN A.2 "Specialist breakout", B.3, B.7).
 
+    <home>/.specialist/breakouts/<bid>.json
+
+A breakout is a fresh task-stack session in the specialist's home (`specialist="<id>:breakout:<bid>"`), seeded with
+`BREAKOUT_SEED`. The page drives it: create -> (offer card / Breakout menu) -> the floating card sends the seed ->
+Close sends `close_prompt` -> on turn end `closed` reads the SUMMARY and NOTE blocks, drafts the summary into the
+task's composer (page) and files the note in the inbox. Discard keeps the session (the nightly job reads it).
+"""
 from __future__ import annotations
+
+import logging
+import os
+import re
+import threading
+import time
+import uuid
+
+logger = logging.getLogger(__name__)
+
+BID_RE = re.compile(r"^b-[0-9a-f]{12}$")
+STATUSES = ("open", "closed", "discarded", "deleted")
+BRIEF_KEYS = ("problem", "tried", "look_at")
+BRIEF_MAX = 1000
+_LOCK = threading.RLock()
+
+BREAKOUT_SEED = """Brief from the task "{parent_title}":
+Problem: {problem}
+Tried: {tried}
+Look at: {look_at}
+
+The task is still running in {parent_folder} and keeps working on everything else. Its transcript is \
+{transcript_path}; you may read it and the folder. Prefer advising over changing the task's files; if you change \
+any, list them. Leave commits and branches to the task. When you think you are done, say so and offer to close."""
+
+_CLOSE_BODY = """Reply with exactly two blocks and nothing else.
+<<<SUMMARY
+Outcome: solved | workaround | reported | not solved — one line
+Found: two or three lines
+Do next: what the task should do next
+Files changed: paths, or None
+SUMMARY>>>
+<<<NOTE
+kind: gap | correction | convention | suspected-bug | behaviour | case
+basis: user-said | verified | guess
+claim: one sentence
+entry: m-xxxx or none
+(then the full evidence: what was tried, what happened, what worked)
+NOTE>>>"""
+CLOSE_OUT = "The user is closing this breakout. " + _CLOSE_BODY
+CLOSE_OUT_FOLLOWUP = ("The user is closing this breakout again. Summarise only what happened since your last "
+                      "summary. " + _CLOSE_BODY)
+_CLOSE_MARK = "The user is closing this breakout"
+
+
+def _io():
+    from fused_render.specialists import counts
+
+    return counts.read_json, counts.write_json
+
+
+def _dir(spec_id: str) -> str:
+    from fused_render.specialists import paths
+
+    return os.path.join(paths.app_dir(spec_id), "breakouts")
+
+
+def _agent():
+    from fused_render.claude_agent import agent_module
+
+    return agent_module()
+
+
+def _save(rec: dict) -> dict:
+    _, write_json = _io()
+    write_json(os.path.join(_dir(rec["specialist"]), rec["id"] + ".json"), rec)
+    return rec
 
 
 def get(spec_id, bid) -> dict | None:
-    return None
+    if not isinstance(bid, str) or not BID_RE.match(bid) or not isinstance(spec_id, str) or not spec_id:
+        return None
+    read_json, _ = _io()
+    rec = read_json(os.path.join(_dir(spec_id), bid + ".json"))
+    return rec if isinstance(rec, dict) else None
 
 
 def for_spec(spec_id) -> list[dict]:
-    return []
+    read_json, _ = _io()
+    out = []
+    try:
+        names = sorted(os.listdir(_dir(spec_id)))
+    except OSError:
+        return out
+    for n in names:
+        if n.endswith(".json") and BID_RE.match(n[:-5]):
+            rec = read_json(os.path.join(_dir(spec_id), n))
+            if isinstance(rec, dict):
+                out.append(rec)
+    return sorted(out, key=lambda r: float(r.get("opened") or 0))
 
 
 def open_now(spec_id) -> list[dict]:
-    return []
+    return [r for r in for_spec(spec_id) if r.get("status") == "open"]
 
 
 def session_ids(spec_id) -> dict[str, str]:
-    return {}
+    """session_id -> status, for every breakout of `spec_id` that has started a session."""
+    return {r["session_id"]: str(r.get("status") or "") for r in for_spec(spec_id)
+            if isinstance(r.get("session_id"), str) and r["session_id"]}
+
+
+def for_parent(parent_session_id: str) -> list[dict]:
+    """Every breakout opened from task session `parent_session_id`, across specialists, with `name`."""
+    if not parent_session_id:
+        return []
+    from fused_render.specialists import store
+
+    out = []
+    for spec in store.all():
+        for rec in for_spec(spec.id):
+            parent = rec.get("parent") if isinstance(rec.get("parent"), dict) else {}
+            if parent.get("session_id") == parent_session_id:
+                out.append(dict(rec, name=spec.name))
+    return sorted(out, key=lambda r: float(r.get("opened") or 0))
+
+
+def clean_brief(brief) -> dict:
+    """`{problem, tried, look_at}` as strings capped at 1000 characters; ValueError when not an object or no problem."""
+    if not isinstance(brief, dict):
+        raise ValueError("the brief must be an object with problem, tried and look_at")
+    out = {}
+    for k in BRIEF_KEYS:
+        v = brief.get(k, "")
+        if not isinstance(v, str):
+            raise ValueError(f"brief.{k} must be text")
+        if len(v) > BRIEF_MAX:
+            raise ValueError(f"brief.{k} is longer than {BRIEF_MAX} characters")
+        out[k] = v.strip()
+    if not out["problem"]:
+        raise ValueError("the brief needs a problem")
+    return out
+
+
+def _transcript_path(file: str, session_id: str) -> str:
+    if not file or not session_id:
+        return "(not known)"
+    try:
+        agent = _agent()
+        return agent._session_transcript_path(agent._workdir(file), session_id)
+    except Exception:  # noqa: BLE001
+        return "(not known)"
+
+
+def seed(rec: dict) -> str:
+    parent = rec.get("parent") or {}
+    brief = rec.get("brief") or {}
+    file = str(parent.get("file") or "")
+    folder = file if not file or os.path.isdir(file) else os.path.dirname(file)
+    return BREAKOUT_SEED.format(
+        parent_title=str(parent.get("title") or "untitled task").replace('"', "'"),
+        problem=brief.get("problem") or "(none)", tried=brief.get("tried") or "(nothing yet)",
+        look_at=brief.get("look_at") or "(not given)", parent_folder=folder or "(not known)",
+        transcript_path=_transcript_path(file, str(parent.get("session_id") or "")))
+
+
+def start_params(rec: dict) -> dict:
+    return {"specialist": f"{rec['specialist']}:breakout:{rec['id']}"}
+
+
+def create(spec, *, parent: dict, brief: dict, origin: str, request_id: str = "") -> dict:
+    """Open a breakout record (status open, no session yet). Raises ValueError on a bad body. `parent` must name
+    the task's `session_id` and `file`."""
+    if not isinstance(parent, dict) or not isinstance(parent.get("session_id"), str) or not parent["session_id"]:
+        raise ValueError("parent.session_id is required")
+    if not isinstance(parent.get("file"), str) or not parent["file"]:
+        raise ValueError("parent.file is required")
+    if origin not in ("offer", "hand"):
+        raise ValueError('origin is "offer" or "hand"')
+    from fused_render.specialists import paths
+
+    if paths.spec_of_path(parent["file"]):
+        raise ValueError("a breakout cannot open a breakout")
+    rec = {"id": "b-" + uuid.uuid4().hex[:12], "specialist": spec.id, "origin": origin,
+           "request_id": str(request_id or "")[:80],
+           "parent": {"session_id": parent["session_id"][:128], "run_id": str(parent.get("run_id") or "")[:80],
+                      "file": parent["file"], "title": str(parent.get("title") or "")[:200]},
+           "brief": clean_brief(brief), "session_id": "", "status": "open", "opened": time.time(),
+           "closes": [], "discarded": None}
+    with _LOCK:
+        _save(rec)
+    try:
+        from fused_render.specialists import counts
+
+        counts.bump(spec.id, "breakouts_opened")
+    except Exception:  # noqa: BLE001
+        logger.debug("specialists: count breakouts_opened", exc_info=True)
+    from fused_render.specialists import task_events
+
+    task_events.add(rec["parent"]["session_id"], "breakout_open", spec.id, spec.name, breakout_id=rec["id"])
+    return rec
+
+
+def set_session(spec_id: str, bid: str, session_id: str) -> None:
+    """Record the session a breakout's first start minted (router post-hook)."""
+    with _LOCK:
+        rec = get(spec_id, bid)
+        if rec is None or not session_id or rec.get("session_id") == session_id:
+            return
+        if not rec.get("session_id"):
+            rec["session_id"] = session_id
+            _save(rec)
+
+
+def close_prompt(spec_id: str, bid: str) -> str:
+    rec = get(spec_id, bid)
+    if rec is None:
+        raise LookupError(f"no such breakout: {bid}")
+    return CLOSE_OUT_FOLLOWUP if rec.get("closes") else CLOSE_OUT
+
+
+def _turn_text(turn: dict) -> str:
+    text = str(turn.get("text") or "")
+    if text.strip():
+        return text
+    segs = turn.get("segments") if isinstance(turn.get("segments"), list) else []
+    return "\n".join(str(s.get("text") or "") for s in segs
+                     if isinstance(s, dict) and s.get("kind") in (None, "", "text"))
+
+
+def last_answer(home: str, session_id: str) -> str:
+    """The breakout's answer to the latest close prompt (assistant text after it), else its last assistant text."""
+    try:
+        hist = _agent()._history(home, session_id)
+    except Exception:  # noqa: BLE001
+        return ""
+    turns = [t for t in (hist.get("turns") if isinstance(hist, dict) else None) or [] if isinstance(t, dict)]
+    start = None
+    for i, t in enumerate(turns):
+        if t.get("role") == "user" and _CLOSE_MARK in str(t.get("text") or ""):
+            start = i
+    after = turns[start + 1:] if start is not None else turns
+    answers = [_turn_text(t) for t in after if t.get("role") == "assistant"]
+    if start is None:
+        answers = answers[-1:]
+    return "\n".join(a for a in answers if a.strip())
+
+
+def _fields(block: str) -> tuple[dict, str]:
+    """(`key: value` header lines, the rest) of a NOTE block."""
+    head, rest, done = {}, [], False
+    for ln in block.splitlines():
+        m = re.match(r"^\s*(kind|basis|claim|entry)\s*:\s*(.*)$", ln, re.I)
+        if m and not done:
+            head[m.group(1).lower()] = m.group(2).strip()
+        else:
+            if ln.strip():
+                done = True
+            rest.append(ln)
+    return head, "\n".join(rest).strip()
+
+
+def _pick(value: str, allowed, default: str) -> str:
+    v = (value or "").strip().lower()
+    return v if v in allowed else default
+
+
+def closed(spec, bid: str, session_id: str) -> dict:
+    """The breakout's close-out turn ended: file its note, record the close, answer the draft for the composer."""
+    from fused_render.specialists import harness, inbox, task_events
+
+    rec = get(spec.id, bid)
+    if rec is None:
+        raise LookupError(f"no such breakout: {bid}")
+    sid = session_id or rec.get("session_id") or ""
+    answer = last_answer(spec.home, sid) if sid else ""
+    summary = harness.extract_block(answer, "SUMMARY")
+    note_block = harness.extract_block(answer, "NOTE")
+    title = f"{spec.name} breakout: {(rec.get('brief') or {}).get('problem', '')[:80]}"
+    draft = (summary.strip() if summary and summary.strip() else "Outcome: not given") \
+        + f"\nFull session: {title}"
+    if note_block:
+        head, evidence = _fields(note_block)
+        kind = _pick(head.get("kind"), inbox.KINDS, "case")
+        basis = _pick(head.get("basis"), inbox.BASES, "guess")
+        claim = head.get("claim") or ""
+        entry = head.get("entry") if re.match(r"^m-[0-9a-f]{4,8}$", head.get("entry") or "") else None
+    else:
+        kind, basis, claim, entry, evidence = "case", "guess", "", None, answer[-4000:]
+    claim = claim or f"Breakout on: {(rec.get('brief') or {}).get('problem', '')}"[:300]
+    note_id = ""
+    try:
+        note = inbox.add(spec.id, kind=kind, claim=claim, basis=basis, evidence=evidence or answer[-4000:],
+                         entry=entry, source={"type": "breakout", "breakout_id": bid, "session_id": sid,
+                                              "title": title})
+        note_id = note.get("id", "")
+    except Exception:  # noqa: BLE001 — the draft still reaches the task
+        logger.exception("specialists: could not file a breakout's note")
+    with _LOCK:
+        rec = get(spec.id, bid) or rec
+        rec.setdefault("closes", []).append({"at": time.time(), "note_id": note_id, "draft": draft})
+        rec["status"] = "closed"
+        if sid and not rec.get("session_id"):
+            rec["session_id"] = sid
+        _save(rec)
+    task_events.add(rec["parent"]["session_id"], "breakout_closed", spec.id, spec.name, breakout_id=bid,
+                    note_id=note_id, session_id=rec.get("session_id") or "")
+    return {"draft": draft, "label": f"Draft from the {spec.name} specialist · not sent yet", "note_id": note_id}
+
+
+def discard(spec, bid: str) -> dict:
+    from fused_render.specialists import task_events
+
+    with _LOCK:
+        rec = get(spec.id, bid)
+        if rec is None:
+            raise LookupError(f"no such breakout: {bid}")
+        rec["status"] = "discarded"
+        rec["discarded"] = time.time()
+        _save(rec)
+    task_events.add(rec["parent"]["session_id"], "breakout_discarded", spec.id, spec.name, breakout_id=bid,
+                    session_id=rec.get("session_id") or "")
+    return rec
+
+
+def reopen(spec, bid: str) -> dict:
+    with _LOCK:
+        rec = get(spec.id, bid)
+        if rec is None:
+            raise LookupError(f"no such breakout: {bid}")
+        if rec.get("status") == "deleted":
+            raise LookupError("this specialist's breakout is gone")
+        rec["status"] = "open"
+        _save(rec)
+    return {"session_id": rec.get("session_id") or "", "start_params": start_params(rec), "home": spec.home}

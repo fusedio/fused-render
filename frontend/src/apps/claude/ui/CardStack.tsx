@@ -17,7 +17,9 @@
 //
 // In this tree that is two render sites for one list: `placement="open"` right
 // above the working line, `placement="parked"` as the live turn's last child.
+import { useContext } from "react";
 import type { ChatController } from "../protocol/controller-api";
+import { SpecialistCardContext } from "../specialists/context";
 import { ANSWERABLE_TOOL, CANVAS_OPEN_TOOL, PLAN_TOOL } from "../protocol/summaries";
 import type { PermissionMode, PermissionRow } from "../protocol/types";
 import { OpenCanvasCard } from "./OpenCanvasCard";
@@ -90,11 +92,15 @@ export function CardStack({
           // trust it over `parkedIn`, which can name a different turn.
           !!p.decision && (only ? true : p.parkedIn === turnKey),
   );
+  // SPECIALISTS (docs/specialists): the offer card and the services card's
+  // extra button. Absent (flag off), every row falls through as before.
+  const specialist = useContext(SpecialistCardContext);
   if (!shown.length) return null;
   return (
     <>
       {shown.map((row) =>
-        row.tool === ANSWERABLE_TOOL ? (
+        specialist?.renderCard(row, actions, liveMode) ??
+        (row.tool === ANSWERABLE_TOOL ? (
           <QuestionCard
             key={row.id}
             row={row}
@@ -117,7 +123,7 @@ export function CardStack({
             liveMode={liveMode}
             onDecide={actions.decidePermission}
           />
-        ),
+        )),
       )}
     </>
   );

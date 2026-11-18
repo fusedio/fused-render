@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { getPrefs, getPrefsShared, dropSharedPrefsRead } from "@platform/lib/api";
 import { GATE_FALLBACK_MS } from "@platform/lib/clock";
 import type { PermissionMode } from "./protocol/types";
+import { feedSpecialistsEnabled, specialistsFlagStamp } from "@platform/lib/specialists-flag";
 
 let reading: Promise<void> | null = null;
 let generation = 0;
@@ -174,6 +175,7 @@ function read(): Promise<void> {
   const departed = generation;
   const breakoutStamp = breakoutPublishedAt;
   const recapStamp = recapPublishedAt;
+  const specialistsStamp = specialistsFlagStamp();
   // ONE BUDGET FOR THE WHOLE READ, retry included (bugbot, 2026-09-15).
   //
   // The deadline used to wrap each ATTEMPT, so a wedged server spent 8 s, was
@@ -199,6 +201,8 @@ function read(): Promise<void> {
       setQueue(p.queue?.enabled === true);
       if (recapPublishedAt === recapStamp) setRecapTitles(p.chat_recap?.enabled !== false);
       if (breakoutPublishedAt === breakoutStamp) setBreakout(p.breakout?.enabled === true);
+      // The same read feeds the specialists flag (platform/lib/specialists-flag).
+      feedSpecialistsEnabled(p.specialists?.enabled === true, specialistsStamp);
       // A server that predates the field keeps "auto", the server's default.
       setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
     })

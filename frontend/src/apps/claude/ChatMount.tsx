@@ -285,7 +285,15 @@ export interface ChatMountProps {
   /** The host's ⋮ reads Breakout's availability / pick state from here. */
   onBreakoutControl?: (ctl: { available: boolean; picking: boolean; toggle: () => void } | null) => void;
   /** With `breakout`: the chat's own session id + transcript, for Send back. */
-  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void }) => void;
+  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void; send?: (text: string) => void }) => void;
+  /** SPECIALISTS (docs/specialists PLAN B.9): fields merged into every `start`
+   *  body — `{specialist: "<id>:main"}` or `"<id>:breakout:<bid>"`. */
+  extraParams?: Record<string, string>;
+  /** `/clear` and the host's Clear call this instead of going back to Chats. */
+  onClear?: () => void;
+  /** This chat IS a specialist session: no plain Breakout control and no
+   *  specialist task UI inside it; with `onBreakoutState` it reports up. */
+  specialist?: { id: string; kind: "main" | "breakout" };
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -395,6 +403,9 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.onBreakout ? { onBreakout: props.onBreakout } : {})}
         {...(props.onBreakoutControl ? { onBreakoutControl: props.onBreakoutControl } : {})}
         {...(props.onBreakoutState ? { onBreakoutState: props.onBreakoutState } : {})}
+        {...(props.extraParams ? { extraParams: props.extraParams } : {})}
+        {...(props.onClear ? { onClear: props.onClear } : {})}
+        {...(props.specialist ? { specialist: props.specialist } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}

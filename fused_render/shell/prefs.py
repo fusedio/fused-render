@@ -496,6 +496,16 @@ def chat_recap_enabled() -> bool:
     return read_prefs().get("chat_recap_enabled") is not False
 
 
+def specialists_enabled() -> bool:
+    """Whether Specialists (docs/specialists/) are on (default off — experimental). Env
+    `FUSED_RENDER_SPECIALISTS` "1"/"0" wins both ways; else only a stored `true` is on. Off, no page, no
+    routes, no task tools, no timers and no folders."""
+    env = os.environ.get("FUSED_RENDER_SPECIALISTS")
+    if env in ("1", "0"):
+        return env == "1"
+    return read_prefs().get("specialists_enabled") is True
+
+
 def breakout_enabled() -> bool:
     """Whether Breakout (research-only side chats seeded from selected messages)
     is available (default off — opt-in beta). Off, no Breakout buttons render
@@ -1264,6 +1274,8 @@ def _prefs_response() -> dict:
         "chat_recap": {"enabled": chat_recap_enabled()},
         # Breakout side chats (opt-in beta, `breakout_enabled`).
         "breakout": {"enabled": breakout_enabled()},
+        # Specialists (experimental, `specialists_enabled`; env can force it).
+        "specialists": {"enabled": specialists_enabled()},
         # The slow in-canvas screenshot fallback on a Mac
         # (`canvas_shot_slow_fallback_enabled`; off by default).
         "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
@@ -1479,6 +1491,35 @@ def _forced_by(env_name: str, override) -> str | None:
     return os.environ.get(env_name) if override is not None else None
 
 
+def _specialists_switched(on: bool) -> None:
+    try:
+        from fused_render.specialists import flag as sp_flag
+
+        if on and sp_flag.on():
+            import fused_render.specialists.launch  # noqa: F401 — agent.py reads it off sys.modules
+            from fused_render.specialists import seed as sp_seed
+
+            try:
+                import fused_render.specialists.agent_hooks  # noqa: F401 — the router's post-hook
+            except Exception:  # noqa: BLE001
+                logger.warning("specialists: agent hooks not loaded", exc_info=True)
+            sp_seed.seed()
+            from fused_render import _platform as _sp_platform
+
+            if not _sp_platform.IS_WINDOWS:
+                from fused_render.specialists import scheduler as sp_scheduler
+
+                sp_scheduler.start()
+        elif not on:
+            import sys
+
+            mod = sys.modules.get("fused_render.specialists.scheduler")
+            if mod is not None:
+                mod.stop()
+    except Exception:  # noqa: BLE001
+        logger.exception("specialists: switching on/off failed")
+
+
 @router.get("/api/prefs")
 def get_prefs():
     return _prefs_response()
@@ -1616,6 +1657,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'breakout_enabled' must be a boolean"},
                                     status_code=400)
             prefs["breakout_enabled"] = value
+            changed = True
+        if "specialists_enabled" in body:
+            value = body.get("specialists_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'specialists_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["specialists_enabled"] = value
             changed = True
         if "canvas_shot_slow_fallback_enabled" in body:
             value = body.get("canvas_shot_slow_fallback_enabled")
@@ -1965,7 +2013,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
-                          "'chat_recap_enabled', 'breakout_enabled', "
+                          "'chat_recap_enabled', 'breakout_enabled', 'specialists_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
                           "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
                           "'task_head_unified_enabled', "
@@ -1989,6 +2037,10 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 status_code=400,
             )
         _store(prefs)
+    if isinstance(body.get("specialists_enabled"), bool):
+        # AFTER the write, best-effort (docs/specialists/PLAN.md A.5): on seeds the shipped specialists and
+        # starts the learning scheduler; off stops the scheduler. Never allowed to fail the preference write.
+        _specialists_switched(body["specialists_enabled"])
     if body.get("canvases_embed_proxy") is False:
         # AFTER the write, like `lan_enabled`: stop the listener now rather
         # than at the next status read. Turning it ON is left to status,

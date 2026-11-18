@@ -70,6 +70,10 @@ export interface ComposerDraftDetail {
   sessionId: string;
   file: string;
   text: string;
+  /** Who the draft is from, drawn over the composer until it is sent
+   *  ("Draft from the Canvas specialist · not sent yet"). Specialist breakouts
+   *  set it; a plain Send back does not. */
+  label?: string;
 }
 
 let cards: readonly BreakoutCard[] = [];

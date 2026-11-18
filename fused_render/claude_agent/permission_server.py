@@ -925,7 +925,15 @@ def _handle_approve(args: dict) -> dict:
         # Decided here, before anything is parked: no req card, no inflight
         # entry, no queue notification for a call that will never wait.
         return _text(refused)
-    if _chat_allows(tool_name, tool_input):
+    # A specialist session's connected-service call (PLAN A.8): the server's
+    # policy may allow it outright, or forbid the chat's "Always approve".
+    policy = _specialist_policy(tool_name) if os.environ.get("FUSED_SPECIALIST_POLICY") else ""
+    # The offer tool raises its own card when it runs; never a second one here.
+    if policy == "allow" or (tool_name == SPECIALIST_OFFER_TOOL
+                             and _specialist_origin()):
+        return _text(_permission_result(tool_name, tool_input,
+                                        {"decision": "allow", "scope": "once"}))
+    if policy != "ask_always" and _chat_allows(tool_name, tool_input):
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
 
@@ -2261,6 +2269,241 @@ EXPERT_SCHEMAS = [
 ]
 
 
+# ------------------------------------------------------------ specialists
+#
+# The specialist task tools (docs/specialists PLAN A.8, B.4), through the
+# server's `/api/specialists/tools/<name>`. Listed only when agent.py stamped
+# `FUSED_RENDER_SPECIALIST_ORIGIN` (a task run with at least one specialist).
+# `specialist_breakout` raises its own offer card here, with the approval
+# machinery, so it shows in every permission mode.
+
+SPECIALIST_TOOLS = ("specialist_list", "specialist_pull", "specialist_check",
+                    "specialist_note", "specialist_breakout")
+SPECIALIST_OFFER_TOOL = "mcp__%s__specialist_breakout" % SERVER_NAME
+#: How long an offer card waits for the user (agent.SPECIALIST_OFFER_CEILING
+#: sits above it); a check runs a side session (harness 600 s) plus slack.
+OFFER_WAIT_S = float(os.environ.get("FUSED_RENDER_SPECIALIST_OFFER_WAIT_S", "900"))
+SPECIALIST_CHECK_TIMEOUT = 600 + 60
+_NOTE_KINDS = ["gap", "correction", "convention", "suspected-bug", "behaviour", "case"]
+OFFER_ACCEPTED = ("The user opened a breakout with the %s specialist for: %s. It is "
+                  "handled there now. Do not work on this problem; continue with the "
+                  "rest of the task. The user will bring back the specialist's answer.")
+OFFER_DECLINED = ("The user chose to keep trying. Do not offer this again unless "
+                  "something new happens; continue with the problem yourself.")
+OFFER_UNANSWERED = "Nobody answered the offer. Continue with the problem yourself."
+
+
+def _specialist_origin() -> str:
+    return (os.environ.get("FUSED_RENDER_SPECIALIST_ORIGIN") or "").rstrip("/")
+
+
+def _defused(text) -> str:
+    """Text anyone may have written, with every "--- " defused (`_framed`)."""
+    return str(text).replace("--- ", "‒‒‒ ")
+
+
+def _specialist_post(name: str, body: dict, timeout=_TERMINAL_TIMEOUT):
+    """`(payload, None)` for a 200 JSON answer of POST /api/specialists/tools/<name>,
+    else `(None, error result)`."""
+    try:
+        status, payload = _server_http(_specialist_origin(), "POST",
+                                       "/api/specialists/tools/" + name,
+                                       dict(body, run_id=_run_id()), timeout)
+    except OSError as exc:
+        return None, _error_result("could not reach the Fused Render server: %s" % exc)
+    if status != 200 or not isinstance(payload, dict):
+        return None, _error_result(_http_error_text(status, payload))
+    return payload, None
+
+
+def _str_arg(args: dict, key: str, cap: int, required: bool = True):
+    value = args.get(key)
+    if value is None and not required:
+        return "", None
+    if not isinstance(value, str) or (required and not value.strip()):
+        return None, _error_result("needs a non-empty `%s`" % key)
+    if len(value) > cap:
+        return None, _error_result("`%s` is longer than %d characters" % (key, cap))
+    return value.strip(), None
+
+
+def _sp_text(payload: dict) -> dict:
+    return _plain(_defused(payload.get("text") or ""))
+
+
+def _handle_specialist_list(args: dict) -> dict:
+    payload, err = _specialist_post("list", {})
+    return err or _sp_text(payload)
+
+
+def _handle_specialist_pull(args: dict) -> dict:
+    who, err = _str_arg(args, "specialist", 200)
+    if err:
+        return err
+    payload, err = _specialist_post("pull", {"specialist": who})
+    # The pulled text is already framed by the server ([fused:specialist-guidance]).
+    return err or _plain(str(payload.get("text") or ""))
+
+
+def _handle_specialist_check(args: dict) -> dict:
+    who, err = _str_arg(args, "specialist", 200)
+    if err:
+        return err
+    stage = args.get("stage")
+    if stage not in ("plan", "done"):
+        return _error_result("`stage` is \"plan\" or \"done\"")
+    summary, err = _str_arg(args, "summary", 4000)
+    if err:
+        return err
+    payload, err = _specialist_post("check", {"specialist": who, "stage": stage,
+                                              "summary": summary},
+                                    SPECIALIST_CHECK_TIMEOUT)
+    return err or _sp_text(payload)
+
+
+def _handle_specialist_note(args: dict) -> dict:
+    body = {}
+    for key, cap, required in (("specialist", 200, False), ("claim", 300, True),
+                               ("evidence", 4000, False), ("entry", 40, False)):
+        value, err = _str_arg(args, key, cap, required)
+        if err:
+            return err
+        if value:
+            body[key] = value
+    if args.get("kind") not in _NOTE_KINDS:
+        return _error_result("`kind` is one of: " + ", ".join(_NOTE_KINDS))
+    if args.get("basis") not in ("user-said", "verified", "guess"):
+        return _error_result("`basis` is user-said, verified or guess")
+    body.update(kind=args["kind"], basis=args["basis"])
+    payload, err = _specialist_post("note", body)
+    return err or _sp_text(payload)
+
+
+def _handle_specialist_breakout(args: dict) -> dict:
+    """The offer card (PLAN A.8): parked in PERM_DIR like an approval, answered
+    by the page's decide (allow + edited brief / deny), capped at OFFER_WAIT_S.
+    Returns when answered; never waits on the breakout itself."""
+    brief = {}
+    for key in ("specialist", "problem", "tried", "look_at"):
+        value, err = _str_arg(args, key, 1000)
+        if err:
+            return err
+        brief[key] = value
+    who = brief.pop("specialist")
+    payload, err = _specialist_post("offer", {"specialist": who, "brief": brief})
+    if err:
+        return _plain(json.loads(err["content"][0]["text"]).get("error") or "offer refused")
+    name = str(payload.get("name") or who)
+    sid = str(payload.get("id") or who)
+    req_id = _request_id()
+    _write_atomic(os.path.join(PERM_DIR, req_id + ".req.json"), {
+        "id": req_id, "tool": SPECIALIST_OFFER_TOOL,
+        "input": {"specialist": sid, "name": name, **brief},
+        "tool_use_id": "", "created_at": time.time()})
+    key = _register_inflight(req_id)
+    _post_card_raised(req_id)
+    try:
+        decision = _await_answer(os.path.join(PERM_DIR, req_id + ".res.json"),
+                                 min(WAIT_TIMEOUT, OFFER_WAIT_S),
+                                 {"decision": "deny", "reason": "timeout"})
+        _post_card_cleared(req_id)
+    finally:
+        if key is not None:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.pop(key, None)
+    if decision.get("decision") == "allow":
+        outcome = "open"
+        edited = decision.get("brief")
+        if isinstance(edited, dict) and all(isinstance(edited.get(k), str)
+                                            for k in ("problem", "tried", "look_at")):
+            brief = {k: edited[k] for k in ("problem", "tried", "look_at")}
+        text = OFFER_ACCEPTED % (name, brief["problem"])
+    elif decision.get("reason") in ("timeout", "abandoned"):
+        outcome, text = "unanswered", OFFER_UNANSWERED
+    else:
+        outcome, text = "declined", OFFER_DECLINED
+    _specialist_post("offer-result", {"request_id": req_id, "specialist": sid,
+                                      "outcome": outcome, "brief": brief})
+    return _plain(_defused(text))
+
+
+_SPECIALIST_HANDLERS = {"specialist_list": _handle_specialist_list,
+                        "specialist_pull": _handle_specialist_pull,
+                        "specialist_check": _handle_specialist_check,
+                        "specialist_note": _handle_specialist_note,
+                        "specialist_breakout": _handle_specialist_breakout}
+_SP_ARG = {"type": "string", "description": "The specialist's name or id, as specialist_list gives it."}
+_SP_TEXT = lambda cap, d: {"type": "string", "maxLength": cap, "description": d}  # noqa: E731
+SPECIALIST_SCHEMAS = [
+    {"name": "specialist_list",
+     "description": "List the user's specialists (experts on one subject each).",
+     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "specialist_pull",
+     "description": ("Load a specialist's guidance (memory, topic files, skills) into "
+                     "this task. Instant."),
+     "inputSchema": {"type": "object", "properties": {"specialist": _SP_ARG},
+                     "required": ["specialist"], "additionalProperties": False}},
+    {"name": "specialist_check",
+     "description": ("Ask a specialist to review your plan (stage plan) or your result "
+                     "(stage done). Read-only; takes up to a few minutes."),
+     "inputSchema": {"type": "object", "properties": {
+         "specialist": _SP_ARG, "stage": {"type": "string", "enum": ["plan", "done"]},
+         "summary": _SP_TEXT(4000, "Your plan or your result, in short.")},
+         "required": ["specialist", "stage", "summary"], "additionalProperties": False}},
+    {"name": "specialist_note",
+     "description": ("Send a note to a specialist's inbox: something it got wrong, "
+                     "missed, or a convention the user stated. Omit specialist when "
+                     "none fits."),
+     "inputSchema": {"type": "object", "properties": {
+         "specialist": _SP_ARG, "kind": {"type": "string", "enum": _NOTE_KINDS},
+         "claim": _SP_TEXT(300, "One sentence."),
+         "evidence": _SP_TEXT(4000, "What shows it."),
+         "basis": {"type": "string", "enum": ["user-said", "verified", "guess"]},
+         "entry": {"type": "string", "description": "The memory entry it concerns (m-xxxx), if any."}},
+         "required": ["kind", "claim", "basis"], "additionalProperties": False}},
+    {"name": "specialist_breakout",
+     "description": ("Offer to hand ONE problem you are stuck on to a specialist. The "
+                     "user sees the brief and decides. If they accept, stop working on "
+                     "that problem and continue with the rest."),
+     "inputSchema": {"type": "object", "properties": {
+         "specialist": _SP_ARG, "problem": _SP_TEXT(1000, "The problem, in short."),
+         "tried": _SP_TEXT(1000, "What you tried."),
+         "look_at": _SP_TEXT(1000, "Where to look: files, commands, errors.")},
+         "required": ["specialist", "problem", "tried", "look_at"],
+         "additionalProperties": False}},
+]
+
+
+def _specialist_policy(tool_name: str) -> str:
+    """"allow" | "ask" | "ask_always" | "" for a connected-service call of a
+    specialist main chat / breakout (env FUSED_SPECIALIST_POLICY =
+    "<origin>|<id>|<kind>"); "" when the seam does not apply. Failure ⇒ ask."""
+    env = os.environ.get("FUSED_SPECIALIST_POLICY") or ""
+    if not env or not str(tool_name).startswith("mcp__specialist_services__"):
+        return ""
+    parts = env.rsplit("|", 2)
+    if len(parts) != 3:
+        return "ask"
+    import urllib.parse
+    origin, spec_id, kind = parts
+    sid = ""
+    try:
+        with open(os.path.join(os.path.dirname(PERM_DIR), "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+        sid = str(meta.get("session_id") or meta.get("resumed_from") or "")
+    except (OSError, ValueError, AttributeError):
+        pass
+    query = urllib.parse.urlencode({"specialist": spec_id, "kind": kind,
+                                    "session_id": sid, "tool": tool_name})
+    try:
+        status, payload = _server_http(origin.rstrip("/"), "GET",
+                                       "/api/specialists/policy?" + query, None, 2.0)
+    except OSError:
+        return "ask"
+    answer = payload.get("answer") if status == 200 and isinstance(payload, dict) else None
+    return answer if answer in ("allow", "ask", "ask_always") else "ask"
+
+
 TOOL_SCHEMA = {
     "name": TOOL_NAME,
     "description": (
@@ -2363,6 +2606,8 @@ def _dispatch(method: str, params: dict) -> dict:
             tools.extend(S3_SCHEMAS)
         if _expert_origin():
             tools.extend(EXPERT_SCHEMAS)
+        if _specialist_origin() and not NO_APPROVE:
+            tools.extend(SPECIALIST_SCHEMAS)
         return {"tools": tools}
     if method == "tools/call":
         name = params.get("name")
@@ -2377,6 +2622,8 @@ def _dispatch(method: str, params: dict) -> dict:
             known = known + S3_TOOLS
         if _expert_origin():
             known = known + EXPERT_TOOLS
+        if _specialist_origin() and not NO_APPROVE:
+            known = known + SPECIALIST_TOOLS
         if name not in known:
             raise LookupError("unknown tool: %s" % name)
         args = params.get("arguments")
@@ -2389,6 +2636,8 @@ def _dispatch(method: str, params: dict) -> dict:
             return _handle_canvas_shot(args)
         if name in _EXPERT_HANDLERS:
             return _EXPERT_HANDLERS[name](args)
+        if name in _SPECIALIST_HANDLERS:
+            return _SPECIALIST_HANDLERS[name](args)
         return _handle_approve(args) if name == TOOL_NAME \
             else _handle_app_state(args)
     if method == "ping":

@@ -750,6 +750,9 @@ export interface ControllerDeps {
   breakout?: boolean;
   /** With `breakout`: the `<breakout-context>` block the first send carries. */
   breakoutContext?: string;
+  /** Extra fields merged into every `start` / `send` body (a specialist
+   *  session's `{specialist: "<id>:main"}`, docs/specialists PLAN B.9). */
+  extraStartParams?: Record<string, string>;
   /** For the working-line clock and tests. MONOTONIC as far as this file is
    *  concerned: every reader of it measures a DURATION (elapsed run time, a
    *  retry budget, a poll deadline), a test is free to hand it `() => 1_000`,

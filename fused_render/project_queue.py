@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import time
 
@@ -157,6 +158,20 @@ def _is_root(path: str) -> bool:
     return os.path.dirname(native) == native
 
 
+def _specialist_home(project: str) -> bool:
+    """A path inside a specialist's home (docs/specialists/PLAN.md A.2), with the flag on: "no folder", so its
+    main chat and its breakouts run in parallel and never queue behind each other. Read off `sys.modules`, never
+    imported: with specialists never loaded (flag off) this is one dict lookup and False. Not cached with the
+    folder keys, because the flag can flip while the server runs."""
+    mod = sys.modules.get("fused_render.specialists.paths")
+    if mod is None:
+        return False
+    try:
+        return bool(mod.flag_on_and_inside(project))
+    except Exception:  # noqa: BLE001 — never let this break queueing
+        return False
+
+
 def queue_key(project: str) -> str:
     """The working tree a task edits, canonical — the key everything queues on.
 
@@ -194,6 +209,8 @@ def queue_key(project: str) -> str:
     repo must reset.
     """
     if not isinstance(project, str) or not project or not os.path.isabs(project):
+        return ""
+    if _specialist_home(project):
         return ""
     cached = _KEY_CACHE.get(project)
     if cached is not None:
