@@ -513,7 +513,6 @@ def test_a_busy_expert_does_not_use_up_the_pass(expert, monkeypatch, transcript)
                                                                       "backend": "claude", "target": "/work"})
         learn.record_use(expert, rid)
         learn._resolve(expert)
-    task = {"session_id": "s1"}
     monkeypatch.setattr(learn, "_tasks", lambda: type("T", (), {"_collect": staticmethod(
         lambda: {s: {"session_id": s} for s in ("s1", "s2", "s3")})})())
     monkeypatch.setattr(learn, "_session_of", lambda t, tasks: {
