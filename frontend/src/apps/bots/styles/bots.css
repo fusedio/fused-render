@@ -615,7 +615,7 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap
 .bots-page .termwrap { position: relative; margin: 0 14px; height: 320px; border-radius: 14px; background: #000; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
 .bots-page:not(.stage) .shotwrap.termup { display: none; }
 div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
-/* An expert's preview column (components/ExpertPane.tsx): no browser; Memory · Sessions on the Browser | Terminal
+/* An expert's preview column (components/ExpertPane.tsx): no browser; Memory · Logs on the Browser | Terminal
    strip (.viewsw .satab). The file and the diffs are monospace; a row that changed memory carries a +/− chip. */
 .bots-page .xpane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden auto; padding-bottom: 14px; }
 .bots-page .xp-panel { margin: 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; min-width: 0; }
@@ -629,7 +629,9 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-empty { padding: 16px 4px; text-align: center; }
 .bots-page .xp-none { margin: 0; }
 .bots-page .xp-lbl { margin: 0 0 4px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.bots-page .xp-chhead { margin-top: 14px !important; }
+.bots-page .xp-chbox { margin-top: 14px; }
+.bots-page .xp-chhead { cursor: pointer; user-select: none; }
+.bots-page .xp-chbox[open] > .xp-chhead { margin-bottom: 6px; }
 /* memory.md and the diffs, rendered markdown (components/MdDoc.tsx) in the panel's sans face. */
 .bots-page .xp-mem { margin: 0 0 8px; padding: 8px 12px; border-radius: 8px; background: var(--inset); border: 1px solid var(--line); max-height: 50vh; overflow: auto; }
 .bots-page .xp-md { color: var(--text); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; white-space: normal; }

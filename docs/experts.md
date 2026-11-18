@@ -557,9 +557,9 @@ The Bots page shows an expert with an `EXPERT` badge in the list (its tooltip is
 column (`ExpertPane.tsx`) has no browser; in its place two tabs:
 
 - **Memory**: `memory.md` rendered as markdown, read-only, its path with an Edit link that opens the file in the explorer, its size against the limit, a note when it was
-  edited by hand since a session last wrote it, and Changes (the sessions that changed it); a change opens on the
-  Sessions tab.
-- **Sessions**: the rows, newest first, with kind (chat, ask, task-learn, dream), origin, status, and when and how
+  edited by hand since a session last wrote it, and Changes (the sessions that changed it, collapsed until opened); a change opens on the
+  Logs tab.
+- **Logs**: the rows, newest first, with kind (chat, ask, task-learn, dream), origin, status, and when and how
   long in short form ("2m ago · 12s"). A row that changed memory carries a "changed memory" tag; on a card narrower
   than 340 px the tag is left out so the line never wraps. The row's cost is stored (`cost_usd`) but not shown. A row
   opens in place to its error if any, its memory diff, and its prompt and transcript.

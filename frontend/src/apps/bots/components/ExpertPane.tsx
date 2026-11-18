@@ -2,8 +2,8 @@
 // shows two tabs in the Browser | Terminal strip's style:
 //   Memory    memory.md as it stands, rendered as markdown (read-only), with its path, its size against the compaction
 //             limit, a note when it was edited by hand since the last session wrote it, and "Changes": the sessions that
-//             changed it (kind, where it came from, when). Clicking a change opens that session on the Sessions tab.
-//   Sessions  the expert's side sessions (and the chat turns that changed memory), newest first: kind, where it came
+//             changed it (kind, where it came from, when). Clicking a change opens that session on the Logs tab.
+//   Logs      the expert's side sessions (and the chat turns that changed memory), newest first: kind, where it came
 //             from, when, status, and a "changed memory" tag when its diff is not empty. A row opens in place to its
 //             error, its memory diff (read as a document: DiffView) and its transcript (role-tagged lines).
 // Data: GET /api/experts/<id>/memory and …/sessions (lib/api.ts expertApi), on mount, when the bot's `seq` moves (a
@@ -21,7 +21,7 @@ import { errMsg } from "../state/store";
 import { MdDoc } from "./MdDoc";
 
 export type ExpertTab = "memory" | "sessions";
-const TABS: [ExpertTab, string][] = [["memory", "Memory"], ["sessions", "Sessions"]];
+const TABS: [ExpertTab, string][] = [["memory", "Memory"], ["sessions", "Logs"]];
 const REFRESH_MS = 10_000;
 
 // ------------------------------------------------------------------ pieces ----
@@ -115,7 +115,7 @@ export function SessionHead({ s, nowMs }: { s: ExpertSession; nowMs?: number }) 
 
 // ------------------------------------------------------------------ panels ----
 
-/** The Memory tab: path with an Edit link to the explorer, size, the hand-edit note, the file rendered as markdown, then the sessions that changed it. */
+/** The Memory tab: path with an Edit link to the explorer, size, the hand-edit note, the file rendered as markdown, then the sessions that changed it (collapsed until opened). */
 export function MemoryPanel({ memory, err, onChange, nowMs }: {
   memory: ExpertMemory | null; err?: string; onChange: (c: ExpertChange) => void; nowMs?: number;
 }) {
@@ -129,8 +129,9 @@ export function MemoryPanel({ memory, err, onChange, nowMs }: {
       {memory.writing ? <p className="xp-hand">A session is working on memory now.</p>
         : memory.edited_by_hand ? <p className="xp-hand">Edited by hand since the last session.</p> : null}
       {memory.text.trim() ? <div className="xp-mem xp-md" aria-label="memory.md"><MdDoc text={memory.text} /></div> : <p className="xp-empty">Nothing remembered yet.</p>}
-      <p className="xp-lbl xp-chhead">Changes</p>
-      {changes.length ? (
+      <details className="xp-chbox">
+        <summary className="xp-lbl xp-chhead">Changes{changes.length ? ` (${changes.length})` : ""}</summary>
+        {changes.length ? (
         <ul className="xp-changes">
           {changes.map((c) => {
             const origin = originOf(c.kind, c.trigger);
@@ -145,12 +146,13 @@ export function MemoryPanel({ memory, err, onChange, nowMs }: {
             );
           })}
         </ul>
-      ) : <p className="xp-none">No session has changed it yet.</p>}
+        ) : <p className="xp-none">No session has changed it yet.</p>}
+      </details>
     </>
   );
 }
 
-/** The Sessions tab: the rows, newest first; the open row shows its detail in place. A session opened from the Memory
+/** The Logs tab: the rows, newest first; the open row shows its detail in place. A session opened from the Memory
  *  tab that the list does not hold (yet) shows on top: its detail once fetched, else "Loading…" or the fetch's error. */
 export function SessionsPanel({ rows, err, open, onOpen, full, fullErr, nowMs }: {
   rows: ExpertSession[] | null; err?: string;
@@ -244,7 +246,7 @@ export function ExpertPane({ b }: { b: Bot }) {
   const uid = useId();
   const paneRef = useRef<HTMLDivElement>(null);
 
-  // A change clicked on the Memory tab: the Sessions tab, that row open and scrolled to.
+  // A change clicked on the Memory tab: the Logs tab, that row open and scrolled to.
   const openChange = (c: ExpertChange) => { setTab("sessions"); setOpen(c.id); };
   const listed = !!rows;  // the row may only mount when the list arrives: reveal it then too (once, not per refresh)
   useEffect(() => {

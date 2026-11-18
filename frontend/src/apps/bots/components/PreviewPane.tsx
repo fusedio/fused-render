@@ -230,7 +230,7 @@ export function PreviewPane() {
     openMenu({ id: s.sel, x: r.right, y: r.bottom + 6, live: true, alignRight: true });
   };
 
-  // An expert has no browser: its Memory · Sessions pane replaces the whole browser stack. The live view stays
+  // An expert has no browser: its Memory · Logs pane replaces the whole browser stack. The live view stays
   // mounted (cdp.ts keeps its elements) but never opens for it.
   const expert = b?.kind === "expert";
   const asleep = !!b && !!b.shot && !b.browser?.running && !b.control && b.status !== "running" && b.status !== "waiting";
