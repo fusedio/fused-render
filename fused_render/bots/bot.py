@@ -2585,12 +2585,14 @@ class Bot:
                     from fused_render.bots import agent_engine
                     run = agent_engine.run
                 except Exception:  # noqa: BLE001 — the agent engine may not be installed; the steps engine always is
-                    if is_super(self.meta):
-                        # Super Bot's guard rails (posture, texted answers) live in the agent engine: no fallback.
-                        logger.warning("bot %s: agent engine unavailable for Super Bot", self.id, exc_info=True)
+                    if is_super(self.meta) or expert:
+                        # Super Bot's guard rails (posture, texted answers) live in the agent engine, and an expert
+                        # IS Claude Code in its folder (no browser): no fallback to the steps engine.
+                        who = "An expert" if expert else "Super Bot"
+                        logger.warning("bot %s: agent engine unavailable for %s", self.id, who, exc_info=True)
                         # Explicit via: this runs on the caller's thread, so emit() would not stamp it and a phone-started
                         # request would get silence (the router answers the origin).
-                        self.emit("error", "Super Bot needs the agent engine (Claude Code), which could not load.",
+                        self.emit("error", f"{who} needs the agent engine (Claude Code), which could not load.",
                                   **({} if chan.is_web(via) else {"via": dict(via)}))
                         self.set_status("idle", task_via=None)
                         self.task_via = dict(chan.WEB)
