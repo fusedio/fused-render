@@ -1160,6 +1160,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     appState = false,
     /** PR3 `SendOptions.optimisticKey`: fill THAT row instead of adding one. */
     adopt?: string,
+    /** `SendOptions.clientId` — see `UserTurn.clientId`. */
+    clientId?: string,
   ): UserTurn => {
     // ADOPTION IS A REPLACE IN PLACE, and it has to be: the optimistic row is
     // already the last bubble in the log, and pushing a second one would leave
@@ -1193,6 +1195,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // from "is there a pane" — a pane that has told us nothing produces no
       // block and owes no receipt.
       ...(appState ? { appState: true as const } : {}),
+      ...(clientId ? { clientId } : {}),
     };
     if (held) emit({ turns: state.turns.map((t) => (t.key === turn.key ? turn : t)) });
     else pushTurn(turn);
@@ -2932,7 +2935,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // the same string the tasks listing wants for its "last prompt" line, which
     // is why it is named here rather than spelled twice (see `noteTurnRunning`).
     const spoken = text || stripBlocks(outgoing);
-    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey);
+    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey, opts.clientId);
     let started = false;
     try {
       let runId = "";
@@ -3184,7 +3187,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // counter pollLoop read as a landed follow-up, and the reply split around
     // the gap where the rolled-back row had been (Bugbot, PR #996).
     const spoken = text || stripBlocks(outgoing);
-    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey);
+    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey, opts.clientId);
     // KEYED BY A SEQ, not by the text: two identical follow-ups ("again") used
     // to collapse into one entry, and the first ack cleared both — so the second
     // one's hint left the composer while the message was still in flight.

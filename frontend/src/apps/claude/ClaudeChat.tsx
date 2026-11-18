@@ -3177,7 +3177,21 @@ function ChatBody(props: ChatBodyProps) {
       // bubble is the markers `stripBlocks` builds out of the composed wire,
       // and only the controller can write those. A PARKED line's bubble is
       // already up: adopt it rather than post a second.
-      const optimisticKey = parked ? parked.bubble : text ? controller.postOptimisticUser(text) : "";
+      //
+      // A FOLLOW-UP INTO A LIVE RUN IS IN THE QUEUE FROM THE KEYPRESS ("sending").
+      // Its row used to be a plain transcript bubble until the controller had
+      // it — after the queue's admission, the pane's photograph and the
+      // app-state read, which is seconds on a busy page — and only THEN moved
+      // into the strip above the box. A reader who pressed Enter looked at the
+      // queue, saw nothing, and could not tell the message had been taken
+      // ("my msg took like 10 sec to show up in the queue"). The tag comes off
+      // when the send's own bubble adopts the row (`addUser`), by which time the
+      // controller names it as queued (`queuedKeys`): one row, never moved.
+      const optimisticKey = parked
+        ? parked.bubble
+        : text
+          ? controller.postOptimisticUser(text, followUp ? "sending" : undefined)
+          : "";
       void (async () => {
         let taken = false;
         let counted = false;
@@ -4837,7 +4851,9 @@ function ChatBody(props: ChatBodyProps) {
     () => queuedLines({ turns: state.turns, queuedKeys: state.queuedKeys, inbox: state.inbox }),
     [state.turns, state.queuedKeys, state.inbox],
   );
-  const hasQueued = queuedView.lines.some((l) => l.pending !== "held");
+  // A line still on its way to the run ("sending") is not yet something to send
+  // now or pull back: the composer's queue verbs wait until it has landed.
+  const hasQueued = queuedView.lines.some((l) => l.pending !== "held" && l.pending !== "sending");
   const transcriptState = useMemo(
     () =>
       queuedView.hiddenKeys.size

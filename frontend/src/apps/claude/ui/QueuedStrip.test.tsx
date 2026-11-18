@@ -30,6 +30,13 @@ describe("QueuedStrip", () => {
     expect(out.match(/>edit</g)).toHaveLength(2);
     expect(out).toContain("(queued until this turn is done)");
   });
+  test("a line still on its way to the run is listed with nothing to press", () => {
+    // Not the page's to pull back, not yet the run's to be sent ahead of.
+    const out = render({ lines: [{ id: "a", text: "on its way", pending: "sending" }] });
+    expect(out).toContain("on its way");
+    expect(out).not.toContain("Ctrl+X");
+    expect(out).not.toContain(">edit<");
+  });
   test("a compact tile lists the lines with no actions", () => {
     const out = render({ compact: true, lines: [{ id: "a", text: "x", pending: "queued" }] });
     expect(out).toContain("c-queue-compact");

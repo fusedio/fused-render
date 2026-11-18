@@ -62,7 +62,6 @@ import { agentLabel, modelLabelsOf, useAgentBackends } from "@platform/lib/agent
 import { copyToTaskShots, SchedButton } from "./SchedButton";
 import { AttachButton } from "./AttachButton";
 import { outboxHint } from "./outbox";
-import { ARRIVE_FLASH_MS } from "./QueuedStrip";
 
 /** The send button's tooltip, while a run is live. */
 export const SEND_NOW_TITLE = "Send now (Ctrl+X) · Queue until done (Ctrl+Enter)";
@@ -1879,34 +1878,6 @@ export function ComposerCard({
   const [menuIdx, setMenuIdx] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
   const [menuDismissed, setMenuDismissed] = useState<string | null>(null);
-  // THE OUTBOX CHIP FLASHES WHEN A LINE JOINS IT, and only then. `on` puts the
-  // arrival class on the chip (styles/composer.css `.c-outbox.is-arriving`) for
-  // the length of the animation, and `seq` is the chip's React key, so a second
-  // arrival inside that time remounts it and plays it again. A count that drops
-  // (the drain sent one, ↑ pulled one back) changes neither: nothing arrived.
-  //
-  // A CLASS, NOT THE CHIP'S MERE PRESENCE (Bugbot, PR #2347). A CSS animation
-  // restarts whenever its element comes back from `display: none`, and this
-  // composer is hidden and shown again around every permission, question and
-  // plan card (`ComposerGate`) — an animation on the bare chip flashed "a line
-  // arrived" each time a card closed over a line that had been waiting all along.
-  const waitingNow = queuedCount ?? 0;
-  const notSentNow = notSentCount ?? 0;
-  const [outboxFlash, setOutboxFlash] = useState({ waiting: waitingNow, notSent: notSentNow, seq: 0, on: false });
-  if (outboxFlash.waiting !== waitingNow || outboxFlash.notSent !== notSentNow) {
-    const grew = waitingNow > outboxFlash.waiting || notSentNow > outboxFlash.notSent;
-    setOutboxFlash({
-      waiting: waitingNow,
-      notSent: notSentNow,
-      seq: outboxFlash.seq + (grew ? 1 : 0),
-      on: grew || outboxFlash.on,
-    });
-  }
-  useEffect(() => {
-    if (!outboxFlash.on) return;
-    const timer = setTimeout(() => setOutboxFlash((f) => ({ ...f, on: false })), ARRIVE_FLASH_MS);
-    return () => clearTimeout(timer);
-  }, [outboxFlash.on, outboxFlash.seq]);
   const menuAll = useMemo(() => menuCommands(slashCommands), [slashCommands]);
   const menuQ = onLocalCommand ? (helpOpen && !text ? "" : menuQuery(text)) : null;
   const menuRows = useMemo(
@@ -2545,7 +2516,7 @@ export function ComposerCard({
             Drawn whatever the queue flag says — these are not the project
             queue's, and ↑ is the thing to do about them. */}
         {(queuedCount ?? 0) + (notSentCount ?? 0) > 0 ? (
-          <div key={outboxFlash.seq} className={outboxFlash.on ? "c-queued c-outbox is-arriving" : "c-queued c-outbox"}>{outboxHint(queuedCount ?? 0, notSentCount ?? 0)}</div>
+          <div className="c-queued c-outbox">{outboxHint(queuedCount ?? 0, notSentCount ?? 0)}</div>
         ) : null}
         {/* THE TOOLS' SHELF: a one-track grid whose row goes 1fr → 0fr while the
             composer is idle (styles/composer.css `.c-composer-tools`). A grid

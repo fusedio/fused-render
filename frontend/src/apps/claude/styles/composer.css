@@ -575,50 +575,12 @@
   line-height: 1.45;
   color: var(--c-faint);
 }
-/* THE OUTBOX CHIP — "1 message waiting to send · ↑ to edit it". The faint line
-   alone read as nothing: a reader who pressed Enter mid-turn could not tell the
-   line had been taken ("it did not give me any indication"). So it is a thin
-   pill with the Queued ring's blue in front of it, in the muted ink rather than
-   the faint one, and it FLASHES ONCE when a line joins it: full ink on a blue
-   wash for a beat, then back to rest. Loud at the moment the reader is looking
-   at the box, quiet for as long as the line waits. The flash rides a class
-   `Composer.tsx` puts on for an arrival and takes off after it — never the
-   chip's mere presence, which a composer hidden and shown again around a card
-   would replay over a line that had been waiting all along. */
+/* THE OUTBOX HINT ("1 message waiting to send · ↑ to edit it") in the muted ink
+   rather than the faint one: it names a message the reader just sent, and at
+   11.5px the faint ink read as nothing. The message itself is in the queue
+   card above the box (styles/sched.css `.c-queue-strip`). */
 .c-outbox {
-  display: flex;
-  align-items: center;
-  gap: calc(6px * var(--c-zoom, 1));
-  width: fit-content;
-  max-width: 100%;
-  padding: 1px calc(8px * var(--c-zoom, 1)) 1px calc(6px * var(--c-zoom, 1));
-  border-radius: calc(10px * var(--c-zoom, 1));
-  background: color-mix(in srgb, var(--status-queued) 7%, transparent);
   color: var(--c-dim);
-}
-.c-outbox.is-arriving {
-  animation: c-outbox-flash 1800ms ease-out;
-}
-.c-outbox::before {
-  content: "";
-  flex: none;
-  box-sizing: border-box;
-  width: calc(8px * var(--c-zoom, 1));
-  height: calc(8px * var(--c-zoom, 1));
-  border: 1.5px solid var(--status-queued);
-  border-radius: 50%;
-}
-@keyframes c-outbox-flash {
-  0%,
-  35% {
-    background: color-mix(in srgb, var(--status-queued) 22%, transparent);
-    color: var(--c-fg);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .c-outbox.is-arriving {
-    animation: none;
-  }
 }
 /* The switched-off agent's line under a closed box (D17): `.c-queued`'s quiet
    line, with its link in the ordinary ink so it reads as the way out. */

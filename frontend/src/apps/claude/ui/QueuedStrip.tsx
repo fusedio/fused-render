@@ -7,9 +7,8 @@ import { useEffect, useRef, useState } from "react";
 import type { QueuedLine } from "../protocol/queued-lines";
 
 /** How long a line that just joined the queue wears its arrival class — the
- *  length of the CSS flash (styles/sched.css `c-queue-arrive`, composer.css
- *  `c-outbox-flash`, both 1800ms) and a little over, so the class never comes
- *  off a frame early. */
+ *  length of the CSS arrival (styles/sched.css `c-queue-glow`, 1800ms) and a
+ *  little over, so the class never comes off a frame early. */
 export const ARRIVE_FLASH_MS = 1900;
 
 const NONE: ReadonlySet<string> = new Set();
@@ -78,7 +77,7 @@ export function QueuedStrip({ lines, running, onSendNow, onPull, compact }: Queu
       {lines.map((line) => (
         <li className={arriving.has(line.id) ? "c-queue-row is-arriving" : "c-queue-row"} key={line.id}>
           <span className="c-queue-text">{line.text}</span>
-          {compact ? null : line.pending === "held" ? (
+          {compact || line.pending === "sending" ? null : line.pending === "held" ? (
             <span className="c-queue-note">(queued until this turn is done)</span>
           ) : running ? (
             <button
@@ -90,7 +89,7 @@ export function QueuedStrip({ lines, running, onSendNow, onPull, compact }: Queu
               (Ctrl+X to send now)
             </button>
           ) : null}
-          {!compact && line.pending ? (
+          {!compact && line.pending && line.pending !== "sending" ? (
             <button
               type="button"
               className="c-queue-act"

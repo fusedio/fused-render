@@ -623,37 +623,6 @@ test("the outbox hint names the parked lines under the box, and not-sent rows ap
   expect(pulled).toBe(1);
 });
 
-test("the outbox chip flashes when a line joins it, and never for a line that was already waiting", () => {
-  const chipOf = (c: ReturnType<typeof mount>) =>
-    c.root.find((n) => typeof n.type === "string" && String(n.props.className ?? "").split(" ").includes("c-outbox"));
-  const arriving = (c: ReturnType<typeof mount>) => String(chipOf(c).props.className).split(" ").includes("is-arriving");
-  // ALREADY WAITING AT MOUNT (a chat reopened, a composer shown again after a
-  // card): nothing arrived, nothing flashes (Bugbot, PR #2347).
-  const c = mount({ queuedCount: 1 });
-  expect(arriving(c)).toBe(false);
-  const first = chipOf(c);
-  c.rerender({ queuedCount: 1 });
-  expect(chipOf(c)).toBe(first);
-  expect(arriving(c)).toBe(false);
-  // A LINE JOINS: the class is on, and the chip is a new node so a flash already
-  // playing starts over.
-  c.rerender({ queuedCount: 2 });
-  const second = chipOf(c);
-  expect(second).not.toBe(first);
-  expect(arriving(c)).toBe(true);
-  // The drain sent one, ↑ pulled one back: nothing arrived — the same node.
-  c.rerender({ queuedCount: 1 });
-  expect(chipOf(c)).toBe(second);
-  // A stop's hand-back is an arrival too.
-  c.rerender({ queuedCount: 1, notSentCount: 1 });
-  expect(chipOf(c)).not.toBe(second);
-  expect(arriving(c)).toBe(true);
-  // …and from nothing: the first line of all.
-  const empty = mount({ queuedCount: 0 });
-  empty.rerender({ queuedCount: 1 });
-  expect(arriving(empty)).toBe(true);
-});
-
 test("CTRL+Enter while LIVE holds the line until done; Cmd+Enter is never (it is ✓ Done's chord)", () => {
   const now: string[] = [];
   const held: string[] = [];
