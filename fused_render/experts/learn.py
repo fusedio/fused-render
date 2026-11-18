@@ -42,6 +42,8 @@ READ_FILE = "read.json"
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
 USER_TAG, AGENT_TAG, TOOL_TAG, NOTE_TAG = "USER| ", "AGENT| ", "TOOL| ", "NOTE| "
 CUT = "[... part cut ...]"
+CARRY = 20                   # a call this few lines before the cursor was read without its outcome
+NEAR = 5                     # calls this close are one window (expert_context then expert_ask)
 
 _LOCK = threading.Lock()     # read.json: record_use (request threads) and the pass
 
@@ -185,17 +187,19 @@ def render_turns(turns) -> str:
     return "\n".join(_lines(turns)[0])
 
 
-def fit(lines: list, calls: list, cap: int = TRANSCRIPT_CAP) -> str:
+def fit(lines: list, calls: list, cap: int | None = None) -> str:
     """`lines` joined, cut to `cap` characters. With `calls` (line indexes where the expert was called) the
     budget is shared between them: each keeps the lines around it, two after the call for every one before
     (what the advice led to is the evidence). Without calls, the end is kept. Whole lines only: every line
     keeps its speaker tag."""
+    cap = TRANSCRIPT_CAP if cap is None else cap
     md = "\n".join(lines)
     if len(md) <= cap:
         return md
     if not calls:
         tail = md[-cap:]
         return CUT + "\n" + tail[tail.find("\n") + 1:]
+    calls = [c for i, c in enumerate(calls) if not i or c - calls[i - 1] > NEAR]  # else the pair takes two shares
     keep, left = set(), cap
     for step in range(3 * len(lines)):  # far enough for a call at either end to reach the other
         # 0, +1, +2, -1, +3, +4, -2, ...: every third step looks back
@@ -230,7 +234,12 @@ def transcript_markdown(session: dict, since: int = 0, bot=None) -> tuple:
     history = _agent()._history(session.get("target") or "", session["session_id"], transcript=session.get("path") or "")
     lines, calls = _lines(list(history.get("turns") or []) if isinstance(history, dict) else [], bot)
     since = since if 0 < since <= len(lines) else 0
-    return fit(lines[since:], [c - since for c in calls if c >= since]), len(lines)
+    here = [c - since for c in calls if c >= since]
+    if any(since - CARRY <= c < since for c in calls):
+        # The last read ended right after a call, before the task had written what came of it: that outcome
+        # opens this slice, so the slice's start is kept as that call's window.
+        here.insert(0, 0)
+    return fit(lines[since:], here), len(lines)
 
 
 # ------------------------------------------------------------------------ state ---
@@ -333,8 +342,8 @@ def due(rec: dict, session: dict, now: float) -> bool:
 
 
 def prompt_for(bot, transcript: str, live: bool = False) -> str:
-    state = ("A task session that used you is still running: remember only what has shown its outcome so far, "
-             "you will be shown the rest later. " if live else "A task session that used you has gone quiet. ")
+    state = ("A task session that used you may still be running: remember only what has shown its outcome so "
+             "far, you will be shown the rest later. " if live else "A task session that used you has gone quiet. ")
     return (f"Today is {sessions.today()}. {store.where(bot)}\n"
             + state + "Between the markers is the "
             "part of its transcript you have not read yet, one line per line of text, tagged with its speaker "

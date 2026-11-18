@@ -774,7 +774,7 @@ def test_a_running_task_is_read_five_minutes_after_its_last_call(expert, monkeyp
     call_at(t0 - 100)  # a second call starts the wait again: both are read in one session
     assert learn.run_pass(now=t0 + 51)["sessions"] == 0
     assert learn.run_pass(now=t0 + 201)["sessions"] == 1
-    assert "is still running" in calls[-1]["prompt"] and "gone quiet" not in calls[-1]["prompt"]
+    assert "may still be running" in calls[-1]["prompt"] and "gone quiet" not in calls[-1]["prompt"]
     rec = learn._load(expert)["sessions"]["s1"]
     assert "called_at" not in rec and rec["lines"] == 1
     # the task keeps working with no new call: nothing until it has been idle (the sweep)
@@ -806,6 +806,26 @@ def test_the_line_cursor_reads_a_turn_that_kept_growing(expert, monkeypatch):
     turn["segments"].append({"kind": "text", "text": "three"})   # the same turn, still running
     assert learn.transcript_markdown(session, n, expert) == ("AGENT| three", 4)
     assert learn.transcript_markdown(session, 9, expert)[0].startswith("USER| go")  # shorter than the cursor: whole
+
+
+def test_a_call_read_without_its_outcome_anchors_the_next_slice(expert, monkeypatch):
+    monkeypatch.setattr(store, "find", lambda key: expert)
+    monkeypatch.setattr(learn, "TRANSCRIPT_CAP", 2000)
+    pad = lambda tag, n: [{"role": "user", "text": f"{tag} {i} " + "x" * 80} for i in range(n)]  # noqa: E731
+    hist = {"turns": pad("a", 3) + [_call("me")] + pad("b", 200) + [_call("me")] + pad("c", 3)}
+    monkeypatch.setattr(learn, "_agent", lambda: type("A", (), {"_history": staticmethod(lambda *a, **k: hist)})())
+    session = {"session_id": "s1", "target": "/work", "path": ""}
+    md, _n = learn.transcript_markdown(session, 4, expert)   # the last read ended at the first call's line
+    assert md.startswith("USER| b 0 ") and "USER| b 1 " in md  # what came of that call is kept, not cut
+    assert md.count(learn.CUT) == 1 and md.count("TOOL| ") == 1 and "USER| c 2 " in md
+    far, _n = learn.transcript_markdown(session, 60, expert)  # that call is long past: only the second anchors
+    assert far.startswith(learn.CUT) and "USER| b 60 " not in far
+
+
+def test_calls_side_by_side_share_one_window():
+    lines = ["USER| " + "x" * 90 for _ in range(400)]
+    md = learn.fit(lines, [100, 101, 300], 6000).split(learn.CUT)
+    assert abs(len(md[1]) - len(md[2])) < 300   # the pair at 100/101 does not take two shares
 
 
 def test_a_change_made_while_a_session_writes_is_not_a_hand_edit(expert, monkeypatch):

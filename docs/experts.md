@@ -261,18 +261,20 @@ either of:
 Each due session gets ONE task-learn session whose prompt holds only the unread rendered lines (from `lines`
 on; a transcript shorter than that, rewritten or compacted, is read whole. Lines, not turns: a task working for an
 hour without a user message is one turn that keeps growing). A task that was active within the idle time is
-described to the expert as still running ("remember only what has shown its outcome so far"), one speaker-tagged line per line
+described to the expert as possibly still running ("remember only what has shown its outcome so far"), one speaker-tagged line per line
 (`USER| `, `AGENT| `, `TOOL| `, `NOTE| `; a line that already starts like a tag is marked `(quoted)`), cut to
 30,000 characters (`learn.fit`), between `<<<TRANSCRIPT` / `TRANSCRIPT>>>` markers, framed as data, and "update
 your memory from this" with the same evidence rule as §3 and one relevance rule: keep only what concerns the
 subject the expert's instructions give it, since most of a task session is about other things. The cut is centred
 on the lines where the task called THIS expert (`expert_context` / `expert_ask` naming it): the budget is shared
 between those calls, each keeping the lines around it, two after the call for every one before (what the advice
-led to is the evidence), with `[... part cut ...]` where lines were left out. An unread part with no such call
+led to is the evidence), with `[... part cut ...]` where lines were left out. Calls within 5 lines of each other (`expert_context` then `expert_ask`) share one window. A call
+within 20 lines before the cursor was read before the task had written what came of it, so the start of the next
+slice is kept as its window. An unread part with no such call
 keeps its last 30,000 characters. Our code picks lines by position only; it never judges what is relevant. At most 4 task-learn sessions start per pass; the rest wait
 for the next. A session grown by housekeeping only (no new turns) is marked read without a harness run.
 
-**Retry and give-up**: the new `size` and `turns` are recorded only after the task-learn session ends `done`, or
+**Retry and give-up**: the new `size` and `lines` are recorded only after the task-learn session ends `done`, or
 ends `error` with a non-empty `memory_diff` (it changed memory before failing, e.g. a timeout after its edit: a
 retry would see the same evidence beside the updated memory and raise counts twice). A failure that changed nothing
 is counted against the size it tried (`fails`), gives up the after-call wait (a running task grows every pass, so
