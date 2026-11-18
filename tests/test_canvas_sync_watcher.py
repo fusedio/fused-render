@@ -144,7 +144,30 @@ def test_a_pycache_in_the_clone_is_never_synced(harness, tmp_path, monkeypatch):
         return real(self, cli, copy_dir)
 
     monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", capture)
+    # Every watcher scan takes one fingerprint: counting them lets the test
+    # wait for scans that really ran past the debounce, not a fixed sleep a
+    # slow runner could finish before the watcher looked at all.
+    scans = [0]
+    real_fp = canvases_mod._SyncManager._take_fingerprint
+
+    def counted_fp(self):
+        scans[0] += 1
+        return real_fp(self)
+
+    monkeypatch.setattr(canvases_mod._SyncManager, "_take_fingerprint", counted_fp)
     manager = _start(harness)
+
+    def settle() -> None:
+        """Wait out the debounce, then three more full scans after it: had
+        the write counted, the push would be under way by then."""
+        until = time.time() + canvases_mod.DEBOUNCE_S
+        while time.time() < until:
+            time.sleep(0.02)
+        start = scans[0]
+        deadline = time.time() + 10
+        while time.time() < deadline and scans[0] < start + 3:
+            time.sleep(0.02)
+        assert scans[0] >= start + 3, "the watcher stopped scanning"
 
     def pycache(rel: str, data: bytes) -> None:
         p = clone / rel
@@ -153,7 +176,7 @@ def test_a_pycache_in_the_clone_is_never_synced(harness, tmp_path, monkeypatch):
 
     pycache("__pycache__/a.cpython-312.pyc", b"\x00\xff")
     pycache("sub/__pycache__/b.cpython-312.pyc", b"\x00\xfe")
-    time.sleep(0.4)
+    settle()
     assert not shipped, "a bytecode cache fired a push"
     assert manager.push_state == "idle"
 
@@ -167,7 +190,7 @@ def test_a_pycache_in_the_clone_is_never_synced(harness, tmp_path, monkeypatch):
 
     # Recompiling (as the next local import does) is still not an edit.
     pycache("__pycache__/a.cpython-312.pyc", b"\x00\xfd")
-    time.sleep(0.4)
+    settle()
     assert len(shipped) == 1, shipped
     assert manager.push_state == "idle"
     _stop_sync("alpha")
