@@ -90,6 +90,9 @@ IGNORE_EOF = "--ignore-eof" in ARGS
 IGNORE_CANCEL = "--ignore-cancel" in ARGS        # a prompt that never stops
 PERM_AFTER_CANCEL = "--perm-after-cancel" in ARGS
 REPLAY_GAP = "--replay-gap" in ARGS
+#: Text the first replayed user prompt carries ahead of itself, as the
+#: host's prepended system prompt does on a new chat's first turn.
+REPLAY_PREFIX = _flag("--replay-prefix", "")
 #: `session/load` replies first and the history streams after it.
 REPLAY_AFTER_REPLY = "--replay-after-reply" in ARGS
 #: `authenticate` never answered, but `session/new` works (a slow login check).
@@ -168,7 +171,9 @@ def _load(rid):
             _update("tool_call", toolCallId="gap", title="ls", kind="execute",
                     status="completed", content=[], locations=[])
         for i in range(REPLAY):
-            _text("user_message_chunk", "replayed q%d" % (i + 1))
+            _text("user_message_chunk",
+                  (REPLAY_PREFIX + "\n\n" if REPLAY_PREFIX and i == 0 else "")
+                  + "replayed q%d" % (i + 1))
             time.sleep(pause)
             _text("agent_thought_chunk", "thinking about q%d" % (i + 1))
             _update("tool_call", toolCallId="old-%d" % i, title="ls",

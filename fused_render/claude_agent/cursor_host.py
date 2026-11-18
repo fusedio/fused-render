@@ -1169,8 +1169,16 @@ class _Host:
                             have.append(text.strip())
         except OSError:
             pass
+        # The chat's first prompt went out as `context + "\n\n" + text` while
+        # the transcript kept `text`: the system prompt is cut off the
+        # replayed one, so it matches that row and is never surfaced.
+        context = self._read_context()
+        turns = list(self.replay_turns)
+        if turns and context and turns[0][0].lstrip().startswith(context):
+            first = turns[0]
+            turns[0] = (first[0].lstrip()[len(context):].lstrip(), first[1])
         missing, at = [], 0
-        for user_text, agent_text in self.replay_turns:
+        for user_text, agent_text in turns:
             try:
                 at = have.index(user_text.strip(), at) + 1
             except ValueError:

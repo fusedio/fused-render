@@ -1792,3 +1792,24 @@ def test_the_echo_carries_the_inbox_rows_uuid(start, agent):
     assert agent._inbox_waiting(s.run_dir) == []
 
 
+
+
+def test_a_resume_does_not_re_add_the_first_prompt_that_carried_the_system_prompt(start):
+    """The first prompt went out as `context + "\\n\\n" + text` while the
+    transcript kept `text`: the replay of it must match that row, and the
+    system prompt never becomes a turn."""
+    seed = [
+        {"type": "user", "timestamp": "2026-10-16T10:00:01.000Z",
+         "message": {"role": "user", "content": [{"type": "text", "text": "replayed q1"}]},
+         "uuid": "u1", "parentUuid": None, "entrypoint": "sdk-cli"},
+        {"type": "assistant", "timestamp": "2026-10-16T10:00:02.000Z",
+         "message": {"role": "assistant", "content": [{"type": "text", "text": "replayed a1"}]},
+         "uuid": "a1", "parentUuid": "u1"},
+    ]
+    s = start(resume=True, fake_args=["--replay", "2", "--replay-prefix", "SYSTEM PROMPT BODY"],
+              transcript_seed=seed, context="SYSTEM PROMPT BODY")
+    assert _wait_for(lambda: len(s.tx()) >= 4)
+    time.sleep(0.3)
+    users = [r["message"]["content"][0]["text"] for r in s.tx() if r["type"] == "user"]
+    assert users == ["replayed q1", "replayed q2"]
+    assert "SYSTEM PROMPT" not in json.dumps(s.tx())
