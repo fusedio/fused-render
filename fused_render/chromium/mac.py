@@ -107,7 +107,11 @@ def _load() -> None:
         raise RuntimeError("engine not on disk")
     engine_dir = chromium.engine_dir()
     fw = chromium.framework_path()
-    objc.loadBundle("FusedChromium", globals(), bundle_path=fw)
+    # scan_classes=False: the default copies EVERY Objective-C class in the
+    # process into `globals()`, building a Python proxy for each (~65k classes,
+    # ~215 MB and ~0.9 s on the main thread). Only the two classes fetched by
+    # name with `lookUpClass` are ever used.
+    objc.loadBundle("FusedChromium", globals(), bundle_path=fw, scan_classes=False)
     engine_cls = objc.lookUpClass("FRChromiumEngine")
     cache = chromium.profile_dir()
     # Owner-only, and enforced on an existing dir too: with the mock keychain

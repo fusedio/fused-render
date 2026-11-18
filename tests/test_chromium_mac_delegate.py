@@ -253,3 +253,28 @@ def test_available_is_false_and_sticky_when_the_engine_is_not_on_disk(mac, monke
     # sticky: a later call does not retry (CEF init is once per process)
     monkeypatch.setattr(chromium, "is_ready", lambda *a, **k: (_ for _ in ()).throw(AssertionError("retried")))
     assert mac.available() is False
+
+
+def test_loading_the_framework_does_not_scan_every_class(mac, monkeypatch, tmp_path):
+    """PyObjC's `loadBundle` defaults to `scan_classes=True`, which builds a
+    Python proxy for every Objective-C class in the process (~215 MB in the
+    desktop app). The engine and view classes are fetched by name instead."""
+    from fused_render import chromium
+
+    calls, looked_up = [], []
+    engine = types.SimpleNamespace(cefVersion=lambda: "139")
+    engine_cls = types.SimpleNamespace(
+        startWithEngineDirectory_cachePath_userAgentProduct_scriptMessageHandlerNames_=lambda *a: engine,
+        lastError=lambda: None)
+    monkeypatch.setattr(chromium, "is_ready", lambda *a, **k: True)
+    monkeypatch.setattr(chromium, "engine_dir", lambda *a, **k: str(tmp_path))
+    monkeypatch.setattr(chromium, "framework_path", lambda *a, **k: str(tmp_path / "FusedChromium.framework"))
+    monkeypatch.setattr(chromium, "profile_dir", lambda *a, **k: str(tmp_path / "profile"))
+    monkeypatch.setattr(mac.objc, "loadBundle", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(mac.objc, "lookUpClass", lambda name: looked_up.append(name) or engine_cls)
+
+    assert mac.available() is True
+    assert mac.engine() is engine
+    (args, kwargs), = calls
+    assert kwargs.get("scan_classes") is False
+    assert looked_up == ["FRChromiumEngine"]
