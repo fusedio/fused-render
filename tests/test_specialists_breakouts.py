@@ -209,7 +209,21 @@ def test_deleted_specialist_with_an_open_breakout(client, parent):
     spec = make_specialist("Canvas", "Fused canvases")
     _, out = _open(client, spec, parent)
     bid = out["breakout_id"]
-    store.delete(spec.id)
+    # Seen live: the card kept chatting after the delete, through the breakout's held-open host. Delete ends the
+    # hosts of the home and of every workroom, not only the live turns.
+    from fused_render.claude_agent import agent_module
+    agent = agent_module()
+    ended, asked = [], []
+    monkeypatch_hosts = {os.path.realpath(out["home"]): ["run-b"], os.path.realpath(spec.home): ["run-m"]}
+    orig_hosts, orig_cancel = agent._hosts_in, agent._cancel_run
+    agent._hosts_in = lambda folder: (asked.append(os.path.realpath(folder)),
+                                      monkeypatch_hosts.get(os.path.realpath(folder), []))[1]
+    agent._cancel_run = lambda run_id, interrupt_first=True: ended.append(run_id)
+    try:
+        store.delete(spec.id)
+    finally:
+        agent._hosts_in, agent._cancel_run = orig_hosts, orig_cancel
+    assert sorted(ended) == ["run-b", "run-m"] and os.path.realpath(out["home"]) in asked
     listed = json.loads(client.get("/api/specialists/breakouts?parent_session_id=task-1")[2])["breakouts"]
     assert [(x["id"], x["status"], x["name"]) for x in listed] == [(bid, "deleted", "Canvas")]
     for action in ("close-prompt", "closed", "discard", "reopen"):  # C5: 410, so the card can be dismissed

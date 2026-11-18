@@ -11,7 +11,7 @@ import {
   resetSpecialistBreakouts,
 } from "@platform/lib/specialist-breakouts";
 import type { ComposerDraftDetail } from "@platform/lib/breakouts";
-import { cardBox, SpecialistBreakoutCard, type SpecialistCardDeps } from "./SpecialistBreakoutCard";
+import { cardBox, DELETED_POLL_MS, SpecialistBreakoutCard, type SpecialistCardDeps } from "./SpecialistBreakoutCard";
 
 const winStubs: Record<string, unknown> = { innerWidth: 2000, innerHeight: 1500 };
 const globalStubs: Record<string, unknown> = {
@@ -217,6 +217,28 @@ test("a deleted specialist: the card says so and can be dismissed (410 reason de
     button(r, "Dismiss").props.onClick();
   });
   expect(getSpecialistBreakouts()).toHaveLength(0);
+});
+
+test("a specialist deleted while the card is open: the card finds out by itself (seen live)", async () => {
+  const gone = Object.assign(new Error("This specialist was deleted."), { status: 410, body: { reason: "deleted" } });
+  let alive = true;
+  const ticks: (() => void)[] = [];
+  const real = globalThis.setInterval;
+  globalThis.setInterval = ((fn: () => void, ms: number) => (ms === DELETED_POLL_MS && ticks.push(fn), 1)) as never;
+  try {
+    const { r } = await ready({ detail: async () => (alive ? { model: "m" } : Promise.reject(gone)) });
+    expect(textOf(r.root)).not.toContain("This specialist was deleted");
+    alive = false;
+    expect(ticks.length).toBeGreaterThan(0);
+    await act(async () => {
+      ticks[ticks.length - 1]!();
+      await new Promise((res) => setTimeout(res, 0));
+    });
+    expect(textOf(r.root)).toContain("This specialist was deleted");
+    expect(button(r, "Dismiss")).toBeTruthy();
+  } finally {
+    globalThis.setInterval = real;
+  }
 });
 
 test("Close on a specialist deleted meanwhile turns the card into the deleted state", async () => {

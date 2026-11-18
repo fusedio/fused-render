@@ -278,6 +278,31 @@ def _cancel_live_runs(home: str) -> None:
         logger.warning("specialists: could not cancel live runs in %s", home, exc_info=True)
 
 
+def _end_hosts(home: str) -> None:
+    """Best effort: end the held-open session hosts (idle between turns) of the main chat and every breakout
+    workroom. Cancelling the live TURNS is not enough: seen live, a breakout card kept chatting with the deleted
+    specialist's host after the delete (its next message started a turn in the trashed home)."""
+    try:
+        from fused_render.claude_agent import agent_module
+
+        agent = agent_module()
+        folders = [home]
+        bdir = os.path.join(home, paths.APP_DIR, "breakouts")
+        try:
+            folders += [os.path.join(bdir, n, "work") for n in os.listdir(bdir)
+                        if os.path.isdir(os.path.join(bdir, n, "work"))]
+        except OSError:
+            pass
+        for folder in folders:
+            for run_id in agent._hosts_in(folder):
+                try:
+                    agent._cancel_run(run_id, interrupt_first=False)
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception:  # noqa: BLE001
+        logger.warning("specialists: could not end the session hosts in %s", home, exc_info=True)
+
+
 def delete(spec_id: str) -> None:
     """Refused (`Busy`) while its nightly job runs. Move the home to `<root>/.state/trash/<id>-<ts>/` (recoverable by hand, never rm), after cancelling its
     live runs and marking its open breakouts `deleted` so a task that holds one gets a clear answer."""
@@ -293,6 +318,7 @@ def delete(spec_id: str) -> None:
     if busy:
         raise Busy("The nightly update is running for this specialist; delete it when the update has finished.")
     _cancel_live_runs(s.home)
+    _end_hosts(s.home)
     bdir = os.path.join(s.home, paths.APP_DIR, "breakouts")
     try:
         names = os.listdir(bdir)

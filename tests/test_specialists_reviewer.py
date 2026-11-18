@@ -217,3 +217,24 @@ def test_unrelated_failure_is_a_count_not_a_note(monkeypatch):
     prompt = calls[0]["prompt"]
     assert "unrelated = what went wrong" in prompt and "When in doubt, unrelated." in prompt
     assert "unused = your guidance was relevant" in prompt
+
+
+def test_restart_after_the_review_finished_settles_without_a_second_run(monkeypatch):
+    """Seen live: the server restarted between a reviewer session's end (its row saved, `done`) and the receipt
+    being marked done; the next pass ran the same review again. A finished, readable row for the receipt is used."""
+    s = make_specialist()
+    reviews = {}
+    _fake_receipts(monkeypatch, reviews)
+    from fused_render.specialists import harness
+    before = _turns()
+    rec = _receipt(before)
+    turns = before + [{"role": "user", "text": "thanks"}, _ok_tool(status="error")]
+    harness.save_row(s.id, {"id": harness.new_row_id(), "kind": "reviewer", "status": "done", "started": 1.0,
+                            "ended": 2.0, "trigger": {"receipt_id": rec["id"]},
+                            "answer": "<<<REVIEW\noutcome: unrelated\nentries: none\nkind: case\nbasis: verified\n"
+                                      "claim: Nothing to do with it.\nREVIEW>>>"})
+    rec["review"] = {**rec["review"], "attempts": 1}
+    calls = stub_side(monkeypatch, answer="<<<REVIEW\noutcome: confirmed\nentries: none\nkind: case\n"
+                                          "basis: verified\nclaim: x\nREVIEW>>>")
+    assert reviewer.review_one(s.id, rec, turns=turns)["outcome"] == "unrelated"
+    assert calls == [] and reviews[rec["id"]]["state"] == "done" and reviews[rec["id"]].get("attempts", 1) == 1

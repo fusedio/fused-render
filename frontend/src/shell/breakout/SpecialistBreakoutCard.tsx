@@ -65,6 +65,8 @@ const DEFAULT_DEPS: SpecialistCardDeps = {
 /** How long the chat waits for the specialist's model before it starts
  *  anyway (on the composer's own default). */
 const DETAIL_WAIT_MS = 1500;
+/** How often an open card checks that its specialist still exists. */
+export const DELETED_POLL_MS = 10_000;
 
 const CARD_W = 440;
 const CARD_H = 620;
@@ -158,6 +160,27 @@ export function SpecialistBreakoutCard({
       clearTimeout(t);
     };
   }, [card.specialistId, detail]);
+
+  // A specialist deleted while its card is open (in another tab or window):
+  // seen live, the card went on chatting as if nothing happened. Ask again
+  // now and then; the card turns into "This specialist was deleted" + Dismiss.
+  useEffect(() => {
+    if (deleted) return;
+    let live = true;
+    const t = setInterval(() => {
+      detail(card.specialistId).then(
+        () => {},
+        (err) => {
+          const status = (err as { status?: number })?.status;
+          if (live && (isSpecialistDeleted(err) || status === 404)) setDeleted(true);
+        },
+      );
+    }, DELETED_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [card.specialistId, detail, deleted]);
 
   const gone = (err: unknown): boolean => {
     if (!isSpecialistDeleted(err)) return false;

@@ -206,6 +206,22 @@ def _set(spec_id: str, rid: str, review: dict, **state) -> dict:
     return review
 
 
+def _finished_row(spec_id: str, rid: str) -> dict | None:
+    """The reviewer row of receipt `rid` that already finished with a readable REVIEW block, if any. Seen live: the
+    server restarted between a review's end and the receipt being marked done, and the review ran a second time."""
+    from fused_render.specialists import harness
+    try:
+        for r in harness.rows(spec_id, limit=200):
+            trig = r.get("trigger") if isinstance(r.get("trigger"), dict) else {}
+            if r.get("kind") != "reviewer" or trig.get("receipt_id") != rid or r.get("status") != "done":
+                continue
+            if parse_review(harness.extract_block(str(r.get("answer") or ""), "REVIEW")) is not None:
+                return r
+    except Exception:  # noqa: BLE001
+        logger.debug("specialists reviewer: could not read rows", exc_info=True)
+    return None
+
+
 def review_one(spec_id: str, receipt: dict, turns=None) -> dict:
     """Review one due receipt. Returns `{"outcome": quiet|confirmed|unrelated|note|error|busy|skipped, "note"?,
     "row"?}`."""
@@ -230,10 +246,14 @@ def review_one(spec_id: str, receipt: dict, turns=None) -> dict:
     if attempts >= MAX_ATTEMPTS:
         _set(spec_id, rid, review, state="skipped", outcome="error")
         return {"outcome": "skipped"}
-    review = _set(spec_id, rid, review, attempts=attempts + 1)
     trigger = {"receipt_id": rid, "session_id": receipt.get("session_id", ""), "run_id": receipt.get("run_id", ""),
                "from_line": f["since"], "to_line": len(f["lines"])}
-    row = harness.run_side(spec, "reviewer", prompt_for(receipt, f), trigger=trigger)
+    row = _finished_row(spec_id, rid)
+    if row is not None:  # a restart cut the settle short after the review itself had finished: settle from it
+        attempts = max(attempts - 1, 0)
+    else:
+        review = _set(spec_id, rid, review, attempts=attempts + 1)
+        row = harness.run_side(spec, "reviewer", prompt_for(receipt, f), trigger=trigger)
     row_id = str(row.get("id") or "")
     if row.get("error") in (harness.BUSY, harness.CLOSED):
         _set(spec_id, rid, review, attempts=attempts)  # not an attempt; the next tick tries again
