@@ -927,15 +927,6 @@ def test_a_writer_does_not_wait_out_a_chat_that_waits_on_the_user(expert, monkey
     assert sessions.run(expert, "task-learn", "learn")["status"] == "done"
 
 
-def test_the_timeout_setting_must_be_finite(monkeypatch):
-    """`inf` is a positive number and no timeout at all: a writer's wait for the lock would never end."""
-    for bad in ("inf", "nan", "-5", "0", "x"):
-        monkeypatch.setenv(sessions.TIMEOUT_ENV, bad)
-        assert sessions._timeout() == sessions.TIMEOUT_S
-    monkeypatch.setenv(sessions.TIMEOUT_ENV, "7.5")
-    assert sessions._timeout() == 7.5
-
-
 def test_a_session_that_ends_after_its_expert_was_deleted_writes_nothing(expert, monkeypatch):
     """Deleting an expert removes its folder; a side session still running then must not make
     `<folder>/.fused/expert/sessions/` again with its final row."""

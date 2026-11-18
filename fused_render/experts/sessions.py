@@ -53,7 +53,6 @@ CHANGES_SHOWN = 20
 #: The memory limit (docs/experts.md "Dreaming"): whichever comes first.
 LIMIT_LINES = 200
 LIMIT_BYTES = 24 * 1024  # 200 lines of memory are often long ones
-TIMEOUT_ENV = "FUSED_RENDER_EXPERT_TIMEOUT"
 TIMEOUT_S = 600.0
 ASK_PARALLEL = 3
 ASK_WAIT_S = 120
@@ -167,14 +166,6 @@ def fence(bot, write: bool, run: bool = False, auto: bool = False) -> list:
 
 
 # -------------------------------------------------------------------- harness ---
-def _timeout() -> float:
-    try:
-        v = float(os.environ.get(TIMEOUT_ENV) or 0)
-    except ValueError:
-        v = 0.0
-    return v if 0 < v < float("inf") else TIMEOUT_S  # `inf` would be a wait with no end (`_take`, `communicate`)
-
-
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
@@ -248,10 +239,10 @@ def harness(bot, prompt: str, write: bool) -> dict:
                                     start_new_session=True)
             _PROCS.add(proc)
         try:
-            raw, err = proc.communicate(prompt.encode("utf-8"), timeout=_timeout())
+            raw, err = proc.communicate(prompt.encode("utf-8"), timeout=TIMEOUT_S)
         except subprocess.TimeoutExpired:
             _kill(proc)
-            out["error"] = f"no answer after {int(_timeout())} s"
+            out["error"] = f"no answer after {int(TIMEOUT_S)} s"
             return out
         result = None
         for ln in raw.decode("utf-8", "replace").splitlines():
@@ -430,7 +421,7 @@ def _take(bot, gate, writes: bool) -> bool:
     wait is as long as the user takes, and a task-learn pass waiting it out would hold up every other expert."""
     if not writes:
         return gate.acquire(timeout=ASK_WAIT_S)
-    end = time.monotonic() + _timeout()
+    end = time.monotonic() + TIMEOUT_S
     while not gate.acquire(timeout=max(0.0, min(LOCK_POLL_S, end - time.monotonic()))):
         if time.monotonic() >= end or (getattr(bot, "meta", None) or {}).get("waiting_on") is not None:
             return False

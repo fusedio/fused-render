@@ -109,8 +109,7 @@ row with status `error`.
   `--disable-slash-commands`) and the fence (§6, in the default permission mode, with the memory.md rule only for
   a writing kind and Bash and the scratch folder only for an ask: `fence(bot, write, run=not write)`). Working directory: the
   expert's folder. The prompt goes on stdin. `--no-session-persistence`: a side session is never resumed, and a
-  transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s
-  (`$FUSED_RENDER_EXPERT_TIMEOUT`), then the process group is killed.
+  transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s (`TIMEOUT_S`), then the process group is killed.
 - **Shutdown** (`sessions.shutdown(budget_s)`): sets a closed flag under `_GUARD`, then ends every live harness within ONE budget: SIGTERM to all, one shared wait, SIGKILL to what is left in the
   last `KILL_GRACE_S` (1 s), waited for together (the bots `registry.shutdown` passes at most 5 s). Once closed, `run`
   starts nothing (an `error` row, `error: sessions.CLOSED`) and `after_write` queues no dream. `harness` checks the flag, spawns and registers the process in
@@ -430,9 +429,8 @@ about them beyond their descriptions, so it uses an expert only when the user as
   (the only verified form names the whole server), so each call raises Copilot's normal card.
 - Gemini and OpenCode get no expert tools.
 
-**Timeouts**: an ask waits for the server up to `EXPERT_TIMEOUT` = harness timeout (600 s or
-`$FUSED_RENDER_EXPERT_TIMEOUT`) + 120 s (an ask slot) + 30 s; the MCP per-call ceiling (`EXPERT_CALL_CEILING`, also
-Codex's `tool_timeout_sec`) sits 60 s above that, so the server's own error arrives instead of a socket timeout.
+**Timeouts**: an ask waits for the server up to `EXPERT_TIMEOUT` = harness timeout (600 s) + 120 s (an ask slot)
++ 30 s; the MCP per-call ceiling (`EXPERT_CALL_CEILING`, also Codex's `tool_timeout_sec`) sits 60 s above that, so the server's own error arrives instead of a socket timeout.
 
 ## 9. The task-learn trigger
 
@@ -634,9 +632,6 @@ Environment variables, read when used:
     FUSED_RENDER_EXPERT_IDLE_S          idle time before a task is due (§9)    default 1200  any positive number
     FUSED_RENDER_EXPERT_TICK_S          timer interval (§9)                    default 60    floor 5
     FUSED_RENDER_EXPERT_START_DELAY_S   first tick after start (§9)            default 90    floor 5
-    FUSED_RENDER_EXPERT_TIMEOUT         one harness run, and a writer's wait   default 600   any positive number
-                                        for the lock (§4); also widens the
-                                        task-side ask timeouts (§8)
 
 A value that is not a positive finite number is ignored (the default applies). `FUSED_RENDER_EXPERT_ORIGIN` is not
 a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8).

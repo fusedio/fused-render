@@ -2736,19 +2736,9 @@ def _s3_read_dirs(s3: bool) -> list:
 EXPERT_TOOLS = ("expert_list", "expert_context", "expert_ask")
 # An ask is a whole expert session, so the per-call ceilings that would cut it
 # short (Codex's 60 s default, this server's own) sit 60 s above the task-side
-# wait, permission_server.EXPERT_TIMEOUT = the server's worst case (an ask slot
-# waited for up to experts/sessions.ASK_WAIT_S 120 s, then the harness's
-# TIMEOUT_S 600 s or $FUSED_RENDER_EXPERT_TIMEOUT) + 30 s. The numbers are
-# copied there and here (neither side imports the other).
-def _expert_call_ceiling() -> float:
-    try:
-        harness = float(os.environ.get("FUSED_RENDER_EXPERT_TIMEOUT") or 0)
-    except ValueError:
-        harness = 0.0
-    return (harness if 0 < harness < float("inf") else 600.0) + 120 + 30 + 60
-
-
-EXPERT_CALL_CEILING = _expert_call_ceiling()
+# wait, permission_server.EXPERT_TIMEOUT (750 s; the number is copied, neither
+# side imports the other).
+EXPERT_CALL_CEILING = 750 + 60
 # Present in a run dir when `_start` found experts for it: the Claude argv is
 # built in the session host, a process that cannot see the bots, so it reads
 # the answer from here.
@@ -2901,11 +2891,6 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
     if experts and _origin():
         # The switch for the expert tools (permission_server.EXPERT_TOOLS).
         server_env["FUSED_RENDER_EXPERT_ORIGIN"] = _origin()
-        # The MCP child sees only this env, so a raised harness timeout must
-        # ride along or `expert_ask`'s HTTP wait (permission_server
-        # EXPERT_TIMEOUT) stays at the default while the ask runs longer.
-        if os.environ.get("FUSED_RENDER_EXPERT_TIMEOUT"):
-            server_env["FUSED_RENDER_EXPERT_TIMEOUT"] = os.environ["FUSED_RENDER_EXPERT_TIMEOUT"]
     servers =_plugin_mcp_servers(CLAUDE_DIR) if strict else {}
     with _private_open(path) as fh:
         json.dump({"mcpServers": {**servers, PERMISSION_SERVER: {
