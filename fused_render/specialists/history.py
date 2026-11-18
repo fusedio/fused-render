@@ -48,9 +48,16 @@ def _git(home: str, *args: str, check: bool = False, timeout: float = 30.0) -> s
     env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
     env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
     # No hooks, no signing prompts, no pager: the user's global git config must not make an app commit hang.
-    cmd = ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "core.pager=cat",
-           "-c", "core.quotepath=false", *args]
-    return subprocess.run(cmd, cwd=home, env=env, capture_output=True, text=True, timeout=timeout, check=check)
+    # An absolute git, `-C` instead of cwd= and close_fds=False: CPython then posix_spawns instead of forking
+    # (a fork with libproj resident dies; tests/test_git_posix_spawn.py).
+    return subprocess.run([_git_bin(), "-C", home, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                           "-c", "core.pager=cat", "-c", "core.quotepath=false", *args],
+                          env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=timeout, check=check, close_fds=False)
+
+
+def _git_bin() -> str:
+    return shutil.which("git") or "git"
 
 
 def init(home: str, message: str = "create") -> str | None:
