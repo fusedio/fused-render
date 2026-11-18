@@ -89,7 +89,9 @@ const realOpen = w.open;
 // mid-test. A bare <html> that scrolls (`overflow: auto`) is enough for the lock
 // to take its simple path, set two styles, and put them back on close.
 const d = document as unknown as { documentElement?: unknown };
+const hadStyle = "getComputedStyle" in w;
 const realStyle = w.getComputedStyle;
+const hadHtml = "documentElement" in d;
 const realHtml = d.documentElement;
 const pageStyle = () =>
   new Proxy({ overflow: "auto", display: "block" } as Record<string, unknown>, {
@@ -137,8 +139,12 @@ afterEach(async () => {
   });
   globalThis.fetch = realFetch;
   w.open = realOpen;
-  w.getComputedStyle = realStyle;
-  d.documentElement = realHtml;
+  // Put back exactly what was there: a key left behind holding `undefined` is not
+  // the same as no key, and it broke the ClaudeChat suites that ran later.
+  if (hadStyle) w.getComputedStyle = realStyle;
+  else delete w.getComputedStyle;
+  if (hadHtml) d.documentElement = realHtml;
+  else delete d.documentElement;
 });
 
 function textOf(n: ReactTestInstance | string): string {
