@@ -978,7 +978,9 @@ def test_how_to_run_is_stated_once_and_the_rest_is_the_skill(expert, tmp_path, m
     from fused_render.bots import agent_engine
     _canvases(expert, tmp_path, monkeypatch)
     note = store.run_note(expert)
-    assert "fused workbench --env prod run --engine remote" in note and "approve" not in note and len(note) < 600
+    assert "fused workbench --env prod run --engine remote" in note and "approve" not in note
+    # Short, apart from the paths it names (a temp dir here, and a longer one on CI).
+    assert len(note.replace(str(tmp_path), "")) < 400
     calls = stub(monkeypatch)
     sessions.ask(expert, "How?")
     fresh, _ = agent_engine._expert_message(expert, "run it", past=[], conv={})
