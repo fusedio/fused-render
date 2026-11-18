@@ -427,8 +427,12 @@ def test_a_mirror_run_in_another_process_loses_to_the_marker(harness, tmp_path, 
     _shim_harness(harness, tmp_path, monkeypatch)
     folder = _reference_copy(harness.clones / "alpha")
     started = tmp_path / "mirror-started"
+    # The other run holds its swap until the gate opens (not a fixed sleep:
+    # a loaded machine can take longer than any delay to finish the clone,
+    # and then the run would re-check the marker before it went live).
+    gate = tmp_path / "mirror-gate"
     harness.set_scenario({
-        "pull_files": _BASE_FILES, "mirror_delay": 1.5,
+        "pull_files": _BASE_FILES, "mirror_gate_file": str(gate),
         "mirror_started_file": str(started),
         "mirror_swap": [{"path": "user/alpha", "files": {"a.py": "from the other run\n"}},
                         {"path": "user/beta", "files": {"a.py": "from the other run\n"}}]})
@@ -441,6 +445,7 @@ def test_a_mirror_run_in_another_process_loses_to_the_marker(harness, tmp_path, 
         _wait_started(started)
         assert _clone(harness).status_code == 200
         assert other.poll() is None                          # still planning its swap
+        gate.write_text("go")                                # now it re-reads the marker
         assert other.wait(timeout=20) == 0
     finally:
         if other.poll() is None:

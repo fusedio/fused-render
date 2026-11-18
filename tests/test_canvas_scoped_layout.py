@@ -367,9 +367,27 @@ def test_the_refusal_reaches_claude_as_a_pretooluse_deny(harness):
     hook = os.path.join(os.path.dirname(canvases_mod.__file__), "claude_agent",
                         "canvas_hook.py")
 
+    # The hook gives each HTTP attempt `_TIMEOUT_S` (2 s) and then fails
+    # open, printing nothing — right for the CLI, which kills it at 5 s. Here
+    # the "server" is a fresh in-process app behind TestClient: its FIRST
+    # request pays the app's one-off setup (0.15-0.5 s of CPU measured, vs
+    # ~0.02 s for the next), which on a loaded CI runner (4 xdist workers +
+    # coverage) stretched past 2 s, so
+    # the hook gave up (the relay's BrokenPipeError) and printed "" — a
+    # timing outcome, not the route's answer. Run the very same script and
+    # `main` with that per-attempt budget lifted, so what is printed is
+    # always the route's decision; the 30 s subprocess cap still bounds it.
+    launch = ("import importlib.util, sys\n"
+              "spec = importlib.util.spec_from_file_location('canvas_hook', sys.argv[1])\n"
+              "hook = importlib.util.module_from_spec(spec)\n"
+              "spec.loader.exec_module(hook)\n"
+              "hook._TIMEOUT_S = 25.0\n"
+              "sys.exit(hook.main(sys.argv[1:]))\n")
+
     def run(file_path):
         out = subprocess.run(
-            [sys.executable, "-I", hook, "pre"], capture_output=True, text=True, timeout=30,
+            [sys.executable, "-I", "-c", launch, hook, "pre"], capture_output=True,
+            text=True, timeout=30,
             input=json.dumps({"session_id": "s1", "cwd": str(clone), "tool_name": "Edit",
                               "hook_event_name": "PreToolUse",
                               "tool_input": {"file_path": str(file_path)}}),

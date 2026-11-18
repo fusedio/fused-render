@@ -15,6 +15,17 @@ cd frontend && npm install && npm run build   # Node 22
 Or run `scripts/dev.sh` for a watch + server dev loop. Wheels and the DMG build
 the shell automatically at package time, so installed users never need Node.
 
+## Tests that don't flake
+
+CI runs the suite on a loaded 4-vCPU runner (4 xdist workers + coverage), so a
+test that depends on how fast something happens will eventually fail there.
+Before writing a test that waits on a thread, subprocess, file, server or
+timer, measures time, or signals a pid, read
+[`.claude/skills/writing-tests-that-dont-flake/SKILL.md`](.claude/skills/writing-tests-that-dont-flake/SKILL.md):
+the race patterns that have actually broken `main`, the fix for each, and how
+to prove a fix under load. `tests/conftest.py` also stops a test from moving
+the pytest worker into a new session or signalling it.
+
 ## Real-weights reproducers
 
 One test file loads real model weights and is **skipped by default** — the
