@@ -1813,3 +1813,24 @@ def test_a_resume_does_not_re_add_the_first_prompt_that_carried_the_system_promp
     users = [r["message"]["content"][0]["text"] for r in s.tx() if r["type"] == "user"]
     assert users == ["replayed q1", "replayed q2"]
     assert "SYSTEM PROMPT" not in json.dumps(s.tx())
+
+
+def test_a_card_mode_switch_is_recorded_in_host_json_so_ask_can_switch_back(start, agent):
+    """The card's "...and stop asking" moves the host to auto: host.json's
+    `mode` follows, so the pill's switch back to Ask is a real change that
+    reaches the host, and the next request is carded again."""
+    s = start(fake_args=["--perm"],
+              env={"FUSED_CLAUDE_HOST_IDLE_REAP_SECONDS": "60"})
+    s.say("clean")
+    assert _wait_for(lambda: s.perm_requests())
+    s.decide(s.perm_requests()[0]["id"], decision="allow", scope="session", mode="auto")
+    s.wait_results(1)
+    path = os.path.join(s.run_dir, "host.json")
+    assert _wait_for(lambda: json.load(open(path)).get("mode") == "auto")
+    assert agent._set_mode(os.path.basename(s.run_dir), "prompt") == \
+        {"ok": True, "mode": "prompt"}
+    assert json.load(open(path))["mode"] == "default"
+    s.say("again")
+    assert _wait_for(lambda: len(s.perm_requests()) == 2)
+    s.decide(s.perm_requests()[1]["id"], decision="deny")
+    s.wait_results(2)

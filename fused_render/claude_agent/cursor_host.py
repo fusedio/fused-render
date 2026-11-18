@@ -1331,6 +1331,7 @@ class _Host:
             if mode in ("auto", "acceptEdits"):
                 with self.lock:
                     self.mode = mode
+                self._record_mode(mode)
 
     def _await_decision(self, entry: dict):
         """permission_server's `_await_answer`, with one extra exit: the
@@ -1637,6 +1638,21 @@ class _Host:
         if not host:
             return  # reaped, or never written: nothing to name
         host["session_id"] = self.sid
+        try:
+            _write_atomic(path, host)
+        except OSError:
+            pass
+
+    def _record_mode(self, mode: str) -> None:
+        """host.json's `mode`, after a card moved the session to `mode`:
+        `agent._set_mode` compares the pill against it, so a stale value
+        would make the switch back to Ask a no-op while the host keeps
+        auto-approving. Read-modify-write, atomic, like `_write_host_json`."""
+        path = os.path.join(self.run_dir, "host.json")
+        host = _read_json(path)
+        if not host:
+            return  # reaped: nothing to record into
+        host["mode"] = mode
         try:
             _write_atomic(path, host)
         except OSError:
