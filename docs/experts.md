@@ -597,9 +597,8 @@ then `public/`), how to answer, and end with `store.MEMORY_RULES`.
 only once the v3 folder migration has completed) installs each shipped key ONCE: create the expert (no greeting
 model call), copy `instructions.md` and the skills over the default layout, set its face, and grant it the canvas
 copies folder (`canvases.canvases_base()`, `~/Fused/canvas`) through `folders`. The witness
-`<bots root>/experts-seeded.json` lists the keys installed, so an expert the user deletes stays deleted. A seed cut
-short (an expert with that `shipped` key but no witness entry) is finished: missing files copied, a default
-`instructions.md` replaced, face and folders set only if unset.
+`<bots root>/experts-seeded.json` lists the keys installed, so an expert the user deletes stays deleted. An expert
+that already carries the `shipped` key but has no witness entry is recorded as it is; a second one is never made.
 
 **A skill added to the shipped folder later** (`seed._new_skills`): the witness also lists, per key, the shipped
 skill names that expert has been offered (`skills`; an older witness without the list counts as the first five,

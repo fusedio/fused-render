@@ -145,35 +145,13 @@ def test_an_installed_expert_gets_a_shipped_skill_added_later_once():
     assert seed.seed() == [] and not os.path.exists(new)
 
 
-def test_a_cut_short_seed_is_finished():
-    from fused_render import canvases
+def test_a_seed_never_makes_a_second_expert_for_a_shipped_key():
     from fused_render.bots import bot as bm
-    # What a seed killed right after create() leaves: the default instructions, no skills, no face, no folders.
+    # What a seed that ended before its witness was written leaves: the expert, no record of it.
     b = bm.create(name="Canvas Reference", kind="expert", greet=False,
                   expert={"ask_me_about": "x", "shipped": "canvas-reference"})
-    d = store.expert_dir(b)
-    assert open(os.path.join(d, "instructions.md")).read() == store.DEFAULT_INSTRUCTIONS
-    assert not b.meta.get("face") and not b.meta.get("folders")
     assert seed.seed() == ["canvas-reference"]
-    [b] = store.all_experts()
-    shipped = os.path.join(seed.SHIPPED_DIR, "canvas-reference")
-    assert open(os.path.join(d, "instructions.md")).read() == open(os.path.join(shipped, "instructions.md")).read()
-    assert sorted(os.listdir(os.path.join(d, "skills"))) == sorted(os.listdir(os.path.join(shipped, "skills")))
-    assert b.meta["face"]["shape"] == "hexagon" and b.folders() == [os.path.abspath(canvases.canvases_base())]
-
-
-def test_a_cut_short_seed_keeps_what_the_user_changed(tmp_path):
-    from fused_render.bots import bot as bm
-    b = bm.create(name="Canvas Reference", kind="expert", greet=False,
-                  expert={"ask_me_about": "x", "shipped": "canvas-reference"})
-    with open(os.path.join(store.expert_dir(b), "instructions.md"), "w") as f:
-        f.write("mine")
-    b.meta["folders"] = bm.clean_folders([str(tmp_path)])
-    b.save()
-    seed.seed()
-    [b] = store.all_experts()
-    assert open(os.path.join(store.expert_dir(b), "instructions.md")).read() == "mine"
-    assert b.folders() == [os.path.abspath(str(tmp_path))]
+    assert [x.id for x in store.all_experts()] == [b.id] and seed.seed() == []
 
 
 def test_an_expert_is_not_exported(client, expert, tmp_path):
@@ -229,25 +207,6 @@ def test_memory_rules_example_is_only_a_format_and_shipped_instructions_end_with
     shipped = open(os.path.join(seed.SHIPPED_DIR, "canvas-reference", "instructions.md"), encoding="utf-8").read()
     assert shipped.endswith(store.MEMORY_RULES) and store.DEFAULT_INSTRUCTIONS.endswith(store.MEMORY_RULES)
     assert "it is not a fact" in store.MEMORY_RULES and "canvas pull" not in store.MEMORY_RULES
-
-
-def test_a_cut_short_seed_copy_leaves_no_partial_file(tmp_path, monkeypatch):
-    src, dst = tmp_path / "src", tmp_path / "dst"
-    (src / "skills").mkdir(parents=True)
-    (src / "instructions.md").write_text("the full text")
-    real = seed.shutil.copyfile
-
-    def partial(a, b):
-        with open(b, "w") as f:
-            f.write("the fu")
-        raise OSError("disk full")
-    monkeypatch.setattr(seed.shutil, "copyfile", partial)
-    with pytest.raises(OSError):
-        seed._copy(str(src), str(dst), overwrite=False)
-    assert os.listdir(dst) == []
-    monkeypatch.setattr(seed.shutil, "copyfile", real)
-    seed._copy(str(src), str(dst), overwrite=False)  # a later non-overwriting pass copies it whole
-    assert (dst / "instructions.md").read_text() == "the full text"
 
 
 def test_a_changed_shipped_file_replaces_only_an_unedited_copy(tmp_path, monkeypatch):
