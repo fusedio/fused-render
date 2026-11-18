@@ -232,9 +232,16 @@ def _update(bot, sid: str, fn) -> None:
 
 
 # ------------------------------------------------------------------------- pass ---
+def _cursor(rec: dict, session: dict) -> tuple:
+    """(size, turns) already read. A transcript now SMALLER than the size read was rewritten or compacted: its
+    cursor resets to the start, so it is read again whole."""
+    size = int(rec.get("size") or 0)
+    return (0, 0) if session["size"] < size else (size, int(rec.get("turns") or 0))
+
+
 def due(rec: dict, session: dict, now: float) -> bool:
-    """Idle for `idle_s()`, grown past what was read, and not given up on at this size."""
-    if session["size"] <= int(rec.get("size") or 0) or now - session["last_active"] < idle_s():
+    """Idle for `idle_s()`, grown past what was read (or shrunk below it), and not given up on at this size."""
+    if session["size"] <= _cursor(rec, session)[0] or now - session["last_active"] < idle_s():
         return False
     f = rec.get("fails") if isinstance(rec.get("fails"), dict) else {}
     return not (f.get("size") == session["size"] and int(f.get("count") or 0) >= MAX_FAILS)
@@ -255,7 +262,8 @@ def prompt_for(transcript: str) -> str:
 def learn_one(bot, session: dict, rec: dict) -> dict | None:
     """Read one due session's unread part in a task-learn session; record what was read only on success."""
     sid, size = session["session_id"], session["size"]
-    md, turns = transcript_markdown(session, int(rec.get("turns") or 0))
+    from_size, from_turns = _cursor(rec, session)
+    md, turns = transcript_markdown(session, from_turns)
 
     def read(r):
         r.update(size=size, turns=turns, at=time.time())
@@ -266,9 +274,11 @@ def learn_one(bot, session: dict, rec: dict) -> dict | None:
         return None
     run_ids = rec.get("run_ids") or []
     trigger = {"session_id": sid, **({"run_id": run_ids[-1]} if run_ids else {}), "target": session["target"],
-               "backend": session["backend"], "from_size": int(rec.get("size") or 0), "to_size": size}
+               "backend": session["backend"], "from_size": from_size, "to_size": size}
     row = sessions.run(bot, "task-learn", prompt_for(md), trigger)
-    if row.get("status") == "done":
+    if row.get("status") == "done" or row.get("memory_diff"):
+        # A failed session that already changed memory.md (cut off by the timeout after its edit) counts as having
+        # read this slice: a retry would see the same evidence beside the updated memory and raise counts twice.
         _update(bot, sid, read)
     elif row.get("error") == sessions.BUSY:
         pass  # the write lock was held the whole wait (a long chat turn): not an attempt, the next pass retries

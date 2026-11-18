@@ -459,6 +459,8 @@ def _row_state(row: dict, staged: str | None) -> dict:
 _APPLIED_KEYS = ("face", "preset", "engine", "max_steps", "step_cap", "expert")
 _ROUTINE_DIGEST_KEYS = ("id", "task", "kind", "minutes", "time", "weekdays", "at")
 _PERMISSION_KEYS = frozenset({"approval", "build_access", "terminal", "super_access"})
+#: An expert's memory is its own memory.md (docs/experts.md §5), never the bot memory file a package carries.
+EXPERT_MEMORY_NOT_IMPORTED = "memory: an expert's memory is not imported"
 
 
 def _package_id(pub: dict, idx: dict) -> str | None:
@@ -475,6 +477,8 @@ def _applied(pub: dict, name: str) -> dict:
     create() stores them, plus the settings that pass _public_fields' checks."""
     from fused_render.bots import bot as bm
     model, effort = _str(pub.get("model")), _str(pub.get("effort"))
+    if model in bm.LOCAL_MODELS and pub.get("kind") == "expert":
+        model = bm.DEFAULT_MODEL  # an expert runs on Claude Code: a local model maps to the default, as create() does
     return {"name": name, "model": model if model in bm.MODELS else bm.DEFAULT_MODEL,
             "effort": effort if effort in bm.EFFORTS else bm.DEFAULT_EFFORT,
             "instructions": _str(pub.get("instructions")).strip(),
@@ -1282,7 +1286,9 @@ def _install_update(path: str, idx: dict, pub: dict, target, apps, memory: bool)
             b.meta.update(snapshot)
             raise BotFileError(f"could not update {_str(b.meta.get('name')) or b.id}: {e or e.__class__.__name__}") from e
         _copy_folder_members(path, idx, b.id, warnings, replace=True)
-        if mem_text is not None:
+        if mem_text is not None and bm.is_expert(b.meta):
+            warnings.append(EXPERT_MEMORY_NOT_IMPORTED)
+        elif mem_text is not None:
             try:
                 b.set_memory(mem_text)
             except OSError as e:
@@ -1406,7 +1412,9 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
         warnings.append(f"settings: {e or e.__class__.__name__}")
         _unlinked(results, paths, e)
     step("playbooks", lambda: _write_skills(b, skills, warnings))
-    if mem_text:
+    if mem_text and bm.is_expert(b.meta):
+        warnings.append(EXPERT_MEMORY_NOT_IMPORTED)
+    elif mem_text:
         step("memory", lambda: b.set_memory(mem_text))
     step("transcript", lambda: b.emit("system", f"Imported from {os.path.basename(path)}"))
     if not bm.is_expert(b.meta):  # an expert's fixed greeting was written by create()

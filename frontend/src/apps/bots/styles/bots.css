@@ -630,11 +630,44 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-none { margin: 0; }
 .bots-page .xp-lbl { margin: 0 0 4px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .bots-page .xp-chhead { margin-top: 14px !important; }
-.bots-page :is(.xp-mem, .xp-diff) { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--inset); color: var(--text);
-  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
-.bots-page .xp-dl.add { color: var(--ok); }
-.bots-page .xp-dl.del { color: var(--err); }
-.bots-page .xp-dl.hunk, .bots-page .xp-dl.meta { color: var(--muted); }
+/* memory.md and the diffs, rendered markdown (components/MdDoc.tsx) in the panel's sans face. */
+.bots-page .xp-mem { margin: 0 0 8px; padding: 8px 12px; border-radius: 8px; background: var(--inset); max-height: 50vh; overflow: auto; }
+.bots-page .xp-md { color: var(--text); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; white-space: normal; }
+.bots-page .xp-md :is(h1, h2, h3, h4, h5, h6) { margin: .7em 0 .25em; font-size: 12.5px; font-weight: 600; line-height: 1.4; color: var(--text); }
+.bots-page .xp-md h1 { font-size: 13.5px; } .bots-page .xp-md h2 { font-size: 13px; }
+.bots-page .xp-md > :first-child, .bots-page .xp-md > :first-child > :first-child { margin-top: 0; }
+.bots-page .xp-md p { margin: 0 0 .4em; }
+.bots-page .xp-md :is(ul, ol) { margin: 0 0 .4em; padding-left: 1.3em; }
+.bots-page .xp-md li { margin: .1em 0; }
+.bots-page .xp-md li::marker { color: var(--muted); }
+.bots-page .xp-md code { font: 10.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: color-mix(in srgb, var(--text) 9%, transparent); border-radius: 4px; padding: .05em .3em; }
+.bots-page .xp-md pre { margin: 0 0 .4em; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--text) 6%, transparent); overflow-x: auto; }
+.bots-page .xp-md pre code { background: none; padding: 0; white-space: pre; }
+.bots-page .xp-md blockquote { margin: 0 0 .4em; padding-left: 8px; border-left: 2px solid var(--line); color: var(--muted); }
+.bots-page .xp-md hr { border: 0; border-top: 1px solid var(--line); margin: .5em 0; }
+.bots-page .xp-md .md-link { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
+.bots-page .xp-md .tablewrap { overflow-x: auto; } .bots-page .xp-md table { border-collapse: collapse; }
+.bots-page .xp-md :is(th, td) { padding: .2em .5em; border-bottom: 1px solid var(--line); text-align: left; }
+/* A diff as a document (DiffView): one row per line, a +/− gutter, added on green, removed on red and struck,
+   context muted; a count bump (removed then added) grouped as a pair. */
+.bots-page .xp-diff { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; padding: 6px; border-radius: 8px; background: var(--inset); max-height: 50vh; overflow: auto; }
+.bots-page .xp-dr { display: flex; gap: 6px; min-width: 0; padding: 2px 8px 2px 4px; border-radius: 5px; }
+.bots-page .xp-g { flex: none; width: 10px; text-align: center; font: 600 11px/18px ui-monospace, SFMono-Regular, Menlo, monospace; user-select: none; }
+.bots-page .xp-dc { flex: 1; min-width: 0; }
+.bots-page .xp-dc > :last-child, .bots-page .xp-dc li:last-child, .bots-page .xp-dc :is(h1, h2, h3, h4, h5, h6) { margin-bottom: 0; }
+.bots-page .xp-dc :is(h1, h2, h3, h4, h5, h6) { margin-top: 0; }
+.bots-page .xp-dc li { margin: 0; }
+.bots-page .xp-dr.add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.bots-page .xp-dr.add .xp-g { color: var(--ok); }
+.bots-page .xp-dr.del { background: color-mix(in srgb, var(--err) 12%, transparent); }
+.bots-page .xp-dr.del .xp-g { color: var(--err); }
+.bots-page .xp-dr.del .xp-dc { color: color-mix(in srgb, var(--text) 75%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--err) 60%, transparent); }
+.bots-page .xp-dr.del .xp-dc * { color: inherit; }
+.bots-page .xp-dr.ctx .xp-dc, .bots-page .xp-dr.ctx .xp-dc * { color: var(--muted); }
+.bots-page .xp-dpair { display: flex; flex-direction: column; gap: 1px; margin: 2px 0; padding: 2px; border-radius: 7px; border: 1px solid var(--line); }
+.bots-page .xp-dgap { padding: 0 8px; color: var(--muted); font-size: 11px; line-height: 1.2; }
+.bots-page .xp-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.bots-page .xp-pending { padding: 8px 10px; }
 /* Kind tag, status, the "changed memory" chip: one line, the origin under it. */
 .bots-page .xp-line { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; white-space: nowrap; }
 .bots-page .xp-kind { flex: none; padding: 0 6px; border-radius: 6px; background: var(--raised); color: var(--text); font-size: 10.5px; }
@@ -642,13 +675,9 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-st.tone-ok { color: var(--ok); } .bots-page .xp-st.tone-err { color: var(--err); }
 .bots-page .xp-st.tone-warn { color: var(--warn); } .bots-page .xp-st.tone-accent { color: var(--accent-text); }
 .bots-page .xp-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.bots-page .xp-chg { flex: none; padding: 0 6px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.bots-page .xp-chg { flex: none; padding: 0 6px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-text, var(--text)); font-size: 10.5px; }
 .bots-page .xp-when { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; }
 .bots-page .xp-origin { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.bots-page .xp-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 8px; }
-.bots-page .xp-chip { padding: 3px 10px; font-size: 11.5px; background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; }
-.bots-page .xp-chip.on { background: var(--card); color: var(--text); border-color: transparent; }
-.bots-page .xp-chip .xp-n { margin-left: 3px; opacity: .75; font-variant-numeric: tabular-nums; }
 .bots-page :is(.xp-rows, .xp-changes) { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .bots-page .xp-row { min-width: 0; border: 1px solid var(--line); border-radius: 8px; }
 .bots-page .xp-row.open { margin-bottom: 4px; }

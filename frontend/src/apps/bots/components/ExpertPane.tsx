@@ -30,7 +30,7 @@ function DiffLine({ tone, text }: { tone: "add" | "del" | "ctx"; text: string })
   return (
     <div className={`xp-dr ${tone}`}>
       <span className="xp-g" aria-hidden="true">{mark}</span>
-      {mark ? <span className="sr-only">{tone === "add" ? "Added: " : "Removed: "}</span> : null}
+      {mark ? <span className="xp-sr">{tone === "add" ? "Added: " : "Removed: "}</span> : null}
       <div className="xp-dc xp-md">{text.trim() ? <MdDoc text={text} /> : "\u00a0"}</div>
     </div>
   );

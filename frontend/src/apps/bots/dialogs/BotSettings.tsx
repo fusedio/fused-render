@@ -51,13 +51,14 @@ export interface BotSettingsProps {
 
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
-  // An expert (docs/experts.md) has no browser, no terminal and no engine choice: General (with "Ask me about") and
-  // Permissions (only the folders it may read) are its whole dialog.
+  // An expert (docs/experts.md) has no browser, no terminal and no engine choice: General (with "Ask me about"),
+  // Permissions (only the folders it may read) and Skills (its reference files under skills/, which you edit and it
+  // only reads; no "Learn from last task", the backend refuses that for an expert) are its whole dialog.
   const isExpert = bot.kind === "expert";
   // On the phone (isLanHost) the Connections, Browser and Phone tabs are not drawn: their routes (Preferences,
   // /api/bots/browsers, iMessage) are Mac-side and the LAN door 404s them (lan.py `_DOORS`).
   const lan = isLanHost();
-  const tabs: [SettingsTab, string][] = isExpert ? [["general", "General"], ["permissions", "Permissions"]] : [["general", "General"], ["permissions", "Permissions"],
+  const tabs: [SettingsTab, string][] = isExpert ? [["general", "General"], ["permissions", "Permissions"], ["skills", "Skills"]] : [["general", "General"], ["permissions", "Permissions"],
     ...(lan ? [] : [["connections", "Connections"] as [SettingsTab, string], ["browser", "Browser"] as [SettingsTab, string]]),
     ["skills", "Skills"], ["routines", "Routines"], ["memory", "Memory"],
     ...(isSuper && !lan ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
@@ -445,7 +446,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
               </Rows>
             ) : null}
 
-            {tab === "skills" ? <SkillsSection b={bot} confirm={confirm} /> : null}
+            {tab === "skills" ? <SkillsSection b={bot} confirm={confirm} expert={isExpert} /> : null}
             {tab === "routines" ? <RoutinesSection b={bot} confirm={confirm} /> : null}
 
             {tab === "memory" ? (

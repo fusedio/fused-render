@@ -37,8 +37,9 @@ export function menuItems(b: Bot, opts: { live?: boolean } = {}): MenuItem[] {
   if (live && !expert) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");
   out.push({ a: "settings", label: "Settings…", icon: MI.settings });
   // There is one Super Bot per Mac: no clone (the backend refuses it).
-  // An expert's Settings has no Skills or Routines section (its skills are static files in its folder).
-  if (!expert) out.push({ a: "skills", label: "Skills…", icon: MI.skills }, { a: "routines", label: "Routines…", icon: MI.routines });
+  // An expert has Skills (its reference files, edited by you) but no Routines.
+  out.push({ a: "skills", label: "Skills…", icon: MI.skills });
+  if (!expert) out.push({ a: "routines", label: "Routines…", icon: MI.routines });
   // Export bot… writes the `.fusedbot` package (dialogs/ExportBot.tsx); Super Bot is one per Mac and never travels,
   // and an expert's folder (instructions, skills, memory) does not travel in one (the backend refuses both).
   if (!ea && !expert) out.push({ a: "exportFile", label: "Export bot…", icon: MI.package });
