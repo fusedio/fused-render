@@ -36,7 +36,12 @@ function useArrivals(lines: readonly QueuedLine[], ready: boolean): ReadonlySet<
   useEffect(() => {
     const now = JSON.parse(ids) as string[];
     const before = known.current;
-    known.current = new Set(now);
+    // EVERY ID EVER SEEN HERE, not only the ones on screen now: the strip can
+    // stop drawing a line that is still waiting (an inbox row stands down for a
+    // held line with the same words, and comes back when that one is pulled),
+    // and a line that never left the queue has not arrived (CodeRabbit,
+    // PR #2347).
+    known.current = before ? new Set([...before, ...now]) : new Set(now);
     // NOT YET, OR ONLY JUST: while the chat is still reading its history the
     // strip is empty for a reason that is not "nothing is queued", and the
     // lines the restore brings are the ones that were waiting all along. They

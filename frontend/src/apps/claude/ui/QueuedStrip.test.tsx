@@ -104,6 +104,15 @@ describe("QueuedStrip", () => {
     expect(s.arriving()).toEqual(["typed now"]);
     s.unmount();
   });
+  test("a line the strip stopped drawing for a while has not arrived when it is drawn again", () => {
+    const s = mountStrip([{ id: "a", text: "continue" }]);
+    s.set([{ id: "h", text: "held twin" }]);
+    expect(s.arriving()).toEqual(["held twin"]);
+    // The held twin is pulled back: the first line is drawn again. It never left.
+    s.set([{ id: "a", text: "continue" }]);
+    expect(s.arriving()).toEqual([]);
+    s.unmount();
+  });
   test("an id with a newline in it is one id", () => {
     // An inbox row with no id of its own is keyed by its words.
     const s = mountStrip([]);
