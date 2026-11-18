@@ -111,9 +111,10 @@ A flake fix is not done until you have shown the race and its absence:
 
 1. **Reproduce first.** Run the single test 20-30× under CPU load:
    ```bash
-   for i in 1 2 3 4; do python -c 'while 1: pass' & done   # burners
+   burners=(); for i in 1 2 3 4; do python -c 'while 1: pass' & burners+=("$!"); done
+   trap 'kill "${burners[@]}" 2>/dev/null' EXIT INT TERM   # stop them even on Ctrl-C
    for i in $(seq 30); do .venv/bin/python -m pytest -n 0 -o addopts="" "tests/test_x.py::test_y" -q -p no:cacheprovider || echo FAIL; done
-   kill %1 %2 %3 %4
+   kill "${burners[@]}"; trap - EXIT INT TERM
    ```
    If the window is too narrow to hit, widen it on purpose: a temporary
    `time.sleep()` at the suspected gap in the product, reverted afterwards.

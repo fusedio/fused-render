@@ -132,8 +132,13 @@ for _signame in ("SIGTERM", "SIGHUP"):
 
 @pytest.fixture(autouse=True)
 def _no_self_signal():
-    """Fail the test that aimed a signal at the pytest process (see above)."""
-    del _SELF_SIGNALS[:]
+    """Fail the test that aimed a signal at the pytest process (see above).
+
+    Pending records are never cleared unreported: one left by a module- or
+    session-scoped fixture (which runs before this one) fails the first test
+    that sees it, and `pytest_sessionfinish` below catches any recorded after
+    the last test's teardown. Each record carries its own stack, so the
+    message names the real caller either way."""
     yield
     if _SELF_SIGNALS:
         seen = "\n".join(_SELF_SIGNALS)
@@ -142,6 +147,16 @@ def _no_self_signal():
                     "that silently kills the worker. Point the pid/pgid at a "
                     "child you spawned, or monkeypatch the kill.\n" + seen,
                     pytrace=False)
+
+def pytest_sessionfinish(session, exitstatus):
+    """The backstop for `_no_self_signal`: a self-signal recorded where no
+    test's teardown could report it (a late fixture teardown) still fails the
+    run."""
+    if _SELF_SIGNALS:
+        sys.__stderr__.write("\n!!! a fixture signalled the pytest process itself "
+                             "(tests/conftest.py guard):\n" + "\n".join(_SELF_SIGNALS) + "\n")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
 
 for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
                        ("FUSED_RENDER_DIR", "fused-render-tests-dir-"),

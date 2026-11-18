@@ -245,10 +245,15 @@ def main():
         if scenario.get("mirror_delay"):
             _t.sleep(scenario["mirror_delay"])
         if scenario.get("mirror_gate_file"):
-            # Bounded so a test that never opens the gate fails on its own
-            # assertions instead of hanging the worker.
+            # Bounded so a test that never opens the gate fails instead of
+            # hanging the worker — and on expiry the run EXITS without
+            # swapping: going ahead would throw away the very ordering the
+            # gate exists to enforce.
             _gate_by = _t.time() + 60
-            while not os.path.exists(scenario["mirror_gate_file"]) and _t.time() < _gate_by:
+            while not os.path.exists(scenario["mirror_gate_file"]):
+                if _t.time() >= _gate_by:
+                    sys.stderr.write("mirror gate never opened\n")
+                    sys.exit(3)
                 _t.sleep(0.02)
         for swap in scenario.get("mirror_swap", []):
             folder = os.path.join(root, swap["path"])
