@@ -187,11 +187,15 @@ def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     from fused_render.agent_backends import opencode as backend_opencode
     assert agent._ACCOUNT_ERROR_MARKERS["opencode"] == backend_opencode.OPENCODE.account_error_markers
     assert agent._LIMIT_ERROR_MARKERS["opencode"] == backend_opencode.OPENCODE.limit_error_markers
+    from fused_render.agent_backends import cursor as backend_cursor
+    assert agent._ACCOUNT_ERROR_MARKERS["cursor"] == backend_cursor.CURSOR.account_error_markers
+    assert agent._LIMIT_ERROR_MARKERS["cursor"] == backend_cursor.CURSOR.limit_error_markers
     assert agent._BACKEND_LABELS == {"claude": backend_claude.CLAUDE.label,
                                      "copilot": backend_copilot.COPILOT.label,
                                      "codex": backend_codex.CODEX.label,
                                      "gemini": backend_gemini.GEMINI.label,
-                                     "opencode": backend_opencode.OPENCODE.label}
+                                     "opencode": backend_opencode.OPENCODE.label,
+                                     "cursor": backend_cursor.CURSOR.label}
     assert set(agent.BACKENDS) == set(agent._BACKEND_LABELS)
     assert set(agent._ACCOUNT_ERROR_MARKERS) == set(agent.BACKENDS)
     assert set(agent._LIMIT_ERROR_MARKERS) == set(agent.BACKENDS)
@@ -199,7 +203,8 @@ def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     assert agent._NEW_CHAT_MODELS == {"copilot": backend_copilot.COPILOT.default_model,
                                       "codex": backend_codex.CODEX.default_model,
                                       "gemini": backend_gemini.GEMINI.default_model,
-                                      "opencode": backend_opencode.OPENCODE.default_model}
+                                      "opencode": backend_opencode.OPENCODE.default_model,
+                                      "cursor": backend_cursor.CURSOR.default_model}
     # Every backend with no fused-minted id is a non-Claude one, and every
     # non-Claude one here mints its own.
     assert set(agent._SELF_MINTED_ID_BACKENDS) == set(agent.BACKENDS) - {"claude"}
@@ -1382,7 +1387,7 @@ def test_registry_running_reads_every_root(agent, target):
             json.dump({"pid": os.getpid(), "sessionId": "s-" + backend,
                        "cwd": workdir, "status": "busy"}, fh)
     assert agent._registry_running(workdir) == {"s-claude", "s-copilot", "s-codex", "s-gemini",
-                                                "s-opencode"}
+                                                "s-opencode", "s-cursor"}
 
 
 def test_defaults_carry_the_backend(agent, target, home):
@@ -1844,10 +1849,12 @@ def test_a_hookless_backends_turn_in_a_canvas_clone_starts_the_sync(
     agent._canvas_turn_start(str(clone / "a.py"), "codex")
     agent._canvas_turn_start(str(clone), "gemini")
     agent._canvas_turn_start(str(clone), "opencode")
+    agent._canvas_turn_start(str(clone), "cursor")
     agent._canvas_turn_start(str(clone), "claude")
     agent._canvas_turn_start(str(clone), "copilot")
     agent._canvas_turn_start(str(tmp_path / "proj" / "index.html"), "codex")
-    assert told == [(str(clone), "codex"), (str(clone), "gemini"), (str(clone), "opencode")]
+    assert told == [(str(clone), "codex"), (str(clone), "gemini"), (str(clone), "opencode"),
+                    (str(clone), "cursor")]
     # ...and `_start` is where it is said.
     _prefs(home, codex_enabled=True)
     _codex_bin(tmp_path, monkeypatch)
@@ -2423,7 +2430,7 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
         assert body.endswith(agent._blocked_note("gemini"))
     assert agent._blocked_note("gemini") == agent._blocked_note("copilot")
     assert agent._fused_cli_note("gemini") == agent._fused_cli_note("codex")
-    assert agent._NO_PREAPPROVE_BACKENDS == ("codex", "gemini", "opencode")
+    assert agent._NO_PREAPPROVE_BACKENDS == ("codex", "gemini", "opencode", "cursor")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     ctx = agent._gemini_context_dir(str(run_dir), str(page), True)
@@ -3116,7 +3123,7 @@ def test_an_opencode_resume_ignores_the_requests_backend(agent, target, home, tm
     assert agent._backend_for_session(SID_OPENCODE, workdir) == "opencode"
 
 
-def test_the_prefs_gate_reads_five_keys(agent, home):
+def test_the_prefs_gate_reads_six_keys(agent, home):
     """`opencode_enabled` is off unless stored True; Claude is on unless
     stored False, or when nothing else is on."""
     assert not agent._backend_enabled("opencode")
@@ -3125,10 +3132,18 @@ def test_the_prefs_gate_reads_five_keys(agent, home):
     _prefs(home, claude_enabled=False, opencode_enabled=True)
     assert not agent._backend_enabled("claude") and agent._backend_enabled("opencode")
     _prefs(home, claude_enabled=False, copilot_enabled=False, codex_enabled=False,
-           gemini_enabled=False, opencode_enabled=False)
+           gemini_enabled=False, opencode_enabled=False, cursor_enabled=False)
     assert agent._backend_enabled("claude")
     _prefs(home, opencode_enabled="yes")
     assert not agent._backend_enabled("opencode")
+    _prefs(home)
+    assert not agent._backend_enabled("cursor")
+    _prefs(home, cursor_enabled=True)
+    assert agent._backend_enabled("cursor") and agent._backend_enabled("claude")
+    _prefs(home, claude_enabled=False, cursor_enabled=True)
+    assert not agent._backend_enabled("claude") and agent._backend_enabled("cursor")
+    _prefs(home, cursor_enabled="yes")
+    assert not agent._backend_enabled("cursor")
 
 
 def test_a_disabled_or_plan_opencode_start_is_refused_before_a_run_dir(agent, target, home):
@@ -3249,3 +3264,238 @@ def test_opencode_defaults(agent, target):
     d = agent._defaults(file, backend="opencode")
     assert d == {"model": "anthropic/claude-sonnet-5-5", "effort": "", "source": "backend",
                  "backend": "opencode", "recorded": {"model": "", "effort": ""}}
+
+
+# ================================================== Cursor (cursor_host.py)
+
+SID_CURSOR = "7b1d3c52-0a64-4f4e-8c1a-2d9e5f6a7b8c"    # as `session/new` mints it
+CURSOR_VERSION = "2026.11.13-eacade1"
+
+
+def _cursor_bin(tmp_path, monkeypatch):
+    b = tmp_path / "bin" / "cursor-agent"
+    b.parent.mkdir(exist_ok=True)
+    b.write_text("#!/bin/sh\nexit 0\n")
+    b.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_CURSOR_BIN", str(b))
+    return str(b)
+
+
+def _cursor_script(path, out):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write("#!/bin/sh\necho '%s'\n" % out)
+    os.chmod(path, 0o755)
+    return path
+
+
+def test_cursor_account_text_names_cursors_fix(agent):
+    text = agent._account_error(
+        "Authentication required. Please run 'agent login' first", "cursor")
+    assert text.startswith("Cursor CLI isn't signed in. Sign in from Preferences")
+    assert "`cursor-agent login`" in text and "Help:" not in text
+    assert text.endswith("(Authentication required. Please run 'agent login' first)")
+    limit = agent._account_error("You are out of usage for this month", "cursor")
+    assert limit.startswith("Your Cursor plan's usage limit was reached.")
+    # Another backend's marker is not Cursor's.
+    assert agent._account_error("requiresOpenaiAuth", "cursor") == "requiresOpenaiAuth"
+
+
+def test_the_cursor_prompt_never_speaks_claude(agent, home, tmp_path):
+    page = tmp_path / "proj" / "index.html"
+    page.parent.mkdir()
+    page.write_text("<html></html>")
+    body = agent._appended_prompt(str(page), True, "cursor")
+    assert "CLAUDE.md" not in body and "pre-approved" not in body
+    assert body.endswith(agent._blocked_note("cursor"))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    ctx = agent._cursor_context_dir(str(run_dir), str(page), True)
+    assert ctx == str(run_dir / "cursor")
+    assert (run_dir / "cursor" / "AGENTS.md").read_text().strip()
+
+
+def test_cursor_argv_is_the_contract_line(agent, target, tmp_path, monkeypatch):
+    """`--approve-mcps --trust`, `--model` unless auto/empty, then `acp`; the
+    mode, effort and read dirs name no flag, and the pane `mcp.json` is left
+    for the HOST to hand to `session/new`."""
+    file, _ = target
+    binary = _cursor_bin(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    assert agent._cursor_argv(str(run_dir), True, "auto", SID_CURSOR, "gpt-5", "high",
+                              [str(tmp_path)], file) == [
+        binary, "--approve-mcps", "--trust", "--model", "gpt-5", "acp"]
+    for model in ("", "auto"):
+        assert agent._cursor_argv(str(run_dir), True, "default", "", model, "", [], file) == [
+            binary, "--approve-mcps", "--trust", "acp"]
+    with open(run_dir / "mcp.json") as fh:
+        server = json.load(fh)["mcpServers"]["fused_render"]
+    assert "--no-approve" in server["args"]
+    assert (run_dir / "cursor" / "AGENTS.md").read_text().strip()
+
+
+def test_cursor_bin_ladder(agent, tmp_path, monkeypatch):
+    """FUSED_RENDER_CURSOR_BIN -> cursor-agent -> a VERIFIED `agent` -> the
+    install prefixes (their `agent` entries verified too)."""
+    on_path = _cursor_script(str(tmp_path / "path" / "cursor-agent"), CURSOR_VERSION)
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
+    monkeypatch.delenv("FUSED_RENDER_CURSOR_BIN", raising=False)
+    assert agent._cursor_bin() == on_path
+    forced = _exe(str(tmp_path / "forced" / "cursor-agent"))
+    monkeypatch.setenv("FUSED_RENDER_CURSOR_BIN", forced)
+    assert agent._cursor_bin() == forced
+    monkeypatch.setenv("FUSED_RENDER_CURSOR_BIN", str(tmp_path / "gone"))
+    assert agent._cursor_bin() == on_path
+    monkeypatch.delenv("FUSED_RENDER_CURSOR_BIN")
+    monkeypatch.setattr(agent, "_CURSOR_CANDIDATES",
+                        tuple(c for c in agent._CURSOR_CANDIDATES if c.startswith("~")))
+    # `agent` on PATH counts only when it answers like Cursor's.
+    os.remove(on_path)
+    other = _cursor_script(str(tmp_path / "path" / "agent"), "agent 1.2.3 (something else)")
+    with pytest.raises(FileNotFoundError):
+        agent._cursor_bin()
+    os.remove(other)
+    real = _cursor_script(str(tmp_path / "path" / "agent"), CURSOR_VERSION)
+    assert agent._cursor_bin() == real
+    os.remove(real)
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing"))
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    stranger = _cursor_script(str(tmp_path / "h" / ".local" / "bin" / "agent"), "not cursor")
+    own = _cursor_script(str(tmp_path / "h" / ".cursor" / "bin" / "agent"), CURSOR_VERSION)
+    assert agent._cursor_bin() == own
+    os.remove(own)
+    os.remove(stranger)
+    with pytest.raises(FileNotFoundError) as exc:
+        agent._cursor_bin()
+    assert str(exc.value).startswith(
+        "cursor CLI not found — install with `curl https://cursor.com/install -fsS | bash`")
+    assert "FUSED_RENDER_CURSOR_BIN" in str(exc.value)
+
+
+def test_cursor_candidates_mirror_cursor_health(agent):
+    from fused_render import cursor_health
+    assert agent._CURSOR_CANDIDATES == cursor_health.POSIX_CANDIDATES
+    for text in (CURSOR_VERSION, "cursor-agent %s" % CURSOR_VERSION):
+        assert agent._CURSOR_VERSION_RE.search(text) and cursor_health._VERSION_RE.search(text)
+    assert not agent._CURSOR_VERSION_RE.search("agent 1.2.3")
+
+
+def test_cursor_spawn_env(agent, home, tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_FOO", "x")
+    monkeypatch.setenv("CURSOR_CONFIG_DIR", "/somewhere/cursor-cfg")
+    monkeypatch.setenv("CURSOR_API_KEY", "key")
+    monkeypatch.delenv("NO_OPEN_BROWSER", raising=False)
+    env = agent._spawn_env("chat", backend="cursor")
+    assert "CLAUDE_CODE_FOO" not in env
+    assert env["CURSOR_CONFIG_DIR"] == "/somewhere/cursor-cfg"
+    assert env["CURSOR_API_KEY"] == "key" and env["NO_OPEN_BROWSER"] == "1"
+    monkeypatch.setenv("NO_OPEN_BROWSER", "0")
+    assert agent._spawn_env("chat", backend="cursor")["NO_OPEN_BROWSER"] == "0"
+
+
+def test_the_cursor_host_is_its_own_file(agent):
+    assert agent._HOST_FILES["cursor"] == os.path.join(agent.HERE, "cursor_host.py")
+    assert os.path.isfile(agent._HOST_FILES["cursor"])
+    assert "cursor" in agent._SELF_MINTED_ID_BACKENDS
+    assert "cursor" in agent._NO_CANVAS_HOOK_BACKENDS
+
+
+@pytest.fixture()
+def cursor_send(agent, home, send_env):
+    _prefs(home, cursor_enabled=True)
+    return send_env
+
+
+def test_a_cursor_model_change_respawns_and_nothing_else_does(
+        agent, tmp_path, cursor_send):
+    """`--model` is a spawn flag: a changed model respawns (""/"auto" are one
+    model); an effort says nothing; a mode change is live; a directory the
+    spawn never saw is no respawn either (`_cursor_argv` grants none: the
+    tools are not workspace-bound), as OpenCode's."""
+    run_dir = _live_run(agent, tmp_path, backend="cursor", mode="default", model="auto")
+    assert agent._send("run-1", "m", model="gpt-5") == {"respawn": True}
+    assert cursor_send == ["run-1"] and _inbox_rows(run_dir) == []
+    assert agent._send("run-1", "m", model="auto") == {"sent": True}
+    assert agent._send("run-1", "m", model="", effort="high") == {"sent": True}
+    assert [r["type"] for r in _inbox_rows(run_dir)] == ["user", "user"]
+    assert cursor_send == ["run-1"]
+    for page, wire in (("acceptEdits", "acceptEdits"), ("auto", "auto"),
+                       ("prompt", "default")):
+        assert agent._send("run-1", "m", permission_mode=page) == {"sent": True}
+        assert _inbox_rows(run_dir)[-2]["request"] == {
+            "subtype": "set_permission_mode", "mode": wire}
+    assert cursor_send == ["run-1"]
+    assert agent._send("run-1", "m", read_dirs=json.dumps([str(tmp_path)])) == {"sent": True}
+    assert cursor_send == ["run-1"]
+    assert agent._send("run-1", "m", permission_mode="plan") == {
+        "error": "plan mode is not available for Cursor",
+        "reason": "unsupported", "backend": "cursor"}
+
+
+def test_a_disabled_cursor_start_is_refused_before_a_run_dir(agent, target, home):
+    file, _ = target
+    assert agent._start(file, "hi", "", "", "", "", has_pane=False, backend="cursor") == {
+        "error": "Cursor is turned off in Preferences",
+        "reason": "backend_disabled", "backend": "cursor"}
+    assert os.listdir(agent.RUNS) == []
+
+
+def test_a_missing_cursor_binary_refuses_the_start(agent, target, home, monkeypatch):
+    file, _ = target
+    _prefs(home, cursor_enabled=True)
+    monkeypatch.setattr(agent, "_cursor_bin", lambda: (_ for _ in ()).throw(
+        FileNotFoundError("cursor CLI not found — install")))
+    res = agent._start(file, "hi", "", "", "", "", has_pane=False, backend="cursor")
+    assert res["backend"] == "cursor" and "cursor CLI not found" in res["error"]
+    [run] = os.listdir(agent.RUNS)
+    assert not os.path.exists(os.path.join(agent.RUNS, run, "meta.json"))
+
+
+def test_the_cursor_terminal_command(agent, target):
+    from fused_render.agent_backends import cursor as backend_cursor
+    file, workdir = target
+    assert backend_cursor.CURSOR.terminal_resume(workdir, "") == "cd %s && cursor-agent" % workdir
+    assert backend_cursor.CURSOR.terminal_resume(workdir, SID_CURSOR) == \
+        "cd %s && cursor-agent --resume %s" % (workdir, SID_CURSOR)
+    fresh = agent._terminal_command(file, backend="cursor")
+    assert fresh["backend"] == "cursor"
+    assert fresh["command"].endswith("&& cursor-agent") and "--resume" not in fresh["command"]
+
+
+def test_cursor_bin_agrees_with_cursor_healths_resolver(agent, tmp_path, monkeypatch):
+    """A `cursor-agent` in a known install prefix wins over an `agent` on
+    PATH, in the spawn and in the health read alike."""
+    from fused_render import cursor_health
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    monkeypatch.delenv("FUSED_RENDER_CURSOR_BIN", raising=False)
+    monkeypatch.setattr(agent, "_CURSOR_CANDIDATES",
+                        tuple(c for c in agent._CURSOR_CANDIDATES if c.startswith("~")))
+    monkeypatch.setattr(cursor_health, "candidates",
+                        lambda: tuple(c for c in cursor_health.POSIX_CANDIDATES
+                                      if c.startswith("~")))
+    _cursor_script(str(tmp_path / "path" / "agent"), CURSOR_VERSION)
+    named = _cursor_script(str(tmp_path / "h" / ".local" / "bin" / "cursor-agent"),
+                           CURSOR_VERSION)
+    assert agent._cursor_bin() == named
+    assert cursor_health.resolve(allow_shell=False)[0] == named
+
+
+def test_the_cursor_terminal_command_uses_the_resolved_binary(agent, target, tmp_path, monkeypatch):
+    """`cursor-agent` when PATH has it; otherwise the located binary (an
+    override, a known path, or the `agent` alias), not a name the shell
+    cannot find."""
+    file, workdir = target
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing"))
+    forced = _exe(str(tmp_path / "odd dir" / "agent"))
+    monkeypatch.setenv("FUSED_RENDER_CURSOR_BIN", forced)
+    out = agent._terminal_command(file, backend="cursor")
+    assert out["command"].endswith("&& '%s'" % forced)
+    on_path = _cursor_script(str(tmp_path / "bin2" / "cursor-agent"), CURSOR_VERSION)
+    monkeypatch.setenv("PATH", str(tmp_path / "bin2"))
+    assert agent._terminal_command(file, backend="cursor")["command"].endswith(
+        "&& cursor-agent")
+    assert on_path

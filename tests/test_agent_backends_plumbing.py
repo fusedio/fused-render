@@ -114,6 +114,16 @@ def gemini_home(tmp_path, monkeypatch):
     return d
 
 
+@pytest.fixture(autouse=True)
+def cursor_home(tmp_path, monkeypatch):
+    """Cursor CLI's own data dir (`CURSOR_CONFIG_DIR`), where its transcripts
+    live — redirected for every test, so no erase here can ever reach the
+    real `~/.cursor`."""
+    d = tmp_path / "cursor-user"
+    monkeypatch.setenv("CURSOR_CONFIG_DIR", str(d))
+    return d
+
+
 @pytest.fixture()
 def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
@@ -156,6 +166,18 @@ def _enable_opencode():
     prefs_mod.write_pref("opencode_enabled", True)
 
 
+def _enable_cursor():
+    prefs_mod.write_pref("cursor_enabled", True)
+
+
+@pytest.fixture()
+def cursor_projects(home):
+    d = home / "cursor" / "projects"
+    d.mkdir(parents=True)
+    assert roots.projects_dir("cursor") == str(d)
+    return d
+
+
 @pytest.fixture()
 def opencode_projects(home):
     d = home / "opencode" / "projects"
@@ -167,7 +189,7 @@ def opencode_projects(home):
 # ------------------------------------------------------------------ roots
 
 
-def test_every_root_list_names_five_roots_in_backends_order(
+def test_every_root_list_names_six_roots_in_backends_order(
         tmp_path, home, claude_projects):
     """docs/CODEX_BACKEND.md §1, docs/GEMINI_BACKEND.md §1 and
     docs/OPENCODE_BACKEND.md §1: a third, a fourth and a fifth root
@@ -175,7 +197,11 @@ def test_every_root_list_names_five_roots_in_backends_order(
     helpers a module with a patchable Claude constant builds through, and
     the modules' own doors. `codex_dir()`, `gemini_dir()` and
     `opencode_dir()` hang off the UNNESTED home, as `copilot_dir()` does."""
-    assert roots.BACKENDS == ("claude", "copilot", "codex", "gemini", "opencode")
+    assert roots.BACKENDS == ("claude", "copilot", "codex", "gemini", "opencode", "cursor")
+    assert roots.cursor_dir() == str(home / "cursor")
+    assert roots.base_dir("cursor") == str(home / "cursor")
+    assert roots.projects_dir("cursor") == str(home / "cursor" / "projects")
+    assert roots.sessions_dir("cursor") == str(home / "cursor" / "sessions")
     assert roots.opencode_dir() == str(home / "opencode")
     assert roots.base_dir("opencode") == str(home / "opencode")
     assert roots.projects_dir("opencode") == str(home / "opencode" / "projects")
@@ -194,25 +220,29 @@ def test_every_root_list_names_five_roots_in_backends_order(
         ("copilot", str(home / "copilot" / "projects")),
         ("codex", str(home / "codex" / "projects")),
         ("gemini", str(home / "gemini" / "projects")),
-        ("opencode", str(home / "opencode" / "projects"))]
+        ("opencode", str(home / "opencode" / "projects")),
+        ("cursor", str(home / "cursor" / "projects"))]
     assert roots.registry_roots() == [
         ("claude", os.path.join(claude, "sessions")),
         ("copilot", str(home / "copilot" / "sessions")),
         ("codex", str(home / "codex" / "sessions")),
         ("gemini", str(home / "gemini" / "sessions")),
-        ("opencode", str(home / "opencode" / "sessions"))]
+        ("opencode", str(home / "opencode" / "sessions")),
+        ("cursor", str(home / "cursor" / "sessions"))]
     assert roots.projects_roots("/c/projects") == [
         ("claude", "/c/projects"),
         ("copilot", str(home / "copilot" / "projects")),
         ("codex", str(home / "codex" / "projects")),
         ("gemini", str(home / "gemini" / "projects")),
-        ("opencode", str(home / "opencode" / "projects"))]
+        ("opencode", str(home / "opencode" / "projects")),
+        ("cursor", str(home / "cursor" / "projects"))]
     assert roots.sessions_roots("/c/sessions") == [
         ("claude", "/c/sessions"),
         ("copilot", str(home / "copilot" / "sessions")),
         ("codex", str(home / "codex" / "sessions")),
         ("gemini", str(home / "gemini" / "sessions")),
-        ("opencode", str(home / "opencode" / "sessions"))]
+        ("opencode", str(home / "opencode" / "sessions")),
+        ("cursor", str(home / "cursor" / "sessions"))]
     # The routers' and the store's doors carry the patched Claude root first.
     assert [b for b, _ in sessions_mod.projects_roots()] == list(roots.BACKENDS)
     assert sessions_mod.projects_roots()[0][1] == str(claude_projects)
@@ -221,7 +251,7 @@ def test_every_root_list_names_five_roots_in_backends_order(
 
 def test_every_root_is_walked_and_the_root_names_the_backend(
         tmp_path, claude_projects, copilot_projects, codex_projects,
-        gemini_projects, opencode_projects, client):
+        gemini_projects, opencode_projects, cursor_projects, client):
     target = tmp_path / "p"
     target.mkdir()
     a = _write_transcript(claude_projects, "sess-claude", str(target), [_user("one")])
@@ -229,11 +259,15 @@ def test_every_root_is_walked_and_the_root_names_the_backend(
     c = _write_transcript(codex_projects, "sess-codex", str(target), [_user("three")])
     d = _write_transcript(gemini_projects, "sess-gemini", str(target), [_user("four")])
     e = _write_transcript(opencode_projects, "sess-opencode", str(target), [_user("five")])
+    f = _write_transcript(cursor_projects, "sess-cursor", str(target), [_user("six")])
 
-    assert tasks_store.transcripts() == [str(a), str(b), str(c), str(d), str(e)]
+    assert tasks_store.transcripts() == [str(a), str(b), str(c), str(d), str(e), str(f)]
     assert tasks_store.transcripts_by_backend() == [
         ("claude", str(a)), ("copilot", str(b)), ("codex", str(c)), ("gemini", str(d)),
-        ("opencode", str(e))]
+        ("opencode", str(e)), ("cursor", str(f))]
+    assert roots.backend_for_transcript(str(f)) == "cursor"
+    assert roots.find_transcript("sess-cursor", str(target)) == ("cursor", str(f))
+    assert roots.backend_for_session("sess-cursor") == "cursor"
     assert roots.backend_for_transcript(str(b)) == "copilot"
     assert roots.backend_for_transcript(str(c)) == "codex"
     assert roots.backend_for_transcript(str(d)) == "gemini"
@@ -252,12 +286,14 @@ def test_every_root_is_walked_and_the_root_names_the_backend(
     assert rows["sess-codex"]["backend"] == "codex"
     assert rows["sess-gemini"]["backend"] == "gemini"
     assert rows["sess-opencode"]["backend"] == "opencode"
+    assert rows["sess-cursor"]["backend"] == "cursor"
     assert rows["sess-claude"]["backend"] == "claude"
     pulse = {r["key"]: r for r in client.get("/api/tasks/pulse").json()["tasks"]}
     assert pulse["sess-copilot"]["backend"] == "copilot"
     assert pulse["sess-codex"]["backend"] == "codex"
     assert pulse["sess-gemini"]["backend"] == "gemini"
     assert pulse["sess-opencode"]["backend"] == "opencode"
+    assert pulse["sess-cursor"]["backend"] == "cursor"
 
     # The sessions router's scans see every non-Claude transcript too.
     summaries = client.get("/api/claude-sessions/summaries").json()["sessions"]
@@ -565,7 +601,7 @@ def test_the_last_enabled_agent_cannot_be_switched_off(client):
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": True,
                                   "codex": False, "gemini": False, "opencode": False,
-                                  "default": "copilot"}
+                                  "cursor": False, "default": "copilot"}
     assert prefs_mod.read_prefs()["default_backend"] == "copilot"
     assert registry.enabled_ids() == ["copilot"]
     # And now Copilot is the last one.
@@ -581,7 +617,7 @@ def test_default_backend_is_repointed_in_the_same_write(client):
     assert r.status_code == 200
     assert r.json()["agents"] == {"claude": True, "copilot": False,
                                   "codex": False, "gemini": False, "opencode": False,
-                                  "default": "claude"}
+                                  "cursor": False, "default": "claude"}
     assert prefs_mod.read_prefs()["default_backend"] == "claude"
     r = client.put("/api/prefs", headers=FUSED, json={"default_backend": "nope"})
     assert r.status_code == 400
@@ -589,7 +625,8 @@ def test_default_backend_is_repointed_in_the_same_write(client):
     assert r.status_code == 400
     body = client.get("/api/prefs").json()
     assert body["agents"] == {"claude": True, "copilot": False, "codex": False,
-                              "gemini": False, "opencode": False, "default": "claude"}
+                              "gemini": False, "opencode": False, "cursor": False,
+                              "default": "claude"}
 
 
 def test_codex_is_off_until_stored_on_and_takes_part_in_the_rule(client):
@@ -609,13 +646,13 @@ def test_codex_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": True, "copilot": True,
                                   "codex": True, "gemini": False, "opencode": False,
-                                  "default": "claude"}
+                                  "cursor": False, "default": "claude"}
     r = client.put("/api/prefs", headers=FUSED,
                    json={"claude_enabled": False, "copilot_enabled": False})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": False,
                                   "codex": True, "gemini": False, "opencode": False,
-                                  "default": "codex"}
+                                  "cursor": False, "default": "codex"}
     assert prefs_mod.read_prefs()["default_backend"] == "codex"
     assert registry.enabled_ids() == ["codex"]
     assert registry.default_id() == "codex"
@@ -653,6 +690,7 @@ def test_the_unknown_key_message_names_the_codex_and_gemini_switches(client):
     assert "'codex_enabled'" in r.json()["error"]
     assert "'gemini_enabled'" in r.json()["error"]
     assert "'opencode_enabled'" in r.json()["error"]
+    assert "'cursor_enabled'" in r.json()["error"]
 
 
 def test_gemini_is_off_until_stored_on_and_takes_part_in_the_rule(client):
@@ -671,11 +709,13 @@ def test_gemini_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     r = client.put("/api/prefs", headers=FUSED, json={"gemini_enabled": True})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": True, "copilot": False, "codex": False,
-                                  "gemini": True, "opencode": False, "default": "claude"}
+                                  "gemini": True, "opencode": False, "cursor": False,
+                                  "default": "claude"}
     r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": False})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": False, "codex": False,
-                                  "gemini": True, "opencode": False, "default": "gemini"}
+                                  "gemini": True, "opencode": False, "cursor": False,
+                                  "default": "gemini"}
     assert registry.enabled_ids() == ["gemini"]
     assert registry.default_id() == "gemini"
     # All four off is refused whole.
@@ -698,7 +738,7 @@ def test_opencode_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     assert prefs_mod.opencode_enabled() is False
     assert prefs_mod.AGENT_BACKEND_KEYS["opencode"] == "opencode_enabled"
     assert prefs_mod.VALID_DEFAULT_BACKENDS == registry.ORDER
-    assert registry.ORDER[-1] == "opencode"
+    assert registry.ORDER[-2] == "opencode"
     body = client.get("/api/prefs").json()
     assert body["agents"]["opencode"] is False
     r = client.put("/api/prefs", headers=FUSED, json={"opencode_enabled": "yes"})
@@ -706,11 +746,13 @@ def test_opencode_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     r = client.put("/api/prefs", headers=FUSED, json={"opencode_enabled": True})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": True, "copilot": False, "codex": False,
-                                  "gemini": False, "opencode": True, "default": "claude"}
+                                  "gemini": False, "opencode": True, "cursor": False,
+                                  "default": "claude"}
     r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": False})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": False, "codex": False,
-                                  "gemini": False, "opencode": True, "default": "opencode"}
+                                  "gemini": False, "opencode": True, "cursor": False,
+                                  "default": "opencode"}
     assert registry.enabled_ids() == ["opencode"]
     assert registry.default_id() == "opencode"
     # All five off is refused whole.
@@ -725,6 +767,41 @@ def test_opencode_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     assert r.json()["agents"]["default"] == "opencode"
     r = client.put("/api/prefs", headers=FUSED, json={"opencode_enabled": False})
     assert r.json()["agents"]["default"] == "gemini"
+
+
+def test_cursor_is_off_until_stored_on_and_takes_part_in_the_rule(client):
+    """The sixth switch, off by default; the PUT rule is "at least one of
+    the SIX on", judged on the merged record."""
+    assert prefs_mod.cursor_enabled() is False
+    assert prefs_mod.AGENT_BACKEND_KEYS["cursor"] == "cursor_enabled"
+    assert prefs_mod.VALID_DEFAULT_BACKENDS == registry.ORDER
+    assert registry.ORDER[-1] == "cursor"
+    body = client.get("/api/prefs").json()
+    assert body["agents"]["cursor"] is False
+    r = client.put("/api/prefs", headers=FUSED, json={"cursor_enabled": "yes"})
+    assert r.status_code == 400
+    r = client.put("/api/prefs", headers=FUSED, json={"cursor_enabled": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"] == {"claude": True, "copilot": False, "codex": False,
+                                  "gemini": False, "opencode": False, "cursor": True,
+                                  "default": "claude"}
+    r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"]["default"] == "cursor"
+    assert registry.enabled_ids() == ["cursor"]
+    assert registry.default_id() == "cursor"
+    # All six off is refused whole.
+    r = client.put("/api/prefs", headers=FUSED, json={"cursor_enabled": False})
+    assert r.status_code == 400
+    assert r.json()["error"] == "turn on another agent first"
+    assert prefs_mod.read_prefs()["cursor_enabled"] is True
+    # OpenCode on beside it: it comes first in ORDER, so the default
+    # re-points there once Cursor goes off.
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"opencode_enabled": True, "default_backend": "cursor"})
+    assert r.json()["agents"]["default"] == "cursor"
+    r = client.put("/api/prefs", headers=FUSED, json={"cursor_enabled": False})
+    assert r.json()["agents"]["default"] == "opencode"
 
 
 def test_fused_ai_never_reads_the_default_agent(monkeypatch):
@@ -747,17 +824,20 @@ def test_the_catalog_endpoint_serves_the_registry(client, monkeypatch):
                         lambda: {"ok": True, "fingerprint": "x"})
     monkeypatch.setattr(claude_health, "summary",
                         lambda: pytest.fail("the catalog must not probe"))
-    from fused_render import codex_health, copilot_health, gemini_health, opencode_health
+    from fused_render import (codex_health, copilot_health, cursor_health,
+                              gemini_health, opencode_health)
     # A disabled agent's health is read from its cache too, never probed.
     monkeypatch.setattr(copilot_health, "cached", lambda: None)
     monkeypatch.setattr(codex_health, "cached", lambda: None)
     monkeypatch.setattr(gemini_health, "cached", lambda: None)
     monkeypatch.setattr(opencode_health, "cached", lambda: None)
     monkeypatch.setattr(opencode_health, "cached_models", lambda: None)
+    monkeypatch.setattr(cursor_health, "cached", lambda: None)
+    monkeypatch.setattr(cursor_health, "cached_models", lambda: None)
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude"]
     assert [b["id"] for b in body["all"]] == ["claude", "copilot", "codex", "gemini",
-                                              "opencode"]
+                                              "opencode", "cursor"]
     assert [b["id"] for b in body["all"]] == list(registry.ORDER)
     assert body["default"] == "claude"
     claude = body["all"][0]
@@ -804,6 +884,20 @@ def test_the_catalog_endpoint_serves_the_registry(client, monkeypatch):
     # The mode is the injected config's `permission` block, fixed at spawn (D5).
     assert opencode["caps"]["live_mode_switch"] is False
     assert opencode["health"] is None
+    cursor = body["all"][5]
+    assert cursor["enabled"] is False
+    assert cursor["label"] == "Cursor"
+    assert cursor["default_model"] == "auto"
+    assert cursor["modes"] == ["prompt", "acceptEdits", "auto"]
+    assert cursor["efforts"] == []
+    assert all(m["reasoning"] is False and m["efforts"] == [] for m in cursor["models"])
+    assert [m["id"] for m in cursor["models"]] == [
+        "auto", "gpt-5", "sonnet-4.5", "sonnet-4.5-thinking", "composer-1"]
+    assert cursor["caps"]["plan_mode"] is False
+    # `--model` is a spawn flag; the approval mode is the host's.
+    assert cursor["caps"]["live_model_switch"] is False
+    assert cursor["caps"]["live_mode_switch"] is True
+    assert cursor["health"] is None
     _enable_copilot()
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude", "copilot"]
@@ -817,6 +911,42 @@ def test_the_catalog_endpoint_serves_the_registry(client, monkeypatch):
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude", "copilot", "codex", "gemini",
                                                    "opencode"]
+    _enable_cursor()
+    body = client.get("/api/agent-backends").json()
+    assert [b["id"] for b in body["backends"]] == ["claude", "copilot", "codex", "gemini",
+                                                   "opencode", "cursor"]
+
+
+def test_cursors_terminal_resume_line():
+    cursor = registry.get("cursor")
+    assert cursor.terminal_resume("/a b", "7b1d3c52-0a64-4f4e-8c1a-2d9e5f6a7b8c") == (
+        "cd '/a b' && cursor-agent --resume 7b1d3c52-0a64-4f4e-8c1a-2d9e5f6a7b8c")
+    assert cursor.terminal_resume("/a", "") == "cd /a && cursor-agent"
+    assert cursor.routes_prefix == "/api/cursor"
+    assert cursor.pref_key == "cursor_enabled"
+    assert getattr(prefs_mod, cursor.pref_key)() is False
+
+
+def test_the_catalog_serves_cursors_discovered_models(monkeypatch):
+    """The health snapshot's `models` replace the seed, `auto` first, every
+    row effortless; nothing cached -> the seed stands."""
+    from fused_render import cursor_health
+    from fused_render.agent_backends import cursor as backend_cursor
+    monkeypatch.setattr(cursor_health, "cached_models", lambda: None)
+    assert backend_cursor.discovered_models(None) is None
+    assert backend_cursor.CURSOR.model_ids() == tuple(m.id for m in backend_cursor.MODELS)
+    rows = [{"id": "gpt-5.2", "label": "GPT-5.2"}, {"id": "auto", "label": "Auto"},
+            {"id": "gpt-5.2", "label": "dup"}, {"id": "", "label": "x"}, "junk"]
+    found = backend_cursor.discovered_models({"models": rows})
+    assert [m.id for m in found] == ["auto", "gpt-5.2"]
+    assert all(m.reasoning is False and m.effort_list(()) == [] for m in found)
+    assert backend_cursor.discovered_models({"models": []}) is None
+    assert backend_cursor.discovered_models({"models": ["junk"]}) is None
+    monkeypatch.setattr(cursor_health, "cached_models", lambda: rows)
+    assert backend_cursor.CURSOR.model_ids(discovered=True) == ("auto", "gpt-5.2")
+    assert registry.foreign_model_error("cursor", "gpt-5.2") is None
+    assert registry.foreign_model_error("cursor", "gpt-6-luna")["reason"] == "unsupported"
+    assert registry.foreign_model_error("claude", "composer-1")["reason"] == "unsupported"
 
 
 def test_opencodes_terminal_resume_line():
@@ -1104,6 +1234,69 @@ def test_the_gemini_chat_glob_refuses_a_bad_id_and_a_symlink_out(tmp_path, gemin
     assert tasks_mod._gemini_chat_files(GEMINI_SID) == []
     # No Gemini home at all is simply nothing to remove.
     assert tasks_mod._gemini_chat_files("00000000-0000-4000-8000-000000000000") == []
+
+
+CURSOR_SID = "7b1d3c52-0a64-4f4e-8c1a-2d9e5f6a7b8c"
+
+
+def _cursor_transcript(cursor_home, project, session_id, name=None, in_dir=False):
+    """A Cursor transcript file as the CLI lays it out (the layout is not
+    documented): `projects/<slug>/agent-transcripts/<sid>.jsonl`, or one level
+    down in a folder named by the id."""
+    d = cursor_home / "projects" / project / "agent-transcripts"
+    if in_dir:
+        d = d / session_id
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / (name or f"{session_id}.jsonl")
+    p.write_text("{}\n")
+    return p
+
+
+def test_erase_under_the_cursor_root_takes_the_cli_transcripts_too(
+        tmp_path, claude_projects, cursor_projects, cursor_home, client):
+    target = tmp_path / "p"
+    target.mkdir()
+    path = _write_transcript(cursor_projects, CURSOR_SID, str(target), [_user("six")])
+    flat = _cursor_transcript(cursor_home, "proj-a", CURSOR_SID)
+    elsewhere = _cursor_transcript(cursor_home, "proj-b", CURSOR_SID)
+    nested = _cursor_transcript(cursor_home, "proj-a", CURSOR_SID, name="transcript.jsonl",
+                                in_dir=True)
+    other = _cursor_transcript(cursor_home, "proj-a", "00000000-0000-4000-8000-000000000000")
+    assert tasks_mod._cursor_home() == str(cursor_home)
+    assert sorted(tasks_mod._cursor_chat_files(CURSOR_SID)) == sorted(
+        os.path.realpath(str(x)) for x in (flat, elsewhere, nested))
+    assert client.get("/api/tasks").json()["tasks"][0]["key"] == CURSOR_SID
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": CURSOR_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert not flat.exists() and not elsewhere.exists() and not nested.exists()
+    assert not nested.parent.exists()      # the emptied folder named by the id
+    assert other.exists()
+
+
+def test_erase_of_a_claude_session_leaves_the_cursor_files_alone(
+        tmp_path, claude_projects, cursor_home, client):
+    target = tmp_path / "p"
+    target.mkdir()
+    path = _write_transcript(claude_projects, CURSOR_SID, str(target), [_user("one")])
+    live = _cursor_transcript(cursor_home, "proj-a", CURSOR_SID)
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": CURSOR_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists() and live.exists()
+
+
+def test_the_cursor_glob_refuses_a_bad_id_and_a_symlink_out(tmp_path, cursor_home):
+    _cursor_transcript(cursor_home, "proj-a", "x" * 36)
+    for bad in ("..", ".", "a/b", "short", "*"):
+        assert tasks_mod._cursor_chat_files(bad) == []
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("{}\n")
+    link_dir = cursor_home / "projects" / "proj-l" / "agent-transcripts"
+    link_dir.mkdir(parents=True)
+    (link_dir / f"{CURSOR_SID}.jsonl").symlink_to(outside)
+    assert tasks_mod._cursor_chat_files(CURSOR_SID) == []
+    # No Cursor home at all is simply nothing to remove.
+    assert tasks_mod._cursor_chat_files("00000000-0000-4000-8000-000000000000") == []
 
 
 def test_the_codex_rollout_glob_refuses_a_bad_id_and_a_symlink_out(
@@ -1626,6 +1819,50 @@ def test_the_gemini_literal_pattern_catches_code_and_spares_prose():
     assert not _GEMINI_LITERAL.search("leaves `GEMINI_CLI_HOME` exactly as found")
     assert not _GEMINI_LITERAL.search("under `~/.gemini`")
     assert not _GEMINI_LITERAL.search('"GEMINI_CLI_HOMES"')
+
+
+#: Code (not prose) that resolves Cursor CLI's own home: a `"~/.cursor"` /
+#: `".cursor"` or a `"CURSOR_CONFIG_DIR"` string literal.
+_CURSOR_LITERAL = re.compile(r"""["'](?:~/\.cursor|\.cursor|CURSOR_CONFIG_DIR)\b""")
+
+#: The only modules that may name Cursor's home: the health/login/install
+#: trio and the roots file; `claude_agent/agent.py` names it in its
+#: binary-candidate paths (stdlib-only, so it cannot reach `cursor_health`),
+#: and `agent_oneshot.py` names the `.cursor` folder of its temp workspace.
+_CURSOR_HOME_ALLOWED = {
+    "templates/shared/agent_roots.py", "cursor_health.py", "cursor_login.py",
+    "cursor_install.py", "claude_agent/agent.py", "agent_oneshot.py",
+}
+
+
+def test_only_the_allowed_modules_name_cursors_own_home():
+    import fused_render
+    base = os.path.dirname(fused_render.__file__)
+    offenders = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in ("__pycache__", "node_modules")]
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, base).replace(os.sep, "/")
+            if rel in _CURSOR_HOME_ALLOWED:
+                continue
+            with open(full, encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    code = line.split("#", 1)[0]
+                    if _CURSOR_LITERAL.search(code):
+                        offenders.append(f"{rel}:{n}: {line.strip()}")
+    assert offenders == []
+
+
+def test_the_cursor_literal_pattern_catches_code_and_spares_prose():
+    assert _CURSOR_LITERAL.search('os.environ.get("CURSOR_CONFIG_DIR")')
+    assert _CURSOR_LITERAL.search('os.path.join(home, ".cursor")')
+    assert _CURSOR_LITERAL.search("expanduser('~/.cursor/bin')")
+    assert not _CURSOR_LITERAL.search("leaves `CURSOR_CONFIG_DIR` exactly as found")
+    assert not _CURSOR_LITERAL.search("under `~/.cursor`")
+    assert not _CURSOR_LITERAL.search('"CURSOR_CONFIG_DIRS"')
 
 
 #: Code (not prose) that resolves OpenCode's own config dir: a

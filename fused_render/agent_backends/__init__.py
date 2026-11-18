@@ -1,5 +1,5 @@
 """Agent backends for Tasks and Sessions: Claude Code, GitHub Copilot CLI,
-OpenAI Codex CLI, Google Gemini CLI and OpenCode.
+OpenAI Codex CLI, Google Gemini CLI, OpenCode and Cursor CLI.
 
     from fused_render.agent_backends import registry
     registry.get("copilot").caps.plan_mode     # False

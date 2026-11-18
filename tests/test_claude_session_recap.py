@@ -587,7 +587,7 @@ class _FakeProc:
         return self._out, None
 
 
-@pytest.mark.parametrize("backend", ["claude", "copilot", "codex", "gemini"])
+@pytest.mark.parametrize("backend", ["claude", "copilot", "codex", "gemini", "cursor"])
 def test_every_recap_spawn_keeps_the_posix_spawn_rule(
         project, agent, monkeypatch, backend):
     """No `cwd`, `close_fds=False`, no session/preexec hooks: any of those makes
@@ -608,6 +608,9 @@ def test_every_recap_spawn_keeps_the_posix_spawn_rule(
         if backend == "gemini":
             # `gemini -p … -o json`: `{session_id, response, stats}` on stdout.
             return _FakeProc(json.dumps({"session_id": "", "response": text, "stats": {}}))
+        if backend == "cursor":
+            # `cursor-agent -p --output-format json`: `{result, session_id, is_error}`.
+            return _FakeProc(json.dumps({"result": text, "session_id": "", "is_error": False}))
         return _FakeProc(_ok(text) if backend == "claude" else text)
 
     monkeypatch.setattr(recap_mod.subprocess, "Popen", fake_popen)
@@ -615,6 +618,7 @@ def test_every_recap_spawn_keeps_the_posix_spawn_rule(
     monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
     monkeypatch.setattr(agent, "_codex_bin", lambda: "/bin/codex", raising=False)
     monkeypatch.setattr(agent, "_gemini_bin", lambda: "/bin/gemini", raising=False)
+    monkeypatch.setattr(agent, "_cursor_bin", lambda: "/bin/cursor-agent", raising=False)
     assert recap_mod._recap_generate(agent, target, SESSION, backend=backend) == text
     kw, = seen
     assert "cwd" not in kw
@@ -641,7 +645,7 @@ class _HungProc:
         self.killed = True
 
 
-@pytest.mark.parametrize("backend", ["claude", "copilot", "codex", "gemini"])
+@pytest.mark.parametrize("backend", ["claude", "copilot", "codex", "gemini", "cursor"])
 def test_a_killed_recap_run_that_will_not_exit_cannot_hang_the_request(
         project, agent, monkeypatch, backend):
     target, write = project
@@ -652,6 +656,7 @@ def test_a_killed_recap_run_that_will_not_exit_cannot_hang_the_request(
     monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
     monkeypatch.setattr(agent, "_codex_bin", lambda: "/bin/codex", raising=False)
     monkeypatch.setattr(agent, "_gemini_bin", lambda: "/bin/gemini", raising=False)
+    monkeypatch.setattr(agent, "_cursor_bin", lambda: "/bin/cursor-agent", raising=False)
     assert recap_mod._recap_generate(agent, target, SESSION, backend=backend) == ""
     assert proc.killed
     assert proc.timeouts == [recap_mod._RECAP_TIMEOUT, recap_mod._RECAP_REAP_TIMEOUT]
@@ -978,4 +983,47 @@ def test_a_gemini_recap_is_headless_trusted_in_process_and_cleans_its_chat_file(
     assert removed == [sid_ok] and not chat.exists()
     # The failed run: "" — and its stderr JSON still names the file to remove.
     assert recap_mod._recap_generate(agent, target, SESSION, backend="gemini") == ""
+    assert removed == [sid_ok, sid_bad] and not chat.exists()
+
+
+def test_a_cursor_recap_is_headless_read_only_and_cleans_its_transcript(
+        project, agent, monkeypatch, tmp_path):
+    """`cursor-agent -p --output-format json --mode ask --trust` in an empty
+    temp workspace, the pointer last; the reported `session_id` names the
+    transcript files to remove — also when the run FAILED."""
+    from fused_render.server.routers import tasks as tasks_mod
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    seen, removed = [], []
+    chat = tmp_path / "cursor-transcript.jsonl"
+
+    def chat_files(sid):
+        removed.append(sid)
+        chat.write_text("{}")
+        return [str(chat)]
+
+    monkeypatch.setattr(tasks_mod, "_cursor_chat_files", chat_files)
+    monkeypatch.setattr(agent, "_cursor_bin", lambda: "/bin/cursor-agent", raising=False)
+    text = "the recap, long enough to count as one"
+    sid_ok = "11111111-2222-4333-8444-555555555555"
+    sid_bad = "99999999-2222-4333-8444-555555555555"
+
+    def fake_popen(argv, **kw):
+        seen.append((argv, kw))
+        if len(seen) == 1:
+            return _GeminiProc(json.dumps({"result": text, "session_id": sid_ok,
+                                           "is_error": False}))
+        return _GeminiProc(json.dumps({"result": "not signed in", "session_id": sid_bad,
+                                       "is_error": True}), "", 1)
+
+    monkeypatch.setattr(recap_mod.subprocess, "Popen", fake_popen)
+    assert recap_mod._recap_generate(agent, target, SESSION, backend="cursor") == text
+    argv, kw = seen[0]
+    assert argv[0] == "/bin/cursor-agent" and argv[1] == "-p"
+    assert argv[argv.index("--output-format") + 1] == "json"
+    assert argv[argv.index("--mode") + 1] == "ask"
+    assert "--trust" in argv and "--workspace" in argv
+    assert "cwd" not in kw
+    assert removed == [sid_ok] and not chat.exists()
+    assert recap_mod._recap_generate(agent, target, SESSION, backend="cursor") == ""
     assert removed == [sid_ok, sid_bad] and not chat.exists()

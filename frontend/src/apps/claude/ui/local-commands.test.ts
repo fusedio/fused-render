@@ -82,6 +82,18 @@ describe("/model argument", () => {
     expect("refuse" in wt && wt.refuse).toBe("Gemini has no worktrees");
   });
 
+  test("Cursor's shortlist and its own full ids, and no effort at all", () => {
+    expect(localModelArg("gpt-5", "cursor")).toBe("gpt-5");
+    expect(localModelArg("Claude Sonnet 4.5", "cursor")).toBe("sonnet-4.5");
+    expect(localModelArg("composer-1", "cursor")).toBe("composer-1");
+    expect(localModelArg("some-new-model", "cursor")).toBe("some-new-model");
+    expect(localModelArg("gpt 5 x", "cursor")).toBe("");
+    expect(localEffortArg("high", "cursor")).toBe("");
+    const at = (text: string) => planLocalCommand(classifyCommand(text)!, { worktreeReady: true, backend: "cursor" });
+    const wt = at("/worktree feat");
+    expect("refuse" in wt && wt.refuse).toBe("Cursor has no worktrees");
+  });
+
   test("OpenCode's shortlist and its provider/model ids, and no effort at all (OPENCODE D7)", () => {
     expect(localModelArg("anthropic/claude-sonnet-5-5", "opencode")).toBe("anthropic/claude-sonnet-5-5");
     expect(localModelArg("GPT-5.5", "opencode")).toBe("openai/gpt-5.5");

@@ -16,18 +16,19 @@ streams in. Stdlib only (plus ../shared/procutil).
 `claude` is looked up on PATH and then in its known install locations
 (_claude_bin).
 
-FIVE AGENT BACKENDS (docs/COPILOT_BACKEND.md, docs/CODEX_BACKEND.md,
+SIX AGENT BACKENDS (docs/COPILOT_BACKEND.md, docs/CODEX_BACKEND.md,
 docs/GEMINI_BACKEND.md, docs/OPENCODE_BACKEND.md): Claude Code (`claude`,
 the default, `session_host.py`), GitHub Copilot CLI (`copilot`,
 `copilot_host.py`, driven over ACP), OpenAI Codex CLI (`codex`,
 `codex_host.py`, driven over `codex app-server`), Google Gemini CLI
 (`gemini`, `gemini_host.py`, driven over ACP too) and OpenCode (`opencode`,
-`opencode_host.py`, ACP again). `backend` is
+`opencode_host.py`, ACP again) and Cursor CLI (`cursor`, `cursor_host.py`,
+ACP once more). `backend` is
 chosen at a chat's first turn and never changes (`_backend_for_session`);
 every host writes the same run-dir files and stream rows, so everything
 below the spawn reads one shape. Where they differ it is named: the argv
-builders (`_copilot_argv`, `_codex_argv`, `_gemini_argv`, `_opencode_argv`),
-`_backend_enabled` (the prefs
+builders (`_copilot_argv`, `_codex_argv`, `_gemini_argv`, `_opencode_argv`,
+`_cursor_argv`), `_backend_enabled` (the prefs
 gate), `_send` (what a live session of each can and cannot take), the
 self-minted session id (`_SELF_MINTED_ID_BACKENDS`), and the caps gating on
 snapshots / background tasks / plan mode, which is "Claude only" — every
@@ -273,6 +274,15 @@ _GEMINI_CANDIDATES = ("~/.npm-global/bin/gemini", "/opt/homebrew/bin/gemini",
 _OPENCODE_CANDIDATES = ("~/.opencode/bin/opencode", "~/.npm-global/bin/opencode",
                         "/opt/homebrew/bin/opencode", "/usr/local/bin/opencode",
                         "~/.local/bin/opencode", "~/.bun/bin/opencode")
+# ...and where Cursor's installer puts `cursor-agent` (and its generic alias
+# `agent`, which `_cursor_bin` only accepts after a `--version` check). A COPY
+# of `cursor_health.POSIX_CANDIDATES`, pinned equal by a test as the others are.
+_CURSOR_CANDIDATES = ("~/.local/bin/cursor-agent", "~/.cursor/bin/cursor-agent",
+                      "/opt/homebrew/bin/cursor-agent", "/usr/local/bin/cursor-agent",
+                      "~/.local/bin/agent", "~/.cursor/bin/agent")
+# What `cursor-agent --version` prints (`2026.11.13-eacade1`): the check that
+# tells Cursor's `agent` from any other program that name belongs to.
+_CURSOR_VERSION_RE = re.compile(r"\b\d{4}\.\d{2}\.\d{2}-[0-9a-f]+\b")
 
 # Where `gh` gets installed, for the D10 login substitute — a COPY of
 # `github_setup.candidates()`: the app's own install dir first (derived at
@@ -290,27 +300,28 @@ _COPILOT_HEALTH_FILE = "copilot-health.json"
 # (`_backend_disabled_error`). `agent_backends.<id>.label` is the app-side
 # copy; a test pins the two equal.
 _BACKEND_LABELS = {"claude": "Claude", "copilot": "Copilot", "codex": "Codex",
-                   "gemini": "Gemini", "opencode": "OpenCode"}
+                   "gemini": "Gemini", "opencode": "OpenCode",
+                   "cursor": "Cursor"}
 
 # The backends whose session id is the CLI's OWN, minted after the spawn and
 # announced on the host's init row — never fused's `--session-id` (D2 of the
 # three contracts: `copilot --acp` refuses the flag, Codex's thread id comes
 # out of `thread/start`, Gemini's `session/new` mints a uuid4 of its own,
-# OpenCode's a `ses_<id>`). A
+# OpenCode's a `ses_<id>`, Cursor's `session/new` one of its own). A
 # fresh chat on one of these has no id in `_start`; `_poll` learns it, and
 # `_record_minted_session` writes the record `_start` could not.
-_SELF_MINTED_ID_BACKENDS = ("copilot", "codex", "gemini", "opencode")
+_SELF_MINTED_ID_BACKENDS = ("copilot", "codex", "gemini", "opencode", "cursor")
 # The backends whose shell command has no allow-list flag (CODEX D9, GEMINI
-# D9, OPENCODE D9): a bare `fused` asks like any other command under the ask
+# D9, OPENCODE D9; Cursor's ACP host answers its permission requests): a bare `fused` asks like any other command under the ask
 # mode, so the prompt's "pre-approved" clause is dropped for them
 # (`_fused_cli_note`).
-_NO_PREAPPROVE_BACKENDS = ("codex", "gemini", "opencode")
+_NO_PREAPPROVE_BACKENDS = ("codex", "gemini", "opencode", "cursor")
 
 # What a NEW chat's model pill opens on, per non-Claude backend (Claude's
 # comes from ~/.claude/settings.json, `_global_defaults`). A COPY of each
 # `agent_backends/<id>.py` `default_model`, pinned equal by a test.
 _NEW_CHAT_MODELS = {"copilot": "auto", "codex": "gpt-6-luna", "gemini": "auto",
-                    "opencode": "anthropic/claude-sonnet-5-5"}
+                    "opencode": "anthropic/claude-sonnet-5-5", "cursor": "auto"}
 
 # Copilot models the CLI refuses `--reasoning-effort` for (1.0.102 fails
 # `session/new`: "Reasoning effort is not supported when using the "auto"
@@ -326,8 +337,8 @@ _COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
 
 # Error-text markers per backend — substrings (lower-cased) of a `result` row
 # or stderr that mean "signed out / no access" and "usage or credit limit".
-# COPIED from `agent_backends/claude.py`, `copilot.py`, `codex.py`, `gemini.py`
-# and `opencode.py`
+# COPIED from `agent_backends/claude.py`, `copilot.py`, `codex.py`, `gemini.py`,
+# `opencode.py` and `cursor.py`
 # (`account_error_markers` / `limit_error_markers`): this module may not import
 # the package, and a test pins the tuples equal so the two cannot drift.
 _ACCOUNT_ERROR_MARKERS = {
@@ -346,6 +357,9 @@ _ACCOUNT_ERROR_MARKERS = {
                "sign in", "unauthorized"),
     "opencode": ("no api key", "not authenticated", "unauthorized", "invalid api key",
                  "provider not found", "model not found", "not signed in"),
+    "cursor": ("authentication required", "not logged in", "not signed in",
+               "unauthenticated", "login required", "agent login",
+               "invalid api key", "unauthorized"),
 }
 _LIMIT_ERROR_MARKERS = {
     # Claude's are the two this function matched before a second backend
@@ -358,6 +372,8 @@ _LIMIT_ERROR_MARKERS = {
     "gemini": ("resource_exhausted", "rate limit", "quota", "too many requests",
                "429"),
     "opencode": ("rate limit", "quota", "too many requests", "429", "overloaded"),
+    "cursor": ("rate limit", "usage limit", "out of usage", "quota",
+               "too many requests", "429"),
 }
 
 # fused-render's own MCP server (permission_server.py): the permission prompt
@@ -847,16 +863,61 @@ def _opencode_bin() -> str:
     )
 
 
+def _is_cursor_cli(path: str) -> bool:
+    """Whether `path --version` prints Cursor's `YYYY.MM.DD-hash`: `agent` is
+    a generic name, so a binary called that is only Cursor's after this."""
+    try:
+        out = subprocess.run([path, "--version"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace",
+                             timeout=10, close_fds=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(_CURSOR_VERSION_RE.search(out.stdout or ""))
+
+
+def _cursor_bin() -> str:
+    """Path to the Cursor CLI — `_opencode_bin`'s twin, in the order
+    `cursor_health.resolve` walks: FUSED_RENDER_CURSOR_BIN (where
+    `cursor_health` publishes a binary only the user's login shell could
+    find), then `cursor-agent` on PATH, then the known `cursor-agent` install
+    paths (`_CURSOR_CANDIDATES`), and only then an `agent`, on PATH or at a
+    known path. Every binary named `agent` must answer `--version` like
+    Cursor's (`_is_cursor_cli`). A stale override is ignored."""
+    override = os.environ.get("FUSED_RENDER_CURSOR_BIN")
+    if override and os.path.isfile(override):
+        return override
+    found = shutil.which("cursor-agent")
+    if found:
+        return found
+    candidates = [os.path.expanduser(os.path.expandvars(c)) for c in _CURSOR_CANDIDATES]
+    for resolved in candidates:
+        if os.path.basename(resolved) != "agent" and os.path.isfile(resolved):
+            return resolved
+    found = shutil.which("agent")
+    if found and _is_cursor_cli(found):
+        return found
+    for resolved in candidates:
+        if os.path.basename(resolved) == "agent" and os.path.isfile(resolved) \
+                and _is_cursor_cli(resolved):
+            return resolved
+    raise FileNotFoundError(
+        "cursor CLI not found — install with `curl https://cursor.com/install "
+        "-fsS | bash`, put `cursor-agent` on the PATH of the environment that "
+        "launched fused-render, or set FUSED_RENDER_CURSOR_BIN to its full "
+        "path. Also looked in: " + ", ".join(_CURSOR_CANDIDATES)
+    )
+
+
 # ------------------------------------------------------------ agent backends
 
 def _backend_enabled(backend: str) -> bool:
     """Whether `backend` may be SPAWNED — the one check in `_start` that keeps
     a disabled agent from ever starting (docs/COPILOT_BACKEND.md invariant 10).
 
-    A stdlib read of `<home>/prefs.json`, the same file and the same five
+    A stdlib read of `<home>/prefs.json`, the same file and the same six
     keys `shell/prefs.py` keeps (`claude_enabled` is on unless stored False,
-    `copilot_enabled`, `codex_enabled`, `gemini_enabled` and
-    `opencode_enabled` are off unless stored True),
+    `copilot_enabled`, `codex_enabled`, `gemini_enabled`,
+    `opencode_enabled` and `cursor_enabled` are off unless stored True),
     because this module cannot import the package. The home is
     `appenv.home_dir()` — the BRANCH-RESOLVED one the server exports, which
     is where prefs.json actually lives — not the unnested `_state_file` root
@@ -875,6 +936,7 @@ def _backend_enabled(backend: str) -> bool:
     codex_on = prefs.get("codex_enabled") is True
     gemini_on = prefs.get("gemini_enabled") is True
     opencode_on = prefs.get("opencode_enabled") is True
+    cursor_on = prefs.get("cursor_enabled") is True
     if backend == "copilot":
         return copilot_on
     if backend == "codex":
@@ -883,8 +945,11 @@ def _backend_enabled(backend: str) -> bool:
         return gemini_on
     if backend == "opencode":
         return opencode_on
+    if backend == "cursor":
+        return cursor_on
     if backend == "claude":
-        return claude_on or not (copilot_on or codex_on or gemini_on or opencode_on)
+        return claude_on or not (copilot_on or codex_on or gemini_on
+                                 or opencode_on or cursor_on)
     return False
 
 
@@ -1344,7 +1409,7 @@ def _both_spellings(dirs: list) -> list:
 # The backends whose session tells the canvas sync nothing by itself: no CLI
 # hooks to attach (Claude's canvas_hook.py) and no host that posts the turn's
 # events (Copilot's `_canvas_hook`).
-_NO_CANVAS_HOOK_BACKENDS = ("codex", "gemini", "opencode")
+_NO_CANVAS_HOOK_BACKENDS = ("codex", "gemini", "opencode", "cursor")
 
 
 def _canvas_turn_start(file: str, backend: str) -> None:
@@ -2053,8 +2118,9 @@ def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dic
     which has no equivalent in a terminal session. Codex's is `codex resume
     <sid>` (CODEX D12), with nothing else: its system prompt and pane tools
     are spawn-only too; Gemini's is `gemini --resume <sid>` (GEMINI D12),
-    likewise bare; OpenCode's is `opencode --session <sid>` (OPENCODE D12). The `fused` PATH prefix below is for every agent, for
-    the same reason each time.
+    likewise bare; OpenCode's is `opencode --session <sid>` (OPENCODE D12);
+    Cursor's is `cursor-agent --resume <sid>`. The `fused` PATH prefix below
+    is for every agent, for the same reason each time.
 
     Same session, same ground: the cwd is `_workdir` (the key everything else
     here uses) and the fused-render skills ride along via the same
@@ -2107,6 +2173,19 @@ def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dic
         argv = ["opencode"]
         if session_id:
             argv += ["--session", session_id]
+    elif backend == "cursor":
+        # Spelled `cursor-agent` when PATH resolves it, as Claude's is; else
+        # the located binary (an override, a known path, the `agent` alias).
+        if shutil.which("cursor-agent"):
+            binary = "cursor-agent"
+        else:
+            try:
+                binary = _cursor_bin()
+            except FileNotFoundError:
+                binary = "cursor-agent"
+        argv = [binary]
+        if session_id:
+            argv += ["--resume", session_id]
     else:
         if shutil.which("claude"):
             binary = "claude"
@@ -5627,6 +5706,57 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
     return cmd
 
 
+def _cursor_context_dir(run_dir: str, file: str, pane: bool, s3: bool = False) -> str:
+    """Write `<run_dir>/cursor/AGENTS.md` and return the dir.
+
+    The body IS the appended prompt (`_appended_prompt`). Cursor has no
+    system-prompt flag and ACP's `session/new` takes no instructions, so the
+    file is how the prompt reaches the model: `cursor_host` reads it and puts
+    it ahead of the chat's first prompt. The prompt keeps Claude's MCP
+    spelling for the pane tool (`mcp__<server>__<tool>`); the host maps the
+    tool cards to the same names."""
+    ctx = os.path.join(run_dir, "cursor")
+    os.makedirs(ctx, exist_ok=True)
+    body = _appended_prompt(file, pane, "cursor", s3=s3)
+    with _private_open(os.path.join(ctx, "AGENTS.md")) as fh:
+        fh.write(body + "\n")
+    return ctx
+
+
+def _cursor_argv(run_dir: str, pane: bool, cli_mode: str | None,
+                 session_id: str, model: str, effort: str,
+                 extra_read_dirs: list | None, file: str) -> list:
+    """The CURSOR CLI's argv — `_gemini_argv`'s twin, same parameters in the
+    same order so `_start` builds any of them from one call site. Driven over
+    ACP (`acp`, JSON-RPC on stdio) by `cursor_host.py`. `session_id` names no
+    flag: a resume is the host's `session/load`, and a fresh chat's id is
+    Cursor's own.
+
+    What maps, and to what:
+      * `--approve-mcps --trust`: fused is the client that chose the folder
+        and the MCP servers, so neither may stop at a prompt nobody sees;
+      * `--model <id>` unless "" or "auto" (the CLI's own pick). It is a
+        spawn flag, so a model change is a respawn (`_send`);
+      * the system prompt → `<run_dir>/cursor/AGENTS.md`, which the host
+        prepends to the first prompt (`_cursor_context_dir`);
+      * the mode, the effort and the extra read dirs → NOTHING here: the
+        approval mode is the host's (live, `session/request_permission`),
+        Cursor has no effort, and its tools are not workspace-bound;
+      * the pane / terminal / canvas tools → `mcp.json` in the run dir
+        (`--no-approve`), which the host hands to `session/new` as the
+        request's `mcpServers`."""
+    cmd = [_cursor_bin(), "--approve-mcps", "--trust"]
+    if model and model != "auto":
+        cmd += ["--model", model]
+    cmd.append("acp")
+    s3 = _s3_tools_supported()
+    _cursor_context_dir(run_dir, file, pane, s3)
+    canvas = _canvas_of(file)
+    if pane or _terminal_tools_supported() or canvas:
+        _write_mcp_config(run_dir, pane, approve=False, canvas=canvas, s3=s3)
+    return cmd
+
+
 #: The fused modes OpenCode offers, by the CLI-wire mode `_start` records
 #: (OPENCODE D5): each is a `permission` block of the injected config
 #: (`opencode_config.PERMISSIONS`), fixed at spawn — so a switch is a
@@ -6055,6 +6185,8 @@ def _spawn_env(chat_id: str = "", backend: str = "", run_dir: str = "") -> dict:
     the Google credential variables left as found, plus `NO_BROWSER=1`
     (setdefault) so a session whose login lapsed fails at the handshake
     instead of opening a browser window from a background task.
+    `backend="cursor"` is the same branch: `CURSOR_CONFIG_DIR` and the
+    credential variables left as found, plus `NO_OPEN_BROWSER=1` (setdefault).
     `backend="opencode"` is the same branch again (OPENCODE §3/D19): the
     CLI's own config-dir variable and the user's own config left alone,
     `OPENCODE_DISABLE_AUTOUPDATE=1`, and the injected config on
@@ -6120,7 +6252,7 @@ def _spawn_env(chat_id: str = "", backend: str = "", run_dir: str = "") -> dict:
     # PYTHONHOME ("No module named 'encodings'") and fails every Bash command.
     for name in _STRIPPED_PYTHON_ENV:
         env.pop(name, None)
-    if backend in ("codex", "gemini", "opencode"):
+    if backend in ("codex", "gemini", "opencode", "cursor"):
         for name in [k for k in env if k.startswith("CLAUDE_CODE_")]:
             env.pop(name, None)
         cli_dir = _fused_cli_dir()
@@ -6129,6 +6261,10 @@ def _spawn_env(chat_id: str = "", backend: str = "", run_dir: str = "") -> dict:
             env["PATH"] = os.pathsep.join([cli_dir] + parts)
         if backend == "opencode":
             _opencode_env(env, run_dir)
+        if backend == "cursor":
+            # A lapsed login fails at the handshake instead of opening a
+            # browser window from a background task.
+            env.setdefault("NO_OPEN_BROWSER", "1")
         if backend == "gemini":
             env.setdefault("NO_BROWSER", "1")
             # Not setdefault: the `gemini` entry point is a launcher that
@@ -6487,9 +6623,11 @@ _CODEX_HOST = os.path.join(HERE, "codex_host.py")
 _GEMINI_HOST = os.path.join(HERE, "gemini_host.py")
 # ...and OpenCode's: ACP once more, the Gemini host's twin (docs/OPENCODE_BACKEND.md §0).
 _OPENCODE_HOST = os.path.join(HERE, "opencode_host.py")
+# ...and Cursor's: ACP once more, the Gemini host's twin.
+_CURSOR_HOST = os.path.join(HERE, "cursor_host.py")
 _HOST_FILES = {"claude": _SESSION_HOST, "copilot": _COPILOT_HOST,
                "codex": _CODEX_HOST, "gemini": _GEMINI_HOST,
-               "opencode": _OPENCODE_HOST}
+               "opencode": _OPENCODE_HOST, "cursor": _CURSOR_HOST}
 
 
 def _fork_point(transcript_path: str, prompt_uuid: str):
@@ -6730,7 +6868,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # no inbox — that nothing lists as a chat.
     argv = None
     build_argv = {"copilot": _copilot_argv, "codex": _codex_argv,
-                  "gemini": _gemini_argv, "opencode": _opencode_argv}.get(backend)
+                  "gemini": _gemini_argv, "opencode": _opencode_argv,
+                  "cursor": _cursor_argv}.get(backend)
     if build_argv is not None:
         try:
             argv = build_argv(run_dir, pane, cli_mode, session_id, model,
@@ -8148,13 +8287,13 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         return _backend_disabled_error(backend)
     wanted = set(_attach_dirs(read_dirs))
     granted = set(host.get("read_dirs") or [])
-    # Copilot takes `--model` at spawn only (D7, caps.live_model_switch): a
-    # changed model is the same respawn a changed effort already is. "" and
+    # Copilot and Cursor take `--model` at spawn only (D7, caps.live_model_switch):
+    # a changed model is the same respawn a changed effort already is. "" and
     # "auto" are ONE model there (an unnamed spawn — the scheduler, the apps
     # API — lets Copilot pick, which is what `auto` says), so the page's
     # first send carrying the `auto` that `_defaults` answered must not kill
     # a healthy session over a spelling.
-    model_respawn = (backend == "copilot" and model
+    model_respawn = (backend in ("copilot", "cursor") and model
                      and (model or "auto") != (host.get("model") or "auto"))
     # Codex NEVER respawns from here (CODEX §7: both live switches on).
     # Model and effort ride every `turn/start` (D7), and an attached
@@ -8166,9 +8305,12 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # OpenCode never respawns from here (OPENCODE §7): its tools are not
     # workspace-bound (D9), its model is live (D7), it has no effort; the
     # one respawn it has — a mode change (D5) — is `_set_mode`'s below.
+    # Cursor respawns for a model change only: a new directory names no flag
+    # (`_cursor_argv` ignores the read dirs), its mode is live and host-side,
+    # and it has no effort to differ on.
     effort_respawn = bool(effort) and effort != host.get("effort", "") \
-        and backend not in ("gemini", "opencode")
-    dir_respawn = not wanted <= granted and backend != "opencode"
+        and backend not in ("gemini", "opencode", "cursor")
+    dir_respawn = not wanted <= granted and backend not in ("opencode", "cursor")
     if backend != "codex" and (dir_respawn or effort_respawn or model_respawn):
         # interrupt_first=False: unlike the stop button, this call means the
         # session can no longer serve this caller as it stands — leaving the
@@ -8198,9 +8340,10 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
             host["model"], host["effort"] = want_model, want_effort
             host_changed = True
             host_keys = ("model", "effort")
-    # Never `set_model` for Copilot: a real change respawned above, and what
-    # is left is the ""/"auto" spelling of the same model.
-    elif model and model != host.get("model", "") and backend != "copilot":
+    # Never `set_model` for Copilot or Cursor: a real change respawned above,
+    # and what is left is the ""/"auto" spelling of the same model.
+    elif model and model != host.get("model", "") \
+            and backend not in ("copilot", "cursor"):
         _write_control_request(run_dir, "set_model", model=model)
         host["model"] = model
         host_changed = True
@@ -9183,7 +9326,7 @@ def _account_error(error: str, backend: str = "") -> str:
     login words.
 
     The markers are PER BACKEND (`_ACCOUNT_ERROR_MARKERS` /
-    `_LIMIT_ERROR_MARKERS`, D13): Copilot, Codex, Gemini and OpenCode word a
+    `_LIMIT_ERROR_MARKERS`, D13): Copilot, Codex, Gemini, OpenCode and Cursor word a
     signed-out session and an exhausted plan budget in their own terms, and
     so does the fix. Neither carries a guide link: the troubleshooting page has panels
     for Claude only."""
@@ -9211,6 +9354,10 @@ def _account_error(error: str, backend: str = "") -> str:
                     "from Preferences → Agents (or run `opencode auth login` "
                     "in a terminal), or pick a local model, then start a new "
                     "chat here. (%s)" % error)
+        if backend == "cursor":
+            return ("Cursor CLI isn't signed in. Sign in from Preferences → "
+                    "Agents (or run `cursor-agent login` in a terminal), then "
+                    "start a new chat here. (%s)" % error)
         # `claude auth login`, not "run `claude`, type /login": the
         # subcommand opens the browser itself, and Preferences → Agents has
         # the same sign-in as a button (claude_login.py).
@@ -9234,6 +9381,10 @@ def _account_error(error: str, backend: str = "") -> str:
             return ("The provider behind this OpenCode model reported a rate "
                     "or usage limit. Wait for it to reset, switch model or "
                     "provider, then try again. (%s)" % error)
+        if backend == "cursor":
+            return ("Your Cursor plan's usage limit was reached. Wait for it "
+                    "to reset, or upgrade the plan, then try again. (%s)"
+                    % error)
         return ("Your Claude plan's usage limit was reached. Wait for it to "
                 "reset, or upgrade the plan, then try again. Help: %s-limit (%s)"
                 % (GUIDE_URL, error))

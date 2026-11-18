@@ -1,5 +1,5 @@
 """One tool-less, session-free text completion from an agent CLI — GitHub
-Copilot, OpenAI Codex, Google Gemini or OpenCode — the way the session recaps have
+Copilot, OpenAI Codex, Google Gemini, OpenCode or Cursor — the way the session recaps have
 always run them, lifted here so `/api/ai` can run the same thing (D1433).
 
 Two callers, one argv per backend:
@@ -15,9 +15,10 @@ What every spec keeps, whichever caller (the recap runners' hard-won facts;
 each flag was checked against the real binary when it was first written —
 docs/COPILOT_BACKEND.md, docs/CODEX_BACKEND.md, docs/GEMINI_BACKEND.md):
 
-* **The prompt travels over stdin, never argv.** A system text leads the one
-  user message with a blank line between — none of the three has a system
-  prompt flag.
+* **The prompt travels over stdin, never argv** (Cursor's, which documents a
+  positional prompt and no stdin read, is the one exception: `_prepare_cursor`).
+  A system text leads the one user message with a blank line between — none
+  of them has a system prompt flag.
 * **No tools, nothing from the server's cwd.** Copilot: an allow-list naming
   a tool that does not exist (an EMPTY `--available-tools=` is ignored and
   keeps every tool), no custom instructions, no built-in MCP servers, no
@@ -75,7 +76,7 @@ logger = logging.getLogger(__name__)
 #: The backends this module runs. Claude is NOT one: `/api/ai` keeps its
 #: persistent `_AiSession` (D168/D169) and the recap keeps its own
 #: `claude -p` argv, both of which stream.
-BACKENDS = ("copilot", "codex", "gemini", "opencode")
+BACKENDS = ("copilot", "codex", "gemini", "opencode", "cursor")
 
 #: `claude_health.SUBPROCESS_KWARGS` minus the text-mode keys: asyncio's
 #: `create_subprocess_exec` refuses `text` / `encoding` / `errors` with a
@@ -127,6 +128,16 @@ GEMINI_POLICY_NAME = "gemini-recap-policy.toml"
 #: appends the positional message after the piped input (ASSUMED,
 #: docs/OPENCODE_BACKEND.md D12; the design's own pointer rule).
 OPENCODE_POINTER = GEMINI_POINTER
+#: `cursor-agent -p` documents a positional prompt and no stdin read, so the
+#: whole prompt is that positional. One argv string tops out near 128 KiB on
+#: Linux (`MAX_ARG_STRLEN`), so a longer prompt is written to
+#: `CURSOR_PROMPT_FILE` in the run's empty workspace and the positional names
+#: the file instead.
+CURSOR_ARGV_MAX = 96_000
+CURSOR_PROMPT_FILE = "prompt.md"
+CURSOR_FILE_POINTER = (
+    f"Read {CURSOR_PROMPT_FILE} in the workspace and answer as the "
+    "instructions in it say. Reply with the answer only.")
 
 #: The levels the Copilot CLI's `--reasoning-effort` takes (1.0.102 `--help`).
 COPILOT_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -216,7 +227,8 @@ def _bin(agent, backend: str) -> str:
     try:
         return {"copilot": agent._copilot_bin, "codex": agent._codex_bin,
                 "gemini": agent._gemini_bin,
-                "opencode": agent._opencode_bin}[backend]()
+                "opencode": agent._opencode_bin,
+                "cursor": agent._cursor_bin}[backend]()
     except OneShotError:
         raise
     except Exception as exc:  # noqa: BLE001 - the resolver's own "not found" text
@@ -300,6 +312,8 @@ def prepare(backend: str, model: str, system: str, prompt: str,
         return _prepare_codex(agent, model, effort, common, tools_mcp)
     if backend == "opencode":
         return _prepare_opencode(agent, model, effort, common, tools_mcp)
+    if backend == "cursor":
+        return _prepare_cursor(agent, model, effort, common, tools_mcp)
     return _prepare_gemini(agent, model, effort, common, tools_mcp)
 
 
@@ -622,6 +636,99 @@ def _prepare_opencode(agent, model: str, effort: Optional[str], common: dict,
     spec = OneShot(argv=argv, env=env,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                    parse=parse, effort_dropped=dropped, **common)
+    return spec
+
+
+def _prepare_cursor(agent, model: str, effort: Optional[str], common: dict,
+                    tools_mcp: Optional[dict] = None) -> OneShot:
+    """`cursor-agent -p --output-format json`, Cursor's headless one-shot,
+    never the ACP server the sessions use. `--mode ask` is the CLI's
+    read-only mode (no edits, no shell), `--trust` keeps a headless run from
+    stopping at the workspace-trust question, and `--workspace` points the
+    run at an EMPTY temp dir instead of a `cwd=` (the spawn rule at the top
+    of this file), so the read tools see nothing of the server's folder. The
+    whole prompt is the positional argument, after `--` (the CLI documents
+    no stdin read); one too long for an argument (`CURSOR_ARGV_MAX`) is
+    written to `prompt.md` in that workspace and the positional names it.
+    `--output-format json` is one object `{result, session_id, is_error, …}`
+    on stdout. A tools run (`tools_mcp`) names the turn's server in the temp
+    workspace's own `.cursor/mcp.json` (the file Cursor reads MCP servers
+    from; ASSUMED) and passes `--approve-mcps`. The transcript the run keeps
+    is removed by the `session_id` the reply named; the CLI's layout is
+    undocumented, so `routers.tasks._cursor_chat_files` only matches names
+    carrying the id."""
+    binary = _bin(agent, "cursor")  # before the temp dir: a miss leaks nothing
+    workspace = tempfile.mkdtemp(prefix="fused-cursor-oneshot-")
+    env = agent._spawn_env(backend="cursor")
+    argv = [binary, "-p", "--output-format", "json",
+            "--mode", "ask", "--trust", "--workspace", workspace]
+    if tools_mcp is not None:
+        cfg_dir = os.path.join(workspace, ".cursor")
+        os.makedirs(cfg_dir, exist_ok=True)
+        with open(os.path.join(cfg_dir, "mcp.json"), "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {_mcp_server_name(): {
+                "command": tools_mcp["command"], "args": list(tools_mcp["args"]),
+                "env": dict(tools_mcp.get("env") or {})}}}, fh)
+        argv.append("--approve-mcps")
+    if model and model != "auto":
+        argv += ["--model", model]
+    prompt = common["stdin"]
+    if len(prompt.encode("utf-8")) > CURSOR_ARGV_MAX:
+        with open(os.path.join(workspace, CURSOR_PROMPT_FILE), "w",
+                  encoding="utf-8") as fh:
+            fh.write(prompt)
+        prompt = CURSOR_FILE_POINTER
+    argv += ["--", prompt]
+    common = dict(common, stdin="")
+    dropped = "the Cursor CLI has no reasoning effort control" if effort else ""
+    found: dict = {}  # becomes `spec.extra`
+
+    def parse(stdout: str, stderr: str, rc: int) -> str:
+        body = None
+        for text in (stdout, stderr):
+            try:
+                candidate = json.loads(text or "")
+            except ValueError:
+                continue
+            if isinstance(candidate, dict):
+                body = candidate
+                break
+        if isinstance(body, dict):
+            found["sid"] = str(body.get("session_id") or "")
+        if rc != 0 or (isinstance(body, dict) and body.get("is_error")):
+            said = ""
+            if isinstance(body, dict) and body.get("is_error"):
+                said = str(body.get("result") or body.get("error") or "")
+            raise OneShotError(*_failure_type(said or stderr or stdout, spec))
+        if not isinstance(body, dict):
+            raise OneShotError("ai_error", "the Cursor CLI answered no JSON")
+        reply = body.get("result")
+        if not isinstance(reply, str) or not reply.strip():
+            raise OneShotError("ai_error", "the Cursor CLI answered nothing")
+        return reply
+
+    def cleanup() -> None:
+        shutil.rmtree(workspace, ignore_errors=True)
+        sid = found.get("sid")
+        if not sid:
+            return
+        # Lazily: `routers.tasks` is the module that knows Cursor's
+        # transcript layout (`_cursor_chat_files`), and it imports widely.
+        try:
+            from fused_render.server.routers import tasks as tasks_mod
+            paths = tasks_mod._cursor_chat_files(sid)
+        except Exception:  # noqa: BLE001 - cleanup never fails the answer
+            return
+        for path in paths:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    spec = OneShot(argv=argv, env=env,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   parse=parse, cleanup=cleanup, effort_dropped=dropped,
+                   extra=found, **common)
     return spec
 
 

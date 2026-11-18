@@ -6,6 +6,7 @@ import {
   CLAUDE_INSTALL_COMMAND,
   CLAUDE_INSTALL_COMMAND_WINDOWS,
   CODEX_INSTALL_COMMAND,
+  CURSOR_INSTALL_COMMAND,
   GEMINI_INSTALL_COMMAND,
   OPENCODE_INSTALL_COMMAND,
   troubleInstructions,
@@ -519,6 +520,58 @@ test("the Gemini brief installs with npm and signs in with Google", () => {
   expect(signedOut).toContain("GEMINI_API_KEY");
   expect(signedOut).not.toContain("codex login");
   expect(signedOut).not.toContain(GEMINI_INSTALL_COMMAND);
+});
+
+
+// -- Cursor ----------------------------------------------------------------------
+
+test("cursor's own markers classify a Cursor session's failure", () => {
+  // The account markers, verbatim from agent_backends/cursor.py.
+  for (const msg of [
+    "Authentication required. Please run 'agent login' first",
+    "Not logged in",
+    "you are not signed in",
+    "Unauthenticated",
+    "login required",
+    "Invalid API key",
+    "401 Unauthorized",
+  ]) expect(troubleKind(msg, "cursor")).toBe("login");
+  for (const msg of [
+    "Rate limit exceeded",
+    "You are out of usage",
+    "usage limit reached",
+    "quota exceeded",
+    "Too Many Requests",
+    "HTTP 429",
+  ]) expect(troubleKind(msg, "cursor")).toBe("limit");
+  for (const msg of [
+    "Read 429000 bytes from stdout",
+    "listening on port 14290",
+  ]) expect(troubleKind(msg, "cursor")).toBe("raw");
+});
+
+test("cursor's markers are Cursor's alone, and the binary and config dir read as Cursor's", () => {
+  expect(troubleKind("agent login", "claude")).toBe("raw");
+  expect(troubleKind("cursor-agent: command not found", "cursor")).toBe("notfound");
+  expect(troubleKind("spawn cursor-agent ENOENT", "cursor")).toBe("notfound");
+  expect(troubleKind("claude: command not found", "cursor")).toBe("raw");
+  expect(troubleKind("ENOENT: no such file or directory, open '/Users/me/.cursor/mcp.json'", "cursor")).toBe("raw");
+  expect(troubleKind("/Users/me/.local/bin/cursor-agent: No such file or directory", "cursor")).toBe("notfound");
+  expect(troubleKind("session start failed: cursor CLI not found — install with `curl https://cursor.com/install -fsS | bash`", "cursor")).toBe("notfound");
+});
+
+test("the Cursor brief installs with curl and signs in with cursor-agent login", () => {
+  const missing = troubleInstructions({ what: "x", error: "cursor-agent: command not found", backend: "cursor" });
+  expect(missing).toContain("which cursor-agent");
+  expect(missing).toContain(CURSOR_INSTALL_COMMAND);
+  expect(CURSOR_INSTALL_COMMAND).toBe("curl https://cursor.com/install -fsS | bash");
+  expect(missing).not.toContain("claude.ai/install.sh");
+  expect(missing).toContain("cursor-agent --version");
+  const signedOut = troubleInstructions({ what: "x", error: "Not logged in", backend: "cursor" });
+  expect(signedOut).toContain("cursor-agent login");
+  expect(signedOut).toContain("CURSOR_API_KEY");
+  expect(signedOut).not.toContain("codex login");
+  expect(signedOut).not.toContain(CURSOR_INSTALL_COMMAND);
 });
 
 

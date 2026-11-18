@@ -34,6 +34,19 @@ afterEach(() => {
 
 const path = (u: string) => new URL(u, "http://x").pathname;
 
+test("cursor's doors are /api/cursor/*", async () => {
+  await getAgentHealth("cursor");
+  await refreshAgentHealth("cursor");
+  await startAgentLogin("cursor");
+  await linkAgentPath("cursor");
+  expect(urls.map(path)).toEqual([
+    "/api/cursor/health",
+    "/api/cursor/health/refresh",
+    "/api/cursor/login",
+    "/api/cursor/link-path",
+  ]);
+});
+
 test("opencode's doors are /api/opencode/* (docs/OPENCODE_BACKEND.md D10)", async () => {
   await getAgentHealth("opencode");
   await refreshAgentHealth("opencode");

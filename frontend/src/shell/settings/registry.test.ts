@@ -118,8 +118,8 @@ describe("visibility", () => {
 
   test("the default-agent picker appears only with two or more agents on", () => {
     expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("agent-default");
-    const agents = (claude: boolean, copilot: boolean, codex: boolean, gemini = false, opencode = false) =>
-      visibleSettings(ctx({}, { agents: { claude, copilot, codex, gemini, opencode, default: "claude" } } as Partial<Prefs>))
+    const agents = (claude: boolean, copilot: boolean, codex: boolean, gemini = false, opencode = false, cursor = false) =>
+      visibleSettings(ctx({}, { agents: { claude, copilot, codex, gemini, opencode, cursor, default: "claude" } } as Partial<Prefs>))
         .map((s) => s.id);
     expect(agents(true, true, false)).toContain("agent-default");
     expect(agents(true, false, true)).toContain("agent-default");
@@ -132,14 +132,17 @@ describe("visibility", () => {
     // OpenCode counts too (docs/OPENCODE_BACKEND.md D17).
     expect(agents(true, false, false, false, true)).toContain("agent-default");
     expect(agents(false, false, false, false, true)).not.toContain("agent-default");
+    // Cursor counts too.
+    expect(agents(true, false, false, false, false, true)).toContain("agent-default");
+    expect(agents(false, false, false, false, false, true)).not.toContain("agent-default");
     // An older server says nothing of Codex: two of the other two still count.
     const old = ctx({}, { agents: { claude: true, copilot: true, default: "claude" } } as unknown as Partial<Prefs>);
     expect(visibleSettings(old).map((s) => s.id)).toContain("agent-default");
   });
 
-  test("the five agent switches stand in the registry's order", () => {
-    const ids = visibleSettings(ctx()).map((s) => s.id as string).filter((id) => /^agent-(claude|copilot|codex|gemini|opencode)$/.test(id));
-    expect(ids).toEqual(["agent-claude", "agent-copilot", "agent-codex", "agent-gemini", "agent-opencode"]);
+  test("the six agent switches stand in the registry's order", () => {
+    const ids = visibleSettings(ctx()).map((s) => s.id as string).filter((id) => /^agent-(claude|copilot|codex|gemini|opencode|cursor)$/.test(id));
+    expect(ids).toEqual(["agent-claude", "agent-copilot", "agent-codex", "agent-gemini", "agent-opencode", "agent-cursor"]);
   });
 
   test("sections come out in first-appearance order", () => {
@@ -234,6 +237,13 @@ describe("search", () => {
       expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-gemini");
     }
     expect(searchSettings(all, "gemini sign").map((h) => h.id)).toEqual(["agent-gemini", "agent-signin"]);
+  });
+
+  test("Cursor is findable by its own words", () => {
+    for (const q of ["cursor", "cursor-agent"]) {
+      expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-cursor");
+    }
+    expect(searchSettings(all, "cursor sign").map((h) => h.id)).toEqual(["agent-cursor", "agent-signin"]);
   });
 
   test("OpenCode is findable by its own words and by 'local model'", () => {

@@ -20,6 +20,7 @@ import {
   CODEX_INSTALL_COMMAND,
   GEMINI_INSTALL_COMMAND,
   OPENCODE_INSTALL_COMMAND,
+  CURSOR_INSTALL_COMMAND,
   isClaudeTrouble,
   troubleHelpUrl,
   troubleInstructions,
@@ -66,6 +67,28 @@ const SAID: Record<string, { title: string; explain: string }> = {
 // beside "Install Codex" named the wrong agent in the one line the user reads
 // first (CodeRabbit on the Codex PR). `raw` is shared — it names nobody.
 const SAID_BY_AGENT: Record<string, Record<string, { title: string; explain: string }>> = {
+  cursor: {
+    notfound: {
+      title: "The app can't find Cursor CLI",
+      explain:
+        "Fused Render uses Cursor CLI on this computer for this task, " +
+        "and it could not find it. Either it was never installed (it runs on " +
+        "macOS and Linux), or it is somewhere the app cannot see.",
+    },
+    login: {
+      title: "Cursor isn't signed in",
+      explain:
+        "Cursor CLI is installed but not signed in to your Cursor account " +
+        "(or given an API key) yet, so nothing can run. Sign in from " +
+        "Preferences → Coding agents, or in a terminal, once.",
+    },
+    limit: {
+      title: "Your Cursor usage limit was reached",
+      explain:
+        "Nothing is broken — your Cursor plan has a set amount of use and it " +
+        "is spent for now. The message below says when it resets.",
+    },
+  },
   opencode: {
     notfound: {
       title: "The app can't find OpenCode",
@@ -257,6 +280,8 @@ export function TroubleCard({
   const instructions = troubleInstructions(ctx);
   const install = backend === "codex"
     ? { name: "Codex", command: CODEX_INSTALL_COMMAND }
+    : backend === "cursor"
+      ? { name: "Cursor CLI", command: CURSOR_INSTALL_COMMAND }
     : backend === "gemini"
       ? { name: "Gemini CLI", command: GEMINI_INSTALL_COMMAND }
       : backend === "opencode"
@@ -269,6 +294,7 @@ export function TroubleCard({
   // labelling its brief "Claude Code instructions" hands the wrong agent's
   // name to whoever gets the paste.
   const agentName = backend === "codex" ? "Codex"
+    : backend === "cursor" ? "Cursor"
     : backend === "gemini" ? "Gemini"
       : backend === "opencode" ? "OpenCode"
         : backend === "copilot" ? "Copilot" : "Claude Code";

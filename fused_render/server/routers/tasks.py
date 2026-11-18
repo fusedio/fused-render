@@ -4621,7 +4621,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # (`_row_settings`).
         "model": model,
         "effort": effort,
-        # WHICH AGENT runs this task — "claude" | "copilot" | "codex" | "gemini", never ""
+        # WHICH AGENT runs this task — "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor", never ""
         # (D2: the backend is fixed at the first turn and every surface names it). The
         # recorded choice, else the root the transcript sits under, else the
         # entries, else Claude — see `_row_backend`.
@@ -7379,7 +7379,8 @@ def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
     """The turns as Markdown, in the Bots export's vocabulary. Lossy by
     design (tool results are not inlined); `format=json` is the full record."""
     who = {"copilot": "Copilot", "codex": "Codex",
-           "gemini": "Gemini", "opencode": "OpenCode"}.get(str(backend or ""), "Claude")
+           "gemini": "Gemini", "opencode": "OpenCode",
+           "cursor": "Cursor"}.get(str(backend or ""), "Claude")
     title = " ".join(str(task.get("title") or "Task").split())
     out = [f"# {title} — transcript", ""]
     if task.get("target"):
@@ -7724,7 +7725,7 @@ class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
     effort: str = ""
-    # "claude" | "copilot" | "codex" | "gemini" | "" (not saying). Recorded once by the
+    # "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor" | "" (not saying). Recorded once by the
     # spawn that starts a conversation; a later POST naming the same value is
     # a no-op and one naming another is refused — the backend never changes
     # (D2).
@@ -8990,6 +8991,12 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     A transcript from under the OPENCODE root takes NOTHING else with it
     (docs/OPENCODE_BACKEND.md D15): OpenCode's own record is one SQLite
     store shared by every session, and deleting rows from it is not ours.
+
+    A transcript from under the CURSOR root takes the CLI's own transcript
+    file(s) with it: `_cursor_chat_files` finds the files under
+    `<cursor home>/projects/*/agent-transcripts/` whose names carry the whole
+    session id. That layout is undocumented, so nothing else of Cursor's is
+    touched.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
@@ -9029,6 +9036,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     copilot = False  # did a transcript go from under the Copilot root
     codex = False  # ... or from under the Codex root
     gemini = False  # ... or from under the Gemini root
+    cursor = False  # ... or from under the Cursor root
     seen: set[str] = set()
     for target in targets:
         resolved = os.path.realpath(target)
@@ -9052,6 +9060,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                     copilot = copilot or projects[parent][1] == "copilot"
                     codex = codex or projects[parent][1] == "codex"
                     gemini = gemini or projects[parent][1] == "gemini"
+                    cursor = cursor or projects[parent][1] == "cursor"
             else:
                 continue
         except OSError:
@@ -9087,6 +9096,23 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
             except OSError:
                 logger.warning("erase: could not remove %s", chat, exc_info=True)
                 failed += 1
+    if cursor and not failed and not refused:
+        for chat in _cursor_chat_files(session_id):
+            try:
+                os.remove(chat)
+                removed += 1
+            except OSError:
+                logger.warning("erase: could not remove %s", chat, exc_info=True)
+                failed += 1
+                continue
+            # A transcript the CLI keeps in a folder named by the id leaves
+            # the empty folder behind; only that folder, only when empty.
+            parent = os.path.dirname(chat)
+            if os.path.basename(parent) == session_id:
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    pass
     return removed, erased, failed, refused
 
 
@@ -9237,6 +9263,52 @@ def _gemini_chat_owner(head: str, ext: str) -> str:
         return ""
     sid = record.get("sessionId")
     return sid if isinstance(sid, str) else ""
+
+
+def _cursor_home() -> str:
+    """Cursor CLI's own data dir (`CURSOR_CONFIG_DIR`, else `~/.cursor`), NOT
+    fused's Cursor root (`agent_roots.cursor_dir()`) — the CLI keeps this one,
+    and erase (and the recap's cleanup) are its only readers. Resolved by
+    `cursor_health.config_dir`, the one place that reads the CLI's own
+    override, as `_gemini_home` resolves Gemini's. A function so a test can
+    point it at a tmp dir."""
+    from fused_render import cursor_health
+
+    return cursor_health.config_dir()
+
+
+def _cursor_chat_files(session_id: str) -> list[str]:
+    """Every transcript file Cursor CLI keeps for `session_id` — the
+    realpaths, ready to remove. The CLI writes them under
+    `<cursor home>/projects/<slug>/agent-transcripts/`; the layout and the
+    file naming are undocumented, so a hit counts only when it is a regular
+    file whose leaf carries the WHOLE session id, directly in that folder, or
+    any file one level down in a folder named exactly by the id. Nothing else is
+    globbed, and a symlink out of the tree is skipped, not followed.
+
+    Same discipline as `_gemini_chat_files`: the id is refused unless it is a
+    name, `glob.escape`d so it is never a pattern, and every hit's REALPATH
+    must sit inside the realpath of the `projects` dir it was globbed under."""
+    import glob
+
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        return []
+    base = os.path.join(_cursor_home(), "projects")
+    if not os.path.isdir(base):
+        return []
+    base_real = os.path.realpath(base)
+    sid = glob.escape(session_id)
+    out: list[str] = []
+    for tail in (("*" + sid + "*",), (sid, "*")):
+        pattern = os.path.join(glob.escape(base), "*", "agent-transcripts", *tail)
+        for hit in glob.glob(pattern):
+            resolved = os.path.realpath(hit)
+            if (is_within(resolved, base_real, strict=True, fs_root_ok=False)
+                    and (session_id in os.path.basename(resolved)
+                         or os.path.basename(os.path.dirname(resolved)) == session_id)
+                    and os.path.isfile(resolved) and resolved not in out):
+                out.append(resolved)
+    return out
 
 
 def _every_rule_behind(key: str) -> list[str]:
@@ -10717,7 +10789,7 @@ def api_task_create(body: dict = Body(...),
     """Start a task from a page: `{prompt, target?, title?, model?, effort?,
     backend?, permission_mode?, due?, queue?}` -> `{entry_id, key}`.
 
-    `backend` — "claude", "copilot", "codex" or "gemini" — is which agent runs the task (D2).
+    `backend` — "claude", "copilot", "codex", "gemini", "opencode" or "cursor" — is which agent runs the task (D2).
     Omitted, it is the Preferences default AT CREATE: `schedule.create` pins
     `registry.default_id()` on the entry, so the `pending:` row and the run
     both name the agent the user saw, not the default of the day it fires. A

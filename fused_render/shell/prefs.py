@@ -653,24 +653,25 @@ def lan_enabled() -> bool:
     return read_prefs().get("lan_enabled") is True
 
 
-#: The five agent switches (D17, docs/COPILOT_BACKEND.md; the third from
+#: The six agent switches (D17, docs/COPILOT_BACKEND.md; the third from
 #: docs/CODEX_BACKEND.md, the fourth from docs/GEMINI_BACKEND.md, the fifth
-#: from docs/OPENCODE_BACKEND.md). Claude Code is on unless a stored `false`
-#: turns it off; Copilot, Codex, Gemini and OpenCode are off unless a stored
-#: `true` turns them on. Asymmetric defaults on purpose — "Claude by default"
-#: is the owner's rule — and `put_prefs` refuses the write that would clear
-#: all five.
+#: from docs/OPENCODE_BACKEND.md, the sixth is Cursor CLI). Claude Code is on
+#: unless a stored `false` turns it off; Copilot, Codex, Gemini, OpenCode and
+#: Cursor are off unless a stored `true` turns them on. Asymmetric defaults on
+#: purpose — "Claude by default" is the owner's rule — and `put_prefs`
+#: refuses the write that would clear all six.
 #: `VALID_DEFAULT_BACKENDS` is in `registry.ORDER`: the PUT's default re-point
 #: walks it and takes the first agent that is on.
 AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled",
                       "codex": "codex_enabled", "gemini": "gemini_enabled",
-                      "opencode": "opencode_enabled"}
-VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex", "gemini", "opencode")
+                      "opencode": "opencode_enabled", "cursor": "cursor_enabled"}
+VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex", "gemini", "opencode",
+                          "cursor")
 
 
 def backend_enabled(backend: str) -> bool:
     """Whether `backend` ("claude" | "copilot" | "codex" | "gemini" |
-    "opencode") may start
+    "opencode" | "cursor") may start
     chats and tasks. Unknown backend reads as off. See
     `agent_backends.registry.enabled_ids` for the never-empty guarantee this
     feeds."""
@@ -703,6 +704,10 @@ def opencode_enabled() -> bool:
     return backend_enabled("opencode")
 
 
+def cursor_enabled() -> bool:
+    return backend_enabled("cursor")
+
+
 def default_backend() -> str:
     """The agent new chats and tasks start from, as stored — `"claude"` when
     unset or junk. Whether it is ENABLED is the registry's question
@@ -713,7 +718,8 @@ def default_backend() -> str:
 
 def _agents_state() -> dict:
     """`{"claude": bool, "copilot": bool, "codex": bool, "gemini": bool,
-    "opencode": bool, "default": id}` for `GET /api/prefs`. Imported lazily: the registry reads
+    "opencode": bool, "cursor": bool, "default": id}` for `GET /api/prefs`.
+    Imported lazily: the registry reads
     this module for the switches. The REGISTRY's answer, not the raw switches:
     a hand-edited prefs.json that turns every switch off reads as Claude on
     there, and this page must agree."""
@@ -724,6 +730,7 @@ def _agents_state() -> dict:
             "codex": registry.is_enabled("codex"),
             "gemini": registry.is_enabled("gemini"),
             "opencode": registry.is_enabled("opencode"),
+            "cursor": registry.is_enabled("cursor"),
             "default": registry.default_id()}
 
 
@@ -1294,9 +1301,10 @@ def _prefs_response() -> dict:
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
         "lan": {"enabled": lan_enabled(), **_lan_status()},
-        # The five agent switches and the agent new chats/tasks start from
+        # The six agent switches and the agent new chats/tasks start from
         # (docs/COPILOT_BACKEND.md D17, docs/CODEX_BACKEND.md D17,
-        # docs/GEMINI_BACKEND.md D17, docs/OPENCODE_BACKEND.md D17). `default`
+        # docs/GEMINI_BACKEND.md D17, docs/OPENCODE_BACKEND.md D17; Cursor's is the
+        # same). `default`
         # is the EFFECTIVE one — the stored choice re-pointed to an enabled
         # agent by the registry — so the page never shows a default that is
         # switched off.
@@ -1946,7 +1954,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                   "copilot": prefs.get("copilot_enabled") is True,
                   "codex": prefs.get("codex_enabled") is True,
                   "gemini": prefs.get("gemini_enabled") is True,
-                  "opencode": prefs.get("opencode_enabled") is True}
+                  "opencode": prefs.get("opencode_enabled") is True,
+                  "cursor": prefs.get("cursor_enabled") is True}
             if not any(on.values()):
                 return JSONResponse(
                     {"error": "turn on another agent first"}, status_code=400)
@@ -1976,7 +1985,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'tasks_view_tabs', 'pinned_tasks', "
                           "'lan_enabled', 'canvases_embed_proxy', "
                           "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
-                          "'gemini_enabled', 'opencode_enabled', "
+                          "'gemini_enabled', 'opencode_enabled', 'cursor_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
                           "'warm_run_enabled', "
                           "'index_low_impact_enabled', "

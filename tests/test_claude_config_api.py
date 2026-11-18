@@ -1390,13 +1390,16 @@ def test_skills_list_reads_every_cli_dir_and_names_who_reads_each(client, claude
     _skill(tmp_path / ".agents" / "skills" / "shared")
     _skill(tmp_path / ".copilot" / "skills" / "cop")
     _skill(tmp_path / ".codex" / "skills" / "cod")
+    _skill(tmp_path / ".cursor" / "skills" / "cur")
     # Dot-dirs (Codex's bundled `.system`) are not the user's skills.
     _skill(tmp_path / ".codex" / "skills" / ".system" / "bundled")
     _skill(tmp_path / ".agents" / "skills" / ".hidden")
     rows = _rows(client)
-    assert set(rows) == {"solo", "shared", "cop", "cod"}
-    assert rows["solo"]["readers"] == ["claude"]
-    assert rows["shared"]["readers"] == ["copilot", "codex", "gemini"]
+    assert set(rows) == {"solo", "shared", "cop", "cod", "cur"}
+    assert rows["solo"]["readers"] == ["claude", "cursor"]
+    assert rows["shared"]["readers"] == ["copilot", "codex", "gemini", "cursor"]
+    assert rows["cur"]["readers"] == ["cursor"]
+    assert rows["cur"]["location"] == str(tmp_path / ".cursor" / "skills")
     assert rows["cop"]["readers"] == ["copilot"]
     assert rows["cod"]["readers"] == ["codex"]
     assert rows["cod"]["location"] == str(tmp_path / ".codex" / "skills")
@@ -1414,7 +1417,7 @@ def test_skills_list_makes_a_symlink_across_dirs_one_row_with_the_union_of_reade
     got = _post(client, "skills", action="list").json()["skills"]
     assert len(got) == 1
     row = got[0]
-    assert row["readers"] == ["claude", "copilot", "codex", "gemini"]
+    assert row["readers"] == ["claude", "copilot", "codex", "gemini", "cursor"]
     # The row stands on the real copy, so editing it edits the one file.
     assert row["path"] == str(real) and row["location"] == str(real.parent)
     assert row["linked"] is True
@@ -1602,7 +1605,7 @@ def test_skills_add_keeps_one_copy_in_agents_and_links_claude_to_it(client, clau
     link = claude_dir / "skills" / "brew"
     assert link.is_symlink() and os.path.realpath(link) == str(real)
     # And it lists as the one row it is.
-    assert _rows(client)["brew"]["readers"] == ["claude", "copilot", "codex", "gemini"]
+    assert _rows(client)["brew"]["readers"] == ["claude", "copilot", "codex", "gemini", "cursor"]
 
 
 def test_skills_add_without_claude_makes_no_claude_link(client, claude_dir, tmp_path, monkeypatch):
