@@ -900,8 +900,9 @@ def _settings(bid, body):
     folders = bm.clean_folders(body["folders"]) if isinstance(body.get("folders"), list) else None  # ValueError -> 400
     if bm.is_expert(b.meta):
         # No browser, no engine choice of the bots kind (an expert always runs on the agent engine),
-        # no terminal: the dialog may still send these keys; they are ignored.
-        body = {k: v for k, v in body.items() if k not in ("engine", "browser_id", "encrypt", "terminal")}
+        # no terminal: the dialog may still send these keys; they are ignored. Nor `memory`: the bot memory file
+        # (`.fused/memory.md`) is not an expert's memory, and our code never writes the expert's memory.md.
+        body = {k: v for k, v in body.items() if k not in ("engine", "browser_id", "encrypt", "terminal", "memory")}
     terminal = _check_terminal(bm, body, bm.is_super(b.meta))
     b.meta["name"] = name or b.meta.get("name")
     if bm.is_expert(b.meta) and isinstance(body.get("ask_me_about"), str):
