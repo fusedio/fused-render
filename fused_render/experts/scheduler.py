@@ -108,10 +108,10 @@ def start() -> None:
         _thread.start()
 
 
-def shutdown(budget_s: float = 5.0) -> None:
-    """Stop the timer (waits up to `budget_s` for a tick in flight) and end every side session's harness."""
+def shutdown(budget_s: float = 2.0) -> None:
+    """Stop the timer and end every side session's harness, within `budget_s` (bots registry.shutdown)."""
     global _timer_stop, _thread
-    deadline = time.monotonic() + max(0.0, budget_s)  # one budget for the harnesses and the timer together
+    deadline = time.monotonic() + max(0.0, budget_s)
     with _LOCK:
         stop, thread = _timer_stop, _thread
         _timer_stop, _thread = None, None

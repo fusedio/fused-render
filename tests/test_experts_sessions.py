@@ -613,8 +613,7 @@ def test_bots_shutdown_ends_the_experts_before_the_claim_goes(monkeypatch):
     finally:
         with sessions._GUARD:
             sessions._PROCS.discard(proc)
-    # Signalled first thing (begin_shutdown, before the Chromes), again when waited for; the claim goes last.
-    assert seen[0] == "kill" and seen[-1] == ("claim", True) and set(seen[:-1]) == {"kill"}
+    assert seen == ["kill", ("claim", True)]  # the harness is ended before the claim goes
     registry.reset_for_tests()  # a later test must be able to run sessions again
     assert sessions.closed() is False
 
@@ -695,36 +694,17 @@ def test_shutdown_waits_for_every_harness_within_one_budget(monkeypatch):
             raise sessions.subprocess.TimeoutExpired("claude", timeout)
     procs = [Stubborn() for _ in range(4)]
     monkeypatch.setattr(sessions, "_signal", lambda p, sig: p.signals.append(sig))
-    monkeypatch.setattr(sessions, "KILL_GRACE_S", 0.2)
     with sessions._GUARD:
         sessions._PROCS.update(procs)
     t0 = time.monotonic()
     try:
-        sessions.shutdown(budget_s=0.6)
+        sessions.shutdown(budget_s=0.4)
     finally:
         with sessions._GUARD:
             sessions._PROCS.difference_update(procs)
         sessions.reopen()
-    assert time.monotonic() - t0 < 1.2  # one shared deadline, not 4 x the budget
+    assert time.monotonic() - t0 < 1.2  # one shared wait, not 4 x the budget
     assert all(p.signals == [sessions.signal.SIGTERM, sessions._SIGKILL] for p in procs)
-
-
-def test_begin_shutdown_signals_without_waiting(monkeypatch):
-    sent = []
-
-    class P:
-        pid = 1
-    p = P()
-    monkeypatch.setattr(sessions, "_signal", lambda proc, sig: sent.append((proc, sig)))
-    with sessions._GUARD:
-        sessions._PROCS.add(p)
-    try:
-        assert sessions.begin_shutdown() == [p]
-        assert sent == [(p, sessions.signal.SIGTERM)] and sessions.closed()
-    finally:
-        with sessions._GUARD:
-            sessions._PROCS.discard(p)
-        sessions.reopen()
 
 
 def test_prompts_name_the_granted_folders_by_their_real_paths(expert, tmp_path):
@@ -887,35 +867,6 @@ def test_a_session_that_ends_after_its_expert_was_deleted_writes_nothing(expert,
     monkeypatch.setattr(sessions, "harness", gone)
     row = sessions.ask(expert, "q")
     assert row["status"] == "done" and not os.path.exists(store.expert_dir(expert))
-
-
-def test_shutdown_waits_for_a_session_to_save_its_row(expert, monkeypatch):
-    """Between a harness ending and its row being saved the session has no process to wait for: shutdown gives
-    it what is left of the budget, so the row is on disk before the caller releases the workspace."""
-    saving, go = threading.Event(), threading.Event()
-    real = sessions._save
-
-    def slow(bot, row):
-        if row.get("status") == "done":
-            saving.set()
-            go.wait(5)
-        real(bot, row)
-    monkeypatch.setattr(sessions, "harness", lambda bot, prompt, write: {"ok": True, "answer": "a", "transcript": []})
-    monkeypatch.setattr(sessions, "_save", slow)
-    t = threading.Thread(target=lambda: sessions.ask(expert, "q"))
-    t.start()
-    try:
-        assert saving.wait(5)
-        threading.Timer(0.2, go.set).start()
-        sessions.shutdown(5)
-        assert [r["status"] for r in sessions.rows(expert)] == ["done"]
-        t0 = time.monotonic()
-        sessions.shutdown(5)  # nothing running: no wait
-        assert time.monotonic() - t0 < 1
-    finally:
-        go.set()
-        t.join(5)
-        sessions.reopen()
 
 
 def test_a_redirected_memory_file_or_scratch_folder_is_not_written_without_a_card(expert, tmp_path, monkeypatch):

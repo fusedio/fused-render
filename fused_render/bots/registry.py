@@ -1092,14 +1092,14 @@ def shutdown(budget_s: float = 8.0) -> None:
             b.stop()
         except Exception:  # noqa: BLE001
             logger.warning("bot %s: stop failed", getattr(b, "id", "?"), exc_info=True)
-    # The experts' harnesses are signalled now, before the Chromes take their share of the budget: a quit that
-    # runs out of time below must not leave one unsignalled (`_end_experts` at the end does the waiting).
-    xs = sys.modules.get("fused_render.experts.sessions")
-    if xs is not None:
+    # The experts' timer and side-session harnesses end here, before the Chromes take their share of the budget
+    # and before the workspace claim is released (they write the experts' memory.md). Only when experts were used.
+    if "fused_render.experts.sessions" in sys.modules:
         try:
-            xs.begin_shutdown()
+            from fused_render.experts import scheduler as experts_scheduler
+            experts_scheduler.shutdown(min(2.0, budget_s))
         except Exception:  # noqa: BLE001
-            logger.warning("signalling the experts' sessions failed", exc_info=True)
+            logger.warning("ending the experts' sessions failed", exc_info=True)
     try:
         n = browsers.stop_all(budget_s)
     except Exception:  # noqa: BLE001
@@ -1110,21 +1110,7 @@ def shutdown(budget_s: float = 8.0) -> None:
         if t is not None and t.is_alive():
             t.join(max(0.0, started + budget_s - time.monotonic()))
     logger.info("bots shutdown: %d Chrome process(es) told to quit in %.1fs", n, time.monotonic() - started)
-    _end_experts(min(5.0, max(0.0, started + budget_s - time.monotonic())))
     _drop_routines_lock()
-
-
-def _end_experts(budget_s: float) -> None:
-    """The experts' timer and side-session harnesses end BEFORE the workspace claim is released (they write the
-    experts' memory.md and state). Only when the experts were loaded; the server's own `_shutdown_experts`, which
-    runs after this, is then a no-op."""
-    if not any(m in sys.modules for m in ("fused_render.experts.scheduler", "fused_render.experts.sessions")):
-        return
-    try:
-        from fused_render.experts import scheduler as experts_scheduler
-        experts_scheduler.shutdown(budget_s)
-    except Exception:  # noqa: BLE001
-        logger.warning("ending the experts' sessions failed", exc_info=True)
 
 
 def reset_for_tests() -> None:

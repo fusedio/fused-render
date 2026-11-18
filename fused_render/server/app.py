@@ -1369,10 +1369,8 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # doors task sessions reach through expert_list / expert_context /
     # expert_ask, plus the task-learn timer (experts/scheduler.py), which only
     # ticks in the process that owns the bots and holds their workspace claim.
-    # `@on_startup`: a lean `open` never learns. Shutdown also ends every side
-    # session's harness process; `_shutdown_bots` (bots registry.shutdown)
-    # already did that before releasing the bots workspace claim, so this
-    # handler is normally a no-op (kept as the fallback).
+    # `@on_startup`: a lean `open` never learns. `_shutdown_bots` (bots
+    # registry.shutdown) stops the timer and ends every side session's harness.
     from fused_render.experts.routes import router as experts_router
 
     app.include_router(experts_router)
@@ -1395,11 +1393,6 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001 — never worth failing startup
             logger.warning("could not start the experts scheduler", exc_info=True)
 
-    @on_shutdown_always
-    async def _shutdown_experts():
-        from fused_render.experts import scheduler as experts_scheduler
-
-        await asyncio.to_thread(experts_scheduler.shutdown)
     # Share an app as a public link (share_app.py): the .fused export handed
     # to the user's Fused account as a one-node canvas, through the same
     # `fused login` provider canvases.py owns (credentials-file presence,

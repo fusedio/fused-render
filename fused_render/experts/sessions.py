@@ -67,7 +67,6 @@ _RUNNING: set = set()          # row ids this process is running
 _PROCS: set = set()            # their harness processes (shutdown)
 _DREAMING: set = set()       # expert ids with a dream session queued or running
 _STATE = {"closed": False}   # set by `shutdown`, cleared by `reopen`: no new harness once closed
-KILL_GRACE_S = 1.0           # of shutdown's budget, kept for SIGKILL after SIGTERM
 
 
 def today() -> str:
@@ -451,7 +450,7 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
             _mark_left(bot)
     finally:
         try:
-            _save(bot, rec)  # before the row leaves _RUNNING: `shutdown` waits on that set for this save
+            _save(bot, rec)
         finally:
             with _GUARD:
                 _RUNNING.discard(rec["id"])
@@ -532,39 +531,14 @@ def reopen() -> None:
         _STATE["closed"] = False
 
 
-def begin_shutdown() -> list:
-    """Close and signal every harness WITHOUT waiting: the first thing a quit does for the experts (bots
-    registry.shutdown, before the browsers take their share of the budget), so no harness is left unsignalled if
-    the rest of the quit runs out of time. Returns the processes signalled; `shutdown` does the waiting."""
-    with _GUARD:
-        _STATE["closed"] = True
-        procs = list(_PROCS)
-    for p in procs:
-        _signal(p, signal.SIGTERM)
-    return procs
-
-
-def shutdown(budget_s: float = 4.0) -> None:
+def shutdown(budget_s: float = 2.0) -> None:
     """Close (no new side session or dream starts: `run` answers a CLOSED error row, `after_write` queues
-    nothing) and end every harness process a side
-    session still has (server shutdown), within `budget_s` all together: SIGTERM to all, one shared wait, then
-    SIGKILL to what is left (the last `KILL_GRACE_S` of the budget, waited for together too)."""
+    nothing) and end every harness process a side session still has: SIGTERM to all, one wait of up to
+    `budget_s` for all of them together, SIGKILL to what is left."""
     with _GUARD:
         _STATE["closed"] = True
         procs = list(_PROCS)
-    start = time.monotonic()
-    budget_s = max(0.0, budget_s)
     for p in procs:
         _signal(p, signal.SIGTERM)
-    left = _wait_all(procs, start + max(0.0, budget_s - KILL_GRACE_S))
-    for p in left:
+    for p in _wait_all(procs, time.monotonic() + max(0.0, budget_s)):
         _signal(p, _SIGKILL)
-    if _wait_all(left, start + budget_s):
-        logger.warning("experts: %d harness process(es) still running at the end of shutdown", len(left))
-    # A session whose harness has ended still has its row to save (the answer, the transcript, the memory diff):
-    # what is left of the budget is its time to do so, before the caller releases the workspace (bots registry).
-    while time.monotonic() < start + budget_s:
-        with _GUARD:
-            if not _RUNNING:
-                return
-        time.sleep(0.01)

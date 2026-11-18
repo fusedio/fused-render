@@ -201,7 +201,6 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_terminal_sessions",
     # Added 2026-10-06: every loaded bot's task and Chrome (bots/registry.py).
     "_shutdown_bots",
-    "_shutdown_experts",
     "_shutdown_index_watch",
 ]
 
@@ -260,7 +259,6 @@ EXPECTED_SHUTDOWN_LEAN = [
     "_shutdown_terminal_sessions",
     # A request can start a bot's Chrome in a lean app too.
     "_shutdown_bots",
-    "_shutdown_experts",
 ]
 
 

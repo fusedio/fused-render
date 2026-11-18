@@ -109,13 +109,13 @@ row with status `error`.
   expert's folder. The prompt goes on stdin. `--no-session-persistence`: a side session is never resumed, and a
   transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s (`TIMEOUT_S`), then the process
   group is killed.
-- **Shutdown** (`sessions.shutdown(budget_s)`): sets a closed flag under `_GUARD`, then ends every live harness within ONE budget: SIGTERM to all, one shared wait, SIGKILL to what is left in the
-  last `KILL_GRACE_S` (1 s), waited for together (the bots `registry.shutdown` passes at most 5 s). Once closed, `run`
-  starts nothing (an `error` row, `error: sessions.CLOSED`) and `after_write` queues no dream. `harness` checks the flag, spawns and registers the process in
-  `_PROCS` in one step under `_GUARD`, so a harness is either never spawned or tracked before `shutdown` takes its
-  snapshot; one ended by a shutdown reports `CLOSED` (not a failed attempt, §9). What is left of the budget after
-  the harnesses are gone is spent waiting for the sessions still between "harness ended" and "row saved"
-  (`_RUNNING`; a row is saved before it leaves that set), so the caller releases the workspace after them.
+- **Shutdown** (`sessions.shutdown(budget_s)`, called once by the bots `registry.shutdown` with at most 2 s,
+  before it stops the Chromes and releases the workspace claim): sets a closed flag, sends SIGTERM to every live
+  harness, waits for all of them together up to the budget and SIGKILLs what is left. Once closed, `run` starts
+  nothing (an `error` row, `error: sessions.CLOSED`) and `after_write` queues no dream. `harness` checks the flag,
+  spawns and registers the process in `_PROCS` in one step under `_GUARD`, so a harness is either never spawned or
+  tracked before `shutdown` takes its snapshot: no `claude` process outlives the app. One ended by a shutdown
+  reports `CLOSED` (not a failed attempt, §9).
   A session whose expert was deleted meanwhile saves no row (`_save`: it would make the removed folder again).
 - **The prompts** of an ask, a task-learn and a dream, and a fresh chat session's message (§7), state the absolute
   paths: "Your folder is <dir>; your memory is <dir>/memory.md." (`store.where`), so the harness never guesses
@@ -492,11 +492,7 @@ has no diff to go by: that slice is read again, and a count may be raised once m
 **The timer** (`scheduler.py`): one daemon thread, armed at server startup (not on Windows); the first tick runs
 90 s after start, then every 60 s ±10 %. A tick runs only in the process that owns the bots
 (`registry.owns()`) and holds the bots workspace claim: only one server process reads the transcripts for a
-workspace. Shutdown stops the timer and kills every side session's harness: the bots `registry.shutdown` does it
-(`_end_experts`, `scheduler.shutdown` on what is left of its budget, at most 5 s; the harnesses are already
-signalled at the start of the quit, `sessions.begin_shutdown`, before the Chromes use their share) right before it releases the bots
-workspace claim, so no harness still writes `memory.md` once another server can take the claim; the server's later
-`_shutdown_experts` handler is then a no-op.
+workspace. The bots `registry.shutdown` stops the timer together with the side sessions (§4).
 
 ## 10. Dreaming (memory compaction)
 
