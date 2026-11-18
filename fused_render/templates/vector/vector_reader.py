@@ -1,71 +1,158 @@
-"""Vector preview reader for fused-render (.shp, .kml, .kmz, .gpx, ...).
+"""Vector preview reader for fused-render (.shp, .geojson, .gpkg, .kml, .parquet, ...).
 
-Reads any pyogrio/GDAL-readable vector file (geopandas comes from this folder's
-own environment — `pyproject.toml`, SPEC PY-16; LIBKML handles .kml/.kmz),
-reprojects to EPSG:4326 and
-returns GeoJSON for the MapLibre template plus schema/CRS/bounds metadata
-and an attribute-table preview. Multi-layer sources (KML folders, GPX
-tracks/waypoints) are concatenated with a `_layer` column.
-
-Large files are protected two ways: a feature cap (`max_features`) and a
-vertex budget — when the raw geometry would exceed it, geometries are
-simplified with a tolerance derived from the data extent so the payload
-stays renderable.
+OGR formats are read with pyogrio/GDAL, GeoParquet with pyarrow (pyogrio's GDAL
+has no Parquet driver), in this folder's environment (`pyproject.toml`, SPEC
+PY-16). A signed https URL is read with range requests: /vsicurl/, or the
+parquet footer and the row groups the feature cap needs. Output is EPSG:4326
+GeoJSON with schema/CRS/bounds metadata and an attribute-table preview;
+multi-layer sources get a `_layer` column. A feature cap and a vertex budget
+(simplifying with an extent-derived tolerance) keep the payload renderable.
 """
-
+import io
+import urllib.request
 
 MAX_VERTICES = 300_000
+GDAL_HTTP = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+             "CPL_VSIL_CURL_CHUNK_SIZE": str(1 << 20),
+             "CPL_VSIL_CURL_CACHE_SIZE": str(256 << 20),
+             "GDAL_HTTP_MAX_RETRY": "3", "GDAL_HTTP_RETRY_DELAY": "0.5"}
 
 
-def _vertex_count(geom):
-    from shapely import get_coordinates
-    return len(get_coordinates(geom))
+class NotVector(ValueError):
+    pass
+
+
+def _get(url, rng):
+    req = urllib.request.Request(url, headers={"Range": "bytes=" + rng})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        if r.status != 206:
+            raise OSError(f"the server ignored a byte range (HTTP {r.status})")
+        return r.read(), int(r.headers["Content-Range"].rsplit("/", 1)[1])
+
+
+def _size(path):
+    import os
+    try:
+        return _get(path, "0-0")[1] if "://" in path else os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+class _Ranged(io.RawIOBase):
+    def __init__(self, url):
+        self.url, self.pos = url, 0
+        self.tail, self.size = _get(url, "-65536")
+
+    def readable(self):
+        return True
+
+    def seek(self, offset, whence=0):
+        self.pos = (0, self.pos, self.size)[whence] + offset
+        return self.pos
+
+    def readinto(self, b):
+        a, z = self.pos, min(self.pos + len(b), self.size)
+        t = self.size - len(self.tail)
+        data = (b"" if a >= z else self.tail[a - t:z - t] if a >= t
+                else _get(self.url, f"{a}-{z - 1}")[0])
+        b[:len(data)] = data
+        self.pos += len(data)
+        return len(data)
+
+
+def _read_ogr(src, cap):
+    import geopandas as gpd
+    import pandas as pd
+    import pyogrio
+
+    layers = [str(l[0]) for l in pyogrio.list_layers(src)]
+    if len(layers) <= 1:
+        gdf = pyogrio.read_dataframe(src, max_features=cap)
+    else:
+        parts = []
+        for name in layers:
+            left = cap - sum(map(len, parts))
+            if left <= 0:
+                break
+            try:
+                part = pyogrio.read_dataframe(src, layer=name, max_features=left)
+            except Exception:  # noqa: BLE001 — skip unreadable sublayers
+                continue
+            part = part[part.geometry.notna()]
+            if len(part):
+                part.insert(0, "_layer", name)
+                parts.append(part)
+        if not parts:
+            raise NotVector("no readable features in any layer")
+        gdf = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
+    total = len(gdf) if len(gdf) < cap else sum(
+        pyogrio.read_info(src, layer=n, force_feature_count=True)["features"] for n in layers)
+    return gdf, total, layers
+
+
+def _read_parquet(file, cap):
+    import json
+    import geopandas as gpd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import shapely
+
+    pf = pq.ParquetFile(_Ranged(file) if "://" in file else file, pre_buffer=True)
+    schema = pf.schema_arrow
+    geo = json.loads((schema.metadata or {}).get(b"geo") or "{}")
+    col = geo.get("primary_column")
+    if col not in schema.names:
+        h3 = next((c for c in schema.names if "h3" in c.lower() or c.lower() == "hex"), None)
+        raise NotVector("This parquet has no GeoParquet geometry column"
+                        + (f" ({h3!r} looks like H3 cells: open it in the H3 mode)." if h3 else "."))
+    meta = geo["columns"][col]
+    skip = {v[0] for v in meta.get("covering", {}).get("bbox", {}).values()}
+    groups = rows = 0
+    while rows < cap and groups < pf.num_row_groups:
+        rows += pf.metadata.row_group(groups).num_rows
+        groups += 1
+    columns = [f.name for f in schema if f.name == col
+               or not (f.name in skip or pa.types.is_binary(f.type))]
+    table = pf.read_row_groups(range(groups), columns=columns).slice(0, cap)
+    geoms = shapely.from_wkb(table[col].to_numpy(zero_copy_only=False))
+    gdf = gpd.GeoDataFrame(table.drop_columns([col]).to_pandas(), geometry=geoms,
+                           crs=meta.get("crs", "OGC:CRS84"))
+    return gdf, pf.metadata.num_rows, []
 
 
 def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
     import os
     import json
+    from concurrent.futures import ThreadPoolExecutor
     import numpy as np
+    import pyogrio
+    from shapely import get_coordinates
 
     max_features, table_rows = int(max_features), int(table_rows)
     if not file:
         return {"error": "no file selected"}
-    file = os.path.abspath(os.path.expanduser(file))
-    if not os.path.isfile(file):
-        return {"error": f"not a file: {file}"}
-
-    import geopandas as gpd
-    from shapely import get_coordinates
+    url = "://" in file
+    if not url:
+        file = os.path.abspath(os.path.expanduser(file))
+        if not os.path.isfile(file):
+            return {"error": f"not a file: {file}"}
+    stem, _, ext = file.rpartition(".")
+    parts = ([f"{stem}.{e}" for e in ("shp", "shx", "dbf", "prj", "cpg")]
+             if ext.lower() == "shp" else [file])
+    sizes = ThreadPoolExecutor(len(parts)).map(_size, parts)
 
     try:
-        import pyogrio
-        import pandas as pd
-        layers = [str(l[0]) for l in pyogrio.list_layers(file)]
-        if len(layers) <= 1:
-            gdf = gpd.read_file(file)
+        if ext.lower() == "parquet":
+            gdf, total, layers = _read_parquet(file, max_features)
         else:
-            parts = []
-            for name in layers:
-                try:
-                    part = gpd.read_file(file, layer=name)
-                except Exception:  # noqa: BLE001 — skip unreadable sublayers
-                    continue
-                if len(part):
-                    part = part[part.geometry.notna()]
-                if len(part):
-                    part.insert(0, "_layer", name)
-                    parts.append(part)
-            if not parts:
-                return {"error": "no readable features in any layer",
-                        "layers": layers}
-            gdf = gpd.GeoDataFrame(
-                pd.concat(parts, ignore_index=True), crs=parts[0].crs)
-        total = len(gdf)
-        truncated = total > max_features
-        if truncated:
-            gdf = gdf.iloc[:max_features]
+            if url:
+                pyogrio.set_gdal_config_options(GDAL_HTTP)
+            gdf, total, layers = _read_ogr("/vsicurl/" + file if url else file, max_features)
+    except NotVector as e:
+        return {"error": str(e)}
     except Exception as e:  # noqa: BLE001
         return {"error": f"could not read vector file: {type(e).__name__}: {e}"}
+    truncated = total > max_features
 
     crs = gdf.crs
     crs_info = {"epsg": (crs.to_epsg() if crs else None),
@@ -123,18 +210,10 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
         feat["id"] = i
 
     b = [float(v) for v in gdf.total_bounds] if len(gdf) else None
-    if file.lower().endswith(".shp"):  # count the sidecar set
-        stem = file.rsplit(".", 1)[0]
-        file_size = sum(os.path.getsize(stem + "." + ext)
-                        for ext in ("shp", "shx", "dbf", "prj", "cpg")
-                        if os.path.isfile(stem + "." + ext))
-    else:
-        file_size = os.path.getsize(file)
     return {
-        "file": file,
-        "file_size": file_size,
+        "file_size": sum(sizes),
         "layers": layers,
-        "count": int(total if total is not None else len(gdf)),
+        "count": int(total),
         "shown": int(len(gdf)),
         "truncated": bool(truncated),
         "simplified_tolerance": simplified,

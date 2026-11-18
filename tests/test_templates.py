@@ -226,7 +226,7 @@ def test_render_refuses_a_native_template():
 def test_builtin_parquet_default_is_duckdb():
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude",
+    assert [e["mode"] for e in entries] == ["duckdb", "structure", "vector", "h3", "claude",
             "geometry_editor"]
     assert entries[0]["path"].replace(os.sep, "/").endswith("duckdb/template.html")
 

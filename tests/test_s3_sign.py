@@ -314,7 +314,7 @@ def test_which_templates_stream_which_files():
     pq = server_templates.remote_templates("t.parquet")
     assert _modes(pq)[0] == ("duckdb", True)
     assert pq[0]["path"].endswith(os.path.join("duckdb", "template.html"))
-    assert {m for m, stream in _modes(pq) if stream} == {"duckdb", "h3"}
+    assert [mode for mode, stream in _modes(pq) if stream] == ["duckdb", "vector", "h3"]
     assert "structure" in [m for m, _ in _modes(pq)]
     assert _modes(server_templates.remote_templates("T.PARQUET"))[0] == ("duckdb", True)
     assert _modes(server_templates.remote_templates("t.TIF"))[0] == ("geotiff", True)

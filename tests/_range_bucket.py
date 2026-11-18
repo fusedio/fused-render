@@ -41,7 +41,8 @@ class _Bucket:
                     return self._send(412, b"")
                 if rng and not bucket.ignore_range:
                     a, _, b = rng[6:].partition("-")
-                    a, b = int(a), min(int(b), len(data) - 1)
+                    a, b = ((int(a), min(int(b), len(data) - 1)) if a
+                            else (max(0, len(data) - int(b)), len(data) - 1))
                     if a >= len(data):
                         return self._send(416, b"")
                     return self._send(206, data[a:b + 1], etag,

@@ -368,7 +368,7 @@ map.on('click', e => {
 function renderMeta(){
   if (!data) return;
   const rows = [
-    ['file', data.file.split('/').pop()],
+    ['file', P.file().split('/').pop()],
     ['size (all sidecars)', human(data.file_size)],
     ['features', data.count.toLocaleString() + (data.truncated ? ` (showing first ${data.shown.toLocaleString()})` : '')],
     ['geometry', data.geometry_types.join(', ')],
@@ -459,7 +459,7 @@ async function refreshExplorer(dir){
   dir = dir || P.dir();
   const prevCrumbs = els.crumbs.innerHTML, prevList = els.explorerList.innerHTML;
   els.explorerList.innerHTML = skeletonRows(6);
-  const r = await fused.runPython('./browse.py', { dir, exts: '.shp,.kml,.kmz,.gpx,.geojson,.gpkg,.fgb', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  const r = await fused.runPython('./browse.py', { dir, exts: '.shp,.kml,.kmz,.gpx,.geojson,.gpkg,.fgb,.parquet', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
   if (!r || r.error){ els.crumbs.innerHTML = prevCrumbs; els.explorerList.innerHTML = prevList; return; }
   els.crumbs.innerHTML = r.crumbs.map(c =>
     `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:var(--crumb-sep)"> / </span>');
@@ -488,9 +488,13 @@ let loadedFile = null;
 async function loadFile(){
   const file = P.file();
   if (!file){ status('no file — use Browse or enter a vector file path'); return; }
+  const streamed = /^s3:\/\//i.test(file);
+  els.browse.hidden = streamed;
+  els.convertBtn.hidden = streamed || /\.parquet$/i.test(file);
   status('Reading vector file…', false, true);
   await styleReady();
-  const r = await fused.runPython('./vector_reader.py', {file})
+  const r = await (streamed ? fused.s3.sign(file).then(s => s.url) : Promise.resolve(file))
+    .then(source => fused.runPython('./vector_reader.py', {file: source}))
     .catch(e => ({error: String(e.message || e)}));
   if (!r || r.error){ status((r && r.error) || 'read failed', true); return; }
   data = r;
@@ -500,7 +504,7 @@ async function loadFile(){
   renderMeta();
   renderTable();
   let note = '';
-  if (r.truncated) note = `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} features (preview cap — GeoParquet conversion uses ALL features)`;
+  if (r.truncated) note = `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} features (preview cap${els.convertBtn.hidden ? '' : ' — GeoParquet conversion uses ALL features'})`;
   else if (r.simplified_tolerance) note = 'geometries simplified for preview';
   status(note);
   if (note) setTimeout(() => status(''), 8000);
