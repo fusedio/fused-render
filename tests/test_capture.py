@@ -1862,18 +1862,40 @@ def test_a_window_shot_never_waits_long_on_the_native_lock(backend, client, monk
     region still behind a Screen Recording prompt holds it, and the page,
     which aborts at 4 s and falls back to that same lock, gets a fast 400
     instead of a request still queued when its fallback arrives."""
+    import threading
+
     called = []
     backend.shot_window = lambda out, spec: called.append(spec)
     monkeypatch.setattr(capture, "WINDOW_LOCK_WAIT_S", 0.05)
-    capture._native_lock.acquire()
+
+    # "Never waits long" is asserted on HOW the lock is asked for, not on the
+    # wall clock of the whole HTTP round trip: under a loaded CI runner the
+    # TestClient's thread hops alone can exceed any fixed bound, while the
+    # property that matters — a bounded acquire of exactly WINDOW_LOCK_WAIT_S
+    # — is deterministic. An unbounded acquire on the held lock would hang
+    # the test, so the spy fails it on the spot instead.
+    real = threading.Lock()
+    waits = []
+
+    class SpyLock:
+        def acquire(self, blocking=True, timeout=-1):
+            waits.append(timeout if blocking else 0)
+            if blocking and timeout < 0:
+                raise AssertionError("the window road blocked on the native lock")
+            return real.acquire(blocking, timeout)
+
+        def release(self):
+            real.release()
+
+    monkeypatch.setattr(capture, "_native_lock", SpyLock())
+    real.acquire()
     try:
-        t0 = time.monotonic()
         res = client.post("/api/capture/shot-window",
                           json={"rect": [0, 0, 10, 10], "window": [0, 0, 10, 10]},
                           headers=H)
-        assert time.monotonic() - t0 < 1.0
     finally:
-        capture._native_lock.release()
+        real.release()
+    assert waits == [capture.WINDOW_LOCK_WAIT_S]
     assert res.status_code == 400 and "busy" in res.json()["error"]
     assert called == []
     # Free: the hook runs with one deadline for the whole road.

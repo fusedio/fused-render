@@ -179,6 +179,15 @@ jobs:
           python -m pytest tests/ -q
           --cov=fused_render --cov-report=term-missing --cov-report=xml --cov-report=html
 
+      # An xdist worker that dies with no Python traceback (`[gwN] node down:
+      # Not properly terminated`) was killed from outside Python. The kernel log
+      # says by what — an OOM kill or a segfault shows up there and nowhere
+      # else. tests/conftest.py already prints a stack for os._exit and a
+      # fatal SIGTERM/SIGHUP; this covers the rest.
+      - name: Kernel log on failure (OOM kills, segfaults)
+        if: failure() && runner.os == 'Linux'
+        run: sudo dmesg -T | grep -iE 'oom|killed process|segfault|python' | tail -n 40 || true
+
       # One representative version avoids 4 duplicate reports/artifacts for
       # the same source tree; 3.11 is the floor for the optional fused engine
       # (D69) so it exercises the most code paths of the matrix.

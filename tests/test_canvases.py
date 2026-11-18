@@ -195,8 +195,10 @@ def main():
         # (another run holds the root), mirror_lock (hold ROOT/.mirror.lock
         # like the real one: left behind if killed), mirror_started_file
         # (touched once running), mirror_delay, mirror_progress (stderr
-        # lines), mirror_swap (folders rewritten AFTER the delay, each only
-        # if its marker still says mirror: the real command's re-check),
+        # lines), mirror_gate_file (after the delay, wait until the test
+        # creates this file: a handshake instead of racing a fixed sleep),
+        # mirror_swap (folders rewritten AFTER the delay and the gate, each
+        # only if its marker still says mirror: the real command's re-check),
         # mirror_stdout (raw text instead of the document), mirror_result,
         # mirror_exit.
         import time as _t
@@ -242,6 +244,12 @@ def main():
             sys.stderr.flush()
         if scenario.get("mirror_delay"):
             _t.sleep(scenario["mirror_delay"])
+        if scenario.get("mirror_gate_file"):
+            # Bounded so a test that never opens the gate fails on its own
+            # assertions instead of hanging the worker.
+            _gate_by = _t.time() + 60
+            while not os.path.exists(scenario["mirror_gate_file"]) and _t.time() < _gate_by:
+                _t.sleep(0.02)
         for swap in scenario.get("mirror_swap", []):
             folder = os.path.join(root, swap["path"])
             marker = os.path.join(folder, ".fused-canvas.json")
