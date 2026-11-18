@@ -486,3 +486,24 @@ def test_an_expert_never_falls_back_to_the_steps_engine(expert, monkeypatch):
     assert expert.start_task("hi") is False
     assert ("error", "An expert needs the agent engine (Claude Code), which could not load.") in said
     assert expert.meta.get("status") == "idle" and (expert.thread is None or not expert.thread.is_alive())
+
+
+def test_a_task_learn_cut_short_by_a_restart_after_its_edit_is_not_replayed(expert):
+    """The server stopped between the expert's edit and the row's end: the row is still `running`, with no diff.
+    The next pass must not read that slice again (the same evidence beside the updated memory)."""
+    mem = store.memory_path(expert)
+    row = sessions._new_row("task-learn", {"session_id": "s1", "from_size": 0, "to_size": 10})
+    row["memory_before"] = sessions._sha(store.memory(expert))
+    sessions._save(expert, row)
+    # Nothing changed yet: an interrupted session that never edited is retried (and the stale row is closed).
+    assert sessions.cut_short(expert, "s1", 0) is False
+    assert sessions.row(expert, row["id"])["status"] == "interrupted"
+    row2 = sessions._new_row("task-learn", {"session_id": "s1", "from_size": 0, "to_size": 10})
+    row2["memory_before"] = sessions._sha(store.memory(expert))
+    sessions._save(expert, row2)
+    with open(mem, "a", encoding="utf-8") as f:
+        f.write("- [1 · 2026-11-18] learned before the restart\n")
+    assert sessions.cut_short(expert, "s1", 5) is False      # another slice of the task
+    assert sessions.cut_short(expert, "other", 0) is False   # another task
+    assert sessions.cut_short(expert, "s1", 0) is True
+    assert sessions.cut_short(expert, "s1", 0) is False      # answers once

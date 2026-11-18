@@ -273,6 +273,11 @@ def learn_one(bot, session: dict, rec: dict) -> dict | None:
     if not md.strip():  # grown by housekeeping only: nothing to read
         _update(bot, sid, read)
         return None
+    if sessions.cut_short(bot, sid, from_size):
+        # A restart killed an earlier task-learn for this slice after it had edited memory.md (its row has no
+        # diff to go by): the slice counts as read, as a failed session with a diff does below.
+        _update(bot, sid, read)
+        return None
     run_ids = rec.get("run_ids") or []
     trigger = {"session_id": sid, **({"run_id": run_ids[-1]} if run_ids else {}), "target": session["target"],
                "backend": session["backend"], "from_size": from_size, "to_size": size}

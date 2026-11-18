@@ -272,6 +272,37 @@ def edited_by_hand(bot) -> bool:
     return bool(sha) and sha != _sha(store.memory(bot))
 
 
+def cut_short(bot, session_id: str, from_size: int) -> bool:
+    """Whether a task-learn session for this slice of this task was cut short by a restart AFTER it changed
+    memory.md: its row is still `running` though nothing runs it, and memory.md no longer hashes to the
+    `memory_before` it noted. Its diff was never computed, so learn.py asks here before reading the slice again
+    (the same evidence beside the already-updated memory would raise counts twice). The row is marked so it
+    answers once. A chat or hand edit in between also changes the hash: that slice is then skipped too, the
+    cheaper of the two mistakes."""
+    d = _rows_dir(bot)
+    try:
+        names = sorted((n for n in os.listdir(d) if n.endswith(".json")), reverse=True)[:ROWS_KEPT]
+    except OSError:
+        return False
+    for n in names:
+        row = store.read_json(os.path.join(d, n), None)
+        if not isinstance(row, dict) or row.get("kind") != "task-learn" or row.get("status") != "running":
+            continue
+        trig = row.get("trigger") if isinstance(row.get("trigger"), dict) else {}
+        with _GUARD:
+            live = row.get("id") in _RUNNING
+        if live or trig.get("session_id") != session_id or trig.get("from_size") != from_size:
+            continue
+        changed = bool(row.get("memory_before")) and row["memory_before"] != _sha(store.memory(bot))
+        row.update(status="interrupted", ended=row.get("ended") or time.time(),
+                   **({"error": "cut short by a restart after it changed memory; its slice counts as read"}
+                      if changed else {}))
+        _save(bot, row)
+        if changed:
+            return True
+    return False
+
+
 def changes(bot, limit: int = CHANGES_SHOWN) -> list:
     """The newest `limit` rows that changed memory.md, `[{"id","kind","started","trigger"}]` ("last changed by")."""
     out = []
@@ -353,8 +384,10 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
         _save(bot, rec)
         return rec
     try:
-        _save(bot, rec)
         before = store.memory(bot)
+        if writes:
+            rec["memory_before"] = _sha(before)  # for `cut_short`: a restart leaves this row with no diff computed
+        _save(bot, rec)
         try:
             res = harness(bot, prompt, writes)
         except Exception as e:  # noqa: BLE001

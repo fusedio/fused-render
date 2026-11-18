@@ -252,6 +252,14 @@ is counted against the size it tried (`fails`) and retried next pass; after 3 fa
 that session is no longer due until it grows again. A session that never started because the write lock stayed held
 (`BUSY`) or the server was shutting down (`CLOSED`) is not an attempt.
 
+**A restart mid-session**: a writing row notes the hash of `memory.md` when it starts (`memory_before`). If the
+server stops after the expert's edit but before the row ends, the row stays `running` with no diff. Before
+reading a slice, `learn_one` asks `sessions.cut_short`: a stale `running` task-learn row for the same task and
+the same `from_size` whose `memory_before` no longer matches the file means that slice was already applied, so
+it is recorded as read and not replayed; the row is closed as `interrupted`. A stale row whose hash still
+matches changed nothing and the slice is read as usual. A chat or hand edit between the two also changes the
+hash; that slice is then skipped too, the cheaper mistake.
+
 **Restart safety**: everything is on disk. A restart mid-wait or mid-session leaves `read.json` where it was (the
 row reads `interrupted`), so the next pass picks the session up again, once; a task resumed later is read again
 from where it was left, only its new part.
