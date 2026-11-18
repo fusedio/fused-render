@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from urllib.parse import unquote, urlsplit
 
 from fused_render._view_url_codec import (
@@ -343,14 +344,27 @@ def _is_attachment(disposition: str | None) -> bool:
 _UNSAFE_NAME = re.compile(r"[\x00-\x1f/\\:]")
 
 
+# Destinations handed out for downloads still in flight. A download's file
+# does not exist yet when its name is chosen (WebKit and Chromium both create
+# it a moment later), so two back-to-back downloads of the same name would
+# both be handed `name.ext` and the second would replace the first. Released
+# by `release_download_destination` when the download finishes or fails; a
+# release that never comes (the window closed mid-download) only costs one
+# skipped number.
+_reserved_destinations: set[str] = set()
+_reserved_lock = threading.Lock()
+
+
 def download_destination(downloads_dir: str, suggested: str | None,
                          exists=os.path.exists) -> str:
-    """A path under ``downloads_dir`` that does not exist yet.
+    """A path under ``downloads_dir`` that does not exist yet, reserved for
+    this download until `release_download_destination`.
 
-    WebKit refuses to write a download over an existing file, so the Finder
-    convention applies: ``name``, ``name 2``, ``name 3`` … The suggested name
-    is reduced to one safe path component first; an empty or unusable one
-    becomes ``download``.
+    Named the way Chrome names a repeat download: ``name.ext``, then
+    ``name (1).ext``, ``name (2).ext`` … — a download is always saved, never
+    skipped or written over an earlier one. The suggested name is reduced to
+    one safe path component first; an empty or unusable one becomes
+    ``download``.
     """
     name = _UNSAFE_NAME.sub("_", (suggested or "").strip()) or "download"
     if name in (".", ".."):
@@ -358,9 +372,20 @@ def download_destination(downloads_dir: str, suggested: str | None,
     stem, ext = os.path.splitext(name)
     if not stem:  # ".bashrc"-style names: keep the whole thing as the stem
         stem, ext = name, ""
-    candidate = os.path.join(downloads_dir, name)
-    counter = 2
-    while exists(candidate):
-        candidate = os.path.join(downloads_dir, f"{stem} {counter}{ext}")
-        counter += 1
+    with _reserved_lock:
+        candidate = os.path.join(downloads_dir, name)
+        counter = 1
+        while candidate in _reserved_destinations or exists(candidate):
+            candidate = os.path.join(downloads_dir, f"{stem} ({counter}){ext}")
+            counter += 1
+        _reserved_destinations.add(candidate)
     return candidate
+
+
+def release_download_destination(path: str | None) -> None:
+    """Give back a name `download_destination` reserved, once its download
+    has finished (the file now exists and `exists` guards it) or failed."""
+    if not path:
+        return
+    with _reserved_lock:
+        _reserved_destinations.discard(str(path))

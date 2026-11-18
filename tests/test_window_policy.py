@@ -136,18 +136,47 @@ def test_subframe_responses_are_never_downloads():
                  content_disposition="attachment") == "allow"
 
 
-def test_download_destination_dedupes_like_finder():
-    taken = {"/dl/a.parquet", "/dl/a 2.parquet"}
-    assert wp.download_destination("/dl", "a.parquet", exists=taken.__contains__) == "/dl/a 3.parquet"
+@pytest.fixture
+def fresh_reservations(monkeypatch):
+    monkeypatch.setattr(wp, "_reserved_destinations", set())
+
+
+def _never(_path):
+    return False
+
+
+def test_download_destination_numbers_like_chrome(fresh_reservations):
+    taken = {"/dl/a.parquet", "/dl/a (1).parquet"}
+    assert wp.download_destination("/dl", "a.parquet", exists=taken.__contains__) == "/dl/a (2).parquet"
     assert wp.download_destination("/dl", "b.zip", exists=taken.__contains__) == "/dl/b.zip"
 
 
-def test_download_destination_sanitises_the_name():
+def test_download_destination_never_hands_out_a_name_twice(fresh_reservations):
+    # The same canvas downloaded twice before the first file exists: each
+    # download gets its own name, so neither is skipped or written over.
+    assert wp.download_destination("/dl", "canvas.zip", exists=_never) == "/dl/canvas.zip"
+    assert wp.download_destination("/dl", "canvas.zip", exists=_never) == "/dl/canvas (1).zip"
+    assert wp.download_destination("/dl", "canvas.zip", exists=_never) == "/dl/canvas (2).zip"
+
+
+def test_download_destination_released_name_is_reused_once_free(fresh_reservations):
+    first = wp.download_destination("/dl", "canvas.zip", exists=_never)
+    wp.release_download_destination(first)
+    wp.release_download_destination(first)  # finished after failed: no-op
+    wp.release_download_destination(None)
+    assert wp.download_destination("/dl", "canvas.zip", exists=_never) == "/dl/canvas.zip"
+    # Once finished the file exists on disk, which keeps the name taken.
+    on_disk = {"/dl/canvas.zip"}
+    wp.release_download_destination("/dl/canvas.zip")
+    assert wp.download_destination("/dl", "canvas.zip", exists=on_disk.__contains__) == "/dl/canvas (1).zip"
+
+
+def test_download_destination_sanitises_the_name(fresh_reservations):
     never = lambda _p: False  # noqa: E731
     assert wp.download_destination("/dl", "../../etc/passwd", exists=never) == "/dl/.._.._etc_passwd"
     assert wp.download_destination("/dl", "", exists=never) == "/dl/download"
-    assert wp.download_destination("/dl", "..", exists=never) == "/dl/download"
-    assert wp.download_destination("/dl", ".bashrc", exists=lambda p: p == "/dl/.bashrc") == "/dl/.bashrc 2"
+    assert wp.download_destination("/dl", "..", exists=never) == "/dl/download (1)"
+    assert wp.download_destination("/dl", ".bashrc", exists=lambda p: p == "/dl/.bashrc") == "/dl/.bashrc (1)"
 
 
 def test_frame_autosave_name():

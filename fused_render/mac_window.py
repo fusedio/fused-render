@@ -30,7 +30,8 @@ What the browser used to do for a page, the delegates here do instead
   a NEW WINDOW.
 - an external http(s) link → the DEFAULT BROWSER, never a window of ours.
 - `<a download>`, `Content-Disposition: attachment`, un-showable MIME types →
-  saved into ~/Downloads under a Finder-style unique name.
+  saved into ~/Downloads under a unique name, numbered the way Chrome
+  numbers a repeat download (`name (1).ext`, `name (2).ext`, …).
 - `alert()` / `confirm()` / `prompt()` → NSAlert; `<input type=file>` →
   NSOpenPanel; camera/mic and geolocation requests from the app's own
   origin → granted (the system TCC prompt still gates the hardware);
@@ -385,6 +386,7 @@ class _WebDelegate(NSObject):
         self._manager = manager
         self._window = window  # the _Window record, not the NSWindow
         self._downloads = []   # strong refs: a WKDownload's delegate is weak too
+        self._download_dests = {}  # id(WKDownload) -> its reserved destination
         self._crash_reloaded = False  # one automatic reload per window, ever
         return self
 
@@ -512,16 +514,22 @@ class _WebDelegate(NSObject):
             self, download, response, suggested, completion):
         dest = window_policy.download_destination(_downloads_dir(), str(suggested or ""))
         logger.info("download -> %s", dest)
+        self._download_dests[id(download)] = dest
         completion(NSURL.fileURLWithPath_(dest))
 
-    def downloadDidFinish_(self, download):
+    def _forget_download(self, download) -> None:
         self._downloads = [d for d in self._downloads if d is not download]
+        window_policy.release_download_destination(
+            self._download_dests.pop(id(download), None))
+
+    def downloadDidFinish_(self, download):
+        self._forget_download(download)
         # Bounce the Downloads stack in the Dock, the way Safari does.
         NSDistributedNotificationCenter.defaultCenter().postNotificationName_object_(
             "com.apple.DownloadFileFinished", None)
 
     def download_didFailWithError_resumeData_(self, download, error, resume_data):
-        self._downloads = [d for d in self._downloads if d is not download]
+        self._forget_download(download)
         logger.warning("download failed: %s", error.localizedDescription() if error else "?")
 
     # ---- popups, dialogs, pickers, permissions (WKUIDelegate) --------------
@@ -1106,6 +1114,9 @@ class _Window:
         delegate._window = None
         delegate._manager = None
         delegate._downloads = []
+        for dest in delegate._download_dests.values():
+            window_policy.release_download_destination(dest)
+        delegate._download_dests = {}
         logger.debug("window destroyed (%s)", self.key or "home")
 
     def close(self) -> None:
