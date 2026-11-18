@@ -190,10 +190,15 @@ export function TasksPeek() {
           }
           return again(1000);
         }
-        // The row's own key when the listing has it (a row is keyed by its
-        // session, and this does not assume so), the session otherwise.
-        const key = readListing()?.find((t) => t.session_id === session)?.key ?? session;
-        setChat((was) => (was && pendingEntryId(was.key) === startedEntry ? { key, anchor: null } : was));
+        // ONTO THE ROW, once the listing has it: the schedule can name the
+        // session a beat before the listing rekeys, and following it there
+        // early would show an empty card for that beat. If the row never
+        // arrives in the time, the session itself is the key (a row is keyed
+        // by its session). The anchor a press named is kept.
+        const row = readListing()?.find((t) => t.session_id === session);
+        if (!row && tries < 29) return again(500);
+        const key = row?.key ?? session;
+        setChat((was) => (was && pendingEntryId(was.key) === startedEntry ? { key, anchor: was.anchor } : was));
       }, () => again(2000));
     };
     look();

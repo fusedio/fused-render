@@ -17,7 +17,7 @@
 import { useRef, useState } from "react";
 import { forceStart } from "@platform/lib/api";
 import {
-  FORCE_START_HINT, FORCE_START_LABEL, QUEUED_WORD, canForceStart, queueCaption, type QueueFacts,
+  FORCE_START_HINT, FORCE_START_LABEL, QUEUED_WORD, canForceStart, pendingEntryId, queueCaption, type QueueFacts,
 } from "@platform/lib/queue";
 import { pokeTasks } from "./tasksPulse";
 
@@ -35,8 +35,8 @@ export interface ForceStartButtonProps {
    *  the task stands in a folder's line (`canForceStart`): a card that has not
    *  heard yet offers nothing rather than a press the server would refuse. */
   facts: QueueFacts | null | undefined;
-  /** Who to start: the entry id while the task is still `pending:<entry>` and
-   *  its row may rekey under the press, else the row's key. */
+  /** Who to start: an entry id, or the row's key. A `pending:<entry>` key is
+   *  sent as its entry id (see `press`). */
   target: { entry_id?: string; key?: string };
   /** After the server answered, either way — the card's own "look again". */
   onDone?: () => void;
@@ -57,7 +57,13 @@ export function ForceStartButton({ facts, target, onDone }: ForceStartButtonProp
     try {
       // `started: false` is an honest answer (the task went on its own a moment
       // ago): nothing to say, the refetch below shows where it is now.
-      await forceStart(target);
+      // BY ENTRY ID WHENEVER THERE IS ONE. A queued task with no session is
+      // filed under `pending:<entry>` and its row is REKEYED the moment its run
+      // mints a session — a key read off a row painted a second ago can name
+      // nothing by the time the press lands. The entry id inside it does not
+      // move (`api_queue_force`'s own note).
+      const entry = target.entry_id || pendingEntryId(target.key);
+      await forceStart(entry ? { entry_id: entry } : target);
     } catch (e) {
       setNote(e instanceof Error && e.message ? e.message : "The queue did not take that.");
     } finally {

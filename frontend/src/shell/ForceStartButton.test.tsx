@@ -94,7 +94,7 @@ test("the press posts the card's own name to /api/tasks/queue/force, once, and t
 
 test("a refusal is said beside the button, in the server's words, and a new press clears it", async () => {
   let refuse = true;
-  fakeFetch(() =>
+  const calls = fakeFetch(() =>
     refuse
       ? ({ ok: false, status: 409, statusText: "Conflict", json: async () => ({ detail: "That task is already running." }), text: async () => JSON.stringify({ detail: "That task is already running." }) } as unknown as Response)
       : ({ ok: true, status: 200, json: async () => ({ ok: true, started: true }) } as unknown as Response),
@@ -103,6 +103,8 @@ test("a refusal is said beside the button, in the server's words, and a new pres
   const r = mount({ facts: QUEUED, target: { key: "pending:e1" }, onDone: () => (done += 1) });
   press(buttons(r)[0]!);
   await act(async () => {});
+  // A `pending:<entry>` key goes as its entry id: the row may rekey under the press.
+  expect(calls[0]!.body).toEqual({ entry_id: "e1" });
   expect(notes(r)).toHaveLength(1);
   expect(String(notes(r)[0]!.props.children).length).toBeGreaterThan(0);
   // The card is told either way: a refusal usually means the row moved on.
@@ -112,6 +114,14 @@ test("a refusal is said beside the button, in the server's words, and a new pres
   press(buttons(r)[0]!);
   await act(async () => {});
   expect(notes(r)).toHaveLength(0);
+});
+
+test("a task that has a session is named by its key", async () => {
+  const calls = fakeFetch(() => ({ ok: true, status: 200, json: async () => ({ ok: true, started: true }) }) as unknown as Response);
+  const r = mount({ facts: QUEUED, target: { key: "sess-1" } });
+  press(buttons(r)[0]!);
+  await act(async () => {});
+  expect(calls[0]!.body).toEqual({ key: "sess-1" });
 });
 
 test("queuedLine says where a queued task stands, and nothing for any other", () => {
