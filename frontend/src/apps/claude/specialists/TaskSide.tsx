@@ -24,6 +24,7 @@ import { SendToSpecialist } from "./SendToSpecialist";
 import { isServiceTool, ServiceCardExtra } from "./ServiceCardExtra";
 import { placeEvents, TaskEventChips } from "./TaskEventChips";
 import { useSpecialistList, useTaskEvents } from "./useTaskEvents";
+import "./task.css";
 
 export interface TaskSideOptions {
   /** A Claude chat (other agents get no specialist tools). */
