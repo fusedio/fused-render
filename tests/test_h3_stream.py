@@ -52,3 +52,22 @@ def test_gate_takes_a_url(put, bucket):  # noqa: F811
     assert condition.main(h3) is True
     assert condition.main(plain) is False
     assert condition.main(bucket.url("missing.parquet")) is False
+
+
+def test_detection_skips_nested_leaves_and_reads_blob_and_tiny_files(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    def write(name, sql):
+        path = str(tmp_path / name)
+        duckdb.execute(f"COPY ({sql}) TO '{path}' (FORMAT parquet)")
+        return path
+
+    nested = write("n.parquet", f"SELECT {{'parent': ({H3_BASE} + range)::UBIGINT}} AS meta, "
+                                f"({H3_BASE} + range)::UBIGINT AS cell_r8 FROM range(100)")
+    assert h3_reader.main(nested)["h3_col"] == "cell_r8"
+    blob = write("b.parquet", f"SELECT printf('%x', {H3_BASE} + range)::BLOB AS hex FROM range(100)")
+    assert h3_reader.main(blob)["cells"][0] == format(H3_BASE, "x")
+    one = str(tmp_path / "one.parquet")
+    pq.write_table(pa.table({"hex": pa.array([H3_BASE], pa.uint64())}), one)
+    assert condition.main(one) is True

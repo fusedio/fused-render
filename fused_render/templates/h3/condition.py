@@ -9,8 +9,8 @@ H3 cell-index column. Detection is footer-first, since I/O is the whole cost:
    BYTE_ARRAY (hex string) top-level columns can hold an H3 index. A column
    whose every row group has min/max stats that both carry the H3 bit pattern
    is decided with no data pages read; a column refuted by its stats is
-   dropped, unless it is NAMED like H3 (a sentinel 0 can hide real H3 data
-   from min/max).
+   dropped, unless it is NAMED like H3 and its max is H3 (a sentinel 0 can
+   hide real H3 data from min).
 2. Columns with a stats gap, and refuted H3-named ones, are sampled with a
    projection of just those columns, accepted at >=90% H3 values.
 
@@ -58,20 +58,24 @@ def connect(src):
         except duckdb.Error:
             con.execute("INSTALL httpfs")
             con.execute("LOAD httpfs")
+        con.execute("PRAGMA enable_object_cache=true")
+        con.execute("SET enable_http_metadata_cache=true")
     return con
 
 
 def h3_column(con, src):
-    cols = {}
+    top = {r[0] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [src]).fetchall()}
+    cols, highs = {}, {}
     for name, ptype, lo, hi, width in con.execute(
             "SELECT path_in_schema, type, stats_min_value, stats_max_value,"
-            " total_uncompressed_size / greatest(num_values, 1)"
+            " total_uncompressed_size / greatest(num_values, 64)"
             " FROM parquet_metadata(?)", [src]).fetchall():
-        if ptype not in ("INT64", "BYTE_ARRAY") or "." in name or width > 64:
+        if ptype not in ("INT64", "BYTE_ARRAY") or name not in top or width > 64:
             continue
         looks = _looks_h3_str if ptype == "BYTE_ARRAY" else _looks_h3_int
         seen = cols.get(name, True)
         cols[name] = None if None in (lo, hi, seen) else seen and looks(lo) and looks(hi)
+        highs[name] = highs.get(name, False) or looks(hi)
 
     def rank(n):
         return H3_NAMES.index(n.lower()) if n.lower() in H3_NAMES else len(H3_NAMES)
@@ -81,7 +85,7 @@ def h3_column(con, src):
         if cols[name]:
             found = name
             break
-        if cols[name] is None or rank(name) < len(H3_NAMES):
+        if cols[name] is None or (rank(name) < len(H3_NAMES) and highs[name]):
             pending.append(name)
     if not pending:
         return found

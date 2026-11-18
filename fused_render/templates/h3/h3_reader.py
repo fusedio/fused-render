@@ -31,8 +31,6 @@ def _cursor(file):
     with _stream_lock:
         if _stream_db is None:
             _stream_db = connect(file)
-            _stream_db.execute("PRAGMA enable_object_cache=true")
-            _stream_db.execute("SET enable_http_metadata_cache=true")
         return _stream_db.cursor()
 
 
@@ -74,8 +72,8 @@ def _read(con, file, h3_col, color_by, max_cells):
     others = [n for n in names if n != cand]
     if is_url(file):
         others = [color_by if color_by in numeric else numeric[0]] if numeric else []
-    h3 = (f"lower(trim({ident(cand)}))" if types[cand] == "VARCHAR"
-          else f"format('{{:x}}', {ident(cand)}::UBIGINT)")
+    h3 = (f"format('{{:x}}', {ident(cand)}::UBIGINT)" if "INT" in types[cand]
+          else f"lower(trim({ident(cand)}::VARCHAR))")
     rows = q(f"SELECT {', '.join([h3] + [ident(n) for n in others])} FROM read_parquet(?)"
              f" WHERE {ident(cand)} IS NOT NULL LIMIT {max_cells}")
 

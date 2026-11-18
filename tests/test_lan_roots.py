@@ -35,3 +35,9 @@ def test_zip_slip_check_refuses_a_filesystem_root_staging_dir():
 
     assert zip_import.reject_reason(zipfile.ZipInfo("etc/x"), "/") is not None
     assert zip_import.reject_reason(zipfile.ZipInfo("a/x"), "/tmp/stage") is None
+
+
+def test_a_url_is_never_a_path_under_an_anchor(tmp_path):
+    page = str(tmp_path / "page.html")
+    assert lan._args_in_scope({"html": page}, [str(tmp_path)])
+    assert not lan._args_in_scope({"path": "s3://fused-asset/k.parquet", "html": page}, [str(tmp_path)])

@@ -258,8 +258,8 @@ const HEX_LAYERS = ['hex-fill', 'hex-dot'];
 function addLayers(){
   for (const id of [...HEX_LAYERS, 'hex-line']) if (map.getLayer(id)) map.removeLayer(id);
   for (const id of ['hex', 'hex-dot']) if (map.getSource(id)) map.removeSource(id);
-  const dotsUntil = gj.features.length
-    ? Math.log2(39136 / h3.getHexagonEdgeLengthAvg(h3.getResolution(data.cells[0]), 'm')) : 0;
+  const cell = data.cells.find(c => h3.isValidCell(c));
+  const dotsUntil = cell ? Math.max(0, Math.log2(39136 / h3.getHexagonEdgeLengthAvg(h3.getResolution(cell), 'm'))) : 0;
   map.addSource('hex', {type: 'geojson', data: gj});
   map.addSource('hex-dot', {type: 'geojson', data: {type: 'FeatureCollection', features:
     gj.features.map(f => ({...f, geometry: {type: 'Point', coordinates: centers[f.id]}}))}});
@@ -495,7 +495,7 @@ function renderMeta(){
 }
 
 // ---------------- load ----------------
-let loadedKey = null;
+let loadedKey = null, loadSeq = 0;
 const readSource = async file => /^s3:\/\//i.test(file) ? (await fused.s3.sign(file)).url : file;
 const readCells = params => fused.daemon.run(params).catch(e => {
   if (e && e.type) throw e;
@@ -510,11 +510,13 @@ async function loadFile(){
   const key = file + '|' + P.h3Col();
   if (key === loadedKey && !colorMissing()) return;
   showMapSkeleton();
+  const seq = ++loadSeq;
   try {
     status('Reading parquet…');
     const [r] = await Promise.all([readSource(file)
       .then(src => readCells({file: src, h3_col: P.h3Col(), color_by: P.colorBy()}))
       .catch(e => ({error: String(e.message || e)})), styleReady()]);
+    if (seq !== loadSeq) return;
     if (!r || r.error){
       if (r && r.no_h3 && r.columns){
         els.h3Col.innerHTML = '<option value="">— pick H3 column —</option>' +
@@ -535,7 +537,7 @@ async function loadFile(){
     status(r.truncated ? `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} cells` : '');
     if (r.truncated) setTimeout(() => status(''), 8000);
   } finally {
-    hideMapSkeleton();
+    if (seq === loadSeq) hideMapSkeleton();
   }
 }
 
