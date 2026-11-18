@@ -53,6 +53,27 @@ def _offer_card(run_id, request_id) -> bool:
 SERVICE_PREFIX = "mcp__specialist_services__"
 
 
+def _main_cancelled(run_id) -> None:
+    """Stop on a specialist's main chat: Claude Code fires no Stop hook for an interrupted turn, so the home's
+    turn record is closed here (`history.main_turn_ended`)."""
+    import json
+    import os
+    import re
+
+    if not (isinstance(run_id, str) and re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$", run_id)):
+        return
+    try:
+        from fused_render.claude_agent import agent_module
+        from fused_render.specialists import history
+
+        with open(os.path.join(agent_module().RUNS, run_id, "meta.json"), encoding="utf-8") as fh:
+            sp = json.load(fh).get("specialist")
+        if isinstance(sp, dict) and sp.get("kind") == "main" and sp.get("id"):
+            history.main_turn_ended(str(sp["id"]))
+    except (OSError, ValueError, AttributeError, ImportError):
+        pass
+
+
 def grant_from_decision(run_id, request_id) -> bool:
     """The user allowed card `request_id` of run `run_id`: when that card asks for a specialist service tool and
     the run is a specialist main chat / breakout, record the one-time grant for (specialist, kind, breakout,
@@ -130,6 +151,7 @@ def _after(action: str, params: dict, envelope: dict) -> None:
             signals.record(sid, "deny", {"request_id": str(params.get("request_id") or "")})
         return
     if action == "cancel":
+        _main_cancelled(params.get("run_id"))
         sid = str(res.get("session_id") or "") or _session_of_run(params.get("run_id"))
         if sid:
             signals.record(sid, "stop", {"run_id": str(params.get("run_id") or "")})

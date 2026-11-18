@@ -313,3 +313,16 @@ def test_working_while_the_main_chats_turn_is_live(client, monkeypatch):
     assert rows()[0]["working"] is False
     monkeypatch.setattr(store, "main_live_runs", lambda home: [{"run_id": "r", "sessions": {"ms-1"}}])
     assert rows()[0]["working"] is True
+
+
+def test_stop_on_the_main_chat_closes_its_turn_record(client):
+    """Claude Code fires no Stop hook for an interrupted turn: the Stop button's cancel closes the record, so the
+    main chat does not read as working (and breakout guards do not stand down) for long after."""
+    from fused_render.specialists import agent_hooks, history
+
+    s = make_specialist()
+    _service_card("run-c1", s.id, "main", "ms-1", "Bash")
+    history.before_turn(s.id, "main", "ms-1")
+    assert history.main_turn_open(s.id)
+    agent_hooks.after_agent_call("cancel", {"run_id": "run-c1"}, {"result": {"ok": True}})
+    assert not history.main_turn_open(s.id)

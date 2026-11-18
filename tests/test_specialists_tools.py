@@ -241,7 +241,7 @@ def test_a_receipt_is_not_due_while_its_task_is_mid_turn(client, task, monkeypat
     from fused_render.claude_agent import agent_module
     from fused_render.specialists import receipts
 
-    spec = make_specialist("Canvas", "Fused canvases")
+    make_specialist("Canvas", "Fused canvases")
     _, body = _post(client, "pull", {"run_id": "run1", "specialist": "Canvas"})
     monkeypatch.setattr(receipts, "_last_activity", lambda rec: 0.0)  # idle for ages by its transcript
     agent = agent_module()

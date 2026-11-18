@@ -295,19 +295,27 @@ def _guard_row(spec_id: str, session_id: str, restored: list[str], skipped: str 
 # cannot forge it the way it could forge a file. Lost on restart, when the live-run check still stands.
 _TURNS: dict[str, dict] = {}
 _TURNS_LOCK = threading.Lock()
-#: A main turn "started" this long ago with no end recorded is taken as over (a lost Stop).
-MAIN_TURN_MAX_S = 6 * 3600.0
+#: A main turn "started" this long ago with no end recorded is taken as over (a lost Stop: Claude Code fires no
+#: Stop for an interrupted turn, and the Stop button's `cancel` ends it here too, `main_turn_ended`).
+MAIN_TURN_MAX_S = 3600.0
 
 
 def _turns(spec_id: str) -> dict:
     return _TURNS.setdefault(spec_id, {"main_started": 0.0, "main_ended": 0.0, "breakouts": {}})
 
 
-def main_turn_open(spec_id: str) -> bool:
-    """A main-chat turn's prompt hook fired and its Stop has not (this process's record)."""
+def main_turn_open(spec_id: str, within_s: float = MAIN_TURN_MAX_S) -> bool:
+    """A main-chat turn's prompt hook fired (less than `within_s` ago) and its Stop has not (this process's
+    record)."""
     with _TURNS_LOCK:
         t = _turns(spec_id)
-        return t["main_started"] > t["main_ended"] and time.time() - t["main_started"] < MAIN_TURN_MAX_S
+        return t["main_started"] > t["main_ended"] and time.time() - t["main_started"] < within_s
+
+
+def main_turn_ended(spec_id: str) -> None:
+    """The main chat's turn is over without a Stop (the user pressed Stop)."""
+    with _TURNS_LOCK:
+        _turns(spec_id)["main_ended"] = time.time()
 
 
 def _main_turn_live(spec_id: str, breakout_session: str) -> bool:

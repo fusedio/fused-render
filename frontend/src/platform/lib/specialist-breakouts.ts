@@ -173,25 +173,24 @@ export function clearSummaryDraft(sessionId: string, file: string): void {
   writeDrafts(next);
 }
 
+function subscribeDrafts(fn: () => void): () => void {
+  draftListeners.add(fn);
+  // Another tab's write (or this one's after a reload) is read afresh.
+  const onStorage = (e: StorageEvent) => {
+    if (e.key !== DRAFTS_KEY) return;
+    drafts = null;
+    fn();
+  };
+  if (typeof window !== "undefined") window.addEventListener?.("storage", onStorage);
+  return () => {
+    draftListeners.delete(fn);
+    if (typeof window !== "undefined") window.removeEventListener?.("storage", onStorage);
+  };
+}
+
 export function useSummaryDraft(sessionId: string, file: string): readonly SummaryDraftPart[] {
   const get = () => (sessionId ? readSummaryDraft(sessionId, file) : NO_PARTS);
-  return useSyncExternalStore(
-    (fn) => {
-      draftListeners.add(fn);
-      const onStorage = (e: StorageEvent) => {
-        if (e.key !== DRAFTS_KEY) return;
-        drafts = null;
-        fn();
-      };
-      if (typeof window !== "undefined") window.addEventListener?.("storage", onStorage);
-      return () => {
-        draftListeners.delete(fn);
-        if (typeof window !== "undefined") window.removeEventListener?.("storage", onStorage);
-      };
-    },
-    get,
-    get,
-  );
+  return useSyncExternalStore(subscribeDrafts, get, get);
 }
 
 /** The summary as it goes to the task: each part, a blank line between. */

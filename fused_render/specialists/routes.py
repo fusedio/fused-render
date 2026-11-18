@@ -58,10 +58,15 @@ def _body(body) -> dict:
     return body
 
 
+#: How long a main turn's prompt hook alone says "working" when no open turn is seen in the runs (the moment
+#: between the hook and the run's first line); past it, only a live run does.
+WORKING_BRIDGE_S = 120.0
+
+
 def _working(s: store.Specialist) -> bool:
     """The main chat's turn is live: a run with an open turn in the home's own folder (breakouts run in their
     workrooms), or a turn whose prompt hook fired and whose Stop has not."""
-    return history.main_turn_open(s.id) or bool(store.main_live_runs(s.home))
+    return bool(store.main_live_runs(s.home)) or history.main_turn_open(s.id, WORKING_BRIDGE_S)
 
 
 def _status(s: store.Specialist, working: bool) -> str:
