@@ -387,3 +387,102 @@ def test_tick_skips_without_the_workspace_claim(monkeypatch):
     monkeypatch.setattr(learn, "run_pass", lambda **k: pytest.fail("a pass without the workspace"))
     out = scheduler.tick()
     assert out["ran"] is False and "workspace" in out["skipped"]
+
+
+# ------------------------------------------------------------ review fixes ---
+def test_an_ask_never_records_a_memory_diff(expert, monkeypatch):
+    # A chat or task-learn writing while the ask runs (an ask takes no write lock) is not the ask's change.
+    stub(monkeypatch, lambda b, p, w: append_memory(b, "- [1 · 2026-11-17] Written by a concurrent chat."))
+    row = sessions.ask(expert, "q?")
+    assert row["status"] == "done" and row["memory_diff"] == "" and sessions.changes(expert) == []
+
+
+def test_a_shrunk_transcript_is_read_again_whole(expert, monkeypatch, transcript):
+    calls = stub(monkeypatch)
+    transcript.write_text("turn 1\nturn 2\nturn 3\n")
+    learn.record_use(expert, "r1")
+    _age(transcript)
+    assert learn.run_pass()["sessions"] == 1
+    assert learn.run_pass()["sessions"] == 0  # unchanged size: skipped
+    transcript.write_text("summary\n")  # rewritten / compacted: smaller than what was read
+    _age(transcript)
+    assert learn.run_pass()["sessions"] == 1
+    assert "USER| summary" in calls[-1]["prompt"]
+    assert sessions.rows(expert)[0]["trigger"]["from_size"] == 0
+    rec = learn._load(expert)["sessions"]["s1"]
+    assert rec["size"] == os.path.getsize(transcript) and rec["turns"] == 1
+    assert learn.run_pass()["sessions"] == 0
+
+
+def test_a_failed_task_learn_that_changed_memory_counts_as_read(expert, monkeypatch, transcript):
+    def edit_then_time_out(b, p, w):
+        append_memory(b, "- [1 · 2026-11-17] Learned before the timeout.")
+        return {"ok": False, "error": "no answer after 600 s", "answer": "", "transcript": []}
+    calls = stub(monkeypatch, edit_then_time_out)
+    learn.record_use(expert, "r1")
+    _age(transcript)
+    assert learn.run_pass() == {"sessions": 1, "errors": 1}
+    rec = learn._load(expert)["sessions"]["s1"]
+    assert rec["size"] == os.path.getsize(transcript) and "fails" not in rec
+    assert learn.run_pass()["sessions"] == 0 and len(calls) == 1  # not retried: counts would be raised twice
+
+
+def test_after_shutdown_no_session_or_dream_starts(expert, monkeypatch):
+    from fused_render.experts import scheduler
+    calls = stub(monkeypatch)
+    lock = store.write_lock(expert)
+    lock.acquire()  # a dream waiting on the gate when shutdown begins
+    out = []
+    t = threading.Thread(target=lambda: out.append(sessions.run(expert, "dream", "x")))
+    t.start()
+    try:
+        time.sleep(0.2)
+        sessions.shutdown()
+    finally:
+        lock.release()
+    t.join(5)
+    try:
+        assert out[0]["status"] == "error" and out[0]["error"] == sessions.CLOSED
+        row = sessions.run(expert, "ask", "q")
+        assert row["status"] == "error" and row["error"] == sessions.CLOSED and calls == []
+        with open(store.memory_path(expert), "w", encoding="utf-8") as f:
+            f.write("x\n" * (sessions.LIMIT_LINES + 1))
+        assert sessions.after_write(expert) is False  # no dream queued after shutdown
+        scheduler.start()  # the server starting again reopens
+        assert sessions.closed() is False
+    finally:
+        scheduler.shutdown(0)
+        sessions.reopen()
+    assert sessions.run(expert, "ask", "q")["status"] == "done"
+
+
+def test_bots_shutdown_ends_the_experts_before_the_claim_goes(monkeypatch):
+    seen = []
+    proc = object()
+    monkeypatch.setattr(sessions, "_kill", lambda p: seen.append("kill"))
+    monkeypatch.setattr(registry, "_drop_routines_lock", lambda: seen.append(("claim", sessions.closed())))
+    with sessions._GUARD:
+        sessions._PROCS.add(proc)
+    try:
+        registry.shutdown(budget_s=0.1)
+    finally:
+        with sessions._GUARD:
+            sessions._PROCS.discard(proc)
+    assert seen == ["kill", ("claim", True)]
+    registry.reset_for_tests()  # a later test must be able to run sessions again
+    assert sessions.closed() is False
+
+
+def test_an_expert_never_falls_back_to_the_steps_engine(expert, monkeypatch):
+    import sys
+
+    import fused_render.bots as bots_pkg
+    from fused_render.bots import steps_engine
+    monkeypatch.delattr(bots_pkg, "agent_engine")
+    monkeypatch.setitem(sys.modules, "fused_render.bots.agent_engine", None)  # the import raises
+    monkeypatch.setattr(steps_engine, "run", lambda *a, **k: pytest.fail("the steps engine ran an expert"))
+    said = []
+    monkeypatch.setattr(expert, "emit", lambda role, text, **k: said.append((role, text)))
+    assert expert.start_task("hi") is False
+    assert ("error", "An expert needs the agent engine (Claude Code), which could not load.") in said
+    assert expert.meta.get("status") == "idle" and (expert.thread is None or not expert.thread.is_alive())
