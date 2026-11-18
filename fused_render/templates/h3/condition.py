@@ -9,8 +9,9 @@ H3 cell-index column. Detection is footer-first, since I/O is the whole cost:
    BYTE_ARRAY (hex string) top-level columns can hold an H3 index. A column
    whose every row group has min/max stats that both carry the H3 bit pattern
    is decided with no data pages read; a column refuted by its stats is
-   dropped, unless it is NAMED like H3 and its max is H3 (a sentinel 0 can
-   hide real H3 data from min).
+   dropped, unless it is NAMED like H3 and one bound is H3 (a sentinel can
+   hide real H3 data from the other). A column too wide to hold H3 values in
+   any row group is skipped, so a geometry column is never sampled.
 2. Columns with a stats gap, and refuted H3-named ones, are sampled with a
    projection of just those columns, accepted at >=90% H3 values.
 
@@ -65,17 +66,18 @@ def connect(src):
 
 def h3_column(con, src):
     top = {r[0] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [src]).fetchall()}
-    cols, highs = {}, {}
-    for name, ptype, lo, hi, width in con.execute(
-            "SELECT path_in_schema, type, stats_min_value, stats_max_value,"
-            " total_uncompressed_size / greatest(num_values, 64)"
-            " FROM parquet_metadata(?)", [src]).fetchall():
-        if ptype not in ("INT64", "BYTE_ARRAY") or name not in top or width > 64:
+    meta = con.execute(
+        "SELECT path_in_schema, type, stats_min_value, stats_max_value,"
+        " total_uncompressed_size / greatest(num_values, 64) FROM parquet_metadata(?)", [src]).fetchall()
+    wide = {m[0] for m in meta if m[4] > 64}
+    cols, hints = {}, {}
+    for name, ptype, lo, hi, _ in meta:
+        if ptype not in ("INT64", "BYTE_ARRAY") or name not in top or name in wide:
             continue
         looks = _looks_h3_str if ptype == "BYTE_ARRAY" else _looks_h3_int
         seen = cols.get(name, True)
         cols[name] = None if None in (lo, hi, seen) else seen and looks(lo) and looks(hi)
-        highs[name] = highs.get(name, False) or looks(hi)
+        hints[name] = hints.get(name, False) or looks(lo) or looks(hi)
 
     def rank(n):
         return H3_NAMES.index(n.lower()) if n.lower() in H3_NAMES else len(H3_NAMES)
@@ -85,7 +87,7 @@ def h3_column(con, src):
         if cols[name]:
             found = name
             break
-        if cols[name] is None or (rank(name) < len(H3_NAMES) and highs[name]):
+        if cols[name] is None or (rank(name) < len(H3_NAMES) and hints[name]):
             pending.append(name)
     if not pending:
         return found
@@ -93,9 +95,10 @@ def h3_column(con, src):
     sel = ", ".join(map(ident, pending))
     sample = con.execute(f"SELECT {sel} FROM read_parquet(?) LIMIT 128", [src]).fetchall()
     for i, name in enumerate(pending):
-        vals = [r[i] for r in sample if r[i] is not None][:50]
+        vals = [r[i].decode(errors="replace") if isinstance(r[i], bytes) else r[i]
+                for r in sample if r[i] is not None][:50]
         good = sum(_looks_h3_str(v) if isinstance(v, str) else _looks_h3_int(v) for v in vals)
-        if vals and good >= max(1, int(len(vals) * 0.9)):
+        if vals and good * 10 >= len(vals) * 9:
             return name
     return found
 

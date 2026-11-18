@@ -67,6 +67,8 @@ def test_detection_skips_nested_leaves_and_reads_blob_and_tiny_files(tmp_path):
                                 f"({H3_BASE} + range)::UBIGINT AS cell_r8 FROM range(100)")
     assert h3_reader.main(nested)["h3_col"] == "cell_r8"
     blob = write("b.parquet", f"SELECT printf('%x', {H3_BASE} + range)::BLOB AS hex FROM range(100)")
+    signed = write("s.parquet", f"SELECT CASE WHEN range = 3 THEN -1 ELSE {H3_BASE} + range END AS hex FROM range(100)")
+    assert h3_reader.main(signed)["shown"] == 99
     assert h3_reader.main(blob)["cells"][0] == format(H3_BASE, "x")
     one = str(tmp_path / "one.parquet")
     pq.write_table(pa.table({"hex": pa.array([H3_BASE], pa.uint64())}), one)

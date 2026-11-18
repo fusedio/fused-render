@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(not _venv_ready(),
                                 reason="the vector template venv is not built here")
 
 _WRITE = r"""
-import sys, geopandas as gpd, shapely
+import sys, geopandas as gpd, pyogrio, shapely
 d = sys.argv[1]
 geoms = [shapely.Point(10 + i % 60 * 0.01, 50 + i // 60 * 0.01).buffer(0.004) for i in range(3000)]
 gdf = gpd.GeoDataFrame({"id": range(3000), "name": [f"n{i % 13}" for i in range(3000)]},
@@ -32,6 +32,8 @@ gdf = gpd.GeoDataFrame({"id": range(3000), "name": [f"n{i % 13}" for i in range(
 gdf.to_crs(32632).to_file(f"{d}/t.shp")
 gdf.to_parquet(f"{d}/t.parquet", row_group_size=250)
 gdf.drop(columns="geometry").assign(h3_index=1).to_parquet(f"{d}/h3.parquet")
+pyogrio.write_dataframe(gdf.drop(columns="geometry").head(5), f"{d}/m.gpkg", layer="meta")
+gdf.head(40).to_file(f"{d}/m.gpkg", layer="roads", mode="a")
 """
 
 _READ = r"""
@@ -94,12 +96,17 @@ def test_a_vrt_is_refused_and_odd_parquet_columns_still_render(tmp_path):
     (tmp_path / "evil.geojson").write_text(
         f"<OGRVRTDataSource><OGRVRTLayer name='x'><SrcDataSource>{tmp_path}/secret.csv"
         "</SrcDataSource><SrcLayer>secret</SrcLayer></OGRVRTLayer></OGRVRTDataSource>")
-    geo = {"version": "1.0.0", "primary_column": "geometry", "columns": {"geometry": {"encoding": "WKB"}}}
-    odd = pa.table({"geometry": [struct.pack("<BIdd", 1, 1, 1.0, 2.0)], "tags": [[1, 2]],
-                    "at": pa.array([0], pa.timestamp("s", "UTC"))})
+    geo = {"version": "1.0.0", "primary_column": "wkb", "columns": {"wkb": {"encoding": "WKB"}}}
+    odd = pa.table({"wkb": [struct.pack("<BIdd", 1, 1, 1.0, 2.0)], "tags": [[1, 2]],
+                    "at": pa.array([0], pa.timestamp("s", "UTC")), "geometry": ["attr"]})
     pq.write_table(odd.replace_schema_metadata({"geo": json.dumps(geo)}), tmp_path / "odd.parquet")
     pq.write_table(pa.table({"width3": [1]}), tmp_path / "plain.parquet")
     evil, odd, plain = _read(tmp_path / "evil.geojson", tmp_path / "odd.parquet", tmp_path / "plain.parquet")
-    assert "SECRET" not in json.dumps(evil) and "error" in evil
-    assert odd["count"] == 1 and odd["table"][0]["tags"] == "[1 2]"
+    assert "SECRET" not in json.dumps(evil) and "not recognized" in evil["error"]
+    assert odd["count"] == 1 and odd["table"][0]["tags"] == "[1 2]" and odd["table"][0]["geometry"] == "attr"
     assert "H3" not in plain["error"]
+
+
+def test_a_geopackage_skips_its_nonspatial_tables(files):
+    gpkg, = _read(files / "m.gpkg")
+    assert sorted(gpkg["layers"]) == ["meta", "roads"] and (gpkg["count"], gpkg["truncated"]) == (40, False)

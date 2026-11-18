@@ -3141,13 +3141,15 @@ export default function Preview({
   return (
     <>
       {fileSearchField}
-      <FallbackPreview
-        fsPath={fsPath}
-        stat={stat}
-        actionsInTopbar={actionsInTopbar}
-        onReload={onReload}
-        remoteUrl={remoteUrl}
-      />
+      {remoteContent ? remoteContent.pane("") : (
+        <FallbackPreview
+          fsPath={fsPath}
+          stat={stat}
+          actionsInTopbar={actionsInTopbar}
+          onReload={onReload}
+          remoteUrl={remoteUrl}
+        />
+      )}
     </>
   );
 }

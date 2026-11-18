@@ -72,10 +72,11 @@ def _read(con, file, h3_col, color_by, max_cells):
     others = [n for n in names if n != cand]
     if is_url(file):
         others = [color_by if color_by in numeric else numeric[0]] if numeric else []
-    h3 = (f"format('{{:x}}', {ident(cand)}::UBIGINT)" if "INT" in types[cand]
-          else f"lower(trim({ident(cand)}::VARCHAR))")
+    num = "INT" in types[cand]
+    val = f"TRY_CAST({ident(cand)} AS UBIGINT)" if num else f"lower(trim({ident(cand)}::VARCHAR))"
+    h3 = f"format('{{:x}}', {val})" if num else val
     rows = q(f"SELECT {', '.join([h3] + [ident(n) for n in others])} FROM read_parquet(?)"
-             f" WHERE {ident(cand)} IS NOT NULL LIMIT {max_cells}")
+             f" WHERE {val} IS NOT NULL LIMIT {max_cells}")
 
     return {
         "file_size": size,

@@ -495,7 +495,7 @@ function renderMeta(){
 }
 
 // ---------------- load ----------------
-let loadedKey = null, loadSeq = 0;
+let loadedKey = null, loadSeq = 0, doneSeq = 0;
 const readSource = async file => /^s3:\/\//i.test(file) ? (await fused.s3.sign(file)).url : file;
 const readCells = params => fused.daemon.run(params).catch(e => {
   if (e && e.type) throw e;
@@ -517,6 +517,7 @@ async function loadFile(){
       .then(src => readCells({file: src, h3_col: P.h3Col(), color_by: P.colorBy()}))
       .catch(e => ({error: String(e.message || e)})), styleReady()]);
     if (seq !== loadSeq) return;
+    doneSeq = seq;
     if (!r || r.error){
       if (r && r.no_h3 && r.columns){
         els.h3Col.innerHTML = '<option value="">— pick H3 column —</option>' +
@@ -571,6 +572,7 @@ els.fitBtn.onclick = () => fitToData(false);
 
 function onParamsChanged(){
   if (P.file() + '|' + P.h3Col() !== loadedKey || colorMissing()){ loadFile(); return; }
+  if (doneSeq !== loadSeq){ doneSeq = ++loadSeq; hideMapSkeleton(); status(''); }
   if (data && map.getLayer('hex-fill')){
     paintHex();
     syncControls();

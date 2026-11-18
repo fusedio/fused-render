@@ -17,6 +17,7 @@ class _Bucket:
         self.objects: dict[str, bytes] = {}
         self.log: list = []
         self.sent: dict[str, int] = {}
+        self.lock = threading.Lock()
         self.deny_next = 0       # answer this many requests with 403
         self.ignore_range = False
         bucket = self
@@ -66,7 +67,8 @@ class _Bucket:
 
             def _send(self, status, body, etag=None, cr=None):
                 key = self.path.split("?")[0]
-                bucket.sent[key] = bucket.sent.get(key, 0) + len(body)
+                with bucket.lock:
+                    bucket.sent[key] = bucket.sent.get(key, 0) + len(body)
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(body)))
                 if etag:

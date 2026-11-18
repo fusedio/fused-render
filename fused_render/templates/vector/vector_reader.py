@@ -71,6 +71,7 @@ def _read_ogr(src, cap):
         pyogrio.set_gdal_config_options(GDAL_HTTP)
         src = "/vsicurl/" + src
     layers = [str(l[0]) for l in pyogrio.list_layers(src)]
+    skipped = set()
     if len(layers) <= 1:
         gdf = pyogrio.read_dataframe(src, max_features=cap)
         if "geometry" not in gdf:
@@ -83,17 +84,19 @@ def _read_ogr(src, cap):
                 break
             try:
                 part = pyogrio.read_dataframe(src, layer=name, max_features=left)
+                part = part[part.geometry.notna()]
             except Exception:  # noqa: BLE001
+                skipped.add(name)
                 continue
-            part = part[part.geometry.notna()]
             if len(part):
                 part.insert(0, "_layer", name)
                 parts.append(part)
         if not parts:
             raise NotVector("no readable features in any layer")
         gdf = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
-    total = len(gdf) if len(layers) <= 1 and len(gdf) < cap else sum(
-        pyogrio.read_info(src, layer=n, force_feature_count=True)["features"] for n in layers)
+    total = len(gdf) if len(layers) <= 1 and len(gdf) < cap else max(len(gdf), sum(
+        pyogrio.read_info(src, layer=n, force_feature_count=True)["features"] or 0
+        for n in layers if n not in skipped))
     return gdf, total, layers
 
 
@@ -121,9 +124,9 @@ def _read_parquet(file, cap):
     columns = [f.name for f in schema if f.name == col
                or not (f.name in skip or pa.types.is_binary(f.type))]
     table = pf.read_row_groups(range(groups), columns=columns).slice(0, cap)
-    geoms = shapely.from_wkb(table[col].to_numpy(zero_copy_only=False))
-    gdf = gpd.GeoDataFrame(table.drop_columns([col]).to_pandas(), geometry=geoms,
-                           crs=meta.get("crs", "OGC:CRS84"))
+    df = table.to_pandas()
+    df[col] = shapely.from_wkb(df[col].to_numpy())
+    gdf = gpd.GeoDataFrame(df, geometry=col, crs=meta.get("crs", "OGC:CRS84"))
     return gdf, pf.metadata.num_rows, []
 
 
@@ -142,7 +145,7 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
             return {"error": f"not a file: {file}"}
     stem, _, ext = (file.split("?")[0] if "://" in file else file).rpartition(".")
     ext = ext.lower()
-    parts = [f"{stem}.{e}" for e in ("shp", "shx", "dbf", "prj", "cpg")] if ext == "shp" else [file]
+    parts = [file] + ([f"{stem}.{e}" for e in ("shx", "dbf", "prj", "cpg")] if ext == "shp" else [])
     sizes = ThreadPoolExecutor(len(parts)).map(_size, parts)
 
     try:
