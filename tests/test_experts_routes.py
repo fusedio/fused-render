@@ -201,11 +201,23 @@ def test_settings_never_write_the_bot_memory_file_of_an_expert(client, expert):
     assert not os.path.exists(expert.memory_path) and store.memory(expert) == before
 
 
-def _expert_package(path, pub, memory=b"- remember this\n"):
+def _expert_package(path, pub, memory=b"- remember this\n", skills=()):
     from fused_render import appfile_container
-    members = [("bot.json", json.dumps(pub).encode())] + ([(".fused/memory.md", memory)] if memory else [])
+    members = ([("bot.json", json.dumps(pub).encode())] + ([(".fused/memory.md", memory)] if memory else [])
+               + [(f"skills/{n}.md", raw) for n, raw in skills])
     appfile_container.write(str(path), {"name": pub["name"]}, members, kind="bot")
     return str(path)
+
+
+def test_an_imported_expert_skill_needs_no_trigger(tmp_path):
+    """An expert's skill is a reference file read by its path: one without a `trigger:` line is complete, and the
+    playbook warning ("it never runs until you add one") is not said of it. One with no text still is."""
+    from fused_render.bots import botfile
+    pub = {"name": "Skilled Expert", "kind": "expert", "expert": {"ask_me_about": "hand-made"}}
+    out = botfile.install(_expert_package(tmp_path / "s.fusedbot", pub, memory=None,
+                                          skills=[("ref", b"# Ref\n\nThe text.\n"), ("empty", b"# Empty\n")]), apps=[], memory=False)
+    assert [s["title"] for s in store.skills(registry.get(out["bot_id"]))] == ["Empty", "Ref"]
+    assert out["warnings"] == ["skill empty: it has no text"]
 
 
 def test_an_expert_package_takes_no_local_model_and_no_bot_memory(tmp_path):
