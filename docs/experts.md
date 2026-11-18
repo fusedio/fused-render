@@ -97,9 +97,17 @@ row with status `error`.
   expert's folder. The prompt goes on stdin. `--no-session-persistence`: a side session is never resumed, and a
   transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s
   (`$FUSED_RENDER_EXPERT_TIMEOUT`), then the process group is killed.
-- **Shutdown** (`sessions.shutdown`): sets a closed flag under `_GUARD` and kills every live harness. Once closed,
-  `run` starts nothing (an `error` row, `error: sessions.CLOSED`, also for a session that was waiting on its gate,
-  and a spawn that raced the flag is killed at once) and `after_write` queues no dream. `scheduler.start` reopens it.
+- **Shutdown** (`sessions.shutdown(budget_s)`): sets a closed flag and raises a generation counter under `_GUARD`,
+  then ends every live harness within ONE budget: SIGTERM to all, one shared wait, SIGKILL to what is left in the
+  last `KILL_GRACE_S` (1 s), waited for together (the bots `registry.shutdown` passes at most 5 s). Once closed, `run`
+  starts nothing (an `error` row, `error: sessions.CLOSED`) and `after_write` queues no dream. `scheduler.start`
+  reopens it, but a session admitted by `run` before a shutdown (the generation it noted) is still refused when it
+  gets its gate after the reopen. `harness` checks closed / generation, spawns and registers the process in
+  `_PROCS` in one step under `_GUARD`, so a harness is either never spawned or tracked before `shutdown` takes its
+  snapshot; one ended by a shutdown reports `CLOSED` (not a failed attempt, §9).
+- **The prompts** of an ask, a task-learn and a dream, and a fresh chat session's message (§7), state the absolute
+  paths: "Your folder is <dir>; your memory is <dir>/memory.md." (`store.where`), so the harness never guesses
+  where memory.md is.
 - **A row** `{id, kind, started, ended, status, trigger, transcript, memory_diff, answer, error?, cost_usd?}`:
   `id` is `<started ms, 13 digits>-<6 hex>`, so names sort by start; `status` is `running` | `done` | `error`, and a
   row still `running` that this process is not running reads as `interrupted` (a restart cut it short);
@@ -179,7 +187,8 @@ rows as Super Bot's do.
   retry). It is seeded with the digest of the past conversation (`bot.past_conversation`, after any previous
   summary), never a summary model call and never the bot memory curation: an expert's memory is `memory.md`.
 - **The message** (`_expert_message`): on a fresh session `CONVERSATION SO FAR (with the user, oldest first):`
-  and the digest, then always `Today is <date>.` and `MESSAGE: <text>`. No preamble sections.
+  and the digest and the folder / memory paths (`store.where`, §4), then always `Today is <date>.` and
+  `MESSAGE: <text>`. No preamble sections.
 - **Memory**: the turn takes the write lock before spawning (§4), notes `memory.md`, and at the end calls
   `note_chat` (a `chat` row when it changed), releases the lock and calls `after_write` (§10).
 
@@ -256,9 +265,16 @@ that session is no longer due until it grows again. A session that never started
 server stops after the expert's edit but before the row ends, the row stays `running` with no diff. Before
 reading a slice, `learn_one` asks `sessions.cut_short`: a stale `running` task-learn row for the same task and
 the same `from_size` whose `memory_before` no longer matches the file means that slice was already applied, so
-it is recorded as read and not replayed; the row is closed as `interrupted`. A stale row whose hash still
-matches changed nothing and the slice is read as usual. A chat or hand edit between the two also changes the
-hash; that slice is then skipped too, the cheaper mistake.
+it is recorded as read and not replayed; the row is closed as `interrupted`. `cut_short` returns that row's
+trigger, and the cursor is set to ITS `to_size` / `to_turns` (the slice that session was given), so turns the task
+added after it stay due (a row written before `to_turns` was kept falls back to the current size and turns). A
+stale row whose hash still matches changed nothing and the slice is read as usual. A chat or hand edit between
+the two also changes the hash; that slice is then skipped too, the cheaper mistake.
+
+**Accepted limit**: there is no journal for the two sub-millisecond windows between the row's write and the
+cursor's write in `read.json` (a server dying after a finished row is saved but before `read.json` is updated, or
+after `cut_short` closed a row but before the cursor moved). A slice cut off there is read again, so a count may be
+raised twice if the server dies in that instant.
 
 **Restart safety**: everything is on disk. A restart mid-wait or mid-session leaves `read.json` where it was (the
 row reads `interrupted`), so the next pass picks the session up again, once; a task resumed later is read again
@@ -290,7 +306,8 @@ The row's `trigger` says where it came from:
 
     chat         {message}                                                      the user's message
     ask          {asker, question, session_id?, run_id?}                         (never writes)
-    task-learn   {session_id, run_id?, target, backend, from_size, to_size}      the task session and the slice read
+    task-learn   {session_id, run_id?, target, backend, from_size, to_size,      the task session and the slice read
+                  to_turns}
     dream        {lines, bytes}                                                  the size that triggered it
 
 - `sessions.changes(bot)`: the newest 20 rows that changed memory, `[{id, kind, started, trigger}]` ("last changed
