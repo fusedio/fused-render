@@ -141,6 +141,24 @@ def test_stuck_on_one_tool_with_different_errors(client, tmp_path, monkeypatch):
     assert outs[4]["additionalContext"].startswith("The same step has failed 5 times (Edit: different errors")
 
 
+def test_two_stuck_rules_never_nudge_back_to_back(client, tmp_path, monkeypatch):
+    """Seen live: four different Bash failures, then the same `cat` failing three times. The different-errors rule
+    fired on the first `cat` and the same-step rule two seconds later: two identical chips. One nudge per
+    `NUDGE_GAP_S`; the same step still nudges once the gap has passed."""
+    monkeypatch.setenv("FUSED_RENDER_SPECIALIST_STUCK_N", "3")
+    make_specialist("Canvas", "Fused canvases")
+    base = dict(event="failure", session_id="s8", cwd=str(tmp_path), tool_name="Bash")
+    for c, e in [("ls /a", "ls: a"), ("cat /b", "cat: b"), ("false", "Exit code 1\nx"), ("exit 4", "Exit code 4\ny")]:
+        assert _hook(client, error=e, tool_input={"command": c}, **base) == {}
+    same = dict(error="cat: /m: No such file", tool_input={"command": "cat /m"}, **base)
+    outs = [_hook(client, **same) for _ in range(3)]
+    assert [bool(o) for o in outs] == [True, False, False]
+    assert [e["kind"] for e in _events(client, "s8")] == ["stuck"]
+    monkeypatch.setattr(task_routes, "NUDGE_GAP_S", 0.0)
+    assert _hook(client, **same)["additionalContext"].startswith("The same step has failed 4 times")
+    assert [e["kind"] for e in _events(client, "s8")] == ["stuck", "stuck"]
+
+
 def test_signal_pull_index_is_per_session(client, tmp_path, monkeypatch):
     from fused_render.specialists import receipts
 

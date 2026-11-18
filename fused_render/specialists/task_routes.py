@@ -360,6 +360,10 @@ def _signature(tool: str, tool_input, error) -> str:
     return f"{tool}|{_input_key(tool_input)}|{_error_line(error)}"
 
 
+#: The least time between two stuck nudges in one task.
+NUDGE_GAP_S = 60.0
+
+
 def _stuck(session_id: str, cwd: str, tool: str, error, tool_input=None) -> str:
     """Count this failure; the STUCK_NUDGE text the first time a signature reaches the threshold, else "".
     Identical failures (`_signature`) count toward N; any failure of the tool counts toward the N + 2
@@ -388,15 +392,19 @@ def _stuck(session_id: str, cwd: str, tool: str, error, tool_input=None) -> str:
         # The same tool failing over and over with DIFFERENT errors is circling too: N + 2, once per tool.
         by_tool = recent(sigs.get(tool_key))
         sigs[tool_key] = by_tool[-50:]
-        fire = len(times) >= n and key not in nudged
+        last = float(st.get("last") or 0) if isinstance(st.get("last"), (int, float)) else 0.0
+        # One nudge at a time: right after a nudge the task needs a moment to act on it. Seen live: the
+        # different-errors rule fired on a failure and the same-step rule two seconds later, two chips at once.
+        cooling = now - last < NUDGE_GAP_S
+        fire = not cooling and len(times) >= n and key not in nudged
         if fire:
             nudged.append(key)
-        elif len(by_tool) >= n + 2 and tool_key not in nudged:
+        elif not cooling and len(by_tool) >= n + 2 and tool_key not in nudged:
             fire, times, sig = True, by_tool, "different errors each time"
             nudged.append(tool_key)
         if fire and tool_key not in nudged:
             nudged.append(tool_key)  # one nudge per tool is enough for the second rule
-        counts.write_json(path, {"sigs": sigs, "nudged": nudged[-200:]})
+        counts.write_json(path, {"sigs": sigs, "nudged": nudged[-200:], "last": now if fire else last})
     if not fire:
         return ""
     specs = store.all()
