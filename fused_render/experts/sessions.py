@@ -53,6 +53,7 @@ TIMEOUT_S = 600.0
 ASK_PARALLEL = 3
 ASK_WAIT_S = 120
 BUSY = "the expert is busy; try again in a minute"
+CLOSED = "the server is shutting down; no new expert session starts"
 ROWS_KEPT = 200
 LINE_MAX = 4000
 
@@ -61,6 +62,7 @@ _GUARD = threading.Lock()
 _RUNNING: set = set()          # row ids this process is running
 _PROCS: set = set()            # their harness processes (shutdown)
 _DREAMING: set = set()       # expert ids with a dream session queued or running
+_STATE = {"closed": False}   # set by `shutdown`, cleared by `reopen` (scheduler.start): no new harness once closed
 
 
 def today() -> str:
@@ -162,7 +164,12 @@ def harness(bot, prompt: str, write: bool) -> dict:
                                 cwd=store.expert_dir(bot), env=dict(os.environ), close_fds=False,
                                 start_new_session=True)
         with _GUARD:
+            closed = _STATE["closed"]
             _PROCS.add(proc)
+        if closed:  # shutdown began between `run`'s check and the spawn: it may already have collected _PROCS
+            _kill(proc)
+            out["error"] = CLOSED
+            return out
         try:
             raw, err = proc.communicate(prompt.encode("utf-8"), timeout=_timeout())
         except subprocess.TimeoutExpired:
@@ -332,12 +339,19 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
     rec = _new_row(kind, trigger)
     writes = kind in WRITERS
     gate = store.write_lock(bot) if writes else _ASKS
-    if not gate.acquire(timeout=_timeout() if writes else ASK_WAIT_S):
-        rec.update(status="error", ended=time.time(), error=BUSY)
+    if closed() or not gate.acquire(timeout=_timeout() if writes else ASK_WAIT_S):
+        rec.update(status="error", ended=time.time(), error=CLOSED if closed() else BUSY)
         _save(bot, rec)
         return rec
     with _GUARD:
-        _RUNNING.add(rec["id"])
+        shut = _STATE["closed"]  # shutdown may have begun while this session waited on the gate
+        if not shut:
+            _RUNNING.add(rec["id"])
+    if shut:
+        gate.release()
+        rec.update(status="error", ended=time.time(), error=CLOSED)
+        _save(bot, rec)
+        return rec
     try:
         _save(bot, rec)
         before = store.memory(bot)
@@ -346,8 +360,11 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
         except Exception as e:  # noqa: BLE001
             logger.warning("expert %s: %s session failed", bot.id, kind, exc_info=True)
             res = {"ok": False, "error": f"{type(e).__name__}: {e}", "transcript": [], "answer": ""}
+        # Only a writer's diff is its own: an ask holds no write lock, so a chat or task-learn writing meanwhile
+        # would otherwise show up in the ask's row and list it as a memory writer.
         rec.update(ended=time.time(), status="done" if res.get("ok") else "error",
-                   transcript=res.get("transcript") or [], memory_diff=diff(before, store.memory(bot)))
+                   transcript=res.get("transcript") or [],
+                   memory_diff=diff(before, store.memory(bot)) if writes else "")
         if res.get("error"):
             rec["error"] = res["error"]
         if res.get("cost_usd") is not None:
@@ -408,7 +425,7 @@ def after_write(bot) -> bool:
     except Exception:  # noqa: BLE001
         return False
     with _GUARD:
-        if bot.id in _DREAMING:
+        if _STATE["closed"] or bot.id in _DREAMING:
             return False
         _DREAMING.add(bot.id)
 
@@ -425,9 +442,22 @@ def after_write(bot) -> bool:
     return True
 
 
-def shutdown() -> None:
-    """End every harness process a side session still has (server shutdown)."""
+def closed() -> bool:
     with _GUARD:
+        return _STATE["closed"]
+
+
+def reopen() -> None:
+    """Let sessions start again (scheduler.start; a test after a shutdown)."""
+    with _GUARD:
+        _STATE["closed"] = False
+
+
+def shutdown() -> None:
+    """Close (no new side session or dream starts: `run` answers a CLOSED error row, `after_write` queues
+    nothing) and end every harness process a side session still has (server shutdown)."""
+    with _GUARD:
+        _STATE["closed"] = True
         procs = list(_PROCS)
     for p in procs:
         _kill(p)

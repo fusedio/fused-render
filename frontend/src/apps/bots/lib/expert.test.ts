@@ -1,22 +1,46 @@
 import { describe, expect, test } from "bun:test";
 import type { ExpertSession } from "./api";
-import { changedMemory, costLabel, diffLines, diffStat, duration, filterSessions, kindLabel, memoryUsage, oneLine, originOf, statusOf } from "./expert";
+import { changedMemory, costLabel, diffDoc, duration, kindLabel, memoryUsage, newestFirst, oneLine, originOf, statusOf } from "./expert";
 
 const row = (p: Partial<ExpertSession>): ExpertSession => ({ id: "s", kind: "ask", started: 100, ended: 112, status: "done", memory_diff: "", ...p });
 const DIFF = "--- a/memory.md\n+++ b/memory.md\n@@ -1,2 +1,2 @@\n ## Works\n-- [1 · 2026-11-16] Pull first.\n+- [2 · 2026-11-17] Pull first.\n+- [1 · 2026-11-17] New fact.\n";
 
-describe("diffLines / diffStat", () => {
-  test("each line gets its tone; the file headers are meta, not counted", () => {
-    const l = diffLines(DIFF);
-    expect(l.map((x) => x.tone)).toEqual(["meta", "meta", "hunk", "ctx", "del", "add", "add"]);
-    expect(l[4].text).toBe("-- [1 · 2026-11-16] Pull first.");
-    expect(diffStat(DIFF)).toBe("+2 −1");
+describe("diffDoc", () => {
+  test("the file headers and hunk header go; a one-for-one removed + added is a pair; a lone added line stays", () => {
+    expect(diffDoc(DIFF)).toEqual([
+      { tone: "ctx", text: "## Works" },
+      { tone: "pair", del: "- [1 · 2026-11-16] Pull first.", add: "- [2 · 2026-11-17] Pull first." },
+      { tone: "add", text: "- [1 · 2026-11-17] New fact." },
+    ]);
   });
-  test("an empty diff is no lines and no stat", () => {
-    expect(diffLines("")).toEqual([]);
-    expect(diffLines("  \n")).toEqual([]);
-    expect(diffLines(undefined)).toEqual([]);
-    expect(diffStat("")).toBe("");
+  test("added, removed and context lines; a removed run with no added run after it stays removed", () => {
+    const d = "@@ -1,4 +1,3 @@\n ## Works\n-- [1 · 2026-11-01] Old.\n-- [1 · 2026-11-02] Older.\n \n ## Does not work\n+- [1 · 2026-11-17] Force push.\n\\ No newline at end of file\n";
+    expect(diffDoc(d).map((r) => r.tone)).toEqual(["ctx", "del", "del", "ctx", "ctx", "add"]);
+  });
+  test("longer runs pair by fact (a bump next to a new fact); different facts stay apart", () => {
+    const bumps = "@@ -1,2 +1,2 @@\n-- [1 · 2026-11-01] A.\n-- [3 · 2026-11-01] B `x`.\n+- [2 · 2026-11-17] A.\n+- [4 · 2026-11-17] B `x`.\n";
+    expect(diffDoc(bumps).map((r) => r.tone)).toEqual(["pair", "pair"]);
+    const rewrite = "@@ -1,2 +1,2 @@\n-- [1 · 2026-11-01] A.\n-- [1 · 2026-11-01] B.\n+- [1 · 2026-11-17] C.\n+- [1 · 2026-11-17] D.\n";
+    expect(diffDoc(rewrite).map((r) => r.tone)).toEqual(["del", "del", "add", "add"]);
+    expect(diffDoc("@@ -1 +1,2 @@\n-a\n+b\n+c\n").map((r) => r.tone)).toEqual(["del", "add", "add"]);
+    const mixed = "@@ -1,2 +1,3 @@\n-- [1 · 2026-11-01] Gone.\n-- [1 · 2026-11-01] Kept.\n+- [1 · 2026-11-17] New.\n+- [2 · 2026-11-17] Kept.\n";
+    expect(diffDoc(mixed)).toEqual([{ tone: "pair", del: "- [1 · 2026-11-01] Kept.", add: "- [2 · 2026-11-17] Kept." },
+      { tone: "del", text: "- [1 · 2026-11-01] Gone." }, { tone: "add", text: "- [1 · 2026-11-17] New." }]);
+  });
+  test("inside a hunk the first character decides: a removed `---` and an added `+++` are lines, not headers", () => {
+    const d = "--- a/memory.md\n+++ b/memory.md\n@@ -1,3 +1,3 @@\n ## Works\n----\n+++++\n";
+    expect(diffDoc(d)).toEqual([{ tone: "ctx", text: "## Works" }, { tone: "pair", del: "---", add: "++++" }]);
+    expect(diffDoc("@@ -1 +0,0 @@\n----\n")).toEqual([{ tone: "del", text: "---" }]);
+    expect(diffDoc("@@ -0,0 +1 @@\n++++\n")).toEqual([{ tone: "add", text: "+++" }]);
+  });
+  test("a second hunk starts after a gap; a headerless diff still reads", () => {
+    expect(diffDoc("@@ -1 +1 @@\n a\n@@ -9 +9 @@\n+b\n").map((r) => r.tone)).toEqual(["ctx", "gap", "add"]);
+    expect(diffDoc("+x\n y\n")).toEqual([{ tone: "add", text: "x" }, { tone: "ctx", text: "y" }]);
+  });
+  test("an empty diff is no rows", () => {
+    expect(diffDoc("")).toEqual([]);
+    expect(diffDoc("  \n")).toEqual([]);
+    expect(diffDoc(undefined)).toEqual([]);
   });
 });
 
@@ -29,8 +53,9 @@ describe("originOf", () => {
     expect(originOf("task-learn", { target: "/Users/a/Fused/canvas/maps/", backend: "claude" })).toBe("task in maps (claude)");
     expect(originOf("task-learn", { backend: "codex" })).toBe("codex task");
     expect(originOf("task-learn", null)).toBe("a task");
-    expect(originOf("compact", { lines: 230, bytes: 14336 })).toBe("memory at 230 lines, 14 KB");
-    expect(originOf("compact", {})).toBe("memory over the limit");
+    expect(originOf("dream", { lines: 230, bytes: 14336 })).toBe("memory at 230 lines, 14 KB");
+    expect(originOf("dream", {})).toBe("memory over the limit");
+    expect(originOf("compact", { lines: 230 })).toBe("");  // the old name is gone
     expect(originOf("other", { message: "x" })).toBe("");
   });
   test("long text is cut to one line", () => {
@@ -45,18 +70,20 @@ describe("rows", () => {
   test("kind and status words", () => {
     expect(kindLabel("task-learn")).toBe("task-learn");
     expect(kindLabel("chat")).toBe("chat");
+    expect(kindLabel("dream")).toBe("dream");
     expect(kindLabel("")).toBe("session");
     expect(statusOf({ status: "running" })).toEqual({ text: "running", tone: "accent" });
     expect(statusOf({ status: "error" }).tone).toBe("err");
     expect(statusOf({ status: "interrupted" }).tone).toBe("warn");
     expect(statusOf({ status: "done" }).tone).toBe("ok");
   });
-  test("changed memory = a non-empty diff; the filter keeps those, newest first", () => {
+  test("changed memory = a non-empty diff; rows newest first", () => {
     const rows = [row({ id: "a", started: 1, memory_diff: DIFF }), row({ id: "b", started: 3 }), row({ id: "c", started: 2, memory_diff: DIFF })];
     expect(changedMemory(rows[1])).toBe(false);
     expect(changedMemory(row({ memory_diff: "\n" }))).toBe(false);
-    expect(filterSessions(rows, "all").map((s) => s.id)).toEqual(["b", "c", "a"]);
-    expect(filterSessions(rows, "changed").map((s) => s.id)).toEqual(["c", "a"]);
+    expect(changedMemory(rows[0])).toBe(true);
+    expect(newestFirst(rows).map((s) => s.id)).toEqual(["b", "c", "a"]);
+    expect(rows.map((s) => s.id)).toEqual(["a", "b", "c"]);  // not sorted in place
   });
   test("duration and cost", () => {
     expect(duration(row({}))).toBe("12 s");

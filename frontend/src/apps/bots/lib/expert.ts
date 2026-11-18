@@ -69,8 +69,9 @@ const factOf = (l: string): string => l.replace(/^\s*[-*+]\s+\[[^\]]*\]\s*/, "")
 
 /** A unified diff of memory.md as document rows. The noise goes: everything before the first `@@` (the `---` / `+++`
  *  file headers, `diff` / `index` lines), each `@@` hunk header (a later one becomes a gap), `\ No newline…`.
- *  Lines are `+` added, `-` removed, the rest context. A run of removed lines answered by a run of added lines the same
- *  length pairs up line by line when it is one and one, or when each pair is the same fact (only its stamp moved).
+ *  Inside a hunk the first character decides: `+` added, `-` removed, the rest context (so a removed `---` line is a
+ *  line, not a header). A run of removed lines answered by a run of added lines pairs up: one and one always; otherwise
+ *  each removed fact with the first added line holding the same fact (only its `[count · date]` stamp moved).
  *  An empty diff is no rows. */
 export function diffDoc(diff: string | null | undefined): DiffRow[] {
   const text = (diff || "").replace(/\r/g, "").replace(/\n$/, "");
@@ -97,9 +98,16 @@ export function diffDoc(diff: string | null | undefined): DiffRow[] {
     let k = j;
     while (k < flat.length && flat[k].tone === "add") k++;
     const dels = flat.slice(i, j) as { tone: "del"; text: string }[], adds = flat.slice(j, k) as { tone: "add"; text: string }[];
-    const pairs = dels.length === adds.length && (dels.length === 1 || dels.every((d, n) => factOf(d.text) !== "" && factOf(d.text) === factOf(adds[n].text)));
-    if (pairs) dels.forEach((d, n) => out.push({ tone: "pair", del: d.text, add: adds[n].text }));
-    else out.push(...dels, ...adds);
+    if (dels.length === 1 && adds.length === 1) out.push({ tone: "pair", del: dels[0].text, add: adds[0].text });
+    else {
+      // Each removed fact meets the first unused added line with the same fact; the rest keep their order after the pairs.
+      const used = new Set<number>(), lone: DiffRow[] = [];
+      for (const d of dels) {
+        const f = factOf(d.text), n = f ? adds.findIndex((a, x) => !used.has(x) && factOf(a.text) === f) : -1;
+        if (n >= 0) { used.add(n); out.push({ tone: "pair", del: d.text, add: adds[n].text }); } else lone.push(d);
+      }
+      out.push(...lone, ...adds.filter((_, x) => !used.has(x)));
+    }
     i = k;
   }
   return out;
