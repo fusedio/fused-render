@@ -1230,6 +1230,32 @@ def test_sync_pulls_remote_changes_when_clean(harness, monkeypatch):
     _stop_sync("alpha")
 
 
+def test_sync_poll_ignores_a_cache_only_dry_run_diff(harness, monkeypatch):
+    """External CLI (no shims): a clean clone holding only a local
+    `__pycache__` — invisible to the fingerprint that gates the poll — is
+    listed by the real CLI's dry-run as files to remove. That is not a remote
+    move: the canvas must not go server-stale and hold its pushes."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.set_scenario({"pull_dry": "would prompt: remove __pycache__/a.cpython-312.pyc\n"
+                                      "would prompt: remove sub/__pycache__/b.pyc\n"})
+
+    def dry_runs():
+        return [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]
+                and "--dry-run" in c]
+
+    seen = len(dry_runs())
+    deadline = time.time() + 10
+    while time.time() < deadline and len(dry_runs()) < seen + 3:
+        time.sleep(0.05)
+    assert len(dry_runs()) >= seen + 3
+    assert _sync_view("alpha")["server_stale"] is None
+    _stop_sync("alpha")
+
+
 def test_sync_pull_reprobe_diff_triggers_push(harness, monkeypatch):
     # A dry-run right after the force pull that STILL reports a diff (e.g. a
     # local edit landed while `--force` itself was running) means local
