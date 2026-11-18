@@ -1368,7 +1368,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Experts (fused_render/experts/, docs/experts.md): `/api/experts/*`, the
     # doors task sessions reach through expert_list / expert_context /
     # expert_ask, plus the task-learn timer (experts/scheduler.py), which only
-    # ticks in the process that owns the bots and holds its machine-wide lease.
+    # ticks in the process that owns the bots and holds their workspace claim.
     # `@on_startup`: a lean `open` never learns. Shutdown also ends every side
     # session's harness process; `_shutdown_bots` (bots registry.shutdown)
     # already did that before releasing the bots workspace claim, so this

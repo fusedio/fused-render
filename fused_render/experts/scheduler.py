@@ -7,9 +7,8 @@ every side session's harness process. A tick runs learn.py's pass; a dream (memo
 
 ONE PROCESS TICKS: two fused-render servers on one machine must not both read the same transcripts, so a tick
 runs only in the process that owns the bots (`bots.registry.owns()`) and holds the bots workspace claim
-(`registry.workspace_claimed()`, the same door `require_workspace` guards), and only while it holds the machine-wide
-lease `experts-scheduler` (`tasks_store.try_acquire_lease`, released after the tick). A process that loses
-either skips that tick.
+(`registry.workspace_claimed()`, the same door `require_workspace` guards). A process without either skips that
+tick.
 """
 from __future__ import annotations
 
@@ -28,10 +27,8 @@ TICK_ENV = "FUSED_RENDER_EXPERT_TICK_S"
 START_DELAY_ENV = "FUSED_RENDER_EXPERT_START_DELAY_S"
 MIN_OVERRIDE_S = 5.0
 _JITTER = 0.1
-LEASE = "experts-scheduler"
 
 _LOCK = threading.Lock()
-_TICK_LOCK = threading.Lock()
 _timer_stop: threading.Event | None = None
 _thread: threading.Thread | None = None
 
@@ -56,10 +53,6 @@ def _workspace() -> bool:
 def tick(stop: threading.Event | None = None) -> dict:
     """One pass. Returns `{"ran": bool, "skipped": why, "learn": {...}, "errors": n}`. Never raises."""
     out = {"ran": False, "skipped": "", "learn": {}, "errors": 0}
-    if not _TICK_LOCK.acquire(blocking=False):
-        out["skipped"] = "a tick is already running"
-        return out
-    leased = False
     try:
         if not _owner():
             out["skipped"] = "this process does not own the bots"
@@ -67,25 +60,12 @@ def tick(stop: threading.Event | None = None) -> dict:
         if not _workspace():
             out["skipped"] = "another app holds the bots workspace"
             return out
-        from fused_render import tasks_store
-        leased = tasks_store.try_acquire_lease(LEASE, machine_wide=True)
-        if not leased:
-            out["skipped"] = "another process holds the experts lease"
-            return out
         out["ran"] = True
         from fused_render.experts import learn
         out["learn"] = learn.run_pass(stop=stop)
     except Exception:  # noqa: BLE001 — never out of tick
         out["errors"] += 1
         logger.warning("experts scheduler: tick failed", exc_info=True)
-    finally:
-        if leased:
-            try:
-                from fused_render import tasks_store
-                tasks_store.release_lease(LEASE)
-            except Exception:  # noqa: BLE001
-                logger.warning("experts scheduler: could not release the lease", exc_info=True)
-        _TICK_LOCK.release()
     return out
 
 

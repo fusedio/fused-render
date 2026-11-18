@@ -491,9 +491,8 @@ has no diff to go by: that slice is read again, and a count may be raised once m
 
 **The timer** (`scheduler.py`): one daemon thread, armed at server startup (not on Windows); the first tick runs
 90 s after start, then every 60 s ±10 %. A tick runs only in the process that owns the bots
-(`registry.owns()`), holds the bots workspace claim, and gets the machine-wide lease `experts-scheduler`
-(`tasks_store.try_acquire_lease`, released after the tick): only one server process on a machine reads the
-transcripts. Shutdown stops the timer and kills every side session's harness: the bots `registry.shutdown` does it
+(`registry.owns()`) and holds the bots workspace claim: only one server process reads the transcripts for a
+workspace. Shutdown stops the timer and kills every side session's harness: the bots `registry.shutdown` does it
 (`_end_experts`, `scheduler.shutdown` on what is left of its budget, at most 5 s; the harnesses are already
 signalled at the start of the quit, `sessions.begin_shutdown`, before the Chromes use their share) right before it releases the bots
 workspace claim, so no harness still writes `memory.md` once another server can take the claim; the server's later
