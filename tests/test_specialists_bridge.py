@@ -270,7 +270,7 @@ def _grants(stub):
 
 
 def _policy_server(tmp_path, stub, allow_file=None):
-    env = {"FUSED_SPECIALIST_POLICY": f"{stub.origin}|abc|breakout", "FUSED_SPECIALIST_GRANT": "sekrit"}
+    env = {"FUSED_SPECIALIST_POLICY": f"{stub.origin}|abc|breakout"}
     if allow_file:
         env["FUSED_PERM_ALLOW_FILE"] = str(allow_file)
     return _server(tmp_path, **env)
@@ -310,7 +310,8 @@ def test_policy_ask_always_ignores_the_always_store(tmp_path, stub):
         s.close()
 
 
-def test_approved_card_posts_a_grant_first(tmp_path, stub):
+def test_an_approved_card_posts_nothing(tmp_path, stub):
+    """CONTRACT C2: the permission server never grants; the server records the grant from the user's decide."""
     stub.policy = "ask_always"
     (tmp_path / "runs" / "run7").mkdir(parents=True)
     (tmp_path / "runs" / "run7" / "meta.json").write_text(json.dumps({"resumed_from": "S2"}))
@@ -320,25 +321,12 @@ def test_approved_card_posts_a_grant_first(tmp_path, stub):
                                               "arguments": {"tool_name": SERVICE, "input": {"text": "hi"}}})
         _answer(_await_req(_perm(tmp_path)), {"decision": "allow", "scope": "once"})
         assert json.loads(pending.result(10)["result"]["content"][0]["text"])["behavior"] == "allow"
-        assert _grants(stub) == [{"specialist": "abc", "kind": "breakout", "session_id": "S2", "tool": SERVICE,
-                                  "secret": "sekrit"}]
+        assert _grants(stub) == [] and not [r for r in stub.requests if r[0] == "POST"]
     finally:
         s.close()
 
 
-def test_a_grant_that_cannot_be_recorded_is_a_deny(tmp_path, stub):
-    stub.policy, stub.grant_status = "ask", 403
-    s = _policy_server(tmp_path, stub)
-    try:
-        pending = s.send_async("tools/call", {"name": "approve", "arguments": {"tool_name": SERVICE, "input": {}}})
-        _answer(_await_req(_perm(tmp_path)), {"decision": "allow", "scope": "once"})
-        out = json.loads(pending.result(10)["result"]["content"][0]["text"])
-        assert out["behavior"] == "deny" and "could not be recorded" in out["message"]
-    finally:
-        s.close()
-
-
-def test_policy_ask_honours_the_always_store_with_a_grant(tmp_path, stub):
+def test_policy_ask_honours_the_always_store_without_a_grant(tmp_path, stub):
     stub.policy = "ask"
     allow = tmp_path / "allow.json"
     allow.write_text(json.dumps({"tools": [SERVICE]}))
@@ -346,7 +334,7 @@ def test_policy_ask_honours_the_always_store_with_a_grant(tmp_path, stub):
     try:
         text, _ = _call(s, "approve", {"tool_name": SERVICE, "input": {}})
         assert json.loads(text)["behavior"] == "allow"
-        assert len(_grants(stub)) == 1
+        assert _grants(stub) == []  # no card answered: no grant, so services.call refuses it
     finally:
         s.close()
 

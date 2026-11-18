@@ -76,9 +76,17 @@ def test_pull_by_choice_records_a_receipt_and_includes_only_said_notes(client, t
     (ev,) = [e for e in _events(client) if e["kind"] == "pull"]
     assert ev["receipt_id"] == rec["id"] and ev["entries"] == 2 and ev["trigger"] == "choice"
     assert ev["specialist"] == {"id": spec.id, "name": "Canvas"}
+    assert ev["knowledge"] == 1 and ev["skills"] == 0  # C5
     status, _, raw = client.get(f"/api/specialists/{spec.id}/receipts/{rec['id']}")
     view = json.loads(raw)
     assert status == 200 and view["text"] == text and "text" not in view["receipt"]
+    # C5 `view`: plain product UI, no receipt line, no provenance braces, no paths, no note ids
+    assert view["view"] == {
+        "memory": [{"id": "m-3f2a", "text": "When a sync stalls, reopen the canvas.", "basis": "verified"},
+                   {"id": "m-0b1c", "text": "Use the staging space.", "basis": "guess"}],
+        "said": [{"text": "Always publish to staging first."}],
+        "knowledge": [{"title": "Sync internals"}], "skills": []}
+    assert said["id"] not in json.dumps(view["view"]) and spec.home not in json.dumps(view["view"])
     assert receipts.for_session("sess-1")[0]["id"] == rec["id"]
     assert receipts.guided_week(spec.id) == 1
 
@@ -182,15 +190,19 @@ def test_deleted_specialist_keeps_the_task_working(client, task):
     from fused_render.specialists import store
 
     spec = make_specialist("Canvas", "Fused canvases")
-    status, body = _post(client, "pull", {"run_id": "run1", "specialist": "Canvas"})
+    status, body_first = _post(client, "pull", {"run_id": "run1", "specialist": "Canvas"})
     assert status == 200
     store.delete(spec.id)
     status, body = _post(client, "pull", {"run_id": "run1", "specialist": "Canvas"})
     assert status == 404 and "no longer exists" in body["error"]
     events = _events(client)
     assert [e["kind"] for e in events] == ["pull"] and events[0]["specialist"]["name"] == "Canvas"
+    # the chip's View keeps answering, from the trashed home
     status, _, raw = client.get(f"/api/specialists/{spec.id}/receipts/{events[0]['receipt_id']}")
-    assert status == 404
+    got = json.loads(raw)
+    assert status == 200 and got["deleted"] is True and got["text"] == body_first["text"]
+    assert client.get(f"/api/specialists/{spec.id}/receipts/r-000000000000")[0] == 404
+    assert client.get("/api/specialists/never-was/receipts/r-000000000000")[0] == 404
     assert _post(client, "list", {"run_id": "run1"}) == (200, {"text": "No specialists yet."})
 
 
@@ -206,3 +218,38 @@ def test_flag_off_answers_404(client, task, monkeypatch):
 def test_posts_need_x_fused(client, task):
     status, _, _ = client.post("/api/specialists/tools/list", {"run_id": "run1"}, headers={"X-Fused": "0"})
     assert status in (400, 403)
+
+
+def test_receipt_view_parses_skills_and_said_lines():
+    from fused_render.specialists import pull
+
+    text = "\n".join([
+        "[fused:specialist-guidance receipt=r-1 specialist=x]", "Guidance from …", "--- memory ---", "# Memory",
+        "- [m-00aa] A plain fact.", "--- said by the user, not yet weighed ---",
+        "- [n-abc-1] (convention, you said so 2026-11-18, in \"Q4\") Use tabs.",
+        "--- topic knowledge (Read when relevant) ---", "(none)",
+        "--- skills (Read the file to follow one) ---", "- sync-fix: Fix a stalled sync: reopen — /h/.claude/skills/sync-fix/SKILL.md",
+        "--- end ---", "- not a section line"])
+    assert pull.view(text) == {"memory": [{"id": "m-00aa", "text": "A plain fact.", "basis": ""}],
+                               "said": [{"text": "Use tabs."}], "knowledge": [],
+                               "skills": [{"name": "sync-fix", "description": "Fix a stalled sync: reopen"}]}
+
+
+def test_a_receipt_is_not_due_while_its_task_is_mid_turn(client, task, monkeypatch):
+    """QA (learning) defect 2: a task waiting on a card writes nothing to its transcript for minutes, yet it is
+    mid-turn; its receipt is not due for review until the run's turn is over."""
+    from fused_render.claude_agent import agent_module
+    from fused_render.specialists import receipts
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, body = _post(client, "pull", {"run_id": "run1", "specialist": "Canvas"})
+    monkeypatch.setattr(receipts, "_last_activity", lambda rec: 0.0)  # idle for ages by its transcript
+    agent = agent_module()
+    live = {"sessions": {"sess-1"}}
+    asked = []
+    monkeypatch.setattr(agent, "_live_runs_in", lambda folder: asked.append(folder) or iter(
+        [{"run_id": "r", "sessions": live["sessions"]}]))
+    assert receipts.due_for_review(1e10) == []
+    assert asked == [task["target"]]
+    live["sessions"] = {"another"}
+    assert [r["id"] for _, r in receipts.due_for_review(1e10)] == [body["receipt_id"]]

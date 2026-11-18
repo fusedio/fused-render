@@ -2,7 +2,7 @@
 // the close flow that drafts the summary into the task's composer, and Discard.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import {
@@ -11,7 +11,7 @@ import {
   resetSpecialistBreakouts,
 } from "@platform/lib/specialist-breakouts";
 import type { ComposerDraftDetail } from "@platform/lib/breakouts";
-import { SpecialistBreakoutCard, type SpecialistCardDeps } from "./SpecialistBreakoutCard";
+import { cardBox, SpecialistBreakoutCard, type SpecialistCardDeps } from "./SpecialistBreakoutCard";
 
 const winStubs: Record<string, unknown> = { innerWidth: 2000, innerHeight: 1500 };
 const globalStubs: Record<string, unknown> = {
@@ -70,7 +70,7 @@ function setup(over: Partial<SpecialistCardDeps> = {}, seed = "Brief from the ta
     breakoutClosed: async (s, b, sid) => (log.push(["closed", s, b, sid]), { draft: "Outcome: solved", label: "Draft from the Canvas specialist · not sent yet", note_id: "n-1" }),
     discardBreakout: async (s, b) => (log.push(["discard", s, b]), { ok: true as const }),
     deliver: async (d: ComposerDraftDetail) => (log.push(["deliver", d]), true),
-    confirm: () => true,
+    detail: async () => ({ model: "claude-haiku-4-5", face: "#123456" }),
     ...over,
   };
   const card = () => getSpecialistBreakouts().find((c) => c.id === id)!;
@@ -84,14 +84,26 @@ function setup(over: Partial<SpecialistCardDeps> = {}, seed = "Brief from the ta
   const report = (s: Report) => act(() => (props.onBreakoutState as (s: Report) => void)(s));
   return { r, id, log, props: () => props, report };
 }
+const flush = () =>
+  act(async () => {
+    await new Promise((res) => setTimeout(res, 0));
+  });
+async function ready(over: Partial<SpecialistCardDeps> = {}, seed?: string) {
+  const out = setup(over, seed);
+  await flush();
+  return out;
+}
 
-test("the chat runs in the home as a specialist session, sending the brief once", () => {
-  const { props, r } = setup();
+test("the chat runs in the home as a specialist session, sending the brief once", async () => {
+  const { props, r } = await ready();
   expect(props()).toMatchObject({
     file: "/w/specialists/canvas",
     extraParams: { specialist: "c1:breakout:b-1" },
-    specialist: { id: "c1", kind: "breakout" },
+    specialist: { id: "c1", kind: "breakout", name: "Canvas", taskTitle: "Publish Q4 canvas" },
     breakoutPrompt: "Brief from the task",
+    // R7: the specialist's model is the chat's default; who is being replied to.
+    model: "claude-haiku-4-5",
+    placeholder: "Reply to the Canvas specialist",
   });
   // Never the research-only posture.
   expect("breakout" in props()).toBe(false);
@@ -103,7 +115,7 @@ test("the chat runs in the home as a specialist session, sending the brief once"
 
 test("Close: close-prompt into the breakout, then the summary as a labelled draft, then the card goes", async () => {
   const sent: string[] = [];
-  const { r, log, report } = setup();
+  const { r, log, report } = await ready();
   report({ sessionId: "bs1", turns: [{ role: "user" }], running: false, send: (t) => sent.push(t) });
   await act(async () => {
     button(r, "Close").props.onClick();
@@ -118,13 +130,20 @@ test("Close: close-prompt into the breakout, then the summary as a labelled draf
   expect(log[1]).toEqual(["closed", "c1", "b-1", "bs1"]);
   expect(log[2]).toEqual([
     "deliver",
-    { sessionId: "s1", file: "/w/proj", text: "Outcome: solved", label: "Draft from the Canvas specialist · not sent yet" },
+    {
+      sessionId: "s1",
+      file: "/w/proj",
+      text: "Outcome: solved",
+      label: "Draft from the Canvas specialist · not sent yet",
+      name: "Canvas",
+      breakoutId: "b-1",
+    },
   ]);
   expect(getSpecialistBreakouts()).toHaveLength(0);
 });
 
 test("Close while it is still replying waits; a failed hand-off keeps the card", async () => {
-  const { r, log, report } = setup({ deliver: async () => false });
+  const { r, log, report } = await ready({ deliver: async () => false });
   report({ sessionId: "bs1", turns: [{ role: "user" }], running: true, send: () => {} });
   await act(async () => {
     button(r, "Close").props.onClick();
@@ -144,12 +163,18 @@ test("Close while it is still replying waits; a failed hand-off keeps the card",
   expect(textOf(r.root)).toContain("Could not put the summary");
 });
 
-test("Discard: confirmed, recorded, the run stopped, no draft", async () => {
+test("Discard: the card's own confirm, then recorded, the run stopped, no draft", async () => {
   let stopped = 0;
-  const { r, log, report } = setup();
+  const { r, log, report } = await ready();
   report({ sessionId: "bs1", turns: [{ role: "user" }], running: true, stop: () => stopped++ });
   await act(async () => {
     button(r, "Discard").props.onClick();
+  });
+  // Nothing yet: the card asks first (never the browser's confirm).
+  expect(log).toEqual([]);
+  expect(r.root.findAll((n) => n.props.role === "alertdialog")).toHaveLength(1);
+  await act(async () => {
+    button(r, "Discard breakout").props.onClick();
   });
   expect(log).toEqual([["discard", "c1", "b-1"]]);
   expect(stopped).toBe(1);
@@ -157,10 +182,79 @@ test("Discard: confirmed, recorded, the run stopped, no draft", async () => {
 });
 
 test("Discard declined at the confirm does nothing", async () => {
-  const { r, log } = setup({ confirm: () => false });
+  const { r, log } = await ready();
   await act(async () => {
     button(r, "Discard").props.onClick();
   });
+  await act(async () => {
+    button(r, "Keep it").props.onClick();
+  });
   expect(log).toEqual([]);
   expect(getSpecialistBreakouts()).toHaveLength(1);
+  expect(r.root.findAll((n) => n.props.role === "alertdialog")).toHaveLength(0);
+});
+
+test("Close cannot be triggered twice; the head says it is writing the summary", async () => {
+  const sent: string[] = [];
+  const { r, log, report } = await ready();
+  report({ sessionId: "bs1", turns: [{ role: "user" }], running: false, send: (t) => sent.push(t) });
+  await act(async () => {
+    button(r, "Close").props.onClick();
+    button(r, "Close").props.onClick();
+  });
+  expect(log.filter((x) => x[0] === "close-prompt")).toHaveLength(1);
+  expect(sent).toEqual(["CLOSE_OUT"]);
+  expect(textOf(r.root)).toContain("Writing the summary…");
+  expect(button(r, "Close").props.disabled).toBe(true);
+});
+
+test("a deleted specialist: the card says so and can be dismissed (410 reason deleted)", async () => {
+  const gone = Object.assign(new Error("This specialist was deleted."), { status: 410, body: { reason: "deleted" } });
+  const { r, props } = await ready({ detail: async () => Promise.reject(gone) });
+  expect(textOf(r.root)).toContain("This specialist was deleted");
+  expect(props()).toEqual({});
+  await act(async () => {
+    button(r, "Dismiss").props.onClick();
+  });
+  expect(getSpecialistBreakouts()).toHaveLength(0);
+});
+
+test("Close on a specialist deleted meanwhile turns the card into the deleted state", async () => {
+  const gone = Object.assign(new Error("This specialist was deleted."), { status: 410, body: { reason: "deleted" } });
+  const { r, report } = await ready({ closePrompt: async () => Promise.reject(gone) });
+  report({ sessionId: "bs1", turns: [{ role: "user" }], running: false, send: () => {} });
+  await act(async () => {
+    button(r, "Close").props.onClick();
+  });
+  expect(textOf(r.root)).toContain("This specialist was deleted");
+  await act(async () => {
+    button(r, "Close").props.onClick();
+  });
+  expect(getSpecialistBreakouts()).toHaveLength(0);
+});
+
+describe("where the card opens", () => {
+  const view = { w: 1440, h: 900 };
+  const chat = { left: 1040, top: 48, right: 1440, bottom: 880 };
+  test("beside the task's chat, over the middle pane, not on top of it", () => {
+    const b = cardBox(chat, 0, view);
+    expect(b.x + b.w).toBeLessThanOrEqual(chat.left);
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.y + b.h).toBeLessThanOrEqual(view.h);
+  });
+  test("a second card steps down past the first one's head", () => {
+    const a = cardBox(chat, 0, view);
+    const b = cardBox(chat, 1, view);
+    expect(b.y - a.y).toBeGreaterThanOrEqual(48);
+  });
+  test("always inside the window", () => {
+    const small = { w: 800, h: 600 };
+    for (let i = 0; i < 6; i++) {
+      const b = cardBox({ left: 0, top: 40, right: 800, bottom: 600 }, i, small);
+      expect(b.x).toBeGreaterThanOrEqual(0);
+      expect(b.y).toBeGreaterThanOrEqual(0);
+      expect(b.x + b.w).toBeLessThanOrEqual(small.w);
+      expect(b.y + b.h).toBeLessThanOrEqual(small.h);
+    }
+  });
 });

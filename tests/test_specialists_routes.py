@@ -44,7 +44,7 @@ def test_create_list_get_patch_delete(client):
     assert st == 403
     st, rows = j(client.get("/api/specialists"))
     assert st == 200 and rows == [{"id": sid, "name": "Canvas", "subject": "Fused canvases", "face": "",
-                                   "status": "Ready", "working": False}]
+                                   "model": "", "status": "Ready", "working": False}]
     st, out = req(client, "PATCH", f"/api/specialists/{sid}", {"subject": "Canvases", "effort": "high",
                                                                "triggers": {"keywords": ["toml"]}})
     assert st == 200 and out["subject"] == "Canvases" and out["triggers"]["keywords"] == ["toml"]
@@ -126,22 +126,79 @@ def test_policy_and_connections_routes(client, fake_roster):
     assert j(client.get(bq)) == (200, {"answer": "ask_always"})
 
 
-def test_grant_route_and_enforced_call(client, fake_roster):
+def _service_card(run_id, spec_id, kind, session_id, tool, bid=""):
+    """A run dir as agent._start leaves it for a specialist session, with one parked card for `tool`."""
+    from fused_render.claude_agent import agent_module
+
+    run_dir = os.path.join(agent_module().RUNS, run_id)
+    os.makedirs(os.path.join(run_dir, "perm"), exist_ok=True)
+    with open(os.path.join(run_dir, "meta.json"), "w") as f:
+        json.dump({"session_id": session_id, "specialist": {"id": spec_id, "kind": kind, "breakout_id": bid}}, f)
+    with open(os.path.join(run_dir, "perm", "req1.req.json"), "w") as f:
+        json.dump({"id": "req1", "tool": tool, "input": {}}, f)
+    return run_dir
+
+
+def test_a_session_alone_cannot_make_a_service_call_run(client, fake_roster, monkeypatch):
+    """QA (privileges) defect 2 / CONTRACT C2: the session's token, with everything its run dir holds (the launch
+    spec as `specialist.json`, meta), cannot record a grant; only the user's `decide allow` through the agent
+    router does, and that grant is spent once by that session only."""
+    from fused_render.claude_agent import agent_module
+    import fused_render.specialists.agent_hooks  # noqa: F401 — loaded at app start (server/app.py)
+
     s = make_specialist()  # notion not allowed: every call needs a card
+    chat.record_start(s.id, "ms-1")
     sp = launch.spec(f"{s.id}:main", s.home)
-    tok, secret = sp["token"], sp["policy_env"]["FUSED_SPECIALIST_GRANT"]
+    dump = json.dumps(sp)
+    assert "GRANT" not in dump and "secret" not in dump and set(sp["policy_env"]) == {"FUSED_SPECIALIST_POLICY"}
+    assert set(launch.check_token(s.id, "main", sp["token"])) == {"spec", "kind", "breakout_id", "exp"}
+    tool = "mcp__specialist_services__notion_create_page"
+    run_dir = _service_card("run-g1", s.id, "main", "ms-1", tool)
+    with open(os.path.join(run_dir, "specialist.json"), "w") as f:
+        f.write(dump)
     base = f"/api/specialists/{s.id}"
-    H = {"X-Specialist-Token": tok}
-    call = {"kind": "main", "server": "specialist_services", "name": "notion_search", "args": {}}
+    H = {"X-Specialist-Token": sp["token"]}
+    call = {"kind": "main", "server": "specialist_services", "name": "notion_create_page", "args": {},
+            "session_id": "ms-1"}
+    needs = {"content": [{"type": "text", "text": "This call needs the user's approval card."}], "isError": True}
+    assert j(client.post(f"{base}/session-tool", call, headers=H)) == (200, needs)
+    # the old grant door is gone, whatever the session sends it
+    for body in ({}, {"specialist": s.id, "kind": "main", "session_id": "ms-1", "tool": tool, "secret": sp["token"]}):
+        assert j(client.post("/api/specialists/policy/grant", body))[0] in (404, 405)
+    assert j(client.post(f"{base}/session-tool", call, headers=H)) == (200, needs)
+    # the user allows the card: the decide passes through the agent router, which records the grant
+    agent = agent_module()
+    monkeypatch.setattr(agent, "_alive", lambda run_dir: True)
+    st, out = j(client.post("/api/claude/agent", {"action": "decide", "run_id": "run-g1", "request_id": "req1",
+                                                  "decision": "allow", "scope": "once"}))
+    assert st == 200 and out.get("decision") == "allow", out
+    other = launch.new_token(s.id, "breakout", "b-000000000001")  # another session of the specialist
+    assert j(client.post(f"{base}/session-tool", {**call, "kind": "breakout"},
+                         headers={"X-Specialist-Token": other}))[1]["isError"]
     st, out = j(client.post(f"{base}/session-tool", call, headers=H))
-    assert st == 200 and out["isError"] and out["content"][0]["text"] == "This call needs the user's approval card."
-    g = {"specialist": s.id, "kind": "main", "session_id": "x", "tool": "mcp__specialist_services__notion_search"}
-    assert j(client.post("/api/specialists/policy/grant", {**g, "secret": "wrong"}))[0] == 403
-    assert j(client.post("/api/specialists/policy/grant", {**g, "secret": secret}, headers={"X-Fused": ""}))[0] == 403
-    assert j(client.post("/api/specialists/policy/grant", {**g, "secret": secret})) == (200, {"ok": True})
-    st, out = j(client.post(f"{base}/session-tool", call, headers=H))
-    assert out == {"content": [{"type": "text", "text": "R:search"}], "isError": False}
-    assert j(client.post(f"{base}/session-tool", call, headers=H))[1]["isError"]  # spent
+    assert out == {"content": [{"type": "text", "text": "R:create_page"}], "isError": False}
+    assert j(client.post(f"{base}/session-tool", call, headers=H)) == (200, needs)  # spent
+    # a deny records nothing
+    _service_card("run-g2", s.id, "main", "ms-1", tool)
+    j(client.post("/api/claude/agent", {"action": "decide", "run_id": "run-g2", "request_id": "req1",
+                                       "decision": "deny", "scope": "once"}))
+    assert j(client.post(f"{base}/session-tool", call, headers=H)) == (200, needs)
+
+
+def test_a_grant_is_recorded_once_per_card_and_only_for_service_tools(client, fake_roster):
+    from fused_render.specialists import agent_hooks
+
+    s = make_specialist()
+    _service_card("run-g3", s.id, "breakout", "bs-1", "mcp__specialist_services__notion_create_page", "b-1")
+    assert agent_hooks.grant_from_decision("run-g3", "req1")
+    assert agent_hooks.grant_from_decision("run-g3", "req1")  # repeated by the post-hook: still one grant
+    assert launch.take_grant(s.id, "breakout", "b-1", "bs-1", "notion_create_page")
+    assert not launch.take_grant(s.id, "breakout", "b-1", "bs-1", "notion_create_page")
+    assert agent_hooks.grant_from_decision("run-g3", "req1")  # a late repeat after the spend grants nothing
+    assert not launch.take_grant(s.id, "breakout", "b-1", "bs-1", "notion_create_page")
+    _service_card("run-g4", s.id, "main", "ms-1", "Bash")
+    assert not agent_hooks.grant_from_decision("run-g4", "req1")
+    assert not agent_hooks.grant_from_decision("../x", "req1")
 
 
 def test_session_tool_door(client, fake_roster):
@@ -192,8 +249,7 @@ def test_mutating_routes_need_x_fused(client):
                                ("PUT", base + "/charter", {"text": "x"}), ("PUT", base + "/skills/a", {"text": "x"}),
                                ("DELETE", base + "/skills/a", None), ("PUT", base + "/people", {"rows": []}),
                                ("PUT", base + "/connections", {"add": []}), ("POST", base + "/chat/clear", {}),
-                               ("POST", "/api/specialists", {"name": "y"}),
-                               ("POST", "/api/specialists/policy/grant", {})):
+                               ("POST", "/api/specialists", {"name": "y"})):
         import urllib.error
         import urllib.request
 
@@ -240,3 +296,20 @@ def test_sessmcp_pipe_against_the_server(client, fake_roster):
     assert out[1]["result"]["serverInfo"]["name"] == "specialist_services"
     assert [t["name"] for t in out[2]["result"]["tools"]] == ["notion_search", "notion_create_page"]
     assert out[3]["result"] == {"content": [{"type": "text", "text": "R:search"}], "isError": False}
+
+
+def test_working_while_the_main_chats_turn_is_live(client, monkeypatch):
+    """C5: `working` is true from the main chat's prompt hook to its Stop (and while a run's turn is open in the
+    home); a breakout's live turn, in its workroom, does not make the main chat look busy."""
+    from fused_render.specialists import history
+
+    s = make_specialist()
+    rows = lambda: j(client.get("/api/specialists"))[1]  # noqa: E731
+    assert rows()[0]["working"] is False and rows()[0]["model"] == ""
+    history.before_turn(s.id, "main", "ms-1")
+    assert rows()[0]["working"] is True and rows()[0]["status"] == "Working now"
+    assert j(client.get(f"/api/specialists/{s.id}"))[1]["working"] is True
+    history.after_turn(s.id, "main", "ms-1")
+    assert rows()[0]["working"] is False
+    monkeypatch.setattr(store, "main_live_runs", lambda home: [{"run_id": "r", "sessions": {"ms-1"}}])
+    assert rows()[0]["working"] is True

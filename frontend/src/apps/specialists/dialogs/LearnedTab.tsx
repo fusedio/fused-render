@@ -201,7 +201,14 @@ export function LearnedTab({
   };
   const revert = (run: string, item: ChangeItem) =>
     act(async () => {
-      const r = await api.revertChange(specialistId, run, item.id);
+      let r;
+      try {
+        r = await api.revertChange(specialistId, run, item.id);
+      } catch (e) {
+        // 409 "gone": the change is no longer there to undo. Say why, show the list as it is now.
+        if ((e as { status?: number }).status === 409) loadChanges();
+        throw e;
+      }
       if (!sendToChat(r.message || revertFallback(item))) throw new Error("The chat is not ready yet. Try again in a moment.");
       setRequested((s) => new Set(s).add(item.id));
     });

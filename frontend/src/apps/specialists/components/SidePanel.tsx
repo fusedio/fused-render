@@ -105,6 +105,8 @@ export function SidePanel({
       load();
     } catch (err) {
       setError(errorText(err));
+      // 409 "gone": nothing left to undo; show the list as it is now.
+      if ((err as { status?: number }).status === 409) load();
     } finally {
       setBusy(null);
     }

@@ -46,11 +46,15 @@ export function SpecialistList({
       {loading && !rows.length ? <div className="spx-muted spx-pad">Loading…</div> : null}
       {rows.map((r) => {
         const working = r.working || (r.id === selected && runningHere);
+        const status = working ? (r.working && /^working /i.test(r.status) ? r.status : "Working…") : r.status || r.subject;
         return (
           <a
             key={r.id}
             href={specialistHref(r.id)}
             className={"spx-list-row" + (r.id === selected ? " is-selected" : "")}
+            // The narrow layout shows only the face: the name and status stay in the row's name.
+            aria-label={status ? `${r.name}, ${status}` : r.name}
+            title={r.name}
             {...(r.id === selected ? { "aria-current": "page" as const } : {})}
             onClick={(e) => {
               if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
@@ -61,7 +65,7 @@ export function SpecialistList({
             <Face id={r.id} name={r.name} face={r.face} letters={initialsFor(r.name, names)} />
             <span className="spx-list-text">
               <span className="spx-list-name">{r.name}</span>
-              <span className="spx-list-status">{working ? "Working…" : r.status || r.subject}</span>
+              <span className="spx-list-status">{status}</span>
             </span>
             {working ? <span className="spx-dot is-working" aria-hidden="true" /> : null}
           </a>

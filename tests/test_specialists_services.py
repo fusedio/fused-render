@@ -94,46 +94,39 @@ def test_calls(app_home, roster):
 
 
 def test_a_call_that_needs_a_card_runs_only_with_a_grant(app_home, roster, monkeypatch):
-    from fused_render.specialists import breakouts, launch
-
-    monkeypatch.setattr(breakouts, "get", lambda sid, bid: {"status": "open", "parent": {}}, raising=False)
+    from fused_render.specialists import launch
 
     s = store.update(make_specialist().id, connections=["notion"])
-    sp = launch.spec(f"{s.id}:main", s.home)
-    secret = sp["policy_env"]["FUSED_SPECIALIST_GRANT"]
-    assert secret and launch.check_token(s.id, "main", sp["token"])["grant"] == secret
     # linear is not allowed: ask_always -> no grant, nothing runs
-    out = services.call(s, "main", "linear_get_issue", {}, grant_secret=secret)
+    out = services.call(s, "main", "linear_get_issue", {}, session_id="ms")
     assert out == {"content": [{"type": "text", "text": services.NEEDS_CARD}], "isError": True} and roster == []
-    assert not launch.record_grant(s.id, "main", "sess", "mcp__specialist_services__linear_get_issue", "wrong")
-    assert not launch.record_grant(s.id, "breakout", "sess", "mcp__specialist_services__linear_get_issue", secret)
-    assert launch.record_grant(s.id, "main", "sess", "mcp__specialist_services__linear_get_issue", secret)
-    # a grant for another tool or another run's secret does not count
-    assert services.call(s, "main", "notion_search", {}, grant_secret="other")["isError"] is False  # allowed
-    assert services.call(s, "main", "linear_get_issue", {}, grant_secret="other")["content"][0]["text"] == \
+    assert launch.record_grant(s.id, "main", "", "ms", "mcp__specialist_services__linear_get_issue", "run/req1")
+    # a grant for another tool, kind, breakout or session does not count
+    assert services.call(s, "main", "notion_search", {})["isError"] is False  # allowed
+    assert services.call(s, "breakout", "linear_get_issue", {}, session_id="ms")["content"][0]["text"] == \
         services.NEEDS_CARD
-    out = services.call(s, "main", "linear_get_issue", {}, grant_secret=secret)
+    assert services.call(s, "main", "linear_get_issue", {}, session_id="other")["content"][0]["text"] == \
+        services.NEEDS_CARD
+    out = services.call(s, "main", "linear_get_issue", {}, session_id="ms")
     assert out["isError"] is False and roster[-1][1] == "get_issue"
     # one-time
-    assert services.call(s, "main", "linear_get_issue", {}, grant_secret=secret)["content"][0]["text"] == \
+    assert services.call(s, "main", "linear_get_issue", {}, session_id="ms")["content"][0]["text"] == \
         services.NEEDS_CARD
-    # breakout write of an allowed service still needs its grant
-    bsp = launch.spec(f"{s.id}:breakout:b-1", s.home)
-    bsecret = bsp["policy_env"]["FUSED_SPECIALIST_GRANT"]
-    assert services.call(s, "breakout", "notion_create_page", {}, grant_secret=bsecret)["isError"]
-    launch.record_grant(s.id, "breakout", "", "notion_create_page", bsecret)
-    assert services.call(s, "breakout", "notion_create_page", {}, grant_secret=bsecret)["isError"] is False
+    # breakout write of an allowed service still needs its grant, for that breakout
+    assert services.call(s, "breakout", "notion_create_page", {}, breakout_id="b-1")["isError"]
+    launch.record_grant(s.id, "breakout", "b-2", "", "notion_create_page", "run/req2")
+    assert services.call(s, "breakout", "notion_create_page", {}, breakout_id="b-1")["isError"]
+    assert services.call(s, "breakout", "notion_create_page", {}, breakout_id="b-2")["isError"] is False
 
 
 def test_grants_expire(app_home, roster, monkeypatch):
     from fused_render.specialists import launch
 
     s = make_specialist()
-    secret = launch.spec(f"{s.id}:main", s.home)["policy_env"]["FUSED_SPECIALIST_GRANT"]
-    assert launch.record_grant(s.id, "main", "", "linear_get_issue", secret)
+    assert launch.record_grant(s.id, "main", "", "", "linear_get_issue", "run/req1")
     real = launch.time.time()
     monkeypatch.setattr(launch.time, "time", lambda: real + launch.GRANT_TTL_S + 1)
-    assert not launch.take_grant(s.id, secret, "linear_get_issue")
+    assert not launch.take_grant(s.id, "main", "", "", "linear_get_issue")
 
 
 def test_connections_tools_match_the_session_names(app_home, roster):

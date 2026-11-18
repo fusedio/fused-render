@@ -78,6 +78,7 @@ export function ServiceCardExtra({
   const title = row?.title || key || "";
 
   const approveAlways = async () => {
+    if (!key) return;
     setBusy(true);
     setError("");
     try {

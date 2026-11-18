@@ -10808,6 +10808,9 @@ def _create_task(body: dict, x_fused_page: str | None, origin: str = "page"):
     resolved, refusal = schedule_api.resolve_target(target, "target")
     if refusal is not None:
         return refusal
+    refusal = schedule_api.specialist_home_refusal(resolved)
+    if refusal is not None:
+        return refusal
     # Fused Web (the sandbox/showcase app) keeps its own local canvas clones
     # at `~/Fused/canvas/<name>` and starts tasks against them right here,
     # through `fused.tasks.create` — never through `canvases.py`'s own

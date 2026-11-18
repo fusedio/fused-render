@@ -112,71 +112,71 @@ export function Specialists() {
 
   return (
     <div className="spx-page">
-     <div className={"spx-cols" + (sideOpen ? " is-side-open" : "")}>
-      <SpecialistList
-        rows={rows}
-        selected={selected}
-        loading={loading}
-        error={listError}
-        onSelect={(id) => void navigateUrl(specialistHref(id))}
-        onCreate={() => setCreating(true)}
-        generalCount={general.length}
-        onOpenGeneral={() => setGeneralOpen(true)}
-        runningHere={runningHere}
-      />
-      {detail ? (
-        <>
-          <MainChat
-            specialist={detail}
-            handle={chat}
-            onOpenSettings={() => setSettings("learned")}
-            onRunning={setRunningHere}
-            headExtra={
-              <button
-                type="button"
-                className="spx-pill spx-side-toggle"
-                aria-expanded={sideOpen}
-                aria-controls={`spx-side-${detail.id}`}
-                onClick={() => setSideOpen((v) => !v)}
-              >
-                Updates
-              </button>
-            }
-          />
-          <SidePanel
-            specialistId={detail.id}
-            sendToChat={sendToChat}
-            onOpenSettings={(tab) => {
-              setSideOpen(false);
-              setSettings(tab);
-            }}
-            refreshKey={panelKey}
-            onClose={() => setSideOpen(false)}
-          />
-        </>
-      ) : (
-        <main className="spx-main spx-empty">
-          {detailError ? (
-            <div className="spx-error" role="alert">
-              {detailError}
-            </div>
-          ) : selected ? (
-            <div className="spx-muted">Loading…</div>
-          ) : !loading && !rows.length ? (
-            <div className="spx-empty-copy">
-              <h1>Specialists</h1>
-              <p className="spx-muted">
-                A specialist is an expert on one subject with its own memory and skills. Chat with it here; your tasks can
-                borrow its guidance or hand it a problem.
-              </p>
-              <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
-                New specialist
-              </button>
-            </div>
-          ) : null}
-        </main>
-      )}
-     </div>
+      <div className={"spx-cols" + (sideOpen ? " is-side-open" : "")}>
+        <SpecialistList
+          rows={rows}
+          selected={selected}
+          loading={loading}
+          error={listError}
+          onSelect={(id) => void navigateUrl(specialistHref(id))}
+          onCreate={() => setCreating(true)}
+          generalCount={general.length}
+          onOpenGeneral={() => setGeneralOpen(true)}
+          runningHere={runningHere}
+        />
+        {detail ? (
+          <>
+            <MainChat
+              specialist={detail}
+              handle={chat}
+              onOpenSettings={() => setSettings("learned")}
+              onRunning={setRunningHere}
+              headExtra={
+                <button
+                  type="button"
+                  className="spx-pill spx-side-toggle"
+                  aria-expanded={sideOpen}
+                  aria-controls={`spx-side-${detail.id}`}
+                  onClick={() => setSideOpen((v) => !v)}
+                >
+                  Updates
+                </button>
+              }
+            />
+            <SidePanel
+              specialistId={detail.id}
+              sendToChat={sendToChat}
+              onOpenSettings={(tab) => {
+                setSideOpen(false);
+                setSettings(tab);
+              }}
+              refreshKey={panelKey}
+              onClose={() => setSideOpen(false)}
+            />
+          </>
+        ) : (
+          <main className="spx-main spx-empty">
+            {detailError ? (
+              <div className="spx-error" role="alert">
+                {detailError}
+              </div>
+            ) : selected ? (
+              <div className="spx-muted">Loading…</div>
+            ) : !loading && !rows.length ? (
+              <div className="spx-empty-copy">
+                <h1>Specialists</h1>
+                <p className="spx-muted">
+                  A specialist is an expert on one subject with its own memory and skills. Chat with it here; your tasks can
+                  borrow its guidance or hand it a problem.
+                </p>
+                <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+                  New specialist
+                </button>
+              </div>
+            ) : null}
+          </main>
+        )}
+      </div>
       {generalOpen ? (
         <GeneralInbox
           notes={general}

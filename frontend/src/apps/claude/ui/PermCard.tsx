@@ -215,7 +215,7 @@ export function PermCard({ row, liveMode, onDecide, moreActions }: PermCardProps
         disabled: posting,
         title: c.title || undefined,
         onClick: () => void send(c.decision, c.scope, c.mode),
-      })).flatMap((a, i) => (i === 0 && moreActions?.length ? [a, ...moreActions] : [a]))}
+      })).flatMap((a, i): GateAction[] => (i === 0 && moreActions?.length ? [a as GateAction, ...moreActions] : [a as GateAction]))}
       status={{ tone: status.cls as GateStatus["tone"], text: status.text }}
     />
   );

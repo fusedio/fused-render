@@ -69,7 +69,14 @@
   border-radius: 6px; padding: 6px 8px; resize: vertical; width: 100%; box-sizing: border-box;
 }
 .spx-offer-note { font-size: 13px; color: var(--c-dim); }
-.spx-offer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* One row, primary first; in a pane too narrow for the row the three stack as
+   one group (never "Keep trying" alone on a second row). */
+.spx-offer { container-type: inline-size; }
+.spx-offer-actions { display: flex; flex-wrap: nowrap; gap: 8px; }
+.spx-offer-actions > .spx-btn { white-space: nowrap; }
+@container (max-width: 380px) {
+  .spx-offer-actions { flex-direction: column; align-items: stretch; }
+}
 .spx-offer-status { font-size: 13px; color: var(--c-dim); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .spx-offer-status.is-error { color: var(--c-error); }
 
@@ -96,9 +103,13 @@
 }
 .spx-bmenu-item:hover, .spx-bmenu-item:focus-visible { background: var(--c-surface); }
 .spx-brief {
-  background: var(--c-card-bg); border: 1px solid var(--spx-tint); border-radius: 10px; padding: 12px;
-  display: flex; flex-direction: column; gap: 8px;
+  /* Opaque and above the log's bottom fade: nothing shows through it. */
+  position: relative; z-index: 2; isolation: isolate;
+  background: var(--c-panel); border: 1px solid var(--spx-tint); border-radius: 10px; padding: 12px;
+  display: flex; flex-direction: column; gap: 8px; box-shadow: 0 8px 24px var(--c-shadow);
 }
+.spx-brief-hint { font-size: 12px; color: var(--c-dim); }
+.spx-bmenu-group { font-size: 11px; color: var(--c-dim); padding: 6px 10px 2px; text-transform: uppercase; letter-spacing: .04em; }
 .spx-brief-title { font-weight: 600; }
 .spx-brief-field { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; font-size: 13px; color: var(--c-dim); }
 .spx-brief-field textarea {
@@ -124,3 +135,42 @@
 /* The services card's extra button */
 .spx-service-card { display: flex; flex-direction: column; gap: 6px; }
 .spx-service-extra { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--c-dim); padding: 0 0 8px; }
+
+/* The guidance a pull added (chip View): a readable sheet, never the payload. */
+.spx-receipt {
+  max-width: 640px; box-sizing: border-box; padding: 10px 12px; font-size: 13px; line-height: 1.45;
+  background: var(--c-card-bg); border: 1px solid var(--c-border); border-radius: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.spx-receipt h4 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--c-dim); }
+.spx-receipt ul { margin: 0; padding-left: 18px; }
+.spx-receipt li + li { margin-top: 2px; }
+.spx-receipt-name { font-weight: 600; }
+.spx-receipt-empty { color: var(--c-dim); }
+
+/* The summary draft: its own block above the composer (TaskReturn mock). */
+.spx-draft {
+  border: 1px solid var(--spx-tint); border-radius: 10px; background: var(--c-card-bg);
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+  max-height: 40vh; overflow: auto;
+}
+.spx-draft-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; font-size: 12px; }
+.spx-draft-body { display: flex; flex-direction: column; gap: 10px; }
+.spx-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.spx-summary-rows { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 12px; }
+.spx-summary-row { display: contents; }
+.spx-proto-val { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--c-fg); }
+
+/* App-written messages inside a specialist session, as product UI (R1). */
+.spx-proto { max-width: 640px; margin: 8px 0 12px; font-size: 13px; }
+.spx-proto-head { font-size: 12px; font-weight: 600; color: var(--spx-tint-text); margin-bottom: 6px; }
+.spx-proto-brief .spx-offer-brief { background: var(--c-card-bg); }
+.spx-proto-summary {
+  border: 1px solid var(--spx-tint-border); background: var(--spx-tint-bg); border-radius: 10px; padding: 10px 12px;
+}
+.spx-proto-foot { margin-top: 8px; font-size: 12px; color: var(--c-dim); }
+.spx-proto-quiet { color: var(--c-dim); font-size: 12px; }
+.spx-proto-quote {
+  margin: 6px 0 0; padding: 6px 10px; border-left: 3px solid var(--spx-tint-border); color: var(--c-fg);
+  white-space: pre-wrap; font-size: 13px;
+}

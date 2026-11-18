@@ -24,8 +24,8 @@ def test_main_spec(app_home):
     for p in (".claude/settings.json", ".claude/settings.local.json"):
         assert f"Edit(/{h}/{p})" in sp["deny"], p
     assert not any(r.endswith("/.claude/skills/**)") for r in sp["deny"])  # main may change its skills (F)
-    grant = sp["policy_env"]["FUSED_SPECIALIST_GRANT"]
-    assert len(grant) >= 24 and launch.check_token(s.id, "main", sp["token"])["grant"] == grant
+    assert sp["policy_env"] == {"FUSED_SPECIALIST_POLICY": sp["policy_env"]["FUSED_SPECIALIST_POLICY"]}
+    assert "grant" not in launch.check_token(s.id, "main", sp["token"])  # no secret a session could read (C2)
     assert entry["alwaysLoad"] is True and entry["timeout"] > 60_000
     assert sp["hooks"] == {"Stop": [{"hooks": [{"specialist_hook": "stop"}]}]}
     assert "main chat" in sp["append"]
@@ -42,10 +42,14 @@ def test_breakout_spec_locks_everything_it_knows(app_home, monkeypatch, tmp_path
     from fused_render.specialists import breakouts
 
     monkeypatch.setattr(breakouts, "get", lambda sid, bid: {
-        "id": bid, "status": "open", "parent": {"file": str(parent), "session_id": "", "title": "Publish Q4"}},
-        raising=False)
-    sp = launch.spec(f"{s.id}:breakout:b-1", s.home)
+        "id": bid, "status": "open", "work": True,
+        "parent": {"file": str(parent), "session_id": "", "title": "Publish Q4"}}, raising=False)
+    work = breakouts.cwd(s.id, "b-1")
+    assert work == os.path.join(s.home, ".specialist", "breakouts", "b-1", "work")
+    assert launch.spec(f"{s.id}:breakout:b-1", s.home)["reason"] == "wrong_folder"
+    sp = launch.spec(f"{s.id}:breakout:b-1", work)
     assert "error" not in sp, sp
+    assert os.path.isfile(os.path.join(work, "memory.md"))  # the workroom is synced before the start
     h = s.home
     for p in ("CLAUDE.md", "memory.md", "said.md", "knowledge/**", ".claude/**", "people.md", "triggers.json",
               "specialist.json", "inbox/**", ".specialist/**", ".git/**"):
@@ -67,6 +71,11 @@ def test_refusals(app_home, monkeypatch, tmp_path):
     assert launch.spec(f"{s.id}:breakout:b-9", s.home)["reason"] == "no_breakout"
     monkeypatch.setattr(breakouts, "get", lambda sid, bid: {"status": "deleted", "parent": {}}, raising=False)
     assert launch.spec(f"{s.id}:breakout:b-9", s.home)["reason"] == "no_breakout"
+    # a closed or discarded breakout takes no new turn without Reopen (fix wave item 11)
+    for status in ("closed", "discarded"):
+        monkeypatch.setattr(breakouts, "get", lambda sid, bid, st=status: {"id": bid, "status": st, "work": True,
+                                                                           "parent": {}}, raising=False)
+        assert launch.spec(f"{s.id}:breakout:b-9", breakouts.cwd(s.id, "b-9"))["reason"] == "breakout_closed"
     monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
     assert launch.spec(f"{s.id}:main", s.home)["reason"] == "specialists_disabled"
 
@@ -86,3 +95,17 @@ def test_token_expiry(app_home, monkeypatch):
     real = _t.time()
     monkeypatch.setattr(launch.time, "time", lambda: real + launch.TOKEN_TTL_S + 1)
     assert launch.check_token(s.id, "main", tok) is None
+
+
+def test_every_session_start_rewrites_the_home_settings(app_home):
+    """R4: whatever a session wrote to the home's project settings is gone before the next session starts."""
+    s = make_specialist()
+    p = os.path.join(s.home, ".claude", "settings.json")
+    with open(p, "w") as f:
+        json.dump({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "touch /tmp/pwn"}]}]}}, f)
+    with open(os.path.join(s.home, ".claude", "settings.local.json"), "w") as f:
+        f.write("{}")
+    assert "error" not in launch.spec(f"{s.id}:main", s.home)
+    with open(p) as f:
+        assert json.load(f) == {"autoMemoryEnabled": False}
+    assert not os.path.exists(os.path.join(s.home, ".claude", "settings.local.json"))

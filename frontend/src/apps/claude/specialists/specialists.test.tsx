@@ -84,7 +84,7 @@ describe("placeEvents", () => {
 });
 
 describe("chips", () => {
-  test("a note the task says the user said: Use now confirms it, then it reads In effect now", async () => {
+  test("a note the task says the user said: 'The task says you stated this', Use now confirms it", async () => {
     const confirmed: string[] = [];
     const r = render(
       <TaskEventChip
@@ -94,11 +94,13 @@ describe("chips", () => {
       />,
     );
     expect(() => button(r, "Undo")).not.toThrow();
+    expect(hasText(r, "The task says you stated this")).toBe(true);
     await act(async () => {
       button(r, "Use now").props.onClick();
     });
     expect(confirmed).toEqual(["c1/n-3"]);
-    expect(hasText(r, "In effect now")).toBe(true);
+    expect(hasText(r, "It uses this from now on")).toBe(true);
+    expect(hasText(r, "The task says you stated this")).toBe(false);
     expect(r.root.findAll((n) => n.type === "button" && textOf(n) === "Use now")).toHaveLength(0);
   });
 
@@ -106,12 +108,19 @@ describe("chips", () => {
     const r = render(
       <TaskEventChip ev={ev({ kind: "note", note_id: "n-4", basis: "user-said", in_effect: true })} host={{ parentSessionId: "s1", parentFile: "/w", refresh: () => {} }} />,
     );
-    expect(hasText(r, "In effect now")).toBe(true);
+    expect(hasText(r, "It uses this from now on")).toBe(true);
     expect(r.root.findAll((n) => n.type === "button" && textOf(n) === "Use now")).toHaveLength(0);
   });
 
   test("the words", () => {
-    expect(chipText(ev({ entries: 2 }))).toBe("Guidance from the Canvas specialist was added · 2 entries");
+    expect(chipText(ev({ entries: 2, skills: 1 }))).toBe(
+      "Guidance from the Canvas specialist was added · 2 memory entries, 1 skill",
+    );
+    expect(chipText(ev({ entries: 1, knowledge: 2 }))).toBe(
+      "Guidance from the Canvas specialist was added · 1 memory entry, 2 topic files",
+    );
+    expect(chipText(ev({ kind: "note", specialist: { id: "general", name: "general inbox" } }))).toBe("Sent to the general inbox");
+    expect(chipText(ev({ kind: "breakout_deleted" }))).toBe("Breakout with the Canvas specialist · specialist deleted");
     expect(chipText(ev({ kind: "breakout_closed" }))).toBe("Breakout closed · its full note is saved with the Canvas specialist");
     expect(chipText(ev({ kind: "note" }))).toBe("Sent to the Canvas specialist's inbox");
   });
@@ -361,12 +370,15 @@ describe("Send to a specialist", () => {
         source: { session_id: "s1", uuid: "u-7", title: "Publish Q4" },
       },
     ]);
-    expect(hasText(r, "Sent to the Canvas specialist's inbox")).toBe(true);
+    expect(hasText(r, "Sent to the Canvas specialist · it uses this from now on")).toBe(true);
+    // One line, one Undo.
+    expect(r.root.findAll((n) => n.type === "button" && textOf(n) === "Undo")).toHaveLength(1);
     await act(async () => {
       button(r, "Undo").props.onClick();
     });
     expect(removed).toEqual(["c1/n-5"]);
     expect(hasText(r, "Send to a specialist")).toBe(true);
+    expect(hasText(r, "Sent to")).toBe(false);
   });
 
   test("none fits: the general inbox", async () => {

@@ -133,8 +133,27 @@ def test_tasks_collect_hides_home_sessions(app_home, monkeypatch):
     assert tasks._specialist_session({"path": "in"})
     assert not tasks._specialist_session({"path": "out"})
     assert not tasks._specialist_session({"path": ""})
+    # R6: hidden with the flag off too (the root exists), in a breakout's workroom too
     monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
+    assert tasks._specialist_session({"path": "in"})
+    work = os.path.join(s.home, ".specialist", "breakouts", "b-1", "work")
+    monkeypatch.setattr(tasks_store, "head", lambda path: (work,) + ("",) * 5)
+    assert tasks._specialist_session({"path": "w"})
+
+
+def test_tasks_collect_hides_nothing_without_a_root(app_home, monkeypatch):
+    """R6: a user who never turned specialists on has no root, so a folder that merely sits where it would be is
+    still listed."""
+    from fused_render import tasks_store
+    from fused_render.server.routers import tasks
+    from fused_render.specialists import paths
+
+    monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
+    assert not os.path.isdir(paths.root())
+    inside = os.path.join(paths.root(), "x")
+    monkeypatch.setattr(tasks_store, "head", lambda path: (inside,) + ("",) * 5)
     assert not tasks._specialist_session({"path": "in"})
+    assert not os.path.isdir(paths.root())  # and nothing was created
 
 
 def test_delete_refused_while_the_nightly_job_runs(app_home, monkeypatch):
@@ -171,3 +190,24 @@ def test_session_folder_lists_skip_homes(app_home, monkeypatch, tmp_path):
     assert paths(claude_sessions.api_home_claude_sessions()) == {str(other)}
     monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
     assert paths(claude_sessions.api_claude_sessions()) == {s.home, str(other)}
+
+
+def test_a_new_task_in_a_home_is_refused_before_any_row_exists(client, monkeypatch):
+    """QA (privileges) defect 5: the refusal happens at task creation (no entry, so no broken Tasks row), with the
+    sentence the start used to answer. Flag off: the doors are main's."""
+    import json as _json
+
+    from fused_render import schedule
+
+    s = make_specialist()
+    before = list(schedule.list_entries()) if hasattr(schedule, "list_entries") else None
+    sentence = "This folder is a specialist's home; open it from the Specialists page."
+    for path, body in (("/api/schedule", {"target": s.home, "message": "hi", "delay_seconds": 60}),
+                       ("/api/tasks/create", {"target": os.path.join(s.home, "knowledge"), "prompt": "hi"})):
+        status, _, raw = client.post(path, body)
+        assert (status, _json.loads(raw)) == (400, {"error": sentence, "reason": "specialist_home"}), path
+    if before is not None:
+        assert list(schedule.list_entries()) == before
+    monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
+    status, _, raw = client.post("/api/tasks/create", {"target": s.home, "prompt": "hi", "due": "nope"})
+    assert "specialist_home" not in raw.decode()

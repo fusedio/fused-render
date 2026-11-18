@@ -69,7 +69,16 @@ def test_create_seeds_the_brief_and_counts(client, parent):
     status, out = _open(client, spec, parent, brief={"problem": "Edited problem", "tried": "t", "look_at": "l"})
     assert status == 200, out
     bid = out["breakout_id"]
-    assert out["home"] == spec.home and out["name"] == "Canvas"
+    # "home" is the breakout's private workroom (C1), with what does not load there natively copied in
+    work = os.path.join(spec.home, ".specialist", "breakouts", bid, "work")
+    assert out["home"] == work == breakouts.cwd(spec.id, bid) and out["name"] == "Canvas"
+    for rel in ("memory.md", "said.md"):
+        with open(os.path.join(spec.home, rel)) as a, open(os.path.join(work, rel)) as b:
+            assert a.read() == b.read()
+    with open(os.path.join(work, "CLAUDE.md")) as f:
+        assert "@memory.md\n@said.md\n" in f.read()
+    with open(os.path.join(work, ".claude", "settings.json")) as f:
+        assert json.load(f) == {"autoMemoryEnabled": False}
     assert out["start_params"] == {"specialist": f"{spec.id}:breakout:{bid}"}
     seed = out["seed"]
     assert seed.startswith('Brief from the task "Publish Q4 canvas":\nProblem: Edited problem\nTried: t\nLook at: l')
@@ -85,9 +94,11 @@ def test_launch_accepts_the_breakout_record(client, parent):
 
     spec = make_specialist("Canvas", "Fused canvases")
     _, out = _open(client, spec, parent, origin="hand")
-    got = launch.spec(out["start_params"]["specialist"], spec.home)
+    assert launch.spec(out["start_params"]["specialist"], spec.home)["reason"] == "wrong_folder"
+    got = launch.spec(out["start_params"]["specialist"], out["home"])
     assert "error" not in got, got
     assert any(parent["file"] in r for r in got["allow"])
+    assert any(r == f"Read(//{spec.home.lstrip('/')}/**)" for r in got["allow"])  # knowledge reads, no card
 
 
 @pytest.mark.parametrize("body,status", [
@@ -131,7 +142,7 @@ def test_close_drafts_the_summary_and_files_the_note(client, parent, answer):
     assert "reopening fixed it" in note["evidence"]
     assert note["source"] == {"type": "breakout", "breakout_id": bid, "session_id": "bs-1",
                               "title": note["source"]["title"]}
-    assert answer["calls"] == [(spec.home, "bs-1")]
+    assert answer["calls"] == [(out["home"], "bs-1")]  # the transcript is keyed on the workroom
     rec = breakouts.get(spec.id, bid)
     assert rec["status"] == "closed" and len(rec["closes"]) == 1
     # a retry of the same close (same answer) files nothing twice
@@ -143,7 +154,7 @@ def test_close_drafts_the_summary_and_files_the_note(client, parent, answer):
     # Reopen continues the same session; a second close asks for a follow-up only.
     status, again = _post(client, base + "/reopen")
     assert again == {"session_id": "bs-1", "start_params": {"specialist": f"{spec.id}:breakout:{bid}"},
-                     "home": spec.home}
+                     "home": out["home"]}
     assert breakouts.get(spec.id, bid)["status"] == "open"
     assert _post(client, base + "/close-prompt")[1]["message"].startswith(
         "The user is closing this breakout again. Summarise only what happened since your last summary.")
@@ -154,7 +165,7 @@ def test_close_drafts_the_summary_and_files_the_note(client, parent, answer):
     assert note2["kind"] == "case" and note2["basis"] == "guess" and "just prose" in note2["evidence"]
     assert len(breakouts.get(spec.id, bid)["closes"]) == 2
     kinds = [e["kind"] for e in _events(client)]
-    assert kinds.count("breakout_closed") == 2 and kinds[0] == "breakout_open"
+    assert kinds == ["breakout_closed"]  # one event per breakout, its current state (C5)
     listed = json.loads(client.get("/api/specialists/breakouts?parent_session_id=task-1")[2])["breakouts"]
     assert [(b["id"], b["name"], b["status"]) for b in listed] == [(bid, "Canvas", "closed")]
 
@@ -201,8 +212,11 @@ def test_deleted_specialist_with_an_open_breakout(client, parent):
     store.delete(spec.id)
     listed = json.loads(client.get("/api/specialists/breakouts?parent_session_id=task-1")[2])["breakouts"]
     assert [(x["id"], x["status"], x["name"]) for x in listed] == [(bid, "deleted", "Canvas")]
-    assert _post(client, f"/api/specialists/{spec.id}/breakouts/{bid}/close-prompt")[0] == 404
-    assert [e["kind"] for e in _events(client)] == ["breakout_open"]
+    for action in ("close-prompt", "closed", "discard", "reopen"):  # C5: 410, so the card can be dismissed
+        assert _post(client, f"/api/specialists/{spec.id}/breakouts/{bid}/{action}") == (
+            410, {"error": "This specialist was deleted.", "reason": "deleted"})
+    assert _post(client, f"/api/specialists/never-was/breakouts/{bid}/discard")[0] == 404
+    assert [e["kind"] for e in _events(client)] == ["breakout_deleted"]
 
 
 # ------------------------------------------------------------- agent_hooks ---
@@ -233,3 +247,111 @@ def test_after_agent_call_records_sessions_and_signals(client, parent, monkeypat
     assert [s["kind"] for s in signals.since("task-1", 0)] == ["deny", "stop", "undo"]
     # never raises
     agent_hooks.after_agent_call("start", None, None)
+
+
+# ------------------------------------------------------------ fix wave (BE-1) ---
+def test_app_written_prefixes_are_pinned(client, parent):
+    """CONTRACT C3: the frontend recognises app-written messages by these exact first characters."""
+    from fused_render.specialists import breakouts
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    assert out["seed"].startswith('Brief from the task "')
+    assert breakouts.BREAKOUT_SEED.startswith('Brief from the task "')
+    assert breakouts.CLOSE_OUT.startswith("The user is closing this breakout")
+    assert breakouts.CLOSE_OUT_FOLLOWUP.startswith("The user is closing this breakout")
+    # C6's basis rule rides in the close-out request
+    for text in (breakouts.CLOSE_OUT, breakouts.CLOSE_OUT_FOLLOWUP):
+        assert "if the user stated it to you in this conversation, the basis is user-said" in text
+
+
+def test_charter_of_a_new_home_says_no_ids_and_no_git(client):
+    """CONTRACT C6 (new homes only)."""
+    spec = make_specialist("Canvas", "Fused canvases")
+    with open(os.path.join(spec.home, "CLAUDE.md")) as f:
+        charter = f.read()
+    for line in ("When you talk to the user, do not cite entry ids, note ids or commits; say it in plain words.",
+                 "The app saves and commits your changes; never run git commands in this folder.",
+                 "if the user stated it to you in this conversation, the basis is user-said"):
+        assert line in charter, line
+
+
+def test_workroom_is_private_and_resynced_each_turn(client, parent):
+    """C1: the workroom lives under `.specialist/` (gitignored, so nothing written there is ever committed), the
+    transcript lookups use it, and the prompt hook refreshes its memory copy each turn."""
+    from fused_render.specialists import breakouts, history
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    bid, work = out["breakout_id"], out["home"]
+    breakouts.set_session(spec.id, bid, "bs-7")
+    assert breakouts.session_cwds(spec.id) == {"bs-7": work}
+    assert os.path.realpath(work).startswith(os.path.realpath(os.path.join(spec.home, ".specialist")) + os.sep)
+    with open(os.path.join(spec.home, "memory.md"), "w") as f:
+        f.write("# Memory\n- [m-0001] Changed by the main chat.\n")
+    history.before_turn(spec.id, "breakout", "bs-7")
+    with open(os.path.join(work, "memory.md")) as f:
+        assert "Changed by the main chat." in f.read()
+    with open(os.path.join(work, "scratch.py"), "w") as f:
+        f.write("print(1)\n")
+    if history.available():
+        assert history.log(spec.id)[0]["files"] == ["memory.md"]  # the turn's "pending changes" commit
+        assert history.commit(spec.id, "x") is None  # the workroom's files never reach history
+
+
+def test_a_record_from_before_workrooms_keeps_the_home(client, parent):
+    from fused_render.specialists import breakouts, counts
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    bid = out["breakout_id"]
+    path = os.path.join(spec.home, ".specialist", "breakouts", bid + ".json")
+    rec = counts.read_json(path, {})
+    rec.pop("work")
+    rec["session_id"] = "old-1"
+    counts.write_json(path, rec)
+    assert breakouts.cwd(spec.id, bid) == spec.home and breakouts.session_cwds(spec.id) == {"old-1": spec.home}
+
+
+def test_close_and_discard_end_the_breakouts_host(client, parent, answer, monkeypatch):
+    """Fix wave item 11: a background job finishing after Close would start a turn in the live host; the host is
+    ended at Close / Discard (and `launch.spec` refuses a start of a breakout that is not open)."""
+    from fused_render.claude_agent import agent_module
+    from fused_render.specialists import breakouts
+
+    agent = agent_module()
+    ended, asked = [], []
+    monkeypatch.setattr(breakouts, "END_DELAY_S", 0.0)
+    monkeypatch.setattr(agent, "_hosts_in", lambda folder: asked.append(folder) or ["run-x"], raising=False)
+    monkeypatch.setattr(agent, "_cancel_run", lambda run_id, interrupt_first=True, queued=False:
+                        ended.append((run_id, interrupt_first)) or {})
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    bid = out["breakout_id"]
+    breakouts.set_session(spec.id, bid, "bs-1")
+    _post(client, f"/api/specialists/{spec.id}/breakouts/{bid}/closed", {"session_id": "bs-1"})
+    _post(client, f"/api/specialists/{spec.id}/breakouts/{bid}/discard")
+    import time as _t
+
+    deadline = _t.time() + 5
+    while len(ended) < 2 and _t.time() < deadline:
+        _t.sleep(0.05)
+    assert ended == [("run-x", False), ("run-x", False)] and asked == [out["home"], out["home"]]
+
+
+def test_hosts_in_and_live_runs_under(tmp_path, monkeypatch):
+    from fused_render.claude_agent import agent_module
+
+    agent = agent_module()
+    runs, home = tmp_path / "runs", tmp_path / "home"
+    work = home / ".specialist" / "breakouts" / "b-1" / "work"
+    work.mkdir(parents=True)
+    for name, target in (("r1", home), ("r2", work), ("r3", tmp_path / "elsewhere")):
+        (runs / name).mkdir(parents=True)
+        (runs / name / "meta.json").write_text(json.dumps({"file": str(target)}))
+    monkeypatch.setattr(agent, "RUNS", str(runs))
+    monkeypatch.setattr(agent, "_alive", lambda run_dir: True)
+    monkeypatch.setattr(agent, "_turn_state_fold", lambda run_dir, st, partial=False: (True, False))
+    assert agent._hosts_in(str(work)) == ["r2"]
+    assert sorted(r["run_id"] for r in agent._live_runs_under(str(home))) == ["r1", "r2"]
+    assert [r["run_id"] for r in agent._live_runs_in(str(home))] == ["r1"]

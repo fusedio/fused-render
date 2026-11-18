@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from fused_render.specialists import task_routes  # noqa: E402
 from _specialists_conftest import *  # noqa: F401,F403
 from _specialists_conftest import make_specialist, needs_git
 
@@ -88,14 +89,47 @@ def test_stuck_at_n_once_per_signature(client, tmp_path, monkeypatch):
                 tool_input={"command": "make"})
     assert _hook(client, error="Exit code 2\nmake: *** [all] Error 2", **fail) == {}
     assert _hook(client, error="Exit code 2\nmake: *** [all] Error 2", **fail) == {}
-    out = _hook(client, error="Exit code 2\nother tail", **fail)
-    assert out["additionalContext"].startswith("The same step has failed 3 times (Bash: Exit code #).")
+    out = _hook(client, error="Exit code 2\nmake: *** [all] Error 3", **fail)  # digits fold
+    assert out["additionalContext"].startswith("The same step has failed 3 times (Bash: make: *** [all] Error #).")
     assert "(Canvas)" in out["additionalContext"] and "specialist_breakout" in out["additionalContext"]
-    assert _hook(client, error="Exit code 2", **fail) == {}  # once per signature
+    assert _hook(client, error="Exit code 2\nmake: *** [all] Error 2", **fail) == {}  # once per signature
     assert [e["kind"] for e in _events(client, "s3")] == ["stuck"]
     assert [s["kind"] for s in signals.since("s3", 0)] == ["failure"] * 4
     # a different failure counts on its own
     assert _hook(client, error="No such file", **fail) == {}
+
+
+def test_stuck_different_commands_are_not_the_same_step(client, tmp_path, monkeypatch):
+    """QA (learning) defect 3: five different failing commands are not "the same step"; they count only toward
+    the different-errors rule (N + 2). Same command, different error line: not identical either."""
+    monkeypatch.setenv("FUSED_RENDER_SPECIALIST_STUCK_N", "3")
+    make_specialist("Canvas", "Fused canvases")
+    base = dict(event="failure", session_id="s6", cwd=str(tmp_path), tool_name="Bash")
+    cmds = [("ls /nope", "Exit code 2\nls: cannot access '/nope'"), ("cat /nope", "Exit code 1\ncat: /nope: No such"),
+            ("frobnicate", "Exit code 127\nfrobnicate: command not found"), ("exit 4", "Exit code 4")]
+    outs = [_hook(client, error=e, tool_input={"command": c}, **base) for c, e in cmds]
+    assert not any(outs)
+    out = _hook(client, error="Exit code 1\nboom", tool_input={"command": "false && x"}, **base)
+    assert out["additionalContext"].startswith("The same step has failed 5 times (Bash: different errors")
+    sigs = {task_routes._signature("Bash", {"command": "make  all"}, "Exit code 2\nE1"),
+            task_routes._signature("Bash", {"command": "make all"}, "Exit code 2\nE1"),
+            task_routes._signature("Bash", {"command": "make all"}, "Exit code 2\nother"),
+            task_routes._signature("Bash", {"command": "make test"}, "Exit code 2\nE1")}
+    assert len(sigs) == 3  # whitespace folds; the error line and the command each tell steps apart
+
+
+def test_stuck_ignores_a_search_that_found_nothing(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_SPECIALIST_STUCK_N", "3")
+    make_specialist("Canvas", "Fused canvases")
+    base = dict(event="failure", session_id="s7", cwd=str(tmp_path), tool_name="Bash")
+    for cmd in ("grep -r quokka src", "cd x && rg foo", "diff a b", "test -f nope", "git grep x", "cat f | grep y"):
+        assert task_routes._benign("Bash", {"command": cmd}, "Exit code 1"), cmd
+    assert not task_routes._benign("Bash", {"command": "grep x f"}, "Exit code 2\ngrep: f: No such file")
+    assert not task_routes._benign("Bash", {"command": "grep x f"}, "Exit code 1\nsomething said")
+    assert not task_routes._benign("Bash", {"command": "make"}, "Exit code 1")
+    assert not task_routes._benign("Edit", {"command": "grep"}, "Exit code 1")
+    outs = [_hook(client, error="Exit code 1", tool_input={"command": "grep -r quokka src"}, **base) for _ in range(6)]
+    assert not any(outs)
 
 
 def test_stuck_on_one_tool_with_different_errors(client, tmp_path, monkeypatch):
@@ -245,3 +279,19 @@ def test_script_stop_prints_nothing_and_fails_open():
                                  ("prompt", "http://127.0.0.1:9", "not json")):
         out = _run(event, stdin, origin)
         assert out.returncode == 0 and out.stdout == ""
+
+
+def test_a_turn_in_a_workroom_is_a_breakout(client, monkeypatch):
+    """C1: a breakout works in `<home>/.specialist/breakouts/<bid>/work`; its hooks resolve to the specialist and
+    the turn is a breakout's whatever the records say."""
+    from fused_render.specialists import chat, history
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    seen = []
+    monkeypatch.setattr(history, "before_turn", lambda i, k, s: seen.append(("before", i, k, s)))
+    monkeypatch.setattr(history, "after_turn", lambda i, k, s: seen.append(("after", i, k, s)))
+    monkeypatch.setattr(chat, "main_sessions", lambda i: ["ms1"])
+    work = os.path.join(spec.home, ".specialist", "breakouts", "b-000000000001", "work")
+    _hook(client, event="prompt", session_id="ms1", cwd=work, prompt="x")
+    _hook(client, event="stop", session_id="ms1", cwd=work)
+    assert seen == [("before", spec.id, "breakout", "ms1"), ("after", spec.id, "breakout", "ms1")]

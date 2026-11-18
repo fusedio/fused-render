@@ -12,6 +12,7 @@ import {
 } from "@platform/lib/specialists-api";
 import { NOTE_KIND, noteSource } from "./MemoryTab";
 import { dayLabel } from "../components/FoldedSession";
+import { secondPerson } from "../lib/api-extra";
 
 export function GeneralInbox({
   notes,
@@ -45,14 +46,25 @@ export function GeneralInbox({
   };
 
   return (
-    <Modal title="Notes that fit no specialist" onClose={onClose} width={640} dialogClassName="spx-settings">
+    <Modal
+      title="Notes that fit no specialist"
+      onClose={onClose}
+      width="min(640px, calc(100vw - 32px))"
+      dialogClassName="spx-dialog spx-general"
+    >
       <div className="spx-tab">
         {error ? (
           <div className="spx-error" role="alert">
             {error}
           </div>
         ) : null}
-        {!notes.length ? <div className="spx-muted">None left.</div> : null}
+        {!notes.length ? <div className="spx-empty-note">None left. Every note has a specialist.</div> : null}
+        {notes.length ? (
+          <p className="spx-muted spx-small">
+            These notes came from your tasks but match no specialist's subject. Give each to the one that should learn it, or
+            delete it.
+          </p>
+        ) : null}
         {notes.map((n) => {
           const pick = target[n.id] ?? specialists[0]?.id ?? "";
           return (
@@ -61,7 +73,7 @@ export function GeneralInbox({
                 <span className="spx-warn">{NOTE_KIND[n.kind] || n.kind}</span>
                 <span className="spx-muted">{dayLabel(n.at)}</span>
               </div>
-              <span>{n.claim}</span>
+              <span>{secondPerson(n.claim)}</span>
               <span className="spx-muted spx-small">{noteSource(n)}</span>
               <div className="spx-row-gap">
                 <label className="spx-small spx-muted" htmlFor={`spx-give-${n.id}`}>

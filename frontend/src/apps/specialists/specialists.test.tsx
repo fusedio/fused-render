@@ -219,7 +219,9 @@ describe("the one chat (D, E)", () => {
     await act(async () => {
       button(r, "Show").props.onClick();
     });
-    expect(hasText(r, "Because.")).toBe(true);
+    // The reply goes through the chat's markdown (lazy), or its plain-text fallback while that loads.
+    expect(hasText(r, "Because.") || r.root.findAll((n) => n.props.text === "Because.").length > 0).toBe(true);
+    expect(hasText(r, "why?")).toBe(true);
     expect(() => button(r, "Hide")).not.toThrow();
   });
 
@@ -279,10 +281,11 @@ describe("the side panel (U, V)", () => {
     const api = panelApi();
     const r = render(<SidePanel specialistId="c1" sendToChat={() => true} onOpenSettings={() => {}} api={api} />);
     await flush();
-    expect(hasText(r, "Learned last night")).toBe(true);
+    expect(hasText(r, "Latest update")).toBe(true);
+    expect(hasText(r, "last night")).toBe(false);
     expect(() => button(r, "See all 4")).not.toThrow();
     expect(hasText(r, "Reverted")).toBe(true);
-    expect(hasText(r, "3 notes waiting for tonight's update")).toBe(true);
+    expect(hasText(r, "3 notes waiting for the next update")).toBe(true);
     expect(hasText(r, "Helping in 1 task now")).toBe(true);
     expect(hasText(r, "Gave guidance to 5 tasks this week")).toBe(true);
     expect(r.root.find((n) => n.type === "a").props.href).toContain("session_id=s9");
@@ -363,6 +366,9 @@ describe("settings (one dialog, six tabs)", () => {
     const sent: string[] = [];
     const r = render(<LearnedTab specialistId="c1" sendToChat={(t) => (sent.push(t), true)} api={api} />);
     await flush();
+    // One line each; where it came from is behind More.
+    expect(hasText(r, "From 2 notes and a breakout")).toBe(false);
+    act(() => button(r, "More").props.onClick());
     expect(hasText(r, "From 2 notes and a breakout")).toBe(true);
     await act(async () => {
       button(r, "Revert").props.onClick();
@@ -386,7 +392,6 @@ describe("settings (one dialog, six tabs)", () => {
         specialist={SPEC}
         onSaved={() => {}}
         onDeleted={() => deleted++}
-        confirm={() => true}
         api={{
           patchSpecialist: async (id, b) => (log.push(["patch", id, b]), SPEC),
           deleteSpecialist: async (id) => (log.push(["delete", id]), { ok: true as const }),
@@ -404,6 +409,11 @@ describe("settings (one dialog, six tabs)", () => {
     expect(log[0]).toEqual(["patch", "c1", { name: "Canvas", subject: "Fused canvases", triggers: { folders: ["/w/q4"], keywords: ["sync"] }, model: "", effort: "" }]);
     await act(async () => {
       button(r, "Delete this specialist").props.onClick();
+    });
+    // The app's own confirm, not the browser's: nothing is deleted until its Delete.
+    expect(log).not.toContainEqual(["delete", "c1"]);
+    await act(async () => {
+      await button(r, "Delete").props.onClick();
     });
     expect(log).toContainEqual(["delete", "c1"]);
     expect(deleted).toBe(1);
@@ -423,7 +433,9 @@ describe("the general inbox", () => {
     const r = render(
       <SpecialistList rows={[]} selected={null} loading={false} error="" onSelect={() => {}} onCreate={() => {}} generalCount={2} onOpenGeneral={() => opened++} />,
     );
-    act(() => button(r, "2 notes fit no specialist").props.onClick());
+    const row = r.root.find((n) => n.type === "button" && String(n.props.className).includes("spx-general-row"));
+    expect(textOf(row)).toContain("2 notes to give to one");
+    act(() => row.props.onClick());
     expect(opened).toBe(1);
   });
 
@@ -502,5 +514,284 @@ describe("the flag gates in the shell (A)", () => {
     expect(s).toContain("put={putSpecialistsEnabled}");
     expect(s).toContain("publishSpecialistsEnabled(next.specialists?.enabled === true)");
     expect(read("shell/settings/registry.ts")).toContain('id: "specialists",');
+  });
+});
+
+// ── fix wave (FE-A): what the UX review asked for ────────────────────────
+import { Face, faceSvg, initialsFor } from "./components/Face";
+import { findOffsets, greeting } from "./components/MainChat";
+import { secondPerson, clip, agoText, revertable } from "./lib/api-extra";
+import { buildSkill, parseSkill, SkillsTab } from "./dialogs/SkillsTab";
+import { PeopleTab, serviceChoices } from "./dialogs/PeopleTab";
+import { ConnectionsTab, serviceTitle } from "./dialogs/ConnectionsTab";
+import { fromLabel } from "./dialogs/MemoryTab";
+
+describe("faces", () => {
+  test("a seeded face draws its shape in its colour; a letter only as fallback", () => {
+    const r = render(<Face id="c1" name="Canvas" face={{ shape: "hexagon", color: "#2a9a86", icon: "" }} />);
+    const svg = r.root.find((n) => n.type === "svg");
+    expect(svg.findAll((n) => n.type === "path")[0]!.props.fill).toBe("#2a9a86");
+    expect(textOf(r.root)).toBe("");
+    const r2 = render(<Face id="c1" name="Canvas" face="" letters="Ca" />);
+    expect(textOf(r2.root)).toBe("Ca");
+    expect(faceSvg({ shape: "hexagon", color: "#2a9a86" }, "c1", "C")).toContain('fill="#2a9a86"');
+  });
+  test("two letters when names share a first letter", () => {
+    const names = ["QA1-Alpha", "QA1-Beta", "QA3-Stats", "Canvas", "Hexagons"];
+    expect(initialsFor("QA3-Stats", names)).toBe("QS");
+    expect(initialsFor("QA1-Beta", names)).toBe("QB");
+    expect(initialsFor("Canvas", names)).toBe("C");
+    expect(initialsFor("Charts", ["Canvas", "Charts"])).toBe("Ch");
+  });
+});
+
+describe("the one chat: working, greeting, model, search", () => {
+  const rig = (chat: { current: string | null; folded: never[] }) => {
+    const mounts: Record<string, unknown>[] = [];
+    const Spy = (p: Record<string, unknown>) => (mounts.push(p), null);
+    const running: boolean[] = [];
+    const r = render(
+      <MainChat
+        specialist={{ ...SPEC, model: "opus", status: "Ready" }}
+        onOpenSettings={() => {}}
+        onRunning={(b) => running.push(b)}
+        mount={Spy as never}
+        api={{ getChat: async () => chat, clearChat: async () => chat }}
+      />,
+    );
+    return { r, mounts, running };
+  };
+  test("an empty chat greets; the composer names the specialist; the model starts as its own (R7)", async () => {
+    const { r, mounts } = rig({ current: null, folded: [] });
+    await flush();
+    expect(hasText(r, "I'm the Canvas specialist. Tell me something to remember, or ask me anything about Fused canvases.")).toBe(true);
+    expect(mounts[mounts.length - 1]).toMatchObject({ model: "opus", placeholder: "Message the Canvas specialist" });
+  });
+  test("the header says Working… while the chat runs, and tells the page", async () => {
+    const { r, mounts, running } = rig({ current: "s1", folded: [] });
+    await flush();
+    expect(hasText(r, "Ready")).toBe(true);
+    act(() => (mounts[mounts.length - 1]!.onBreakoutState as (s: unknown) => void)({ sessionId: "s1", turns: [{}], running: true }));
+    expect(hasText(r, "Working…")).toBe(true);
+    expect(hasText(r, "I'm the Canvas specialist")).toBe(false);
+    expect(running[running.length - 1]).toBe(true);
+  });
+  test("search offsets and greeting text", () => {
+    expect(findOffsets("None and none, NONE", "none")).toEqual([0, 9, 15]);
+    expect(findOffsets("abc", "")).toEqual([]);
+    expect(greeting({ name: "Stats", subject: "Python statistics." })).toBe(
+      "I'm the Stats specialist. Tell me something to remember, or ask me anything about Python statistics.",
+    );
+  });
+  test("the list says Working… from the chat's own run state before its poll", () => {
+    const r = render(
+      <SpecialistList
+        rows={[{ id: "c1", name: "Canvas", subject: "c", face: "", status: "Ready", working: false }]}
+        selected="c1"
+        loading={false}
+        error=""
+        onSelect={() => {}}
+        onCreate={() => {}}
+        runningHere
+      />,
+    );
+    expect(textOf(r.root.find((n) => n.type === "a"))).toContain("Working…");
+  });
+});
+
+describe("plain words (R1)", () => {
+  test("second person, clipped titles, ages", () => {
+    expect(secondPerson("In the user's projects, mean() must skip None.")).toBe("In your projects, mean() must skip None.");
+    expect(secondPerson("The user's canvases are left-aligned.")).toBe("Your canvases are left-aligned.");
+    expect(secondPerson("Asked by the user.")).toBe("Asked by you.");
+    expect(secondPerson("The user prefers tabs.")).toBe("The user prefers tabs.");
+    expect(clip("QA3T2: I keep getting wrong averages from stats.py and I'm stuck. Hand this problem", 40)).toBe(
+      "QA3T2: I keep getting wrong averages…",
+    );
+    expect(agoText(100, 112_000)).toBe("12 s ago");
+  });
+  test("an entry's source in words, never its raw form", () => {
+    expect(fromLabel("user main chat")).toBe("You told it in its chat");
+    expect(fromLabel("breakout b-12ab34cd")).toBe("A breakout from one of your tasks");
+    expect(fromLabel("")).toBe("");
+  });
+  test("C4: only an active item can be reverted", () => {
+    expect(["active", undefined, "reverting", "reverted", "changed"].map((s) => revertable(s))).toEqual([true, true, false, false, false]);
+  });
+});
+
+describe("Learned while an update runs (C5)", () => {
+  const base = (over: Partial<LearnedApi>): LearnedApi => ({
+    getLearned: async () => ({ runs: [] }),
+    listDrafts: async () => ({ drafts: [] }),
+    getNightly: async () => ({ last_ok: null, running: false, last_row: null, started: null }),
+    runNightly: async () => ({ row: "r9" }),
+    revertChange: async () => ({ message: "", session_id: null }),
+    sendDraft: async () => ({ message: "", session_id: null }),
+    discardDraft: async () => ({ ok: true as const }),
+    ...over,
+  });
+  test("Updating… started N s ago, never beside No updates yet; refreshes when it ends", async () => {
+    let running = true;
+    let reads = 0;
+    const api = base({
+      getNightly: async () => ({ last_ok: null, running, last_row: null, started: 100 }),
+      getLearned: async () => (reads++, { runs: running ? [] : [{ run: "r9", at: 0, summary: "Read 2 notes.", items: [] }] }),
+    });
+    const r = render(<LearnedTab specialistId="c1" sendToChat={() => true} api={api} now={() => 112_000} />);
+    await flush();
+    expect(hasText(r, "Updating… started 12 s ago")).toBe(true);
+    expect(hasText(r, "No updates yet")).toBe(false);
+    running = false;
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 3_100));
+    });
+    expect(reads).toBe(2);
+    expect(hasText(r, "Latest update")).toBe(true);
+    expect(hasText(r, "Last night")).toBe(false);
+  }, 6_000);
+  test("changed and reverted items offer no Revert; Revert keeps the tab and says it was asked", async () => {
+    const sent: string[] = [];
+    const api = base({
+      getLearned: async () => ({
+        runs: [
+          {
+            run: "r1",
+            at: 0,
+            summary: "",
+            items: [
+              { id: "i1", kind: "Learned", text: "A", state: "active" },
+              { id: "i2", kind: "Learned", text: "B", state: "changed" },
+              { id: "i3", kind: "Learned", text: "C", state: "reverted" },
+            ],
+          },
+        ],
+      }),
+      revertChange: async () => ({ message: "Undo this change from the latest update: A", session_id: null }),
+    });
+    const r = render(<LearnedTab specialistId="c1" sendToChat={(t) => (sent.push(t), true)} api={api} />);
+    await flush();
+    expect(r.root.findAll((n) => n.type === "button" && textOf(n) === "Revert").length).toBe(1);
+    expect(hasText(r, "Changed since")).toBe(true);
+    await act(async () => {
+      button(r, "Revert").props.onClick();
+    });
+    expect(sent).toEqual(["Undo this change from the latest update: A"]);
+    expect(hasText(r, "Revert asked in the chat")).toBe(true);
+  });
+});
+
+describe("skills, people, connections", () => {
+  test("SKILL.md front matter round-trips through fields; other keys are kept", () => {
+    const text = "---\nname: publish\ndescription: When publishing a canvas.\nallowed-tools: Read\n---\n\n# Publish\n\n1. Sign in\n";
+    const p = parseSkill(text);
+    expect(p).toMatchObject({ name: "publish", description: "When publishing a canvas.", extra: ["allowed-tools: Read"] });
+    expect(p.body.startsWith("# Publish")).toBe(true);
+    expect(parseSkill(buildSkill({ ...p, description: "Before: a publish" }))).toMatchObject({ description: "Before: a publish" });
+  });
+  test("Skills: an empty state, and no raw front matter in the editor", async () => {
+    const r = render(
+      <SkillsTab
+        specialistId="c1"
+        api={{
+          listSkills: async () => ({ skills: [] }),
+          getSkill: async () => ({ name: "", text: "" }),
+          putSkill: async () => ({ name: "", text: "" }),
+          deleteSkill: async () => ({ ok: true as const }),
+        }}
+      />,
+    );
+    await flush();
+    expect(hasText(r, "No skills yet")).toBe(true);
+    expect(hasText(r, "Pick a skill")).toBe(false);
+  });
+  test("People: Service is a choice of connected services; Remove on every row; an empty state", async () => {
+    expect(
+      serviceChoices(
+        [
+          { key: "slack", title: "Slack", kind: "connect", connected: true, allowed: false },
+          { key: "notion", title: "Notion", kind: "connect", connected: false, allowed: false },
+          { key: "app", title: "Svc", kind: "app", connected: true, allowed: true },
+        ],
+        "Email",
+      ),
+    ).toEqual(["Email", "Slack"]);
+    const r = render(
+      <PeopleTab
+        specialistId="c1"
+        api={{
+          getPeople: async () => ({ rows: [{ area: "Sync", owner: "Ana", service: "Slack", handle: "@ana", notes: "" }], path: "" }),
+          putPeople: async (_id, rows) => ({ rows, path: "" }),
+          getConnections: async () => ({ services: [{ key: "slack", title: "Slack", kind: "connect", connected: true, allowed: true }] }),
+        }}
+      />,
+    );
+    await flush();
+    const sel = r.root.find((n) => n.type === "select");
+    expect(sel.props.value).toBe("Slack");
+    expect(() => button(r, "Remove")).not.toThrow();
+    const empty = render(
+      <PeopleTab specialistId="c1" api={{ getPeople: async () => ({ rows: [], path: "" }), putPeople: async (_i, rows) => ({ rows, path: "" }) }} />,
+    );
+    await flush();
+    expect(hasText(empty, "No people yet")).toBe(true);
+  });
+  test("Connections: a row not signed in is off, with Sign in; the title, not the id", async () => {
+    expect(serviceTitle({ key: "qa2-svc", title: "qa2-svc" })).toBe("Qa2 svc");
+    expect(serviceTitle({ key: "gh", title: "GitHub" })).toBe("GitHub");
+    const r = render(
+      <ConnectionsTab
+        specialistId="c1"
+        api={{
+          getConnections: async () => ({ services: [{ key: "notion", title: "Notion", kind: "connect", connected: false, allowed: false }] }),
+          putConnections: async () => ({ services: [] }),
+        }}
+      />,
+    );
+    await flush();
+    const row = r.root.find((n) => n.type === "li");
+    expect(String(row.props.className)).toContain("is-off");
+    expect(row.find((n) => n.type === "input").props.disabled).toBe(true);
+    expect(row.find((n) => n.type === "a").props.href).toBe("/preferences?s=connections");
+  });
+});
+
+describe("dialogs", () => {
+  test("Settings: Done, Learned · N new, never wider than the window", () => {
+    let closed = 0;
+    const r = render(
+      <SpecialistSettings
+        specialist={SPEC}
+        tab="general"
+        onTab={() => {}}
+        onClose={() => closed++}
+        sendToChat={() => true}
+        onSaved={() => {}}
+        onDeleted={() => {}}
+        learnedCount={4}
+      />,
+    );
+    expect(textOf(r.root.findAll((n) => n.props.role === "tab")[0]!)).toBe("Learned · 4 new");
+    act(() => button(r, "Done").props.onClick());
+    expect(closed).toBe(1);
+    expect(r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("modal-close")).length).toBe(0);
+  });
+  test("Create: examples as placeholders, errors under the field, busy on Create", async () => {
+    let resolve!: (s: SpecialistDetail) => void;
+    const r = render(<CreateSpecialist onClose={() => {}} onCreated={() => {}} create={() => new Promise((res) => (resolve = res))} />);
+    const inputs = r.root.findAll((n) => n.type === "input");
+    expect(inputs[0]!.props.placeholder).toBe("e.g. Canvas");
+    await act(async () => {
+      r.root.find((n) => n.type === "form").props.onSubmit({ preventDefault() {} });
+    });
+    expect(hasText(r, "Give it a name.")).toBe(true);
+    expect(r.root.findAll((n) => n.type === "input")[0]!.props["aria-invalid"]).toBe(true);
+    act(() => r.root.findAll((n) => n.type === "input")[0]!.props.onChange({ target: { value: "Canvas" } }));
+    act(() => r.root.findAll((n) => n.type === "input")[1]!.props.onChange({ target: { value: "Canvases" } }));
+    await act(async () => {
+      r.root.find((n) => n.type === "form").props.onSubmit({ preventDefault() {} });
+    });
+    expect(hasText(r, "Creating…")).toBe(true);
+    await act(async () => resolve(SPEC));
   });
 });

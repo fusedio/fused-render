@@ -28,6 +28,7 @@ export function countRows(c: Counts): [string, number][] {
     ["Repeat breakouts (same problem again)", c.repeat_breakouts || 0],
     ["Pulls", c.pulls || 0],
     ["Pulls confirmed", c.pulls_confirmed || 0],
+    ["Guidance that turned out unrelated", Number((c as Counts & { pulls_unrelated?: number }).pulls_unrelated || 0)],
     ["Corrections received", c.corrections_received || 0],
     ["Notes from tasks", by("task")],
     ["Notes from breakouts", by("breakout")],

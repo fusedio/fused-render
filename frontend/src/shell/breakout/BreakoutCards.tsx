@@ -429,7 +429,7 @@ export default function BreakoutCards() {
         <AgentPeekCard key={p.id} peek={p} index={cards.length + i} />
       ))}
       {specialistCards.map((c, i) => (
-        <SpecialistBreakoutCard key={c.id} card={c} index={cards.length + peeks.length + i} />
+        <SpecialistBreakoutCard key={c.id} card={c} index={cards.length + peeks.length + i} cascade={i} />
       ))}
     </>,
     document.body,
