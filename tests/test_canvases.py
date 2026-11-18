@@ -1256,7 +1256,7 @@ def test_sync_poll_ignores_a_cache_only_dry_run_diff(harness, monkeypatch):
                                       "would prompt: remove sub/__pycache__/b.pyc\n"})
 
     def dry_runs():
-        return [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]
+        return [c for c in harness.calls() if c[:2] == ["canvas", "pull"]
                 and "--dry-run" in c]
 
     seen = len(dry_runs())

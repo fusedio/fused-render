@@ -1951,7 +1951,7 @@ def _under_ignored_dir(rel: str) -> bool:
 
 
 # One line of a `pull --dry-run` plan: `create|update|remove <rel>`, a
-# conflict or delete prefixed `would prompt: ` (fused workbench canvas_pull).
+# conflict or delete prefixed `would prompt: ` (fused canvas_pull).
 _DRY_RUN_REMOVE_RE = re.compile(r"^(?:would prompt: )?remove (.+)$")
 
 
