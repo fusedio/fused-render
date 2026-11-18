@@ -260,6 +260,10 @@ def prompt_for(transcript: str) -> str:
             "<<<TRANSCRIPT\n" + transcript.replace("<<<", "‹‹‹").replace(">>>", "›››") + "\nTRANSCRIPT>>>")
 
 
+def _int(value, default: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
+
+
 def learn_one(bot, session: dict, rec: dict) -> dict | None:
     """Read one due session's unread part in a task-learn session; record what was read only on success."""
     sid, size = session["session_id"], session["size"]
@@ -273,14 +277,19 @@ def learn_one(bot, session: dict, rec: dict) -> dict | None:
     if not md.strip():  # grown by housekeeping only: nothing to read
         _update(bot, sid, read)
         return None
-    if sessions.cut_short(bot, sid, from_size):
+    was = sessions.cut_short(bot, sid, from_size)
+    if was is not None:
         # A restart killed an earlier task-learn for this slice after it had edited memory.md (its row has no
-        # diff to go by): the slice counts as read, as a failed session with a diff does below.
-        _update(bot, sid, read)
+        # diff to go by): the slice IT was given counts as read, as a failed session with a diff does below.
+        # Only that slice: turns added since stay due (a row from before `to_turns` was kept reads up to now).
+        def read_slice(r):
+            r.update(size=_int(was.get("to_size"), size), turns=_int(was.get("to_turns"), turns), at=time.time())
+            r.pop("fails", None)
+        _update(bot, sid, read_slice)
         return None
     run_ids = rec.get("run_ids") or []
     trigger = {"session_id": sid, **({"run_id": run_ids[-1]} if run_ids else {}), "target": session["target"],
-               "backend": session["backend"], "from_size": from_size, "to_size": size}
+               "backend": session["backend"], "from_size": from_size, "to_size": size, "to_turns": turns}
     row = sessions.run(bot, "task-learn", prompt_for(md), trigger)
     if row.get("status") == "done" or row.get("memory_diff"):
         # A failed session that already changed memory.md (cut off by the timeout after its edit) counts as having

@@ -299,18 +299,19 @@ def edited_by_hand(bot) -> bool:
     return bool(sha) and sha != _sha(store.memory(bot))
 
 
-def cut_short(bot, session_id: str, from_size: int) -> bool:
-    """Whether a task-learn session for this slice of this task was cut short by a restart AFTER it changed
-    memory.md: its row is still `running` though nothing runs it, and memory.md no longer hashes to the
-    `memory_before` it noted. Its diff was never computed, so learn.py asks here before reading the slice again
-    (the same evidence beside the already-updated memory would raise counts twice). The row is marked so it
-    answers once. A chat or hand edit in between also changes the hash: that slice is then skipped too, the
-    cheaper of the two mistakes."""
+def cut_short(bot, session_id: str, from_size: int) -> dict | None:
+    """The trigger of a task-learn session for this slice of this task that was cut short by a restart AFTER it
+    changed memory.md (its row is still `running` though nothing runs it, and memory.md no longer hashes to the
+    `memory_before` it noted), else None. Its diff was never computed, so learn.py asks here before reading the
+    slice again (the same evidence beside the already-updated memory would raise counts twice) and records as read
+    only the slice that session was given (the trigger's `to_size` / `to_turns`). The row is marked so it answers
+    once. A chat or hand edit in between also changes the hash: that slice is then skipped too, the cheaper of the
+    two mistakes."""
     d = _rows_dir(bot)
     try:
         names = sorted((n for n in os.listdir(d) if n.endswith(".json")), reverse=True)[:ROWS_KEPT]
     except OSError:
-        return False
+        return None
     for n in names:
         row = store.read_json(os.path.join(d, n), None)
         if not isinstance(row, dict) or row.get("kind") != "task-learn" or row.get("status") != "running":
@@ -326,8 +327,8 @@ def cut_short(bot, session_id: str, from_size: int) -> bool:
                       if changed else {}))
         _save(bot, row)
         if changed:
-            return True
-    return False
+            return trig
+    return None
 
 
 def changes(bot, limit: int = CHANGES_SHOWN) -> list:
