@@ -11,10 +11,9 @@ and expert_ask, routes.py) notes the calling run in the expert's `.fused/expert/
 `run_pass` resolves pending runs to their session (the agent run dir, `caller`), then for every recorded session
 whose transcript is due (`due`) and has grown past `size`, starts ONE `task-learn` session with only the
 unread lines (speaker-tagged, framed as data) and "update your memory from this"; a transcript that shrank below
-`size` (rewritten, compacted) is read again whole. The new size is recorded only after that session finished ok
-(or failed after it had already changed memory.md); a failure is retried next pass, and after `MAX_FAILS` attempts at one size that
-size counts as read (a session that never started because the expert stayed busy is not an attempt). Everything is on disk, so a restart loses nothing and a resumed task is read again from
-where it was left. Nothing here reads what the expert wrote.
+`size` (rewritten, compacted) is read again whole. What was read is recorded only after that session finished
+(retry and give-up: `learn_one`). Everything is on disk, so a resumed task is read again from where it was left.
+Nothing here reads what the expert wrote.
 """
 from __future__ import annotations
 

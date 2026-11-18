@@ -2,8 +2,8 @@
 
 One daemon thread: `start()` arms it (idempotent), the first `tick` runs `start_delay_s()` later and then every
 `tick_s()` (developer settings `FUSED_RENDER_EXPERT_TICK_S` / `_START_DELAY_S`); `shutdown()` stops it and ends
-every side session's harness process. A tick runs learn.py's pass; a dream (memory compaction) is queued by the sessions themselves
-(sessions.after_write).
+every side session's harness process. A tick runs learn.py's pass; a dream (memory compaction) is queued by the
+sessions themselves (sessions.after_write).
 
 ONE PROCESS TICKS: two fused-render servers on one machine must not both read the same transcripts, so a tick
 runs only in the process that owns the bots (`bots.registry.owns()`) and holds the bots workspace claim

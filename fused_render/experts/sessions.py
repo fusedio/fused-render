@@ -15,19 +15,12 @@ UI shows is the rows with a non-empty diff (`changes`). Every session that
 changed memory.md leaves its hash as it ended in `.fused/expert/left.json`; a
 file that differs from it was edited by hand since (`edited_by_hand`).
 
-The fence is the harness's own (`fence`): only Read / Glob / Grep (plus Edit /
-Write when the kind writes, plus Bash limited to the `fused` commands that run a
-UDF, and Edit / Write for the scratch folder of throwaway UDF files, for a chat
-and an ask) exist, the pre-allowed writes are memory.md and that scratch folder,
-and with no permission prompt tool every other write, and every read outside the
-expert's folder and its granted folders, is refused by Claude Code itself
-(verified on claude 2.1.327). The chat (bots/agent_engine.py) uses the same
-`fence` in Claude Code's auto permission mode (`auto=True`) and adds a permission
-prompt tool: there a user is at hand, so routine actions run, the classifier
-refuses what it judges risky, and a write outside memory.md and the scratch
-folder raises an approval card (side sessions have nobody to ask and stay in the
-default mode). Nothing here reads the model's words to decide anything: the transcript
-is kept for the user to look at.
+The fence is the harness's own flags (`fence`, docs/experts.md "The fence"): a
+side session has nobody to ask, so whatever no rule allows is refused by Claude
+Code itself (verified on claude 2.1.327); the chat (bots/agent_engine.py) uses
+the same `fence` with `auto=True` and a permission prompt tool. Nothing here
+reads the model's words to decide anything: the transcript is kept for the user
+to look at.
 """
 from __future__ import annotations
 
