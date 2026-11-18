@@ -17,7 +17,7 @@ const noop = () => {};
 describe("MemoryPanel", () => {
   const mem: ExpertMemory = { text: "## Works\n- [1 · 2026-11-17] Pull <first>.\n", path: "/x/Canvas Reference/memory.md", lines: 2, bytes: 40,
     limit_lines: 200, limit_bytes: 12288, edited_by_hand: true,
-    changes: [{ id: "c1", kind: "task-quiet", started: at(30), trigger: { target: "/w/maps", backend: "claude" } },
+    changes: [{ id: "c1", kind: "task-learn", started: at(30), trigger: { target: "/w/maps", backend: "claude" } },
       { id: "c2", kind: "chat", started: at(90), trigger: { message: "Always pull first" } }] };
   test("the file read-only and preformatted, its path, size, the hand-edit note, then who changed it", () => {
     const out = renderToStaticMarkup(createElement(MemoryPanel, { memory: mem, onChange: noop, nowMs: now }));
@@ -43,7 +43,7 @@ describe("MemoryPanel", () => {
 describe("SessionsPanel", () => {
   const rows = [row({ id: "old", started: at(60), kind: "compact", trigger: { lines: 230 }, memory_diff: DIFF }),
     row({ id: "new", started: at(2), ended: null, status: "running", trigger: { asker: "a task", question: "How?" } }),
-    row({ id: "mid", started: at(20), kind: "task-quiet", status: "error", error: "harness exited", trigger: { target: "/w/maps" }, memory_diff: "" })];
+    row({ id: "mid", started: at(20), kind: "task-learn", status: "error", error: "harness exited", trigger: { target: "/w/maps" }, memory_diff: "" })];
   const base = { rows, filter: "all" as const, onFilter: noop, open: null, onOpen: noop, full: null, nowMs: now };
   test("newest first, with kind, status, origin, and the change chip only where memory changed", () => {
     const out = renderToStaticMarkup(createElement(SessionsPanel, base));

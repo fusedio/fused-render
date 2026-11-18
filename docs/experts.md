@@ -75,14 +75,14 @@ format.
     kind         started by                               fresh session   writes memory   row
     chat         the user, in the bot's main thread (§7)  no (resumes)    yes             only when memory.md changed
     ask          a task calling expert_ask (§8)           yes             no              always
-    task-quiet   the timer, for a quiet task (§9)         yes             yes             always
+    task-learn   the timer, for a quiet task (§9)         yes             yes             always
     compact      after a write, over the limit (§10)      yes             yes             always
 
-`sessions.run(bot, kind, prompt, trigger)` runs ask, task-quiet and compact: take the gate, save a `running` row,
+`sessions.run(bot, kind, prompt, trigger)` runs ask, task-learn and compact: take the gate, save a `running` row,
 note `memory.md`, call `harness`, note `memory.md` again, save the finished row. It never raises: a failure is a
 row with status `error`.
 
-- **The write lock** (`store.write_lock`, one per expert, in-process): task-quiet, compact and every chat turn hold
+- **The write lock** (`store.write_lock`, one per expert, in-process): task-learn, compact and every chat turn hold
   it, so memory writers run one at a time. A side session waits for it up to the harness timeout (600 s), then
   ends as an `error` row with `error: "the expert is busy; try again in a minute"` (`sessions.BUSY`). A chat turn
   waits for it with "waiting for the expert's memory" and gives up only on Stop.
@@ -136,7 +136,7 @@ own permission rules (verified on claude 2.1.326), with NO permission prompt too
     --permission-mode default
     --allowedTools Edit(//<abs>/memory.md) Read(//<granted folder>/**) ...
 
-- Only Read, Glob and Grep exist, plus Edit and Write when the session writes (chat, task-quiet, compact; not
+- Only Read, Glob and Grep exist, plus Edit and Write when the session writes (chat, task-learn, compact; not
   ask). No shell, no web, no subagents.
 - Reads inside the working directory (the expert's folder) are the CLI's default, so the expert can read its
   `instructions.md`, `skills/`, `bot.json` and its own `.fused/` (session rows, `read.json`).
@@ -207,7 +207,7 @@ back as reference material.
 `$FUSED_RENDER_EXPERT_TIMEOUT`) + 120 s (an ask slot) + 30 s; the MCP per-call ceiling (`EXPERT_CALL_CEILING`, also
 Codex's `tool_timeout_sec`) sits 60 s above that, so the server's own error arrives instead of a socket timeout.
 
-## 9. The task-quiet trigger
+## 9. The task-learn trigger
 
 A task session never formally ends, so a timer finds quiet ones (`quiet.py`, `scheduler.py`).
 
@@ -223,14 +223,14 @@ state, in `.fused/expert/read.json`:
 days is dropped); find each recorded session in the Tasks listing (`tasks._collect`); a session is **due** when
 its transcript file has grown past the recorded `size` and its last real activity
 (`session_liveness.tail_activity`: housekeeping rows do not count; else the file's mtime) is at least the idle time
-ago (600 s). Each due session gets ONE task-quiet session whose prompt holds only the unread turns (from `turns`
+ago (600 s). Each due session gets ONE task-learn session whose prompt holds only the unread turns (from `turns`
 on; a transcript shorter than that, rewritten or compacted, is read whole), one speaker-tagged line per line
 (`USER| `, `AGENT| `, `TOOL| `, `NOTE| `; a line that already starts like a tag is marked `(quoted)`), capped at
 the last 30,000 characters, between `<<<TRANSCRIPT` / `TRANSCRIPT>>>` markers, framed as data, and "update your
-memory from this" with the same evidence rule as §3. At most 4 task-quiet sessions start per pass; the rest wait
+memory from this" with the same evidence rule as §3. At most 4 task-learn sessions start per pass; the rest wait
 for the next. A session grown by housekeeping only (no new turns) is marked read without a harness run.
 
-**Retry and give-up**: the new `size` and `turns` are recorded only after the task-quiet session ends `done`. A
+**Retry and give-up**: the new `size` and `turns` are recorded only after the task-learn session ends `done`. A
 failure is counted against the size it tried (`fails`) and retried next pass; after 3 failures (`MAX_FAILS`) at
 one size that session is no longer due until it grows again. A session that never started because the write lock
 stayed held (`BUSY`) is not an attempt.
@@ -248,7 +248,7 @@ transcripts. Shutdown stops the timer and kills every side session's harness.
 ## 10. Compaction
 
 The limit is 200 lines or 12 KB (`LIMIT_LINES`, `LIMIT_BYTES`), whichever comes first. After a chat turn and after
-a task-quiet session (not after a compact), `sessions.after_write` checks the size; over the limit it queues ONE
+a task-learn session (not after a compact), `sessions.after_write` checks the size; over the limit it queues ONE
 compact session per expert in a background thread (a second is not queued while one is queued or running). The
 compact prompt gives today's date, the size and the limit, and says: merge lines that say the same thing (add the
 counts, keep the newest date), drop old low-count lines, get clearly under the limit, keep the format and the two
@@ -262,7 +262,7 @@ The row's `trigger` says where it came from:
 
     chat         {message}                                                      the user's message
     ask          {asker, question, session_id?, run_id?}                         (never writes)
-    task-quiet   {session_id, run_id?, target, backend, from_size, to_size}      the task session and the slice read
+    task-learn   {session_id, run_id?, target, backend, from_size, to_size}      the task session and the slice read
     compact      {lines, bytes}                                                  the size that triggered it
 
 - `sessions.changes(bot)`: the newest 20 rows that changed memory, `[{id, kind, started, trigger}]` ("last changed

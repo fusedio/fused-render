@@ -1,4 +1,4 @@
-"""The experts' timer (docs/experts.md "The task-quiet trigger").
+"""The experts' timer (docs/experts.md "The task-learn trigger").
 
 One daemon thread: `start()` arms it (idempotent), the first `tick` runs `start_delay_s()` later and then every
 `tick_s()` (developer settings `FUSED_RENDER_EXPERT_TICK_S` / `_START_DELAY_S`); `shutdown()` stops it and ends
@@ -44,7 +44,7 @@ def _owner() -> bool:
 
 
 def _workspace() -> bool:
-    """The bots workspace claim (`registry.workspace_claimed`): a task-quiet session writes the expert's folder."""
+    """The bots workspace claim (`registry.workspace_claimed`): a task-learn session writes the expert's folder."""
     try:
         from fused_render.bots import registry
         return bool(registry.workspace_claimed())

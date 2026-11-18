@@ -2,7 +2,7 @@
 
     kind         started by                     writes memory
     ask          a task calling `expert_ask`    no
-    task-quiet   the timer (quiet.py)           yes
+    task-learn   the timer (quiet.py)           yes
     compact      `after_write`, over the limit  yes
     chat         (the user, bots/agent_engine)  yes; a row only when it changed memory.md (`note_chat`)
 
@@ -41,9 +41,9 @@ from fused_render.experts import store
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("ask", "task-quiet", "compact")      # what `run` starts
+KINDS = ("ask", "task-learn", "compact")      # what `run` starts
 ROW_KINDS = KINDS + ("chat",)                 # what a row may say (chat rows come from `note_chat`)
-WRITERS = frozenset({"task-quiet", "compact"})
+WRITERS = frozenset({"task-learn", "compact"})
 CHANGES_SHOWN = 20
 #: The memory limit (docs/experts.md "Compaction"): whichever comes first.
 LIMIT_LINES = 200
@@ -400,7 +400,7 @@ def compact(bot) -> dict:
 
 
 def after_write(bot) -> bool:
-    """Called after any session that may have written memory (chat, task-quiet): over the limit, queue ONE
+    """Called after any session that may have written memory (chat, task-learn): over the limit, queue ONE
     compact session in the background. True when it queued one."""
     try:
         if not over_limit(bot):

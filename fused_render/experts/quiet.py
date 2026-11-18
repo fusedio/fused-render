@@ -1,4 +1,4 @@
-"""Task-quiet: learning from the task sessions that used an expert (docs/experts.md "The task-quiet trigger").
+"""Task-learn: learning from the task sessions that used an expert (docs/experts.md "The task-learn trigger").
 
 A task session never formally ends, so the timer (scheduler.py) finds quiet ones. `record_use` (expert_context
 and expert_ask, routes.py) notes the calling run in the expert's `.fused/expert/read.json`:
@@ -8,7 +8,7 @@ and expert_ask, routes.py) notes the calling run in the expert's `.fused/expert/
                                "fails": {"size": n, "count": k}}}}
 
 `run_pass` resolves pending runs to their session (the agent run dir, `caller`), then for every recorded session
-whose transcript has been idle `idle_s()` and has grown past `size`, starts ONE `task-quiet` session with only the
+whose transcript has been idle `idle_s()` and has grown past `size`, starts ONE `task-learn` session with only the
 unread turns (speaker-tagged, framed as data) and "update your memory from this". The new size is recorded only
 after that session finished ok; a failure is retried next pass, and after `MAX_FAILS` attempts at one size that
 size counts as read (a session that never started because the expert stayed busy is not an attempt). Everything is on disk, so a restart loses nothing and a resumed task is read again from
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 IDLE_S = 600
 IDLE_ENV = "FUSED_RENDER_EXPERT_IDLE_S"
 MAX_FAILS = 3
-PER_PASS = 4                 # task-quiet sessions started per pass; the rest wait for the next one
+PER_PASS = 4                 # task-learn sessions started per pass; the rest wait for the next one
 PENDING_KEEP_S = 7 * 86400   # a run whose session never resolves is forgotten after this
 RUN_IDS_KEPT = 20
 TRANSCRIPT_CAP = 30000
@@ -253,7 +253,7 @@ def prompt_for(transcript: str) -> str:
 
 
 def quiet_one(bot, session: dict, rec: dict) -> dict | None:
-    """Read one due session's unread part in a task-quiet session; record what was read only on success."""
+    """Read one due session's unread part in a task-learn session; record what was read only on success."""
     sid, size = session["session_id"], session["size"]
     md, turns = transcript_markdown(session, int(rec.get("turns") or 0))
 
@@ -267,7 +267,7 @@ def quiet_one(bot, session: dict, rec: dict) -> dict | None:
     run_ids = rec.get("run_ids") or []
     trigger = {"session_id": sid, **({"run_id": run_ids[-1]} if run_ids else {}), "target": session["target"],
                "backend": session["backend"], "from_size": int(rec.get("size") or 0), "to_size": size}
-    row = sessions.run(bot, "task-quiet", prompt_for(md), trigger)
+    row = sessions.run(bot, "task-learn", prompt_for(md), trigger)
     if row.get("status") == "done":
         _update(bot, sid, read)
     elif row.get("error") == sessions.BUSY:
@@ -306,5 +306,5 @@ def run_pass(now=None, limit: int = PER_PASS, stop=None) -> dict:
                     out["errors"] += row.get("status") != "done"
             except Exception:  # noqa: BLE001
                 out["errors"] += 1
-                logger.warning("expert %s: task-quiet for %s failed", bot.id, sid, exc_info=True)
+                logger.warning("expert %s: task-learn for %s failed", bot.id, sid, exc_info=True)
     return out

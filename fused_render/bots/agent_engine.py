@@ -1157,7 +1157,7 @@ def run(bot, task: str, label: str | None = None) -> None:
 
 def _expert_hold(bot):
     """Take the expert's write lock for a chat turn (one memory writer at a time, experts/sessions.py); waits
-    while a task-quiet or compact session holds it. None when Stop lands meanwhile."""
+    while a task-learn or compact session holds it. None when Stop lands meanwhile."""
     lock = xstore.write_lock(bot)
     if lock.acquire(blocking=False):
         return lock

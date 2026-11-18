@@ -26,9 +26,9 @@ describe("originOf", () => {
     expect(originOf("chat", {})).toBe("your chat");
     expect(originOf("ask", { asker: "Claude Code task", question: "How do I share a canvas?" })).toBe("Claude Code task: How do I share a canvas?");
     expect(originOf("ask", { question: "Why?" })).toBe("Why?");
-    expect(originOf("task-quiet", { target: "/Users/a/Fused/canvas/maps/", backend: "claude" })).toBe("task in maps (claude)");
-    expect(originOf("task-quiet", { backend: "codex" })).toBe("codex task");
-    expect(originOf("task-quiet", null)).toBe("a task");
+    expect(originOf("task-learn", { target: "/Users/a/Fused/canvas/maps/", backend: "claude" })).toBe("task in maps (claude)");
+    expect(originOf("task-learn", { backend: "codex" })).toBe("codex task");
+    expect(originOf("task-learn", null)).toBe("a task");
     expect(originOf("compact", { lines: 230, bytes: 14336 })).toBe("memory at 230 lines, 14 KB");
     expect(originOf("compact", {})).toBe("memory over the limit");
     expect(originOf("other", { message: "x" })).toBe("");
@@ -43,7 +43,7 @@ describe("originOf", () => {
 
 describe("rows", () => {
   test("kind and status words", () => {
-    expect(kindLabel("task-quiet")).toBe("task-quiet");
+    expect(kindLabel("task-learn")).toBe("task-learn");
     expect(kindLabel("chat")).toBe("chat");
     expect(kindLabel("")).toBe("session");
     expect(statusOf({ status: "running" })).toEqual({ text: "running", tone: "accent" });

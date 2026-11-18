@@ -1,5 +1,5 @@
 """Experts with the harness stubbed (docs/experts.md): session rows and diffs, the write lock, compaction, the
-fence flags, chat rows, and the task-quiet due rule with its retry cap."""
+fence flags, chat rows, and the task-learn due rule with its retry cap."""
 from _bots_conftest import *  # noqa: F401,F403 — app_home (a per-test home and workspace)
 import os
 import threading
@@ -39,8 +39,8 @@ def test_layout_and_row_with_diff(expert, monkeypatch):
     assert store.memory(expert) == store.EMPTY_MEMORY
     assert os.path.isfile(os.path.join(store.expert_dir(expert), "instructions.md"))
     stub(monkeypatch, lambda b, p, w: append_memory(b, "- [1 · 2026-11-17] A fact."))
-    row = sessions.run(expert, "task-quiet", "read this", {"session_id": "s1"})
-    assert row["status"] == "done" and row["kind"] == "task-quiet" and row["ended"] >= row["started"]
+    row = sessions.run(expert, "task-learn", "read this", {"session_id": "s1"})
+    assert row["status"] == "done" and row["kind"] == "task-learn" and row["ended"] >= row["started"]
     assert "+- [1 · 2026-11-17] A fact." in row["memory_diff"]
     assert row["trigger"] == {"session_id": "s1"} and row["cost_usd"] == 0.01
     listed = sessions.rows(expert)
@@ -77,8 +77,8 @@ def test_chat_row_only_when_memory_changed(expert):
 def test_changes_and_edited_by_hand(expert, monkeypatch):
     assert sessions.edited_by_hand(expert) is False  # no session has written yet
     stub(monkeypatch, lambda b, p, w: append_memory(b, "- [1 · 2026-11-17] From a task.") if "learn" in p else None)
-    a = sessions.run(expert, "task-quiet", "learn")
-    sessions.run(expert, "task-quiet", "nothing new")  # no diff: not a change
+    a = sessions.run(expert, "task-learn", "learn")
+    sessions.run(expert, "task-learn", "nothing new")  # no diff: not a change
     sessions.ask(expert, "q?")
     assert [c["id"] for c in sessions.changes(expert)] == [a["id"]]
     assert set(sessions.changes(expert)[0]) == {"id", "kind", "started", "trigger"}
@@ -89,11 +89,11 @@ def test_changes_and_edited_by_hand(expert, monkeypatch):
 
 def test_a_session_that_changed_nothing_keeps_the_hand_edit_note(expert, monkeypatch):
     stub(monkeypatch, lambda b, p, w: append_memory(b, "- [1 · 2026-11-17] Learned.") if "learn" in p else None)
-    sessions.run(expert, "task-quiet", "learn")
+    sessions.run(expert, "task-learn", "learn")
     append_memory(expert, "- [1 · 2026-11-17] Typed by the user.")
     assert sessions.edited_by_hand(expert) is True
     assert sessions.note_chat(expert, store.memory(expert), "hi") is None  # a chat "hi"
-    sessions.run(expert, "task-quiet", "nothing new")
+    sessions.run(expert, "task-learn", "nothing new")
     assert sessions.edited_by_hand(expert) is True
     before = store.memory(expert)
     append_memory(expert, "- [1 · 2026-11-17] Told in chat.")
@@ -122,7 +122,7 @@ def _overlap(monkeypatch, expert, kinds):
 
 
 def test_writers_never_overlap(expert, monkeypatch):
-    assert _overlap(monkeypatch, expert, ["task-quiet", "compact", "task-quiet"]) == 1
+    assert _overlap(monkeypatch, expert, ["task-learn", "compact", "task-learn"]) == 1
 
 
 def test_asks_run_in_parallel(expert, monkeypatch):
@@ -163,7 +163,7 @@ def test_a_write_over_the_limit_queues_one_compact(expert, monkeypatch):
         else:
             append_memory(b, "\n".join(f"- [1 · 2026-11-17] fact {i}" for i in range(250)))
     calls = stub(monkeypatch, body)
-    sessions.run(expert, "task-quiet", "learn")
+    sessions.run(expert, "task-learn", "learn")
     deadline = time.time() + 5
     while time.time() < deadline and not any(r["kind"] == "compact" and r["status"] == "done"
                                              for r in sessions.rows(expert)):
@@ -271,7 +271,7 @@ def test_an_expert_chat_leaves_compaction_to_the_cli(expert, monkeypatch):
     assert "--autocompact" in agent_engine.argv("claude", "m", "low", "/sp", "/mcp", window=200000)
 
 
-# -------------------------------------------------------------- task-quiet ---
+# -------------------------------------------------------------- task-learn ---
 class FakeTasks:
     def __init__(self, tasks):
         self.tasks = tasks
@@ -315,7 +315,7 @@ def test_due_rule_and_only_the_unread_part(expert, monkeypatch, transcript):
     assert "USER| turn 1" in calls[-1]["prompt"] and "update your memory" in calls[-1]["prompt"].lower()
     row = sessions.rows(expert)[0]
     size = os.path.getsize(transcript)
-    assert row["kind"] == "task-quiet" and row["trigger"] == {
+    assert row["kind"] == "task-learn" and row["trigger"] == {
         "session_id": "s1", "run_id": "r1", "target": "/work", "backend": "claude", "from_size": 0, "to_size": size}
     assert quiet.run_pass()["sessions"] == 0  # read at this size
     with open(transcript, "a") as f:

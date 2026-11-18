@@ -4,7 +4,7 @@ import type { ExpertMemory, ExpertSession, ExpertTrigger } from "./api";
 import { fmtBytes, fmtDur } from "./format";
 
 /** The kinds as the pane names them; an unknown kind shows as sent. */
-export const KIND_LABEL: Record<string, string> = { chat: "chat", ask: "ask", "task-quiet": "task-quiet", compact: "compact" };
+export const KIND_LABEL: Record<string, string> = { chat: "chat", ask: "ask", "task-learn": "task-learn", compact: "compact" };
 export const kindLabel = (k: string): string => KIND_LABEL[k] || k || "session";
 
 /** The status as a word and a tone (running: accent, done: ok, error: err, interrupted: warn). */
@@ -36,7 +36,7 @@ export function originOf(kind: string, t: ExpertTrigger | null | undefined): str
     const who = oneLine(g.asker, 40), q = oneLine(g.question, 70);
     return who && q ? `${who}: ${q}` : who || q;
   }
-  if (kind === "task-quiet") {
+  if (kind === "task-learn") {
     const where = g.target ? basename(String(g.target)) : "", be = oneLine(g.backend, 20);
     return where ? `task in ${where}${be ? ` (${be})` : ""}` : be ? `${be} task` : "a task";
   }

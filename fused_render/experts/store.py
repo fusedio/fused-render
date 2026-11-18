@@ -166,7 +166,7 @@ def ensure_layout(bot) -> None:
 
 # ---------------------------------------------------------------- locks, json ---
 def write_lock(bot) -> threading.Lock:
-    """Sessions that write memory run one at a time per expert (chat, task-quiet, compact)."""
+    """Sessions that write memory run one at a time per expert (chat, task-learn, compact)."""
     bid = str(getattr(bot, "id", bot))
     with _LOCKS_GUARD:
         return _LOCKS.setdefault(bid, threading.Lock())
