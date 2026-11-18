@@ -392,3 +392,17 @@ def test_specialists_pref_env_wins(agent, tmp_path, monkeypatch):
     (home / "prefs.json").write_text(json.dumps({"specialists_enabled": "yes"}))
     monkeypatch.delenv("FUSED_RENDER_SPECIALISTS")
     assert not agent._specialists_pref()
+
+
+def test_status_line_names_the_specialist():
+    """The task's status line can say "Asking the Canvas specialist…": the specialist tools' detail is the
+    `specialist` argument; other tools are unchanged."""
+    from fused_render.claude_agent import agent_module
+
+    agent = agent_module()
+    for tool in ("specialist_check", "specialist_pull", "specialist_note", "specialist_breakout"):
+        assert agent._tool_detail("mcp__fused_render__" + tool, {"specialist": "Canvas", "stage": "plan"}) == "Canvas"
+    assert agent._tool_detail("mcp__fused_render__specialist_list", {}) == ""
+    assert agent._tool_detail("mcp__fused_render__specialist_pull", {"specialist": 3}) == ""
+    assert agent._tool_detail("mcp__other__x", {"specialist": "Canvas"}) == ""
+    assert agent._tool_detail("Grep", {"pattern": "foo"}) == "foo"

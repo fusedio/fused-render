@@ -10415,6 +10415,10 @@ def _tool_detail(name, inp) -> str:
         d = inp.get("url") or inp.get("query") or ""
     elif name == CANVAS_OPEN_TOOL:
         d = "Open %s to take a screenshot" % (inp.get("name") or "the canvas")
+    elif name.startswith("mcp__fused_render__specialist_"):
+        # The specialist asked (docs/specialists), so the status line can say
+        # "Asking the Canvas specialist…" rather than "a specialist".
+        d = inp.get("specialist") if isinstance(inp.get("specialist"), str) else ""
     else:
         d = ""
     d = " ".join(str(d).split())
