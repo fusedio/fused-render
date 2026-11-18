@@ -314,8 +314,7 @@ def test_which_templates_stream_which_files():
     pq = server_templates.remote_templates("t.parquet")
     assert _modes(pq)[0] == ("duckdb", True)
     assert pq[0]["path"].endswith(os.path.join("duckdb", "template.html"))
-    # every other bound, ungated mode is listed too, to open on a download
-    assert all(not stream for mode, stream in _modes(pq)[1:])
+    assert {m for m, stream in _modes(pq) if stream} == {"duckdb", "h3"}
     assert "structure" in [m for m, _ in _modes(pq)]
     assert _modes(server_templates.remote_templates("T.PARQUET"))[0] == ("duckdb", True)
     assert _modes(server_templates.remote_templates("t.TIF"))[0] == ("geotiff", True)
@@ -323,10 +322,9 @@ def test_which_templates_stream_which_files():
     for name in ("t.csv", "t.json"):
         entries = server_templates.remote_templates(name)
         assert entries and not any(e["stream"] for e in entries), name
-    # no text sniff (no local bytes), and no gated or native modes
     assert server_templates.remote_templates("Makefile") == []
-    for e in server_templates.remote_templates("t.parquet"):
-        assert not e.get("conditional") and not e.get("native")
+    assert [e["mode"] for e in pq if e.get("conditional")] == ["h3"]
+    assert not any(e.get("native") for e in pq)
 
 
 def test_the_stream_key_lists_extensions(tmp_path):
