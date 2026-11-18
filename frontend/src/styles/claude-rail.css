@@ -800,37 +800,55 @@
    screen, that looks odd … regardless of elements, we should have drag icon
    at 50% of the width so it doesn't move"): the row's `::after`, out of the
    flow at its centre — the window's centre, since the row runs edge to edge
-   — whatever the row holds and however wide its tags are. Nothing here
-   takes a press of its own: the dots are the row's, and the row is the
-   grab. */
+   — whatever the row holds and however wide its tags are.
+   OVER WHATEVER REACHES THE MIDDLE, ON A PLATE (owner, 2026-11-18, of a long
+   title under the dots: "if we overlap show bg on drag handle so it is
+   clear" — what it covers is a wide thing to press, with room beside it):
+   the dots stand on a small plate of the row's own ground
+   (`--row-bg-hover`, the pinned row's), so over empty row it is not seen
+   and over a title or a tag it clears its own spot. Drawn as gradients, not
+   a mask (a mask would cut the plate away with everything else). A press on
+   it is a press on the row: the grab. */
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
   position: relative;
 }
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
+  --dot: var(--fg-faint) 1.25px, transparent 1.75px;
   content: "";
   position: absolute;
   left: 50%;
   top: 50%;
+  z-index: 1;
+  box-sizing: content-box;
   width: 16px;
   height: 16px;
+  padding: 3px 6px;
+  border-radius: 6px;
   transform: translate(-50%, -50%);
-  background: var(--fg-faint);
-  -webkit-mask: var(--rail-grab-dots) center / 16px 16px no-repeat;
-  mask: var(--rail-grab-dots) center / 16px 16px no-repeat;
+  background-color: var(--row-bg-hover);
+  background-image:
+    radial-gradient(circle at 3px 5.5px, var(--dot)),
+    radial-gradient(circle at 8px 5.5px, var(--dot)),
+    radial-gradient(circle at 13px 5.5px, var(--dot)),
+    radial-gradient(circle at 3px 10.5px, var(--dot)),
+    radial-gradient(circle at 8px 10.5px, var(--dot)),
+    radial-gradient(circle at 13px 10.5px, var(--dot));
+  /* The dots are laid out in the 16px content box; the plate (the colour)
+     fills the padding too. */
+  background-origin: content-box;
+  background-repeat: no-repeat;
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--dur-fast) var(--ease-out);
-}
-:is(.claude-rail-peek, .modal-popover).is-movable {
-  --rail-grab-dots: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='3' cy='5.5' r='1.25'/%3E%3Ccircle cx='8' cy='5.5' r='1.25'/%3E%3Ccircle cx='13' cy='5.5' r='1.25'/%3E%3Ccircle cx='3' cy='10.5' r='1.25'/%3E%3Ccircle cx='8' cy='10.5' r='1.25'/%3E%3Ccircle cx='13' cy='10.5' r='1.25'/%3E%3C/svg%3E");
 }
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *):hover::after,
 :is(.claude-rail-peek, .modal-popover).is-dragging
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
   opacity: 1;
+  pointer-events: auto;
 }
 /* …under the drag: no glide (the box follows the pointer every frame), no
    text selection; and the page's frames take no pointer, so a drag over the
