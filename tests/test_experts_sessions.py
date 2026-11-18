@@ -455,8 +455,7 @@ def test_due_rule_and_only_the_unread_part(expert, monkeypatch, transcript):
     row = sessions.rows(expert)[0]
     size = os.path.getsize(transcript)
     assert row["kind"] == "task-learn" and row["trigger"] == {
-        "session_id": "s1", "run_id": "r1", "target": "/work", "backend": "claude", "from_size": 0, "to_size": size,
-        "to_lines": 1}
+        "session_id": "s1", "run_id": "r1", "target": "/work", "backend": "claude", "from_size": 0, "to_size": size}
     assert learn.run_pass()["sessions"] == 0  # read at this size
     with open(transcript, "a") as f:
         f.write("turn 2\n")
@@ -658,27 +657,6 @@ def test_an_expert_never_falls_back_to_the_steps_engine(expert, monkeypatch):
     assert expert.meta.get("status") == "idle" and (expert.thread is None or not expert.thread.is_alive())
 
 
-def test_a_task_learn_cut_short_by_a_restart_after_its_edit_is_not_replayed(expert):
-    """The server stopped between the expert's edit and the row's end: the row is still `running`, with no diff.
-    The next pass must not read that slice again (the same evidence beside the updated memory)."""
-    mem = store.memory_path(expert)
-    row = sessions._new_row("task-learn", {"session_id": "s1", "from_size": 0, "to_size": 10})
-    row["memory_before"] = sessions._sha(store.memory(expert))
-    sessions._save(expert, row)
-    # Nothing changed yet: an interrupted session that never edited is retried (and the stale row is closed).
-    assert sessions.cut_short(expert, "s1", 0) is None
-    assert sessions.row(expert, row["id"])["status"] == "interrupted"
-    row2 = sessions._new_row("task-learn", {"session_id": "s1", "from_size": 0, "to_size": 10})
-    row2["memory_before"] = sessions._sha(store.memory(expert))
-    sessions._save(expert, row2)
-    with open(mem, "a", encoding="utf-8") as f:
-        f.write("- [1 · 2026-11-18] learned before the restart\n")
-    assert sessions.cut_short(expert, "s1", 5) is None       # another slice of the task
-    assert sessions.cut_short(expert, "other", 0) is None    # another task
-    assert sessions.cut_short(expert, "s1", 0) == {"session_id": "s1", "from_size": 0, "to_size": 10}  # its trigger
-    assert sessions.cut_short(expert, "s1", 0) is None       # answers once
-
-
 # ------------------------------------------------------- shutdown races ---
 class _PausedProc:
     """A harness process whose spawn (Popen) is paused until `go` is set."""
@@ -752,27 +730,6 @@ def test_shutdown_waits_for_every_harness_within_one_budget(monkeypatch):
         sessions.reopen()
     assert time.monotonic() - t0 < 1.2  # one shared deadline, not 4 x the budget
     assert all(p.signals == [sessions.signal.SIGTERM, sessions._SIGKILL] for p in procs)
-
-
-def test_a_cut_short_slice_records_only_what_it_was_given(expert, monkeypatch, transcript):
-    """A restart cut short a task-learn after its edit; the task has grown since. Only the interrupted session's
-    slice counts as read: the turns after it stay due."""
-    calls = stub(monkeypatch)
-    transcript.write_text("turn 1\nturn 2\n")
-    slice_size = os.path.getsize(transcript)
-    learn.record_use(expert, "r1")
-    row = sessions._new_row("task-learn", {"session_id": "s1", "from_size": 0, "to_size": slice_size, "to_lines": 2})
-    row["memory_before"] = sessions._sha(store.memory(expert))
-    sessions._save(expert, row)
-    append_memory(expert, "- [1 · 2026-11-18] learned before the restart")
-    with open(transcript, "a") as f:
-        f.write("turn 3\n")
-    _age(transcript)
-    assert learn.run_pass()["sessions"] == 0 and calls == []  # the cut-short slice is not replayed
-    rec = learn._load(expert)["sessions"]["s1"]
-    assert rec["size"] == slice_size and rec["lines"] == 2
-    assert learn.run_pass()["sessions"] == 1  # turn 3 is still due
-    assert "USER| turn 3" in calls[-1]["prompt"] and "turn 1" not in calls[-1]["prompt"]
 
 
 def test_begin_shutdown_signals_without_waiting(monkeypatch):

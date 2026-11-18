@@ -358,10 +358,6 @@ def prompt_for(bot, transcript: str, live: bool = False) -> str:
             "<<<TRANSCRIPT\n" + transcript.replace("<<<", "‹‹‹").replace(">>>", "›››") + "\nTRANSCRIPT>>>")
 
 
-def _int(value, default: int) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
-
-
 def learn_one(bot, session: dict, rec: dict) -> dict | None:
     """Read one due session's unread part in a task-learn session; record what was read only on success."""
     sid, size = session["session_id"], session["size"]
@@ -381,20 +377,9 @@ def learn_one(bot, session: dict, rec: dict) -> dict | None:
     if not md.strip():  # grown by housekeeping only: nothing to read
         _update(bot, sid, read)
         return None
-    was = sessions.cut_short(bot, sid, from_size)
-    if was is not None:
-        # A restart killed an earlier task-learn for this slice after it had edited memory.md (its row has no
-        # diff to go by): the slice IT was given counts as read, as a failed session with a diff does below.
-        # Only that slice: lines added since stay due (a row with no `to_lines` reads up to now).
-        def read_slice(r):
-            r.update(size=_int(was.get("to_size"), size), lines=_int(was.get("to_lines"), lines), at=time.time())
-            r.pop("fails", None)
-            answered(r)
-        _update(bot, sid, read_slice)
-        return None
     run_ids = rec.get("run_ids") or []
     trigger = {"session_id": sid, **({"run_id": run_ids[-1]} if run_ids else {}), "target": session["target"],
-               "backend": session["backend"], "from_size": from_size, "to_size": size, "to_lines": lines}
+               "backend": session["backend"], "from_size": from_size, "to_size": size}
     live = t0 - session["last_active"] < idle_s()
     row = sessions.run(bot, "task-learn", prompt_for(bot, md, live), trigger)
     if row.get("status") == "done" or row.get("memory_diff"):
