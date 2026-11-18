@@ -3246,18 +3246,15 @@ def _bot_session(task: dict) -> bool:
 
 
 def _specialist_session(task: dict) -> bool:
-    """A transcript of a specialist's own session (its main chat or a breakout; docs/specialists/PLAN.md A.5): a
-    conversation on the specialists page or a breakout card, not a task. Same cwd test as `_bot_session`, behind
-    the flag (`paths.flag_on_and_inside`: a pure string test first). Read off `sys.modules`: with specialists
-    never loaded this is one dict lookup."""
+    """A transcript of a specialist's own session (its main chat, a breakout in its workroom; docs/specialists/
+    PLAN.md A.5): a conversation on the specialists page or a breakout card, not a task. Hidden whether the flag
+    is on or off (CONTRACT R6): a string test on the transcript's cwd, then the specialists root must exist, so a
+    user who never turned specialists on has nothing hidden. `paths` imports nothing heavy."""
     if not task["path"]:
         return False
-    import sys  # noqa: PLC0415
-    mod = sys.modules.get("fused_render.specialists.paths")
-    if mod is None:
-        return False
     try:
-        return bool(mod.flag_on_and_inside(tasks_store.head(task["path"])[0]))
+        from fused_render.specialists import paths as sp_paths  # noqa: PLC0415
+        return sp_paths.hidden_from_tasks(tasks_store.head(task["path"])[0])
     except Exception:  # noqa: BLE001 — "cannot tell" must not hide a task
         return False
 

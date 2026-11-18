@@ -52,6 +52,11 @@ export function FloatingCard({
   error,
   onClose,
   children,
+  head,
+  className,
+  initialBox,
+  resizable,
+  closeDisabled,
 }: {
   index: number;
   label: string;
@@ -65,12 +70,30 @@ export function FloatingCard({
   error?: string;
   onClose: () => void;
   children: ReactNode;
+  /** SPECIALISTS: the head's identity (face, name, a second line) in place of
+   *  the title and note spans. */
+  head?: ReactNode;
+  /** SPECIALISTS: a modifier class beside `breakout-card`. */
+  className?: string;
+  /** SPECIALISTS: where the card opens and how big (viewport px), in place of
+   *  the bottom-right slot. Kept inside the window. */
+  initialBox?: { x: number; y: number; w: number; h: number };
+  /** SPECIALISTS: a corner grip resizes the card. */
+  resizable?: boolean;
+  /** SPECIALISTS: Close is busy (the summary is being written). */
+  closeDisabled?: boolean;
 }) {
   // Drag by the head row. `pos` null = the default bottom-right slot; once
   // dragged the card is placed by left/top. Moves are coalesced to one
   // `setPos` per animation frame (same as TerminalDrawer's drag resize).
   const cardRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(() =>
+    initialBox ? clampBox(initialBox.x, initialBox.y, initialBox.w, initialBox.h) : null,
+  );
+  const [size, setSize] = useState<{ w: number; h: number } | null>(() =>
+    initialBox ? { w: initialBox.w, h: initialBox.h } : null,
+  );
+  const resize = useRef<{ sx: number; sy: number; w: number; h: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const latest = useRef<{ x: number; y: number } | null>(null);
@@ -130,15 +153,42 @@ export function FloatingCard({
     return () => window.removeEventListener("resize", onResize);
   }, [hasPos]);
 
+  // RESIZE by the corner grip (specialist cards): the card grows right and
+  // down from where it sits, never past the window.
+  const onGripDown = (e: PointerEvent<HTMLDivElement>) => {
+    const r = cardRef.current?.getBoundingClientRect();
+    if (!r) return;
+    e.stopPropagation();
+    resize.current = { sx: e.clientX, sy: e.clientY, w: r.width, h: r.height };
+    if (!pos) setPos({ x: r.left, y: r.top });
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onGripMove = (e: PointerEvent<HTMLDivElement>) => {
+    const d = resize.current;
+    if (!d) return;
+    const r = cardRef.current?.getBoundingClientRect();
+    const left = r?.left ?? 0;
+    const top = r?.top ?? 0;
+    setSize({
+      w: Math.max(MIN_W, Math.min(d.w + e.clientX - d.sx, window.innerWidth - left)),
+      h: Math.max(MIN_H, Math.min(d.h + e.clientY - d.sy, window.innerHeight - top)),
+    });
+  };
+  const onGripUp = (e: PointerEvent<HTMLDivElement>) => {
+    if (!resize.current) return;
+    resize.current = null;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  };
+
   return (
     <div
       ref={cardRef}
-      className="breakout-card"
+      className={className ? `breakout-card ${className}` : "breakout-card"}
       role="dialog"
       aria-label={label}
       style={{
-        width: `min(${PEEK_WIDTH}px, calc(100vw - 16px))`,
-        height: `min(${PEEK_MAX_HEIGHT}px, 70vh)`,
+        width: size ? `min(${Math.round(size.w)}px, 100vw)` : `min(${PEEK_WIDTH}px, calc(100vw - 16px))`,
+        height: size ? `min(${Math.round(size.h)}px, 100vh)` : `min(${PEEK_MAX_HEIGHT}px, 70vh)`,
         ...(pos
           ? { left: pos.x, top: pos.y }
           : { right: 16 + slotX, bottom: 16 + slotY }),
@@ -153,17 +203,21 @@ export function FloatingCard({
           onPointerCancel={onHeadUp}
         >
           <div className="claude-rail-peek-row">
-            <span className="breakout-title">{title}</span>
-            <span
-              className="breakout-note"
-              {...(noteTitle ? { title: noteTitle } : {})}
-              {...(noteHint ? { "data-hint": noteHint } : {})}
-            >
-              {note}
-            </span>
+            {head ?? (
+              <>
+                <span className="breakout-title">{title}</span>
+                <span
+                  className="breakout-note"
+                  {...(noteTitle ? { title: noteTitle } : {})}
+                  {...(noteHint ? { "data-hint": noteHint } : {})}
+                >
+                  {note}
+                </span>
+              </>
+            )}
             <span className="breakout-spacer" />
             {actions}
-            <button type="button" className="breakout-btn" onClick={onClose}>
+            <button type="button" className="breakout-btn" onClick={onClose} {...(closeDisabled ? { disabled: true } : {})}>
               Close
             </button>
           </div>
@@ -175,8 +229,29 @@ export function FloatingCard({
         ) : null}
         <div className="claude-rail-peek-body">{children}</div>
       </div>
+      {resizable ? (
+        <div
+          className="breakout-resize"
+          role="separator"
+          aria-label="Resize"
+          onPointerDown={onGripDown}
+          onPointerMove={onGripMove}
+          onPointerUp={onGripUp}
+          onPointerCancel={onGripUp}
+        />
+      ) : null}
     </div>
   );
+}
+
+const MIN_W = 300;
+const MIN_H = 240;
+
+/** A box's top-left kept inside the window (its size as given). */
+export function clampBox(x: number, y: number, w: number, h: number): { x: number; y: number } {
+  const W = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const H = typeof window !== "undefined" ? window.innerHeight : 800;
+  return { x: Math.max(0, Math.min(x, W - w)), y: Math.max(0, Math.min(y, H - h)) };
 }
 
 export function Card({
