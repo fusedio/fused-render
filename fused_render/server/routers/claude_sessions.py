@@ -103,6 +103,21 @@ def _session_cwd(jsonl_path: str) -> str | None:
     return None
 
 
+def _specialist_home(cwd: str) -> bool:
+    """A specialist's home (docs/specialists/): its main chat and breakouts run there, so it would lead every
+    "recent folders" list, and a task started there is refused. Same seam as the Tasks list's
+    `_specialist_session`: read off `sys.modules`, so with specialists never loaded (flag off) it is one dict
+    lookup and nothing changes."""
+    import sys  # noqa: PLC0415
+    mod = sys.modules.get("fused_render.specialists.paths")
+    if mod is None:
+        return False
+    try:
+        return bool(mod.flag_on_and_inside(cwd))
+    except Exception:  # noqa: BLE001 — "cannot tell" must not hide a folder
+        return False
+
+
 @router.get("/api/claude-sessions")
 def api_claude_sessions():
     latest: dict[str, float] = {}
@@ -111,7 +126,7 @@ def api_claude_sessions():
             continue
         for jsonl_path in glob.glob(os.path.join(root, "*", "*.jsonl")):
             cwd = _session_cwd(jsonl_path)
-            if not cwd or not os.path.isdir(cwd):
+            if not cwd or not os.path.isdir(cwd) or _specialist_home(cwd):
                 continue
             try:
                 mtime = os.path.getmtime(jsonl_path)
@@ -224,7 +239,7 @@ def api_home_claude_sessions(limit: int = HOME_SESSION_LIMIT):
         # Mark before the probe: repeated sessions for a stale folder cannot
         # become valid during this one request and should not repeat the syscall.
         seen.add(cwd)
-        if not os.path.isdir(cwd):
+        if not os.path.isdir(cwd) or _specialist_home(cwd):
             continue
         folders.append({
             "path": canonical_fs_path(cwd),

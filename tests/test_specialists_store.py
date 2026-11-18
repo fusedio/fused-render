@@ -145,3 +145,29 @@ def test_delete_refused_while_the_nightly_job_runs(app_home, monkeypatch):
     with pytest.raises(store.Busy, match="nightly update is running"):
         store.delete(s.id)
     assert os.path.isdir(s.home)
+
+
+def test_session_folder_lists_skip_homes(app_home, monkeypatch, tmp_path):
+    """Live run: the main chat's home led the New task folder picker's recents (`/api/claude-sessions`), and a
+    task started there is refused. Both folder lists skip a home with the flag on, and keep it with it off."""
+    import json as _json
+
+    from fused_render.server.routers import claude_sessions
+
+    s = make_specialist()
+    other = tmp_path / "proj"
+    other.mkdir()
+    root = tmp_path / "projects"
+    for i, cwd in enumerate((s.home, str(other))):
+        d = root / f"p{i}"
+        d.mkdir(parents=True)
+        (d / "x.jsonl").write_text(_json.dumps({"type": "user", "cwd": cwd, "sessionId": "x"}) + "\n")
+    monkeypatch.setattr(claude_sessions, "projects_roots", lambda: [("claude", str(root))])
+
+    def paths(r):
+        return {f["path"] for f in r["folders"]}
+
+    assert paths(claude_sessions.api_claude_sessions()) == {str(other)}
+    assert paths(claude_sessions.api_home_claude_sessions()) == {str(other)}
+    monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
+    assert paths(claude_sessions.api_claude_sessions()) == {s.home, str(other)}

@@ -114,6 +114,8 @@ div.spx-page {
 .spx-tasks { margin-top: auto; gap: 4px; font-size: 12px; color: var(--fg-muted); border-top: 1px solid var(--border); padding-top: 12px; }
 .spx-tasks h2.spx-tasks-title { font-size: 12px; color: var(--fg); }
 .spx-tasks a { color: var(--spx-tint-text); }
+/* A task's title is its first message, often a paragraph: one line, cut. */
+.spx-tasks-link { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 
 /* Settings dialog */
 .spx-settings .spx-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin-bottom: 16px; }

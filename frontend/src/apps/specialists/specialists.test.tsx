@@ -260,6 +260,21 @@ function panelApi(over: Partial<PanelApi> = {}): PanelApi & { log: unknown[] } {
 }
 
 describe("the side panel (U, V)", () => {
+  test("refreshKey re-reads without blanking the panel (live: stale after Run now in Settings)", async () => {
+    let reads = 0;
+    const api = panelApi();
+    const counted: PanelApi = { ...api, getPanel: async (id) => (reads++, api.getPanel(id)) };
+    const el = (k: number) => <SidePanel specialistId="c1" sendToChat={() => true} onOpenSettings={() => {}} refreshKey={k} api={counted} />;
+    const r = render(el(0));
+    await act(async () => {});
+    expect(reads).toBe(1);
+    expect(textOf(r.root)).toContain("When a sync stalls");
+    act(() => r.update(el(1)));
+    expect(textOf(r.root)).toContain("When a sync stalls");
+    await act(async () => {});
+    expect(reads).toBe(2);
+  });
+
   test("Learned last night with Revert, Reverted; drafts; inbox; In your tasks; no breakouts listed", async () => {
     const api = panelApi();
     const r = render(<SidePanel specialistId="c1" sendToChat={() => true} onOpenSettings={() => {}} api={api} />);

@@ -159,7 +159,12 @@ export function Specialists() {
           specialist={detail}
           tab={settings}
           onTab={setSettings}
-          onClose={() => setSettings(null)}
+          onClose={() => {
+            setSettings(null);
+            // Run now, Revert, a draft sent or discarded, a memory edit: the panel shows the same
+            // facts, so read it again now rather than on its next 30 s poll.
+            setPanelKey((n) => n + 1);
+          }}
           sendToChat={sendToChat}
           onSaved={(s) => {
             setDetail(s);

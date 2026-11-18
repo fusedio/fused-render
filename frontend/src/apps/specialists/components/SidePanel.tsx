@@ -76,9 +76,13 @@ export function SidePanel({
     );
   }, [api, specialistId]);
 
+  // Another specialist: start blank. A refresh (refreshKey) keeps what is on
+  // screen until the new read lands, so the panel does not flash empty.
   useEffect(() => {
     setPanel(null);
     setRequested(new Set());
+  }, [specialistId]);
+  useEffect(() => {
     load();
     const t = setInterval(load, PANEL_POLL_MS);
     return () => clearInterval(t);
@@ -237,6 +241,8 @@ export function SidePanel({
                   {i === 0 ? " · " : ", "}
                   <a
                     href={href}
+                    className="spx-tasks-link"
+                    title={t.title || undefined}
                     onClick={(e) => {
                       if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
                       e.preventDefault();
