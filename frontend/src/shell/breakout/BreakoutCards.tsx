@@ -20,6 +20,8 @@ import {
   useBreakouts,
   type BreakoutCard,
 } from "@platform/lib/breakouts";
+import { useSpecialistBreakouts } from "@platform/lib/specialist-breakouts";
+import { SpecialistBreakoutCard } from "./SpecialistBreakoutCard";
 
 const OFFSET = 28;
 
@@ -338,7 +340,11 @@ export function AgentPeekCard({
 export default function BreakoutCards() {
   const cards = useBreakouts();
   const peeks = useAgentPeeks();
-  if (!cards.length && !peeks.length) return null;
+  // SPECIALIST BREAKOUTS (docs/specialists): the same chrome, stacked after the
+  // plain ones. The store is empty unless the flag is on (only the task side,
+  // itself flag-gated, opens one).
+  const specialistCards = useSpecialistBreakouts();
+  if (!cards.length && !peeks.length && !specialistCards.length) return null;
   return createPortal(
     <>
       {cards.map((c, i) => (
@@ -346,6 +352,9 @@ export default function BreakoutCards() {
       ))}
       {peeks.map((p, i) => (
         <AgentPeekCard key={p.id} peek={p} index={cards.length + i} />
+      ))}
+      {specialistCards.map((c, i) => (
+        <SpecialistBreakoutCard key={c.id} card={c} index={cards.length + peeks.length + i} />
       ))}
     </>,
     document.body,

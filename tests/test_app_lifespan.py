@@ -163,6 +163,8 @@ EXPECTED_STARTUP = [
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",
     "_startup_experts",
+    # Added 2026-11-18: specialists (docs/specialists/PLAN.md A.5): seed + scheduler, only with the flag on.
+    "_startup_specialists",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and
     # every extension but the built-in `.fused` refused to share.
@@ -201,6 +203,8 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_terminal_sessions",
     # Added 2026-10-06: every loaded bot's task and Chrome (bots/registry.py).
     "_shutdown_bots",
+    # Added 2026-11-18: the specialists scheduler and side sessions, a no-op unless they were loaded.
+    "_shutdown_specialists",
     "_shutdown_index_watch",
 ]
 
@@ -259,6 +263,8 @@ EXPECTED_SHUTDOWN_LEAN = [
     "_shutdown_terminal_sessions",
     # A request can start a bot's Chrome in a lean app too.
     "_shutdown_bots",
+    # A request can start a specialist side session in a lean app too.
+    "_shutdown_specialists",
 ]
 
 
