@@ -1944,7 +1944,40 @@ def _rmtree_quiet(path: str) -> None:
 # takes one out of a bundle, and a `.fusedignore` line, so no push ships it.
 _SYNC_IGNORED_BASENAMES = canvas_snapshot.IGNORED_BASENAMES
 
-_CLONE_FUSEDIGNORE = f"CLAUDE.md\n.fusedignore\n{canvas_marker.MARKER_NAME}\n"
+_CLONE_FUSEDIGNORE = f"CLAUDE.md\n.fusedignore\n{canvas_marker.MARKER_NAME}\n__pycache__/\n"
+
+
+def _under_ignored_dir(rel: str) -> bool:
+    """`rel` (either separator) sits inside a directory no sync walk descends
+    into — `canvas_snapshot.ignored_dir`, applied to every parent component."""
+    parts = rel.replace(os.sep, "/").split("/")[:-1]
+    return any(canvas_snapshot.ignored_dir(p) for p in parts)
+
+
+# One line of a `pull --dry-run` plan: `create|update|remove <rel>`, a
+# conflict or delete prefixed `would prompt: ` (fused workbench canvas_pull).
+_DRY_RUN_REMOVE_RE = re.compile(r"^(?:would prompt: )?remove (.+)$")
+
+
+def _dry_run_in_sync(stdout: str | None) -> bool:
+    """Does a `pull --dry-run` report say local == remote? Its up-to-date
+    sentinel does; so does a plan whose every line removes a file inside a
+    directory the sync never walks (`_under_ignored_dir`) — the CLI lists
+    each local-only file as a delete, so a `__pycache__` a local import left
+    behind would otherwise read as a remote move on every poll, while the
+    fingerprint that gates the poll does not see it at all. Anything else,
+    including a line this does not recognise, is a diff."""
+    text = stdout or ""
+    if "already up to date" in text:
+        return True
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines:
+        m = _DRY_RUN_REMOVE_RE.match(ln)
+        if m is None or not _under_ignored_dir(m.group(1)):
+            return False
+    return True
 
 _CLONE_CLAUDE_MD = """\
 # Fused canvas clone: {name}
@@ -2504,7 +2537,7 @@ def api_canvases_list(
         if is_cloned:
             n_udfs = 0
             for dirpath, dirs, files in os.walk(_canvas_dir(env, canvas["name"])):
-                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
                 for f in files:
                     if f.startswith("."):
                         continue
@@ -2917,7 +2950,7 @@ def _folder_fingerprint(folder: str) -> dict:
     """{relative path: (size, mtime_ns)} of the non-dot files under `folder`."""
     out = {}
     for dirpath, dirs, files in os.walk(folder):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
         for f in files:
             if f.startswith("."):
                 continue
@@ -3769,7 +3802,7 @@ class _SyncManager:
             parts = rel.split(os.sep)
             if parts[0] == os.pardir:
                 return False
-            if any(p.startswith(".") for p in parts):
+            if any(p.startswith(".") or p in canvas_snapshot.IGNORED_DIRNAMES for p in parts):
                 return False
             return parts[-1] not in _SYNC_IGNORED_BASENAMES
 
@@ -3842,7 +3875,7 @@ class _SyncManager:
     def _take_fingerprint(self) -> dict[str, tuple[float, int]]:
         fp: dict[str, tuple[float, int]] = {}
         for root, dirs, files in os.walk(self.dir):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
             for f in files:
                 if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
                     continue
@@ -3863,7 +3896,7 @@ class _SyncManager:
         on this platform)."""
         hashes: dict[str, str] = {}
         for root, dirs, files in os.walk(top):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
             for f in files:
                 if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
                     continue
@@ -3889,7 +3922,11 @@ class _SyncManager:
         if isinstance(files, dict) and all(
             isinstance(k, str) and isinstance(v, str) for k, v in files.items()
         ):
-            self._base_files = files
+            # A sync point saved before the hash walk pruned `__pycache__`
+            # may still list its .pyc files; the walk never will again, so
+            # keeping them would read as an unpublished deletion forever.
+            self._base_files = {k: v for k, v in files.items()
+                                if not _under_ignored_dir(k)}
         if isinstance(remote, dict) and isinstance(remote.get("udfs"), dict):
             self._remote = remote
         base_toml = data.get("base_toml")
@@ -4068,7 +4105,7 @@ class _SyncManager:
             return None
         failed: list[str] = []
         for root, dirs, files in os.walk(self.dir):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
             for f in files:
                 if f.startswith("."):
                     continue
@@ -4318,7 +4355,11 @@ class _SyncManager:
                 # A seeded helper file that somehow reached the remote (a
                 # push from elsewhere with --no-ignore) must not overwrite
                 # the local seed.
-                if rel.rsplit("/", 1)[-1] in _SYNC_IGNORED_BASENAMES:
+                # Nor a bytecode cache: the walks prune it, so a written copy
+                # would sit in the sync point and never in a local hash.
+                parts = rel.split("/")
+                if (parts[-1] in _SYNC_IGNORED_BASENAMES
+                        or any(p in canvas_snapshot.IGNORED_DIRNAMES for p in parts[:-1])):
                     continue
                 try:
                     data = zf.read(info.filename)
@@ -4905,7 +4946,7 @@ class _SyncManager:
         except (subprocess.TimeoutExpired, OSError):
             recheck = None
         still_diff = recheck is not None and recheck.returncode == 0 and (
-            "already up to date" not in (recheck.stdout or "")
+            not _dry_run_in_sync(recheck.stdout)
         )
         # The CLI's --force removed the seeded Claude helper files (they're
         # not in the bundle) — put them back now that the recheck has run.
@@ -4967,7 +5008,7 @@ class _SyncManager:
 
     def _freeze_copy(self, exclude: Iterable[str] = ()) -> str:
         """Copy the clone to `.sync/push/<name>/` (fresh each push) for the
-        CLI to read while _op_lock is free: dot-dirs and what `.fusedignore`
+        CLI to read while _op_lock is free: dot-dirs, `__pycache__` and what `.fusedignore`
         names are left out; `.fusedignore` itself travels; so do top-level
         `exclude` basenames (a node the user deleted whose file came back
         without a row — `held_tombstones`). The ownership marker never
@@ -4991,7 +5032,7 @@ class _SyncManager:
                 if (at_root and n in exclude) or n == canvas_marker.MARKER_NAME:
                     out.append(n)
                     continue
-                if ((is_dir and n.startswith("."))
+                if ((is_dir and canvas_snapshot.ignored_dir(n))
                         or (n != ".fusedignore" and canvas_snapshot.fusedignored(
                             rules, n, is_dir=is_dir, at_root=at_root))):
                     out.append(n)
@@ -5388,8 +5429,9 @@ class _SyncManager:
             return
         if probe.returncode != 0:
             return  # transient (network, auth) — the next poll retries
-        # canvas_pull.py's up-to-date sentinel; anything else is a diff.
-        if "already up to date" in (probe.stdout or ""):
+        # canvas_pull.py's up-to-date sentinel, or only cache files the sync
+        # never walks (`_dry_run_in_sync`); anything else is a diff.
+        if _dry_run_in_sync(probe.stdout):
             return
         # The remote moved (no shim, so no per-UDF detail): say so; pull()
         # brings it down when asked.
@@ -5437,7 +5479,7 @@ class _SyncManager:
         except (subprocess.TimeoutExpired, OSError):
             recheck = None
         still_diff = recheck is not None and recheck.returncode == 0 and (
-            "already up to date" not in (recheck.stdout or "")
+            not _dry_run_in_sync(recheck.stdout)
         )
         self._reseed()
         still_diff = self._settle_after_force_pull(pulled, still_diff)

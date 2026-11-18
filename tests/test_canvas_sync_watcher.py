@@ -121,6 +121,134 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
     assert "push start" in actions and "push end" in actions and "snapshot applied" in actions
 
 
+def test_a_pycache_in_the_clone_is_never_synced(harness, tmp_path, monkeypatch):
+    """Importing a node's .py locally leaves `__pycache__/` in the clone. It
+    is machine state: writing it fires no push, a push never ships it, and
+    the sync point never counts it — the server drops the .pyc on import, so
+    a base holding it could never match the bundle handed back and every
+    poll would read as a remote change, every merge as a local edit."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    clone = harness.clones / "alpha"
+    assert "__pycache__/" in (clone / ".fusedignore").read_text().splitlines()
+
+    shipped: list[list[str]] = []
+    real = canvases_mod._SyncManager._run_push_cli
+
+    def capture(self, cli, copy_dir):
+        shipped.append(sorted(
+            os.path.relpath(os.path.join(root, f), copy_dir).replace(os.sep, "/")
+            for root, _dirs, files in os.walk(copy_dir) for f in files))
+        return real(self, cli, copy_dir)
+
+    monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", capture)
+    # Every watcher scan takes one fingerprint: counting them lets the test
+    # wait for scans that really ran past the debounce, not a fixed sleep a
+    # slow runner could finish before the watcher looked at all.
+    scans = [0]
+    real_fp = canvases_mod._SyncManager._take_fingerprint
+
+    def counted_fp(self):
+        scans[0] += 1
+        return real_fp(self)
+
+    monkeypatch.setattr(canvases_mod._SyncManager, "_take_fingerprint", counted_fp)
+    manager = _start(harness)
+
+    def settle() -> None:
+        """Wait out the debounce, then three more full scans after it: had
+        the write counted, the push would be under way by then."""
+        until = time.time() + canvases_mod.DEBOUNCE_S
+        while time.time() < until:
+            time.sleep(0.02)
+        start = scans[0]
+        deadline = time.time() + 10
+        while time.time() < deadline and scans[0] < start + 3:
+            time.sleep(0.02)
+        assert scans[0] >= start + 3, "the watcher stopped scanning"
+
+    def pycache(rel: str, data: bytes) -> None:
+        p = clone / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
+    pycache("__pycache__/a.cpython-312.pyc", b"\x00\xff")
+    pycache("sub/__pycache__/b.cpython-312.pyc", b"\x00\xfe")
+    settle()
+    assert not shipped, "a bytecode cache fired a push"
+    assert manager.push_state == "idle"
+
+    (clone / "a.py").write_text("a2-edited\n")
+    status = _wait_sync(lambda s: s["push_seq"] >= 1 and s["push_state"] == "idle")
+    assert status["push_seq"] >= 1, status
+    assert shipped and not any("__pycache__" in f for f in shipped[0]), shipped
+    assert "a.py" in shipped[0], shipped
+    assert manager._base_files is not None
+    assert not any("__pycache__" in rel for rel in manager._base_files), manager._base_files
+
+    # Recompiling (as the next local import does) is still not an edit.
+    pycache("__pycache__/a.cpython-312.pyc", b"\x00\xfd")
+    settle()
+    assert len(shipped) == 1, shipped
+    assert manager.push_state == "idle"
+    _stop_sync("alpha")
+
+
+def test_a_sync_point_saved_with_pycache_entries_loads_without_them(
+        harness, tmp_path, monkeypatch):
+    """A sync point written before the hash walk pruned `__pycache__` lists
+    its .pyc files. The walk never will again, so the loaded base must drop
+    them — kept, they read as an unpublished deletion on a clean clone. A
+    regular FILE that happens to be named `__pycache__` is not a cache dir."""
+    _quiet_watcher(monkeypatch)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    shims.seed_base("alpha", {**_BASE_FILES, "__pycache__/a.cpython-312.pyc": "x",
+                              os.path.join("sub", "__pycache__", "b.pyc"): "y",
+                              "__pycache__": "z"}, "t1", revision=1)
+    shims.set_manifest("t1", revision=1)
+    m = _start(harness)
+    assert set(m._base_files) == {*_BASE_FILES, "__pycache__"}, m._base_files
+
+
+def test_a_pycache_in_the_remote_bundle_is_not_merged(harness, tmp_path, monkeypatch):
+    """A bundle member under `__pycache__/` (a push from elsewhere that
+    shipped one) is dropped on fetch: written, it would enter the sync point
+    while every local hash walk prunes it — a clone dirty after each merge."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b2\n",
+                            "__pycache__/a.cpython-312.pyc": "x",
+                            "sub/__pycache__/b.pyc": "y"})
+    shims.set_manifest("t2", revision=2)
+    _poll(m)
+    clone = harness.clones / "alpha"
+    assert (clone / "b.py").read_text() == "b2\n"
+    assert not (clone / "__pycache__").exists() and not (clone / "sub").exists()
+    assert not any("__pycache__" in rel for rel in m._base_files), m._base_files
+    assert m._dirty_since is None and m.push_state == "idle"
+
+
+@pytest.mark.parametrize("stdout, in_sync", [
+    ("Nothing to do: already up to date (local files match the canvas).\n", True),
+    ("would prompt: remove __pycache__/a.cpython-312.pyc\n", True),
+    ("remove sub/__pycache__/b.pyc\nwould prompt: remove .cache/x\n", True),
+    ("would prompt: remove __pycache__/a.pyc\nupdate remote_udf.py\n", False),
+    ("would prompt: remove gone.py\n", False),
+    ("would prompt: remove __pycache__\n", False),  # a FILE by that name
+    ("create remote_udf.py\n", False),
+    ("Would write files (local differs from the canvas).", False),
+    ("", False),
+    (None, False),
+])
+def test_a_dry_run_that_only_removes_cache_files_is_in_sync(stdout, in_sync):
+    """The external-CLI probe's reading of `pull --dry-run`: the CLI lists
+    every local-only file as a delete, so a plan that only removes files
+    under a directory the sync never walks is local == remote. Anything
+    unrecognised stays a diff (the old, conservative reading)."""
+    assert canvases_mod._dry_run_in_sync(stdout) is in_sync
+
+
 @pytest.mark.parametrize("write_while_waiting, pushes", [(False, 1), (True, 2)])
 def test_the_manual_push_waits_its_turn_behind_a_running_push(
         harness, tmp_path, monkeypatch, fake_agent, write_while_waiting, pushes):

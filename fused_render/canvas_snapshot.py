@@ -676,6 +676,21 @@ _SOURCE_SUFFIXES = (".py", ".json", ".md", ".html")
 # D1476): local state, never a node source and never taken from a bundle.
 IGNORED_BASENAMES = frozenset({"CLAUDE.md", ".fusedignore", ".fused-canvas.json"})
 
+# Python's bytecode cache: a clone grows one the moment anything imports a
+# node's .py locally (a test, a quick `python -c`, an agent checking its
+# work). It is machine state, never canvas content, and the server drops its
+# undecodable .pyc files on import — so a sync point that counted it could
+# never match the bundle the server hands back, and every poll would see a
+# remote change and every merge a local edit. Pruned like a dot-dir by every
+# walk of a clone, the push copy included.
+IGNORED_DIRNAMES = frozenset({"__pycache__"})
+
+
+def ignored_dir(name: str) -> bool:
+    """A directory no walk of a clone descends into or ships: dot-dirs
+    (`.sync`, `.git`, …) and `IGNORED_DIRNAMES`."""
+    return name.startswith(".") or name in IGNORED_DIRNAMES
+
 
 def fusedignore_rules(clone_dir: str) -> list[tuple[str, bool, bool, bool]]:
     data = _read_bytes(os.path.join(clone_dir, ".fusedignore")) or b""
