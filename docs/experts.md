@@ -41,9 +41,17 @@ The expert's folder is the bot's own folder (`bot.public_dir`, `bots/paths.bot_f
 (`store.DEFAULT_INSTRUCTIONS`), an empty `memory.md` (`## Works` / `## Does not work`), `skills/` — and never
 overwrites. A skill's title (`store.skills`) is its first `# ` heading, else its file name.
 
-The harness's system prompt (`store.instructions`) is `instructions.md` (the default text when empty), then the
-bot's Settings instructions under `## From the user (Settings)` when there are any and the file does not already
-contain them.
+The harness's system prompt (`store.instructions`) is `instructions.md` (the default text when the file is
+missing or empty). The user reads and edits the file in Settings > Instructions (§13), which saves it whole
+(`store.save_instructions`: a temp file then a rename; empty text and text over `store.INSTRUCTIONS_MAX`, 50,000
+characters, are refused, never cut; a save that changes nothing does not rewrite the file).
+
+A legacy extra: an expert's Settings once had a "What it should do" box that wrote `meta["instructions"]`
+(Super Bot can still set that key). While the key holds text the file does not contain, `store.instructions`
+appends it under `## From the user (Settings)`, and the Instructions page shows it as the last section of the
+text. A save there writes the whole text into `instructions.md` and clears the key in the same call, so the extra
+is either in the file or removed by the user, never applied unseen. The bot settings route ignores
+`instructions` for an expert.
 
 ## 3. memory.md
 
@@ -363,7 +371,7 @@ started, none of the bot tools. Built-in tool calls become `action` rows as Supe
   and the system prompt's hash is unchanged.
 - **Compaction is Claude Code's**: no `--autocompact` is passed and the conversation never rolls over for the
   token budget (`_conversation_plan`); the CLI compacts the chat by itself.
-- **A fresh session** starts when there is none yet, when `instructions.md` or the Settings instructions changed
+- **A fresh session** starts when there is none yet, when the instructions changed (a save in Settings > Instructions, an edit of `instructions.md`, a shipped update)
   (the system prompt cannot change on a resumed session), or when a resume does not come back (`ResumeLost`, one
   retry). It is seeded with the digest of the past conversation (`bot.past_conversation`, after any previous
   summary), never a summary model call and never the bot memory curation: an expert's memory is `memory.md`.
@@ -546,9 +554,18 @@ finish 502.
                                                      "edited_by_hand","writing","changes"}
     GET  /api/experts/{id}/sessions                 {"sessions": [row without transcript]} newest first (100)
     GET  /api/experts/{id}/sessions/{sid}           the full row
+    GET  /api/experts/{id}/instructions             {"text","path","limit","legacy","shipped","follows_shipped"}:
+                                                    what the expert is told (`store.instructions`), the most
+                                                    characters a save takes, whether the text ends with a legacy
+                                                    Settings extra, the shipped key, and whether the file is still
+                                                    a shipped version (`seed.follows_shipped`)
+    POST /api/experts/{id}/instructions {text}      writes `instructions.md` whole and clears the legacy extra;
+                                                    the same object back; 400 when empty or over the limit, 409
+                                                    without the workspace
 
 `ask` is a sync handler (FastAPI's threadpool), so the harness run never blocks the event loop. The phone door
-(`lan.py`) passes only the three GETs under `/{id}/…` and the list, never `context` or `ask`.
+(`lan.py`) passes the list, the three GETs under `/{id}/…` and the instructions (GET and POST: a settings write,
+like the bot's `settings` and `skills` ops it already passes), never `context` or `ask`.
 
 ## 13. UI
 
@@ -568,9 +585,19 @@ marks are dropped and each line's markdown is rendered, added lines on a green g
 a red ground with `−`, context muted; a removed line and the added line that replaces it (a count bump) are
 shown as a pair. Text from memory is rendered as text, never as HTML.
 
-Settings for an expert are General (name, "Ask me about", instructions, model, effort; no step cap, no approval
-setting), Permissions (only the folders it may read) and Skills (the files under `skills/`: list, edit, add,
+Settings for an expert are General (name, "Ask me about", model, effort; no step cap, no approval setting, no
+"What it should do" box), Instructions, Permissions (only the folders it may read) and Skills (the files under `skills/`: list, edit, add,
 delete; no "learn from last task", since an expert never edits its skills). No Export button.
+
+**Instructions** (`dialogs/InstructionsSection.tsx`) is a section of its own in the dialog's rail: `instructions.md`
+as plain text in one editor that fills the section and scrolls inside itself, with the character count against
+the limit under it. The text is what the expert runs with (the default text when there is no file, a legacy
+extra as its last section, §2). The draft is one of the dialog's unsaved edits, like any other field: it survives
+a switch of section, the dialog's Save writes it (before the other settings), Cancel drops it, and Escape or the
+backdrop asks "Discard changes?" first. A refused save (too long, empty, the workspace held elsewhere) keeps the
+dialog open on Instructions with the server's sentence and the draft. For a shipped expert one line says whether
+its instructions still follow the app's updates (§14): they do until a change is saved here. There is no reset to
+the shipped text.
 
 ## 14. Shipped expert
 
@@ -599,7 +626,7 @@ over a file it has, and the list is updated: offered once, so one the user delet
 last gave it (`given`). On each seed, an installed `instructions.md` or skill whose shipped version changed is
 replaced only while the installed copy is still what we shipped: its hash is the recorded one, or, for an install
 from before hashes were recorded, one of the earlier shipped versions listed in `seed.PAST`. A copy the user (or
-anyone) edited is theirs and is left alone; a missing one is not put back. Changed instructions start a fresh chat
+anyone) edited is theirs and is left alone (a changed save in Settings > Instructions is such an edit); a missing one is not put back. Changed instructions start a fresh chat
 session, as any instructions change does (§7). When you change a shipped file, add its old hash to `seed.PAST`
 (a test checks the current version is not listed). The description `expert_list` shows (`ask_me_about` in the
 shipped `expert.json`) follows the same rule: an installed expert still carrying an earlier shipped text
