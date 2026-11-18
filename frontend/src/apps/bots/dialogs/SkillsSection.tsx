@@ -1,8 +1,11 @@
 // Settings › Skills (OpenBot dialogs.js skills, once its own #smodal): the bot's playbooks as cards (Edit, delete with a
-// confirm), "Learn from last task" and the hand-written form (Title, Trigger words, Steps). Every op posts at once and
+// confirm), "Learn from last task" and the hand-written form (Title, Trigger words, Steps; "Text" for an expert, lib/expert skillFormWords). Every op posts at once and
 // the next poll repaints the list; nothing here touches the Settings snapshot or its Save. The confirm is a sibling
 // modal, so it goes through the dialog's `confirm` (holds `busy`) and not askConfirm directly.
-import { useEffect, useState } from "react";
+// An expert (`expert`) has the same list and form over the same files (skills/*.md in its folder, the same save /
+// delete ops), but its skills are reference files it reads and never writes: no "Learn from last task" (the backend
+// refuses op "learn" for an expert), and the words say so.
+import { useEffect, useRef, useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
@@ -10,6 +13,8 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@platform/shadc
 import { Input } from "@platform/shadcn/ui/input";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { api, type Bot } from "../lib/api";
+import { skillFormWords } from "../lib/expert";
+import { revealWithin } from "../lib/scroll";
 import { act } from "../state/store";
 import { CARD_CLASS } from "./shell";
 
@@ -19,7 +24,7 @@ export interface SectionProps {
   confirm: (title: string, text: string, ok?: string, danger?: boolean) => Promise<boolean>;
 }
 
-export function SkillsSection({ b, confirm }: SectionProps) {
+export function SkillsSection({ b, confirm, expert = false }: SectionProps & { expert?: boolean }) {
   const [form, setForm] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);  // the skill's name while editing an existing one
   const [title, setTitle] = useState(""), [trigger, setTrigger] = useState(""), [body, setBody] = useState("");
@@ -30,32 +35,46 @@ export function SkillsSection({ b, confirm }: SectionProps) {
   useEffect(() => { setSent(false); }, [b.learning, b.seq]);
   const learning = sent || !!b.learning;
   const sk = b.skills || [];
-  // By id, not ref: the shadcn Input forwards no ref on React 18.
-  const focusTitle = () => requestAnimationFrame(() => document.getElementById("sktitle")?.focus());
+  const w = skillFormWords(expert);
+  // By id, not ref: the shadcn Input forwards no ref on React 18. The form opens under the list (Edit as well as
+  // "Write one by hand"): bring it into view inside the dialog's own scroller only ([data-sec]), never the page, and
+  // focus without the browser's own scroll (which would move every scrollable ancestor).
+  const focusTitle = () => requestAnimationFrame(() => {
+    const form = document.getElementById("sform");
+    revealWithin(form?.closest<HTMLElement>("[data-sec]") ?? null, form);
+    document.getElementById("sktitle")?.focus({ preventScroll: true });
+  });
 
+  // Which draft the form holds: a save that finishes closes the form only if it still holds the draft it sent
+  // (Edit or "Write one by hand" on another skill meanwhile opened a new one, whose text must not be dropped).
+  const draft = useRef(0);
   const edit = (name: string) => {
     const k = sk.find((x) => x.name === name); if (!k) return;
+    draft.current++;
     setEditing(name); setTitle(k.title); setTrigger(k.trigger); setBody(k.body); setForm(true); focusTitle();
   };
   const del = async (name: string) => {
     const k = sk.find((x) => x.name === name);
-    if (!(await confirm(`Delete the skill "${k?.title || name}"?`, "The bot stops using this playbook."))) return;
+    if (!(await confirm(`Delete the skill "${k?.title || name}"?`, expert ? "The file is removed from the expert's skills folder." : "The bot stops using this playbook."))) return;
     await act(() => api.skills(b.id, { op: "delete", rid: name }));
   };
   const save = async () => {
+    const mine = draft.current;
     const r = await act(() => api.skills(b.id, { op: "save", name: title, trigger, text: body, ...(editing ? { rid: editing } : {}) }));
-    if (!r?.ok) return;
+    if (!r?.ok || draft.current !== mine) return;  // refused (the banner says why): the draft stays for another try
     setForm(false); setEditing(null);
   };
   const learn = async () => {
     const r = await act(() => api.skills(b.id, { op: "learn" }));
     if (r?.ok) setSent(true);  // progress shows in the thread; the new card lands with a later poll
   };
-  const blank = () => { setEditing(null); setTitle(""); setTrigger(""); setBody(""); setForm(true); focusTitle(); };
+  const blank = () => { draft.current++; setEditing(null); setTitle(""); setTrigger(""); setBody(""); setForm(true); focusTitle(); };
 
   return (
     <div className="flex flex-col gap-4">
-      <p className="m-0 text-[13px] leading-5 text-muted-foreground">A skill is a step-by-step playbook. When a task contains one of its trigger words, the bot gets the playbook in its prompt and follows it instead of exploring. The bot can also save one itself with <code>learn</code>.</p>
+      {expert ? (
+        <p className="m-0 text-[13px] leading-5 text-muted-foreground">An expert's skills are reference files in the skills folder of its own folder. It reads the ones a question touches but never edits them; what it learns goes to its memory. Edit them here.</p>
+      ) : <p className="m-0 text-[13px] leading-5 text-muted-foreground">A skill is a step-by-step playbook. When a task contains one of its trigger words, the bot gets the playbook in its prompt and follows it instead of exploring. The bot can also save one itself with <code>learn</code>.</p>}
       <div className="flex flex-col gap-3" id="slist">
         {sk.length ? sk.map((k) => (
           <section key={k.name} className={CARD_CLASS} data-name={k.name}>
@@ -73,31 +92,31 @@ export function SkillsSection({ b, confirm }: SectionProps) {
             </div>
             <div className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-[13px] leading-5 text-muted-foreground">{k.body}</div>
           </section>
-        )) : <p className="m-0 text-sm text-muted-foreground">No skills yet. Finish a task, then click "Learn from last task", or write one by hand.</p>}
+        )) : <p className="m-0 text-sm text-muted-foreground">{expert ? "No skills yet. Write one by hand." : "No skills yet. Finish a task, then click \"Learn from last task\", or write one by hand."}</p>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button id="slearn" title="Ask the model to condense this bot's most recent finished task into a playbook" disabled={learning} onClick={() => { void learn(); }}>Learn from last task</Button>
-        <Button id="snew" variant="outline" onClick={blank}>Write one by hand</Button>
-        {learning ? <span className="text-[13px] text-muted-foreground">Learning from the last task; progress shows in the thread.</span> : null}
+        {expert ? null : <Button id="slearn" title="Ask the model to condense this bot's most recent finished task into a playbook" disabled={learning} onClick={() => { void learn(); }}>Learn from last task</Button>}
+        <Button id="snew" variant={expert ? "default" : "outline"} onClick={blank}>Write one by hand</Button>
+        {learning && !expert ? <span className="text-[13px] text-muted-foreground">Learning from the last task; progress shows in the thread.</span> : null}
       </div>
       {form ? (
         <FieldGroup id="sform" className={CARD_CLASS}>
           <Field>
             <FieldLabel htmlFor="sktitle">Title</FieldLabel>
-            <Input id="sktitle" placeholder="e.g. LinkedIn feed summary" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <Input id="sktitle" placeholder={w.titlePlaceholder} value={title} onChange={(e) => setTitle(e.target.value)} />
           </Field>
           <Field>
             <FieldLabel htmlFor="sktrig">Trigger words</FieldLabel>
-            <Input id="sktrig" placeholder="linkedin feed, linkedin posts" value={trigger} onChange={(e) => setTrigger(e.target.value)} />
-            <FieldDescription>Comma-separated; any one appearing in a task mounts this playbook.</FieldDescription>
+            <Input id="sktrig" placeholder={w.triggerPlaceholder} value={trigger} onChange={(e) => setTrigger(e.target.value)} />
+            <FieldDescription>{w.triggerHint}</FieldDescription>
           </Field>
           <Field>
-            <FieldLabel htmlFor="skbody">Steps</FieldLabel>
-            <Textarea id="skbody" rows={7} placeholder={"1. Go to https://…\n2. Dismiss the cookie banner\n3. …"} value={body} onChange={(e) => setBody(e.target.value)} />
+            <FieldLabel htmlFor="skbody">{w.bodyLabel}</FieldLabel>
+            <Textarea id="skbody" rows={7} placeholder={w.bodyPlaceholder} value={body} onChange={(e) => setBody(e.target.value)} />
           </Field>
           <div className="flex justify-end gap-2">
             <Button id="skcancel" variant="outline" onClick={() => { setForm(false); setEditing(null); }}>Cancel</Button>
-            <Button id="sksave" disabled={!title.trim() || !trigger.trim()} onClick={() => { void save(); }}>{editing ? "Save" : "Add playbook"}</Button>
+            <Button id="sksave" disabled={!title.trim() || !trigger.trim()} onClick={() => { void save(); }}>{editing ? "Save" : expert ? "Add skill" : "Add playbook"}</Button>
           </div>
         </FieldGroup>
       ) : null}

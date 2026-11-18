@@ -82,6 +82,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import time
 
@@ -234,9 +235,9 @@ def loaded() -> list:
         return list(_bots.values())
 
 
-def create(name="", model="", effort="", instructions="", preset="", kind="", browser=""):
+def create(name="", model="", effort="", instructions="", preset="", kind="", browser="", expert=None):
     require_owner()
-    b = _botmod().create(name, model, effort, instructions, preset=preset, kind=kind, browser=browser)
+    b = _botmod().create(name, model, effort, instructions, preset=preset, kind=kind, browser=browser, expert=expert)
     sync_wake()
     return b
 
@@ -470,6 +471,7 @@ def _become_owner() -> None:
              ("FusedBot import", _import_fusedbot),
              ("v3 folder migration", _migrate_v3),
              ("Super Bot seed", _seed_super),
+             ("experts seed", _seed_experts),
              ("channels router", _start_router),
              ("takeover walk", _reconcile),
              ("browser sweep", _sweep_browsers),
@@ -477,7 +479,7 @@ def _become_owner() -> None:
     _run_steps([x for x in steps if claimed or x[0] not in _WS_STEPS])
 
 
-_WS_STEPS = ("v3 folder migration", "Super Bot seed", "takeover walk", "browser sweep")
+_WS_STEPS = ("v3 folder migration", "Super Bot seed", "experts seed", "takeover walk", "browser sweep")
 
 
 def _run_steps(steps) -> None:
@@ -496,7 +498,7 @@ def _workspace_steps() -> None:
         if _OWNER["ws_ready"] or not _claim_workspace():
             return
         _OWNER["ws_ready"] = True
-    _run_steps((("v3 folder migration", _migrate_v3), ("Super Bot seed", _seed_super),
+    _run_steps((("v3 folder migration", _migrate_v3), ("Super Bot seed", _seed_super), ("experts seed", _seed_experts),
                 ("takeover walk", _reconcile), ("browser sweep", _sweep_browsers)))
 
 
@@ -692,6 +694,20 @@ def _seed_super() -> None:
         logger.info("Super Bot seed skipped: legacy bots are still waiting to be migrated")
         return
     seed_super()
+
+
+def _seed_experts() -> None:
+    """The shipped experts (experts/seed.py), right after the Super Bot seed and under the same gates: until the
+    v3 migration has stamped, a legacy expert would be invisible and seeded twice. A failure logs, never blocks."""
+    from fused_render.bots import migrate_v3
+    if not os.path.exists(migrate_v3.stamp_path()) or _legacy_bots_remain():
+        logger.info("experts seed skipped: the v3 folder migration has not completed")
+        return
+    try:
+        from fused_render.experts import seed
+        seed.seed()
+    except Exception:  # noqa: BLE001 — startup goes on without the shipped experts
+        logger.warning("experts seed failed", exc_info=True)
 
 
 def _legacy_bots_remain() -> bool:
@@ -1076,6 +1092,14 @@ def shutdown(budget_s: float = 8.0) -> None:
             b.stop()
         except Exception:  # noqa: BLE001
             logger.warning("bot %s: stop failed", getattr(b, "id", "?"), exc_info=True)
+    # The experts' timer and side-session harnesses end here, before the Chromes take their share of the budget
+    # and before the workspace claim is released (they write the experts' memory.md). Only when experts were used.
+    if "fused_render.experts.sessions" in sys.modules:
+        try:
+            from fused_render.experts import scheduler as experts_scheduler
+            experts_scheduler.shutdown(min(2.0, budget_s))
+        except Exception:  # noqa: BLE001
+            logger.warning("ending the experts' sessions failed", exc_info=True)
     try:
         n = browsers.stop_all(budget_s)
     except Exception:  # noqa: BLE001
@@ -1096,6 +1120,9 @@ def reset_for_tests() -> None:
         browser_mod.allow_launches()  # a test that ran shutdown() must not latch the next one
     except Exception:  # noqa: BLE001
         pass
+    experts_sessions = sys.modules.get("fused_render.experts.sessions")
+    if experts_sessions is not None:
+        experts_sessions.reopen()  # likewise: a shutdown closed the experts' side sessions
     with _lock:
         if _sched.get("stop") is not None:
             _sched["stop"].set()

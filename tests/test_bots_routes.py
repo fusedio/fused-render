@@ -153,6 +153,23 @@ def test_skills_save_and_delete(client, ws):
     assert st == 200 and out["skills"] == []
 
 
+def test_a_hand_written_skill_is_refused_not_cut_and_add_never_replaces_a_file(client, ws):
+    """The form's save: text past the limit is refused with the file untouched (it was cut to the limit and
+    reported saved), and an Add whose title derives an existing file's name is refused (it replaced that file).
+    An Edit (`rid`) still replaces its own file."""
+    from fused_render.bots.bot import Bot
+    bid = make(client)
+    post = lambda body: j(client.post(f"/api/bots/{bid}/skills", {"op": "save", "trigger": "prices", **body}))
+    assert post({"name": "Prices", "text": "1. goto x"})[0] == 200
+    st, out = post({"name": "Prices", "rid": "prices", "text": "x" * (Bot.SKILL_BODY_CAP + 1)})
+    assert st == 400 and str(Bot.SKILL_BODY_CAP) in out["error"]
+    st, out = post({"name": "  prices!", "text": "other steps"})
+    assert st == 400 and "already exists" in out["error"]
+    assert [s["body"] for s in one(status(client, shot_for=bid), bid)["skills"]] == ["1. goto x"]
+    st, out = post({"name": "Prices", "rid": "prices", "text": "x" * Bot.SKILL_BODY_CAP})
+    assert st == 200 and len(out["skills"][0]["body"]) == Bot.SKILL_BODY_CAP
+
+
 def test_send_starts_a_task(client, ws, monkeypatch):
     started = []
     monkeypatch.setattr(botmod.Bot, "start_task", lambda self, task, label=None, origin="manual", via=None, images=None: started.append((task, label)))

@@ -62,8 +62,10 @@ export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
         {needsYou(b) ? <span className="dot needsyou" title="Needs you in the browser" />
           : <span className={`dot ${b.status}${n ? " unread" : ""}`} />}</span>
       <div className="name">
-        {b.pinned ? <span className="pin">📌</span> : null}{b.name}
+        {/* The name alone truncates (.nm); the pin and the badges never shrink, so EXPERT is never clipped to "EXP…". */}
+        {b.pinned ? <span className="pin">📌</span> : null}<span className="nm">{b.name}</span>
         {b.kind === "super" ? <span className="super" title="Super Bot: Claude Code's own tools on this Mac">SUPER</span> : null}
+        {b.kind === "expert" ? <span className="expert" title={b.expert?.ask_me_about ? `Expert: ${b.expert.ask_me_about}` : "Expert: keeps a memory, answers tasks"}>EXPERT</span> : null}
         {glyph ? <span className={`rt ${glyph.warn ? "warn" : ""}`} title={glyph.title}>{MI.routines}</span> : null}
       </div>
       <div className="meta">

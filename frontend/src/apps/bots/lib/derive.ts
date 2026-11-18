@@ -51,7 +51,7 @@ export function activeHandoff(b: Pick<Bot, "handoffs">): Handoff | null {
 /** "running · step 3" ("running · step 3/60" with a step cap), "waiting for you", "idle · browser off", … */
 export const statusLabel = (b: Bot): string =>
   ({ running: `running · step ${b.step || 0}`, waiting: "waiting for you", paused: "paused", error: "error",
-     idle: b.browser?.running ? "idle" : "idle · browser off" } as Record<string, string>)[b.status] || b.status;
+     idle: b.browser?.running || b.kind === "expert" ? "idle" : "idle · browser off" } as Record<string, string>)[b.status] || b.status;
 
 const DOING_WORDS: Record<string, string> = { thinking: "thinking", writing: "writing a reply" };
 

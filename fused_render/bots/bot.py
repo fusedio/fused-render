@@ -144,7 +144,10 @@ ENGINES = ("auto", "steps", "agent")
 # always in "ask" posture, see agent_engine.super_mode); the file inbox is
 # refused (docs §5 "Super Bot"). Super Bot hands browsing work to the other
 # bots (`handoff`, docs §11); a hand-off to Super Bot is refused (depth one).
-KINDS = ("bot", "super")
+# "expert" (docs/experts.md) has no browser and no shell: it runs on Claude Code in its own folder, keeps one
+# memory file (memory.md, the only file it may write) and is reached from task sessions (`meta["expert"]` is its
+# settings, experts.store.manifest).
+KINDS = ("bot", "super", "expert")
 SUPER_ACCESS = {"ask": "default", "full": "auto"}
 SUPER_NAME = "Super Bot"
 # The outside senders Super Bot takes a task from (receive / start_task): a text from its handle, an app page on
@@ -489,6 +492,8 @@ def _engine_for(meta) -> str:
     `auto` = steps for a local model or when no `claude` CLI is resolved."""
     if is_super(meta):
         return "agent"  # Super Bot IS Claude Code; without a CLI its task fails and says so
+    if is_expert(meta):
+        return "agent"  # an expert IS Claude Code in its folder (agent_engine's expert mode); never Chrome
     engine = meta.get("engine") or "auto"
     if engine in ("steps", "agent"):
         return engine
@@ -516,6 +521,14 @@ def step_cap(meta) -> int:
 def is_super(meta) -> bool:
     """The one bot with Claude Code's own tools (KINDS)."""
     return (meta or {}).get("kind") == "super"
+
+
+def is_expert(meta) -> bool:
+    """An expert: no browser, one memory file (KINDS, docs/experts.md)."""
+    return (meta or {}).get("kind") == "expert"
+
+
+EXPERT_NO_BROWSER = "an expert has no browser"
 
 
 #: Guards a bot's lazy terminal creation (two tools racing must share one shell).
@@ -570,12 +583,19 @@ class Bot:
         self.read_only = _registry().workspace_read_only()
         # The browser (its logins) is a folder of its own, maybe shared with other bots (browsers.py).
         # A bot from before browsers existed is adopted: its profile moves, nothing is copied.
-        if self.read_only:
-            self.meta["browser_id"] = self.meta.get("browser_id") or bid  # in memory only
-        elif not self.meta.get("browser_id") or not browsers.exists(self.meta["browser_id"]):
-            self.meta["browser_id"] = browsers.adopt(bid, self.dir, self.cache_dir, self.meta)
-            store.write_meta(bid, self.meta)
-        self.browser = Browser(self.dir, self.cache_dir, proc=browsers.get(self.meta["browser_id"]))
+        if is_expert(self.meta):
+            # An expert has no browser: no browser folder is made, nothing is adopted. The view below is inert (plain
+            # paths under the bot's own folders, a private process object nothing ever starts), kept because many
+            # helpers read `browser.downloads` and friends.
+            self.meta.pop("browser_id", None)
+            self.browser = Browser(self.dir, self.cache_dir)
+        else:
+            if self.read_only:
+                self.meta["browser_id"] = self.meta.get("browser_id") or bid  # in memory only
+            elif not self.meta.get("browser_id") or not browsers.exists(self.meta["browser_id"]):
+                self.meta["browser_id"] = browsers.adopt(bid, self.dir, self.cache_dir, self.meta)
+                store.write_meta(bid, self.meta)
+            self.browser = Browser(self.dir, self.cache_dir, proc=browsers.get(self.meta["browser_id"]))
         # Bots from before the live view was the only take-over path recorded a popped-out desktop window here.
         if not self.read_only and self.meta.pop("visible", None) is not None:
             store.write_meta(bid, self.meta)
@@ -1231,6 +1251,9 @@ class Bot:
     # appears in the task text, so unrelated tasks pay nothing for it.
     SKILL_MAX = 40
     SKILL_BODY_CAP = 6000
+    # An expert's skill is a reference file it reads on demand, never mounted into a prompt, and a shipped one is
+    # already longer than a playbook may be: the editor's limit for those (routes._skills).
+    EXPERT_SKILL_BODY_CAP = 24000
 
     @property
     def skills_dir(self):
@@ -1263,15 +1286,20 @@ class Bot:
             out.append({"name": n[:-3], "title": title or n[:-3], "trigger": trigger, "body": body})
         return out
 
-    def skill_save(self, title, trigger, body, name=None):
+    @staticmethod
+    def skill_slug(title):
+        """The file name (no `.md`) skill_save gives a skill with this title or name."""
+        return re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")[:60] or "playbook"
+
+    def skill_save(self, title, trigger, body, name=None, cap=None):
         title = " ".join((title or "").split())[:80] or "Untitled playbook"
         trigger = ", ".join(t.strip() for t in re.split(r"[,\n]", trigger or "") if t.strip())[:300]
-        body = (body or "").strip()[:self.SKILL_BODY_CAP]
+        body = (body or "").strip()[:cap or self.SKILL_BODY_CAP]
         if not trigger:
             raise ValueError("a playbook needs at least one trigger word or phrase")
         if not body:
             raise ValueError("a playbook needs steps")
-        name = re.sub(r"[^a-z0-9]+", "-", (name or title).lower()).strip("-")[:60] or "playbook"
+        name = self.skill_slug(name or title)
         os.makedirs(self.skills_dir, exist_ok=True)
         if not os.path.exists(os.path.join(self.skills_dir, name + ".md")) and len(self.skills()) >= self.SKILL_MAX:
             raise ValueError(f"this bot already has {self.SKILL_MAX} playbooks; delete one first")
@@ -1924,8 +1952,14 @@ class Bot:
     def summary(self, light=False, detail=False):
         """docs §2. light: skip the per-bot liveness probe (full-screen polls 2-3x/s);
         detail: the selected bot also reports its tabs, files and Inbox."""
-        bs = self.browser.status_cached() if light else self.browser.status()
-        bs["shared"] = bool(self.shared_with())  # logins shared; the window, tabs and sleep are this bot's own
+        expert = is_expert(self.meta)
+        if expert:
+            # No browser: the same shape, always asleep, never probed.
+            bs = {"running": False, "url": None, "title": None, "headed": False, "sealed": False, "encrypt": False,
+                  "shared": False}
+        else:
+            bs = self.browser.status_cached() if light else self.browser.status()
+            bs["shared"] = bool(self.shared_with())  # logins shared; the window, tabs and sleep are this bot's own
         if detail and bs.get("running"):
             bs["tabs"] = self.browser.tabs()
         if detail:
@@ -1933,12 +1967,14 @@ class Bot:
             bs["artifacts"] = self.artifacts()
             bs["artifacts_dir"] = self.artifacts_dir
             bs["folders_missing"] = [f for f in self.folders() if not os.path.isdir(f)]
-        shot_ts = self.browser.shot_ts()
+        shot_ts = 0 if expert else self.browser.shot_ts()
         with self.lock:  # hand-off watchers change rows in place (under this lock); copy them as they stand
             meta = dict(self.meta)
             inbox_n = len(self.inbox)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
+        if expert:
+            return self._expert_summary(meta, inbox_n, bs, detail)
         return {**meta, "inbox_n": inbox_n, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(), "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
@@ -1949,6 +1985,22 @@ class Bot:
                 "shot": f"/api/bots/{self.id}/shot" if shot_ts else None,
                 "shot_ts": shot_ts, "viewport": list(vp if isinstance(vp := getattr(self.browser, "viewport", None), (tuple, list))
                                  else getattr(browser_mod, "VIEWPORT", (1280, 800)))}
+
+    def _expert_summary(self, meta, inbox_n, bs, detail):
+        """summary() for an expert (docs/experts.md): the shape the page reads, no browser, plus its settings
+        (`expert`: ask_me_about, shipped)."""
+        try:
+            from fused_render.experts import store as xstore
+            manifest = xstore.manifest(self)
+        except Exception:  # noqa: BLE001
+            manifest = meta.get("expert") if isinstance(meta.get("expert"), dict) else {}
+        meta.pop("browser_id", None)
+        return {**meta, "inbox_n": inbox_n, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(),
+                "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": None, "browser_name": "",
+                "shared_with": [], "encrypt": False, "terminal_id": None, "terminal_available": False,
+                "terminal_needs_claude": False, "memory": "" if detail else None,
+                "skills": self.skills() if detail else None, "learning": self.learning, "shot": None, "shot_ts": 0,
+                "viewport": list(getattr(browser_mod, "VIEWPORT", (1280, 800))), "expert": manifest}
 
     # -- routines ------------------------------------------------------------
     # meta["routines"]: [{id, task, kind: interval|daily|once, minutes, time "HH:MM",
@@ -2514,7 +2566,8 @@ class Bot:
             # super_mode). "setup" is the app's own first task (SUPER_SETUP, _maybe_super_setup), never an outside sender.
             self.emit("system", f"Ignored a task from {origin}: Super Bot only takes tasks you type here.")
             return False
-        if self.browser.headed():
+        expert = is_expert(self.meta)
+        if not expert and self.browser.headed():
             self.emit("system", f"Not started: the browser is open as a real window on your desktop. Click \"Back here\" (or close the window), then try again: {label or task}")
             return False
         with self.lock:
@@ -2540,12 +2593,14 @@ class Bot:
                     from fused_render.bots import agent_engine
                     run = agent_engine.run
                 except Exception:  # noqa: BLE001 — the agent engine may not be installed; the steps engine always is
-                    if is_super(self.meta):
-                        # Super Bot's guard rails (posture, texted answers) live in the agent engine: no fallback.
-                        logger.warning("bot %s: agent engine unavailable for Super Bot", self.id, exc_info=True)
+                    if is_super(self.meta) or expert:
+                        # Super Bot's guard rails (posture, texted answers) live in the agent engine, and an expert
+                        # IS Claude Code in its folder (no browser): no fallback to the steps engine.
+                        who = "An expert" if expert else "Super Bot"
+                        logger.warning("bot %s: agent engine unavailable for %s", self.id, who, exc_info=True)
                         # Explicit via: this runs on the caller's thread, so emit() would not stamp it and a phone-started
                         # request would get silence (the router answers the origin).
-                        self.emit("error", "Super Bot needs the agent engine (Claude Code), which could not load.",
+                        self.emit("error", f"{who} needs the agent engine (Claude Code), which could not load.",
                                   **({} if chan.is_web(via) else {"via": dict(via)}))
                         self.set_status("idle", task_via=None)
                         self.task_via = dict(chan.WEB)
@@ -2609,6 +2664,8 @@ class Bot:
         `by` lands in meta["control_by"]: "bot" when the bot asked (login), "user" when
         the user took the page. A take-over while the user already holds the page keeps
         the first hand-over's control_by / control_since."""
+        if is_expert(self.meta):
+            raise ValueError(EXPERT_NO_BROWSER + " to take over")
         self.pause(note=note)
         self.wake_browser()
         self.set_status("paused" if self.thread and self.thread.is_alive() else "idle", control=True, **self._control_owner(by))
@@ -2703,6 +2760,8 @@ class Bot:
         the user: the explicit escape hatch for what the live view cannot carry (passkeys,
         the password manager, print). The only relaunch left; a shared browser pops out
         for every bot on it, so it is refused while another of them is mid-task."""
+        if is_expert(self.meta):
+            raise ValueError(EXPERT_NO_BROWSER + " to open as a window")
         busy = [o["name"] for o in self.shared_with() if self._working(_registry().get(o["id"]))]
         if busy:
             raise ValueError(f"{', '.join(busy)} is working in this shared browser; stop or pause that task first")
@@ -2767,6 +2826,8 @@ class Bot:
     def wake_browser(self):
         """Relaunch an asleep browser: Chrome if it is down, else just this bot's window (a shared Chrome
         another bot keeps up). A browser that is already up is left exactly as it is."""
+        if is_expert(self.meta):
+            raise ValueError(EXPERT_NO_BROWSER + " to wake")
         if self.browser.running():
             return
         self.browser.start()
@@ -2802,6 +2863,8 @@ class Bot:
     def idle_sleep_due(self, selected):
         """Idle for a while, not being looked at or driven -> put the browser to
         sleep. The next task, take-over or live view relaunches it."""
+        if is_expert(self.meta):
+            return False
         if selected or self.meta.get("control"):
             return False
         if self.meta.get("status") not in ("idle", "error") or (self.thread and self.thread.is_alive()):
@@ -2811,6 +2874,8 @@ class Bot:
         return self.browser.running() and not self.browser.headed()  # never quit the user's own window under them
 
     def idle_sleep(self):
+        if is_expert(self.meta):
+            return  # no browser to put to sleep
         try:
             if self.browser.sleep():  # this bot's window; Chrome quits (and seals when encrypt is on) once no bot has one
                 self.emit("system", f"Browser closed after {IDLE_SLEEP_S // 60} minutes idle"
@@ -3166,6 +3231,8 @@ class Bot:
             except Exception:  # noqa: BLE001
                 continue
             n = " ".join((m.get("name") or "").split())
+            if n and is_expert(m):
+                continue  # an expert has no browser: never a hand-off target (docs/experts.md §5)
             if n:
                 (supers if is_super(m) or bid == self.id else cands).append((bid, n, m))
         names = ", ".join(sorted({n for _, n, _ in cands})) or "none yet"
@@ -3713,7 +3780,7 @@ def bots_section(bot) -> str:
         except Exception:  # noqa: BLE001
             continue
         name = " ".join((m.get("name") or "").split())
-        if not name or is_super(m):
+        if not name or is_super(m) or is_expert(m):
             continue
         instr = " ".join((m.get("instructions") or "").split())[:120]
         lines.append(f"- {name} ({m.get('preset') or 'custom'}; "  # no status word: BOTS NOW owns state, this list stays hashed
@@ -3892,7 +3959,7 @@ def bots_now_section(bot) -> str:
             b = live.get(bid)
             m = b.meta if b is not None else _read_meta(bid)
             name = " ".join((m.get("name") or "").split())
-            if not name or is_super(m):
+            if not name or is_super(m) or is_expert(m):
                 continue
             a = activity(bid, m, b, now)
             if a["status"] == "idle" and not a["busy"] and not a["headed"]:
@@ -4048,6 +4115,8 @@ def check_settings(meta, model="", effort="", max_steps=None):
         raise ValueError(f"unknown model {model!r}; choose one of {', '.join(MODELS)}")
     if model and model in LOCAL_MODELS and is_super(meta):
         raise ValueError("Super Bot runs on Claude Code; pick a Claude model")
+    if model and model in LOCAL_MODELS and is_expert(meta):
+        raise ValueError("An expert runs on Claude Code; pick a Claude model")
     if effort and effort not in EFFORTS:
         raise ValueError(f"unknown effort {effort!r}; choose one of {', '.join(EFFORTS)}")
     if isinstance(max_steps, bool):
@@ -4205,7 +4274,7 @@ def _name_taken(name, except_id=None) -> bool:
 def _logins_source(name):
     """`logins_from` against what exists: an existing bot's name, else a browser's own
     name (Settings > Browsers) → (display name, browser id); None when neither."""
-    bots = _registry().all()
+    bots = [b for b in _registry().all() if not is_expert(b.meta)]  # an expert has no logins to share
     src = next((b for b in bots if (b.meta.get("name") or "").lower() == name.lower()), None)
     if src is not None:
         return src.meta.get("name") or name, src.browser_id
@@ -4441,7 +4510,8 @@ class BotIdTaken(ValueError):
     """create(bot_id=) refused an id some folder already claims, before anything was written."""
 
 
-def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True, browser="", *, bot_id=None):
+def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True, browser="", *, bot_id=None,
+           expert=None):
     """A new bot: bot.json, a `created` line, the greeting (background). Returns the Bot.
     With `preset` (a key under bots/presets/) its playbooks, brand face, standing
     rules and starter apps are applied before the greeting, so it introduces them;
@@ -4451,7 +4521,10 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
     `greet=False` skips the model-written hello (the seeded Super Bot writes a fixed line).
     `browser` is an existing browser id to share (another bot's logins); default a browser of its own.
     `bot_id` is an id the caller minted (botfile's install, which must know its bot's id even when this raises
-    after bot.json exists); one that is malformed or already a bot is refused before anything is written."""
+    after bot.json exists); one that is malformed or already a bot is refused before anything is written.
+    `kind="expert"` (docs/experts.md) makes an expert: `expert` is its settings (meta["expert"]), no
+    preset, no browser (none made, none shared), and never the model-written hello: a fixed greeting `done`
+    with source "seed", whatever `greet` says."""
     if bot_id is not None:
         if not isinstance(bot_id, str) or not bpaths._ID_RE.fullmatch(bot_id):
             raise ValueError(f"bad bot id {bot_id!r}")
@@ -4465,6 +4538,8 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
             raise BotIdTaken(f"there is already a bot {bot_id}")
     preset = (preset or "").strip()
     browser = os.path.basename(browser or "")
+    if kind == "expert":
+        preset, browser = "", ""  # no preset, no browser (shared or own)
     if browser and not browsers.exists(browser):
         raise ValueError("that bot's browser no longer exists")
     kind = kind if kind in KINDS else "bot"
@@ -4474,6 +4549,8 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
         preset = ""
         if model in LOCAL_MODELS:
             model = DEFAULT_MODEL
+    if kind == "expert" and model in LOCAL_MODELS:
+        model = DEFAULT_MODEL  # an expert runs on Claude Code (agent_engine, experts.sessions.harness)
     if preset:
         from fused_render.bots import presets as presets_mod
         if presets_mod.get(preset) is None:  # refuse before bot.json exists: no orphan bot
@@ -4489,6 +4566,10 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
                      "instructions": meta["instructions"] or SUPER_INSTRUCTIONS, "setup": super_setup_text(),
                      "imessage_enabled": False,  # the phone switch (Settings > Phone) starts off
                      "pinned": True})  # the one bot per Mac starts pinned (sidebar); the user can unpin it
+    if kind == "expert":
+        meta.pop("browser_id", None)
+        meta.update({"kind": "expert", "name": name or f"Expert {n}",
+                     "expert": dict(expert) if isinstance(expert, dict) else {}})
     _write_new_meta(bid, meta)
     b = _registry().get(bid)
     if preset:
@@ -4496,9 +4577,29 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
     shared = ", ".join(o["name"] for o in b.shared_with()) if browser else ""
     b.emit("system", f"{meta['name']} created." + (f" Comes with {len(b.skills())} {b.meta['preset']} playbooks." if preset else "")
            + (f" Shares logins with {shared}." if shared else ""))
-    if greet:
+    if kind == "expert":
+        try:
+            from fused_render.experts import store as xstore
+            xstore.ensure_layout(b)  # instructions.md, memory.md, skills/ (only what is missing)
+        except Exception:  # noqa: BLE001
+            logger.warning("bot %s: expert folder not laid out", b.id, exc_info=True)
+        b.emit("done", expert_greeting(b), source="seed")
+    elif greet:
         b.greet()
     return b
+
+
+def expert_greeting(b) -> str:
+    """An expert's first line (create): fixed text, no model call."""
+    about = ""
+    try:
+        from fused_render.experts import store as xstore
+        about = (xstore.manifest(b).get("ask_me_about") or "").strip().rstrip(".")
+    except Exception:  # noqa: BLE001
+        pass
+    name = b.meta.get("name") or "an expert"
+    return (f"Hi, I'm {name}, an expert." + (f" Ask me about {about[:1].lower() + about[1:]}." if about else "")
+            + " I keep what I learn in memory.md in my folder. Ask me a question, or tell me something to remember.")
 
 
 _CLONE_SKIP = {"SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile", "DevToolsActivePort",
@@ -4527,6 +4628,8 @@ def clone(src_id, name="", share=True):
     src = reg.get(src_id)
     if is_super(src.meta):
         raise ValueError("Super Bot cannot be cloned; there is one per Mac")
+    if is_expert(src.meta):
+        raise ValueError("An expert cannot be cloned; create a new expert instead")
     bid = uuid.uuid4().hex[:8]
     bpaths.place(bid, name or f"{src.meta.get('name', 'Bot')} copy")  # same name as the meta below
     resealed = False

@@ -22,7 +22,25 @@ about arrives here as a `permission` tool call (`_permission`) and becomes the
 same approval card a risky click raises. Built-in tool calls never reach
 `handle_tool`; `_drive` reads them off the stream (tool_use, then the echoed
 tool_result) and emits `action` rows for the transcript, and counts them
-against Super Bot's larger step cap. Once a task has touched the web (a browser
+against Super Bot's larger step cap.
+
+An expert (docs/experts.md) runs here too, with none of Super Bot's extras: its
+folder is the working directory, instructions.md (experts.store.instructions)
+the system prompt, no browser, none of the bot tools, and Claude Code's own
+fence (experts.sessions.fence: Read/Glob/Grep/Edit/Write, Bash for the `fused`
+commands that run a UDF). The chat runs in Claude Code's auto permission mode:
+routine actions run, its classifier refuses what it judges risky. Every edit
+asks: the chat gets `--permission-prompt-tool mcp__bot__permission` on a bot MCP
+server whose roster is that one tool (`roster_for`); memory.md and the scratch
+folder of throwaway UDFs are answered `allow`, any other write (and whatever
+else the CLI hands to a person) becomes Super Bot's approval card
+(`_permission`), with no "approve forever" and no risk score. A routine's turn has
+nobody at the card and keeps the side sessions' prompt-less fence in the default
+mode (`NO_MCP`: everything else is refused by the CLI). Its first message is the conversation summary plus the
+date and the MESSAGE (`_expert_message`); built-in calls become `action` rows as
+Super Bot's do. A chat turn writes memory, so it holds the expert's write lock
+and ends with experts.sessions.note_chat (a "chat" session row when memory.md
+changed) and after_write (compaction). Once a task has touched the web (a browser
 action or WebFetch/WebSearch) writes and shell always ask, whatever
 `super_access` says: page text is the injection channel for a bot with a shell.
 
@@ -75,6 +93,8 @@ from urllib.parse import quote
 
 from fused_render import _platform, permission_risk
 from fused_render.bots import apptools, channels, claude_cli, paths, tools
+from fused_render.experts import sessions as xsessions
+from fused_render.experts import store as xstore
 
 # The step cap (bot.MAX_STEPS / SUPER_MAX_STEPS, or the bot's own `max_steps`): --max-turns does not exist on this
 # CLI, so tool calls are counted here against bot.step_cap(meta), read once per turn.
@@ -91,6 +111,10 @@ MCP_SERVER = "bot"             # the model sees mcp__bot__<tool>
 ROLLOVER_FRACTION = 0.5        # roll the conversation over when its context passes this share of the model's window (owner, 2026-10-07)
 NUDGE_FRACTION = 0.8           # … and nudge the model to `remember` durable facts at this share of the rollover mark
 WINDOW_DEFAULT = 200_000
+#: An expert's session (chat here, side sessions in experts/sessions.py): nothing from the user's own Claude Code
+#: setup, no MCP server at all (inline JSON is accepted by the CLI, verified on 2.1.326), no slash commands.
+NO_MCP = ["--setting-sources=", "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config", "--disable-slash-commands"]
+_NO_AUTO: set = set()  # experts whose chat was told once that the CLI has no auto mode (the `init` event)
 WINDOW_1M = 1_000_000
 _MILLION = re.compile(r"\[1m\]|fable|opus-?5|sonnet-?5|haiku-?5|opus-?4-?[78](?!\d)|^(?:opus|sonnet|haiku)$", re.I)  # the frontend's rule (context-window.ts): every 5.x model and Opus 4.7+ run 1M (CLI 2.1.300, measured 2026-10-15)
 
@@ -227,6 +251,7 @@ class Turn:
         self.stderr = deque(maxlen=40)
         # Super Bot (docs §5): built-in Claude Code tool calls seen on the stream, and whether the task has read the web.
         self.is_super = tools.is_super(bot)
+        self.is_expert = xstore.is_expert(bot)
         self.max_steps = _botmod().step_cap(bot.meta)
         self.web_touched = False
         self.pending_builtin: dict = {}      # tool_use_id -> (tool name, transcript label)
@@ -238,6 +263,11 @@ class Turn:
         self.ctx_tokens = 0
         self.nudged = False
         self.saw_init = False
+
+    @property
+    def builtin_rows(self) -> bool:
+        """Built-in Claude Code calls become `action` rows (_builtin_use): Super Bot's and an expert's."""
+        return self.is_super or self.is_expert
 
     # stdin -----------------------------------------------------------------
     def write(self, obj: dict) -> bool:
@@ -331,9 +361,17 @@ def _check(bot, token) -> Turn:
 
 
 def roster_for(bot, token) -> list:
-    """`GET /api/bots/<id>/tools`: the task's tool list (MCP tools/list shape)."""
+    """`GET /api/bots/<id>/tools`: the task's tool list (MCP tools/list shape). An expert's is the permission
+    prompt alone (its chat's approval cards): it has no browser and none of the bot tools."""
     _check(bot, token)
+    if xstore.is_expert(bot):
+        return [{"name": tools.PERMISSION_TOOL, **tools.PERMISSION_SPEC}]
     return tools.roster(bot)
+
+
+def expert_cards(bot) -> bool:
+    """An expert's turn has a user to answer an approval card: every turn but a routine's (tools.routine_run)."""
+    return xstore.is_expert(bot) and not tools.routine_run(bot)
 
 
 # ---------------------------------------------------------- first message ---
@@ -421,6 +459,8 @@ def first_message(bot, task: str, past=None, page: dict | None = None, conv: dic
     follow-up ("now open the second one") does not spend its first call on
     `observe`; its refs are the turn's current ones (run() took it through
     _observe)."""
+    if xstore.is_expert(bot):
+        return _expert_message(bot, task, past, conv)
     m = bot.meta
     conv = conv if isinstance(conv, dict) else {}
     fresh = not conv.get("session_id")
@@ -509,10 +549,33 @@ def first_message(bot, task: str, past=None, page: dict | None = None, conv: dic
     return text, sent
 
 
+def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tuple:
+    """An expert's turn message: on a fresh session the conversation summary (or digest) and the absolute paths of
+    its folder and memory.md (and, when it may run UDFs, which folder is which environment), then the date and the MESSAGE; a resumed session already holds the rest. Its
+    instructions are the system prompt."""
+    conv = conv if isinstance(conv, dict) else {}
+    parts = []
+    where = xstore.where(bot, run=True)
+    sent = {"where": _sha(where)}
+    if not conv.get("session_id"):
+        summary = (conv.get("summary") or "").strip()
+        if not summary:
+            past = _call(bot.past_conversation, []) if past is None else past
+            summary = "\n".join(past) if past else "(this is the start of the conversation)"
+        parts.append("CONVERSATION SO FAR (with the user, oldest first):\n" + summary)
+        parts.append(where)
+    elif (conv.get("sent") or {}).get("where") != sent["where"]:
+        # A resumed session already has it, unless a folder was granted or taken away since (or the UDF
+        # environments changed): the new process's fence follows the grants, and the model must be told.
+        parts.append("Your folders as they are now (they changed since you were last told): " + where)
+    parts += [f"Today is {xsessions.today()}.", f"MESSAGE: {task}"]
+    return "\n\n".join(parts), sent
+
+
 # ------------------------------------------------------------- spawning ---
 def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
          super_mode: str | None = None,
-         resume: str | None = None, window: int | None = None) -> list:
+         resume: str | None = None, window: int | None = None, fence: list | None = None) -> list:
     """docs §6, verified on claude 2.1.287. No --include-partial-messages
     (thoughts are per text block, and the flag floods stdout). `super_mode` (the
     CLI permission mode, bot.py SUPER_ACCESS values) switches Super Bot on: the
@@ -527,8 +590,15 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
     sources stay off in both: nothing from the user's own Claude Code setup
     (CLAUDE.md, skills, hooks) reaches a bot. `resume` continues the bot's
     conversation (its CLI session); sessions persist on disk for that. `window`
-    (the model's context window) is passed as --autocompact so the CLI's own
-    compaction never fires before fused's rollover (ROLLOVER_FRACTION)."""
+    (the model's context window) is passed as --autocompact (the CLI's
+    "auto-compact window size", 100k-1M tokens) so the CLI's own compaction
+    never fires before fused's rollover (ROLLOVER_FRACTION); an expert's turn
+    passes none and its chat is left to the CLI's own compaction. `fence`
+    (an expert: experts.sessions.fence) replaces the tool, permission and MCP
+    flags with the expert's own. With an `mcp_file` (its chat, `expert_cards`)
+    what the CLI asks about goes to our `permission` MCP tool, the only
+    tool that server lists for an expert (`roster_for`): `_expert_permission`;
+    with none (a routine's turn) it is `NO_MCP` and the CLI refuses."""
     out = [bin_path, "-p",
            "--input-format", "stream-json",
            "--output-format", "stream-json",
@@ -541,6 +611,13 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
         out += ["--resume", str(resume)]
     if window:
         out += ["--autocompact", str(int(window))]
+    if fence is not None:
+        if not mcp_file:
+            return out + list(fence) + NO_MCP
+        # No `--allowedTools mcp__bot__*`: the one tool there is the prompt itself, never the model's to call.
+        return out + list(fence) + ["--permission-prompt-tool", f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}",
+                                    "--setting-sources=", "--mcp-config", mcp_file, "--strict-mcp-config",
+                                    "--disable-slash-commands"]
     if super_mode:
         out += ["--permission-mode", super_mode,
                 "--permission-prompt-tool", f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}"]
@@ -585,6 +662,8 @@ def _super_cwd(bot, fallback: str) -> str:
 
 
 def system_prompt_for(bot, cwd: str) -> str:
+    if xstore.is_expert(bot):
+        return xstore.instructions(bot)
     if not tools.is_super(bot):
         return SYSTEM_PROMPT
     return SYSTEM_PROMPT + SUPER_PROMPT + f"\nINBOX: {cwd}"
@@ -791,6 +870,14 @@ def _drive(bot, sess: Turn, proc) -> tuple:
         t = ev.get("type")
         if t == "system" and ev.get("subtype") == "init":
             sess.saw_init = True
+            if sess.is_expert and expert_cards(bot) and ev.get("permissionMode") not in (None, "auto") \
+                    and bot.id not in _NO_AUTO:
+                # The CLI starts in `default` by itself when auto mode is not there (an older CLI or model, an
+                # organization that turned it off): the fence then asks about everything its rules do not cover.
+                _NO_AUTO.add(bot.id)  # said once per expert per server run
+                bot.emit("note", f"Claude Code started in permission mode `{ev.get('permissionMode')}`, not auto (its "
+                                 "auto mode is not available for this model or account), so this expert asks before "
+                                 "anything outside its rules.")
             if ev.get("session_id"):
                 sess.session_id = str(ev["session_id"])
         if t == "assistant":
@@ -819,7 +906,7 @@ def _drive(bot, sess: Turn, proc) -> tuple:
                     uses += 1
                     if str(blk.get("name") or "") != f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}":
                         _doing(bot, _tool_doing(str(blk.get("name") or ""), blk.get("input")))
-                    if sess.is_super and not str(blk.get("name") or "").startswith("mcp__"):
+                    if sess.builtin_rows and not str(blk.get("name") or "").startswith("mcp__"):
                         _builtin_use(bot, sess, blk)
                     elif str(blk.get("name") or "") != f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}":
                         mcp_uses += 1
@@ -874,30 +961,45 @@ def _drive(bot, sess: Turn, proc) -> tuple:
         # system/init, user echoes / tool_results, control_response, stream_event: nothing to show
 
 
+def _digest(bot, previous: str) -> str:
+    """The previous note plus the digest of the conversation, cut to what `conversation_rollover` keeps
+    (`SUMMARY_CAP`) from the END: the rollover keeps the first characters, and an expert (never summarized, no
+    `recall`) whose previous note already filled the cap would start its fresh session without the newest
+    exchanges. As `Bot.summarize_conversation`'s own fallback does."""
+    text = ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))).strip()
+    return text[-int(getattr(bot, "SUMMARY_CAP", 8000)):]
+
+
 def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
     """(conv, resume_id): the bot's conversation record and the CLI session
     this turn resumes, or None after a rollover (over budget, the system
     prompt changed, or no session yet: the first turn under this design, or
     the turn after a lost resume). A rollover seeds the fresh session with
     bot.summarize_conversation over the transcript since the session began;
-    a thin slice (a new bot) takes the digest without a model call."""
+    a thin slice (a new bot) takes the digest without a model call. An
+    expert never rolls over for the budget (its chat is left to the CLI's own
+    auto-compaction: `argv` gets no --autocompact for it), and its rollover
+    (no session yet, instructions changed) always takes the digest: its chat
+    makes no model call of ours (its memory is memory.md; it has no `recall`)."""
     conv = _call(getattr(bot, "conversation", None), None)
     if not isinstance(conv, dict):
         return None, None  # a bot without a conversation record (tests' fake): every turn a fresh session
+    expert = xstore.is_expert(bot)
     limit = rollover_at(model)
     sid = conv.get("session_id")
     tokens = int(conv.get("tokens") or 0)
-    if sid and tokens < limit and conv.get("prompt_hash") == sp_hash:
+    if sid and (tokens < limit or expert) and conv.get("prompt_hash") == sp_hash:
         return conv, sid
-    why = "over budget" if sid and tokens >= limit else ("system prompt changed" if sid else "new")
+    why = "over budget" if sid and tokens >= limit and not expert else ("system prompt changed" if sid else "new")
     since = int(conv.get("since_seq") or 0)
     lines = _call(getattr(bot, "transcript_lines", None), [], since)
     previous = (conv.get("summary") or "").strip()
-    summary = _call(getattr(bot, "summarize_conversation", None), "", since, previous) if len(lines) >= 4 else ""
+    summary = (_call(getattr(bot, "summarize_conversation", None), "", since, previous)
+               if len(lines) >= 4 and not expert else "")
     if not summary:  # a thin slice, or a summary call that failed: the previous note plus the digest
-        summary = ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))).strip()
+        summary = _digest(bot, previous)
     _call(getattr(bot, "conversation_rollover", None), None, summary, sp_hash)
-    if why != "new":
+    if why != "new" and not expert:  # an expert's memory is memory.md, kept by the expert itself
         # Memory upkeep rides on the rollover (bot.curate_memory): one more call, every ~half a window.
         _call(getattr(bot, "curate_memory", None), None, since)
     if why == "over budget":
@@ -916,6 +1018,8 @@ def run(bot, task: str, label: str | None = None) -> None:
     final_msg = ""
     collected = False
     conv = None
+    expert = xstore.is_expert(bot)
+    wlock = mem_before = None  # an expert's write lock, held for the turn, and memory.md as the turn found it
     # Per-turn bot state the shared helpers read (steps_engine.run resets the same).
     bot.task_dir, bot.task_started = None, time.time()
     bot._tool_apps = set()
@@ -930,10 +1034,14 @@ def run(bot, task: str, label: str | None = None) -> None:
         except AttributeError:
             pass
         bot.emit("system", f"Task started: {label or task}")
-        bot.browser.start()
+        if not expert:
+            bot.browser.start()
         bin_path = claude_cli.runnable()
         if not bin_path:
             raise RuntimeError("the Claude Code CLI (`claude`) was not found; install it or pick a local model")
+        if expert:
+            wlock = _expert_hold(bot)  # None: Stop landed while a side session held the memory (the check below)
+            mem_before = xstore.memory(bot) if wlock is not None else None
         if bot.stop_flag.is_set():
             bot.emit("system", "Stopped")
             _call(bot._routine_outcome, None, task, "stopped", "")
@@ -944,14 +1052,14 @@ def run(bot, task: str, label: str | None = None) -> None:
         cache = paths.bot_cache_dir(bot.id)
         os.makedirs(cache, exist_ok=True)
         mode = super_mode(bot)
-        cwd = _super_cwd(bot, cache) if mode else cache
+        cwd = xstore.expert_dir(bot) if expert else (_super_cwd(bot, cache) if mode else cache)
         sp_text = system_prompt_for(bot, cwd)
         sp_file = os.path.join(cache, "system_prompt.txt")
         with open(sp_file, "w", encoding="utf-8") as f:
             f.write(sp_text)
         conv, resume_id = _conversation_plan(bot, model, _sha(sp_text))
         page = None
-        st = _call(lambda: bot.browser.status_cached(), {})
+        st = {} if expert else _call(lambda: bot.browser.status_cached(), {})
         if isinstance(st, dict) and st.get("running") and _real_page(st.get("url")):
             page = _observe(bot, _ProbeTurn())
             if not _real_page(page.get("url")):
@@ -975,12 +1083,18 @@ def run(bot, task: str, label: str | None = None) -> None:
                 sess.prev_url = u
                 sess.visited[u] = 1  # as if a goto had landed there: coming back later is a revisit
             prompt, sent = first_message(bot, task, None, page=page, conv=conv)
-            mcp_file = write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token)
+            # An expert with nobody at the card (a routine) gets no MCP server at all, so no permission prompt.
+            mcp_file = ("" if expert and not expert_cards(bot)
+                        else write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token))
             # Super Bot reads its Inbox (cwd) without a prompt; every other read, and every write, reaches
             # `_permission`, whose fence judges by `bot.folder_roots` (docs §6). No --add-dir (was `~` whole).
             sess.cwd = cwd  # before the spawn: the first permission call may land at once
             proc = _spawn(argv(bin_path, model, effort, sp_file, mcp_file, super_mode=mode,
-                               resume=resume, window=context_window(model)), cwd)
+                               # An expert: no --autocompact, the CLI compacts its chat by itself (_conversation_plan).
+                               resume=resume, window=None if expert else context_window(model),
+                               # A user at the card: Claude Code's auto mode. A routine's turn: the default mode.
+                               fence=(xsessions.fence(bot, write=True, run=True, auto=expert_cards(bot))
+                                      if expert else None)), cwd)
             sess.proc = proc
             threading.Thread(target=_drain_stderr, args=(sess, proc), daemon=True, name=f"bot-stderr-{bot.id}").start()
             if bot.stop_flag.is_set():  # Stop landed while we were spawning
@@ -1019,8 +1133,8 @@ def run(bot, task: str, label: str | None = None) -> None:
                 _end_session(sess)
             since = int(conv.get("since_seq") or 0) if isinstance(conv, dict) else 0
             previous = (conv.get("summary") or "").strip() if isinstance(conv, dict) else ""
-            summary = (_call(getattr(bot, "summarize_conversation", None), "", since, previous)
-                       or ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))))
+            summary = ((None if expert else _call(getattr(bot, "summarize_conversation", None), "", since, previous))
+                       or _digest(bot, previous))
             _call(getattr(bot, "conversation_rollover", None), None, summary, _sha(sp_text))
             conv = _call(getattr(bot, "conversation", None), None)
             outcome, final = spawn(None)
@@ -1084,9 +1198,27 @@ def run(bot, task: str, label: str | None = None) -> None:
         if sess is not None:
             _end_session(sess)
         _terminate(proc)
+        if wlock is not None:
+            # A "chat" row when memory.md changed, started when the turn did.
+            _call(xsessions.note_chat, None, bot, mem_before, task, getattr(bot, "task_started", None))
+            wlock.release()
+            _call(xsessions.after_write, None, bot)
         fresh = getattr(bot, "_fresh_downloads", None)
         if not collected and (getattr(bot, "task_dir", None) is not None or (fresh and _call(fresh, False))):
             _call(bot.collect_task_artifacts, None, final_msg)  # stopped / errored / capped turns keep what they got
+
+
+def _expert_hold(bot):
+    """Take the expert's write lock for a chat turn (one memory writer at a time, experts/sessions.py); waits
+    while a task-learn or dream session holds it. None when Stop lands meanwhile."""
+    lock = xstore.write_lock(bot)
+    if lock.acquire(blocking=False):
+        return lock
+    _doing(bot, "waiting for the expert's memory")
+    while not lock.acquire(timeout=1.0):
+        if bot.stop_flag.is_set():
+            return None
+    return lock
 
 
 class _ProbeTurn:
@@ -1267,8 +1399,8 @@ def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
     with the images queued by the instructions it carried (docs §13), so a
     picture never lands on a later result than the words it came with."""
     out = _handle_core(bot, sess, name, args)
-    # Never on Super Bot's permission answer: that must stay ONE JSON text block (the messages were re-queued).
-    if (sess.pending_images and not (name == tools.PERMISSION_TOOL and sess.is_super)
+    # Never on a permission answer: that must stay ONE JSON text block (the messages were re-queued).
+    if (sess.pending_images and not (name == tools.PERMISSION_TOOL and sess.builtin_rows)
             and isinstance(out, dict) and isinstance(out.get("content"), list)):
         out["content"].extend(b for b in (_image_result_block(im) for im in sess.pending_images) if b)
         sess.pending_images = []
@@ -1281,9 +1413,11 @@ def _handle_core(bot, sess: Turn, name: str, args: dict) -> dict:
     was_paused = _wait_pause(bot)
     if bot.stop_flag.is_set():
         return _stopped()
+    if sess.is_expert and name != tools.PERMISSION_TOOL:
+        return _result(f"error: unknown tool {name!r}", error=True)  # an expert has none of the bot tools
     notes = []
     msgs = bot._drain_inbox()
-    if name == tools.PERMISSION_TOOL and sess.is_super:
+    if name == tools.PERMISSION_TOOL and sess.builtin_rows:
         # Claude Code asking, not the model acting: no step, no page, and the
         # answer must be ONE JSON text block, so mid-task messages cannot ride
         # on it. They go back to the inbox for the next real tool result (and
@@ -1529,6 +1663,8 @@ def _permission(bot, sess: Turn, args: dict):
     when Stop landed while the card was up."""
     name = str(args.get("tool_name") or "tool")
     inp = args.get("input") if isinstance(args.get("input"), dict) else {}
+    if sess.is_expert:
+        return _expert_permission(bot, sess, args, name, inp)
     if name == "AskUserQuestion":
         return _ask_builtin(bot, sess, args)  # a question for the user, not a call to approve
     preview = builtin_label(name, inp)
@@ -1549,11 +1685,34 @@ def _permission(bot, sess: Turn, args: dict):
     if not sess.web_touched and tools.forever_match(bot, rule):
         bot.emit("note", f"Running without asking ({rule['label']}: approved forever).")
         return _permission_answer(True, args)
+    return _permission_card(bot, sess, args, name, inp, preview, rule,
+                            "This task has read the web, so every write and command asks first." if sess.web_touched else "")
+
+
+EXPERT_CARD_WHY = "It is outside what this expert may do without asking."
+
+
+def _expert_permission(bot, sess: Turn, args: dict, name: str, inp: dict):
+    """An expert's chat (docs/experts.md §6): whatever Claude Code asks about is the user's to decide, on the same
+    card: every write other than memory.md and the scratch folder of throwaway UDF files (the fence's ask rule
+    sends all edits here; those two are answered `allow` by their path, `store.free_write`), and what auto mode
+    hands back to a person (after its classifier has refused several calls in a row, or when the CLI has no auto
+    mode and runs in `default`). There is no "approve forever" (the rule would live in bot.json, where no side
+    session could use it and no setting shows it) and no risk score (that is a model call, and fused makes none
+    for an expert)."""
+    if name.startswith("mcp__"):  # the only MCP tool is this prompt: the model called it as if it were a tool
+        return _permission_answer(False, args, "That is Claude Code's own permission prompt, not a tool for you.")
+    if name in ("Edit", "Write") and xstore.free_write(bot, inp.get("file_path"), sess.cwd):
+        return _permission_answer(True, args)  # memory.md and the scratch folder: every edit asks (the fence's ask rule)
+    return _permission_card(bot, sess, args, name, inp, builtin_label(name, inp), None, EXPERT_CARD_WHY)
+
+
+def _permission_card(bot, sess: Turn, args: dict, name: str, inp: dict, preview: str, rule, why: str):
+    """The approval card for one built-in call and its answer on the permission wire. None on Stop."""
     if preview in sess.denied:
         bot.emit("note", f"Not asking again: the user already declined to {preview}.")
         return _permission_answer(False, args, f"DENIED EARLIER by the user: {preview}. Do not retry it; do something else "
                                                "or finish and say what you could not do.")
-    why = "This task has read the web, so every write and command asks first." if sess.web_touched else ""
     # The same card and the same reading of the answer as a risky click
     # (_gate): yes / no / anything else is an instruction and the card stays up.
     # An allow answer is one JSON block with no room for text, so instructions
@@ -1561,7 +1720,8 @@ def _permission(bot, sess: Turn, args: dict):
     # deny carries a message the model reads, so they ride on that.
     notes: list = []
     raw: list = []
-    verdict, said = _gate(bot, sess, preview, why, notes, raw, rule=rule, tool=name, tool_input=inp)
+    verdict, said = _gate(bot, sess, preview, why, notes, raw, rule=rule, tool=None if sess.is_expert else name,
+                          tool_input=inp)
     if verdict is None:
         return None
     if verdict:
@@ -1569,7 +1729,7 @@ def _permission(bot, sess: Turn, args: dict):
             with bot.lock:
                 bot.inbox[:0] = raw
         return _permission_answer(True, args)
-    bot.emit("system", "Denied; Super Bot will try something else.")
+    bot.emit("system", f"Denied; {'the expert' if sess.is_expert else 'Super Bot'} will try something else.")
     sess.denied.add(preview)
     why_not = f' They said: "{said}".' if said and said.lower() not in ("deny", "no", "n") else ""
     return _permission_answer(False, args, f"DENIED by the user: {preview}.{why_not} Do not retry it; do something else "

@@ -14,7 +14,7 @@ import { ApiError, api, stepThumbUrl, type AppRef, type Bot, type BotEvent } fro
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
-import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
+import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, offersPhone, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { approvalParts } from "@platform/lib/approvalParts";
@@ -68,6 +68,8 @@ interface RowProps {
   chosen: string | null;
   /** The selected bot's display name, for the approval card's head. */
   botName?: string;
+  /** The selected bot's kind (only Super Bot's greeting offers the phone, lib/thread `offersPhone`). */
+  botKind?: string;
   /** The apps root (appFromText needs it; "" until loaded). */
   appsRoot: string;
   onBeside: (a: AppRef) => void;
@@ -264,7 +266,7 @@ function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boole
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k === "routine" ? "a routine" : k);
 
-function body({ e, botId, botName, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, targetWaiting, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
+function body({ e, botId, botName, botKind, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, targetWaiting, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.source === "clear") return <ClearMark e={e} n={foldN || 0} open={!!foldOpen} onFold={onFold} />;
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} targetWaiting={targetWaiting} />;
@@ -344,8 +346,9 @@ function body({ e, botId, botName, reaction, live, chosen, appsRoot, onBeside, h
         ? `<span class="via" title="${esc(`Sent by the app ${(e.via!.addr || "").split(":")[0] || "?"} through fused.bots`)}">from ${esc((e.via!.addr || "").split(":")[0] || "an app")}</span>`
         : `<span class="via" title="${esc(`Received over ${chanLabel(k)} from ${e.via!.addr || "?"}`)}">via ${esc(chanLabel(k))}</span>`
     : "";
-  // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone.
-  const seedBtn = e.role === "done" && e.source === "seed"
+  // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone; an
+  // expert's greeting (also "seed") never does.
+  const seedBtn = offersPhone(e, botKind)
     ? '<div class="opts"><button class="opt seed" data-dialog="phone">Connect your phone</button></div>' : "";
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
     + (e.role === "user" ? esc(e.text) : md(e.text)) + seedBtn + viaChip
@@ -793,7 +796,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
       return (
         <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew} texted={texted.get(e.seq)}
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
-          botName={b.name} chosen={card ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
+          botName={b.name} botKind={b.kind} chosen={card ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
           targetWaiting={ho && e.relay ? S.bots.find((x) => x.id === ho.target)?.waiting_on ?? null : undefined}
           linkLive={e.link ? botIds.has(e.link.bot) : undefined} bopen={e.build ? buildOpen(evs, e) : undefined}

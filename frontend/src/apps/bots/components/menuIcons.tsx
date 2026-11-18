@@ -32,17 +32,20 @@ export type MenuItem = { a: MenuAction; label: string; icon: ReactNode; danger?:
 /** openMenu's rows, in order, the same wherever the menu opens (a row's right-click or the preview header's ☰, which
  *  alone leads with "Open live view"). Skills… and Routines… open Settings on that section. */
 export function menuItems(b: Bot, opts: { live?: boolean } = {}): MenuItem[] {
-  const { live } = opts, out: MenuItem[] = [], ea = b.kind === "super";
-  if (live) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");
+  const { live } = opts, out: MenuItem[] = [], ea = b.kind === "super", expert = b.kind === "expert";
+  // An expert has no browser: no live view, and no clone (the backend refuses one).
+  if (live && !expert) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");
   out.push({ a: "settings", label: "Settings…", icon: MI.settings });
   // There is one Super Bot per Mac: no clone (the backend refuses it).
+  // An expert has Skills (its reference files, edited by you) but no Routines.
   out.push({ a: "skills", label: "Skills…", icon: MI.skills });
-  out.push({ a: "routines", label: "Routines…", icon: MI.routines });
-  // Export bot… writes the `.fusedbot` package (dialogs/ExportBot.tsx); Super Bot is one per Mac and never travels.
-  if (!ea) out.push({ a: "exportFile", label: "Export bot…", icon: MI.package });
+  if (!expert) out.push({ a: "routines", label: "Routines…", icon: MI.routines });
+  // Export bot… writes the `.fusedbot` package (dialogs/ExportBot.tsx); Super Bot is one per Mac and never travels,
+  // and an expert's folder (instructions, skills, memory) does not travel in one (the backend refuses both).
+  if (!ea && !expert) out.push({ a: "exportFile", label: "Export bot…", icon: MI.package });
   out.push({ a: "export", label: "Export transcript", icon: MI.export });
   // Clone shares the source's logins (one browser); the second row is the old behaviour, a copy of them.
-  if (!ea) out.push({ a: "clone", label: "Clone", icon: MI.clone }, { a: "cloneCopy", label: "Clone with a copy of its logins", icon: MI.clone });
+  if (!ea && !expert) out.push({ a: "clone", label: "Clone", icon: MI.clone }, { a: "cloneCopy", label: "Clone with a copy of its logins", icon: MI.clone });
   out.push("hr",
     { a: "pin", label: b.pinned ? "Unpin" : "Pin to top", icon: b.pinned ? MI.unpin : MI.pin },
     { a: "hide", label: b.hidden ? "Unhide" : "Hide", icon: b.hidden ? MI.unhide : MI.hide },
