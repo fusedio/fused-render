@@ -806,3 +806,16 @@ def test_the_line_cursor_reads_a_turn_that_kept_growing(expert, monkeypatch):
     turn["segments"].append({"kind": "text", "text": "three"})   # the same turn, still running
     assert learn.transcript_markdown(session, n, expert) == ("AGENT| three", 4)
     assert learn.transcript_markdown(session, 9, expert)[0].startswith("USER| go")  # shorter than the cursor: whole
+
+
+def test_a_change_made_while_a_session_writes_is_not_a_hand_edit(expert, monkeypatch):
+    seen = []
+
+    def mid_turn(b, p, w):
+        append_memory(b, "- [1 · 2026-11-17] Learned.")
+        seen.append((sessions.writing(b), sessions.edited_by_hand(b)))   # what the memory tab reads mid-turn
+    stub(monkeypatch, mid_turn)
+    sessions.run(expert, "task-learn", "learn")       # leaves the mark
+    sessions.run(expert, "task-learn", "learn more")  # differs from the mark until this session ends
+    assert seen == [(True, False), (True, False)]
+    assert (sessions.writing(expert), sessions.edited_by_hand(expert)) == (False, False)

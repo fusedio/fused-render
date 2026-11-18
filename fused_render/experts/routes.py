@@ -112,7 +112,8 @@ def expert_memory(eid: str):
     lines, nbytes = len(text.splitlines()), len(text.encode("utf-8"))
     return {"text": text, "path": store.memory_path(bot), "lines": lines, "bytes": nbytes,
             "limit_lines": sessions.LIMIT_LINES, "limit_bytes": sessions.LIMIT_BYTES,
-            "edited_by_hand": sessions.edited_by_hand(bot), "changes": sessions.changes(bot)}
+            "edited_by_hand": sessions.edited_by_hand(bot), "writing": sessions.writing(bot),
+            "changes": sessions.changes(bot)}
 
 
 @router.get(PREFIX + "/{eid}/sessions")

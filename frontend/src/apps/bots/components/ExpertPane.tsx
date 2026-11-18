@@ -123,7 +123,8 @@ export function MemoryPanel({ memory, err, onChange, nowMs }: {
       {err ? <p className="xp-err" role="alert">{err}</p> : null}
       <p className="xp-path" title={memory.path}>{memory.path}</p>
       <p className={`xp-size${use.over ? " over" : ""}`}>{use.text}{use.over ? " · over the limit, a dream session will shorten it" : ""}</p>
-      {memory.edited_by_hand ? <p className="xp-hand">Edited by hand since the last session.</p> : null}
+      {memory.writing ? <p className="xp-hand">A session is working on memory now.</p>
+        : memory.edited_by_hand ? <p className="xp-hand">Edited by hand since the last session.</p> : null}
       {memory.text.trim() ? <div className="xp-mem xp-md" aria-label="memory.md"><MdDoc text={memory.text} /></div> : <p className="xp-empty">Nothing remembered yet.</p>}
       <p className="xp-note">Read-only here. You can edit the file by hand at the path above; the expert reads it at the start of every session.</p>
       <p className="xp-lbl xp-chhead">Changes</p>

@@ -335,6 +335,8 @@ The row's `trigger` says where it came from:
 - `sessions.edited_by_hand(bot)`: every session that changed `memory.md` (side or chat) leaves the file's sha256 in
   `.fused/expert/left.json`; a file that no longer matches was edited by hand since. A session that changed
   nothing (a chat "hi") leaves the mark where it was. False before any session has written.
+  False while a writing session runs (`sessions.writing`: the write lock is held): a change made mid-turn is that
+  session's and is noted when it ends. `GET …/memory` returns `writing` so the pane can say a session is at work.
 
 ## 12. HTTP API (`fused_render/experts/routes.py`, prefix `/api/experts`)
 
@@ -350,7 +352,7 @@ finish 502.
                                                     {"id","name","answer","session": row id}; records use; the
                                                     question is required, at most 4000 chars
     GET  /api/experts/{id}/memory                   {"text","path","lines","bytes","limit_lines","limit_bytes",
-                                                     "edited_by_hand","changes"}
+                                                     "edited_by_hand","writing","changes"}
     GET  /api/experts/{id}/sessions                 {"sessions": [row without transcript]} newest first (100)
     GET  /api/experts/{id}/sessions/{sid}           the full row
 

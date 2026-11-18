@@ -273,7 +273,7 @@ export interface ExpertChange { id: string; kind: ExpertSessionKind | (string & 
  *  it was edited by hand since the last session wrote it, and the sessions that changed it. */
 export interface ExpertMemory {
   text: string; path: string; lines: number; bytes: number; limit_lines: number; limit_bytes: number;
-  edited_by_hand?: boolean; changes?: ExpertChange[];
+  edited_by_hand?: boolean; writing?: boolean; changes?: ExpertChange[];
 }
 /** "chat": a row only for a main-thread chat turn that changed memory (no transcript). */
 export type ExpertSessionKind = "chat" | "ask" | "task-learn" | "dream";

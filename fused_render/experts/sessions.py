@@ -292,8 +292,16 @@ def _mark_left(bot) -> None:
     store.write_json(_left_path(bot), {"sha256": _sha(store.memory(bot)), "at": time.time()})
 
 
+def writing(bot) -> bool:
+    """A session that may write memory.md is running now (a chat turn, a task-learn, a dream)."""
+    return store.write_lock(bot).locked()
+
+
 def edited_by_hand(bot) -> bool:
-    """memory.md differs from what the last writing session left (no session has written yet: False)."""
+    """memory.md differs from what the last writing session left (no session has written yet: False). Never while
+    a writing session runs: a change made mid-turn is that session's, noted when it ends."""
+    if writing(bot):
+        return False
     left = store.read_json(_left_path(bot), {})
     sha = left.get("sha256") if isinstance(left, dict) else None
     return bool(sha) and sha != _sha(store.memory(bot))
