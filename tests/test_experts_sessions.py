@@ -297,7 +297,7 @@ def transcript(tmp_path, monkeypatch):
                                                          "backend": "claude", "target": "/work"})
     monkeypatch.setattr(learn, "_last_active", lambda p, m: m)
 
-    def md(session, since=0):
+    def md(session, since=0, bot=None):
         lines = open(session["path"]).read().splitlines()
         return "\n".join("USER| " + ln for ln in lines[since:]), len(lines)
     monkeypatch.setattr(learn, "transcript_markdown", md)
@@ -725,3 +725,34 @@ def test_prompts_name_the_granted_folders_by_their_real_paths(expert, tmp_path):
     granted.mkdir(parents=True)
     expert.meta["folders"] = [str(granted)]
     assert store.where(expert).endswith(f" You may also read: {granted}.")
+
+
+def _call(expert_name, tool="mcp__fused__expert_ask"):
+    return {"role": "assistant", "segments": [{"kind": "tool", "name": tool, "input": {"expert": expert_name}}]}
+
+
+def test_a_long_transcript_is_cut_around_the_calls_to_this_expert(expert, monkeypatch):
+    other = type("B", (), {"id": "other"})()
+    monkeypatch.setattr(store, "find", lambda key: expert if key == "me" else other if key == "them" else None)
+    pad = lambda tag, n: [{"role": "user", "text": f"{tag} {i} " + "x" * 80} for i in range(n)]  # noqa: E731
+    turns = pad("a", 300) + [_call("me")] + pad("b", 300) + [_call("them")] + pad("c", 300) + [_call("me")] + pad("d", 300)
+    lines, calls = learn._lines(turns, expert)
+    assert calls == [300, 902]  # the other expert's call is not an anchor
+    md = learn.fit(lines, calls, 6000)
+    assert len(md) <= 6000 + 3 * (len(learn.CUT) + 1)
+    kept = md.splitlines()
+    assert kept[0] == learn.CUT and kept[-1] == learn.CUT and kept.count(learn.CUT) == 3
+    assert sum(ln.startswith("TOOL| ") for ln in kept) == 2          # both calls survive
+    assert all(ln == learn.CUT or ln[:6] in ("USER| ", "TOOL| ") for ln in kept)   # whole lines only
+    n = lambda tag: sum(ln.startswith(f"USER| {tag} ") for ln in kept)  # noqa: E731
+    assert n("c") < n("b") and n("a") < n("b") and n("a") < n("d")   # more after each call than before it
+    assert abs((n("a") + n("b")) - (n("c") + n("d"))) <= 3            # the budget is shared between the calls
+    # short enough: untouched; no call to this expert: the end is kept, as before
+    assert learn.fit(lines[:5], [], 6000) == "\n".join(lines[:5])
+    tail = learn.fit(lines, [], 6000)
+    assert tail.startswith(learn.CUT) and tail.endswith(lines[-1]) and len(tail) <= 6000 + len(learn.CUT) + 1
+
+
+def test_the_learn_prompt_asks_for_the_experts_own_subject_only(expert):
+    p = learn.prompt_for(expert, "USER| hi")
+    assert "only what concerns the subject your instructions give you" in p and learn.CUT in p
