@@ -2252,7 +2252,8 @@ EXPERT_SCHEMAS = [
     {"name": EXPERT_LIST_TOOL,
      "description": ("List the user's experts: each knows one subject and keeps "
                      "a memory of what worked and what did not. Returns each "
-                     "expert's name and what to ask it about."),
+                     "expert's name and what to ask it about. Call it once, "
+                     "at the start of a conversation."),
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": EXPERT_CONTEXT_TOOL,
      "description": ("An expert's memory (memory.md, verbatim) and the titles and "

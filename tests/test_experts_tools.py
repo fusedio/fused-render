@@ -115,6 +115,7 @@ def test_the_three_tools_against_the_routes(tmp_path, stub):
                                               "expert_ask"]
         assert tools[3]["inputSchema"]["required"] == ["expert", "question"]
         assert "Canvas Reference" not in json.dumps(tools)  # no roster in descriptions
+        assert "at the start of a conversation" in tools[1]["description"]
 
         text, err = _call(s, "expert_list")
         assert not err and "- Canvas Reference: writing canvases" in text
@@ -242,6 +243,13 @@ def test_claude_spawn_with_experts_differs_only_by_the_expert_pieces(
     for t in tools:
         assert t in note
     assert "reference material" in note
+    # The standing instruction: list once at the start, context before ask.
+    assert "once per conversation, before you start" in note
+    assert note.index(tools[0]) < note.index(tools[1]) < note.index(tools[2])
+    assert len(note) < 800  # paid on every turn
+    # Backends without the tools are never told about them.
+    for backend in ("gemini", "opencode"):
+        assert "expert_" not in agent._appended_prompt(str(tmp_path / "f"), False, backend)
     cfg = json.load(open(os.path.join(rd, "mcp.json")))["mcpServers"]["fused_render"]
     assert cfg["timeout"] >= (agent.EXPERT_CALL_CEILING + 60) * 1000
     assert agent._expert_stamped(rd)
