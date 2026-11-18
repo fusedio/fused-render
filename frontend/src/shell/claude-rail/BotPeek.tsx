@@ -89,7 +89,8 @@ import {
   wishSize,
   type MoveEdge,
 } from "./rail-move-lib";
-import { useWindowBox, windowBox, windowPos } from "./rail-move-store";
+import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos, windowSize } from "./rail-move-store";
+import { useRailFreePins } from "./rail-free-pins-flag";
 import { useCardMove } from "./useCardMove";
 import {
   FAV_HEIGHT,
@@ -190,13 +191,40 @@ export interface BotPeekProps {
    *  press. Given, Escape closes a hover and a temp card; only a pinned one
    *  ignores it. Absent: the card as it was. */
   pinCtl?: { pinned: boolean; onToggle: () => void } | null;
+  /** THIS CARD IS THE PINNED WINDOW'S OWN (free pins, rail-slots-lib; the
+   *  shell's pinned-bot host): it floats, frozen, and takes no part in the
+   *  non-pin window B's bookkeeping (`publishFavBox`). */
+  pinSlot?: boolean;
 }
 
 export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
-  { id, shown, anchorOf, railEl, onPointerEnter, onPointerLeave, onCone, onPressInside, onHold, onDismiss, onNoRoom, onOpen, held, onHeld, pinned, pinCtl = null },
+  {
+    id,
+    shown,
+    anchorOf,
+    railEl,
+    onPointerEnter,
+    onPointerLeave,
+    onCone,
+    onPressInside,
+    onHold,
+    onDismiss,
+    onNoRoom,
+    onOpen,
+    held,
+    onHeld,
+    pinned,
+    pinCtl = null,
+    pinSlot = false,
+  },
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
+  // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box the
+  // window's mark holds; not pinned, it pushes the pins it would cover.
+  const freePins = useRailFreePins() && !!pinCtl;
+  const freePinsRef = useRef(false);
+  freePinsRef.current = freePins;
   // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): this card is
   // window B's, as the favourite's is. Pinned and dragged by its head, it
   // FLOATS at the window's position — kept through a swap to a favourite.
@@ -246,7 +274,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     // FLOATING: at the window's position, its size, inside the viewport;
     // never "no room" (rail-move-lib).
     const at = floatingRef.current ? windowPos("b") : null;
-    if (at) return floatPlacement(at, wishSize(wish()), viewportOf(window));
+    if (at) return floatPlacement(at, (freePinsRef.current ? windowSize("b") : null) ?? wishSize(wish()), viewportOf(window));
     if (!anchorOf(key) || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
@@ -290,8 +318,10 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     // THE EDGE MAGNET (rail-move-lib `snapResize`; RailPeek's rule), with
     // the pin: on the axes window A holds still on (`dockedBAxes`), against
     // its card as it stood at the press, read once.
-    const otherBox = pinCtl ? windowBox("a") : null;
-    const magnet = pinCtl ? dockedBAxes({ floating, aFloats: windowPos("a") !== null, mine: box, other: otherBox }) : null;
+    const otherBox = pinCtl ? magnetBox("a", floating) : null;
+    // FREE PINS: a docked card's neighbour is window A's non-pin, which never
+    // floats.
+    const magnet = pinCtl ? dockedBAxes({ floating, aFloats: !freePins && windowPos("a") !== null, mine: box, other: otherBox }) : null;
     dragStart.current = {
       x: e.clientX,
       y: e.clientY,
@@ -363,6 +393,20 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     const lastBox = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    // A FREE PIN'S RESIZE IS THE PIN'S ALONE (rail-slots-lib): the window's
+    // frozen box, never the shared size.
+    if (start?.floating && freePinsRef.current) {
+      if (
+        save &&
+        lastBox &&
+        (lastBox.left !== start.box.left ||
+          lastBox.top !== start.box.top ||
+          lastBox.width !== start.box.width ||
+          lastBox.height !== start.box.height)
+      )
+        commitWindowBox("b", lastBox);
+      return;
+    }
     // A FLOATING card's left or top grip moved its corner: the window stands
     // there now (rail-move-lib).
     if (save && start?.floating && lastBox && (lastBox.left !== start.box.left || lastBox.top !== start.box.top))
@@ -390,10 +434,18 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   // card keeps clear of; a hover overlaps, as the favourite's does. As the
   // bot owner: a close here never clears a box the favourite's card holds.
   // …but not where it FLOATS: window A places itself as if it were not there.
+  // …and never from the PINNED window's own card (`pinSlot`, free pins): it
+  // floats, and its silence must not wipe the box the non-pin bot card says.
   useEffect(() => {
+    if (pinSlot) return;
     publishFavBox(visible && pinned && !move.floating ? box : null, "bot");
-  }, [visible, pinned, box, move.floating]);
-  useEffect(() => () => publishFavBox(null, "bot"), []);
+  }, [visible, pinned, box, move.floating, pinSlot]);
+  useEffect(
+    () => () => {
+      if (!pinSlot) publishFavBox(null, "bot");
+    },
+    [pinSlot],
+  );
   // A card that leaves the page under a resize takes its guides with it (no
   // pointerup will come to clear them; reviewer, 2026-11-18).
   useEffect(
@@ -403,7 +455,9 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     [],
   );
   // Its live box for window A's head drag (rail-move-store `windowBox`).
-  useWindowBox("b", !!pinCtl && visible ? box : null);
+  useWindowBox("b", !!pinCtl && visible ? box : null, freePins && move.floating);
+  // A clicked-open non-pin pushes the pins it covers (rail-slots-lib).
+  usePusher(freePins && visible && !move.floating && pinned ? box : null);
   const dragKey = useRef<string | null>(null);
   useEffect(() => {
     if (dragStart.current && (!gripsOn || dragKey.current !== shownKey)) endDrag(false);

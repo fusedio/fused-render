@@ -28,6 +28,9 @@ import { useCanvasRailPeek } from "./rail-peek-flag";
 import { viewPress } from "./rail-pin-lib";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
+import { setBotOpen, setFavPinned } from "@platform/lib/last-chat";
+import { useRailFreePins } from "./rail-free-pins-flag";
+import { freezeFromDock } from "./rail-move-store";
 
 export { BOT_PEEK_ID };
 
@@ -42,6 +45,7 @@ export function BotCardHost() {
   const ref = useRef<BotPeekHandle | null>(null);
   // HOVER / TEMP / PIN (rail-pin-lib): the unified-head switch.
   const pinModel = useTaskHeadUnified();
+  const freePins = useRailFreePins();
   // A PAGE HOP keeps only a pinned card (rail-pin-lib `hopKeeps`): a temp one
   // goes with it. The page is the URL's path (a view switch on one page keeps
   // it, as it keeps the favourite's).
@@ -108,7 +112,29 @@ export function BotCardHost() {
       held={card.held}
       onHeld={setBotCardHeld}
       pinned={card.pinned}
-      pinCtl={pinModel ? { pinned: card.held, onToggle: () => setBotCardHeld(!card.held) } : null}
+      pinCtl={
+        pinModel
+          ? {
+              pinned: card.held,
+              onToggle: () => {
+                // FREE PINS (rail-slots-lib): the pin's press freezes the
+                // window where it stands and hands the bot to window B's
+                // pinned host (PinnedPeek), replacing what was pinned there;
+                // this card, the non-pin, lets go.
+                const id = botCardIntent().current;
+                if (freePins) {
+                  if (!id) return;
+                  freezeFromDock("b");
+                  setFavPinned(null);
+                  setBotOpen(id);
+                  botCardIntent().dismiss();
+                  return;
+                }
+                setBotCardHeld(!card.held);
+              },
+            }
+          : null
+      }
     />
   );
 }

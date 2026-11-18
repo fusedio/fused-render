@@ -872,6 +872,45 @@ html.rail-card-moving iframe {
 .modal-popover.is-front {
   z-index: 48;
 }
+/* FREE PINS (rail-slots-lib; `.is-free-pin`, useCardMove — behind
+   `rail_free_pins_enabled`). A PINNED WINDOW STANDS UNDER THE NON-PINS: the
+   window a hover or a click opens beside the rail is the one the reader is
+   looking at, and where a pin could not be pushed clear of it (no room to
+   its left) the non-pin lies over it. Under the hover's bridge too (44), so
+   a pin lying across the gap never takes the pointer on its way to the card.
+   Between the two pins: last pressed on top. The ids are named for the door
+   cards' own rule (46), as above. */
+.claude-rail-peek.is-free-pin,
+#claude-rail-tasks-peek.is-free-pin,
+#claude-rail-bots-peek.is-free-pin,
+#claude-rail-git-peek.is-free-pin,
+.modal-popover.is-free-pin {
+  z-index: 42;
+}
+.claude-rail-peek.is-free-pin.is-front,
+#claude-rail-tasks-peek.is-free-pin.is-front,
+#claude-rail-bots-peek.is-free-pin.is-front,
+#claude-rail-git-peek.is-free-pin.is-front,
+.modal-popover.is-free-pin.is-front {
+  z-index: 43;
+}
+/* THE PIN A NON-PIN'S PIN ICON IS ABOUT TO REPLACE (`.is-doomed`,
+   rail-slots-store; Akshil, 2026-11-18: "we show the pin task window border
+   subtle red so we know this task is going to be killed"): a hairline in the
+   status red while that icon is hovered or focused. The icon's own caption
+   says it in words (rail-slots-lib `pinHint`). */
+.claude-rail-peek.is-free-pin.is-doomed > .claude-rail-peek-card,
+.modal-popover.is-free-pin.is-doomed .modal-dialog {
+  outline: 1.5px solid color-mix(in srgb, var(--status-failed) 70%, transparent);
+  outline-offset: -1px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-failed) 14%, transparent);
+}
+/* THE RING'S PIN FACES THE OTHER WAY with free pins (Akshil, 2026-11-18:
+   "pin shown in task ring for pin tasks and turn pin 180 other way"): the
+   glyph as drawn, not mirrored (RailPin `PinAngle`'s inline mirror). */
+.claude-rail-pinmark.is-free svg {
+  transform: none !important;
+}
 /* THE WIDTH MAGNET'S GUIDE (card-snap.ts, owner 2026-11-10): one line on
    <body> along the left edge two stacked cards share once a width drag
    snapped them level — a quiet grey, dashed (owner, 2026-11-10: "shouldn't

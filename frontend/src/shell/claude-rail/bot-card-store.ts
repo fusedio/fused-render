@@ -21,6 +21,7 @@ import { useSyncExternalStore } from "react";
 import { setBotOpen } from "@platform/lib/last-chat";
 import { setBotCard } from "./fav-peek-store";
 import { PeekIntent, type Timers } from "./rail-peek-lib";
+import { railFreePinsNow } from "./rail-free-pins-flag";
 
 export interface BotCardState {
   /** The bot whose card is up (a hover's preview or pinned), by id. */
@@ -63,8 +64,12 @@ export function setBotCardPinModel(on: boolean): void {
   pinModel = on;
 }
 
-/** The window's mark for a reload (header of `pinModel`). */
+/** The window's mark for a reload (header of `pinModel`). FREE PINS
+ *  (rail-slots-lib): the mark is the PINNED bot's, written by the pin's press
+ *  (BotCardHost) and read by the shell's pinned host — this card is the
+ *  non-pin, never held, and must not clear it. */
 function markOpen(): void {
+  if (railFreePinsNow()) return;
   if (pinModel) setBotOpen(state.key && state.pinned && state.held ? state.key : null);
 }
 

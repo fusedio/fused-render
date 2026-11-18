@@ -1604,6 +1604,11 @@ export interface Prefs {
   // rail Tasks card, the New task card, the Cards popup (`task_head_unified_enabled`,
   // shell/prefs.py; off by default). Optional: absent (older server) reads as off.
   task_head_unified?: { enabled: boolean };
+  // Free pins on the Claude rail (`rail_free_pins_enabled`, shell/prefs.py; off
+  // by default): a pin is its task's, freezes the window where it stood, and
+  // leaves the rail's column to a second, non-pinned window. Read only with
+  // the unified head on. Optional: absent (older server) reads as off.
+  rail_free_pins?: { enabled: boolean };
   // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
   // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
   // its status ring. Optional: absent (older server) reads as off.
@@ -2189,6 +2194,10 @@ export function putTaskFavouritesEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskHeadUnifiedEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_head_unified_enabled: enabled });
+}
+
+export function putRailFreePinsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { rail_free_pins_enabled: enabled });
 }
 
 export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {

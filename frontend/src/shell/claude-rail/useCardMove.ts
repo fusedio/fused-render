@@ -58,10 +58,12 @@ import {
   setLiveWindowPos,
   subscribeWindowPos,
   useFrontWindow,
-  windowBox,
+  magnetBox,
   windowPos,
 } from "./rail-move-store";
 import { setSnapGuides } from "./card-snap";
+import { useRailFreePins } from "./rail-free-pins-flag";
+import { useDoomedWindow } from "./rail-slots-store";
 
 /** On <html> while a card is being moved: frames take no pointer, nothing
  *  selects (claude-rail.css). */
@@ -153,6 +155,10 @@ export function useCardMove(o: {
   shown?: string | null;
 }): CardMove {
   const { win, on, headSelector } = o;
+  // FREE PINS (rail-slots-lib): a pinned window is frozen where it stood, so
+  // it always floats and nothing docks it but its unpin.
+  const freePins = useRailFreePins() && on;
+  const doomed = useDoomedWindow();
   const shown = on ? (o.shown ?? null) : null;
   useEffect(() => {
     if (shown !== null) noteFrontWindow(win);
@@ -177,8 +183,8 @@ export function useCardMove(o: {
   const [dragging, setDragging] = useState(false);
   const drag = useRef<Drag | null>(null);
   const stop = useRef<(() => void) | null>(null);
-  const now = useRef({ movable, floating, headSelector });
-  now.current = { movable, floating, headSelector };
+  const now = useRef({ movable, floating, headSelector, freePins });
+  now.current = { movable, floating, headSelector, freePins };
 
   const finish = (commit: boolean) => {
     const d = drag.current;
@@ -251,7 +257,7 @@ export function useCardMove(o: {
       // THE EDGE MAGNET (header): flush with the other window's card or the
       // viewport — an edge or the middle — within EDGE_SNAP_PX, the guides
       // along every line the box now stands on.
-      const snapped = snapEdges(clampPos({ left: d.left + dx, top: d.top + dy }, size, view), size, windowBox(otherWin), view);
+      const snapped = snapEdges(clampPos({ left: d.left + dx, top: d.top + dy }, size, view), size, magnetBox(otherWin, true), view);
       d.latest = snapped.pos;
       setSnapGuides(snapped.x, snapped.y);
       if (!d.raf) {
@@ -279,7 +285,8 @@ export function useCardMove(o: {
   };
 
   const onDoubleClick = (e: ReactMouseEvent<HTMLElement>) => {
-    if (!now.current.floating) return;
+    // A free pin has no dock to go back to (rail-slots-lib): its unpin does that.
+    if (!now.current.floating || now.current.freePins) return;
     const el = elementOf(e.target);
     if (!el || !e.currentTarget.contains(el) || !headDocks(el, now.current.headSelector)) return;
     commitWindowPos(win, null);
@@ -303,7 +310,15 @@ export function useCardMove(o: {
     pos: floating ? pos : null,
     dragging,
     className:
-      (movable ? " is-movable" : "") + (floating ? " is-floating" : "") + (dragging ? " is-dragging" : "") + (isFront ? " is-front" : ""),
+      (movable ? " is-movable" : "") +
+      (floating ? " is-floating" : "") +
+      (dragging ? " is-dragging" : "") +
+      (isFront ? " is-front" : "") +
+      // A FREE PIN (rail-slots-lib): under the non-pins, never dimmed by a
+      // ring's hover row, and the one a red border marks (claude-rail.css).
+      (freePins && floating ? " is-free-pin" : "") +
+      // …the pin a non-pin's pin icon is about to replace (rail-slots-store).
+      (freePins && floating && doomed === win ? " is-doomed" : ""),
     onPointerDown,
     onDoubleClick,
     notePress: () => {

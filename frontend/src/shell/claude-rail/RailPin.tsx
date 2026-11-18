@@ -13,8 +13,22 @@
 //     hears a press before whatever it landed on reacts; the ruling waits a
 //     tick for React's capture phase to say whether the press came from the
 //     card's own tree (a menu or picker portaled out of it).
-import { useEffect, useRef, type Ref } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { useAPinned, useBotOpen, useFavPinned } from "@platform/lib/last-chat";
 import { pinWords, pressVerdict, viewPress, type PressTarget, type PressWhere } from "./rail-pin-lib";
+import { useRailFreePins } from "./rail-free-pins-flag";
+import type { RailWindow } from "./rail-move-lib";
+import { doomedBy, pinHint, sectionPinned } from "./rail-slots-lib";
+import { doomedWindow, setDoomedWindow, usePinTitle } from "./rail-slots-store";
+
+/** The window a card's box is of, read off the DOM (free pins): window B's
+ *  cards say so (`data-rail-win` on the chat card's box, the bot card's
+ *  class); every other rail card — the list's, Tasks / Bots / Git, the + — is
+ *  window A's. */
+const WINDOW_B_BOX = '[data-rail-win="b"], .claude-rail-bot-peek';
+function windowOf(el: Element | null): RailWindow {
+  return el?.closest(WINDOW_B_BOX) ? "b" : "a";
+}
 
 /** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this"; and
  *  2026-11-16, of the pin the card showed with favourites off: "copy that
@@ -58,11 +72,51 @@ export function RailPinButton({
    *  is the head's first button (DoorCard `closeRef`). */
   btnRef?: Ref<HTMLButtonElement>;
 }) {
-  const words = pinWords(pinned);
+  // FREE PINS (rail-slots-lib "PINNING A NON-PIN REPLACES ITS SECTION'S PIN"):
+  // on a non-pin card whose section has a pin, the caption names what the
+  // press closes, and the hover (or the keyboard's focus) wears that pinned
+  // window a red border.
+  const freePins = useRailFreePins();
+  const own = useRef<HTMLButtonElement | null>(null);
+  const [win, setWin] = useState<RailWindow | null>(null);
+  useLayoutEffect(() => {
+    if (freePins) setWin(windowOf(own.current));
+  }, [freePins]);
+  const aWord = useAPinned();
+  const favKey = useFavPinned();
+  const botId = useBotOpen();
+  const replaces = freePins && win !== null && !pinned && sectionPinned(win, { aWord, favKey, botId });
+  const title = usePinTitle(replaces ? win : null);
+  const words = freePins ? pinHint({ pinned, replaces: replaces ? title : false }) : pinWords(pinned);
+  const mark = (on: boolean) => {
+    if (!freePins || win === null) return;
+    const which = on ? doomedBy({ win, cardPinned: pinned, sectionPinned: replaces }) : null;
+    if (which) setDoomedWindow(which);
+    else if (doomedWindow() === win) setDoomedWindow(null);
+  };
+  // The icon going (its card closed, or became the pin) takes its mark along.
+  useEffect(
+    () => () => {
+      if (win !== null && doomedWindow() === win) setDoomedWindow(null);
+    },
+    [win],
+  );
+  useEffect(() => {
+    if (!replaces && win !== null && doomedWindow() === win) setDoomedWindow(null);
+  }, [replaces, win]);
+  const setRefs = (el: HTMLButtonElement | null) => {
+    own.current = el;
+    if (typeof btnRef === "function") btnRef(el);
+    else if (btnRef) (btnRef as { current: HTMLButtonElement | null }).current = el;
+  };
   return (
     <button
-      ref={btnRef}
+      ref={setRefs}
       type="button"
+      onPointerEnter={() => mark(true)}
+      onPointerLeave={() => mark(false)}
+      onFocus={() => mark(true)}
+      onBlur={() => mark(false)}
       className={(variant === "head" ? "task-head-btn" : "claude-rail-peek-btn") + " rail-pin-btn" + (pinned ? " is-pinned" : "")}
       aria-pressed={pinned}
       aria-label="Pin"

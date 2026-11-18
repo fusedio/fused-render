@@ -285,6 +285,8 @@ import {
   setFavPinned,
   setLastChat,
   setLastFav,
+  useAPinned,
+  useBotOpen,
   useFavOpen,
   useFavPinned,
   useLastChat,
@@ -350,7 +352,19 @@ import {
 import { publishWindowABox, setSnapGuide, setSnapGuides } from "./card-snap";
 import { isPopoverEdge, popoverDrag } from "@platform/ui/modal/popover-place";
 import { FLOAT_GRIPS, POPOVER_HEAD_SELECTOR, floatPlacement, floatResize, railPressWindow, snapResize, viewportOf } from "./rail-move-lib";
-import { noteFrontWindow, publishWindowBox, windowBox, windowPos } from "./rail-move-store";
+import {
+  commitWindowBox,
+  freezeFromDock,
+  magnetBox,
+  noteFrontWindow,
+  publishPusher,
+  publishWindowBox,
+  windowPos,
+  windowSize,
+} from "./rail-move-store";
+import { railFreePinsNow, useRailFreePins } from "./rail-free-pins-flag";
+import { pinOf, placeColumn } from "./rail-slots-lib";
+import { focusPin, onOpenAsk } from "./rail-slots-store";
 import { useCardMove } from "./useCardMove";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import { taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
@@ -677,6 +691,24 @@ function publishPlusBoxes(box: Box | null): void {
   publishPlusBox(box);
   publishPlusLiveBox(box);
 }
+/** FREE PINS (rail-slots-lib), the + card's three sayings — each a stable
+ *  function, as the ones above. PINNED, it floats: its box is the section's
+ *  pin's, and it pushes nothing. */
+function publishPlusPinBox(box: Box | null): void {
+  publishWindowBox("a", "plus", box, true);
+  publishPusher("plus", null);
+}
+/** A non-pin opened by a click: beside the rail, and it pushes the pins it
+ *  would cover. */
+function publishPlusDockPush(box: Box | null): void {
+  publishPlusBoxes(box);
+  publishPusher("plus", box);
+}
+/** A hover's preview: beside the rail, pushing nothing. */
+function publishPlusDockQuiet(box: Box | null): void {
+  publishPlusBoxes(box);
+  publishPusher("plus", null);
+}
 
 export function ClaudeRail({
   place,
@@ -826,6 +858,19 @@ export function ClaudeRail({
   const pinModel = useTaskHeadUnified();
   const pinModelRef = useRef(pinModel);
   pinModelRef.current = pinModel;
+  // FREE PINS (rail-slots-lib header; `rail_free_pins_enabled`, only with the
+  // pin's own switch): the pin is the TASK'S. This rail's cards are then the
+  // sections' NON-PIN windows only — a task or a bot that is pinned moves to
+  // the shell's pinned hosts (PinnedPeek), a door's card and the + stay where
+  // they are and float — and a ring's click never swaps what a pin shows.
+  const freePins = useRailFreePins();
+  const freePinsRef = useRef(freePins);
+  freePinsRef.current = freePins;
+  /** Section A's pin, as its mark spells it (last-chat `aPinned`). */
+  const aWord = useAPinned();
+  /** Section B's pinned bot (last-chat `botOpen`; free pins: a pinned bot's
+   *  mark only). */
+  const pinnedBotId = useBotOpen();
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
   const favs = useMemo(() => (favsOn ? favSeats(rows, full) : []), [favsOn, rows, full]);
@@ -1625,8 +1670,9 @@ export function ClaudeRail({
   botHeldRef.current = botHeld;
   // THE PIN IS THE WINDOW'S (rail-pin-lib header): is window B — a
   // favourite's card or a bot's — pinned right now? Read at a click.
+  // FREE PINS: never — the pin is the task's, and a click opens the non-pin.
   const windowBPinned = (): boolean =>
-    pinModelRef.current && (botHeldRef.current || (favOpen() !== null && favPinned() === favOpen()));
+    pinModelRef.current && !freePinsRef.current && (botHeldRef.current || (favOpen() !== null && favPinned() === favOpen()));
   // A pin holds the card where favourites are on (the list card's rule).
   setBotCardHoldsOnPin(favsOn);
   // …unless the pin is its own (rail-pin-lib): a press is temp then.
@@ -1798,6 +1844,14 @@ export function ClaudeRail({
     setFavRestore(null);
   };
   const pressBotRing = (id: string, href: string) => {
+    // FREE PINS (rail-slots-lib `slotClick` "raise"): the pinned bot's ring
+    // brings its pinned window to the front, the keyboard into it.
+    if (freePinsRef.current && botOpen() === id) {
+      hideHint();
+      noteFrontWindow("b");
+      focusPin("b");
+      return;
+    }
     // WITH THE PIN (rail-pin-lib `ringClick`): the ring of the bot whose
     // card is open does nothing — a ring opens, it is not a toggle (owner,
     // 2026-11-17); anything else opens the card temp.
@@ -1961,6 +2015,8 @@ export function ClaudeRail({
   const onFavRingKey = (t: TaskPulseTask, href: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
     if (e.key === "ArrowLeft") {
       e.preventDefault();
+      // FREE PINS: a pinned task's ring raises its pinned window.
+      if (raisePinOf(t.key)) return;
       const keep = windowBPinned();
       dismissFavHover();
       requestFavFocus(t.key);
@@ -2154,7 +2210,9 @@ export function ClaudeRail({
     const was = listWordSeen.current;
     listWordSeen.current = listWord;
     if (listWord) setAPinned(listWord);
-    else if (was && aPinned() === was) setAPinned(null);
+    // FREE PINS: this card never holds the mark — a mark it wrote before the
+    // switch came on is the shell's pinned window's now (below), and stays.
+    else if (was && !freePinsRef.current && aPinned() === was) setAPinned(null);
   }, [listWord]);
   const popUp = !!card?.pop;
   // THE + CARD'S RESIZE GUIDES GO WITH THE CARD (reviewer, 2026-11-18): the
@@ -2231,6 +2289,11 @@ export function ClaudeRail({
       return;
     }
     if (pin.kind === "task") {
+      // FREE PINS: a pinned task's window is the shell's (PinnedPeek).
+      if (freePinsRef.current) {
+        aRestored.current = true;
+        return;
+      }
       if (!tasksPulseLoaded() && rows.length === 0) return;
       aRestored.current = true;
       if (pinnedTaskLands({ inList: baseSeats.some((x) => x.pulse.key === pin.key) }) === "ring") {
@@ -2255,6 +2318,12 @@ export function ClaudeRail({
       door.store.setHeld(true);
     }
   }, [pinModel, navDoors, shown, rows, baseSeats, intent, tasksCard, botsCard, gitCard]);
+  // FREE PINS — A PINNED TASK NEEDS NO RING (rail-slots-lib): its window is
+  // the shell's (PinnedPeek) and floats, so a view that does not list the
+  // chat leaves it standing — the rule above ("we just close the window if
+  // it is not in the next view") was the docked card's, which had to stand on
+  // a ring. Only its task going (archived, erased) lets the pin go, and the
+  // pinned window says that itself.
   // ONE CARD BESIDE THE RAIL (owner, 2026-11-07: "either new task thing
   // should be open or window A — new task thing is like window A but diff
   // UI"): the New task popover and the rail's other cards — window A (the
@@ -2273,6 +2342,20 @@ export function ClaudeRail({
   // CLEAR of it instead (`popPlace`, rail-peek-lib `placeClear`). Until
   // 2026-11-08 a + hover put window B's clicked card down, and a favourite's
   // hover put the pinned popover down.
+  // FREE PINS — THE ONE-CARD RULE IS THE NON-PINS' (rail-slots-lib): a card
+  // HELD by its pin is the section's pinned window, and no other card coming
+  // puts it down — a ring's click, a door's, the + open the non-pin beside
+  // it. These are the rule's closes, a held card left out.
+  const popIsPin = (): boolean => freePinsRef.current && !!cardRef.current?.pop && !!cardRef.current.held;
+  const yieldTasks = (): void => {
+    if (!(freePinsRef.current && tasksCardStore.state().held)) closeTasksCard();
+  };
+  const yieldBots = (): void => {
+    if (!(freePinsRef.current && botsCardStore.state().held)) closeBotsCard();
+  };
+  const yieldGit = (): void => {
+    if (!(freePinsRef.current && gitCardStore.state().held)) closeGitCard();
+  };
   const popSeq = card?.pop ? card.seq : null;
   useEffect(() => {
     if (popSeq === null) return;
@@ -2282,6 +2365,7 @@ export function ClaudeRail({
   }, [popSeq]);
   useEffect(() => {
     if (peekKey === null || popSeq === null) return;
+    if (popIsPin()) return;
     // No × at all while Create is pending (Modal draws none when busy): as
     // blocked as a disabled one (CodeRabbit on #2189).
     const busyPop = popBusy(railRef.current);
@@ -2329,9 +2413,9 @@ export function ClaudeRail({
   gitUpRef.current = gitSeq !== null;
   useEffect(() => {
     if (tasksSeq === null) return;
-    closeBotsCard();
-    closeGitCard();
-    if (cardRef.current?.pop) {
+    yieldBots();
+    yieldGit();
+    if (cardRef.current?.pop && !popIsPin()) {
       const busyPop = popBusy(railRef.current);
       if (busyPop) {
         closeTasksCard();
@@ -2345,9 +2429,9 @@ export function ClaudeRail({
   }, [tasksSeq]);
   useEffect(() => {
     if (botsSeq === null) return;
-    closeTasksCard();
-    closeGitCard();
-    if (cardRef.current?.pop) {
+    yieldTasks();
+    yieldGit();
+    if (cardRef.current?.pop && !popIsPin()) {
       const busyPop = popBusy(railRef.current);
       if (busyPop) {
         closeBotsCard();
@@ -2361,9 +2445,9 @@ export function ClaudeRail({
   }, [botsSeq]);
   useEffect(() => {
     if (gitSeq === null) return;
-    closeTasksCard();
-    closeBotsCard();
-    if (cardRef.current?.pop) {
+    yieldTasks();
+    yieldBots();
+    if (cardRef.current?.pop && !popIsPin()) {
       const busyPop = popBusy(railRef.current);
       if (busyPop) {
         closeGitCard();
@@ -2392,11 +2476,88 @@ export function ClaudeRail({
     const listCame = peekKey !== null && peekKey !== was.peekKey;
     const popCame = popSeq !== null && popSeq !== was.popSeq;
     if (listCame || popCame) {
-      closeTasksCard();
-      closeBotsCard();
-      closeGitCard();
+      yieldTasks();
+      yieldBots();
+      yieldGit();
     }
   }, [peekKey, popSeq]);
+  // FREE PINS — ONE PIN PER SECTION (rail-slots-lib "PINNING A NON-PIN
+  // REPLACES ITS SECTION'S PIN"): window A's mark names the one pinned card;
+  // a card still held that the mark no longer names was replaced, and goes.
+  // Read off the mark itself, not this render's copy: a card pinned in this
+  // very commit has written it by now (its store, or the effect above).
+  const tasksHeldNow = tasksCard.up && tasksCard.held;
+  const botsHeldNow = botsCard.up && botsCard.held;
+  const gitHeldNow = gitCard.up && gitCard.held;
+  useEffect(() => {
+    if (!freePins) return;
+    const word = aPinned();
+    if (tasksHeldNow && word !== "tasks") closeTasksCard();
+    if (botsHeldNow && word !== "bots") closeBotsCard();
+    if (gitHeldNow && word !== "git") closeGitCard();
+    if (popHeld && word !== aPinWord({ kind: "plus" })) setCardCloseSignal((n) => n + 1);
+  }, [freePins, aWord, tasksHeldNow, botsHeldNow, gitHeldNow, popHeld]);
+  // …AND AN UNPIN PUTS THE WINDOW BACK BY THE RAIL (owner's answer,
+  // 2026-11-18): a door's card or the + let go of its pin while up is the
+  // section's NON-PIN now — it docks itself — and the non-pin that stood
+  // there gives way to it, the mirror of the rule above.
+  const heldWas = useRef({ tasks: false, bots: false, git: false, pop: false });
+  useEffect(() => {
+    const was = heldWas.current;
+    heldWas.current = { tasks: tasksHeldNow, bots: botsHeldNow, git: gitHeldNow, pop: popHeld };
+    if (!freePins) return;
+    const letGo =
+      (was.tasks && !tasksHeldNow && tasksCard.up) ||
+      (was.bots && !botsHeldNow && botsCard.up) ||
+      (was.git && !gitHeldNow && gitCard.up) ||
+      (was.pop && !popHeld && popUp);
+    if (!letGo) return;
+    if (!(was.tasks && tasksCard.up)) yieldTasks();
+    if (!(was.bots && botsCard.up)) yieldBots();
+    if (!(was.git && gitCard.up)) yieldGit();
+    if (!(was.pop && popUp) && cardRef.current?.pop && !popIsPin() && !popBusy(railRef.current)) setCardCloseSignal((n) => n + 1);
+    setHeld(false);
+    intent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freePins, tasksHeldNow, botsHeldNow, gitHeldNow, popHeld]);
+  // …AND THE SWITCH TURNED ON OVER A CARD HELD THE OLD WAY (the list's, the
+  // bot's): its mark is a pinned task's or bot's now, and the shell's pinned
+  // window draws it — this rail's card, the non-pin, lets go, or the chat
+  // would stand twice.
+  useEffect(() => {
+    if (!freePins) return;
+    if (heldRef.current) {
+      setHeld(false);
+      intent.dismiss();
+    }
+    if (botHeldRef.current) {
+      setBotHeld(false);
+      botIntent.dismiss();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freePins]);
+  // …AND THE PINNED WINDOWS ASK THIS RAIL'S NON-PINS TO OPEN (rail-slots-store
+  // `askOpen`): a pinned task's or bot's unpin puts it back beside the rail —
+  // in this rail's list card, or the bot's card.
+  useEffect(() => {
+    if (!freePins) return;
+    return onOpenAsk((ask) => {
+      if (ask.kind === "bot") {
+        if (!botEls.current.has(ask.key)) return false;
+        takeWindowB();
+        botIntent.press(ask.key);
+        focusBotComposerSoon(ask.key);
+        return true;
+      }
+      if (ask.win !== "a") return false;
+      const seat = seatsRef.current.find((x) => x.pulse.key === ask.key);
+      if (!seat || !ringEls.current.has(ask.key)) return false;
+      intent.press(ask.key);
+      if (seat.pulse.session_id) focusComposerSoon(ask.key);
+      return true;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freePins, intent, botIntent]);
   // ANOTHER WINDOW A CARD PINNED (the Tasks card by its door, the list card
   // by a ring) while a + or draft hover's read is still out: that preview
   // must not open over it when its delay runs out (plus-pop-lib
@@ -2531,10 +2692,12 @@ export function ClaudeRail({
   const aHovers = () =>
     windowAHovers({
       listPinned: pinned && peekKey !== null,
-      popPinned: !!card?.pop && !!card.pinned,
-      tasksPinned: tasksCard.up && tasksCard.pinned,
-      botsPinned: botsCard.up && botsCard.pinned,
-      gitPinned: gitCard.up && gitCard.pinned,
+      // FREE PINS: a HELD card is the section's pin, not the non-pin a
+      // hover's preview would stand over — it silences nothing.
+      popPinned: !!card?.pop && !!card.pinned && !(freePins && !!card.held),
+      tasksPinned: tasksCard.up && tasksCard.pinned && !(freePins && tasksCard.held),
+      botsPinned: botsCard.up && botsCard.pinned && !(freePins && botsCard.held),
+      gitPinned: gitCard.up && gitCard.pinned && !(freePins && gitCard.held),
       modalCard: !!card && !card.pop,
     });
   // A hover on the + previews only where its press opens the popover card,
@@ -2590,19 +2753,24 @@ export function ClaudeRail({
       // (owner, 2026-11-17: "window jumps"). The window is pinned while its
       // mark stands, whichever card the mark still names.
       // …but not a card that was held and LET GO (its unpin): docked.
-      const floatAt = popMove.floating || (pinModel && !popLetGo && aPinned() !== null) ? windowPos("a") : null;
-      if (floatAt) return floatPlacement(floatAt, want, viewportOf(window));
+      // FREE PINS: only its OWN pin floats it — the mark may name another
+      // card, the section's pin, beside which this one is the non-pin — and
+      // at the size its pin froze.
+      const floatAt =
+        popMove.floating || (pinModel && !freePins && !popLetGo && aPinned() !== null) ? windowPos("a") : null;
+      if (floatAt) return floatPlacement(floatAt, (freePins ? windowSize("a") : null) ?? want, viewportOf(window));
       const rail = railRef.current;
       const row = rail && rowOf(rail);
       const door = cardRef.current?.door;
       const anchor = door && door !== PLUS_DOOR ? draftCardBox() : plusRef.current?.getBoundingClientRect();
       if (!rail || !row || !anchor) return null;
-      return placeClear(anchor, rail.getBoundingClientRect(), row.getBoundingClientRect(), favBox, {
+      return (freePins ? placeColumn : placeClear)(anchor, rail.getBoundingClientRect(), row.getBoundingClientRect(), favBox, {
         width: want.width,
         maxHeight: want.height,
       });
     },
-    [favBox, draftCardBox, popMove.floating, popLetGo],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [favBox, draftCardBox, popMove.floating, popLetGo, freePins, pinModel],
   );
   // A DRAFT'S RING IS A POPOVER DOOR (owner, 2026-11-07: a draft "behaves
   // exactly like the +"): its hover previews the New task popover on its
@@ -2623,8 +2791,10 @@ export function ClaudeRail({
   // window A — whichever card it shows — pinned right now? Read at a click:
   // a door of a pinned window swaps what it shows and the window stays
   // pinned (`ringClick`'s `windowPinned`).
+  // FREE PINS: never — the pin is the task's, and a click opens the non-pin.
   const windowAPinned = (): boolean =>
     pinModelRef.current &&
+    !freePinsRef.current &&
     (heldRef.current ||
       !!cardRef.current?.held ||
       tasksCardStore.state().held ||
@@ -2800,6 +2970,16 @@ export function ClaudeRail({
   // the keyboard on its way to the composer — or, with no room for a card,
   // the chat in the pane. Also a favourite's press that the server refused
   // (`openFavourite`), which lands a round trip later: hence the ref.
+  /** FREE PINS: `key` is pinned — its window comes to the front and takes
+   *  the keyboard. False when it is not pinned (or free pins are off). */
+  const raisePinOf = (key: string): boolean => {
+    const win = freePinsRef.current ? pinOf(key, { aWord: aPinned(), favKey: favPinned() }) : null;
+    if (!win) return false;
+    hideHint();
+    noteFrontWindow(win);
+    focusPin(win);
+    return true;
+  };
   const pressRing = (t: TaskPulseTask, href: string, detail: number) => {
     const keyboard = detail === 0;
     const how = ringPress({ paneOpen, favsOn, peekOn, noRoom });
@@ -2809,6 +2989,10 @@ export function ClaudeRail({
     // clicks Open from window A"): the card pins; the pane keeps its chat —
     // the pane's own chat included, mounted again in the card.
     if (how === "card") {
+      // FREE PINS (rail-slots-lib `pinOf`): the ring of a PINNED task raises
+      // its pinned window — in whichever section it was pinned — and opens
+      // no second window on the same chat.
+      if (raisePinOf(t.key)) return;
       // A DRAFT'S RING, with the nav doors (owner, 2026-11-07: "drafts open
       // should open in the new thing we added"): the New task popover on
       // the draft, pinned — not window A. A hover's card coming on this ring
@@ -2966,6 +3150,12 @@ export function ClaudeRail({
   const botRestored = useRef(false);
   useEffect(() => {
     if (botRestored.current || !peekOn || botNoRoom) return;
+    // FREE PINS: the mark is a PINNED bot's, and the shell's pinned host
+    // draws it (PinnedPeek) — this rail's card is the non-pin.
+    if (freePinsRef.current) {
+      botRestored.current = true;
+      return;
+    }
     // The shell's card is up already (a view switch, not a reload): nothing
     // to restore.
     if (botIntent.current !== null) {
@@ -3167,7 +3357,7 @@ export function ClaudeRail({
   // behind the unified-head switch.
   const pinMark = (on: boolean) =>
     pinModel && on ? (
-      <span className="claude-rail-pinmark" aria-hidden="true">
+      <span className={"claude-rail-pinmark" + (freePins ? " is-free" : "")} aria-hidden="true">
         <PinAngle size={9} filled />
       </span>
     ) : null;
@@ -3237,10 +3427,10 @@ export function ClaudeRail({
                 // Window A held by the + popover or the Tasks card: the list's
                 // rings say their title (`aHovers` shows them no card).
                 windowAHeld:
-                  (!!card?.pop && !!card.pinned) ||
-                  (tasksCard.up && tasksCard.pinned) ||
-                  (botsCard.up && botsCard.pinned) ||
-                  (gitCard.up && gitCard.pinned),
+                  (!!card?.pop && !!card.pinned && !(freePins && !!card.held)) ||
+                  (tasksCard.up && tasksCard.pinned && !(freePins && tasksCard.held)) ||
+                  (botsCard.up && botsCard.pinned && !(freePins && botsCard.held)) ||
+                  (gitCard.up && gitCard.pinned && !(freePins && gitCard.held)),
                 sectionSize: foot ? favs.length : baseSeats.length,
               });
               // The rings' own captions step aside for the card: a hover
@@ -3255,6 +3445,12 @@ export function ClaudeRail({
               // caption; so is every other favourite's ring while any favourite card is open.
               const favRing = wears.favRing;
               const titleOnly = wears.titleOnly;
+              // FREE PINS: the ring of a PINNED task opens nothing on a hover
+              // — its chat stands in its pinned window already (one chat, one
+              // composer) — and says its title, the plain caption: its click
+              // replaces no window, so no row and nothing dimmed.
+              const pinnedRing = freePins && pinOf(t.key, { aWord, favKey: favPinnedKey }) !== null;
+              const ringHovers = wears.hovers && !pinnedRing;
               // …BUT NOT THE RING OF THE WINDOW'S OWN OPEN TASK (Akshil,
               // 2026-11-17: "for window A, if we hover on the task that is
               // open we don't show this new header; for window B we show —
@@ -3262,7 +3458,7 @@ export function ClaudeRail({
               // favourite's ring says nothing, like the list ring whose card
               // stands — its window is the caption. The other favourites'
               // rings keep their row.
-              const captionless = peekOn && (!titleOnly || (pinModel && favRing));
+              const captionless = peekOn && !pinnedRing && (!titleOnly || (pinModel && favRing));
               // THE RING'S WINDOW (owner, 2026-11-05: two sections, two
               // windows): a favourite's ring talks to window B's hover
               // (fav-peek-store `favHoverIntent`), a list ring to this
@@ -3326,7 +3522,7 @@ export function ClaudeRail({
                   // the time and count as is. And don't truncate it") —
                   // the title is `data-hint-title` above.
                   // Behind the unified-head switch, like the windows' heads.
-                  {...(pinModel
+                  {...(pinModel && !pinnedRing
                     ? {
                         "data-hint-row": "",
                         "data-hint-count": row && !draft && (row.message_count ?? 0) > 0 ? String(row.message_count) : "",
@@ -3345,7 +3541,7 @@ export function ClaudeRail({
                         "aria-haspopup": "dialog" as const,
                         "aria-expanded": !!card?.pop && card.door === t.key,
                       }
-                    : peekOn && wears.hovers
+                    : peekOn && ringHovers
                     ? {
                         "aria-haspopup": "dialog" as const,
                         "aria-expanded": peeked,
@@ -3386,7 +3582,7 @@ export function ClaudeRail({
                         // The open favourite's ring opens no hover card, but
                         // a leave is always heard: the intent must not think
                         // the pointer still rests on a ring it left.
-                        ...(!wears.hovers
+                        ...(!ringHovers
                           ? {}
                           : {
                               onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) =>
@@ -3444,6 +3640,7 @@ export function ClaudeRail({
                       // favourite's ring does nothing — a ring opens, it
                       // is not a toggle (owner, 2026-11-17) —, anything
                       // else opens it temp.
+                      if (raisePinOf(t.key)) return;
                       if (pinModelRef.current) {
                         const act = ringClick({
                           mode: favRing ? (favPinned() === t.key ? "pinned" : "temp") : "closed",
@@ -3493,11 +3690,16 @@ export function ClaudeRail({
                     iconPicked={picked}
                   />
                   {pinMark(
-                    foot
-                      ? favRing && favPinnedKey === t.key
-                      : popDoor
-                        ? popHeld && card?.door === t.key
-                        : peeked && held,
+                    // FREE PINS: the pin is the task's — every ring of a
+                    // pinned task wears it, in the list and in the favourites
+                    // ("pin shown in task ring for pin tasks").
+                    freePins && !popDoor
+                      ? pinOf(t.key, { aWord, favKey: favPinnedKey }) !== null
+                      : foot
+                        ? favRing && favPinnedKey === t.key
+                        : popDoor
+                          ? popHeld && card?.door === t.key
+                          : peeked && held,
                   )}
                 </a>
                 </div>
@@ -3577,6 +3779,13 @@ export function ClaudeRail({
                   pinned={!!card.held}
                   onToggle={() => {
                     plusIntent.pinInside();
+                    // FREE PINS: the pin's press freezes the window where it
+                    // stands, and takes the section's pin (the mark) at once
+                    // — the pin it replaces goes with this press.
+                    if (freePinsRef.current && cardRef.current?.pop && !cardRef.current.held) {
+                      freezeFromDock("a");
+                      setAPinned(aPinWord({ kind: "plus" }));
+                    }
                     setCard((c) => (c?.pop ? { ...c, held: !c.held } : c));
                   }}
                 />
@@ -3595,7 +3804,7 @@ export function ClaudeRail({
                 // WINDOW A'S SIZE (owner, 2026-11-07): the remembered
                 // `canvasRailPeek`, else 420×640 — clamped inside the window
                 // by the chassis, the form scrolling inside it.
-                size: railCardSize(getUiLayout().canvasRailPeek ?? null),
+                size: (freePins && popMove.floating ? windowSize("a") : null) ?? railCardSize(getUiLayout().canvasRailPeek ?? null),
                 // …AND RESIZED LIKE IT (`savePopSize`): the grips on a
                 // pinned card only — a hover's preview is not a thing to
                 // drag. WITH THE PIN (design.md row 21): hover, temp and
@@ -3617,13 +3826,19 @@ export function ClaudeRail({
                             drag: (edge, start, dx, dy) => {
                               const view = viewportOf(window);
                               const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
-                              const pulled = snapResize(edge, dx, dy, (x, y) => floatResize(edge, start, x, y, view, lim), windowBox("b"), view);
+                              const pulled = snapResize(edge, dx, dy, (x, y) => floatResize(edge, start, x, y, view, lim), magnetBox("b", true), view);
                               popGuides.current = true;
                               setSnapGuides(pulled.x, pulled.y);
                               return pulled.box;
                             },
                             onDragEnd: clearPopGuides,
                             onResize: (size, changed, box) => {
+                              // A FREE PIN'S RESIZE IS THE PIN'S ALONE: the
+                              // window's frozen box, never the shared size.
+                              if (railFreePinsNow()) {
+                                commitWindowBox("a", { left: box.left, top: box.top, width: size.width, height: size.height });
+                                return;
+                              }
                               popMove.setPos({ left: box.left, top: box.top });
                               savePopSize(size, changed);
                             },
@@ -3659,7 +3874,7 @@ export function ClaudeRail({
                                   dx,
                                   dy,
                                   (x, y) => popoverDrag(edge, start, x, y, view, lim, floor, row ?? undefined),
-                                  windowBox("b"),
+                                  magnetBox("b", false),
                                   view,
                                 );
                                 popGuides.current = true;
@@ -3697,7 +3912,17 @@ export function ClaudeRail({
                 // while it floats (window B then places itself alone) —
                 // and, with the unified head, its live box for window B's
                 // head drag, docked or floating (rail-move-store).
-                onBox: !pinModel ? publishPlusBox : popMove.floating ? publishPlusLiveBox : publishPlusBoxes,
+                onBox: !pinModel
+                  ? publishPlusBox
+                  : freePins
+                    ? popMove.floating
+                      ? publishPlusPinBox
+                      : card.pinned
+                        ? publishPlusDockPush
+                        : publishPlusDockQuiet
+                    : popMove.floating
+                      ? publishPlusLiveBox
+                      : publishPlusBoxes,
                 // Per rail (a hop re-places the card beside the new rail).
                 placeKey: popPlaceKey,
                 // The row reshaping (the sidebar collapsing) re-places it.
@@ -4169,7 +4394,10 @@ export function ClaudeRail({
                 // bot's card is PINNED the other bots' rings say their name
                 // too — their hover shows no card (`botIntent` sits still for
                 // a held card; Bugbot on #2201).
-                const hovers = card && openFavKey === null && !(botPinned && botKey !== null && botKey !== b.id);
+                // FREE PINS: nor does the pinned bot's own ring — its chat
+                // stands in its pinned window.
+                const hovers =
+                  card && openFavKey === null && !(botPinned && botKey !== null && botKey !== b.id) && !(freePins && pinnedBotId === b.id);
                 const peeked = card && botKey === b.id;
                 return (
                   <div key={b.id} role="listitem" className="claude-rail-seat">
@@ -4236,7 +4464,7 @@ export function ClaudeRail({
                       ) : unread ? (
                         <span className="sidebar-rail-dot is-unread" aria-hidden="true" />
                       ) : null}
-                      {pinMark(peeked && botHeld)}
+                      {pinMark(freePins ? pinnedBotId === b.id : peeked && botHeld)}
                     </a>
                   </div>
                 );
@@ -4264,7 +4492,9 @@ export function ClaudeRail({
           onDismiss={() => {
             // Let go by its own Open (a hand-off): the window's mark goes
             // now — the hop may unmount this rail before it renders again.
-            if (readAPin(aPinned())?.kind === "task") setAPinned(null);
+            // FREE PINS: this card is the non-pin — a task the mark names is
+            // the pinned window's, and this card's door lets nothing of it go.
+            if (!freePinsRef.current && readAPin(aPinned())?.kind === "task") setAPinned(null);
             dismissToRing();
           }}
           onNoRoom={onNoRoom}
@@ -4291,6 +4521,18 @@ export function ClaudeRail({
                   onToggle: () => {
                     const key = intent.current;
                     if (!key) return;
+                    // FREE PINS (rail-slots-lib): the pin's press freezes the
+                    // window where it stands and hands the task to the
+                    // section's pinned window (the shell's PinnedPeek, which
+                    // reads the mark) — replacing whatever was pinned there.
+                    // This card, the non-pin, lets go.
+                    if (freePinsRef.current) {
+                      freezeFromDock("a");
+                      setAPinned(aPinWord({ kind: "task", key }));
+                      setHeld(false);
+                      intent.dismiss();
+                      return;
+                    }
                     if (heldRef.current) {
                       setHeld(false);
                       return;

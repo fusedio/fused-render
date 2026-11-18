@@ -211,9 +211,12 @@ import {
   viewportOf,
   wishSize,
   type MoveEdge,
+  type RailWindow,
 } from "./rail-move-lib";
-import { useWindowBox, windowBox, windowPos } from "./rail-move-store";
+import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos, windowSize } from "./rail-move-store";
 import { useCardMove } from "./useCardMove";
+import { useRailFreePins } from "./rail-free-pins-flag";
+import { placeColumn } from "./rail-slots-lib";
 
 /** Where a card's dragged size is kept in the ui-layout document: the
  *  rail's pinned card, or the favourite's (RailPeekProps `resizeKey`). */
@@ -441,6 +444,11 @@ export interface RailPeekProps {
    *  `onToggle` its press. Given, Escape closes a hover and a temp card and only
    *  a pinned one ignores it. Absent: the card as it was. */
   pinCtl?: { pinned: boolean; onToggle: () => void } | null;
+  /** WHICH WINDOW THE CARD IS (rail-move-lib `RailWindow`), said outright —
+   *  the pinned windows' hosts (PinnedPeek; free pins, rail-slots-lib). Absent,
+   *  the card says it the way it always did: the favourite's (`resizeKey`) is
+   *  window B's, any other window A's. */
+  win?: RailWindow;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -528,14 +536,22 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onBox,
     pinned,
     pinCtl = null,
+    win,
   },
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
+  // FREE PINS (rail-slots-lib; behind the pin's own switch): a pinned card is
+  // FROZEN — its size and position are the window's mark's, not the shared
+  // remembered size — and a non-pin shares the rail's column and pushes the
+  // pins it would cover.
+  const freePins = useRailFreePins() && !!pinCtl;
+  const freePinsRef = useRef(false);
+  freePinsRef.current = freePins;
   // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): the list's card
   // is window A's, the favourite's (`resizeKey`) window B's. Pinned and
   // dragged, it FLOATS: placed at the window's position, not beside the rail.
-  const moveWin = resizeKey === "canvasRailFav" ? "b" : "a";
+  const moveWin: RailWindow = win ?? (resizeKey === "canvasRailFav" ? "b" : "a");
   const move = useCardMove({
     win: moveWin,
     on: !!pinCtl,
@@ -613,6 +629,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     else setGrown(true);
   }, [pinned]);
   const wishFor = (key: string): PeekWish => {
+    // A FREE PIN'S SIZE IS ITS OWN (rail-slots-lib "A PIN IS FROZEN"): what
+    // its mark froze, whatever the shared sizes say now.
+    if (freePinsRef.current && floatingRef.current) {
+      const frozen = windowSize(moveWin);
+      if (frozen) return { ...(size ?? {}), width: frozen.width, maxHeight: frozen.height };
+    }
     if (size) {
       // A PINNED window has no height limit but its room (owner, 2026-11-17:
       // "remove the restrictions of height only from pin window"): the half-
@@ -651,7 +673,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // (rail-peek-lib `clampAnchor`), never above or below it.
     const scroller = anchor.closest(".claude-rail-chats");
     const at = clampAnchor(anchor.getBoundingClientRect(), scroller ? scroller.getBoundingClientRect() : null);
-    return placeClear(at, rail, row.getBoundingClientRect(), avoid, wishFor(key));
+    // FREE PINS: the two sections' non-pins share the rail's ONE column —
+    // above the other, never beside it (rail-slots-lib `placeColumn`).
+    return (freePinsRef.current ? placeColumn : placeClear)(at, rail, row.getBoundingClientRect(), avoid, wishFor(key));
   };
   // THE CORNER AND EDGE DRAG (header). `resizing` names the held grip while
   // a drag is on: the card drops its glide transitions and the placement
@@ -706,12 +730,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // THE EDGE MAGNET (rail-move-lib `snapResize`), with the pin: both axes
     // for window A's card (window B never moves for it); for window B's, the
     // axes window A holds still on (`dockedBAxes`).
-    const otherBox = pinCtl ? windowBox(otherWin) : null;
+    const otherBox = pinCtl ? magnetBox(otherWin, floating) : null;
     const magnet = !pinCtl
       ? null
       : moveWin === "a"
         ? BOTH_AXES
-        : dockedBAxes({ floating, aFloats: windowPos("a") !== null, mine: box, other: otherBox });
+        : // FREE PINS: a docked window B card's neighbour is window A's NON-PIN,
+          // which never floats — only window A's pin does.
+          dockedBAxes({ floating, aFloats: !freePins && windowPos("a") !== null, mine: box, other: otherBox });
     dragStart.current = {
       x: e.clientX,
       y: e.clientY,
@@ -805,6 +831,18 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    // A FREE PIN'S RESIZE IS THE PIN'S ALONE (rail-slots-lib): the box as the
+    // drag left it is the window's frozen box now — never the shared size the
+    // non-pins take.
+    if (start?.floating && freePinsRef.current) {
+      if (
+        save &&
+        last &&
+        (last.left !== start.box.left || last.top !== start.box.top || last.width !== start.box.width || last.height !== start.box.height)
+      )
+        commitWindowBox(moveWin, last);
+      return;
+    }
     // A FLOATING card's left or top grip moved its corner: the window stands
     // there now (rail-move-lib).
     if (save && start?.floating && last && (last.left !== start.box.left || last.top !== start.box.top))
@@ -849,7 +887,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const visible = on && box !== null && shownKey !== null;
   // Its live box, docked or floating, for the other window's head drag to
   // snap to (rail-move-store `windowBox`).
-  useWindowBox(moveWin, !!pinCtl && visible ? box : null);
+  useWindowBox(moveWin, !!pinCtl && visible ? box : null, freePins && move.floating);
+  // A CLICKED-OPEN NON-PIN PUSHES THE PINS IT COVERS (rail-slots-lib): open
+  // by a press (`pinned`, the list's; `held`, the favourite's), beside the
+  // rail. A hover's preview pushes nothing.
+  usePusher(freePins && visible && !move.floating && (pinned || held) ? box : null);
   // OPEN, SO READ (task-open-read `useHoldOpenTask`): a chat the reader
   // pressed open here — pinned or held, not a passing hover — is a chat on
   // screen; what lands in it while it shows is read, and raises no notice.
@@ -1723,6 +1765,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         move.className
       }
       role="dialog"
+      // Which window the card is, for the pin icon (RailPin `windowOf`).
+      {...(freePins ? { "data-rail-win": moveWin } : {})}
       // Ours: never makes the canvas screenshot refuse (canvas-shot-native).
       data-shot-own=""
       aria-label={head ? `${head.label} — preview` : "Chat preview"}

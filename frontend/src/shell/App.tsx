@@ -66,6 +66,7 @@ import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
+import { PinnedPeeks } from "@shell/claude-rail/PinnedPeek";
 import { TasksPeek } from "@shell/claude-rail/TasksPeek";
 import { PlusCardHost } from "@shell/claude-rail/PlusCardHost";
 import { BotsPeek } from "@shell/claude-rail/BotsPeek";
@@ -1382,6 +1383,11 @@ export default function App({ config }: { config: Config }) {
           is up (shell/claude-rail FavouritePeek): mounted once here so a hop
           between pages never remounts it. */}
       {!IS_EMBED && <FavouritePeek />}
+      {/* The rail's PINNED windows with free pins on (shell/claude-rail
+          PinnedPeek; owner, 2026-11-18): a pinned task or bot stands in its
+          own window, beside the non-pin one the rail's cards above and below
+          draw — mounted once here, for the favourite's reason. */}
+      {!IS_EMBED && <PinnedPeeks />}
       {/* The Tasks card off the rail's Tasks door (shell/claude-rail
           TasksPeek): mounted once here for the same reason — its view,
           filters and scroll survive a hop (owner, 2026-11-07). */}

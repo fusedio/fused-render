@@ -103,6 +103,10 @@ import {
   useFavPinned,
 } from "@platform/lib/last-chat";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { setBotOpen } from "@platform/lib/last-chat";
+import { useRailFreePins } from "./rail-free-pins-flag";
+import { freezeFromDock } from "./rail-move-store";
+import { onOpenAsk } from "./rail-slots-store";
 import { RailPeek } from "./RailPeek";
 import {
   dismissFavHover,
@@ -189,11 +193,29 @@ export function FavouritePeek() {
   const pinModel = useTaskHeadUnified();
   const openKey = useFavOpen();
   const pinnedKey = useFavPinned();
+  // FREE PINS (rail-slots-lib): this card is window B's NON-PIN. A pinned
+  // favourite stands in the shell's pinned window (PinnedPeek, on the pin's
+  // mark), so the pin's key and the open key are two different chats.
+  const freePins = useRailFreePins();
   // A pin mark on a key no longer open (closed, or another favourite took
   // the window: a swap is temp, the pin is per card) goes.
   useEffect(() => {
-    if (pinModel && pinnedKey !== null && pinnedKey !== openKey) setFavPinned(null);
-  }, [pinModel, pinnedKey, openKey]);
+    if (pinModel && !freePins && pinnedKey !== null && pinnedKey !== openKey) setFavPinned(null);
+  }, [pinModel, freePins, pinnedKey, openKey]);
+  // …and never one chat in both (a hand-over that opened the pinned key):
+  // the pinned window has it.
+  useEffect(() => {
+    if (freePins && openKey !== null && openKey === pinnedKey) clearFavOpen(openKey);
+  }, [freePins, openKey, pinnedKey]);
+  // The pinned window's unpin puts its chat back here (rail-slots-store).
+  useEffect(() => {
+    if (!freePins) return;
+    return onOpenAsk((ask) => {
+      if (ask.win !== "b" || ask.kind !== "task") return false;
+      setFavOpen(ask.key);
+      return true;
+    });
+  }, [freePins]);
   // A RELOAD BRINGS BACK ONLY A PINNED CARD (design.md row 19): an open key
   // the storage kept from before this document loaded, with no pin on it, is
   // closed — once, as the switch's answer lands.
@@ -443,6 +465,17 @@ export function FavouritePeek() {
   const togglePin = useCallback(() => {
     const key = favOpen() ?? hoverRow?.key ?? null;
     if (!key) return;
+    // FREE PINS: the pin's press freezes the window where it stands and
+    // hands the chat to window B's pinned window — replacing a favourite or
+    // a bot pinned there. This card, the non-pin, lets go.
+    if (freePins) {
+      freezeFromDock("b");
+      dismissFavHover();
+      setBotOpen(null);
+      setFavPinned(key);
+      clearFavOpen(key);
+      return;
+    }
     if (favPinned() === key) {
       setFavPinned(null);
       return;
@@ -450,7 +483,7 @@ export function FavouritePeek() {
     if (favOpen() !== key) setFavOpen(key);
     dismissFavHover();
     setFavPinned(key);
-  }, [hoverRow]);
+  }, [hoverRow, freePins]);
   // A PAGE HOP KEEPS ONLY A PINNED CARD (rail-pin-lib `hopKeeps`): the open
   // favourite that was already open before the URL's path changed, and is not
   // pinned, closes. A key opened BY the hop (the where-chip's hand-over, its
@@ -501,7 +534,7 @@ export function FavouritePeek() {
       held={!hovering}
       onHeld={noop}
       pinned={false}
-      pinCtl={pinModel ? { pinned: !hovering && !!open && pinnedKey === open.key, onToggle: togglePin } : null}
+      pinCtl={pinModel ? { pinned: !freePins && !hovering && !!open && pinnedKey === open.key, onToggle: togglePin } : null}
     />
   );
 }

@@ -602,6 +602,17 @@ button.tasks-caret,
 :root[data-rail-row-dim="b"] .claude-rail-peek:is(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after {
   opacity: 1;
 }
+/* …AND NEVER A FREE PIN (`.is-free-pin`, useCardMove; behind
+   `rail_free_pins_enabled`; Akshil, 2026-11-18: "do this only for non pin
+   windows because that is the one going to be replace"): with free pins the
+   click opens the section's NON-PIN window, so that is the one the row dims —
+   a pinned window, whichever section's, stays lit. `!important`: the rules
+   above carry an id's weight through their `:not()`. */
+:root[data-rail-row-dim="a"] .claude-rail-peek.is-free-pin > .claude-rail-peek-card::after,
+:root[data-rail-row-dim="b"] .claude-rail-peek.is-free-pin > .claude-rail-peek-card::after,
+:root[data-rail-row-dim="a"] .modal-popover.is-free-pin .modal-dialog.new-task-dialog::after {
+  opacity: 0 !important;
+}
 .hint-row {
   display: flex;
   /* The facts sit on the title's FIRST line, however many it takes. */
