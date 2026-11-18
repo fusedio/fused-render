@@ -82,3 +82,24 @@ def test_geoparquet_streams_only_the_row_groups_it_shows(files, bucket):  # noqa
     assert ranges and all(r and r.startswith("bytes=") for r in ranges)
     assert bucket.sent["/v/t.parquet"] < size / 2
     assert "H3 mode" in h3["error"]
+
+
+def test_a_vrt_is_refused_and_odd_parquet_columns_still_render(tmp_path):
+    import struct
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    (tmp_path / "secret.csv").write_text("token\nSECRET\n")
+    (tmp_path / "evil.geojson").write_text(
+        f"<OGRVRTDataSource><OGRVRTLayer name='x'><SrcDataSource>{tmp_path}/secret.csv"
+        "</SrcDataSource><SrcLayer>secret</SrcLayer></OGRVRTLayer></OGRVRTDataSource>")
+    geo = {"version": "1.0.0", "primary_column": "geometry", "columns": {"geometry": {"encoding": "WKB"}}}
+    odd = pa.table({"geometry": [struct.pack("<BIdd", 1, 1, 1.0, 2.0)], "tags": [[1, 2]],
+                    "at": pa.array([0], pa.timestamp("s", "UTC"))})
+    pq.write_table(odd.replace_schema_metadata({"geo": json.dumps(geo)}), tmp_path / "odd.parquet")
+    pq.write_table(pa.table({"width3": [1]}), tmp_path / "plain.parquet")
+    evil, odd, plain = _read(tmp_path / "evil.geojson", tmp_path / "odd.parquet", tmp_path / "plain.parquet")
+    assert "SECRET" not in json.dumps(evil) and "error" in evil
+    assert odd["count"] == 1 and odd["table"][0]["tags"] == "[1 2]"
+    assert "H3" not in plain["error"]

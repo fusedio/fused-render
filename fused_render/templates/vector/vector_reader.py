@@ -9,9 +9,12 @@ multi-layer sources get a `_layer` column. A feature cap and a vertex budget
 (simplifying with an extent-derived tolerance) keep the payload renderable.
 """
 import io
+import os
 import urllib.request
 
+os.environ["GDAL_SKIP"] = "OGR_VRT"
 MAX_VERTICES = 300_000
+H3_NAMES = ("h3", "hex", "h3_index", "h3index", "h3_cell", "cell_id", "hex_id", "h3_id")
 GDAL_HTTP = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
              "CPL_VSIL_CURL_CHUNK_SIZE": str(1 << 20),
              "CPL_VSIL_CURL_CACHE_SIZE": str(256 << 20),
@@ -31,10 +34,9 @@ def _get(url, rng):
 
 
 def _size(path):
-    import os
     try:
         return _get(path, "0-0")[1] if "://" in path else os.path.getsize(path)
-    except OSError:
+    except Exception:  # noqa: BLE001
         return 0
 
 
@@ -71,6 +73,8 @@ def _read_ogr(src, cap):
     layers = [str(l[0]) for l in pyogrio.list_layers(src)]
     if len(layers) <= 1:
         gdf = pyogrio.read_dataframe(src, max_features=cap)
+        if "geometry" not in gdf:
+            raise NotVector("this file has no geometry")
     else:
         parts = []
         for name in layers:
@@ -88,7 +92,7 @@ def _read_ogr(src, cap):
         if not parts:
             raise NotVector("no readable features in any layer")
         gdf = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
-    total = len(gdf) if len(gdf) < cap else sum(
+    total = len(gdf) if len(layers) <= 1 and len(gdf) < cap else sum(
         pyogrio.read_info(src, layer=n, force_feature_count=True)["features"] for n in layers)
     return gdf, total, layers
 
@@ -105,7 +109,7 @@ def _read_parquet(file, cap):
     geo = json.loads((schema.metadata or {}).get(b"geo") or "{}")
     col = geo.get("primary_column")
     if col not in schema.names:
-        h3 = next((c for c in schema.names if "h3" in c.lower() or c.lower() == "hex"), None)
+        h3 = next((c for c in schema.names if c.lower() in H3_NAMES), None)
         raise NotVector("This parquet has no GeoParquet geometry column"
                         + (f" ({h3!r} looks like H3 cells: open it in the H3 mode)." if h3 else "."))
     meta = geo["columns"][col]
@@ -124,7 +128,6 @@ def _read_parquet(file, cap):
 
 
 def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
-    import os
     import json
     from concurrent.futures import ThreadPoolExecutor
     import numpy as np
@@ -137,7 +140,7 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
         file = os.path.abspath(os.path.expanduser(file))
         if not os.path.isfile(file):
             return {"error": f"not a file: {file}"}
-    stem, _, ext = file.split("?")[0].rpartition(".")
+    stem, _, ext = (file.split("?")[0] if "://" in file else file).rpartition(".")
     ext = ext.lower()
     parts = [f"{stem}.{e}" for e in ("shp", "shx", "dbf", "prj", "cpg")] if ext == "shp" else [file]
     sizes = ThreadPoolExecutor(len(parts)).map(_size, parts)
@@ -200,7 +203,7 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
     table = [{c: safe(r[c]) for c in cols}
              for _, r in gdf.head(table_rows).iterrows()]
 
-    gj = json.loads(gdf.to_json())
+    gj = json.loads(gdf.to_json(default=str))
     # keep a stable feature id for hover state
     for i, feat in enumerate(gj.get("features", [])):
         feat["id"] = i

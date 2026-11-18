@@ -187,6 +187,7 @@ const P = {
   dir:  () => fused.params.get('dir') || (P.file() ? P.file().replace(/\/[^/]*$/, '') : '~'),
   showAll: () => fused.params.get('showall') === '1',
 };
+const esc = v => String(v).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
 // loading=true keeps the topbar's slim progress bar sliding and gives the
 // status pill a soft pulse; both switch off the instant a non-loading call
@@ -319,7 +320,7 @@ function fitToData(instant){
 // ---------------- hover / click ----------------
 function featHTML(props){
   return '<table>' + Object.entries(props).map(([k, v]) =>
-    `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`).join('') + '</table>';
+    `<tr><td>${esc(k)}</td><td>${esc(v ?? '—')}</td></tr>`).join('') + '</table>';
 }
 const TIP_MAX_ROWS = 6;
 map.on('mousemove', e => {
@@ -338,7 +339,7 @@ map.on('mousemove', e => {
   const rest = keys.filter(k => !lead.includes(k)).slice(0, TIP_MAX_ROWS - lead.length);
   const more = keys.length - lead.length - rest.length;
   els.mapTip.innerHTML = `<div class="t">Feature #${hoverId}</div><table>` +
-    [...lead, ...rest].map(k => `<tr><td>${k}</td><td>${props[k] ?? '—'}</td></tr>`).join('') +
+    [...lead, ...rest].map(k => `<tr><td>${esc(k)}</td><td>${esc(props[k] ?? '—')}</td></tr>`).join('') +
     '</table>' + (more > 0 ? `<div style="color:var(--sz-fg)">… ${more} more — click for all</div>` : '');
   els.mapTip.style.display = 'block';
   const pad = 14;
@@ -380,15 +381,15 @@ function renderMeta(){
   if (data.native_bounds)
     rows.push(['native bounds', data.native_bounds.map(v => +v.toFixed(2)).join(', ')]);
   els.metaBody.innerHTML = '<table>' + rows.map(([k, v]) =>
-    `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`).join('') + '</table>' +
+    `<tr><td>${k}</td><td>${esc(v ?? '—')}</td></tr>`).join('') + '</table>' +
     '<h2 style="margin-top:10px">Schema</h2><table>' +
-    data.schema.map(s => `<tr><td>${s.name}</td><td>${s.dtype}</td></tr>`).join('') + '</table>';
+    data.schema.map(s => `<tr><td>${esc(s.name)}</td><td>${esc(s.dtype)}</td></tr>`).join('') + '</table>';
 }
 function renderTable(){
   if (!data || !data.table.length){ els.tableBody.innerHTML = '<span style="color:var(--sz-fg)">no attributes</span>'; return; }
   const cols = data.schema.map(s => s.name);
-  els.tableBody.innerHTML = '<table><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>' +
-    data.table.map(r => '<tr>' + cols.map(c => `<td>${r[c] ?? '—'}</td>`).join('') + '</tr>').join('') + '</table>';
+  els.tableBody.innerHTML = '<table><tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>' +
+    data.table.map(r => '<tr>' + cols.map(c => `<td>${esc(r[c] ?? '—')}</td>`).join('') + '</tr>').join('') + '</table>';
 }
 els.metaBtn.onclick = () => { els.metaPanel.style.display = els.metaPanel.style.display === 'block' ? 'none' : 'block'; };
 els.metaClose.onclick = () => els.metaPanel.style.display = 'none';
@@ -405,7 +406,7 @@ els.convertBtn.onclick = async () => {
   const r = await fused.runPython('./convert_parquet.py', {file: P.file()}, { key: null })
     .catch(e => ({error: String(e.message || e)}));
   els.convertBtn.disabled = false;
-  if (!r || r.error){ status('Convert failed: ' + ((r && r.error) || '?'), true); return; }
+  if (!r || r.error){ status('Convert failed: ' + esc((r && r.error) || '?'), true); return; }
   status(`✓ wrote <b>${r.path.split('/').pop()}</b> — ${r.rows.toLocaleString()} rows, ` +
          `${human(r.size)} (from ${human(r.src_size)}) in ${r.seconds}s ` +
          `<a id="revealLink" style="cursor:pointer">reveal</a>`);
@@ -421,7 +422,7 @@ function syncControls(){
   els.path.value = P.file();
   if (!data) return;
   els.colorBy.innerHTML = '<option value="">— single color —</option>' +
-    data.schema.map(s => `<option value="${s.name}" ${s.name === P.colorBy() ? 'selected' : ''}>${s.name}</option>`).join('');
+    data.schema.map(s => `<option value="${esc(s.name)}" ${s.name === P.colorBy() ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
 }
 // These write ONLY WHEN THE URL DOES NOT ALREADY MEAN THE NEW VALUE (SPEC
 // PT-15) — pressing Load on the path already loaded, or re-picking the colour-by
@@ -476,19 +477,20 @@ async function refreshExplorer(dir){
 }
 
 // ---------------- load ----------------
-let loadedFile = null;
+let loadedFile = null, loadSeq = 0;
 
 async function loadFile(){
-  const file = P.file();
+  const file = P.file(), seq = ++loadSeq;
   if (!file){ status('no file — use Browse or enter a vector file path'); return; }
   const streamed = /^s3:\/\//i.test(file);
   els.browse.hidden = streamed;
   els.convertBtn.hidden = streamed || /\.parquet$/i.test(file);
   status('Reading vector file…', false, true);
   const [r] = await Promise.all([(streamed ? fused.s3.sign(file).then(s => s.url) : Promise.resolve(file))
-    .then(source => fused.runPython('./vector_reader.py', {file: source}))
+    .then(source => fused.runPython('./vector_reader.py', {file: source}, {key: file}))
     .catch(e => ({error: String(e.message || e)})), styleReady()]);
-  if (!r || r.error){ status((r && r.error) || 'read failed', true); return; }
+  if (seq !== loadSeq) return;
+  if (!r || r.error){ status(esc((r && r.error) || 'read failed'), true); return; }
   data = r;
   syncControls();
   addLayers();
