@@ -54,7 +54,7 @@ For exploration, write the UDF as a `.py` file in your scratch folder, `.fused/u
     fused workbench --env prod run --engine remote scratch /full/path/to/.fused/udfs/raster_stats.py --n 5
 
 - The file needs exactly one function decorated with `@fused.udf`.
-- The scratch folder is yours: create and edit `.py` files there with the Write and Edit tools, with no approval. It is a throwaway cache. Before writing a new UDF, look there for one you wrote earlier (Glob `.fused/udfs/*.py`) and reuse or adapt it; give files names that say what they do.
+- The scratch folder is yours: create and edit `.py` files there with the Write and Edit tools, with no approval. It is a throwaway cache. Before writing a new UDF, look there for one you wrote earlier (Glob `.fused/udfs/*.py`) and reuse or adapt it; give files names that say what they do, specific to the question at hand (other sessions of yours can use the folder at the same time, and a file written under the same name replaces yours).
 - Nothing in it is saved to Fused or to any canvas: the file's source is sent for that one run. The files may be deleted at any time, so never rely on one being there.
 - It is not your memory. What you learn from a run still goes into `memory.md`, never into these files, and you write nowhere else.
 - Inside throwaway source, load another UDF by its full name (`fused.load("<owner>/<udf>")`): a bare name may not resolve to the canvas you mean.

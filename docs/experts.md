@@ -45,7 +45,7 @@ overwrites. A skill's title (`store.skills`) is its first `# ` heading, else its
 The harness's system prompt (`store.instructions`) is `instructions.md` (the default text when the file is
 missing or empty). The user reads and edits the file in Settings > Instructions (§13), which saves it whole
 (`store.save_instructions`: a temp file then a rename; empty text and text over `store.INSTRUCTIONS_MAX`, 50,000
-characters, are refused, never cut; a save that changes nothing does not rewrite the file).
+characters, are refused, never cut; a save that changes nothing does not rewrite the file, though it still clears a legacy extra, below).
 
 A legacy extra: an expert's Settings once had a "What it should do" box that wrote `meta["instructions"]`
 (Super Bot can still set that key). While the key holds text the file does not contain, `store.instructions`
@@ -97,8 +97,9 @@ row with status `error`.
 
 - **The write lock** (`store.write_lock`, one per expert, in-process): task-learn, dream and every chat turn hold
   it, so memory writers run one at a time. A task-learn or dream that finds it held does not wait and leaves no row: it returns
-  at once with `error: "the expert is busy; try again in a minute"` (`sessions.BUSY`), and the timer's next
-  tick tries again (§9). A chat turn waits for it with "waiting for the expert's memory" and gives up only on
+  at once with `error: "the expert is busy; try again in a minute"` (`sessions.BUSY`). A refused task-learn is
+  tried again on the timer's next tick (§9); a refused dream is not retried: the next writing session that ends
+  with memory still over the limit starts one (§10). A chat turn waits for it with "waiting for the expert's memory" and gives up only on
   Stop.
 - **Asks** only read and take no lock: up to 3 run at once in the process (`ASK_PARALLEL`, shared by all
   experts); a fourth waits up to 120 s (`ASK_WAIT_S`) for a slot, then is a BUSY `error` row.
@@ -115,7 +116,9 @@ row with status `error`.
   harness, waits for all of them together up to the budget and SIGKILLs what is left. Once closed, `run` starts
   nothing (an `error` row, `error: sessions.CLOSED`) and `after_write` queues no dream. `harness` checks the flag,
   spawns and registers the process in `_PROCS` in one step under `_GUARD`, so a harness is either never spawned or
-  tracked before `shutdown` takes its snapshot: no `claude` process outlives the app. One ended by a shutdown
+  tracked before `shutdown` takes its snapshot: every `claude` the app started is stopped on an ordinary quit (one
+  that ignores SIGTERM is SIGKILLed when the budget runs out). An app that is itself killed outright stops nothing;
+  its sessions end at their own 600 s timeout or when they finish. One ended by a shutdown
   reports `CLOSED` (not a failed attempt, §9).
 - **The prompts** of an ask, a task-learn and a dream, and a fresh chat session's message (§7), state the absolute
   paths: "Your folder is <dir>; your memory is <dir>/memory.md." (`store.where`), so the harness never guesses
@@ -123,7 +126,8 @@ row with status `error`.
   skills may name a default location (`~/Fused/canvas`) that is elsewhere on a relocated workspace
   (`FUSED_RENDER_DIR`), and a read at the default path is refused. An ask's prompt and a fresh chat's message
   (`store.where(bot, run=True)`) add one line: which environment each folder of canvas copies is and the command
-  prefix that runs a UDF there (§6 "Running UDFs"). A resumed chat session is not told again.
+  prefix that runs a UDF there (§6 "Running UDFs"). A resumed chat session is told again only when these changed
+  since it was last told (§7).
 - **A row** `{id, kind, started, ended, status, trigger, transcript, memory_diff, answer, error?, cost_usd?}`:
   `id` is `<started ms, 13 digits>-<6 hex>`, so names sort by start; `status` is `running` | `done` | `error`, and a
   row still `running` that this process is not running reads as `interrupted` (a restart cut it short);
@@ -306,7 +310,7 @@ and nothing else (it does not look at, rewrite or approve a command).
 - **What the expert is told**: one line, once (`store.run_note`, inside `store.where(bot, run=True)`): which
   folder is which environment, the command prefix that runs a UDF there, and where its throwaway UDF files go,
   naming the skill. An ask's prompt and a fresh chat session's first message carry it; a resumed chat turn
-  carries nothing. Everything else is in the shipped skill `running-udfs.md`: the exact command form, that the
+  carries it again only when it changed (§7). Everything else is in the shipped skill `running-udfs.md`: the exact command form, that the
   environment is the folder's, the scratch folder, the three `--help` commands, and what happens to a call outside
   these forms: for a task session's question it is refused, so change the command; in the chat Claude Code judges
   it, and it runs, is refused, or raises an Approve / Deny card, so never ask the user to approve something not
@@ -480,7 +484,8 @@ other due tasks wait for the next pass while the pass goes on to the next expert
 ends `error` with a non-empty `memory_diff` (it changed memory before failing, e.g. a timeout after its edit: a
 retry would see the same evidence beside the updated memory and raise counts twice). A failure that changed nothing
 is counted against the size it tried (`fails`), gives up the after-call wait (a running task grows every pass, so
-the size rule alone would retry forever; the idle pass or the next call tries again) and is retried next pass; after 3 failures (`MAX_FAILS`) at one size
+the size rule alone would retry forever; the idle pass or the next call tries again) and is due again on the next
+pass, at the same size, with no wait; after 3 failures (`MAX_FAILS`) at one size
 that session is no longer due until it grows again. A session that never started because the write lock was held
 (`BUSY`) or the server was shutting down (`CLOSED`) is not an attempt.
 

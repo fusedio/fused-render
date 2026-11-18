@@ -81,8 +81,20 @@ let list: ConnectProvider[] = [];
 let answers: Record<string, ConnectStatus> = {};
 let opened: unknown[][] = [];
 const realFetch = globalThis.fetch;
-const w = window as unknown as { open?: unknown };
+const w = window as unknown as { open?: unknown; getComputedStyle?: unknown };
 const realOpen = w.open;
+// The cert notice is a base-ui AlertDialog: opening it locks page scroll from a
+// timer, reading `getComputedStyle` and `document.documentElement`, which this
+// renderer has neither of — the timer threw and React unmounted the tree
+// mid-test. A bare <html> that scrolls (`overflow: auto`) is enough for the lock
+// to take its simple path, set two styles, and put them back on close.
+const d = document as unknown as { documentElement?: unknown };
+const realStyle = w.getComputedStyle;
+const realHtml = d.documentElement;
+const pageStyle = () =>
+  new Proxy({ overflow: "auto", display: "block" } as Record<string, unknown>, {
+    get: (t, k) => (k in t ? t[k as string] : ""),
+  });
 
 function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
   const u = String(url);
@@ -110,6 +122,8 @@ beforeEach(() => {
     opened.push(a);
     return null;
   };
+  w.getComputedStyle = pageStyle;
+  d.documentElement = { style: {}, clientWidth: 0 };
 });
 // Every mounted page is unmounted after its test: a mounted Connections keeps
 // polling /api/connect/*, and the whole suite shares one process, so a page left
@@ -123,6 +137,8 @@ afterEach(async () => {
   });
   globalThis.fetch = realFetch;
   w.open = realOpen;
+  w.getComputedStyle = realStyle;
+  d.documentElement = realHtml;
 });
 
 function textOf(n: ReactTestInstance | string): string {

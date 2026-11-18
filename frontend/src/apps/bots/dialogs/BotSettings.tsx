@@ -402,7 +402,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                   </Row>
                 ) : null}
                 <Row title="Folders it may read" stack
-                  text={isExpert ? "Besides its own folder, it may read files and folders here. It never writes there; memory.md is the only file it writes."
+                  text={isExpert ? "Besides its own folder, it may read files and folders here. On its own it writes only its memory and its scratch UDF files; in your chat, any other write asks for your approval first."
                     : "Files and folders here are open to its ls, find and readfile. It never writes there. Apps it runs read what they read." + (isSuper ? " Its shell is not fenced." : "")}>
                   {folders.length ? (
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmfolders">
