@@ -61,6 +61,17 @@
 // non pin windows because that is the one going to be replace"): the pin is
 // not what a click replaces any more.
 //
+// NOTHING ON SCREEN MOVES UNLESS ITS RULE SAYS SO (owner, 2026-11-18: "when i
+// click pin the whole window moves … it should be smooth, no flicker,
+// jumping"). The pin's press changes a card's ROLE, never the card: a chat
+// window is two mounted cards of one kind that swap roles (rail-slots-store
+// "THE TWO SLOTS OF A CHAT WINDOW"), a door's card and the + pin where they
+// are, and the list's pair is drawn by the shell (rail-list-host-store) so a
+// page hop does not remount it. So: a pin's press leaves every pixel of its
+// card where it was; the pin it replaces fades out where it stood
+// (rail-move-store `pinEpoch`); an unpin glides the card to the rail, or
+// leaves it be if it never left; a push glides, and glides back.
+//
 // Everything here needs no DOM, so each rule is proved on its own
 // (rail-slots-lib.test.ts).
 import {

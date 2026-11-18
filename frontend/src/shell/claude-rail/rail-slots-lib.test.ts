@@ -36,7 +36,18 @@ import {
   serialisePinBox,
   slotClick,
 } from "./rail-slots-lib";
-import { askOpen, doomedWindow, focusPin, onOpenAsk, pinTitle, registerPinFocus, resetRailSlotsForTests, setDoomedWindow, setPinTitle } from "./rail-slots-store";
+import {
+  doomedWindow,
+  focusPin,
+  freeSlot,
+  otherSlot,
+  pinTitle,
+  registerPinFocus,
+  resetRailSlotsForTests,
+  setDoomedWindow,
+  setFreeSlot,
+  setPinTitle,
+} from "./rail-slots-store";
 
 const box = (left: number, top: number, width: number, height: number) => ({ left, top, width, height });
 
@@ -222,21 +233,34 @@ describe("the position store, free pins on", () => {
     expect(magnetBox("a", false)).toEqual(box(972, 60, 420, 640));
     expect(magnetBox("b", true)).toBeNull();
   });
+  it("the card being pinned stops pushing at the freeze: the pin is not drawn clear of its own old box", () => {
+    // The non-pin, opened by a click: beside the rail, and a pusher.
+    publishWindowBox("a", "list", box(972, 60, 420, 640));
+    publishPusher("a", "list", box(972, 60, 420, 640));
+    // …while the other section's non-pin stands too.
+    publishPusher("b", "fav", box(1012, 720, 380, 200));
+    freezeFromDock("a");
+    // Frozen exactly where it stood — not pushed left of the box it had.
+    expect(windowPos("a")).toEqual({ left: 972, top: 60 });
+    // The other section's non-pin still pushes what it covers.
+    commitWindowBox("b", box(1000, 700, 380, 200));
+    expect(windowPos("b")).toEqual({ left: 1012 - PUSH_GAP - 380, top: 700 });
+  });
   it("a clicked-open non-pin pushes the pin, and its going puts it back home", () => {
     commitWindowBox("a", box(972, 60, 420, 640));
     const home = windowPos("a");
-    publishPusher("list", box(972, 60, 420, 640));
+    publishPusher("a", "list", box(972, 60, 420, 640));
     expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 420, top: 60 });
     // The same answer is the same object: readers re-render on a real change only.
     expect(windowPos("a")).toBe(windowPos("a"));
     // Nothing was written: the size and the home are as frozen.
     expect(windowSize("a")).toEqual({ width: 420, height: 640 });
-    publishPusher("list", null);
+    publishPusher("a", "list", null);
     expect(windowPos("a")).toBe(home);
   });
   it("a drag is never pushed, and where it ends is home — the size rides on", () => {
     commitWindowBox("a", box(972, 60, 420, 640));
-    publishPusher("list", box(972, 60, 420, 640));
+    publishPusher("a", "list", box(972, 60, 420, 640));
     setLiveWindowPos("a", { left: 990, top: 70 });
     expect(windowPos("a")).toEqual({ left: 990, top: 70 });
     commitWindowPos("a", { left: 40, top: 70 });
@@ -246,16 +270,16 @@ describe("the position store, free pins on", () => {
   it("a pin with no size in its mark is pushed by its card's live box", () => {
     commitWindowPos("a", { left: 992, top: 80 });
     expect(windowSize("a")).toBeNull();
-    publishPusher("list", box(972, 60, 420, 640));
+    publishPusher("a", "list", box(972, 60, 420, 640));
     // No size known: it cannot be told whether it lies under the non-pin.
     expect(windowPos("a")).toEqual({ left: 992, top: 80 });
     publishWindowBox("a", "pin", box(992, 80, 400, 500), true);
-    publishPusher("list", box(972, 60, 420, 641));
+    publishPusher("a", "list", box(972, 60, 420, 641));
     expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
   });
   it("turning the unified head off is heard too: the store re-reads", () => {
     commitWindowBox("a", box(972, 60, 420, 640));
-    publishPusher("list", box(972, 60, 420, 640));
+    publishPusher("a", "list", box(972, 60, 420, 640));
     expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 420, top: 60 });
     publishTaskHeadUnified({ enabled: false });
     expect(windowPos("a")).toEqual({ left: 972, top: 60 });
@@ -263,7 +287,7 @@ describe("the position store, free pins on", () => {
   });
   it("off, nothing is pushed and no size is read", () => {
     commitWindowBox("a", box(972, 60, 420, 640));
-    publishPusher("list", box(972, 60, 420, 640));
+    publishPusher("a", "list", box(972, 60, 420, 640));
     setRailFreePinsForTests(false);
     expect(windowPos("a")).toEqual({ left: 972, top: 60 });
     expect(windowSize("a")).toBeNull();
@@ -290,19 +314,19 @@ describe("what the four windows say to each other", () => {
     setPinTitle("b", "bot", null);
     expect(pinTitle("b")).toBeNull();
   });
-  it("an unpin's ask goes to the non-pin that takes it; nobody: false", () => {
-    expect(askOpen({ win: "a", kind: "task", key: "k" })).toBe(false);
-    const seen: string[] = [];
-    const off = onOpenAsk((ask) => {
-      if (ask.win !== "b") return false;
-      seen.push(ask.kind + ":" + ask.key);
-      return true;
-    });
-    expect(askOpen({ win: "a", kind: "task", key: "k" })).toBe(false);
-    expect(askOpen({ win: "b", kind: "bot", key: "b1" })).toBe(true);
-    expect(seen).toEqual(["bot:b1"]);
-    off();
-    expect(askOpen({ win: "b", kind: "bot", key: "b1" })).toBe(false);
+  it("a chat window's two slots swap roles: the pin makes the other one free, the unpin swaps back", () => {
+    expect(freeSlot("a")).toBe("x");
+    expect(otherSlot("x")).toBe("y");
+    // The pin's press on the free slot's card: the OTHER slot is the non-pin now.
+    setFreeSlot("a", otherSlot(freeSlot("a")));
+    expect(freeSlot("a")).toBe("y");
+    // The unpin on the pinned slot's card (x): it is the free one again.
+    setFreeSlot("a", "x");
+    expect(freeSlot("a")).toBe("x");
+    // Each kind of card has its own pair.
+    setFreeSlot("fav", "y");
+    expect(freeSlot("fav")).toBe("y");
+    expect(freeSlot("bot")).toBe("x");
   });
   it("the keyboard lands in the pinned window that registered", () => {
     expect(focusPin("a")).toBe(false);

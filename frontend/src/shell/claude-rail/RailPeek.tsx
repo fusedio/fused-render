@@ -213,7 +213,7 @@ import {
   type MoveEdge,
   type RailWindow,
 } from "./rail-move-lib";
-import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos, windowSize } from "./rail-move-store";
+import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
 import { useCardMove } from "./useCardMove";
 import { useRailFreePins } from "./rail-free-pins-flag";
 import { placeColumn } from "./rail-slots-lib";
@@ -445,7 +445,7 @@ export interface RailPeekProps {
    *  a pinned one ignores it. Absent: the card as it was. */
   pinCtl?: { pinned: boolean; onToggle: () => void } | null;
   /** WHICH WINDOW THE CARD IS (rail-move-lib `RailWindow`), said outright —
-   *  the pinned windows' hosts (PinnedPeek; free pins, rail-slots-lib). Absent,
+   *  a slot in its pin's role (free pins, rail-slots-store). Absent,
    *  the card says it the way it always did: the favourite's (`resizeKey`) is
    *  window B's, any other window A's. */
   win?: RailWindow;
@@ -632,7 +632,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // A FREE PIN'S SIZE IS ITS OWN (rail-slots-lib "A PIN IS FROZEN"): what
     // its mark froze, whatever the shared sizes say now.
     if (freePinsRef.current && floatingRef.current) {
-      const frozen = windowSize(moveWin);
+      const frozen = move.size();
       if (frozen) return { ...(size ?? {}), width: frozen.width, maxHeight: frozen.height };
     }
     if (size) {
@@ -661,7 +661,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const place = (key: string): Box | null => {
     // FLOATING: at the window's position (read live — a drag moves it between
     // renders), at the card's size, inside the viewport; never "no room".
-    const floatAt = floatingRef.current ? windowPos(moveWin) : null;
+    const floatAt = floatingRef.current ? move.at() : null;
     if (floatAt) return floatPlacement(floatAt, wishSize(wishFor(key)), viewportOf(window));
     const anchor = anchorOf(key);
     if (!anchor || !railEl || !row) return null;
@@ -891,7 +891,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // A CLICKED-OPEN NON-PIN PUSHES THE PINS IT COVERS (rail-slots-lib): open
   // by a press (`pinned`, the list's; `held`, the favourite's), beside the
   // rail. A hover's preview pushes nothing.
-  usePusher(freePins && visible && !move.floating && (pinned || held) ? box : null);
+  usePusher(moveWin, freePins && visible && !move.floating && (pinned || held) ? box : null);
   // OPEN, SO READ (task-open-read `useHoldOpenTask`): a chat the reader
   // pressed open here — pinned or held, not a passing hover — is a chat on
   // screen; what lands in it while it shows is read, and raises no notice.

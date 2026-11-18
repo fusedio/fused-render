@@ -65,13 +65,13 @@ import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
-import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
-import { PinnedPeeks } from "@shell/claude-rail/PinnedPeek";
+import { FavouritePeek, FavouritePeekSlotY } from "@shell/claude-rail/FavouritePeek";
+import { ListCardHost } from "@shell/claude-rail/ListCardHost";
 import { TasksPeek } from "@shell/claude-rail/TasksPeek";
 import { PlusCardHost } from "@shell/claude-rail/PlusCardHost";
 import { BotsPeek } from "@shell/claude-rail/BotsPeek";
 import { GitPeek } from "@shell/claude-rail/GitPeek";
-import { BotCardHost } from "@shell/claude-rail/BotCardHost";
+import { BotCardHost, BotCardHostSlotY } from "@shell/claude-rail/BotCardHost";
 import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
@@ -1383,11 +1383,14 @@ export default function App({ config }: { config: Config }) {
           is up (shell/claude-rail FavouritePeek): mounted once here so a hop
           between pages never remounts it. */}
       {!IS_EMBED && <FavouritePeek />}
-      {/* The rail's PINNED windows with free pins on (shell/claude-rail
-          PinnedPeek; owner, 2026-11-18): a pinned task or bot stands in its
-          own window, beside the non-pin one the rail's cards above and below
-          draw — mounted once here, for the favourite's reason. */}
-      {!IS_EMBED && <PinnedPeeks />}
+      {/* …and its second slot, with free pins on (owner, 2026-11-18): the
+          favourite's window is two cards that swap roles — the non-pin and
+          the pin — so pinning never remounts the chat the reader pinned. */}
+      {!IS_EMBED && <FavouritePeekSlotY />}
+      {/* The list's chat card, with free pins on (shell/claude-rail
+          ListCardHost): the rail builds it, the shell draws it, so a pinned
+          list task is never remounted by a page hop. */}
+      {!IS_EMBED && <ListCardHost />}
       {/* The Tasks card off the rail's Tasks door (shell/claude-rail
           TasksPeek): mounted once here for the same reason — its view,
           filters and scroll survive a hop (owner, 2026-11-07). */}
@@ -1411,6 +1414,7 @@ export default function App({ config }: { config: Config }) {
       {/* In an embed too: its rail draws pinned bots, whose rings would pin a
           card nothing drew (CodeRabbit on #2201). */}
       <BotCardHost />
+      <BotCardHostSlotY />
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

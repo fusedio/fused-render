@@ -360,11 +360,17 @@ import {
   publishPusher,
   publishWindowBox,
   windowPos,
-  windowSize,
 } from "./rail-move-store";
 import { railFreePinsNow, useRailFreePins } from "./rail-free-pins-flag";
-import { pinOf, placeColumn } from "./rail-slots-lib";
-import { focusPin, onOpenAsk } from "./rail-slots-store";
+import { aPinTask, pinOf, placeColumn } from "./rail-slots-lib";
+import { SLOTS, focusPin, freeSlot, otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
+import { PIN_A_ID, usePinHasBox } from "./use-pin-box";
+import { publishListCards, useListHosted, withdrawListCards } from "./rail-list-host-store";
+
+/** With free pins off the list's card has the one slot it always had. */
+const ONE_SLOT: readonly Slot[] = ["x"];
+const pinNoop = () => {};
+const pinNoRing = () => null;
 import { useCardMove } from "./useCardMove";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import { taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
@@ -696,18 +702,18 @@ function publishPlusBoxes(box: Box | null): void {
  *  pin's, and it pushes nothing. */
 function publishPlusPinBox(box: Box | null): void {
   publishWindowBox("a", "plus", box, true);
-  publishPusher("plus", null);
+  publishPusher("a", "plus", null);
 }
 /** A non-pin opened by a click: beside the rail, and it pushes the pins it
  *  would cover. */
 function publishPlusDockPush(box: Box | null): void {
   publishPlusBoxes(box);
-  publishPusher("plus", box);
+  publishPusher("a", "plus", box);
 }
 /** A hover's preview: beside the rail, pushing nothing. */
 function publishPlusDockQuiet(box: Box | null): void {
   publishPlusBoxes(box);
-  publishPusher("plus", null);
+  publishPusher("a", "plus", null);
 }
 
 export function ClaudeRail({
@@ -859,10 +865,10 @@ export function ClaudeRail({
   const pinModelRef = useRef(pinModel);
   pinModelRef.current = pinModel;
   // FREE PINS (rail-slots-lib header; `rail_free_pins_enabled`, only with the
-  // pin's own switch): the pin is the TASK'S. This rail's cards are then the
-  // sections' NON-PIN windows only — a task or a bot that is pinned moves to
-  // the shell's pinned hosts (PinnedPeek), a door's card and the + stay where
-  // they are and float — and a ring's click never swaps what a pin shows.
+  // pin's own switch): the pin is the TASK'S. A chat window is then two slots
+  // that swap roles (rail-slots-store) — its non-pin, which this rail's rings
+  // drive, and its pin, frozen where it stood; a door's card and the + pin
+  // where they are — and a ring's click never swaps what a pin shows.
   const freePins = useRailFreePins();
   const freePinsRef = useRef(freePins);
   freePinsRef.current = freePins;
@@ -1488,6 +1494,41 @@ export function ClaudeRail({
     () => (peekOn ? kept.map((k) => seats.find((s) => s.pulse.key === k)).filter((s): s is NonNullable<typeof s> => !!s) : []),
     [peekOn, kept, seats],
   );
+  // FREE PINS — THE LIST CARD'S TWO SLOTS (rail-slots-store): which is the
+  // non-pin now, and the pinned task the other one shows — its seat off this
+  // rail's rings, else off the pulse (a pinned window floats and needs no
+  // ring: a view that does not list the chat still shows it). The free slot
+  // never mounts the pinned chat too (one chat, one composer).
+  const aFree = useFreeSlot("a");
+  const pinKeyA = freePins ? aPinTask(aWord) : null;
+  const pinSeatA = useMemo((): RailRow | null => {
+    if (!pinKeyA) return null;
+    const seat = seats.find((x) => x.pulse.key === pinKeyA);
+    if (seat) return seat;
+    const pulse = rows.find((t) => t.key === pinKeyA);
+    return pulse && pulse.status !== "archived" ? { pulse, row: null } : null;
+  }, [pinKeyA, seats, rows]);
+  const pinKeptA = useMemo(() => (pinSeatA ? [pinSeatA] : []), [pinSeatA]);
+  // Its task gone (archived, erased), once the pulse's rows are held: the pin
+  // goes with it.
+  const pinGoneA = pinKeyA !== null && rows.length > 0 && !pinSeatA;
+  useEffect(() => {
+    if (pinGoneA && pinKeyA && aPinned() === aPinWord({ kind: "task", key: pinKeyA })) setAPinned(null);
+  }, [pinGoneA, pinKeyA]);
+  const pinPlacedA = usePinHasBox("a", !!pinSeatA, railRef.current);
+  const pinPeekRef = useRef<RailPeekHandle | null>(null);
+  const pinUpA = !!pinSeatA && pinPlacedA;
+  useEffect(() => {
+    if (!pinUpA) return;
+    return registerPinFocus("a", () => !!pinPeekRef.current?.focusComposer() || !!pinPeekRef.current?.focusChat());
+  }, [pinUpA]);
+  const pinTitleA = pinSeatA ? cardTitleLine({ ...pinSeatA.pulse, ...(pinSeatA.row ?? {}) } as Task).text || pinSeatA.pulse.title || "Chat" : null;
+  useEffect(() => {
+    setPinTitle("a", "task", pinTitleA);
+    return () => setPinTitle("a", "task", null);
+  }, [pinTitleA]);
+  const freeSeat = pinKeyA && peekSeat?.pulse.key === pinKeyA ? null : peekSeat;
+  const freeKept = useMemo(() => (pinKeyA ? keptSeats.filter((x) => x.pulse.key !== pinKeyA) : keptSeats), [pinKeyA, keptSeats]);
   // While the card is up: a press anywhere but the rail and the card closes
   // it. A click INTO the workbench frame is not a press this document sees,
   // and it needs no rule of its own: the pointer is on the canvas, off the
@@ -2296,7 +2337,7 @@ export function ClaudeRail({
       return;
     }
     if (pin.kind === "task") {
-      // FREE PINS: a pinned task's window is the shell's (PinnedPeek).
+      // FREE PINS: a pinned task's window is the pinned slot's (below).
       if (freePinsRef.current) {
         aRestored.current = true;
         return;
@@ -2325,8 +2366,8 @@ export function ClaudeRail({
       door.store.setHeld(true);
     }
   }, [pinModel, navDoors, shown, rows, baseSeats, intent, tasksCard, botsCard, gitCard]);
-  // FREE PINS — A PINNED TASK NEEDS NO RING (rail-slots-lib): its window is
-  // the shell's (PinnedPeek) and floats, so a view that does not list the
+  // FREE PINS — A PINNED TASK NEEDS NO RING (rail-slots-lib): its window
+  // floats (the pinned slot, drawn by the shell), so a view that does not list the
   // chat leaves it standing — the rule above ("we just close the window if
   // it is not in the next view") was the docked card's, which had to stand on
   // a ring. Only its task going (archived, erased) lets the pin go, and the
@@ -2547,40 +2588,23 @@ export function ClaudeRail({
       if (botOpen() !== null && !botHeldRef.current) setBotOpen(null);
       return;
     }
+    // The card on screen KEEPS its place and its chat: its slot takes the
+    // pin's role (rail-slots-store), and the machine's card — the non-pin,
+    // the other slot's now — is put down.
     if (heldRef.current) {
       if (windowPos("a") === null) freezeFromDock("a");
+      setFreeSlot("a", otherSlot(freeSlot("a")));
       setHeld(false);
       intent.dismiss();
     }
     if (botHeldRef.current) {
       if (windowPos("b") === null) freezeFromDock("b");
+      setFreeSlot("bot", otherSlot(freeSlot("bot")));
       setBotHeld(false);
       botIntent.dismiss();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [freePins]);
-  // …AND THE PINNED WINDOWS ASK THIS RAIL'S NON-PINS TO OPEN (rail-slots-store
-  // `askOpen`): a pinned task's or bot's unpin puts it back beside the rail —
-  // in this rail's list card, or the bot's card.
-  useEffect(() => {
-    if (!freePins) return;
-    return onOpenAsk((ask) => {
-      if (ask.kind === "bot") {
-        if (!botEls.current.has(ask.key)) return false;
-        takeWindowB();
-        botIntent.press(ask.key);
-        focusBotComposerSoon(ask.key);
-        return true;
-      }
-      if (ask.win !== "a") return false;
-      const seat = seatsRef.current.find((x) => x.pulse.key === ask.key);
-      if (!seat || !ringEls.current.has(ask.key)) return false;
-      intent.press(ask.key);
-      if (seat.pulse.session_id) focusComposerSoon(ask.key);
-      return true;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [freePins, intent, botIntent]);
   // ANOTHER WINDOW A CARD PINNED (the Tasks card by its door, the list card
   // by a ring) while a + or draft hover's read is still out: that preview
   // must not open over it when its delay runs out (plus-pop-lib
@@ -2780,8 +2804,8 @@ export function ClaudeRail({
       // card, the section's pin, beside which this one is the non-pin — and
       // at the size its pin froze.
       const floatAt =
-        popMove.floating || (pinModel && !freePins && !popLetGo && aPinned() !== null) ? windowPos("a") : null;
-      if (floatAt) return floatPlacement(floatAt, (freePins ? windowSize("a") : null) ?? want, viewportOf(window));
+        popMove.floating || (pinModel && !freePins && !popLetGo && aPinned() !== null) ? popMove.at() : null;
+      if (floatAt) return floatPlacement(floatAt, (freePins ? popMove.size() : null) ?? want, viewportOf(window));
       const rail = railRef.current;
       const row = rail && rowOf(rail);
       const door = cardRef.current?.door;
@@ -3172,8 +3196,8 @@ export function ClaudeRail({
   const botRestored = useRef(false);
   useEffect(() => {
     if (botRestored.current || !peekOn || botNoRoom) return;
-    // FREE PINS: the mark is a PINNED bot's, and the shell's pinned host
-    // draws it (PinnedPeek) — this rail's card is the non-pin.
+    // FREE PINS: the mark is a PINNED bot's, and the bot window's pinned
+    // slot draws it (BotCardHost) — nothing for this rail to restore.
     if (freePinsRef.current) {
       botRestored.current = true;
       return;
@@ -3379,7 +3403,7 @@ export function ClaudeRail({
   // behind the unified-head switch.
   const pinMark = (on: boolean) =>
     pinModel && on ? (
-      <span className={"claude-rail-pinmark" + (freePins ? " is-free" : "")} aria-hidden="true">
+      <span className="claude-rail-pinmark" aria-hidden="true">
         <PinAngle size={9} filled />
       </span>
     ) : null;
@@ -3826,7 +3850,7 @@ export function ClaudeRail({
                 // WINDOW A'S SIZE (owner, 2026-11-07): the remembered
                 // `canvasRailPeek`, else 420×640 — clamped inside the window
                 // by the chassis, the form scrolling inside it.
-                size: (freePins && popMove.floating ? windowSize("a") : null) ?? railCardSize(getUiLayout().canvasRailPeek ?? null),
+                size: (freePins && popMove.floating ? popMove.size() : null) ?? railCardSize(getUiLayout().canvasRailPeek ?? null),
                 // …AND RESIZED LIKE IT (`savePopSize`): the grips on a
                 // pinned card only — a hover's preview is not a thing to
                 // drag. WITH THE PIN (design.md row 21): hover, temp and
@@ -3986,6 +4010,165 @@ export function ClaudeRail({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* THE LIST'S CHAT CARD — AND, WITH FREE PINS, ITS TWO SLOTS
+          (rail-slots-store "THE TWO SLOTS OF A CHAT WINDOW"): the free slot is
+          the card as it always was, on the machine's seat; the other shows the
+          section's pinned task (`aPinned`), frozen where its pin left it. The
+          pin's press swaps the two roles — same card, same chat, no remount.
+     WITH FREE PINS THE SHELL DRAWS THEM (rail-list-host-store, ListCardHost):
+     this rail builds the elements and hands them over, so a page hop — this
+     rail going, the next one coming — never remounts a pinned list task. */
+  const listCards = peekOn &&
+        (freePins ? SLOTS : ONE_SLOT).map((slot) =>
+          freePins && slot !== aFree ? (
+            pinSeatA && pinPlacedA ? (
+              <RailPeek
+                key={slot}
+                ref={pinPeekRef}
+                id={PIN_A_ID}
+                win="a"
+                shown={pinSeatA}
+                kept={pinKeptA}
+                anchorOf={pinNoRing}
+                railEl={railRef.current}
+                place={place}
+                onReload={refreshListing}
+                onPointerEnter={pinNoop}
+                onPointerLeave={pinNoop}
+                onCone={pinNoop}
+                // A press inside the pinned window is a press in the rail's
+                // view: it closes no non-pin (rail-pin-lib `viewPress`).
+                onPressInside={() => {
+                  viewPress.inside = true;
+                }}
+                onHold={pinNoop}
+                // It answers only to its unpin and its Open door (below).
+                onDismiss={pinNoop}
+                onNoRoom={pinNoop}
+                // The Open door is a hand-off: the pin goes once the hop went.
+                onOpenChat={(href) => {
+                  const word = aPinned();
+                  const went = openChat(href);
+                  void Promise.resolve(went).then((ok) => {
+                    if (ok !== false && word && aPinned() === word) setAPinned(null);
+                  });
+                  return went;
+                }}
+                here={hereOf}
+                pageRoot={favouritesOnly ? null : root}
+                held
+                onHeld={pinNoop}
+                oneSize={favsOn}
+                pinned
+                onPin={pinNoop}
+                pinCtl={{
+                  pinned: true,
+                  // THE UNPIN (rail-slots-lib "UNPINNING PUTS THE WINDOW BACK
+                  // BY THE RAIL"): this slot is the free one again, the
+                  // machine's card on the same chat — it docks itself, and
+                  // the non-pin that stood there gives way. A chat this view
+                  // does not list has no ring to stand on: its window closes.
+                  onToggle: () => {
+                    const key = pinSeatA.pulse.key;
+                    setFreeSlot("a", slot);
+                    setAPinned(null);
+                    if (seatsRef.current.some((x) => x.pulse.key === key)) intent.press(key);
+                    else {
+                      setHeld(false);
+                      intent.dismiss();
+                    }
+                  },
+                }}
+              />
+            ) : null
+          ) : freeKept.length > 0 ? (
+        <RailPeek
+          key={slot}
+          ref={peekRef}
+          id={PEEK_ID}
+          shown={freeSeat}
+          kept={freeKept}
+          anchorOf={anchorOf}
+          coneOf={coneOf}
+          railEl={railRef.current}
+          place={place}
+          onReload={refreshListing}
+          onPointerEnter={() => intent.enterCard()}
+          onPointerLeave={() => intent.leaveCard()}
+          onCone={(inside) => (inside ? intent.enterCone() : intent.leaveCone())}
+          onPressInside={onPressInside}
+          onHold={(on) => intent.hold(on)}
+          onDismiss={() => {
+            // Let go by its own Open (a hand-off): the window's mark goes
+            // now — the hop may unmount this rail before it renders again.
+            // FREE PINS: this card is the non-pin — a task the mark names is
+            // the pinned window's, and this card's door lets nothing of it go.
+            if (!freePinsRef.current && readAPin(aPinned())?.kind === "task") setAPinned(null);
+            dismissToRing();
+          }}
+          onNoRoom={onNoRoom}
+          onOpenChat={openChat}
+          here={hereOf}
+          pageRoot={favouritesOnly ? null : root}
+          onChipLeave={onChipLeave}
+          held={held}
+          onHeld={setHeld}
+          onStarred={onStarred}
+          avoid={favBox}
+          oneSize={favsOn}
+          pinned={pinned}
+          onPin={() => {
+            const key = intent.current;
+            if (!key) return;
+            intent.press(key);
+            if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key);
+          }}
+          pinCtl={
+            pinModel
+              ? {
+                  pinned: held,
+                  onToggle: () => {
+                    const key = intent.current;
+                    if (!key) return;
+                    // FREE PINS (rail-slots-lib): the pin's press freezes the
+                    // window where it stands, and the two slots SWAP ROLES
+                    // (rail-slots-store) — this card, as it is, becomes the
+                    // section's pinned window, replacing whatever was pinned
+                    // there; the machine's card, the non-pin, is the other
+                    // slot's from here on and is put down.
+                    if (freePinsRef.current) {
+                      freezeFromDock("a");
+                      setAPinned(aPinWord({ kind: "task", key }));
+                      setFreeSlot("a", otherSlot(slot));
+                      setHeld(false);
+                      intent.dismiss();
+                      return;
+                    }
+                    if (heldRef.current) {
+                      setHeld(false);
+                      return;
+                    }
+                    if (!intent.isPinned) intent.press(key);
+                    setHeld(true);
+                  },
+                }
+              : null
+          }
+        />
+          ) : null,
+        );
+  const listHosted = useListHosted() && freePins;
+  useLayoutEffect(() => {
+    if (!listHosted) return;
+    const built = Array.isArray(listCards) ? listCards : [];
+    publishListCards(railToken.current, { x: built[0] ?? null, y: built[1] ?? null });
+  });
+  useLayoutEffect(() => {
+    if (!listHosted) return;
+    const token = railToken.current;
+    return () => withdrawListCards(token);
+  }, [listHosted]);
 
   return (
     <aside
@@ -4495,78 +4678,9 @@ export function ClaudeRail({
           </>
         )}
       </div>
-      {peekOn && keptSeats.length > 0 && (
-        <RailPeek
-          ref={peekRef}
-          id={PEEK_ID}
-          shown={peekSeat}
-          kept={keptSeats}
-          anchorOf={anchorOf}
-          coneOf={coneOf}
-          railEl={railRef.current}
-          place={place}
-          onReload={refreshListing}
-          onPointerEnter={() => intent.enterCard()}
-          onPointerLeave={() => intent.leaveCard()}
-          onCone={(inside) => (inside ? intent.enterCone() : intent.leaveCone())}
-          onPressInside={onPressInside}
-          onHold={(on) => intent.hold(on)}
-          onDismiss={() => {
-            // Let go by its own Open (a hand-off): the window's mark goes
-            // now — the hop may unmount this rail before it renders again.
-            // FREE PINS: this card is the non-pin — a task the mark names is
-            // the pinned window's, and this card's door lets nothing of it go.
-            if (!freePinsRef.current && readAPin(aPinned())?.kind === "task") setAPinned(null);
-            dismissToRing();
-          }}
-          onNoRoom={onNoRoom}
-          onOpenChat={openChat}
-          here={hereOf}
-          pageRoot={favouritesOnly ? null : root}
-          onChipLeave={onChipLeave}
-          held={held}
-          onHeld={setHeld}
-          onStarred={onStarred}
-          avoid={favBox}
-          oneSize={favsOn}
-          pinned={pinned}
-          onPin={() => {
-            const key = intent.current;
-            if (!key) return;
-            intent.press(key);
-            if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key);
-          }}
-          pinCtl={
-            pinModel
-              ? {
-                  pinned: held,
-                  onToggle: () => {
-                    const key = intent.current;
-                    if (!key) return;
-                    // FREE PINS (rail-slots-lib): the pin's press freezes the
-                    // window where it stands and hands the task to the
-                    // section's pinned window (the shell's PinnedPeek, which
-                    // reads the mark) — replacing whatever was pinned there.
-                    // This card, the non-pin, lets go.
-                    if (freePinsRef.current) {
-                      freezeFromDock("a");
-                      setAPinned(aPinWord({ kind: "task", key }));
-                      setHeld(false);
-                      intent.dismiss();
-                      return;
-                    }
-                    if (heldRef.current) {
-                      setHeld(false);
-                      return;
-                    }
-                    if (!intent.isPinned) intent.press(key);
-                    setHeld(true);
-                  },
-                }
-              : null
-          }
-        />
-      )}
+      {/* The list's chat card (built above, `listCards`): drawn here unless
+          the shell's host draws it (free pins; rail-list-host-store). */}
+      {!listHosted && listCards}
       {!hosted && card && renderCard(card)}
     </aside>
   );

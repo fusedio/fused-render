@@ -905,12 +905,6 @@ html.rail-card-moving iframe {
   outline-offset: -1px;
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-failed) 14%, transparent);
 }
-/* THE RING'S PIN FACES THE OTHER WAY with free pins (Akshil, 2026-11-18:
-   "pin shown in task ring for pin tasks and turn pin 180 other way"): the
-   glyph as drawn, not mirrored (RailPin `PinAngle`'s inline mirror). */
-.claude-rail-pinmark.is-free svg {
-  transform: none !important;
-}
 /* THE WIDTH MAGNET'S GUIDE (card-snap.ts, owner 2026-11-10): one line on
    <body> along the left edge two stacked cards share once a width drag
    snapped them level — a quiet grey, dashed (owner, 2026-11-10: "shouldn't

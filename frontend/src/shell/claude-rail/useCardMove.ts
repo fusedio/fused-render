@@ -39,6 +39,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import type { Size } from "./rail-move-lib";
 import {
   clampPos,
   headDocks,
@@ -59,7 +60,9 @@ import {
   subscribeWindowPos,
   useFrontWindow,
   magnetBox,
+  pinEpoch,
   windowPos,
+  windowSize,
 } from "./rail-move-store";
 import { setSnapGuides } from "./card-snap";
 import { useRailFreePins } from "./rail-free-pins-flag";
@@ -90,6 +93,13 @@ export interface CardMove {
   /** Where the window now stands for good (a left or top resize moved it),
    *  or docked (`null`). */
   setPos(pos: Pos | null): void;
+  /** WHERE THIS CARD'S WINDOW FLOATS, read live (a placement outside render:
+   *  a resize, a scroll) — the window's position, or, for a pin that has been
+   *  REPLACED (rail-move-store `pinEpoch`), the spot it had: it is on its way
+   *  out and must not follow the pin that took its window. */
+  at(): Pos | null;
+  /** …and its frozen size (free pins), the same way. */
+  size(): Size | null;
 }
 
 interface Drag {
@@ -164,13 +174,28 @@ export function useCardMove(o: {
     if (shown !== null) noteFrontWindow(win);
   }, [shown, win]);
   const movable = on && o.movable;
+  // THE PIN THIS CARD IS (rail-move-store `pinEpoch`): the count its window
+  // was pinned at when this card took the pin. A later count: it was
+  // replaced, and reads the last position and size it had instead of the
+  // window's.
+  const epoch = useRef<number | null>(null);
+  if (!movable) epoch.current = null;
+  else if (epoch.current === null) epoch.current = pinEpoch(win);
+  const had = useRef<{ pos: Pos | null; size: Size | null }>({ pos: null, size: null });
+  const at = (): Pos | null => {
+    if (epoch.current !== null && epoch.current !== pinEpoch(win)) return had.current.pos;
+    const pos = windowPos(win);
+    had.current = { pos, size: windowSize(win) };
+    return pos;
+  };
+  const size = (): Size | null => (epoch.current !== null && epoch.current !== pinEpoch(win) ? had.current.size : windowSize(win));
   // Read live only while this card can float: a drag's every frame would
   // otherwise re-render every card of both windows. The other window counts
   // only as "does it float" (the stacking).
   const otherWin: RailWindow = win === "a" ? "b" : "a";
   const pos = useSyncExternalStore(
     subscribeWindowPos,
-    () => (movable ? windowPos(win) : null),
+    () => (movable ? at() : null),
     () => null,
   );
   const otherFloats = useSyncExternalStore(
@@ -325,5 +350,7 @@ export function useCardMove(o: {
       if (on) noteFrontWindow(win);
     },
     setPos: (p) => commitWindowPos(win, p),
+    at,
+    size,
   };
 }

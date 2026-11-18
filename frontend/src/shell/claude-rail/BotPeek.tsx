@@ -89,7 +89,7 @@ import {
   wishSize,
   type MoveEdge,
 } from "./rail-move-lib";
-import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos, windowSize } from "./rail-move-store";
+import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
 import { useRailFreePins } from "./rail-free-pins-flag";
 import { useCardMove } from "./useCardMove";
 import {
@@ -273,8 +273,8 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const place = (key: string): Box | null => {
     // FLOATING: at the window's position, its size, inside the viewport;
     // never "no room" (rail-move-lib).
-    const at = floatingRef.current ? windowPos("b") : null;
-    if (at) return floatPlacement(at, (freePinsRef.current ? windowSize("b") : null) ?? wishSize(wish()), viewportOf(window));
+    const at = floatingRef.current ? move.at() : null;
+    if (at) return floatPlacement(at, (freePinsRef.current ? move.size() : null) ?? wishSize(wish()), viewportOf(window));
     if (!anchorOf(key) || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
@@ -457,7 +457,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   // Its live box for window A's head drag (rail-move-store `windowBox`).
   useWindowBox("b", !!pinCtl && visible ? box : null, freePins && move.floating);
   // A clicked-open non-pin pushes the pins it covers (rail-slots-lib).
-  usePusher(freePins && visible && !move.floating && pinned ? box : null);
+  usePusher("b", freePins && visible && !move.floating && pinned ? box : null);
   const dragKey = useRef<string | null>(null);
   useEffect(() => {
     if (dragStart.current && (!gripsOn || dragKey.current !== shownKey)) endDrag(false);

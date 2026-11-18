@@ -41,7 +41,7 @@ function stored(win: RailWindow): PinMark | null {
  *  each chassis (`usePusher`), read here, where every chassis reads the
  *  position it draws its pinned card at. The pin's own mark is never
  *  rewritten by a push: when the non-pin goes, the pin is drawn at home. */
-const pushers = new Map<string, Box>();
+const pushers = new Map<string, { win: RailWindow; box: Box }>();
 let pushVersion = 0;
 /** The last answer per window, so a re-read with nothing changed hands back
  *  the same object. */
@@ -53,7 +53,11 @@ function pushedFor(win: RailWindow, mark: PinMark): Pos {
   if (!size) return mark.pos;
   const c = pushedCache[win];
   if (c && c.mark === mark && c.version === pushVersion && c.w === size.width && c.h === size.height) return c.pos;
-  const pos = pushedPos(mark.pos, size, [...pushers.values()]);
+  const pos = pushedPos(
+    mark.pos,
+    size,
+    [...pushers.values()].map((p) => p.box),
+  );
   pushedCache[win] = { mark, version: pushVersion, w: size.width, h: size.height, pos };
   return pos;
 }
@@ -107,9 +111,30 @@ export function commitWindowBox(win: RailWindow, box: Box): void {
  *  `win`'s frozen box. Before the pin is written: the card that then floats
  *  reads it on its first placement. False with no card up to freeze — the
  *  caller's card then stands wherever the mark already said, or docked. */
+/** HOW MANY TIMES WINDOW `win` HAS BEEN PINNED ANEW (`freezeFromDock`). A
+ *  window's position is one mark, and the pin that is REPLACED reads the same
+ *  mark as the one replacing it: for the frames it takes to go, it would
+ *  follow the new pin's box — jump to the rail and fade out over the window
+ *  that took its place (owner, 2026-11-18: "no flicker, jumping"). A pinned
+ *  card remembers the count it was pinned at (useCardMove); once the count
+ *  has moved on it is the replaced one, and stands where it stood. */
+const pinEpochs: Record<RailWindow, number> = { a: 0, b: 0 };
+export function pinEpoch(win: RailWindow): number {
+  return pinEpochs[win];
+}
+
 export function freezeFromDock(win: RailWindow): boolean {
   const box = dockBox(win);
   if (!box) return false;
+  pinEpochs[win] += 1;
+  // THE CARD BEING PINNED STOPS PUSHING, NOW (owner, 2026-11-18: "when i click
+  // pin the whole window moves"): it is this window's non-pin until its next
+  // render says otherwise, and a pin frozen under its own old box would be
+  // drawn pushed clear of it for those frames — a slide out and back. Its
+  // window's pushers go with the freeze; a non-pin that still stands says so
+  // again on its next placement.
+  for (const [owner, p] of [...pushers]) if (p.win === win) pushers.delete(owner);
+  pushVersion += 1;
   commitWindowBox(win, box);
   return true;
 }
@@ -216,14 +241,14 @@ export function useWindowBox(win: RailWindow, box: Box | null, pin = false): voi
 /** A clicked-open non-pin window says where it stands (`pushers`), or that it
  *  is gone (`null`). Readers of a pinned window's position hear a real change
  *  only. */
-export function publishPusher(owner: string, box: Box | null): void {
-  const was = pushers.get(owner) ?? null;
+export function publishPusher(win: RailWindow, owner: string, box: Box | null): void {
+  const was = pushers.get(owner)?.box ?? null;
   if (!box) {
     if (!was) return;
     pushers.delete(owner);
   } else {
     if (was && was.left === box.left && was.top === box.top && was.width === box.width && was.height === box.height) return;
-    pushers.set(owner, box);
+    pushers.set(owner, { win, box });
   }
   pushVersion += 1;
   notify();
@@ -232,7 +257,7 @@ export function publishPusher(owner: string, box: Box | null): void {
 /** A NON-PIN CARD THAT PUSHES (rail-slots-lib): `box` while it is a
  *  clicked-open non-pin beside the rail, null otherwise — a hover's preview,
  *  a pinned card, a closed one, or free pins off; withdrawn on unmount. */
-export function usePusher(box: Box | null): void {
+export function usePusher(win: RailWindow, box: Box | null): void {
   const owner = useRef<string | null>(null);
   if (owner.current === null) owner.current = `push-${++boxSeq}`;
   const id = owner.current;
@@ -241,9 +266,9 @@ export function usePusher(box: Box | null): void {
   const width = box?.width;
   const height = box?.height;
   useEffect(() => {
-    publishPusher(id, left === undefined || top === undefined || width === undefined || height === undefined ? null : { left, top, width, height });
-  }, [id, left, top, width, height]);
-  useEffect(() => () => publishPusher(id, null), [id]);
+    publishPusher(win, id, left === undefined || top === undefined || width === undefined || height === undefined ? null : { left, top, width, height });
+  }, [win, id, left, top, width, height]);
+  useEffect(() => () => publishPusher(win, id, null), [win, id]);
 }
 
 // The switch going on or off re-reads every position: a pin is pushed, and

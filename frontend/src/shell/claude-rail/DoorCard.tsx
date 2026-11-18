@@ -67,7 +67,7 @@ import {
   viewportOf,
   type MoveEdge,
 } from "./rail-move-lib";
-import { commitWindowBox, freezeFromDock, magnetBox, usePusher, useWindowBox, windowPos, windowSize } from "./rail-move-store";
+import { commitWindowBox, freezeFromDock, magnetBox, usePusher, useWindowBox } from "./rail-move-store";
 import { useCardMove } from "./useCardMove";
 import { railFreePinsNow, useRailFreePins } from "./rail-free-pins-flag";
 import { placeColumn } from "./rail-slots-lib";
@@ -239,8 +239,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const place = (): Box | null => {
     // FLOATING: at the window's position, window A's size, inside the
     // viewport; never "no room" (rail-move-lib).
-    const at = floatingRef.current ? windowPos("a") : null;
-    if (at) return floatPlacement(at, (freePinsRef.current ? windowSize("a") : null) ?? cardSize(), viewportOf(window));
+    const at = floatingRef.current ? move.at() : null;
+    if (at) return floatPlacement(at, (freePinsRef.current ? move.size() : null) ?? cardSize(), viewportOf(window));
     const d = store.doorOf(rail);
     if (!rail || !d || !row) return null;
     const r = rail.getBoundingClientRect();
@@ -385,7 +385,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   // Its live box for window B's head drag (rail-move-store `windowBox`).
   useWindowBox("a", pinModel && visible ? box : null, freePins && move.floating);
   // A clicked-open non-pin pushes the pins it covers (rail-slots-lib).
-  usePusher(freePins && visible && !move.floating && card.pinned ? box : null);
+  usePusher("a", freePins && visible && !move.floating && card.pinned ? box : null);
   // Window A's box, for window B's grips to snap to (card-snap.ts).
   // …but not where it FLOATS: window B places itself as if it were not there.
   useEffect(() => {
