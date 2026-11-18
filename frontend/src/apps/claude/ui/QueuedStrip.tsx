@@ -93,7 +93,8 @@ export interface QueuedStripProps {
 }
 
 export function QueuedStrip({ lines, running, onSendNow, onPull, compact, ready = true }: QueuedStripProps) {
-  const arriving = useArrivals(lines, ready);
+  // A card's tile draws no arrival (`c-queue-compact`), so it tracks none.
+  const arriving = useArrivals(lines, ready && !compact);
   if (!lines.length) return null;
   return (
     <ul className={compact ? "c-queue-strip c-queue-compact" : "c-queue-strip"} aria-label="Queued messages">
