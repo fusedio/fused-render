@@ -17,13 +17,13 @@ describe("QueuedStrip", () => {
     expect(render({})).toBe("");
   });
   test("every line is its own row with the send-now affordance while running", () => {
-    const out = render({ lines: [{ id: "a", text: "again" }, { id: "b", text: "again" }] });
+    const out = render({ lines: [{ id: "a", text: "again", local: true }, { id: "b", text: "again", local: true }] });
     expect(out.match(/c-queue-row/g)).toHaveLength(2);
     expect(out.match(/Ctrl\+X to send now/g)).toHaveLength(2);
     expect(out).not.toContain(">edit<");
   });
   test("no send-now when nothing is running", () => {
-    expect(render({ running: false, lines: [{ id: "a", text: "x" }] })).not.toContain("Ctrl+X");
+    expect(render({ running: false, lines: [{ id: "a", text: "x", local: true }] })).not.toContain("Ctrl+X");
   });
   test("an outbox line can be pulled back; a held one says what it waits for", () => {
     const out = render({ lines: [{ id: "a", text: "x", pending: "queued" }, { id: "b", text: "y", pending: "held" }] });
@@ -72,26 +72,26 @@ describe("QueuedStrip", () => {
   test("a line that was already waiting when the strip mounted does not flash", () => {
     // A rail card opened on hover, a pane switched back to: the chat mounts
     // with its queue in it, and nothing just happened (Bugbot, PR #2347).
-    const s = mountStrip([{ id: "a", text: "old" }]);
+    const s = mountStrip([{ id: "a", text: "old", local: true }]);
     expect(s.arriving()).toEqual([]);
     expect(s.tags()).toEqual([]);
-    s.set([{ id: "a", text: "old" }]);
+    s.set([{ id: "a", text: "old", local: true }]);
     expect(s.arriving()).toEqual([]);
     s.unmount();
   });
   test("a line that joins flashes, alone, whether the strip was empty or not", () => {
     const s = mountStrip([]);
-    s.set([{ id: "a", text: "first" }]);
+    s.set([{ id: "a", text: "first", local: true }]);
     expect(s.arriving()).toEqual(["first"]);
     // …and says so in a word, for as long as the arrival lasts.
     expect(s.tags()).toEqual(["Queued"]);
-    s.set([{ id: "a", text: "first" }, { id: "b", text: "second" }]);
+    s.set([{ id: "a", text: "first", local: true }, { id: "b", text: "second", local: true }]);
     expect(s.arriving()).toEqual(["first", "second"]);
     // One leaving is not an arrival for the ones that stay.
-    const t = mountStrip([{ id: "a", text: "old" }, { id: "b", text: "older" }]);
-    t.set([{ id: "b", text: "older" }]);
+    const t = mountStrip([{ id: "a", text: "old", local: true }, { id: "b", text: "older", local: true }]);
+    t.set([{ id: "b", text: "older", local: true }]);
     expect(t.arriving()).toEqual([]);
-    t.set([{ id: "b", text: "older" }, { id: "c", text: "new" }]);
+    t.set([{ id: "b", text: "older", local: true }, { id: "c", text: "new", local: true }]);
     expect(t.arriving()).toEqual(["new"]);
     s.unmount();
     t.unmount();
@@ -100,27 +100,35 @@ describe("QueuedStrip", () => {
     // A cold reopen: the strip mounts empty before the history read returns,
     // and the restore then brings the lines that were waiting all along.
     const s = mountStrip([], false);
-    s.set([{ id: "a", text: "was waiting" }], false);
+    s.set([{ id: "a", text: "was waiting", local: true }], false);
     expect(s.arriving()).toEqual([]);
-    s.set([{ id: "a", text: "was waiting" }], true);
+    s.set([{ id: "a", text: "was waiting", local: true }], true);
     expect(s.arriving()).toEqual([]);
-    s.set([{ id: "a", text: "was waiting" }, { id: "b", text: "typed now" }], true);
+    s.set([{ id: "a", text: "was waiting", local: true }, { id: "b", text: "typed now", local: true }], true);
     expect(s.arriving()).toEqual(["typed now"]);
     s.unmount();
   });
   test("a line the strip stopped drawing for a while has not arrived when it is drawn again", () => {
-    const s = mountStrip([{ id: "a", text: "continue" }]);
-    s.set([{ id: "h", text: "held twin" }]);
+    const s = mountStrip([{ id: "a", text: "continue", local: true }]);
+    s.set([{ id: "h", text: "held twin", local: true }]);
     expect(s.arriving()).toEqual(["held twin"]);
     // The held twin is pulled back: the first line is drawn again. It never left.
-    s.set([{ id: "a", text: "continue" }]);
+    s.set([{ id: "a", text: "continue", local: true }]);
     expect(s.arriving()).toEqual([]);
+    s.unmount();
+  });
+  test("a line only the run's inbox knows never arrives, whenever it shows up", () => {
+    // Another tab's, a reload's, the first poll of a run this page attached to.
+    const s = mountStrip([]);
+    s.set([{ id: "inbox-1", text: "from elsewhere" }]);
+    expect(s.arriving()).toEqual([]);
+    expect(s.tags()).toEqual([]);
     s.unmount();
   });
   test("an id with a newline in it is one id", () => {
     // An inbox row with no id of its own is keyed by its words.
     const s = mountStrip([]);
-    s.set([{ id: "first\nsecond", text: "two lines" }]);
+    s.set([{ id: "first\nsecond", text: "two lines", local: true }]);
     expect(s.arriving()).toEqual(["two lines"]);
     s.unmount();
   });

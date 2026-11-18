@@ -23,6 +23,10 @@ export interface QueuedLine {
    *  its way to a live run (`UserTurn.pending`): listed from the keypress, and
    *  not the reader's to pull back or send now — the send is already under way. */
   pending?: "queued" | "held" | "sending";
+  /** Typed in THIS view (the line is one of this page's own turns), as against a
+   *  line only the run's inbox knows — another tab's, or one a reload restored.
+   *  Only a local line can "just arrive" (`ui/QueuedStrip`). */
+  local?: true;
 }
 
 export function queuedLines(input: {
@@ -39,7 +43,7 @@ export function queuedLines(input: {
       t.pending === "queued" || t.pending === "held" || t.pending === "sending" ? t.pending : undefined;
     if (!pending && !sent.has(t.key)) continue;
     hiddenKeys.add(t.key);
-    lines.push({ id: t.key, text: t.text, ...(pending ? { pending } : {}) });
+    lines.push({ id: t.key, text: t.text, local: true, ...(pending ? { pending } : {}) });
   }
   // An entry with a uuid is judged by the server alone (it lists a line until
   // the CLI echoes it), so an earlier transcript line with the same words never
@@ -58,7 +62,10 @@ export function queuedLines(input: {
   for (const t of input.turns) {
     if (t.role === "user" && t.clientId && !hiddenKeys.has(t.key)) drawn.add(t.clientId);
   }
-  const optimistic = lines.map((l) => l.text);
+  // A "sending" line has no inbox entry yet (the controller has not posted it),
+  // so its words retire nothing: an entry that says the same thing is another
+  // message, still waiting, and keeps its row (CodeRabbit, PR #2347).
+  const optimistic = lines.filter((l) => l.pending !== "sending").map((l) => l.text);
   const rows = Array.isArray(input.inbox) ? input.inbox : [];
   const named = inboxBubbles(
     rows.filter((r) => r && r.uuid && !drawn.has(r.uuid)),

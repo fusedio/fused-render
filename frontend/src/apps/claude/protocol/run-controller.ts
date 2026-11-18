@@ -3187,7 +3187,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // counter pollLoop read as a landed follow-up, and the reply split around
     // the gap where the rolled-back row had been (Bugbot, PR #996).
     const spoken = text || stripBlocks(outgoing);
-    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey, opts.clientId);
+    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey);
     // KEYED BY A SEQ, not by the text: two identical follow-ups ("again") used
     // to collapse into one entry, and the first ack cleared both — so the second
     // one's hint left the composer while the message was still in flight.

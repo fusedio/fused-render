@@ -577,9 +577,9 @@ a.c-waitcard .wc-ahead:hover,
    So the weight is in the ARRIVAL, and only there. For about three seconds the
    new line sits in the ordinary ink on a soft wash, having risen into place,
    with the word "Queued" beside it — accepted, and waiting, said outright.
-   Then the wash and the word fade and it is the quiet line again: the muted
-   ink, and a small ring in the Queued colour in front of it, which is all that
-   stays.
+   Then the wash and the word fade and it is the quiet line again, in the
+   muted ink — nothing of the arrival stays, the Queued ring included: it
+   rides the word and leaves with it.
 
    ON A CLASS (`is-arriving`, ui/QueuedStrip `useArrivals`), never the row's
    mere presence: the strip mounts every time its chat does (a rail card opened
@@ -592,16 +592,6 @@ a.c-waitcard .wc-ahead:hover,
   padding: 1px calc(10px * var(--c-zoom, 1));
   border-radius: calc(9px * var(--c-zoom, 1));
 }
-.c-queue-strip:not(.c-queue-compact) .c-queue-row::before {
-  content: "";
-  flex: none;
-  align-self: center;
-  box-sizing: border-box;
-  width: calc(8px * var(--c-zoom, 1));
-  height: calc(8px * var(--c-zoom, 1));
-  border: 1.5px solid var(--status-queued);
-  border-radius: 50%;
-}
 /* The words hug the left and the gap takes the rest, so the arrival's word can
    stand right after them and leave without anything moving. */
 .c-queue-strip:not(.c-queue-compact) .c-queue-text {
@@ -613,10 +603,24 @@ a.c-waitcard .wc-ahead:hover,
 }
 .c-queue-tag {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--c-zoom, 1));
   font-size: calc(11px * var(--c-zoom, 1));
   font-weight: 500;
   color: var(--status-queued);
   animation: c-queue-tag 3000ms ease-out both;
+}
+/* The Queued ring, with the word and for as long as the word: a ring left in
+   front of every waiting line kept drawing the eye after the moment had
+   passed (Akshil, 2026-11-18). */
+.c-queue-tag::before {
+  content: "";
+  box-sizing: border-box;
+  width: calc(8px * var(--c-zoom, 1));
+  height: calc(8px * var(--c-zoom, 1));
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
 }
 .c-queue-strip:not(.c-queue-compact) .c-queue-row.is-arriving {
   animation:

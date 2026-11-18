@@ -32,7 +32,13 @@ function useArrivals(lines: readonly QueuedLine[], ready: boolean): ReadonlySet<
   // The ids as ONE string for the effect's dependency. JSON, not a joined list:
   // an inbox row with no id of its own is keyed by its words, and words have
   // newlines in them (CodeRabbit, PR #2347).
-  const ids = JSON.stringify(lines.map((l) => l.id));
+  //
+  // ONLY THE LINES TYPED IN THIS VIEW. The arrival says "your message was
+  // accepted", and that is a thing to say about a message the reader just
+  // sent here — never about a line the run's inbox reported (another tab's, a
+  // reload's, the first poll of a run this page attached to), whenever it
+  // happens to show up (CodeRabbit, PR #2347).
+  const ids = JSON.stringify(lines.filter((l) => l.local).map((l) => l.id));
   useEffect(() => {
     const now = JSON.parse(ids) as string[];
     const before = known.current;

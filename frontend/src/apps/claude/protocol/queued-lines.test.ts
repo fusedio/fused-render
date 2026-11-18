@@ -30,6 +30,7 @@ describe("queuedLines", () => {
     const typed = [user("u1", "hello"), user("f", "and also this", { pending: "sending" })];
     const before = queuedLines({ turns: typed, queuedKeys: [], inbox: [] });
     expect(before.lines.map((l) => [l.id, l.text, l.pending])).toEqual([["f", "and also this", "sending"]]);
+    expect(before.lines[0]!.local).toBe(true);
     expect(before.hiddenKeys.has("f")).toBe(true);
     // The send's own bubble adopts the row (the tag comes off) and the
     // controller names it as queued: one id, so the strip never remounts it.
@@ -112,6 +113,19 @@ describe("queuedLines and identical words", () => {
       ],
     });
     expect(two.lines.map((l) => l.id)).toEqual(["f2"]);
+  });
+
+  it("a line still on its way does not retire an inbox entry that says the same thing", () => {
+    // It has no inbox entry of its own yet: the one listed is another message.
+    const out = queuedLines({
+      turns: [user("s1", "again", { pending: "sending" })],
+      queuedKeys: [],
+      inbox: [{ id: "f1", uuid: "x1", text: "again" }],
+    });
+    expect(out.lines.map((l) => [l.id, l.local])).toEqual([
+      ["s1", true],
+      ["f1", undefined],
+    ]);
   });
 
   it("an inbox row for a line already in the strip is not drawn twice", () => {

@@ -49,8 +49,9 @@ export interface UserTurn {
    * `SendOptions.clientId` of the send that drew this bubble — the same id the
    * server stamps on the run's inbox entry (`InboxMessage.uuid`). It is how the
    * queue strip knows an inbox entry is THIS bubble, already on screen, and not
-   * a second message with the same words (`protocol/queued-lines`). A live
-   * send only; a restored turn has none.
+   * a second message with the same words (`protocol/queued-lines`). Only on the
+   * message that OPENS a turn (`sendMessage`): a follow-up's bubble lives in the
+   * strip and is matched there as it always was. A restored turn has none.
    */
   clientId?: string;
   /**
