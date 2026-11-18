@@ -115,11 +115,13 @@ def where(bot, run: bool = False) -> str:
     return out + (" " + note if run and (note := run_note(bot)) else "")
 
 
-def run_note(bot) -> str:
+def run_note(bot, ask_user: bool = False) -> str:
     """What a session that may run UDFs is told ("" when it may not): which Fused environment each folder of canvas
-    copies belongs to, the command that runs a UDF there, and that no other form can be approved. A chat states
-    it every turn (agent_engine._expert_message): a session resumed from before the expert could run, or before
-    an environment was added, never saw it."""
+    copies belongs to, the command that runs a UDF there, and what happens to any other command: refused with
+    nobody to approve it (an ask, a routine's turn), or put to the user on an approval card (`ask_user`: the chat,
+    agent_engine.expert_cards). A chat states it every turn (agent_engine._expert_message): a session resumed
+    from before the expert could run, before an environment was added, or from when nobody could approve, never
+    saw it."""
     envs = run_envs(bot)
     if not envs:
         return ""
@@ -128,9 +130,17 @@ def run_note(bot) -> str:
             + ", always in the environment the canvas copy belongs to: "
             + "; ".join(f"copies under {d} are environment `{env}`, run with `{run_prefix(env)} <canvas> <udf>`"
                         for env, d in envs)
-            + ". The command must start exactly like that (add `--help` to see its flags). Any other shell command"
-            " is refused, and nobody can approve it: do not ask the user to approve a command, change it to this"
-            " form.")
+            + ". The command must start exactly like that (add `--help` to see its flags). "
+            + (ASK_USER_NOTE if ask_user else REFUSED_NOTE))
+
+
+#: How a session that may run UDFs is told what happens outside its allow rules (`run_note`).
+REFUSED_NOTE = ("Any other shell command is refused, and nobody can approve it: do not ask the user to approve a "
+                "command, change it to this form.")
+ASK_USER_NOTE = ("Anything else (another shell command, a read outside your folders, a write other than memory.md) "
+                 "is not refused outright: when you call it, the user gets an Approve / Deny card in this chat and "
+                 "the call waits for their answer. So never tell the user to approve something you have not called, "
+                 "keep to the form above whenever it does the job, and when a call is denied do not retry it.")
 
 
 #: The Fused environments an expert may run UDFs in. `custom` is not one: it is reached with FUSED_ENV unset from

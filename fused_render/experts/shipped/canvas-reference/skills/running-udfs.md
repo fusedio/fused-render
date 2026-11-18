@@ -71,7 +71,7 @@ Results are cached on Fused. The same UDF with the same parameters may return an
 
 ## What the fence refuses
 
-One `fused` command per Bash call. Chaining (`;`, `&&`), writing output to a file (`>`, `tee`), command substitution (`$(...)`, backticks) and every other program are refused, as are all other `fused` commands (push, pull, create, delete, login). `fused workbench --env <env> whoami` is allowed and shows who is signed in. Do not use `--output-file`: read the result from the command's output. A refusal is final; do not try another spelling.
+One `fused` command per Bash call. Chaining (`;`, `&&`), writing output to a file (`>`, `tee`), command substitution (`$(...)`, backticks) and every other program are refused, as are all other `fused` commands (push, pull, create, delete, login). `fused workbench --env <env> whoami` is allowed and shows who is signed in. Do not use `--output-file`: read the result from the command's output. A refusal is final; do not try another spelling. In the user's chat a command outside these rules is not refused outright: the user gets an Approve / Deny card for it. Keep to the commands above anyway, and never ask the user to approve something you have not called.
 
 ## Reporting
 

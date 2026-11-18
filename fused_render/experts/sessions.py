@@ -21,7 +21,9 @@ UDF for a chat and an ask) exist, the one pre-allowed write is memory.md, and
 with no permission prompt tool every other write, and every read outside the
 expert's folder and its granted folders, is refused by Claude Code itself
 (verified on claude 2.1.326). The chat (bots/agent_engine.py) uses the same
-`fence`. Nothing here reads the model's words to decide anything: the transcript
+`fence` and adds a permission prompt tool: there a user is at hand, so what the
+fence does not cover raises an approval card instead of a refusal (side
+sessions have nobody to ask and never get one). Nothing here reads the model's words to decide anything: the transcript
 is kept for the user to look at.
 """
 from __future__ import annotations
@@ -53,6 +55,7 @@ TIMEOUT_ENV = "FUSED_RENDER_EXPERT_TIMEOUT"
 TIMEOUT_S = 600.0
 ASK_PARALLEL = 3
 ASK_WAIT_S = 120
+LOCK_POLL_S = 2.0            # how often a writer waiting for the lock looks whether the chat waits on the user
 BUSY = "the expert is busy; try again in a minute"
 CLOSED = "the server is shutting down; no new expert session starts"
 ROWS_KEPT = 200
@@ -100,7 +103,7 @@ def fence(bot, write: bool, run: bool = False) -> list:
     parameters or say who is signed in, per environment the expert may run in (`store.run_envs`; with none, no
     Bash at all). The rules name the command and its environment only: running on the remote engine is an
     instruction to the expert (its skill, `store.where`), not something a rule enforces. Everything else has nobody
-    to ask and is refused. The rule list is variadic: callers put another `--flag` (or nothing) after it."""
+    to ask and is refused, unless the caller adds a permission prompt tool (the chat, agent_engine.argv). The rule list is variadic: callers put another `--flag` (or nothing) after it."""
     rules = []
     if write:
         rules += [f"Edit({_rule_path(p)})" for p in _spellings(store.memory_path(bot))]
@@ -413,6 +416,19 @@ def diff(before: str, after: str) -> str:
                                         "memory.md (before)", "memory.md (after)", n=1))
 
 
+def _take(bot, gate, writes: bool) -> bool:
+    """Wait for a session's gate: an ask slot up to ASK_WAIT_S, the write lock up to the harness timeout. A writer
+    gives up at once while the chat that holds the lock waits on the user (an approval card, `waiting_on`): that
+    wait is as long as the user takes, and a task-learn pass waiting it out would hold up every other expert."""
+    if not writes:
+        return gate.acquire(timeout=ASK_WAIT_S)
+    end = time.monotonic() + _timeout()
+    while not gate.acquire(timeout=max(0.0, min(LOCK_POLL_S, end - time.monotonic()))):
+        if time.monotonic() >= end or (getattr(bot, "meta", None) or {}).get("waiting_on") is not None:
+            return False
+    return True
+
+
 def run(bot, kind: str, prompt: str, trigger=None, gen=None) -> dict:
     """One side session, start to saved row. Never raises: a failure is a row with status `error`. `gen`: the
     shutdown generation the session was QUEUED in (a dream queued by `after_write`); one queued before a shutdown
@@ -425,7 +441,7 @@ def run(bot, kind: str, prompt: str, trigger=None, gen=None) -> dict:
     with _GUARD:
         shut = _STATE["closed"] or (gen is not None and gen != _STATE["gen"])
         gen = _STATE["gen"] if gen is None else gen  # admitted in this generation
-    if shut or not gate.acquire(timeout=_timeout() if writes else ASK_WAIT_S):
+    if shut or not _take(bot, gate, writes):
         rec.update(status="error", ended=time.time(), error=CLOSED if shut or closed() else BUSY)
         _save(bot, rec)
         return rec

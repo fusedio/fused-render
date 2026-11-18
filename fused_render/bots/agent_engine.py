@@ -26,10 +26,15 @@ against Super Bot's larger step cap.
 
 An expert (docs/experts.md) runs here too, with none of Super Bot's extras: its
 folder is the working directory, instructions.md (experts.store.instructions)
-the system prompt, no browser and no bot MCP server (`NO_MCP`), and Claude
-Code's own fence (experts.sessions.fence: Read/Glob/Grep/Edit/Write, the one
-pre-allowed write memory.md, no permission prompt tool, so everything else is
-refused by the CLI). Its first message is the conversation summary plus the
+the system prompt, no browser, none of the bot tools, and Claude Code's own
+fence (experts.sessions.fence: Read/Glob/Grep/Edit/Write, Bash for the `fused`
+commands that run a UDF, the one pre-allowed write memory.md). What the fence
+does not cover asks the user: the chat gets `--permission-prompt-tool
+mcp__bot__permission` on a bot MCP server whose roster is that one tool
+(`roster_for`), and the call becomes Super Bot's approval card (`_permission`),
+with no auto-allow, no "approve forever" and no risk score. A routine's turn has
+nobody at the card and keeps the side sessions' prompt-less fence (`NO_MCP`:
+everything else is refused by the CLI). Its first message is the conversation summary plus the
 date and the MESSAGE (`_expert_message`); built-in calls become `action` rows as
 Super Bot's do. A chat turn writes memory, so it holds the expert's write lock
 and ends with experts.sessions.note_chat (a "chat" session row when memory.md
@@ -353,9 +358,17 @@ def _check(bot, token) -> Turn:
 
 
 def roster_for(bot, token) -> list:
-    """`GET /api/bots/<id>/tools`: the task's tool list (MCP tools/list shape)."""
+    """`GET /api/bots/<id>/tools`: the task's tool list (MCP tools/list shape). An expert's is the permission
+    prompt alone (its chat's approval cards): it has no browser and none of the bot tools."""
     _check(bot, token)
+    if xstore.is_expert(bot):
+        return [{"name": tools.PERMISSION_TOOL, **tools.PERMISSION_SPEC}]
     return tools.roster(bot)
+
+
+def expert_cards(bot) -> bool:
+    """An expert's turn has a user to answer an approval card: every turn but a routine's (tools.routine_run)."""
+    return xstore.is_expert(bot) and not tools.routine_run(bot)
 
 
 # ---------------------------------------------------------- first message ---
@@ -548,7 +561,7 @@ def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tupl
         parts.append(xstore.where(bot))  # a resumed session already has the paths
     # Every turn, not only the first: a session resumed from before the expert could run (or before an environment
     # was added) never saw it, and an expert that guesses the command form is refused.
-    parts.append(xstore.run_note(bot))
+    parts.append(xstore.run_note(bot, ask_user=expert_cards(bot)))
     parts = [p for p in parts if p]
     parts += [f"Today is {xsessions.today()}.", f"MESSAGE: {task}"]
     return "\n\n".join(parts), {}
@@ -577,7 +590,10 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
     never fires before fused's rollover (ROLLOVER_FRACTION); an expert's turn
     passes none and its chat is left to the CLI's own compaction. `fence`
     (an expert: experts.sessions.fence) replaces the tool, permission and MCP
-    flags with the expert's own and `NO_MCP`; `mcp_file` is unused then."""
+    flags with the expert's own. With an `mcp_file` (its chat, `expert_cards`)
+    what the fence does not cover goes to our `permission` MCP tool, the only
+    tool that server lists for an expert (`roster_for`), and becomes an approval
+    card; with none (a routine's turn) it is `NO_MCP` and the CLI refuses."""
     out = [bin_path, "-p",
            "--input-format", "stream-json",
            "--output-format", "stream-json",
@@ -591,7 +607,12 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
     if window:
         out += ["--autocompact", str(int(window))]
     if fence is not None:
-        return out + list(fence) + NO_MCP
+        if not mcp_file:
+            return out + list(fence) + NO_MCP
+        # No `--allowedTools mcp__bot__*`: the one tool there is the prompt itself, never the model's to call.
+        return out + list(fence) + ["--permission-prompt-tool", f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}",
+                                    "--setting-sources=", "--mcp-config", mcp_file, "--strict-mcp-config",
+                                    "--disable-slash-commands"]
     if super_mode:
         out += ["--permission-mode", super_mode,
                 "--permission-prompt-tool", f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}"]
@@ -1040,7 +1061,9 @@ def run(bot, task: str, label: str | None = None) -> None:
                 sess.prev_url = u
                 sess.visited[u] = 1  # as if a goto had landed there: coming back later is a revisit
             prompt, sent = first_message(bot, task, None, page=page, conv=conv)
-            mcp_file = "" if expert else write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token)
+            # An expert with nobody at the card (a routine) gets no MCP server at all, so no permission prompt.
+            mcp_file = ("" if expert and not expert_cards(bot)
+                        else write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token))
             # Super Bot reads its Inbox (cwd) without a prompt; every other read, and every write, reaches
             # `_permission`, whose fence judges by `bot.folder_roots` (docs §6). No --add-dir (was `~` whole).
             sess.cwd = cwd  # before the spawn: the first permission call may land at once
@@ -1352,8 +1375,8 @@ def _handle(bot, sess: Turn, name: str, args: dict) -> dict:
     with the images queued by the instructions it carried (docs §13), so a
     picture never lands on a later result than the words it came with."""
     out = _handle_core(bot, sess, name, args)
-    # Never on Super Bot's permission answer: that must stay ONE JSON text block (the messages were re-queued).
-    if (sess.pending_images and not (name == tools.PERMISSION_TOOL and sess.is_super)
+    # Never on a permission answer: that must stay ONE JSON text block (the messages were re-queued).
+    if (sess.pending_images and not (name == tools.PERMISSION_TOOL and sess.builtin_rows)
             and isinstance(out, dict) and isinstance(out.get("content"), list)):
         out["content"].extend(b for b in (_image_result_block(im) for im in sess.pending_images) if b)
         sess.pending_images = []
@@ -1366,9 +1389,11 @@ def _handle_core(bot, sess: Turn, name: str, args: dict) -> dict:
     was_paused = _wait_pause(bot)
     if bot.stop_flag.is_set():
         return _stopped()
+    if sess.is_expert and name != tools.PERMISSION_TOOL:
+        return _result(f"error: unknown tool {name!r}", error=True)  # an expert has none of the bot tools
     notes = []
     msgs = bot._drain_inbox()
-    if name == tools.PERMISSION_TOOL and sess.is_super:
+    if name == tools.PERMISSION_TOOL and sess.builtin_rows:
         # Claude Code asking, not the model acting: no step, no page, and the
         # answer must be ONE JSON text block, so mid-task messages cannot ride
         # on it. They go back to the inbox for the next real tool result (and
@@ -1614,6 +1639,8 @@ def _permission(bot, sess: Turn, args: dict):
     when Stop landed while the card was up."""
     name = str(args.get("tool_name") or "tool")
     inp = args.get("input") if isinstance(args.get("input"), dict) else {}
+    if sess.is_expert:
+        return _expert_permission(bot, sess, args, name, inp)
     if name == "AskUserQuestion":
         return _ask_builtin(bot, sess, args)  # a question for the user, not a call to approve
     preview = builtin_label(name, inp)
@@ -1634,11 +1661,30 @@ def _permission(bot, sess: Turn, args: dict):
     if not sess.web_touched and tools.forever_match(bot, rule):
         bot.emit("note", f"Running without asking ({rule['label']}: approved forever).")
         return _permission_answer(True, args)
+    return _permission_card(bot, sess, args, name, inp, preview, rule,
+                            "This task has read the web, so every write and command asks first." if sess.web_touched else "")
+
+
+EXPERT_CARD_WHY = "It is outside what this expert may do without asking."
+
+
+def _expert_permission(bot, sess: Turn, args: dict, name: str, inp: dict):
+    """An expert's chat (docs/experts.md §6): whatever Claude Code's fence does not allow (a shell command outside
+    the `fused` rules, a read outside its granted folders, a write other than memory.md) is the user's to decide,
+    on the same card. Nothing is allowed without the card, there is no "approve forever" (the rule would live in
+    bot.json, where no side session could use it and no setting shows it) and no risk score (that is a model
+    call, and fused makes none for an expert)."""
+    if name.startswith("mcp__"):  # the only MCP tool is this prompt: the model called it as if it were a tool
+        return _permission_answer(False, args, "That is Claude Code's own permission prompt, not a tool for you.")
+    return _permission_card(bot, sess, args, name, inp, builtin_label(name, inp), None, EXPERT_CARD_WHY)
+
+
+def _permission_card(bot, sess: Turn, args: dict, name: str, inp: dict, preview: str, rule, why: str):
+    """The approval card for one built-in call and its answer on the permission wire. None on Stop."""
     if preview in sess.denied:
         bot.emit("note", f"Not asking again: the user already declined to {preview}.")
         return _permission_answer(False, args, f"DENIED EARLIER by the user: {preview}. Do not retry it; do something else "
                                                "or finish and say what you could not do.")
-    why = "This task has read the web, so every write and command asks first." if sess.web_touched else ""
     # The same card and the same reading of the answer as a risky click
     # (_gate): yes / no / anything else is an instruction and the card stays up.
     # An allow answer is one JSON block with no room for text, so instructions
@@ -1646,7 +1692,8 @@ def _permission(bot, sess: Turn, args: dict):
     # deny carries a message the model reads, so they ride on that.
     notes: list = []
     raw: list = []
-    verdict, said = _gate(bot, sess, preview, why, notes, raw, rule=rule, tool=name, tool_input=inp)
+    verdict, said = _gate(bot, sess, preview, why, notes, raw, rule=rule, tool=None if sess.is_expert else name,
+                          tool_input=inp)
     if verdict is None:
         return None
     if verdict:
@@ -1654,7 +1701,7 @@ def _permission(bot, sess: Turn, args: dict):
             with bot.lock:
                 bot.inbox[:0] = raw
         return _permission_answer(True, args)
-    bot.emit("system", "Denied; Super Bot will try something else.")
+    bot.emit("system", f"Denied; {'the expert' if sess.is_expert else 'Super Bot'} will try something else.")
     sess.denied.add(preview)
     why_not = f' They said: "{said}".' if said and said.lower() not in ("deny", "no", "n") else ""
     return _permission_answer(False, args, f"DENIED by the user: {preview}.{why_not} Do not retry it; do something else "

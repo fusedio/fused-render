@@ -195,6 +195,11 @@ def test_fence_flags(expert, tmp_path):
     assert cmd[cmd.index("--mcp-config") + 1] == '{"mcpServers":{}}'
     # The rule list is variadic: it is followed by another flag.
     assert cmd[cmd.index(w[-1]) + 1].startswith("--")
+    # The chat (an mcp.json): the same fence, the bot MCP server and its permission prompt instead of NO_MCP.
+    chat = agent_engine.argv("claude", "sonnet", "low", "/sp", "/mcp.json", fence=w)
+    assert chat[chat.index("--permission-prompt-tool") + 1] == "mcp__bot__permission"
+    assert chat[chat.index("--mcp-config") + 1] == "/mcp.json" and "--strict-mcp-config" in chat
+    assert "--setting-sources=" in chat and chat[chat.index(w[-1]) + 1].startswith("--")
 
 
 def test_fence_skips_a_folder_with_glob_characters(expert, tmp_path):
@@ -356,6 +361,7 @@ def test_an_expert_chat_leaves_compaction_to_the_cli(expert, monkeypatch):
         raise RuntimeError("stop here")
     monkeypatch.setattr(claude_cli, "runnable", lambda: "claude")
     monkeypatch.setattr(agent_engine, "_spawn", spawn)
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")  # the chat's mcp.json (its approval cards) names it
     agent_engine.run(expert, "hi")
     assert seen and "--autocompact" not in seen[0] and "--resume" not in seen[0]
     # An ordinary bot still holds the CLI's compaction off until fused's rollover.
@@ -928,14 +934,43 @@ def test_a_change_made_while_a_session_writes_is_not_a_hand_edit(expert, monkeyp
     assert (sessions.writing(expert), sessions.edited_by_hand(expert)) == (False, False)
 
 
+def sessions_ask_prompt(expert, monkeypatch):
+    calls = stub(monkeypatch)
+    sessions.ask(expert, "How?")
+    return calls[0]["prompt"]
+
+
 def test_a_resumed_chat_is_told_how_to_run_every_turn(expert, tmp_path, monkeypatch):
     from fused_render.bots import agent_engine
     _canvases(expert, tmp_path, monkeypatch)
     note = store.run_note(expert)
     assert "fused workbench --env prod run --engine remote" in note and "nobody can approve it" in note
+    assert note in sessions_ask_prompt(expert, monkeypatch)  # an ask has nobody at a card: refused, change the command
+    note = store.run_note(expert, ask_user=True)        # the chat: the user is asked on a card
+    assert "fused workbench --env prod run --engine remote" in note and "nobody can approve" not in note
+    assert "Approve / Deny card in this chat" in note
     fresh, _ = agent_engine._expert_message(expert, "run it", past=[], conv={})
     resumed, _ = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s"})
     assert note in fresh and note in resumed            # a session from before the expert could run never saw it
+    monkeypatch.setattr(expert, "task_via", {"kind": "routine"})  # a routine's turn has nobody at the card either
+    assert store.run_note(expert) in agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s"})[0]
     assert store.where(expert) in fresh and store.where(expert) not in resumed
     monkeypatch.delenv(__import__("fused_render.fusedcli", fromlist=["x"]).CLI_DIR_ENV)
     assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={"session_id": "s"})[0]
+
+
+def test_a_writer_does_not_wait_out_a_chat_that_waits_on_the_user(expert, monkeypatch):
+    calls = stub(monkeypatch)
+    lock = store.write_lock(expert)
+    lock.acquire()  # a chat turn holds the memory ...
+    try:
+        monkeypatch.setitem(expert.meta, "waiting_on", 7)  # ... with an approval card up
+        monkeypatch.setattr(sessions, "LOCK_POLL_S", 0.05)
+        t0 = time.monotonic()
+        row = sessions.run(expert, "task-learn", "learn")
+        assert row["status"] == "error" and row["error"] == sessions.BUSY and calls == []
+        assert time.monotonic() - t0 < 5  # not the harness timeout (600 s)
+    finally:
+        lock.release()
+    expert.meta.pop("waiting_on", None)
+    assert sessions.run(expert, "task-learn", "learn")["status"] == "done"

@@ -25,6 +25,7 @@ import pytest
 from fused_render.bots import paths as bpaths
 from fused_render.bots import agent_engine, apptools, tools
 from fused_render.bots import bot as botmod
+from fused_render.bots.channels import base as chan_base
 
 from _claude_stub_cli import write_stub_cli
 
@@ -1298,6 +1299,73 @@ def test_super_permission_card_denied_and_not_asked_twice(server, fake_cli, monk
     assert "USER INSTRUCTION (mid-task, overrides the task): leave it alone" in first["message"]
     assert second["behavior"] == "deny" and "DENIED EARLIER" in second["message"]
     assert bot.roles().count("approval") == 1
+
+
+# ---- an expert's chat: what its fence does not cover asks on the same card (docs/experts.md §6) ----
+def expert_bot(tmp_path):
+    bot = FakeBot("e0e0e0e0")
+    bot.meta.update({"name": "Tester Expert", "kind": "expert", "model": "sonnet"})
+    bot.public_dir = str(tmp_path / "expert")
+    os.makedirs(bot.public_dir, exist_ok=True)
+    bot.granted = []
+    return bot
+
+
+def test_expert_chat_argv_and_roster(server, fake_cli, monkeypatch, tmp_path):
+    bot = expert_bot(tmp_path)
+    run_task(bot, [{"result": "ok"}], monkeypatch)
+    argv = fake_cli("argv")[0]["argv"]
+    assert argv[argv.index("--permission-prompt-tool") + 1] == "mcp__bot__permission"
+    assert argv[argv.index("--tools") + 1] == "Read,Glob,Grep,Edit,Write" and "--tools=" not in argv
+    assert argv[argv.index("--permission-mode") + 1] == "default" and "--setting-sources=" in argv
+    assert f"mcp__{agent_engine.MCP_SERVER}__*" not in argv  # the prompt is not a tool the model may call
+    assert fake_cli("tools")[0]["tools"] == ["permission"]  # no browser, none of the bot tools
+
+
+def test_expert_chat_card_denied_then_approved(server, fake_cli, monkeypatch, tmp_path, stub_risk):
+    bot = expert_bot(tmp_path)
+    t = start(bot, [_perm("Bash", command="ls /tmp"), _perm("Read", file_path="/etc/hosts"), {"result": "done"}], monkeypatch)
+    card = bot.wait_event("approval")
+    assert card["text"] == f"About to run `ls /tmp`. {agent_engine.EXPERT_CARD_WHY} Approve?"
+    assert "forever" not in card and "severity" not in card and bot.meta["status"] == "waiting"
+    bot.say("no")
+    # A read outside its folders is the user's to decide too: nothing is allowed without the card.
+    second = bot.wait_event("approval", pred=lambda ev: "read" in ev["text"])
+    assert second["detail"] == "read /etc/hosts"
+    bot.say("yes")
+    finish(t)
+    assert _answer(fake_cli, 0)["behavior"] == "deny" and "DENIED by the user: run `ls /tmp`" in _answer(fake_cli, 0)["message"]
+    assert _answer(fake_cli, 1) == {"behavior": "allow", "updatedInput": {"file_path": "/etc/hosts"}}
+    assert stub_risk == []  # no model call of ours for an expert, so no risk score
+    assert "allow_rules" not in bot.meta and bot.roles()[-1] == "done"
+    assert any(e["text"] == "Denied; the expert will try something else." for e in bot.events)
+
+
+def test_expert_chat_forever_answer_writes_no_rule(server, fake_cli, monkeypatch, tmp_path):
+    bot = expert_bot(tmp_path)
+    t = start(bot, [_perm("Write", file_path="/tmp/x.md", content="hi"), {"result": "ok"}], monkeypatch)
+    assert bot.wait_event("approval")
+    bot.say(chan_base.Forever("yes"))  # the third button's answer, were one ever sent
+    finish(t)
+    assert _answer(fake_cli)["behavior"] == "allow" and "allow_rules" not in bot.meta
+
+
+def test_expert_has_no_bot_tools_and_cannot_call_the_prompt(server, fake_cli, monkeypatch, tmp_path):
+    bot = expert_bot(tmp_path)
+    run_task(bot, [{"tool": "goto", "args": {"url": "https://shop.test/"}},
+                   _perm("mcp__bot__permission", tool_name="Bash"), {"result": "ok"}], monkeypatch)
+    calls = fake_cli("call")
+    assert "unknown tool 'goto'" in calls[0]["result"]
+    assert _answer(fake_cli)["behavior"] == "deny" and "approval" not in bot.roles()
+
+
+def test_expert_routine_turn_has_no_card_path(server, fake_cli, monkeypatch, tmp_path):
+    bot = expert_bot(tmp_path)
+    bot.task_via = {"kind": chan_base.ROUTINE_KIND}
+    assert agent_engine.expert_cards(bot) is False
+    run_task(bot, [{"result": "ok"}], monkeypatch)
+    argv = fake_cli("argv")[0]["argv"]
+    assert "--permission-prompt-tool" not in argv and argv[-len(agent_engine.NO_MCP):] == agent_engine.NO_MCP
 
 
 def test_super_reads_never_ask(server, fake_cli, monkeypatch, tmp_path):
