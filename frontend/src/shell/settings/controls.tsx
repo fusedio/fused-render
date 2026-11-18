@@ -22,6 +22,7 @@ import {
   EnginesPointer,
   GeminiAgentControl,
   OpencodeAgentControl,
+  CursorAgentControl,
 } from "./ai";
 import {
   CanvasesControl,
@@ -77,6 +78,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "agent-codex": CodexAgentControl,
   "agent-gemini": GeminiAgentControl,
   "agent-opencode": OpencodeAgentControl,
+  "agent-cursor": CursorAgentControl,
   "agent-default": DefaultAgentControl,
   "claude-model": ClaudeModelPointer,
   "claude-cli-missing": ClaudeCliMissing,

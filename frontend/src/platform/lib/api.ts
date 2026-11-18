@@ -515,7 +515,9 @@ export interface ClaudeHealth {
       the CLI cached one. The OPENCODE snapshot (`/api/opencode/health`,
       docs/OPENCODE_BACKEND.md D10) says "local" (the default model is a
       `fused/…` local row — no account at all) or "providers" (at least one
-      provider OpenCode reports as connected). */
+      provider OpenCode reports as connected). The CURSOR snapshot
+      (`/api/cursor/health`) says "login" (`cursor-agent login`) or "api_key"
+      (`CURSOR_API_KEY`), with the account email when the CLI printed one. */
   account: {
     method: string | null;
     email: string | null;
@@ -665,7 +667,7 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 // -- The same doors, PER AGENT (docs/COPILOT_BACKEND.md D10) ----------------
 //
 // `/api/copilot/*`, `/api/codex/*` (docs/CODEX_BACKEND.md D10),
-// `/api/gemini/*` (docs/GEMINI_BACKEND.md D10) and `/api/opencode/*`
+// `/api/gemini/*` (docs/GEMINI_BACKEND.md D10), `/api/cursor/*` and `/api/opencode/*`
 // (docs/OPENCODE_BACKEND.md D10) — `health,
 // health/refresh, install, login, login/cancel, link-path` — answer the same
 // bodies as the Claude ones above, so one set of functions keyed on the
@@ -675,7 +677,7 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 // contract) and is not generalised.
 
 /** Each agent's route segment; an id not here (or none) is Claude's. */
-const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex", gemini: "gemini", opencode: "opencode" };
+const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex", gemini: "gemini", opencode: "opencode", cursor: "cursor" };
 
 function agentRoute(backend: string, tail: string): string {
   return `/api/${AGENT_ROUTES[backend] ?? "claude"}/${tail}`;
@@ -747,7 +749,7 @@ export interface AgentCaps {
 
 export interface AgentBackendRow {
   id: string;
-  /** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" — the word every surface names the agent by. */
+  /** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" / "Cursor" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
   /** `reasoning: false` marks a model its CLI takes no effort for (the spawn
@@ -1727,12 +1729,12 @@ export interface Prefs {
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled` /
-  // `gemini_enabled` / `opencode_enabled` (default off, docs/CODEX_BACKEND.md D17,
+  // `gemini_enabled` / `opencode_enabled` / `cursor_enabled` (default off, docs/CODEX_BACKEND.md D17,
   // docs/GEMINI_BACKEND.md D17, docs/OPENCODE_BACKEND.md D17), and the one
   // new chats and tasks open on. The server refuses a PUT that would turn
   // the last one off (400 "turn on another agent first"). OPTIONAL: an older
   // server answers without it, and the reader treats absence as Claude only.
-  agents?: { claude: boolean; copilot: boolean; codex: boolean; gemini?: boolean; opencode?: boolean; default: string };
+  agents?: { claude: boolean; copilot: boolean; codex: boolean; gemini?: boolean; opencode?: boolean; cursor?: boolean; default: string };
 }
 
 export type ChromiumEngineState = "unsupported" | "missing" | "ready";
@@ -3770,7 +3772,7 @@ export function createApp(
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
-  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "gemini" | "opencode" | "" for the
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor" | "" for the
   // catalog's default (docs/COPILOT_BACKEND.md D17).
   backend: string = "",
 ): Promise<NewAppResult> {
@@ -4049,7 +4051,7 @@ export interface Task {
    */
   model: string;
   effort: string;
-  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex" | "gemini" | "opencode"
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor"
    *  (docs/COPILOT_BACKEND.md D2), chosen at the first turn and immutable. Optional: an older server
    *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
   backend?: string;

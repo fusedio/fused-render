@@ -14,6 +14,7 @@ import {
   CLAUDE_UPDATE_COMMAND,
   CODEX_BIN_ENV,
   COPILOT_BIN_ENV,
+  CURSOR_BIN_ENV,
   GEMINI_BIN_ENV,
   OPENCODE_BIN_ENV,
   agentAccountLine,
@@ -21,7 +22,7 @@ import {
   claudeIssues,
   issueHelpUrl,
 } from "./claude-health";
-import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND, OPENCODE_INSTALL_COMMAND } from "./trouble";
+import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND, CURSOR_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND, OPENCODE_INSTALL_COMMAND } from "./trouble";
 import type { ClaudeHealth } from "./api";
 
 // A machine where everything is fine. Each test breaks exactly one thing, so
@@ -344,6 +345,57 @@ test("gemini: the account line names the method in Gemini's words", () => {
   expect(line({ account: { method: "api_key", email: null, org: null, plan: null } })).toBe("Signed in with a Gemini API key");
   expect(line({ account: { method: "vertex", email: null, org: null, plan: null } })).toBe("Signed in through Vertex AI");
   expect(line({ account: { method: "gateway", email: null, org: null, plan: null } })).toBe("Signed in through an AI API gateway");
+  expect(line({ account: null })).toBe("Signed in");
+  expect(line({ signed_in: false })).toBeNull();
+});
+
+
+// -- Cursor --------------------------------------------------------------------
+
+function cursorHealthy(over: Partial<ClaudeHealth> = {}): ClaudeHealth {
+  return healthy({
+    path: "/Users/x/.local/bin/cursor-agent",
+    version: "2026.11.13-abc1234",
+    min_version: "2026.11.13-abc1234",
+    install_command: CURSOR_INSTALL_COMMAND,
+    account: { method: "login", email: "dev@example.com", org: null, plan: null },
+    ...over,
+  });
+}
+
+test("cursor: a healthy machine produces no issues", () => {
+  expect(agentIssues(cursorHealthy(), "cursor")).toEqual([]);
+});
+
+test("cursor: a missing CLI names Cursor CLI and offers the curl install, and a stale override names its env var", () => {
+  const [issue] = agentIssues(cursorHealthy({ found: false, path: null, version: null, signed_in: false }), "cursor");
+  expect(issue.id).toBe("missing");
+  expect(issue.title).toBe("The app can't find Cursor CLI");
+  expect(issue.command).toBe(CURSOR_INSTALL_COMMAND);
+  expect(CURSOR_INSTALL_COMMAND).toBe("curl https://cursor.com/install -fsS | bash");
+  expect(issue.action).toBeUndefined();
+  const [override] = agentIssues(cursorHealthy({ found: false, source: "override" }), "cursor");
+  expect(override.id).toBe("unusable-override");
+  expect(override.title).toContain(CURSOR_BIN_ENV);
+  expect(CURSOR_BIN_ENV).toBe("FUSED_RENDER_CURSOR_BIN");
+  expect(override.title).not.toContain(GEMINI_BIN_ENV);
+});
+
+test("cursor: signed out offers the Cursor sign-in, never `claude doctor`", () => {
+  const issues = agentIssues(cursorHealthy({ signed_in: false, account: null }), "cursor");
+  expect(issues.map((i) => i.id)).toEqual(["signed-out"]);
+  expect(issues[0].detail).toContain("Cursor");
+  expect(issues[0].action?.kind).toBe("login");
+  const [broken] = agentIssues(cursorHealthy({ broken: true }), "cursor");
+  expect(broken.id).toBe("broken");
+  expect(broken.action).toBeUndefined();
+});
+
+test("cursor: the account line names the method in Cursor's words", () => {
+  const line = (over: Partial<ClaudeHealth>) => agentAccountLine(cursorHealthy(over), "cursor", () => "CLAUDE LINE");
+  expect(line({})).toBe("Signed in to Cursor as dev@example.com");
+  expect(line({ account: { method: "login", email: null, org: null, plan: null } })).toBe("Signed in to Cursor");
+  expect(line({ account: { method: "api_key", email: null, org: null, plan: null } })).toBe("Signed in with a Cursor API key");
   expect(line({ account: null })).toBe("Signed in");
   expect(line({ signed_in: false })).toBeNull();
 });

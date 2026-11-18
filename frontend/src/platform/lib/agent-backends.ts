@@ -212,11 +212,47 @@ export const OPENCODE_FALLBACK: AgentBackendRow = {
   health: null,
 };
 
+/** The Cursor row, the fifth twin: a Cursor chat answers with Cursor's caps
+ *  from the first frame. Off until the server says otherwise. The model is a
+ *  spawn flag (`--model`), so a change respawns and only the mode switch is
+ *  live (host-side). NO EFFORT CONTROL: an empty `efforts` and every model
+ *  `reasoning: false`. A seed: the account's own model list replaces it.
+ *  KEEP IN SYNC BY HAND with fused_render/agent_backends/cursor.py — pinned
+ *  field for field by tests/test_agent_backend_pins.py. */
+export const CURSOR_FALLBACK: AgentBackendRow = {
+  id: "cursor",
+  label: "Cursor",
+  enabled: false,
+  models: [
+    { id: "auto", label: "Auto (Cursor picks)", reasoning: false },
+    { id: "gpt-5", label: "GPT-5", reasoning: false },
+    { id: "sonnet-4.5", label: "Claude Sonnet 4.5", reasoning: false },
+    { id: "sonnet-4.5-thinking", label: "Claude Sonnet 4.5 (thinking)", reasoning: false },
+    { id: "composer-1", label: "Composer 1", reasoning: false },
+  ],
+  default_model: "auto",
+  efforts: [],
+  modes: ["prompt", "acceptEdits", "auto"],
+  caps: {
+    plan_mode: false,
+    live_model_switch: false,
+    live_mode_switch: true,
+    snapshots: false,
+    artifacts: false,
+    worktrees: false,
+    bg_tasks: false,
+    ask_user: false,
+    terminal_mirror: false,
+    mid_turn_messages: false,
+  },
+  health: null,
+};
+
 const FALLBACK: AgentCatalog = {
   // ENABLED: Claude alone, the defaults of every switch (D17).
   backends: [CLAUDE_FALLBACK],
   default: "claude",
-  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK, OPENCODE_FALLBACK],
+  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK, OPENCODE_FALLBACK, CURSOR_FALLBACK],
 };
 
 export interface AgentCatalogState extends AgentCatalog {
@@ -389,7 +425,7 @@ export function backendOf(id: string | null | undefined): AgentBackendRow {
   return current.all.find((b) => b.id === want) ?? current.backends.find((b) => b.id === want) ?? CLAUDE_FALLBACK;
 }
 
-/** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" — the word every surface names the agent by. */
+/** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" / "Cursor" — the word every surface names the agent by. */
 export function agentLabel(id: string | null | undefined): string {
   return backendOf(id).label;
 }

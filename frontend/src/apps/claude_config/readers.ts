@@ -13,6 +13,7 @@ export const CLI_LABEL: Record<CliId, string> = {
   codex: "Codex",
   gemini: "Gemini",
   opencode: "OpenCode",
+  cursor: "Cursor",
 };
 
 export function visibleReaders(readers: CliId[], on: CliId[]): CliId[] {
@@ -30,7 +31,7 @@ export function useEnabledClis(): CliId[] {
       (p) => {
         const a = p.agents;
         if (!alive || !a) return;
-        setOn((["claude", "copilot", "codex", "gemini", "opencode"] as CliId[]).filter((c) => !!a[c]));
+        setOn((["claude", "copilot", "codex", "gemini", "opencode", "cursor"] as CliId[]).filter((c) => !!a[c]));
       },
       () => {},
     );

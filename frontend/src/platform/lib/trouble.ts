@@ -38,6 +38,9 @@ export const GEMINI_INSTALL_COMMAND = "npm install -g @google/gemini-cli";
 /** OpenCode's documented install route (docs/OPENCODE_BACKEND.md D10). */
 export const OPENCODE_INSTALL_COMMAND = "npm install -g opencode-ai";
 
+/** Cursor CLI's documented install route (macOS and Linux; there is no Windows build). */
+export const CURSOR_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | bash";
+
 // TWO TIERS, and the split is the whole correctness argument.
 //
 // Some phrases NAME the thing — "claude cli not found", "please run /login" —
@@ -67,6 +70,7 @@ const ABOUT_COPILOT = /copilot|github/i;
 const ABOUT_CODEX = /codex|openai|chatgpt/i;
 const ABOUT_GEMINI = /gemini|google/i;
 const ABOUT_OPENCODE = /opencode|open code|provider|api key/i;
+const ABOUT_CURSOR = /cursor/i;
 
 // Unconditional: these name Claude Code or quote the CLI's own vocabulary.
 const NAMED: [TroubleKind, RegExp][] = [
@@ -130,6 +134,17 @@ const OPENCODE_NAMED: [TroubleKind, RegExp][] = [
   ["notfound", /opencode (?:cli )?not found/i],
 ];
 
+// CURSOR'S OWN MARKERS, unconditional for a Cursor session. KEEP IN SYNC BY
+// HAND with `account_error_markers` / `limit_error_markers` in
+// fused_render/agent_backends/cursor.py. `429` is matched as a whole number
+// here, as Codex's is. The signed-out ACP answer is "Authentication required.
+// Please run 'agent login' first", which the first marker catches.
+const CURSOR_NAMED: [TroubleKind, RegExp][] = [
+  ["login", /authentication required|not logged in|not signed in|unauthenticated|login required|agent login|invalid api key|unauthorized/i],
+  ["limit", /rate limit|usage limit|out of usage|quota|too many requests|\b429\b/i],
+  ["notfound", /cursor (?:cli )?not found|cursor-agent not found/i],
+];
+
 /** Each non-Claude agent's unconditional markers and subject test. Claude's
  *  are `NAMED` / `ABOUT_CLAUDE`, and any id not here reads as Claude. */
 const AGENT_TROUBLE: Record<string, { named: [TroubleKind, RegExp][]; about: RegExp }> = {
@@ -137,6 +152,7 @@ const AGENT_TROUBLE: Record<string, { named: [TroubleKind, RegExp][]; about: Reg
   codex: { named: CODEX_NAMED, about: ABOUT_CODEX },
   gemini: { named: GEMINI_NAMED, about: ABOUT_GEMINI },
   opencode: { named: OPENCODE_NAMED, about: ABOUT_OPENCODE },
+  cursor: { named: CURSOR_NAMED, about: ABOUT_CURSOR },
 };
 
 // An ENOENT whose path sits INSIDE an agent's own config dir (or is the dir
@@ -144,8 +160,8 @@ const AGENT_TROUBLE: Record<string, { named: [TroubleKind, RegExp][]; about: Reg
 // a missing CLI: the notfound shape must not read it as "install the CLI".
 // Unless the path's last segment IS the binary: `~/.claude/local/claude` is
 // a real (legacy) install location, and a half-removed one is a missing CLI.
-const AGENT_CONFIG_PATH = /[\\/]\.(?:claude|copilot|codex|gemini|opencode)(?:[\\/]|['"\s]|$)/i;
-const CLI_BINARY_PATH = /[\\/](?:claude|copilot|codex|gemini|opencode)(?:\.cmd|\.exe)?(?=$|['"\s:,)])/i;
+const AGENT_CONFIG_PATH = /[\\/]\.(?:claude|copilot|codex|gemini|opencode|cursor)(?:[\\/]|['"\s]|$)/i;
+const CLI_BINARY_PATH = /[\\/](?:claude|copilot|codex|gemini|opencode|cursor(?:-agent)?)(?:\.cmd|\.exe)?(?=$|['"\s:,)])/i;
 
 // Only when the message is about Claude — see above.
 const SHAPES: [TroubleKind, RegExp][] = [
@@ -372,8 +388,16 @@ export function troubleInstructions(ctx: TroubleContext): string {
   const codex = ctx.backend === "codex";
   const gemini = ctx.backend === "gemini";
   const opencode = ctx.backend === "opencode";
+  const cursor = ctx.backend === "cursor";
   const steps: Record<TroubleKind, string[]> = {
-    notfound: opencode
+    notfound: cursor
+      ? [
+        "Check whether the CLI exists and where: `which cursor-agent` (the same CLI is also installed as `agent`), and look in ~/.local/bin, /opt/homebrew/bin and /usr/local/bin.",
+        `If it is missing, install it: \`${CURSOR_INSTALL_COMMAND}\` (macOS and Linux only).`,
+        "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
+        `Confirm with \`cursor-agent --version\`, then tell me to quit ${displayName()} and reopen it.`,
+      ]
+      : opencode
       ? [
         "Check whether the CLI exists and where: `which opencode`, and look in ~/.opencode/bin, ~/.npm-global/bin, /opt/homebrew/bin, /usr/local/bin, ~/.local/bin and ~/.bun/bin.",
         `If it is missing, install it: \`${OPENCODE_INSTALL_COMMAND}\`.`,
@@ -407,7 +431,13 @@ export function troubleInstructions(ctx: TroubleContext): string {
         "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
         `Confirm with \`claude --version\`, then tell me to quit ${displayName()} and reopen it.`,
       ],
-    login: opencode
+    login: cursor
+      ? [
+        "Confirm the CLI runs: `cursor-agent --version`.",
+        "Sign in: run `cursor-agent login` and finish it in the browser — or export `CURSOR_API_KEY`. `cursor-agent status` shows who is signed in.",
+        `Confirm the session works, then tell me to retry in ${displayName()}.`,
+      ]
+      : opencode
       ? [
         "Confirm the CLI runs: `opencode --version`.",
         "Sign in: run `opencode auth login`, pick a provider and paste its API key — or load a local model in the app, which needs no account at all. `opencode auth list` shows what is connected.",

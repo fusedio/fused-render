@@ -7,6 +7,7 @@ import {
   CLAUDE_FALLBACK,
   CODEX_FALLBACK,
   COPILOT_FALLBACK,
+  CURSOR_FALLBACK,
   GEMINI_FALLBACK,
   OPENCODE_FALLBACK,
   agentLabel,
@@ -123,6 +124,42 @@ test("an OpenCode chat answers with OpenCode's row before the catalog lands (doc
   expect(modelTagOf("opencode", "anthropic/claude-sonnet-5-5")).toBe("");
   expect(modelTagOf("gemini", "fused/local")).toBe("");
   expect(modelTagOf("opencode", "")).toBe("");
+});
+
+test("a Cursor chat answers with Cursor's row before the catalog lands", () => {
+  resetAgentBackendsForTests();
+  expect(backendOf("cursor")).toBe(CURSOR_FALLBACK);
+  expect(agentLabel("cursor")).toBe("Cursor");
+  expect(defaultModelOf("cursor")).toBe("auto");
+  expect(modesOf("cursor")).toEqual(["prompt", "acceptEdits", "auto"]);
+  const caps = capsOf("cursor");
+  expect(caps.plan_mode).toBe(false);
+  // The model is a spawn flag, so a change respawns; the mode is host-side.
+  expect(caps.live_model_switch).toBe(false);
+  expect(caps.live_mode_switch).toBe(true);
+  expect(caps.worktrees).toBe(false);
+  expect(caps.ask_user).toBe(false);
+  expect(effortsOf("cursor")).toEqual([]);
+  expect(effortsForModel("cursor", "gpt-5")).toEqual([]);
+  expect(effortsForModel("cursor", "gpt-9-unknown")).toEqual([]);
+  expect(defaultEffortFor("cursor", "gpt-5")).toBe("");
+  expect(CURSOR_FALLBACK.models.map((m) => m.id)).toEqual(["auto", "gpt-5", "sonnet-4.5", "sonnet-4.5-thinking", "composer-1"]);
+  expect(CURSOR_FALLBACK.models.every((m) => m.reasoning === false)).toBe(true);
+  expect(CURSOR_FALLBACK.enabled).toBe(false);
+  expect(isBackendEnabled("cursor")).toBe(false);
+  expect(agentNamed("cursor")).toBe(true);
+  expect(isForeignModel("sonnet", "cursor")).toBe(true);
+  expect(isForeignModel("gpt-6-luna", "cursor")).toBe(true);
+  expect(isForeignModel("gpt-5", "cursor")).toBe(false);
+  expect(isForeignModel("sonnet-4.5", "cursor")).toBe(false);
+  expect(modelTagOf("cursor", "fused/local")).toBe("");
+});
+
+test("with all six on, the server's default can be Cursor", () => {
+  const rows = [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK, OPENCODE_FALLBACK, CURSOR_FALLBACK].map((r) => ({ ...r, enabled: true }));
+  resetAgentBackendsForTests({ backends: rows, default: "cursor", all: rows });
+  expect(defaultBackend()).toBe("cursor");
+  expect(isBackendEnabled("cursor")).toBe(true);
 });
 
 test("with all five on, the server's default can be OpenCode", () => {
