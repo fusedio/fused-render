@@ -199,6 +199,10 @@ _STATUS_IN = {"signed_in": True, "email": "dev@example.com"}
     ("Signed in\nAccount: Dev.Name+x@corp.example.io (Pro)", 0,
      {"signed_in": True, "email": "Dev.Name+x@corp.example.io"}),
     ("Logged in", 0, {"signed_in": True, "email": None}),
+    # A failure that is no sign-out says nothing about the credential.
+    ("Error: getaddrinfo ENOTFOUND api2.cursor.sh", 1, None),
+    ("503 Service Unavailable", 1, None),
+    ("", 2, None),
 ])
 def test_parse_status_table(out, code, want):
     assert cursor_health.parse_status(out, code) == want

@@ -296,24 +296,34 @@ def _env_credential() -> bool:
     return any(os.environ.get(n) for n in _API_KEY_ENV)
 
 
-def parse_status(text: str, code: int) -> dict:
-    """`cursor-agent status`'s output and exit code → `{signed_in, email}`.
+_SIGNED_OUT_RE = re.compile(
+    r"not logged in|not signed in|not authenticated|authentication required"
+    r"|login required|please (?:log|sign) ?in|run ['\"`]?(?:cursor-)?agent login",
+    re.I)
 
-    Signed out is "Not logged in" (exit 0, verified) or any non-zero exit.
-    The signed-in text is not pinned down, so signed in is "exit 0 and not
-    'not logged in'", with the first email address in the text as the
-    account."""
+
+def parse_status(text: str, code: int) -> Optional[dict]:
+    """`cursor-agent status`'s output and exit code → `{signed_in, email}`,
+    or None when the output cannot say.
+
+    Signed out is POSITIVE evidence only: "Not logged in" (exit 0, verified)
+    or an authentication sentence. A failure that says nothing of the kind (a
+    network error, a 5xx) is "could not tell", never "sign in". The signed-in
+    text is not pinned down, so signed in is "exit 0 and no signed-out
+    sentence", with the first email address in the text as the account."""
     clean = _ANSI_RE.sub("", text or "")
-    if code != 0 or "not logged in" in clean.lower():
+    if _SIGNED_OUT_RE.search(clean):
         return {"signed_in": False, "email": None}
+    if code != 0:
+        return None
     m = _EMAIL_RE.search(clean)
     return {"signed_in": True, "email": m.group(0) if m else None}
 
 
 def _status(path: str) -> Optional[dict]:
     """Run `status`: `{signed_in, email}`, or None when it would not answer
-    (a timeout or a spawn failure — "could not tell" must never render as
-    "sign in")."""
+    (a timeout, a spawn failure, or a failure that is no sign-out: "could
+    not tell" must never render as "sign in")."""
     try:
         res = _run_probe(path, "status", timeout=_STATUS_TIMEOUT_S)
     except (OSError, ValueError, subprocess.SubprocessError):
