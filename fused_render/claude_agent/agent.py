@@ -2729,10 +2729,22 @@ def _s3_read_dirs(s3: bool) -> list:
     return [root]
 
 
+#: Each harness's per-server "never defer this server's tools" key, for
+#: `_write_mcp_config(always_load=...)`. Claude Code: `alwaysLoad` (a CLI
+#: that predates it strips it, as it does `timeout`). Copilot CLI:
+#: `deferTools: "never"` — the `/mcp edit` form's "Defer Tools: Never";
+#: its tool search shipped before our floor (copilot_health.MIN_VERSION).
+_ALWAYS_LOAD_KEYS = {
+    "claude": {"alwaysLoad": True},
+    "copilot": {"deferTools": "never"},
+}
+
+
 def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
                       strict: bool = False, chat_id: str = "",
                       canvas: "dict | bool | None" = None,
-                      handoff_dir: str = "", s3: bool = False) -> str:
+                      handoff_dir: str = "", s3: bool = False,
+                      always_load: str = "") -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
@@ -2762,7 +2774,20 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
     `strict` (a lean session, `--strict-mcp-config`) also writes the enabled
     plugins' MCP servers (`_plugin_mcp_servers`) next to ours, since strict mode
     would otherwise drop them; ours wins a key collision. Non-strict runs leave
-    the CLI to load plugin servers itself — adding them would start each twice."""
+    the CLI to load plugin servers itself — adding them would start each twice.
+
+    `always_load` names the harness reading the file ("claude" | "copilot")
+    and stamps THAT harness's never-defer key on OUR server (never the
+    plugin ones copied in beside it; `_ALWAYS_LOAD_KEYS`): its tools go into
+    the model's tool list up front instead of behind the CLI's tool search,
+    so the model never spends a search round-trip to find `app_state` /
+    `terminal_*` / the canvas and S3 tools. The roster is a handful of
+    tools, so the context cost is small. Each key is written only for its
+    own harness, so neither CLI is handed the other's config. Codex,
+    Gemini and OpenCode pass nothing: the last two do not defer MCP tools,
+    and Codex has no never-defer key (its `omit_tools_from = ["deferred"]`
+    HIDES a server from tool search, it does not promote it), and the hosts
+    copy named keys out of this file anyway."""
     path = os.path.join(run_dir, "mcp.json")
     server = _permission_server_path()
     args = [server, _perm_dir(run_dir)]
@@ -2837,6 +2862,7 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
             # open-canvas ask, then the page), so its ceiling is the larger of
             # the two (CodeRabbit, #1924; D1471).
             "timeout": (max(PERMISSION_WAIT, _canvas_shot_ceiling() if canvas else 0) + 60) * 1000,
+            **_ALWAYS_LOAD_KEYS.get(always_load, {}),
         }}}, fh)
     return path
 
@@ -4807,7 +4833,10 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                handoff_dir=_breakout_handoff_dir(file) if breakout else "",
                # The chat's stable id: a resume's own session, or the id a
                # fresh chat / fork was minted (the same key `_decide` writes).
-               chat_id=new_session_id or session_id, s3=s3),
+               chat_id=new_session_id or session_id, s3=s3,
+               # Our tools in the model's list from turn one, never deferred
+               # behind ToolSearch (see `_write_mcp_config`).
+               always_load="claude"),
            *(["--strict-mcp-config"] if strict_mcp else []),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
@@ -5409,7 +5438,9 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
     if pane or _terminal_tools_supported() or _canvas_of(file):
         cmd += ["--additional-mcp-config",
                 "@" + _write_mcp_config(run_dir, pane, approve=False,
-                                        canvas=_canvas_of(file), s3=s3)]
+                                        canvas=_canvas_of(file), s3=s3,
+                                        # Never behind Copilot's tool search.
+                                        always_load="copilot")]
     # SHOTS is made HERE, not left to the first screenshot: `--add-dir` is the
     # session's only read grant on it, the CLI exits at startup on a directory
     # that does not exist, and there is no post-start grant over ACP. A refusal
