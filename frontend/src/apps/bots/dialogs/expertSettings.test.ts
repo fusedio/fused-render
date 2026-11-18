@@ -27,7 +27,9 @@ const value = {
 describe("expert settings", () => {
   test("Save sends name, model, effort, instructions, ask_me_about and folders only", async () => {
     const sent: unknown[] = [];
-    const orig = { settings: api.settings, flag: api.flag, profile: api.profile };
+    // `status` too: saveSettings ends in a poll, and an unanswered real fetch (the whole suite in one process) hangs it.
+    const orig = { settings: api.settings, flag: api.flag, profile: api.profile, status: api.status };
+    api.status = (() => Promise.reject(new Error("no server in a test"))) as typeof api.status;
     api.settings = ((_id: string, body: unknown) => { sent.push(body); return Promise.resolve({ ok: true }); }) as typeof api.settings;
     api.flag = (() => Promise.resolve({ ok: true })) as typeof api.flag;
     api.profile = (() => { throw new Error("an expert has no browser profile"); }) as typeof api.profile;
