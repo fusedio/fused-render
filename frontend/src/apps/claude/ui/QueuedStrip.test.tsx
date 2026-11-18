@@ -47,8 +47,9 @@ describe("QueuedStrip", () => {
 
   // THE ARRIVAL FLASH (styles/sched.css `.c-queue-row.is-arriving`): on a line
   // that joined while the strip was up, and on nothing else.
-  const mountStrip = (lines: Parameters<typeof QueuedStrip>[0]["lines"]) => {
-    const props = (next: typeof lines) => ({ lines: next, running: true, onSendNow: () => {}, onPull: () => {} });
+  const mountStrip = (lines: Parameters<typeof QueuedStrip>[0]["lines"], ready = true) => {
+    let isReady = ready;
+    const props = (next: typeof lines) => ({ lines: next, running: true, onSendNow: () => {}, onPull: () => {}, ready: isReady });
     let r!: ReactTestRenderer;
     act(() => {
       r = create(createElement(QueuedStrip, props(lines)));
@@ -60,7 +61,10 @@ describe("QueuedStrip", () => {
         .map((n) => String(n.findByProps({ className: "c-queue-text" }).props.children));
     return {
       arriving,
-      set: (next: typeof lines) => act(() => r.update(createElement(QueuedStrip, props(next)))),
+      set: (next: typeof lines, nowReady = isReady) => {
+        isReady = nowReady;
+        act(() => r.update(createElement(QueuedStrip, props(next))));
+      },
       unmount: () => act(() => r.unmount()),
     };
   };
@@ -87,5 +91,24 @@ describe("QueuedStrip", () => {
     expect(t.arriving()).toEqual(["new"]);
     s.unmount();
     t.unmount();
+  });
+  test("lines a still-loading chat restores are the baseline, and the next one after it is an arrival", () => {
+    // A cold reopen: the strip mounts empty before the history read returns,
+    // and the restore then brings the lines that were waiting all along.
+    const s = mountStrip([], false);
+    s.set([{ id: "a", text: "was waiting" }], false);
+    expect(s.arriving()).toEqual([]);
+    s.set([{ id: "a", text: "was waiting" }], true);
+    expect(s.arriving()).toEqual([]);
+    s.set([{ id: "a", text: "was waiting" }, { id: "b", text: "typed now" }], true);
+    expect(s.arriving()).toEqual(["typed now"]);
+    s.unmount();
+  });
+  test("an id with a newline in it is one id", () => {
+    // An inbox row with no id of its own is keyed by its words.
+    const s = mountStrip([]);
+    s.set([{ id: "first\nsecond", text: "two lines" }]);
+    expect(s.arriving()).toEqual(["two lines"]);
+    s.unmount();
   });
 });

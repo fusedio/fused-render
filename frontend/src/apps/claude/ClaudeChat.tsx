@@ -3590,6 +3590,18 @@ function ChatBody(props: ChatBodyProps) {
           } catch {
             ok = false;
           }
+          // THE "sending" TAG NEVER OUTLIVES ITS SEND. Every road through the
+          // controller either adopts the row (the tag comes off with it) or
+          // drops it; this is for the one that does neither — a throw before
+          // the controller's own bubble went up. Left tagged, the row would sit
+          // in the queue for ever, hidden from the transcript. Untagged it is
+          // what it was before this tag existed: a plain bubble.
+          if (
+            optimisticKey
+            && controller.getState().turns.some((t) => t.key === optimisticKey && t.role === "user" && t.pending === "sending")
+          ) {
+            controller.setOptimisticPending(optimisticKey, undefined);
+          }
           // MY send, asked of my own id — and spent, whichever way it went.
           done(ok && !returnedSends.current.delete(sendId));
         } finally {
@@ -6576,6 +6588,7 @@ function ChatBody(props: ChatBodyProps) {
               onSendNow={onSendQueuedNow}
               onPull={onPullPending}
               compact={compact}
+              ready={!state.historyLoading && !state.adopting}
             />
             {!compact ? (
               <ComposerGate

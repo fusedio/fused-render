@@ -25,16 +25,24 @@ const NONE: ReadonlySet<string> = new Set();
  * So what is there at mount is already known, and only an id seen for the first
  * time AFTER that is an arrival.
  */
-function useArrivals(lines: readonly QueuedLine[]): ReadonlySet<string> {
+function useArrivals(lines: readonly QueuedLine[], ready: boolean): ReadonlySet<string> {
   const known = useRef<Set<string> | null>(null);
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
   const [arriving, setArriving] = useState<ReadonlySet<string>>(NONE);
-  const ids = lines.map((l) => l.id).join("\n");
+  // The ids as ONE string for the effect's dependency. JSON, not a joined list:
+  // an inbox row with no id of its own is keyed by its words, and words have
+  // newlines in them (CodeRabbit, PR #2347).
+  const ids = JSON.stringify(lines.map((l) => l.id));
   useEffect(() => {
-    const now = ids ? ids.split("\n") : [];
+    const now = JSON.parse(ids) as string[];
     const before = known.current;
     known.current = new Set(now);
-    if (before === null) return;
+    // NOT YET, OR ONLY JUST: while the chat is still reading its history the
+    // strip is empty for a reason that is not "nothing is queued", and the
+    // lines the restore brings are the ones that were waiting all along. They
+    // are the baseline, not arrivals (CodeRabbit, PR #2347) — so the first
+    // look, and every look until the chat has settled, only remembers.
+    if (before === null || !ready) return;
     const fresh = now.filter((id) => !before.has(id));
     if (!fresh.length) return;
     setArriving((was) => new Set([...was, ...fresh]));
@@ -47,7 +55,7 @@ function useArrivals(lines: readonly QueuedLine[]): ReadonlySet<string> {
       });
     }, ARRIVE_FLASH_MS);
     timers.current.add(timer);
-  }, [ids]);
+  }, [ids, ready]);
   useEffect(() => {
     const pending = timers.current;
     return () => {
@@ -67,10 +75,14 @@ export interface QueuedStripProps {
   onPull: (id: string) => void;
   /** A card tile: read-only. The lines are listed, with no send-now or edit. */
   compact?: boolean;
+  /** The chat has read its history and is not adopting a run: from here on a
+   *  new line is an arrival. Until then the lines are the ones that were
+   *  already waiting (`useArrivals`). Absent means settled. */
+  ready?: boolean;
 }
 
-export function QueuedStrip({ lines, running, onSendNow, onPull, compact }: QueuedStripProps) {
-  const arriving = useArrivals(lines);
+export function QueuedStrip({ lines, running, onSendNow, onPull, compact, ready = true }: QueuedStripProps) {
+  const arriving = useArrivals(lines, ready);
   if (!lines.length) return null;
   return (
     <ul className={compact ? "c-queue-strip c-queue-compact" : "c-queue-strip"} aria-label="Queued messages">
