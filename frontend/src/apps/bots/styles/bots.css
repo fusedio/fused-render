@@ -631,7 +631,7 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-lbl { margin: 0 0 4px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .bots-page .xp-chhead { margin-top: 14px !important; }
 /* memory.md and the diffs, rendered markdown (components/MdDoc.tsx) in the panel's sans face. */
-.bots-page .xp-mem { margin: 0 0 8px; padding: 8px 12px; border-radius: 8px; background: var(--inset); max-height: 50vh; overflow: auto; }
+.bots-page .xp-mem { margin: 0 0 8px; padding: 8px 12px; border-radius: 8px; background: var(--inset); border: 1px solid var(--line); max-height: 50vh; overflow: auto; }
 .bots-page .xp-md { color: var(--text); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; white-space: normal; }
 .bots-page .xp-md :is(h1, h2, h3, h4, h5, h6) { margin: .7em 0 .25em; font-size: 12.5px; font-weight: 600; line-height: 1.4; color: var(--text); }
 .bots-page .xp-md h1 { font-size: 13.5px; } .bots-page .xp-md h2 { font-size: 13px; }
@@ -651,7 +651,7 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-md :is(th, td) { padding: .2em .5em; border-bottom: 1px solid var(--line); text-align: left; }
 /* A diff as a document (DiffView): one row per line, a +/− gutter, added on green, removed on red and struck,
    context muted; a count bump (removed then added) grouped as a pair. */
-.bots-page .xp-diff { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; padding: 6px; border-radius: 8px; background: var(--inset); max-height: 50vh; overflow: auto; }
+.bots-page .xp-diff { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; padding: 6px; border-radius: 8px; background: var(--inset); border: 1px solid var(--line); max-height: 50vh; overflow: auto; }
 .bots-page .xp-dr { display: flex; gap: 6px; min-width: 0; padding: 2px 8px 2px 4px; border-radius: 5px; }
 .bots-page .xp-g { flex: none; width: 10px; text-align: center; font: 600 11px/18px ui-monospace, SFMono-Regular, Menlo, monospace; user-select: none; }
 .bots-page .xp-dc { flex: 1; min-width: 0; }
