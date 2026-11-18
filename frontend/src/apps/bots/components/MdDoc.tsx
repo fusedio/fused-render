@@ -33,7 +33,7 @@ function inlineOne(t: Token): ReactNode {
       const x = t as Tokens.Link;
       return <span className="md-link" title={x.href}>{inline(x.tokens)}</span>;
     }
-    case "image": return (t as Tokens.Image).text;
+    case "image": return unesc((t as Tokens.Image).text);  // the alt text, escaped by the lexer like any other
     default: return t.raw;  // inline html and anything unknown: its source, as text
   }
 }

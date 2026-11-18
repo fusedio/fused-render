@@ -5,7 +5,7 @@
 // An expert (`expert`) has the same list and form over the same files (skills/*.md in its folder, the same save /
 // delete ops), but its skills are reference files it reads and never writes: no "Learn from last task" (the backend
 // refuses op "learn" for an expert), and the words say so.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
@@ -45,8 +45,12 @@ export function SkillsSection({ b, confirm, expert = false }: SectionProps & { e
     document.getElementById("sktitle")?.focus({ preventScroll: true });
   });
 
+  // Which draft the form holds: a save that finishes closes the form only if it still holds the draft it sent
+  // (Edit or "Write one by hand" on another skill meanwhile opened a new one, whose text must not be dropped).
+  const draft = useRef(0);
   const edit = (name: string) => {
     const k = sk.find((x) => x.name === name); if (!k) return;
+    draft.current++;
     setEditing(name); setTitle(k.title); setTrigger(k.trigger); setBody(k.body); setForm(true); focusTitle();
   };
   const del = async (name: string) => {
@@ -55,15 +59,16 @@ export function SkillsSection({ b, confirm, expert = false }: SectionProps & { e
     await act(() => api.skills(b.id, { op: "delete", rid: name }));
   };
   const save = async () => {
+    const mine = draft.current;
     const r = await act(() => api.skills(b.id, { op: "save", name: title, trigger, text: body, ...(editing ? { rid: editing } : {}) }));
-    if (!r?.ok) return;
+    if (!r?.ok || draft.current !== mine) return;  // refused (the banner says why): the draft stays for another try
     setForm(false); setEditing(null);
   };
   const learn = async () => {
     const r = await act(() => api.skills(b.id, { op: "learn" }));
     if (r?.ok) setSent(true);  // progress shows in the thread; the new card lands with a later poll
   };
-  const blank = () => { setEditing(null); setTitle(""); setTrigger(""); setBody(""); setForm(true); focusTitle(); };
+  const blank = () => { draft.current++; setEditing(null); setTitle(""); setTrigger(""); setBody(""); setForm(true); focusTitle(); };
 
   return (
     <div className="flex flex-col gap-4">

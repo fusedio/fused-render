@@ -28,11 +28,13 @@ const REFRESH_MS = 10_000;
 /** One diff line's markdown on its background, with a + / − gutter mark. */
 function DiffLine({ tone, text }: { tone: "add" | "del" | "ctx"; text: string }) {
   const mark = tone === "add" ? "+" : tone === "del" ? "−" : "";
+  // A code fence alone parses as an empty code block: the line would show its mark and no text. Its source instead.
+  const fence = /^\s*(`{3,}|~{3,})/.test(text);
   return (
     <div className={`xp-dr ${tone}${text.trim() ? "" : " blank"}`}>
       <span className="xp-g" aria-hidden="true">{mark}</span>
       {mark ? <span className="xp-sr">{tone === "add" ? "Added: " : "Removed: "}</span> : null}
-      <div className="xp-dc xp-md">{text.trim() ? <MdDoc text={text} /> : "\u00a0"}</div>
+      <div className="xp-dc xp-md">{fence ? <code>{text.trim()}</code> : text.trim() ? <MdDoc text={text} /> : "\u00a0"}</div>
     </div>
   );
 }
@@ -122,7 +124,7 @@ export function MemoryPanel({ memory, err, onChange, nowMs }: {
     <>
       {err ? <p className="xp-err" role="alert">{err}</p> : null}
       <p className="xp-path" title={memory.path}>{memory.path}</p>
-      <p className={`xp-size${use.over ? " over" : ""}`}>{use.text}{use.over ? " · over the limit, a dream session will shorten it" : ""}</p>
+      <p className={`xp-size${use.over ? " over" : ""}`}>{use.text}{use.over ? " · over the limit; a dream session shortens it after the next session that writes it" : ""}</p>
       {memory.writing ? <p className="xp-hand">A session is working on memory now.</p>
         : memory.edited_by_hand ? <p className="xp-hand">Edited by hand since the last session.</p> : null}
       {memory.text.trim() ? <div className="xp-mem xp-md" aria-label="memory.md"><MdDoc text={memory.text} /></div> : <p className="xp-empty">Nothing remembered yet.</p>}
@@ -245,12 +247,13 @@ export function ExpertPane({ b }: { b: Bot }) {
 
   // A change clicked on the Memory tab: the Sessions tab, that row open and scrolled to.
   const openChange = (c: ExpertChange) => { setTab("sessions"); setOpen(c.id); };
+  const listed = !!rows;  // the row may only mount when the list arrives: reveal it then too (once, not per refresh)
   useEffect(() => {
     if (tab !== "sessions" || !open) return;
     // Only the pane scrolls (it is the scroller, .xpane): scrollIntoView would move the app shell too.
     const t = window.setTimeout(() => revealWithin(paneRef.current, document.getElementById(`xps-${open}`)), 0);
     return () => window.clearTimeout(t);
-  }, [tab, open]);
+  }, [tab, open, listed]);
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
