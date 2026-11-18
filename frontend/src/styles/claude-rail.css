@@ -795,20 +795,18 @@
    space over the first row header"): six dots, shown while the pointer is
    over the grab row of a pinned window (and through its drag), so the row
    says what a press on it does before the cursor has to.
-   AT 50% OF THE ROW, ALWAYS (owner, 2026-11-18, of a build that set it in
-   the row's free space: "the drag icon moves based on the elements on
-   screen, that looks odd … regardless of elements, we should have drag icon
-   at 50% of the width so it doesn't move"): the row's `::after`, out of the
-   flow at its centre — the window's centre, since the row runs edge to edge
-   — whatever the row holds and however wide its tags are.
-   OVER WHATEVER REACHES THE MIDDLE, ON A PLATE (owner, 2026-11-18, of a long
-   title under the dots: "if we overlap show bg on drag handle so it is
-   clear" — what it covers is a wide thing to press, with room beside it):
-   the dots stand on a small plate of the row's own ground
-   (`--row-bg-hover`, the pinned row's), so over empty row it is not seen
-   and over a title or a tag it clears its own spot. Drawn as gradients, not
-   a mask (a mask would cut the plate away with everything else). A press on
-   it is a press on the row: the grab. */
+   AT 50% OF THE ROW, OR NOT AT ALL. Always the same spot (owner, 2026-11-18,
+   of a build that set it in the row's free space: "the drag icon moves
+   based on the elements on screen, that looks odd … at 50% of the width so
+   it doesn't move"): the row's `::after`, out of the flow at its centre —
+   the window's centre, since the row runs edge to edge. And never over the
+   row's content (owner, same day, of a plate that let it stand on a tag:
+   "this UI looks bad … no full element goes below it?"): where a title, a
+   tag or a seat reaches the middle the row says `data-rail-handle="off"`
+   (useCardMove `installHandleFit`, rail-move-lib `handleClear`) and no dots
+   are drawn. The row grabs either way — the cursor still says so.
+   Nothing here takes a press of its own: the dots are the row's, and the
+   row is the grab. */
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
   position: relative;
@@ -820,14 +818,9 @@
   position: absolute;
   left: 50%;
   top: 50%;
-  z-index: 1;
-  box-sizing: content-box;
   width: 16px;
   height: 16px;
-  padding: 3px 6px;
-  border-radius: 6px;
   transform: translate(-50%, -50%);
-  background-color: var(--row-bg-hover);
   background-image:
     radial-gradient(circle at 3px 5.5px, var(--dot)),
     radial-gradient(circle at 8px 5.5px, var(--dot)),
@@ -835,9 +828,6 @@
     radial-gradient(circle at 3px 10.5px, var(--dot)),
     radial-gradient(circle at 8px 10.5px, var(--dot)),
     radial-gradient(circle at 13px 10.5px, var(--dot));
-  /* The dots are laid out in the 16px content box; the plate (the colour)
-     fills the padding too. */
-  background-origin: content-box;
   background-repeat: no-repeat;
   opacity: 0;
   pointer-events: none;
@@ -848,7 +838,9 @@
 :is(.claude-rail-peek, .modal-popover).is-dragging
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
   opacity: 1;
-  pointer-events: auto;
+}
+:is(.claude-rail-peek, .modal-popover) :is(.task-head-row, .claude-rail-peek-row)[data-rail-handle="off"]::after {
+  display: none;
 }
 /* …under the drag: no glide (the box follows the pointer every frame), no
    text selection; and the page's frames take no pointer, so a drag over the

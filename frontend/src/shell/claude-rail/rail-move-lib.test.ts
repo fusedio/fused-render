@@ -23,6 +23,7 @@ import {
   snapEdges,
   snapResize,
   dockedBAxes,
+  handleClear,
   EDGE_SNAP_PX,
   viewportOf,
   wishSize,
@@ -424,5 +425,29 @@ describe("dockedBAxes: where a docked window A holds still for window B's resize
     const beside = { left: 180, top: 40, width: 412, height: 400 };
     expect(dockedBAxes({ floating: false, aFloats: false, mine, other: beside })).toBeNull();
     expect(dockedBAxes({ floating: false, aFloats: false, mine, other: null })).toBeNull();
+  });
+});
+
+describe("handleClear: the drag handle stands at the row's middle or not at all (owner, 2026-11-18)", () => {
+  // A row 100..600: its middle at 350, the dots 342..358, the air 336..364.
+  const row = { left: 100, width: 500 };
+  test("free while nothing reaches the dots or the air beside them", () => {
+    expect(handleClear(row, [])).toBe(true);
+    expect(
+      handleClear(row, [
+        { left: 110, right: 336 },
+        { left: 364, right: 590 },
+      ]),
+    ).toBe(true);
+  });
+  test("a title or a tag that reaches the middle takes it — from either side, across it, or wholly under it", () => {
+    expect(handleClear(row, [{ left: 110, right: 337 }])).toBe(false);
+    expect(handleClear(row, [{ left: 363, right: 590 }])).toBe(false);
+    expect(handleClear(row, [{ left: 110, right: 590 }])).toBe(false);
+    // A narrow seat lying wholly under the dots: it must stay in reach.
+    expect(handleClear(row, [{ left: 345, right: 355 }])).toBe(false);
+  });
+  test("a seat with no width is not there", () => {
+    expect(handleClear(row, [{ left: 350, right: 350 }])).toBe(true);
   });
 });

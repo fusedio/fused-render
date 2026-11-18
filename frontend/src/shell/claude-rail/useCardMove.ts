@@ -40,7 +40,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
+  HANDLE_ROW_SELECTOR,
+  HANDLE_SPACER_SELECTOR,
   clampPos,
+  handleClear,
   headDocks,
   headPress,
   isFloating,
@@ -62,6 +65,52 @@ import {
   windowPos,
 } from "./rail-move-store";
 import { setSnapGuides } from "./card-snap";
+
+/** THE DRAG HANDLE GIVES WAY TO THE ROW'S CONTENT (rail-move-lib
+ *  `handleClear`): the six dots stand at 50% of a pinned window's grab row
+ *  (claude-rail.css), and a long title or a row of tags may reach that far.
+ *  Each grab row on the page says `data-rail-handle="off"` while something
+ *  stands where the dots would, and the CSS draws none. Measured when the
+ *  dots could come up or what is under them could change: the pointer
+ *  coming onto anything inside a rail window (a hover folds and unfolds
+ *  seats in the row), and the frame after a click (the pin that makes the
+ *  row a grab row is pressed with the pointer already on it). One listener
+ *  set for the document, as the hints have (platform/lib/hints): the four
+ *  chassis' rows are found by selector, and an attribute React never set is
+ *  one it never takes away. */
+const HANDLE_HOST_SELECTOR = ".claude-rail-peek, .modal-popover";
+let handleFitOn = false;
+function fitHandles(): void {
+  for (const row of document.querySelectorAll(HANDLE_ROW_SELECTOR)) {
+    const r = row.getBoundingClientRect();
+    const kids = [...row.children]
+      .filter((k) => !k.matches(HANDLE_SPACER_SELECTOR))
+      .map((k) => k.getBoundingClientRect())
+      .map((k) => ({ left: k.left, right: k.right }));
+    if (handleClear({ left: r.left, width: r.width }, kids)) row.removeAttribute("data-rail-handle");
+    else row.setAttribute("data-rail-handle", "off");
+  }
+}
+function installHandleFit(): void {
+  if (handleFitOn || typeof document === "undefined" || typeof document.addEventListener !== "function") return;
+  if (typeof Element === "undefined" || typeof document.querySelectorAll !== "function") return;
+  handleFitOn = true;
+  const inWindow = (t: EventTarget | null) => t instanceof Element && t.closest(HANDLE_HOST_SELECTOR) !== null;
+  document.addEventListener(
+    "pointerover",
+    (e) => {
+      if (inWindow(e.target)) fitHandles();
+    },
+    true,
+  );
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (inWindow(e.target) && typeof requestAnimationFrame === "function") requestAnimationFrame(fitHandles);
+    },
+    true,
+  );
+}
 
 /** On <html> while a card is being moved: frames take no pointer, nothing
  *  selects (claude-rail.css). */
@@ -157,6 +206,9 @@ export function useCardMove(o: {
   useEffect(() => {
     if (shown !== null) noteFrontWindow(win);
   }, [shown, win]);
+  useEffect(() => {
+    if (on) installHandleFit();
+  }, [on]);
   const movable = on && o.movable;
   // Read live only while this card can float: a drag's every frame would
   // otherwise re-render every card of both windows. The other window counts
