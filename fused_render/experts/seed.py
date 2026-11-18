@@ -59,10 +59,6 @@ def _witness() -> tuple:
     return tuple(dict(d[k]) if isinstance(d.get(k), dict) else {} for k in ("keys", "skills", "given"))
 
 
-def _seeded() -> dict:
-    return _witness()[0]
-
-
 def _sha(path: str) -> str:
     """A short content hash of the file, "" when it is not there."""
     try:

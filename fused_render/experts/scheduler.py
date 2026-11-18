@@ -115,11 +115,6 @@ def _timer_loop(stop: threading.Event) -> None:
             return
 
 
-def started() -> bool:
-    with _LOCK:
-        return _thread is not None
-
-
 def start() -> None:
     """Arm the timer (the server's startup hook) and let side sessions start again after a shutdown. Idempotent."""
     global _timer_stop, _thread

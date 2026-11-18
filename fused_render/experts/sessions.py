@@ -48,7 +48,6 @@ from fused_render.experts import store
 logger = logging.getLogger(__name__)
 
 KINDS = ("ask", "task-learn", "dream")      # what `run` starts
-ROW_KINDS = KINDS + ("chat",)                 # what a row may say (chat rows come from `note_chat`)
 WRITERS = frozenset({"task-learn", "dream"})
 CHANGES_SHOWN = 20
 #: The memory limit (docs/experts.md "Dreaming"): whichever comes first.

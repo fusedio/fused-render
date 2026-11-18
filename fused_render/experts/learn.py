@@ -182,11 +182,6 @@ def _lines(turns, bot=None) -> tuple:
     return out, calls
 
 
-def render_turns(turns) -> str:
-    """The conversation, one speaker-tagged line per line of text."""
-    return "\n".join(_lines(turns)[0])
-
-
 def fit(lines: list, calls: list, cap: int | None = None) -> str:
     """`lines` joined, cut to `cap` characters. With `calls` (line indexes where the expert was called) the
     budget is shared between them: each keeps the lines around it, two after the call for every one before
