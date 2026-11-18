@@ -47,6 +47,8 @@
 import { Component, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ChevronDown, ChevronUp, X } from "lucide-react";
 import type { Task } from "@platform/lib/api";
+import { queueCaption } from "@platform/lib/queue";
+import { ForceStartButton, queuedLine } from "@shell/ForceStartButton";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { navigateUrl } from "@platform/lib/router";
 import { ChatMount } from "@apps/claude";
@@ -456,6 +458,13 @@ export function TasksPeek() {
                     smallCardShown={api.visible}
                     {...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}
                   />
+                ) : task && queueCaption(task) ? (
+                  // QUEUED, AND NO CHAT YET: the line it stands in, and the way
+                  // to stop standing in it (Akshil, 2026-11-18).
+                  <div className="claude-rail-peek-note is-stack">
+                    <span>{queuedLine(task)}</span>
+                    <ForceStartButton facts={task} target={{ key: task.key }} />
+                  </div>
                 ) : (
                   <p className="claude-rail-peek-note">{listing ? "This task has no conversation yet." : "Loading…"}</p>
                 )}

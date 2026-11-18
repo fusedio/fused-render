@@ -1763,6 +1763,7 @@ button.new-task-source:focus-visible {
 .nt-landing-wait {
   align-items: center;
   justify-content: center;
+  gap: 10px;
   color: var(--fg-muted);
   font-size: 13px;
 }

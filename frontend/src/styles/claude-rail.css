@@ -1598,6 +1598,61 @@ a.claude-rail-peek-scope:focus-visible {
   color: var(--fg-muted);
 }
 
+/* FORCE START ON A CARD WITH NO CHAT YET (shell/ForceStartButton). A queued
+   task that has a conversation gets the verb from the chat's own waiting card
+   (apps/claude sched.css `.wc-run`); a queued task that has none draws a
+   placeholder, and this is the same button for it: the same neutral box, for
+   the same reason — the press puts a second run in the folder, and a
+   primary-coloured button would read as the card recommending it. Lives here
+   and not in new-task.css because the rail's two cards and the New task card
+   all draw it, and this sheet is in the barrel for every page. */
+.force-start {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: inherit;
+  gap: 6px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.force-start-btn {
+  flex: 0 0 auto;
+  appearance: none;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.force-start-btn:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+}
+.force-start-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.force-start-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.force-start-note {
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--error);
+  overflow-wrap: anywhere;
+}
+/* A note that is a small column and not one centred sentence: the Tasks card's
+   "Queued · after TASK-038" with its button under it. */
+.claude-rail-peek-note.is-stack {
+  flex-direction: column;
+  gap: 10px;
+}
+
 /* THE BRIDGE between the card and the rail (RailPeek): transparent, the
    gap's width, the card's height; a pointer resting in it is "on the card".
    Hit-testable only while the card is up. */
