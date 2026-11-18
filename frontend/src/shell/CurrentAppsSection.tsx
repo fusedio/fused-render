@@ -324,13 +324,15 @@ function CurrentAppRow({
       >
         {app.name}
       </a>
-      {/* The env chip, then the dot after it: the pair is pushed to the
-          row's right edge (canvases.css), so every row's chip and dot sit in
-          one column whether or not the row is running. A "· N queued" count
-          is moved ahead of the pair by CSS order, so the dot stays last. */}
+      {/* The env chip, last in the row by CSS order and flush with its right
+          edge (canvases.css), so every row's chip sits in one column; the
+          running/unread dot and a "· N queued" count stay after the name. Both
+          spellings are rendered and a container query picks one: the word, or
+          its initial when the section is narrow. The hover ✕ overlays it. */}
       {showEnv && app.canvas && isWorkbenchEnv(app.canvas.env) && (
         <span className="canvas-row-env" aria-hidden="true">
-          {ENV_NAMES[app.canvas.env].tag}
+          <span className="canvas-row-env-full">{ENV_NAMES[app.canvas.env].tag}</span>
+          <span className="canvas-row-env-initial">{ENV_NAMES[app.canvas.env].initial}</span>
         </span>
       )}
       {/* The running dot sits AFTER the name (owner, 2026-08-27), so it never

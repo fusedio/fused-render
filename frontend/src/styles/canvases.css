@@ -534,27 +534,17 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
 }
 
 /* The sidebar's Canvases section (shell/CurrentAppsSection.tsx, section="canvases"): Projects' rows
-   with a canvas glyph, and the environment at the row's right edge when both
-   hold clones, with the running/unread dot after it. `margin-left: auto` pins
-   the chip right even when the dot takes the name's stretch away; the row's
-   own gap is the minimum space before it. The chip and the dot get order 1 so
-   a "· N queued" count (order 0) stays ahead of them and the dot stays last. */
+   with a canvas glyph, and the environment as a chip at the row's right edge
+   when both hold clones. The chip goes last (order 1) and `margin-left: auto`
+   pins it right, so chips line up in one column; the running/unread dot and a
+   "· N queued" count (order 0) stay after the name, as on a Projects row. No
+   slot is reserved on the chip's right for the hover ✕: .bookmark-actions is
+   absolutely positioned and its fade covers the chip on hover. */
 .canvas-row-glyph {
   cursor: default;
 }
-.canvas-row-env,
-.current-app-row:has(> .canvas-row-env) > :is(.current-app-running, .current-app-unread) {
-  order: 1;
-}
-.current-app-row:has(> .canvas-row-env) > :is(.current-app-running, .current-app-unread) {
-  margin-left: 0;
-}
-/* A row with no dot keeps the dot's slot (9px dot + the row's 7px gap) empty
-   behind its chip, so chips line up in one column down the list. */
-.current-app-row:not(:has(> .current-app-running, > .current-app-unread)) > .canvas-row-env {
-  margin-right: 16px;
-}
 .canvas-row-env {
+  order: 1;
   flex: none;
   margin-left: auto;
   font-size: 10px;
@@ -563,6 +553,31 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--fg-muted);
+}
+.canvas-row-env-initial {
+  display: none;
+}
+/* Narrow sidebar: the chip shrinks to its initial so the name keeps the room.
+   The query is on the fold's inner box, the rows' common parent, so every row
+   flips at once and the chips stay one column. 200px of row ≈ the point where
+   "Production" leaves a name about eight characters. */
+.sidebar-canvases .sidebar-fold-inner {
+  container-type: inline-size;
+}
+@container (max-width: 200px) {
+  /* The initial ("P", "U", "C") is a round badge: a min-width equal to the
+     chip's height (14px line + 2px border) makes a one-letter pill a circle. */
+  .canvas-row-env {
+    min-width: 16px;
+    padding: 0 3px;
+    text-align: center;
+  }
+  .canvas-row-env-full {
+    display: none;
+  }
+  .canvas-row-env-initial {
+    display: inline;
+  }
 }
 
 /* Custom environment with no settings.toml: the prompt that stands where the
