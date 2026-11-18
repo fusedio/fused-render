@@ -66,7 +66,15 @@ def test_flag_off_every_route_is_404_and_nothing_is_created(client, monkeypatch)
     for method, path in routes:
         st, body = _call(client, method, path)
         assert st == 404, (method, path, st, body)
-        assert json.loads(body) == {"error": "not found"}, (method, path, body)
+        assert json.loads(body) == {"detail": "Not Found"}, (method, path, body)
+    # a malformed body is still the unknown-path 404, not a 422
+    r = urllib.request.Request(client.base + "/api/specialists", data=b"{not json", method="POST",
+                               headers={"Content-Type": "application/json", "X-Fused": "1"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(r)
+    assert e.value.code == 404 and json.loads(e.value.read()) == {"detail": "Not Found"}
+    unknown = _call(client, "POST", "/api/no-such-route-at-all")
+    assert unknown[0] == 404 and json.loads(unknown[1]) == {"detail": "Not Found"}
     assert not os.path.exists(paths.root())
     new = {t.name for t in threading.enumerate()} - threads_before
     assert not any("special" in n.lower() for n in new), new
@@ -124,6 +132,14 @@ def test_router_post_hook_is_inert_when_off(monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
     claude_agent._specialist_after({"action": "start"}, {"result": {}})
     assert seen == ["start"]
+    # a poll is one string test: the flag is never read
+    reads = []
+    monkeypatch.setattr(flag, "on", lambda: reads.append(1) or True)
+    claude_agent._specialist_after({"action": "poll"}, {})
+    claude_agent._specialist_after({"action": "history"}, {})
+    assert reads == [] and seen == ["start"]
+    claude_agent._specialist_after({"action": "cancel"}, {})
+    assert reads == [1] and seen == ["start", "cancel"]
     fake.after_agent_call = lambda *a: 1 / 0  # never raises out
     monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "1")
     claude_agent._specialist_after({"action": "decide"}, {})
