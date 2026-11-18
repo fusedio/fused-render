@@ -164,9 +164,9 @@ def harness(bot, prompt: str, write: bool) -> dict:
                                 cwd=store.expert_dir(bot), env=dict(os.environ), close_fds=False,
                                 start_new_session=True)
         with _GUARD:
-            closed = _STATE["closed"]
+            shut = _STATE["closed"]
             _PROCS.add(proc)
-        if closed:  # shutdown began between `run`'s check and the spawn: it may already have collected _PROCS
+        if shut:  # shutdown began between `run`'s check and the spawn: it may already have collected _PROCS
             _kill(proc)
             out["error"] = CLOSED
             return out

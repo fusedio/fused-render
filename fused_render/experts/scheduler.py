@@ -120,8 +120,10 @@ def started() -> bool:
 
 
 def start() -> None:
-    """Arm the timer (the server's startup hook). Idempotent."""
+    """Arm the timer (the server's startup hook) and let side sessions start again after a shutdown. Idempotent."""
     global _timer_stop, _thread
+    from fused_render.experts import sessions
+    sessions.reopen()
     with _LOCK:
         if _thread is not None:
             return
