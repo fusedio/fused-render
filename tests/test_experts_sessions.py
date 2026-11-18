@@ -672,3 +672,56 @@ def test_begin_shutdown_signals_without_waiting(monkeypatch):
         with sessions._GUARD:
             sessions._PROCS.discard(p)
         sessions.reopen()
+
+
+def test_a_queued_dream_and_an_in_flight_learn_do_not_survive_a_shutdown_and_reopen(expert, monkeypatch):
+    """The generation travels with the work itself: a dream whose thread was queued before a shutdown, and a
+    task-learn that was running across one, start nothing after the service reopens."""
+    calls, queued = [], []
+
+    class Held:  # a thread that is queued but not started until the test says so
+        def __init__(self, target=None, **kw):
+            self.target = target
+            queued.append(self)
+
+        def start(self):
+            pass
+    monkeypatch.setattr(sessions.threading, "Thread", Held)
+
+    def bloat():
+        with open(store.memory_path(expert), "a", encoding="utf-8") as f:
+            f.write("- [1 · 2026-11-18] filler\n" * (sessions.LIMIT_LINES + 5))
+
+    def harness(bot, prompt, write):
+        calls.append(prompt[:40])
+        if "learn" in prompt:           # the task-learn is in flight: memory goes over the limit, then a restart
+            bloat()
+            sessions.shutdown(0)
+            sessions.reopen()
+        return {"ok": True, "answer": "", "transcript": []}
+    monkeypatch.setattr(sessions, "harness", harness)
+    sessions.reopen()
+
+    # 1. An in-flight task-learn that ends after a shutdown and reopen queues no dream.
+    row = sessions.run(expert, "task-learn", "learn from this", {"session_id": "s1"})
+    assert row["status"] == "done" and sessions.over_limit(expert) and queued == []
+
+    # 2. A dream queued now, whose thread only runs after a shutdown and reopen, is refused.
+    assert sessions.after_write(expert) is True and len(queued) == 1
+    sessions.shutdown(0)
+    sessions.reopen()
+    before = len(calls)
+    queued[0].target()
+    assert len(calls) == before  # the harness never ran for it
+    dreams = [r for r in sessions.rows(expert) if r["kind"] == "dream"]
+    assert [r["status"] for r in dreams] == ["error"] and dreams[0]["error"] == sessions.CLOSED
+
+
+def test_prompts_name_the_granted_folders_by_their_real_paths(expert, tmp_path):
+    """A relocated workspace: the canvas copies are not at the default path the skills name, so the prompt says
+    where the granted folder really is (a read at the default path would be refused)."""
+    assert "You may also read" not in store.where(expert)
+    granted = tmp_path / "ws" / "canvas"
+    granted.mkdir(parents=True)
+    expert.meta["folders"] = [str(granted)]
+    assert store.where(expert).endswith(f" You may also read: {granted}.")

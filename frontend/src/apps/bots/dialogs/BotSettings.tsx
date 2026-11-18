@@ -273,7 +273,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
             {tab === "general" ? (
               <Rows>
                 <Row title="Name" htmlFor="bmname">
-                  <Input id="bmname" placeholder="e.g. LinkedIn scout" value={name} onChange={(e) => setName(e.target.value)}
+                  <Input id="bmname" placeholder={isExpert ? "e.g. Canvas Reference" : "e.g. LinkedIn scout"} value={name} onChange={(e) => setName(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") ok(); }} />
                 </Row>
                 {/* Super Bot's avatar is the fixed Claude mark: no picker (the backend refuses a change too). */}

@@ -104,8 +104,13 @@ def memory_path(bot) -> str:
 
 
 def where(bot) -> str:
-    """The absolute paths a session's prompt states, so the harness never guesses where memory.md is."""
-    return f"Your folder is {expert_dir(bot)}; your memory is {memory_path(bot)}."
+    """The absolute paths a session's prompt states, so the harness never guesses where memory.md or a granted
+    folder is."""
+    out = f"Your folder is {expert_dir(bot)}; your memory is {memory_path(bot)}."
+    # The granted folders by their real paths: instructions and skills may name a default location (`~/Fused/canvas`)
+    # that is somewhere else on a relocated workspace, and a read there is refused.
+    folders = read_folders(bot)
+    return out + (" You may also read: " + ", ".join(folders) + "." if folders else "")
 
 
 def state_dir(bot) -> str:

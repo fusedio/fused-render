@@ -107,7 +107,9 @@ row with status `error`.
   snapshot; one ended by a shutdown reports `CLOSED` (not a failed attempt, §9).
 - **The prompts** of an ask, a task-learn and a dream, and a fresh chat session's message (§7), state the absolute
   paths: "Your folder is <dir>; your memory is <dir>/memory.md." (`store.where`), so the harness never guesses
-  where memory.md is.
+  where memory.md is, followed by "You may also read: <granted folders>." when there are any: instructions and
+  skills may name a default location (`~/Fused/canvas`) that is elsewhere on a relocated workspace
+  (`FUSED_RENDER_DIR`), and a read at the default path is refused.
 - **A row** `{id, kind, started, ended, status, trigger, transcript, memory_diff, answer, error?, cost_usd?}`:
   `id` is `<started ms, 13 digits>-<6 hex>`, so names sort by start; `status` is `running` | `done` | `error`, and a
   row still `running` that this process is not running reads as `interrupted` (a restart cut it short);
