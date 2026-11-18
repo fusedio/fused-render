@@ -223,7 +223,9 @@ def test_fence_lets_a_chat_and_an_ask_run_udfs_per_environment(expert, tmp_path,
     assert store.run_envs(expert) == [("prod", str(base / "prod")), ("unstable", str(base / "unstable"))]  # never custom
     bash = ["Bash(fused workbench --env prod run:*)", "Bash(fused workbench --env prod udf-schema:*)",
             "Bash(fused workbench --env prod whoami)", "Bash(fused workbench --env unstable run:*)",
-            "Bash(fused workbench --env unstable udf-schema:*)", "Bash(fused workbench --env unstable whoami)"]
+            "Bash(fused workbench --env unstable udf-schema:*)", "Bash(fused workbench --env unstable whoami)",
+            "Bash(fused workbench --help)", "Bash(fused workbench run --help)",
+            "Bash(fused workbench udf-schema --help)"]
     chat = sessions.fence(expert, write=True, run=True)
     assert chat[1] == "Read,Glob,Grep,Edit,Write,Bash" and [x for x in chat if x.startswith("Bash(")] == bash
     ask = sessions.fence(expert, write=False, run=True)
@@ -924,3 +926,16 @@ def test_a_change_made_while_a_session_writes_is_not_a_hand_edit(expert, monkeyp
     sessions.run(expert, "task-learn", "learn more")  # differs from the mark until this session ends
     assert seen == [(True, False), (True, False)]
     assert (sessions.writing(expert), sessions.edited_by_hand(expert)) == (False, False)
+
+
+def test_a_resumed_chat_is_told_how_to_run_every_turn(expert, tmp_path, monkeypatch):
+    from fused_render.bots import agent_engine
+    _canvases(expert, tmp_path, monkeypatch)
+    note = store.run_note(expert)
+    assert "fused workbench --env prod run --engine remote" in note and "nobody can approve it" in note
+    fresh, _ = agent_engine._expert_message(expert, "run it", past=[], conv={})
+    resumed, _ = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s"})
+    assert note in fresh and note in resumed            # a session from before the expert could run never saw it
+    assert store.where(expert) in fresh and store.where(expert) not in resumed
+    monkeypatch.delenv(__import__("fused_render.fusedcli", fromlist=["x"]).CLI_DIR_ENV)
+    assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={"session_id": "s"})[0]

@@ -112,14 +112,25 @@ def where(bot, run: bool = False) -> str:
     # that is somewhere else on a relocated workspace, and a read there is refused.
     folders = read_folders(bot)
     out += " You may also read: " + ", ".join(folders) + "." if folders else ""
-    envs = run_envs(bot) if run else []
-    if envs:
-        skill = os.path.join(expert_dir(bot), "skills", RUN_SKILL)
-        out += (" You may run UDFs on Fused" + (f" (read {skill} first)" if os.path.isfile(skill) else "")
-                + ", always in the environment the canvas copy belongs to: "
-                + "; ".join(f"copies under {d} are environment `{env}`, run with `{run_prefix(env)} <canvas> <udf>`"
-                            for env, d in envs) + ".")
-    return out
+    return out + (" " + note if run and (note := run_note(bot)) else "")
+
+
+def run_note(bot) -> str:
+    """What a session that may run UDFs is told ("" when it may not): which Fused environment each folder of canvas
+    copies belongs to, the command that runs a UDF there, and that no other form can be approved. A chat states
+    it every turn (agent_engine._expert_message): a session resumed from before the expert could run, or before
+    an environment was added, never saw it."""
+    envs = run_envs(bot)
+    if not envs:
+        return ""
+    skill = os.path.join(expert_dir(bot), "skills", RUN_SKILL)
+    return ("You may run UDFs on Fused" + (f" (read {skill} first)" if os.path.isfile(skill) else "")
+            + ", always in the environment the canvas copy belongs to: "
+            + "; ".join(f"copies under {d} are environment `{env}`, run with `{run_prefix(env)} <canvas> <udf>`"
+                        for env, d in envs)
+            + ". The command must start exactly like that (add `--help` to see its flags). Any other shell command"
+            " is refused, and nobody can approve it: do not ask the user to approve a command, change it to this"
+            " form.")
 
 
 #: The Fused environments an expert may run UDFs in. `custom` is not one: it is reached with FUSED_ENV unset from

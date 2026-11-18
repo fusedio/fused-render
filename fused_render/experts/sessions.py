@@ -115,6 +115,9 @@ def fence(bot, write: bool, run: bool = False) -> list:
     for env in envs:
         rules += [f"Bash(fused workbench --env {env} run:*)", f"Bash(fused workbench --env {env} udf-schema:*)",
                   f"Bash(fused workbench --env {env} whoami)"]
+    if envs:  # reading the flags is harmless, and an expert that may not will guess them or ask to be approved
+        rules += ["Bash(fused workbench --help)", "Bash(fused workbench run --help)",
+                  "Bash(fused workbench udf-schema --help)"]
     out = ["--tools", "Read,Glob,Grep" + (",Edit,Write" if write else "") + (",Bash" if envs else ""),
            "--permission-mode", "default"]
     return out + (["--allowedTools", *rules] if rules else [])

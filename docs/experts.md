@@ -163,6 +163,8 @@ own permission rules (verified on claude 2.1.326; the Bash rules on 2.1.327), wi
     --allowedTools Edit(//<abs>/memory.md) Read(//<granted folder>/**) ...
                    Bash(fused workbench --env <env> run:*) Bash(fused workbench --env <env> udf-schema:*)
                    Bash(fused workbench --env <env> whoami) ...
+                   Bash(fused workbench --help) Bash(fused workbench run --help)
+                   Bash(fused workbench udf-schema --help)
 
     kind         tools
     chat         Read Glob Grep Edit Write Bash
@@ -191,6 +193,12 @@ gate. Task-learn and dream sessions get no Bash (`fence(..., run=False)`): they 
 Claude Code's own Bash permission rules; our code builds the rules and the prompt line and nothing else (it does
 not look at, rewrite or approve a command).
 
+- **What the expert is told** (`store.run_note`): which folder is which environment, the command that runs a UDF
+  there, that the command must start exactly like that, and that a refused command cannot be approved by anyone,
+  so it must change the command and never ask the user to approve one. An ask's prompt carries it; the chat
+  states it EVERY turn (`agent_engine._expert_message`), since a chat session resumed from before the expert
+  could run, or before an environment was added, would otherwise never see it and guess the form. The three
+  `--help` commands without an environment are allowed so the expert can read the flags.
 - **Which environments** (`store.run_envs`): `prod` and `unstable` (`store.RUN_ENVS`), each only when its folder of
   canvas copies `<canvases base>/<env>` (`canvases.canvases_base()`) exists inside a folder the expert was granted,
   and only when the server wrote the `fused` wrapper (`fusedcli.CLI_DIR_ENV` is set; the wrapper's folder is on

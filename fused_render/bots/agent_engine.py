@@ -545,7 +545,11 @@ def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tupl
             past = _call(bot.past_conversation, []) if past is None else past
             summary = "\n".join(past) if past else "(this is the start of the conversation)"
         parts.append("CONVERSATION SO FAR (with the user, oldest first):\n" + summary)
-        parts.append(xstore.where(bot, run=True))  # a resumed session already has it
+        parts.append(xstore.where(bot))  # a resumed session already has the paths
+    # Every turn, not only the first: a session resumed from before the expert could run (or before an environment
+    # was added) never saw it, and an expert that guesses the command form is refused.
+    parts.append(xstore.run_note(bot))
+    parts = [p for p in parts if p]
     parts += [f"Today is {xsessions.today()}.", f"MESSAGE: {task}"]
     return "\n\n".join(parts), {}
 
