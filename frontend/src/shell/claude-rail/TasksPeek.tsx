@@ -46,7 +46,9 @@
 // and Open — the /tasks page itself — on the right.
 import { Component, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ChevronDown, ChevronUp, X } from "lucide-react";
-import type { Task } from "@platform/lib/api";
+import { getSchedule, type Task } from "@platform/lib/api";
+import { pendingEntryId, queueCaption } from "@platform/lib/queue";
+import { ForceStartButton, queuedLine } from "@shell/ForceStartButton";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { navigateUrl } from "@platform/lib/router";
 import { ChatMount } from "@apps/claude";
@@ -151,6 +153,60 @@ export function TasksPeek() {
     });
   }, [mounted]);
   const task = chat ? (listing?.find((t) => t.key === chat.key) ?? null) : null;
+  // A CHAT THAT WAS QUEUED WITH NO SESSION IS REKEYED WHEN IT STARTS (Bugbot,
+  // PR #2348): its row is `pending:<entry>` until its run mints a session, and
+  // then it is that session's row — so the key this card was opened on names
+  // nothing, and the body fell back to "no conversation yet" over a task that
+  // had just been force-started from this very card. The entry id is the name
+  // that does not move (`api_queue_force`'s own note): once the pending row has
+  // left the listing, the entry is asked which session it became and the card
+  // follows it there.
+  const startedEntry = chat && listing && !task ? pendingEntryId(chat.key) : "";
+  // …AND AN ENTRY THAT IS NOT BECOMING A SESSION SAYS SO: cancelled or failed
+  // before it ran, or silent for the whole look. The body goes back to "no
+  // conversation yet" rather than "Starting…" for ever.
+  const [lostEntry, setLostEntry] = useState("");
+  useEffect(() => {
+    if (!startedEntry) return;
+    let alive = true;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const again = (ms: number) => {
+      // Half a minute of looking: a run that has not said its session by then
+      // is not about to, and Back is the way out.
+      if (!alive) return;
+      if (++tries < 30) timer = setTimeout(look, ms);
+      else setLostEntry(startedEntry);
+    };
+    const look = () => {
+      void getSchedule().then((res) => {
+        if (!alive) return;
+        const entry = res.entries.find((e) => e.id === startedEntry);
+        const session = entry?.claude_session_id;
+        if (!session) {
+          if (entry && (entry.state === "error" || entry.state === "cancelled" || entry.state === "missed")) {
+            setLostEntry(startedEntry);
+            return;
+          }
+          return again(1000);
+        }
+        // ONTO THE ROW, once the listing has it: the schedule can name the
+        // session a beat before the listing rekeys, and following it there
+        // early would show an empty card for that beat. If the row never
+        // arrives in the time, the session itself is the key (a row is keyed
+        // by its session). The anchor a press named is kept.
+        const row = readListing()?.find((t) => t.session_id === session);
+        if (!row && tries < 29) return again(500);
+        const key = row?.key ?? session;
+        setChat((was) => (was && pendingEntryId(was.key) === startedEntry ? { key, anchor: was.anchor } : was));
+      }, () => again(2000));
+    };
+    look();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [startedEntry]);
   // THE CHAT'S HEAD IS THE SIDE PEEK'S (owner, 2026-11-08: "the top bar in a
   // chat view is confusing, it only tells me the title — show the one we
   // already show there, just hide the × button"): the Tasks page's own panel
@@ -456,8 +512,21 @@ export function TasksPeek() {
                     smallCardShown={api.visible}
                     {...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}
                   />
+                ) : task && queueCaption(task) ? (
+                  // QUEUED, AND NO CHAT YET: the line it stands in, and the way
+                  // to stop standing in it (Akshil, 2026-11-18).
+                  <div className="claude-rail-peek-note is-stack">
+                    <span>{queuedLine(task)}</span>
+                    <ForceStartButton facts={task} target={{ key: task.key }} />
+                  </div>
                 ) : (
-                  <p className="claude-rail-peek-note">{listing ? "This task has no conversation yet." : "Loading…"}</p>
+                  <p className="claude-rail-peek-note">
+                    {!listing
+                      ? "Loading…"
+                      : startedEntry && lostEntry !== startedEntry
+                        ? "Starting the task…"
+                        : "This task has no conversation yet."}
+                  </p>
                 )}
               </div>
             )}
