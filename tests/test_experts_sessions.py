@@ -194,6 +194,8 @@ def test_a_write_over_the_limit_queues_one_dream(expert, monkeypatch):
     assert kinds.count("dream") == 1 and not sessions.over_limit(expert)
     assert sum("over its limit" in c["prompt"] for c in calls) == 1
     assert all(store.where(expert) in c["prompt"] for c in calls if "over its limit" in c["prompt"])
+    dream = next(c["prompt"] for c in calls if "over its limit" in c["prompt"])
+    assert store.archive_path(expert) in dream and "never just away" in dream  # moved to the archive, not dropped
     assert sessions.after_write(expert) is False  # under the limit now
 
 
@@ -205,6 +207,7 @@ def test_fence_flags(expert, tmp_path):
     w = sessions.fence(expert, write=True)
     assert w[:4] == ["--tools", "Read,Glob,Grep,Edit,Write", "--permission-mode", "default"]
     mem = store.memory_path(expert)
+    assert f"Edit(//{store.archive_path(expert).lstrip('/')})" in w  # a dream moves lines there
     assert f"Edit(//{mem.lstrip('/')})" in w and f"Read(//{str(granted).lstrip('/')}/**)" in w
     assert "--permission-prompt-tool" not in w
     r = sessions.fence(expert, write=False)
@@ -261,7 +264,7 @@ def test_fence_lets_a_chat_and_an_ask_run_udfs_per_environment(expert, tmp_path,
     mem = f"Edit(//{store.memory_path(expert).lstrip('/')})"
     assert os.path.isdir(store.udfs_dir(expert)) and store.udfs_dir(expert).endswith(os.path.join(".fused", "udfs"))
     assert [x for x in ask if x.startswith("Edit(")] == [scratch]
-    assert [x for x in chat if x.startswith("Edit(")] == [mem, scratch]
+    assert [x for x in chat if x.startswith("Edit(")] == [mem, f"Edit(//{store.archive_path(expert).lstrip('/')})", scratch]
     assert chat[2:4] == ask[2:4] == ["--permission-mode", "default"] and "--settings" not in chat + ask
     # task-learn and dream (and any caller that does not ask for it) get no Bash at all
     for flags in (sessions.fence(expert, write=True), sessions.fence(expert, write=False)):
@@ -334,7 +337,7 @@ def test_side_sessions_run_udfs_only_in_an_ask(expert, tmp_path, monkeypatch):
     assert {"role": "tool", "text": "Bash fused workbench --env prod whoami"} in res["transcript"]  # the row shows it
     sessions.harness(expert, "q", True)  # a task-learn or a dream
     assert "Read,Glob,Grep,Edit,Write" in cmds[-1] and not any(x.startswith("Bash(") for x in cmds[-1])
-    assert [x for x in cmds[-1] if x.startswith("Edit(")] == [f"Edit(//{store.memory_path(expert).lstrip('/')})"]
+    assert [x for x in cmds[-1] if x.startswith("Edit(")] == [f"Edit(//{store.memory_path(expert).lstrip('/')})", f"Edit(//{store.archive_path(expert).lstrip('/')})"]
     assert cmds[-1][cmds[-1].index("--permission-mode") + 1] == "default"
 
 

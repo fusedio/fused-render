@@ -347,7 +347,8 @@ def prompt_for(bot, transcript: str, live: bool = False) -> str:
             f"reading {CUT} marks transcript left out. Raise the count and date of a fact already in memory.md instead of adding it "
             "again, but only when this session showed it in practice (it ran, it failed, the user said it): the "
             "task repeating what expert_context or expert_ask told it is not new evidence and must not raise a "
-            "count. If nothing here is worth remembering, change nothing. Then say in one line what you did.\n\n"
+            "count. Before you add a new fact, search memory-archive.md in your folder for it: one found there comes "
+            "back into memory.md with its count raised by one, and the archive stays as it is. If nothing here is worth remembering, change nothing. Then say in one line what you did.\n\n"
             "<<<TRANSCRIPT\n" + transcript.replace("<<<", "‹‹‹").replace(">>>", "›››") + "\nTRANSCRIPT>>>")
 
 

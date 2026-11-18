@@ -30,6 +30,7 @@ The expert's folder is the bot's own folder (`bot.public_dir`, `bots/paths.bot_f
       instructions.md             standing instructions (static; the harness's system prompt)
       skills/*.md                 static reference files (the expert is told never to rewrite them)
       memory.md                   the only file the expert writes unasked (§6)
+      memory-archive.md           lines a dream moved out of memory.md (§10); made by the first dream that needs it
       .fused/expert/
         sessions/<id>.json        one row per session (§4); the newest 200 are kept
         read.json                 which task sessions used it and how much of each it has read (§9)
@@ -175,7 +176,7 @@ Claude Code's own permission system (verified on claude 2.1.327). There are two 
     chat (a user at hand)     auto      Read Glob Grep Edit Write Bash   memory.md, .fused/udfs/
     chat turn of a routine    default   Read Glob Grep Edit Write Bash   memory.md, .fused/udfs/
     ask                       default   Read Glob Grep Edit Write Bash   .fused/udfs/
-    task-learn, dream         default   Read Glob Grep Edit Write        memory.md
+    task-learn, dream         default   Read Glob Grep Edit Write        memory.md, memory-archive.md
 
 **The default mode** (everything but the attended chat): allow rules, NO permission prompt tool and NO MCP
 server, so what the rules do not cover is refused.
@@ -499,9 +500,18 @@ The limit is 200 lines or 24 KB (`LIMIT_LINES`, `LIMIT_BYTES`), whichever comes 
 a task-learn session (not after a dream), `sessions.after_write` checks the size; over the limit it queues ONE
 dream session per expert in a background thread (a second is not queued while one is queued or running). The
 dream prompt gives today's date, the size and the limit, and says: merge lines that say the same thing (add the
-counts, keep the newest date), drop old low-count lines, get clearly under the limit, keep the format and the two
-headings, edit only `memory.md`. Its row's trigger is `{lines, bytes}`. The expert decides what goes; our code
-ranks and deletes nothing.
+counts, keep the newest date), move old low-count lines to the end of `memory-archive.md` unchanged, get clearly
+under the limit, keep the format and the two headings, edit only those two files. Its row's trigger is
+`{lines, bytes}`. The expert decides what goes; our code ranks, moves and deletes nothing.
+
+**The archive** (`memory-archive.md`, `store.archive_path`) is the expert's own business: no code of ours reads,
+writes, checks or limits it, no prompt and no `expert_context` loads it, and the page does not show it (the dream's
+diff shows the lines leaving `memory.md`). The memory rules in `instructions.md` tell the expert to search it when
+memory has nothing on a question, when the user asks about the past, and before adding a new fact (the task-learn
+prompt repeats that one); a line found useful is copied back into `memory.md`, the archive is left as it is. A fact
+the user calls wrong is deleted, not archived. The fence lets every default-mode writer edit it (one rule list for
+task-learn and dream); the attended chat gets a card for it. An expert whose `instructions.md` predates the
+archive (hand-written, or an edited shipped one) learns of it only from the dream and task-learn prompts.
 
 ## 11. Tracing a memory change
 

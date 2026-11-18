@@ -116,7 +116,7 @@ def _auto_settings(bot) -> str:
 def fence(bot, write: bool, run: bool = False, auto: bool = False) -> list:
     """The harness flags that fence an expert's session. Reads inside the working directory (the expert's
     folder) are the harness's default; each granted folder gets a Read rule (a folder whose path has glob
-    characters gets none); memory.md gets an Edit rule (which covers Write) when `write`. `run` (a chat or
+    characters gets none); memory.md and memory-archive.md get an Edit rule (which covers Write) when `write`. `run` (a chat or
     an ask) adds Bash with allow rules for exactly the `fused` commands that run a UDF on Fused, print a UDF's
     parameters or say who is signed in, per environment the expert may run in (`store.run_envs`; with none, no
     Bash at all), and Edit / Write with an Edit rule for the scratch folder of throwaway UDF files
@@ -135,7 +135,7 @@ def fence(bot, write: bool, run: bool = False, auto: bool = False) -> list:
     after it."""
     rules = []
     envs = [env for env, _ in store.run_envs(bot)] if run else []
-    edits = ([store.memory_path(bot)] if write else []) + ([store.udfs_dir(bot) + "/**"] if envs else [])
+    edits = ([store.memory_path(bot), store.archive_path(bot)] if write else []) + ([store.udfs_dir(bot) + "/**"] if envs else [])
     if not auto:
         rules += [f"Edit({_rule_path(p)})" for e in edits for p in _spellings(e)]
     for folder in store.read_folders(bot):
@@ -478,9 +478,11 @@ def dream(bot) -> dict:
     lines, nbytes = size(bot)
     prompt = (f"Today is {today()}. {store.where(bot)}\nYour memory.md is over its limit: {lines} lines, {nbytes} bytes; the limit is "
               f"{LIMIT_LINES} lines or {LIMIT_BYTES} bytes, whichever comes first.\n"
-              "Compact it now: merge lines that say the same thing (add their counts, keep the newest date), drop "
-              "old lines with low counts, and get it clearly under the limit. Keep the format and the two "
-              "headings. Edit memory.md and nothing else, then say in one line what you did.")
+              "Compact it now: merge lines that say the same thing (add their counts, keep the newest date), move "
+              f"old lines with low counts to the end of {store.archive_path(bot)} unchanged (create the file if it is "
+              "missing; do not read all of it, it may be long), and get memory.md clearly under the limit. A line you "
+              "take out and do not merge goes to the archive, never just away. Keep the format and the two headings. "
+              "Edit those two files and nothing else, then say in one line what you did.")
     return run(bot, "dream", prompt, {"lines": lines, "bytes": nbytes})
 
 
