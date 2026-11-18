@@ -1070,3 +1070,22 @@ def test_shutdown_waits_for_a_session_to_save_its_row(expert, monkeypatch):
         go.set()
         t.join(5)
         sessions.reopen()
+
+
+def test_a_redirected_memory_file_or_scratch_folder_is_not_written_without_a_card(expert, tmp_path, monkeypatch):
+    """`free_write` answers the chat's edits of memory.md and the scratch folder without a card. When either is
+    a symlink to somewhere outside the expert's folder, the place it points at is not one of the two."""
+    _canvases(expert, tmp_path, monkeypatch)
+    d, scratch, mem = store.expert_dir(expert), store.udfs_dir(expert), store.memory_path(expert)
+    outside = tmp_path / "outside"
+    (outside / "dir").mkdir(parents=True)
+    (outside / "notes.md").write_text("mine")
+    assert store.free_write(expert, mem) and store.free_write(expert, os.path.join(scratch, "a.py"))
+    os.remove(mem)
+    os.symlink(str(outside / "notes.md"), mem)
+    assert not store.free_write(expert, mem) and not store.free_write(expert, "memory.md", d)
+    assert not store.free_write(expert, str(outside / "notes.md"))
+    os.rmdir(scratch)
+    os.symlink(str(outside / "dir"), scratch)
+    assert not store.free_write(expert, os.path.join(scratch, "a.py"))
+    assert not store.free_write(expert, str(outside / "dir" / "a.py"))
