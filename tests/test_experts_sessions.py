@@ -834,16 +834,6 @@ def test_a_call_read_without_its_outcome_anchors_the_next_slice(expert, monkeypa
     assert far.startswith(learn.CUT) and "USER| b 60 " not in far
 
 
-def test_calls_side_by_side_share_one_window():
-    lines = ["USER| " + "x" * 90 for _ in range(400)]
-    md = learn.fit(lines, [100, 101, 300], 6000).split(learn.CUT)
-    assert abs(len(md[1]) - len(md[2])) < 300   # the pair at 100/101 does not take two shares
-    # "Close" is measured from the last call that kept a window: a call every few lines is not ONE window at
-    # the first of them (the rest of a long task would be left out).
-    md = learn.fit(lines, list(range(100, 400, 4)), 6000)
-    assert lines[100] in md and md.count(learn.CUT) >= 2 and len(md.split(learn.CUT)) > 4
-
-
 def test_a_change_made_while_a_session_writes_is_not_a_hand_edit(expert, monkeypatch):
     seen = []
 

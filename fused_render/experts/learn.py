@@ -43,7 +43,6 @@ _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
 USER_TAG, AGENT_TAG, TOOL_TAG, NOTE_TAG = "USER| ", "AGENT| ", "TOOL| ", "NOTE| "
 CUT = "[... part cut ...]"
 CARRY = 20                   # a call this few lines before the cursor was read without its outcome
-NEAR = 5                     # calls this close are one window (expert_context then expert_ask)
 
 _LOCK = threading.Lock()     # read.json: record_use (request threads) and the pass
 
@@ -195,11 +194,6 @@ def fit(lines: list, calls: list, cap: int | None = None) -> str:
         tail = md[-cap:]
         cut = tail.find("\n")  # none: the last line alone is over the cap, and half a line has no speaker tag
         return CUT + ("\n" + tail[cut + 1:] if cut >= 0 else "")
-    anchors = []
-    for c in calls:  # one window for calls close together (else the pair takes two shares), measured from the
-        if not anchors or c - anchors[-1] > NEAR:  # last call KEPT: a call every few lines is not all one window
-            anchors.append(c)
-    calls = anchors
     keep, left = set(), cap
     for step in range(3 * len(lines)):  # far enough for a call at either end to reach the other
         # 0, +1, +2, -1, +3, +4, -2, ...: every third step looks back

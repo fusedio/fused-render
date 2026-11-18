@@ -469,7 +469,7 @@ your memory from this" with the same evidence rule as §3 and one relevance rule
 subject the expert's instructions give it, since most of a task session is about other things. The cut is centred
 on the lines where the task called THIS expert (`expert_context` / `expert_ask` naming it): the budget is shared
 between those calls, each keeping the lines around it, two after the call for every one before (what the advice
-led to is the evidence), with `[... part cut ...]` where lines were left out. Calls within 5 lines of the last call that has a window (`expert_context` then `expert_ask`) share that window. A call
+led to is the evidence), with `[... part cut ...]` where lines were left out. A call
 within 20 lines before the cursor was read before the task had written what came of it, so the start of the next
 slice is kept as its window. An unread part with no such call
 keeps its last 30,000 characters. Our code picks lines by position only; it never judges what is relevant. At most 4 task-learn sessions start per pass; the rest wait
