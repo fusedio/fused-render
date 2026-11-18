@@ -18,6 +18,7 @@ import math
 import os
 import random
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ def start() -> None:
 def shutdown(budget_s: float = 5.0) -> None:
     """Stop the timer (waits up to `budget_s` for a tick in flight) and end every side session's harness."""
     global _timer_stop, _thread
+    deadline = time.monotonic() + max(0.0, budget_s)  # one budget for the harnesses and the timer together
     with _LOCK:
         stop, thread = _timer_stop, _thread
         _timer_stop, _thread = None, None
@@ -142,8 +144,8 @@ def shutdown(budget_s: float = 5.0) -> None:
         stop.set()
     try:
         from fused_render.experts import sessions
-        sessions.shutdown()
+        sessions.shutdown(max(0.0, budget_s))
     except Exception:  # noqa: BLE001
         logger.warning("experts scheduler: could not end the side sessions", exc_info=True)
     if thread is not None and thread is not threading.current_thread():
-        thread.join(max(0.0, budget_s))
+        thread.join(max(0.0, deadline - time.monotonic()))

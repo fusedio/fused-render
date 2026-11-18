@@ -62,7 +62,11 @@ _GUARD = threading.Lock()
 _RUNNING: set = set()          # row ids this process is running
 _PROCS: set = set()            # their harness processes (shutdown)
 _DREAMING: set = set()       # expert ids with a dream session queued or running
-_STATE = {"closed": False}   # set by `shutdown`, cleared by `reopen` (scheduler.start): no new harness once closed
+#: `closed`: set by `shutdown`, cleared by `reopen` (scheduler.start): no new harness once closed. `gen`: raised by
+#: every `shutdown`, never lowered: a session admitted before a shutdown stays refused after a reopen.
+_STATE = {"closed": False, "gen": 0}
+_LOCAL = threading.local()   # `.gen`: the generation `run` admitted this thread's session in (read by `harness`)
+KILL_GRACE_S = 1.0           # of shutdown's budget, kept for SIGKILL after SIGTERM
 
 
 def today() -> str:
@@ -115,20 +119,36 @@ def _timeout() -> float:
     return v if v > 0 else TIMEOUT_S
 
 
-def _kill(proc) -> None:
-    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _signal(proc, sig) -> None:
+    """Signal the harness's process group (it runs in its own session), else the process itself."""
+    try:
+        os.killpg(proc.pid, sig)
+    except (AttributeError, OSError):
         try:
-            os.killpg(proc.pid, sig)
-        except (AttributeError, OSError):
-            try:
-                proc.send_signal(sig)
-            except OSError:
-                pass
+            proc.send_signal(sig)
+        except OSError:
+            pass
+
+
+def _wait_all(procs, deadline: float) -> list:
+    """Wait for `procs` together until `deadline` (monotonic); the ones still running."""
+    left = []
+    for p in procs:
         try:
-            proc.wait(timeout=2)
-            return
+            p.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            continue
+            left.append(p)
+    return left
+
+
+def _kill(proc) -> None:
+    for sig in (signal.SIGTERM, _SIGKILL):
+        _signal(proc, sig)
+        if not _wait_all([proc], time.monotonic() + 2):
+            return
 
 
 def _tool_line(blk: dict) -> str:
@@ -159,23 +179,27 @@ def harness(bot, prompt: str, write: bool) -> dict:
            "--effort", bot.meta.get("effort") or agent_engine.DEFAULT_EFFORT,
            "--system-prompt-file", sp_file, *agent_engine.NO_MCP, *fence(bot, write)]
     proc = None
+    gen = getattr(_LOCAL, "gen", None)
     try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                cwd=store.expert_dir(bot), env=dict(os.environ), close_fds=False,
-                                start_new_session=True)
+        # Spawn and register in ONE step under the guard, after the closed / generation check: a harness is
+        # either never spawned or in _PROCS before `shutdown` can take its snapshot.
         with _GUARD:
-            shut = _STATE["closed"]
+            if _STATE["closed"] or (gen is not None and gen != _STATE["gen"]):
+                out["error"] = CLOSED
+                return out
+            gen = _STATE["gen"]
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    cwd=store.expert_dir(bot), env=dict(os.environ), close_fds=False,
+                                    start_new_session=True)
             _PROCS.add(proc)
-        if shut:  # shutdown began between `run`'s check and the spawn: it may already have collected _PROCS
-            _kill(proc)
-            out["error"] = CLOSED
-            return out
         try:
             raw, err = proc.communicate(prompt.encode("utf-8"), timeout=_timeout())
         except subprocess.TimeoutExpired:
             _kill(proc)
             out["error"] = f"no answer after {int(_timeout())} s"
             return out
+        with _GUARD:
+            ended_by_shutdown = gen != _STATE["gen"]
         result = None
         for ln in raw.decode("utf-8", "replace").splitlines():
             try:
@@ -194,6 +218,9 @@ def harness(bot, prompt: str, write: bool) -> dict:
                         out["transcript"].append({"role": "tool", "text": _tool_line(blk)[:300]})
             elif ev.get("type") == "result":
                 result = ev
+        if result is None and ended_by_shutdown:  # `shutdown` killed it: not a failed attempt (learn.py)
+            out["error"] = CLOSED
+            return out
         if result is None:
             tail = err.decode("utf-8", "replace").strip()[-400:]
             out["error"] = f"Claude Code exited (code {proc.returncode}) without an answer" + (f": {tail}" if tail else "")
@@ -370,12 +397,15 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
     rec = _new_row(kind, trigger)
     writes = kind in WRITERS
     gate = store.write_lock(bot) if writes else _ASKS
-    if closed() or not gate.acquire(timeout=_timeout() if writes else ASK_WAIT_S):
-        rec.update(status="error", ended=time.time(), error=CLOSED if closed() else BUSY)
+    with _GUARD:
+        shut, gen = _STATE["closed"], _STATE["gen"]  # admitted in this generation
+    if shut or not gate.acquire(timeout=_timeout() if writes else ASK_WAIT_S):
+        rec.update(status="error", ended=time.time(), error=CLOSED if shut or closed() else BUSY)
         _save(bot, rec)
         return rec
     with _GUARD:
-        shut = _STATE["closed"]  # shutdown may have begun while this session waited on the gate
+        # A shutdown while this session waited on the gate refuses it, even if a reopen came since (the generation).
+        shut = _STATE["closed"] or _STATE["gen"] != gen
         if not shut:
             _RUNNING.add(rec["id"])
     if shut:
@@ -388,11 +418,14 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
         if writes:
             rec["memory_before"] = _sha(before)  # for `cut_short`: a restart leaves this row with no diff computed
         _save(bot, rec)
+        _LOCAL.gen = gen  # `harness` spawns only in this generation
         try:
             res = harness(bot, prompt, writes)
         except Exception as e:  # noqa: BLE001
             logger.warning("expert %s: %s session failed", bot.id, kind, exc_info=True)
             res = {"ok": False, "error": f"{type(e).__name__}: {e}", "transcript": [], "answer": ""}
+        finally:
+            _LOCAL.gen = None
         # Only a writer's diff is its own: an ask holds no write lock, so a chat or task-learn writing meanwhile
         # would otherwise show up in the ask's row and list it as a memory writer.
         rec.update(ended=time.time(), status="done" if res.get("ok") else "error",
@@ -486,11 +519,23 @@ def reopen() -> None:
         _STATE["closed"] = False
 
 
-def shutdown() -> None:
+def shutdown(budget_s: float = 4.0) -> None:
     """Close (no new side session or dream starts: `run` answers a CLOSED error row, `after_write` queues
-    nothing) and end every harness process a side session still has (server shutdown)."""
+    nothing; a session admitted before stays refused after a `reopen`) and end every harness process a side
+    session still has (server shutdown), within `budget_s` all together: SIGTERM to all, one shared wait, then
+    SIGKILL to what is left (the last `KILL_GRACE_S` of the budget, waited for together too)."""
     with _GUARD:
         _STATE["closed"] = True
+        _STATE["gen"] += 1
         procs = list(_PROCS)
+    if not procs:
+        return
+    start = time.monotonic()
+    budget_s = max(0.0, budget_s)
     for p in procs:
-        _kill(p)
+        _signal(p, signal.SIGTERM)
+    left = _wait_all(procs, start + max(0.0, budget_s - KILL_GRACE_S))
+    for p in left:
+        _signal(p, _SIGKILL)
+    if _wait_all(left, start + budget_s):
+        logger.warning("experts: %d harness process(es) still running at the end of shutdown", len(left))
