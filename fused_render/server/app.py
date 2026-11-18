@@ -1421,6 +1421,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
                 return  # off: no module loaded for the spawn side, no folder, no thread
             # The spawn side (claude_agent/agent.py) and the router's post-hook read these off sys.modules.
             import fused_render.specialists.launch  # noqa: F401
+            from fused_render.specialists import harness as sp_harness
+
+            sp_harness.reopen()  # a previous shutdown in this process left it closed
             try:
                 import fused_render.specialists.agent_hooks  # noqa: F401
             except Exception:  # noqa: BLE001

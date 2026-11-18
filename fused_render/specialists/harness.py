@@ -407,8 +407,14 @@ def closed() -> bool:
 
 
 def reopen() -> None:
+    """Undo `shutdown()`: side sessions may start again. Called by every specialists start (app startup, the
+    flag switched on), because `shutdown()` is one-way and a second app start in one process (tests, a
+    restarted lifespan) would otherwise leave every check, review and nightly answering CLOSED. Drops
+    registry entries of processes that have already exited."""
     with _GUARD:
         _STATE["closed"] = False
+        for p in [p for p in _PROCS if p.poll() is not None]:
+            _PROCS.discard(p)
 
 
 def shutdown(budget_s: float = 2.0) -> None:

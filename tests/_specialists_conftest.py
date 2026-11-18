@@ -31,6 +31,10 @@ def reset_specialists_caches():
     paths = sys.modules.get("fused_render.specialists.paths")
     if paths is not None:
         paths._reset()
+    # An app lifespan test earlier in this worker runs the shutdown handlers, which close the harness.
+    harness = sys.modules.get("fused_render.specialists.harness")
+    if harness is not None:
+        harness.reopen()
 
 
 @pytest.fixture(autouse=True)

@@ -168,3 +168,38 @@ def test_rows_never_recreate_a_deleted_home(app_home):
     harness.save_row(s.id, {"kind": "check", "status": "done", "started": 1.0, "trigger": {}})
     chat.clear(s.id)
     assert not os.path.exists(s.home)
+
+
+def test_a_second_app_start_in_one_process_reopens_the_harness(app_home, monkeypatch, tmp_path):
+    """`shutdown()` is one-way. An app's shutdown handlers followed by another app start in the same process (the
+    test suite, a restarted lifespan) used to leave every side session answering CLOSED for good."""
+    import asyncio
+
+    from fused_render.server import create_app
+    from fused_render.specialists import scheduler
+
+    monkeypatch.setattr(scheduler, "start", lambda: None)  # no thread here
+    stub_side(monkeypatch, answer="fine")
+    s = make_specialist()
+    app = create_app(start_dir=str(tmp_path))
+    by_name = {f.__name__: f for f in app.state.startup_handlers + app.state.shutdown_handlers}
+    asyncio.run(by_name["_shutdown_specialists"]())
+    assert harness.closed()
+    assert harness.run_side(s, "check", "ping", trigger={})["error"] == harness.CLOSED
+    asyncio.run(by_name["_startup_specialists"]())
+    assert not harness.closed()
+    row = harness.run_side(s, "check", "ping", trigger={})
+    assert row["status"] == "done" and row["answer"] == "fine"
+
+
+def test_switching_the_flag_on_reopens_a_closed_harness(app_home, monkeypatch):
+    from fused_render.shell import prefs
+    from fused_render.specialists import scheduler
+
+    monkeypatch.setattr(scheduler, "start", lambda: None)
+    harness.shutdown(0.1)
+    try:
+        prefs._specialists_switched(True)
+        assert not harness.closed()
+    finally:
+        harness.reopen()

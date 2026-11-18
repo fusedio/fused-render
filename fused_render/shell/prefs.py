@@ -1497,7 +1497,10 @@ def _specialists_switched(on: bool) -> None:
 
         if on and sp_flag.on():
             import fused_render.specialists.launch  # noqa: F401 — agent.py reads it off sys.modules
+            from fused_render.specialists import harness as sp_harness
             from fused_render.specialists import seed as sp_seed
+
+            sp_harness.reopen()  # an earlier app shutdown in this process leaves it closed
 
             try:
                 import fused_render.specialists.agent_hooks  # noqa: F401 — the router's post-hook
