@@ -28,7 +28,10 @@ the registry row, `perm/`, the inbox). Cursor's own transcripts under
   workspace-bound. Effort: Cursor has none.
 - **D2 Session id.** Cursor's own: `session/new` mints it. A resume is
   `session/load`, whose replay is backfilled into the transcript after a quiet
-  period (as Gemini D3).
+  period (as Gemini D3). The first prompt of a new chat went out as the system
+  prompt plus the text while the transcript kept the text alone, so the backfill
+  cuts the system prompt (`cursor/AGENTS.md`) off the replayed first prompt
+  before matching: it never becomes a turn.
 - **D3 Auth.** The handshake is `initialize`, `authenticate` (`methodId` from
   `authMethods[0]`, else `cursor_login`), then `session/new|load`. Signed out,
   `authenticate` never answers (measured) and `session/new` answers `-32000
@@ -59,8 +62,12 @@ the registry row, `perm/`, the inbox). Cursor's own transcripts under
 - **D6 Approval modes are the host's.** Cursor's ACP modes (agent / plan / ask)
   are not approval modes, so the host never sends one. `prompt`: every
   `session/request_permission` becomes a `perm/<id>.req.json` card (same round
-  trip as Gemini). `acceptEdits`: edit-kind requests are answered allow-once
-  without a card, the rest carded. `auto`: everything answered without a card
+  trip as Gemini). `acceptEdits`: edit-kind requests for a path inside the
+  session's cwd or a granted dir are answered allow-once without a card; an
+  edit anywhere else (`~/.zshrc`) and every other request is carded. A card's
+  "...and stop asking" / "...and accept edits" moves the host's mode and writes
+  it to `host.json`, so `agent._set_mode` sees the real value and Ask switches
+  back. `auto`: everything answered without a card
   (tool rows still written). A mode change is live and host-side
   (`live_mode_switch=True`). The option is chosen by `kind`; with no options
   offered the host falls back to the documented literals `allow-once`,
@@ -75,8 +82,9 @@ the registry row, `perm/`, the inbox). Cursor's own transcripts under
 - **D9 No usage, no compaction.** Usage rows are zero; there is no compaction
   event. Rows otherwise follow the row contract of `docs/COPILOT_BACKEND.md` 4.
 - **D10 Health.** `cursor_health` never spawns `acp` and never touches Cursor's
-  servers signed out: it runs `--version`, `cursor-agent status` (exit 0 and no
-  "not logged in" is signed in; an API key in the environment is signed in with
+  servers signed out: it runs `--version`, `cursor-agent status` ("not logged in" or an
+  authentication sentence is signed out; exit 0 without one is signed in; a
+  failure that says neither is unknown, never "sign in"; an API key in the environment is signed in with
   `account.method == "api_key"`), and, only when signed in, `cursor-agent
   models`. Install is `curl https://cursor.com/install -fsS | bash` (macOS and
   Linux; refused on Windows); login is `cursor-agent login` under a pty.
@@ -122,15 +130,22 @@ Verified (2026.11.13, signed out): `--help` and `acp --help`; `initialize` reply
 (`loadSession`, `mcpCapabilities {http, sse}`, `promptCapabilities`, one auth
 method `cursor_login`, no `agentInfo`); `authenticate` silent when signed out;
 `session/new` signed out `-32000 "Authentication required"`; `status` / `about`
-text when signed out.
+text when signed out; `-p --help` documents a positional `prompt` and no stdin
+read, so the one-shot (`agent_oneshot._prepare_cursor`) sends the whole prompt
+as the positional after `--` (stdin stays empty), and a prompt over
+`CURSOR_ARGV_MAX` (96 000 bytes, under Linux's 128 KiB per-argument cap) is
+written to `prompt.md` in the run's empty workspace with the positional naming
+that file.
 
 Assumed (the design absorbs each): `session/new.mcpServers` is honoured;
 `session/request_permission` option ids and kinds; the title or `rawInput` shape
 of an MCP tool call; the shape of `session/new`'s reply beyond `sessionId`; the
 signed-in `status` and `models` output; `-p --output-format json` returning
-`{result, session_id, is_error}`; whether a prompt on stdin works in `-p` mode;
+`{result, session_id, is_error}`;
 the `agent-transcripts` layout; the `cursor-cli` brew cask name; whether
-`--model` is honoured by `acp` (the host does not send `session/set_model`).
+`--model` is honoured by `acp` (the host does not send `session/set_model`);
+that `-p` accepts `--` before the positional prompt; that a model reads `prompt.md`
+from the workspace when told to.
 
 ## 5. Known gaps
 

@@ -15,9 +15,10 @@ What every spec keeps, whichever caller (the recap runners' hard-won facts;
 each flag was checked against the real binary when it was first written —
 docs/COPILOT_BACKEND.md, docs/CODEX_BACKEND.md, docs/GEMINI_BACKEND.md):
 
-* **The prompt travels over stdin, never argv.** A system text leads the one
-  user message with a blank line between — none of the three has a system
-  prompt flag.
+* **The prompt travels over stdin, never argv** (Cursor's, which documents a
+  positional prompt and no stdin read, is the one exception: `_prepare_cursor`).
+  A system text leads the one user message with a blank line between — none
+  of them has a system prompt flag.
 * **No tools, nothing from the server's cwd.** Copilot: an allow-list naming
   a tool that does not exist (an EMPTY `--available-tools=` is ignored and
   keeps every tool), no custom instructions, no built-in MCP servers, no
@@ -127,9 +128,16 @@ GEMINI_POLICY_NAME = "gemini-recap-policy.toml"
 #: appends the positional message after the piped input (ASSUMED,
 #: docs/OPENCODE_BACKEND.md D12; the design's own pointer rule).
 OPENCODE_POINTER = GEMINI_POINTER
-#: What `cursor-agent -p` is told when the whole prompt rides stdin (ASSUMED:
-#: the CLI's positional prompt closes the message, as Gemini's flag text does).
-CURSOR_POINTER = GEMINI_POINTER
+#: `cursor-agent -p` documents a positional prompt and no stdin read, so the
+#: whole prompt is that positional. One argv string tops out near 128 KiB on
+#: Linux (`MAX_ARG_STRLEN`), so a longer prompt is written to
+#: `CURSOR_PROMPT_FILE` in the run's empty workspace and the positional names
+#: the file instead.
+CURSOR_ARGV_MAX = 96_000
+CURSOR_PROMPT_FILE = "prompt.md"
+CURSOR_FILE_POINTER = (
+    f"Read {CURSOR_PROMPT_FILE} in the workspace and answer as the "
+    "instructions in it say. Reply with the answer only.")
 
 #: The levels the Copilot CLI's `--reasoning-effort` takes (1.0.102 `--help`).
 COPILOT_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -639,7 +647,9 @@ def _prepare_cursor(agent, model: str, effort: Optional[str], common: dict,
     stopping at the workspace-trust question, and `--workspace` points the
     run at an EMPTY temp dir instead of a `cwd=` (the spawn rule at the top
     of this file), so the read tools see nothing of the server's folder. The
-    prompt rides stdin and the pointer closes it (ASSUMED, as Gemini's).
+    whole prompt is the positional argument, after `--` (the CLI documents
+    no stdin read); one too long for an argument (`CURSOR_ARGV_MAX`) is
+    written to `prompt.md` in that workspace and the positional names it.
     `--output-format json` is one object `{result, session_id, is_error, …}`
     on stdout. A tools run (`tools_mcp`) names the turn's server in the temp
     workspace's own `.cursor/mcp.json` (the file Cursor reads MCP servers
@@ -647,9 +657,10 @@ def _prepare_cursor(agent, model: str, effort: Optional[str], common: dict,
     is removed by the `session_id` the reply named; the CLI's layout is
     undocumented, so `routers.tasks._cursor_chat_files` only matches names
     carrying the id."""
+    binary = _bin(agent, "cursor")  # before the temp dir: a miss leaks nothing
     workspace = tempfile.mkdtemp(prefix="fused-cursor-oneshot-")
     env = agent._spawn_env(backend="cursor")
-    argv = [_bin(agent, "cursor"), "-p", "--output-format", "json",
+    argv = [binary, "-p", "--output-format", "json",
             "--mode", "ask", "--trust", "--workspace", workspace]
     if tools_mcp is not None:
         cfg_dir = os.path.join(workspace, ".cursor")
@@ -661,7 +672,14 @@ def _prepare_cursor(agent, model: str, effort: Optional[str], common: dict,
         argv.append("--approve-mcps")
     if model and model != "auto":
         argv += ["--model", model]
-    argv.append(CURSOR_POINTER)
+    prompt = common["stdin"]
+    if len(prompt.encode("utf-8")) > CURSOR_ARGV_MAX:
+        with open(os.path.join(workspace, CURSOR_PROMPT_FILE), "w",
+                  encoding="utf-8") as fh:
+            fh.write(prompt)
+        prompt = CURSOR_FILE_POINTER
+    argv += ["--", prompt]
+    common = dict(common, stdin="")
     dropped = "the Cursor CLI has no reasoning effort control" if effort else ""
     found: dict = {}  # becomes `spec.extra`
 

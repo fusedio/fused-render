@@ -93,3 +93,40 @@ def test_gemini_tools_ride_a_system_settings_file_and_an_allowing_policy():
         assert "--allowed-mcp-server-names" not in plain.argv
     finally:
         plain.cleanup()
+
+
+def test_cursor_carries_the_whole_prompt_as_the_positional_and_nothing_on_stdin():
+    """`cursor-agent -p` documents a positional prompt and no stdin read, so
+    the full text (system and prompt) is the last argument, after `--`."""
+    spec = agent_oneshot.prepare("cursor", "auto", "sys", "-p question", agent=_Agent())
+    try:
+        assert spec.argv[-2:] == ["--", "sys\n\n-p question"]
+        assert spec.stdin == ""
+    finally:
+        spec.cleanup()
+
+
+def test_cursor_hands_an_oversize_prompt_over_as_a_file_in_its_workspace():
+    big = "x" * (agent_oneshot.CURSOR_ARGV_MAX + 1)
+    spec = agent_oneshot.prepare("cursor", "auto", "", big, agent=_Agent())
+    try:
+        workspace = spec.argv[spec.argv.index("--workspace") + 1]
+        with open(os.path.join(workspace, agent_oneshot.CURSOR_PROMPT_FILE)) as fh:
+            assert fh.read() == big
+        assert spec.argv[-2] == "--"
+        assert agent_oneshot.CURSOR_PROMPT_FILE in spec.argv[-1]
+        assert big not in spec.argv
+        assert spec.stdin == ""
+    finally:
+        spec.cleanup()
+    assert not os.path.exists(workspace)
+
+
+def test_cursor_leaves_no_temp_workspace_when_the_binary_is_missing(monkeypatch, tmp_path):
+    def missing(agent, backend):
+        raise agent_oneshot.OneShotError("ai_unavailable", "cursor CLI not found")
+    monkeypatch.setattr(agent_oneshot, "_bin", missing)
+    monkeypatch.setattr(agent_oneshot.tempfile, "tempdir", str(tmp_path))
+    with pytest.raises(agent_oneshot.OneShotError):
+        agent_oneshot.prepare("cursor", "auto", "sys", "p", agent=_Agent())
+    assert [n for n in os.listdir(tmp_path) if n.startswith("fused-cursor-oneshot-")] == []
