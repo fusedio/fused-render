@@ -1,6 +1,7 @@
 """Experts with the harness stubbed (docs/experts.md): session rows and diffs, the write lock, compaction, the
 fence flags, chat rows, and the task-learn due rule with its retry cap."""
 from _bots_conftest import *  # noqa: F401,F403 — app_home (a per-test home and workspace)
+import json
 import os
 import threading
 import time
@@ -203,6 +204,90 @@ def test_fence_skips_a_folder_with_glob_characters(expert, tmp_path):
     expert.meta["folders"] = [str(ok), str(odd)]
     w = sessions.fence(expert, write=False)
     assert f"Read(//{str(ok).lstrip('/')}/**)" in w and not any("odd[1]" in x for x in w)
+
+
+def _canvases(expert, tmp_path, monkeypatch, envs=("prod", "unstable", "custom")):
+    """A canvases base with one folder per environment, granted to the expert, and the `fused` wrapper on."""
+    from fused_render import canvases, fusedcli
+    base = tmp_path / "canvas"
+    for env in envs:
+        (base / env / "user").mkdir(parents=True)
+    monkeypatch.setattr(canvases, "canvases_base", lambda: str(base))
+    monkeypatch.setenv(fusedcli.CLI_DIR_ENV, str(tmp_path / "fused-bin"))
+    expert.meta["folders"] = [str(base)]
+    return base
+
+
+def test_fence_lets_a_chat_and_an_ask_run_udfs_per_environment(expert, tmp_path, monkeypatch):
+    base = _canvases(expert, tmp_path, monkeypatch)
+    assert store.run_envs(expert) == [("prod", str(base / "prod")), ("unstable", str(base / "unstable"))]  # never custom
+    bash = ["Bash(fused workbench --env prod run:*)", "Bash(fused workbench --env prod udf-schema:*)",
+            "Bash(fused workbench --env prod whoami)", "Bash(fused workbench --env unstable run:*)",
+            "Bash(fused workbench --env unstable udf-schema:*)", "Bash(fused workbench --env unstable whoami)"]
+    chat = sessions.fence(expert, write=True, run=True)
+    assert chat[1] == "Read,Glob,Grep,Edit,Write,Bash" and [x for x in chat if x.startswith("Bash(")] == bash
+    ask = sessions.fence(expert, write=False, run=True)
+    assert ask[1] == "Read,Glob,Grep,Bash" and [x for x in ask if x.startswith("Bash(")] == bash
+    assert "--permission-prompt-tool" not in chat + ask and "--disallowedTools" not in chat + ask
+    # task-learn and dream (and any caller that does not ask for it) get no Bash at all
+    for flags in (sessions.fence(expert, write=True), sessions.fence(expert, write=False)):
+        assert "Bash" not in flags[1] and not any(x.startswith("Bash(") for x in flags)
+
+
+def test_fence_has_no_bash_without_an_environment_folder_or_the_cli(expert, tmp_path, monkeypatch):
+    from fused_render import fusedcli
+    base = _canvases(expert, tmp_path, monkeypatch, envs=("custom",))
+    assert store.run_envs(expert) == [] and "Bash" not in sessions.fence(expert, write=True, run=True)[1]
+    (base / "prod").mkdir()
+    assert [e for e, _ in store.run_envs(expert)] == ["prod"]
+    expert.meta["folders"] = [str(base / "prod" / "nope")]  # the environment's folder is not inside a granted one
+    assert store.run_envs(expert) == []
+    expert.meta["folders"] = [str(base)]
+    monkeypatch.delenv(fusedcli.CLI_DIR_ENV)  # no `fused` wrapper: nothing to run
+    assert store.run_envs(expert) == [] and "Bash" not in sessions.fence(expert, write=False, run=True)[1]
+
+
+def test_side_sessions_run_udfs_only_in_an_ask(expert, tmp_path, monkeypatch):
+    from fused_render.bots import claude_cli
+    _canvases(expert, tmp_path, monkeypatch, envs=("prod",))
+    cmds = []
+
+    class Proc:
+        pid, returncode = 0, 0
+
+        def __init__(self, cmd, **kw):
+            cmds.append(cmd)
+
+        def communicate(self, data, timeout=None):
+            use = {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "fused workbench --env prod whoami"}}]}}
+            return (json.dumps(use) + '\n{"type":"result","subtype":"success","result":"ok"}\n').encode(), b""
+    monkeypatch.setattr(claude_cli, "runnable", lambda: "claude")
+    monkeypatch.setattr(sessions.subprocess, "Popen", Proc)
+    res = sessions.harness(expert, "q", False)  # an ask
+    assert "Read,Glob,Grep,Bash" in cmds[-1] and "Bash(fused workbench --env prod run:*)" in cmds[-1]
+    assert {"role": "tool", "text": "Bash fused workbench --env prod whoami"} in res["transcript"]  # the row shows it
+    sessions.harness(expert, "q", True)  # a task-learn or a dream
+    assert "Read,Glob,Grep,Edit,Write" in cmds[-1] and not any(x.startswith("Bash(") for x in cmds[-1])
+
+
+def test_only_a_chat_and_an_ask_are_told_how_to_run(expert, tmp_path, monkeypatch):
+    base = _canvases(expert, tmp_path, monkeypatch, envs=("prod",))
+    note = (f"copies under {base / 'prod'} are environment `prod`, run with "
+            "`fused workbench --env prod run --engine remote <canvas> <udf>`")
+    assert note not in store.where(expert) and note in store.where(expert, run=True)
+    assert "You may run UDFs on Fused, always" in store.where(expert, run=True)  # no such skill in its folder yet
+    skill = os.path.join(store.expert_dir(expert), "skills", store.RUN_SKILL)
+    os.makedirs(os.path.dirname(skill), exist_ok=True)
+    open(skill, "w").close()
+    assert f"You may run UDFs on Fused (read {skill} first)" in store.where(expert, run=True)
+    calls = stub(monkeypatch)
+    sessions.ask(expert, "does it run?")
+    assert note in calls[-1]["prompt"]
+    text, _ = agent_engine.first_message(expert, "run it", past=[], conv={})
+    assert note in text
+    sessions.dream(expert)
+    assert note not in calls[-1]["prompt"] and store.where(expert) in calls[-1]["prompt"]
 
 
 def test_side_sessions_leave_no_cli_transcript(expert, monkeypatch):

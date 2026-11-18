@@ -103,14 +103,56 @@ def memory_path(bot) -> str:
     return os.path.join(expert_dir(bot), MEMORY)
 
 
-def where(bot) -> str:
+def where(bot, run: bool = False) -> str:
     """The absolute paths a session's prompt states, so the harness never guesses where memory.md or a granted
-    folder is."""
+    folder is. `run` (a chat or an ask, the sessions whose fence lets them run UDFs): also which Fused environment
+    each folder of canvas copies belongs to and the command that runs a UDF there (`run_envs`)."""
     out = f"Your folder is {expert_dir(bot)}; your memory is {memory_path(bot)}."
     # The granted folders by their real paths: instructions and skills may name a default location (`~/Fused/canvas`)
     # that is somewhere else on a relocated workspace, and a read there is refused.
     folders = read_folders(bot)
-    return out + (" You may also read: " + ", ".join(folders) + "." if folders else "")
+    out += " You may also read: " + ", ".join(folders) + "." if folders else ""
+    envs = run_envs(bot) if run else []
+    if envs:
+        skill = os.path.join(expert_dir(bot), "skills", RUN_SKILL)
+        out += (" You may run UDFs on Fused" + (f" (read {skill} first)" if os.path.isfile(skill) else "")
+                + ", always in the environment the canvas copy belongs to: "
+                + "; ".join(f"copies under {d} are environment `{env}`, run with `{run_prefix(env)} <canvas> <udf>`"
+                            for env, d in envs) + ".")
+    return out
+
+
+#: The Fused environments an expert may run UDFs in. `custom` is not one: it is reached with FUSED_ENV unset from
+#: inside its own folder (fusedcli._wrapper_text), which an allow rule cannot require.
+RUN_ENVS = ("prod", "unstable")
+RUN_SKILL = "running-udfs.md"
+
+
+def run_prefix(env: str) -> str:
+    """The start of the command that runs a UDF, as the prompt gives it. The fence's allow rule (sessions.fence)
+    requires the `--env`; `--engine remote` is an instruction to the expert, not a restriction."""
+    return f"fused workbench --env {env} run --engine remote"
+
+
+def run_envs(bot) -> list:
+    """`[(env, folder)]`: the environments this expert may run UDFs in, each with its folder of canvas copies
+    (`<canvases base>/<env>`). An environment counts when that folder exists inside a granted folder: the expert
+    runs what it can read. Empty without the `fused` CLI wrapper (fusedcli.export_fused_cli_env)."""
+    try:
+        from fused_render import canvases, fusedcli
+        if not os.environ.get(fusedcli.CLI_DIR_ENV):
+            return []
+        base = canvases.canvases_base()
+    except Exception:  # noqa: BLE001
+        return []
+    granted = [os.path.realpath(f) for f in read_folders(bot)]
+    out = []
+    for env in RUN_ENVS:
+        d = os.path.join(base, env)
+        real = os.path.realpath(d)
+        if os.path.isdir(d) and any(real == g or real.startswith(g.rstrip(os.sep) + os.sep) for g in granted):
+            out.append((env, d))
+    return out
 
 
 def state_dir(bot) -> str:

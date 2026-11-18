@@ -545,7 +545,7 @@ def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tupl
             past = _call(bot.past_conversation, []) if past is None else past
             summary = "\n".join(past) if past else "(this is the start of the conversation)"
         parts.append("CONVERSATION SO FAR (with the user, oldest first):\n" + summary)
-        parts.append(xstore.where(bot))  # a resumed session already has it
+        parts.append(xstore.where(bot, run=True))  # a resumed session already has it
     parts += [f"Today is {xsessions.today()}.", f"MESSAGE: {task}"]
     return "\n\n".join(parts), {}
 
@@ -1043,7 +1043,7 @@ def run(bot, task: str, label: str | None = None) -> None:
             proc = _spawn(argv(bin_path, model, effort, sp_file, mcp_file, super_mode=mode,
                                # An expert: no --autocompact, the CLI compacts its chat by itself (_conversation_plan).
                                resume=resume, window=None if expert else context_window(model),
-                               fence=xsessions.fence(bot, write=True) if expert else None), cwd)
+                               fence=xsessions.fence(bot, write=True, run=True) if expert else None), cwd)
             sess.proc = proc
             threading.Thread(target=_drain_stderr, args=(sess, proc), daemon=True, name=f"bot-stderr-{bot.id}").start()
             if bot.stop_flag.is_set():  # Stop landed while we were spawning

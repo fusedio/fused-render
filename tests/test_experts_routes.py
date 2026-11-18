@@ -110,6 +110,34 @@ def test_seed_once_and_a_deleted_expert_stays_deleted():
     assert seed.seed() == [] and store.all_experts() == []
 
 
+def test_an_installed_expert_gets_a_shipped_skill_added_later_once():
+    """An install from before a skill was added (the witness lists no skills, or not this one) is handed the new
+    file on the next seed; its other skills and its instructions are left alone, and deleting it sticks."""
+    assert seed.seed() == ["canvas-reference"]
+    b = store.all_experts()[0]
+    d = store.expert_dir(b)
+    new = os.path.join(d, "skills", store.RUN_SKILL)
+    assert os.path.isfile(new)
+    assert store.read_json(seed.witness_path(), {})["skills"]["canvas-reference"] == seed._skill_names("canvas-reference")
+    # As an older version left it: no running skill, a witness with keys only, files the user changed or deleted.
+    os.remove(new)
+    os.remove(os.path.join(d, "skills", "edges-and-folders.md"))
+    with open(os.path.join(d, "instructions.md"), "w", encoding="utf-8") as f:
+        f.write("mine")
+    with open(os.path.join(d, "skills", "canvas-folder-layout.md"), "w", encoding="utf-8") as f:
+        f.write("# mine")
+    keys = store.read_json(seed.witness_path(), {})["keys"]
+    store.write_json(seed.witness_path(), {"keys": keys})
+    assert seed.seed() == [] and len(store.all_experts()) == 1
+    shipped = os.path.join(seed.SHIPPED_DIR, "canvas-reference", "skills", store.RUN_SKILL)
+    assert store.read_text(new) == store.read_text(shipped)
+    assert not os.path.exists(os.path.join(d, "skills", "edges-and-folders.md"))  # an original the user deleted
+    assert store.read_text(os.path.join(d, "instructions.md")) == "mine"
+    assert store.read_text(os.path.join(d, "skills", "canvas-folder-layout.md")) == "# mine"
+    os.remove(new)  # offered once: the user's delete sticks
+    assert seed.seed() == [] and not os.path.exists(new)
+
+
 def test_a_cut_short_seed_is_finished():
     from fused_render import canvases
     from fused_render.bots import bot as bm

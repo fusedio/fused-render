@@ -91,11 +91,15 @@ def _spellings(path: str) -> list:
 _GLOB_CHARS = frozenset("*?[]{}")
 
 
-def fence(bot, write: bool) -> list:
+def fence(bot, write: bool, run: bool = False) -> list:
     """The harness flags that fence an expert's session. Reads inside the working directory (the expert's
     folder) are the harness's default; each granted folder gets a Read rule (a folder whose path has glob
-    characters gets none); memory.md gets the one Edit rule (which covers Write) when `write`. Everything else has
-    nobody to ask and is refused. The rule list is variadic: callers put another `--flag` (or nothing) after it."""
+    characters gets none); memory.md gets the one Edit rule (which covers Write) when `write`. `run` (a chat or
+    an ask) adds Bash with allow rules for exactly the `fused` commands that run a UDF on Fused, print a UDF's
+    parameters or say who is signed in, per environment the expert may run in (`store.run_envs`; with none, no
+    Bash at all). The rules name the command and its environment only: running on the remote engine is an
+    instruction to the expert (its skill, `store.where`), not something a rule enforces. Everything else has nobody
+    to ask and is refused. The rule list is variadic: callers put another `--flag` (or nothing) after it."""
     rules = []
     if write:
         rules += [f"Edit({_rule_path(p)})" for p in _spellings(store.memory_path(bot))]
@@ -106,7 +110,12 @@ def fence(bot, write: bool) -> list:
             logger.warning("expert %s: folder %r has glob characters; not granted", getattr(bot, "id", "?"), folder)
             continue
         rules += [f"Read({_rule_path(p)}/**)" for p in _spellings(folder)]
-    out = ["--tools", "Read,Glob,Grep" + (",Edit,Write" if write else ""), "--permission-mode", "default"]
+    envs = [env for env, _ in store.run_envs(bot)] if run else []
+    for env in envs:
+        rules += [f"Bash(fused workbench --env {env} run:*)", f"Bash(fused workbench --env {env} udf-schema:*)",
+                  f"Bash(fused workbench --env {env} whoami)"]
+    out = ["--tools", "Read,Glob,Grep" + (",Edit,Write" if write else "") + (",Bash" if envs else ""),
+           "--permission-mode", "default"]
     return out + (["--allowedTools", *rules] if rules else [])
 
 
@@ -153,7 +162,7 @@ def _kill(proc) -> None:
 
 def _tool_line(blk: dict) -> str:
     inp = blk.get("input") if isinstance(blk.get("input"), dict) else {}
-    what = inp.get("file_path") or inp.get("path") or inp.get("pattern") or ""
+    what = inp.get("file_path") or inp.get("path") or inp.get("pattern") or inp.get("command") or ""
     return f"{blk.get('name') or 'tool'} {what}".strip()
 
 
@@ -177,7 +186,8 @@ def harness(bot, prompt: str, write: bool) -> dict:
     cmd = [bin_path, "-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
            "--model", bot.meta.get("model") or agent_engine.DEFAULT_MODEL,
            "--effort", bot.meta.get("effort") or agent_engine.DEFAULT_EFFORT,
-           "--system-prompt-file", sp_file, *agent_engine.NO_MCP, *fence(bot, write)]
+           # A side session that only reads is an ask, which may run UDFs; the writers (task-learn, dream) may not.
+           "--system-prompt-file", sp_file, *agent_engine.NO_MCP, *fence(bot, write, run=not write)]
     proc = None
     gen = getattr(_LOCAL, "gen", None)
     try:
@@ -464,7 +474,7 @@ def run(bot, kind: str, prompt: str, trigger=None, gen=None) -> dict:
 def ask(bot, question: str, asker: str = "", caller=None) -> dict:
     """`expert_ask`: a fresh session with the question and a note on who asks. It cannot write memory. `caller`:
     the asking task's `session_id` / `run_id` when known, kept on the row's trigger."""
-    prompt = (f"Today is {today()}. {store.where(bot)}\nA task session is asking you a question"
+    prompt = (f"Today is {today()}. {store.where(bot, run=True)}\nA task session is asking you a question"
               + (f" ({asker})" if asker else "") + ". It is an agent doing real work, not the user.\n"
               "Read memory.md and the skills the question touches, then answer: the answer first, short and "
               "concrete. Where memory and a skill disagree, memory wins. Say so plainly when neither covers it.\n"
