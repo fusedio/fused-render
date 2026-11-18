@@ -355,6 +355,15 @@ describe("snapResize: a resize's magnet on the edge its grip holds (owner, 2026-
     expect(r.box.width).toBe(LIMITS.maxWidth);
     expect(r.x).toEqual([]);
   });
+  test("a nearer line the clamps refuse does not hide the next one in reach", () => {
+    // The widest this card may be puts its right edge at 100 + 722 = 822.
+    // A slim other card: edges at 816 and 824. The held edge at 821 is 3px
+    // from 824 — past the maximum, refused — and 5px from 816: taken.
+    const slim = { left: 816, top: 100, width: 8, height: 400 };
+    const r = snapResize("r", 321, 0, float("r"), slim, VIEW);
+    expect(r.box.width).toBe(716);
+    expect(r.x).toEqual([{ x: 816, top: 100, bottom: 850 }]);
+  });
   test("the docked drag is one more chassis: the width magnet is its left↔left case", () => {
     // Two cards in the rail's column, right edges level at 1000.
     const row = { left: 0, top: 0, width: 1400, height: 900 };

@@ -348,6 +348,7 @@ import {
   type Box,
 } from "./rail-peek-lib";
 import { publishWindowABox, setSnapGuide, setSnapGuides } from "./card-snap";
+import { isPopoverEdge, popoverDrag } from "@platform/ui/modal/popover-place";
 import { FLOAT_GRIPS, POPOVER_HEAD_SELECTOR, floatPlacement, floatResize, railPressWindow, snapResize, viewportOf } from "./rail-move-lib";
 import { noteFrontWindow, publishWindowBox, windowBox, windowPos } from "./rail-move-store";
 import { useCardMove } from "./useCardMove";
@@ -2156,6 +2157,19 @@ export function ClaudeRail({
     else if (was && aPinned() === was) setAPinned(null);
   }, [listWord]);
   const popUp = !!card?.pop;
+  // THE + CARD'S RESIZE GUIDES GO WITH THE CARD (reviewer, 2026-11-18): the
+  // chassis clears them on the grip's release (`onDragEnd`), and a card that
+  // closes or leaves the page under the drag gets no release.
+  const popGuides = useRef(false);
+  const clearPopGuides = useCallback(() => {
+    if (!popGuides.current) return;
+    popGuides.current = false;
+    setSnapGuides([], []);
+  }, []);
+  useEffect(() => {
+    if (!popUp) clearPopGuides();
+  }, [popUp, clearPopGuides]);
+  useEffect(() => clearPopGuides, [clearPopGuides]);
   const popHeld = pinModel && popUp && !!card?.held;
   // LET GO: this + card was held and no longer is (its unpin). It stands
   // beside the rail again at once — `popPlace` must not read it as a card
@@ -3456,12 +3470,14 @@ export function ClaudeRail({
                     // The full row's column where it is held: a draft row is
                     // `draft` only once `kind` is known (the pulse has no kind).
                     status={taskColumn(merged)}
-                    // The ring's own native `title` tooltip ("Done", "Draft")
-                    // would float over the card — or over the link's instant
-                    // caption — a second later (owner, 2026-11-18: one
-                    // tooltip, instant); "" is no tooltip. The link's
-                    // aria-label still names the chat and its state.
-                    label=""
+                    // With the card on, the ring's own native `title` tooltip
+                    // ("Done", "Draft") would float over the card a second
+                    // later; "" is no tooltip. The link's aria-label still
+                    // names the chat and its state. …and over the link's
+                    // instant caption, where the hover shows that instead
+                    // (owner, 2026-11-18: one tooltip, instant): `quiet`.
+                    // With the card off the ring is as it always was.
+                    {...(captionless ? { label: "" } : peekOn ? { quiet: true } : {})}
                     unread={unread}
                     background={liveJobRow(t)}
                     // The red centre dot the List gives a draft row and a
@@ -3602,10 +3618,11 @@ export function ClaudeRail({
                               const view = viewportOf(window);
                               const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
                               const pulled = snapResize(edge, dx, dy, (x, y) => floatResize(edge, start, x, y, view, lim), windowBox("b"), view);
+                              popGuides.current = true;
                               setSnapGuides(pulled.x, pulled.y);
                               return pulled.box;
                             },
-                            onDragEnd: () => setSnapGuides([], []),
+                            onDragEnd: clearPopGuides,
                             onResize: (size, changed, box) => {
                               popMove.setPos({ left: box.left, top: box.top });
                               savePopSize(size, changed);
@@ -3622,14 +3639,45 @@ export function ClaudeRail({
                         // bounds), never over the sidebar or the header.
                         bounds: () => rowOf(railRef.current)?.getBoundingClientRect() ?? null,
                         onResize: savePopSize,
-                        // THE WIDTH MAGNET (card-snap.ts): to window B's card.
-                        adjust: (next, edge, start) => {
-                          const row = rowOf(railRef.current)?.getBoundingClientRect();
-                          const s = snapWidth(next, edge, favBox, PEEK_MIN_WIDTH, row ? dragMaxWidth(start, row) : PEEK_MAX_WIDTH);
-                          setSnapGuide(s.guide);
-                          return s.box;
-                        },
-                        onDragEnd: () => setSnapGuide(null),
+                        ...(pinModel
+                          ? {
+                              // WITH THE PIN (window B's card may float): the
+                              // chassis' own drag (`popoverDrag`, the floor and
+                              // the row as above) with the held edge's magnet
+                              // on either axis (rail-move-lib `snapResize`) —
+                              // the width magnet is its left↔left case. Window
+                              // B never moves for window A's card, so its box
+                              // is read as it stands.
+                              drag: (edge, start, dx, dy) => {
+                                if (!isPopoverEdge(edge)) return start;
+                                const view = viewportOf(window);
+                                const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
+                                const row = rowOf(railRef.current)?.getBoundingClientRect();
+                                const floor = bottomClear(start, favBox);
+                                const pulled = snapResize(
+                                  edge,
+                                  dx,
+                                  dy,
+                                  (x, y) => popoverDrag(edge, start, x, y, view, lim, floor, row ?? undefined),
+                                  windowBox("b"),
+                                  view,
+                                );
+                                popGuides.current = true;
+                                setSnapGuides(pulled.x, pulled.y);
+                                return pulled.box;
+                              },
+                            }
+                          : {
+                              // THE WIDTH MAGNET (card-snap.ts): to window B's card.
+                              adjust: (next, edge, start) => {
+                                const row = rowOf(railRef.current)?.getBoundingClientRect();
+                                const s = snapWidth(next, edge, favBox, PEEK_MIN_WIDTH, row ? dragMaxWidth(start, row) : PEEK_MAX_WIDTH);
+                                popGuides.current = true;
+                                setSnapGuide(s.guide);
+                                return s.box;
+                              },
+                            }),
+                        onDragEnd: clearPopGuides,
                       },
                     }
                   : {}),

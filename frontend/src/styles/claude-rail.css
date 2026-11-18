@@ -798,8 +798,8 @@
    IN THE FREE SPACE, NOT OVER THE ROW'S MIDDLE: the shared head's row has no
    spacer (its right cluster is pushed by an auto margin), so the handle IS
    one — the row's `::after`, ordered before the right cluster and growing
-   into whatever room the row has left; a row with none gives it none, and
-   the handle is simply not there (it never sits on a tag or a seat). Its
+   into whatever room the row has left; a row with less than the dots need
+   shows none (it never sits on a tag or a seat, and is never cut). Its
    left margin takes back the one gap it adds, so pinning moves nothing.
    A one-row head (the Bots and Git cards, a bot's card) already has the
    spacer (`.claude-rail-peek-gap`), which draws it. Nothing here takes a
@@ -813,8 +813,13 @@
   display: block;
   height: 16px;
   background: var(--fg-faint);
-  -webkit-mask: var(--rail-grab-dots) center / 16px 16px no-repeat;
-  mask: var(--rail-grab-dots) center / 16px 16px no-repeat;
+  /* ALL SIX DOTS OR NONE: the mask is 16px wide where the box has room for
+     it and 0 wide (nothing drawn) where it has less — a percentage in
+     `mask-size` is of the box itself, the one length that knows its own
+     width. A spacer squeezed to a few pixels would otherwise show the
+     middle pair of dots through the slit. */
+  -webkit-mask: var(--rail-grab-dots) center / clamp(0px, (100% - 15.5px) * 9999, 16px) 16px no-repeat;
+  mask: var(--rail-grab-dots) center / clamp(0px, (100% - 15.5px) * 9999, 16px) 16px no-repeat;
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease-out);
 }

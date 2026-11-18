@@ -397,7 +397,12 @@ export function snapEdges(
  *  every clamp it has; the magnet only ever asks it for a little more or
  *  less travel, so a snap the clamps refuse (a minimum, the row, the gap
  *  over window B) does not happen and draws nothing. The guides: every edge
- *  line the held edge ends up on. */
+ *  line the held edge ends up on.
+ *
+ *  `other` IS THE CARD AS IT STOOD WHEN THE GRIP WENT DOWN — the caller reads
+ *  it once, at the press, never per move: a docked window A re-places itself
+ *  from window B's box, so a live target would move as the dragged edge
+ *  neared it and the magnet would chase it (reviewer, 2026-11-18). */
 export function snapResize(
   edge: MoveEdge,
   dx: number,
@@ -414,17 +419,18 @@ export function snapResize(
   const heldX = (b: Box) => (xGrip === "lo" ? b.left : b.left + b.width);
   const heldY = (b: Box) => (yGrip === "lo" ? b.top : b.top + b.height);
   const asked = resize(dx, dy);
-  // The nearest line to the held edge, as extra travel — kept only when the
-  // chassis' clamps let the edge reach it.
+  // The nearest line to the held edge the chassis' clamps let it reach, as
+  // extra travel: a nearer one they refuse does not hide the next in reach.
   const pull = (held: number, lines: AxisLine[], at: (extra: number) => number): number => {
-    let best: number | null = null;
-    for (const l of lines) {
-      const delta = l.at - held;
-      if (Math.abs(delta) > px) continue;
-      if (best === null || Math.abs(delta) < Math.abs(best)) best = delta;
+    const deltas = lines
+      .map((l) => l.at - held)
+      .filter((d) => Math.abs(d) <= px)
+      .sort((a, b) => Math.abs(a) - Math.abs(b));
+    for (const d of deltas) {
+      if (d === 0) return 0;
+      if (Math.abs(at(d) - (held + d)) <= LEVEL) return d;
     }
-    if (best === null || best === 0) return 0;
-    return Math.abs(at(best) - (held + best)) <= LEVEL ? best : 0;
+    return 0;
   };
   const ex = xGrip ? pull(heldX(asked), xLines, (extra) => heldX(resize(dx + extra, dy))) : 0;
   const ey = yGrip ? pull(heldY(asked), yLines, (extra) => heldY(resize(dx, dy + extra))) : 0;

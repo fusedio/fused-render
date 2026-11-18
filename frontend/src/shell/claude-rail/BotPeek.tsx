@@ -267,6 +267,11 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     floor: number | undefined;
     /** The height the drag may not pass; none once pinned. */
     cap: number | undefined;
+    /** Window A's card as it stood at the press, for the held edge's magnet
+     *  (rail-move-lib `snapResize`) — read once; null: no magnet. */
+    other: Box | null;
+    /** The edge magnet applies: else the docked width magnet alone. */
+    magnet: boolean;
   } | null>(null);
   const dragLast = useRef<Box | null>(null);
   const onGripDown = (corner: MoveEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -289,6 +294,12 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
       floating,
       floor,
       cap,
+      // THE EDGE MAGNET (rail-move-lib `snapResize`; RailPeek's rule): with
+      // the pin, for a floating card, and for the docked one only while
+      // window A floats — a docked window A moves as this card is resized.
+      // Its card as it stood at the press, read once.
+      other: pinCtl && (floating || windowPos("a") !== null) ? windowBox("a") : null,
+      magnet: !!pinCtl && (floating || windowPos("a") !== null),
     };
     dragLast.current = null;
     setResizing(corner);
@@ -304,7 +315,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     if (start.floating || !isDockEdge(start.corner)) {
       const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH, maxHeight: start.cap };
       const view = viewportOf(window);
-      const pulled = snapResize(start.corner, dx, dy, (x, y) => floatResize(start.corner, start.box, x, y, view, lim), windowBox("a"), view);
+      const pulled = snapResize(start.corner, dx, dy, (x, y) => floatResize(start.corner, start.box, x, y, view, lim), start.other, view);
       setSnapGuides(pulled.x, pulled.y);
       const fl = pulled.box;
       dragLast.current = fl;
@@ -315,15 +326,15 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     const bounds = row.getBoundingClientRect();
     const dock = start.corner;
     let next: Box;
-    if (pinCtl) {
-      // WITH THE PIN (window A's card may float): the held edge's magnet on
-      // either axis (`snapResize`) — the width magnet is its left↔left case.
+    if (start.magnet) {
+      // WITH THE PIN, WINDOW A FLOATING: the held edge's magnet on either
+      // axis (`snapResize`) — the width magnet is its left↔left case.
       const pulled = snapResize(
         dock,
         dx,
         dy,
         (x, y) => dragResize(dock, start.box, x, y, bounds, start.floor, start.cap),
-        windowBox("a"),
+        start.other,
         viewportOf(window),
       );
       setSnapGuides(pulled.x, pulled.y);
@@ -377,6 +388,14 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     publishFavBox(visible && pinned && !move.floating ? box : null, "bot");
   }, [visible, pinned, box, move.floating]);
   useEffect(() => () => publishFavBox(null, "bot"), []);
+  // A card that leaves the page under a resize takes its guides with it (no
+  // pointerup will come to clear them; reviewer, 2026-11-18).
+  useEffect(
+    () => () => {
+      if (dragStart.current) setSnapGuides([], []);
+    },
+    [],
+  );
   // Its live box for window A's head drag (rail-move-store `windowBox`).
   useWindowBox("b", !!pinCtl && visible ? box : null);
   const dragKey = useRef<string | null>(null);

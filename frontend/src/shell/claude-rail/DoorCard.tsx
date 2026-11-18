@@ -266,13 +266,25 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     corner: MoveEdge;
     el: HTMLElement;
     floating: boolean;
+    /** Window B's card as it stood at the press, for the held edge's magnet
+     *  (rail-move-lib `snapResize`): read once, never per move. */
+    other: Box | null;
   } | null>(null);
   const dragLast = useRef<Box | null>(null);
   const onGripDown = (corner: MoveEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || !box) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floating: move.floating };
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      box,
+      pointerId: e.pointerId,
+      corner,
+      el: e.currentTarget,
+      floating: move.floating,
+      other: pinModelRef.current ? windowBox("b") : null,
+    };
     dragLast.current = null;
     setResizing(corner);
   };
@@ -287,7 +299,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     if (start.floating || !isDockEdge(start.corner)) {
       const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
       const view = viewportOf(window);
-      const pulled = snapResize(start.corner, dx, dy, (x, y) => floatResize(start.corner, start.box, x, y, view, lim), windowBox("b"), view);
+      const pulled = snapResize(start.corner, dx, dy, (x, y) => floatResize(start.corner, start.box, x, y, view, lim), start.other, view);
       setSnapGuides(pulled.x, pulled.y);
       const fl = pulled.box;
       dragLast.current = fl;
@@ -304,7 +316,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     if (pinModelRef.current) {
       // WITH THE PIN (window B's card may float): the held edge's magnet on
       // either axis (`snapResize`) — the width magnet is its left↔left case.
-      const pulled = snapResize(dock, dx, dy, (x, y) => dragResize(dock, start.box, x, y, bounds, floor), windowBox("b"), viewportOf(window));
+      const pulled = snapResize(dock, dx, dy, (x, y) => dragResize(dock, start.box, x, y, bounds, floor), start.other, viewportOf(window));
       setSnapGuides(pulled.x, pulled.y);
       next = pulled.box;
     } else {
@@ -348,6 +360,14 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   useEffect(() => {
     if (dragStart.current && !visible) endDrag(false);
   }, [visible]);
+  // A card that leaves the page under a resize takes its guides with it (no
+  // pointerup will come to clear them; reviewer, 2026-11-18).
+  useEffect(
+    () => () => {
+      if (dragStart.current) setSnapGuides([], []);
+    },
+    [],
+  );
   // Its live box for window B's head drag (rail-move-store `windowBox`).
   useWindowBox("a", pinModel && visible ? box : null);
   // Window A's box, for window B's grips to snap to (card-snap.ts).

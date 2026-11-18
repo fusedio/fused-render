@@ -670,6 +670,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     floor: number | undefined;
     /** The height the drag may not pass (the favourite's card, header). */
     cap: number | undefined;
+    /** The other window's card as it stood at the press, for the held edge's
+     *  magnet (rail-move-lib `snapResize`) — null: no magnet. Read ONCE: a
+     *  docked window A re-places itself from window B's box, and a target
+     *  read per move would run from the edge nearing it. */
+    other: Box | null;
+    /** The edge magnet applies (below): else the docked width magnet alone. */
+    magnet: boolean;
   } | null>(null);
   // The box the last move asked for — what the release saves. A ref, not
   // `box`: the move's state write may not have committed when the pointer
@@ -691,7 +698,26 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // The favourite's card: never past half the window (header) — unless it
     // is PINNED, which has no height limit but its room (owner, 2026-11-17).
     const cap = resizeKey === "canvasRailFav" && !pinCtl?.pinned ? favMaxHeight(window.innerHeight) : undefined;
-    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floating, floor, cap };
+    const otherWin = moveWin === "a" ? "b" : "a";
+    // THE EDGE MAGNET (rail-move-lib `snapResize`), with the pin: always for
+    // a floating card and for window A's; for window B's DOCKED card only
+    // while window A floats — a docked window A stands clear of window B's
+    // box (`avoid`) and moves as this one is resized, so its edges are no
+    // lines to stand on (the width magnet below is what holds there).
+    const magnet = !!pinCtl && (floating || moveWin === "a" || windowPos("a") !== null);
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      box,
+      pointerId: e.pointerId,
+      corner,
+      el: e.currentTarget,
+      floating,
+      floor,
+      cap,
+      other: magnet ? windowBox(otherWin) : null,
+      magnet,
+    };
     dragLast.current = null;
     setResizing(corner);
   };
@@ -700,9 +726,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (!start || start.pointerId !== e.pointerId) return;
     const dx = e.clientX - start.x;
     const dy = e.clientY - start.y;
-    // The other window's card as it stands, docked or floating (rail-move-
-    // store): what the held edge's magnet reaches for (`snapResize`).
-    const otherCard = windowBox(moveWin === "a" ? "b" : "a");
+    // The other window's card as it stood at the press (`dragStart.other`):
+    // what the held edge's magnet reaches for (`snapResize`).
+    const otherCard = start.other;
     // FLOATING (rail-move-lib `floatResize`): inside the viewport, not the
     // row; the same minimums and maximums; the edge magnet and its guides
     // (owner, 2026-11-18: "top bottom left right … everywhere").
@@ -727,10 +753,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const bounds = row.getBoundingClientRect();
     const dock = start.corner;
     let next: Box;
-    if (pinCtl) {
+    if (start.magnet) {
       // WITH THE PIN (the other card may float): the held edge's magnet, on
-      // either axis, against the card as it stands (`snapResize`) — the
-      // width magnet below is its left↔left case.
+      // either axis (`snapResize`) — the width magnet below is its
+      // left↔left case.
       const pulled = snapResize(
         dock,
         dx,
@@ -846,6 +872,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // `endDrag` reads refs; the flag and the key are what decide.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gripsOn, shownKey]);
+  // …and a card that leaves the page under a resize takes its guides with it
+  // (no pointerup will come to clear them; reviewer, 2026-11-18).
+  useEffect(
+    () => () => {
+      if (dragStart.current) setSnapGuides([], []);
+    },
+    [],
+  );
   // A ui-layout hydrate that lands after the first render replaces the
   // cache without a render of ours: re-render, so a pinned card up at that
   // moment is re-placed at the saved size (CodeRabbit on #2062).
