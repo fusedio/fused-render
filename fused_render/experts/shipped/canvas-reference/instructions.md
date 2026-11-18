@@ -25,9 +25,9 @@ What is worth remembering: what worked, what failed and why, corrections from th
 in your skills. Not worth remembering: one-off details of a single task, and anything a skill already says.
 
 Format: plain text, one fact per line, under `## Works` or `## Does not work`. Each line starts with a count
-and the date it was last seen:
+and the date it was last seen. This line only shows the format; it is not a fact:
 
-    - [4 · 2026-11-17] Pull a shared canvas with `fused canvas pull` before editing it.
+    - [4 · 2026-11-17] <the fact, in one sentence>
 
 When you see a fact that is already in memory, raise its count and set its date to today. Do not add a second
 line for it. A new fact starts at count 1 with today's date. A fact counts as seen again only when a task showed it
