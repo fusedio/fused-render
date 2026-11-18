@@ -588,17 +588,20 @@ model call), copy `instructions.md` and the skills over the default layout, set 
 copies folder (`canvases.canvases_base()`, `~/Fused/canvas`) through `folders`. The witness
 `<bots root>/experts-seeded.json` lists the keys installed, so an expert the user deletes stays deleted. A seed cut
 short (an expert with that `shipped` key but no witness entry) is finished: missing files copied, a default
-`instructions.md` replaced, face and folders set only if unset. A skill the expert has is never synced afterwards:
-its copies are its own.
+`instructions.md` replaced, face and folders set only if unset.
 
 **A skill added to the shipped folder later** (`seed._new_skills`): the witness also lists, per key, the shipped
 skill names that expert has been offered (`skills`; an older witness without the list counts as the first five,
 `seed.FIRST_SKILLS`). On each start a shipped skill not in the list is copied into the installed expert, never
-over a file it has, and the list is updated: offered once, so one the user deletes stays deleted. `instructions.md`
-is not touched: an expert installed before `running-udfs.md` gets the skill file, the fence and the prompt line
-(which names the skill), but keeps its old instructions, which do not mention running. A skill file it already
-has is not replaced either: an expert that got `running-udfs.md` before the scratch folder keeps the copy that
-says "you cannot create files" and prefers the heredoc, and learns of the folder from the prompt line alone.
+over a file it has, and the list is updated: offered once, so one the user deletes stays deleted.
+
+**A shipped file that changed** (`seed._resync`): the witness records, per key, the hash of each file as we
+last gave it (`given`). On each seed, an installed `instructions.md` or skill whose shipped version changed is
+replaced only while the installed copy is still what we shipped: its hash is the recorded one, or, for an install
+from before hashes were recorded, one of the earlier shipped versions listed in `seed.PAST`. A copy the user (or
+anyone) edited is theirs and is left alone; a missing one is not put back. Changed instructions start a fresh chat
+session, as any instructions change does (§7). When you change a shipped file, add its old hash to `seed.PAST`
+(a test checks the current version is not listed).
 
 ## 15. Developer settings
 

@@ -241,3 +241,43 @@ def test_a_cut_short_seed_copy_leaves_no_partial_file(tmp_path, monkeypatch):
     monkeypatch.setattr(seed.shutil, "copyfile", real)
     seed._copy(str(src), str(dst), overwrite=False)  # a later non-overwriting pass copies it whole
     assert (dst / "instructions.md").read_text() == "the full text"
+
+
+def test_a_changed_shipped_file_replaces_only_an_unedited_copy(tmp_path, monkeypatch):
+    import shutil
+    shipped = tmp_path / "shipped"
+    shutil.copytree(seed.SHIPPED_DIR, shipped)
+    monkeypatch.setattr(seed, "SHIPPED_DIR", str(shipped))
+    assert seed.seed() == ["canvas-reference"]
+    d = store.expert_dir(store.all_experts()[0])
+    given = store.read_json(seed.witness_path(), {})["given"]["canvas-reference"]
+    assert given["instructions.md"] == seed._sha(os.path.join(d, "instructions.md")) and len(given) == 1 + len(seed._skill_names("canvas-reference"))
+    src = shipped / "canvas-reference"
+    with open(os.path.join(d, "skills", "edges-and-folders.md"), "a", encoding="utf-8") as f:
+        f.write("\nmine\n")                       # edited by the user
+    os.remove(os.path.join(d, "skills", "canvas-folder-layout.md"))   # deleted by the user
+    for rel in ("instructions.md", "skills/edges-and-folders.md", "skills/canvas-folder-layout.md", "skills/running-udfs.md"):
+        with open(src / rel, "a", encoding="utf-8") as f:
+            f.write("\nshipped v2\n")
+    assert seed.seed() == []
+    read = lambda rel: store.read_text(os.path.join(d, rel))  # noqa: E731
+    assert read("instructions.md").endswith("shipped v2\n") and read("skills/running-udfs.md").endswith("shipped v2\n")
+    assert read("skills/edges-and-folders.md").endswith("mine\n")      # an edited copy is theirs
+    assert not os.path.exists(os.path.join(d, "skills", "canvas-folder-layout.md"))  # a deleted skill stays deleted
+    # An install from before the witness recorded hashes: a copy matching a known earlier version is unedited.
+    w = store.read_json(seed.witness_path(), {})
+    w.pop("given")
+    store.write_json(seed.witness_path(), w)
+    with open(os.path.join(d, "instructions.md"), "w", encoding="utf-8") as f:
+        f.write("an old shipped text")
+    monkeypatch.setitem(seed.PAST["canvas-reference"], "instructions.md", [seed._sha(os.path.join(d, "instructions.md"))])
+    with open(os.path.join(d, "skills", "running-udfs.md"), "w", encoding="utf-8") as f:
+        f.write("not a version we ever shipped")
+    assert seed.seed() == []
+    assert read("instructions.md").endswith("shipped v2\n") and read("skills/running-udfs.md") == "not a version we ever shipped"
+
+
+def test_every_earlier_shipped_version_is_listed_and_the_current_one_is_not():
+    for key, files in seed.PAST.items():
+        for rel, hashes in files.items():
+            assert seed._sha(os.path.join(seed.SHIPPED_DIR, key, rel)) not in hashes, rel

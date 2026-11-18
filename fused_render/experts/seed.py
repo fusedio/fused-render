@@ -4,14 +4,16 @@ Each folder under `SHIPPED_DIR` is one expert: `expert.json` (`{"name", "ask_me_
 `instructions.md` and `skills/*.md`. `seed()` installs each ONCE: it creates the expert, copies the folder's files
 into the expert's folder and grants it the canvas copies (`~/Fused/canvas`, canvases.canvases_base) through the
 bot's `folders` setting. The witness `<bots root>/experts-seeded.json` lists the keys installed so far, so an
-expert the user deletes stays deleted. A skill the expert has is never synced afterwards (its copies are its own),
-but a skill file ADDED to the shipped folder later is copied once into an installed expert (`_new_skills`; the
-witness lists the shipped skill names each key has been offered, so one the user deletes stays deleted).
-instructions.md is never touched after the install.
+expert the user deletes stays deleted. A skill file ADDED to the shipped folder later is copied once into an
+installed expert (`_new_skills`; the witness lists the shipped skill names each key has been offered, so one the
+user deletes stays deleted). A shipped file that CHANGED replaces the installed copy only while that copy is still
+what we shipped (`_resync`; the witness records the hash of each file as given): instructions.md or a skill the
+user or anyone edited is theirs and is left alone.
 Called by the bots owner after the Super Bot seed (registry._seed_experts).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -37,16 +39,74 @@ FIRST_SKILLS = {"canvas-reference": ["canvas-folder-layout.md", "edges-and-folde
                                      "fused-cli-canvas-commands.md", "live-clone-vs-reference-copy.md"]}
 
 
+#: Hashes (`_sha`) of every earlier shipped version of a file, for installs from before the witness recorded what
+#: it gave: a copy matching one of these was never edited. Add a file's old hash here when you change the file.
+PAST = {"canvas-reference": {
+    "instructions.md": ["62c58da29d602c8f", "b4d386a0270a1a1a", "b189182d1246ad34", "1864272239c734c0",
+                        "58f5ce3cce43c7b5", "705d28bc7c5754ef"],
+    "skills/canvas-folder-layout.md": ["dcc8a9606ee6d28d", "38953af0627ba825"],
+    "skills/finding-a-reference-canvas.md": ["2c24bd024c045947"],
+    "skills/live-clone-vs-reference-copy.md": ["0a7634eb8be02203", "ffbeda78861daf1a"],
+    "skills/running-udfs.md": ["ee874333d2b5d028", "7d46c614a4e8a72a", "05172db74852c1cc"]}}
+
+
 def _witness() -> tuple:
-    """`(keys, skills)`: `{key: when installed}` and `{key: [shipped skill names it has been offered]}`."""
+    """`(keys, skills, given)`: `{key: when installed}`, `{key: [shipped skill names it has been offered]}` and
+    `{key: {file: hash of that file as we last gave it}}`."""
     d = store.read_json(witness_path(), {})
-    keys = d.get("keys") if isinstance(d, dict) else None
-    skills = d.get("skills") if isinstance(d, dict) else None
-    return (dict(keys) if isinstance(keys, dict) else {}), (dict(skills) if isinstance(skills, dict) else {})
+    d = d if isinstance(d, dict) else {}
+    return tuple(dict(d[k]) if isinstance(d.get(k), dict) else {} for k in ("keys", "skills", "given"))
 
 
 def _seeded() -> dict:
     return _witness()[0]
+
+
+def _sha(path: str) -> str:
+    """A short content hash of the file, "" when it is not there."""
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
+def _put(src: str, to: str) -> None:
+    """Copy through a temp sibling and a rename: a copy cut short never leaves a partial `to`."""
+    os.makedirs(os.path.dirname(to), exist_ok=True)
+    tmp = f"{to}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, to)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def _files(key: str) -> list:
+    return ["instructions.md"] + ["skills/" + n for n in _skill_names(key)]
+
+
+def _resync(key: str, given: dict) -> dict:
+    """Replace each installed file of `key` whose shipped version changed, when the installed copy is still what
+    we shipped (its hash is the one recorded in `given`, or a known earlier version, `PAST`). An edited copy is
+    left alone, and so is a missing one (a deleted skill stays deleted). Returns `given` brought up to date."""
+    b = _existing(key)
+    if b is None:
+        return given
+    given = dict(given)
+    for rel in _files(key):
+        src, to = os.path.join(SHIPPED_DIR, key, rel), os.path.join(store.expert_dir(b), rel)
+        new, have = _sha(src), _sha(to)
+        if not have or not new:
+            continue
+        if have != new:
+            if have not in {given.get(rel), *PAST.get(key, {}).get(rel, [])}:
+                continue  # edited: theirs
+            _put(src, to)
+            logger.info("experts seed: %s/%s updated to the shipped version", key, rel)
+        given[rel] = new
+    return given
 
 
 def _skill_names(key: str) -> list:
@@ -66,14 +126,7 @@ def _new_skills(key: str, offered: list) -> list:
     for n in new:
         to = os.path.join(store.expert_dir(b), "skills", n)
         if not os.path.exists(to):
-            os.makedirs(os.path.dirname(to), exist_ok=True)
-            tmp = f"{to}.{uuid.uuid4().hex[:8]}.tmp"
-            try:
-                shutil.copyfile(os.path.join(SHIPPED_DIR, key, "skills", n), tmp)
-                os.replace(tmp, to)
-            finally:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
+            _put(os.path.join(SHIPPED_DIR, key, "skills", n), to)
     return new
 
 
@@ -99,16 +152,7 @@ def _copy(src: str, dst: str, overwrite: bool) -> None:
     for rel in ["instructions.md"] + [os.path.join("skills", n) for n in skills]:
         to = os.path.join(dst, rel)
         if overwrite or not os.path.exists(to):
-            os.makedirs(os.path.dirname(to), exist_ok=True)
-            # A temp sibling, then a rename: a copy cut short never leaves a partial `to` that a later
-            # non-overwriting pass would take as already copied.
-            tmp = f"{to}.{uuid.uuid4().hex[:8]}.tmp"
-            try:
-                shutil.copyfile(os.path.join(src, rel), tmp)
-                os.replace(tmp, to)
-            finally:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
+            _put(os.path.join(src, rel), to)  # never a partial `to` a later non-overwriting pass would keep
 
 
 def _canvas_folder() -> str:
@@ -143,23 +187,26 @@ def seed_one(key: str):
 
 
 def seed() -> list:
-    """Install every shipped expert not installed before, and hand an installed one the shipped skills added
-    since (`_new_skills`). Returns the keys installed now. Never raises."""
-    done, skills = _witness()
+    """Install every shipped expert not installed before; hand an installed one the shipped skills added since
+    (`_new_skills`) and the new version of each shipped file it has not edited (`_resync`). Returns the keys
+    installed now. Never raises."""
+    done, skills, given = _witness()
+    before = json.dumps([done, skills, given], sort_keys=True)
     out = []
     for key in shipped_keys():
         try:
             if key in done:
                 offered = skills.get(key) if isinstance(skills.get(key), list) else FIRST_SKILLS.get(key, [])
-                if not _new_skills(key, offered):
-                    continue
+                _new_skills(key, offered)
             else:
                 seed_one(key)
                 done[key] = time.time()
                 out.append(key)
+            given[key] = _resync(key, given.get(key) if isinstance(given.get(key), dict) else {})
         except Exception:  # noqa: BLE001 — the next start tries again
             logger.warning("experts seed: %s failed", key, exc_info=True)
             continue
         skills[key] = _skill_names(key)
-        store.write_json(witness_path(), {"keys": done, "skills": skills})
+    if json.dumps([done, skills, given], sort_keys=True) != before:
+        store.write_json(witness_path(), {"keys": done, "skills": skills, "given": given})
     return out
