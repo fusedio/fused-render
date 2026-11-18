@@ -23,7 +23,7 @@ trigger: live clone, clone, reference copy, read-only, edit canvas, sync, publis
 - The user edits the same folder live from the canvas view beside the chat: adding, deleting, renaming, moving or resizing nodes, grouping them into folders and editing code all land in `canvas.toml` and the source files within a fraction of a second.
 - Re-read `canvas.toml` right before every edit to it, and edit it with targeted edits only. Never rewrite the whole file: that throws away what the user did since it was read.
 - When the session and the user change the same property of the same node at the same moment, the user's change is kept.
-- A node file that vanished was deleted by the user. A copy is in `<env>/.sync/trash/<canvas>/<timestamp>/` (from the clone: `../../.sync/trash/<canvas>/<timestamp>/`). Do not recreate it unless the user asks. A recreated file with no row stays off the canvas.
+- A node file that vanished was deleted by the user. A copy is in `<env>/.sync/trash/<canvas>/<timestamp>/` (from the clone: `../../.sync/trash/<canvas>/<timestamp>/`). Do not recreate it unless the user asks. A recreated file with no row stays off the canvas and out of the push (the user's delete wins): unlike a new file, it gets no default row. If the user asked for it back, write its `[[canvas.nodes]]` row too.
 - A Hard pull replaces the clone with the server's copy, after a backup into the same trash folder. Restore from the trash only what the user asks for.
 - Verify work with the `canvas_screenshot` tool (`what: "canvas"` for the whole graph, `what: "udf"` for one node's rendered output) and `fused workbench canvas validate .`. If a publish failed, the canvas view shows why; fixing the files lets the next publish ship the fix.
 

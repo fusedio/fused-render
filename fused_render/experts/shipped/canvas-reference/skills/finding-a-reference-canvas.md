@@ -21,7 +21,7 @@ Each canvas folder may carry this small JSON file (format version 1):
 
 - `sync: "mirror"`: a read-only reference copy written by the mirror command.
 - `sync: "live"`: the user's editable clone, two-way synced by fused-render. Only ever under `user/`.
-- No marker (or an unreadable one) on a `user/<name>` folder that has a `canvas.toml`: fused-render treats it as a live clone.
+- No marker (or an unreadable one) on a `user/<name>` folder that has a `canvas.toml`: fused-render treats it as a live clone, unless an adoption is pending (an `<env>/.sync/<name>.adopting` flag: the user just opened a reference copy from the Canvases page). Such a folder, like one marked `live` with that flag, is still read-only until its first pull has landed.
 - `scope` is `user`, `team` or `public`; `owner` names who owns the canvas; `revision` and `last_updated` say how fresh it is.
 
 Read the marker to tell the caller whose canvas an example is and whether it is a reference copy.

@@ -64,7 +64,7 @@ Each node is one `[[canvas.nodes]]` row, keyed by `udfName`. Keys a row may carr
 ## Rows and files must agree
 
 - Every node needs its source file next to `canvas.toml`.
-- A file with no row gets a default row at push. Write the row yourself when the node's position matters.
+- A file with no row gets a default row at push. Write the row yourself when the node's position matters. The one exception: the file of a node the user deleted, written back without a row, stays off the canvas (see the live-clone skill).
 - To remove a node, delete its file AND its row. A node whose file is missing is removed from the server at the next push.
 - A rename is the file AND the row's `udfName` (and every edge and `childUdfOrder` entry naming it), done together in one change set.
 - Check the folder with `fused workbench canvas validate .` after structural edits. An invalid canvas is rejected at push time.
