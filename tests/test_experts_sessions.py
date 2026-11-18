@@ -52,6 +52,7 @@ def test_ask_cannot_write_and_keeps_caller(expert, monkeypatch):
     calls = stub(monkeypatch, answer="Use pull.")
     row = sessions.ask(expert, "How?", "a claude task session", caller={"session_id": "s9", "run_id": "r9", "target": "/x"})
     assert row["answer"] == "Use pull." and row["memory_diff"] == "" and calls[0]["write"] is False
+    assert store.where(expert) in calls[0]["prompt"]
     assert row["trigger"] == {"asker": "a claude task session", "question": "How?", "session_id": "s9", "run_id": "r9"}
 
 
@@ -171,6 +172,7 @@ def test_a_write_over_the_limit_queues_one_dream(expert, monkeypatch):
     kinds = [r["kind"] for r in sessions.rows(expert)]
     assert kinds.count("dream") == 1 and not sessions.over_limit(expert)
     assert sum("over its limit" in c["prompt"] for c in calls) == 1
+    assert all(store.where(expert) in c["prompt"] for c in calls if "over its limit" in c["prompt"])
     assert sessions.after_write(expert) is False  # under the limit now
 
 
@@ -227,6 +229,8 @@ def test_expert_turn_message_and_system_prompt(expert):
     text, sent = agent_engine.first_message(expert, "What is X?", past=["user: hi"], conv={})
     assert "CONVERSATION SO FAR" in text and "user: hi" in text and text.endswith("MESSAGE: What is X?")
     assert f"Today is {sessions.today()}." in text and sent == {}
+    where = f"Your folder is {store.expert_dir(expert)}; your memory is {store.memory_path(expert)}."
+    assert store.where(expert) == where and where in text  # a fresh session is told where its memory is
     text, _ = agent_engine.first_message(expert, "Next?", conv={"session_id": "abc"})
     assert text == f"Today is {sessions.today()}.\n\nMESSAGE: Next?"
     assert agent_engine.system_prompt_for(expert, "/x") == store.instructions(expert)
@@ -313,10 +317,12 @@ def test_due_rule_and_only_the_unread_part(expert, monkeypatch, transcript):
     _age(transcript)
     assert learn.run_pass()["sessions"] == 1
     assert "USER| turn 1" in calls[-1]["prompt"] and "update your memory" in calls[-1]["prompt"].lower()
+    assert store.where(expert) in calls[-1]["prompt"]  # the absolute paths: never a guessed memory.md
     row = sessions.rows(expert)[0]
     size = os.path.getsize(transcript)
     assert row["kind"] == "task-learn" and row["trigger"] == {
-        "session_id": "s1", "run_id": "r1", "target": "/work", "backend": "claude", "from_size": 0, "to_size": size}
+        "session_id": "s1", "run_id": "r1", "target": "/work", "backend": "claude", "from_size": 0, "to_size": size,
+        "to_turns": 1}
     assert learn.run_pass()["sessions"] == 0  # read at this size
     with open(transcript, "a") as f:
         f.write("turn 2\n")
@@ -458,8 +464,12 @@ def test_after_shutdown_no_session_or_dream_starts(expert, monkeypatch):
 
 def test_bots_shutdown_ends_the_experts_before_the_claim_goes(monkeypatch):
     seen = []
-    proc = object()
-    monkeypatch.setattr(sessions, "_kill", lambda p: seen.append("kill"))
+
+    class Proc:
+        def wait(self, timeout=None):
+            return 0
+    proc = Proc()
+    monkeypatch.setattr(sessions, "_signal", lambda p, sig: seen.append("kill"))
     monkeypatch.setattr(registry, "_drop_routines_lock", lambda: seen.append(("claim", sessions.closed())))
     with sessions._GUARD:
         sessions._PROCS.add(proc)
@@ -496,14 +506,14 @@ def test_a_task_learn_cut_short_by_a_restart_after_its_edit_is_not_replayed(expe
     row["memory_before"] = sessions._sha(store.memory(expert))
     sessions._save(expert, row)
     # Nothing changed yet: an interrupted session that never edited is retried (and the stale row is closed).
-    assert sessions.cut_short(expert, "s1", 0) is False
+    assert sessions.cut_short(expert, "s1", 0) is None
     assert sessions.row(expert, row["id"])["status"] == "interrupted"
     row2 = sessions._new_row("task-learn", {"session_id": "s1", "from_size": 0, "to_size": 10})
     row2["memory_before"] = sessions._sha(store.memory(expert))
     sessions._save(expert, row2)
     with open(mem, "a", encoding="utf-8") as f:
         f.write("- [1 · 2026-11-18] learned before the restart\n")
-    assert sessions.cut_short(expert, "s1", 5) is False      # another slice of the task
-    assert sessions.cut_short(expert, "other", 0) is False   # another task
-    assert sessions.cut_short(expert, "s1", 0) is True
-    assert sessions.cut_short(expert, "s1", 0) is False      # answers once
+    assert sessions.cut_short(expert, "s1", 5) is None       # another slice of the task
+    assert sessions.cut_short(expert, "other", 0) is None    # another task
+    assert sessions.cut_short(expert, "s1", 0) == {"session_id": "s1", "from_size": 0, "to_size": 10}  # its trigger
+    assert sessions.cut_short(expert, "s1", 0) is None       # answers once
