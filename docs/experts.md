@@ -49,13 +49,15 @@ Plain text, one fact per line under `## Works` or `## Does not work`, each line 
 it was last seen:
 
     ## Works
-    - [4 · 2026-11-17] Pull a shared canvas with `fused canvas pull` before editing it.
+    - [4 · 2026-11-17] Validate a clone with `fused workbench canvas validate .` after renaming a node.
 
     ## Does not work
     - [2 · 2026-11-12] The YC dataset has no founder emails; tasks that need them fail.
 
 The rules live in `store.MEMORY_RULES`, which ends `DEFAULT_INSTRUCTIONS` and is repeated verbatim at the end of the
-shipped expert's `instructions.md`:
+shipped expert's `instructions.md`. Its format line is a placeholder (`- [4 · 2026-11-17] <the fact, in one
+sentence>`, "only shows the format; it is not a fact"): memory beats skills, so a concrete example there could be
+repeated as advice.
 
 - read memory before answering; `memory.md` is the only file it may write; never edit `instructions.md` or
   `skills/`, never create files;
@@ -94,13 +96,17 @@ row with status `error`.
   `--disable-slash-commands`) and the fence (§6, with Edit/Write only for a writing kind). Working directory: the
   expert's folder. The prompt goes on stdin. `--no-session-persistence`: a side session is never resumed, and a
   transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s
-  (`$FUSED_RENDER_EXPERT_TIMEOUT`), then the process group is killed. Server shutdown kills every live one.
+  (`$FUSED_RENDER_EXPERT_TIMEOUT`), then the process group is killed.
+- **Shutdown** (`sessions.shutdown`): sets a closed flag under `_GUARD` and kills every live harness. Once closed,
+  `run` starts nothing (an `error` row, `error: sessions.CLOSED`, also for a session that was waiting on its gate,
+  and a spawn that raced the flag is killed at once) and `after_write` queues no dream. `scheduler.start` reopens it.
 - **A row** `{id, kind, started, ended, status, trigger, transcript, memory_diff, answer, error?, cost_usd?}`:
   `id` is `<started ms, 13 digits>-<6 hex>`, so names sort by start; `status` is `running` | `done` | `error`, and a
   row still `running` that this process is not running reads as `interrupted` (a restart cut it short);
   `transcript` is `[{role, text}]` with roles `prompt` (what we sent), `expert` (its text blocks), `tool` (tool
   name and path or pattern), `refused` (the CLI's `permission_denials`); `memory_diff` is the unified diff of
-  `memory.md` before and after (`""` when unchanged); `answer` is the result text; `cost_usd` is what the harness
+  `memory.md` before and after (`""` when unchanged, and always `""` for an ask: it holds no write lock, so a
+  concurrent writer's change is not its own); `answer` is the result text; `cost_usd` is what the harness
   reported (`total_cost_usd`), nothing more. `trigger` is §11's.
 - **Chat rows** (`sessions.note_chat`, called at the end of every chat turn under the lock): only when `memory.md`
   changed during the turn; `started` is the turn's start (`bot.task_started`), `ended` when it was noted, empty
@@ -112,7 +118,11 @@ Kind `expert` in `meta["kind"]`; its settings in `meta["expert"]` (`store.manife
 description `expert_list` shows, 240 chars, one line) and `shipped` (the shipped expert's key it came from, else
 `""`). Both are public `bot.json` keys (`bots/store.PUBLIC_KEYS`).
 
-- **Engine**: always the agent engine (`bot._engine_for`); no engine choice, no browser, no terminal.
+- **Engine**: always the agent engine (`bot._engine_for`); no engine choice, no browser, no terminal. When the agent
+  engine cannot be imported the task is refused ("An expert needs the agent engine (Claude Code), which could not
+  load."), as for Super Bot: never the steps engine.
+- **Settings**: `engine`, `browser_id`, `encrypt`, `terminal` and `memory` in a settings body are ignored (`memory`
+  would write the bot memory file `.fused/memory.md`, which is not an expert's memory).
 - **No browser**: none is made or shared at create; `goto`, `nav`, `tab`, `viewport` and the other browser ops are
   refused with "This bot is an expert and has no browser, so … does not apply." (`bots/routes.py` `_refuse_expert`);
   take-over, open-as-window and wake raise `an expert has no browser …`; idle sleep is a no-op; it is never a
@@ -125,7 +135,10 @@ description `expert_list` shows, 240 chars, one line) and `shipped` (the shipped
 - **Export refused for now**: `GET /api/bots/<id>/package` and `package.write` raise
   `package.EXPERT_REFUSAL` ("An expert cannot be exported yet: its instructions, skills and memory would not travel
   with it"). Import (`botfile.py`) keeps `kind: "expert"` and its manifest but drops `shipped` (a file must not
-  claim to be a shipped expert); updating a bot from a package of the other kind is refused.
+  claim to be a shipped expert); updating a bot from a package of the other kind is refused. A local model in an
+  expert package becomes the default model (new install and update alike, as `create` does). A package's
+  `.fused/memory.md` is never written for an expert: the install result carries the warning
+  `botfile.EXPERT_MEMORY_NOT_IMPORTED` ("memory: an expert's memory is not imported").
 
 ## 6. The fence
 
@@ -221,7 +234,9 @@ state, in `.fused/expert/read.json`:
 
 **The pass** (`learn.run_pass`, once per tick): resolve pending runs to their sessions (a run unresolved after 7
 days is dropped); find each recorded session in the Tasks listing (`tasks._collect`); a session is **due** when
-its transcript file has grown past the recorded `size` and its last real activity
+its transcript file has grown past the recorded `size` (or shrunk below it: a rewritten or compacted transcript
+resets the cursor, `size` and `turns`, to the start and is read again whole; an unchanged size is skipped) and its
+last real activity
 (`session_liveness.tail_activity`: housekeeping rows do not count; else the file's mtime) is at least the idle time
 ago (600 s). Each due session gets ONE task-learn session whose prompt holds only the unread turns (from `turns`
 on; a transcript shorter than that, rewritten or compacted, is read whole), one speaker-tagged line per line
@@ -230,10 +245,12 @@ the last 30,000 characters, between `<<<TRANSCRIPT` / `TRANSCRIPT>>>` markers, f
 memory from this" with the same evidence rule as §3. At most 4 task-learn sessions start per pass; the rest wait
 for the next. A session grown by housekeeping only (no new turns) is marked read without a harness run.
 
-**Retry and give-up**: the new `size` and `turns` are recorded only after the task-learn session ends `done`. A
-failure is counted against the size it tried (`fails`) and retried next pass; after 3 failures (`MAX_FAILS`) at
-one size that session is no longer due until it grows again. A session that never started because the write lock
-stayed held (`BUSY`) is not an attempt.
+**Retry and give-up**: the new `size` and `turns` are recorded only after the task-learn session ends `done`, or
+ends `error` with a non-empty `memory_diff` (it changed memory before failing, e.g. a timeout after its edit: a
+retry would see the same evidence beside the updated memory and raise counts twice). A failure that changed nothing
+is counted against the size it tried (`fails`) and retried next pass; after 3 failures (`MAX_FAILS`) at one size
+that session is no longer due until it grows again. A session that never started because the write lock stayed held
+(`BUSY`) or the server was shutting down (`CLOSED`) is not an attempt.
 
 **Restart safety**: everything is on disk. A restart mid-wait or mid-session leaves `read.json` where it was (the
 row reads `interrupted`), so the next pass picks the session up again, once; a task resumed later is read again
@@ -243,7 +260,10 @@ from where it was left, only its new part.
 90 s after start, then every 300 s ±10 %. A tick runs only in the process that owns the bots
 (`registry.owns()`), holds the bots workspace claim, and gets the machine-wide lease `experts-scheduler`
 (`tasks_store.try_acquire_lease`, released after the tick): only one server process on a machine reads the
-transcripts. Shutdown stops the timer and kills every side session's harness.
+transcripts. Shutdown stops the timer and kills every side session's harness: the bots `registry.shutdown` does it
+(`_end_experts`, `scheduler.shutdown` on what is left of its budget, at most 5 s) right before it releases the bots
+workspace claim, so no harness still writes `memory.md` once another server can take the claim; the server's later
+`_shutdown_experts` handler is then a no-op.
 
 ## 10. Dreaming (memory compaction)
 
