@@ -317,13 +317,21 @@ finish 502.
 The Bots page shows an expert with an `EXPERT` badge in the list (its tooltip is `ask_me_about`). Its preview
 column (`ExpertPane.tsx`) has no browser; in its place two tabs:
 
-- **Memory**: `memory.md` read-only, its path, its size against the limit, a note when it was edited by hand since a
-  session last wrote it, and Changes (the sessions that changed it); a change opens on the Sessions tab.
-- **Sessions**: the rows, newest first, with kind, origin, time, status, cost and +/− when memory changed; a filter
-  keeps only changes; a row opens to its transcript and coloured diff.
+- **Memory**: `memory.md` rendered as markdown, read-only, its path, its size against the limit, a note when it was
+  edited by hand since a session last wrote it, and Changes (the sessions that changed it); a change opens on the
+  Sessions tab.
+- **Sessions**: the rows, newest first, with kind (chat, ask, task-learn, dream), origin, time, status, cost and a
+  "changed memory" tag when the row has a diff. A row opens in place to its error if any, its memory diff, and its
+  prompt and transcript.
+
+A memory diff is never shown as raw diff text (`lib/expert.ts diffDoc`, `MdDoc.tsx`): the file headers and hunk
+marks are dropped and each line's markdown is rendered, added lines on a green ground with `+`, removed lines on
+a red ground with `−`, context muted; a removed line and the added line that replaces it (a count bump) are
+shown as a pair. Text from memory is rendered as text, never as HTML.
 
 Settings for an expert are General (name, "Ask me about", instructions, model, effort; no step cap, no approval
-setting) and Permissions (only the folders it may read). No Export button.
+setting), Permissions (only the folders it may read) and Skills (the files under `skills/`: list, edit, add,
+delete; no "learn from last task", since an expert never edits its skills). No Export button.
 
 ## 14. Shipped expert
 
