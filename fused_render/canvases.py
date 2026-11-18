@@ -8426,7 +8426,7 @@ def _revive_for_session(env: str, name: str, event: str) -> "_SyncManager | None
 def session_turn_start(path: str, backend: str = "") -> bool:
     """A turn of an agent session whose target is `path` is beginning, said
     by the server itself (agent.py `_start`/`_send`) for the backends with no
-    hook that could say it: Codex, Gemini and OpenCode have neither Claude's
+    hook that could say it: Codex, Gemini, OpenCode and Cursor have neither Claude's
     CLI hooks nor a host that posts them (Copilot's). Starts the clone's
     watcher when none runs, exactly as the "start" hook does. That is all
     such a session needs: the watcher holds its push while the run is live

@@ -57,8 +57,8 @@ router = APIRouter()
 # Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
 # `agent_roots.claude_dir`), module-level because the tests of this router
 # and of `routers/tasks` patch it at a tmp dir. Every scan here walks
-# `projects_roots()`, which puts fused's own Copilot, Codex and Gemini roots
-# beside it (docs/COPILOT_BACKEND.md D3, docs/CODEX_BACKEND.md D3,
+# `projects_roots()`, which puts fused's own Copilot, Codex, Gemini, OpenCode
+# and Cursor roots beside it (docs/COPILOT_BACKEND.md D3, docs/CODEX_BACKEND.md D3,
 # docs/GEMINI_BACKEND.md D3): same bucket layout, same row shape, so a
 # non-Claude session is a session on every one of these surfaces.
 CLAUDE_DIR = roots.claude_dir()
@@ -66,8 +66,8 @@ PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 
 
 def projects_roots() -> list[tuple[str, str]]:
-    """`[(backend, projects dir), ...]` — Claude's (as patched), Copilot's,
-    Codex's and Gemini's."""
+    """`[(backend, projects dir), ...]` — Claude's (as patched), then every
+    other backend's own root, in `roots.BACKENDS` order."""
     return roots.projects_roots(PROJECTS_DIR)
 
 # Mutable session state (custom names, triage). The retired bundled sessions
@@ -955,7 +955,8 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
     A COPILOT session is recapped by Copilot (`_recap_copilot`), a CODEX
     session by Codex (`_recap_codex`), a GEMINI session by Gemini
     (`_recap_gemini`) and an OPENCODE session by OpenCode
-    (`_recap_opencode`), each from the same tail; everything below is the
+    (`_recap_opencode`) and a CURSOR session by Cursor
+    (`_recap_cursor`), each from the same tail; everything below is the
     Claude run.
 
     `--no-session-persistence` is the load-bearing flag: this run mints a
@@ -1015,6 +1016,8 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         return _recap_gemini(agent, tail, prompts, raw)
     if backend == "opencode":
         return _recap_opencode(agent, tail, prompts, raw)
+    if backend == "cursor":
+        return _recap_cursor(agent, tail, prompts, raw)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": prompts[1] % tail}]}})
@@ -1068,7 +1071,7 @@ _COPILOT_SESSION_ID_RE = agent_oneshot.COPILOT_SESSION_ID_RE
 
 def _recap_oneshot(agent, backend: str, tail: str,
                    prompts: tuple[str, str] | None, raw: bool) -> str:
-    """The Copilot / Codex / Gemini / OpenCode twin of the Claude run above, through the
+    """The Copilot / Codex / Gemini / OpenCode / Cursor twin of the Claude run above, through the
     ONE one-shot runner (`agent_oneshot`, D1433) that `/api/ai`'s agent tiers
     also use — the argv, the no-tools flags, the session cleanup and the
     spawn rule live there, once. None of the three has a system-prompt flag,
@@ -1114,6 +1117,15 @@ def _recap_opencode(agent, tail: str,
     stdin and every tool denied through an injected `permission` block
     (docs/OPENCODE_BACKEND.md D12/D16) — `agent_oneshot._prepare_opencode`."""
     return _recap_oneshot(agent, "opencode", tail, prompts, raw)
+
+
+def _recap_cursor(agent, tail: str,
+                  prompts: tuple[str, str] | None = None,
+                  raw: bool = False) -> str:
+    """`cursor-agent -p --output-format json --mode ask` with the prompt on
+    stdin, in an empty temp workspace, the transcript it keeps removed
+    afterwards — `agent_oneshot._prepare_cursor`."""
+    return _recap_oneshot(agent, "cursor", tail, prompts, raw)
 
 
 # Kept as names for readers that import them; the facts live in agent_oneshot.

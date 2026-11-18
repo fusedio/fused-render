@@ -5,16 +5,17 @@ enabled installed plugin (source "plugin", read-only), plus the skills the
 cloned marketplaces offer (`available`). name + description come from YAML
 frontmatter.
 
-The user's own skills live in the dirs the three CLIs read:
+The user's own skills live in the dirs the CLIs read:
 
-  ~/.claude/skills            Claude
-  ~/.agents/skills            Copilot and Codex
+  ~/.claude/skills            Claude, Cursor
+  ~/.agents/skills            Copilot, Codex, Gemini and Cursor
   ~/.copilot/skills           Copilot   (COPILOT_HOME moves it)
   ~/.codex/skills             Codex     (CODEX_HOME moves it)
   ~/.gemini/skills            Gemini    (GEMINI_CLI_HOME moves it)
   <opencode config dir>/skills  OpenCode (its config-dir variable moves it; it
                               also reads a project's `.opencode/skills`,
                               which is not a user dir and is not listed)
+  ~/.cursor/skills            Cursor    (CURSOR_CONFIG_DIR moves it)
 
 A skill reachable from several of them by symlink is ONE row whose `readers`
 are the union. Dot-dirs (Codex's bundled .system) are not the user's.
@@ -32,7 +33,7 @@ installed_plugins.json's installPath, never a path from the caller.
 main(action=...):
   list -> {skills: [{slug, name, description, source, plugin?, marketplace?,
                      linked, path, location, paths, readers}]}
-          readers: ["claude" | "copilot" | "codex" | "gemini" | "opencode"]; paths: every entry (copy
+          readers: ["claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor"]; paths: every entry (copy
           and link) that is this skill
   available -> {skills: [{slug, name, description, plugin, pluginDescription,
                           marketplace, path, pluginInstalled, added}], skipped}
@@ -96,7 +97,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from fused_render import codex_health, copilot_health, gemini_health
+from fused_render import codex_health, copilot_health, cursor_health, gemini_health
 from fused_render.agent_backends import opencode_config
 from fused_render.shell import prefs, storage
 
@@ -104,7 +105,7 @@ from . import lib, marketplaces, plugins
 
 SKILLS_DIR = os.path.join(lib.CLAUDE_DIR, "skills")
 
-_CLIS = ("claude", "copilot", "codex", "gemini", "opencode")
+_CLIS = ("claude", "copilot", "codex", "gemini", "opencode", "cursor")
 
 
 # A plugin ships its skills across at most a few dozen dirs; the walk budget
@@ -120,10 +121,12 @@ def _user_dirs() -> list:
     """[(dir, readers)] — each dir the user's own skills live in and the CLIs
     that read it, in the order a row's readers are listed."""
     dirs = [
-        (SKILLS_DIR, ["claude"]),
+        # Cursor too: it reads `.claude/skills` and `.agents/skills` beside its
+        # own `~/.cursor/skills`.
+        (SKILLS_DIR, ["claude", "cursor"]),
         # Gemini too: `discoverSkills` loads `~/.gemini/skills` AND the
         # shared `~/.agents/skills` (0.65.0 source, `getUserAgentSkillsDir`).
-        (_agents_dir(), ["copilot", "codex", "gemini"]),
+        (_agents_dir(), ["copilot", "codex", "gemini", "cursor"]),
         (os.path.join(copilot_health.config_dir(), "skills"), ["copilot"]),
         (os.path.join(codex_health.config_dir(), "skills"), ["codex"]),
         (os.path.join(gemini_health.config_dir(), "skills"), ["gemini"]),
@@ -131,6 +134,7 @@ def _user_dirs() -> list:
         # `.opencode/skills`, not a user dir). `opencode_config.config_dir`
         # is the one reader of its config-dir rule outside the health files.
         (os.path.join(opencode_config.config_dir(), "skills"), ["opencode"]),
+        (os.path.join(cursor_health.config_dir(), "skills"), ["cursor"]),
     ]
     merged: dict = {}
     for path, readers in dirs:
