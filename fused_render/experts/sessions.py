@@ -32,6 +32,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -113,7 +114,7 @@ def _auto_settings(bot) -> str:
                           "and the like)."]}})
 
 
-def fence(bot, write: bool, run: bool = False, auto: bool = False) -> list:
+def fence(bot, write: bool, run: bool = False, auto: bool = False, s3: bool = False) -> list:
     """The harness flags that fence an expert's session. Reads inside the working directory (the expert's
     folder) are the harness's default; each granted folder gets a Read rule (a folder whose path has glob
     characters gets none); memory.md and memory-archive.md get an Edit rule (which covers Write) when `write`. `run` (a chat or
@@ -132,7 +133,11 @@ def fence(bot, write: bool, run: bool = False, auto: bool = False) -> list:
     for memory.md and the scratch folder and turns into a card for anything else. A CLI or model without auto
     mode starts in `default` by itself (its `init` event says so): the same flags then ask about everything the
     rules do not cover, as before auto mode. The rule list is variadic: callers put another `--flag` (or nothing)
-    after it."""
+    after it.
+
+    `s3` (a chat or an ask whose spawn also lists the S3 server, `s3_server`; the caller decides once and hands the
+    same answer to both): allow rules for the two S3 tools, read-only like the task sessions' (which pre-allow
+    them), and a Read rule for fused-render's remote cache, where `s3_read` puts what it fetched."""
     rules = []
     envs = [env for env, _ in store.run_envs(bot)] if run else []
     edits = ([store.memory_path(bot), store.archive_path(bot)] if write else []) + ([store.udfs_dir(bot) + "/**"] if envs else [])
@@ -145,6 +150,9 @@ def fence(bot, write: bool, run: bool = False, auto: bool = False) -> list:
             logger.warning("expert %s: folder %r has glob characters; not granted", getattr(bot, "id", "?"), folder)
             continue
         rules += [f"Read({_rule_path(p)}/**)" for p in _spellings(folder)]
+    if s3:
+        rules += [f"mcp__{store.S3_SERVER}__{t}" for t in store.S3_TOOLS]
+        rules += [f"Read({_rule_path(p)}/**)" for p in _spellings(store.s3_cache_root())]
     for env in envs:
         rules += [f"Bash(fused workbench --env {env} run:*)", f"Bash(fused workbench --env {env} udf-schema:*)",
                   f"Bash(fused workbench --env {env} whoami)"]
@@ -154,6 +162,35 @@ def fence(bot, write: bool, run: bool = False, auto: bool = False) -> list:
     out = ["--tools", "Read,Glob,Grep" + (",Edit,Write" if edits else "") + (",Bash" if envs else ""),
            "--permission-mode", "auto" if auto else "default"] + (["--settings", _auto_settings(bot)] if auto else [])
     return out + (["--allowedTools", *rules] if rules else [])
+
+
+def s3_server(bot) -> dict:
+    """`{name: entry}` for an MCP config: the task sessions' own server (claude_agent/permission_server.py) with the
+    S3 tools alone (`--no-approve`: no approval tool; no other switch in its environment, so nothing else is
+    listed), calling this server's `/api/remote*` routes, its saved ranges under the remote cache in a folder of
+    this expert's own. Only for a spawn that decided `store.s3_on()`."""
+    from fused_render.bots import paths
+    from fused_render.claude_agent import agent_module
+    ag = agent_module()
+    origin = paths.server_origin()
+    perm = os.path.join(paths.bot_cache_dir(bot.id), "expert", "mcp")  # the server wants one; nothing is parked there
+    return {store.S3_SERVER: {
+        "command": sys.executable,
+        "args": [os.path.join(os.path.dirname(os.path.abspath(ag.__file__)), "permission_server.py"), perm,
+                 "--no-approve"],
+        "env": {"PYTHONUTF8": "1", "FUSED_RENDER_S3_ORIGIN": origin,
+                "FUSED_RENDER_S3_SCRATCH": os.path.join(store.s3_cache_root(), ".ranges", f"expert-{bot.id}")},
+        "timeout": int((ag.S3_CALL_CEILING + 60) * 1000),
+        # Never behind the CLI's tool search: the fence's `--tools` has no ToolSearch, so a deferred tool could not
+        # be loaded at all (a task session's server has the same key, agent._ALWAYS_LOAD_KEYS).
+        **ag._ALWAYS_LOAD_KEYS["claude"]}}
+
+
+def mcp_flags(servers: dict) -> list:
+    """`agent_engine.NO_MCP` with `servers` as the only MCP servers (an inline config): nothing from the user's
+    own Claude Code setup, no slash commands. `{}` is exactly NO_MCP."""
+    return ["--setting-sources=", "--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":")),
+            "--strict-mcp-config", "--disable-slash-commands"]
 
 
 # -------------------------------------------------------------------- harness ---
@@ -191,7 +228,8 @@ def _kill(proc) -> None:
 
 def _tool_line(blk: dict) -> str:
     inp = blk.get("input") if isinstance(blk.get("input"), dict) else {}
-    what = inp.get("file_path") or inp.get("path") or inp.get("pattern") or inp.get("command") or ""
+    what = (inp.get("file_path") or inp.get("path") or inp.get("pattern") or inp.get("command") or inp.get("url")
+            or inp.get("query") or "")
     return f"{blk.get('name') or 'tool'} {what}".strip()
 
 
@@ -207,6 +245,7 @@ def harness(bot, prompt: str, write: bool) -> dict:
         return out
     cache = os.path.join(paths.bot_cache_dir(bot.id), "expert")
     os.makedirs(cache, exist_ok=True)
+    s3 = not write and store.s3_on()  # once, for both the server and its allow rules
     sp_file = os.path.join(cache, f"system_prompt.{uuid.uuid4().hex[:8]}.txt")
     with open(sp_file, "w", encoding="utf-8") as f:
         f.write(store.instructions(bot))
@@ -215,8 +254,10 @@ def harness(bot, prompt: str, write: bool) -> dict:
     cmd = [bin_path, "-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
            "--model", bot.meta.get("model") or agent_engine.DEFAULT_MODEL,
            "--effort", bot.meta.get("effort") or agent_engine.DEFAULT_EFFORT,
-           # A side session that does not write memory is an ask, which may run UDFs; the writers (task-learn, dream) may not.
-           "--system-prompt-file", sp_file, *agent_engine.NO_MCP, *fence(bot, write, run=not write)]
+           # A side session that does not write memory is an ask, which may run UDFs and read S3 files; the writers
+           # (task-learn, dream) may not.
+           "--system-prompt-file", sp_file, *mcp_flags(s3_server(bot) if s3 else {}),
+           *fence(bot, write, run=not write, s3=s3)]
     proc = None
     try:
         # Spawn and register in ONE step under the guard, after the closed check: a harness is either never

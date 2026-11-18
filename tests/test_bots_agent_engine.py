@@ -1323,6 +1323,29 @@ def test_expert_chat_argv_and_roster(server, fake_cli, monkeypatch, tmp_path):
     assert fake_cli("tools")[0]["tools"] == ["permission"]  # no browser, none of the bot tools
 
 
+def test_expert_chat_gets_the_s3_tools_and_shows_their_calls(server, fake_cli, monkeypatch, tmp_path):
+    """With the S3 tools on, the chat's mcp.json names their server beside the bot's, the fence pre-allows them, and
+    a call becomes an `action` row like a built-in's (the CLI runs it, not handle_tool)."""
+    from fused_render.experts import store as xstore
+    monkeypatch.setattr(xstore, "s3_on", lambda: True)
+    bot = expert_bot(tmp_path)
+    run_task(bot, [{"builtin": "mcp__fused_render__s3_read", "args": {"url": "s3://fused-asset/a.csv", "length": 99},
+                    "output": "a,b"}, {"result": "ok"}], monkeypatch)
+    argv = fake_cli("argv")[0]["argv"]
+    with open(argv[argv.index("--mcp-config") + 1], encoding="utf-8") as f:
+        servers = json.load(f)["mcpServers"]
+    assert sorted(servers) == ["bot", "fused_render"] and servers["fused_render"]["args"][-1] == "--no-approve"
+    assert "mcp__fused_render__s3_search" in argv and "mcp__fused_render__s3_read" in argv
+    assert fake_cli("tools")[0]["tools"] == ["permission"]  # the bot server's roster is unchanged
+    acts = [e for e in bot.events if e["role"] == "action"]
+    assert [(a["text"], a["result"]) for a in acts] == [("s3_read s3://fused-asset/a.csv", "a,b")]
+    # A routine's turn (nobody at a card): no bot server, the S3 server inline.
+    cmd = agent_engine.argv("claude", "sonnet", "low", "/sp", "", fence=["--tools", "Read"],
+                            extra_mcp={"fused_render": servers["fused_render"]})
+    assert list(json.loads(cmd[cmd.index("--mcp-config") + 1])["mcpServers"]) == ["fused_render"]
+    assert "--permission-prompt-tool" not in cmd and "--strict-mcp-config" in cmd
+
+
 def test_expert_chat_card_denied_then_approved(server, fake_cli, monkeypatch, tmp_path, stub_risk):
     bot = expert_bot(tmp_path)
     t = start(bot, [_perm("Bash", command="ls /tmp"), _perm("Read", file_path="/etc/hosts"), {"result": "done"}], monkeypatch)
@@ -1523,6 +1546,7 @@ def test_builtin_label():
     assert L("Glob", {"pattern": "**/*.py", "path": "/tmp"}) == "find **/*.py in /tmp"
     assert L("WebFetch", {"url": "https://x.test/a"}) == "fetch https://x.test/a"
     assert L("Frobnicate", {"thing": "it"}) == "Frobnicate it"
+    assert L("mcp__fused_render__s3_search", {"path": "s3://fused-asset/census/"}) == "s3_search s3://fused-asset/census/"
     assert len(L("Bash", {"command": "x" * 500})) < 140
 
 
