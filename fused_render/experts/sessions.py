@@ -68,10 +68,7 @@ _GUARD = threading.Lock()
 _RUNNING: set = set()          # row ids this process is running
 _PROCS: set = set()            # their harness processes (shutdown)
 _DREAMING: set = set()       # expert ids with a dream session queued or running
-#: `closed`: set by `shutdown`, cleared by `reopen` (scheduler.start): no new harness once closed. `gen`: raised by
-#: every `shutdown`, never lowered: a session admitted before a shutdown stays refused after a reopen.
-_STATE = {"closed": False, "gen": 0}
-_LOCAL = threading.local()   # `.gen`: the generation `run` admitted this thread's session in (read by `harness`)
+_STATE = {"closed": False}   # set by `shutdown`, cleared by `reopen`: no new harness once closed
 KILL_GRACE_S = 1.0           # of shutdown's budget, kept for SIGKILL after SIGTERM
 
 
@@ -239,15 +236,13 @@ def harness(bot, prompt: str, write: bool) -> dict:
            # A side session that does not write memory is an ask, which may run UDFs; the writers (task-learn, dream) may not.
            "--system-prompt-file", sp_file, *agent_engine.NO_MCP, *fence(bot, write, run=not write)]
     proc = None
-    gen = getattr(_LOCAL, "gen", None)
     try:
-        # Spawn and register in ONE step under the guard, after the closed / generation check: a harness is
-        # either never spawned or in _PROCS before `shutdown` can take its snapshot.
+        # Spawn and register in ONE step under the guard, after the closed check: a harness is either never
+        # spawned or in _PROCS before `shutdown` can take its snapshot.
         with _GUARD:
-            if _STATE["closed"] or (gen is not None and gen != _STATE["gen"]):
+            if _STATE["closed"]:
                 out["error"] = CLOSED
                 return out
-            gen = _STATE["gen"]
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     cwd=store.expert_dir(bot), env=dict(os.environ), close_fds=False,
                                     start_new_session=True)
@@ -258,8 +253,6 @@ def harness(bot, prompt: str, write: bool) -> dict:
             _kill(proc)
             out["error"] = f"no answer after {int(_timeout())} s"
             return out
-        with _GUARD:
-            ended_by_shutdown = gen != _STATE["gen"]
         result = None
         for ln in raw.decode("utf-8", "replace").splitlines():
             try:
@@ -278,7 +271,7 @@ def harness(bot, prompt: str, write: bool) -> dict:
                         out["transcript"].append({"role": "tool", "text": _tool_line(blk)[:300]})
             elif ev.get("type") == "result":
                 result = ev
-        if result is None and ended_by_shutdown:  # `shutdown` killed it: not a failed attempt (learn.py)
+        if result is None and closed():  # `shutdown` killed it: not a failed attempt (learn.py)
             out["error"] = CLOSED
             return out
         if result is None:
@@ -476,45 +469,33 @@ def _take(bot, gate, writes: bool) -> bool:
     return True
 
 
-def run(bot, kind: str, prompt: str, trigger=None, gen=None) -> dict:
-    """One side session, start to saved row. Never raises: a failure is a row with status `error`. `gen`: the
-    shutdown generation the session was QUEUED in (a dream queued by `after_write`); one queued before a shutdown
-    is refused even when it only gets here after a `reopen`."""
+def run(bot, kind: str, prompt: str, trigger=None) -> dict:
+    """One side session, start to saved row. Never raises: a failure is a row with status `error`."""
     if kind not in KINDS:
         raise ValueError(f"unknown session kind {kind!r}")
     rec = _new_row(kind, trigger)
     writes = kind in WRITERS
     gate = store.write_lock(bot) if writes else _ASKS
-    with _GUARD:
-        shut = _STATE["closed"] or (gen is not None and gen != _STATE["gen"])
-        gen = _STATE["gen"] if gen is None else gen  # admitted in this generation
-    if shut or not _take(bot, gate, writes):
-        rec.update(status="error", ended=time.time(), error=CLOSED if shut or closed() else BUSY)
-        _save(bot, rec)
-        return rec
-    with _GUARD:
-        # A shutdown while this session waited on the gate refuses it, even if a reopen came since (the generation).
-        shut = _STATE["closed"] or _STATE["gen"] != gen
-        if not shut:
-            _RUNNING.add(rec["id"])
-    if shut:
+    taken = not closed() and _take(bot, gate, writes)
+    if taken and closed():  # a shutdown came while it waited on the gate
         gate.release()
-        rec.update(status="error", ended=time.time(), error=CLOSED)
+        taken = False
+    if not taken:
+        rec.update(status="error", ended=time.time(), error=CLOSED if closed() else BUSY)
         _save(bot, rec)
         return rec
+    with _GUARD:
+        _RUNNING.add(rec["id"])
     try:
         before = store.memory(bot)
         if writes:
             rec["memory_before"] = _sha(before)  # for `cut_short`: a restart leaves this row with no diff computed
         _save(bot, rec)
-        _LOCAL.gen = gen  # `harness` spawns only in this generation
         try:
             res = harness(bot, prompt, writes)
         except Exception as e:  # noqa: BLE001
             logger.warning("expert %s: %s session failed", bot.id, kind, exc_info=True)
             res = {"ok": False, "error": f"{type(e).__name__}: {e}", "transcript": [], "answer": ""}
-        finally:
-            _LOCAL.gen = None
         # Only a writer's diff is its own: an ask holds no write lock, so a chat or task-learn writing meanwhile
         # would otherwise show up in the ask's row and list it as a memory writer.
         rec.update(ended=time.time(), status="done" if res.get("ok") else "error",
@@ -535,7 +516,7 @@ def run(bot, kind: str, prompt: str, trigger=None, gen=None) -> dict:
                 _RUNNING.discard(rec["id"])
             gate.release()
     if writes and kind != "dream":
-        after_write(bot, gen)
+        after_write(bot)
     return rec
 
 
@@ -563,35 +544,32 @@ def over_limit(bot) -> bool:
     return lines > LIMIT_LINES or nbytes > LIMIT_BYTES
 
 
-def dream(bot, gen=None) -> dict:
+def dream(bot) -> dict:
     lines, nbytes = size(bot)
     prompt = (f"Today is {today()}. {store.where(bot)}\nYour memory.md is over its limit: {lines} lines, {nbytes} bytes; the limit is "
               f"{LIMIT_LINES} lines or {LIMIT_BYTES} bytes, whichever comes first.\n"
               "Compact it now: merge lines that say the same thing (add their counts, keep the newest date), drop "
               "old lines with low counts, and get it clearly under the limit. Keep the format and the two "
               "headings. Edit memory.md and nothing else, then say in one line what you did.")
-    return run(bot, "dream", prompt, {"lines": lines, "bytes": nbytes}, gen)
+    return run(bot, "dream", prompt, {"lines": lines, "bytes": nbytes})
 
 
-def after_write(bot, gen=None) -> bool:
+def after_write(bot) -> bool:
     """Called after any session that may have written memory (chat, task-learn): over the limit, queue ONE
-    dream session in the background. True when it queued one. `gen`: the generation the calling session ran in;
-    a session from before a shutdown queues nothing after a `reopen`, and the dream carries the generation it was
-    queued in, so one whose thread only starts after a shutdown and reopen is refused by `run`."""
+    dream session in the background. True when it queued one."""
     try:
         if not over_limit(bot):
             return False
     except Exception:  # noqa: BLE001
         return False
     with _GUARD:
-        if _STATE["closed"] or bot.id in _DREAMING or (gen is not None and gen != _STATE["gen"]):
+        if _STATE["closed"] or bot.id in _DREAMING:
             return False
         _DREAMING.add(bot.id)
-        queued_in = _STATE["gen"]
 
     def body():
         try:
-            dream(bot, queued_in)
+            dream(bot)
         except Exception:  # noqa: BLE001
             logger.warning("expert %s: dream failed", bot.id, exc_info=True)
         finally:
@@ -619,7 +597,6 @@ def begin_shutdown() -> list:
     the rest of the quit runs out of time. Returns the processes signalled; `shutdown` does the waiting."""
     with _GUARD:
         _STATE["closed"] = True
-        _STATE["gen"] += 1
         procs = list(_PROCS)
     for p in procs:
         _signal(p, signal.SIGTERM)
@@ -628,12 +605,11 @@ def begin_shutdown() -> list:
 
 def shutdown(budget_s: float = 4.0) -> None:
     """Close (no new side session or dream starts: `run` answers a CLOSED error row, `after_write` queues
-    nothing; a session admitted before stays refused after a `reopen`) and end every harness process a side
+    nothing) and end every harness process a side
     session still has (server shutdown), within `budget_s` all together: SIGTERM to all, one shared wait, then
     SIGKILL to what is left (the last `KILL_GRACE_S` of the budget, waited for together too)."""
     with _GUARD:
         _STATE["closed"] = True
-        _STATE["gen"] += 1
         procs = list(_PROCS)
     start = time.monotonic()
     budget_s = max(0.0, budget_s)

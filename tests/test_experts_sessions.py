@@ -680,33 +680,6 @@ def test_a_task_learn_cut_short_by_a_restart_after_its_edit_is_not_replayed(expe
 
 
 # ------------------------------------------------------- shutdown races ---
-def test_a_waiter_from_before_a_shutdown_stays_refused_after_a_reopen(expert, monkeypatch):
-    calls = stub(monkeypatch)
-    lock = store.write_lock(expert)
-    lock.acquire()  # a dream waits on its gate when shutdown begins
-    out = []
-    at_gate, take = threading.Event(), sessions._take
-
-    def taking(*a):  # the session has noted its generation by now: not a sleep that a slow machine outlasts
-        at_gate.set()
-        return take(*a)
-    monkeypatch.setattr(sessions, "_take", taking)
-    t = threading.Thread(target=lambda: out.append(sessions.run(expert, "dream", "x")))
-    t.start()
-    try:
-        assert at_gate.wait(5)
-        sessions.shutdown()
-        sessions.reopen()  # the server starts again before the waiter gets its gate
-    finally:
-        lock.release()
-    t.join(5)
-    try:
-        assert out[0]["status"] == "error" and out[0]["error"] == sessions.CLOSED and calls == []
-        assert sessions.run(expert, "dream", "y")["status"] == "done"  # admitted after the reopen: runs
-    finally:
-        sessions.reopen()
-
-
 class _PausedProc:
     """A harness process whose spawn (Popen) is paused until `go` is set."""
     entered, go, made = threading.Event(), threading.Event(), []
@@ -802,25 +775,6 @@ def test_a_cut_short_slice_records_only_what_it_was_given(expert, monkeypatch, t
     assert "USER| turn 3" in calls[-1]["prompt"] and "turn 1" not in calls[-1]["prompt"]
 
 
-def test_a_dream_queued_before_a_shutdown_is_refused_after_a_reopen(expert, monkeypatch):
-    """A dream carries the generation it was queued in: its thread starting only after a shutdown and a reopen
-    must not run, and an old session finishing after the reopen queues nothing."""
-    ran = []
-    monkeypatch.setattr(sessions, "harness", lambda bot, prompt, write: ran.append(1) or {"ok": True, "answer": "", "transcript": []})
-    sessions.reopen()
-    with sessions._GUARD:
-        old = sessions._STATE["gen"]
-    sessions.shutdown()
-    sessions.reopen()
-    row = sessions.dream(expert, old)
-    assert row["status"] == "error" and row["error"] == sessions.CLOSED and not ran
-    with open(store.memory_path(expert), "a", encoding="utf-8") as f:
-        f.write("- [1 · 2026-11-18] filler\n" * (sessions.LIMIT_LINES + 5))
-    assert sessions.over_limit(expert)
-    assert sessions.after_write(expert, old) is False       # a session from before the shutdown
-    assert sessions.dream(expert)["status"] == "done" and ran  # a new one runs
-
-
 def test_begin_shutdown_signals_without_waiting(monkeypatch):
     sent = []
 
@@ -837,49 +791,6 @@ def test_begin_shutdown_signals_without_waiting(monkeypatch):
         with sessions._GUARD:
             sessions._PROCS.discard(p)
         sessions.reopen()
-
-
-def test_a_queued_dream_and_an_in_flight_learn_do_not_survive_a_shutdown_and_reopen(expert, monkeypatch):
-    """The generation travels with the work itself: a dream whose thread was queued before a shutdown, and a
-    task-learn that was running across one, start nothing after the service reopens."""
-    calls, queued = [], []
-
-    class Held:  # a thread that is queued but not started until the test says so
-        def __init__(self, target=None, **kw):
-            self.target = target
-            queued.append(self)
-
-        def start(self):
-            pass
-    monkeypatch.setattr(sessions.threading, "Thread", Held)
-
-    def bloat():
-        with open(store.memory_path(expert), "a", encoding="utf-8") as f:
-            f.write("- [1 · 2026-11-18] filler\n" * (sessions.LIMIT_LINES + 5))
-
-    def harness(bot, prompt, write):
-        calls.append(prompt[:40])
-        if "learn" in prompt:           # the task-learn is in flight: memory goes over the limit, then a restart
-            bloat()
-            sessions.shutdown(0)
-            sessions.reopen()
-        return {"ok": True, "answer": "", "transcript": []}
-    monkeypatch.setattr(sessions, "harness", harness)
-    sessions.reopen()
-
-    # 1. An in-flight task-learn that ends after a shutdown and reopen queues no dream.
-    row = sessions.run(expert, "task-learn", "learn from this", {"session_id": "s1"})
-    assert row["status"] == "done" and sessions.over_limit(expert) and queued == []
-
-    # 2. A dream queued now, whose thread only runs after a shutdown and reopen, is refused.
-    assert sessions.after_write(expert) is True and len(queued) == 1
-    sessions.shutdown(0)
-    sessions.reopen()
-    before = len(calls)
-    queued[0].target()
-    assert len(calls) == before  # the harness never ran for it
-    dreams = [r for r in sessions.rows(expert) if r["kind"] == "dream"]
-    assert [r["status"] for r in dreams] == ["error"] and dreams[0]["error"] == sessions.CLOSED
 
 
 def test_prompts_name_the_granted_folders_by_their_real_paths(expert, tmp_path):

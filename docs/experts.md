@@ -111,12 +111,9 @@ row with status `error`.
   expert's folder. The prompt goes on stdin. `--no-session-persistence`: a side session is never resumed, and a
   transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s
   (`$FUSED_RENDER_EXPERT_TIMEOUT`), then the process group is killed.
-- **Shutdown** (`sessions.shutdown(budget_s)`): sets a closed flag and raises a generation counter under `_GUARD`,
-  then ends every live harness within ONE budget: SIGTERM to all, one shared wait, SIGKILL to what is left in the
+- **Shutdown** (`sessions.shutdown(budget_s)`): sets a closed flag under `_GUARD`, then ends every live harness within ONE budget: SIGTERM to all, one shared wait, SIGKILL to what is left in the
   last `KILL_GRACE_S` (1 s), waited for together (the bots `registry.shutdown` passes at most 5 s). Once closed, `run`
-  starts nothing (an `error` row, `error: sessions.CLOSED`) and `after_write` queues no dream. `scheduler.start`
-  reopens it, but a session admitted by `run` before a shutdown (the generation it noted) is still refused when it
-  gets its gate after the reopen. `harness` checks closed / generation, spawns and registers the process in
+  starts nothing (an `error` row, `error: sessions.CLOSED`) and `after_write` queues no dream. `harness` checks the flag, spawns and registers the process in
   `_PROCS` in one step under `_GUARD`, so a harness is either never spawned or tracked before `shutdown` takes its
   snapshot; one ended by a shutdown reports `CLOSED` (not a failed attempt, §9). What is left of the budget after
   the harnesses are gone is spent waiting for the sessions still between "harness ended" and "row saved"
