@@ -56,7 +56,6 @@ LIMIT_BYTES = 24 * 1024  # 200 lines of memory are often long ones
 TIMEOUT_S = 600.0
 ASK_PARALLEL = 3
 ASK_WAIT_S = 120
-LOCK_POLL_S = 2.0            # how often a writer waiting for the lock looks whether the chat waits on the user
 BUSY = "the expert is busy; try again in a minute"
 CLOSED = "the server is shutting down; no new expert session starts"
 ROWS_KEPT = 200
@@ -415,19 +414,6 @@ def diff(before: str, after: str) -> str:
                                         "memory.md (before)", "memory.md (after)", n=1))
 
 
-def _take(bot, gate, writes: bool) -> bool:
-    """Wait for a session's gate: an ask slot up to ASK_WAIT_S, the write lock up to the harness timeout. A writer
-    gives up at once while the chat that holds the lock waits on the user (an approval card, `waiting_on`): that
-    wait is as long as the user takes, and a task-learn pass waiting it out would hold up every other expert."""
-    if not writes:
-        return gate.acquire(timeout=ASK_WAIT_S)
-    end = time.monotonic() + TIMEOUT_S
-    while not gate.acquire(timeout=max(0.0, min(LOCK_POLL_S, end - time.monotonic()))):
-        if time.monotonic() >= end or (getattr(bot, "meta", None) or {}).get("waiting_on") is not None:
-            return False
-    return True
-
-
 def run(bot, kind: str, prompt: str, trigger=None) -> dict:
     """One side session, start to saved row. Never raises: a failure is a row with status `error`."""
     if kind not in KINDS:
@@ -435,11 +421,9 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
     rec = _new_row(kind, trigger)
     writes = kind in WRITERS
     gate = store.write_lock(bot) if writes else _ASKS
-    taken = not closed() and _take(bot, gate, writes)
-    if taken and closed():  # a shutdown came while it waited on the gate
-        gate.release()
-        taken = False
-    if not taken:
+    # An ask waits for a slot; a writer that finds the expert's memory held (a chat turn, another writer) is BUSY
+    # at once: the timer tries again on its next tick (learn.py).
+    if closed() or not (gate.acquire(blocking=False) if writes else gate.acquire(timeout=ASK_WAIT_S)):
         rec.update(status="error", ended=time.time(), error=CLOSED if closed() else BUSY)
         _save(bot, rec)
         return rec

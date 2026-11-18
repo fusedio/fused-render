@@ -95,12 +95,10 @@ note `memory.md`, call `harness`, note `memory.md` again, save the finished row.
 row with status `error`.
 
 - **The write lock** (`store.write_lock`, one per expert, in-process): task-learn, dream and every chat turn hold
-  it, so memory writers run one at a time. A side session waits for it up to the harness timeout (600 s), then
-  ends as an `error` row with `error: "the expert is busy; try again in a minute"` (`sessions.BUSY`). A chat turn
-  waits for it with "waiting for the expert's memory" and gives up only on Stop. A chat turn that waits on an
-  approval card (§6) keeps the lock for as long as the user takes; a side session that finds the lock held by
-  such a turn (`bot.meta["waiting_on"]` set, looked at every `LOCK_POLL_S` = 2 s) ends as BUSY at once
-  (`sessions._take`), so a task-learn pass is not held up for 600 s per due session.
+  it, so memory writers run one at a time. A side session that finds it held does not wait: it ends at once as an
+  `error` row with `error: "the expert is busy; try again in a minute"` (`sessions.BUSY`), and the timer's next
+  tick tries again (§9). A chat turn waits for it with "waiting for the expert's memory" and gives up only on
+  Stop.
 - **Asks** only read and take no lock: up to 3 run at once in the process (`ASK_PARALLEL`, shared by all
   experts); a fourth waits up to 120 s (`ASK_WAIT_S`) for a slot, then is a BUSY `error` row.
 - **The harness run** (`harness`): `claude -p --output-format stream-json --verbose --no-session-persistence`, the
@@ -109,7 +107,8 @@ row with status `error`.
   `--disable-slash-commands`) and the fence (§6, in the default permission mode, with the memory.md rule only for
   a writing kind and Bash and the scratch folder only for an ask: `fence(bot, write, run=not write)`). Working directory: the
   expert's folder. The prompt goes on stdin. `--no-session-persistence`: a side session is never resumed, and a
-  transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s (`TIMEOUT_S`), then the process group is killed.
+  transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s (`TIMEOUT_S`), then the process
+  group is killed.
 - **Shutdown** (`sessions.shutdown(budget_s)`): sets a closed flag under `_GUARD`, then ends every live harness within ONE budget: SIGTERM to all, one shared wait, SIGKILL to what is left in the
   last `KILL_GRACE_S` (1 s), waited for together (the bots `registry.shutdown` passes at most 5 s). Once closed, `run`
   starts nothing (an `error` row, `error: sessions.CLOSED`) and `after_write` queues no dream. `harness` checks the flag, spawns and registers the process in
@@ -430,7 +429,8 @@ about them beyond their descriptions, so it uses an expert only when the user as
 - Gemini and OpenCode get no expert tools.
 
 **Timeouts**: an ask waits for the server up to `EXPERT_TIMEOUT` = harness timeout (600 s) + 120 s (an ask slot)
-+ 30 s; the MCP per-call ceiling (`EXPERT_CALL_CEILING`, also Codex's `tool_timeout_sec`) sits 60 s above that, so the server's own error arrives instead of a socket timeout.
++ 30 s; the MCP per-call ceiling (`EXPERT_CALL_CEILING`, also Codex's `tool_timeout_sec`) sits 60 s above that, so the
+server's own error arrives instead of a socket timeout.
 
 ## 9. The task-learn trigger
 
@@ -481,7 +481,7 @@ ends `error` with a non-empty `memory_diff` (it changed memory before failing, e
 retry would see the same evidence beside the updated memory and raise counts twice). A failure that changed nothing
 is counted against the size it tried (`fails`), gives up the after-call wait (a running task grows every pass, so
 the size rule alone would retry forever; the idle pass or the next call tries again) and is retried next pass; after 3 failures (`MAX_FAILS`) at one size
-that session is no longer due until it grows again. A session that never started because the write lock stayed held
+that session is no longer due until it grows again. A session that never started because the write lock was held
 (`BUSY`) or the server was shutting down (`CLOSED`) is not an attempt.
 
 **Restart safety**: everything is on disk. A restart mid-wait or mid-session leaves `read.json` where it was (the

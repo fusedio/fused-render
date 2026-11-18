@@ -502,34 +502,22 @@ def test_three_failed_attempts_then_give_up_until_it_grows(expert, monkeypatch, 
     assert rec["size"] == os.path.getsize(transcript) and "fails" not in rec
 
 
-def test_a_busy_expert_does_not_use_up_the_pass(expert, monkeypatch, transcript):
-    """A task-learn refused at the gate (the expert's chat holds its memory) starts no harness: it takes none of
-    the pass's limit, and that expert's other due tasks are left for the next pass instead of being refused too."""
+def test_a_busy_expert_does_not_use_up_the_pass(expert, monkeypatch):
     stub(monkeypatch)
-    monkeypatch.setattr(sessions, "_timeout", lambda: 0.01)
-    for rid, sid in (("r1", "s1"), ("r2", "s2"), ("r3", "s3")):
-        monkeypatch.setattr(learn, "caller", lambda run_id, sid=sid: {"run_id": run_id, "session_id": sid,
-                                                                      "backend": "claude", "target": "/work"})
-        learn.record_use(expert, rid)
-        learn._resolve(expert)
+    sids = ("s1", "s2", "s3")
+    store.write_json(learn._path(expert), {"sessions": {s: {"run_ids": [], "size": 0, "lines": 0} for s in sids}})
     monkeypatch.setattr(learn, "_tasks", lambda: type("T", (), {"_collect": staticmethod(
-        lambda: {s: {"session_id": s} for s in ("s1", "s2", "s3")})})())
+        lambda: {s: {"session_id": s} for s in sids})})())
     monkeypatch.setattr(learn, "_session_of", lambda t, tasks: {
         "session_id": t["session_id"], "size": 10, "last_active": 0, "target": "/work", "backend": "claude"})
     monkeypatch.setattr(learn, "transcript_markdown", lambda session, since=0, bot=None: ("USER| hi", 1))
-    lock = store.write_lock(expert)
-    lock.acquire()
-    try:
-        assert learn.run_pass(limit=2) == {"sessions": 1, "errors": 1}  # one refusal, then the next expert
-    finally:
-        lock.release()
-    assert [r["error"] for r in sessions.rows(expert)] == [sessions.BUSY]
+    with store.write_lock(expert):  # a chat turn holds the memory: one refusal, the expert's other tasks wait
+        assert learn.run_pass(limit=2) == {"sessions": 1, "errors": 1}
     assert learn.run_pass(limit=2) == {"sessions": 2, "errors": 0}  # the limit counts harnesses started
 
 
 def test_a_busy_expert_is_not_a_failed_attempt(expert, monkeypatch, transcript):
     calls = stub(monkeypatch)
-    monkeypatch.setattr(sessions, "_timeout", lambda: 0.01)
     learn.record_use(expert, "r1")
     _age(transcript)
     lock = store.write_lock(expert)
@@ -594,19 +582,8 @@ def test_a_failed_task_learn_that_changed_memory_counts_as_read(expert, monkeypa
 def test_after_shutdown_no_session_or_dream_starts(expert, monkeypatch):
     from fused_render.experts import scheduler
     calls = stub(monkeypatch)
-    lock = store.write_lock(expert)
-    lock.acquire()  # a dream waiting on the gate when shutdown begins
-    out = []
-    t = threading.Thread(target=lambda: out.append(sessions.run(expert, "dream", "x")))
-    t.start()
+    sessions.shutdown()
     try:
-        time.sleep(0.2)
-        sessions.shutdown()
-    finally:
-        lock.release()
-    t.join(5)
-    try:
-        assert out[0]["status"] == "error" and out[0]["error"] == sessions.CLOSED
         row = sessions.run(expert, "ask", "q")
         assert row["status"] == "error" and row["error"] == sessions.CLOSED and calls == []
         with open(store.memory_path(expert), "w", encoding="utf-8") as f:
@@ -908,23 +885,6 @@ def test_how_to_run_is_stated_once_and_the_rest_is_the_skill(expert, tmp_path, m
     monkeypatch.delenv(__import__("fused_render.fusedcli", fromlist=["x"]).CLI_DIR_ENV)
     assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={})[0]
     assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={"session_id": "s"})[0]
-
-
-def test_a_writer_does_not_wait_out_a_chat_that_waits_on_the_user(expert, monkeypatch):
-    calls = stub(monkeypatch)
-    lock = store.write_lock(expert)
-    lock.acquire()  # a chat turn holds the memory ...
-    try:
-        monkeypatch.setitem(expert.meta, "waiting_on", 7)  # ... with an approval card up
-        monkeypatch.setattr(sessions, "LOCK_POLL_S", 0.05)
-        t0 = time.monotonic()
-        row = sessions.run(expert, "task-learn", "learn")
-        assert row["status"] == "error" and row["error"] == sessions.BUSY and calls == []
-        assert time.monotonic() - t0 < 5  # not the harness timeout (600 s)
-    finally:
-        lock.release()
-    expert.meta.pop("waiting_on", None)
-    assert sessions.run(expert, "task-learn", "learn")["status"] == "done"
 
 
 def test_a_session_that_ends_after_its_expert_was_deleted_writes_nothing(expert, monkeypatch):

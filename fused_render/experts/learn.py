@@ -387,8 +387,8 @@ def learn_one(bot, session: dict, rec: dict) -> dict | None:
         # read this slice: a retry would see the same evidence beside the updated memory and raise counts twice.
         _update(bot, sid, read)
     elif row.get("error") in (sessions.BUSY, sessions.CLOSED):
-        pass  # the write lock was held the whole wait (a long chat turn), or the server is shutting down: not an
-        # attempt, the next pass retries
+        pass  # the write lock was held (a chat turn), or the server is shutting down: not an attempt, the next
+        # pass retries
     else:
         def failed(r):
             f = r.get("fails") if isinstance(r.get("fails"), dict) else {}
