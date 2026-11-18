@@ -22,6 +22,7 @@ import {
   serialisePos,
   snapEdges,
   snapResize,
+  dockedBAxes,
   EDGE_SNAP_PX,
   viewportOf,
   wishSize,
@@ -260,20 +261,21 @@ describe("snapEdges: the edge magnet of a head drag (round 3, owner 2026-11-17)"
     // An edge nearer than the centre wins the pull.
     expect(snapEdges({ left: 603, top: 620 }, small, other, VIEW).pos.left).toBe(600);
   });
-  test("the app window's own edges and middle draw their guide, along the whole window (owner, 2026-11-18)", () => {
+  test("the app window draws no guide — not its edges, not its middle — and has no pull to its middle (owner, 2026-11-18)", () => {
+    // Flush with its edges still (the ruling of 2026-11-17), silently.
     const left = snapEdges({ left: 9, top: 300 }, size, null, VIEW);
-    expect(left.x).toEqual([{ x: 0, top: 0, bottom: VIEW.height }]);
-    // The far edges: the line is drawn on the window's last pixel, not past it.
-    const right = snapEdges({ left: 991, top: 300 }, size, null, VIEW);
+    expect(left.pos.left).toBe(0);
+    expect(left).toMatchObject({ x: [], y: [] });
+    const right = snapEdges({ left: 991, top: 300 }, size, other, VIEW);
     expect(right.pos.left).toBe(VIEW.width - size.width);
-    expect(right.x).toEqual([{ x: VIEW.width - 1, top: 0, bottom: VIEW.height }]);
-    const bottom = snapEdges({ left: 300, top: 595 }, size, null, VIEW);
-    expect(bottom.y).toEqual([{ y: VIEW.height - 1, left: 0, right: VIEW.width }]);
-    // The middle of the window: (1400 − 400) / 2 = 500, (900 − 300) / 2 = 300.
-    const mid = snapEdges({ left: 507, top: 294 }, size, null, VIEW);
-    expect(mid.pos).toEqual({ left: 500, top: 300 });
-    expect(mid.x).toEqual([{ x: 700, top: 0, bottom: VIEW.height }]);
-    expect(mid.y).toEqual([{ y: 450, left: 0, right: VIEW.width }]);
+    expect(right.x).toEqual([{ x: 1000, top: 100, bottom: 600 }]);
+    const bottom = snapEdges({ left: 100, top: 595 }, size, null, VIEW);
+    expect(bottom.pos.top).toBe(600);
+    expect(bottom.y).toEqual([]);
+    // The middle of the window ((1400 − 400) / 2 = 500, (900 − 300) / 2 =
+    // 300): 7px off it, the box stays where the drag put it.
+    const mid = snapEdges({ left: 507, top: 293 }, size, null, VIEW);
+    expect(mid).toEqual({ pos: { left: 507, top: 293 }, x: [], y: [] });
   });
   test("the other card's edge standing on the app window's far edge is drawn inside it", () => {
     // The other card flush with the window's bottom: bottom↔bottom at y 900.
@@ -281,12 +283,6 @@ describe("snapEdges: the edge magnet of a head drag (round 3, owner 2026-11-17)"
     const s = snapEdges({ left: 100, top: 596 }, size, low, VIEW);
     expect(s.pos.top).toBe(600);
     expect(s.y).toEqual([{ y: VIEW.height - 1, left: 100, right: 1000 }]);
-  });
-  test("a card as long as the app window draws no window line on that axis (the clamp holds it there)", () => {
-    const tall = { width: 400, height: VIEW.height };
-    const s = snapEdges({ left: 300, top: 0 }, tall, null, VIEW);
-    expect(s.pos).toEqual({ left: 300, top: 0 });
-    expect(s.y).toEqual([]);
   });
   test("a line the drag put the box on itself is drawn too, with no pull", () => {
     const s = snapEdges({ left: 600, top: 560 }, { width: 300, height: 300 }, other, VIEW);
@@ -298,8 +294,8 @@ describe("snapEdges: the edge magnet of a head drag (round 3, owner 2026-11-17)"
     const off = { left: -6, top: 100, width: 300, height: 300 };
     const s = snapEdges({ left: 4, top: 560 }, size, off, VIEW);
     expect(s.pos.left).toBe(0);
-    // The line it stands on is the app window's, not the card's.
-    expect(s.x).toEqual([{ x: 0, top: 0, bottom: VIEW.height }]);
+    // The line it stands on is the app window's, not the card's: no guide.
+    expect(s.x).toEqual([]);
     // A viewport nobody knows (a test shim) snaps to the other card alone.
     const open = { width: Infinity, height: Infinity };
     expect(snapEdges({ left: 4, top: 560 }, size, null, open)).toEqual({ pos: { left: 4, top: 560 }, x: [], y: [] });
@@ -343,10 +339,33 @@ describe("snapResize: a resize's magnet on the edge its grip holds (owner, 2026-
     const r = snapResize("b", 0, 10, (dx, dy) => floatResize("b", level, dx, dy, VIEW, LIMITS), other, VIEW);
     expect(r.x).toEqual([]);
   });
-  test("the app window's edge: flush with it draws its line", () => {
-    const r = snapResize("l", -95, 0, float("l"), null, VIEW);
-    expect(r.box.left).toBe(0);
-    expect(r.x).toEqual([{ x: 0, top: 0, bottom: VIEW.height }]);
+  test("the other card's MIDDLE is a line for the held edge too (owner, 2026-11-18: \"for end but not for middle\")", () => {
+    // The other's middle across: x 800. The right edge at 500 + 293 = 793.
+    const wide = { ...start, width: 300 };
+    const r = snapResize("r", 393, 0, (dx, dy) => floatResize("r", wide, dx, dy, VIEW, LIMITS), other, VIEW);
+    expect(r.box).toEqual({ left: 100, top: 550, width: 700, height: 300 });
+    expect(r.x).toEqual([{ x: 800, top: 100, bottom: 850 }]);
+    // …and down: its middle at y 300. A top grip from 550 up to 305.
+    const t = snapResize("t", 0, -245, float("t"), other, VIEW);
+    expect(t.box.top).toBe(300);
+    expect(t.y).toEqual([{ y: 300, left: 100, right: 1000 }]);
+  });
+  test("…and this card's own middle meets the other's: the held edge stops there", () => {
+    // A card 700..(grip) across, the other's middle at 800: centred on it
+    // when the right edge stands at 900. The edge at 894 is 6px short.
+    const beside = { left: 700, top: 550, width: 100, height: 300 };
+    const lim = { minWidth: 100, minHeight: 240, maxWidth: 722 };
+    const r = snapResize("r", 94, 0, (dx, dy) => floatResize("r", beside, dx, dy, VIEW, lim), other, VIEW);
+    expect(r.box).toEqual({ left: 700, top: 550, width: 200, height: 300 });
+    expect(r.x).toEqual([{ x: 800, top: 100, bottom: 850 }]);
+  });
+  test("the app window is no line for a resize: flush with its edge draws nothing, and nothing pulls to it", () => {
+    const flush = snapResize("l", -100, 0, float("l"), null, VIEW);
+    expect(flush.box.left).toBe(0);
+    expect(flush).toMatchObject({ x: [], y: [] });
+    // 5px short of the window's left edge, the other card far away: no pull.
+    const far = { left: 1200, top: 100, width: 150, height: 100 };
+    expect(snapResize("l", -95, 0, float("l"), far, VIEW).box.left).toBe(5);
   });
   test("a snap the chassis' clamps refuse does not happen, and draws nothing", () => {
     // The other card's left edge 6px past the widest this card may be.
@@ -356,13 +375,14 @@ describe("snapResize: a resize's magnet on the edge its grip holds (owner, 2026-
     expect(r.x).toEqual([]);
   });
   test("a nearer line the clamps refuse does not hide the next one in reach", () => {
-    // The widest this card may be puts its right edge at 100 + 722 = 822.
-    // A slim other card: edges at 816 and 824. The held edge at 821 is 3px
-    // from 824 — past the maximum, refused — and 5px from 816: taken.
-    const slim = { left: 816, top: 100, width: 8, height: 400 };
-    const r = snapResize("r", 321, 0, float("r"), slim, VIEW);
-    expect(r.box.width).toBe(716);
-    expect(r.x).toEqual([{ x: 816, top: 100, bottom: 850 }]);
+    // The widest this card may be puts its right edge at 100 + 722 = 822,
+    // where the drag has it. A slim other card: edges at 814 and 824, its
+    // middle at 819. 824 is 2px on — past the maximum, refused — and the
+    // middle 3px back: taken.
+    const slim = { left: 814, top: 100, width: 10, height: 400 };
+    const r = snapResize("r", 322, 0, float("r"), slim, VIEW);
+    expect(r.box.width).toBe(719);
+    expect(r.x).toEqual([{ x: 819, top: 100, bottom: 850 }]);
   });
   test("the docked drag is one more chassis: the width magnet is its left↔left case", () => {
     // Two cards in the rail's column, right edges level at 1000.
@@ -371,5 +391,38 @@ describe("snapResize: a resize's magnet on the edge its grip holds (owner, 2026-
     const r = snapResize("l", 4, 0, (dx, dy) => dragResize("l", docked, dx, dy, row), other, VIEW);
     expect(r.box).toEqual({ left: 600, top: 550, width: 400, height: 300 });
     expect(r.x).toEqual([{ x: 600, top: 100, bottom: 850 }]);
+  });
+  test("a drag the clamps hold back still takes a stop the pointer is near", () => {
+    // A left grip pushed right past the minimum width (280): the left edge
+    // stands at 220 however far the pointer goes. The other card's left
+    // edge at 216 is 4px back from where the POINTER asks (dx 120 → 220),
+    // and reachable (width 284).
+    const near = { left: 216, top: 100, width: 300, height: 300 };
+    const r = snapResize("l", 124, 0, float("l"), near, VIEW);
+    expect(r.box).toEqual({ left: 216, top: 550, width: 284, height: 300 });
+    expect(r.x).toEqual([{ x: 216, top: 100, bottom: 850 }]);
+  });
+  test("an axis switched off takes no pull and draws nothing", () => {
+    const r = snapResize("tr", 95, -45, float("tr"), other, VIEW, undefined, { x: true, y: false });
+    expect(r.box).toEqual({ left: 100, top: 505, width: 500, height: 345 });
+    expect(r.x).toHaveLength(1);
+    expect(r.y).toEqual([]);
+  });
+});
+
+describe("dockedBAxes: where a docked window A holds still for window B's resize", () => {
+  const mine = { left: 600, top: 500, width: 400, height: 300 };
+  test("window A floating, or this card floating: both axes", () => {
+    expect(dockedBAxes({ floating: false, aFloats: true, mine, other: null })).toEqual({ x: true, y: true });
+    expect(dockedBAxes({ floating: true, aFloats: false, mine, other: null })).toEqual({ x: true, y: true });
+  });
+  test("both docked, stacked in the rail's column (right edges level): the x axis alone", () => {
+    const above = { left: 520, top: 40, width: 480, height: 400 };
+    expect(dockedBAxes({ floating: false, aFloats: false, mine, other: above })).toEqual({ x: true, y: false });
+  });
+  test("both docked, window A beside this card, or no window A: none", () => {
+    const beside = { left: 180, top: 40, width: 412, height: 400 };
+    expect(dockedBAxes({ floating: false, aFloats: false, mine, other: beside })).toBeNull();
+    expect(dockedBAxes({ floating: false, aFloats: false, mine, other: null })).toBeNull();
   });
 });

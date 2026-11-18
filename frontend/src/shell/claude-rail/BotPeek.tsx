@@ -81,8 +81,10 @@ import {
   RAIL_HEAD_SELECTOR,
   floatPlacement,
   floatResize,
+  dockedBAxes,
   isDockEdge,
   snapResize,
+  type ResizeAxes,
   viewportOf,
   wishSize,
   type MoveEdge,
@@ -270,8 +272,9 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     /** Window A's card as it stood at the press, for the held edge's magnet
      *  (rail-move-lib `snapResize`) — read once; null: no magnet. */
     other: Box | null;
-    /** The edge magnet applies: else the docked width magnet alone. */
-    magnet: boolean;
+    /** The axes the edge magnet works on; null: none (the pin off: the
+     *  docked width magnet alone). */
+    magnet: ResizeAxes | null;
   } | null>(null);
   const dragLast = useRef<Box | null>(null);
   const onGripDown = (corner: MoveEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -284,6 +287,11 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     // Floating: the viewport's bottom.
     const floor = !floating && railEl ? railEl.getBoundingClientRect().bottom : undefined;
     const cap = pinCtl?.pinned ? undefined : favMaxHeight(window.innerHeight);
+    // THE EDGE MAGNET (rail-move-lib `snapResize`; RailPeek's rule), with
+    // the pin: on the axes window A holds still on (`dockedBAxes`), against
+    // its card as it stood at the press, read once.
+    const otherBox = pinCtl ? windowBox("a") : null;
+    const magnet = pinCtl ? dockedBAxes({ floating, aFloats: windowPos("a") !== null, mine: box, other: otherBox }) : null;
     dragStart.current = {
       x: e.clientX,
       y: e.clientY,
@@ -294,12 +302,8 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
       floating,
       floor,
       cap,
-      // THE EDGE MAGNET (rail-move-lib `snapResize`; RailPeek's rule): with
-      // the pin, for a floating card, and for the docked one only while
-      // window A floats — a docked window A moves as this card is resized.
-      // Its card as it stood at the press, read once.
-      other: pinCtl && (floating || windowPos("a") !== null) ? windowBox("a") : null,
-      magnet: !!pinCtl && (floating || windowPos("a") !== null),
+      other: magnet ? otherBox : null,
+      magnet,
     };
     dragLast.current = null;
     setResizing(corner);
@@ -327,8 +331,8 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     const dock = start.corner;
     let next: Box;
     if (start.magnet) {
-      // WITH THE PIN, WINDOW A FLOATING: the held edge's magnet on either
-      // axis (`snapResize`) — the width magnet is its left↔left case.
+      // WITH THE PIN: the held edge's magnet on the axes window A holds
+      // still on (`snapResize`) — the width magnet is its left↔left case.
       const pulled = snapResize(
         dock,
         dx,
@@ -336,6 +340,8 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
         (x, y) => dragResize(dock, start.box, x, y, bounds, start.floor, start.cap),
         start.other,
         viewportOf(window),
+        undefined,
+        start.magnet,
       );
       setSnapGuides(pulled.x, pulled.y);
       next = pulled.box;

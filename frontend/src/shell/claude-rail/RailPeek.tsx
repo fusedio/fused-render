@@ -203,8 +203,11 @@ import {
   RAIL_HEAD_SELECTOR,
   floatPlacement,
   floatResize,
+  BOTH_AXES,
+  dockedBAxes,
   isDockEdge,
   snapResize,
+  type ResizeAxes,
   viewportOf,
   wishSize,
   type MoveEdge,
@@ -675,8 +678,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
      *  docked window A re-places itself from window B's box, and a target
      *  read per move would run from the edge nearing it. */
     other: Box | null;
-    /** The edge magnet applies (below): else the docked width magnet alone. */
-    magnet: boolean;
+    /** The axes the edge magnet works on (below); null: none — the docked
+     *  width magnet alone, with the pin off. */
+    magnet: ResizeAxes | null;
   } | null>(null);
   // The box the last move asked for — what the release saves. A ref, not
   // `box`: the move's state write may not have committed when the pointer
@@ -699,12 +703,15 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // is PINNED, which has no height limit but its room (owner, 2026-11-17).
     const cap = resizeKey === "canvasRailFav" && !pinCtl?.pinned ? favMaxHeight(window.innerHeight) : undefined;
     const otherWin = moveWin === "a" ? "b" : "a";
-    // THE EDGE MAGNET (rail-move-lib `snapResize`), with the pin: always for
-    // a floating card and for window A's; for window B's DOCKED card only
-    // while window A floats — a docked window A stands clear of window B's
-    // box (`avoid`) and moves as this one is resized, so its edges are no
-    // lines to stand on (the width magnet below is what holds there).
-    const magnet = !!pinCtl && (floating || moveWin === "a" || windowPos("a") !== null);
+    // THE EDGE MAGNET (rail-move-lib `snapResize`), with the pin: both axes
+    // for window A's card (window B never moves for it); for window B's, the
+    // axes window A holds still on (`dockedBAxes`).
+    const otherBox = pinCtl ? windowBox(otherWin) : null;
+    const magnet = !pinCtl
+      ? null
+      : moveWin === "a"
+        ? BOTH_AXES
+        : dockedBAxes({ floating, aFloats: windowPos("a") !== null, mine: box, other: otherBox });
     dragStart.current = {
       x: e.clientX,
       y: e.clientY,
@@ -715,7 +722,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       floating,
       floor,
       cap,
-      other: magnet ? windowBox(otherWin) : null,
+      other: magnet ? otherBox : null,
       magnet,
     };
     dragLast.current = null;
@@ -764,6 +771,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         (x, y) => dragResize(dock, start.box, x, y, bounds, start.floor, start.cap),
         otherCard,
         viewportOf(window),
+        undefined,
+        start.magnet,
       );
       setSnapGuides(pulled.x, pulled.y);
       next = pulled.box;

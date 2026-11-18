@@ -215,18 +215,22 @@ export function floatResize(edge: MoveEdge, start: Box, dx: number, dy: number, 
  *  the app window's edges, with the dashed guide. Neither window is resized
  *  by it"). The width magnet's reach (rail-peek-lib SNAP_PX).
  *
- *  …AND THE GUIDES EVERYWHERE (owner, 2026-11-18: "guidelines are not on top
- *  and bottom and in left and right and in middle — it should work all the
- *  time … for both windows … top bottom left right middle everywhere"):
+ *  …AND THE GUIDES BETWEEN THE TWO WINDOWS, EVERYWHERE (owner, 2026-11-18:
+ *  "guidelines are not on top and bottom and in left and right and in middle
+ *  — it should work all the time … for both windows"; and, of a build that
+ *  also drew the app window's own edges and middle: "why do we have the
+ *  whole page left right middle top, I didn't ask for that, I asked for both
+ *  pin windows"):
  *    - the MIDDLE is a line too: the dragged box's centre takes the other
- *      card's centre, or the app window's, on either axis;
- *    - the app window's own edges and centre draw their guide (they drew
- *      none), along the whole window;
+ *      card's centre, on either axis;
  *    - every line the box ends up on is drawn, not only the one that pulled
  *      it (two cards of one width share a left AND a right edge);
  *    - a line that would fall past the app window is drawn just inside it;
- *    - a RESIZE has the same magnet on the edge its grip holds
- *      (`snapResize`), floating or docked. */
+ *    - a RESIZE has the magnet on the edge its grip holds (`snapResize`),
+ *      floating or docked: the other card's two edges AND its middle.
+ *  THE APP WINDOW DRAWS NO GUIDE, edge or middle: a head drag still lands
+ *  flush with its edges (the ruling of 2026-11-17), silently, and has no
+ *  pull to its middle; a resize has no pull to it at all. */
 export const EDGE_SNAP_PX = 12;
 
 /** A guide along a snapped edge: a vertical line at `x` from `top` to
@@ -249,112 +253,99 @@ interface Span {
   len: number;
 }
 
-/** A line the dragged box may stand on, on one axis: `at` its coordinate,
- *  `mid` a centre line (met by the box's centre, never by an edge), `view`
- *  the app window's own (else the other card's). */
+/** A line of the OTHER CARD the dragged box may stand on, on one axis: `at`
+ *  its coordinate, `mid` its centre line (else one of its two edges). */
 interface AxisLine {
   at: number;
   mid: boolean;
-  view: boolean;
 }
 
-/** The lines of one axis: the other card's two edges and its centre, then the
- *  app window's (when its size is known, and — for a move — only while the
- *  box has room to travel on this axis: a card as long as the window is held
- *  against both edges by the clamp, and would draw a line on every drag). */
-function axisLines(other: Span | null, view: number, viewOn: boolean): AxisLine[] {
-  const lines: AxisLine[] = [];
-  if (other) {
-    lines.push({ at: other.lo, mid: false, view: false });
-    lines.push({ at: other.lo + other.len, mid: false, view: false });
-    lines.push({ at: other.lo + other.len / 2, mid: true, view: false });
-  }
-  if (viewOn && Number.isFinite(view)) {
-    lines.push({ at: 0, mid: false, view: true });
-    lines.push({ at: view, mid: false, view: true });
-    lines.push({ at: view / 2, mid: true, view: true });
-  }
-  return lines;
+/** The other card's lines on one axis: its two edges, then its middle. */
+function cardLines(other: Span | null): AxisLine[] {
+  if (!other) return [];
+  return [
+    { at: other.lo, mid: false },
+    { at: other.lo + other.len, mid: false },
+    { at: other.lo + other.len / 2, mid: true },
+  ];
 }
 
 /** Two coordinates that draw on the same pixel (a centre may sit on a half). */
 const LEVEL = 0.5;
 
 /** One axis of the MOVE magnet: the dragged box's edges (`lo`, `lo + len`)
- *  against the edge lines, its centre against the centre lines. The nearest
- *  within `px` wins — the other card's before the app window's on a tie, an
- *  edge before a centre. Null: nothing in reach. */
-function snapAxis(lo: number, len: number, lines: AxisLine[], px: number): number | null {
+ *  against the other card's edges, its centre against the other card's
+ *  centre, and its edges against the app window's (`view`, when known — a
+ *  pull with no guide). The nearest within `px` wins — the other card's
+ *  before the app window's on a tie, an edge before a centre. Null: nothing
+ *  in reach. */
+function snapAxis(lo: number, len: number, lines: AxisLine[], view: number, px: number): number | null {
+  const deltas: number[] = [];
+  for (const l of lines) for (const mine of l.mid ? [lo + len / 2] : [lo, lo + len]) deltas.push(l.at - mine);
+  if (Number.isFinite(view)) deltas.push(0 - lo, view - (lo + len));
   let best: number | null = null;
-  for (const l of lines) {
-    for (const mine of l.mid ? [lo + len / 2] : [lo, lo + len]) {
-      const delta = l.at - mine;
-      if (Math.abs(delta) > px) continue;
-      if (best === null || Math.abs(delta) < Math.abs(best)) best = delta;
-    }
+  for (const d of deltas) {
+    if (Math.abs(d) > px) continue;
+    if (best === null || Math.abs(d) < Math.abs(best)) best = d;
   }
   return best === null ? null : lo + best;
 }
 
 /** THE LINES A BOX STANDS ON, on one axis, once placed: every edge line one
- *  of its `edges` meets and every centre line its centre meets. A centre line
- *  is left out when an edge line of the same owner is met too (two cards of
- *  one size: the two shared edges say it, the middle would be a third line
- *  for the same fact). Each line once, the other card's first. */
-function metLines(lo: number, len: number, lines: AxisLine[], edges: number[], centre: boolean): AxisLine[] {
+ *  of its `edges` meets — the other card's middle too where `edgeOnMid` (a
+ *  resize: the held edge may stop on it) — and the middle its own centre
+ *  meets. That centre-to-centre line is left out when an edge line is met
+ *  too (two cards of one size: the two shared edges say it, the middle would
+ *  be a third line for the same fact). Each line once. */
+function metLines(lo: number, len: number, lines: AxisLine[], edges: number[], edgeOnMid: boolean): AxisLine[] {
   const met: AxisLine[] = [];
   const has = (l: AxisLine) => met.some((m) => Math.abs(m.at - l.at) <= LEVEL);
   for (const l of lines) {
-    if (l.mid) continue;
+    if (l.mid && !edgeOnMid) continue;
     if (edges.some((e) => Math.abs(e - l.at) <= LEVEL) && !has(l)) met.push(l);
   }
-  if (!centre) return met;
+  const shared = met.some((m) => !m.mid);
   for (const l of lines) {
-    if (!l.mid || Math.abs(lo + len / 2 - l.at) > LEVEL) continue;
-    if (met.some((m) => !m.mid && m.view === l.view) || has(l)) continue;
-    met.push(l);
+    if (!l.mid || shared || has(l)) continue;
+    if (Math.abs(lo + len / 2 - l.at) <= LEVEL) met.push(l);
   }
   return met;
 }
 
 /** Where a line is DRAWN: on its pixel, and just inside the app window when
- *  it is the window's far edge (or the other card's edge standing on it) — a
- *  1px line at `view` is past the last pixel. */
+ *  the other card's edge stands on the window's far edge — a 1px line at
+ *  `view` is past the last pixel. */
 function drawnAt(at: number, view: number): number {
   const px = Math.round(at);
   return Number.isFinite(view) ? Math.max(0, Math.min(px, view - 1)) : px;
 }
 
-/** A line's reach across the other axis: over both cards for the other
- *  card's line, the whole app window for the window's own. */
-function reach(l: AxisLine, mine: Span, other: Span | null, view: number): { lo: number; hi: number } {
-  if (l.view && Number.isFinite(view)) return { lo: 0, hi: view };
-  if (!other) return { lo: mine.lo, hi: mine.lo + mine.len };
-  return { lo: Math.min(mine.lo, other.lo), hi: Math.max(mine.lo + mine.len, other.lo + other.len) };
-}
-
-/** The guides for a box as it stands (`box`), given the lines of both axes
- *  and which of its edges count on each (a move: both and the centre; a
- *  resize: the one edge the grip holds). */
+/** The guides for a box as it stands (`box`) beside the other card: the
+ *  lines of both axes it is on, each run over both cards. `x` / `y`: which
+ *  of its edges count on that axis (a move: both; a resize: the one the grip
+ *  holds, which may stop on the other card's middle too). */
 function guidesFor(
   box: Box,
   other: Box | null,
   viewport: Size,
-  x: { lines: AxisLine[]; edges: number[]; centre: boolean },
-  y: { lines: AxisLine[]; edges: number[]; centre: boolean },
+  x: { edges: number[]; edgeOnMid: boolean },
+  y: { edges: number[]; edgeOnMid: boolean },
 ): { x: EdgeGuideX[]; y: EdgeGuideY[] } {
-  const mineX: Span = { lo: box.left, len: box.width };
-  const mineY: Span = { lo: box.top, len: box.height };
-  const otherX: Span | null = other ? { lo: other.left, len: other.width } : null;
-  const otherY: Span | null = other ? { lo: other.top, len: other.height } : null;
-  const xs = metLines(box.left, box.width, x.lines, x.edges, x.centre).map((l) => {
-    const r = reach(l, mineY, otherY, viewport.height);
-    return { x: drawnAt(l.at, viewport.width), top: r.lo, bottom: r.hi };
-  });
-  const ys = metLines(box.top, box.height, y.lines, y.edges, y.centre).map((l) => {
-    const r = reach(l, mineX, otherX, viewport.width);
-    return { y: drawnAt(l.at, viewport.height), left: r.lo, right: r.hi };
-  });
+  if (!other) return { x: [], y: [] };
+  const top = Math.min(box.top, other.top);
+  const bottom = Math.max(box.top + box.height, other.top + other.height);
+  const left = Math.min(box.left, other.left);
+  const right = Math.max(box.left + box.width, other.left + other.width);
+  const xs = metLines(box.left, box.width, cardLines({ lo: other.left, len: other.width }), x.edges, x.edgeOnMid).map((l) => ({
+    x: drawnAt(l.at, viewport.width),
+    top,
+    bottom,
+  }));
+  const ys = metLines(box.top, box.height, cardLines({ lo: other.top, len: other.height }), y.edges, y.edgeOnMid).map((l) => ({
+    y: drawnAt(l.at, viewport.height),
+    left,
+    right,
+  }));
   return { x: xs, y: ys };
 }
 
@@ -363,10 +354,11 @@ function guidesFor(
  *  the other window's card while it is up (docked or floating; null: none).
  *  Each axis on its own: within `px`, the nearest of left↔left, left↔right,
  *  right↔left, right↔right, centre↔centre (and top / bottom / middle the
- *  same) — against the other card or the app window — wins, and the box
- *  moves onto it. The result is clamped to the viewport again. `x` / `y`:
- *  every line the box now stands on (none: no guide), whether the magnet
- *  pulled it there or the drag put it there itself. */
+ *  same) against the other card — or an edge of the app window — wins, and
+ *  the box moves onto it. The result is clamped to the viewport again.
+ *  `x` / `y`: every line of the OTHER CARD the box now stands on (none: no
+ *  guide), whether the magnet pulled it there or the drag put it there
+ *  itself. The app window's own edge draws none. */
 export function snapEdges(
   pos: Pos,
   size: Size,
@@ -374,30 +366,56 @@ export function snapEdges(
   viewport: Size,
   px = EDGE_SNAP_PX,
 ): { pos: Pos; x: EdgeGuideX[]; y: EdgeGuideY[] } {
-  const xLines = axisLines(other ? { lo: other.left, len: other.width } : null, viewport.width, size.width < viewport.width);
-  const yLines = axisLines(other ? { lo: other.top, len: other.height } : null, viewport.height, size.height < viewport.height);
-  const sx = snapAxis(pos.left, size.width, xLines, px);
-  const sy = snapAxis(pos.top, size.height, yLines, px);
+  const sx = snapAxis(pos.left, size.width, cardLines(other ? { lo: other.left, len: other.width } : null), viewport.width, px);
+  const sy = snapAxis(pos.top, size.height, cardLines(other ? { lo: other.top, len: other.height } : null), viewport.height, px);
   const at = clampPos({ left: sx ?? pos.left, top: sy ?? pos.top }, size, viewport);
   const box = { left: at.left, top: at.top, width: size.width, height: size.height };
   const g = guidesFor(
     box,
     other,
     viewport,
-    { lines: xLines, edges: [box.left, box.left + box.width], centre: true },
-    { lines: yLines, edges: [box.top, box.top + box.height], centre: true },
+    { edges: [box.left, box.left + box.width], edgeOnMid: false },
+    { edges: [box.top, box.top + box.height], edgeOnMid: false },
   );
   return { pos: at, x: g.x, y: g.y };
 }
 
-/** A RESIZE'S MAGNET (owner, 2026-11-18: the guides "everywhere"): the edge
- *  the grip holds takes an edge of the other card, or of the app window,
- *  within `px` — each axis on its own, a corner grip both. `resize(dx, dy)`
- *  is the chassis' own drag (rail-peek-lib `dragResize`, `floatResize`) with
- *  every clamp it has; the magnet only ever asks it for a little more or
- *  less travel, so a snap the clamps refuse (a minimum, the row, the gap
- *  over window B) does not happen and draws nothing. The guides: every edge
- *  line the held edge ends up on.
+/** The axes a resize's magnet works on. */
+export interface ResizeAxes {
+  x: boolean;
+  y: boolean;
+}
+export const BOTH_AXES: ResizeAxes = { x: true, y: true };
+
+/** WHICH AXES A DOCKED WINDOW B'S RESIZE MAY SNAP ON (RailPeek's favourite
+ *  card, BotPeek). Window A, docked, stands clear of window B's box and
+ *  re-places itself as window B is resized — so its lines are only lines to
+ *  stand on where they hold still:
+ *    - window A FLOATS (or this card does): both axes — nothing moves it;
+ *    - both docked, STACKED in the rail's column (right edges level): the x
+ *      axis — window A keeps its left edge, its right edge and its middle
+ *      whatever window B's width, while its top and bottom give way to
+ *      window B's height;
+ *    - both docked, window A BESIDE window B: none — its right edge follows
+ *      window B's left one, and the magnet would chase it. */
+export function dockedBAxes(o: { floating: boolean; aFloats: boolean; mine: Box; other: Box | null }): ResizeAxes | null {
+  if (o.floating || o.aFloats) return BOTH_AXES;
+  if (!o.other) return null;
+  const level = Math.abs(o.other.left + o.other.width - (o.mine.left + o.mine.width)) <= 2;
+  return level ? { x: true, y: false } : null;
+}
+
+/** A RESIZE'S MAGNET (owner, 2026-11-18: the guides between the two windows
+ *  "everywhere"; then, of a resize that took the other card's edges only:
+ *  "it does for end but not for middle"): within `px` the edge the grip
+ *  holds takes a line of the other card — one of its two edges, or its
+ *  MIDDLE — or stops where this card's own middle meets the other's; each
+ *  axis on its own, a corner grip both. `resize(dx, dy)` is the chassis' own
+ *  drag (rail-peek-lib `dragResize`, `floatResize`) with every clamp it has;
+ *  the magnet only ever asks it for a little more or less travel, so a snap
+ *  the clamps refuse (a minimum, the row, the gap over window B) does not
+ *  happen and draws nothing. The guides: every line of the other card the
+ *  held edge — or this card's middle — ends up on.
  *
  *  `other` IS THE CARD AS IT STOOD WHEN THE GRIP WENT DOWN — the caller reads
  *  it once, at the press, never per move: a docked window A re-places itself
@@ -411,38 +429,60 @@ export function snapResize(
   other: Box | null,
   viewport: Size,
   px = EDGE_SNAP_PX,
+  /** Which axes the magnet works on (`ResizeAxes`): both, unless the caller
+   *  knows the other card moves along one as this one is resized. */
+  axes: ResizeAxes = BOTH_AXES,
 ): { box: Box; x: EdgeGuideX[]; y: EdgeGuideY[] } {
-  const xGrip = edge === "l" || edge === "tl" || edge === "bl" ? "lo" : edge === "r" || edge === "tr" || edge === "br" ? "hi" : null;
-  const yGrip = edge === "t" || edge === "tl" || edge === "tr" ? "lo" : edge === "b" || edge === "bl" || edge === "br" ? "hi" : null;
-  const xLines = axisLines(other ? { lo: other.left, len: other.width } : null, viewport.width, true).filter((l) => !l.mid);
-  const yLines = axisLines(other ? { lo: other.top, len: other.height } : null, viewport.height, true).filter((l) => !l.mid);
+  const xHeld = edge === "l" || edge === "tl" || edge === "bl" ? "lo" : edge === "r" || edge === "tr" || edge === "br" ? "hi" : null;
+  const yHeld = edge === "t" || edge === "tl" || edge === "tr" ? "lo" : edge === "b" || edge === "bl" || edge === "br" ? "hi" : null;
+  const xGrip = axes.x ? xHeld : null;
+  const yGrip = axes.y ? yHeld : null;
+  const asked = resize(dx, dy);
+  if (!other) return { box: asked, x: [], y: [] };
+  const xLines = cardLines({ lo: other.left, len: other.width });
+  const yLines = cardLines({ lo: other.top, len: other.height });
   const heldX = (b: Box) => (xGrip === "lo" ? b.left : b.left + b.width);
   const heldY = (b: Box) => (yGrip === "lo" ? b.top : b.top + b.height);
-  const asked = resize(dx, dy);
-  // The nearest line to the held edge the chassis' clamps let it reach, as
-  // extra travel: a nearer one they refuse does not hide the next in reach.
-  const pull = (held: number, lines: AxisLine[], at: (extra: number) => number): number => {
-    const deltas = lines
-      .map((l) => l.at - held)
-      .filter((d) => Math.abs(d) <= px)
-      .sort((a, b) => Math.abs(a) - Math.abs(b));
-    for (const d of deltas) {
-      if (d === 0) return 0;
-      if (Math.abs(at(d) - (held + d)) <= LEVEL) return d;
-    }
-    return 0;
+  // Where the held edge may stop: on each line of the other card, and where
+  // this card's middle meets the other's (`still` is the edge the grip does
+  // not hold: the middle is half-way between the two).
+  const stops = (lines: AxisLine[], still: number): number[] => {
+    const at = lines.map((l) => l.at);
+    for (const l of lines) if (l.mid) at.push(2 * l.at - still);
+    return at;
   };
-  const ex = xGrip ? pull(heldX(asked), xLines, (extra) => heldX(resize(dx + extra, dy))) : 0;
-  const ey = yGrip ? pull(heldY(asked), yLines, (extra) => heldY(resize(dx, dy + extra))) : 0;
-  const box = ex || ey ? resize(dx + ex, dy + ey) : asked;
+  // THE TRAVEL THAT PUTS THE HELD EDGE ON A STOP, measured from where the
+  // edge stood with no travel at all (`rest`) — not from where the drag has
+  // it now: a drag its clamps are holding back (the card at its minimum, the
+  // pointer further on) has the edge standing still however the pointer
+  // moves, and a nudge from there would never arrive. The nearest stop to
+  // the POINTER's ask within `px` wins, if the chassis' clamps let the edge
+  // reach it: a nearer one they refuse does not hide the next in reach.
+  const travel = (now: number, rest: number, at: number[], land: (t: number) => number): number => {
+    const asks = at
+      .map((v) => ({ v, t: v - rest }))
+      .filter((c) => Math.abs(c.t - now) <= px)
+      .sort((p, q) => Math.abs(p.t - now) - Math.abs(q.t - now));
+    for (const c of asks) if (Math.abs(land(c.t) - c.v) <= LEVEL) return c.t;
+    return now;
+  };
+  const rest = resize(0, 0);
+  const stillX = xGrip === "lo" ? rest.left + rest.width : rest.left;
+  const stillY = yGrip === "lo" ? rest.top + rest.height : rest.top;
+  const tx = xGrip ? travel(dx, heldX(rest), stops(xLines, stillX), (t) => heldX(resize(t, dy))) : dx;
+  const ty = yGrip ? travel(dy, heldY(rest), stops(yLines, stillY), (t) => heldY(resize(dx, t))) : dy;
+  const box = tx !== dx || ty !== dy ? resize(tx, ty) : asked;
+  // An axis no grip holds draws nothing: its edges and its middle did not
+  // move, and a line there would be the drag's doing nothing.
+  const none = { x: [] as EdgeGuideX[], y: [] as EdgeGuideY[] };
   const g = guidesFor(
     box,
     other,
     viewport,
-    { lines: xLines, edges: xGrip ? [heldX(box)] : [], centre: false },
-    { lines: yLines, edges: yGrip ? [heldY(box)] : [], centre: false },
+    { edges: xGrip ? [heldX(box)] : [], edgeOnMid: true },
+    { edges: yGrip ? [heldY(box)] : [], edgeOnMid: true },
   );
-  return { box, x: g.x, y: g.y };
+  return { box, x: xGrip ? g.x : none.x, y: yGrip ? g.y : none.y };
 }
 
 /** LAST PRESSED ON TOP (owner, 2026-11-17: "overlap allowed, last pressed on

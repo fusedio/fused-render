@@ -21,7 +21,11 @@ import { pinWords, pressVerdict, viewPress, type PressTarget, type PressWhere } 
  *  icon for pin") — Bootstrap Icons' `pin-angle-fill` (MIT), inlined:
  *  react-icons is not a dependency and one path does not earn one. Angled,
  *  16-unit box. `filled`: the glyph as drawn (a pinned window, and the
- *  favourites-off head's seat); else its outline alone (hover / temp). */
+ *  favourites-off head's seat); else its outline alone (hover / temp).
+ *  MIRRORED on the x axis, everywhere it is drawn (owner, 2026-11-18, first
+ *  of the rail's mark — "invert the pin on x axis so it faces right side" —
+ *  then of the head's own button: "rotate pin icon 180deg, x axis"): the
+ *  point leans down to the right. */
 export function PinAngle({ size = 14, filled = false }: { size?: number; filled?: boolean }) {
   return (
     <svg
@@ -29,6 +33,7 @@ export function PinAngle({ size = 14, filled = false }: { size?: number; filled?
       height={size}
       viewBox="0 0 16 16"
       aria-hidden="true"
+      style={{ transform: "scaleX(-1)" }}
       {...(filled
         ? { fill: "currentColor" }
         : { fill: "none", stroke: "currentColor", strokeWidth: 1, strokeLinejoin: "round" as const, overflow: "visible" })}
