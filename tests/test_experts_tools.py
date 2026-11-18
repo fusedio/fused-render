@@ -244,7 +244,7 @@ def test_claude_spawn_with_experts_differs_only_by_the_expert_pieces(
         assert t in note
     assert "reference material" in note
     # The standing instruction: list once at the start, context before ask.
-    assert "once per conversation, before you start" in note
+    assert "first tool call in every conversation must be " + tools[0] in note.replace("`", "")
     assert note.index(tools[0]) < note.index(tools[1]) < note.index(tools[2])
     assert len(note) < 800  # paid on every turn
     # Backends without the tools are never told about them.
