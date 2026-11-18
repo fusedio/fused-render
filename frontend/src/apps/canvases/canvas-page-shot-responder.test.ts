@@ -22,6 +22,7 @@ const {
 } = await import("./canvas-page-shot-responder");
 const { canvasPagePath } = await import("./api");
 const { openCanvasPath } = await import("@apps/claude/ui/OpenCanvasCard");
+const { resetShotsDirForTests } = await import("@apps/claude/shots");
 
 const NOW = 1_000_000_000_000;
 const row = (id: string, ageMs = 10_000, claimed = false): CanvasShotInboxRow => ({
@@ -194,6 +195,9 @@ test("the open-canvas card goes where canvasPagePath does", () => {
 });
 
 test("takeCanvasShot: the picture's framing rides the answer (the tool's note says what it is)", async () => {
+  // shotsDir() memoizes for the page's lifetime; a test file that ran earlier in
+  // this bun process may have cached another directory.
+  resetShotsDirForTests();
   const real = globalThis.fetch;
   globalThis.fetch = (async (url: string) => {
     const body = String(url).includes("/api/claude/agent") ? { dir: "/tmp/shots" } : { ok: true };
