@@ -11,6 +11,7 @@
 // <sid>) when it opens and again when its status or end moves. Each of the three keeps a request generation, so only
 // the latest request's answer lands (two refreshes can finish out of order). A failed fetch says so in the pane, never
 // the banner.
+import { spaLinkProps } from "@platform/lib/router";
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { expertApi, type Bot, type ExpertChange, type ExpertMemory, type ExpertSession } from "../lib/api";
 import { agoShort, changedMemory, diffDoc, duration, kindLabel, memoryUsage, newestFirst, originOf, roleTag, statusOf, turnIsMarkdown } from "../lib/expert";
@@ -114,7 +115,7 @@ export function SessionHead({ s, nowMs }: { s: ExpertSession; nowMs?: number }) 
 
 // ------------------------------------------------------------------ panels ----
 
-/** The Memory tab: path, size, the hand-edit note, the file rendered as markdown, then the sessions that changed it. */
+/** The Memory tab: path with an Edit link to the explorer, size, the hand-edit note, the file rendered as markdown, then the sessions that changed it. */
 export function MemoryPanel({ memory, err, onChange, nowMs }: {
   memory: ExpertMemory | null; err?: string; onChange: (c: ExpertChange) => void; nowMs?: number;
 }) {
@@ -123,12 +124,11 @@ export function MemoryPanel({ memory, err, onChange, nowMs }: {
   return (
     <>
       {err ? <p className="xp-err" role="alert">{err}</p> : null}
-      <p className="xp-path" title={memory.path}>{memory.path}</p>
+      <p className="xp-path" title={memory.path}>{memory.path} <a className="xp-edit" {...spaLinkProps(memory.path)} title="Open memory.md in the explorer to edit it">Edit</a></p>
       <p className={`xp-size${use.over ? " over" : ""}`}>{use.text}{use.over ? " · over the limit; a dream session shortens it after the next session that writes it" : ""}</p>
       {memory.writing ? <p className="xp-hand">A session is working on memory now.</p>
         : memory.edited_by_hand ? <p className="xp-hand">Edited by hand since the last session.</p> : null}
       {memory.text.trim() ? <div className="xp-mem xp-md" aria-label="memory.md"><MdDoc text={memory.text} /></div> : <p className="xp-empty">Nothing remembered yet.</p>}
-      <p className="xp-note">Read-only here. You can edit the file by hand at the path above; the expert reads it at the start of every session.</p>
       <p className="xp-lbl xp-chhead">Changes</p>
       {changes.length ? (
         <ul className="xp-changes">
@@ -243,7 +243,6 @@ export function ExpertPane({ b }: { b: Bot }) {
   const { full, err: fullErr } = useSession(b.id, open, stamp);
   const uid = useId();
   const paneRef = useRef<HTMLDivElement>(null);
-  const about = b.expert?.ask_me_about || "";
 
   // A change clicked on the Memory tab: the Sessions tab, that row open and scrolled to.
   const openChange = (c: ExpertChange) => { setTab("sessions"); setOpen(c.id); };
@@ -264,7 +263,6 @@ export function ExpertPane({ b }: { b: Bot }) {
 
   return (
     <div className="xpane" id="xpane" ref={paneRef}>
-      {about ? <p className="xp-about" title="What tasks ask this expert about">{about}</p> : null}
       <div className="viewsw" role="tablist" aria-label="Expert" onKeyDown={onKey}>
         {TABS.map(([t, l]) => (
           <button key={t} type="button" id={`${uid}-${t}`} role="tab" className={`satab${tab === t ? " on" : ""}`} aria-selected={tab === t}

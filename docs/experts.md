@@ -556,7 +556,7 @@ like the bot's `settings` and `skills` ops it already passes), never `context` o
 The Bots page shows an expert with an `EXPERT` badge in the list (its tooltip is `ask_me_about`). Its preview
 column (`ExpertPane.tsx`) has no browser; in its place two tabs:
 
-- **Memory**: `memory.md` rendered as markdown, read-only, its path, its size against the limit, a note when it was
+- **Memory**: `memory.md` rendered as markdown, read-only, its path with an Edit link that opens the file in the explorer, its size against the limit, a note when it was
   edited by hand since a session last wrote it, and Changes (the sessions that changed it); a change opens on the
   Sessions tab.
 - **Sessions**: the rows, newest first, with kind (chat, ask, task-learn, dream), origin, status, and when and how

@@ -25,10 +25,9 @@ describe("MemoryPanel", () => {
     expect(out).toContain('<div class="xp-mem xp-md" aria-label="memory.md"><h2>Works</h2><ul><li>[1 · 2026-11-17] Pull &lt;first&gt;.</li></ul></div>');
     expect(out).not.toContain("<pre");
     expect(out).not.toMatch(/<textarea|contenteditable/);
-    expect(out).toContain(">/x/Canvas Reference/memory.md<");
+    expect(out).toContain('>/x/Canvas Reference/memory.md <a class="xp-edit" href="/explorer/view/x/Canvas%20Reference/memory.md"');
     expect(out).toContain("2 of 200 lines · 40 B of 12 KB");
     expect(out).toContain("Edited by hand since the last session.");
-    expect(out).toContain("edit the file by hand");
     expect(out).toContain(">task in maps (claude)<");
     expect(out).toContain(">“Always pull first”<");
     expect(out).toContain(">30m ago<");
