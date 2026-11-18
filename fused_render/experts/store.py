@@ -214,7 +214,7 @@ def memory(bot) -> str:
 def instructions(bot) -> str:
     """The standing instructions the harness gets as its system prompt: instructions.md (the default text when
     the file is missing or empty). A legacy extra (`meta["instructions"]`, typed in a Settings box an expert no
-    longer has, or set by Super Bot's `bot_settings`) follows under a heading until the Instructions page saves,
+    longer has, or set by Super Bot) follows under a heading until the Instructions page saves,
     which folds it into the file (`save_instructions`)."""
     text = read_text(instructions_path(bot)).strip() or DEFAULT_INSTRUCTIONS.strip()
     extra = legacy_instructions(bot)
