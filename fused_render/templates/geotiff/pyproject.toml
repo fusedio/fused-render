@@ -26,3 +26,9 @@ dependencies = [
 # and install. Without this uv would try to build the "project" itself and fail.
 [tool.uv]
 package = false
+
+# TIFFs stream from S3 (D1488, D1492): the explorer opens an uncached s3://
+# TIFF here on its address, the page signs it (fused.s3.sign) and the tile
+# daemon reads it through GDAL's /vsicurl/ with range requests.
+[tool.fused-render.template]
+stream = [".tif", ".tiff"]

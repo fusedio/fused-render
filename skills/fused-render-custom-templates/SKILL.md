@@ -16,7 +16,7 @@ Each extension resolves to ordered mode list (first = default; >1 shows switcher
     ├── template.html  required entry point
     ├── reader.py      optional siblings, referenced relatively
     ├── condition.py   optional per-file gate
-    ├── stream-s3      optional marker: template reads `_file=s3://…` itself
+    ├── pyproject.toml optional: [tool.fused-render.template] stream = [".parquet"] — template reads `_file=s3://…` itself
     └── icon.svg       optional switcher icon (monochrome, currentColor, square, legible 16px)
 ```
 
@@ -34,9 +34,9 @@ Flat object; same key grammar as built-in `fused_render/templates/registry.json`
 
 `def main(path) -> bool` beside template.html — show this template for this file? No file = always shown. Runs after registry resolution, evaluated in background (`GET /api/fs/conditions?path=…`), verdicts cached ~60 s; multiple gates for one extension run concurrently (cost = slowest gate, all still run). May read file, keep reads bounded (headers/footers). Broken gate = template dropped, reason in `error` on conditions response. Gated template never default while ungated one exists. Shows "conditional" badge in Templates → Library.
 
-## stream-s3
+## Streaming from S3
 
-Marker file = template opens bucket objects WITHOUT download. Template must take BOTH forms of `_file`: an `s3://` address (streamed) and a local path (an object already downloaded opens from its cached copy, like any local file). Lines starting with `.` list the extensions it streams (`.parquet` — duckdb; none = every bound file): explorer passes `_file=s3://bucket/key` instead of a local cache path. Template must then read it itself: `fused.s3.sign(addr)` (JS) / `fused_s3.sign(addr)` (Python, `templates/shared`) → `{url, expires_at}` HTTPS URL, Range works. Keep address as identity (`fused.params`, cache keys); sign in the page and pass the URL to `runPython` (duckdb), or let a long-lived daemon sign itself (`fused_s3`). Read only what the view needs — refuse/point to Download when a view would read most of a big file (duckdb: `STREAM_SCAN_BUDGET`; geotiff: zoom-in only without overviews). Not honoured for conditional or native templates. Examples: `duckdb/` (DuckDB `httpfs` on the signed URL), `geotiff/` (GDAL `/vsicurl/` on the signed URL, in the tile daemon).
+`pyproject.toml` beside template.html, `[tool.fused-render.template] stream = [".parquet"]` = template opens bucket objects of those extensions WITHOUT download (duckdb: `.parquet`; geotiff: `.tif`, `.tiff`). Explorer passes `_file=s3://bucket/key` to it for an uncached object; every other mode bound to the file shows a download card in its pane and opens on the downloaded copy. No key = never sees `s3://` (download fallback is automatic). Template must take BOTH forms of `_file`: an `s3://` address (streamed) and a local path (an object already downloaded opens from its cached copy, like any local file). Read it itself: `fused.s3.sign(addr)` (JS) / `fused_s3.sign(addr)` (Python, `templates/shared`) → `{url, expires_at}` HTTPS URL, Range works. Keep address as identity (`fused.params`, cache keys); sign in the page and pass the URL to `runPython`/daemon (duckdb, geotiff), or let a long-lived process sign itself (`fused_s3`). Read only what the view needs — refuse/point to Download when a view would read most of a big file (duckdb: `STREAM_SCAN_BUDGET`; geotiff: zoom-in only without overviews); the explorer's "Streaming from S3" bar has the Download button. Not honoured for conditional or native templates (shown only once the object is cached). Examples: `duckdb/` (DuckDB `httpfs` on the signed URL), `geotiff/` (GDAL `/vsicurl/` on the signed URL, in the tile daemon).
 
 ## Guardrail
 
