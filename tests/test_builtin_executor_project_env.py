@@ -104,7 +104,7 @@ def test_a_declared_import_that_is_missing_here_explains_itself(tmp_path):
     assert "pyproject.toml" in message
     assert os.path.basename(str(tmp_path)) in message
     # The fix must be reachable from the message alone. The engine always
-    # ships (D1496), so switching it on in Preferences is the only one.
+    # ships (D1502), so switching it on in Preferences is the only one.
     assert "Preferences" in message
 
 

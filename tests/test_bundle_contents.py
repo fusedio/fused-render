@@ -341,7 +341,7 @@ def test_the_base_does_not_depend_on_fused_and_the_extra_pins_a_release():
     `fused.cli` layout differs from the one this app drives.
 
     The pin is the 2.9.3 beta until a fused-py release ships `canvas lease`
-    and `canvas mirror` (D1495). Once one does, the pin moves to it and this
+    and `canvas mirror` (D1501). Once one does, the pin moves to it and this
     test should require a release again; `_BETA_UNTIL_RELEASE` is the only
     pre-release it accepts.
     """

@@ -129,7 +129,7 @@ dev = [
     # A TEST dependency: the engine tests' headerless scripts and the
     # app-package fast path assume the app's own interpreter has pandas, as every
     # packaged build does through `[bundled]`. It used to arrive here through
-    # `fused[aws]`'s data group; `[fused]` is now the plain CLI (D1495).
+    # `fused[aws]`'s data group; `[fused]` is now the plain CLI (D1501).
     "pandas",
     # Every feature extra, so the suite runs against the whole product.
     "fused-render[all]",
