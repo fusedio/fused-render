@@ -276,9 +276,9 @@ export interface ExpertMemory {
   edited_by_hand?: boolean; changes?: ExpertChange[];
 }
 /** "chat": a row only for a main-thread chat turn that changed memory (no transcript). */
-export type ExpertSessionKind = "chat" | "ask" | "task-learn" | "compact";
+export type ExpertSessionKind = "chat" | "ask" | "task-learn" | "dream";
 /** What started a session, by kind: chat {message}; ask {asker, question, session_id?}; task-learn {session_id,
- *  run_id?, target, backend, from_size, to_size}; compact {lines, bytes}. Every key optional here. */
+ *  run_id?, target, backend, from_size, to_size}; dream (memory compaction) {lines, bytes}. Every key optional here. */
 export interface ExpertTrigger {
   message?: string; asker?: string; question?: string; session_id?: string; run_id?: string; target?: string; backend?: string;
   from_size?: number; to_size?: number; lines?: number; bytes?: number; [k: string]: unknown;

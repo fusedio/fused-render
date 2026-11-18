@@ -1,10 +1,11 @@
 // The expert pane's pure helpers (components/ExpertPane.tsx): a session row's words (kind, origin from its trigger,
-// status, time), the memory size line, and a unified diff split into coloured lines. No fetching, no React.
+// status, time), the memory size line, and a unified diff of memory.md read as rows of a document (added, removed,
+// a removed + added pair, unchanged context). No fetching, no React.
 import type { ExpertMemory, ExpertSession, ExpertTrigger } from "./api";
 import { fmtBytes, fmtDur } from "./format";
 
 /** The kinds as the pane names them; an unknown kind shows as sent. */
-export const KIND_LABEL: Record<string, string> = { chat: "chat", ask: "ask", "task-learn": "task-learn", compact: "compact" };
+export const KIND_LABEL: Record<string, string> = { chat: "chat", ask: "ask", "task-learn": "task-learn", dream: "dream" };
 export const kindLabel = (k: string): string => KIND_LABEL[k] || k || "session";
 
 /** The status as a word and a tone (running: accent, done: ok, error: err, interrupted: warn). */
@@ -28,7 +29,7 @@ export const oneLine = (s: unknown, n = 80): string => {
 export const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() || p;
 
 /** Where a session came from, in one line, read from its trigger: the chat message; who asked and the question; the
- *  task's target folder (else its backend); compact: the size that set it off. "" when the trigger says nothing. */
+ *  task's target folder (else its backend); dream (compaction): the size that set it off. "" when the trigger says nothing. */
 export function originOf(kind: string, t: ExpertTrigger | null | undefined): string {
   const g = t || {};
   if (kind === "chat") return g.message ? `“${oneLine(g.message, 70)}”` : "your chat";
@@ -40,7 +41,7 @@ export function originOf(kind: string, t: ExpertTrigger | null | undefined): str
     const where = g.target ? basename(String(g.target)) : "", be = oneLine(g.backend, 20);
     return where ? `task in ${where}${be ? ` (${be})` : ""}` : be ? `${be} task` : "a task";
   }
-  if (kind === "compact") {
+  if (kind === "dream") {
     const parts = [typeof g.lines === "number" ? `${g.lines} lines` : "", typeof g.bytes === "number" ? fmtBytes(g.bytes) : ""].filter(Boolean);
     return parts.length ? `memory at ${parts.join(", ")}` : "memory over the limit";
   }
@@ -53,35 +54,55 @@ export const changedMemory = (s: Pick<ExpertSession, "memory_diff">): boolean =>
 /** How long it ran ("12 s", "3 min"); "" while running or under a second. */
 export const duration = (s: Pick<ExpertSession, "started" | "ended">): string => (s.ended && s.started ? fmtDur(s.ended - s.started) : "");
 
-/** The list's filter: every session, or only the ones that changed memory. Newest first either way (the server
- *  sends them so; sorted again here so a merged list cannot come out of order). */
-export type SessionFilter = "all" | "changed";
-export function filterSessions(rows: readonly ExpertSession[], f: SessionFilter): ExpertSession[] {
-  return rows.filter((s) => f === "all" || changedMemory(s)).sort((a, b) => (b.started || 0) - (a.started || 0));
-}
+/** Newest first (the server sends them so; sorted again here so a merged list cannot come out of order). */
+export const newestFirst = (rows: readonly ExpertSession[]): ExpertSession[] => [...rows].sort((a, b) => (b.started || 0) - (a.started || 0));
 
-export type DiffTone = "add" | "del" | "hunk" | "meta" | "ctx";
-export interface DiffLine { tone: DiffTone; text: string }
+/** One row of a memory diff read as a document: an added, removed or unchanged line (its markdown source, without the
+ *  diff's one-character prefix); a removed line answered by an added one (a fact's count bump); or a gap between hunks. */
+export type DiffRow =
+  | { tone: "add" | "del" | "ctx"; text: string }
+  | { tone: "pair"; del: string; add: string }
+  | { tone: "gap" };
 
-/** A unified diff as lines with a tone: `+` added, `-` removed, `@@` a hunk header, the `---` / `+++` file headers
- *  (and `\ No newline…`) as meta, the rest context. An empty diff is no lines. */
-export function diffLines(diff: string | null | undefined): DiffLine[] {
-  const text = (diff || "").replace(/\n$/, "");
+/** A fact's text without its `- [count · date]` stamp, to tell a bumped fact from a different one. */
+const factOf = (l: string): string => l.replace(/^\s*[-*+]\s+\[[^\]]*\]\s*/, "").trim();
+
+/** A unified diff of memory.md as document rows. The noise goes: everything before the first `@@` (the `---` / `+++`
+ *  file headers, `diff` / `index` lines), each `@@` hunk header (a later one becomes a gap), `\ No newline…`.
+ *  Lines are `+` added, `-` removed, the rest context. A run of removed lines answered by a run of added lines the same
+ *  length pairs up line by line when it is one and one, or when each pair is the same fact (only its stamp moved).
+ *  An empty diff is no rows. */
+export function diffDoc(diff: string | null | undefined): DiffRow[] {
+  const text = (diff || "").replace(/\r/g, "").replace(/\n$/, "");
   if (!text.trim()) return [];
-  return text.split("\n").map((l): DiffLine => {
-    if (l.startsWith("+++") || l.startsWith("---") || l.startsWith("\\")) return { tone: "meta", text: l };
-    if (l.startsWith("@@")) return { tone: "hunk", text: l };
-    if (l.startsWith("+")) return { tone: "add", text: l };
-    if (l.startsWith("-")) return { tone: "del", text: l };
-    return { tone: "ctx", text: l };
-  });
-}
-
-/** "+3 −1": lines added and removed (file headers not counted); "" for no change. */
-export function diffStat(diff: string | null | undefined): string {
-  let add = 0, del = 0;
-  for (const l of diffLines(diff)) { if (l.tone === "add") add++; else if (l.tone === "del") del++; }
-  return add || del ? `+${add} −${del}` : "";
+  let lines = text.split("\n");
+  const firstHunk = lines.findIndex((l) => l.startsWith("@@"));
+  if (firstHunk >= 0) lines = lines.slice(firstHunk);
+  else while (lines.length && /^(---|\+\+\+|diff |index )/.test(lines[0])) lines = lines.slice(1);
+  const flat: DiffRow[] = [];
+  let hunks = 0;
+  for (const l of lines) {
+    if (l.startsWith("@@")) { if (hunks++ && flat.length) flat.push({ tone: "gap" }); continue; }
+    if (l.startsWith("\\")) continue;
+    if (l.startsWith("+")) flat.push({ tone: "add", text: l.slice(1) });
+    else if (l.startsWith("-")) flat.push({ tone: "del", text: l.slice(1) });
+    else flat.push({ tone: "ctx", text: l.startsWith(" ") ? l.slice(1) : l });
+  }
+  // Pair a removed run with the added run right after it (see above).
+  const out: DiffRow[] = [];
+  for (let i = 0; i < flat.length;) {
+    if (flat[i].tone !== "del") { out.push(flat[i++]); continue; }
+    let j = i;
+    while (j < flat.length && flat[j].tone === "del") j++;
+    let k = j;
+    while (k < flat.length && flat[k].tone === "add") k++;
+    const dels = flat.slice(i, j) as { tone: "del"; text: string }[], adds = flat.slice(j, k) as { tone: "add"; text: string }[];
+    const pairs = dels.length === adds.length && (dels.length === 1 || dels.every((d, n) => factOf(d.text) !== "" && factOf(d.text) === factOf(adds[n].text)));
+    if (pairs) dels.forEach((d, n) => out.push({ tone: "pair", del: d.text, add: adds[n].text }));
+    else out.push(...dels, ...adds);
+    i = k;
+  }
+  return out;
 }
 
 /** memory.md's size against the compaction limit: "42 of 200 lines · 3 KB of 12 KB", and whether either is over. */
