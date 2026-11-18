@@ -17,7 +17,7 @@ import time
 from fastapi import APIRouter, Body, Depends, Header, Query
 
 from fused_render.server.common import _error, _require_fused
-from fused_render.specialists import chat, flag, harness, history, launch, paths, services, store
+from fused_render.specialists import chat, flag, harness, history, launch, services, store
 from fused_render.specialists import home as hm
 
 router = APIRouter(dependencies=[Depends(flag.require)])

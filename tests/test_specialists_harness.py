@@ -1,7 +1,6 @@
 """Side sessions (check / reviewer / nightly) with `_spawn` stubbed: argv fence, rows, timeouts, restart (X)."""
 from _specialists_conftest import *  # noqa: F401,F403
 import json
-import os
 import sys
 import textwrap
 import threading

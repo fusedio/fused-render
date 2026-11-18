@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from fused_render.specialists import chat, harness, launch, store
+from fused_render.specialists import chat, harness, launch
 
 
 def j(resp):

@@ -2,7 +2,6 @@
 from _specialists_conftest import *  # noqa: F401,F403
 import os
 
-import pytest
 
 from fused_render.specialists import chat, harness, history
 
