@@ -1,7 +1,7 @@
 // The expert pane's pure helpers (components/ExpertPane.tsx): a session row's words (kind, origin from its trigger,
 // status, time), the memory size line, and a unified diff of memory.md read as rows of a document (added, removed,
 // a removed + added pair, unchanged context). No fetching, no React.
-import type { ExpertMemory, ExpertSession, ExpertTrigger } from "./api";
+import type { ExpertInstructions, ExpertMemory, ExpertSession, ExpertTrigger } from "./api";
 import { fmtBytes } from "./format";
 
 /** The kinds as the pane names them; an unknown kind shows as sent. */
@@ -151,13 +151,31 @@ export function settingsWords(kind: string | undefined): { instructionsPlacehold
   if (kind === "expert") {
     return {
       instructionsPlaceholder: "e.g. “Answer questions about writing canvases; keep answers short.”",
-      description: "How this expert answers, the model it runs on, the folders it may read and its skills (the reference files it reads).",
+      description: "This expert's name, the model it runs on, its instructions, the folders it may read and its skills (the reference files it reads).",
     };
   }
   return {
     instructionsPlaceholder: "e.g. “Browse LinkedIn for me. Answer in bullets. Never like or comment.”",
     description: `How this bot thinks, what it may do without asking, the services it may use, its browser, its playbooks, its routines, its memory${kind === "super" ? " and your phone" : ""}.`,
   };
+}
+
+/** The Instructions page's counter: "1,204 of 50,000 characters", and whether the text is over the limit (the save
+ *  is refused then, never cut). Counted as the server counts: characters of the trimmed text, not UTF-16 units. */
+export function instructionsUsage(text: string, limit: number): { text: string; over: boolean } {
+  const n = [...text.trim()].length;
+  const over = n > limit;
+  return { text: `${n.toLocaleString("en-US")} of ${limit.toLocaleString("en-US")} characters${over ? ". Shorten it to save." : ""}`, over };
+}
+
+/** The Instructions page's notes, one sentence each: a shipped expert's file follows the app until it is edited,
+ *  and a legacy Settings extra is shown as the text's last section. */
+export function instructionsNotes(i: Pick<ExpertInstructions, "shipped" | "follows_shipped" | "legacy">): string[] {
+  return [
+    !i.shipped ? "" : i.follows_shipped ? "This expert came with the app. Its instructions follow app updates until you save a change here."
+      : "You changed these instructions, so app updates no longer replace them.",
+    i.legacy ? "The last section, “From the user (Settings)”, is what was typed in the old “What it should do” box." : "",
+  ].filter(Boolean);
 }
 
 export interface SkillFormWords { titlePlaceholder: string; triggerPlaceholder: string; triggerHint: string; bodyLabel: string; bodyPlaceholder: string }

@@ -26,8 +26,8 @@ const value = {
 describe("expert settings", () => {
   // The body is tested as a value, not through saveSettings: that ends in the store's shared poll, and with the whole
   // suite in one process a poll another file left pending would hang this test and leak into the next one.
-  test("Save sends name, model, effort, instructions, ask_me_about and folders only", () => {
-    expect(expertSettingsBody(value)).toEqual({ name: "Canvas Reference", model: "sonnet", effort: "low", instructions: "Be brief.",
+  test("Save sends name, model, effort, ask_me_about and folders only (never instructions: those are the Instructions page's)", () => {
+    expect(expertSettingsBody(value)).toEqual({ name: "Canvas Reference", model: "sonnet", effort: "low",
       ask_me_about: "Canvases", folders: ["/w/maps"] });
   });
   test("Skills: the expert's files listed with Edit and delete, write by hand, no Learn from last task", () => {

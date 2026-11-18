@@ -275,6 +275,11 @@ export interface ExpertMemory {
   text: string; path: string; lines: number; bytes: number; limit_lines: number; limit_bytes: number;
   edited_by_hand?: boolean; writing?: boolean; changes?: ExpertChange[];
 }
+/** GET / POST /api/experts/<id>/instructions: what the expert is told (instructions.md, the default text when there
+ *  is none, then a legacy Settings extra), where the file is, the most characters a save takes, whether the text
+ *  ends with that legacy extra, the shipped key ("" if none) and whether the file is still a shipped version (the
+ *  app replaces it when the shipped one changes; false once it was edited). */
+export interface ExpertInstructions { text: string; path: string; limit: number; legacy?: boolean; shipped?: string; follows_shipped?: boolean }
 /** "chat": a row only for a main-thread chat turn that changed memory (no transcript). */
 export type ExpertSessionKind = "chat" | "ask" | "task-learn" | "dream";
 /** What started a session, by kind: chat {message}; ask {asker, question, session_id?}; task-learn {session_id,
@@ -584,6 +589,9 @@ export const expertApi = {
   memory: (id: string) => get<ExpertMemory>(`${xid(id)}/memory`, "expert memory"),
   sessions: (id: string) => get<{ sessions: ExpertSession[] }>(`${xid(id)}/sessions`, "expert sessions"),
   session: (id: string, sid: string) => get<ExpertSession>(`${xid(id)}/sessions/${encodeURIComponent(sid)}`, "expert session"),
+  instructions: (id: string) => get<ExpertInstructions>(`${xid(id)}/instructions`, "expert instructions"),
+  /** Writes instructions.md whole. Refused (400, a sentence) when empty or over the limit: nothing is cut. */
+  saveInstructions: (id: string, text: string) => post<ExpertInstructions>(`${xid(id)}/instructions`, { text }, "expert instructions"),
 };
 
 /** POST /api/bots/<id>/seen {seq}: the unread mark (Bot.seen_seq). Silent: no banner, no poll after it (store.ts

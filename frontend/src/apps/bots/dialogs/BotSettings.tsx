@@ -7,6 +7,9 @@
 // Every control keeps its backend key. The form is a snapshot of the bot as the dialog opened (later polls never
 // reset what you typed); Save stays greyed until something differs from that snapshot. Escape and the backdrop
 // close at once when nothing changed and ask first otherwise; Enter in Name is Save.
+// An expert has one more section, Instructions (InstructionsSection.tsx): its instructions.md in an editor that fills
+// the section. Its draft is part of "something differs": Save writes the file first (its own route, which refuses
+// with a sentence shown on that section, the dialog staying open with the draft), then closes with the rest.
 //
 // Base UI only coordinates dialogs through the React tree: the page's own confirm is a sibling in the bots portal
 // host, so a click in it reads as an OUTSIDE press here and would fire onOpenChange(false). The `busy` ref covers the
@@ -24,7 +27,7 @@ import { Textarea } from "@platform/shadcn/ui/textarea";
 import { cn } from "@platform/lib/utils";
 import { Face } from "../components/Face";
 import { FolderPlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
-import { ApiError, api, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
+import { ApiError, api, expertApi, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type ExpertInstructions, type Face as FaceT } from "../lib/api";
 import { settingsWords } from "../lib/expert";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
@@ -34,6 +37,7 @@ import { askConfirm } from "./ask";
 import { navigateUrl } from "@platform/lib/router";
 import { ConnectionsSection, PREFERENCES_CONNECTIONS_URL } from "./ConnectionsSection";
 import { FacePopover } from "./FacePopover";
+import { InstructionsSection } from "./InstructionsSection";
 import { PhoneSection } from "./PhoneSection";
 import { isLanHost } from "@platform/lib/host";
 import { RoutinesSection } from "./RoutinesSection";
@@ -41,7 +45,7 @@ import { Row, Rows } from "./SettingsRow";
 import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 import { SkillsSection } from "./SkillsSection";
 
-export type SettingsTab = "general" | "permissions" | "connections" | "browser" | "skills" | "routines" | "memory" | "phone";
+export type SettingsTab = "general" | "instructions" | "permissions" | "connections" | "browser" | "skills" | "routines" | "memory" | "phone";
 
 export interface BotSettingsProps {
   bot: Bot;
@@ -53,14 +57,14 @@ export interface BotSettingsProps {
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
   // An expert (docs/experts.md) has no browser, no terminal and no engine choice: General (with "Ask me about"),
-  // Permissions (only the folders it may read) and Skills (its reference files under skills/, which you edit and it
+  // Instructions (its instructions.md; it has no "What it should do" box), Permissions (only the folders it may read) and Skills (its reference files under skills/, which you edit and it
   // only reads; no "Learn from last task", the backend refuses that for an expert) are its whole dialog.
   const isExpert = bot.kind === "expert";
   const words = settingsWords(isSuper ? "super" : isExpert ? "expert" : "bot");  // an expert's words fit its reference files
   // On the phone (isLanHost) the Connections, Browser and Phone tabs are not drawn: their routes (Preferences,
   // /api/bots/browsers, iMessage) are Mac-side and the LAN door 404s them (lan.py `_DOORS`).
   const lan = isLanHost();
-  const tabs: [SettingsTab, string][] = isExpert ? [["general", "General"], ["permissions", "Permissions"], ["skills", "Skills"]] : [["general", "General"], ["permissions", "Permissions"],
+  const tabs: [SettingsTab, string][] = isExpert ? [["general", "General"], ["instructions", "Instructions"], ["permissions", "Permissions"], ["skills", "Skills"]] : [["general", "General"], ["permissions", "Permissions"],
     ...(lan ? [] : [["connections", "Connections"] as [SettingsTab, string], ["browser", "Browser"] as [SettingsTab, string]]),
     ["skills", "Skills"], ["routines", "Routines"], ["memory", "Memory"],
     ...(isSuper && !lan ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
@@ -160,7 +164,21 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     trustedApps: v.trustedApps.filter((a) => !v.trustedAppsWas.includes(a)), trustedAppsWas: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)),
     connections: v.connections.filter((a) => !v.connectionsWas.includes(a)), connectionsWas: v.connectionsWas.filter((a) => !v.connections.includes(a)) });
   const [initial] = useState(() => fingerprint(read()));
-  const okDisabled = fingerprint(read()) === initial;
+  // An expert's instructions.md (Settings › Instructions): read as the dialog opens, edited as a draft kept here.
+  const [instr, setInstr] = useState<ExpertInstructions | null>(null);
+  const [instrDraft, setInstrDraft] = useState("");
+  const [instrError, setInstrError] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    let live = true;
+    if (!isExpert) return;
+    expertApi.instructions(bot.id).then((r) => { if (live) { setInstr(r); setInstrDraft(r.text); } },
+      (e) => { if (live) setInstrError(`The instructions could not be read: ${e instanceof Error ? e.message : String(e)}`); });
+    return () => { live = false; };
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  const instrDirty = !!instr && instrDraft !== instr.text;
+  const settingsClean = fingerprint(read()) === initial;
+  const okDisabled = settingsClean && !instrDirty;
   const n = name.trim();
 
   // Your Chrome's profiles and the apps root, listed fresh each time (an expert shows neither).
@@ -224,7 +242,24 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     return () => window.clearTimeout(t);
   }, [tab]);
 
-  const ok = () => { if (!okDisabled) onClose(read()); };
+  // Save: the instructions first, by their own route. A refusal (too long, empty, the workspace held elsewhere) stays
+  // in the dialog on the Instructions section, the draft and every other edit kept; then the settings, as ever.
+  const ok = async () => {
+    if (okDisabled || saving) return;
+    if (instrDirty) {
+      setSaving(true);
+      setInstrError("");
+      try {
+        await expertApi.saveInstructions(bot.id, instrDraft);
+      } catch (e) {
+        setInstrError(e instanceof Error ? e.message : String(e));
+        setTab("instructions");
+        setSaving(false);
+        return;
+      }
+    }
+    onClose(settingsClean ? null : read());
+  };
   /** askConfirm with the dialog held open while it is up (the sections' deletes, the dirty guard). */
   const confirm = async (title: string, text: string, okLabel?: string, danger?: boolean) => {
     busy.current = true;
@@ -274,7 +309,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
               <Rows>
                 <Row title="Name" htmlFor="bmname">
                   <Input id="bmname" placeholder={isExpert ? "e.g. Canvas Reference" : "e.g. LinkedIn scout"} value={name} onChange={(e) => setName(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") ok(); }} />
+                    onKeyDown={(e) => { if (e.key === "Enter") void ok(); }} />
                 </Row>
                 {/* Super Bot's avatar is the fixed Claude mark: no picker (the backend refuses a change too). */}
                 <Row title="Avatar" text={isSuper ? "Super Bot's mark is fixed." : "Shape and colour; the bot's face in the list and the chat."}>
@@ -289,11 +324,12 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                       onChange={(e) => setAskMeAbout(e.target.value)} />
                   </Row>
                 ) : null}
-                <Row title="What it should do" text={isExpert ? "Standing rules for its chats and sessions." : "Standing rules for every task."} htmlFor="bminstr" stack>
+                {/* An expert's instructions are a file with a section of its own (Instructions), not this box. */}
+                {isExpert ? null : <Row title="What it should do" text="Standing rules for every task." htmlFor="bminstr" stack>
                   <Textarea id="bminstr" rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} className="max-h-64"
                     placeholder={isSuper ? "Blank keeps Super Bot's own: files in its Inbox folder, say before anything destructive."
                       : words.instructionsPlaceholder} />
-                </Row>
+                </Row>}
                 <Row title="Model" text="Applies from the next task." htmlFor="bmmodel">
                   <NativeSelect className="w-full" id="bmmodel" value={model} onChange={(e) => setModel(e.target.value)}>
                     {modelsFor(isSuper || isExpert).map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
@@ -309,6 +345,10 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                     placeholder={isSuper ? "1000" : "200"} onChange={(e) => { if (/^\d*$/.test(e.target.value)) setMaxSteps(e.target.value); }} />
                 </Row>}
               </Rows>
+            ) : null}
+
+            {tab === "instructions" && isExpert ? (
+              <InstructionsSection info={instr} draft={instrDraft} onChange={setInstrDraft} error={instrError} saving={saving} />
             ) : null}
 
             {tab === "permissions" ? (
@@ -470,7 +510,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
         <DialogFooter className={FOOTER_CLASS}>
           {isSuper || isExpert ? null : <Button variant="outline" className="sm:mr-auto" onClick={() => { void exportFile(); }}>Export bot</Button>}
           <Button variant="outline" onClick={() => onClose(null)}>Cancel</Button>
-          <Button disabled={okDisabled} onClick={ok}>Save</Button>
+          <Button disabled={okDisabled || saving} onClick={() => { void ok(); }}>Save</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

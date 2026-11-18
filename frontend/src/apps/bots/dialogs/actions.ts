@@ -67,9 +67,10 @@ export async function createBot(v: BotDialogValue): Promise<void> {
 /** Settings → Save: a Logins switch first (its own call: the backend refuses it mid-task, and that must not lose the
  *  rest), then the settings, the face, the Chrome profile import. Encrypt belongs to the browser: after a switch it is
  *  sent only when the user changed it, so the old browser's flag never overwrites the new one's. A blank name saves nothing. */
-/** What an expert's Settings dialog saves: these six and nothing else (never the bot `memory`, browser or approvals). */
+/** What an expert's Settings dialog saves: these five and nothing else (never the bot `memory`, browser or approvals,
+ *  and never `instructions`: an expert's are its instructions.md, saved by the dialog's Instructions page). */
 export function expertSettingsBody(v: BotDialogValue): Record<string, unknown> {
-  return { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, ask_me_about: v.askMeAbout ?? "", folders: v.folders };
+  return { name: v.name, model: v.model, effort: v.effort, ask_me_about: v.askMeAbout ?? "", folders: v.folders };
 }
 
 export async function saveSettings(id: string, v: BotDialogValue): Promise<void> {
