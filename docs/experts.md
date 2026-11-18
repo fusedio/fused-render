@@ -93,7 +93,8 @@ row with status `error`.
 - **The harness run** (`harness`): `claude -p --output-format stream-json --verbose --no-session-persistence`, the
   bot's model and effort (`sonnet` / `low` by default), `--system-prompt-file` with `store.instructions`,
   `agent_engine.NO_MCP` (`--setting-sources=`, an empty inline `--mcp-config` with `--strict-mcp-config`,
-  `--disable-slash-commands`) and the fence (§6, with Edit/Write only for a writing kind). Working directory: the
+  `--disable-slash-commands`) and the fence (§6, with Edit/Write only for a writing kind and Bash for running
+  UDFs only for an ask: `fence(bot, write, run=not write)`). Working directory: the
   expert's folder. The prompt goes on stdin. `--no-session-persistence`: a side session is never resumed, and a
   transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s
   (`$FUSED_RENDER_EXPERT_TIMEOUT`), then the process group is killed.
@@ -109,12 +110,14 @@ row with status `error`.
   paths: "Your folder is <dir>; your memory is <dir>/memory.md." (`store.where`), so the harness never guesses
   where memory.md is, followed by "You may also read: <granted folders>." when there are any: instructions and
   skills may name a default location (`~/Fused/canvas`) that is elsewhere on a relocated workspace
-  (`FUSED_RENDER_DIR`), and a read at the default path is refused.
+  (`FUSED_RENDER_DIR`), and a read at the default path is refused. An ask's prompt and a fresh chat's message
+  (`store.where(bot, run=True)`) add which environment each folder of canvas copies is and the command that runs a
+  UDF there (§6 "Running UDFs").
 - **A row** `{id, kind, started, ended, status, trigger, transcript, memory_diff, answer, error?, cost_usd?}`:
   `id` is `<started ms, 13 digits>-<6 hex>`, so names sort by start; `status` is `running` | `done` | `error`, and a
   row still `running` that this process is not running reads as `interrupted` (a restart cut it short);
   `transcript` is `[{role, text}]` with roles `prompt` (what we sent), `expert` (its text blocks), `tool` (tool
-  name and path or pattern), `refused` (the CLI's `permission_denials`); `memory_diff` is the unified diff of
+  name and path, pattern or Bash command, 300 chars), `refused` (the CLI's `permission_denials`); `memory_diff` is the unified diff of
   `memory.md` before and after (`""` when unchanged, and always `""` for an ask: it holds no write lock, so a
   concurrent writer's change is not its own); `answer` is the result text; `cost_usd` is what the harness
   reported (`total_cost_usd`), nothing more. `trigger` is §11's.
@@ -153,14 +156,22 @@ description `expert_list` shows, 240 chars, one line) and `shipped` (the shipped
 ## 6. The fence
 
 `sessions.fence(bot, write)` returns the flags; the chat (§7) and every side session use it. It is Claude Code's
-own permission rules (verified on claude 2.1.326), with NO permission prompt tool and NO MCP server:
+own permission rules (verified on claude 2.1.326; the Bash rules on 2.1.327), with NO permission prompt tool and NO MCP server:
 
-    --tools Read,Glob,Grep[,Edit,Write]
+    --tools Read,Glob,Grep[,Edit,Write][,Bash]
     --permission-mode default
     --allowedTools Edit(//<abs>/memory.md) Read(//<granted folder>/**) ...
+                   Bash(fused workbench --env <env> run:*) Bash(fused workbench --env <env> udf-schema:*)
+                   Bash(fused workbench --env <env> whoami) ...
+
+    kind         tools
+    chat         Read Glob Grep Edit Write Bash
+    ask          Read Glob Grep Bash
+    task-learn   Read Glob Grep Edit Write
+    dream        Read Glob Grep Edit Write
 
 - Only Read, Glob and Grep exist, plus Edit and Write when the session writes (chat, task-learn, dream; not
-  ask). No shell, no web, no subagents.
+  ask), plus Bash when the session may run UDFs (chat, ask; "Running UDFs" below). No web, no subagents.
 - Reads inside the working directory (the expert's folder) are the CLI's default, so the expert can read its
   `instructions.md`, `skills/`, `bot.json` and its own `.fused/` (session rows, `read.json`).
 - Each granted folder (the bot's `folders` setting, Settings > Permissions; `store.read_folders`) gets a `Read`
@@ -171,6 +182,46 @@ own permission rules (verified on claude 2.1.326), with NO permission prompt too
 - Refused, with nobody to ask: every other write or edit (`instructions.md`, `skills/`, any file outside), every
   read outside the folder and the granted folders, every tool not in `--tools`. The model gets the CLI's refusal
   as the tool's result; a side-session row lists them as `refused` lines.
+
+### Running UDFs
+
+The expert's chat and its ask sessions (asks from unattended tasks included) may run UDFs on Fused with the
+`fused` CLI: a saved UDF of a canvas it sees, or throwaway source of its own. There is no setting for it and no
+gate. Task-learn and dream sessions get no Bash (`fence(..., run=False)`): they have no use for it. It is all
+Claude Code's own Bash permission rules; our code builds the rules and the prompt line and nothing else (it does
+not look at, rewrite or approve a command).
+
+- **Which environments** (`store.run_envs`): `prod` and `unstable` (`store.RUN_ENVS`), each only when its folder of
+  canvas copies `<canvases base>/<env>` (`canvases.canvases_base()`) exists inside a folder the expert was granted,
+  and only when the server wrote the `fused` wrapper (`fusedcli.CLI_DIR_ENV` is set; the wrapper's folder is on
+  the harness's PATH). With no such environment the session has no Bash at all.
+- **The rules**: per environment, `Bash(fused workbench --env <env> run:*)`, `Bash(fused workbench --env <env>
+  udf-schema:*)` (a UDF's parameters) and `Bash(fused workbench --env <env> whoami)`.
+- **The environment is resolved by the expert, and the rule makes it say so**: `--env <env>` is part of every
+  allowed command (the CLI's own flag; it wins over `FUSED_ENV` and over the wrapper's defaults), so a run with no
+  `--env`, or one for an environment it was not given, is refused. Which environment is right comes from the
+  folder: the prompt says "copies under `<base>/prod` are environment `prod`, run with `fused workbench --env prod
+  run --engine remote <canvas> <udf>`" for each (`store.where(bot, run=True)`), and names the skill.
+- **`custom` cannot be run**: it is reached with `FUSED_ENV` unset from inside its own folder (the wrapper's cwd
+  rule), which an allow rule cannot require. Its copies are still readable.
+- **Throwaway UDFs** go on standard input with a quoted heredoc (`... run --engine remote scratch --stdin <<'EOF'`),
+  or as a `.py` path in the UDF argument (a canvas copy's node file: its source is sent for that run). Nothing is
+  saved and no file is written: the file fence is unchanged (memory.md is still the only write).
+- **Remote engine**: the skill and the prompt tell the expert to always pass `--engine remote` and never
+  `--engine local`. This is an instruction to the expert, not a restriction: no rule refuses `--engine local`,
+  which would run the UDF's code on this machine outside the fence.
+- **What Claude Code itself refuses** (observed on claude 2.1.327 with these rules): any other program, any other
+  `fused` command (`canvas list`, `login`, `whoami --team`), a command chained with `;` or `&&` to one that is not
+  allowed, a pipe into a writing command (`| tee f`), output redirects (`> f`, `>> memory.md`), `$(...)` and
+  backticks, an unquoted heredoc, text after the heredoc word, an environment-variable prefix (`FUSED_ENV=x fused
+  ...`), `cd` elsewhere followed by a command. **What it lets through**: read-only commands on paths the session
+  may read (`ls`, `cat`, `find`, `pwd`, a pipe into `head`), and every flag of the allowed commands, so
+  `--output-file <path>` writes a result file wherever the user can write and `--engine local` is not stopped.
+  These are accepted (owner, 2026-11-18): nothing is built to block them.
+- **The row** shows each command as a `tool` line (`Bash fused workbench --env prod run ...`); the chat shows it
+  as an `action` row with the output.
+- A UDF runs under the user's Fused sign-in. Without one the CLI waits 30 s for a browser login and fails; the
+  skill tells the expert to send the user to the Canvases page.
 
 ## 7. Chat
 
@@ -387,9 +438,11 @@ delete; no "learn from last task", since an expert never edits its skills). No E
 
 `experts/shipped/<key>/` holds `expert.json` (`{name, ask_me_about, face}`), `instructions.md` and `skills/*.md`.
 One ships: `canvas-reference` — "Canvas Reference", about writing canvases, the canvas APIs and examples from
-existing canvases — with five skills (canvas folder layout, edges and folders, finding a reference canvas, the
-`fused` CLI canvas commands, live clone vs reference copy). Its instructions add how to search the canvas copies
-(`user/`, then `team/`, then `public/`), how to answer, and end with `store.MEMORY_RULES`.
+existing canvases — with six skills (canvas folder layout, edges and folders, finding a reference canvas, the
+`fused` CLI canvas commands, live clone vs reference copy, running UDFs). Its instructions add when it may run
+UDFs (§6; the `running-udfs.md` skill has the commands: environment from the folder, remote engine, saved and
+throwaway UDFs, parameters, caching, what is refused), how to search the canvas copies (`user/`, then `team/`,
+then `public/`), how to answer, and end with `store.MEMORY_RULES`.
 
 **The seed** (`seed.seed`, called by the bots owner right after the Super Bot seed, `registry._seed_experts`,
 only once the v3 folder migration has completed) installs each shipped key ONCE: create the expert (no greeting
@@ -397,8 +450,15 @@ model call), copy `instructions.md` and the skills over the default layout, set 
 copies folder (`canvases.canvases_base()`, `~/Fused/canvas`) through `folders`. The witness
 `<bots root>/experts-seeded.json` lists the keys installed, so an expert the user deletes stays deleted. A seed cut
 short (an expert with that `shipped` key but no witness entry) is finished: missing files copied, a default
-`instructions.md` replaced, face and folders set only if unset. Skills are never synced afterwards: the expert's
-copies are its own.
+`instructions.md` replaced, face and folders set only if unset. A skill the expert has is never synced afterwards:
+its copies are its own.
+
+**A skill added to the shipped folder later** (`seed._new_skills`): the witness also lists, per key, the shipped
+skill names that expert has been offered (`skills`; an older witness without the list counts as the first five,
+`seed.FIRST_SKILLS`). On each start a shipped skill not in the list is copied into the installed expert, never
+over a file it has, and the list is updated: offered once, so one the user deletes stays deleted. `instructions.md`
+is not touched: an expert installed before `running-udfs.md` gets the skill file, the fence and the prompt line
+(which names the skill), but keeps its old instructions, which do not mention running.
 
 ## 15. Developer settings
 
@@ -418,8 +478,10 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
 ## 16. Deliberately not there
 
 - No undo, no approval step, no quality checks on what the expert writes; the user edits `memory.md` directly.
-- Experts never edit skills (refused by the fence; `learn` refused); skills are never re-synced from the shipped
-  copy.
+- Experts never edit skills (refused by the fence; `learn` refused); a skill it has is never re-synced from the
+  shipped copy, and neither is `instructions.md` (§14).
+- Running UDFs (§6): no enforcement of the remote engine, no block on `--output-file`, no setting to turn it off,
+  no `custom` environment.
 - No separate lessons, research step, ledger or token accounting beyond the harness's reported `cost_usd` per row.
 - Task-learn runs only for tasks that called `expert_context` or `expert_ask`; a task that never did teaches
   nothing.

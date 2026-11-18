@@ -16,7 +16,8 @@ changed memory.md leaves its hash as it ended in `.fused/expert/left.json`; a
 file that differs from it was edited by hand since (`edited_by_hand`).
 
 The fence is the harness's own (`fence`): only Read / Glob / Grep (plus Edit /
-Write when the kind writes) exist, the one pre-allowed write is memory.md, and
+Write when the kind writes, plus Bash limited to the `fused` commands that run a
+UDF for a chat and an ask) exist, the one pre-allowed write is memory.md, and
 with no permission prompt tool every other write, and every read outside the
 expert's folder and its granted folders, is refused by Claude Code itself
 (verified on claude 2.1.326). The chat (bots/agent_engine.py) uses the same
