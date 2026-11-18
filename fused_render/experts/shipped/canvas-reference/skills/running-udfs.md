@@ -30,7 +30,7 @@ Always pass `--engine remote`, right after `run`. It runs the UDF on Fused. Neve
     fused workbench --env prod run --engine remote <canvas> <udf>
 
 - `<canvas>` is the canvas's name: the `name` in the copy's `.fused-canvas.json` (else the folder's name). `<udf>` is the node's `udfName` (its file name without `.py`).
-- This runs the UDF as saved on Fused, which may be newer than the copy you read.
+- This runs the UDF as saved on Fused now, which may be newer than the copy you read. When what you read is why it is safe to run (you checked that it changes nothing), run the file you read by its path instead (two lines down).
 - For a canvas under `team/`, add `--team`. To name a canvas by its id (the `id` in `.fused-canvas.json`), add `--id` and give the id as `<canvas>`.
 - To run exactly the file you read, give its full path as `<udf>`: `fused workbench --env prod run --engine remote <canvas> /full/path/to/<udfName>.py`. The file's source is sent for this one run and nothing is saved. Not with `--team` or `--id`.
 - Only `.py` nodes run. A `.json` widget, `.html` node or `.md` note is not a UDF.
@@ -68,12 +68,12 @@ Results are cached on Fused. The same UDF with the same parameters may return an
 
 ## Outside these forms
 
-One `fused` command per Bash call, in the forms above. `fused workbench --env <env> whoami` shows who is signed in. Do not use `--output-file`: read the result from the command's output. To read a command's flags: `fused workbench --help`, `fused workbench run --help`, `fused workbench udf-schema --help`. Never run a `fused` command that changes something (push, pull, create, delete, login).
+One `fused` command per Bash call, in the forms above. `fused workbench --env <env> whoami` shows who is signed in. Do not use `--output-file`: read the result from the command's output. Nothing refuses that flag, so leaving it out is yours to do. To read a command's flags: `fused workbench --help`, `fused workbench run --help`, `fused workbench udf-schema --help`. Never run a `fused` command that changes something (push, pull, create, delete, login).
 
 What happens to anything else (another program, chaining with `;` or `&&`, writing output to a file, command substitution, a write outside `memory.md` and the scratch folder) depends on who you are talking to:
 
 - A task session's question: it is refused, and nobody can approve it. A refusal is final; do not try another spelling. Change the command to one of the forms above, or say what you could not run.
-- Your chat with the user: Claude Code judges each call by itself. Routine, harmless ones run; one it judges risky or irreversible is refused with a reason, or the user gets an Approve / Deny card in the chat and the call waits for their answer. Writing any file other than `memory.md` and your scratch files always raises that card. So never tell the user to approve something you have not called; keep to the forms above whenever they do the job; when a call is refused, say what you could not do instead of trying another spelling, and when the user denies a call, do not retry it.
+- Your chat with the user: Claude Code judges each call by itself. Routine, harmless ones run; one it judges risky or irreversible is refused with a reason, or the user gets an Approve / Deny card in the chat and the call waits for their answer. Writing any file other than `memory.md` and your scratch files with the Write or Edit tool always raises that card. So never tell the user to approve something you have not called; keep to the forms above whenever they do the job; when a call is refused, say what you could not do instead of trying another spelling, and when the user denies a call, do not retry it.
 
 ## Reporting
 

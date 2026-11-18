@@ -47,7 +47,8 @@ PAST = {"canvas-reference": {
     "skills/canvas-folder-layout.md": ["dcc8a9606ee6d28d", "38953af0627ba825"],
     "skills/finding-a-reference-canvas.md": ["2c24bd024c045947"],
     "skills/live-clone-vs-reference-copy.md": ["0a7634eb8be02203", "ffbeda78861daf1a"],
-    "skills/running-udfs.md": ["ee874333d2b5d028", "7d46c614a4e8a72a", "05172db74852c1cc"]}}
+    "skills/running-udfs.md": ["ee874333d2b5d028", "7d46c614a4e8a72a", "05172db74852c1cc",
+                               "1813dbee30d7e4f5"]}}
 
 
 def _witness() -> tuple:
