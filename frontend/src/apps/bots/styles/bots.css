@@ -694,6 +694,7 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-turn { display: flex; gap: 8px; min-width: 0; }
 .bots-page .xp-role { flex: none; width: 52px; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding-top: 1px; }
 .bots-page .xp-ttext { flex: 1; min-width: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.bots-page .xp-ttext.xp-md { white-space: normal; }  /* the expert's text, rendered (MdDoc): its own line breaks */
 .bots-page .xp-turn.role-tool .xp-ttext { color: var(--muted); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .bots-page .xp-turn.role-refused :is(.xp-role, .xp-ttext) { color: var(--err); }
 .bots-page .shotwrap img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }

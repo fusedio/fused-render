@@ -25,6 +25,7 @@ import { cn } from "@platform/lib/utils";
 import { Face } from "../components/Face";
 import { FolderPlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { ApiError, api, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
+import { settingsWords } from "../lib/expert";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
@@ -55,6 +56,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   // Permissions (only the folders it may read) and Skills (its reference files under skills/, which you edit and it
   // only reads; no "Learn from last task", the backend refuses that for an expert) are its whole dialog.
   const isExpert = bot.kind === "expert";
+  const words = settingsWords(isSuper ? "super" : isExpert ? "expert" : "bot");  // an expert's words fit its reference files
   // On the phone (isLanHost) the Connections, Browser and Phone tabs are not drawn: their routes (Preferences,
   // /api/bots/browsers, iMessage) are Mac-side and the LAN door 404s them (lan.py `_DOORS`).
   const lan = isLanHost();
@@ -252,7 +254,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
       <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
         <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>Settings · {n || init.name}</DialogTitle>
-          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, the services it may use, its browser, its playbooks, its routines, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
+          <DialogDescription className="sr-only">{words.description}</DialogDescription>
         </DialogHeader>
         {/* On the phone (lan) the section list is a scrolling row above the content, not a column beside it. */}
         <div className={cn("flex min-h-0 flex-1 gap-6 px-6 pb-5", lan && "flex-col gap-3 px-4")}>
@@ -290,7 +292,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 <Row title="What it should do" text={isExpert ? "Standing rules for its chats and sessions." : "Standing rules for every task."} htmlFor="bminstr" stack>
                   <Textarea id="bminstr" rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} className="max-h-64"
                     placeholder={isSuper ? "Blank keeps Super Bot's own: files in its Inbox folder, say before anything destructive."
-                      : "e.g. “Browse LinkedIn for me. Answer in bullets. Never like or comment.”"} />
+                      : words.instructionsPlaceholder} />
                 </Row>
                 <Row title="Model" text="Applies from the next task." htmlFor="bmmodel">
                   <NativeSelect className="w-full" id="bmmodel" value={model} onChange={(e) => setModel(e.target.value)}>

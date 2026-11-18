@@ -1,5 +1,5 @@
 // Settings › Skills (OpenBot dialogs.js skills, once its own #smodal): the bot's playbooks as cards (Edit, delete with a
-// confirm), "Learn from last task" and the hand-written form (Title, Trigger words, Steps). Every op posts at once and
+// confirm), "Learn from last task" and the hand-written form (Title, Trigger words, Steps; "Text" for an expert, lib/expert skillFormWords). Every op posts at once and
 // the next poll repaints the list; nothing here touches the Settings snapshot or its Save. The confirm is a sibling
 // modal, so it goes through the dialog's `confirm` (holds `busy`) and not askConfirm directly.
 // An expert (`expert`) has the same list and form over the same files (skills/*.md in its folder, the same save /
@@ -13,6 +13,8 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@platform/shadc
 import { Input } from "@platform/shadcn/ui/input";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { api, type Bot } from "../lib/api";
+import { skillFormWords } from "../lib/expert";
+import { revealWithin } from "../lib/scroll";
 import { act } from "../state/store";
 import { CARD_CLASS } from "./shell";
 
@@ -33,8 +35,15 @@ export function SkillsSection({ b, confirm, expert = false }: SectionProps & { e
   useEffect(() => { setSent(false); }, [b.learning, b.seq]);
   const learning = sent || !!b.learning;
   const sk = b.skills || [];
-  // By id, not ref: the shadcn Input forwards no ref on React 18.
-  const focusTitle = () => requestAnimationFrame(() => document.getElementById("sktitle")?.focus());
+  const w = skillFormWords(expert);
+  // By id, not ref: the shadcn Input forwards no ref on React 18. The form opens under the list (Edit as well as
+  // "Write one by hand"): bring it into view inside the dialog's own scroller only ([data-sec]), never the page, and
+  // focus without the browser's own scroll (which would move every scrollable ancestor).
+  const focusTitle = () => requestAnimationFrame(() => {
+    const form = document.getElementById("sform");
+    revealWithin(form?.closest<HTMLElement>("[data-sec]") ?? null, form);
+    document.getElementById("sktitle")?.focus({ preventScroll: true });
+  });
 
   const edit = (name: string) => {
     const k = sk.find((x) => x.name === name); if (!k) return;
@@ -89,16 +98,16 @@ export function SkillsSection({ b, confirm, expert = false }: SectionProps & { e
         <FieldGroup id="sform" className={CARD_CLASS}>
           <Field>
             <FieldLabel htmlFor="sktitle">Title</FieldLabel>
-            <Input id="sktitle" placeholder="e.g. LinkedIn feed summary" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <Input id="sktitle" placeholder={w.titlePlaceholder} value={title} onChange={(e) => setTitle(e.target.value)} />
           </Field>
           <Field>
             <FieldLabel htmlFor="sktrig">Trigger words</FieldLabel>
-            <Input id="sktrig" placeholder="linkedin feed, linkedin posts" value={trigger} onChange={(e) => setTrigger(e.target.value)} />
-            <FieldDescription>Comma-separated; any one appearing in a task mounts this playbook.</FieldDescription>
+            <Input id="sktrig" placeholder={w.triggerPlaceholder} value={trigger} onChange={(e) => setTrigger(e.target.value)} />
+            <FieldDescription>{w.triggerHint}</FieldDescription>
           </Field>
           <Field>
-            <FieldLabel htmlFor="skbody">Steps</FieldLabel>
-            <Textarea id="skbody" rows={7} placeholder={"1. Go to https://…\n2. Dismiss the cookie banner\n3. …"} value={body} onChange={(e) => setBody(e.target.value)} />
+            <FieldLabel htmlFor="skbody">{w.bodyLabel}</FieldLabel>
+            <Textarea id="skbody" rows={7} placeholder={w.bodyPlaceholder} value={body} onChange={(e) => setBody(e.target.value)} />
           </Field>
           <div className="flex justify-end gap-2">
             <Button id="skcancel" variant="outline" onClick={() => { setForm(false); setEditing(null); }}>Cancel</Button>

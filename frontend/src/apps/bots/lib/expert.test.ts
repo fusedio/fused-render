@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExpertSession } from "./api";
-import { changedMemory, costLabel, diffDoc, duration, kindLabel, memoryUsage, newestFirst, oneLine, originOf, statusOf } from "./expert";
+import { changedMemory, costLabel, diffDoc, duration, kindLabel, memoryUsage, newestFirst, oneLine, originOf, settingsWords, skillFormWords, statusOf, turnIsMarkdown } from "./expert";
 
 const row = (p: Partial<ExpertSession>): ExpertSession => ({ id: "s", kind: "ask", started: 100, ended: 112, status: "done", memory_diff: "", ...p });
 const DIFF = "--- a/memory.md\n+++ b/memory.md\n@@ -1,2 +1,2 @@\n ## Works\n-- [1 · 2026-11-16] Pull first.\n+- [2 · 2026-11-17] Pull first.\n+- [1 · 2026-11-17] New fact.\n";
@@ -101,5 +101,37 @@ describe("memoryUsage", () => {
     expect(memoryUsage({ lines: 201, bytes: 3072, limit_lines: 200, limit_bytes: 12288 }).over).toBe(true);
     expect(memoryUsage({ lines: 10, bytes: 13000, limit_lines: 200, limit_bytes: 12288 }).over).toBe(true);
     expect(memoryUsage({ lines: 1, bytes: 10, limit_lines: 0, limit_bytes: 0 })).toEqual({ text: "1 line · 10 B", over: false });
+  });
+});
+
+describe("follow-ups", () => {
+  test("an added or removed blank line is left out (no empty coloured strip); blank context stays", () => {
+    const d = "@@ -1,3 +1,4 @@\n ## Works\n+\n+- [1 · 2026-11-18] New.\n \n-\n ## Does not work\n";
+    expect(diffDoc(d)).toEqual([
+      { tone: "ctx", text: "## Works" },
+      { tone: "add", text: "- [1 · 2026-11-18] New." },
+      { tone: "ctx", text: "" },
+      { tone: "ctx", text: "## Does not work" },
+    ]);
+    expect(diffDoc("@@ -1,2 +1,3 @@\n ## Works\n+\n ## Does not work\n")).toEqual([]);  // only blank lines changed
+  });
+
+  test("only the expert's own transcript text renders as markdown", () => {
+    expect(turnIsMarkdown("expert")).toBe(true);
+    for (const r of ["prompt", "tool", "refused", ""]) expect(turnIsMarkdown(r)).toBe(false);
+  });
+
+  test("an expert's settings speak of reference files; an ordinary bot's words are unchanged", () => {
+    const x = settingsWords("expert"), b = settingsWords("bot"), s = settingsWords("super");
+    expect(x.instructionsPlaceholder).toContain("Answer questions about writing canvases");
+    expect(x.description).not.toMatch(/browser|playbooks|routines/);
+    expect(b.instructionsPlaceholder).toBe("e.g. “Browse LinkedIn for me. Answer in bullets. Never like or comment.”");
+    expect(b.description).toBe("How this bot thinks, what it may do without asking, the services it may use, its browser, its playbooks, its routines, its memory.");
+    expect(s.description.endsWith(" and your phone.")).toBe(true);
+    const xs = skillFormWords(true), bs = skillFormWords(false);
+    expect(xs.bodyLabel).toBe("Text");
+    expect(xs.triggerHint).toContain("help the expert find");
+    expect(bs.bodyLabel).toBe("Steps");
+    expect(bs.triggerHint).toBe("Comma-separated; any one appearing in a task mounts this playbook.");
   });
 });

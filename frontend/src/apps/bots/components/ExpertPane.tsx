@@ -13,8 +13,9 @@
 // the banner.
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { expertApi, type Bot, type ExpertChange, type ExpertMemory, type ExpertSession } from "../lib/api";
-import { changedMemory, costLabel, diffDoc, duration, kindLabel, memoryUsage, newestFirst, originOf, roleTag, statusOf } from "../lib/expert";
+import { changedMemory, costLabel, diffDoc, duration, kindLabel, memoryUsage, newestFirst, originOf, roleTag, statusOf, turnIsMarkdown } from "../lib/expert";
 import { fmtAgo, fmtWhen } from "../lib/format";
+import { revealWithin } from "../lib/scroll";
 import { errMsg } from "../state/store";
 import { MdDoc } from "./MdDoc";
 
@@ -41,7 +42,7 @@ function DiffLine({ tone, text }: { tone: "add" | "del" | "ctx"; text: string })
  *  "No change to memory." for an empty one. */
 export function DiffView({ diff }: { diff: string | null | undefined }) {
   const rows = diffDoc(diff);
-  if (!rows.length) return <p className="xp-none">No change to memory.</p>;
+  if (!rows.length) return <p className="xp-none">{(diff || "").trim() ? "Only blank lines changed." : "No change to memory."}</p>;
   return (
     <div className="xp-diff" role="group" aria-label="Memory diff">
       {rows.map((r, i) => r.tone === "gap" ? <div key={i} className="xp-dgap" aria-hidden="true">⋯</div>
@@ -52,7 +53,8 @@ export function DiffView({ diff }: { diff: string | null | undefined }) {
   );
 }
 
-/** The transcript, one role-tagged block per turn. */
+/** The transcript, one role-tagged block per turn: the expert's own text rendered as markdown (MdDoc, as the diff and
+ *  memory.md are); the prompt, tool and refused lines as plain preformatted text. */
 export function Transcript({ turns }: { turns: ExpertSession["transcript"] }) {
   if (!turns?.length) return <p className="xp-none">No transcript.</p>;
   return (
@@ -60,7 +62,9 @@ export function Transcript({ turns }: { turns: ExpertSession["transcript"] }) {
       {turns.map((t, i) => (
         <li key={i} className={`xp-turn role-${t.role}`}>
           <span className="xp-role">{roleTag(t.role)}</span>
-          <span className="xp-ttext">{t.text}</span>
+          {turnIsMarkdown(t.role)
+            ? <div className="xp-ttext xp-md"><MdDoc text={t.text} /></div>
+            : <span className="xp-ttext">{t.text}</span>}
         </li>
       ))}
     </ol>
@@ -235,13 +239,15 @@ export function ExpertPane({ b }: { b: Bot }) {
   const stamp = row ? `${row.status}:${row.ended ?? ""}:${row.status === "running" ? tick : ""}` : "";
   const { full, err: fullErr } = useSession(b.id, open, stamp);
   const uid = useId();
+  const paneRef = useRef<HTMLDivElement>(null);
   const about = b.expert?.ask_me_about || "";
 
   // A change clicked on the Memory tab: the Sessions tab, that row open and scrolled to.
   const openChange = (c: ExpertChange) => { setTab("sessions"); setOpen(c.id); };
   useEffect(() => {
     if (tab !== "sessions" || !open) return;
-    const t = window.setTimeout(() => document.getElementById(`xps-${open}`)?.scrollIntoView({ block: "nearest" }), 0);
+    // Only the pane scrolls (it is the scroller, .xpane): scrollIntoView would move the app shell too.
+    const t = window.setTimeout(() => revealWithin(paneRef.current, document.getElementById(`xps-${open}`)), 0);
     return () => window.clearTimeout(t);
   }, [tab, open]);
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -253,7 +259,7 @@ export function ExpertPane({ b }: { b: Bot }) {
   };
 
   return (
-    <div className="xpane" id="xpane">
+    <div className="xpane" id="xpane" ref={paneRef}>
       {about ? <p className="xp-about" title="What tasks ask this expert about">{about}</p> : null}
       <div className="viewsw" role="tablist" aria-label="Expert" onKeyDown={onKey}>
         {TABS.map(([t, l]) => (
