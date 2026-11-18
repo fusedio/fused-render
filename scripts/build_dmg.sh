@@ -966,16 +966,16 @@ rm -rf "$BUILD_DIR/pil-venv"
 # ---------------------------------------------------------------------------
 # 4c. Bundled fused CLI (SPEC §19 DP-3): the `fused` package installed above
 #     (a [bundled] requirement, so setup_py2app.py's derivation forces it)
-#     ships in the bundle so Deploy works with zero setup. Two artifacts:
+#     ships in the bundle so canvases and sharing work with zero setup. Two
+#     artifacts:
 #     - Contents/Resources/bin/fused: a terminal wrapper over the SAME baked-in CLI
-#       (bundled python + fused_render/_fused_cli.py shim), for the one-time
-#       setup steps a modal can't do (`fused cloud setup`, `fused cloud
-#       login`, `fused env create`). The Deploy modal's guidance names this
-#       path when running packaged (deploy._setup_cli_hint).
+#       (bundled python + fused_render/_fused_cli.py shim), for commands a user
+#       runs in a terminal (e.g. a sign-in). fusedcli.setup_cli_hint names
+#       this path when running packaged.
 #     - a smoke test invoking real CLI verbs through the shim, so a py2app
 #       packaging gap (an untraced dynamic import, a dropped data dir - see
 #       setup_py2app.py's fused-deps block) fails the BUILD, not the user's first
-#       deploy. Runs before signing: the wrapper must exist before the seal.
+#       canvas sync. Runs before signing: the wrapper must exist before the seal.
 # ---------------------------------------------------------------------------
 
 echo "==> bundled fused CLI: terminal wrapper + smoke test"
@@ -1004,18 +1004,26 @@ exec env -u PYTHONPATH PYTHONHOME="\$RES" "\$RES/../MacOS/python" "\$RES/lib/${P
 WRAPPER
 chmod +x "$WRAPPER_PATH"
 
-# --help imports the whole click command tree; `env list` (against an empty,
-# isolated store) exercises the environments stack (pydantic models et al).
-for probe in "--help" "share --help" "env list"; do
-  if ! PROBE_OUT="$(env OPENFUSED_ENVS_FILE="$BUILD_DIR/smoke-envs.json" \
-      "$WRAPPER_PATH" $probe 2>&1)"; then
-    echo "FATAL: bundled fused CLI failed on: fused $probe" >&2
+# --help imports the whole click command tree; `workbench canvas validate` on a
+# minimal canvas exercises the canvas models (pydantic et al) that canvas sync
+# runs on every publish (canvases.py's _SyncManager validates before a push).
+SMOKE_CANVAS="$BUILD_DIR/smoke-canvas"
+rm -rf "$SMOKE_CANVAS"
+mkdir -p "$SMOKE_CANVAS"
+printf '[canvas]\nname = "smoke"\n' > "$SMOKE_CANVAS/canvas.toml"
+smoke_probe() {
+  if ! PROBE_OUT="$("$WRAPPER_PATH" "$@" 2>&1)"; then
+    echo "FATAL: bundled fused CLI failed on: fused $*" >&2
     echo "$PROBE_OUT" >&2
     echo "(a py2app packaging gap? see setup_py2app.py's fused packages block)" >&2
     exit 1
   fi
-done
-echo "    fused --help / share --help / env list OK"
+}
+smoke_probe --help
+smoke_probe share --help
+smoke_probe workbench canvas validate "$SMOKE_CANVAS"
+rm -rf "$SMOKE_CANVAS"
+echo "    fused --help / share --help / workbench canvas validate OK"
 
 # ---------------------------------------------------------------------------
 # 4d-bis. Bundle uv (D176). NOT a convenience: the install loader (SPEC PY-18)

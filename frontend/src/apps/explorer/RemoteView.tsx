@@ -14,11 +14,16 @@
 //     with `remoteUrl` set so the viewer keeps every local-file affordance
 //     (rename, delete, reveal, share, splits, sidebar, app rows) out of reach
 //     and its menus speak the s3 address instead;
-//   - an uncached file one of its templates streams (`stream_templates`, a
-//     `stream-s3` marker, D1484) → that template's page on the `s3://` address
-//     itself, reading only what it shows; Download is a button above it;
-//   - any other uncached file → download first: at once up to `warn_bytes`,
-//     behind a notice above it (shown every time), with progress and Cancel.
+//   - an uncached file with modes (`stat.templates`, D1492) → the same viewer
+//     on the `s3://` address, with its mode switcher: a mode whose template
+//     streams the object (its pyproject.toml `[tool.fused-render.template]
+//     stream`) frames the address and reads only what it shows, under a
+//     "Streaming from S3" bar with Download (and keeps streaming while a
+//     download another mode started runs); every other mode shows the
+//     download card in its pane, and opens on the cached copy once it lands;
+//   - an uncached file with no modes → the download card: at once up to
+//     `warn_bytes`, behind a notice above it (shown every time), with
+//     progress and Cancel.
 // The address bar, tab title and history stay on the `s3://` address
 // throughout; only Preview's iframe ever receives the local cache path, and
 // only a streaming template's iframe receives the `s3://` address.
@@ -40,9 +45,10 @@ import {
   type RemoteStat,
 } from "@platform/lib/remote";
 import { notify } from "@platform/lib/notifications";
+import { isSidebarMode } from "@platform/lib/mode-visibility";
 import { BreadcrumbBar } from "@apps/explorer/Breadcrumb";
 import Listing from "@apps/explorer/Listing";
-import Preview from "@apps/explorer/Preview";
+import Preview, { type RemoteContent } from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
 
 const POLL_MS = 500;
@@ -195,13 +201,24 @@ type FetchPhase =
 function RemoteDownload({
   stat,
   onDone,
+  autoStart = false,
+  onStarted,
+  onCancelled,
 }: {
   stat: RemoteStat;
   /** The download finished: the caller re-stats and renders the cache. */
   onDone: () => void;
+  /** Start (or join) the download at once, even past `warn_bytes`: the
+   *  reader already asked for it, in this card or another mode's. */
+  autoStart?: boolean;
+  /** The download was asked for (Download, or an automatic start). */
+  onStarted?: () => void;
+  /** The server reports the download cancelled. */
+  onCancelled?: () => void;
 }) {
   const big = stat.size === null || stat.size > stat.warn_bytes;
-  const [phase, setPhase] = useState<FetchPhase>(() => (big ? { kind: "confirm" } : { kind: "starting" }));
+  const confirmFirst = big && !autoStart;
+  const [phase, setPhase] = useState<FetchPhase>(() => (confirmFirst ? { kind: "confirm" } : { kind: "starting" }));
   // A cancel request is out (or was accepted and the poll has yet to see it).
   const [cancelling, setCancelling] = useState(false);
   const reach = useNavReach();
@@ -245,7 +262,10 @@ function RemoteDownload({
         (s) => {
           if (!alive.current || watching.current !== watch) return;
           if (s.state === "done") finish(s.total ?? s.done, s.total ?? stat.size);
-          else if (s.state === "cancelled") setPhase({ kind: "cancelled" });
+          else if (s.state === "cancelled") {
+            setPhase({ kind: "cancelled" });
+            onCancelled?.();
+          }
           else if (s.state === "error")
             setPhase({
               kind: "failed",
@@ -273,6 +293,7 @@ function RemoteDownload({
   };
 
   const start = () => {
+    onStarted?.();
     const watch = ++watching.current;
     window.clearTimeout(timer.current);
     setCancelling(false);
@@ -292,10 +313,11 @@ function RemoteDownload({
     );
   };
 
-  // A file under the threshold starts at once.
+  // A file under the threshold starts at once, and so does a download the
+  // reader already asked for (`autoStart`): a running one is joined.
   const startedRef = useRef(false);
   useEffect(() => {
-    if (big || startedRef.current) return;
+    if (confirmFirst || startedRef.current) return;
     startedRef.current = true;
     start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -458,33 +480,89 @@ function RemoteCachedFile({
   );
 }
 
-// -- streamed file: the template reads the bucket itself ------------------------
+// -- uncached file: the viewer on the address, one pane per mode ---------------
 
-/** A file whose template streams it (`stat.stream_templates`, a `stream-s3`
- *  marker in the template folder, D1484): the template's page gets the
- *  `s3://` address as `_file` and reads only the byte ranges it shows, through
- *  a URL the server signs (`fused.s3.sign` / `fused_s3`). No download, no
- *  size notice. Download stays one click away for a file the viewer will not
- *  stream (the duckdb grid says so for a sort that would scan most of the file). */
-function RemoteStreamFile({ stat, onDownload }: { stat: RemoteStat; onDownload: () => void }) {
-  const entry = (stat.stream_templates ?? [])[0];
-  if (!entry || !entry.path) return null;
-  const src = `/render?path=${encodeURIComponent(entry.path)}&_file=${encodeURIComponent(stat.url)}`;
-  return (
-    <div className="preview-body">
-      <div className="preview-content-stack">
+/** An uncached object with modes (`stat.templates`, D1492): the ordinary
+ *  viewer, its mode switcher included, on the `s3://` address. A mode whose
+ *  template streams the object gets the address as `_file` and reads only the
+ *  byte ranges it shows, through a URL the server signs (`fused.s3.sign` /
+ *  `fused_s3`). Any other mode shows the download card in its pane; once the
+ *  copy lands the page re-stats and opens it, on the same `_mode`.
+ *
+ *  Once a download is asked for — a pane's Download or automatic start, or
+ *  the bar's Download (the duckdb grid points at it on a sort that would
+ *  scan most of the file) — the whole file is downloading: a card mounted by
+ *  a mode switch joins the running download instead of asking again, and
+ *  re-stats onto the copy when it lands. A streaming mode keeps streaming
+ *  through it: a download started in another mode's pane (often on its own,
+ *  for a file under `warn_bytes`) is no reason to take the stream away. Only
+ *  the mode whose bar's Download was pressed gives its pane to the card. A
+ *  cancelled download puts the modes back. */
+function RemoteUncachedFile({
+  stat,
+  onRenderedTitle,
+  onDone,
+}: {
+  stat: RemoteStat;
+  onRenderedTitle: (t: string | null) => void;
+  onDone: () => void;
+}) {
+  const [downloading, setDownloading] = useState(false);
+  // Streaming modes whose own bar's Download was pressed: they show the card.
+  const [downloadIn, setDownloadIn] = useState<ReadonlySet<string>>(() => new Set());
+  const templates = stat.templates ?? [];
+  const streams = (mode: string) => !downloadIn.has(mode) && templates.some((t) => t.mode === mode && t.stream);
+  const cancelled = () => {
+    setDownloading(false);
+    setDownloadIn(new Set());
+  };
+  const remoteContent: RemoteContent = {
+    pane: (mode) =>
+      streams(mode) ? null : (
+        <RemoteDownload
+          stat={stat}
+          onDone={onDone}
+          autoStart={downloading}
+          onStarted={() => setDownloading(true)}
+          onCancelled={cancelled}
+        />
+      ),
+    banner: (mode) =>
+      streams(mode) ? (
         <div className="listing-snapshot-banner">
           Streaming from S3: only the parts you view are read
           {stat.size !== null ? ` (${formatSize(stat.size)} in the bucket)` : ""}.
-          <button type="button" className="listing-snapshot-back" onClick={onDownload}>
+          <button
+            type="button"
+            className="listing-snapshot-back"
+            onClick={() => {
+              setDownloading(true);
+              setDownloadIn((s) => new Set(s).add(mode));
+            }}
+          >
             Download
           </button>
         </div>
-        <div className="preview-frames">
-          <iframe key={src} className="preview-frame is-shown" src={src} title={stat.name} />
-        </div>
-      </div>
-    </div>
+      ) : null,
+  };
+  const asStat: StatResult = {
+    path: stat.url,
+    name: stat.name,
+    is_dir: false,
+    size: stat.size,
+    mtime: stat.mtime,
+    writable: false,
+    templates,
+  };
+  return (
+    <Preview
+      fsPath={stat.url}
+      stat={asStat}
+      remoteUrl={stat.url}
+      remoteContent={remoteContent}
+      onRenderedTitle={onRenderedTitle}
+      actionsInTopbar
+    />
   );
 }
 
@@ -499,8 +577,6 @@ export function RemoteView({ location, home }: { location: string; home: string 
   const [reloadKey, setReloadKey] = useState(0);
   const [state, setState] = useState<RemoteState>({ status: "loading" });
   const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
-  // The streamed view's Download: the download card instead, for this address.
-  const [downloadAnyway, setDownloadAnyway] = useState(false);
   // Reached as a FOLDER (a folder row, an ancestor crumb, Back to one: the
   // `isDir` nav hint in history.state, read once at mount like StatView's):
   // stat the prefix spelling, which the server answers from the index alone —
@@ -570,9 +646,17 @@ export function RemoteView({ location, home }: { location: string; home: string 
         </div>
       </div>
     );
-  } else if ((state.stat.stream_templates ?? []).length > 0 && !downloadAnyway) {
+  } else if ((state.stat.templates ?? []).some((t) => !isSidebarMode(t.mode))) {
+    // Preview drops companion modes (claude, git) for a remote file, so a
+    // file bound only to one (a user's ungated `claude` fork) gets the
+    // download card below, not a viewer with nothing to show.
     content = (
-      <RemoteStreamFile key={state.stat.url} stat={state.stat} onDownload={() => setDownloadAnyway(true)} />
+      <RemoteUncachedFile
+        key={state.stat.url}
+        stat={state.stat}
+        onRenderedTitle={setRenderedTitle}
+        onDone={reload}
+      />
     );
   } else {
     content = <RemoteDownload key={state.stat.url} stat={state.stat} onDone={reload} />;

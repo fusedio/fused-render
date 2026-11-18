@@ -1120,6 +1120,14 @@ describe("favCardWish (the favourite's card, never taller than half the window)"
   it("…and again as the window shrinks: 600 tall holds 300", () => {
     expect(favCardWish(base, { width: 400, height: 420 }, 600)).toEqual({ width: 400, maxHeight: 300, align: "bottom" });
   });
+  it("a PINNED window hands over no window height: no ceiling, the stored height stands (2026-11-17)", () => {
+    // RailPeek's `wishFor` and BotPeek's `wish` pass Infinity once the window
+    // is pinned (owner: "remove the restrictions of height only from pin
+    // window"); hover and temp cards pass the real height and keep the half.
+    expect(favMaxHeight(Infinity)).toBe(Infinity);
+    expect(favCardWish(base, { width: 400, height: 820 }, Infinity).maxHeight).toBe(820);
+    expect(favCardWish(base, { width: 400, height: 820 }, 1000).maxHeight).toBe(500);
+  });
 });
 
 describe("dragResize with a height ceiling (the favourite's card)", () => {

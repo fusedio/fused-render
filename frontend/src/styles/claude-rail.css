@@ -486,6 +486,25 @@
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
 }
+/* THE PIN ON THE RING OF A PINNED WINDOW (ClaudeRail `pinMark`; owner,
+   2026-11-18: "when we pin we should show a pin icon topleft of the task
+   ring in rail, smaller version, also invert the pin on x axis so it faces
+   right side"): the head's own filled pin (RailPin `PinAngle`), small, at
+   the seat's top-left corner — outside the ring's circle — and mirrored (the
+   glyph itself is, RailPin `PinAngle`), so its point leans in toward the
+   ring it holds. Only while the window is
+   PINNED (not a hover, not a temp card): the wash says "open", the pin says
+   "stays". The head's muted ink; it takes no pointer and no name (the
+   window's pin button says it). On every door of the rail whose window is
+   pinned: a ring, a favourite, a bot's face, a nav door. */
+.claude-rail-pinmark {
+  position: absolute;
+  top: -1px;
+  left: -4px;
+  display: flex;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
 /* The favourite's card (FavouritePeek `#claude-rail-fav-peek`): ONE ABOVE
    THE RAIL'S OWN CARD (45) and its bridge (44), so where the two must
    overlap (a window too small to keep them apart, RailPeek `avoid`) the
@@ -701,6 +720,158 @@
   border-color: color-mix(in srgb, var(--fg) 75%, transparent);
   transition-delay: 0s;
 }
+/* …AND THE RIGHT SIDE, ON A FLOATING WINDOW ONLY (rail-move-lib; owner,
+   2026-11-17: "the right edge is free now"): the left grips mirrored. */
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br {
+  right: -6px;
+  width: 18px;
+  height: 18px;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr {
+  top: -6px;
+  cursor: nesw-resize;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br {
+  bottom: -6px;
+  cursor: nwse-resize;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-r {
+  z-index: 2;
+  right: -4px;
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
+  cursor: ew-resize;
+}
+.rail-grip-ring.is-r {
+  -webkit-mask-image: linear-gradient(to left, black 11px, transparent 24px);
+  mask-image: linear-gradient(to left, black 11px, transparent 24px);
+}
+.rail-grip-ring.is-tr {
+  -webkit-mask-image: radial-gradient(circle at 100% 0, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 100% 0, black 14px, transparent 44px);
+}
+.rail-grip-ring.is-br {
+  -webkit-mask-image: radial-gradient(circle at 100% 100%, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 100% 100%, black 14px, transparent 44px);
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-r:hover ~ .rail-grip-ring.is-r,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr:hover ~ .rail-grip-ring.is-tr,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br:hover ~ .rail-grip-ring.is-br {
+  opacity: 1;
+  transition-delay: 80ms;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-r.is-active ~ .rail-grip-ring.is-r,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr.is-active ~ .rail-grip-ring.is-tr,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br.is-active ~ .rail-grip-ring.is-br {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--fg) 75%, transparent);
+  transition-delay: 0s;
+}
+/* A PINNED WINDOW MOVES BY ITS HEAD'S FIRST ROW (useCardMove; owner,
+   2026-11-17: "instead of whole header draggable now the colored part 1st of
+   the header is draggable for pinned chats"): `.is-movable` on the card's box
+   while it is pinned, and the grab is the row the pin colours (task-head.css
+   "A PINNED RAIL WINDOW'S FIRST ROW"; rail-move-lib `RAIL_HEAD_SELECTOR`,
+   `POPOVER_HEAD_SELECTOR`) — the shared head's row 1, or a one-row head's
+   row. The title's row keeps its text cursor's ways. Its controls keep their
+   own cursor: a zero-specificity reset that any rule of theirs outranks. */
+:is(.claude-rail-peek, .modal-popover).is-movable
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
+  cursor: grab;
+  touch-action: none;
+}
+:where(:is(.claude-rail-peek, .modal-popover).is-movable :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *))
+  :where(button, input, textarea, select, [contenteditable]) {
+  cursor: auto;
+}
+:where(:is(.claude-rail-peek, .modal-popover).is-movable :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *))
+  :where(a[href]) {
+  cursor: pointer;
+}
+/* THE GRABBER: A SMALL BAR AT THE TOP EDGE OF A PINNED WINDOW'S GRAB ROW
+   (owner, 2026-11-18: "when it is pinned and we hover over first row let's
+   show the drag handle in middle space over the first row header"). Shown
+   while the pointer is over the row (and through its drag), so the row says
+   what a press on it does before the cursor has to.
+   WHERE IT IS, AND WHY A BAR. Three builds stood six dots in the row itself:
+   in its free space ("the drag icon moves based on the elements on screen,
+   that looks odd … at 50% of the width so it doesn't move"), then at 50%
+   over whatever was there on a plate ("this UI looks bad … no full element
+   goes below it?"), then at 50% and hidden when a tag reached it ("find a
+   better way"). The row's middle is not free ground: tags and titles grow
+   into it. The strip ABOVE the row's content is — the row is 40px tall and
+   nothing in it is taller than 28 — so the handle is the sheet grabber
+   (Apple's sheets: "a small horizontal indicator at the top edge"): one
+   short bar, centred at 50% of the row, in that strip. It never moves, it
+   is never hidden, and nothing can lie under it.
+   Nothing here takes a press of its own: the bar is the row's, and the row
+   is the grab. */
+:is(.claude-rail-peek, .modal-popover).is-movable
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
+  position: relative;
+}
+:is(.claude-rail-peek, .modal-popover).is-movable
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  background: var(--fg-faint);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+/* A one-row head (the Bots and Git cards, a bot's card) keeps a 4px strip
+   above its row: the bar sits in it. */
+.claude-rail-peek.is-movable .claude-rail-peek-head > .claude-rail-peek-row:first-child::after {
+  top: 0;
+}
+:is(.claude-rail-peek, .modal-popover).is-movable
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *):hover::after,
+:is(.claude-rail-peek, .modal-popover).is-dragging
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
+  opacity: 1;
+}
+/* …under the drag: no glide (the box follows the pointer every frame), no
+   text selection; and the page's frames take no pointer, so a drag over the
+   canvas or an app keeps its pointer stream (`.rail-card-moving` on <html>;
+   the app page seam's own trick, app-page.css). */
+.claude-rail-peek.is-dragging,
+.claude-rail-peek.is-dragging .claude-rail-peek-card,
+.modal-popover.is-dragging .modal-dialog {
+  transition: none;
+}
+:is(.claude-rail-peek, .modal-popover).is-dragging
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
+  cursor: grabbing;
+}
+html.rail-card-moving {
+  user-select: none;
+  -webkit-user-select: none;
+}
+html.rail-card-moving iframe {
+  pointer-events: none;
+}
+/* LAST PRESSED ON TOP (rail-move-lib `raised`; owner, 2026-11-17): with
+   either window floating, the one pressed last steps over the other — the
+   top of the rail cards' band (45–48), never over a dialog, the hint panel
+   or the magnet's guide. The door cards' own ids are named so their rule
+   (46) does not outrank it. */
+.claude-rail-peek.is-front,
+#claude-rail-tasks-peek.is-front,
+#claude-rail-bots-peek.is-front,
+#claude-rail-git-peek.is-front,
+#claude-rail-fav-peek.is-front,
+#claude-rail-bot-peek.is-front,
+.modal-popover.is-front {
+  z-index: 48;
+}
 /* THE WIDTH MAGNET'S GUIDE (card-snap.ts, owner 2026-11-10): one line on
    <body> along the left edge two stacked cards share once a width drag
    snapped them level — a quiet grey, dashed (owner, 2026-11-10: "shouldn't
@@ -717,6 +888,15 @@
 }
 .rail-snap-guide.is-on {
   opacity: 1;
+}
+/* …AND ITS HORIZONTAL TWIN, for the edge magnet of a pinned window's head
+   drag (card-snap `setSnapGuideH`; owner, 2026-11-17): the same dashed line
+   laid along a top or bottom edge. */
+.rail-snap-guide.is-h {
+  width: auto;
+  height: 0;
+  border-left: 0;
+  border-top: 1px dashed color-mix(in srgb, var(--fg) 35%, transparent);
 }
 .claude-rail-peek-card {
   flex: 1 1 auto;
@@ -1416,6 +1596,61 @@ a.claude-rail-peek-scope:focus-visible {
   margin: 0;
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+/* FORCE START ON A CARD WITH NO CHAT YET (shell/ForceStartButton). A queued
+   task that has a conversation gets the verb from the chat's own waiting card
+   (apps/claude sched.css `.wc-run`); a queued task that has none draws a
+   placeholder, and this is the same button for it: the same neutral box, for
+   the same reason — the press puts a second run in the folder, and a
+   primary-coloured button would read as the card recommending it. Lives here
+   and not in new-task.css because the rail's two cards and the New task card
+   all draw it, and this sheet is in the barrel for every page. */
+.force-start {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: inherit;
+  gap: 6px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.force-start-btn {
+  flex: 0 0 auto;
+  appearance: none;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.force-start-btn:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+}
+.force-start-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.force-start-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.force-start-note {
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--error);
+  overflow-wrap: anywhere;
+}
+/* A note that is a small column and not one centred sentence: the Tasks card's
+   "Queued · after TASK-038" with its button under it. */
+.claude-rail-peek-note.is-stack {
+  flex-direction: column;
+  gap: 10px;
 }
 
 /* THE BRIDGE between the card and the rail (RailPeek): transparent, the

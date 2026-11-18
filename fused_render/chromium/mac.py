@@ -107,7 +107,11 @@ def _load() -> None:
         raise RuntimeError("engine not on disk")
     engine_dir = chromium.engine_dir()
     fw = chromium.framework_path()
-    objc.loadBundle("FusedChromium", globals(), bundle_path=fw)
+    # scan_classes=False: the default copies EVERY Objective-C class in the
+    # process into `globals()`, building a Python proxy for each (~65k classes,
+    # ~215 MB and ~0.9 s on the main thread). Only the two classes fetched by
+    # name with `lookUpClass` are ever used.
+    objc.loadBundle("FusedChromium", globals(), bundle_path=fw, scan_classes=False)
     engine_cls = objc.lookUpClass("FRChromiumEngine")
     cache = chromium.profile_dir()
     # Owner-only, and enforced on an existing dir too: with the mock keychain
@@ -262,11 +266,13 @@ class _ChromiumDelegate(NSObject):
     def chromiumView_downloadDidFinish_(self, view, path):
         from AppKit import NSDistributedNotificationCenter
 
+        window_policy.release_download_destination(str(path) if path else None)
         NSDistributedNotificationCenter.defaultCenter().postNotificationName_object_(
             "com.apple.DownloadFileFinished", None)
 
     @_sig(b"v@:@@@")
     def chromiumView_downloadDidFail_error_(self, view, path, message):
+        window_policy.release_download_destination(str(path) if path else None)
         logger.warning("download failed: %s", message)
 
     # ---- dialogs, pickers, permissions ------------------------------------------------
@@ -323,7 +329,10 @@ class _ChromiumDelegate(NSObject):
         # downloads" until it reloads — a workbench canvas framed from its own
         # origin could download one file from its file explorer and then
         # none. Every download still lands under ~/Downloads by
-        # `download_destination`.
+        # `download_destination`. The engine sets the limiter's content
+        # setting to "allow" at start-up (FRCefApp::OnContextInitialized), so
+        # this prompt should no longer be raised at all; granting it stays as
+        # the fallback.
         if kind == "multiple_downloads":
             logger.info("multiple downloads from %s -> grant",
                         origin.absoluteString() if origin is not None else "?")

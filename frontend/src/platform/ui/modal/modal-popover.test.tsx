@@ -141,6 +141,89 @@ describe("Modal popover pinned (the rail's +: hover previews, a press pins)", ()
   });
 });
 
+describe("the caller moves the card (popover.move) and owns its drag (resize.grips, resize.drag)", () => {
+  type Grip = { props: Record<string, (e: unknown) => void> & { className: string } };
+  function mountMoved() {
+    installPortalContainer();
+    const body = (globalThis as unknown as { document: { body: Record<string, unknown> } }).document.body;
+    body.createNodeMock = () => ({
+      getBoundingClientRect: () => ({ left: 100, top: 50, width: 420, height: 640, right: 520, bottom: 690, x: 100, y: 50 }),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      contains: () => false,
+      focus() {},
+      addEventListener() {},
+      removeEventListener() {},
+      offsetHeight: 640,
+    });
+    const anchor = createRef<HTMLElement>();
+    const down: unknown[] = [];
+    const dbl: unknown[] = [];
+    const resized: unknown[] = [];
+    const asked: unknown[] = [];
+    let r!: ReactTestRenderer;
+    act(() => {
+      r = create(
+        <Modal
+          title="New task"
+          onClose={() => {}}
+          popover={{
+            anchor,
+            size: { width: 420, height: 640 },
+            move: { className: " is-movable is-floating", onPointerDown: (e) => down.push(e), onDoubleClick: (e) => dbl.push(e) },
+            resize: {
+              minWidth: 360,
+              minHeight: 240,
+              maxWidth: 722,
+              grips: ["l", "r", "t", "b", "tl", "bl", "tr", "br"],
+              drag: (edge, start, dx, dy) => {
+                asked.push(edge);
+                return { ...start, width: start.width + dx, height: start.height + dy };
+              },
+              onResize: (size, changed, box) => resized.push({ size, changed, box }),
+            },
+          }}
+        >
+          <span>body</span>
+        </Modal>,
+      );
+    });
+    return { r, down, dbl, resized, asked };
+  }
+
+  test("the layer wears the caller's class; the dialog's pointerdown and double-click are the caller's", () => {
+    const m = mountMoved();
+    const overlay = m.r.root.find((n) => typeof n.type === "string" && String(n.props.className ?? "").includes("modal-overlay"));
+    expect(overlay.props.className).toContain("modal-popover is-movable is-floating");
+    const dialog = m.r.root.find((n) => n.props.role === "dialog");
+    act(() => dialog.props.onPointerDown({ button: 0 }));
+    act(() => dialog.props.onDoubleClick({}));
+    expect(m.down).toHaveLength(1);
+    expect(m.dbl).toHaveLength(1);
+    act(() => m.r.unmount());
+  });
+
+  test("the caller's grips (the right side too) and its drag; the release reports the whole box", () => {
+    const m = mountMoved();
+    const grips = m.r.root.findAll((n) => typeof n.type === "string" && String(n.props.className ?? "").startsWith("modal-popover-grip")) as unknown as Grip[];
+    expect(grips.map((g) => g.props.className.split(" ")[1])).toEqual(["is-l", "is-r", "is-t", "is-b", "is-tl", "is-bl", "is-tr", "is-br"]);
+    const br = grips.find((g) => g.props.className.includes("is-br"))!;
+    const el = { setPointerCapture() {}, hasPointerCapture: () => false, releasePointerCapture() {} };
+    act(() => br.props.onPointerDown({ button: 0, pointerId: 1, clientX: 0, clientY: 0, currentTarget: el, preventDefault() {}, stopPropagation() {} }));
+    act(() => br.props.onPointerMove({ pointerId: 1, clientX: 30, clientY: 20 }));
+    act(() => br.props.onPointerUp({ pointerId: 1 }));
+    expect(m.asked).toEqual(["br"]);
+    expect(m.resized).toEqual([
+      {
+        size: { width: 450, height: 660 },
+        changed: { width: true, height: true },
+        box: { left: 100, top: 50, width: 450, height: 660 },
+      },
+    ]);
+    act(() => m.r.unmount());
+  });
+});
+
 describe("popoverPlacement", () => {
   const view = { width: 1400, height: 900 };
   test("left of the rail's edge, a gap away, top level with the anchor", () => {

@@ -204,11 +204,12 @@ export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
   typeof s === "string" && (WORKBENCH_ENVS as readonly string[]).includes(s);
 
 /** `label` names the env in full (pickers, headers, tooltips); `tag` is the
- *  short form for tight spots (a sidebar row's chip). */
-export const ENV_NAMES: Record<WorkbenchEnv, { label: string; tag: string }> = {
-  unstable: { label: "Unstable", tag: "Unstable" },
-  prod: { label: "Production", tag: "Production" },
-  custom: { label: "Custom ~/.fused/settings.toml", tag: "Custom" },
+ *  short form for tight spots (a sidebar row's chip); `initial` is the
+ *  tightest, the chip in a narrow sidebar (canvases.css container query). */
+export const ENV_NAMES: Record<WorkbenchEnv, { label: string; tag: string; initial: string }> = {
+  unstable: { label: "Unstable", tag: "Unstable", initial: "U" },
+  prod: { label: "Production", tag: "Production", initial: "P" },
+  custom: { label: "Custom ~/.fused/settings.toml", tag: "Custom", initial: "C" },
 };
 
 /** A canvas workspace route: the env is a path segment because it is one on

@@ -42,6 +42,12 @@ const { resetFlagsForTests: resetClaudeFlagsForTests } = await import("@apps/cla
 const { getPlusCard, plusHostElement, registerPlusHost, resetPlusCardStoreForTests } = await import("./plus-card-store");
 const { doorSelector, ringSelector, botRingSelector, viewPress } = await import("./rail-pin-lib");
 const { PLUS_DOOR } = await import("./plus-pop-lib");
+const { setWindowPosMark, windowPosMark } = await import("@platform/lib/last-chat");
+const { commitWindowPos, resetRailMoveForTests, windowBox } = await import("./rail-move-store");
+const { RAIL_HEAD_SELECTOR } = await import("./rail-move-lib");
+const { windowABox, resetCardSnap } = await import("./card-snap");
+const { _setUiLayoutForTest } = await import("@platform/lib/ui-layout");
+const { snapGuide } = await import("./card-snap");
 
 const DIR = "/home/me/apps/demo";
 const OTHER = "/home/me/apps/other";
@@ -955,6 +961,43 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     off();
   });
 
+  test("the +, pinned and moved (owner, 2026-11-17): it floats at window A's position — no box published, the right grips on — and docks with the unpin", async () => {
+    answer();
+    const off = registerPlusHost();
+    const r = await mount({ unified: true });
+    await pressPlus(r, 1);
+    type Pop = {
+      place: (w: { width: number; height: number }) => unknown;
+      onBox?: unknown;
+      move?: { className: string };
+      resize?: { grips?: readonly string[] };
+    };
+    const pop = () => drawn()!.popover as Pop;
+    // Temp: the head does not grab.
+    expect(pop().move!.className).not.toContain("is-movable");
+    await act(async () => (drawn()!.pinNode as ReactElement<{ onToggle: () => void }>).props.onToggle());
+    expect(pop().move!.className).toContain("is-movable");
+    expect(pop().onBox).toBeDefined();
+    await act(async () => commitWindowPos("a", { left: 150, top: 90 }));
+    await settle();
+    expect(pop().move!.className).toContain("is-floating");
+    expect(pop().place({ width: 420, height: 640 })).toEqual({ left: 150, top: 90, width: 420, height: 640 });
+    // Floating, its box feeds no docked placement (card-snap) — only the
+    // live box window B's head drag snaps to (rail-move-store, round 3).
+    resetCardSnap();
+    (pop().onBox as (b: unknown) => void)({ left: 150, top: 90, width: 420, height: 640 });
+    expect(windowABox()).toBeNull();
+    expect(windowBox("a")).toEqual({ left: 150, top: 90, width: 420, height: 640 });
+    expect(pop().resize!.grips).toContain("br");
+    // The unpin: docked again, the position gone with the pin.
+    await act(async () => (drawn()!.pinNode as ReactElement<{ onToggle: () => void }>).props.onToggle());
+    await settle();
+    expect(windowPosMark("a")).toBeNull();
+    expect(pop().move!.className).not.toContain("is-floating");
+    expect(pop().resize!.grips).toBeUndefined();
+    off();
+  });
+
   test("the switch off: no pin icon, and a preview has no grips", async () => {
     answer();
     const off = registerPlusHost();
@@ -1187,3 +1230,365 @@ describe("the pin's seat in the shared head", () => {
 // The bot ring selector is the classifier's too (used by the rail's own
 // watchers' tests above through the stand-in element).
 void botRingSelector;
+
+// ---------------------------------------------------------------------------
+// A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): a pinned window
+// dragged by its head floats at the WINDOW's position — kept through a swap to
+// another ring or door, dropped with the pin, back after a reload — and while
+// it floats it publishes no box for the other window to keep clear of.
+
+describe("a pinned window moves by its head (owner, 2026-11-17)", () => {
+  beforeEach(() => {
+    resetRailMoveForTests();
+    resetCardSnap();
+  });
+  afterEach(() => {
+    resetRailMoveForTests();
+    resetCardSnap();
+  });
+
+  type Style = { left: number; top: number; width: number; height?: number };
+  /** The card's fixed box (the element `place()` positions). */
+  const boxOf = (r: ReactTestRenderer, id: string): ReactTestInstance =>
+    r.root.find((n) => n.type === "div" && n.props.id === id && n.props.role === "dialog");
+  const listBox = (r: ReactTestRenderer) => boxOf(r, peek(r)!.props.id as string);
+  const styleOf = (n: ReactTestInstance) => n.props.style as Style;
+  /** A press on the head's bare area (`RAIL_HEAD_SELECTOR`, no control). */
+  const HEAD = { closest: (sel: string) => (sel === RAIL_HEAD_SELECTOR ? {} : null) };
+  const boxEl = (n: ReactTestInstance) => {
+    const st = styleOf(n);
+    return {
+      contains: () => true,
+      getBoundingClientRect: () => rect(st.left, st.top, st.width, st.height ?? 600),
+      addEventListener() {},
+      removeEventListener() {},
+      setPointerCapture() {},
+      hasPointerCapture: () => false,
+      releasePointerCapture() {},
+    };
+  };
+  const fireWin = (type: string, e: Record<string, unknown>) => {
+    for (const fn of [...(winL.get(type) ?? [])]) fn({ type, ...e });
+  };
+  /** A head drag by (dx, dy): down on the head, one move, up. */
+  async function dragHead(n: ReactTestInstance, dx: number, dy: number, target: unknown = HEAD) {
+    const el = boxEl(n);
+    const at = styleOf(n);
+    await act(async () => {
+      n.props.onPointerDown({ button: 0, pointerId: 7, clientX: at.left + 50, clientY: at.top + 10, currentTarget: el, target });
+    });
+    await act(async () => {
+      fireWin("pointermove", { pointerId: 7, clientX: at.left + 50 + dx, clientY: at.top + 10 + dy });
+      await tick();
+    });
+    await act(async () => {
+      fireWin("pointerup", { pointerId: 7 });
+      await tick();
+    });
+  }
+  async function pinList(r: ReactTestRenderer, key = "a") {
+    await press(listRing(r, key));
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    await settle();
+  }
+
+  test("a head drag floats the pinned list card at window A's position; no box is published while it floats", async () => {
+    const r = await mount({ unified: true });
+    await pinList(r);
+    const docked = { ...styleOf(listBox(r)) };
+    expect(windowABox()).not.toBeNull();
+    await dragHead(listBox(r), -300, 50);
+    await settle();
+    const want = { left: docked.left - 300, top: docked.top + 50 };
+    expect(JSON.parse(windowPosMark("a") ?? "null")).toEqual(want);
+    expect(styleOf(listBox(r))).toMatchObject(want);
+    expect(listBox(r).props.className).toContain("is-floating");
+    // Window B places itself as if this one were not there (card-snap.ts).
+    expect(windowABox()).toBeNull();
+  });
+
+  test("a press that never passes the threshold moves nothing; a hover or temp card never moves", async () => {
+    const r = await mount({ unified: true });
+    await press(listRing(r, "a"));
+    const temp = { ...styleOf(listBox(r)) };
+    await dragHead(listBox(r), -300, 50);
+    await settle();
+    expect(windowPosMark("a")).toBeNull();
+    expect(styleOf(listBox(r))).toMatchObject({ left: temp.left, top: temp.top });
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    await settle();
+    await dragHead(listBox(r), 2, 2);
+    expect(windowPosMark("a")).toBeNull();
+    // …nor does a press on a control in the head.
+    await dragHead(listBox(r), -300, 50, { closest: () => ({}) });
+    expect(windowPosMark("a")).toBeNull();
+  });
+
+  test("the position is the window's: a swap to another ring and to the Tasks door keeps it", async () => {
+    const off = registerTasksCard();
+    let api: { visible: boolean } | null = null;
+    const card = (
+      <DoorCard store={tasksCardStore} href="/tasks" className="t" ariaLabel="Tasks" subOpen={false}>
+        {(a) => {
+          api = a;
+          return null;
+        }}
+      </DoorCard>
+    );
+    const r = await mount({ unified: true, extra: card });
+    await pinList(r);
+    await act(async () => commitWindowPos("a", { left: 120, top: 60 }));
+    await settle();
+    expect(styleOf(listBox(r))).toMatchObject({ left: 120, top: 60 });
+    // Another ring of the pinned window: it swaps, pinned, at the same place.
+    await press(listRing(r, "b"));
+    await settle();
+    expect(shownKey(r)).toBe("b");
+    expect(peek(r)!.props.held).toBe(true);
+    expect(styleOf(listBox(r))).toMatchObject({ left: 120, top: 60 });
+    // The Tasks door: the card swaps to the door's, still at the window's place.
+    await press(r.root.find((n) => n.type === "a" && n.props["data-rail-door"] === "tasks"));
+    await settle();
+    expect(tasksCardState()).toMatchObject({ up: true, held: true });
+    expect(aPinned()).toBe("tasks");
+    expect(windowPosMark("a")).not.toBeNull();
+    expect(styleOf(boxOf(r, tasksCardStore.id))).toMatchObject({ left: 120, top: 60 });
+    expect(api!.visible).toBe(true);
+    off();
+  });
+
+  test("unpinned, the card docks and the position goes with the pin; a double-click on the head docks and keeps the pin", async () => {
+    const r = await mount({ unified: true });
+    await pinList(r);
+    const docked = { ...styleOf(listBox(r)) };
+    await act(async () => commitWindowPos("a", { left: 120, top: 60 }));
+    await settle();
+    // The double-click on the bare head: docked, still pinned.
+    await act(async () => {
+      listBox(r).props.onDoubleClick({ target: HEAD, currentTarget: boxEl(listBox(r)) });
+    });
+    await settle();
+    expect(windowPosMark("a")).toBeNull();
+    expect(peek(r)!.props.held).toBe(true);
+    expect(styleOf(listBox(r))).toMatchObject({ left: docked.left, top: docked.top });
+    // Floating again, then the unpin: docked at once, the mark cleared.
+    await act(async () => commitWindowPos("a", { left: 120, top: 60 }));
+    await settle();
+    expect(styleOf(listBox(r))).toMatchObject({ left: 120, top: 60 });
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    await settle();
+    expect(aPinned()).toBeNull();
+    expect(windowPosMark("a")).toBeNull();
+    expect(styleOf(listBox(r))).toMatchObject({ left: docked.left, top: docked.top });
+  });
+
+  test("a reload brings the pinned window back where it floated (the mark)", async () => {
+    setAPinned("task:a");
+    setWindowPosMark("a", JSON.stringify({ left: 210, top: 140 }));
+    const r = await mount({ unified: true });
+    await settle();
+    expect(shownKey(r)).toBe("a");
+    expect(peek(r)!.props.held).toBe(true);
+    expect(styleOf(listBox(r))).toMatchObject({ left: 210, top: 140 });
+  });
+
+  test("window B: a floating bot card publishes no box for window A to keep clear of; pressed last, window A steps over it", async () => {
+    const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
+    const r = await mount({ unified: true });
+    await act(async () => {
+      publishBots([BOT] as never);
+    });
+    const botRing = r.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1");
+    // The pin icon is the only way to pin (2026-11-17: no double-click pin).
+    await press(botRing);
+    await act(async () => r.root.findByType(BotPeek).props.pinCtl.onToggle());
+    await settle();
+    expect(botOpen()).toBe("b1");
+    expect(favPeekState().favBox).not.toBeNull();
+    await act(async () => commitWindowPos("b", { left: 40, top: 30 }));
+    await settle();
+    // Window B lets its box go a beat after it stops standing there
+    // (fav-peek-store `FAV_BOX_RELEASE_MS`).
+    await act(async () => {
+      await new Promise((done) => setTimeout(done, 120));
+    });
+    expect(favPeekState().favBox).toBeNull();
+    expect(styleOf(boxOf(r, r.root.findByType(BotPeek).props.id as string))).toMatchObject({ left: 40, top: 30 });
+    // Window A, opened after it: on top at once (rail-move-lib `raised`; a
+    // card coming up takes the front, or its hover opened UNDER a window
+    // floating beside the rail — owner, 2026-11-17).
+    const botBox = () => boxOf(r, r.root.findByType(BotPeek).props.id as string);
+    expect(botBox().props.className).toContain("is-front");
+    await press(listRing(r, "a"));
+    expect(listBox(r).props.className).toContain("is-front");
+    expect(botBox().props.className).not.toContain("is-front");
+    // …a press inside the other one hands the front back, and a press inside
+    // this one takes it again.
+    await act(async () => botBox().props.onPointerDownCapture());
+    expect(listBox(r).props.className).not.toContain("is-front");
+    expect(botBox().props.className).toContain("is-front");
+    await act(async () => listBox(r).props.onPointerDownCapture());
+    expect(listBox(r).props.className).toContain("is-front");
+  });
+
+  test("the switch off: nothing moves", async () => {
+    const r = await mount({ unified: false });
+    await press(listRing(r, "a"));
+    await dragHead(listBox(r), -300, 50);
+    await settle();
+    expect(windowPosMark("a")).toBeNull();
+    expect(listBox(r).props.className).not.toContain("is-movable");
+  });
+});
+
+describe("floating windows (round 3 B; owner, 2026-11-17)", () => {
+  let hadInner: { w: unknown; h: unknown } = { w: undefined, h: undefined };
+  beforeEach(() => {
+    hadInner = { w: win.innerWidth, h: win.innerHeight };
+    resetRailMoveForTests();
+    resetCardSnap();
+    _setUiLayoutForTest();
+  });
+  afterEach(() => {
+    win.innerWidth = hadInner.w;
+    win.innerHeight = hadInner.h;
+    resetRailMoveForTests();
+    resetCardSnap();
+    _setUiLayoutForTest();
+  });
+
+  type Style = { left: number; top: number; width: number; height?: number };
+  const boxOf = (r: ReactTestRenderer, id: string): Style =>
+    r.root.find((n) => n.type === "div" && n.props.id === id && n.props.role === "dialog").props.style as Style;
+  const listStyle = (r: ReactTestRenderer) => boxOf(r, peek(r)!.props.id as string);
+  const botStyle = (r: ReactTestRenderer) => boxOf(r, r.root.findByType(BotPeek).props.id as string);
+  const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
+  const botRing = (r: ReactTestRenderer) => r.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1");
+  /** Window B: the bot's card, opened and PINNED. */
+  async function openBot(r: ReactTestRenderer) {
+    await act(async () => {
+      publishBots([BOT] as never);
+    });
+    await press(botRing(r), 1);
+    await press(botRing(r), 2);
+    await settle();
+  }
+
+  test("back where I left it: a window shrink squeezes the floating card, the stored spot stays, and it returns as the room does", async () => {
+    win.innerWidth = 1400;
+    win.innerHeight = 900;
+    const r = await mount({ unified: true });
+    await press(listRing(r, "a"));
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    await settle();
+    await act(async () => commitWindowPos("a", { left: 900, top: 200 }));
+    await settle();
+    expect(listStyle(r)).toMatchObject({ left: 900, top: 200, width: 420, height: 640 });
+    const resize = async (w: number, h: number) => {
+      win.innerWidth = w;
+      win.innerHeight = h;
+      await act(async () => {
+        for (const fn of [...(winL.get("resize") ?? [])]) fn({ type: "resize" });
+        await tick();
+      });
+    };
+    await resize(1000, 700);
+    expect(listStyle(r)).toMatchObject({ left: 1000 - 420, top: 700 - 640, height: 640 });
+    expect(JSON.parse(windowPosMark("a") ?? "null")).toEqual({ left: 900, top: 200 });
+    await resize(1400, 900);
+    expect(listStyle(r)).toMatchObject({ left: 900, top: 200 });
+    expect(JSON.parse(windowPosMark("a") ?? "null")).toEqual({ left: 900, top: 200 });
+  });
+
+  test("the edge magnet: a head drag within 12px of window B's card lands flush with it, the guide along the edge until the release", async () => {
+    const r = await mount({ unified: true });
+    await openBot(r);
+    await press(listRing(r, "a"));
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    await settle();
+    const b = { ...botStyle(r) } as Required<Style>;
+    const a = { ...listStyle(r) } as Required<Style>;
+    const el = {
+      contains: () => true,
+      getBoundingClientRect: () => rect(a.left, a.top, a.width, a.height),
+      addEventListener() {},
+      removeEventListener() {},
+      setPointerCapture() {},
+      hasPointerCapture: () => false,
+      releasePointerCapture() {},
+    };
+    const node = r.root.find((n) => n.type === "div" && n.props.id === peek(r)!.props.id && n.props.role === "dialog");
+    const HEAD = { closest: (sel: string) => (sel === RAIL_HEAD_SELECTOR ? {} : null) };
+    const fire = (type: string, e: Record<string, unknown>) => {
+      for (const fn of [...(winL.get(type) ?? [])]) fn({ type, ...e });
+    };
+    // Left, so the card's right edge stops 5px short of window B's left
+    // edge; and up 37px, clear of every edge across.
+    const dx = b.left - 5 - (a.left + a.width) - 200;
+    await act(async () => {
+      node.props.onPointerDown({ button: 0, pointerId: 3, clientX: 500, clientY: 300, currentTarget: el, target: HEAD });
+    });
+    await act(async () => {
+      fire("pointermove", { pointerId: 3, clientX: 500 + dx, clientY: 337 });
+      await tick();
+    });
+    // 200px further left than flush: nothing near, no guide.
+    expect(snapGuide()).toBeNull();
+    await act(async () => {
+      fire("pointermove", { pointerId: 3, clientX: 500 + dx + 200, clientY: 337 });
+      await tick();
+    });
+    expect(snapGuide()).toMatchObject({ x: b.left });
+    await act(async () => {
+      fire("pointerup", { pointerId: 3 });
+      await tick();
+    });
+    expect(JSON.parse(windowPosMark("a") ?? "null")).toEqual({ left: b.left - a.width, top: a.top + 37 });
+    expect(snapGuide()).toBeNull();
+  });
+});
+
+describe("the pin on the door of a pinned window (owner, 2026-11-18)", () => {
+  const marksIn = (n: ReactTestInstance) => n.findAll((c) => c.props?.className === "claude-rail-pinmark");
+  const marks = (r: ReactTestRenderer) => marksIn(r.root);
+
+  test("window A: no mark on a temp card's ring; the pin icon puts it on that ring, and takes it off again", async () => {
+    const r = await mount({ unified: true });
+    await press(listRing(r, "a"));
+    expect(marks(r)).toHaveLength(0);
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    expect(marksIn(listRing(r, "a"))).toHaveLength(1);
+    expect(marks(r)).toHaveLength(1);
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    expect(marks(r)).toHaveLength(0);
+  });
+
+  test("window B: the pinned favourite's ring in the favourites, never the list's ring on the same chat", async () => {
+    const r = await mount({ unified: true, chats: [chat("a"), chat("f", { starred: true })] });
+    await press(footRing(r, "f"));
+    expect(marks(r)).toHaveLength(0);
+    await act(async () => setFavPinned("f"));
+    expect(marksIn(footRing(r, "f"))).toHaveLength(1);
+    expect(marks(r)).toHaveLength(1);
+    await act(async () => setFavPinned(null));
+    expect(marks(r)).toHaveLength(0);
+  });
+
+  test("the Tasks door: the mark while its card is pinned", async () => {
+    const off = registerTasksCard();
+    const r = await mount({ unified: true });
+    const door = () => byLabel(r, "Tasks")[0]!;
+    await press(door());
+    expect(marks(r)).toHaveLength(0);
+    await act(async () => tasksCardStore.setHeld(true));
+    expect(marksIn(door())).toHaveLength(1);
+    off();
+  });
+
+  test("the switch off: a held card's ring wears no pin (there is no pin)", async () => {
+    const r = await mount({ unified: false });
+    await press(listRing(r, "a"));
+    expect(peek(r)!.props.held).toBe(true);
+    expect(marks(r)).toHaveLength(0);
+  });
+});

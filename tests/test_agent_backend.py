@@ -853,6 +853,8 @@ def test_copilot_argv_composition(agent, target, home, tmp_path, monkeypatch):
         server = json.load(fh)["mcpServers"]["fused_render"]
     assert "--no-approve" in server["args"]
     assert agent._state_dir(str(run_dir)) in server["args"]
+    # Never deferred behind Copilot's tool search, and no Claude-only key.
+    assert server["deferTools"] == "never" and "alwaysLoad" not in server
 
 
 def test_copilot_argv_without_a_pane_has_no_mcp_and_no_write_grant(

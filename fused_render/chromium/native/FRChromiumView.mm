@@ -381,6 +381,7 @@ class FRClient : public CefClient,
         destinationForDownloadWithSuggestedFilename:FRString(suggested_name)
                                                 URL:FRURL(download_item->GetURL())];
     if (!dest) return false;  // cancelled
+    download_paths_[download_item->GetId()] = dest.UTF8String;
     callback->Continue(dest.UTF8String, false);
     return true;
   }
@@ -389,15 +390,30 @@ class FRClient : public CefClient,
                          CefRefPtr<CefDownloadItem> download_item,
                          CefRefPtr<CefDownloadItemCallback> callback) override {
     id<FRChromiumViewDelegate> d = delegate();
+    // A finished download is reported once, under the path OnBeforeDownload
+    // chose: GetFullPath() of an interrupted download can be an intermediate
+    // name or empty, and the delegate releases the name it reserved.
+    bool ended = download_item->IsComplete() || download_item->IsInterrupted() ||
+                 download_item->IsCanceled();
+    if (!ended) return;
     NSString *path = FRString(download_item->GetFullPath());
+    auto chosen = download_paths_.find(download_item->GetId());
+    if (chosen == download_paths_.end()) {
+      if (!download_item->IsComplete()) return;  // never ours, or already reported
+    } else {
+      path = [NSString stringWithUTF8String:chosen->second.c_str()];
+      download_paths_.erase(chosen);
+    }
     if (download_item->IsComplete()) {
       if ([d respondsToSelector:@selector(chromiumView:downloadDidFinish:)]) {
         [d chromiumView:view_ downloadDidFinish:path];
       }
-    } else if (download_item->IsInterrupted()) {
+    } else if (download_item->IsInterrupted() || download_item->IsCanceled()) {
       if ([d respondsToSelector:@selector(chromiumView:downloadDidFail:error:)]) {
-        NSString *msg = [NSString stringWithFormat:@"interrupted (%d)",
-                         (int)download_item->GetInterruptReason()];
+        NSString *msg = download_item->IsCanceled()
+            ? @"cancelled"
+            : [NSString stringWithFormat:@"interrupted (%d)",
+                                         (int)download_item->GetInterruptReason()];
         [d chromiumView:view_ downloadDidFail:path error:msg];
       }
     }
@@ -728,6 +744,10 @@ class FRClient : public CefClient,
   // Weak: a popup that was created and closed normally leaves a dead entry
   // behind, read only on abort (ids are unique per opener).
   std::map<int, __weak FRChromiumView *> pending_popups_;
+  // Download id -> the path the delegate chose (and reserved) for it in
+  // OnBeforeDownload; reported back once the download ends so the delegate
+  // can give that exact name back.
+  std::map<uint32_t, std::string> download_paths_;
 
   IMPLEMENT_REFCOUNTING(FRClient);
   DISALLOW_COPY_AND_ASSIGN(FRClient);

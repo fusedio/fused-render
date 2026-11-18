@@ -639,35 +639,40 @@ def _looks_like_text(path: str) -> bool:
     return True
 
 
-#: A template folder holding this file reads an `s3://` address in `_file`
-#: itself (signing it with `fused.s3.sign` / `fused_s3`, D1484), so the
-#: explorer can open a bucket object in it without downloading first. Lines
-#: of the marker that start with "." list the extensions it streams (a
-#: template bound to many formats may stream only some: duckdb streams
-#: parquet, not CSV); no such line means every file it is bound to.
-STREAM_S3_MARKER = "stream-s3"
+def streamed_extensions(template_path: str) -> tuple:
+    """The extensions a template streams from S3 (D1492): the
+    `[tool.fused-render.template] stream` list in the `pyproject.toml` beside
+    its `template.html`, lower-cased, each starting with ".". A template that
+    lists one reads an `s3://` address in `_file` itself for those files
+    (signing it with `fused.s3.sign` / `fused_s3`, D1484), so the explorer
+    opens a bucket object in it without downloading. No manifest, no key, or
+    one that will not parse streams nothing."""
+    import tomllib
 
-
-def _streamed_extensions(marker: str):
-    """The marker's extension list (lower-case, each starting with "."), or
-    None when it lists none (= all). An unreadable marker streams nothing."""
+    manifest = os.path.join(os.path.dirname(template_path), "pyproject.toml")
     try:
-        with open(marker, encoding="utf-8", errors="replace") as f:
-            text = f.read(64 * 1024)
-    except OSError:
+        with open(manifest, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, ValueError):
         return ()
-    exts = [tok.lower() for line in text.splitlines() if line.startswith(".")
-            for tok in line.split() if tok.startswith(".") and len(tok) > 1]
-    return tuple(exts) or None
+    table = data
+    for key in ("tool", "fused-render", "template"):
+        table = table.get(key) if isinstance(table, dict) else None
+    exts = table.get("stream") if isinstance(table, dict) else None
+    if not isinstance(exts, list):
+        return ()
+    return tuple(e.lower() for e in exts
+                 if isinstance(e, str) and e.startswith(".") and len(e) > 1)
 
 
-def remote_stream_templates(name: str) -> list:
-    """The templates for a bucket object named `name` that stream it: the
-    same registry resolution a local file gets (user over core), kept to the
-    entries whose folder carries `STREAM_S3_MARKER` (and whose marker, if it
-    lists extensions, lists this one). Never a native template and never a
-    conditional one (its gate runs on a local path), and no text sniff —
-    there are no local bytes to sniff."""
+def remote_templates(name: str) -> list:
+    """The modes a bucket object named `name` opens in, before it is
+    downloaded: the same registry resolution a local file gets (user over
+    core), each entry marked `stream` when its template streams this
+    extension. The rest open on a downloaded copy. Native and conditional
+    entries are left out (their gates and views need a local path; they
+    appear once the object is cached), and there is no text sniff: there are
+    no local bytes to sniff."""
     entries, _err = _templates_for(name, False, sniff_text=False)
     lower = name.lower()
     out = []
@@ -675,13 +680,8 @@ def remote_stream_templates(name: str) -> list:
         path = e.get("path")
         if not path or e.get("conditional") or _is_native(path):
             continue
-        marker = os.path.join(os.path.dirname(path), STREAM_S3_MARKER)
-        if not os.path.isfile(marker):
-            continue
-        exts = _streamed_extensions(marker)
-        if exts is not None and not lower.endswith(exts):
-            continue
-        out.append(e)
+        exts = streamed_extensions(path)
+        out.append({**e, "stream": bool(exts) and lower.endswith(exts)})
     return out
 
 

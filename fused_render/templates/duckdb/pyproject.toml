@@ -9,3 +9,10 @@
 # loaded too. writer.py (edits) still runs one-shot through runPython.
 [tool.fused-render.app]
 main = "reader.py"
+
+# Parquet streams from S3 (D1486, D1492): the explorer opens an uncached
+# s3:// parquet here on its address, the page signs it (fused.s3.sign) and
+# DuckDB's httpfs reads only the footer and the row groups a view touches.
+# CSV/JSON have no footer to page from, so they open on a downloaded copy.
+[tool.fused-render.template]
+stream = [".parquet"]

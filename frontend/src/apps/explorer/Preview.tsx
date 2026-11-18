@@ -923,6 +923,17 @@ function NativePane({
 // still exists for browsing the app's OWN subfolders under a snapshot, for
 // the same reason: a listing has no per-row heading a template could wear
 // instead.
+/** An uncached bucket object's content per mode (RemoteView.tsx, D1492). A
+ *  mode whose template streams the object is framed on its `s3://` address as
+ *  usual; any other mode shows `pane` (the download card) in place of its
+ *  frame, and opens on the cached copy once it lands. */
+export interface RemoteContent {
+  /** What `mode` shows instead of its frame, or null to frame it. */
+  pane: (mode: string) => ReactNode | null;
+  /** A bar above the active mode's pane, or null. */
+  banner: (mode: string) => ReactNode | null;
+}
+
 function TemplatePreview({
   fsPath,
   stat,
@@ -931,6 +942,7 @@ function TemplatePreview({
   onRenderedTitle,
   actionsInTopbar,
   remoteUrl,
+  remoteContent,
 }: {
   fsPath: string;
   stat: StatResult;
@@ -939,6 +951,7 @@ function TemplatePreview({
   onRenderedTitle?: (title: string | null) => void;
   actionsInTopbar?: boolean;
   remoteUrl?: string;
+  remoteContent?: RemoteContent;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
@@ -2394,6 +2407,7 @@ function TemplatePreview({
                 </div>
               )
             )}
+            {remoteContent?.banner(activeMode)}
             {/* One frame per mounted mode (see the held-frame swap above). Each
              key is its own mode, so a frame is created once and never
              re-created by a switch away and back within the swap window. */}
@@ -2475,6 +2489,21 @@ function TemplatePreview({
                     if (m === activeMode) setShown(m);
                   }}
                 />
+              );
+              // An uncached bucket object in a mode that does not stream it
+              // (D1492): the download card in this mode's pane, not a frame.
+              const remotePane = remoteContent?.pane(m);
+              if (remotePane) return (
+                <NativePane
+                  key={m}
+                  className={"preview-frame" + (m === shown ? " is-shown" : "")}
+                  onReady={() => {
+                    loadedFrames.current.add(m);
+                    if (m === activeMode) setShown(m);
+                  }}
+                >
+                  {remotePane}
+                </NativePane>
               );
               // THE ONE FRAME ELEMENT, for every mode but the chat. Written once
               // because of the capability marks on it — each is a contract
@@ -2957,9 +2986,21 @@ interface PreviewProps {
   // off, and the file menus shrink to the address's own verbs
   // (remoteFileMenu). Undefined for every local view.
   remoteUrl?: string;
+  // An UNCACHED remote object (RemoteView.tsx, D1492): `fsPath` and
+  // `remoteUrl` are both its `s3://` address, `stat.templates` its modes, and
+  // this says which of them show the download card instead of a frame.
+  remoteContent?: RemoteContent;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload, remoteUrl }: PreviewProps) {
+export default function Preview({
+  fsPath,
+  stat,
+  onRenderedTitle,
+  actionsInTopbar,
+  onReload,
+  remoteUrl,
+  remoteContent,
+}: PreviewProps) {
   // Flush relay for a host framing THIS document (the canvas node pane, two
   // frames up from the editor): the host asks this window, and the ask goes
   // down to the shown content frame's own `__fusedFlushEdits` (the code
@@ -3093,6 +3134,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
           onRenderedTitle={onRenderedTitle}
           actionsInTopbar={actionsInTopbar}
           remoteUrl={remoteUrl}
+          remoteContent={remoteContent}
         />
       </>
     );

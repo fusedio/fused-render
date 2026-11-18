@@ -2,8 +2,10 @@
 
 #include <map>
 
+#include "include/base/cef_logging.h"
 #include "include/cef_command_line.h"
 #include "include/cef_process_message.h"
+#include "include/cef_request_context.h"
 #include "include/wrapper/cef_helpers.h"
 
 namespace fused {
@@ -88,6 +90,31 @@ void FRCefApp::OnBeforeCommandLineProcessing(const CefString& process_type,
 
 void FRCefApp::OnScheduleMessagePumpWork(int64_t delay_ms) {
   if (schedule_) schedule_(delay_ms);
+}
+
+void FRCefApp::OnContextInitialized() {
+  // Chromium's automatic-downloads limiter (DownloadRequestLimiter), which
+  // WebKit never had. After a page's first download it asks before the next
+  // one, and the answer is saved in the profile (root_cache_path persists it
+  // across launches) as a content setting for the frame's origin. Before the
+  // permission handler granted that prompt it denied it for any origin but
+  // the local server, so every profile that ever downloaded twice from a
+  // framed workbench canvas holds BLOCK for https://www.fused.io: the limiter
+  // reads BLOCK and refuses the second download without asking, so granting
+  // the prompt never got the chance to help. Clear those saved answers and
+  // make "allow" the default, so a page downloads as often as it asks and
+  // the prompt is never raised.
+  CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
+  if (!context) return;
+  CefString error;
+  if (!context->SetPreference("profile.content_settings.exceptions.automatic_downloads",
+                              nullptr, error)) {
+    LOG(WARNING) << "could not clear saved automatic-downloads settings: "
+                 << error.ToString();
+  }
+  context->SetContentSetting(CefString(), CefString(),
+                             CEF_CONTENT_SETTING_TYPE_AUTOMATIC_DOWNLOADS,
+                             CEF_CONTENT_SETTING_VALUE_ALLOW);
 }
 
 void FRCefApp::OnBrowserCreated(CefRefPtr<CefBrowser> browser,

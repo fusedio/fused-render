@@ -138,11 +138,22 @@ windows. Three things the first run fixed, all in `FRChromiumEngine.mm`:
   run (cefclient's fallback): CEF does not ask for a run for every task that
   becomes ready, and without it a navigation stalled after `OnBeforeBrowse`;
 * `--use-mock-keychain`, so the first window never asks for keychain access.
-* Chromium's automatic-downloads limiter (which WebKit never had) is granted
-  for every origin: after a page's first download the next one raises a
-  `MULTIPLE_DOWNLOADS` permission prompt, and a denial latches the page to
-  "no downloads" until it reloads — a framed workbench canvas downloaded one
-  file from its file explorer and then none.
+* Chromium's automatic-downloads limiter (which WebKit never had) is set to
+  "allow" for every origin at start-up (`FRCefApp::OnContextInitialized`):
+  after a page's first download the limiter asks before the next one, and
+  the answer is saved in the profile as a per-origin content setting. The
+  first engine builds denied that prompt for any origin but our own, so a
+  framed workbench canvas downloaded one file and then none — and because
+  the denial was saved as BLOCK for https://www.fused.io, later builds that
+  granted the prompt never saw it again (the limiter refuses a BLOCKed origin
+  without asking). Start-up clears the saved per-origin answers
+  (`profile.content_settings.exceptions.automatic_downloads`) and makes
+  "allow" the default; the permission handler still grants
+  `MULTIPLE_DOWNLOADS` as a fallback.
+* Downloads are named the way Chrome names them: `name.ext`, then
+  `name (1).ext`, `name (2).ext` … (`window_policy.download_destination`),
+  with names of downloads still in flight reserved so two quick downloads of
+  the same file never share one.
 
 Not yet exercised:
 

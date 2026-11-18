@@ -310,27 +310,15 @@ function rowEdge(el: Element): number {
   return col.getBoundingClientRect().left;
 }
 
-/** The on-screen width of the element a selector names, or 0. */
-function liveWidth(selector: string | null): number {
-  if (!selector) return 0;
-  let box: Element | null = null;
-  try {
-    box = document.querySelector(selector);
-  } catch {
-    return 0;
-  }
-  if (!box || typeof box.getBoundingClientRect !== "function") return 0;
-  return Math.round(box.getBoundingClientRect().width);
-}
-
 /** The message glyph the count wears (lucide `message-square`, 12px). */
 const ROW_COUNT_ICON =
   '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
 
-/** THE TASK'S NAME AND ITS FACTS, AS WIDE AS THE WINDOW (Akshil, 2026-11-16:
- *  "when we hover we show a tooltip with the title of the task — instead show
- *  this as is … the width is the same as window A/B's") beside a rail ring
- *  whose hover opens no card. It began as the Tasks list's whole row —
+/** THE TASK'S NAME AND ITS FACTS (Akshil, 2026-11-16: "when we hover we show
+ *  a tooltip with the title of the task — instead show this as is") beside a
+ *  rail ring whose hover opens no card. It was as wide as the window the ring
+ *  opens until 2026-11-18 ("make it not the same width as the window, we can
+ *  have it less or more"); it is as wide as its words now, see below. It began as the Tasks list's whole row —
  *  status, number, title, reply, count, time. Since 2026-11-17 the LEFT part
  *  is gone and the title is never clamped ("cut the left side, like icon and
  *  task id … get rid of truncation and keep only title, not subtitle as
@@ -340,8 +328,8 @@ const ROW_COUNT_ICON =
  *  it is longer than the room — then the message count and the time at the
  *  right end, on the title's first line. No ring, no number, no reply.
  *  Opted into with `data-hint-row` beside the task form's `data-hint-title`;
- *  `data-hint-count` and `data-hint-when` are the facts, `data-hint-width`
- *  the panel's width in px, `data-hint-window` the window the ring opens
+ *  `data-hint-count` and `data-hint-when` are the facts,
+ *  `data-hint-window` the window the ring opens
  *  ("a" | "b" — the one the scrim dims, tasks.css). */
 function renderRowHint(p: HTMLDivElement, el: Element): boolean {
   if (!el.hasAttribute("data-hint-row")) return false;
@@ -369,17 +357,15 @@ function renderRowHint(p: HTMLDivElement, el: Element): boolean {
   // (Akshil, 2026-11-17: "it darkens both instead of only … one of the
   // window"). A host that does not say is window A's.
   p.setAttribute("data-row-window", el.getAttribute("data-hint-window") === "b" ? "b" : "a");
-  // As wide as the window the ring opens, inside the room beside the column.
-  // THE WINDOW'S WIDTH NOW, when it is on screen (`data-hint-width-of`, a
-  // selector): the reader may have just dragged it wider, and the width the
-  // host stamped at its last render is then stale (Akshil, 2026-11-16: "we
-  // click a task ring, then resize and hover over another — the hover row's
-  // size doesn't change"). The stamped `data-hint-width` is the fallback for
-  // a window that is not up.
-  const live = liveWidth(el.getAttribute("data-hint-width-of"));
-  const want = live || Number(el.getAttribute("data-hint-width")) || 0;
+  // AS WIDE AS ITS WORDS, NOT AS THE WINDOW (Akshil, 2026-11-18: "the width,
+  // make it not the same width as the window, we can have it less or more …
+  // if it is the same width that's fine for one or two but not for all,
+  // basically it is fine if it is coincidence"). The panel fits its content
+  // (the fixed panel's own shrink-to-fit), up to the row's measure
+  // (tasks.css) and never past the room beside the column — which is all
+  // this says: a title longer than that wraps.
   const room = rowEdge(el) - 8 - EDGE;
-  p.style.width = want > 0 ? `${Math.max(120, Math.min(want, room))}px` : "";
+  p.style.setProperty("--hint-row-room", `${Math.max(120, Math.round(room))}px`);
   return true;
 }
 
@@ -388,11 +374,38 @@ function renderRowHint(p: HTMLDivElement, el: Element): boolean {
  *  scroll hides the hint; the browser then reports the element that slid
  *  under the resting pointer, and its hint comes up — until the next scroll
  *  tick hides it again. For a caption that is harmless. A rail ring's ROW
- *  also dims the rail's windows (tasks.css, the scrim on `.is-row.is-on`), so
+ *  also dims the rail's windows (tasks.css, the scrim; `markRowDim`), so
  *  every tick of the wheel blinked the window. A row that came up this way is
  *  marked `is-passing` and dims nothing; the mark goes the moment the pointer
  *  is somewhere new — the reader pointing — or the keyboard brings a hint. */
 let passing = false;
+
+/** WHICH RAIL WINDOW STANDS UNDER THE SCRIM, SAID ON THE ROOT ELEMENT
+ *  (tasks.css reads `:root[data-rail-row-dim]`): the row's window while a row
+ *  is up and the reader is pointing at it, nothing otherwise.
+ *
+ *  ON THE ROOT, NOT ASKED OF THE PANEL WITH `body:has(.hint-panel…)` (Akshil,
+ *  2026-11-18: "the render app feels a bit slow, especially when moving around
+ *  and resizing the tasks"). A `:has()` whose anchor is `body`, with a
+ *  descendant after it, makes the browser treat every element inserted or
+ *  removed ANYWHERE as something that may have changed the answer — and the
+ *  shadcn `group-has-*` rules make that invalidation the whole document. Every
+ *  insert restyled all ~5,800 elements (12.5 ms each, against 0.15 ms), and a
+ *  rail window's resize ran at 34 to 48 frames a second. An attribute written
+ *  here costs a restyle when the row comes up and when it goes, and nothing in
+ *  between. */
+const ROW_DIM_ATTR = "data-rail-row-dim";
+function markRowDim(): void {
+  const root = document.documentElement;
+  const dims = !!panel && panel.classList.contains("is-on") && panel.classList.contains("is-row") && !panel.classList.contains("is-passing");
+  const win = dims ? panel!.getAttribute("data-row-window") : null;
+  if (!win) {
+    if (root.hasAttribute(ROW_DIM_ATTR)) root.removeAttribute(ROW_DIM_ATTR);
+    return;
+  }
+  if (root.getAttribute(ROW_DIM_ATTR) !== win) root.setAttribute(ROW_DIM_ATTR, win);
+}
+
 let pointerX = Number.NaN;
 let pointerY = Number.NaN;
 
@@ -417,6 +430,7 @@ function pointed(e: PointerEvent): void {
   if (!passing) return;
   passing = false;
   if (panel) panel.classList.remove("is-passing");
+  markRowDim();
 }
 
 function show(el: Element, x: number, y: number): void {
@@ -425,7 +439,7 @@ function show(el: Element, x: number, y: number): void {
   p.classList.toggle("is-row", row);
   p.classList.toggle("is-passing", row && passing);
   if (!row) {
-    p.style.width = "";
+    p.style.removeProperty("--hint-row-room");
     p.removeAttribute("data-row-window");
   }
   const task = !row && renderTaskHint(p, el);
@@ -433,6 +447,7 @@ function show(el: Element, x: number, y: number): void {
   p.classList.toggle("is-task", task);
   if (!task) p.classList.remove("is-reply");
   p.classList.add("is-on");
+  markRowDim();
   sizeOnce(p);
   if (anchoredSide(el)) {
     placeBeside(el);
@@ -453,7 +468,8 @@ export function hideHint(): void {
     panel.classList.remove("is-row");
     panel.removeAttribute("data-row-window");
     panel.classList.remove("is-passing");
-    panel.style.width = "";
+    panel.style.removeProperty("--hint-row-room");
+    markRowDim();
   }
 }
 
