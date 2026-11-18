@@ -1944,7 +1944,7 @@ def _rmtree_quiet(path: str) -> None:
 # takes one out of a bundle, and a `.fusedignore` line, so no push ships it.
 _SYNC_IGNORED_BASENAMES = canvas_snapshot.IGNORED_BASENAMES
 
-_CLONE_FUSEDIGNORE = f"CLAUDE.md\n.fusedignore\n{canvas_marker.MARKER_NAME}\n"
+_CLONE_FUSEDIGNORE = f"CLAUDE.md\n.fusedignore\n{canvas_marker.MARKER_NAME}\n__pycache__/\n"
 
 _CLONE_CLAUDE_MD = """\
 # Fused canvas clone: {name}
@@ -2504,7 +2504,7 @@ def api_canvases_list(
         if is_cloned:
             n_udfs = 0
             for dirpath, dirs, files in os.walk(_canvas_dir(env, canvas["name"])):
-                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
                 for f in files:
                     if f.startswith("."):
                         continue
@@ -2917,7 +2917,7 @@ def _folder_fingerprint(folder: str) -> dict:
     """{relative path: (size, mtime_ns)} of the non-dot files under `folder`."""
     out = {}
     for dirpath, dirs, files in os.walk(folder):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
         for f in files:
             if f.startswith("."):
                 continue
@@ -3769,7 +3769,7 @@ class _SyncManager:
             parts = rel.split(os.sep)
             if parts[0] == os.pardir:
                 return False
-            if any(p.startswith(".") for p in parts):
+            if any(p.startswith(".") or p in canvas_snapshot.IGNORED_DIRNAMES for p in parts):
                 return False
             return parts[-1] not in _SYNC_IGNORED_BASENAMES
 
@@ -3842,7 +3842,7 @@ class _SyncManager:
     def _take_fingerprint(self) -> dict[str, tuple[float, int]]:
         fp: dict[str, tuple[float, int]] = {}
         for root, dirs, files in os.walk(self.dir):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
             for f in files:
                 if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
                     continue
@@ -3863,7 +3863,7 @@ class _SyncManager:
         on this platform)."""
         hashes: dict[str, str] = {}
         for root, dirs, files in os.walk(top):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
             for f in files:
                 if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
                     continue
@@ -4068,7 +4068,7 @@ class _SyncManager:
             return None
         failed: list[str] = []
         for root, dirs, files in os.walk(self.dir):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            dirs[:] = [d for d in dirs if not canvas_snapshot.ignored_dir(d)]
             for f in files:
                 if f.startswith("."):
                     continue
@@ -4967,7 +4967,7 @@ class _SyncManager:
 
     def _freeze_copy(self, exclude: Iterable[str] = ()) -> str:
         """Copy the clone to `.sync/push/<name>/` (fresh each push) for the
-        CLI to read while _op_lock is free: dot-dirs and what `.fusedignore`
+        CLI to read while _op_lock is free: dot-dirs, `__pycache__` and what `.fusedignore`
         names are left out; `.fusedignore` itself travels; so do top-level
         `exclude` basenames (a node the user deleted whose file came back
         without a row — `held_tombstones`). The ownership marker never
@@ -4991,7 +4991,7 @@ class _SyncManager:
                 if (at_root and n in exclude) or n == canvas_marker.MARKER_NAME:
                     out.append(n)
                     continue
-                if ((is_dir and n.startswith("."))
+                if ((is_dir and canvas_snapshot.ignored_dir(n))
                         or (n != ".fusedignore" and canvas_snapshot.fusedignored(
                             rules, n, is_dir=is_dir, at_root=at_root))):
                     out.append(n)

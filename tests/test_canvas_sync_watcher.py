@@ -121,6 +121,58 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
     assert "push start" in actions and "push end" in actions and "snapshot applied" in actions
 
 
+def test_a_pycache_in_the_clone_is_never_synced(harness, tmp_path, monkeypatch):
+    """Importing a node's .py locally leaves `__pycache__/` in the clone. It
+    is machine state: writing it fires no push, a push never ships it, and
+    the sync point never counts it — the server drops the .pyc on import, so
+    a base holding it could never match the bundle handed back and every
+    poll would read as a remote change, every merge as a local edit."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    clone = harness.clones / "alpha"
+    assert "__pycache__/" in (clone / ".fusedignore").read_text().splitlines()
+
+    shipped: list[list[str]] = []
+    real = canvases_mod._SyncManager._run_push_cli
+
+    def capture(self, cli, copy_dir):
+        shipped.append(sorted(
+            os.path.relpath(os.path.join(root, f), copy_dir).replace(os.sep, "/")
+            for root, _dirs, files in os.walk(copy_dir) for f in files))
+        return real(self, cli, copy_dir)
+
+    monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", capture)
+    manager = _start(harness)
+
+    def pycache(rel: str, data: bytes) -> None:
+        p = clone / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
+    pycache("__pycache__/a.cpython-312.pyc", b"\x00\xff")
+    pycache("sub/__pycache__/b.cpython-312.pyc", b"\x00\xfe")
+    time.sleep(0.4)
+    assert not shipped, "a bytecode cache fired a push"
+    assert manager.push_state == "idle"
+
+    (clone / "a.py").write_text("a2-edited\n")
+    status = _wait_sync(lambda s: s["push_seq"] >= 1 and s["push_state"] == "idle")
+    assert status["push_seq"] >= 1, status
+    assert shipped and not any("__pycache__" in f for f in shipped[0]), shipped
+    assert "a.py" in shipped[0], shipped
+    assert manager._base_files is not None
+    assert not any("__pycache__" in rel for rel in manager._base_files), manager._base_files
+
+    # Recompiling (as the next local import does) is still not an edit.
+    pycache("__pycache__/a.cpython-312.pyc", b"\x00\xfd")
+    time.sleep(0.4)
+    assert len(shipped) == 1, shipped
+    assert manager.push_state == "idle"
+    _stop_sync("alpha")
+
+
 @pytest.mark.parametrize("write_while_waiting, pushes", [(False, 1), (True, 2)])
 def test_the_manual_push_waits_its_turn_behind_a_running_push(
         harness, tmp_path, monkeypatch, fake_agent, write_while_waiting, pushes):
