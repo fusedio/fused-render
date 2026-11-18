@@ -296,6 +296,18 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
 # How long /api/canvases/snapshot waits on _op_lock before answering 409.
 SNAPSHOT_LOCK_WAIT_S = 1.0
+# A frame that keeps acking deltas with names SKIPPED ("kept its own newer
+# change") while no snapshot of its own reaches us is not holding a newer
+# edit — it would have posted it. Past this many such acks, or this long,
+# the disk→canvas leg reads "held" with the names, the log says so once, and
+# the page is asked to send the frame a full state (`embed_heal_seq`).
+EMBED_SKIP_STREAK_ACKS = 3
+# A turn end held because ANOTHER session's turn is open in the clone
+# (`turn_end`) publishes anyway once the hold is this old — at the next turn
+# end or watcher tick. Turns that keep overlapping, or a turn that never
+# reads as ended, would otherwise keep the folder unpublished for good.
+TURN_END_HOLD_MAX_S = 180.0
+EMBED_SKIP_STREAK_S = 10.0
 # stop()'s bound on joining the watcher thread. A push still inside its CLI
 # can hold that thread for up to PUSH_TIMEOUT; the quit rung terminates the
 # CLI first (terminate_push), and no caller should hang behind a network call.
@@ -1377,6 +1389,147 @@ def in_reference_copy(path: str) -> bool:
     except (OSError, ValueError):
         return False
     return False
+
+
+# THE NODE VIEW'S GATE (SPEC §53.3 NV-2): which node of which clone a file
+# is, by the four node-source suffixes. The kind is what the file's suffix
+# makes the node in the workbench; a canvas.toml row carries no kind of its
+# own (only folders are typed), so "the row's kind matches the file" is: the
+# row is a node (not a folder) AND this file is the one `node_files` picks
+# for the stem (`foo.py` beside `foo.json` makes `foo.json` no node file).
+NODE_FILE_KINDS = {".py": "udf", ".json": "widget", ".html": "html", ".md": "note"}
+#: canvas.toml is node/edge metadata; past this it is not read (the canvas
+#: template's own gate uses the same bound).
+NODE_TOML_MAX_BYTES = 2 * 1024 * 1024
+
+
+def node_file_shape(path) -> tuple[str, str, str, str, str] | None:
+    """`(env, name, clone_dir, stem, kind)` when `path` is SHAPED like a node's
+    source file — one of the four node suffixes (a `.py` stem not starting
+    with `_`), directly in a `user/<canvas>` folder of a canvases root — else
+    None. The path alone decides: no syscall on it, canvas.toml unread
+    (`clone_dir_for` resolves only the fixed roots). `canvas_node_file`'s
+    first step, and all that stat asks before it marks the `_node` entry as the
+    default candidate (SPEC PT-8, `prefer`). Never raises."""
+    try:
+        path = str(path or "")
+        if not path or not os.path.isabs(path):
+            return None
+        path = os.path.normpath(path)
+        base = os.path.basename(path)
+        stem, ext = os.path.splitext(base)
+        kind = NODE_FILE_KINDS.get(ext)
+        if (kind is None or not stem or base.startswith(".")
+                or base in canvas_snapshot.IGNORED_BASENAMES
+                or (ext == ".py" and stem.startswith("_"))
+                # The frame scope (FP-9) and the embed key a node by this
+                # alphabet; a name outside it cannot be one node view's.
+                or not _NAME_RE.fullmatch(stem)):
+            return None
+        found = clone_dir_for(path)
+        if found is None:
+            return None
+        env, name, clone_dir = found
+        folder = os.path.dirname(path)
+        # Directly in the canvas folder: its parent is `user/<name>` and that
+        # folder's parent is the scope root, which is in no clone.
+        if (os.path.basename(folder) != name or clone_dir_for(folder) != found
+                or clone_dir_for(os.path.dirname(folder)) is not None):
+            return None
+        return env, name, clone_dir, stem, kind
+    except Exception:  # noqa: BLE001 — a shape that cannot be read is no node
+        return None
+
+
+def canvas_node_file(path) -> dict | None:
+    """`{env, name, node, kind, file, title, clone_dir}` when `path` is a node's
+    source file at the root of a `user/<canvas>` folder (a clone or a
+    reference copy there, D1476), else None. Cheapest first: the path's
+    shape and suffix (`node_file_shape`, no syscall), then the folder's
+    canvas.toml (one stat, one read of at most NODE_TOML_MAX_BYTES), then
+    one listdir for the suffix rule. `team/` and `public/` never pass
+    (`clone_dir_for`). Never raises. Shared by the `_node` sentinel's gate
+    (`server.templates._node_view_gate`) and GET /api/canvases/node, so the mode and the view agree
+    on what a node is. The `canvases_enabled` preference is the CALLER's
+    question."""
+    try:
+        shape = node_file_shape(path)
+        if shape is None:
+            return None
+        env, name, clone_dir, stem, kind = shape
+        path = os.path.normpath(str(path))
+        base = os.path.basename(path)
+        folder = os.path.dirname(path)
+        toml_path = os.path.join(folder, "canvas.toml")
+        if os.path.getsize(toml_path) > NODE_TOML_MAX_BYTES:
+            return None
+        with open(toml_path, "rb") as fh:
+            doc = tomllib.load(fh)
+        canvas = doc.get("canvas") if isinstance(doc, dict) else None
+        rows = canvas.get("nodes") if isinstance(canvas, dict) else None
+        row = canvas_snapshot.rows_by_name(rows if isinstance(rows, list) else []).get(stem)
+        if row is None or canvas_snapshot.is_folder(row):
+            return None
+        if canvas_snapshot.node_files(folder).get(stem) != base:
+            return None
+        title = row.get("title")
+        return {"env": env, "name": name, "node": stem, "kind": kind, "file": base,
+                "title": title.strip() if isinstance(title, str) and title.strip() else stem,
+                "clone_dir": clone_dir}
+    except Exception:  # noqa: BLE001 — a gate that cannot decide says no (CT-12)
+        return None
+
+
+def _cached_handle(env: str) -> str | None:
+    """The whoami handle when this process already holds a live answer for
+    `env`'s current login, else None. Never runs the CLI."""
+    with _CLI_CACHE_LOCK:
+        hit = _cli_cache.get(("whoami", env, _creds_sig(env)))
+    if hit is None or hit[0] <= time.monotonic() or not isinstance(hit[1], dict):
+        return None
+    handle = hit[1].get("handle")
+    return handle if isinstance(handle, str) and handle else None
+
+
+@router.get("/api/canvases/node")
+def api_canvases_node(path: str = ""):
+    """What the node view (SPEC §53.3) needs to start, so the page parses no
+    paths: `{enabled}` alone while the `canvases_enabled` preference is off;
+    `{enabled, node: null}` for a path that is not a node file (the `udf`
+    gate's own rule, `canvas_node_file`); else `{enabled, env, name, node,
+    kind, file, title, live, reference, signed_in, handle?}` (`title`: the
+    row's, else the node's name) — `live`: the folder is
+    a clone this process may sync (`_is_live_clone`); `reference`: it is a
+    reference copy (the view clones, adopting it in place, before starting
+    the sync); `signed_in`: `env`'s `fused login` store exists; `handle`: the
+    whoami answer when one is already cached (no CLI run here). A cheap
+    local read: no X-Fused guard, nothing written."""
+    from fused_render.shell import prefs
+
+    if not prefs.canvases_enabled():
+        return {"enabled": False}
+    if not isinstance(path, str) or not path or not os.path.isabs(os.path.expanduser(path)):
+        return _error("'path' must be an absolute path")
+    info = canvas_node_file(os.path.expanduser(path))
+    if info is None:
+        return {"enabled": True, "node": None}
+    env, name = info["env"], info["name"]
+    out = {
+        "enabled": True,
+        "env": env,
+        "name": name,
+        "node": info["node"],
+        "kind": info["kind"],
+        "file": info["file"],
+        "title": info["title"],
+        "live": _is_live_clone(env, name),
+        "reference": canvas_marker.is_reference(info["clone_dir"]),
+        "signed_in": _logged_in(env),
+    }
+    handle = _cached_handle(env)
+    if handle:
+        out["handle"] = handle
+    return out
 
 
 @router.get("/api/canvases/whoami")
@@ -3062,6 +3215,154 @@ def forget_file_sessions(files: list[str], *, backup=None, log=None) -> dict:
     return out
 
 
+# PER-FRAME PICTURES (SPEC 53.1). Several frames can show one canvas: the
+# workspace, another window of it, a node view. Each page mints an id for its
+# frame and names it on every embed call (`frame`); the manager keeps one
+# `_FrameState` per id. A call that names none is the record "", which always
+# exists, so a page from before this keeps its one picture.
+_FRAME_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+#: A record whose page is gone (no events socket, no call) is dropped after this.
+FRAME_DROP_S = 60.0
+#: Records per canvas, the "" one included.
+MAX_FRAMES = 16
+# (canvas key, frame id) → open events sockets naming that frame. Outside the
+# manager: a stop/start replaces the manager under a socket that stays open.
+_FRAME_SOCKETS: dict[tuple[str, str], int] = {}
+_FRAME_SOCKETS_LOCK = threading.Lock()
+
+
+class _TooManyFrames(Exception):
+    pass
+
+
+class _FrameScoped(Exception):
+    """A write from a frame whose record is scoped to one node (FP-9)."""
+
+
+class _FrameState:
+    """What the host knows of ONE embedded frame: the picture it is believed
+    to hold and the bookkeeping of both legs with it. Everything here is read
+    and written under the manager's `_op_lock`, except the reads `sync_state`
+    and `_push` make, which tolerate a value one step old."""
+
+    def __init__(self, frame: str, scope: str | None = None):
+        self.id = frame
+        # The one node this frame may write (a node view), or None: the
+        # whole canvas. Set when the record is made and never changed.
+        self.scope = scope
+        self.last_call = time.time()
+        # Whether this frame has spoken (a snapshot, a body, an ack): until
+        # then nothing is owed to it (`sync_state`).
+        self.seen = False
+        # A refused delta, for sync/state.
+        self.delta_error: str | None = None
+        # Files this frame's generation created that have no row yet, and
+        # rows it sent whose file is not on disk yet. Both are facts about
+        # the clone that only the frame that caused them can end (its
+        # generation moving on), so each record keeps its own and the readers
+        # that care about the clone take the union (`_all_rowless`,
+        # `_owed_files`).
+        self.rowless: set[str] = set()
+        self.fileless: set[str] = set()
+        # An empty cut deferred to deltas still in flight (cut_delta): the
+        # ack of the last of them cuts again (ack_delta).
+        self.recut_after_acks = False
+        # Embed v3 snapshots (canvas_snapshot.py): the last compact state this
+        # manager applied from the embedded workbench, per hydration
+        # generation, and the (gen, seq) pairs already applied so a replayed
+        # snapshot (the embed re-posts its unacked queue after a reload) is
+        # acked again without a second write. Both reset when `gen` moves:
+        # a new generation means the embed re-hydrated from the server, so
+        # its base is whatever the clone held at that push, not our memory.
+        self.embed_gen = 0
+        # EMBED_VIEW: the compact state the embed is believed to hold — the
+        # `prev` of the snapshot leg and the base of the delta leg
+        # (canvas_snapshot.py, "the disk → embed leg"). Its rows are always
+        # DISK rows: the whole disk reading after an acked delta, disk
+        # restricted to the nodes the embed sent after its own snapshot
+        # (canvas_snapshot.held_view — never wider than what the frame holds,
+        # or a node Claude added on disk would be "known", skipped by the next
+        # delta and deleted by the next snapshot). None = nothing known: the
+        # next delta is a full state and the next snapshot falls back to its
+        # own `base_nodes`.
+        self.embed_view: dict | None = None
+        # A generation switch whose view reset waits for that generation's
+        # first ACCEPTED post (`_embed_commit_gen`); a delta ack in between
+        # re-seeds the view from the frame's own ack and cancels it.
+        self.view_reset_pending = False
+        # The view was re-seeded by a FULL delta the frame acked (its hello)
+        # since the last snapshot was applied: it is that frame's picture, so
+        # a generation switch noticed only now (its first snapshot) has
+        # nothing to reset. A snapshot applied since clears it.
+        self.view_from_hello = False
+        # The disk revision the view mirrors; a delta ack for an older rev is
+        # stale (a snapshot write re-read disk since) and is ignored.
+        self.view_rev = 0
+        # Disk readings handed to the page, by rev, until the frame acks.
+        self.delta_views: dict[int, dict] = {}
+        # Node names each cut delta carried an op for, and the names a frame
+        # ack reported SKIPPED (it kept its own newer change) that no later
+        # acked delta has re-sent yet: a delta cut behind the skipping one
+        # (diffed against its reading) never mentions them, and its ack must
+        # not make the view forget what the frame still shows for them.
+        self.delta_names: dict[int, set] = {}
+        # name → the disk_rev when the hold began: only a delta cut AFTER it
+        # (its base carries the held picture) settles the name.
+        self.skip_hold: dict[str, int] = {}
+        # Consecutive acks that skipped names with no snapshot of the frame's
+        # applied in between (`_note_skip_streak`): {names, since, count,
+        # stuck}, or None. `embed_heal_seq` moves once per stuck streak; the
+        # page answers a move with a full state for THIS frame.
+        self.skip_streak: dict | None = None
+        self.embed_heal_seq = 0
+        self.embed_applied: dict[tuple[int, int], dict] = {}
+        self.gen_applied_max: dict[int, int] = {}
+        # Causality between the two legs (audit 2026-11-10): the highest delta
+        # rev this manager CUT WITH OPS (a full state counts, an empty cut
+        # does not). A snapshot names the rev the frame had applied when it
+        # serialized it (`body.rev`); one below `_cut_rev` was built before a
+        # delta the host had already sent — a stale picture — and is BOUNCED
+        # (apply_snapshot): nothing written, the frame applies the delta and
+        # posts again. The frame stays the one merge engine.
+        self.cut_rev = 0
+        # SPEC 53.1 FP-6: the disk_rev of the latest snapshot or rename write
+        # made by ANOTHER frame. A snapshot of this frame's built on a rev
+        # below it predates that write; `cut_rev` cannot tell (no delta with
+        # it may have been cut for this frame yet), and applied, its edge set
+        # would replace the other frame's. `recut_for`: the rev of the re-cut
+        # forced for such a bounce, so one write forces one re-cut.
+        self.other_write_rev = 0
+        self.recut_for = 0
+        # The snapshot seq the last skip-triggered re-cut was made at (see
+        # ack_delta): never two re-cuts for one seq, so a frame that keeps
+        # skipping cannot drive a delta loop.
+        self.skip_recut_seq: tuple[int, int] | None = None
+        # Highest seq applied in this generation. A snapshot is the embed's
+        # FULL state, so one that arrives after a later seq (a 409 retry that
+        # lost the race, a replayed queue) is superseded: it is acked as
+        # applied and never touches disk — applied, it would read the newer
+        # snapshot's nodes as deletions and trash their files.
+        self.embed_max_seq = -1
+        # Set by a landed HARD pull: `{rev, until}` — the disk_rev the pull
+        # left and a deadline. Until the frame acks a delta at or past that
+        # rev (it now shows the server's copy), or a new generation hydrates,
+        # every snapshot of the current generation is acked stale and never
+        # touches disk: those snapshots describe the canvas the pull just
+        # discarded (one that met the pull's 409 and is retrying, one the
+        # frame cut before applying the delta), and applied they would write
+        # the old canvas straight back. The deadline keeps a frame that never
+        # acks (closed, reloading) from fencing the clone for good.
+        self.hard_fence: dict | None = None
+        # The body channel's own fence after a hard pull: the disk_rev the
+        # pull left, held until the frame ACKS a delta at or past it (or
+        # re-hydrates from the server). No deadline: a snapshot fenced too
+        # long is a lost layout edit, but a body let through would put the
+        # discarded text — or a file the pull removed, which hashes as the
+        # empty text — straight back. A frame that never acks posts nothing
+        # worth taking.
+        self.body_fence_rev: int | None = None
+
+
 class _SyncManager:
     """One watcher thread: fingerprint the clone folder, debounce, push.
 
@@ -3115,16 +3416,11 @@ class _SyncManager:
         self._flight_lock = threading.Lock()
         self._push_started_at: float | None = None
         self._push_proc: subprocess.Popen | None = None
-        self._rowless: set[str] = set()
-        self._fileless: set[str] = set()
         # Every node source file this manager has seen on disk, by slug
         # (`_note_disk`). A row whose file is in here and gone was DELETED —
         # never a row written ahead of its file — so the push drops it from
         # the clone's own toml too, served or not (`_push`).
         self._seen_sources: set[str] = set()
-        # An empty cut deferred to deltas still in flight (cut_delta): the
-        # ack of the last of them cuts again (ack_delta).
-        self._recut_after_acks = False
         # Bodies posted for a file that is gone, kept in the trash
         # (`_keep_gone_body`): file → its trash folder, and the hash kept.
         self._gone_trash: dict[str, str] = {}
@@ -3135,13 +3431,10 @@ class _SyncManager:
         self._pull_in_flight = False
         self._last_pull_error: str | None = None
         # disk → embed leg bookkeeping for sync/state: when each disk_rev was
-        # cut (the age of the oldest one the frame has not acked), the last
-        # cut's hold reason, a refused delta, and whether any frame has spoken
-        # to this manager at all (no frame = nothing owed).
+        # cut (the age of the oldest one a frame has not acked) and the last
+        # cut's hold reason. What is per frame is on its `_FrameState`.
         self._rev_times: dict[int, float] = {}
         self._last_cut_held: str | None = None
-        self._delta_error: str | None = None
-        self._frame_seen = False
         self._lock_path = _lock_path(env, name)
         self._lock_since = lock_since
         self.push_seq = 0
@@ -3246,37 +3539,9 @@ class _SyncManager:
         # turn?" (`agent_session_id`): the idle stop's question.
         self._agent_session_id = ""
         self._agent_session_checked_at = 0.0
-        # Embed v3 snapshots (canvas_snapshot.py): the last compact state this
-        # manager applied from the embedded workbench, per hydration
-        # generation, and the (gen, seq) pairs already applied so a replayed
-        # snapshot (the embed re-posts its unacked queue after a reload) is
-        # acked again without a second write. Both reset when `gen` moves:
-        # a new generation means the embed re-hydrated from the server, so
-        # its base is whatever the clone held at that push, not our memory.
-        self._embed_gen = 0
-        # EMBED_VIEW: the compact state the embed is believed to hold — the
-        # `prev` of the snapshot leg and the base of the delta leg
-        # (canvas_snapshot.py, "the disk → embed leg"). Its rows are always
-        # DISK rows: the whole disk reading after an acked delta, disk
-        # restricted to the nodes the embed sent after its own snapshot
-        # (canvas_snapshot.held_view — never wider than what the frame holds,
-        # or a node Claude added on disk would be "known", skipped by the next
-        # delta and deleted by the next snapshot). None = nothing known: the
-        # next delta is a full state and the next snapshot falls back to its
-        # own `base_nodes`.
-        self._embed_view: dict | None = None
-        # A generation switch whose view reset waits for that generation's
-        # first ACCEPTED post (`_embed_commit_gen`); a delta ack in between
-        # re-seeds the view from the frame's own ack and cancels it.
-        self._view_reset_pending = False
-        # The view was re-seeded by a FULL delta the frame acked (its hello)
-        # since the last snapshot was applied: it is that frame's picture, so
-        # a generation switch noticed only now (its first snapshot) has
-        # nothing to reset. A snapshot applied since clears it.
-        self._view_from_hello = False
-        # The disk revision the view mirrors; a delta ack for an older rev is
-        # stale (a snapshot write re-read disk since) and is ignored.
-        self._view_rev = 0
+        # The per-frame records (`_FrameState`), by frame id. "" is the frame
+        # of a page that names none and is never dropped.
+        self._frames: dict[str, _FrameState] = {"": _FrameState("")}
         # DISK_REV: bumped whenever the clone's fingerprint moves — a scan
         # tick, a snapshot write, a merge — or the remote manifest's ids do
         # (a push gave a new node its server id; the ids live outside the
@@ -3293,31 +3558,11 @@ class _SyncManager:
         # _note_disk runs on the watcher thread (its scan) and on request
         # threads (under _op_lock): the compare-and-bump needs its own lock.
         self._rev_lock = threading.Lock()
-        # Disk readings handed to the page, by rev, until the frame acks.
-        self._delta_views: dict[int, dict] = {}
-        # Node names each cut delta carried an op for, and the names a frame
-        # ack reported SKIPPED (it kept its own newer change) that no later
-        # acked delta has re-sent yet: a delta cut behind the skipping one
-        # (diffed against its reading) never mentions them, and its ack must
-        # not make the view forget what the frame still shows for them.
-        self._delta_names: dict[int, set] = {}
-        # name → the disk_rev when the hold began: only a delta cut AFTER it
-        # (its base carries the held picture) settles the name.
-        self._skip_hold: dict[str, int] = {}
-        self._embed_applied: dict[tuple[int, int], dict] = {}
-        self._gen_applied_max: dict[int, int] = {}
-        # Causality between the two legs (audit 2026-11-10): the highest delta
-        # rev this manager CUT WITH OPS (a full state counts, an empty cut
-        # does not). A snapshot names the rev the frame had applied when it
-        # serialized it (`body.rev`); one below `_cut_rev` was built before a
-        # delta the host had already sent — a stale picture — and is BOUNCED
-        # (apply_snapshot): nothing written, the frame applies the delta and
-        # posts again. The frame stays the one merge engine.
-        self._cut_rev = 0
-        # The snapshot seq the last skip-triggered re-cut was made at (see
-        # ack_delta): never two re-cuts for one seq, so a frame that keeps
-        # skipping cannot drive a delta loop.
-        self._skip_recut_seq: tuple[int, int] | None = None
+        # A turn end held for another session's open turn: {since, run_id},
+        # or None. Cleared by the next push; past TURN_END_HOLD_MAX_S the
+        # watcher publishes even while a run is live (`_tick`). Per canvas:
+        # it is about the clone's sessions, not about any frame.
+        self._publish_held: dict | None = None
         # What the user did to the canvas from the workbench, for the Claude
         # sessions working in this clone (owner, 2026-11-10: Claude is told in
         # real time). `_journal` is a bounded ring of {seq, at, kind, name,
@@ -3346,33 +3591,9 @@ class _SyncManager:
         self._tombstones_path = os.path.join(self.root, ".sync", f"{name}.tombstones.json")
         self._tombstones: dict[str, dict] = self._load_tombstones()
         self._held_out_logged: list[str] = []
-        # Highest seq applied in this generation. A snapshot is the embed's
-        # FULL state, so one that arrives after a later seq (a 409 retry that
-        # lost the race, a replayed queue) is superseded: it is acked as
-        # applied and never touches disk — applied, it would read the newer
-        # snapshot's nodes as deletions and trash their files.
-        self._embed_max_seq = -1
-        # Set by a landed HARD pull: `{rev, until}` — the disk_rev the pull
-        # left and a deadline. Until the frame acks a delta at or past that
-        # rev (it now shows the server's copy), or a new generation hydrates,
-        # every snapshot of the current generation is acked stale and never
-        # touches disk: those snapshots describe the canvas the pull just
-        # discarded (one that met the pull's 409 and is retrying, one the
-        # frame cut before applying the delta), and applied they would write
-        # the old canvas straight back. The deadline keeps a frame that never
-        # acks (closed, reloading) from fencing the clone for good.
-        self._hard_fence: dict | None = None
         # The trash folder the last pull() snapshotted the clone into (None
         # when it took no snapshot); pull()'s answer carries it.
         self._last_trash: str | None = None
-        # The body channel's own fence after a hard pull: the disk_rev the
-        # pull left, held until the frame ACKS a delta at or past it (or
-        # re-hydrates from the server). No deadline: a snapshot fenced too
-        # long is a lost layout edit, but a body let through would put the
-        # discarded text — or a file the pull removed, which hashes as the
-        # empty text — straight back. A frame that never acks posts nothing
-        # worth taking.
-        self._body_fence_rev: int | None = None
         # Body channel (canvas_snapshot.body_hash): node → the hash of the text
         # this channel last wrote for it. A body whose `base_hash` is that hash
         # overwrites the frame's own previous write, so nothing goes to trash;
@@ -4973,12 +5194,13 @@ class _SyncManager:
                     present = None
                 deletable = (set() if present is None
                              else (served | self._seen_sources) - present)
-                if present is not None:
-                    self._fileless -= present  # as in cut_delta: its file landed
+                # As in cut_delta: a file that landed is owed no more.
+                owed = (self._settle_fileless(present) if present is not None
+                        else self._owed_files())
                 held = self.held_tombstones()
                 dropped = self._reconcile_rows(
-                    "disk_to_server", self.dir, pending=self._rowless | held,
-                    drop=deletable - self._fileless,
+                    "disk_to_server", self.dir, pending=self._all_rowless() | held,
+                    drop=deletable - owed,
                     backup=lambda rel, data: self._backup_to(self._new_trash_dir(), rel, data))
                 self._fingerprint = frozen = self._take_fingerprint()
                 self._dirty_since = None
@@ -5116,6 +5338,8 @@ class _SyncManager:
                 self._dirty_since = self._dirty_since or time.time()
             self._push_started_at = None
             self.push_state = "pending" if moved else "idle"
+            # Published: a turn end held for another session's turn is moot.
+            self._publish_held = None
             # Last: `status()` reads without the lock, so a reader that sees
             # the new push_seq must already see the push settled, not
             # push_seq 1 with push_state still "pushing".
@@ -5244,6 +5468,17 @@ class _SyncManager:
         if self._idle_check(live):
             return  # stopping: this was the last tick
         self._lease_tick()
+        streaking = [f for f in list(self._frames.values()) if f.skip_streak is not None]
+        if streaking and self._op_lock.acquire(blocking=False):
+            # The time half of the skip-streak rule: a frame that skipped
+            # names once and then went quiet is as stuck as one that skipped
+            # three deltas. Non-blocking: a busy clone is checked next tick.
+            # Per frame: each streak is one frame's.
+            try:
+                for f in streaking:
+                    self._check_skip_streak(f)
+            finally:
+                self._op_lock.release()
         gen = self._fp_gen
         current = self._take_fingerprint()
         self._note_disk(current)
@@ -5283,7 +5518,10 @@ class _SyncManager:
             # a hosted tab does not save over a server it has not looked
             # at, and neither does this one; or while another owner has the
             # canvas checked out (its lease).
-            if not live and self.server_stale is None and not self._leased_elsewhere():
+            # A turn end held for another session's turn past
+            # TURN_END_HOLD_MAX_S publishes now, live run or not.
+            if ((not live or self._publish_hold_expired())
+                    and self.server_stale is None and not self._leased_elsewhere()):
                 # Non-blocking: a manual push or a pull in flight already
                 # owns the network leg; this tick just skips. The pause
                 # count is re-read UNDER the flight lock — pause() raises
@@ -5572,8 +5810,10 @@ class _SyncManager:
         passing the session's hook count when the Stop arrived: once it
         moves, that session's next turn is under way, and neither the
         merge nor the push may land in the middle of it (its own Stop
-        publishes). Returns what happened: "pushed", "merged", "idle", "busy",
-        "held", "superseded"."""
+        publishes). Nor while ANOTHER session's turn is open in the clone
+        (`_other_live_turn`): that session's change set may be half-done, and
+        its own Stop publishes. Returns what happened: "pushed", "merged",
+        "idle", "busy", "held", "superseded"."""
         def superseded() -> bool:
             return (hooks_at_stop is not None
                     and self._tool_hooks.get(session_id, 0) != hooks_at_stop)
@@ -5582,6 +5822,16 @@ class _SyncManager:
             self.log_event("disk_to_server", "turn end", ok=False,
                            detail="a newer turn started in this folder; its own turn end publishes")
             return "superseded"
+
+        def held_for(other: str) -> str:
+            if self._publish_held is None:
+                self._publish_held = {"since": time.time(), "run_id": other}
+                self._bump()
+            self.log_event("disk_to_server", "turn end", ok=False,
+                           detail="publish held: another session's turn is still open "
+                                  "in this folder; its turn end publishes (or the watcher, "
+                                  f"after {TURN_END_HOLD_MAX_S / 60:g} min)")
+            return "held"
 
         self.agent_run_id(fresh=True)
         if not self._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
@@ -5593,13 +5843,45 @@ class _SyncManager:
                 return "busy"
             if superseded():
                 return gave_way()
+            other = self._other_live_turn(session_id)
+            if other and not self._publish_hold_expired():
+                # Another session is mid-turn in this folder: its change set
+                # may be half-done (a file without its row, a rename without
+                # its canvas.toml edit), and publishing now would ship it —
+                # rows reconciled for its new files at the canvas's edge, old
+                # names removed from the server. Neither merge nor push: the
+                # other session's own Stop publishes, the debounce backstop
+                # does once no run is live, and either publishes anyway once
+                # the hold is TURN_END_HOLD_MAX_S old (`_tick`): a turn that
+                # never ends, or turns that keep overlapping, must not keep
+                # the folder unpublished for good.
+                return held_for(other)
+            if other:
+                self.log_event("disk_to_server", "turn end", ok=False,
+                               detail=f"publishing although another session's turn is still "
+                                      f"open: held for over {TURN_END_HOLD_MAX_S / 60:g} min")
+            else:
+                self._publish_held = None
+            capped = bool(other)
+
+            def fenced() -> bool:
+                # Re-checked after the network legs, at the merge and at the
+                # push's freeze: another session's turn may have started since
+                # the check above (unless the hold already ran out).
+                return superseded() or (not capped and bool(self._other_live_turn(session_id)))
+
+            def fenced_out() -> str:
+                if superseded():
+                    return gave_way()
+                return held_for(self._other_live_turn(session_id) or "unknown")
+
             what = "idle"
             if self.server_stale is not None:
                 cli = fused_cli()
                 if cli is not None and _shim_manifest_command(cli) is not None:
-                    merged = self._merge_now(fence=superseded)
+                    merged = self._merge_now(fence=fenced)
                     if merged.get("code") == "superseded":
-                        return gave_way()
+                        return fenced_out()
                     if merged.get("ok"):
                         what = "merged"
             if self.server_stale is not None or self._leased_elsewhere():
@@ -5611,15 +5893,46 @@ class _SyncManager:
             dirty = (self._dirty_since is not None
                      or self._take_fingerprint() != self._fingerprint)
             if dirty:
-                if superseded():
-                    return gave_way()
+                if fenced():
+                    return fenced_out()
                 self.log_event("disk_to_server", "turn end", detail="publishing the folder")
-                if self._push(fence=superseded) == "busy" and superseded():
-                    return gave_way()
+                if self._push(fence=fenced) == "busy" and fenced():
+                    return fenced_out()
                 return "pushed"
             return what
         finally:
             self._flight_lock.release()
+
+    def _publish_hold_expired(self) -> bool:
+        """A turn end held for another session's open turn (`_publish_held`)
+        TURN_END_HOLD_MAX_S ago or more: publish anyway."""
+        held = self._publish_held
+        return held is not None and time.time() - held["since"] >= TURN_END_HOLD_MAX_S
+
+    def _other_live_turn(self, session_id: str) -> str:
+        """The run id of a turn open in this clone that belongs to a session
+        other than `session_id`, or "". "" as well when that cannot be told —
+        no session id (a backend whose hook names none), an agent module
+        without `_live_runs_in`, a failed lookup: a turn end then publishes
+        as it always did (fail open; the alternative holds a publish on a
+        guess). The stopping session's own run may still read as open when
+        its Stop arrives, so it is told apart by the ids it answers to."""
+        if not session_id:
+            return ""
+        agent = _agent_module()
+        runs_in = getattr(agent, "_live_runs_in", None) if agent is not None else None
+        if runs_in is None:
+            return ""
+        try:
+            for run in runs_in(self.dir):
+                sessions = run.get("sessions") or ()
+                # A run naming no session cannot be told from the stopping
+                # one: not counted (fail open, as above).
+                if sessions and session_id not in sessions:
+                    return str(run.get("run_id") or "") or "unknown"
+        except Exception:  # noqa: BLE001 — "cannot tell" publishes, as before
+            logger.debug("live-run lookup failed for %s", self.dir, exc_info=True)
+        return ""
 
     def _lease_reason(self) -> str:
         owner = (self._lease_held_by or {}).get("owner") or "another editor"
@@ -5760,10 +6073,13 @@ class _SyncManager:
                 # The frame still shows the discarded canvas: drop the view so
                 # the next cut is a full state, and fence its snapshots until
                 # it has applied that state (see `_hard_fence`).
-                self._embed_view = None
-                self._hard_fence = {"rev": self.disk_rev,
-                                    "until": time.time() + HARD_FENCE_S}
-                self._body_fence_rev = self.disk_rev
+                # Every frame there is; one that arrives later starts with
+                # no view and no fence, and its first cut is the pulled clone.
+                for fr in list(self._frames.values()):
+                    fr.embed_view = None
+                    fr.hard_fence = {"rev": self.disk_rev,
+                                     "until": time.time() + HARD_FENCE_S}
+                    fr.body_fence_rev = self.disk_rev
             if hard and self.push_state == "error":
                 # The files that push failed on are gone: the clone is the
                 # server's copy now (or a fresh local edit over it, which the
@@ -5854,7 +6170,75 @@ class _SyncManager:
             return {"ok": False, "error": error}
         return {"ok": True, "trash": self._last_trash}
 
-    def _embed_enter(self, gen: int, seq: int) -> dict | None:
+    # -- the per-frame records (SPEC 53.1) -----------------------------------
+
+    def _frame(self, frame: str = "", scope: str | None = None) -> _FrameState:
+        """The record for `frame`, made on first use (no view: its first cut
+        is a full state). Under _op_lock. Records whose page is gone are
+        dropped here, on the way in: no events socket names them and they
+        have made no call for FRAME_DROP_S. A record's scope is fixed when it
+        is made; a later call naming another is refused, so a node view's
+        record can never be widened by what a frame sends."""
+        now = time.time()
+        key = _sync_key(self.env, self.name)
+        with _FRAME_SOCKETS_LOCK:
+            live = {f for (k, f), n in _FRAME_SOCKETS.items() if k == key and n > 0}
+        for fid in [f for f, rec in self._frames.items()
+                    if f and f != frame and f not in live
+                    and now - rec.last_call > FRAME_DROP_S]:
+            self._drop_frame(fid)
+        fr = self._frames.get(frame)
+        if fr is None:
+            if len(self._frames) >= MAX_FRAMES:
+                idle = sorted((rec.last_call, f) for f, rec in self._frames.items()
+                              if f and f not in live)
+                if not idle:
+                    raise _TooManyFrames(
+                        f"{MAX_FRAMES} frames already show this canvas")
+                self._drop_frame(idle[0][1])
+            fr = self._frames[frame] = _FrameState(frame, scope)
+        elif scope is not None and scope != fr.scope:
+            raise _FrameScoped("this frame's record is scoped to another node")
+        fr.last_call = now
+        return fr
+
+    def _drop_frame(self, frame: str) -> None:
+        """Forget a frame. The rows it sent whose file never came are the
+        ones its own next generation would have dropped (`_embed_enter`)."""
+        fr = self._frames.pop(frame, None)
+        drop = self._fileless_only_of(fr) if fr is not None else set()
+        if drop:
+            try:
+                self._reconcile_rows("embed_to_disk", self.dir, drop=drop, add=False)
+            except Exception as exc:  # noqa: BLE001 — a row kept is no harm
+                logger.warning("canvas %s: could not drop a gone frame's rows: %s",
+                               _sync_key(self.env, self.name), exc)
+
+    def _fileless_only_of(self, fr: _FrameState) -> set[str]:
+        """`fr`'s fileless rows that NO OTHER frame still owes a file for:
+        the ones `fr` may drop when it goes (or moves to a new generation).
+        Two frames can each have sent a row for one name (two windows that
+        both made `udf_3`); the row is the other frame's too until its file
+        lands or it lets go of it."""
+        others = set().union(*(f.fileless for f in list(self._frames.values()) if f is not fr))
+        return fr.fileless - others
+
+    def _all_rowless(self) -> set[str]:
+        return set().union(*(f.rowless for f in list(self._frames.values())))
+
+    def _owed_files(self) -> set[str]:
+        """Rows some frame sent whose file is not on disk yet."""
+        return set().union(*(f.fileless for f in list(self._frames.values())))
+
+    def _settle_fileless(self, landed: Iterable[str]) -> set[str]:
+        """`landed` files are on disk (or their node is gone): no frame is
+        owed them any more. Returns what is still owed."""
+        landed = set(landed)
+        for f in list(self._frames.values()):
+            f.fileless -= landed
+        return self._owed_files()
+
+    def _embed_enter(self, fr: _FrameState, gen: int, seq: int) -> dict | None:
         """Bookkeeping shared by apply_snapshot / apply_rename, under _op_lock.
         Returns the ack to answer with when nothing is to be written: the one
         already given for this (gen, seq), or a no-op ack for a seq older than
@@ -5865,10 +6249,10 @@ class _SyncManager:
         # Looked up after the generation switch below, an old pair flipped the
         # generation back (view, revs and fences reset) and the snapshot after
         # it ran with no picture of the frame, its rows overwriting Claude's.
-        done = self._embed_applied.get((gen, seq))
+        done = fr.embed_applied.get((gen, seq))
         if done is not None:
             return done
-        if gen != self._embed_gen and seq <= self._gen_applied_max.get(gen, -1):
+        if gen != fr.embed_gen and seq <= fr.gen_applied_max.get(gen, -1):
             # An OLDER generation's pair at or below the highest seq applied
             # in it: applied, or superseded by a later full state of that
             # generation — a replay whose ack was pruned from
@@ -5877,9 +6261,9 @@ class _SyncManager:
             # hard-pull fences would all reset for a body that is no news.
             return {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
                     "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
-        if gen != self._embed_gen:
-            newer = gen > self._embed_gen
-            self._embed_gen = gen
+        if gen != fr.embed_gen:
+            newer = gen > fr.embed_gen
+            fr.embed_gen = gen
             # A new generation: the embed re-hydrated from the SERVER, so what
             # it holds is no longer any disk reading. Its hello brings a full
             # delta that re-seeds the view. The view itself is dropped only
@@ -5888,25 +6272,26 @@ class _SyncManager:
             # before a delta it was owed) leaves the frame holding exactly the
             # view it acked, and a full cut against None would re-seat every
             # node — overwriting a drag the frame has not had acked (sim B).
-            self._view_reset_pending = not self._view_from_hello
-            self._rowless = set()
-            if self._fileless:
-                self._reconcile_rows("embed_to_disk", self.dir, drop=self._fileless, add=False)
-                self._fileless = set()
+            fr.view_reset_pending = not fr.view_from_hello
+            fr.rowless = set()
+            drop = self._fileless_only_of(fr)
+            if drop:
+                self._reconcile_rows("embed_to_disk", self.dir, drop=drop, add=False)
+            fr.fileless = set()
             # `_embed_applied` and `_gen_applied_max` are NOT cleared: (gen,
             # seq) pairs never repeat (a fresh tab's gen is its clock, a
             # refetch bumps it by one and restarts seq), and keeping them is
             # what answers a replay above.
-            self._embed_max_seq = -1
+            fr.embed_max_seq = -1
             if newer:
                 # A NEWER generation holds what a hard pull just brought down
                 # (it refetched), so the fences have nothing left to hold out.
-                # An OLDER one (a second frame on this canvas) predates it.
-                self._hard_fence = None
-                self._body_fence_rev = None
-        fence = self._hard_fence
+                # An OLDER one (a late post of the generation before) predates it.
+                fr.hard_fence = None
+                fr.body_fence_rev = None
+        fence = fr.hard_fence
         if fence is not None and time.time() >= fence["until"]:
-            self._hard_fence = fence = None
+            fr.hard_fence = fence = None
             self.log_event("embed_to_disk", "hard pull fence expired", ok=False,
                            detail=f"no delta ack from the workbench in {HARD_FENCE_S:g}s")
         if fence is not None:
@@ -5915,34 +6300,34 @@ class _SyncManager:
                            detail=f"{gen}/{seq}: predates the hard pull; not applied")
             ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
                    "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
-            return self._embed_record(gen, seq, ack)
-        if seq < self._embed_max_seq:
+            return self._embed_record(fr, gen, seq, ack)
+        if seq < fr.embed_max_seq:
             ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
                    "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
-            self._embed_applied[(gen, seq)] = ack
+            fr.embed_applied[(gen, seq)] = ack
             return ack
         return None
 
-    def _embed_commit_gen(self) -> None:
+    def _embed_commit_gen(self, fr: _FrameState) -> None:
         """A new generation's first post was accepted: drop the view now (see
         `_embed_enter`), so this post is measured against nothing known."""
-        if self._view_reset_pending:
-            self._view_reset_pending = False
-            self._embed_view = None
+        if fr.view_reset_pending:
+            fr.view_reset_pending = False
+            fr.embed_view = None
 
-    def _embed_record(self, gen: int, seq: int, ack: dict) -> dict:
-        self._embed_max_seq = max(self._embed_max_seq, seq)
-        self._embed_applied[(gen, seq)] = ack
+    def _embed_record(self, fr: _FrameState, gen: int, seq: int, ack: dict) -> dict:
+        fr.embed_max_seq = max(fr.embed_max_seq, seq)
+        fr.embed_applied[(gen, seq)] = ack
         # Per generation, the highest seq applied — what answers a replay
         # once its own ack has been pruned below (`_embed_enter`).
-        self._gen_applied_max[gen] = max(self._gen_applied_max.get(gen, -1), seq)
-        if len(self._gen_applied_max) > 32:
-            for old in sorted(self._gen_applied_max)[:-16]:
-                del self._gen_applied_max[old]
+        fr.gen_applied_max[gen] = max(fr.gen_applied_max.get(gen, -1), seq)
+        if len(fr.gen_applied_max) > 32:
+            for old in sorted(fr.gen_applied_max)[:-16]:
+                del fr.gen_applied_max[old]
         # Bound the dedupe memory: the embed's queue is never deep.
-        if len(self._embed_applied) > 64:
-            for key in sorted(self._embed_applied)[:-32]:
-                del self._embed_applied[key]
+        if len(fr.embed_applied) > 64:
+            for key in sorted(fr.embed_applied)[:-32]:
+                del fr.embed_applied[key]
         return ack
 
     # -- the disk → embed leg (deltas) ---------------------------------------
@@ -5961,10 +6346,11 @@ class _SyncManager:
             self._rev_key = key
             self.disk_rev += 1
             # When each rev appeared, for sync/state's disk_to_embed age. Only
-            # revs the frame has not acked matter; bounded either way.
+            # revs some frame has not acked matter; bounded either way.
             self._rev_times[self.disk_rev] = time.time()
             if len(self._rev_times) > 64:
-                for old in [r for r in self._rev_times if r <= self._view_rev] or \
+                acked = min(f.view_rev for f in list(self._frames.values()))
+                for old in [r for r in self._rev_times if r <= acked] or \
                         sorted(self._rev_times)[:-64]:
                     self._rev_times.pop(old, None)
         try:
@@ -6177,6 +6563,64 @@ class _SyncManager:
             self._rev_times[self.disk_rev] = time.time()
         self._bump()
 
+    def _note_skip_streak(self, fr: _FrameState, skipped: set[str]) -> None:
+        """An applied ack, under _op_lock. Names skipped: one more ack of the
+        streak (started now if none runs). None skipped and none still held
+        over from an earlier skip: the frame took everything, the streak is
+        over. A snapshot of the frame's own ends it too
+        (`_refresh_view_after_write`): that is the newer change a skip is
+        supposed to stand for."""
+        if not skipped:
+            if not fr.skip_hold:
+                self._clear_skip_streak(fr, "the workbench took every change")
+            return
+        streak = fr.skip_streak
+        if streak is None:
+            fr.skip_streak = {"names": set(skipped), "since": time.time(),
+                              "count": 1, "stuck": False}
+        else:
+            streak["names"] = set(skipped)
+            streak["count"] += 1
+        self._check_skip_streak(fr)
+
+    def _check_skip_streak(self, fr: _FrameState, now: float | None = None) -> None:
+        """Mark a skip streak stuck once it reaches EMBED_SKIP_STREAK_ACKS acks
+        or EMBED_SKIP_STREAK_S seconds: logged once, shown on the
+        disk→canvas leg, and `_embed_heal_seq` moves so the page sends the
+        frame a full state. Once per streak — a frame that skips the full
+        state too stays shown as held, never asked again in a loop."""
+        streak = fr.skip_streak
+        if streak is None or streak["stuck"]:
+            return
+        now = time.time() if now is None else now
+        if (streak["count"] < EMBED_SKIP_STREAK_ACKS
+                and now - streak["since"] < EMBED_SKIP_STREAK_S):
+            return
+        streak["stuck"] = True
+        # A newer rev first: a skip hold drops only on a delta cut at a rev
+        # past the one it was skipped at (`ack_delta`), and with no disk move
+        # the page's full cut would come at that same rev — taken in full, it
+        # would settle nothing and the leg would stay held.
+        self._force_recut()
+        fr.embed_heal_seq += 1
+        names = sorted(streak["names"])
+        self.log_event("disk_to_embed", "workbench holding back", ok=False,
+                       detail=f"{_file_list(names, 8)}: skipped in {streak['count']} "
+                              "delta(s) with no edit of its own posted; asking it "
+                              "for a full state")
+        self._bump()
+
+    def _clear_skip_streak(self, fr: _FrameState, why: str) -> None:
+        streak, fr.skip_streak = fr.skip_streak, None
+        if streak is not None and streak["stuck"]:
+            self.log_event("disk_to_embed", "workbench caught up", detail=why)
+            self._bump()
+
+    def _skip_streak_reason(self, fr: _FrameState) -> str:
+        names = sorted((fr.skip_streak or {}).get("names") or ())
+        return ("The canvas is not taking disk changes to "
+                f"{_file_list(names, 6)}: it reads them as unsaved edits of its own")
+
     def _remote_ids(self) -> dict[str, str]:
         """slug → server id from the last remote manifest (the shim emits
         ids; an older shim or the external CLI gives none)."""
@@ -6186,7 +6630,7 @@ class _SyncManager:
         return {slug: info["id"] for slug, info in udfs.items()
                 if isinstance(info, dict) and isinstance(info.get("id"), str) and info["id"]}
 
-    def _refresh_view_after_write(self, names, *, edges: list, ids: dict,
+    def _refresh_view_after_write(self, fr: _FrameState, names, *, edges: list, ids: dict,
                                   bodies: dict, embed_rows: dict | None) -> None:
         """After a snapshot or rename landed on disk: the embed holds disk
         restricted to `names`, the nodes it is known to hold, with its own
@@ -6199,23 +6643,47 @@ class _SyncManager:
         the frame applied that delta and then wrote on top of it, and this
         view already describes the result."""
         self._note_disk()
-        self._view_rev = self.disk_rev
-        self._frame_seen = True
+        fr.view_rev = self.disk_rev
+        fr.seen = True
         # The frame's own post describes what it shows now: nothing held over.
-        self._skip_hold = {}
-        self._view_from_hello = False
+        fr.skip_hold = {}
+        self._clear_skip_streak(fr, "the workbench posted its own change")
+        fr.view_from_hello = False
         self._bump()
         try:
             disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
         except Exception as exc:  # noqa: BLE001 — a view we cannot read is no view
             logger.warning("canvas %s: could not re-read the clone after a write: %s",
                            _sync_key(self.env, self.name), exc)
-            self._embed_view = None
+            fr.embed_view = None
             return
-        self._embed_view = canvas_snapshot.held_view(
+        fr.embed_view = canvas_snapshot.held_view(
             disk, names, edges=edges, ids=ids, bodies=bodies, embed_rows=embed_rows)
 
-    def cut_delta(self, full: bool) -> dict:
+    def _note_frame_write(self, fr: _FrameState) -> None:
+        """`fr`'s snapshot or rename CHANGED the clone (its result says so):
+        every OTHER record is told the rev of that write (FP-6), so a
+        snapshot one of them built before it is bounced, not applied. Called
+        after the write's `_note_disk()`, so `disk_rev` already counts it —
+        whichever thread (the 1 s tick, the watcher, the refresh) noted it
+        first. With one record there is no other, and nothing changes."""
+        for other in list(self._frames.values()):
+            if other is not fr:
+                other.other_write_rev = max(other.other_write_rev, self.disk_rev)
+
+    def _owes_frame(self, fr: _FrameState) -> bool:
+        """Whether the next cut for `fr` would carry anything: its view is
+        unknown, or differs from disk. A bounce for another frame's write is
+        made only then, so the delta the frame waits for always has ops."""
+        if fr.embed_view is None:
+            return True
+        try:
+            disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
+        except Exception:  # noqa: BLE001 — no reading: nothing to bounce for
+            return False
+        return bool(canvas_snapshot.diff_views(disk, fr.embed_view, pending=self._owed_files()))
+
+    def cut_delta(self, full: bool, frame: str = "", scope: str | None = None) -> dict:
         """diff(disk, embed_view) for the page to post to the frame. Under
         _op_lock, so a snapshot write never lands between the toml read and
         the file reads. Returns `{rev, base_rev, ops, full}`; `{rev, held}`
@@ -6235,6 +6703,7 @@ class _SyncManager:
         move and drops the answer when it has no frame (boot, a reload), so
         only a frame's own ack or snapshot is evidence that one is there —
         otherwise disk_to_embed would read "pending" with nobody to ack."""
+        fr = self._frame(frame, scope)
         self._note_disk()
         rev = self.disk_rev
         try:
@@ -6247,12 +6716,12 @@ class _SyncManager:
             self.log_event("disk_to_embed", "delta unheld", detail=f"rev {rev}")
             self._last_cut_held = None
             self._bump()
-        if self._delta_error is not None:
+        if fr.delta_error is not None:
             # A good cut (the frame's hello asks for one) starts the leg over.
-            self._delta_error = None
+            fr.delta_error = None
             self._bump()
-        view = None if full else self._embed_view
-        base_rev = self._view_rev
+        view = None if full else fr.embed_view
+        base_rev = fr.view_rev
         pending: list[int] = []
         if view is not None:
             # Deltas already cut and still unacked: the page posts them in
@@ -6262,16 +6731,16 @@ class _SyncManager:
             # an in-flight delta added and disk has since dropped (a session
             # deleting it) is in neither side of this diff, and no later
             # delta ever deletes it from the canvas (sim seed 127).
-            pending = [r for r in self._delta_views if r > self._view_rev]
+            pending = [r for r in fr.delta_views if r > fr.view_rev]
             if pending:
                 base_rev = max(pending)
                 acked = view
-                view = self._adopt(self._delta_views[base_rev])
+                view = self._adopt(fr, fr.delta_views[base_rev])
                 # …except for names the frame SKIPPED (`_skip_hold`): it
                 # still shows the acked view's picture of them — node and the
                 # edges touching it (as `ack_delta` keeps them), or a cut
                 # would find no edge change and never re-send the removal.
-                hold = set(self._skip_hold)
+                hold = set(fr.skip_hold)
                 if hold:
                     view = {**view, **{t: dict(view.get(t) or {})
                                        for t in ("nodes", "files", "bodies", "ids")}}
@@ -6290,10 +6759,10 @@ class _SyncManager:
         # name is on disk, however it got there (a session's write, an older
         # workbench's snapshot, a body equal to disk): left in `_fileless`,
         # a later `rm` of that file would never reach the frame.
-        self._fileless -= disk["stems"]
-        ops = canvas_snapshot.diff_views(disk, view, pending=self._fileless)
+        owed = self._settle_fileless(disk["stems"])
+        ops = canvas_snapshot.diff_views(disk, view, pending=owed)
         disk["edges"] = canvas_snapshot.held_edges(disk, view["nodes"] if view else (),
-                                                   self._fileless)
+                                                   owed)
         if view is not None and not ops and pending:
             # Nothing to post, but deltas are still in flight: the frame holds
             # this reading only once it has applied them, and it may yet SKIP
@@ -6306,39 +6775,39 @@ class _SyncManager:
             # (`_recut_after_acks`), which adopts — or re-sends what the frame
             # skipped. Without it, nothing would cut again until disk moved,
             # and disk_to_embed would read "pending" meanwhile.
-            self._recut_after_acks = True
+            fr.recut_after_acks = True
             return {"rev": rev, "base_rev": base_rev, "ops": [], "full": False,
-                    **self._cut_seq()}
+                    **self._cut_seq(fr)}
         if view is not None and not ops:
-            self._embed_view = self._adopt(disk)
-            self._view_rev = rev
-            self._delta_error = None
+            fr.embed_view = self._adopt(fr, disk)
+            fr.view_rev = rev
+            fr.delta_error = None
             self._bump()
-            return {"rev": rev, "base_rev": rev, "ops": [], "full": False, **self._cut_seq()}
-        self._delta_views[rev] = disk
+            return {"rev": rev, "base_rev": rev, "ops": [], "full": False, **self._cut_seq(fr)}
+        fr.delta_views[rev] = disk
         if view is None:
-            self._delta_names.setdefault(-rev, set())  # marks rev as a full cut
-        self._delta_names[rev] = {n for o in ops for n in (o.get("name"), o.get("from"),
+            fr.delta_names.setdefault(-rev, set())  # marks rev as a full cut
+        fr.delta_names[rev] = {n for o in ops for n in (o.get("name"), o.get("from"),
                                                            o.get("to")) if isinstance(n, str)}
-        self._cut_rev = max(self._cut_rev, rev)
-        for old in sorted(self._delta_views)[:-8]:
-            del self._delta_views[old]
-        for old in [r for r in self._delta_names
-                    if r not in self._delta_views and -r not in self._delta_views]:
-            del self._delta_names[old]
+        fr.cut_rev = max(fr.cut_rev, rev)
+        for old in sorted(fr.delta_views)[:-8]:
+            del fr.delta_views[old]
+        for old in [r for r in fr.delta_names
+                    if r not in fr.delta_views and -r not in fr.delta_views]:
+            del fr.delta_names[old]
         self.log_event("disk_to_embed", "delta cut",
                        detail=f"rev {rev}: {len(ops)} op(s)" + (" (full)" if view is None else ""))
         return {"rev": rev, "base_rev": None if view is None else base_rev,
-                "ops": ops, "full": view is None, **self._cut_seq()}
+                "ops": ops, "full": view is None, **self._cut_seq(fr)}
 
-    def _cut_seq(self) -> dict:
+    def _cut_seq(self, fr: _FrameState) -> dict:
         """What a delta says about the snapshot leg (audit 2026-11-10): the
         frame generation and the highest snapshot/rename seq applied in it
         when the delta was cut. The frame skips ops on nodes its own LATER,
         still unacked snapshots added, deleted, renamed or moved — the delta
         was cut without them, and the user's change wins."""
-        return {"gen": self._embed_gen or None,
-                "seq": self._embed_max_seq if self._embed_max_seq >= 0 else None}
+        return {"gen": fr.embed_gen or None,
+                "seq": fr.embed_max_seq if fr.embed_max_seq >= 0 else None}
 
     def _cut_held(self, rev: int, reason: str) -> dict:
         """A delta the clone cannot answer yet. Logged once per distinct
@@ -6349,7 +6818,8 @@ class _SyncManager:
         return {"rev": rev, "held": reason}
 
     def ack_delta(self, rev: int, ok: bool, reason: str | None = None,
-                  skipped: Iterable[str] = ()) -> dict:
+                  skipped: Iterable[str] = (), frame: str = "",
+                  scope: str | None = None) -> dict:
         """The frame applied (or refused) the delta cut at `rev`. `reason` is
         the page's word for a refusal; one that only means "nobody could take
         it yet" (no frame on the page, a frame not hydrated) resets the view
@@ -6357,42 +6827,44 @@ class _SyncManager:
         frame's hello brings a full state that settles it. Nor does such a
         refusal mark a frame as seen: until the hello, there is no frame able
         to ack, and disk_to_embed must not read "pending" over a boot."""
-        view = self._delta_views.pop(rev, None)
-        carried = self._delta_names.pop(rev, set())
-        was_full = self._delta_names.pop(-rev, None) is not None
+        fr = self._frame(frame, scope)
+        view = fr.delta_views.pop(rev, None)
+        carried = fr.delta_names.pop(rev, set())
+        was_full = fr.delta_names.pop(-rev, None) is not None
         benign = (not ok and bool(reason)
                   and _BENIGN_DELTA_REFUSAL.search(reason) is not None)
         if not benign:
-            self._frame_seen = True
+            fr.seen = True
         if not ok:
             # The frame holds something we cannot describe: start over with a
             # full state on its next hello or the next disk move.
-            self._embed_view = None
-            self._skip_hold = {}
+            fr.embed_view = None
+            fr.skip_hold = {}
+            self._clear_skip_streak(fr, "the workbench refused a delta")
             if not benign:
-                self._delta_error = (f"the workbench refused the delta for rev {rev}"
+                fr.delta_error = (f"the workbench refused the delta for rev {rev}"
                                      + (f": {reason}" if reason else ""))
                 self._bump()
             self.log_event("disk_to_embed", "delta refused", ok=benign,
                            detail=f"rev {rev}" + (f": {reason}" if reason else ""))
             return {"ok": True, "rev": rev, "reset": True}
-        if self._body_fence_rev is not None and rev >= self._body_fence_rev:
+        if fr.body_fence_rev is not None and rev >= fr.body_fence_rev:
             # The frame applied the pulled state: its bodies describe it now.
-            self._body_fence_rev = None
+            fr.body_fence_rev = None
             self.log_event("embed_to_disk", "body fence lifted", detail=f"rev {rev}")
-        if self._hard_fence is not None and rev >= self._hard_fence["rev"]:
+        if fr.hard_fence is not None and rev >= fr.hard_fence["rev"]:
             # The frame applied a reading cut after the hard pull: it shows
             # the server's copy now, and its snapshots describe that.
-            self._hard_fence = None
+            fr.hard_fence = None
             self.log_event("embed_to_disk", "hard pull fence lifted", detail=f"rev {rev}")
-        if view is None or rev < self._view_rev:
+        if view is None or rev < fr.view_rev:
             # Superseded: a snapshot write re-read disk since this was cut.
             # The frame still APPLIED this delta, so the bodies it carried
             # are bodies the frame holds: fill the ones the current view
             # could not vouch for (a snapshot after a gen change starts with
             # note texts only), or every cut under an autosave stream would
             # re-send all code while each snapshot keeps staling the acks.
-            cur = self._embed_view
+            cur = fr.embed_view
             if view is not None and cur is not None:
                 bodies = dict(cur.get("bodies", {}))
                 for name, text in view.get("bodies", {}).items():
@@ -6401,13 +6873,13 @@ class _SyncManager:
                 cur["bodies"] = bodies
             self.log_event("disk_to_embed", "delta acked", detail=f"rev {rev} (stale)")
             return {"ok": True, "rev": rev, "stale": True}
-        cur = self._embed_view or {}
+        cur = fr.embed_view or {}
         skipped = {n for n in skipped if isinstance(n, str)}
         # Earlier skips this delta did not re-send: the frame still shows its
         # own picture of them, so the view keeps it (see `_skip_hold`).
-        held_over = {n: at for n, at in self._skip_hold.items()
+        held_over = {n: at for n, at in fr.skip_hold.items()
                      if n not in skipped and not (n in carried and rev > at)}
-        self._skip_hold = {**held_over, **{n: self.disk_rev for n in skipped}}
+        fr.skip_hold = {**held_over, **{n: self.disk_rev for n in skipped}}
         keep = skipped | set(held_over)
         if keep:
             # The frame kept its own newer change for these (its unacked
@@ -6429,12 +6901,13 @@ class _SyncManager:
                  if e[0] not in keep and e[1] not in keep]
                 + [list(e) for e in cur.get("edges") or []
                    if (e[0] in keep or e[1] in keep)])
-        self._embed_view = self._adopt(view)
-        self._view_reset_pending = False  # the frame's own ack: the view is its truth
+        fr.embed_view = self._adopt(fr, view)
+        fr.view_reset_pending = False  # the frame's own ack: the view is its truth
         if was_full:
-            self._view_from_hello = True
-        self._view_rev = rev
-        self._delta_error = None
+            fr.view_from_hello = True
+        fr.view_rev = rev
+        fr.delta_error = None
+        self._note_skip_streak(fr, skipped)
         if skipped:
             # The snapshot that made the frame skip reached this host before
             # this ack (the page relays both through one ordered chain), so a
@@ -6442,26 +6915,26 @@ class _SyncManager:
             # re-sent ops apply. Once per applied seq only — a frame still
             # skipping on the same seq waits for its next snapshot, whose
             # write re-reads disk into the view and cuts on its own.
-            key = (self._embed_gen, self._embed_max_seq)
+            key = (fr.embed_gen, fr.embed_max_seq)
             names = sorted(skipped)
             self.log_event("disk_to_embed", "delta partly kept",
                            detail=f"rev {rev}: the workbench kept its own newer "
                                   f"{', '.join(names[:8])}"
                                   + (f" (+{len(names) - 8})" if len(names) > 8 else ""))
-            if key != self._skip_recut_seq:
-                self._skip_recut_seq = key
+            if key != fr.skip_recut_seq:
+                fr.skip_recut_seq = key
                 self._force_recut()
         cut_at = self._rev_times.get(rev)
         self.log_event("disk_to_embed", "delta acked",
                        ms=None if cut_at is None else (time.time() - cut_at) * 1000,
                        detail=f"rev {rev}")
-        if self._recut_after_acks and not any(r > self._view_rev for r in self._delta_views):
+        if fr.recut_after_acks and not any(r > fr.view_rev for r in fr.delta_views):
             # An empty cut waited for this ack (cut_delta): cut again now.
-            self._recut_after_acks = False
+            fr.recut_after_acks = False
             self._force_recut()
         return {"ok": True, "rev": rev}
 
-    def _adopt(self, disk: dict) -> dict:
+    def _adopt(self, fr: _FrameState, disk: dict) -> dict:
         """A disk reading becoming the view keeps what the reading cannot
         carry: the current view's `embed_rows` (a delta changes what the frame
         SHOWS, not what it last SENT, and that baseline is what apply_snapshot
@@ -6472,11 +6945,11 @@ class _SyncManager:
         delete. A node the reading has a row but no file for stays only
         where `canvas_snapshot.keeps_bare_row` says so: any other was deleted
         by the delta (`canvas_snapshot.diff_views`)."""
-        cur = self._embed_view or {}
+        cur = fr.embed_view or {}
         out = dict(disk)
         held = [n for n in cur.get("nodes", {}) if n not in disk["nodes"]
                 and (n in disk["files"]
-                     or canvas_snapshot.keeps_bare_row(disk, n, self._fileless))]
+                     or canvas_snapshot.keeps_bare_row(disk, n, self._owed_files()))]
         if held:
             out["nodes"] = {**disk["nodes"],
                             **{n: disk["rowed"].get(n, cur["nodes"][n]) for n in held}}
@@ -6493,7 +6966,7 @@ class _SyncManager:
             out["ids"] = ids
         return out
 
-    def apply_snapshot(self, gen: int, seq: int, body: dict) -> dict:
+    def apply_snapshot(self, gen: int, seq: int, body: dict, frame: str = "") -> dict:
         """Fold one embed snapshot into the clone (canvas_snapshot.apply_snapshot)
         under _op_lock, so it never interleaves with a push or a pull writing
         the same files. Returns the ack the page relays to the frame.
@@ -6501,7 +6974,10 @@ class _SyncManager:
         The watcher's fingerprint is deliberately NOT re-taken here: a write
         that changed canvas.toml is a local edit like any other, and the next
         scan arming the debounce is exactly how it reaches the server."""
-        stale = self._embed_enter(gen, seq)
+        fr = self._frame(frame)
+        if fr.scope is not None:
+            raise _FrameScoped("this frame shows one node and sends no snapshots")
+        stale = self._embed_enter(fr, gen, seq)
         if stale is not None:
             return stale
         new = canvas_snapshot.compact_state(body)
@@ -6512,7 +6988,7 @@ class _SyncManager:
                 trash[0] = self._new_trash_dir()
             self._backup_to(trash[0], rel, data)
 
-        prev = self._embed_view
+        prev = fr.embed_view
         # BOUNCE a stale picture. `body.rev` is the delta rev the frame had
         # applied when it serialized this body (absent from an older
         # workbench, or a rev from before a server restart when it exceeds
@@ -6525,18 +7001,42 @@ class _SyncManager:
         # and posts a fresh snapshot. One round trip, no second merge engine.
         snap_rev = body.get("rev")
         if (isinstance(snap_rev, int) and not isinstance(snap_rev, bool)
-                and snap_rev <= self.disk_rev and snap_rev < self._cut_rev):
+                and snap_rev <= self.disk_rev and snap_rev < fr.cut_rev):
             self.log_event("embed_to_disk", "snapshot bounced",
                            detail=f"{gen}/{seq} built on rev {snap_rev}, a delta was cut at "
-                                  f"rev {self._cut_rev}: the workbench re-sends")
+                                  f"rev {fr.cut_rev}: the workbench re-sends")
             ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
-                   "rebuild": True, "rev": self._cut_rev, "upserted": [], "deleted": [],
+                   "rebuild": True, "rev": fr.cut_rev, "upserted": [], "deleted": [],
                    "created": [], "push_seq": self.push_seq}
-            return self._embed_record(gen, seq, ack)
-        self._embed_commit_gen()
-        prev = self._embed_view
+            return self._embed_record(fr, gen, seq, ack)
+        # The same bounce for a write by ANOTHER frame (FP-6): the frame
+        # built this body before that write reached it, and no delta with it
+        # was cut for it yet, so `cut_rev` above cannot see it. Applied,
+        # nodes and row keys are kept by this frame's view, but its edge set
+        # would replace the other frame's. Only while the frame is owed a
+        # delta (its view differs from disk; the frame's own body or rename
+        # since does not count as having seen the write): a re-cut is forced
+        # once per write, so the frame has a delta with ops at or past the
+        # acked rev; once it applied one, its `body.rev` is past the write
+        # and nothing bounces.
+        owed_rev = fr.other_write_rev
+        if (isinstance(snap_rev, int) and not isinstance(snap_rev, bool)
+                and snap_rev <= self.disk_rev and snap_rev < owed_rev
+                and self._owes_frame(fr)):
+            if fr.recut_for < owed_rev:
+                self._force_recut()
+                fr.recut_for = self.disk_rev
+            self.log_event("embed_to_disk", "snapshot bounced",
+                           detail=f"{gen}/{seq} built on rev {snap_rev}, before another "
+                                  f"frame's write at rev {owed_rev}: the workbench re-sends")
+            ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                   "rebuild": True, "rev": fr.recut_for, "upserted": [], "deleted": [],
+                   "created": [], "push_seq": self.push_seq}
+            return self._embed_record(fr, gen, seq, ack)
+        self._embed_commit_gen(fr)
+        prev = fr.embed_view
         result = canvas_snapshot.apply_snapshot(self.dir, new, prev, backup=backup,
-                                                rowless_prev=self._rowless)
+                                                rowless_prev=fr.rowless)
         self._log_folder_fixes("embed_to_disk", result.get("folder_fixes") or [])
         # The embed now holds what it just sent: disk rows for ITS nodes only
         # (a disk-only node is Claude's and still owed to it as a delta), its
@@ -6554,13 +7054,16 @@ class _SyncManager:
         # them.
         held = list(new["nodes"]) + [n for n in result.get("deferred_deletes") or []
                                      if n not in new["nodes"]]
-        self._rowless = set(result.get("rowless_files") or ())
-        self._fileless = (self._fileless | set(result["fileless"])) - set(result["deleted"])
+        fr.rowless = set(result.get("rowless_files") or ())
+        fr.fileless |= set(result["fileless"])
+        self._settle_fileless(result["deleted"])
         for gone in result.get("deleted") or ():
             self._body_written.pop(gone, None)
-        self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
+        self._refresh_view_after_write(fr, held, edges=new["edges"], ids=new["ids"],
                                        bodies=bodies, embed_rows=new["nodes"])
-        view = self._embed_view
+        if result["changed"]:
+            self._note_frame_write(fr)
+        view = fr.embed_view
         if view is not None:
             # Keys the frame still shows from before a delta it skipped
             # (canvas_snapshot: never written over disk): the view holds the
@@ -6598,7 +7101,7 @@ class _SyncManager:
                "upserted": result["upserted"], "deleted": result["deleted"],
                "deleted_files": deleted_files,
                "created": result["created"], "push_seq": self.push_seq}
-        return self._embed_record(gen, seq, ack)
+        return self._embed_record(fr, gen, seq, ack)
 
     def _forget_file_sessions(self, rels: list[str], trash: str | None) -> None:
         """`forget_file_sessions` for this clone's `rels`, backing each
@@ -6644,7 +7147,8 @@ class _SyncManager:
                        detail=f"{file}: the workbench's text for a deleted file, in {dest}")
         return dest
 
-    def apply_body(self, node: str, file: str, base_hash: str, text: str) -> dict:
+    def apply_body(self, node: str, file: str, base_hash: str, text: str,
+                   frame: str = "") -> dict:
         """One source text from the workbench's body channel → the clone, by
         compare-and-swap on content (canvas_snapshot.body_hash). Under
         _op_lock (the route takes it), so it never interleaves with a
@@ -6660,6 +7164,9 @@ class _SyncManager:
         equal to disk is acked without a write (no mtime move, no disk_rev,
         no delta). Returns the ack the page relays to the frame.
         """
+        fr = self._frame(frame)
+        if fr.scope is not None and fr.scope != node:
+            raise _FrameScoped(f"this frame shows {fr.scope!r} and writes no other node")
         stem, dot, ext = file.rpartition(".")
         if not dot or stem != node or "/" in file or file.startswith(".") \
                 or ("." + ext) not in canvas_snapshot.BODY_SUFFIXES:
@@ -6670,7 +7177,7 @@ class _SyncManager:
         existing = canvas_snapshot.node_files(self.dir).get(node)
         if existing is not None and existing != file:
             raise ValueError(f"{node!r} is {existing!r} on disk, not {file!r}")
-        # A hard pull replaced the clone (see `_body_fence_rev`): until the
+        # A hard pull replaced the clone (see `_FrameState.body_fence_rev`): until the
         # frame has acked the pulled state, a body describes the canvas the
         # pull discarded — written, it would put that text (or a file the
         # pull removed, hashed here as the empty text) straight back. Not
@@ -6678,10 +7185,10 @@ class _SyncManager:
         # the frame holds its text and tries again later, by which time the
         # full delta has re-seeded its base. Bound to the ack, never to a
         # clock: the snapshot fence's deadline does not apply here.
-        if self._body_fence_rev is not None:
+        if fr.body_fence_rev is not None:
             self.log_event("embed_to_disk", "body fenced",
                            detail=f"{file}: predates the hard pull (rev "
-                                  f"{self._body_fence_rev} not acked); not written")
+                                  f"{fr.body_fence_rev} not acked); not written")
             return {"ok": False, "code": "fenced", "node": node, "file": file}
         path = os.path.join(self.dir, file)
         text = canvas_snapshot.normalize_newlines(text)
@@ -6752,36 +7259,39 @@ class _SyncManager:
                 rows = set(canvas_snapshot.rows_of_doc(doc)["nodes"])
             except Exception:  # noqa: BLE001 — no toml yet: the row is owed either way
                 pass
-            self._fileless.discard(node)
+            self._settle_fileless((node,))
             if node not in rows:
-                self._rowless.add(node)
+                fr.rowless.add(node)
         # The frame holds what it just wrote: the view's body moves with
         # disk, so the next delta carries nothing for this node (its own
         # write never echoes). A node the view does not know (a new file,
         # or no view at all) is owed to the frame by the next cut, which
         # then carries this very text and a hash equal to the frame's base.
-        view = self._embed_view
+        view = fr.embed_view
         if view is not None and node in view.get("nodes", {}):
             view.setdefault("bodies", {})[node] = text
         self._note_disk()
-        self._view_rev = self.disk_rev
-        self._frame_seen = True
+        fr.view_rev = self.disk_rev
+        fr.seen = True
         self._bump()
         return {"ok": True, "node": node, "file": file, "hash": new_hash,
                 "changed": True, "created": created}
 
     def apply_rename(self, gen: int, seq: int, frm: str, to: str,
-                     file_from: str | None, file_to: str | None) -> dict:
+                     file_from: str | None, file_to: str | None, frame: str = "") -> dict:
         """The workbench's rename hint (canvas_snapshot.apply_rename), under
         _op_lock like a snapshot, acked the same way. The previous snapshot is
         renamed too, so the snapshot that follows is diffed against the new
         name rather than read as delete + add."""
-        stale = self._embed_enter(gen, seq)
+        fr = self._frame(frame)
+        if fr.scope is not None:
+            raise _FrameScoped("this frame shows one node and renames nothing")
+        stale = self._embed_enter(fr, gen, seq)
         if stale is not None:
             return stale
-        self._embed_commit_gen()
+        self._embed_commit_gen(fr)
         result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
-        for held in (self._rowless, self._fileless):
+        for held in [s for f in self._frames.values() for s in (f.rowless, f.fileless)]:
             if frm in held and result["changed"]:
                 held.discard(frm)
                 held.add(to)
@@ -6789,23 +7299,25 @@ class _SyncManager:
             self._body_written[to] = self._body_written.pop(frm)
         if result["changed"]:
             self._note_user_changes({}, renamed=[(frm, to)])
-        renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
+        renamed = canvas_snapshot.rename_prev(fr.embed_view, frm, to, file_to)
         if renamed is None:
             # Nothing known before the rename, nothing known after: the next
             # delta is a full state. `_view_rev` follows the rev as in the
             # refresh.
             self._note_disk()
-            self._view_rev = self.disk_rev
-            self._frame_seen = True
+            fr.view_rev = self.disk_rev
+            fr.seen = True
             self._bump()
         else:
             self._refresh_view_after_write(
-                renamed["nodes"], edges=renamed.get("edges", []), ids=renamed.get("ids", {}),
+                fr, renamed["nodes"], edges=renamed.get("edges", []), ids=renamed.get("ids", {}),
                 bodies=renamed.get("bodies", {}), embed_rows=renamed.get("embed_rows"))
+        if result["changed"]:
+            self._note_frame_write(fr)
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "renamed": result["renamed"], "moved": result["moved"],
                "push_seq": self.push_seq}
-        return self._embed_record(gen, seq, ack)
+        return self._embed_record(fr, gen, seq, ack)
 
     def status(self) -> dict:
         """The short answer sync/start, sync/push and sync/pull return (the
@@ -6834,7 +7346,7 @@ class _SyncManager:
         disk = self._take_file_hashes(self.dir)
         return sum(1 for rel in set(base) | set(disk) if base.get(rel) != disk.get(rel))
 
-    def sync_state(self, *, files: bool = False) -> dict:
+    def sync_state(self, *, files: bool = False, frame: str | None = None) -> dict:
         """GET /api/canvases/sync/state: one entry per leg of the two loops.
         The server knows three; `embed_to_disk` (snapshots the page has
         received and not yet had acked) is the host page's own knowledge and
@@ -6845,15 +7357,33 @@ class _SyncManager:
         def age(t: float | None) -> int | None:
             return None if t is None else max(0, int((now - t) * 1000))
 
-        # disk → embed: the oldest disk_rev the frame has not acked.
-        rev, view_rev = self.disk_rev, self._view_rev
+        # disk → embed: the oldest disk_rev the frame has not acked. The
+        # frame is the caller's when it names one that has a record (the
+        # events socket does); otherwise the one worst off among those that
+        # have spoken: a refused delta first, then the furthest behind.
+        frames = list(self._frames.values())
+        fr = self._frames.get(frame) if frame is not None else None
+        if fr is not None:
+            fr.last_call = now
+        else:
+            spoken = [f for f in frames if f.seen]
+            fr = (min(spoken, key=lambda f: (
+                f.delta_error is None,
+                not (f.skip_streak is not None and f.skip_streak["stuck"]),
+                f.view_rev)) if spoken else self._frames[""])
+        rev, view_rev = self.disk_rev, fr.view_rev
         unacked = [t for r, t in list(self._rev_times.items()) if r > view_rev]
         oldest = min(unacked) if unacked else None
-        if self._frame_seen and self._delta_error is not None:
-            d2e = {"state": "error", "oldest_age_ms": age(oldest), "reason": self._delta_error}
-        elif self._frame_seen and rev > view_rev and self._last_cut_held is not None:
+        streak = fr.skip_streak
+        stuck = streak if streak is not None and streak["stuck"] else None
+        if fr.seen and fr.delta_error is not None:
+            d2e = {"state": "error", "oldest_age_ms": age(oldest), "reason": fr.delta_error}
+        elif fr.seen and stuck is not None:
+            d2e = {"state": "held", "oldest_age_ms": age(stuck["since"]),
+                   "reason": self._skip_streak_reason(fr)}
+        elif fr.seen and rev > view_rev and self._last_cut_held is not None:
             d2e = {"state": "held", "oldest_age_ms": age(oldest), "reason": self._last_cut_held}
-        elif self._frame_seen and rev > view_rev:
+        elif fr.seen and rev > view_rev:
             d2e = {"state": "pending", "oldest_age_ms": age(oldest), "reason": None}
         else:
             d2e = {"state": "idle", "oldest_age_ms": None, "reason": None}
@@ -6870,11 +7400,21 @@ class _SyncManager:
             d2s = {"state": "held", "oldest_age_ms": age(dirty), "reason": self._lease_reason()}
         elif ps == "pending" or dirty is not None:
             reason = None
+            waiting = False
             if self._paused():
                 reason = "sync is paused"
+            elif self._publish_held is not None:
+                left = max(0, int(TURN_END_HOLD_MAX_S - (time.time() - self._publish_held["since"])))
+                reason = ("waiting for another Claude session in this folder to finish its "
+                          f"turn; publishing anyway in {left // 60}:{left % 60:02d}")
+                waiting = True
             elif self._agent_run_id:
                 reason = "waiting for the Claude session in this folder to finish"
-            d2s = {"state": "pending", "oldest_age_ms": age(dirty), "reason": reason}
+                waiting = True
+            d2s = {"state": "pending", "oldest_age_ms": age(dirty), "reason": reason,
+                   # The page offers "Publish now" (sync/push) while a session
+                   # is what the publish waits on.
+                   "waiting_on_session": waiting}
         else:
             d2s = {"state": "idle", "oldest_age_ms": None, "reason": None}
         d2s["last_push_at"] = self.last_push_at
@@ -6918,6 +7458,13 @@ class _SyncManager:
             },
             "disk_rev": rev,
             "watcher_epoch": self.watcher_epoch,
+            # The frame keeps skipping names with no edit of its own posted
+            # (`_check_skip_streak`), or None; `embed_heal_seq` moves once per
+            # such streak and the page answers with a full state for it.
+            "embed_skipping": None if stuck is None else {
+                "names": sorted(stuck["names"]), "since": stuck["since"],
+                "count": stuck["count"]},
+            "embed_heal_seq": fr.embed_heal_seq,
             "owner": {"pid": os.getpid(), "port": canvas_sync_state.server_port()},
             "other_watchers": _other_watchers(self.env, self.name),
             "error_detail": list(self.error_detail),
@@ -6957,6 +7504,24 @@ _IDLE_EMBED_TO_DISK = {"state": "idle", "oldest_age_ms": None, "reason": None}
 # A delta refusal that means "nobody could take it yet", not "the frame
 # choked on it": no frame on the page, a frame still hydrating.
 _BENIGN_DELTA_REFUSAL = re.compile(r"hydrat|no[ _-]?frame", re.IGNORECASE)
+
+
+def _default_frame_field(field: str) -> property:
+    return property(lambda self: getattr(self._frames[""], field),
+                    lambda self, value: setattr(self._frames[""], field, value))
+
+
+# The "" record's fields under the names they had on the manager, for the
+# tests that set up and read one frame's state. Nothing in this module reads
+# them: every method names the record it acts on.
+for _field in ("embed_gen", "embed_view", "view_reset_pending", "view_from_hello",
+               "view_rev", "delta_views", "delta_names", "skip_hold", "cut_rev",
+               "skip_recut_seq", "recut_after_acks", "embed_max_seq", "embed_applied",
+               "gen_applied_max", "delta_error", "rowless", "fileless", "hard_fence",
+               "body_fence_rev", "skip_streak", "embed_heal_seq"):
+    setattr(_SyncManager, "_" + _field, _default_frame_field(_field))
+_SyncManager._frame_seen = _default_frame_field("seen")
+del _field
 
 
 def _stale_changed(stale: dict | None) -> list[dict]:
@@ -8054,6 +8619,30 @@ def api_canvases_sync_force_quit_owner(body: dict = Body(...), x_fused: str | No
     return {"ok": True, "freed": freed, "pid": pid, "signalled": True}
 
 
+def _frame_of(value, scope=None) -> tuple[str, str | None, JSONResponse | None]:
+    """The `frame` (and `frame_scope`) of an embed call (SPEC 53.1 FP-1, FP-9):
+    (frame id, scope, error). Absent is the "" record, the one frame of a page
+    that names none."""
+    if value is None or value == "":
+        frame = ""
+    elif isinstance(value, str) and _FRAME_ID_RE.fullmatch(value):
+        frame = value
+    else:
+        return "", None, _error("'frame' must be 1-64 letters, digits, '_' or '-'")
+    if scope is None or scope == "":
+        return frame, None, None
+    if not frame or not isinstance(scope, str) or not _NAME_RE.fullmatch(scope):
+        return "", None, _error("'frame_scope' must be a node name, on a named frame")
+    return frame, scope, None
+
+
+def _frame_refused(exc: Exception) -> JSONResponse:
+    if isinstance(exc, _TooManyFrames):
+        return JSONResponse({"ok": False, "code": "too_many_frames", "error": str(exc)},
+                            status_code=409)
+    return JSONResponse({"ok": False, "code": "scoped", "error": str(exc)}, status_code=400)
+
+
 @router.post("/api/canvases/snapshot")
 def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Apply one embedded-workbench snapshot to the clone (embed v3).
@@ -8078,6 +8667,9 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    frame, _scope, bad = _frame_of(body.get("frame"))
     if bad is not None:
         return bad
     gen, seq, snapshot = body.get("gen"), body.get("seq"), body.get("body")
@@ -8125,9 +8717,13 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
             if isinstance(rename, dict):
                 ack = manager.apply_rename(
                     gen, seq, rename["from"], rename["to"],
-                    rename.get("file_from"), rename.get("file_to"))
+                    rename.get("file_from"), rename.get("file_to"), frame=frame)
             else:
-                ack = manager.apply_snapshot(gen, seq, snapshot)
+                ack = manager.apply_snapshot(gen, seq, snapshot, frame=frame)
+        except (_FrameScoped, _TooManyFrames) as exc:
+            manager.log_event("embed_to_disk", "snapshot refused", ok=False,
+                              detail=f"{what} {gen}/{seq}: {exc}")
+            return _frame_refused(exc)
         except FileNotFoundError:
             # Busy, not rejected: a canvas.toml that is missing for a moment
             # (Claude replacing it, a pull mid-write) must not cost the user
@@ -8193,6 +8789,9 @@ def api_canvases_body(body: dict = Body(...), x_fused: str | None = Header(defau
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
+    frame, _scope, bad = _frame_of(body.get("frame"))
+    if bad is not None:
+        return bad
     node, file = body.get("node"), body.get("file")
     base_hash, text = body.get("base_hash"), body.get("text")
     if not isinstance(node, str) or not node or not isinstance(file, str) or not file:
@@ -8215,7 +8814,11 @@ def api_canvases_body(body: dict = Body(...), x_fused: str | None = Header(defau
             if manager.pause_count > 0:
                 return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
         try:
-            ack = manager.apply_body(node, file, base_hash, text)
+            ack = manager.apply_body(node, file, base_hash, text, frame=frame)
+        except (_FrameScoped, _TooManyFrames) as exc:
+            manager.log_event("embed_to_disk", "body refused", ok=False,
+                              detail=f"{file}: {exc}")
+            return _frame_refused(exc)
         except OSError as exc:
             manager.log_event("embed_to_disk", "body busy", ok=False,
                               detail=f"{file}: write failed: {exc}")
@@ -8253,16 +8856,22 @@ def _snapshot_ack_detail(what: str, gen: int, seq: int, ack: dict) -> str:
 
 
 @router.get("/api/canvases/delta")
-def api_canvases_delta(name: str = "", env: str = "", full: str = ""):
+def api_canvases_delta(name: str = "", env: str = "", full: str = "",
+                       frame: str = "", frame_scope: str = ""):
     """The delta that takes the embed from what it holds to what disk holds
     (embed v3, canvas_snapshot.py's delta section). The workspace page asks
     when the events socket (or its sync/state fallback poll) shows `disk_rev`
     advanced, and with `full=1` when
     the frame says hello after hydrating; it posts the answer to the frame as
-    `fused-embed-delta` and relays the ack to /api/canvases/delta/ack."""
+    `fused-embed-delta` and relays the ack to /api/canvases/delta/ack.
+    `frame` names the page's frame (the delta is against ITS picture);
+    `frame_scope` makes a new record a node view's."""
     if not _NAME_RE.fullmatch(name or ""):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     env, bad = _require_env(env)
+    if bad is not None:
+        return bad
+    frame, scope, bad = _frame_of(frame, frame_scope)
     if bad is not None:
         return bad
     manager = _sync_manager(env, name, create=False)
@@ -8275,7 +8884,9 @@ def api_canvases_delta(name: str = "", env: str = "", full: str = ""):
                           detail=f"the clone stayed locked past {SNAPSHOT_LOCK_WAIT_S:g}s")
         return _busy("a sync operation is in flight for this canvas; try again in a moment")
     try:
-        return JSONResponse(manager.cut_delta(full == "1"))
+        return JSONResponse(manager.cut_delta(full == "1", frame=frame, scope=scope))
+    except (_FrameScoped, _TooManyFrames) as exc:
+        return _frame_refused(exc)
     finally:
         manager._op_lock.release()
 
@@ -8293,15 +8904,23 @@ def api_canvases_delta_ack(body: dict = Body(...), x_fused: str | None = Header(
         return bad
     if not isinstance(rev, int):
         return _error("'rev' must be an integer")
+    frame, scope, bad = _frame_of(body.get("frame"), body.get("frame_scope"))
+    if bad is not None:
+        return bad
     manager = _sync_manager(env, name, create=False)
     if manager is None:
         return JSONResponse({"ok": False, "code": "no_watcher"}, status_code=409)
     reason = body.get("reason")
     with manager._op_lock:
         skipped = body.get("skipped")
-        return JSONResponse(manager.ack_delta(
-            rev, bool(ok), reason=reason if isinstance(reason, str) else None,
-            skipped=[n for n in skipped if isinstance(n, str)] if isinstance(skipped, list) else ()))
+        try:
+            return JSONResponse(manager.ack_delta(
+                rev, bool(ok), reason=reason if isinstance(reason, str) else None,
+                skipped=([n for n in skipped if isinstance(n, str)]
+                         if isinstance(skipped, list) else ()),
+                frame=frame, scope=scope))
+        except (_FrameScoped, _TooManyFrames) as exc:
+            return _frame_refused(exc)
 
 
 # The agent hook's answer to an edit of a reference copy (D1478).
@@ -8825,13 +9444,15 @@ SYNC_EVENTS_PING_S = 15.0
 SYNC_EVENTS_TICK_S = 1.0
 
 
-def _state_for(env: str, name: str, files: bool = False) -> dict:
+def _state_for(env: str, name: str, files: bool = False, frame: str | None = None) -> dict:
     manager = _sync_manager(env, name, create=False)
-    return _unwatched_state(env, name) if manager is None else manager.sync_state(files=files)
+    return (_unwatched_state(env, name) if manager is None
+            else manager.sync_state(files=files, frame=frame))
 
 
 @router.get("/api/canvases/sync/state")
-def api_canvases_sync_state(name: str = "", env: str = "", files: str = ""):
+def api_canvases_sync_state(name: str = "", env: str = "", files: str = "",
+                            frame: str = ""):
     """Every leg of the two sync loops for one canvas (the build contract's
     shape). A canvas this process is not syncing answers all-idle with
     `watching: false` — never a 409: the page polls this as the socket's
@@ -8842,7 +9463,10 @@ def api_canvases_sync_state(name: str = "", env: str = "", files: str = ""):
     env, bad = _require_env(env)
     if bad is not None:
         return bad
-    return _state_for(env, name, files=files in ("1", "true"))
+    frame, _scope, bad = _frame_of(frame)
+    if bad is not None:
+        return bad
+    return _state_for(env, name, files=files in ("1", "true"), frame=frame or None)
 
 
 @router.get("/api/canvases/sync/log")
@@ -8866,8 +9490,8 @@ def _legs_busy(state: dict) -> bool:
     return any(leg.get("state") != "idle" for leg in state.get("legs", {}).values())
 
 
-def _socket_read(env: str, name: str, epoch,
-                 log_after: int) -> tuple[dict, list[dict], object, int]:
+def _socket_read(env: str, name: str, epoch, log_after: int,
+                 frame: str | None = None) -> tuple[dict, list[dict], object, int]:
     """One socket wake's reads, in a worker thread: `_sync_manager` takes the
     threading `_SYNC_LOCK` and the state reads the lock file — neither
     belongs on the event loop. Returns (state, new log events, epoch,
@@ -8875,7 +9499,8 @@ def _socket_read(env: str, name: str, epoch,
     ring's current end: only events from here on are "new" (the drawer reads
     history off sync/log)."""
     manager = _sync_manager(env, name, create=False)
-    state = _unwatched_state(env, name) if manager is None else manager.sync_state()
+    state = (_unwatched_state(env, name) if manager is None
+             else manager.sync_state(frame=frame))
     if state.get("watcher_epoch") != epoch:
         return state, [], state.get("watcher_epoch"), \
             (manager._log.last_seq if manager is not None else 0)
@@ -8916,7 +9541,15 @@ async def api_canvases_sync_events(ws: WebSocket):
         await ws.close(code=1008)
         return
     key = _sync_key(env, name)
+    # The page's frame (SPEC 53.1): while this socket is open its record is
+    # kept, and the state sent is that frame's.
+    frame = ws.query_params.get("frame") or ""
+    if frame and not _FRAME_ID_RE.fullmatch(frame):
+        await ws.close(code=1008)
+        return
     await ws.accept()
+    with _FRAME_SOCKETS_LOCK:
+        _FRAME_SOCKETS[(key, frame)] = _FRAME_SOCKETS.get((key, frame), 0) + 1
     token = canvas_sync_state.subscribe(key)
     wake = token[1]
     closed = asyncio.Event()
@@ -8942,7 +9575,7 @@ async def api_canvases_sync_events(ws: WebSocket):
         while not closed.is_set():
             wake.clear()
             state, events, epoch, log_after = await asyncio.to_thread(
-                _socket_read, env, name, epoch, log_after)
+                _socket_read, env, name, epoch, log_after, frame or None)
             if closed.is_set():
                 break
             await ws.send_text(json.dumps({"type": "state", "state": state}))
@@ -8970,4 +9603,10 @@ async def api_canvases_sync_events(ws: WebSocket):
         pass
     finally:
         canvas_sync_state.unsubscribe(key, token)
+        with _FRAME_SOCKETS_LOCK:
+            left = _FRAME_SOCKETS.get((key, frame), 0) - 1
+            if left > 0:
+                _FRAME_SOCKETS[(key, frame)] = left
+            else:
+                _FRAME_SOCKETS.pop((key, frame), None)
         drainer.cancel()

@@ -19,6 +19,7 @@
 //     the door a plain link to its page (`doorAction`);
 //   - the keyboard into the card (`registerFocus` / `focusCard`): an Enter on
 //     the door pins the card, and the keyboard should land in it.
+import { aPinned, setAPinned } from "@platform/lib/last-chat";
 import { useSyncExternalStore } from "react";
 import { PeekIntent, type Timers } from "./rail-peek-lib";
 
@@ -27,6 +28,11 @@ export interface DoorCardState {
   up: boolean;
   /** Pinned by a press (the door's, or one inside the card). */
   pinned: boolean;
+  /** HELD by its pin (rail-pin-lib; the unified-head switch on): a press
+   *  outside, a press into a frame and a page hop leave it up. With `pinned`
+   *  and not `held` it is TEMP. Dropped with the card. Never set with the
+   *  switch off. */
+  held: boolean;
   /** Bumped on every opening (closed → up), never on a pin. */
   seq: number;
   /** A card is mounted and has room beside the rail: the door opens it. */
@@ -78,11 +84,21 @@ export interface DoorCardStore {
   registerFocus(fn: () => boolean): () => void;
   /** Put the keyboard in the card; true once it is there. */
   focusCard(): boolean;
+  /** The pin icon (or a double-click on the door): held, or back to temp.
+   *  Only a card that is up holds. */
+  setHeld(on: boolean): void;
+  /** A press that started in the card's React tree (DoorCard's capture
+   *  phase, portals included) — read by the rail's outside-press watcher. */
+  readonly press: { inside: boolean };
   resetForTests(timers?: Timers): void;
 }
 
-export function createDoorCardStore(key: string, id: string): DoorCardStore {
-  let state: DoorCardState = { up: false, pinned: false, seq: 0, ready: false };
+/** `pinWord`: what window A's mark says while this card is pinned (`aPinned`,
+ *  rail-pin-lib `aPinWord`) — written here, where the hold is, so a close
+ *  from anywhere (the card's own Open, a rail that is gone) lets the mark go. */
+export function createDoorCardStore(key: string, id: string, pinWord?: string): DoorCardStore {
+  let state: DoorCardState = { up: false, pinned: false, held: false, seq: 0, ready: false };
+  const press = { inside: false };
   const subs = new Set<() => void>();
   let cards = 0;
   let roomy = true;
@@ -92,8 +108,20 @@ export function createDoorCardStore(key: string, id: string): DoorCardStore {
   const doors = new WeakMap<HTMLElement, HTMLElement>();
 
   function write(next: DoorCardState): void {
-    if (next.up === state.up && next.pinned === state.pinned && next.seq === state.seq && next.ready === state.ready) return;
+    if (
+      next.up === state.up &&
+      next.pinned === state.pinned &&
+      next.held === state.held &&
+      next.seq === state.seq &&
+      next.ready === state.ready
+    )
+      return;
+    const wasHeld = state.held;
     state = next;
+    if (pinWord && wasHeld !== next.held) {
+      if (next.held) setAPinned(pinWord);
+      else if (aPinned() === pinWord) setAPinned(null);
+    }
     for (const fn of [...subs]) fn();
   }
   function settleReady(): void {
@@ -120,8 +148,9 @@ export function createDoorCardStore(key: string, id: string): DoorCardStore {
                 up: k !== null,
                 seq: k !== null ? state.seq + 1 : state.seq,
                 pinned: k === null ? false : state.pinned,
+                held: k === null ? false : state.held,
               }),
-            pin: (on) => write({ ...state, pinned: on }),
+            pin: (on) => write({ ...state, pinned: on, held: on ? state.held : false }),
             warm: () => {},
           },
           testTimers,
@@ -169,12 +198,17 @@ export function createDoorCardStore(key: string, id: string): DoorCardStore {
     focusCard() {
       return focuser?.() ?? false;
     },
+    setHeld(on) {
+      write({ ...state, held: on && state.up });
+    },
+    press,
     resetForTests(timers) {
       focuser = null;
+      press.inside = false;
       intent?.dispose();
       intent = null;
       testTimers = timers;
-      state = { up: false, pinned: false, seq: 0, ready: false };
+      state = { up: false, pinned: false, held: false, seq: 0, ready: false };
       cards = 0;
       roomy = true;
       subs.clear();

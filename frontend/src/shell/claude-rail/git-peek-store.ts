@@ -9,6 +9,7 @@
 import { useSyncExternalStore } from "react";
 import type { Timers } from "./rail-peek-lib";
 import { createDoorCardStore, type DoorCardState } from "./door-card-store";
+import { taskHeadUnifiedNow } from "@shell/task-head-flag";
 
 /** The intent machine's one key: there is one Git card. */
 export const GIT_CARD_KEY = "git";
@@ -16,7 +17,7 @@ export const GIT_CARD_KEY = "git";
 export const GIT_PEEK_ID = "claude-rail-git-peek";
 
 /** The store itself, for the chassis the door cards share (DoorCard). */
-export const gitCardStore = createDoorCardStore(GIT_CARD_KEY, GIT_PEEK_ID);
+export const gitCardStore = createDoorCardStore(GIT_CARD_KEY, GIT_PEEK_ID, "git");
 
 export const gitCardIntent = () => gitCardStore.intent();
 export const closeGitCard = (returningFocus = false): void => gitCardStore.close(returningFocus);
@@ -53,7 +54,9 @@ export const setGitCardRail = (rail: HTMLElement | null): void => setOpener(rail
  *  card falls back to the top rail. */
 export function forgetGitCardRail(rail: HTMLElement): void {
   if (opener !== rail) return;
-  if (!gitCardStore.state().pinned) gitCardStore.close();
+  // With the pin (rail-pin-lib `hopKeeps`): only a HELD card follows.
+  const s = gitCardStore.state();
+  if (!(taskHeadUnifiedNow() ? s.held : s.pinned)) gitCardStore.close();
   setOpener(null);
 }
 export const gitCardRail = (): HTMLElement | null => opener;

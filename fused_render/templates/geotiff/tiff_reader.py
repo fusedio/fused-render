@@ -75,9 +75,10 @@ def _merc_bbox(bounds, epsg):
     n = 25
     xs = np.concatenate([np.linspace(l, r, n), np.full(n, r), np.linspace(r, l, n), np.full(n, l)])
     ys = np.concatenate([np.full(n, t), np.linspace(t, b, n), np.full(n, b), np.linspace(b, t, n)])
-    if int(epsg) == 3857:
+    crs = int(epsg) if str(epsg).isdigit() else epsg   # an EPSG code, or a WKT
+    if crs == 3857:
         return float(l), float(b), float(r), float(t)
-    tr = Transformer.from_crs(int(epsg), 3857, always_xy=True)
+    tr = Transformer.from_crs(crs, 3857, always_xy=True)
     mx, my = tr.transform(xs, ys)
     mx = mx[np.isfinite(mx)]; my = my[np.isfinite(my)]
     if not mx.size:

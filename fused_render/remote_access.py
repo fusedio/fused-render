@@ -2,8 +2,9 @@
 
 Scope is one public bucket, `BUCKET` in `REGION`, read with anonymous HTTPS.
 Folders come from its index (`remote_index`); this module answers for objects:
-`head(bucket, key)`, `read_url(bucket, key)` and `read_range(bucket, key,
-start, end)`. A signed reader for other buckets would replace these
+`head(bucket, key)`, `read_url(bucket, key)`, `read_range(bucket, key,
+start, end)` and `sign_read_url(bucket, key)` (the URL a template reads the
+object from itself). A signed reader for other buckets would replace these
 functions here and nowhere else.
 
 **No SSRF.** The only host ever contacted is built from `BUCKET`/`REGION`
@@ -137,6 +138,31 @@ def read_url(bucket: str, key: str) -> str:
     """The https URL a plain GET (with Range) downloads the object from."""
     require_supported(bucket)
     return f"https://{BUCKET}.s3.{REGION}.amazonaws.com/{quote(key, safe='/~')}"
+
+
+@dataclass(frozen=True)
+class SignedUrl:
+    """A URL that reads one object with plain HTTPS GETs (Range included) and
+    no other credentials. `expires_at` is an epoch time, or None when the URL
+    does not expire."""
+    url: str
+    expires_at: float | None
+
+
+def sign_read_url(bucket: str, key: str) -> SignedUrl:
+    """The URL a page or template reads `s3://bucket/key` from directly
+    (`fused.s3.sign`, `POST /api/remote/sign`).
+
+    Signing is the authorization point: only objects this module would read
+    itself are signed, and the caller gets a URL for that one object, never a
+    credential. Today the one supported bucket is public, so the URL is the
+    plain `read_url` and never expires. Signed access to private buckets (the
+    user's Fused credentials) replaces the body here; the callers already
+    handle `expires_at`. No network call."""
+    require_supported(bucket)
+    if not key or key.endswith("/"):
+        raise RemoteError("bad_url", "a folder has no bytes to read — sign an object, not a prefix")
+    return SignedUrl(url=read_url(bucket, key), expires_at=None)
 
 
 def iso_utc(ts: float | None) -> str | None:

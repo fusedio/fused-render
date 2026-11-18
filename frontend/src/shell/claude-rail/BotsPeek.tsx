@@ -45,6 +45,7 @@ import { botHref } from "@apps/bots/routes";
 import { useBotsSelector } from "@apps/bots/state/store";
 import { botStatusWords } from "./claude-rail-lib";
 import { DoorCard } from "./DoorCard";
+import { RailPinButton } from "./RailPin";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { botsCardStore, useBotsCard } from "./bots-peek-store";
 
@@ -119,6 +120,8 @@ export function BotsPeek() {
           <div className="claude-rail-peek-head">
             {chat ? (
               <div className="claude-rail-peek-row">
+                {/* The pin before ← (no × on this row): `[pin] [←] [↑][↓]`. */}
+                {api.pin && <RailPinButton variant="legacy" pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
                 <button
                   ref={api.backRef}
                   type="button"
@@ -151,9 +154,13 @@ export function BotsPeek() {
               </div>
             ) : (
               <div className="claude-rail-peek-row">
-                <button ref={api.closeRef} type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Close Bots" title="Close" onClick={api.close}>
-                  <X size={14} aria-hidden="true" />
-                </button>
+                {/* With the pin: no ×, the pin in its seat (and the keyboard's landing). */}
+                {!api.pin && (
+                  <button ref={api.closeRef} type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Close Bots" title="Close" onClick={api.close}>
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                )}
+                {api.pin && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
                 <span className="claude-rail-tasks-title" title="Bots">
                   Bots
                 </span>

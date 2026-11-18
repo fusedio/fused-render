@@ -9,6 +9,8 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { navigate } from "@platform/lib/router";
 import { cameFromSelParam } from "@apps/explorer/listing/selection";
+import { isRemoteLocation } from "@platform/lib/path-url";
+import { remoteCrumbs } from "@apps/explorer/listing/remote-crumbs";
 
 export function PathCrumbs({
   fsPath,
@@ -41,6 +43,17 @@ export function PathCrumbs({
     ro.observe(el);
     return () => ro.disconnect();
   }, [fsPath, home]);
+
+  // An S3 folder's Listing claims the bar like a local one, so its resting
+  // crumbs are the bucket address's — the same pieces the bar's own strip
+  // draws for an S3 file (remote-crumbs.tsx).
+  if (isRemoteLocation(fsPath)) {
+    return (
+      <div className="listing-search-crumbs" ref={ref}>
+        {remoteCrumbs(fsPath)}
+      </div>
+    );
+  }
 
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice((home as string).length) : fsPath;

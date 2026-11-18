@@ -252,6 +252,54 @@ export function useFavOpen(): string | null {
   return useSyncExternalStore(subscribeFavOpen, favOpen, favOpen);
 }
 
+// THE OPEN FAVOURITE'S PIN (claude-rail rail-pin-lib; owner, 2026-11-16,
+// behind the unified-head switch): which favourite's card the reader PINNED
+// in this window (the pin icon, a double-click on its ring) — the open card is
+// pinned while this names the open key, TEMP otherwise. sessionStorage
+// `fused-render:fav-pinned`, so a reload brings back only a pinned card
+// (FavouritePeek).
+const favPinnedMark = markStore("fused-render:fav-pinned");
+
+/** The favourite whose card is pinned in THIS window, by task key. */
+export function favPinned(): string | null {
+  return favPinnedMark.get();
+}
+
+/** Pin `key`'s favourite card in this window, or let the pin go (`null`). */
+export function setFavPinned(key: string | null): void {
+  favPinnedMark.set(key);
+  if (key === null) settlePos("b");
+}
+
+// WINDOW A'S PIN (claude-rail rail-pin-lib; owner, 2026-11-16: "when we pin we
+// are pinning the window rather than the task"): what the pinned window A
+// shows in this window — `task:<key>`, `plus`, `tasks`, `bots`, `git`
+// (`aPinWord`) — or nothing while it is not pinned. sessionStorage
+// `fused-render:a-pinned`, so the pin outlives the rail that held it: a page
+// hop, a page with no rail, a reload (ClaudeRail's restore).
+const aPinnedMark = markStore("fused-render:a-pinned");
+
+/** What the pinned window A shows in THIS window, or null. */
+export function aPinned(): string | null {
+  return aPinnedMark.get();
+}
+
+/** Pin window A on `word`, or let the pin go (`null`). */
+export function setAPinned(word: string | null): void {
+  aPinnedMark.set(word);
+  if (word === null) settlePos("a");
+}
+
+/** `onLastChatStorage`, for the favourite's pin. */
+export function onFavPinnedStorage(e: Pick<StorageEvent, "key" | "storageArea">): void {
+  favPinnedMark.onStorage(e);
+}
+
+/** The pinned favourite, live. */
+export function useFavPinned(): string | null {
+  return useSyncExternalStore(favPinnedMark.subscribe, favPinnedMark.get, favPinnedMark.get);
+}
+
 // THE OPEN BOT CARD IS PER WINDOW TOO (owner, 2026-11-08: "bots open in
 // window B close when I switch view, which is wrong — tasks open in window B
 // don't; they should only close on a switch to a task or another bot, or the
@@ -271,6 +319,7 @@ export function botOpen(): string | null {
 /** Pin `id`'s bot card in this window, or let it go (`null`). */
 export function setBotOpen(id: string | null): void {
   botOpenMark.set(id);
+  if (id === null) settlePos("b");
 }
 
 /** `onLastChatStorage`, for the open bot. */
@@ -281,3 +330,60 @@ export function onBotOpenStorage(e: Pick<StorageEvent, "key" | "storageArea">): 
 export function useBotOpen(): string | null {
   return useSyncExternalStore(botOpenMark.subscribe, botOpenMark.get, () => null);
 }
+
+// WHERE A PINNED WINDOW FLOATS (claude-rail rail-move-lib; owner, 2026-11-17:
+// a pinned window A or B dragged by its head stays where it was put): one
+// position per window, JSON `{left, top}` — sessionStorage
+// `fused-render:a-pos` and `fused-render:fav-pos` (window B: the favourite's
+// card and the bot's card alike), beside the pins they belong to. It lives
+// EXACTLY AS LONG AS THE PIN: a page hop and a reload keep it with the pin, and
+// the pin going clears it.
+//
+// THE PIN GOING, NOT ITS MARK BLINKING: a swap inside a pinned window (a door
+// to a ring, a favourite to a bot) can clear the old card's mark a moment
+// before the new card writes its own — the pin is the window's and never went.
+// So the position is cleared only once the window's marks are STILL all empty
+// after that moment (`settlePos`, the next task).
+const aPosMark = markStore("fused-render:a-pos");
+const favPosMark = markStore("fused-render:fav-pos");
+const posMark = (win: "a" | "b"): MarkStore => (win === "a" ? aPosMark : favPosMark);
+/** Is the window pinned on any card right now (its marks)? */
+function windowPinnedNow(win: "a" | "b"): boolean {
+  return win === "a" ? aPinnedMark.get() !== null : favPinnedMark.get() !== null || botOpenMark.get() !== null;
+}
+const settleTimers: Record<"a" | "b", ReturnType<typeof setTimeout> | null> = { a: null, b: null };
+function settlePos(win: "a" | "b"): void {
+  if (settleTimers[win] !== null || typeof setTimeout === "undefined") return;
+  settleTimers[win] = setTimeout(() => {
+    settleTimers[win] = null;
+    if (!windowPinnedNow(win)) posMark(win).set(null);
+  }, 0);
+}
+
+/** Window `win`'s stored position, as stored (rail-move-lib `parsePos` reads
+ *  it), or null while it is docked. */
+export function windowPosMark(win: "a" | "b"): string | null {
+  return posMark(win).get();
+}
+
+/** Float window `win` at a stored position (rail-move-lib `serialisePos`), or
+ *  dock it (`null`). */
+export function setWindowPosMark(win: "a" | "b", raw: string | null): void {
+  posMark(win).set(raw);
+}
+
+/** `subscribeLastChat`, for a window's position. */
+export function subscribeWindowPosMark(win: "a" | "b", fn: () => void): () => void {
+  return posMark(win).subscribe(fn);
+}
+
+/** `onLastChatStorage`, for the windows' positions. */
+export function onWindowPosStorage(e: Pick<StorageEvent, "key" | "storageArea">): void {
+  aPosMark.onStorage(e);
+  favPosMark.onStorage(e);
+}
+
+// A position the window's storage kept with no pin beside it (the pin went in
+// a document that closed before its clear ran): docked.
+if (aPosMark.get() !== null && !windowPinnedNow("a")) aPosMark.set(null);
+if (favPosMark.get() !== null && !windowPinnedNow("b")) favPosMark.set(null);

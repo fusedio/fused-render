@@ -11,11 +11,14 @@ import type { TemplateEntry } from "@platform/lib/api";
 import { AppStar } from "@platform/ui/AppStar";
 
 // Sentinel modes the shell renders without a template folder (SPEC PT-12/D81):
-// `_render` (the target file itself, in an iframe) and `_listing` (the shell's
-// built-in directory listing, no iframe). Any other `path: null` entry is an
-// unknown sentinel — filtered out by every view that dispatches on templates
-// (Preview, PaneModeMenu), so they share this one set to stay in lockstep.
-export const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
+// `_render` (the target file itself, in an iframe), `_listing` (the shell's
+// built-in directory listing, no iframe) and `_node` (the canvas node view,
+// SPEC §53.3 — drawn by apps/canvases through platform/ui/NativeView, no
+// iframe; the one sentinel with a gate, so it arrives `conditional`). Any
+// other `path: null` entry is an unknown sentinel — filtered out by every view
+// that dispatches on templates (Preview, PaneModeMenu), so they share this one
+// set to stay in lockstep.
+export const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing", "_node"]);
 
 // Display name for a mode key. The implementation moved to
 // platform/lib/mode-name.ts (pure, unit-tested) once the shared ModeMenu
@@ -46,6 +49,17 @@ const LISTING_SENTINEL_ICON = (
   </svg>
 );
 
+// Shell-baked icon for the "_node" sentinel (SPEC §53.3) — the canvas node
+// view: a window with a code bracket pair, the icon its template folder
+// shipped before it became a sentinel.
+const NODE_SENTINEL_ICON = (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3.5" y="5" width="17" height="14" rx="2" />
+    <path d="M3.5 9h17" />
+    <path d="M9 13l-2 2 2 2M15 13l2 2-2 2" />
+  </svg>
+);
+
 // Icon for a template-mode entry (PT-11): a sentinel mode gets a shell-baked
 // SVG; a resolved template with no icon.svg gets a placeholder box with the
 // mode's first letter; otherwise a monochrome SVG tinted via CSS mask-image +
@@ -56,6 +70,9 @@ export function templateModeIcon(entry: TemplateEntry): React.ReactNode {
   }
   if (entry.mode === "_listing") {
     return LISTING_SENTINEL_ICON;
+  }
+  if (entry.mode === "_node") {
+    return NODE_SENTINEL_ICON;
   }
   if (entry.icon === null) {
     return <span className="mode-icon-placeholder">{entry.mode.charAt(0).toUpperCase()}</span>;

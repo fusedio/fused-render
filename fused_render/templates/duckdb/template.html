@@ -780,6 +780,33 @@
     // ---- load / save ----
 
     let loadSeq = 0;
+    // One reader.py call, on this folder's warm worker (pyproject.toml
+    // `main =`, D1487): Python and DuckDB stay loaded between calls, and for
+    // a streamed file (its `file` is the signed URL) so do httpfs and the
+    // file's parquet footer, so a call costs its query instead of a fresh
+    // process. A call the worker cannot take (a preview frame, a worker that
+    // would not start) runs reader.py one-shot. A reader error (it carries a
+    // `type`) is the answer either way, not a reason to retry.
+    // key:null — one grid load fans out count+schema+positions+N page batches
+    // on reader.py, all results needed; default per-file cancellation (D114)
+    // would keep only the last and leave the grid mostly empty.
+    function readerCall(params) {
+      const oneShot = () => fused.runPython("./reader.py", params, { key: null });
+      return fused.daemon.run(params).catch((err) => {
+        if (err && err.type) throw err;
+        return oneShot();
+      });
+    }
+    // The signed read URL for the s3:// `_file` (fused.s3.sign, D1484),
+    // reused until it is a minute from expiring (public bucket: never).
+    let signed = null;
+    async function readSource(file) {
+      if (!/^s3:\/\//i.test(file)) return file;
+      const fresh = signed && signed.address === file && (!signed.expires_at
+        || Date.parse(signed.expires_at) - Date.now() > 60_000);
+      if (!fresh) signed = { address: file, ...(await fused.s3.sign(file)) };
+      return signed.url;
+    }
     // Last schema fetched for the per-column path, keyed by file+table.
     // Lets a re-load (filter/sort/page change) skip the serial schema await.
     let schemaCache = null;
@@ -808,8 +835,20 @@
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
       }
+      // An s3:// object streams (D1486): the page signs it and reader.py
+      // reads the HTTPS URL. `file` stays the s3:// address for every key.
+      let source = file;
+      try {
+        source = await readSource(file);
+      } catch (err) {
+        if (seq !== loadSeq) return;
+        setLoading(false);
+        wrap.innerHTML = `<div id="status" class="error"><strong>Can't open from S3</strong>: ${escapeHtml(err.message || "")}</div>`;
+        return;
+      }
+      if (seq !== loadSeq) return;
       const args = {
-        file, table, offset: String(offset), limit: String(LIMIT),
+        file: source, table, offset: String(offset), limit: String(LIMIT),
         sort: currentSort(), filters: currentFilters(),
       };
       // The filtered COUNT scans far more of the file than the 100-row page, so
@@ -818,10 +857,7 @@
       // countVal buffers the total in case the count resolves before the page
       // has been applied to `state`.
       let countVal, rendered = false;
-      // key:null — one grid load fans out count+schema+positions+N page batches
-      // on reader.py, all results needed; default per-file cancellation (D114)
-      // would keep only the last and leave the grid mostly empty.
-      fused.runPython("./reader.py", { ...args, mode: "count" }, { key: null })
+      readerCall({ ...args, mode: "count" })
         .then((c) => {
           if (seq !== loadSeq || !c || typeof c.total_rows !== "number") return;
           countVal = c.total_rows;
@@ -845,7 +881,7 @@
           let schema = schemaCache && schemaCache.key === file + "\n" + table
             ? schemaCache.schema : null;
           if (!schema) {
-            schema = await fused.runPython("./reader.py", { ...args, mode: "schema" }, { key: null });
+            schema = await readerCall({ ...args, mode: "schema" });
             if (seq !== loadSeq) return;
             schemaCache = { key: file + "\n" + table, schema };
           }
@@ -878,7 +914,7 @@
           let positions = null;
           if (args.sort || args.filters.length) {
             try {
-              const p = await fused.runPython("./reader.py", { ...args, mode: "positions" }, { key: null });
+              const p = await readerCall({ ...args, mode: "positions" });
               if (seq !== loadSeq) return;
               if (p && Array.isArray(p.positions)) {
                 positions = p.positions;
@@ -889,7 +925,19 @@
                   state.idsByAttr.set(String(id), id);
                 });
               }
-            } catch (_) { /* fall back to per-batch windows */ }
+            } catch (e) {
+              // A streamed (S3) file refuses a sort/filter that would read
+              // most of it (reader.py STREAM_SCAN_BUDGET): every batch would
+              // refuse the same way, so say so instead of falling back.
+              if (/Too large to stream/.test((e && e.message) || "")) {
+                if (seq !== loadSeq) return;
+                setLoading(false);
+                const msg = String(e.message).replace(/^[\s\S]*?(Too large to stream)/, "$1");
+                wrap.innerHTML = `<div id="status" class="error">${escapeHtml(msg)}</div>`;
+                return;
+              }
+              /* otherwise fall back to per-batch windows */
+            }
           }
           if (state.deferRender) {
             // The break-the-hold timer arms only now: its 250ms budget was
@@ -909,12 +957,12 @@
           for (const cols of packColumns(schema.columns, schema.col_sizes || {})) {
             const batchArgs = { ...args, mode: "page", columns: cols };
             if (positions) batchArgs.positions = positions;
-            fused.runPython("./reader.py", batchArgs, { key: null })
+            readerCall(batchArgs)
               .then((d) => applyBatch(seq, cols, d), () => applyBatch(seq, cols, null));
           }
           return;
         }
-        const data = await fused.runPython("./reader.py", { ...args, mode: "page" }, { key: null });
+        const data = await readerCall({ ...args, mode: "page" });
         if (seq !== loadSeq) return;
         staged = { edits: new Map(), deletes: new Set(), inserts: [] };
         state = data;

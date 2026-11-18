@@ -474,7 +474,8 @@ const byClass = (r: ReturnType<typeof create>, c: string) =>
   r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.split(" ").includes(c) && (/check/.test(c) ? (n.type as { name?: string }).name === "Checkbox" : typeof n.type === "string"));
 const press = async (el: { props: Record<string, (...a: unknown[]) => void> }, fn = "onClick") => {
   await act(async () => {
-    el.props[fn]({ stopPropagation() {} });
+    // A press ON the element (the card ignores clicks bubbled from a portal).
+    el.props[fn]({ stopPropagation() {}, currentTarget: { contains: () => true }, target: {} });
   });
 };
 const barButton = (r: ReturnType<typeof create>, label: string) =>

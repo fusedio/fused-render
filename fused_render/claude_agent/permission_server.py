@@ -87,7 +87,13 @@ import time
 import urllib.parse
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_NAME = "fused_approvals"
+# Named after the app, not the approval tool: this server is every tool
+# fused-render hands the agent. agent.PERMISSION_SERVER and each host's copy
+# mirror it (a test pins them); it was `fused_approvals` before.
+SERVER_NAME = "fused_render"
+# The pre-rename name (agent.LEGACY_PERMISSION_SERVER). Only ever matched,
+# never served: see `_same_tool`.
+LEGACY_SERVER_NAME = "fused_approvals"
 TOOL_NAME = "approve"
 APP_STATE_TOOL = "app_state"
 CANVAS_SHOT_TOOL = "canvas_screenshot"
@@ -2285,6 +2291,20 @@ def _breakout_hook(handoff_dir: str) -> int:
 ALLOW_ONCE_TTL = 30 * 60
 
 
+def _same_tool(a, b) -> bool:
+    """Whether two tool names are the same tool, reading our own server's
+    pre-rename spelling (`mcp__fused_approvals__<tool>`) as the current one.
+    A one-shot grant is recorded under the name the REFUSED call carried, and
+    a chat that was running across the update to the rename may retry the
+    call after its CLI respawned with the new name; without this the grant
+    would never match and the user's Allow would be asked for again."""
+    def current(name):
+        old = "mcp__%s__" % LEGACY_SERVER_NAME
+        return ("mcp__%s__" % SERVER_NAME + name[len(old):]
+                if isinstance(name, str) and name.startswith(old) else name)
+    return current(a) == current(b)
+
+
 def _allow_once_match_input(tool_name, tool_input):
     """What a grant matches a call on: a Bash call by its `command` alone (the
     model rewords `description` and tunes `timeout` between tries), any other
@@ -2373,7 +2393,7 @@ def _allow_once_hook(path: str) -> int:
         now = time.time()
         live = [e for e in old if isinstance(e, dict)
                 and now - float(e.get("created") or 0) < ALLOW_ONCE_TTL]
-        found = next((e for e in live if e.get("tool_name") == tool_name
+        found = next((e for e in live if _same_tool(e.get("tool_name"), tool_name)
                       and e.get("match_input") == wanted), None)
         if found is None:
             return _KEEP

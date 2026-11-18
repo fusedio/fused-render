@@ -3017,7 +3017,8 @@ describe("the board card's status ring", () => {
     // …and the third card whose ring says what its lane does not: a finished
     // turn with a live background job, drawn In Progress (tasks-lib.liveJobRow)
     // — the blue "Background" ring.
-    expect(CARD).toContain(": jobs\n              ? <StatusIcon status={status} background />");
+    // (Indented one level deeper since the a/b card seats the chain in RingSeat.)
+    expect(CARD).toMatch(/: jobs\n\s+\? <StatusIcon status=\{status\} background \/>/);
     // The waiting card's own ring, by the same rule: its status and its lane are
     // two different facts (Needs attention, drawn under Blocked), which is
     // exactly the condition the ring is drawn for.
@@ -4310,12 +4311,14 @@ describe("the archive action", () => {
     // Only when the filing can be changed at all — a mid-run row grows nothing.
     expect(at).toBeGreaterThan(-1);
     expect(ROW).toContain("{!ab && fileButton}");
+    // The button is `FileAct`, the one every view's id slot draws (2026-11-16).
+    expect(row).toContain("<FileAct file={file}");
     // The same class group Run now / Edit / Cancel wear, which is what makes it
     // quiet — and the DIRECTION is a suffix, so one button covers both.
-    expect(row).toContain('"tasks-act tasks-act--" + file.kind');
-    expect(row).toContain("ICON_ARCHIVE : ICON_UNARCHIVE");
+    expect(FILE_ACT).toContain('" tasks-act--" + file.kind');
+    expect(FILE_ACT).toContain('file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE');
     // The words come from tasks-lib rather than from the row.
-    expect(row).toContain("aria-label={file.label}");
+    expect(FILE_ACT).toContain('"aria-label": label ?? file.label');
   });
 
   it("goes BOTH ways now, from one intent, on both views", () => {
@@ -4339,13 +4342,16 @@ describe("the archive action", () => {
       NODE.indexOf("const fileButton = file && ("),
       NODE.indexOf("const pageDoor = "),
     );
-    for (const src of [fileButton, CARD]) {
-      expect(src).toContain("file && (");
-      // One button per view, branching on the direction rather than two buttons
-      // that could both render (or both not).
-      expect((src.match(/(?<![\w.])file && \(/g) ?? []).length).toBe(1);
-      // The direction is a class SUFFIX and a glyph choice, so neither view can
-      // draw one direction's skin over the other's action.
+    // One button per view, branching on the direction rather than two buttons
+    // that could both render (or both not). The a/b card's id slot asks
+    // `file ?` — it replaces the strip's (`file && !ab`), never joins it.
+    expect((fileButton.match(/(?<![\w.])file && \(/g) ?? []).length).toBe(1);
+    expect((CARD.match(/(?<![\w.])file && !ab && \(/g) ?? []).length).toBe(1);
+    expect((CARD.match(/<FileAct\b/g) ?? []).length).toBe(1);
+    // The direction is a class SUFFIX and a glyph choice, so neither view can
+    // draw one direction's skin over the other's action — in the shared button
+    // and in the legacy card strip's own.
+    for (const src of [FILE_ACT, CARD]) {
       expect(src).toContain('tasks-act--" + file.kind');
       expect(src).toContain("ICON_ARCHIVE : ICON_UNARCHIVE");
     }
@@ -4383,8 +4389,9 @@ describe("the archive action", () => {
     // Out on BOTH views at once. It is one button on one kind of element, and a
     // List that can file a task where a card cannot is exactly the divergence the
     // shared flag exists to prevent.
-    expect(NODE).toMatch(/const fileButton = file && \(\s*<button/);
-    expect(CARD).toMatch(/\{file && \(\s*<button/);
+    expect(NODE).toMatch(/const fileButton = file && \(\s*<FileAct/);
+    expect(FILE_ACT).toContain('<button type="button" {...common} disabled={disabled}>');
+    expect(CARD).toMatch(/\{file && !ab && \(\s*<button/);
     // Its neighbours are all still gated, each by its own guard rather than by a
     // group's, and their order survives whichever of them are rendered.
     for (const guarded of ["seen", "run", "chat"]) {
@@ -4466,7 +4473,7 @@ describe("the archive action", () => {
     // waiting message other than dragging a card out of a lane that is rolled
     // up whenever it is empty.
     expect(card).toContain(
-      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
+      "{((peekOn && page) || (file && !ab) || folderMissing || (hasDraft(task) && !heldInPeek)\n"
       + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
@@ -4621,7 +4628,8 @@ describe("the archive action", () => {
     for (const r of rules(live)) {
       for (const sel of r.selectors) {
         if (/tasks-idslot|tasks-bseat|task-icon-pick|task-star:focus-visible/.test(sel)) {
-          expect(sel).toContain("tasks-row--ab");
+          // The List's row, or the Board card on the same switch (2026-11-16).
+          expect(sel).toMatch(/tasks-row--ab|tasks-card-wrap--ab/);
         }
       }
     }
@@ -5008,7 +5016,10 @@ describe("the delete affordance", () => {
     expect(at).toBeGreaterThan(0);
     // GATED on `gone` (Akshil, 2026-09-07): a task that still opens is archived.
     expect(head.slice(del, at)).toContain("{gone && (");
-    expect(head).toContain("{(filing || explorer || gone || jobs) && (");
+    // (On the a/b tile Archive is the id slot's, not a door: 2026-11-16.)
+    expect(head).toContain(
+      "{((filing && !ab) || explorer || gone || jobs || (ab && hasDraft(task) && !heldInPeek)) && (",
+    );
     // Trash, then Archive, then the folder (Akshil: "left-side of the archive button").
     expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_ARCHIVE"));
     expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
@@ -5053,7 +5064,7 @@ describe("the delete affordance", () => {
     expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
-      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
+      "{((peekOn && page) || (file && !ab) || folderMissing || (hasDraft(task) && !heldInPeek)\n"
       + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
@@ -5139,6 +5150,11 @@ describe("the delete affordance", () => {
 const NODE = VIEWS.slice(
   VIEWS.indexOf("function TaskNode("),
   VIEWS.indexOf("export function TaskBoard("),
+);
+/** The filing button every view's slot draws (FileAct, 2026-11-16). */
+const FILE_ACT = VIEWS.slice(
+  VIEWS.indexOf("export function FileAct("),
+  VIEWS.indexOf("function TaskNode("),
 );
 const BOARD = VIEWS.slice(
   VIEWS.indexOf("export function TaskBoard("),
@@ -9941,12 +9957,15 @@ describe("the Cards view's frame", () => {
     // marked in all four views).
     // …and the card the reader last opened, which is the OTHER thing that may
     // ride this class list (design.md §8: the head's hover wash became a mark
-    // on the one card that was actually pressed).
+    // on the one card that was actually pressed). …and the a/b switch's
+    // modifier (2026-11-16), which only scopes the id slot's stylesheet.
     expect(CARDS).toContain(
-      'className={"task-card task-card--door" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")\n'
+      'className={"task-card task-card--door" + (ab ? " task-card--ab" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")\n'
         + '        + (selected ? " is-selected" : "")}',
     );
-    expect(CARDS).toContain("onClick={() => onPeek(task)}");
+    // …but only a press on the card's own DOM: a click bubbled up the React
+    // tree from a portal (the a/b ring's icon picker) is not one (PR #2300).
+    expect(CARDS).toContain("if (!e.currentTarget.contains(e.target as Node)) return;\n        onPeek(task);");
     expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("pointer-events: none");
     expect(block(CARDS_CSS, ".task-card--door .task-card-body")).toContain("overflow: hidden");
     expect(head).toContain('e.key === "Enter" || e.key === " "');

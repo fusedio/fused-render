@@ -24,6 +24,7 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
@@ -31,7 +32,15 @@ import {
 import { createPortal } from "react-dom";
 import { useDeferredClose } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "./esc-stack";
-import { popoverDrag, popoverPlacement, type PopoverBox, type PopoverEdge, type PopoverLimits } from "./popover-place";
+import {
+  isPopoverEdge,
+  popoverDrag,
+  popoverPlacement,
+  type PopoverBox,
+  type PopoverEdge,
+  type PopoverGrip,
+  type PopoverLimits,
+} from "./popover-place";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 import {
   CLOSE_CONTROL_SELECTOR,
@@ -235,8 +244,19 @@ export interface ModalProps {
      *     close it — an outside press and Escape do not.
      */
     pinned?: boolean;
+    /** A `pinned: true` popover that ESCAPE still closes (the rail's TEMP
+     *  card, claude-rail rail-pin-lib: a hover and a temp card close on
+     *  Escape, only a pinned one ignores it). Not an Escape something inside
+     *  already took (`defaultPrevented`), nor one pressed in a menu, a
+     *  listbox or a dialog the card opened — that one's Escape is its own. */
+    tempEscape?: boolean;
     /** The reader acted inside a preview (`pinned: false`): pin it. */
     onPin?: () => void;
+    /** ANY press inside the card, pinned or not — React's capture phase, so a
+     *  menu portaled out of it counts, and a grip's press too: the opener's
+     *  own outside-press rule reads it (the rail's temp card, claude-rail
+     *  rail-pin-lib). */
+    onPressInside?: () => void;
     /** The pointer entered / left the card (the opener's hover grace). */
     onPointerEnter?: () => void;
     onPointerLeave?: () => void;
@@ -276,8 +296,26 @@ export interface ModalProps {
       /** The size let go at, and WHICH of its two dimensions the drag moved
        *  (an edge drag moves one): the caller keeps its remembered value for
        *  the other, so a width the window clamped is not saved over it by a
-       *  height-only drag (CodeRabbit on #2189). */
-      onResize: (size: { width: number; height: number }, changed: { width: boolean; height: boolean }) => void;
+       *  height-only drag (CodeRabbit on #2189). `box`: the whole box let go
+       *  at — where a left or top grip moved the card to. */
+      onResize: (
+        size: { width: number; height: number },
+        changed: { width: boolean; height: boolean },
+        box: PopoverBox & { height: number },
+      ) => void;
+      /** THE GRIPS, when not the five beside an anchor (`POPOVER_GRIPS`): the
+       *  caller's card let go of its anchor wears the right edge and corners
+       *  too (the rail's floating window, owner 2026-11-17). */
+      grips?: readonly PopoverGrip[];
+      /** THE DRAG, the caller's way, in place of `popoverDrag` and `adjust`:
+       *  the box a grip's drag asks for (the rail's floating window, clamped
+       *  to the viewport). */
+      drag?: (
+        edge: PopoverGrip,
+        start: PopoverBox & { height: number },
+        dx: number,
+        dy: number,
+      ) => PopoverBox & { height: number };
       /** A last say over each drag frame's box (`next`), given the grip held
        *  and the box the drag began from — the rail's width magnet
        *  (claude-rail card-snap.ts). `onDragEnd` when the drag lets go. */
@@ -291,6 +329,15 @@ export interface ModalProps {
     /** Where the sized card stands, as it changes, and null when it goes —
      *  for a host that lines other cards up with it (the rail's magnet). */
     onBox?: (box: { left: number; top: number; width: number; height: number } | null) => void;
+    /** THE CALLER MOVES THE CARD BY ITS HEAD (the rail's pinned window,
+     *  claude-rail useCardMove; owner, 2026-11-17): the dialog's pointerdown
+     *  and double-click go to it, and its class to the layer. Where the card
+     *  then stands is the caller's `place`. Absent: no such handlers. */
+    move?: {
+      className: string;
+      onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
+      onDoubleClick: (e: ReactMouseEvent<HTMLElement>) => void;
+    };
   };
 }
 
@@ -342,6 +389,8 @@ export function Modal({
   // unmount below, which are bound once.
   const pinnedRef = useRef(popover?.pinned);
   pinnedRef.current = popover?.pinned;
+  const tempEscapeRef = useRef(popover?.tempEscape === true);
+  tempEscapeRef.current = popover?.tempEscape === true;
 
   // Store the previously-focused element, move focus into the dialog on mount,
   // and restore it on unmount. Callers win: an `initialFocus` ref takes
@@ -516,8 +565,15 @@ export function Modal({
   useEffect(() => {
     const onDocKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // A pinned popover closes by its ✕ only (header of `popover.pinned`).
-      if (pinnedRef.current === true) return;
+      // A pinned popover closes by its ✕ only (header of `popover.pinned`) —
+      // but for the opener's temp card (`popover.tempEscape`).
+      if (pinnedRef.current === true) {
+        if (!tempEscapeRef.current || e.defaultPrevented) return;
+        const pop = (e.target as Element | null)?.closest?.(
+          "[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']",
+        );
+        if (pop && pop !== dialogRef.current) return;
+      }
       if (!isTopmost(token.current)) return;
       attemptClose();
     };
@@ -577,13 +633,13 @@ export function Modal({
   const resize = popover?.resize;
   const [dragBox, setDragBox] = useState<(PopoverBox & { height: number }) | null>(null);
   const [dragged, setDragged] = useState<{ width: number; height: number } | null>(null);
-  const [gripHeld, setGripHeld] = useState<PopoverEdge | null>(null);
+  const [gripHeld, setGripHeld] = useState<PopoverGrip | null>(null);
   const dragStart = useRef<{
     x: number;
     y: number;
     box: PopoverBox & { height: number };
     pointerId: number;
-    edge: PopoverEdge;
+    edge: PopoverGrip;
     el: HTMLElement;
     floor: number | undefined;
     bounds: { left: number; top: number; width: number; height: number } | null;
@@ -678,13 +734,17 @@ export function Modal({
     }
   };
 
-  const onGripDown = (edge: PopoverEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
+  const onGripDown = (edge: PopoverGrip) => (e: ReactPointerEvent<HTMLDivElement>) => {
     const dialog = dialogRef.current;
     // Not on a card already leaving (CodeRabbit on #2189): a drag through
     // the exit fade would save a size nobody meant.
     if (e.button !== 0 || !dialog || !resize || closing) return;
     e.preventDefault();
     e.stopPropagation();
+    // A grip's press is a press inside the card (it stands outside the
+    // dialog's box): a preview with grips pins on it as on any press.
+    popover?.onPressInside?.();
+    if (pinnedRef.current === false) popover?.onPin?.();
     const r = dialog.getBoundingClientRect();
     const box = { left: r.left, top: r.top, width: r.width, height: r.height };
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -705,18 +765,23 @@ export function Modal({
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     const view = ownerDoc.defaultView;
-    if (!start || start.pointerId !== e.pointerId || !view || !resize) return;
-    const asked = popoverDrag(
-      start.edge,
-      start.box,
-      e.clientX - start.x,
-      e.clientY - start.y,
-      { width: view.innerWidth, height: view.innerHeight },
-      resize,
-      start.floor,
-      start.bounds ?? undefined,
-    );
-    const next = resize.adjust ? resize.adjust(asked, start.edge, start.box) : asked;
+    if (!start || start.pointerId !== e.pointerId || !resize) return;
+    let next: PopoverBox & { height: number };
+    if (resize.drag) next = resize.drag(start.edge, start.box, e.clientX - start.x, e.clientY - start.y);
+    else {
+      if (!view || !isPopoverEdge(start.edge)) return;
+      const asked = popoverDrag(
+        start.edge,
+        start.box,
+        e.clientX - start.x,
+        e.clientY - start.y,
+        { width: view.innerWidth, height: view.innerHeight },
+        resize,
+        start.floor,
+        start.bounds ?? undefined,
+      );
+      next = resize.adjust ? resize.adjust(asked, start.edge, start.box) : asked;
+    }
     dragLast.current = next;
     setDragBox((was) =>
       was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height
@@ -737,7 +802,7 @@ export function Modal({
     if (!last || (last.width === start.box.width && last.height === start.box.height)) return;
     const size = { width: last.width, height: last.height };
     setDragged(size);
-    resize?.onResize(size, { width: last.width !== start.box.width, height: last.height !== start.box.height });
+    resize?.onResize(size, { width: last.width !== start.box.width, height: last.height !== start.box.height }, last);
   };
   const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
@@ -800,7 +865,11 @@ export function Modal({
 
   return createPortal(
     <div
-      className={(popover ? "modal-overlay modal-popover" : "modal-overlay deploy-overlay") + (closing ? " closing" : "")}
+      className={
+        (popover ? "modal-overlay modal-popover" : "modal-overlay deploy-overlay") +
+        (closing ? " closing" : "") +
+        (popover?.move?.className ?? "")
+      }
       // The card's left edge, for side panels that stand beside it (Browse,
       // Custom recurrence — schedule.css `.modal-popover`).
       {...(popover && place ? { style: { "--modal-pop-left": `${place.left}px` } as CSSProperties } : {})}
@@ -852,6 +921,7 @@ export function Modal({
               // `popover.pinned`). React's own events, so a pill's menu
               // portaled out of the card still counts as inside it.
               onPointerDownCapture: () => {
+                popover.onPressInside?.();
                 if (pinnedRef.current === false) popover.onPin?.();
               },
               onFocusCapture: () => {
@@ -859,6 +929,7 @@ export function Modal({
               },
               onPointerEnter: () => popover.onPointerEnter?.(),
               onPointerLeave: () => popover.onPointerLeave?.(),
+              ...(popover.move ? { onPointerDown: popover.move.onPointerDown, onDoubleClick: popover.move.onDoubleClick } : {}),
             }
           : {})}
       >
@@ -974,7 +1045,7 @@ export function Modal({
             height: dragBox?.height ?? place?.height ?? 0,
           }}
         >
-          {POPOVER_GRIPS.map((edge) => (
+          {(resize.grips ?? POPOVER_GRIPS).map((edge) => (
             <div
               key={edge}
               className={"modal-popover-grip is-" + edge + (gripHeld === edge ? " is-active" : "")}
@@ -985,7 +1056,7 @@ export function Modal({
               onLostPointerCapture={() => dragStart.current && endDrag()}
             />
           ))}
-          {POPOVER_GRIPS.map((e) => (
+          {(resize.grips ?? POPOVER_GRIPS).map((e) => (
             <div key={"ring-" + e} className={"rail-grip-ring is-" + e} />
           ))}
         </div>

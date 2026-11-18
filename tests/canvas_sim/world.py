@@ -139,13 +139,19 @@ def tick(m) -> None:
 
 class FakeAgent:
     """`_agent_module()` stand-in: a run is live in a clone while its
-    Session's turn is."""
+    Session's turn is. `turns` holds every open turn per clone by session id
+    (several sessions may work in one clone); `live` is the newest run id."""
 
     def __init__(self):
         self.live: dict[str, str] = {}   # clone dir → run id
+        self.turns: dict[str, dict[str, str]] = {}   # clone dir → {session id: run id}
 
     def _live_run_in(self, folder):
         return {"run_id": self.live.get(os.path.normpath(folder), "")}
+
+    def _live_runs_in(self, folder):
+        for sid, run_id in reversed(list(self.turns.get(os.path.normpath(folder), {}).items())):
+            yield {"run_id": run_id, "backend": "claude", "sessions": {sid}}
 
     def _live_run(self, file, session_id="", limit=None):
         return self._live_run_in(file)
@@ -606,23 +612,36 @@ class FakeFrame:
 class Session:
     """A Claude session working in the clone."""
 
-    def __init__(self, world: "World"):
+    def __init__(self, world: "World", sid: str | None = None):
         self.w = world
-        self.sid = f"sim-session-{world.name}"
+        self.sid = sid or f"sim-session-{world.name}"
         self.contexts: list[str] = []
 
     @property
     def live(self) -> bool:
         return bool(self.w.agent.live.get(os.path.normpath(self.w.dir)))
 
+    def _turns(self) -> dict[str, str]:
+        return self.w.agent.turns.setdefault(os.path.normpath(self.w.dir), {})
+
     def start_turn(self) -> None:
-        self.w.agent.live[os.path.normpath(self.w.dir)] = f"run-{self.w.ledger.step}"
+        run_id = f"run-{self.w.ledger.step}-{self.sid}"
+        self.w.agent.live[os.path.normpath(self.w.dir)] = run_id
+        self._turns()[self.sid] = run_id
 
     def end_turn(self) -> None:
-        self.w.agent.live.pop(os.path.normpath(self.w.dir), None)
+        turns = self._turns()
+        others = [r for s, r in turns.items() if s != self.sid]
+        if others:
+            self.w.agent.live[os.path.normpath(self.w.dir)] = others[-1]
+        else:
+            self.w.agent.live.pop(os.path.normpath(self.w.dir), None)
         m = self.w.manager
         if hasattr(m, "turn_end"):
-            m.turn_end()  # what the Stop hook route runs (synchronously here)
+            # What the Stop hook route runs (synchronously here). The Stop
+            # lands while this session's own run still reads open.
+            m.turn_end(self.sid, m._tool_hooks.get(self.sid))
+        turns.pop(self.sid, None)
 
     def _hook(self, path: str) -> None:
         res = self.w.client.post("/api/canvases/agent/hook", json={
@@ -862,6 +881,7 @@ class World:
         if m is not None:
             m.stop()
         self.agent.live.pop(os.path.normpath(self.dir), None)
+        self.agent.turns.pop(os.path.normpath(self.dir), None)
 
     # -- quiescence and the invariants -------------------------------------------
 

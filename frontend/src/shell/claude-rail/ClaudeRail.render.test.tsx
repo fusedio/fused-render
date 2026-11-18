@@ -414,7 +414,7 @@ describe("ClaudeRail's card beside the pane", () => {
   // everywhere"), behind its flag: the card's two-row head becomes the one
   // every task view draws — its own rename row gone, TaskPeekWho's in its place.
   const cls = (n: ReactTestInstance) => String(n.props?.className ?? "").split(" ");
-  test("flag on: the card wears the shared head — the ×, the identity, the ⋮ — and no title row of its own", async () => {
+  test("flag on: the card wears the shared head — the pin, the identity, the ⋮ — and no title row of its own", async () => {
     resetTaskHeadUnifiedFlagForTests();
     publishTaskHeadUnified({ enabled: true });
     try {
@@ -424,14 +424,19 @@ describe("ClaudeRail's card beside the pane", () => {
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(1);
       expect(peek.findAll((n) => cls(n).includes("claude-rail-peek-titlerow"))).toHaveLength(0);
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-side-peek-who")).length).toBeGreaterThan(0);
-      const lead = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-lead"));
-      expect(lead.props["aria-label"]).toBe("Close the preview");
+      // With the unified head the rail card has NO × (owner, 2026-11-16: a
+      // click outside closes a temp card, a pinned one is unpinned first):
+      // the pin is the head's first button.
+      expect(peek.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === "Close the preview")).toHaveLength(0);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("rail-pin-btn"))).toHaveLength(1);
       // The card's OWN star (toggleStar: tells the rail, dismisses on unstar),
       // not the head's plain TaskStar, as the count slot's other occupant —
       // and its archive as the id slot's (the a/b slots, 2026-11-15).
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-star"))).toHaveLength(0);
-      const countSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-countslot"));
-      expect(countSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
+      // A rail window seats it in the acts' layer of its facts box (the count
+      // and the time are the other layer; 2026-11-16).
+      const acts = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-facts-layer") && cls(n).includes("is-b"));
+      expect(acts.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
       const idSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-idslot"));
       expect(idSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(1);
       // The status icon trades with nothing.
@@ -1122,5 +1127,131 @@ describe("ClaudeRail on an open file (owner, 2026-11-16)", () => {
     const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { kind: "file", file: `${DIR}/x.py`, dir: DIR } });
     expect(seatKeys(r).map(([, c]) => c)).toEqual(["claude-rail-seat is-off", "claude-rail-seat is-off", "claude-rail-seat is-off"]);
     expect(seps(r)).toBe(0);
+  });
+});
+
+describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2026-11-16)", () => {
+  const ringsOf = (r: ReactTestRenderer, key: string) =>
+    r.root.findAll((n) => n.type === "a" && n.props["data-task-key"] === key);
+  const inFoot = (n: ReactTestInstance) => {
+    for (let up = n.parent; up; up = up.parent) if (up.props?.className === "claude-rail-favs") return true;
+    return false;
+  };
+  const row = chat("a", { task_id: "TASK-042", title: "Rename the pane noun", message_count: 7, last_reply: "Done — renamed in three files." });
+  const ROW_ATTRS = ["data-hint-row", "data-hint-count", "data-hint-when", "data-hint-window"];
+  // The row's left part, gone since 2026-11-17 ("strip the left part, that
+  // is status and task id").
+  // …and the window's width, gone since 2026-11-18 ("make it not the same
+  // width as the window"): the row is as wide as its words.
+  const GONE_ATTRS = ["data-hint-id", "data-hint-width", "data-hint-width-of"];
+
+  test("flag on: a list ring carries the title, count, time and window A's width — no number; the rail names the edge", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: false, chats: [row] });
+      const [ring] = ringsOf(r, "a");
+      expect(ring).toBeDefined();
+      // Opted into the row form (platform/lib/hints `renderRowHint`)…
+      expect(ring!.props["data-hint-row"]).toBe("");
+      // …with the title, the count and the time (2026-11-17: "strip the left
+      // part, that is status and task id, keep the time and count as is"):
+      // no number is handed over any more.
+      expect(ring!.props["data-hint-title"]).toBe("Rename the pane noun");
+      expect(ring!.props["data-hint-count"]).toBe("7");
+      expect(String(ring!.props["data-hint-when"]).length).toBeGreaterThan(0);
+      for (const a of GONE_ATTRS) expect(a in ring!.props).toBe(false);
+      // …and the window it opens, the one the scrim dims: A.
+      expect(ring!.props["data-hint-window"]).toBe("a");
+      expect(ring!.props["data-hint-side"]).toBe("left");
+      // The row stands against the rail's own edge, where its windows do.
+      expect(aside(r).props["data-hint-edge"]).toBe("");
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag on: a favourite's ring names window B, the list's ring window A — and neither asks for a width", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    try {
+      const fav = { ...row, starred: true } as Task;
+      const r = await mountRail({ paneOpen: false, favourites: true, chats: [fav] });
+      const rings = ringsOf(r, "a");
+      const foot = rings.filter(inFoot);
+      const list = rings.filter((n) => !inFoot(n));
+      expect(foot).toHaveLength(1);
+      expect(foot[0]!.props["data-hint-row"]).toBe("");
+      // It names window B as the one its row dims; the list's rings name A.
+      expect(foot[0]!.props["data-hint-window"]).toBe("b");
+      for (const ring of list) expect(ring.props["data-hint-window"]).toBe("a");
+      for (const ring of [...foot, ...list]) for (const a of GONE_ATTRS) expect(a in ring.props).toBe(false);
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag on: the open favourite's ring says nothing, like window A's open ring; the other favourites keep their row (2026-11-17)", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    const open = { ...row, starred: true } as Task;
+    const other = { ...chat("b", { task_id: "TASK-043", title: "Another favourite" }), starred: true } as Task;
+    setFavOpen(open.key);
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: true, chats: [open, other] });
+      const mine = ringsOf(r, open.key).find(inFoot);
+      const theirs = ringsOf(r, other.key).find(inFoot);
+      expect(mine).toBeDefined();
+      expect(theirs).toBeDefined();
+      // The empty hint is the opt-out (hints.ts `hintOf`): no row, no tooltip.
+      expect(mine!.props["data-hint"]).toBe("");
+      expect(theirs!.props["data-hint"]).toBe("Another favourite");
+      expect(theirs!.props["data-hint-row"]).toBe("");
+    } finally {
+      setFavOpen(null);
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag off: the open favourite's ring keeps its title caption", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    const open = { ...row, starred: true } as Task;
+    setFavOpen(open.key);
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: true, chats: [open] });
+      const [mine] = ringsOf(r, "a").filter(inFoot);
+      expect(mine!.props["data-hint"]).toBe("Rename the pane noun");
+    } finally {
+      setFavOpen(null);
+    }
+  });
+
+  test("flag on: a chat with no count prints none — the seat is left out, not zeroed", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: false, chats: [chat("a", { message_count: 0 })] });
+      const [ring] = ringsOf(r, "a");
+      expect(ring!.props["data-hint-row"]).toBe("");
+      expect(ring!.props["data-hint-count"]).toBe("");
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag off: the ring keeps the old caption — no row attribute at all", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: false });
+    try {
+      const r = await mountRail({ paneOpen: false, favourites: false, chats: [row] });
+      const [ring] = ringsOf(r, "a");
+      expect(ring).toBeDefined();
+      for (const attr of ROW_ATTRS) expect(attr in ring!.props).toBe(false);
+      // The two-line caption's own attributes are still there.
+      expect(ring!.props["data-hint-title"]).toBe("Rename the pane noun");
+      expect(ring!.props["data-hint-side"]).toBe("left");
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
   });
 });

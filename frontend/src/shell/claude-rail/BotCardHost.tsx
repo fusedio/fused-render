@@ -25,6 +25,9 @@ import {
 import { pinnedBots } from "./claude-rail-lib";
 import { useFavPeekState } from "./fav-peek-store";
 import { useCanvasRailPeek } from "./rail-peek-flag";
+import { viewPress } from "./rail-pin-lib";
+import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { useUrlVersion } from "@platform/lib/hooks";
 
 export { BOT_PEEK_ID };
 
@@ -37,6 +40,19 @@ export function BotCardHost() {
   const card = useBotCardState();
   const intent = botCardIntent();
   const ref = useRef<BotPeekHandle | null>(null);
+  // HOVER / TEMP / PIN (rail-pin-lib): the unified-head switch.
+  const pinModel = useTaskHeadUnified();
+  // A PAGE HOP keeps only a pinned card (rail-pin-lib `hopKeeps`): a temp one
+  // goes with it. The page is the URL's path (a view switch on one page keeps
+  // it, as it keeps the favourite's).
+  useUrlVersion();
+  const path = typeof location === "undefined" ? "" : location.pathname;
+  const pathWas = useRef(path);
+  useEffect(() => {
+    if (pathWas.current === path) return;
+    pathWas.current = path;
+    if (pinModel && card.key && card.pinned && !card.held) intent.dismiss();
+  }, [path, pinModel, card.key, card.pinned, card.held, intent]);
 
   useEffect(() => setBotCardWarm(preloadBotChat), []);
   useEffect(
@@ -69,6 +85,7 @@ export function BotCardHost() {
       onCone={(inside) => (inside ? intent.enterCone() : intent.leaveCone())}
       onPressInside={() => {
         botPress.inside = true;
+        viewPress.inside = true;
         intent.pressStart();
       }}
       onHold={(held) => intent.hold(held)}
@@ -91,6 +108,7 @@ export function BotCardHost() {
       held={card.held}
       onHeld={setBotCardHeld}
       pinned={card.pinned}
+      pinCtl={pinModel ? { pinned: card.held, onToggle: () => setBotCardHeld(!card.held) } : null}
     />
   );
 }

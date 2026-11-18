@@ -52,7 +52,8 @@ const LEVEL_STYLE: Record<SyncLevel, { border: string; bg: string; dot: string }
   error: { border: "rgba(220,60,60,0.35)", bg: "rgba(220,60,60,0.08)", dot: "rgb(220,60,60)" },
 };
 
-function Dot({ level, size = 8 }: { level: SyncLevel; size?: number }) {
+/** The strip's level dot — also the node view's sync chip (NodeView.tsx). */
+export function Dot({ level, size = 8 }: { level: SyncLevel; size?: number }) {
   return (
     <span
       aria-hidden
@@ -75,6 +76,12 @@ export interface PullControl {
   onPull: () => void;
 }
 
+export interface PublishControl {
+  busy: boolean;
+  error: string | null;
+  onPublish: () => void;
+}
+
 export function SyncStrip({
   env,
   name,
@@ -84,6 +91,7 @@ export function SyncStrip({
   owned,
   live,
   pull,
+  publish = null,
   open,
   onToggle,
   onBack,
@@ -103,6 +111,9 @@ export function SyncStrip({
   /** The events socket is up (else the page is polling). */
   live: boolean;
   pull: PullControl;
+  /** "Publish now", shown while the publish waits on a Claude session's turn
+   *  (`waiting_on_session`). Null: never shown. */
+  publish?: PublishControl | null;
   open: boolean;
   onToggle: () => void;
   /** Back to the canvases listing, on this canvas's environment
@@ -132,6 +143,9 @@ export function SyncStrip({
   const inFlight =
     pushState === "pending" || pushState === "pushing" || s2d.state === "pulling" || queue.length > 0;
   const showPull = s2d.state === "stale" || s2d.state === "pulling" || pullFailed || pull.busy;
+  const d2s = merged.legs.disk_to_server;
+  const showPublish =
+    !!publish && (publish.busy || (d2s.state === "pending" && d2s.waiting_on_session === true));
   // This page's own pull error first (it is the click the user just made),
   // else the server's reason for the failed pull leg.
   const pullErrorText = pulling
@@ -255,6 +269,41 @@ export function SyncStrip({
             title="Bring the server's changes into this canvas; anything it overwrites is kept in the canvas trash"
           >
             {pulling ? "Pulling…" : "Pull"}
+          </button>
+        </span>
+      )}
+      {!owned && server && showPublish && publish && (
+        // The publish waits on a Claude session's turn (another session's
+        // half-done change set, or this folder's own live run): the user
+        // may publish anyway, unfinished changes included.
+        <span
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+          style={{ display: "flex", alignItems: "center", gap: 8, flex: "none", cursor: "default" }}
+        >
+          {publish.error && !publish.busy && (
+            <span
+              style={{
+                color: "rgb(200,60,60)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                maxWidth: 240,
+              }}
+              title={publish.error}
+            >
+              {publish.error}
+            </span>
+          )}
+          <button
+            type="button"
+            className="btn"
+            style={{ padding: "1px 10px", fontSize: 12 }}
+            disabled={publish.busy}
+            onClick={() => publish.onPublish()}
+            title="Publish this folder now, including changes a Claude session has not finished yet"
+          >
+            {publish.busy ? "Publishing…" : "Publish now"}
           </button>
         </span>
       )}

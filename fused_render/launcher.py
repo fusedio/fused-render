@@ -13,7 +13,10 @@ is an installer, not an app (AF-14), and is not listed — and, by typing only,
 every bot (`_bot_registry`, ``kind: "bot"``, opened on the Bots page as the
 Dock opens one). Under the app rows, a non-empty query also lists files
 and folders from the file index (``file_results``): the home search box's
-engine, a handful of rows, opened in the explorer. The bottom rows
+engine, a handful of rows, opened in the explorer — and, with Canvases on,
+a few objects from the public ``fused-asset`` bucket (``remote_results``,
+``kind: "s3"``: the Home search's "Fused assets" group), opened in the
+explorer at their ``s3://`` address. The bottom rows
 (`home_rows`: the shell home and the Bots page) sit under the list when the
 query is empty and rank with everything else when it is not.
 
@@ -597,6 +600,83 @@ def file_results(query: str, limit: int = FILE_RESULTS, exclude=()) -> dict:
         if len(rows) >= limit:
             break
     return {"files": rows, "reason": str(out.get("reason") or "")}
+
+
+# ---- the fused-asset bucket ---------------------------------------------------------
+
+#: Bucket objects shown under the file rows for a non-empty query — the Home
+#: search's "Fused assets" group, smaller: a bonus answer, as it is there.
+REMOTE_RESULTS = 4
+
+
+def remote_page_for(url: str) -> str | None:
+    """The shell URL PATH an `s3://` row opens at — the explorer on that
+    address (`/explorer/view/s3%3A/<bucket>/<key>`, the frontend's
+    `rootedFsPath` reads it back), or None for anything that is not an
+    `s3://` address. The native side (app.py ``_open_from_launcher``)
+    resolves an ``s3`` row's key through this, as a canvas row's goes
+    through `canvas_page_for`."""
+    if not isinstance(url, str) or not url.startswith("s3://"):
+        return None
+    segments = [urllib.parse.quote(seg, safe="!*'()")
+                for seg in ["s3:", *url[5:].split("/")] if seg]
+    return "/explorer/view/" + "/".join(segments)
+
+
+def _remote_row(hit: dict) -> dict:
+    """One `remote_index.rank` hit as a launcher row: ``kind: "s3"``, ``path``
+    the `s3://` address (the key the open callback receives), ``url`` its
+    explorer page. The bucket's own hit (key "") is named after the bucket."""
+    url = hit["url"]
+    key = str(hit.get("key") or "").rstrip("/")
+    name = key.rsplit("/", 1)[-1] if key else url[5:].rstrip("/")
+    return {
+        "path": url,
+        "url": remote_page_for(url),
+        "name": name,
+        "title": name,
+        "kind": "s3",
+        "is_dir": bool(hit.get("is_dir")),
+        "pinned": False,
+        "recent": False,
+        "running": False,
+        "icon": None,
+    }
+
+
+def remote_results(query: str, limit: int = REMOTE_RESULTS) -> list[dict]:
+    """Objects and folders in the public `fused-asset` bucket matching
+    ``query``, from its index (`remote_index.rank`, the Home search's
+    "Fused assets" engine — `s3://…` spellings included). Gated on the
+    canvases preference, as that group and every remote route are. Like
+    `file_results`, never raises: an index still loading, a missing extra
+    or a failed query all read as no rows."""
+    q = str(query or "").strip()
+    if not q or limit <= 0:
+        return []
+    try:
+        from fused_render import remote_index
+        from fused_render.shell.prefs import canvases_enabled
+
+        if not canvases_enabled():
+            return []
+        remote_index.retry_if_needed()
+        out = remote_index.rank(q, limit, True)
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.debug("launcher remote search failed", exc_info=True)
+        return []
+    if not out.get("ready"):
+        return []
+    # A key with an empty segment (`a//b`, `/a`) has no explorer address: the URL
+    # codec drops empty segments (path-url.ts rootedFsPath), so its row would
+    # open a different key. Left out rather than shown and mis-opened.
+    def addressable(key: str) -> bool:
+        # A folder key ends in exactly one "/" of its own; strip only that.
+        body = key[:-1] if key.endswith("/") else key
+        return "//" not in body and not body.startswith("/") and not body.endswith("/")
+
+    hits = [h for h in (out.get("hits") or []) if addressable(str(h.get("key") or ""))]
+    return [_remote_row(h) for h in hits[:limit]]
 
 
 # ---- the panel beside the Claude rail ---------------------------------------------

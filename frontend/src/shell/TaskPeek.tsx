@@ -139,6 +139,7 @@ import { breakoutOpener } from "@platform/lib/breakouts";
 // flag: with it on, this panel's head is `TaskHead` and its ⋮ is the chat's own
 // `Kebab`; with it off, the head below is the one this panel has always drawn.
 import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { TaskHead } from "./TaskHead";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
@@ -165,6 +166,9 @@ function sidebarStamp(): number {
 
 /** Re-render on window resize: every make-room rule is about the CURRENT
  *  window, so a peek opened wide has to re-decide when the window narrows.
+ *  The host is watched too, for the right-edge chrome (the fallback rail, a
+ *  favourite's card) coming and going with no resize: the store's viewport
+ *  ends at the host's right edge (task-peek-store `viewportWidth`).
  *
  *  `enabled` is the flag's, and it reaches all the way down to the listener: a
  *  reader who has opted out of the side peek is not paying for a resize handler
@@ -173,10 +177,16 @@ function useViewportWidth(enabled: boolean): number {
   const [w, setW] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth));
   useEffect(() => {
     if (!enabled) return;
-    const read = () => setW(window.innerWidth);
+    const host = document.querySelector<HTMLElement>(".tasks-peek-host");
+    const read = () => setW(host ? host.getBoundingClientRect().right : window.innerWidth);
     read();
     window.addEventListener("resize", read);
-    return () => window.removeEventListener("resize", read);
+    const ro = host && typeof ResizeObserver !== "undefined" ? new ResizeObserver(read) : null;
+    ro?.observe(host!);
+    return () => {
+      window.removeEventListener("resize", read);
+      ro?.disconnect();
+    };
   }, [enabled]);
   return w;
 }
@@ -376,18 +386,6 @@ const ICON = {
  *  meaning, in the corner every panel in this app puts it. */
 const ICON_CLOSE = (
   <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
-);
-/** OPEN IN EXPLORER — the PREFIX on a word (Akshil, 2026-09-14 — design.md,
- *  Polish batch 5). An arrow out of a box, pointing to the upper right: the
- *  mark the whole web uses for "this leaves the page you are on", which is
- *  exactly what the press does. It leads the label rather than trailing it, the
- *  way every other icon-and-word control in this app is built; the "→" that
- *  used to follow the word said "forward", which is what a Next control says. */
-const ICON_OPEN_EXTERNAL = (
-  <svg {...ICON} width={13} height={13}>
-    <path d="M7 17 17 7" />
-    <path d="M8 7h9v9" />
-  </svg>
 );
 /** CHEVRONS, not arrows (design.md, Header + list state v2). Prev/next step
  *  through a list that is on screen; an arrow would promise travel. */
@@ -700,6 +698,7 @@ export function TaskPeek({
   // never a breakpoint, and armed only while the panel is actually up.
   const [headFit, headRef] = useStripFit(PEEK_HEAD_DROPS, key !== null);
   const unified = useTaskHeadUnified();
+  const favsOn = useTaskFavourites();
   /** The shared head's chip seat, for the chat's worktree menu to portal into
    *  (ChatMount `headChipsHost`). State, so the chat re-renders once it lands. */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
@@ -1333,6 +1332,10 @@ export function TaskPeek({
             lead={{ kind: "close", label: "Close the task panel", hint: "Close · Esc", onPress: () => closePeek() }}
             nav={{ prev: ends.prev, next: ends.next, step: (d) => void step(d), keyHints: true }}
             task={task}
+            // Two lines, the rail window's layout (Akshil, 2026-11-17) — and
+            // no star seat while favourites are off, so the count stays put.
+            twoLine
+            star={favsOn}
             fitEnabled={key !== null}
             chipsRef={setChipsHost}
             statusRef={setStatusHost}
@@ -1404,15 +1407,14 @@ export function TaskPeek({
             <div className="task-side-peek-marks">
               {/* The project and agent labels were dropped from the peek header to
                   declutter it; the chat's own Topbar still shows them. */}
-              {/* "↗ OPEN" — a WORD behind a MARK (design.md, Polish batches 4
-                  and 5). The folder glyph it replaced was the page's one door
-                  picture, which is a good rule everywhere except beside a
-                  folder NAME, where it read as "open that folder" and did not;
-                  the label says the act, and the external-link arrow in front
-                  of it says the press leaves this page. The icon LEADS, the way
-                  every other icon-and-word control in this app is built. It is
-                  a quiet ghost button: no outline at rest, a wash and full ink
-                  on hover.
+              {/* "OPEN" — A WORD (design.md, Polish batches 4 and 5; the mark
+                  that led it went on 2026-11-16, Akshil: no arrow beside
+                  "Open", anywhere). The folder glyph it replaced was the
+                  page's one door picture, which is a good rule everywhere
+                  except beside a folder NAME, where it read as "open that
+                  folder" and did not; the label says the act. It is a quiet
+                  ghost button: no outline at rest, a wash and full ink on
+                  hover.
 
                   A real link with a real href, so ⌘-click opens a tab, exactly
                   like the row's own door. */}
@@ -1428,7 +1430,6 @@ export function TaskPeek({
                     openAsPage();
                   }}
                 >
-                  {ICON_OPEN_EXTERNAL}
                   Open
                 </a>
               )}

@@ -271,18 +271,32 @@ def retry_if_needed() -> None:
 # --- readers ------------------------------------------------------------------
 
 
-def rank(q: str, limit: int, ranked: bool, token=None) -> dict:
+def rank(q: str, limit: int, ranked: bool, token=None, prefix: str | None = None) -> dict:
     """Top `limit` keys matching `q`, as `{ready, hits, total, truncated}`
     with hits `{url, key, is_dir, size, mtime}`. Runs `search_ranked` over
     the sibling store, files and folders together (a folder's key and url
     end in "/", size and mtime None). Raises `index.cancel.Cancelled` when
-    `token` is cancelled mid-query."""
+    `token` is cancelled mid-query.
+
+    `prefix` (None = the whole bucket; "" = the bucket root folder, else a
+    folder key ending in "/") scopes the search to that folder's subtree —
+    the S3 folder view, which is the explorer's own Listing, so the query
+    means exactly what it means in a local folder: it goes through the same
+    `resolve_query` (globs, whitespace wildcards, a leading "/" anchoring a
+    pattern to the folder itself), and the answer also carries its `mode`
+    and `pattern` for the client's highlighting. Keys stay whole bucket
+    keys. The whole-bucket search (Home, the launcher) is the address-aware
+    one below instead: there a bucket name or an `s3://` spelling may be
+    typed."""
     empty = {"ready": False, "hits": [], "total": 0, "truncated": False}
     opened = _open_store()
     if opened is None:
         return empty
     cfg, root, _ = opened
     from fused_render.index.query import search_ranked
+
+    if prefix is not None:
+        return _rank_scoped(cfg, root, q, limit, ranked, token, prefix)
 
     # Keys are matched relative to the bucket, so the bucket's own name is in
     # no key. Typing it (or part of it) must still find the bucket: it is
@@ -318,18 +332,54 @@ def rank(q: str, limit: int, ranked: bool, token=None) -> dict:
                         include_dirs=True, token=token, ranked=ranked)
     if not out.get("covered"):
         return empty
-    for h in out["hits"]:
-        if h.get("is_dir"):
-            # A folder's key ends in "/"; its synthesised dirs-row mtime is
-            # not a real object time, so size and mtime are both None.
-            key = h["rel"] + "/"
-            hits.append({"url": canonical_url(BUCKET, key), "key": key,
-                         "is_dir": True, "size": None, "mtime": None})
-        else:
-            hits.append({"url": canonical_url(BUCKET, h["rel"]), "key": h["rel"],
-                         "is_dir": False, "size": h["size"], "mtime": h["mtime"]})
+    hits.extend(_rank_hit(h) for h in out["hits"])
     return {"ready": True, "hits": hits, "total": len(hits),
             "truncated": bool(out.get("truncated"))}
+
+
+def _rank_scoped(cfg, root: str, q: str, limit: int, ranked: bool, token,
+                 prefix: str) -> dict:
+    """`rank` within folder `prefix` — see `rank`."""
+    from fused_render.index.query import resolve_query, search_ranked
+
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+    folder = _dir_path(root, prefix)
+    resolved = resolve_query(folder, q or "", token=token)
+    base, pattern, mode = resolved["base"], resolved["pattern"], resolved["mode"]
+    nothing = {"ready": True, "hits": [], "total": 0, "truncated": False,
+               "mode": mode, "pattern": pattern}
+    if not pattern.strip():
+        return nothing
+    # A query that walks out of the folder (`~/…`, `..`, an absolute path on
+    # this machine) has left the bucket: nothing in this store answers it.
+    # The explorer never sends one live — it waits for Enter and opens that
+    # folder instead (useListingSearch's commit gate).
+    if base != folder and not base.startswith(folder + "/"):
+        return nothing
+    out = search_ranked(cfg, base, q=pattern, limit=max(0, limit), include_dirs=True,
+                        token=token, ranked=ranked, glob=(mode == "glob"))
+    if not out.get("covered"):
+        # The store is open, so "not covered" is a folder the bucket does not
+        # have (every real folder has a dirs row): ready, nothing in it.
+        return nothing
+    sub = prefix + (base[len(folder) + 1:] + "/" if base != folder else "")
+    hits = [_rank_hit(h, sub) for h in out["hits"]]
+    return {"ready": True, "hits": hits, "total": len(hits),
+            "truncated": bool(out.get("truncated")), "mode": mode, "pattern": pattern}
+
+
+def _rank_hit(h: dict, prefix: str = "") -> dict:
+    """One `search_ranked` hit (its `rel` relative to folder `prefix`) as a
+    bucket hit. A folder's key ends in "/"; its synthesised dirs-row mtime is
+    not a real object time, so size and mtime are both None."""
+    key = prefix + h["rel"]
+    if h.get("is_dir"):
+        key += "/"
+        return {"url": canonical_url(BUCKET, key), "key": key,
+                "is_dir": True, "size": None, "mtime": None}
+    return {"url": canonical_url(BUCKET, key), "key": key,
+            "is_dir": False, "size": h["size"], "mtime": h["mtime"]}
 
 
 def _sq(s: str) -> str:

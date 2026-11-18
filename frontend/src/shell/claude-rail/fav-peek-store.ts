@@ -211,13 +211,49 @@ export function publishFavBoxFor(hovering: boolean, box: Box | null, owner?: Fav
   publishFavBox(hovering ? null : box, owner);
 }
 
+/** A CLOSING WINDOW B LETS GO OF ITS BOX A BEAT LATER (Akshil, 2026-11-17:
+ *  "when I have both A/B windows open I click outside, window B closes first
+ *  and then window A closes, but during that split second it shifts down a
+ *  bit … because window B closes and gives space for window A"). One press
+ *  closes both temp cards, each from its own watcher, a task apart: window
+ *  B's box went to null first, window A re-placed itself into the freed room,
+ *  and then faded out from there. So the null is published after this
+ *  beat — long enough for window A's own close, in the same gesture, to
+ *  land first (a closing card places nothing); short enough that a window A
+ *  that STAYS (pinned, or not hit by the press) still settles at once. A box
+ *  — window B opening or moving — is published immediately, and cancels a
+ *  pending release. */
+export const FAV_BOX_RELEASE_MS = 80;
+let boxRelease: ReturnType<typeof setTimeout> | null = null;
+
+function releaseFavBox(): void {
+  boxRelease = null;
+  if (live.favBox === null) return;
+  mark({ ...live, favBox: null });
+}
+
 /** Where window B's card stands (null while closed). An `owner`'s null is
  *  heard only while that owner's box is the one standing (header). */
 export function publishFavBox(box: Box | null, owner?: FavBoxOwner): void {
   if (box === null && owner && boxOwner !== null && boxOwner !== owner) return;
   boxOwner = box === null ? null : (owner ?? "fav");
+  if (boxRelease !== null) {
+    clearTimeout(boxRelease);
+    boxRelease = null;
+  }
   if (sameBox(live.favBox, box)) return;
+  if (box === null) {
+    boxRelease = setTimeout(releaseFavBox, FAV_BOX_RELEASE_MS);
+    return;
+  }
   mark({ ...live, favBox: box });
+}
+
+/** The pending release, now (tests; a real caller never needs it). */
+export function flushFavBoxReleaseForTests(): void {
+  if (boxRelease === null) return;
+  clearTimeout(boxRelease);
+  releaseFavBox();
 }
 
 /** THE BOT WHOSE CARD HOLDS WINDOW B (ClaudeRail `botPinned`; header): the
@@ -418,6 +454,11 @@ export function favHoverIntent(): PeekIntent {
   return hoverIntent;
 }
 
+/** A press that started in the favourite's card (React's capture phase,
+ *  portals included; FavouritePeek) — the rail's outside-press watcher for a
+ *  TEMP card reads it (rail-pin-lib). */
+export const favPress = { inside: false };
+
 /** Drop the hover now (a press converted it, the rail went, the card was
  *  closed): no grace, nothing left pending. */
 export function dismissFavHover(): void {
@@ -488,6 +529,8 @@ export function resetFavPeekStoreForTests(): void {
   pendingAt = 0;
   pageRails = 0;
   boxOwner = null;
+  if (boxRelease !== null) clearTimeout(boxRelease);
+  boxRelease = null;
   botCard = null;
   favRestore = null;
 }

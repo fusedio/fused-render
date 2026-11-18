@@ -306,7 +306,7 @@ def _tool_call_fields():
                 "content": [{"type": "diff", "path": "new_file.txt",
                              "oldText": None, "newText": "hi"}]}
     if TOOL_KIND == "mcp":
-        return {"title": "app_state (fused_approvals MCP Server)", "kind": "other",
+        return {"title": "app_state (fused_render MCP Server)", "kind": "other",
                 "locations": [], "content": []}
     return {"title": TOOL_TITLE, "kind": TOOL_KIND, "locations": [], "content": []}
 

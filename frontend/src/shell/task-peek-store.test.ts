@@ -1195,6 +1195,27 @@ describe("the sidebar, and the only thing that moves it", () => {
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
   });
 
+  it("a covering panel stops at the host, not the window, when chrome stands at its right", () => {
+    // The shell's fallback rail (48px) beside the host: counted as content,
+    // the panel came out 48px wider than the host, ran out past its left edge
+    // and the host's `overflow: hidden` cut the × off under the sidebar rail.
+    arm();
+    setPeekWidth(1200);
+    const doc = globalThis as unknown as { document: { querySelector: (sel: string) => unknown } };
+    const realQuerySelector = doc.document.querySelector;
+    const right = VIEWPORT - 48;
+    doc.document.querySelector = (sel: string) =>
+      sel === ".tasks-peek-host" ? { getBoundingClientRect: () => ({ right }) } : null;
+    try {
+      applyResize();
+      expect(sidebar.getSidebarState().collapsed).toBe(true);
+      expect(currentRoom().cover).toBe(true);
+      expect(currentRoom().peekWidth).toBe(right - SIDEBAR_RAIL);
+    } finally {
+      doc.document.querySelector = realQuerySelector;
+    }
+  });
+
   it("SHRINKS a covering panel to the default when the reader re-opens the sidebar", () => {
     // Akshil, 2026-09-15. Their sidebar wins; the panel that was covering the
     // list hands its width back so the list is on screen beside it again.
@@ -1496,7 +1517,12 @@ function withFakeTasksDom(
   const liveEachSide = opts.tightEachSide ?? untightEachSide;
   const main = { getBoundingClientRect: () => ({ width: Math.min(cap, opts.content) }) };
   const page = {};
-  const host = { clientWidth: opts.content };
+  // Its right edge on the window's: no chrome beside it (task-peek-store
+  // `viewportWidth`).
+  const host = {
+    clientWidth: opts.content,
+    getBoundingClientRect: () => ({ right: (globalThis as { window: { innerWidth: number } }).window.innerWidth }),
+  };
   const styles = new Map<unknown, Record<string, unknown>>();
   styles.set(main, {
     getPropertyValue: (name: string) =>

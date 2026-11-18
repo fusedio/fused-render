@@ -45,7 +45,7 @@
 // beside it while a chat is open, the small title ("Tasks", or the chat's),
 // and Open — the /tasks page itself — on the right.
 import { Component, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronUp, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp, X } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { navigateUrl } from "@platform/lib/router";
@@ -62,6 +62,8 @@ import { TaskPeekWho } from "@shell/TaskPeekWho";
 // at one height, so the list↔chat swap no longer jumps 26→44px.
 import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
 import {
   CardPeekContext,
   PEEK_ITEM_ATTR,
@@ -73,6 +75,7 @@ import {
 } from "@shell/task-peek-store";
 import { useAutoReadOpenTasks, useDocumentVisible } from "@shell/task-open-read";
 import { DoorCard } from "./DoorCard";
+import { RailPinButton } from "./RailPin";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { tasksCardStore, useTasksCard } from "./tasks-peek-store";
 
@@ -118,6 +121,8 @@ export function TasksPeek() {
   // re-fired by a fresh callback.
   const [breakoutCtl, setBreakoutCtl] = useState<BreakoutControl | null>(null);
   const unified = useTaskHeadUnified();
+  // "Open in Tasks" reads the page's path: a card kept across a hop re-reads it.
+  useUrlVersion();
   /** The shared head's chip seat (ChatMount `headChipsHost`): the card's chat
    *  shows its worktree pill there — it showed none before. */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
@@ -209,18 +214,24 @@ export function TasksPeek() {
                 // × THEN ← (Akshil, 2026-11-16): the card's own close stands in
                 // the corner on the chat too, the way back to the list after
                 // it. No ↑↓ here — the list is one ← away.
-                preLead={
-                  <button
-                    type="button"
-                    className="task-head-btn"
-                    aria-label="Close Tasks"
-                    data-hint="Close"
-                    onClick={api.close}
-                  >
-                    <X size={14} aria-hidden="true" />
-                  </button>
-                }
+                // …but for the pin: no card has a × with it (RailPeek's note).
+                {...(api.pin
+                  ? {}
+                  : {
+                      preLead: (
+                        <button
+                          type="button"
+                          className="task-head-btn"
+                          aria-label="Close Tasks"
+                          data-hint="Close"
+                          onClick={api.close}
+                        >
+                          <X size={14} aria-hidden="true" />
+                        </button>
+                      ),
+                    })}
                 lead={{ kind: "back", label: "Back to tasks", onPress: () => setChat(null), ref: api.backRef }}
+                {...(api.pin ? { pinNode: <RailPinButton pinned={api.pin.pinned} onToggle={api.pin.onToggle} /> } : {})}
                 task={task}
                 chipsRef={setChipsHost}
                 statusRef={setStatusHost}
@@ -244,6 +255,9 @@ export function TasksPeek() {
                       queued={taskColumn(task) === "queued"}
                       onErased={() => setChat(null)}
                       onArchived={() => setChat(null)}
+                      {...openInTasksProps(
+                        openInTasksItem({ on: unified, taskKey: task.key, onOpen: (href) => void api.openPage(href) }),
+                      )}
                       {...(taskHref(task) && opensInSidePane(taskHref(task)!) ? {
                         fullScreen: {
                           on: false,
@@ -268,7 +282,11 @@ export function TasksPeek() {
               <TaskHead
                 key="list"
                 className="claude-rail-tasks-list-head"
-                lead={{ kind: "close", label: "Close Tasks", hint: "Close", onPress: api.close, ref: api.closeRef }}
+                // With the pin: no ×, and the pin is where the keyboard lands.
+                lead={api.pin ? null : { kind: "close", label: "Close Tasks", hint: "Close", onPress: api.close, ref: api.closeRef }}
+                {...(api.pin
+                  ? { pinNode: <RailPinButton btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} /> }
+                  : {})}
                 task={null}
                 title="Tasks"
                 // No ⋮ to carry a folded door, and "Open tasks" is the only
@@ -330,7 +348,6 @@ export function TasksPeek() {
                         if (href) api.openPage(href);
                       }}
                     >
-                      <ArrowUpRight size={13} strokeWidth={1.6} aria-hidden="true" />
                       Open
                     </a>
                   )}
@@ -346,6 +363,9 @@ export function TasksPeek() {
                           queued={taskColumn(task) === "queued"}
                           onErased={() => setChat(null)}
                           onArchived={() => setChat(null)}
+                          {...openInTasksProps(
+                            openInTasksItem({ on: unified, taskKey: task.key, onOpen: (href) => void api.openPage(href) }),
+                          )}
                           // FULL SCREEN: the Open door, then the Claude panel
                           // filling the window (side-maximized-store).
                           {...(taskHref(task) && opensInSidePane(taskHref(task)!) ? {

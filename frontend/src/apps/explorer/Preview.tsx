@@ -54,8 +54,11 @@ import { dismissNotification, dismissPopup, notify } from "@platform/lib/notific
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
+  NODE_MODE,
+  isNodeViewEntry,
   isModePending,
   isSidebarMode,
+  modesUnderSnapshot,
   partitionModes,
   unavailableReason,
   visibleModes,
@@ -63,6 +66,7 @@ import {
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import { retainedFrames } from "@apps/explorer/lib/held-frames";
 import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
 import {
   pendingClaudeAskVersion,
@@ -81,6 +85,7 @@ import {
   sideReopenedByUrl,
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
+import { NativeView } from "@platform/ui/NativeView";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
@@ -796,8 +801,10 @@ function usePreviewFileMenu(
 // `_mode` (shell URL) selects among stat.templates by name (SPEC PT-9): absent
 // or unknown/stale value falls back to the default silently. The default is
 // the first UNCONDITIONAL entry (CT-12: a gated template is never the default
-// while a normal one exists) — only an all-conditional list falls back to its
-// first (by then verdict-allowed) entry.
+// while a normal one exists), with one exception: a node file's preferred
+// `_node` (PT-8 `prefer`), which is the default and holds the pane on the
+// checking placeholder until its verdict. An all-conditional list falls back
+// to its first (by then verdict-allowed) entry.
 // Both rules live in lib/mode-visibility so every mode surface resolves the
 // same way; `templates` here is already the visible list, so a gate-denied
 // `_mode` lands on the default exactly like an unknown one.
@@ -868,6 +875,36 @@ const FRAME_SWAP_TIMEOUT_MS = 4000;
 const annotateTargetFrame = (): HTMLIFrameElement | null =>
   document.querySelector<HTMLIFrameElement>("iframe[data-fused-annotate-target]");
 
+// A NATIVE content mode's box in the held-frame swap: what a frame's `load`
+// is to an iframe, its mount is to this — the view draws its own loading
+// state, so there is nothing to wait for before showing it.
+//
+// A pane without `is-shown` — the node view kept mounted behind another mode
+// (NV-12) — is taken out of pointer, focus and assistive-tech reach by CSS
+// (`.preview-native.preview-frame:not(.is-shown)`, preview.css), on the very
+// paint the class changes: an effect would leave a frame in which the hidden
+// pane still caught clicks over the mode in front of it.
+function NativePane({
+  className,
+  onReady,
+  children,
+}: {
+  className: string;
+  onReady: () => void;
+  children: ReactNode;
+}) {
+  const ready = useRef(onReady);
+  ready.current = onReady;
+  useEffect(() => {
+    ready.current();
+  }, []);
+  return (
+    <div className={className + " preview-native"}>
+      {children}
+    </div>
+  );
+}
+
 // THIS FILE ONCE HOSTED NO SNAPSHOT INDICATOR OF ITS OWN — the reasoning was
 // that a content pane is the ordinary template rendering ordinary bytes, the
 // code editor looks exactly like the code editor, with no room to say "these
@@ -886,6 +923,17 @@ const annotateTargetFrame = (): HTMLIFrameElement | null =>
 // still exists for browsing the app's OWN subfolders under a snapshot, for
 // the same reason: a listing has no per-row heading a template could wear
 // instead.
+/** An uncached bucket object's content per mode (RemoteView.tsx, D1492). A
+ *  mode whose template streams the object is framed on its `s3://` address as
+ *  usual; any other mode shows `pane` (the download card) in place of its
+ *  frame, and opens on the cached copy once it lands. */
+export interface RemoteContent {
+  /** What `mode` shows instead of its frame, or null to frame it. */
+  pane: (mode: string) => ReactNode | null;
+  /** A bar above the active mode's pane, or null. */
+  banner: (mode: string) => ReactNode | null;
+}
+
 function TemplatePreview({
   fsPath,
   stat,
@@ -894,6 +942,7 @@ function TemplatePreview({
   onRenderedTitle,
   actionsInTopbar,
   remoteUrl,
+  remoteContent,
 }: {
   fsPath: string;
   stat: StatResult;
@@ -902,12 +951,33 @@ function TemplatePreview({
   onRenderedTitle?: (title: string | null) => void;
   actionsInTopbar?: boolean;
   remoteUrl?: string;
+  remoteContent?: RemoteContent;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
-  // switcher as a disabled spinner, not selectable, never the default.
+  // switcher as a disabled spinner, not selectable, never the default except
+  // a preferred `_node` (PT-8), which holds the pane on the checking placeholder.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
+
+  // The shell's git snapshot (`_snapshot`): see "the shell's git snapshot"
+  // below for the whole story.
+  const urlVersion = useUrlVersion();
+  const {
+    sha: snapshotSha,
+    snap: snapshotResolved,
+    pending: snapshotPending,
+    error: snapshotError,
+    retry: retrySnapshot,
+    backToLive,
+    applySelected: applySelectedSnapshot,
+  } = usePreviewSnapshot(fsPath, urlVersion);
+  // THE NODE VIEW IS LIVE BY NATURE (SPEC §53.3): it draws the canvas as the
+  // workbench holds it now, never as of a commit. Under a snapshot it is not
+  // offered at all, so the pane falls back to a mode that honours the commit
+  // (Code) instead of drawing the live node under "Showing this file as of
+  // commit …"; Back to live brings it back.
+  const offered = modesUnderSnapshot(templates, snapshotSha);
 
   // --- the content/sidebar split (`_side`) ----------------------------------
   // ONE surface splits: a single FILE opened on the explorer route in its own
@@ -924,7 +994,7 @@ function TemplatePreview({
   // (Claude chat, git, the parent's MCP) and the rail would all be about the
   // cache folder, not the `s3://` object the reader opened.
   const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !remoteUrl;
-  const parts = partitionModes(templates);
+  const parts = partitionModes(offered);
 
   // --- the BORROWED companion `git`, and the parent's `mcp`, from this file's parent folder -
   // A working tree belongs to the FOLDER (templates/git/condition.py), and so does
@@ -1007,7 +1077,7 @@ function TemplatePreview({
   // the pending entry for the deep link's sake.
   // A remote cache copy never gets here with a companion in `templates`
   // (Preview drops them upstream), so this needs no remote case.
-  const contentModes = split.offered ? parts.content : templates;
+  const contentModes = split.offered ? parts.content : offered;
   const sidebarModes = split.offered ? split.all : [];
   // What the sidebar's switcher DRAWS, which is a longer list than the one above:
   // all three companions, the ones this file cannot show disabled and explaining
@@ -1166,16 +1236,9 @@ function TemplatePreview({
   // AND the git sidebar hop — round 3 findings 2 and 7), and `snapshotError`
   // is the round 3 finding 8 fix: a non-404 resolve failure used to leave
   // this pane pending forever with no way out.
-  const urlVersion = useUrlVersion();
-  const {
-    sha: snapshotSha,
-    snap: snapshotResolved,
-    pending: snapshotPending,
-    error: snapshotError,
-    retry: retrySnapshot,
-    backToLive,
-    applySelected: applySelectedSnapshot,
-  } = usePreviewSnapshot(fsPath, urlVersion);
+  // (The hook itself is called at the top of this component: the node view's
+  // snapshot rule, below `isPending`, needs `snapshotSha` before the mode
+  // lists are built.)
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
     // git sidebar to select in, and two instances racing for one window global
@@ -1748,7 +1811,8 @@ function TemplatePreview({
   // "_render" sentinel (PT-12): render the target file itself, no _file param.
   // Ordinary entries: target file rides on the iframe's own URL as _file —
   // the shell URL's pathname already names the file, so no duplication there.
-  // `_listing` builds no src — it renders a shell component, not an iframe.
+  // `_listing` and `_node` build no src — each renders a shell component, not
+  // an iframe.
   //
   // `_snapshot` rides here and on the shell's OWN url, unlike the deleted
   // `_rev` design (lib/preview-rev.ts, deleted): a snapshot is a
@@ -1809,7 +1873,7 @@ function TemplatePreview({
   // stamps the nested render too.
   const thumbFlags = IS_PREVIEW ? "&_preview=1&_nofocus=1" : "";
   const srcFor = (m: string): string | null => {
-    if (m === "_listing") return null;
+    if (m === "_listing" || m === NODE_MODE) return null;
     // Both branches below route through the shared `snapshotFrameSrc`
     // (platform/lib/snapshot-param.ts) rather than composing the src by
     // hand — the app page's own copy of this logic (AppPage.tsx, AppFiles.tsx)
@@ -1979,15 +2043,28 @@ function TemplatePreview({
     return () => window.clearTimeout(id);
   }, [shown, activeMode, framePending]);
   // Retire the frames the swap left behind, once the incoming one has faded in.
+  //
+  // EXCEPT THE NODE VIEW (SPEC §53.3 NV-12), which stays mounted, hidden,
+  // while its file stays open and the mode is on offer. Its open is the
+  // heaviest in the shell — sync/start, a token, a cross-origin workbench that
+  // boots, syncs and runs the node — so Node → Code → Node used to pay all of
+  // it again for a view that had not changed. Kept, it also stays live: its
+  // relay keeps the frame in step with the disk while Code edits the file, so
+  // switching back shows the edit already applied. `filter` keeps the list's
+  // order, so the kept pane is never moved (a moved frame reloads).
+  const nodeOffered = contentModes.some((t) => t.mode === NODE_MODE && isNodeViewEntry(t));
   useEffect(() => {
-    if (frames.length <= 1 || shown !== activeMode) return;
+    if (shown !== activeMode) return;
+    const keep = retainedFrames(frames, activeMode, NODE_MODE, nodeOffered);
+    if (keep.length === frames.length) return;
     const id = window.setTimeout(() => {
-      setFrames([activeMode]);
+      setFrames((f) => retainedFrames(f, activeMode, NODE_MODE, nodeOffered));
       // Their documents are gone with them, so they are no longer "loaded".
-      for (const m of [...loadedFrames.current]) if (m !== activeMode) loadedFrames.current.delete(m);
+      const kept = new Set(keep);
+      for (const m of [...loadedFrames.current]) if (!kept.has(m)) loadedFrames.current.delete(m);
     }, FRAME_FADE_MS);
     return () => window.clearTimeout(id);
-  }, [frames, shown, activeMode]);
+  }, [frames, shown, activeMode, nodeOffered]);
 
   // Embed hides the whole preview-header, hence the switcher (shell.css). A
   // directory whose mode list carries `_listing` alongside another mode (a
@@ -2034,7 +2111,7 @@ function TemplatePreview({
     else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };
-  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
+  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(offered, openMode));
   const fileMenuRef = useRef<(() => MenuEntry[]) | null>(null);
   const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef, remoteUrl);
 
@@ -2330,11 +2407,33 @@ function TemplatePreview({
                 </div>
               )
             )}
+            {remoteContent?.banner(activeMode)}
             {/* One frame per mounted mode (see the held-frame swap above). Each
              key is its own mode, so a frame is created once and never
              re-created by a switch away and back within the swap window. */}
             <div className="preview-frames">
             {frames.map((m) => {
+              // THE NODE VIEW (SPEC §53.3 NV-3): a canvas node file's default
+              // content mode, and the layout pane's — an embed document is
+              // this same content pane. The `_node` sentinel (PT-12): drawn by
+              // apps/canvases through the shell's registry, never a frame. It paints its
+              // own loading state, so it takes over from a held frame at once.
+              // A kept node pane whose mode left the list (a git snapshot,
+              // NV-12) draws nothing until the retirement above drops it —
+              // never an iframe of a mode with no page.
+              if (m === NODE_MODE && m !== activeMode && !contentModes.some((t) => t.mode === m)) return null;
+              if (m === NODE_MODE && nodeOffered) return (
+                <NativePane
+                  key={m}
+                  className={"preview-frame" + (m === shown ? " is-shown" : "")}
+                  onReady={() => {
+                    loadedFrames.current.add(m);
+                    if (m === activeMode) setShown(m);
+                  }}
+                >
+                  <NativeView mode={NODE_MODE} path={fsPath} placement="content" />
+                </NativePane>
+              );
               // THE CONTENT PANE'S CHAT (`_mode=claude` as the main body): the
               // FULL split variant, `chatOnly` false, because the chat's own
               // left pane IS this target's preview and that is the whole point
@@ -2390,6 +2489,21 @@ function TemplatePreview({
                     if (m === activeMode) setShown(m);
                   }}
                 />
+              );
+              // An uncached bucket object in a mode that does not stream it
+              // (D1492): the download card in this mode's pane, not a frame.
+              const remotePane = remoteContent?.pane(m);
+              if (remotePane) return (
+                <NativePane
+                  key={m}
+                  className={"preview-frame" + (m === shown ? " is-shown" : "")}
+                  onReady={() => {
+                    loadedFrames.current.add(m);
+                    if (m === activeMode) setShown(m);
+                  }}
+                >
+                  {remotePane}
+                </NativePane>
               );
               // THE ONE FRAME ELEMENT, for every mode but the chat. Written once
               // because of the capability marks on it — each is a contract
@@ -2872,9 +2986,21 @@ interface PreviewProps {
   // off, and the file menus shrink to the address's own verbs
   // (remoteFileMenu). Undefined for every local view.
   remoteUrl?: string;
+  // An UNCACHED remote object (RemoteView.tsx, D1492): `fsPath` and
+  // `remoteUrl` are both its `s3://` address, `stat.templates` its modes, and
+  // this says which of them show the download card instead of a frame.
+  remoteContent?: RemoteContent;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload, remoteUrl }: PreviewProps) {
+export default function Preview({
+  fsPath,
+  stat,
+  onRenderedTitle,
+  actionsInTopbar,
+  onReload,
+  remoteUrl,
+  remoteContent,
+}: PreviewProps) {
   // Flush relay for a host framing THIS document (the canvas node pane, two
   // frames up from the editor): the host asks this window, and the ask goes
   // down to the shown content frame's own `__fusedFlushEdits` (the code
@@ -2902,7 +3028,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   const ownsBar = !!actionsInTopbar && !stat.is_dir;
   const fileSearchField = <FileSearchField active={ownsBar && !remoteUrl} fsPath={fsPath} />;
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
-  // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
+  // a recognized sentinel (`_render`, `_listing`, `_node`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
   // A remote location's cache copy (`remoteUrl`) is untrusted bucket content:
@@ -3008,6 +3134,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
           onRenderedTitle={onRenderedTitle}
           actionsInTopbar={actionsInTopbar}
           remoteUrl={remoteUrl}
+          remoteContent={remoteContent}
         />
       </>
     );

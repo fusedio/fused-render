@@ -84,10 +84,52 @@ export function snapGuide(): SnapGuide | null {
   return guide;
 }
 
+/** A HORIZONTAL GUIDE, for the edge magnet of a head drag (rail-move-lib
+ *  `snapEdges`; owner, 2026-11-17): a line at viewport y `y`, from `left` to
+ *  `right` — the vertical one's twin (`.rail-snap-guide.is-h`), drawn beside
+ *  it when both axes snapped. */
+export interface SnapGuideH {
+  y: number;
+  left: number;
+  right: number;
+}
+
+let guideH: SnapGuideH | null = null;
+let lineH: HTMLDivElement | null = null;
+
+/** The horizontal guide for the drag on now, or null to fade it out. */
+export function setSnapGuideH(next: SnapGuideH | null): void {
+  if (guideH === next || (guideH && next && guideH.y === next.y && guideH.left === next.left && guideH.right === next.right)) return;
+  guideH = next;
+  if (typeof document === "undefined" || typeof document.createElement !== "function") return;
+  if (!next) {
+    lineH?.classList.remove("is-on");
+    return;
+  }
+  if (!lineH || !lineH.isConnected) {
+    lineH = document.createElement("div");
+    lineH.className = "rail-snap-guide is-h";
+    lineH.setAttribute("aria-hidden", "true");
+    document.body.appendChild(lineH);
+  }
+  lineH.style.top = `${next.y}px`;
+  lineH.style.left = `${next.left - GUIDE_OVERSHOOT}px`;
+  lineH.style.width = `${next.right - next.left + 2 * GUIDE_OVERSHOOT}px`;
+  lineH.classList.add("is-on");
+}
+
+/** The horizontal guide as it stands (tests). */
+export function snapGuideH(): SnapGuideH | null {
+  return guideH;
+}
+
 /** Test seam. */
 export function resetCardSnap(): void {
   aBoxes.clear();
   guide = null;
   line?.remove();
   line = null;
+  guideH = null;
+  lineH?.remove();
+  lineH = null;
 }

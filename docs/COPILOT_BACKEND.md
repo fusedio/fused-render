@@ -208,7 +208,7 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
 - **D14** tool names: ACP `kind` → `execute`=Bash{command,description},
   `edit` new file=Write{file_path,content} / existing=Edit{file_path,diff},
   `read`=Read{file_path}, `fetch`=WebFetch{url}, `search`=Grep{pattern,path},
-  MCP `fused_approvals-app_state` → `mcp__fused_approvals__app_state`, else the
+  MCP `fused_render-app_state` → `mcp__fused_render__app_state`, else the
   ACP `title`. Every input also carries `_acp: {kind, title}`.
 - **D15** erase removes the fused transcript + `~/.copilot/session-state/<sid>/`
   (Q6 owner: yes); relocate moves the fused transcript bucket only.

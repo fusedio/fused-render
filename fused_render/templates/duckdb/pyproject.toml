@@ -1,0 +1,18 @@
+# The duckdb grid's warm worker (D1487). There is no [project] table, so
+# reader.py and writer.py keep running on the app's own interpreter (PY-17)
+# and this folder has no environment to build or lock.
+#
+# `main = "reader.py"` lets fused-render's shipped worker serve reader.py
+# from one long-lived process (`fused.daemon.run`). The grid sends every read
+# there, so a page, sort or filter costs its query instead of a fresh Python
+# process; for a streamed S3 parquet, httpfs and the file's footer stay
+# loaded too. writer.py (edits) still runs one-shot through runPython.
+[tool.fused-render.app]
+main = "reader.py"
+
+# Parquet streams from S3 (D1486, D1492): the explorer opens an uncached
+# s3:// parquet here on its address, the page signs it (fused.s3.sign) and
+# DuckDB's httpfs reads only the footer and the row groups a view touches.
+# CSV/JSON have no footer to page from, so they open on a downloaded copy.
+[tool.fused-render.template]
+stream = [".parquet"]

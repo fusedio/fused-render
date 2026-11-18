@@ -114,9 +114,9 @@ _KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
 #: `<server>_<tool>` (assumed, not verified — D8's pane server is wired
 #: through `mcpServers` and the fused tool names are matched here either
 #: way, `_FUSED_TOOLS`). fused's own server becomes
-#: `mcp__fused_approvals__<tool>`, another server's `<server>-<tool>`.
+#: `mcp__fused_render__<tool>`, another server's `<server>-<tool>`.
 _MCP_TITLE = re.compile(r"^(?P<tool>[A-Za-z0-9_.-]+) \((?P<server>[A-Za-z0-9_.-]+) MCP Server\)$")
-_MCP_SERVER = "fused_approvals"
+_MCP_SERVER = "fused_render"
 _MCP_CALL = re.compile(r"^(?P<tool>[A-Za-z0-9_.-]+)\((?P<args>.*)\)$", re.S)
 _CALL_ARG = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*): (?P<val>.*?)(?=, [A-Za-z_][A-Za-z0-9_]*: |$)", re.S)
 #: fused's own pane-server tools (permission_server.py): the names an
@@ -501,7 +501,7 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
     command line, once the call is complete) and `locations` as the
     fallback. An MCP tool titled `<tool> (<server> MCP Server)` or
     `<server>_<tool>`: fused's own server becomes
-    `mcp__fused_approvals__<tool>` (the name agent.py pre-allows and
+    `mcp__fused_render__<tool>` (the name agent.py pre-allows and
     `_segments_from_rows` strips), another server's `<server>-<tool>`,
     Copilot's spelling."""
     raw = raw if isinstance(raw, dict) else ({} if raw is None else {"value": raw})
@@ -555,7 +555,7 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
         elif m:
             name = "%s-%s" % (m.group("server"), m.group("tool"))
         elif bare in _FUSED_TOOLS:
-            # `app_state` or `fused_approvals_app_state`: fused's own tool.
+            # `app_state` or `fused_render_app_state`: fused's own tool.
             name = "mcp__%s__%s" % (_MCP_SERVER, bare)
         elif call and call.group("tool") in _FUSED_TOOLS:
             # `<tool>(key: value, …)`: fused's own tool with arguments. The

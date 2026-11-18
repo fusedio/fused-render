@@ -90,11 +90,24 @@ import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { opensOnThisPage } from "@shell/useAppPageClaudePane";
 import { readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
-import { clearFavOpen, lastChatId, setFavOpen, setLastFav } from "@platform/lib/last-chat";
+import {
+  clearFavOpen,
+  favOpen,
+  favOpenedAtMs,
+  favPinned,
+  lastChatId,
+  setFavOpen,
+  setFavPinned,
+  setLastFav,
+  useFavOpen,
+  useFavPinned,
+} from "@platform/lib/last-chat";
+import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { RailPeek } from "./RailPeek";
 import {
   dismissFavHover,
   favHoverIntent,
+  favPress,
   focusRail,
   publishFavBox,
   publishFavBoxFor,
@@ -111,6 +124,7 @@ import {
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ownPlace, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { hopDropsOpen, reloadDropsOpen, viewPress } from "./rail-pin-lib";
 import {
   FAV_HEIGHT,
   FAV_WIDTH,
@@ -121,6 +135,15 @@ import {
 } from "./rail-peek-lib";
 
 export const FAV_PEEK_ID = "claude-rail-fav-peek";
+
+/** When this document loaded: an open favourite whose card was opened before
+ *  it is one a RELOAD found in the window's storage (the reload rule below). */
+const LOADED_AT = Date.now();
+/** The reload rule runs once per document. */
+let reloadChecked = false;
+export function resetFavReloadCheckForTests(): void {
+  reloadChecked = false;
+}
 
 /** A bit under the list card's 420×640 (owner: "by default the size of
  *  that preview could be a bit smaller"); the bottom on the rail's. The
@@ -160,6 +183,28 @@ export function FavouritePeek() {
     });
   }, [on]);
   const { rail, page, pendingFocus } = useFavPeekState();
+  // HOVER / TEMP / PIN (rail-pin-lib; the unified-head switch on): the open
+  // card is TEMP until its pin (or a double-click on its ring) pins it — this
+  // window's pin mark (last-chat `favPinned`) naming the open key.
+  const pinModel = useTaskHeadUnified();
+  const openKey = useFavOpen();
+  const pinnedKey = useFavPinned();
+  // A pin mark on a key no longer open (closed, or another favourite took
+  // the window: a swap is temp, the pin is per card) goes.
+  useEffect(() => {
+    if (pinModel && pinnedKey !== null && pinnedKey !== openKey) setFavPinned(null);
+  }, [pinModel, pinnedKey, openKey]);
+  // A RELOAD BRINGS BACK ONLY A PINNED CARD (design.md row 19): an open key
+  // the storage kept from before this document loaded, with no pin on it, is
+  // closed — once, as the switch's answer lands.
+  useEffect(() => {
+    if (!pinModel || reloadChecked) return;
+    reloadChecked = true;
+    const key = favOpen();
+    if (key && reloadDropsOpen({ openKey: key, pinnedKey: favPinned(), openedAt: favOpenedAtMs(key), loadedAt: LOADED_AT })) {
+      clearFavOpen(key);
+    }
+  }, [pinModel]);
   // No room beside this rail (RailPeek `onNoRoom`): hidden until the window
   // or the rail changes shape, or another rail stands.
   const [noRoom, setNoRoom] = useState(false);
@@ -385,10 +430,39 @@ export function FavouritePeek() {
   );
   // A press inside the hover card keeps it: the hover becomes the open key.
   const pressInside = useCallback(() => {
+    // The rail's outside-press watcher for a temp card (rail-pin-lib).
+    favPress.inside = true;
+    viewPress.inside = true;
     if (!hovering || !hoverRow) return;
     setFavOpen(hoverRow.key);
     dismissFavHover();
   }, [hovering, hoverRow]);
+  // THE PIN ICON (rail-pin-lib `pinToggle`): a hover's card opens pinned, an
+  // open one pins or goes back to temp. Read off the window's marks at the
+  // press — the press inside has just turned a hover into the open key.
+  const togglePin = useCallback(() => {
+    const key = favOpen() ?? hoverRow?.key ?? null;
+    if (!key) return;
+    if (favPinned() === key) {
+      setFavPinned(null);
+      return;
+    }
+    if (favOpen() !== key) setFavOpen(key);
+    dismissFavHover();
+    setFavPinned(key);
+  }, [hoverRow]);
+  // A PAGE HOP KEEPS ONLY A PINNED CARD (rail-pin-lib `hopKeeps`): the open
+  // favourite that was already open before the URL's path changed, and is not
+  // pinned, closes. A key opened BY the hop (the where-chip's hand-over, its
+  // open landing with the push) is new, and stays.
+  const path = typeof location === "undefined" ? "" : location.pathname;
+  const hopSeen = useRef({ path, key: openKey });
+  useEffect(() => {
+    const was = hopSeen.current;
+    hopSeen.current = { path, key: openKey };
+    if (!pinModel) return;
+    if (openKey && hopDropsOpen({ was, now: { path, key: openKey }, pinnedKey: favPinned() })) clearFavOpen(openKey);
+  }, [path, openKey, pinModel]);
   // Only an OPEN card makes the rail's own card give way (`avoid`); a hover
   // overlaps it and publishes nothing.
   const onBox = useCallback((b: Parameters<typeof publishFavBox>[0]) => publishFavBoxFor(hovering, b, "fav"), [hovering]);
@@ -427,6 +501,7 @@ export function FavouritePeek() {
       held={!hovering}
       onHeld={noop}
       pinned={false}
+      pinCtl={pinModel ? { pinned: !hovering && !!open && pinnedKey === open.key, onToggle: togglePin } : null}
     />
   );
 }

@@ -6,20 +6,31 @@
 // ordinary BreadcrumbBar, which draws S3 crumbs for a remote location.
 //
 // Three bodies, by the server's stat:
-//   - a prefix (`kind: "dir"`) → a read-only, one-level table (RemoteListing);
+//   - a prefix (`kind: "dir"`) → the explorer's own folder view (Listing), the
+//     same component a local folder gets: it lists, searches, completes and
+//     resolves typed addresses from the bucket index (listing/source.ts), with
+//     every write and the side pane switched off (Listing's `remote`);
 //   - a cached file → the EXISTING viewer (Preview) on the cached local copy,
 //     with `remoteUrl` set so the viewer keeps every local-file affordance
 //     (rename, delete, reveal, share, splits, sidebar, app rows) out of reach
 //     and its menus speak the s3 address instead;
-//   - an uncached file → download first: at once up to `warn_bytes`, behind a
-//     notice above it (shown every time), with progress and Cancel.
+//   - an uncached file with modes (`stat.templates`, D1492) → the same viewer
+//     on the `s3://` address, with its mode switcher: a mode whose template
+//     streams the object (its pyproject.toml `[tool.fused-render.template]
+//     stream`) frames the address and reads only what it shows, under a
+//     "Streaming from S3" bar with Download; every other mode shows the
+//     download card in its pane, and opens on the cached copy once it lands;
+//   - an uncached file with no modes → the download card: at once up to
+//     `warn_bytes`, behind a notice above it (shown every time), with
+//     progress and Cancel.
 // The address bar, tab title and history stay on the `s3://` address
-// throughout; only Preview's iframe ever receives the local cache path.
+// throughout; only Preview's iframe ever receives the local cache path, and
+// only a streaming template's iframe receives the `s3://` address.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@platform/shadcn/ui/button";
 import { canonFsPath } from "@platform/lib/path-url";
-import { IS_PREVIEW, navHintIsDir, navigate, navigateUrl, spaLinkProps } from "@platform/lib/router";
-import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
+import { IS_PREVIEW, navHintIsDir, navigate, navigateUrl } from "@platform/lib/router";
+import { basename, formatSize } from "@platform/lib/format";
 import { useDocumentTitle, useNavReach } from "@platform/lib/hooks";
 import { goBack } from "@platform/lib/nav-history";
 import { statPath, type StatResult } from "@platform/lib/api";
@@ -29,15 +40,14 @@ import {
   remoteFetch,
   remoteFetchCancel,
   remoteFetchStatus,
-  remoteList,
   remoteStat,
-  type RemoteEntry,
   type RemoteStat,
 } from "@platform/lib/remote";
 import { notify } from "@platform/lib/notifications";
-import { iconForEntry } from "@platform/ui/FileIcons";
+import { isSidebarMode } from "@platform/lib/mode-visibility";
 import { BreadcrumbBar } from "@apps/explorer/Breadcrumb";
-import Preview from "@apps/explorer/Preview";
+import Listing from "@apps/explorer/Listing";
+import Preview, { type RemoteContent } from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
 
 const POLL_MS = 500;
@@ -174,124 +184,6 @@ function RemoteErrorBody({ error, onRetry }: { error: RemoteApiError; onRetry?: 
   );
 }
 
-// -- folder (prefix) listing --------------------------------------------------
-
-function RemoteListing({ url }: { url: string }) {
-  const [entries, setEntries] = useState<RemoteEntry[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<RemoteApiError | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const ctl = useRef<AbortController | null>(null);
-
-  const load = (from: string | null) => {
-    ctl.current?.abort();
-    const c = new AbortController();
-    ctl.current = c;
-    setLoading(true);
-    setError(null);
-    retryWhileIndexLoads(() => remoteList(asPrefix(url), { cursor: from, signal: c.signal }), c.signal).then(
-      (r) => {
-        if (c.signal.aborted) return;
-        setEntries((prev) => (from ? [...prev, ...r.entries] : r.entries));
-        setCursor(r.cursor);
-        setLoading(false);
-      },
-      (err) => {
-        if (c.signal.aborted || isAbort(err)) return;
-        setError(asRemoteError(err));
-        setLoading(false);
-      },
-    );
-  };
-
-  useEffect(() => {
-    setEntries([]);
-    setCursor(null);
-    load(null);
-    return () => ctl.current?.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, attempt]);
-
-  if (error && entries.length === 0) {
-    return <RemoteErrorBody error={error} onRetry={() => setAttempt((n) => n + 1)} />;
-  }
-  return (
-    <div className="listing">
-      <div className="listing-scroll">
-        <table className="listing-table">
-          <thead className={entries.length === 0 ? "listing-head-empty" : undefined}>
-            <tr>
-              <th className="col-name">
-                <span className="col-label">Name</span>
-              </th>
-              <th className="col-size">
-                <span className="col-label">Size</span>
-              </th>
-              <th className="col-mtime">
-                <span className="col-label">Modified</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => {
-              const link = spaLinkProps(entry.url, { isDir: entry.is_dir });
-              return (
-                <tr
-                  key={entry.url}
-                  className="row"
-                  onClick={() => navigate(entry.url, { isDir: entry.is_dir })}
-                >
-                  <td className="name">
-                    <a
-                      className="row-handle"
-                      href={link.href}
-                      onClick={(e) => {
-                        // The row's own click would navigate a second time.
-                        e.stopPropagation();
-                        link.onClick(e);
-                      }}
-                      style={{ color: "inherit", textDecoration: "none", cursor: "pointer" }}
-                    >
-                      <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
-                      <span className="name-text">{entry.name}</span>
-                    </a>
-                  </td>
-                  <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
-                  <td className="mtime" title={formatMtimeFull(entry.mtime)}>
-                    {formatMtime(entry.mtime)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {loading && entries.length === 0 && (
-          <div className="preview-resolving">
-            <span className="mode-icon-spinner" />
-            Listing…
-          </div>
-        )}
-        {(cursor || (error && entries.length > 0)) && (
-          <div className="listing-truncated">
-            <div className="status-message">
-              {error ? `Could not load more: ${error.message}` : `${entries.length} shown.`}
-              <button
-                type="button"
-                className="listing-load-more"
-                disabled={loading}
-                onClick={() => load(cursor)}
-              >
-                {loading ? "Loading…" : error ? "Retry" : "Load more"}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // -- uncached file: notice / download -----------------------------------------
 
 type FetchPhase =
@@ -308,13 +200,24 @@ type FetchPhase =
 function RemoteDownload({
   stat,
   onDone,
+  autoStart = false,
+  onStarted,
+  onCancelled,
 }: {
   stat: RemoteStat;
   /** The download finished: the caller re-stats and renders the cache. */
   onDone: () => void;
+  /** Start (or join) the download at once, even past `warn_bytes`: the
+   *  reader already asked for it, in this card or another mode's. */
+  autoStart?: boolean;
+  /** The download was asked for (Download, or an automatic start). */
+  onStarted?: () => void;
+  /** The server reports the download cancelled. */
+  onCancelled?: () => void;
 }) {
   const big = stat.size === null || stat.size > stat.warn_bytes;
-  const [phase, setPhase] = useState<FetchPhase>(() => (big ? { kind: "confirm" } : { kind: "starting" }));
+  const confirmFirst = big && !autoStart;
+  const [phase, setPhase] = useState<FetchPhase>(() => (confirmFirst ? { kind: "confirm" } : { kind: "starting" }));
   // A cancel request is out (or was accepted and the poll has yet to see it).
   const [cancelling, setCancelling] = useState(false);
   const reach = useNavReach();
@@ -358,7 +261,10 @@ function RemoteDownload({
         (s) => {
           if (!alive.current || watching.current !== watch) return;
           if (s.state === "done") finish(s.total ?? s.done, s.total ?? stat.size);
-          else if (s.state === "cancelled") setPhase({ kind: "cancelled" });
+          else if (s.state === "cancelled") {
+            setPhase({ kind: "cancelled" });
+            onCancelled?.();
+          }
           else if (s.state === "error")
             setPhase({
               kind: "failed",
@@ -386,6 +292,7 @@ function RemoteDownload({
   };
 
   const start = () => {
+    onStarted?.();
     const watch = ++watching.current;
     window.clearTimeout(timer.current);
     setCancelling(false);
@@ -405,10 +312,11 @@ function RemoteDownload({
     );
   };
 
-  // A file under the threshold starts at once.
+  // A file under the threshold starts at once, and so does a download the
+  // reader already asked for (`autoStart`): a running one is joined.
   const startedRef = useRef(false);
   useEffect(() => {
-    if (big || startedRef.current) return;
+    if (confirmFirst || startedRef.current) return;
     startedRef.current = true;
     start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -571,6 +479,77 @@ function RemoteCachedFile({
   );
 }
 
+// -- uncached file: the viewer on the address, one pane per mode ---------------
+
+/** An uncached object with modes (`stat.templates`, D1492): the ordinary
+ *  viewer, its mode switcher included, on the `s3://` address. A mode whose
+ *  template streams the object gets the address as `_file` and reads only the
+ *  byte ranges it shows, through a URL the server signs (`fused.s3.sign` /
+ *  `fused_s3`). Any other mode shows the download card in its pane; once the
+ *  copy lands the page re-stats and opens it, on the same `_mode`.
+ *
+ *  Once a download is asked for — a pane's Download or automatic start, or
+ *  the bar's Download (the duckdb grid points at it on a sort that would
+ *  scan most of the file) — the whole file is downloading: every mode,
+ *  streaming ones included, shows the card, and a card mounted by a mode
+ *  switch joins the running download instead of asking again. So the shown
+ *  pane is always the one watching when the copy lands. A cancelled
+ *  download puts the modes back. */
+function RemoteUncachedFile({
+  stat,
+  onRenderedTitle,
+  onDone,
+}: {
+  stat: RemoteStat;
+  onRenderedTitle: (t: string | null) => void;
+  onDone: () => void;
+}) {
+  const [downloading, setDownloading] = useState(false);
+  const templates = stat.templates ?? [];
+  const streams = (mode: string) => !downloading && templates.some((t) => t.mode === mode && t.stream);
+  const remoteContent: RemoteContent = {
+    pane: (mode) =>
+      streams(mode) ? null : (
+        <RemoteDownload
+          stat={stat}
+          onDone={onDone}
+          autoStart={downloading}
+          onStarted={() => setDownloading(true)}
+          onCancelled={() => setDownloading(false)}
+        />
+      ),
+    banner: (mode) =>
+      streams(mode) ? (
+        <div className="listing-snapshot-banner">
+          Streaming from S3: only the parts you view are read
+          {stat.size !== null ? ` (${formatSize(stat.size)} in the bucket)` : ""}.
+          <button type="button" className="listing-snapshot-back" onClick={() => setDownloading(true)}>
+            Download
+          </button>
+        </div>
+      ) : null,
+  };
+  const asStat: StatResult = {
+    path: stat.url,
+    name: stat.name,
+    is_dir: false,
+    size: stat.size,
+    mtime: stat.mtime,
+    writable: false,
+    templates,
+  };
+  return (
+    <Preview
+      fsPath={stat.url}
+      stat={asStat}
+      remoteUrl={stat.url}
+      remoteContent={remoteContent}
+      onRenderedTitle={onRenderedTitle}
+      actionsInTopbar
+    />
+  );
+}
+
 // -- the page -----------------------------------------------------------------
 
 type RemoteState =
@@ -624,7 +603,9 @@ export function RemoteView({ location, home }: { location: string; home: string 
   } else if (state.status === "error") {
     content = <RemoteErrorBody error={state.error} onRetry={retry} />;
   } else if (state.stat.kind === "dir") {
-    content = <RemoteListing url={state.stat.url} />;
+    // `location`, not the stat's url: the folder is addressed exactly as the
+    // address bar spells it, so its rows, crumbs and saved sort agree.
+    content = <Listing fsPath={location} barChrome />;
   } else if (state.stat.cached && state.stat.path) {
     content = (
       <RemoteCachedFile
@@ -648,6 +629,18 @@ export function RemoteView({ location, home }: { location: string; home: string 
           </p>
         </div>
       </div>
+    );
+  } else if ((state.stat.templates ?? []).some((t) => !isSidebarMode(t.mode))) {
+    // Preview drops companion modes (claude, git) for a remote file, so a
+    // file bound only to one (a user's ungated `claude` fork) gets the
+    // download card below, not a viewer with nothing to show.
+    content = (
+      <RemoteUncachedFile
+        key={state.stat.url}
+        stat={state.stat}
+        onRenderedTitle={setRenderedTitle}
+        onDone={reload}
+      />
     );
   } else {
     content = <RemoteDownload key={state.stat.url} stat={state.stat} onDone={reload} />;

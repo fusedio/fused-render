@@ -2542,6 +2542,13 @@ def main() -> None:
                     _open_bots_native()
                 elif kind == "canvas":
                     _open_canvas_native(key)
+                elif kind == "s3":
+                    # A fused-asset bucket row: the explorer on its `s3://`
+                    # address. Never `_open_app_native`, which reads its key
+                    # as a local path.
+                    page = launcher_mod.remote_page_for(key)
+                    if page is not None:
+                        _open_page_native(page)
                 else:
                     _open_app_native(key)
 

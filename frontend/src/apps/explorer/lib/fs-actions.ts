@@ -7,7 +7,7 @@
 // view keeps its own menu/dialog/toast state and its own post-action behaviour
 // (Listing re-anchors its selection + refetches; Preview navigates).
 import { listDir, deleteEntry, statPath, resolveConditions } from "@platform/lib/api";
-import { visibleModes } from "@platform/lib/mode-visibility";
+import { defaultMode, visibleModes } from "@platform/lib/mode-visibility";
 import type { ArchiveFormat, TemplateEntry } from "@platform/lib/api";
 import { copyToClipboard as writeSystemClipboard } from "@platform/lib/clipboard";
 import { getClipboard, getClipboardEpoch, setClipboard } from "@apps/explorer/lib/fs-clipboard";
@@ -442,15 +442,16 @@ export function buildCompressItems(
 }
 
 // Build the Open-With submenu rows from a resolved mode list. `onSelect` gets
-// the chosen mode and whether it's the default (the first unconditional entry,
-// else the first) — Listing/Preview use that to set or delete `_mode`. The
+// the chosen mode and whether it's the default (`defaultMode`: the same rule
+// every surface uses, PT-8 and its `prefer` exception) — Listing/Preview use
+// that to set or delete `_mode`. The
 // template-mode glyph fills the reserved icon column, matching the pane menu.
 export function buildOpenWithItems(
   modes: TemplateEntry[],
   onSelect: (mode: string, isDefault: boolean) => void
 ): MenuItem[] {
   if (modes.length === 0) return [{ label: "No views available", disabled: true }];
-  const def = modes.find((t) => !t.conditional) || modes[0];
+  const def = defaultMode(modes) ?? modes[0];
   return modes.map((t) => ({
     label: modeTitle(t.mode),
     icon: templateModeIcon(t),

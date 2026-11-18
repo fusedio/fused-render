@@ -497,6 +497,132 @@ button.tasks-caret,
 .hint-panel.is-task.is-reply {
   max-width: min(46ch, 60vw);
 }
+/* THE TASK'S NAME AND FACTS BESIDE ITS RING (hints.ts `renderRowHint`;
+   Akshil, 2026-11-16): a rail ring whose hover opens no card shows the task
+   in a panel beside the rail, as wide as its own words (2026-11-18; it was
+   as wide as the window the ring opens). Since 2026-11-17 the left part is gone and nothing is clamped
+   ("strip the left part, that is status and task id, keep the time and count
+   as is. And don't truncate it"): the title, whole — wrapping when it is
+   longer than its room — then the count and the time, fixed, at the right
+   end on the title's first line. */
+.hint-panel.is-row {
+  box-sizing: border-box;
+  /* THE TASKS ROW UNDER THE POINTER, IN THE APP'S OWN POPOVER DRESS (Akshil,
+     2026-11-17: "hard to read because of bg/contrast" → "check other places
+     in our platform, we don't want it to change too much from current
+     design, just make sure it is visible enough, doesn't mix in with the
+     bg"). On the window's own ground (2026-11-16) the row sank into the
+     head and the chat it lands on. Nothing new is invented for it:
+       ground  `--row-bg-hover` — a Tasks row under the pointer (`.tasks-row
+               :hover`), the composer's surface in the same window;
+       edge    the chat popovers' strong border (composer.css `.c-kebabpop`,
+               `.c-ctxpop`, `.c-selpop`… `--c-border-strong`; the same value
+               at the root is `--nt-card-border-strong`);
+       shadow  those popovers' `0 6px 24px`.
+     (Tried the same day and dropped: fading the window's content to half —
+     "feels a bit off" — and a lighter grey ground with a moat — "not good
+     enough". What stayed is the light scrim below.) */
+  background: var(--row-bg-hover);
+  border-color: var(--nt-card-border-strong);
+  box-shadow: 0 6px 24px var(--shadow-md);
+  /* AS WIDE AS ITS WORDS (Akshil, 2026-11-18: "make it not the same width as
+     the window, we can have it less or more … fine if it is coincidence"):
+     the panel shrinks to its content, up to the task caption's own measure
+     (`.is-task`, 90ch) and never past the room beside the rail, which
+     hints.ts measures (`--hint-row-room`). A longer title wraps. */
+  max-width: min(90ch, var(--hint-row-room, 80vw));
+  /* One line is the 36px row it always was (17.5px of text + 18); more
+     lines keep the same air above and below. */
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 400;
+  /* The name wraps, never clamps: a long one takes a second line. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+}
+/* …AND THE RAIL'S WINDOWS STEP BACK UNDER A SCRIM WHILE THE ROW IS UP (Akshil,
+   2026-11-17, after trying window opacity, content dimming, a blur and six
+   scrim strengths on a live build: "let's do scrim 30"). The app's own modal
+   scrim (`--scrim`: 55% black dark, 40% light) is "quite high intensity"
+   here, so the window takes 55% of it — 30% black in a dark theme, 22% in a
+   light one — and follows every theme's token.
+
+   IT FADES IN AND OUT ("a transition fade for this scrim, fade in and out"):
+   the layer is always there at opacity 0 and only its opacity moves, so a
+   pointer crossing from ring to ring dips it instead of blinking it — at
+   `--dur-med`, the rail window's own fade (claude-rail.css `.claude-rail-peek`;
+   reduced motion collapses it). The row itself stays instant (base.css
+   `.hint-panel`).
+
+   NOTHING IN THE WINDOW IS REPOSITIONED FOR IT. The card is not made a
+   positioned box (its resize grips are earlier siblings and would end up
+   under it); the layer is laid out against the card's wrapper, the fixed
+   `.claude-rail-peek`, which is the card's own box — hence the child
+   selector and the inherited radius. It takes no pointer.
+
+   THE + NEW TASK POPOVER IS A RAIL WINDOW TOO (Akshil, 2026-11-17: "scrim
+   should apply for + new button, bots and tasks as well, because we are
+   viewing another task" — it worked on every card but the +). It is window A
+   in the Modal chassis, not a `.claude-rail-peek-card`, so it is named here:
+   the dialog is its own positioned, clipped box, and its `::before` is the
+   accent line on its top edge, so the layer is its `::after`. */
+.claude-rail-peek > .claude-rail-peek-card::after,
+.modal-popover .modal-dialog.new-task-dialog::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--scrim) 55%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+/* NOT FOR A ROW THE SCROLL BROUGHT (hints.ts `is-passing`; Akshil, 2026-11-17:
+   "when I scroll there is a little flash of the overlay that comes in and
+   goes out"): rings sliding under a resting pointer raise their rows and
+   each scroll tick takes them down again; the windows stay as they are until
+   the pointer itself moves onto a ring. */
+/* ONLY THE WINDOW THE RING OPENS (Akshil, 2026-11-17: "when I hover task
+   items when there is a task open on window A/B it darkens both instead of
+   only … one of the window"): the row says whose it is (`data-row-window`,
+   hints.ts) — a list ring's is window A (a task's card, Tasks / Bots / Git,
+   the + popover), a favourite's is window B (the favourite's card, a bot's).
+   The other window is not what the reader is about to replace, and stays
+   lit. */
+body:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .claude-rail-peek:not(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after,
+body:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after,
+body:has(.hint-panel.is-row.is-on[data-row-window="b"]:not(.is-passing)) .claude-rail-peek:is(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after {
+  opacity: 1;
+}
+.hint-row {
+  display: flex;
+  /* The facts sit on the title's FIRST line, however many it takes. */
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.hint-row-title {
+  /* The title is the row's slack: it takes what the facts leave, and wraps. */
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--fg);
+}
+.hint-row-count,
+.hint-row-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+.hint-row-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
 .hint-task {
   display: flex;
   flex-direction: column;
@@ -1732,6 +1858,16 @@ button.tasks-caret,
    hung off its right edge: over the a item's ink, costing the row nothing.
    `data-fit-skip` on the seat keeps it off the fit ladder's sums (row-fit.ts
    `rowNeed`), whichever of the two states it is in. */
+/* THE ROW IS AS TALL AS ITS HOVER SEATS, AT REST TOO (Akshil, 2026-11-16: "for
+   projects, hovering on the list changes height"). The star's and the door's
+   seats are 18px boxes that exist only under the pointer; a row with nothing
+   else that tall — the Project view's, which drops the folder chip — stood on
+   its 16px line at rest and grew 2px when pointed at, and the whole list
+   under it stepped down. The floor is those 18px plus the row's own padding,
+   so a row that already holds a chip is unchanged. */
+.tasks-row--ab {
+  min-height: calc(18px + 2 * var(--tasks-row-pad-y));
+}
 .tasks-row--ab > .tasks-bseat {
   position: relative;
   flex: 0 0 0px;
@@ -2039,6 +2175,76 @@ button.tasks-caret,
 .prefs-section .tasks-card-wrap.is-dragging .tasks-card-act {
   opacity: 0;
   pointer-events: none;
+}
+
+/* -- The a/b Board card (owner, 2026-11-16; `tasks-card-wrap--ab`) ------------
+   "In card view we are missing the archive button thing on task id": the List
+   a/b row's id slot (`.tasks-row--ab .tasks-idslot`, above), on the card's
+   head — TASK-nnn at rest, Archive / Unarchive over it while the card is
+   pointed at, in the same box. Behind the same switch, and every rule here is
+   scoped to the modifier: off, the card is today's.
+
+   NOTHING MOVES: the button is out of flow over the number (absolute, the
+   slot's own width, 22px tall over a 16px head line), so neither the head nor
+   the card changes size under the pointer. The button is a span-button
+   (FileAct `nested`) because the card is a <button>; it takes the row's
+   `.tasks-act` skin and its `opacity` handover — the card's `:hover`, or the
+   button's own `:focus-visible`, never `:focus-within` (the card itself is the
+   focus target a click leaves behind). */
+.tasks-card-wrap--ab .tasks-idslot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.tasks-card-wrap--ab .tasks-idslot:has(.tasks-act) {
+  min-width: 22px;
+}
+.tasks-card-wrap--ab .tasks-idslot .tasks-act,
+.prefs-section .tasks-card-wrap--ab .tasks-idslot .tasks-act {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  width: auto;
+  transform: translateY(-50%);
+}
+.tasks-card-wrap--ab .tasks-idslot .tasks-id {
+  transition: opacity 0.08s ease;
+}
+.tasks-card-wrap--ab:hover .tasks-idslot .tasks-act,
+.tasks-card-wrap--ab .tasks-idslot .tasks-act:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Only where there IS a button to hand over to: a card whose filing cannot
+   change keeps its number under the pointer. */
+.tasks-card-wrap--ab:hover .tasks-idslot:has(.tasks-act) .tasks-id,
+.tasks-card-wrap--ab .tasks-idslot:has(.tasks-act:focus-visible) .tasks-id {
+  opacity: 0;
+}
+/* Mid-write (the card's `busy`): the span cannot be `:disabled`. */
+.tasks-card-wrap--ab:hover .tasks-idslot .tasks-act[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+/* In the air: the number, not a button over a ghost (the strip's rule). */
+.tasks-card-wrap--ab.is-dragging .tasks-idslot .tasks-act {
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-card-wrap--ab.is-dragging .tasks-idslot:has(.tasks-act) .tasks-id {
+  opacity: 1;
+}
+@media (hover: none) {
+  .tasks-card-wrap--ab .tasks-idslot .tasks-act {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .tasks-card-wrap--ab .tasks-idslot:has(.tasks-act) .tasks-id {
+    opacity: 0;
+  }
 }
 
 /* What the server said when it would not run it. Under the row it is about,
@@ -3052,6 +3258,7 @@ button.tasks-draft-pill.is-on:focus-visible {
 /* ALONE, THE ARROW IS THE STAR'S SIZE (Akshil, 2026-11-16): beside a word it
    is a 10px mark on a label; on its own it is the whole control. */
 .tasks-list[data-fit]:not([data-fit="0"]) .tasks-row--ab > .tasks-bseat--door > .tasks-act--page svg {
+  display: inline;
   width: 14px;
   height: 14px;
 }
@@ -3096,6 +3303,12 @@ button.tasks-draft-pill.is-on:focus-visible {
    a bare word in a row of ink does not, and this is the one door on the row.
    `.tasks-act` already draws a 1px transparent border and fills it on hover, so
    this is a colour and not a box — the strip's geometry does not move. */
+/* NO ARROW BESIDE THE WORD (Akshil, 2026-11-16: "remove it from everywhere"):
+   the door reads "Open". The ↗ is drawn only where the word has folded away
+   (the narrow a/b row, further down). */
+.tasks-act--page svg {
+  display: none;
+}
 .tasks-act--page,
 .prefs-section .tasks-act--page {
   width: auto;

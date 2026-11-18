@@ -56,6 +56,17 @@ export function popoverPlacement(
  *  right edge stands against the rail: no grip there. */
 export type PopoverEdge = "tl" | "bl" | "l" | "t" | "b";
 
+/** …and the RIGHT edge and corners, for a card the caller has let go of its
+ *  anchor (the rail's pinned window dragged off the rail, claude-rail
+ *  rail-move-lib): the right edge is free then. Their drag is the caller's
+ *  (Modal `popover.resize.drag`). */
+export type PopoverGrip = PopoverEdge | "r" | "tr" | "br";
+
+/** One of the five grips `popoverDrag` reads. */
+export function isPopoverEdge(g: PopoverGrip): g is PopoverEdge {
+  return g !== "r" && g !== "tr" && g !== "br";
+}
+
 export interface PopoverLimits {
   minWidth: number;
   minHeight: number;

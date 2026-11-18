@@ -55,7 +55,21 @@ import type { DoorCardStore } from "./door-card-store";
 import { useFavPeekState } from "./fav-peek-store";
 import { publishWindowABox, setSnapGuide } from "./card-snap";
 import { useCanvasRailPeek } from "./rail-peek-flag";
+import { viewPress } from "./rail-pin-lib";
+import { useTaskHeadUnified } from "@shell/task-head-flag";
 import {
+  FLOAT_GRIPS,
+  RAIL_HEAD_SELECTOR,
+  floatPlacement,
+  floatResize,
+  isDockEdge,
+  viewportOf,
+  type MoveEdge,
+} from "./rail-move-lib";
+import { useWindowBox, windowPos } from "./rail-move-store";
+import { useCardMove } from "./useCardMove";
+import {
+  PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
   bottomClear,
@@ -94,6 +108,10 @@ export interface DoorCardApi {
   backRef: RefObject<HTMLButtonElement>;
   /** A chat's own Escape, let through: closes a preview, never a pinned card. */
   onSubEscape(): void;
+  /** THE PIN ICON (rail-pin-lib; the unified-head switch on): the card's pin
+   *  (`held`) and its toggle, for the content's head (RailPinButton). Null
+   *  with the switch off. */
+  pin: { pinned: boolean; onToggle: () => void } | null;
 }
 
 export interface DoorCardProps {
@@ -136,6 +154,9 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const rail = railProp === undefined ? fav.rail : railProp;
   const railGiven = railProp !== undefined;
   const intent = store.intent();
+  // HOVER / TEMP / PIN (rail-pin-lib): with the unified-head switch on, a
+  // press makes the card temp and only its pin holds it.
+  const pinModel = useTaskHeadUnified();
 
   // A card stands behind every rail's door while the flag is on (the store's
   // `ready`); off, nothing shows.
@@ -169,15 +190,31 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     setNoRoom(false);
   }, [favBox]);
   // A PREVIEW NEVER OUTLIVES ITS RAIL; a pinned card follows the reader to the
-  // next page's rail (header).
+  // next page's rail (header). With the pin (rail-pin-lib `hopKeeps`), only a
+  // HELD card follows: a temp one goes with the hop too.
   const railWas = useRef(rail);
+  const pinModelRef = useRef(pinModel);
+  pinModelRef.current = pinModel;
   useEffect(() => {
     if (railWas.current === rail) return;
     railWas.current = rail;
-    if (!railGiven && !store.state().pinned) store.close();
+    const s = store.state();
+    if (!railGiven && !(pinModelRef.current ? s.held : s.pinned)) store.close();
   }, [rail, store, railGiven]);
 
   const up = on && card.up;
+  // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): every door card
+  // is window A's. Pinned and dragged by its head, it FLOATS at the window's
+  // position — kept through a swap to a ring, another door or the + card.
+  const move = useCardMove({
+    win: "a",
+    on: pinModel,
+    movable: card.held,
+    headSelector: RAIL_HEAD_SELECTOR,
+    shown: up ? String(card.seq) : null,
+  });
+  const floatingRef = useRef(false);
+  floatingRef.current = move.floating;
 
   // WHERE IT STANDS (header): left of the rail, its top level with the rail's
   // door, at window A's size, clamped inside the row.
@@ -191,6 +228,10 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const door = store.doorOf(rail);
   const want = up && !!rail && !!door && !noRoom;
   const place = (): Box | null => {
+    // FLOATING: at the window's position, window A's size, inside the
+    // viewport; never "no room" (rail-move-lib).
+    const at = floatingRef.current ? windowPos("a") : null;
+    if (at) return floatPlacement(at, cardSize(), viewportOf(window));
     const d = store.doorOf(rail);
     if (!rail || !d || !row) return null;
     const r = rail.getBoundingClientRect();
@@ -213,22 +254,42 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   };
 
   // THE GRIPS AND THEIR DRAG (RailPeek's; window A's key, `canvasRailPeek`).
-  const [resizing, setResizing] = useState<ResizeEdge | null>(null);
-  const resizingRef = useRef<ResizeEdge | null>(null);
+  const [resizing, setResizing] = useState<MoveEdge | null>(null);
+  const resizingRef = useRef<MoveEdge | null>(null);
   resizingRef.current = resizing;
-  const dragStart = useRef<{ x: number; y: number; box: Box; pointerId: number; corner: ResizeEdge; el: HTMLElement } | null>(null);
+  const dragStart = useRef<{
+    x: number;
+    y: number;
+    box: Box;
+    pointerId: number;
+    corner: MoveEdge;
+    el: HTMLElement;
+    floating: boolean;
+  } | null>(null);
   const dragLast = useRef<Box | null>(null);
-  const onGripDown = (corner: ResizeEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
+  const onGripDown = (corner: MoveEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || !box) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget };
+    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floating: move.floating };
     dragLast.current = null;
     setResizing(corner);
   };
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
-    if (!start || start.pointerId !== e.pointerId || !row) return;
+    if (!start || start.pointerId !== e.pointerId) return;
+    // FLOATING (rail-move-lib `floatResize`): inside the viewport, no magnet.
+    if (start.floating || !isDockEdge(start.corner)) {
+      const fl = floatResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, viewportOf(window), {
+        minWidth: PEEK_MIN_WIDTH,
+        minHeight: PEEK_MIN_HEIGHT,
+        maxWidth: PEEK_MAX_WIDTH,
+      });
+      dragLast.current = fl;
+      setBox((prev) => (prev && sameBox(prev, fl) ? prev : fl));
+      return;
+    }
+    if (!row) return;
     // Never over window B's card under it (RailPeek's own floor,
     // rail-peek-lib `bottomClear`; owner, 2026-11-08).
     const bounds = row.getBoundingClientRect();
@@ -248,6 +309,10 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    // A FLOATING card's left or top grip moved its corner: the window stands
+    // there now (rail-move-lib).
+    if (save && start?.floating && last && (last.left !== start.box.left || last.top !== start.box.top))
+      move.setPos({ left: last.left, top: last.top });
     if (!save || !start || !last || (last.width === start.box.width && last.height === start.box.height)) return;
     // Only a dimension the drag changed, past the grips' minimums (RailPeek
     // `endDrag`); the other keeps what was remembered.
@@ -267,12 +332,15 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   useEffect(() => {
     if (dragStart.current && !visible) endDrag(false);
   }, [visible]);
+  // Its live box for window B's head drag (rail-move-store `windowBox`).
+  useWindowBox("a", pinModel && visible ? box : null);
   // Window A's box, for window B's grips to snap to (card-snap.ts).
+  // …but not where it FLOATS: window B places itself as if it were not there.
   useEffect(() => {
-    if (!visible || !box) return;
+    if (!visible || !box || move.floating) return;
     publishWindowABox("door:" + className, box);
     return () => publishWindowABox("door:" + className, null);
-  }, [visible, box, className]);
+  }, [visible, box, className, move.floating]);
   const onVisibleRef = useRef(onVisible);
   onVisibleRef.current = onVisible;
   useEffect(() => {
@@ -335,7 +403,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     else intent.leaveCone();
   };
   useEffect(() => {
-    if (!shownOn || !box || !door) return;
+    // None for a FLOATING card: it is pinned, and stands nowhere near its door.
+    if (!shownOn || !box || !door || move.floating) return;
     const r = door.getBoundingClientRect();
     const apex = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     const onMove = (e: PointerEvent) => {
@@ -347,7 +416,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
       document.removeEventListener("pointermove", onMove, true);
       setCone(false);
     };
-  }, [shownOn, box, door]);
+  }, [shownOn, box, door, move.floating]);
 
   // A PRESS INSIDE pins a preview (PeekIntent `pressStart`), and is the
   // content's to claim (`onClaim`) — React's capture phase, so a menu or
@@ -431,8 +500,11 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   };
   // ESCAPE closes a PREVIEW (a pinned card closes by its ×, the door or Open
   // only); never from a popup inside the card, whose Escape is its own.
+  // WITH THE PIN (owner, 2026-11-16: "a consistent behaviour"): a hover and a
+  // TEMP card close on Escape, only a pinned (held) one ignores it.
+  const escapeKeeps = pinModel ? card.held : card.pinned;
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "Escape" || e.defaultPrevented || card.pinned) return;
+    if (e.key !== "Escape" || e.defaultPrevented || escapeKeeps) return;
     const t = e.target as HTMLElement;
     const pop = t.closest("[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']");
     if (pop && pop !== cardRef.current) return;
@@ -441,7 +513,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   };
   // …and with the focus nowhere (a hover's preview: the pointer brought it,
   // the keyboard is on the body), the document's Escape does the same.
-  const previewing = visible && !card.pinned;
+  const previewing = visible && !escapeKeeps;
   useEffect(() => {
     if (!previewing) return;
     const onKey = (e: KeyboardEvent) => {
@@ -454,7 +526,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     return () => document.removeEventListener("keydown", onKey);
   }, [previewing, store]);
   const onSubEscape = useCallback(() => {
-    if (!store.state().pinned) close();
+    const s = store.state();
+    if (!(pinModelRef.current ? s.held : s.pinned)) close();
   }, [close, store]);
   // OPEN: the page itself; the card goes once the hop went (a leave guard
   // may refuse it — FavouritePeek's rule).
@@ -469,14 +542,26 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     [close, href],
   );
 
+  const held = card.held;
+  const togglePin = useCallback(() => store.setHeld(!store.state().held), [store]);
   const api = useMemo<DoorCardApi>(
-    () => ({ visible, pinned: card.pinned, close, openPage, closeRef, backRef, onSubEscape }),
-    [visible, card.pinned, close, openPage, onSubEscape],
+    () => ({
+      visible,
+      pinned: card.pinned,
+      close,
+      openPage,
+      closeRef,
+      backRef,
+      onSubEscape,
+      pin: pinModel ? { pinned: held, onToggle: togglePin } : null,
+    }),
+    [visible, card.pinned, close, openPage, onSubEscape, pinModel, held, togglePin],
   );
 
   if (!on) return null;
+  // None while FLOATING.
   const bridge =
-    box && railLeft.current > box.left + box.width + 1
+    !move.floating && box && railLeft.current > box.left + box.width + 1
       ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
       : null;
 
@@ -494,7 +579,9 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
       <div
         ref={cardRef}
         id={store.id}
-        className={"claude-rail-peek claude-rail-door-peek " + className + " favs-on" + (visible ? " is-on" : "") + (resizing ? " is-resizing" : "")}
+        className={
+          "claude-rail-peek claude-rail-door-peek " + className + " favs-on" + (visible ? " is-on" : "") + (resizing ? " is-resizing" : "") + move.className
+        }
         role="dialog"
         aria-label={ariaLabel}
         style={box ? { left: box.left, top: box.top, width: box.width, height: box.height } : undefined}
@@ -502,8 +589,14 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
         onPointerLeave={() => intent.leaveCard()}
         onPointerDownCapture={() => {
           claim();
+          // The rail's outside-press watcher reads it (rail-pin-lib).
+          store.press.inside = true;
+          viewPress.inside = true;
+          move.notePress();
           intent.pressStart();
         }}
+        onPointerDown={move.onPointerDown}
+        onDoubleClick={move.onDoubleClick}
         onClickCapture={claim}
         onKeyDownCapture={claim}
         onFocusCapture={onFocusCapture}
@@ -511,7 +604,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
         onKeyDown={onKeyDown}
       >
         {visible &&
-          ALL_GRIPS.map((corner) => (
+          // …and, FLOATING, the right edge and corners too (rail-move-lib).
+          (move.floating ? FLOAT_GRIPS : ALL_GRIPS).map((corner) => (
             <div
               key={corner}
               className={"claude-rail-peek-grip is-" + corner + (resizing === corner ? " is-active" : "")}
@@ -523,7 +617,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
               onLostPointerCapture={() => dragStart.current && endDrag(true)}
             />
           ))}
-        {visible && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
+        {visible &&
+          (move.floating ? FLOAT_GRIPS : ALL_GRIPS).map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
         <div className="claude-rail-peek-card">{children(api)}</div>
       </div>
     </>,

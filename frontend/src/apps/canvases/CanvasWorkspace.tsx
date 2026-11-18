@@ -238,11 +238,13 @@ import {
   type AiToolDefinition,
   type AiStreamError,
   checkRemote,
+  publishCanvas,
   pullCanvas,
   startSync,
   takeoverSync,
   unreachableOwnerFromError,
   forceQuitOwner,
+  newFrameId,
   syncEventsUrl,
   type WorkbenchEnv,
   canvasNameFromPath,
@@ -261,9 +263,11 @@ import { CHAT_PARAMS, placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
+  healWanted,
   mergeLogEvents,
   noWatcher,
   type EmbedFailure,
+  type HealMark,
   type MergedSyncState,
   type RelayEntry,
   type SyncLogEvent,
@@ -1268,6 +1272,21 @@ export default function CanvasWorkspace({
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [nodePath, nodeFileOnDisk, sync?.disk_rev]);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const onPublish = useCallback(async () => {
+    setPublishBusy(true);
+    setPublishError(null);
+    try {
+      const s = await publishCanvas(env, name);
+      if (!s.ok) setPublishError(s.error ?? "Publish failed");
+      void getSyncState(env, name).then(applyState, () => undefined);
+    } catch (e) {
+      setPublishError((e as Error).message);
+    } finally {
+      setPublishBusy(false);
+    }
+  }, [env, name]);
   const onPull = useCallback(async (hard = false) => {
     setPullBusy(true);
     setPullError(null);
@@ -1277,7 +1296,7 @@ export default function CanvasWorkspace({
       const s = await pullCanvas(env, name, hard);
       if (!s.ok) setPullError(s.pull_error ?? s.error ?? "pull failed");
       if (hard && s.ok) setPullBackup(s.trash ?? null);
-      void getSyncState(env, name).then(applyState, () => undefined);
+      void getSyncState(env, name, frameId).then(applyState, () => undefined);
     } catch (e) {
       setPullError((e as Error).message);
     } finally {
@@ -1285,6 +1304,10 @@ export default function CanvasWorkspace({
     }
   }, [env, name]);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  // This page's frame, to the server (SPEC 53.1): one id for the life of the
+  // mount, named on every embed call and on the events socket. A reload of
+  // the frame is a new generation of the same frame, not a new one.
+  const frameId = useRef(newFrameId()).current;
   // The agent catalog: the AI gateway's model list for the frame (module
   // doc) and the Fix button's Claude gate both read it. Mirrored into a ref
   // for the message handlers, which must not re-bind on every catalog read.
@@ -1890,8 +1913,8 @@ export default function CanvasWorkspace({
       for (;;) {
         try {
           const ack = rename
-            ? await applyRename(env, name, gen, seq, rename)
-            : await applySnapshot(env, name, gen, seq, body ?? {});
+            ? await applyRename(env, name, gen, seq, rename, frameId)
+            : await applySnapshot(env, name, gen, seq, body ?? {}, frameId);
           settleRelay(qid);
           setRelayFailure(null);
           // A node deleted in the canvas took its file — and the server
@@ -1955,7 +1978,7 @@ export default function CanvasWorkspace({
       const started = Date.now();
       for (;;) {
         try {
-          const ack = await applyBody(env, name, body);
+          const ack = await applyBody(env, name, body, frameId);
           if (ack.ok) {
             post({ type: "fused-embed-body-applied", seq, name: body.node, hash: ack.hash });
           } else if (ack.code === "stale") {
@@ -2155,7 +2178,7 @@ export default function CanvasWorkspace({
         const started = Date.now();
         for (;;) {
           try {
-            const delta = await getDelta(env, name, full);
+            const delta = await getDelta(env, name, full, frameId);
             if (delta.held !== undefined) {
               if (Date.now() - started > DELTA_RETRY_WINDOW_MS) return;
               await new Promise((r) => window.setTimeout(r, DELTA_RETRY_MS));
@@ -2200,7 +2223,10 @@ export default function CanvasWorkspace({
             return;
           } catch (e) {
             const status = (e as { status?: number }).status;
-            if (status === 409 && Date.now() - started <= DELTA_RETRY_WINDOW_MS) {
+            // A full state is asked once (a hello, a heal on `embed_heal_seq`)
+            // and nothing re-asks it if it is lost: any failure retries
+            // within the window, not only a busy clone.
+            if ((status === 409 || full) && Date.now() - started <= DELTA_RETRY_WINDOW_MS) {
               await new Promise((r) => window.setTimeout(r, DELTA_RETRY_MS));
               continue;
             }
@@ -2239,6 +2265,17 @@ export default function CanvasWorkspace({
     }
     relayDelta(false);
   }, [sync?.disk_rev, sync?.watcher_epoch, relayDelta]);
+
+  // The server saw the frame skip the same nodes delta after delta with no
+  // edit of its own posted (`embed_heal_seq` moves once per such streak):
+  // send it a full state, as a hello would. Per watcher, like the counter
+  // above; the first sight of a watcher's value is a baseline, not a move.
+  const healMarkRef = useRef<HealMark | null>(null);
+  useEffect(() => {
+    const { heal, mark } = healWanted(healMarkRef.current, sync?.watcher_epoch ?? null, sync?.embed_heal_seq);
+    healMarkRef.current = mark;
+    if (heal) relayDelta(true);
+  }, [sync?.embed_heal_seq, sync?.watcher_epoch, relayDelta]);
 
   // The node this page currently shows, readable from the message handler
   // without re-subscribing it on every selection.
@@ -2430,6 +2467,8 @@ export default function CanvasWorkspace({
         }
       }
       if (type === "fused-embed-snapshot") {
+        // From THE workbench frame only: it writes the clone (FP-10).
+        if (event.source !== frameRef.current?.contentWindow) return;
         const { gen, seq, body } = (event.data ?? {}) as {
           gen?: unknown; seq?: unknown; body?: unknown;
         };
@@ -2444,6 +2483,7 @@ export default function CanvasWorkspace({
         // The rename hint: posted the moment a UDF is renamed, before any
         // snapshot carries the new name, so disk follows the name (file, row,
         // edges) instead of reading the next snapshot as delete + add.
+        if (event.source !== frameRef.current?.contentWindow) return;
         const { gen, seq, from, to, file_from, file_to } = (event.data ?? {}) as {
           gen?: unknown; seq?: unknown; from?: unknown; to?: unknown;
           file_from?: unknown; file_to?: unknown;
@@ -2593,6 +2633,8 @@ export default function CanvasWorkspace({
         pendingFitRef.current = false;
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
+        // The ack moves the server's picture of THIS frame: only it may send one.
+        if (event.source !== frameRef.current?.contentWindow) return;
         const rev = event.data?.rev;
         if (typeof rev !== "number") return;
         // Through the SNAPSHOT chain, not fire-and-forget: the frame posts a
@@ -2620,7 +2662,7 @@ export default function CanvasWorkspace({
           if (notice) notify(notice);
         }
         relayChainRef.current = relayChainRef.current.then(() =>
-          ackDelta(env, name, rev, ok, reason, skipped).then(() => undefined, () => undefined),
+          ackDelta(env, name, rev, ok, reason, skipped, frameId).then(() => undefined, () => undefined),
         );
         // A REAL refusal: the server has dropped its picture of the frame
         // and marks the leg red. Send a full state once, right away, so the
@@ -2908,7 +2950,7 @@ export default function CanvasWorkspace({
     let retryMs = 0;
     let failures = 0;
     const pollOnce = () => {
-      void getSyncState(env, name).then(
+      void getSyncState(env, name, frameId).then(
         (s) => {
           failures = 0;
           if (!closed) applyState(s);
@@ -2939,7 +2981,7 @@ export default function CanvasWorkspace({
       retryTimer = null;
       let s: WebSocket;
       try {
-        s = new WebSocket(syncEventsUrl(env, name));
+        s = new WebSocket(syncEventsUrl(env, name, frameId));
       } catch {
         startPolling();
         scheduleReconnect();
@@ -3364,6 +3406,7 @@ export default function CanvasWorkspace({
           disabled: pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
           onPull: () => void onPull(),
         }}
+        publish={{ busy: publishBusy, error: publishError, onPublish: () => void onPublish() }}
       />
       {drawerOpen && (sync || owned) && (
         <SyncDrawer

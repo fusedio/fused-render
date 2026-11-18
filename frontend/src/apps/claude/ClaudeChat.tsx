@@ -179,12 +179,13 @@ import { PlaceTags } from "@shell/claude-rail/PlaceTags";
 // head — the same one every other task view draws.
 import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
 import { TaskPeekProject } from "@shell/TaskPeekWho";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
 import { shortTaskId } from "@shell/tasks-lib";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { queueCaption } from "@platform/lib/queue";
-import { ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
+import { hasWhereTag, ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { AllowDeniedContext, TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
@@ -730,7 +731,7 @@ function ChatBody(props: ChatBodyProps) {
   // Natively that frame arrives as `annotateTarget`, a getter the host owns
   // (Preview.tsx looks its own mark up; CanvasWorkspace hands over its workbench
   // frame). Without it `hasPane` was false in the sidebar, no block was pushed,
-  // `has_pane:"0"` took `mcp__fused_approvals__app_state` out of the run's
+  // `has_pane:"0"` took `mcp__fused_render__app_state` out of the run's
   // roster — and, because `agent.py`'s `_pane_file` reads the pane off the
   // LEADING app-state block, every chat had in that layout was recorded as a
   // FOLDER chat and vanished from the file's Recent list (R3-1/R3-3).
@@ -962,7 +963,7 @@ function ChatBody(props: ChatBodyProps) {
   //
   // `has_pane` is what agent.py builds the session's MCP roster off, once, at
   // spawn: `pane=False` writes an `mcp.json` with no app-state channel and an
-  // `--allowed-tools` without `mcp__fused_approvals__app_state`, and there is
+  // `--allowed-tools` without `mcp__fused_render__app_state`, and there is
   // no way back — `_send` never touches argv, and `host.json` does not even
   // record the pane, so nothing can respawn for one appearing. A first message
   // typed before `statPath`/`runAppEntry` landed therefore cost the WHOLE
@@ -4306,8 +4307,13 @@ function ChatBody(props: ChatBodyProps) {
   /** A worktree menu is MOUNTED and has said this folder is in a repo
    *  (`WorktreeMenu.onReady`). Compact mounts none, and a peek only with `headerInPeek`; a non-repo says false. */
   const worktreeReady = useRef(false);
+  // The same answer as state, for what is DRAWN off it: the menu's element
+  // exists before (and whether or not) its pill does — it renders nothing for
+  // a folder outside any repo.
+  const [worktreePill, setWorktreePill] = useState(false);
   const onWorktreeReady = useCallback((isRepo: boolean) => {
     worktreeReady.current = isRepo;
+    setWorktreePill(isRepo);
   }, []);
   // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
   // own head and by `/tasks`, and remembered globally (`useTasksOpen`). An empty
@@ -5653,6 +5659,25 @@ function ChatBody(props: ChatBodyProps) {
         secondaryOnly
       />
     ) : null;
+  // THE UNIFIED HEAD SEATS THE TAGS APART (Akshil, 2026-11-16): a pane IS
+  // its place, so the place's own name is not drawn; where in it — Canvas,
+  // the node, the file — stands at the head's right end, before the count
+  // slot, with its icon (TaskHead `where`). A place with no where-tag (a
+  // whole folder, a file) draws none.
+  const whereTag =
+    placeTag && head.task && hasWhereTag(railScope(head.task, ownPlace(head.task)), ownPlace(head.task)) ? (
+      <PlaceTags
+        scope={railScope(head.task, ownPlace(head.task))}
+        at={ownPlace(head.task)}
+        pageRoot={props.pageRoot ?? null}
+        sessionId={head.task.session_id ?? null}
+        {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
+        // No `onlyDoor` here: that rule keeps the folder's own name off the
+        // merged head, and the where-tag never carries it — one with no door
+        // is plain text, as on every other head (CodeRabbit on #2287).
+        part="where"
+      />
+    ) : null;
   const headerExtra =
     props.prChip && head.task ? (
       <>
@@ -5837,6 +5862,15 @@ function ChatBody(props: ChatBodyProps) {
   const kebabMenu = (
       <Kebab
         {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
+        // OPEN IN TASKS (flag on, off the Tasks page): only a chat with a task
+        // row — the landing and a never-run chat have none to open.
+        {...openInTasksProps(
+          openInTasksItem({
+            on: headUnified,
+            taskKey: inChat ? (head.task?.key ?? null) : null,
+            onOpen: (href) => void navigateUrl(href),
+          }),
+        )}
         file={file}
         sessionId={inChat ? (state.sessionId ?? "") : ""}
         btnRef={kebabBtn}
@@ -5955,6 +5989,27 @@ function ChatBody(props: ChatBodyProps) {
         ) : null}
       </span>
     ) : null;
+  // ONE TAG, THEN "+x", BESIDE A PANE'S TOOLS (Akshil, 2026-11-17: "in this
+  // view where we have buttons we directly do 1 +x — we don't show PR and WT
+  // tags more than one because we also have buttons"): where the head seats
+  // tools and already shows the worktree tag, every pull request goes behind
+  // one "+N". With no worktree tag the first PR is the tag ("PR #12 +2") —
+  // so the tag has to be on screen, not merely mounted: the menu draws no
+  // pill outside a repo (`worktreePill`; CodeRabbit on #2313).
+  // Tools that are DRAWN: the strip's own gate (`stripSeatsShown` — a target
+  // that cannot be annotated seats none; CodeRabbit on #2313), or the canvas
+  // camera that stands in for it.
+  const headHasTools = stripSeatsShown || !!canvasShotSeat;
+  const headWorktreeTag = !!shownHint || (!!worktreeMenu && worktreePill);
+  const headChipsExtra =
+    props.prChip && head.task ? (
+      <>
+        <TaskPrChip task={head.task} collapsed={headHasTools && headWorktreeTag} />
+        {props.headerExtra}
+      </>
+    ) : (
+      props.headerExtra
+    );
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
@@ -5974,6 +6029,11 @@ function ChatBody(props: ChatBodyProps) {
             : null
       }
       task={inChat ? head.task : null}
+      // Two lines, the rail window's layout (Akshil, 2026-11-17) — but one row
+      // in full screen, where the head is a seat inside the pane's own header.
+      twoLine={inChat && !leadHost}
+      // No star seat while favourites are off (`placeTagOn` is that switch).
+      star={placeTagOn}
       {...(fallbackTitle ? { title: fallbackTitle } : {})}
       pending={inChat && head.pending && !headLine}
       running={running}
@@ -5981,15 +6041,16 @@ function ChatBody(props: ChatBodyProps) {
       status={inChat ? limitWord : ""}
       place={
         inChat && head.task
-          ? (placeTag ?? (props.mergedHead ? null : <TaskPeekProject task={head.task} />))
+          ? (placeTag || props.mergedHead ? null : <TaskPeekProject task={head.task} />)
           : null
       }
+      {...(inChat && whereTag ? { where: whereTag } : {})}
       chips={
         inChat ? (
           <>
             {shownHint ? null : worktreeMenu}
             <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
-            {headerExtra}
+            {headChipsExtra}
           </>
         ) : null
       }

@@ -182,7 +182,7 @@ describe("summarizePermission", () => {
     const bash = summarizePermission(row("Bash", { command: "ls", description: "ls", ...sidecar }));
     expect(bash.body).toBe("ls");
     expect(leftoverInput({ command: "ls", description: "ls", ...sidecar }, bash.covered)).toBeNull();
-    const mcp = summarizePermission(row("mcp__fused_approvals__app_state", { a: 1, ...sidecar }));
+    const mcp = summarizePermission(row("mcp__fused_render__app_state", { a: 1, ...sidecar }));
     expect(mcp.body).toBe('{\n  "a": 1\n}');
     expect(leftoverInput({ a: 1, ...sidecar }, mcp.covered)).toBeNull();
   });

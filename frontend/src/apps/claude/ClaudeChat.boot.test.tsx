@@ -235,7 +235,7 @@ test("the HOSTED layout's pane is the host's frame: has_pane 1 and a pushed bloc
   // asserted together: no `<live-app-state>` block (so the model could not see
   // the app and no receipt was drawn), `has_pane: "0"` (so agent.py wrote an
   // `mcp.json` with no app-state channel and the CLI reported
-  // `mcp__fused_approvals__app_state` as not connected), and — because
+  // `mcp__fused_render__app_state` as not connected), and — because
   // `_pane_file` reads the pane off the LEADING block — a session recorded as a
   // FOLDER chat, which then never appeared in the file's Recent list (R3-1/R3-3).
   await mountChat({ initialAsk: "what can you see?", annotateTarget: hostFrameStub() });
@@ -326,7 +326,7 @@ test("an UNRESOLVED pane sends has_pane EMPTY and lets agent.py decide", async (
   // yet. Neither answer is honest here, and the dishonest one is expensive:
   // `has_pane` is what agent.py builds the session's MCP roster off, ONCE, at
   // spawn, and nothing can repair it afterwards — so a `"0"` guessed while the
-  // pane's stat was in flight took `mcp__fused_approvals__app_state` away for
+  // pane's stat was in flight took `mcp__fused_render__app_state` away for
   // the whole session and the CLI reported the tool as unreachable (R2-10).
   // The empty string is agent.py's own "you decide": `main` reads it as no
   // opinion and answers with `_has_pane(file)`, off the filesystem, unraced.

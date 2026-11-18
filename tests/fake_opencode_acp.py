@@ -305,11 +305,11 @@ def _tool_rows(cwd):
                               "content": {"type": "text", "text": "Wrote new_file.txt"}}],
                  "rawOutput": {"output": "Wrote new_file.txt", "metadata": {}}})
     if TOOL_KIND == "mcp":
-        return ([{"toolCallId": "call-1", "title": "fused_approvals_app_state",
+        return ([{"toolCallId": "call-1", "title": "fused_render_app_state",
                   "kind": "other", "status": "pending", "locations": [],
                   "rawInput": {"reason": "look"}}],
                 {"toolCallId": "call-1", "status": "completed",
-                 "title": "fused_approvals_app_state",
+                 "title": "fused_render_app_state",
                  "content": [{"type": "content",
                               "content": {"type": "text", "text": "{}"}}]})
     full = {"command": TOOL_TITLE, "description": "list files", "cwd": cwd}

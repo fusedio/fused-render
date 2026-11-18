@@ -144,7 +144,14 @@ test("flag ON: the shared head — ×, chevrons, identity, ↗ Open and the chat
   expect(place.findAll((n) => n.props["data-hint"] === "/repo/app").length).toBeGreaterThan(0);
   const idSlot = hostAll(r, (n) => hasClass(n, "task-head-idslot"))[0]!;
   expect(idSlot.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-file"))).toHaveLength(1);
-  expect(hostAll(r, (n) => hasClass(n, "task-head-countslot"))).toHaveLength(1);
+  // TWO LINES (2026-11-17), the rail window's layout, under the panel's own
+  // reveal (no `is-window`). Favourites are off here, so the door is the one
+  // act: no star seat, the facts keep slots of their own, and Open trades
+  // with the time.
+  const headEl = hostAll(r, (n) => hasClass(n, "task-head"))[0]!;
+  expect(hasClass(headEl, "is-two-line")).toBe(true);
+  expect(hasClass(headEl, "is-window")).toBe(false);
+  expect(hostAll(r, (n) => hasClass(n, "task-head-facts"))).toHaveLength(0);
   const timeSlot = hostAll(r, (n) => hasClass(n, "task-head-timeslot"))[0]!;
   expect(timeSlot.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-open"))).toHaveLength(1);
 });
