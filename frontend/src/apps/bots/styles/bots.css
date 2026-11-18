@@ -638,6 +638,7 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-md > :first-child, .bots-page .xp-md > :first-child > :first-child { margin-top: 0; }
 .bots-page .xp-md p { margin: 0 0 .4em; }
 .bots-page .xp-md :is(ul, ol) { margin: 0 0 .4em; padding-left: 1.3em; }
+.bots-page .xp-md ul { list-style: disc; } .bots-page .xp-md ol { list-style: decimal; }  /* the diff sits inside a row's <li> */
 .bots-page .xp-md li { margin: .1em 0; }
 .bots-page .xp-md li::marker { color: var(--muted); }
 .bots-page .xp-md code { font: 10.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: color-mix(in srgb, var(--text) 9%, transparent); border-radius: 4px; padding: .05em .3em; }
@@ -665,6 +666,7 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-dr.del .xp-dc * { color: inherit; }
 .bots-page .xp-dr.ctx .xp-dc, .bots-page .xp-dr.ctx .xp-dc * { color: var(--muted); }
 .bots-page .xp-dpair { display: flex; flex-direction: column; gap: 1px; margin: 2px 0; padding: 2px; border-radius: 7px; border: 1px solid var(--line); }
+.bots-page .xp-dr.blank { padding-top: 0; padding-bottom: 0; height: 6px; overflow: hidden; }
 .bots-page .xp-dgap { padding: 0 8px; color: var(--muted); font-size: 11px; line-height: 1.2; }
 .bots-page .xp-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .bots-page .xp-pending { padding: 8px 10px; }
