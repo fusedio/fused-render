@@ -305,7 +305,10 @@ export function TaskPeekWho({
         <>
       <span
         className="task-side-peek-status"
-        title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
+        // The app's instant caption (platform/lib/hints), as the head's
+        // buttons have it — not the browser's slow `title` (owner,
+        // 2026-11-18).
+        data-hint={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
       >
         <TaskIconPick
           task={task}
@@ -322,6 +325,9 @@ export function TaskPeekWho({
             iconPicked={task.icon_picked}
             {...(ring?.unread ? { unread: true } : {})}
             {...(ring?.draftHeld ? { draftHeld: true } : {})}
+            // The seat's instant caption says it (above): no native tooltip
+            // a second later with the same word.
+            quiet
           />
         </TaskIconPick>
         {/* Not while the title is being edited: the host's overlay (the rail
@@ -365,7 +371,7 @@ export function TaskPeekWho({
               // folded the where-tag's word 24px before the row was full.
               {...(part === "title" ? { "data-fit-skip": "" } : {})}
               aria-label="Rename task"
-              title="Rename task"
+              data-hint="Rename task"
               onClick={startRename}
             >
               <Pencil size={12} aria-hidden />

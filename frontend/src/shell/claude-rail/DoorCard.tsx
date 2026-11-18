@@ -53,7 +53,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import type { DoorCardStore } from "./door-card-store";
 import { useFavPeekState } from "./fav-peek-store";
-import { publishWindowABox, setSnapGuide } from "./card-snap";
+import { publishWindowABox, setSnapGuide, setSnapGuides } from "./card-snap";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { viewPress } from "./rail-pin-lib";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
@@ -63,10 +63,11 @@ import {
   floatPlacement,
   floatResize,
   isDockEdge,
+  snapResize,
   viewportOf,
   type MoveEdge,
 } from "./rail-move-lib";
-import { useWindowBox, windowPos } from "./rail-move-store";
+import { useWindowBox, windowBox, windowPos } from "./rail-move-store";
 import { useCardMove } from "./useCardMove";
 import {
   PEEK_MAX_WIDTH,
@@ -278,13 +279,17 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     if (!start || start.pointerId !== e.pointerId) return;
-    // FLOATING (rail-move-lib `floatResize`): inside the viewport, no magnet.
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    // FLOATING (rail-move-lib `floatResize`): inside the viewport, with the
+    // held edge's magnet to window B's card as it stands and to the app
+    // window (`snapResize`; owner, 2026-11-18).
     if (start.floating || !isDockEdge(start.corner)) {
-      const fl = floatResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, viewportOf(window), {
-        minWidth: PEEK_MIN_WIDTH,
-        minHeight: PEEK_MIN_HEIGHT,
-        maxWidth: PEEK_MAX_WIDTH,
-      });
+      const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
+      const view = viewportOf(window);
+      const pulled = snapResize(start.corner, dx, dy, (x, y) => floatResize(start.corner, start.box, x, y, view, lim), windowBox("b"), view);
+      setSnapGuides(pulled.x, pulled.y);
+      const fl = pulled.box;
       dragLast.current = fl;
       setBox((prev) => (prev && sameBox(prev, fl) ? prev : fl));
       return;
@@ -293,11 +298,22 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     // Never over window B's card under it (RailPeek's own floor,
     // rail-peek-lib `bottomClear`; owner, 2026-11-08).
     const bounds = row.getBoundingClientRect();
-    const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, bottomClear(start.box, favBox));
-    // THE WIDTH MAGNET (card-snap.ts): to window B's card.
-    const snapped = snapWidth(asked, start.corner, favBox, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
-    setSnapGuide(snapped.guide);
-    const next = snapped.box;
+    const dock = start.corner;
+    const floor = bottomClear(start.box, favBox);
+    let next: Box;
+    if (pinModelRef.current) {
+      // WITH THE PIN (window B's card may float): the held edge's magnet on
+      // either axis (`snapResize`) — the width magnet is its left↔left case.
+      const pulled = snapResize(dock, dx, dy, (x, y) => dragResize(dock, start.box, x, y, bounds, floor), windowBox("b"), viewportOf(window));
+      setSnapGuides(pulled.x, pulled.y);
+      next = pulled.box;
+    } else {
+      const asked = dragResize(dock, start.box, dx, dy, bounds, floor);
+      // THE WIDTH MAGNET (card-snap.ts): to window B's card.
+      const snapped = snapWidth(asked, dock, favBox, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
+      setSnapGuide(snapped.guide);
+      next = snapped.box;
+    }
     dragLast.current = next;
     setBox((prev) => (prev && sameBox(prev, next) ? prev : next));
   };
@@ -305,7 +321,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     const start = dragStart.current;
     dragStart.current = null;
     setResizing(null);
-    setSnapGuide(null);
+    setSnapGuides([], []);
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);

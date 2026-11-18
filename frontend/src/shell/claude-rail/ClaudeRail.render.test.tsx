@@ -795,7 +795,12 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
     expect(gitGroup(r)).toHaveLength(0);
     expect(items(r).slice(0, 2)).toEqual(["sidebar-rail-sep is-tight", "claude-rail-nav claude-rail-git-door"]);
     const door = gitDoor(r)[0]!;
-    expect(door.props.title).toBe("Git — on feature · 0 ahead · 2 behind main · 1 to push · 2 to pull");
+    // The app's instant caption beside the door, not the browser's `title`
+    // (owner, 2026-11-18). No card host here, so the hover brings no card
+    // up and the door says its words.
+    expect(door.props.title).toBeUndefined();
+    expect(door.props["data-hint-side"]).toBe("left");
+    expect(door.props["data-hint"]).toBe("Git — on feature · 0 ahead · 2 behind main · 1 to push · 2 to pull");
     expect(door.props["aria-label"]).toBe("Git, on feature, 1 to push, 2 to pull, updates on the remote");
     // Green on top (2 behind main), the push dot bottom-right.
     const dots = door.findAll((n) => typeof n.props?.className === "string" && n.props.className.startsWith("sidebar-rail-dot"));

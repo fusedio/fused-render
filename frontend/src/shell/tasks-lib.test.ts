@@ -2657,7 +2657,9 @@ describe("the unread mark", () => {
     // UP for the ancestor's, and this sits inside a lane header ("Collapse Done")
     // and a row (the task's full title). A leaf, which has no count, keeps the
     // status word as an ordinary slow native tooltip.
-    expect(icon).toContain('title={many ? "" : text}');
+    // (…unless its host captions it at once itself — `quiet`, the task
+    // head's status seat, 2026-11-18.)
+    expect(icon).toContain('title={many || quiet ? "" : text}');
   });
 
   it("SAYS unread even with no count, so a leaf's dot is not sight-only", () => {

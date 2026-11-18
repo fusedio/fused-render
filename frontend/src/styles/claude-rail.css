@@ -486,6 +486,25 @@
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
 }
+/* THE PIN ON THE RING OF A PINNED WINDOW (ClaudeRail `pinMark`; owner,
+   2026-11-18: "when we pin we should show a pin icon topleft of the task
+   ring in rail, smaller version, also invert the pin on x axis so it faces
+   right side"): the head's own filled pin (RailPin `PinAngle`), small, at
+   the seat's top-left corner — outside the ring's circle — and mirrored, so
+   its point leans in toward the ring it holds. Only while the window is
+   PINNED (not a hover, not a temp card): the wash says "open", the pin says
+   "stays". The head's muted ink; it takes no pointer and no name (the
+   window's pin button says it). On every door of the rail whose window is
+   pinned: a ring, a favourite, a bot's face, a nav door. */
+.claude-rail-pinmark {
+  position: absolute;
+  top: -1px;
+  left: -4px;
+  display: flex;
+  color: var(--fg-muted);
+  transform: scaleX(-1);
+  pointer-events: none;
+}
 /* The favourite's card (FavouritePeek `#claude-rail-fav-peek`): ONE ABOVE
    THE RAIL'S OWN CARD (45) and its bridge (44), so where the two must
    overlap (a window too small to keep them apart, RailPeek `avoid`) the
@@ -770,6 +789,49 @@
 :where(:is(.claude-rail-peek, .modal-popover).is-movable :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *))
   :where(a[href]) {
   cursor: pointer;
+}
+/* THE DRAG HANDLE, IN THE ROW'S FREE MIDDLE (owner, 2026-11-18: "when it is
+   pinned and we hover over first row let's show the drag handle in middle
+   space over the first row header"): six dots, shown while the pointer is
+   over the grab row of a pinned window (and through its drag), so the row
+   says what a press on it does before the cursor has to.
+   IN THE FREE SPACE, NOT OVER THE ROW'S MIDDLE: the shared head's row has no
+   spacer (its right cluster is pushed by an auto margin), so the handle IS
+   one — the row's `::after`, ordered before the right cluster and growing
+   into whatever room the row has left; a row with none gives it none, and
+   the handle is simply not there (it never sits on a tag or a seat). Its
+   left margin takes back the one gap it adds, so pinning moves nothing.
+   A one-row head (the Bots and Git cards, a bot's card) already has the
+   spacer (`.claude-rail-peek-gap`), which draws it. Nothing here takes a
+   press of its own: the dots are the row's, and the row is the grab. */
+:is(.claude-rail-peek, .modal-popover).is-movable .task-head-row:not(.claude-rail-peek-body *, .modal-body *) > .task-head-marks {
+  order: 2;
+}
+:is(.claude-rail-peek, .modal-popover).is-movable .task-head-row:not(.claude-rail-peek-body *, .modal-body *)::after,
+.claude-rail-peek.is-movable .claude-rail-peek-head > .claude-rail-peek-row:first-child > .claude-rail-peek-gap::after {
+  content: "";
+  display: block;
+  height: 16px;
+  background: var(--fg-faint);
+  -webkit-mask: var(--rail-grab-dots) center / 16px 16px no-repeat;
+  mask: var(--rail-grab-dots) center / 16px 16px no-repeat;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+:is(.claude-rail-peek, .modal-popover).is-movable .task-head-row:not(.claude-rail-peek-body *, .modal-body *)::after {
+  order: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  margin-left: -10px;
+}
+:is(.claude-rail-peek, .modal-popover).is-movable {
+  --rail-grab-dots: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='3' cy='5.5' r='1.25'/%3E%3Ccircle cx='8' cy='5.5' r='1.25'/%3E%3Ccircle cx='13' cy='5.5' r='1.25'/%3E%3Ccircle cx='3' cy='10.5' r='1.25'/%3E%3Ccircle cx='8' cy='10.5' r='1.25'/%3E%3Ccircle cx='13' cy='10.5' r='1.25'/%3E%3C/svg%3E");
+}
+:is(.claude-rail-peek, .modal-popover).is-movable .task-head-row:not(.claude-rail-peek-body *, .modal-body *):hover::after,
+:is(.claude-rail-peek, .modal-popover).is-dragging .task-head-row:not(.claude-rail-peek-body *, .modal-body *)::after,
+.claude-rail-peek.is-movable .claude-rail-peek-head > .claude-rail-peek-row:first-child:hover > .claude-rail-peek-gap::after,
+.claude-rail-peek.is-dragging .claude-rail-peek-head > .claude-rail-peek-row:first-child > .claude-rail-peek-gap::after {
+  opacity: 1;
 }
 /* …under the drag: no glide (the box follows the pointer every frame), no
    text selection; and the page's frames take no pointer, so a drag over the

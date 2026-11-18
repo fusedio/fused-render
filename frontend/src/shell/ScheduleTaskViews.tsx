@@ -765,8 +765,14 @@ export function StatusIcon({
   background,
   icon,
   iconPicked,
+  quiet,
 }: {
   status: BoardColumn;
+  /** NO NATIVE TOOLTIP: the host captions the ring itself, at once
+   *  (platform/lib/hints `data-hint` on its seat — the task head's status
+   *  seat), and the browser's `title` would say the same word again a second
+   *  later. The accessible name stays. */
+  quiet?: boolean;
   /** THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): the task's
    *  `icon_slot` — null on a task that wears the ring (never given one and
    *  not starred, or its icon removed; 2026-11-16). With the experiment on, the ring becomes that glyph —
@@ -840,7 +846,7 @@ export function StatusIcon({
       }
       aria-label={marks ? `${text}, ${marks}` : text}
       data-tip={many ?? ""}
-      title={many ? "" : text}
+      title={many || quiet ? "" : text}
     >
       {glyph && (
         <svg aria-hidden="true" focusable="false">

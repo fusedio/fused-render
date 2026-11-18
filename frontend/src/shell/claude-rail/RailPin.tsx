@@ -46,8 +46,8 @@ export function RailPinButton({
 }: {
   pinned: boolean;
   onToggle: () => void;
-  /** `head`: the shared head's icon button (`.task-head-btn`, its hint);
-   *  `legacy`: the rail card's own row (`.claude-rail-peek-btn`, a title). */
+  /** `head`: the shared head's icon button (`.task-head-btn`);
+   *  `legacy`: the rail card's own row (`.claude-rail-peek-btn`). */
   variant?: "head" | "legacy";
   /** The card's keyboard landing: with the pin no card has a ×, and the pin
    *  is the head's first button (DoorCard `closeRef`). */
@@ -61,7 +61,9 @@ export function RailPinButton({
       className={(variant === "head" ? "task-head-btn" : "claude-rail-peek-btn") + " rail-pin-btn" + (pinned ? " is-pinned" : "")}
       aria-pressed={pinned}
       aria-label="Pin"
-      {...(variant === "head" ? { "data-hint": words } : { title: words })}
+      // The app's instant caption on either head (platform/lib/hints; owner,
+      // 2026-11-18: the rail's tooltips "consistent and shown instantly").
+      data-hint={words}
       onClick={onToggle}
     >
       <PinAngle size={14} filled={pinned} />

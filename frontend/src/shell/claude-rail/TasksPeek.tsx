@@ -402,18 +402,18 @@ export function TasksPeek() {
                   type="button"
                   className="claude-rail-peek-btn claude-rail-peek-close"
                   aria-label="Close Tasks"
-                  title="Close"
+                  data-hint="Close"
                   onClick={api.close}
                 >
                   <X size={14} aria-hidden="true" />
                 </button>
-                <span className="claude-rail-tasks-title" title={title}>
+                <span className="claude-rail-tasks-title" data-hint={title}>
                   {title}
                 </span>
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
                 {/* "Open tasks", not the other cards' "Open" (owner, 2026-11-08):
                     this door is the page's, not a chat's. */}
-                <button type="button" className="btn claude-rail-peek-open" title="Open the Tasks page" onClick={() => api.openPage()}>
+                <button type="button" className="btn claude-rail-peek-open" data-hint="Open the Tasks page" onClick={() => api.openPage()}>
                   Open tasks
                 </button>
               </div>

@@ -98,17 +98,17 @@ export function GitPeek() {
               <div className="claude-rail-peek-row">
                 {/* With the pin: no ×, the pin in its seat (and the keyboard's landing). */}
                 {!api.pin && (
-                  <button ref={api.closeRef} type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Close Git" title="Close" onClick={api.close}>
+                  <button ref={api.closeRef} type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Close Git" data-hint="Close" onClick={api.close}>
                     <X size={14} aria-hidden="true" />
                   </button>
                 )}
                 {api.pin && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
-                <span className="claude-rail-tasks-title" title="Git">
+                <span className="claude-rail-tasks-title">
                   Git
                 </span>
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
                 {take && (
-                  <button type="button" className="btn claude-rail-peek-open" title="Open the Git panel" onClick={take}>
+                  <button type="button" className="btn claude-rail-peek-open" data-hint="Open the Git panel" onClick={take}>
                     Open
                   </button>
                 )}

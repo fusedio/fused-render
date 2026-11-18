@@ -1547,3 +1547,48 @@ describe("floating windows (round 3 B; owner, 2026-11-17)", () => {
     expect(snapGuide()).toBeNull();
   });
 });
+
+describe("the pin on the door of a pinned window (owner, 2026-11-18)", () => {
+  const marksIn = (n: ReactTestInstance) => n.findAll((c) => c.props?.className === "claude-rail-pinmark");
+  const marks = (r: ReactTestRenderer) => marksIn(r.root);
+
+  test("window A: no mark on a temp card's ring; the pin icon puts it on that ring, and takes it off again", async () => {
+    const r = await mount({ unified: true });
+    await press(listRing(r, "a"));
+    expect(marks(r)).toHaveLength(0);
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    expect(marksIn(listRing(r, "a"))).toHaveLength(1);
+    expect(marks(r)).toHaveLength(1);
+    await act(async () => peek(r)!.props.pinCtl.onToggle());
+    expect(marks(r)).toHaveLength(0);
+  });
+
+  test("window B: the pinned favourite's ring in the favourites, never the list's ring on the same chat", async () => {
+    const r = await mount({ unified: true, chats: [chat("a"), chat("f", { starred: true })] });
+    await press(footRing(r, "f"));
+    expect(marks(r)).toHaveLength(0);
+    await act(async () => setFavPinned("f"));
+    expect(marksIn(footRing(r, "f"))).toHaveLength(1);
+    expect(marks(r)).toHaveLength(1);
+    await act(async () => setFavPinned(null));
+    expect(marks(r)).toHaveLength(0);
+  });
+
+  test("the Tasks door: the mark while its card is pinned", async () => {
+    const off = registerTasksCard();
+    const r = await mount({ unified: true });
+    const door = () => byLabel(r, "Tasks")[0]!;
+    await press(door());
+    expect(marks(r)).toHaveLength(0);
+    await act(async () => tasksCardStore.setHeld(true));
+    expect(marksIn(door())).toHaveLength(1);
+    off();
+  });
+
+  test("the switch off: a held card's ring wears no pin (there is no pin)", async () => {
+    const r = await mount({ unified: false });
+    await press(listRing(r, "a"));
+    expect(peek(r)!.props.held).toBe(true);
+    expect(marks(r)).toHaveLength(0);
+  });
+});

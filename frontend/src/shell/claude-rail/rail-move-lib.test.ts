@@ -21,11 +21,12 @@ import {
   raised,
   serialisePos,
   snapEdges,
+  snapResize,
   EDGE_SNAP_PX,
   viewportOf,
   wishSize,
 } from "./rail-move-lib";
-import { PEEK_MAX_HEIGHT, PEEK_MAX_WIDTH, PEEK_WIDTH } from "./rail-peek-lib";
+import { PEEK_MAX_HEIGHT, PEEK_MAX_WIDTH, PEEK_WIDTH, dragResize } from "./rail-peek-lib";
 
 const VIEW = { width: 1400, height: 900 };
 
@@ -189,7 +190,7 @@ describe("snapEdges: the edge magnet of a head drag (round 3, owner 2026-11-17)"
   const other = { left: 600, top: 100, width: 400, height: 400 };
   const free = { left: 150, top: 560 };
   test("nothing near: the box stays where the drag put it, no guide", () => {
-    expect(snapEdges(free, size, other, VIEW)).toEqual({ pos: free, x: null, y: null });
+    expect(snapEdges(free, size, other, VIEW)).toEqual({ pos: free, x: [], y: [] });
   });
   test("left↔left, left↔right, right↔left, right↔right", () => {
     expect(snapEdges({ left: 608, top: 560 }, size, other, VIEW).pos.left).toBe(600);
@@ -220,33 +221,146 @@ describe("snapEdges: the edge magnet of a head drag (round 3, owner 2026-11-17)"
   test("x and y snap on their own, the nearest edge wins", () => {
     const both = snapEdges({ left: 605, top: 503 }, size, other, VIEW);
     expect(both.pos).toEqual({ left: 600, top: 500 });
-    expect(both.x).not.toBeNull();
-    expect(both.y).not.toBeNull();
+    expect(both.x.length).toBeGreaterThan(0);
+    expect(both.y.length).toBeGreaterThan(0);
     const xOnly = snapEdges({ left: 605, top: 560 }, size, other, VIEW);
     expect(xOnly.pos).toEqual({ left: 600, top: 560 });
-    expect(xOnly.y).toBeNull();
-    // 6px from the other's left, 4px from its right: the right wins.
-    expect(snapEdges({ left: 606, top: 560 }, { width: 390, height: 300 }, other, VIEW).pos.left).toBe(610);
+    expect(xOnly.y).toEqual([]);
+    // 6px from the other's left, 4px from its right — and 1px off its
+    // middle: the nearest line wins, here the middle.
+    expect(snapEdges({ left: 606, top: 560 }, { width: 390, height: 300 }, other, VIEW).pos.left).toBe(605);
+    // Two edges in reach and no middle (the other card's right edge and the
+    // app window's): 5px from the card's, 9px from the window's.
+    const wide = { left: 600, top: 100, width: 400 - 14, height: 400 };
+    expect(snapEdges({ left: 991, top: 560 }, size, wide, VIEW).pos.left).toBe(986);
   });
-  test("the guides run along the shared edge over both cards; the app window's own edge draws none", () => {
+  test("the guides run along the shared edge over both cards — every edge the two share", () => {
+    // Same width, left edges level: the right edges are level too. Two lines,
+    // and no third down the middle for the same fact.
     const s = snapEdges({ left: 605, top: 560 }, size, other, VIEW);
-    expect(s.x).toEqual({ x: 600, top: 100, bottom: 860 });
-    // Snapped to the viewport's edge: the position, and no line (a tall card
-    // the clamp holds against it would draw one on every drag).
-    const v = snapEdges({ left: 991, top: 300 }, size, null, VIEW);
-    expect(v.pos.left).toBe(VIEW.width - size.width);
-    expect(v.x).toBeNull();
+    expect(s.x).toEqual([
+      { x: 600, top: 100, bottom: 860 },
+      { x: 1000, top: 100, bottom: 860 },
+    ]);
+    // A narrower card shares one edge only.
+    const narrow = snapEdges({ left: 605, top: 560 }, { width: 300, height: 300 }, other, VIEW);
+    expect(narrow.x).toEqual([{ x: 600, top: 100, bottom: 860 }]);
     const h = snapEdges({ left: 150, top: 106 }, size, other, VIEW);
-    expect(h.y).toEqual({ y: 100, left: 150, right: 1000 });
+    expect(h.y).toEqual([{ y: 100, left: 150, right: 1000 }]);
+  });
+  test("the middle is a line too: centre to the other card's centre, either axis (owner, 2026-11-18)", () => {
+    // The other's centre: x 800, y 300. A 300×200 box centred there stands at 650, 200.
+    const small = { width: 300, height: 200 };
+    const x = snapEdges({ left: 655, top: 620 }, small, other, VIEW);
+    expect(x.pos.left).toBe(650);
+    expect(x.x).toEqual([{ x: 800, top: 100, bottom: 820 }]);
+    const y = snapEdges({ left: 100, top: 193 }, small, other, VIEW);
+    expect(y.pos.top).toBe(200);
+    expect(y.y).toEqual([{ y: 300, left: 100, right: 1000 }]);
+    // An edge nearer than the centre wins the pull.
+    expect(snapEdges({ left: 603, top: 620 }, small, other, VIEW).pos.left).toBe(600);
+  });
+  test("the app window's own edges and middle draw their guide, along the whole window (owner, 2026-11-18)", () => {
+    const left = snapEdges({ left: 9, top: 300 }, size, null, VIEW);
+    expect(left.x).toEqual([{ x: 0, top: 0, bottom: VIEW.height }]);
+    // The far edges: the line is drawn on the window's last pixel, not past it.
+    const right = snapEdges({ left: 991, top: 300 }, size, null, VIEW);
+    expect(right.pos.left).toBe(VIEW.width - size.width);
+    expect(right.x).toEqual([{ x: VIEW.width - 1, top: 0, bottom: VIEW.height }]);
+    const bottom = snapEdges({ left: 300, top: 595 }, size, null, VIEW);
+    expect(bottom.y).toEqual([{ y: VIEW.height - 1, left: 0, right: VIEW.width }]);
+    // The middle of the window: (1400 − 400) / 2 = 500, (900 − 300) / 2 = 300.
+    const mid = snapEdges({ left: 507, top: 294 }, size, null, VIEW);
+    expect(mid.pos).toEqual({ left: 500, top: 300 });
+    expect(mid.x).toEqual([{ x: 700, top: 0, bottom: VIEW.height }]);
+    expect(mid.y).toEqual([{ y: 450, left: 0, right: VIEW.width }]);
+  });
+  test("the other card's edge standing on the app window's far edge is drawn inside it", () => {
+    // The other card flush with the window's bottom: bottom↔bottom at y 900.
+    const low = { left: 600, top: 500, width: 400, height: 400 };
+    const s = snapEdges({ left: 100, top: 596 }, size, low, VIEW);
+    expect(s.pos.top).toBe(600);
+    expect(s.y).toEqual([{ y: VIEW.height - 1, left: 100, right: 1000 }]);
+  });
+  test("a card as long as the app window draws no window line on that axis (the clamp holds it there)", () => {
+    const tall = { width: 400, height: VIEW.height };
+    const s = snapEdges({ left: 300, top: 0 }, tall, null, VIEW);
+    expect(s.pos).toEqual({ left: 300, top: 0 });
+    expect(s.y).toEqual([]);
+  });
+  test("a line the drag put the box on itself is drawn too, with no pull", () => {
+    const s = snapEdges({ left: 600, top: 560 }, { width: 300, height: 300 }, other, VIEW);
+    expect(s.pos.left).toBe(600);
+    expect(s.x).toEqual([{ x: 600, top: 100, bottom: 860 }]);
   });
   test("the result stays inside the viewport: an edge off-screen loses to the viewport's own", () => {
     // The other card hangs 6px off the left: flush with it would be −6.
     const off = { left: -6, top: 100, width: 300, height: 300 };
     const s = snapEdges({ left: 4, top: 560 }, size, off, VIEW);
     expect(s.pos.left).toBe(0);
-    expect(s.x).toBeNull();
+    // The line it stands on is the app window's, not the card's.
+    expect(s.x).toEqual([{ x: 0, top: 0, bottom: VIEW.height }]);
     // A viewport nobody knows (a test shim) snaps to the other card alone.
     const open = { width: Infinity, height: Infinity };
-    expect(snapEdges({ left: 4, top: 560 }, size, null, open)).toEqual({ pos: { left: 4, top: 560 }, x: null, y: null });
+    expect(snapEdges({ left: 4, top: 560 }, size, null, open)).toEqual({ pos: { left: 4, top: 560 }, x: [], y: [] });
+  });
+});
+
+describe("snapResize: a resize's magnet on the edge its grip holds (owner, 2026-11-18)", () => {
+  const LIMITS = { minWidth: 280, minHeight: 240, maxWidth: 722 };
+  // The other window's card: 600..1000 across, 100..500 down.
+  const other = { left: 600, top: 100, width: 400, height: 400 };
+  // A floating card, 100..500 across, 550..850 down.
+  const start = { left: 100, top: 550, width: 400, height: 300 };
+  const float = (edge: Parameters<typeof floatResize>[0]) => (dx: number, dy: number) => floatResize(edge, start, dx, dy, VIEW, LIMITS);
+  test("nothing near: the drag's own box, no guide", () => {
+    const r = snapResize("r", 30, 0, float("r"), other, VIEW);
+    expect(r.box).toEqual({ left: 100, top: 550, width: 430, height: 300 });
+    expect(r).toMatchObject({ x: [], y: [] });
+  });
+  test("a right grip takes the other card's left edge within reach", () => {
+    // The right edge at 500 + 93 = 593, 7px short of 600.
+    const r = snapResize("r", 93, 0, float("r"), other, VIEW);
+    expect(r.box).toEqual({ left: 100, top: 550, width: 500, height: 300 });
+    expect(r.x).toEqual([{ x: 600, top: 100, bottom: 850 }]);
+    expect(r.y).toEqual([]);
+    // 13px short: no pull.
+    expect(snapResize("r", 87, 0, float("r"), other, VIEW).box.width).toBe(487);
+  });
+  test("a top grip takes the other card's bottom edge; a corner grip both axes", () => {
+    // The top at 550 − 44 = 506, 6px under the other's bottom (500).
+    const t = snapResize("t", 0, -44, float("t"), other, VIEW);
+    expect(t.box).toEqual({ left: 100, top: 500, width: 400, height: 350 });
+    expect(t.y).toEqual([{ y: 500, left: 100, right: 1000 }]);
+    const tr = snapResize("tr", 95, -45, float("tr"), other, VIEW);
+    expect(tr.box).toEqual({ left: 100, top: 500, width: 500, height: 350 });
+    expect(tr.x).toHaveLength(1);
+    expect(tr.y).toHaveLength(1);
+  });
+  test("only the held edge counts: a height grip draws no vertical line", () => {
+    // The left edges would be level at 600 — but the bottom grip holds neither.
+    const level = { ...start, left: 600 };
+    const r = snapResize("b", 0, 10, (dx, dy) => floatResize("b", level, dx, dy, VIEW, LIMITS), other, VIEW);
+    expect(r.x).toEqual([]);
+  });
+  test("the app window's edge: flush with it draws its line", () => {
+    const r = snapResize("l", -95, 0, float("l"), null, VIEW);
+    expect(r.box.left).toBe(0);
+    expect(r.x).toEqual([{ x: 0, top: 0, bottom: VIEW.height }]);
+  });
+  test("a snap the chassis' clamps refuse does not happen, and draws nothing", () => {
+    // The other card's left edge 6px past the widest this card may be.
+    const far = { left: 100 + LIMITS.maxWidth + 6, top: 100, width: 300, height: 400 };
+    const r = snapResize("r", 322, 0, float("r"), far, VIEW);
+    expect(r.box.width).toBe(LIMITS.maxWidth);
+    expect(r.x).toEqual([]);
+  });
+  test("the docked drag is one more chassis: the width magnet is its left↔left case", () => {
+    // Two cards in the rail's column, right edges level at 1000.
+    const row = { left: 0, top: 0, width: 1400, height: 900 };
+    const docked = { left: 590, top: 550, width: 410, height: 300 };
+    const r = snapResize("l", 4, 0, (dx, dy) => dragResize("l", docked, dx, dy, row), other, VIEW);
+    expect(r.box).toEqual({ left: 600, top: 550, width: 400, height: 300 });
+    expect(r.x).toEqual([{ x: 600, top: 100, bottom: 850 }]);
   });
 });

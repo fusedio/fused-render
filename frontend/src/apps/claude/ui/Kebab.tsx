@@ -714,7 +714,10 @@ export function Kebab({
               type="button"
               className="c-kebabbtn"
               aria-label="More options"
-              title="More options"
+              // The app's instant caption (platform/lib/hints), as the head's
+              // other seats have it — not the browser's slow `title` (owner,
+              // 2026-11-18).
+              data-hint="More options"
               ref={(el) => {
                 ownBtn.current = el;
                 if (btnRef) btnRef.current = el;

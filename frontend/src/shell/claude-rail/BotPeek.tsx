@@ -75,18 +75,19 @@ import { botStatusWords } from "./claude-rail-lib";
 import { isBotsPath } from "@apps/bots/routes";
 import { publishFavBox } from "./fav-peek-store";
 import { RailPinButton } from "./RailPin";
-import { setSnapGuide, windowABox } from "./card-snap";
+import { setSnapGuide, setSnapGuides, windowABox } from "./card-snap";
 import {
   FLOAT_GRIPS,
   RAIL_HEAD_SELECTOR,
   floatPlacement,
   floatResize,
   isDockEdge,
+  snapResize,
   viewportOf,
   wishSize,
   type MoveEdge,
 } from "./rail-move-lib";
-import { useWindowBox, windowPos } from "./rail-move-store";
+import { useWindowBox, windowBox, windowPos } from "./rail-move-store";
 import { useCardMove } from "./useCardMove";
 import {
   FAV_HEIGHT,
@@ -295,25 +296,45 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     if (!start || start.pointerId !== e.pointerId) return;
-    // FLOATING (rail-move-lib `floatResize`): inside the viewport, no magnet.
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    // FLOATING (rail-move-lib `floatResize`): inside the viewport, with the
+    // held edge's magnet to window A's card as it stands and to the app
+    // window (`snapResize`; owner, 2026-11-18).
     if (start.floating || !isDockEdge(start.corner)) {
-      const fl = floatResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, viewportOf(window), {
-        minWidth: PEEK_MIN_WIDTH,
-        minHeight: PEEK_MIN_HEIGHT,
-        maxWidth: PEEK_MAX_WIDTH,
-        maxHeight: start.cap,
-      });
+      const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH, maxHeight: start.cap };
+      const view = viewportOf(window);
+      const pulled = snapResize(start.corner, dx, dy, (x, y) => floatResize(start.corner, start.box, x, y, view, lim), windowBox("a"), view);
+      setSnapGuides(pulled.x, pulled.y);
+      const fl = pulled.box;
       dragLast.current = fl;
       setBox((prev) => (prev && prev.left === fl.left && prev.top === fl.top && prev.width === fl.width && prev.height === fl.height ? prev : fl));
       return;
     }
     if (!row) return;
     const bounds = row.getBoundingClientRect();
-    const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, start.floor, start.cap);
-    // THE WIDTH MAGNET (card-snap.ts): to window A's card.
-    const snapped = snapWidth(asked, start.corner, windowABox(), PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
-    setSnapGuide(snapped.guide);
-    const next = snapped.box;
+    const dock = start.corner;
+    let next: Box;
+    if (pinCtl) {
+      // WITH THE PIN (window A's card may float): the held edge's magnet on
+      // either axis (`snapResize`) — the width magnet is its left↔left case.
+      const pulled = snapResize(
+        dock,
+        dx,
+        dy,
+        (x, y) => dragResize(dock, start.box, x, y, bounds, start.floor, start.cap),
+        windowBox("a"),
+        viewportOf(window),
+      );
+      setSnapGuides(pulled.x, pulled.y);
+      next = pulled.box;
+    } else {
+      const asked = dragResize(dock, start.box, dx, dy, bounds, start.floor, start.cap);
+      // THE WIDTH MAGNET (card-snap.ts): to window A's card.
+      const snapped = snapWidth(asked, dock, windowABox(), PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
+      setSnapGuide(snapped.guide);
+      next = snapped.box;
+    }
     dragLast.current = next;
     setBox((prev) => (prev && prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height ? prev : next));
   };
@@ -321,7 +342,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     const start = dragStart.current;
     dragStart.current = null;
     setResizing(null);
-    setSnapGuide(null);
+    setSnapGuides([], []);
     const lastBox = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
@@ -581,7 +602,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
                     type="button"
                     className="claude-rail-peek-btn claude-rail-peek-close"
                     aria-label="Close the preview"
-                    title="Close the preview"
+                    data-hint="Close the preview"
                     onClick={() => {
                       onHeld(false);
                       onDismiss();
@@ -594,7 +615,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
                 <span className="claude-rail-peek-botface" aria-hidden="true">
                   <Face b={subject} />
                 </span>
-                <span className="claude-rail-peek-botname" title={name}>
+                <span className="claude-rail-peek-botname" data-hint={name}>
                   {name}
                 </span>
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
@@ -602,7 +623,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
                 <button
                   type="button"
                   className="btn claude-rail-peek-open"
-                  title="Open this bot's page"
+                  data-hint="Open this bot's page"
                   onClick={() => {
                     onOpen(botHref(view.id));
                     onHeld(false);
