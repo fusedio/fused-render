@@ -601,21 +601,18 @@ copies folder (`canvases.canvases_base()`, `~/Fused/canvas`) through `folders`. 
 that already carries the `shipped` key but has no witness entry is recorded as it is; a second one is never made.
 
 **A skill added to the shipped folder later** (`seed._new_skills`): the witness also lists, per key, the shipped
-skill names that expert has been offered (`skills`; an older witness without the list counts as the first five,
-`seed.FIRST_SKILLS`). On each start a shipped skill not in the list is copied into the installed expert, never
-over a file it has, and the list is updated: offered once, so one the user deletes stays deleted. The list only
-grows (a skill that leaves the shipped folder stays on it), and it is written even when the resync below fails.
+skill names that expert has been offered (`skills`). On each start a shipped skill not in the list is copied into the installed expert, never
+over a file it has, and the list is updated: offered once, so one the user deletes stays deleted. A witness
+without the list offers nothing.
 
 **A shipped file that changed** (`seed._resync`): the witness records, per key, the hash of each file as we
 last gave it (`given`). On each seed, an installed `instructions.md` or skill whose shipped version changed is
-replaced only while the installed copy is still what we shipped: its hash is the recorded one, or, for an install
-from before hashes were recorded, one of the earlier shipped versions listed in `seed.PAST` (with a hash on
-record `PAST` is not consulted: an earlier version found then was put back by hand, and is theirs). A copy the user (or
-anyone) edited is theirs and is left alone (a changed save in Settings > Instructions is such an edit); a missing one is not put back. Changed instructions start a fresh chat
-session, as any instructions change does (§7). When you change a shipped file, add its old hash to `seed.PAST`
-(a test checks the current version is not listed). The description `expert_list` shows (`ask_me_about` in the
-shipped `expert.json`) follows the same rule: an installed expert still carrying an earlier shipped text
-(`seed.PAST_ABOUT`) gets the current one; one the user wrote in Settings is kept (`seed._about`).
+replaced only while the installed copy is still what we gave: its hash is the recorded one. A copy the user (or
+anyone) edited is theirs and is left alone (a changed save in Settings > Instructions is such an edit), and so is a
+copy the witness has no hash for; a missing one is not put back. Changed instructions start a fresh chat session,
+as any instructions change does (§7). The description `expert_list` shows (`ask_me_about` in the shipped
+`expert.json`) follows the same rule: the witness records the text as given, and an installed expert still
+carrying that text gets the new one; one the user wrote in Settings is kept.
 
 ## 15. Developer settings
 
