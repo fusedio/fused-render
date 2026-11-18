@@ -685,10 +685,16 @@ def test_a_waiter_from_before_a_shutdown_stays_refused_after_a_reopen(expert, mo
     lock = store.write_lock(expert)
     lock.acquire()  # a dream waits on its gate when shutdown begins
     out = []
+    at_gate, take = threading.Event(), sessions._take
+
+    def taking(*a):  # the session has noted its generation by now: not a sleep that a slow machine outlasts
+        at_gate.set()
+        return take(*a)
+    monkeypatch.setattr(sessions, "_take", taking)
     t = threading.Thread(target=lambda: out.append(sessions.run(expert, "dream", "x")))
     t.start()
     try:
-        time.sleep(0.2)
+        assert at_gate.wait(5)
         sessions.shutdown()
         sessions.reopen()  # the server starts again before the waiter gets its gate
     finally:
