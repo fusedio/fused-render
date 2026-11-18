@@ -1251,6 +1251,9 @@ class Bot:
     # appears in the task text, so unrelated tasks pay nothing for it.
     SKILL_MAX = 40
     SKILL_BODY_CAP = 6000
+    # An expert's skill is a reference file it reads on demand, never mounted into a prompt, and a shipped one is
+    # already longer than a playbook may be: the editor's limit for those (routes._skills).
+    EXPERT_SKILL_BODY_CAP = 24000
 
     @property
     def skills_dir(self):
@@ -1283,15 +1286,20 @@ class Bot:
             out.append({"name": n[:-3], "title": title or n[:-3], "trigger": trigger, "body": body})
         return out
 
-    def skill_save(self, title, trigger, body, name=None):
+    @staticmethod
+    def skill_slug(title):
+        """The file name (no `.md`) skill_save gives a skill with this title or name."""
+        return re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")[:60] or "playbook"
+
+    def skill_save(self, title, trigger, body, name=None, cap=None):
         title = " ".join((title or "").split())[:80] or "Untitled playbook"
         trigger = ", ".join(t.strip() for t in re.split(r"[,\n]", trigger or "") if t.strip())[:300]
-        body = (body or "").strip()[:self.SKILL_BODY_CAP]
+        body = (body or "").strip()[:cap or self.SKILL_BODY_CAP]
         if not trigger:
             raise ValueError("a playbook needs at least one trigger word or phrase")
         if not body:
             raise ValueError("a playbook needs steps")
-        name = re.sub(r"[^a-z0-9]+", "-", (name or title).lower()).strip("-")[:60] or "playbook"
+        name = self.skill_slug(name or title)
         os.makedirs(self.skills_dir, exist_ok=True)
         if not os.path.exists(os.path.join(self.skills_dir, name + ".md")) and len(self.skills()) >= self.SKILL_MAX:
             raise ValueError(f"this bot already has {self.SKILL_MAX} playbooks; delete one first")

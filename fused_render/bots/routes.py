@@ -1023,8 +1023,18 @@ def _skills(bid, body):
     b = _ws(bid)
     op = body.get("op") or ""
     if op == "save":
+        # The form's save is refused, never cut or redirected: skill_save keeps the first `cap` characters and
+        # writes over a file of the same derived name, which is right for the model's own `learn` and wrong for a
+        # person's text (a long reference lost its end; "Add" with an existing title replaced that file).
+        expert = _botmod().is_expert(b.meta)
+        cap = b.EXPERT_SKILL_BODY_CAP if expert else b.SKILL_BODY_CAP
+        text, rid = (body.get("text") or "").strip(), body.get("rid") or None
+        if len(text) > cap:
+            raise ValueError(f"This text is {len(text)} characters; a skill holds at most {cap}. Shorten it or split it in two.")
+        if not rid and os.path.exists(os.path.join(b.skills_dir, b.skill_slug(" ".join((body.get("name") or "").split())[:80] or "Untitled playbook") + ".md")):
+            raise ValueError("A skill with this title already exists. Edit that one, or use another title.")
         b.skill_save(body.get("name"), body.get("trigger") if body.get("trigger") is not None else body.get("url"),
-                     body.get("text"), name=body.get("rid") or None)
+                     text, name=rid, cap=cap)
     elif op == "delete":
         b.skill_delete(body.get("rid") or "")
     elif op == "learn":
