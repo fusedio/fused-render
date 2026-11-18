@@ -2136,7 +2136,7 @@ def _expert_harness_s() -> float:
         v = float(os.environ.get("FUSED_RENDER_EXPERT_TIMEOUT") or 0)
     except ValueError:
         v = 0.0
-    return v if v > 0 else 600.0
+    return v if 0 < v < float("inf") else 600.0
 
 
 #: How long an `expert_ask` waits for the server. This file imports nothing of

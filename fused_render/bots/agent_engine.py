@@ -555,15 +555,21 @@ def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tupl
     instructions are the system prompt."""
     conv = conv if isinstance(conv, dict) else {}
     parts = []
+    where = xstore.where(bot, run=True)
+    sent = {"where": _sha(where)}
     if not conv.get("session_id"):
         summary = (conv.get("summary") or "").strip()
         if not summary:
             past = _call(bot.past_conversation, []) if past is None else past
             summary = "\n".join(past) if past else "(this is the start of the conversation)"
         parts.append("CONVERSATION SO FAR (with the user, oldest first):\n" + summary)
-        parts.append(xstore.where(bot, run=True))  # a resumed session already has it
+        parts.append(where)
+    elif (conv.get("sent") or {}).get("where") != sent["where"]:
+        # A resumed session already has it, unless a folder was granted or taken away since (or the UDF
+        # environments changed): the new process's fence follows the grants, and the model must be told.
+        parts.append("Your folders as they are now (they changed since you were last told): " + where)
     parts += [f"Today is {xsessions.today()}.", f"MESSAGE: {task}"]
-    return "\n\n".join(parts), {}
+    return "\n\n".join(parts), sent
 
 
 # ------------------------------------------------------------- spawning ---
@@ -955,6 +961,15 @@ def _drive(bot, sess: Turn, proc) -> tuple:
         # system/init, user echoes / tool_results, control_response, stream_event: nothing to show
 
 
+def _digest(bot, previous: str) -> str:
+    """The previous note plus the digest of the conversation, cut to what `conversation_rollover` keeps
+    (`SUMMARY_CAP`) from the END: the rollover keeps the first characters, and an expert (never summarized, no
+    `recall`) whose previous note already filled the cap would start its fresh session without the newest
+    exchanges. As `Bot.summarize_conversation`'s own fallback does."""
+    text = ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))).strip()
+    return text[-int(getattr(bot, "SUMMARY_CAP", 8000)):]
+
+
 def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
     """(conv, resume_id): the bot's conversation record and the CLI session
     this turn resumes, or None after a rollover (over budget, the system
@@ -982,7 +997,7 @@ def _conversation_plan(bot, model: str, sp_hash: str) -> tuple:
     summary = (_call(getattr(bot, "summarize_conversation", None), "", since, previous)
                if len(lines) >= 4 and not expert else "")
     if not summary:  # a thin slice, or a summary call that failed: the previous note plus the digest
-        summary = ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))).strip()
+        summary = _digest(bot, previous)
     _call(getattr(bot, "conversation_rollover", None), None, summary, sp_hash)
     if why != "new" and not expert:  # an expert's memory is memory.md, kept by the expert itself
         # Memory upkeep rides on the rollover (bot.curate_memory): one more call, every ~half a window.
@@ -1119,7 +1134,7 @@ def run(bot, task: str, label: str | None = None) -> None:
             since = int(conv.get("since_seq") or 0) if isinstance(conv, dict) else 0
             previous = (conv.get("summary") or "").strip() if isinstance(conv, dict) else ""
             summary = ((None if expert else _call(getattr(bot, "summarize_conversation", None), "", since, previous))
-                       or ((previous + "\n\nSINCE THEN:\n" if previous else "") + "\n".join(_call(bot.past_conversation, []))))
+                       or _digest(bot, previous))
             _call(getattr(bot, "conversation_rollover", None), None, summary, _sha(sp_text))
             conv = _call(getattr(bot, "conversation", None), None)
             outcome, final = spawn(None)
@@ -1694,7 +1709,10 @@ def _expert_permission(bot, sess: Turn, args: dict, name: str, inp: dict):
 
 def _permission_card(bot, sess: Turn, args: dict, name: str, inp: dict, preview: str, rule, why: str):
     """The approval card for one built-in call and its answer on the permission wire. None on Stop."""
-    if preview in sess.denied:
+    # A shell command is remembered whole: its label is cut to 120 characters, and two commands that begin alike
+    # would share one refusal (the second answered "denied earlier" without the user ever seeing it).
+    denied = ("Bash", " ".join(str(inp.get("command") or "").split())) if name == "Bash" else preview
+    if denied in sess.denied:
         bot.emit("note", f"Not asking again: the user already declined to {preview}.")
         return _permission_answer(False, args, f"DENIED EARLIER by the user: {preview}. Do not retry it; do something else "
                                                "or finish and say what you could not do.")
@@ -1715,7 +1733,7 @@ def _permission_card(bot, sess: Turn, args: dict, name: str, inp: dict, preview:
                 bot.inbox[:0] = raw
         return _permission_answer(True, args)
     bot.emit("system", f"Denied; {'the expert' if sess.is_expert else 'Super Bot'} will try something else.")
-    sess.denied.add(preview)
+    sess.denied.add(denied)
     why_not = f' They said: "{said}".' if said and said.lower() not in ("deny", "no", "n") else ""
     return _permission_answer(False, args, f"DENIED by the user: {preview}.{why_not} Do not retry it; do something else "
                                            "or finish and say what you could not do." + "".join(f"\n{n}" for n in notes))

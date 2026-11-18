@@ -1328,7 +1328,11 @@ def test_expert_chat_card_denied_then_approved(server, fake_cli, monkeypatch, tm
     t = start(bot, [_perm("Bash", command="ls /tmp"), _perm("Read", file_path="/etc/hosts"), {"result": "done"}], monkeypatch)
     card = bot.wait_event("approval")
     assert card["text"] == f"About to run `ls /tmp`. {agent_engine.EXPERT_CARD_WHY} Approve?"
-    assert "forever" not in card and "severity" not in card and bot.meta["status"] == "waiting"
+    assert "forever" not in card and "severity" not in card
+    end = time.time() + 10  # the status is set just after the card is emitted (_gate)
+    while bot.meta.get("waiting_on") != card["seq"] and time.time() < end:
+        time.sleep(0.01)
+    assert bot.meta["status"] == "waiting"
     bot.say("no")
     # A read outside its folders is the user's to decide too: nothing is allowed without the card.
     second = bot.wait_event("approval", pred=lambda ev: "read" in ev["text"])
@@ -1340,6 +1344,35 @@ def test_expert_chat_card_denied_then_approved(server, fake_cli, monkeypatch, tm
     assert stub_risk == []  # no model call of ours for an expert, so no risk score
     assert "allow_rules" not in bot.meta and bot.roles()[-1] == "done"
     assert any(e["text"] == "Denied; the expert will try something else." for e in bot.events)
+
+
+def test_a_declined_command_does_not_refuse_another_that_begins_alike(server, fake_cli, monkeypatch, tmp_path):
+    """The card's label cuts a command at 120 characters; the refusal is remembered by the whole command, so a
+    different one with the same beginning still reaches the user (it was answered "denied earlier" unseen)."""
+    bot = expert_bot(tmp_path)
+    head = "python -c 'print(1)' " + "x" * 130
+    t = start(bot, [_perm("Bash", command=head + " --one"), _perm("Bash", command=head + " --two"),
+                    _perm("Bash", command=head + "  --one"), {"result": "done"}], monkeypatch)
+    first = bot.wait_event("approval")
+    bot.say("no")
+    second = bot.wait_event("approval", pred=lambda ev: ev["seq"] != first["seq"])
+    assert second and second["detail"] == first["detail"]  # the same label, another command
+    bot.say("yes")
+    finish(t)
+    assert _answer(fake_cli, 1)["behavior"] == "allow"
+    assert "DENIED EARLIER" in _answer(fake_cli, 2)["message"] and bot.roles().count("approval") == 2
+
+
+def test_a_rebuilt_expert_session_keeps_the_newest_exchanges(tmp_path):
+    """No summary call for an expert: the note is the previous note plus the digest, and what the rollover keeps
+    is its END (the previous note alone could fill the cap and push every recent exchange out)."""
+    bot = expert_bot(tmp_path)
+    bot.past_conversation = lambda: ["#41 USER: the newest question", "#42 YOU FINISHED: the newest answer"]
+    cap = 8000
+    out = agent_engine._digest(bot, "old " * cap)
+    assert len(out) == cap and out.endswith("#42 YOU FINISHED: the newest answer") and "#41 USER" in out
+    assert agent_engine._digest(bot, "earlier note") == ("earlier note\n\nSINCE THEN:\n#41 USER: the newest question\n"
+                                                        "#42 YOU FINISHED: the newest answer")
 
 
 def test_expert_chat_memory_edit_needs_no_card(server, fake_cli, monkeypatch, tmp_path):

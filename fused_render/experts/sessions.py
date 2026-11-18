@@ -176,7 +176,7 @@ def _timeout() -> float:
         v = float(os.environ.get(TIMEOUT_ENV) or 0)
     except ValueError:
         v = 0.0
-    return v if v > 0 else TIMEOUT_S
+    return v if 0 < v < float("inf") else TIMEOUT_S  # `inf` would be a wait with no end (`_take`, `communicate`)
 
 
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
@@ -318,6 +318,8 @@ def _rows_dir(bot) -> str:
 
 
 def _save(bot, row: dict) -> None:
+    if getattr(bot, "deleted", False):
+        return  # deleted while this session ran: a late row would make `<folder>/.fused/expert/` again (state_dir)
     store.write_json(os.path.join(_rows_dir(bot), row["id"] + ".json"), row)
 
 
@@ -350,6 +352,8 @@ def _left_path(bot) -> str:
 def _mark_left(bot) -> None:
     """memory.md as the writing session that just ended left it (`edited_by_hand`). Called only when that session
     changed it: one that changed nothing (a chat "hi") must not clear a hand edit's note."""
+    if getattr(bot, "deleted", False):
+        return  # as `_save`
     store.write_json(_left_path(bot), {"sha256": _sha(store.memory(bot)), "at": time.time()})
 
 
@@ -525,10 +529,12 @@ def run(bot, kind: str, prompt: str, trigger=None, gen=None) -> dict:
         if writes and rec["memory_diff"]:
             _mark_left(bot)
     finally:
-        with _GUARD:
-            _RUNNING.discard(rec["id"])
-        gate.release()
-        _save(bot, rec)
+        try:
+            _save(bot, rec)  # before the row leaves _RUNNING: `shutdown` waits on that set for this save
+        finally:
+            with _GUARD:
+                _RUNNING.discard(rec["id"])
+            gate.release()
     if writes and kind != "dream":
         after_write(bot, gen)
     return rec
@@ -630,8 +636,6 @@ def shutdown(budget_s: float = 4.0) -> None:
         _STATE["closed"] = True
         _STATE["gen"] += 1
         procs = list(_PROCS)
-    if not procs:
-        return
     start = time.monotonic()
     budget_s = max(0.0, budget_s)
     for p in procs:
@@ -641,3 +645,10 @@ def shutdown(budget_s: float = 4.0) -> None:
         _signal(p, _SIGKILL)
     if _wait_all(left, start + budget_s):
         logger.warning("experts: %d harness process(es) still running at the end of shutdown", len(left))
+    # A session whose harness has ended still has its row to save (the answer, the transcript, the memory diff):
+    # what is left of the budget is its time to do so, before the caller releases the workspace (bots registry).
+    while time.monotonic() < start + budget_s:
+        with _GUARD:
+            if not _RUNNING:
+                return
+        time.sleep(0.01)

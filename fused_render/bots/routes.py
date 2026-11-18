@@ -901,8 +901,10 @@ def _settings(bid, body):
     if bm.is_expert(b.meta):
         # No browser, no engine choice of the bots kind (an expert always runs on the agent engine),
         # no terminal: the dialog may still send these keys; they are ignored. Nor `memory`: the bot memory file
-        # (`.fused/memory.md`) is not an expert's memory, and our code never writes the expert's memory.md.
-        body = {k: v for k, v in body.items() if k not in ("engine", "browser_id", "encrypt", "terminal", "memory")}
+        # (`.fused/memory.md`) is not an expert's memory, and our code never writes the expert's memory.md. Nor
+        # `instructions`: an expert's are its instructions.md (POST /api/experts/{id}/instructions), and a stale
+        # dialog sending its old box back must not plant the extra again.
+        body = {k: v for k, v in body.items() if k not in ("engine", "browser_id", "encrypt", "terminal", "memory", "instructions")}
     terminal = _check_terminal(bm, body, bm.is_super(b.meta))
     b.meta["name"] = name or b.meta.get("name")
     if bm.is_expert(b.meta) and isinstance(body.get("ask_me_about"), str):

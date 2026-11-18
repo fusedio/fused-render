@@ -212,11 +212,47 @@ def memory(bot) -> str:
 
 
 def instructions(bot) -> str:
-    """The standing instructions the harness gets as its system prompt: instructions.md, then whatever the user
-    wrote in Settings."""
-    text = read_text(os.path.join(expert_dir(bot), INSTRUCTIONS)).strip() or DEFAULT_INSTRUCTIONS.strip()
-    extra = str(_meta_of(bot).get("instructions") or "").strip()
+    """The standing instructions the harness gets as its system prompt: instructions.md (the default text when
+    the file is missing or empty). A legacy extra (`meta["instructions"]`, typed in a Settings box an expert no
+    longer has, or set by Super Bot's `bot_settings`) follows under a heading until the Instructions page saves,
+    which folds it into the file (`save_instructions`)."""
+    text = read_text(instructions_path(bot)).strip() or DEFAULT_INSTRUCTIONS.strip()
+    extra = legacy_instructions(bot)
     return text + ("\n\n## From the user (Settings)\n\n" + extra if extra and extra not in text else "")
+
+
+def instructions_path(bot) -> str:
+    return os.path.join(expert_dir(bot), INSTRUCTIONS)
+
+
+def legacy_instructions(bot) -> str:
+    return str(_meta_of(bot).get("instructions") or "").strip()
+
+
+#: The most text Settings > Instructions saves, in characters. More is refused, never cut.
+INSTRUCTIONS_MAX = 50_000
+
+
+def save_instructions(bot, text) -> None:
+    """Settings > Instructions: `text` becomes instructions.md, whole, and the legacy extra is cleared in the same
+    call (the page showed it as part of the text, so it is in `text` unless the user removed it). The file is
+    written through a temp sibling and a rename, and only when the text differs from what the expert runs with: a
+    save that changes nothing leaves a shipped expert's file as shipped (seed._resync). Empty or oversized text is
+    a ValueError and nothing is written."""
+    if not isinstance(text, str):
+        raise ValueError("`text` must be a string")
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        raise ValueError("The instructions are empty. Write what this expert should be told.")
+    if len(text) > INSTRUCTIONS_MAX:
+        raise ValueError(f"These instructions are {len(text):,} characters; the limit is {INSTRUCTIONS_MAX:,}. "
+                         "Shorten them, or move reference material into a skill.")
+    path = instructions_path(bot)
+    if text != (read_text(path).strip() or DEFAULT_INSTRUCTIONS.strip()) or not os.path.isfile(path):
+        write_text(path, text + "\n")
+    if _meta_of(bot).get("instructions"):  # after the file: a failed write keeps the extra applied
+        bot.meta["instructions"] = ""
+        bot.save()
 
 
 def skills(bot) -> list:
@@ -268,6 +304,22 @@ def write_json(path, obj) -> None:
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(obj, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def write_text(path, text: str) -> None:
+    """The whole file or nothing: a temp sibling, then a rename."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):

@@ -3,6 +3,7 @@ fence flags, chat rows, and the task-learn due rule with its retry cap."""
 from _bots_conftest import *  # noqa: F401,F403 — app_home (a per-test home and workspace)
 import json
 import os
+import shutil
 import threading
 import time
 
@@ -360,10 +361,10 @@ def test_side_sessions_leave_no_cli_transcript(expert, monkeypatch):
 def test_expert_turn_message_and_system_prompt(expert):
     text, sent = agent_engine.first_message(expert, "What is X?", past=["user: hi"], conv={})
     assert "CONVERSATION SO FAR" in text and "user: hi" in text and text.endswith("MESSAGE: What is X?")
-    assert f"Today is {sessions.today()}." in text and sent == {}
+    assert f"Today is {sessions.today()}." in text and list(sent) == ["where"]  # what it was told, by hash
     where = f"Your folder is {store.expert_dir(expert)}; your memory is {store.memory_path(expert)}."
     assert store.where(expert) == where and where in text  # a fresh session is told where its memory is
-    text, _ = agent_engine.first_message(expert, "Next?", conv={"session_id": "abc"})
+    text, _ = agent_engine.first_message(expert, "Next?", conv={"session_id": "abc", "sent": sent})
     assert text == f"Today is {sessions.today()}.\n\nMESSAGE: Next?"
     assert agent_engine.system_prompt_for(expert, "/x") == store.instructions(expert)
 
@@ -983,10 +984,17 @@ def test_how_to_run_is_stated_once_and_the_rest_is_the_skill(expert, tmp_path, m
     assert len(note.replace(str(tmp_path), "")) < 400
     calls = stub(monkeypatch)
     sessions.ask(expert, "How?")
-    fresh, _ = agent_engine._expert_message(expert, "run it", past=[], conv={})
-    resumed, _ = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s"})
+    fresh, sent = agent_engine._expert_message(expert, "run it", past=[], conv={})
+    resumed, _ = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s", "sent": sent})
     assert note in calls[0]["prompt"] and note in fresh and store.where(expert, run=True) in fresh
     assert resumed == f"Today is {sessions.today()}.\n\nMESSAGE: run it"  # nothing restated on a resumed session
+    # ... until what it was told stops being true: a folder granted (or taken away) since is said on the next turn.
+    more = tmp_path / "granted-later"
+    more.mkdir()
+    monkeypatch.setattr(store, "read_folders", lambda bot, was=store.read_folders: was(bot) + [str(more)])
+    told, sent2 = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s", "sent": sent})
+    assert store.where(expert, run=True) in told and str(more) in told and sent2 != sent
+    assert str(more) not in agent_engine._expert_message(expert, "x", past=[], conv={"session_id": "s", "sent": sent2})[0]
     # What happens outside the rules is the shipped skill's to say, for both kinds of session.
     skill = open(os.path.join(os.path.dirname(store.__file__), "shipped", "canvas-reference", "skills",
                               store.RUN_SKILL), encoding="utf-8").read()
@@ -1012,3 +1020,53 @@ def test_a_writer_does_not_wait_out_a_chat_that_waits_on_the_user(expert, monkey
         lock.release()
     expert.meta.pop("waiting_on", None)
     assert sessions.run(expert, "task-learn", "learn")["status"] == "done"
+
+
+def test_the_timeout_setting_must_be_finite(monkeypatch):
+    """`inf` is a positive number and no timeout at all: a writer's wait for the lock would never end."""
+    for bad in ("inf", "nan", "-5", "0", "x"):
+        monkeypatch.setenv(sessions.TIMEOUT_ENV, bad)
+        assert sessions._timeout() == sessions.TIMEOUT_S
+    monkeypatch.setenv(sessions.TIMEOUT_ENV, "7.5")
+    assert sessions._timeout() == 7.5
+
+
+def test_a_session_that_ends_after_its_expert_was_deleted_writes_nothing(expert, monkeypatch):
+    """Deleting an expert removes its folder; a side session still running then must not make
+    `<folder>/.fused/expert/sessions/` again with its final row."""
+    def gone(bot, prompt, write):
+        bot.deleted = True
+        shutil.rmtree(store.expert_dir(bot))
+        return {"ok": True, "answer": "late", "transcript": []}
+    monkeypatch.setattr(sessions, "harness", gone)
+    row = sessions.ask(expert, "q")
+    assert row["status"] == "done" and not os.path.exists(store.expert_dir(expert))
+
+
+def test_shutdown_waits_for_a_session_to_save_its_row(expert, monkeypatch):
+    """Between a harness ending and its row being saved the session has no process to wait for: shutdown gives
+    it what is left of the budget, so the row is on disk before the caller releases the workspace."""
+    saving, go = threading.Event(), threading.Event()
+    real = sessions._save
+
+    def slow(bot, row):
+        if row.get("status") == "done":
+            saving.set()
+            go.wait(5)
+        real(bot, row)
+    monkeypatch.setattr(sessions, "harness", lambda bot, prompt, write: {"ok": True, "answer": "a", "transcript": []})
+    monkeypatch.setattr(sessions, "_save", slow)
+    t = threading.Thread(target=lambda: sessions.ask(expert, "q"))
+    t.start()
+    try:
+        assert saving.wait(5)
+        threading.Timer(0.2, go.set).start()
+        sessions.shutdown(5)
+        assert [r["status"] for r in sessions.rows(expert)] == ["done"]
+        t0 = time.monotonic()
+        sessions.shutdown(5)  # nothing running: no wait
+        assert time.monotonic() - t0 < 1
+    finally:
+        go.set()
+        t.join(5)
+        sessions.reopen()

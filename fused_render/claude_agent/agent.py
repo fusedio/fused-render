@@ -2745,7 +2745,7 @@ def _expert_call_ceiling() -> float:
         harness = float(os.environ.get("FUSED_RENDER_EXPERT_TIMEOUT") or 0)
     except ValueError:
         harness = 0.0
-    return (harness if harness > 0 else 600.0) + 120 + 30 + 60
+    return (harness if 0 < harness < float("inf") else 600.0) + 120 + 30 + 60
 
 
 EXPERT_CALL_CEILING = _expert_call_ceiling()

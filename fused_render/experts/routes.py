@@ -6,6 +6,8 @@
     GET  /api/experts/{id}/memory             the file, its size against the limit, who changed it last
     GET  /api/experts/{id}/sessions           the side-session rows, newest first, without transcripts
     GET  /api/experts/{id}/sessions/{sid}     one full row
+    GET  /api/experts/{id}/instructions       what the expert is told (Settings > Instructions)
+    POST /api/experts/{id}/instructions {text}  writes instructions.md whole; refused when empty or over the limit
 
 Owned by the bots owner (bots/routes.OWNED_PREFIXES) and forwarded there. POSTs need `X-Fused: 1`. Errors are
 `{"error": "<sentence>"}`: an unknown expert 404, a bad body 400, the bots workspace held elsewhere 409. `ask`
@@ -129,3 +131,34 @@ def expert_session(eid: str, sid: str):
     if row is None:
         return _error(f"no such session: {store.line(sid, 80)}", 404)
     return row
+
+
+def _instructions(bot) -> dict:
+    from fused_render.experts import seed
+    text, extra = store.instructions(bot), store.legacy_instructions(bot)
+    return {"text": text, "path": store.instructions_path(bot), "limit": store.INSTRUCTIONS_MAX,
+            # The text ends with a legacy Settings extra that is not in the file yet (a save folds it in).
+            "legacy": bool(extra) and text.endswith(extra) and extra not in store.read_text(store.instructions_path(bot)),
+            "shipped": store.manifest(bot)["shipped"], "follows_shipped": seed.follows_shipped(bot)}
+
+
+@router.get(PREFIX + "/{eid}/instructions")
+@_handled
+def expert_instructions(eid: str):
+    """What the expert runs with (`store.instructions`: the file, the default text when there is none, then a
+    legacy Settings extra), the limit a save holds it to, and whether it is a shipped copy that still follows
+    the app's updates."""
+    return _instructions(_expert(eid))
+
+
+@router.post(PREFIX + "/{eid}/instructions")
+@_handled
+def expert_instructions_save(eid: str, body=Body(None), x_fused: str | None = Header(None)):
+    if (bad := _require_fused(x_fused)) is not None:
+        return bad
+    body = _body(body)
+    bot = _expert(eid)
+    from fused_render.bots import registry
+    registry.require_workspace()
+    store.save_instructions(bot, body.get("text"))
+    return _instructions(bot)
