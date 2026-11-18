@@ -413,7 +413,8 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
     # at once: the timer tries again on its next tick (learn.py).
     if closed() or not (gate.acquire(blocking=False) if writes else gate.acquire(timeout=ASK_WAIT_S)):
         rec.update(status="error", ended=time.time(), error=CLOSED if closed() else BUSY)
-        _save(bot, rec)
+        if not writes:  # a refused writer is retried every tick: a row each time would bury the real ones
+            _save(bot, rec)
         return rec
     with _GUARD:
         _RUNNING.add(rec["id"])

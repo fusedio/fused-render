@@ -95,8 +95,8 @@ note `memory.md`, call `harness`, note `memory.md` again, save the finished row.
 row with status `error`.
 
 - **The write lock** (`store.write_lock`, one per expert, in-process): task-learn, dream and every chat turn hold
-  it, so memory writers run one at a time. A side session that finds it held does not wait: it ends at once as an
-  `error` row with `error: "the expert is busy; try again in a minute"` (`sessions.BUSY`), and the timer's next
+  it, so memory writers run one at a time. A task-learn or dream that finds it held does not wait and leaves no row: it returns
+  at once with `error: "the expert is busy; try again in a minute"` (`sessions.BUSY`), and the timer's next
   tick tries again (§9). A chat turn waits for it with "waiting for the expert's memory" and gives up only on
   Stop.
 - **Asks** only read and take no lock: up to 3 run at once in the process (`ASK_PARALLEL`, shared by all

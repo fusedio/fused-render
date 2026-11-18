@@ -621,7 +621,7 @@ def test_a_busy_expert_is_not_a_failed_attempt(expert, monkeypatch, transcript):
     finally:
         lock.release()
     assert calls == [] and "fails" not in learn._load(expert)["sessions"]["s1"]
-    assert all(r["error"] == sessions.BUSY for r in sessions.rows(expert))
+    assert sessions.rows(expert) == []  # no row per refused tick
     assert learn.run_pass() == {"sessions": 1, "errors": 0} and len(calls) == 1
 
 
