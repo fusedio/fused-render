@@ -560,7 +560,7 @@ def test_a_tool_call_becomes_the_claude_tool_rows(start, agent, fake_args):
 
 
 @pytest.mark.parametrize("kind", ["mcp", "mcp-raw"])
-def test_an_mcp_tool_call_maps_to_fused_approvals_in_either_shape(start, kind):
+def test_an_mcp_tool_call_maps_to_fused_render_in_either_shape(start, kind):
     """Cursor's MCP tool shape is not pinned down: a title-only call
     (`<tool> (<server> MCP Server)`) and a `rawInput`-bearing `other` call
     titled `<server>-<tool>` both become fused's own tool name."""
@@ -570,7 +570,7 @@ def test_an_mcp_tool_call_maps_to_fused_approvals_in_either_shape(start, kind):
     block = next(r["event"]["content_block"] for r in s.out()
                  if r.get("type") == "stream_event"
                  and r["event"]["type"] == "content_block_start")
-    assert block["name"] == "mcp__fused_approvals__app_state"
+    assert block["name"] == "mcp__fused_render__app_state"
     if kind == "mcp-raw":
         assert block["input"]["selector"] == "main"
         assert block["input"]["_acp"]["raw"] == {"selector": "main"}
@@ -581,17 +581,17 @@ def test_tool_mapping_table(host_mod, tmp_path):
     # fused's own MCP tools, titled without a rawInput: no arguments →
     # `<tool> (<server> MCP Server)`; arguments → `<tool>(key: value, …)`,
     # parsed into the input the card shows.
-    assert m("other", "app_state (fused_approvals MCP Server)", None, [], "")[0] == \
-        "mcp__fused_approvals__app_state"
+    assert m("other", "app_state (fused_render MCP Server)", None, [], "")[0] == \
+        "mcp__fused_render__app_state"
     # Values are BARE (the CLI never quotes), and may hold commas and colons:
     # a pair ends only where the next `, key: ` begins.
     name, inp = m("other", "terminal_send(id: t1, text: ls -la)", None, [], "")
-    assert name == "mcp__fused_approvals__terminal_send"
+    assert name == "mcp__fused_render__terminal_send"
     assert (inp["id"], inp["text"]) == ("t1", "ls -la")
     name, inp = m("other", "terminal_send(id: t3, text: echo a, b; date: now)", None, [], "")
     assert (inp["id"], inp["text"]) == ("t3", "echo a, b; date: now")
     name, inp = m("other", "canvas_screenshot(what: udf, udf: my_udf)", None, [], "")
-    assert name == "mcp__fused_approvals__canvas_screenshot" and inp["udf"] == "my_udf"
+    assert name == "mcp__fused_render__canvas_screenshot" and inp["udf"] == "my_udf"
     assert m("other", "app_state(keys: [a, b])", None, [], "")[1]["keys"] == "[a, b]"
     assert m("other", "other_tool(x: 1)", None, [], "")[0] == "other_tool(x: 1)"
     assert m("other", "echo (weather MCP Server)", None, [], "")[0] == "weather-echo"
@@ -622,10 +622,10 @@ def test_tool_mapping_table(host_mod, tmp_path):
                     "newText": "hello\n"}])
     assert (name, inp["file_path"], inp["content"]) == ("Write", "brand_new.txt", "hello\n")
     # An MCP call titled `<tool> (<server> MCP Server)`.
-    name, inp = m("other", "app_state (fused_approvals MCP Server)", {"reason": "look"}, [], "")
-    assert name == "mcp__fused_approvals__app_state" and inp["reason"] == "look"
+    name, inp = m("other", "app_state (fused_render MCP Server)", {"reason": "look"}, [], "")
+    assert name == "mcp__fused_render__app_state" and inp["reason"] == "look"
     # An unmapped kind keeps the call's own input under `_acp.raw`.
-    assert inp["_acp"] == {"kind": "other", "title": "app_state (fused_approvals MCP Server)",
+    assert inp["_acp"] == {"kind": "other", "title": "app_state (fused_render MCP Server)",
                            "raw": {"reason": "look"}}
     assert m("other", "list_issues (github MCP Server)", {}, [], "")[0] == "github-list_issues"
     assert m("other", "some free title", {}, [], "")[0] == "some free title"
@@ -636,13 +636,13 @@ def test_tool_mapping_table(host_mod, tmp_path):
     name, inp = m("read", "Reading a.py", None, [{"path": "a.py"}], "")
     assert (name, inp["file_path"]) == ("Read", "a.py")
     # Cursor's other MCP spellings, with or without a rawInput.
-    for title in ("fused_approvals-app_state", "mcp__fused_approvals__app_state",
-                  "fused_approvals: app_state", "app_state"):
+    for title in ("fused_render-app_state", "mcp__fused_render__app_state",
+                  "fused_render: app_state", "app_state"):
         name, inp = m("other", title, {"reason": "look"}, [], "")
-        assert name == "mcp__fused_approvals__app_state", title
+        assert name == "mcp__fused_render__app_state", title
         assert inp["reason"] == "look" and inp["_acp"]["raw"] == {"reason": "look"}
-    assert m("other", "fused_approvals-terminal_send(id: t1, text: ls)", None, [], "")[0] \
-        == "mcp__fused_approvals__terminal_send"
+    assert m("other", "fused_render-terminal_send(id: t1, text: ls)", None, [], "")[0] \
+        == "mcp__fused_render__terminal_send"
     assert m("other", "mcp__github__list_issues", {}, [], "")[0] == "github-list_issues"
     assert m("other", "github-list_issues", {}, [], "")[0] == "github-list_issues"
     assert m("other", "Note: something", None, [], "")[0] == "Note: something"
@@ -1136,7 +1136,7 @@ def test_the_pane_mcp_server_rides_session_new(start, agent):
     assert new == {"cwd": s.cwd, "mcpServers": []}
     # A second session whose run dir carries an mcp.json before the host
     # spawns, in the exact shape `_write_mcp_config` writes.
-    s2 = start(mcp={"fused_approvals": {
+    s2 = start(mcp={"fused_render": {
         "command": sys.executable,
         "args": ["permission_server.py", "/perm", "--no-approve"],
         "env": {"PYTHONUTF8": "1", "FUSED_RENDER_TERMINAL_ORIGIN": "http://x"},
@@ -1145,7 +1145,7 @@ def test_the_pane_mcp_server_rides_session_new(start, agent):
     new = next(e["msg"]["params"] for e in s2.fake()
                if e.get("msg", {}).get("method") == "session/new")
     assert new["mcpServers"] == [{
-        "name": "fused_approvals", "command": sys.executable,
+        "name": "fused_render", "command": sys.executable,
         "args": ["permission_server.py", "/perm", "--no-approve"],
         "env": [{"name": "PYTHONUTF8", "value": "1"},
                 {"name": "FUSED_RENDER_TERMINAL_ORIGIN", "value": "http://x"}]}]
@@ -1419,12 +1419,12 @@ def test_cursors_extension_requests_are_answered_and_its_notifications_ignored(s
 
 
 def test_session_load_carries_the_mcp_servers(start):
-    s = start(resume=True, mcp={"fused_approvals": {"command": sys.executable,
+    s = start(resume=True, mcp={"fused_render": {"command": sys.executable,
                                                     "args": ["p.py"], "env": {}}})
     assert _wait_for(lambda: len(s.out()) >= 1)
     load = next(e["msg"]["params"] for e in s.fake()
                 if e.get("msg", {}).get("method") == "session/load")
-    assert [m["name"] for m in load["mcpServers"]] == ["fused_approvals"]
+    assert [m["name"] for m in load["mcpServers"]] == ["fused_render"]
 
 
 def test_a_replay_that_lands_after_the_load_reply_is_still_backfilled(start):

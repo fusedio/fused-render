@@ -528,13 +528,13 @@ def test_every_copy_of_the_server_name_agrees(agent):
     assert agent.PERMISSION_SERVER == name
     assert agent.LEGACY_PERMISSION_SERVER == _load("permission_server").LEGACY_SERVER_NAME
     assert "__" not in name and "-" not in name
-    for host in ("gemini_host", "opencode_host"):
+    for host in ("gemini_host", "opencode_host", "cursor_host"):
         assert _load(host)._MCP_SERVER == name
     assert _load("copilot_host")._MCP_PREFIX == name + "-"
 
 
 def test_hosts_know_the_tool_names():
-    for host in ("gemini_host", "opencode_host"):
+    for host in ("gemini_host", "opencode_host", "cursor_host"):
         mod = _load(host)
         assert {"s3_search", "s3_read"} <= mod._FUSED_TOOLS
 

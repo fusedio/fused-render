@@ -35,7 +35,7 @@ the registry row, `perm/`, the inbox). Cursor's own transcripts under
   (and the Sign in card) match. `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` in the
   environment satisfy the login with no browser.
 - **D4 MCP injection (the main unknown).** The app's pane MCP server
-  (`fused_approvals`: `app_state`, `terminal_*`, canvas, S3) rides
+  (`fused_render`: `app_state`, `terminal_*`, canvas, S3) rides
   `session/new` / `session/load` `mcpServers`, built from the run dir's
   `mcp.json` exactly as Gemini's is; `--approve-mcps` stands in for the
   approval prompt. Why this and not `CURSOR_CONFIG_DIR` or a project
@@ -67,7 +67,7 @@ the registry row, `perm/`, the inbox). Cursor's own transcripts under
   notifications are ignored, any other request gets `-32601`.
 - **D8 Tool mapping.** `_map_tool` accepts a `rawInput`-bearing call and a
   title-only call, and several spellings of an MCP title; fused's own tools map
-  to `mcp__fused_approvals__<tool>`. The spellings are guesses (see below).
+  to `mcp__fused_render__<tool>`. The spellings are guesses (see below).
 - **D9 No usage, no compaction.** Usage rows are zero; there is no compaction
   event. Rows otherwise follow the row contract of `docs/COPILOT_BACKEND.md` 4.
 - **D10 Health.** `cursor_health` never spawns `acp` and never touches Cursor's

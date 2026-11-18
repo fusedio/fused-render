@@ -3331,7 +3331,7 @@ def test_cursor_argv_is_the_contract_line(agent, target, tmp_path, monkeypatch):
         assert agent._cursor_argv(str(run_dir), True, "default", "", model, "", [], file) == [
             binary, "--approve-mcps", "--trust", "acp"]
     with open(run_dir / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
+        server = json.load(fh)["mcpServers"]["fused_render"]
     assert "--no-approve" in server["args"]
     assert (run_dir / "cursor" / "AGENTS.md").read_text().strip()
 

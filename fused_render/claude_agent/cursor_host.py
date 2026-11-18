@@ -108,8 +108,8 @@ _KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
 _MCP_TITLE = re.compile(r"^(?P<tool>[A-Za-z0-9_.-]+) \((?P<server>[A-Za-z0-9_.-]+) MCP Server\)$")
 # ...or Claude's own spelling, `mcp__<server>__<tool>`.
 _MCP_DOUBLE = re.compile(r"^mcp__(?P<server>[A-Za-z0-9_.-]+?)__(?P<tool>[A-Za-z0-9_.-]+)$")
-_MCP_SERVER = "fused_approvals"
-_MCP_COLON = re.compile(r"^fused_approvals:\s*(?P<tool>[A-Za-z0-9_.-]+)$")
+_MCP_SERVER = "fused_render"
+_MCP_COLON = re.compile(r"^fused_render:\s*(?P<tool>[A-Za-z0-9_.-]+)$")
 #: ...and an MCP call WITH arguments: `<tool>(key: value, …)`: pairs joined
 #: by ", ", string values BARE (never quoted). A value may itself hold
 #: commas, so a pair ends only where the next `, key: ` begins.
@@ -485,7 +485,7 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
     A call may carry no `rawInput`, so `title` (the tool's own description of
     the call — a shell command's command line) and `locations` carry what the
     card shows. An MCP tool (`_mcp_identity`) from fused's own server becomes
-    `mcp__fused_approvals__<tool>` (the name agent.py pre-allows and
+    `mcp__fused_render__<tool>` (the name agent.py pre-allows and
     `_segments_from_rows` strips), another server's `<server>-<tool>`."""
     raw = raw if isinstance(raw, dict) else ({} if raw is None else {"value": raw})
     kind = str(kind or "")

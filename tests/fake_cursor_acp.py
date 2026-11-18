@@ -282,10 +282,10 @@ def _tool_call_fields():
                 "content": [{"type": "diff", "path": "new_file.txt",
                              "oldText": None, "newText": "hi"}]}
     if TOOL_KIND == "mcp":
-        return {"title": "app_state (fused_approvals MCP Server)", "kind": "other",
+        return {"title": "app_state (fused_render MCP Server)", "kind": "other",
                 "locations": [], "content": []}
     if TOOL_KIND == "mcp-raw":
-        return {"title": TOOL_TITLE if TOOL_TITLE != "ls -la" else "fused_approvals-app_state",
+        return {"title": TOOL_TITLE if TOOL_TITLE != "ls -la" else "fused_render-app_state",
                 "kind": "other", "rawInput": {"selector": "main"},
                 "locations": [], "content": []}
     fields = {"title": TOOL_TITLE, "kind": TOOL_KIND, "locations": [], "content": []}
