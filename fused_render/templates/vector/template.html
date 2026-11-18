@@ -478,7 +478,12 @@ async function refreshExplorer(dir){
     // and took the pushState under first-change-push (PR-3), leaving the `file`
     // write to coalesce behind it and the entry to record a folder change
     // nobody made.
-    else { setParam('dir', row.dataset.p.replace(/\/[^/]*$/, '')); setParam('file', row.dataset.p); els.explorer.style.display = 'none'; }
+    else {
+      const dir = row.dataset.p.replace(/\/[^/]*$/, '');
+      if (fused.params.get('dir') !== dir) fused.params.set('dir', dir);
+      fused.params.set('file', row.dataset.p);
+      els.explorer.style.display = 'none';
+    }
   });
 }
 
