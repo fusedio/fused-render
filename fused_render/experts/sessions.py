@@ -53,7 +53,7 @@ WRITERS = frozenset({"task-learn", "dream"})
 CHANGES_SHOWN = 20
 #: The memory limit (docs/experts.md "Dreaming"): whichever comes first.
 LIMIT_LINES = 200
-LIMIT_BYTES = 12 * 1024
+LIMIT_BYTES = 24 * 1024  # 200 lines of memory are often long ones
 TIMEOUT_ENV = "FUSED_RENDER_EXPERT_TIMEOUT"
 TIMEOUT_S = 600.0
 ASK_PARALLEL = 3

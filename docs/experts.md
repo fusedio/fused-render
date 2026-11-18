@@ -502,7 +502,7 @@ workspace claim, so no harness still writes `memory.md` once another server can 
 
 ## 10. Dreaming (memory compaction)
 
-The limit is 200 lines or 12 KB (`LIMIT_LINES`, `LIMIT_BYTES`), whichever comes first. After a chat turn and after
+The limit is 200 lines or 24 KB (`LIMIT_LINES`, `LIMIT_BYTES`), whichever comes first. After a chat turn and after
 a task-learn session (not after a dream), `sessions.after_write` checks the size; over the limit it queues ONE
 dream session per expert in a background thread (a second is not queued while one is queued or running). The
 dream prompt gives today's date, the size and the limit, and says: merge lines that say the same thing (add the
