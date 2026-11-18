@@ -196,19 +196,23 @@ import {
   type ResizeEdge,
   type StarMark,
 } from "./rail-peek-lib";
-import { publishWindowABox, setSnapGuide, windowABox } from "./card-snap";
+import { publishWindowABox, setSnapGuide, setSnapGuides, windowABox } from "./card-snap";
 import { PinAngle, RailPinButton } from "./RailPin";
 import {
   FLOAT_GRIPS,
   RAIL_HEAD_SELECTOR,
   floatPlacement,
   floatResize,
+  BOTH_AXES,
+  dockedBAxes,
   isDockEdge,
+  snapResize,
+  type ResizeAxes,
   viewportOf,
   wishSize,
   type MoveEdge,
 } from "./rail-move-lib";
-import { useWindowBox, windowPos } from "./rail-move-store";
+import { useWindowBox, windowBox, windowPos } from "./rail-move-store";
 import { useCardMove } from "./useCardMove";
 
 /** Where a card's dragged size is kept in the ui-layout document: the
@@ -669,6 +673,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     floor: number | undefined;
     /** The height the drag may not pass (the favourite's card, header). */
     cap: number | undefined;
+    /** The other window's card as it stood at the press, for the held edge's
+     *  magnet (rail-move-lib `snapResize`) — null: no magnet. Read ONCE: a
+     *  docked window A re-places itself from window B's box, and a target
+     *  read per move would run from the edge nearing it. */
+    other: Box | null;
+    /** The axes the edge magnet works on (below); null: none — the docked
+     *  width magnet alone, with the pin off. */
+    magnet: ResizeAxes | null;
   } | null>(null);
   // The box the last move asked for — what the release saves. A ref, not
   // `box`: the move's state write may not have committed when the pointer
@@ -690,22 +702,54 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // The favourite's card: never past half the window (header) — unless it
     // is PINNED, which has no height limit but its room (owner, 2026-11-17).
     const cap = resizeKey === "canvasRailFav" && !pinCtl?.pinned ? favMaxHeight(window.innerHeight) : undefined;
-    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floating, floor, cap };
+    const otherWin = moveWin === "a" ? "b" : "a";
+    // THE EDGE MAGNET (rail-move-lib `snapResize`), with the pin: both axes
+    // for window A's card (window B never moves for it); for window B's, the
+    // axes window A holds still on (`dockedBAxes`).
+    const otherBox = pinCtl ? windowBox(otherWin) : null;
+    const magnet = !pinCtl
+      ? null
+      : moveWin === "a"
+        ? BOTH_AXES
+        : dockedBAxes({ floating, aFloats: windowPos("a") !== null, mine: box, other: otherBox });
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      box,
+      pointerId: e.pointerId,
+      corner,
+      el: e.currentTarget,
+      floating,
+      floor,
+      cap,
+      other: magnet ? otherBox : null,
+      magnet,
+    };
     dragLast.current = null;
     setResizing(corner);
   };
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     if (!start || start.pointerId !== e.pointerId) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    // The other window's card as it stood at the press (`dragStart.other`):
+    // what the held edge's magnet reaches for (`snapResize`).
+    const otherCard = start.other;
     // FLOATING (rail-move-lib `floatResize`): inside the viewport, not the
-    // row; the same minimums and maximums; no magnet (it needs the shared
-    // right edge a floating card no longer has).
+    // row; the same minimums and maximums; the edge magnet and its guides
+    // (owner, 2026-11-18: "top bottom left right … everywhere").
     if (start.floating || !isDockEdge(start.corner)) {
-      const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
-      const fl = floatResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, viewportOf(window), {
-        ...lim,
+      const lim = {
+        minWidth: PEEK_MIN_WIDTH,
+        minHeight: PEEK_MIN_HEIGHT,
+        maxWidth: PEEK_MAX_WIDTH,
         ...(start.cap !== undefined ? { maxHeight: start.cap } : {}),
-      });
+      };
+      const view = viewportOf(window);
+      const pulled = snapResize(start.corner, dx, dy, (x, y) => floatResize(start.corner, start.box, x, y, view, lim), otherCard, view);
+      setSnapGuides(pulled.x, pulled.y);
+      const fl = pulled.box;
       dragLast.current = fl;
       setBox((prev) =>
         prev && prev.left === fl.left && prev.top === fl.top && prev.width === fl.width && prev.height === fl.height ? prev : fl,
@@ -714,12 +758,32 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     }
     if (!row) return;
     const bounds = row.getBoundingClientRect();
-    const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, start.floor, start.cap);
-    // THE WIDTH MAGNET (card-snap.ts): the other window's card — window A's
-    // for the favourite's card, window B's (`avoid`) for the list's.
-    const snapped = snapWidth(asked, start.corner, resizeKey ? windowABox() : avoid, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
-    setSnapGuide(snapped.guide);
-    const next = snapped.box;
+    const dock = start.corner;
+    let next: Box;
+    if (start.magnet) {
+      // WITH THE PIN (the other card may float): the held edge's magnet, on
+      // either axis (`snapResize`) — the width magnet below is its
+      // left↔left case.
+      const pulled = snapResize(
+        dock,
+        dx,
+        dy,
+        (x, y) => dragResize(dock, start.box, x, y, bounds, start.floor, start.cap),
+        otherCard,
+        viewportOf(window),
+        undefined,
+        start.magnet,
+      );
+      setSnapGuides(pulled.x, pulled.y);
+      next = pulled.box;
+    } else {
+      const asked = dragResize(dock, start.box, dx, dy, bounds, start.floor, start.cap);
+      // THE WIDTH MAGNET (card-snap.ts): the other window's card — window A's
+      // for the favourite's card, window B's (`avoid`) for the list's.
+      const snapped = snapWidth(asked, dock, resizeKey ? windowABox() : avoid, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
+      setSnapGuide(snapped.guide);
+      next = snapped.box;
+    }
     dragLast.current = next;
     setBox((prev) =>
       prev && prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height
@@ -737,7 +801,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const start = dragStart.current;
     dragStart.current = null;
     setResizing(null);
-    setSnapGuide(null);
+    setSnapGuides([], []);
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
@@ -817,6 +881,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // `endDrag` reads refs; the flag and the key are what decide.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gripsOn, shownKey]);
+  // …and a card that leaves the page under a resize takes its guides with it
+  // (no pointerup will come to clear them; reviewer, 2026-11-18).
+  useEffect(
+    () => () => {
+      if (dragStart.current) setSnapGuides([], []);
+    },
+    [],
+  );
   // A ui-layout hydrate that lands after the first render replaces the
   // cache without a render of ours: re-render, so a pinned card up at that
   // moment is re-placed at the saved size (CodeRabbit on #2062).
@@ -1354,7 +1426,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       type="button"
       className={"claude-rail-peek-btn claude-rail-peek-pin" + (held ? " is-held" : "")}
       aria-pressed={held}
-      title={held ? "Unpin and close the preview" : "Pin the preview: it stays until you unpin it"}
+      data-hint={held ? "Unpin and close the preview" : "Pin the preview: it stays until you unpin it"}
       aria-label="Pin the preview"
       onClick={() => {
         if (held) {
@@ -1448,12 +1520,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       const cls =
         "claude-rail-peek-scope" +
         (head.scope.kind === "node" ? " is-node" : head.scope.kind === "file" ? " is-file" : "");
-      if (!door) return <span className={cls} title={chipPath(head.scope, head.at)}>{label}</span>;
+      if (!door) return <span className={cls} data-hint={chipPath(head.scope, head.at)}>{label}</span>;
       return (
         <a
           href={door.href}
           className={cls + " is-door"}
-          title={door.title}
+          data-hint={door.title}
           // Favourites off: this canvas's chip, already the
           // selection — a disabled link (`chipDoor` `current`).
           aria-disabled={door.current || undefined}
@@ -1565,7 +1637,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       aria-pressed={starOf(head.t)}
       // One label, the state in `aria-pressed`.
       aria-label="Favourite"
-      title={starOf(head.t) ? "Remove from favourites" : "Add to favourites"}
+      data-hint={starOf(head.t) ? "Remove from favourites" : "Add to favourites"}
       onClick={() => void toggleStar(head.t)}
     >
       <Star size={14} fill={starOf(head.t) ? "currentColor" : "none"} aria-hidden="true" />
@@ -1799,6 +1871,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                       label: head.draft ? "Open the draft" : "Open this chat in the Claude panel",
                       // ↗ only for a door that leaves the page on screen (#2218).
                       arrow: openArrow,
+                      // No caption over the window's head (TaskHead `quiet`).
+                      quiet: true,
                       onOpen: (href) => {
                         onOpenChat(href);
                         onHeld(false);
@@ -1837,7 +1911,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 type="button"
                 className="claude-rail-peek-btn claude-rail-peek-close"
                 aria-label="Close the preview"
-                title="Close the preview"
+                data-hint="Close the preview"
                 onClick={() => {
                   // A favourite's open card: the × is the reader closing it,
                   // and ClaudeRail writes "closed" as the card leaves (its
@@ -1850,7 +1924,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               </button>
               )}
               {!favsOn && head.id && (
-                <span className="claude-rail-peek-id" title={head.words}>
+                <span className="claude-rail-peek-id" data-hint={head.words}>
                   {head.id}
                 </span>
               )}
@@ -1863,7 +1937,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   // The word alone (Akshil, 2026-11-16: no arrow beside
                   // "Open", anywhere).
                   className="btn claude-rail-peek-open"
-                  title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
                   onClick={() => {
                     onOpenChat(head.href!);
                     // The door closes the card too — a held one as well: a
@@ -1928,7 +2001,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     starButton(head)
                   )}
                   {head.id && (
-                    <span className="claude-rail-peek-id" title={head.words}>
+                    <span className="claude-rail-peek-id" data-hint={head.words}>
                       {head.id}
                     </span>
                   )}
@@ -1974,7 +2047,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     <button
                       type="button"
                       className="claude-rail-peek-btn claude-rail-peek-rename"
-                      title="Rename task"
+                      data-hint="Rename task"
                       aria-label="Rename task"
                       onClick={() => startRename(head)}
                     >

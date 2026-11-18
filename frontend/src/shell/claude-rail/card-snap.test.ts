@@ -2,7 +2,7 @@
 // rail-peek-lib `snapWidth`).
 import { afterEach, describe, expect, it } from "bun:test";
 import { PEEK_MAX_WIDTH, PEEK_MIN_WIDTH, SNAP_PX, snapWidth, type Box } from "./rail-peek-lib";
-import { publishWindowABox, resetCardSnap, setSnapGuide, snapGuide, windowABox } from "./card-snap";
+import { publishWindowABox, resetCardSnap, setSnapGuide, setSnapGuides, snapGuide, snapGuideH, snapGuides, windowABox } from "./card-snap";
 
 // Window A above window B, both right edges at x=1000 (the rail's column).
 const B: Box = { left: 600, top: 500, width: 400, height: 300 };
@@ -57,5 +57,23 @@ describe("card-snap store", () => {
     expect(snapGuide()).toEqual({ x: 600, top: 40, bottom: 800 });
     setSnapGuide(null);
     expect(snapGuide()).toBeNull();
+  });
+
+  it("holds every line a drag stands on, both directions, until they are cleared", () => {
+    setSnapGuides(
+      [
+        { x: 600, top: 40, bottom: 800 },
+        { x: 1000, top: 40, bottom: 800 },
+      ],
+      [{ y: 40, left: 600, right: 1000 }],
+    );
+    expect(snapGuides().v).toHaveLength(2);
+    expect(snapGuide()).toEqual({ x: 600, top: 40, bottom: 800 });
+    expect(snapGuideH()).toEqual({ y: 40, left: 600, right: 1000 });
+    // The width magnet's one line replaces the vertical ones, not the others.
+    setSnapGuide(null);
+    expect(snapGuides()).toEqual({ v: [], h: [{ y: 40, left: 600, right: 1000 }] });
+    setSnapGuides([], []);
+    expect(snapGuides()).toEqual({ v: [], h: [] });
   });
 });

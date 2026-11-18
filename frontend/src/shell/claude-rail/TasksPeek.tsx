@@ -241,7 +241,7 @@ export function TasksPeek() {
                 }}
                 open={
                   task && taskHref(task)
-                    ? { href: taskHref(task)!, label: pageDoorLabel(task), onOpen: (h) => api.openPage(h) }
+                    ? { href: taskHref(task)!, label: pageDoorLabel(task), quiet: true, onOpen: (h) => api.openPage(h) }
                     : null
                 }
                 kebab={task?.session_id ? (
@@ -294,7 +294,7 @@ export function TasksPeek() {
                 fitEnabled={false}
                 // "Open tasks", not the other cards' "Open" (owner,
                 // 2026-11-08): this door is the page's, not a chat's.
-                open={{ href: "/tasks", label: "Open the Tasks page", word: "Open tasks", onOpen: () => api.openPage() }}
+                open={{ href: "/tasks", label: "Open the Tasks page", word: "Open tasks", quiet: true, onOpen: () => api.openPage() }}
               />
             )
           ) : chat ? (
@@ -402,18 +402,18 @@ export function TasksPeek() {
                   type="button"
                   className="claude-rail-peek-btn claude-rail-peek-close"
                   aria-label="Close Tasks"
-                  title="Close"
+                  data-hint="Close"
                   onClick={api.close}
                 >
                   <X size={14} aria-hidden="true" />
                 </button>
-                <span className="claude-rail-tasks-title" title={title}>
+                <span className="claude-rail-tasks-title" data-hint={title}>
                   {title}
                 </span>
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
                 {/* "Open tasks", not the other cards' "Open" (owner, 2026-11-08):
                     this door is the page's, not a chat's. */}
-                <button type="button" className="btn claude-rail-peek-open" title="Open the Tasks page" onClick={() => api.openPage()}>
+                <button type="button" className="btn claude-rail-peek-open" onClick={() => api.openPage()}>
                   Open tasks
                 </button>
               </div>

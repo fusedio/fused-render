@@ -347,14 +347,15 @@ import {
   snapWidth,
   type Box,
 } from "./rail-peek-lib";
-import { publishWindowABox, setSnapGuide } from "./card-snap";
-import { FLOAT_GRIPS, POPOVER_HEAD_SELECTOR, floatPlacement, floatResize, railPressWindow, viewportOf } from "./rail-move-lib";
-import { noteFrontWindow, publishWindowBox, windowPos } from "./rail-move-store";
+import { publishWindowABox, setSnapGuide, setSnapGuides } from "./card-snap";
+import { isPopoverEdge, popoverDrag } from "@platform/ui/modal/popover-place";
+import { FLOAT_GRIPS, POPOVER_HEAD_SELECTOR, floatPlacement, floatResize, railPressWindow, snapResize, viewportOf } from "./rail-move-lib";
+import { noteFrontWindow, publishWindowBox, windowBox, windowPos } from "./rail-move-store";
 import { useCardMove } from "./useCardMove";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import { taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
 import { aPinWord, cardMode, doorSelector, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress } from "./rail-pin-lib";
-import { RailPinButton, useTempOutside, type PressFlag } from "./RailPin";
+import { PinAngle, RailPinButton, useTempOutside, type PressFlag } from "./RailPin";
 import {
   dismissFavHover,
   favHoverIntent,
@@ -2156,6 +2157,19 @@ export function ClaudeRail({
     else if (was && aPinned() === was) setAPinned(null);
   }, [listWord]);
   const popUp = !!card?.pop;
+  // THE + CARD'S RESIZE GUIDES GO WITH THE CARD (reviewer, 2026-11-18): the
+  // chassis clears them on the grip's release (`onDragEnd`), and a card that
+  // closes or leaves the page under the drag gets no release.
+  const popGuides = useRef(false);
+  const clearPopGuides = useCallback(() => {
+    if (!popGuides.current) return;
+    popGuides.current = false;
+    setSnapGuides([], []);
+  }, []);
+  useEffect(() => {
+    if (!popUp) clearPopGuides();
+  }, [popUp, clearPopGuides]);
+  useEffect(() => clearPopGuides, [clearPopGuides]);
   const popHeld = pinModel && popUp && !!card?.held;
   // LET GO: this + card was held and no longer is (its unpin). It stands
   // beside the rail again at once — `popPlace` must not read it as a card
@@ -3144,6 +3158,31 @@ export function ClaudeRail({
     measureEdges();
   }, [place, activeList, measureEdges, hideList]);
 
+  // THE PIN ON THE DOOR OF A PINNED WINDOW (owner, 2026-11-18: "when we pin
+  // we should show a pin icon topleft of the task ring in rail, smaller
+  // version, also invert the pin on x axis so it faces right side"): the
+  // head's own filled pin, small and mirrored (claude-rail.css
+  // `.claude-rail-pinmark`), on the ring, face or door whose window the
+  // reader PINNED — never a hover's or a temp card's. The pin only exists
+  // behind the unified-head switch.
+  const pinMark = (on: boolean) =>
+    pinModel && on ? (
+      <span className="claude-rail-pinmark" aria-hidden="true">
+        <PinAngle size={9} filled />
+      </span>
+    ) : null;
+  // A DOOR'S CAPTION (owner, 2026-11-18: the rail's tooltips "consistent and
+  // shown instantly like we have in tasks"): the app's instant hint beside
+  // the door (platform/lib/hints, `data-hint-side`), as the rings have it —
+  // not the browser's `title`, which came a second later in another style.
+  // The rings' own rule for WHEN: a door whose hover brings its card up (or
+  // whose card stands) says nothing — the card is the caption (an empty
+  // hint is the opt-out).
+  const doorHint = (words: string, cardIsCaption: boolean) => ({
+    "data-hint": cardIsCaption ? "" : words,
+    "data-hint-side": "left",
+  });
+
   // ONE RING, as the list draws it (and as the favourites' section does).
   const ringOf = ({ pulse: t, row, off }: RailRow, foot = false) => {
               // The live status is the pulse's (fresher than the listing).
@@ -3434,8 +3473,11 @@ export function ClaudeRail({
                     // With the card on, the ring's own native `title` tooltip
                     // ("Done", "Draft") would float over the card a second
                     // later; "" is no tooltip. The link's aria-label still
-                    // names the chat and its state.
-                    {...(captionless ? { label: "" } : {})}
+                    // names the chat and its state. …and over the link's
+                    // instant caption, where the hover shows that instead
+                    // (owner, 2026-11-18: one tooltip, instant): `quiet`.
+                    // With the card off the ring is as it always was.
+                    {...(captionless ? { label: "" } : peekOn ? { quiet: true } : {})}
                     unread={unread}
                     background={liveJobRow(t)}
                     // The red centre dot the List gives a draft row and a
@@ -3450,6 +3492,13 @@ export function ClaudeRail({
                     icon={picked || t.starred ? (merged.icon_slot ?? null) : null}
                     iconPicked={picked}
                   />
+                  {pinMark(
+                    foot
+                      ? favRing && favPinnedKey === t.key
+                      : popDoor
+                        ? popHeld && card?.door === t.key
+                        : peeked && held,
+                  )}
                 </a>
                 </div>
               );
@@ -3556,19 +3605,24 @@ export function ClaudeRail({
                       resize: popMove.floating
                         ? {
                             // FLOATING (rail-move-lib `floatResize`): inside
-                            // the viewport, the right edge and corners too, no
-                            // magnet; a left or top grip moves window A's
-                            // position.
+                            // the viewport, the right edge and corners too,
+                            // with the held edge's magnet to window B's card
+                            // and the app window (`snapResize`; owner,
+                            // 2026-11-18); a left or top grip moves window
+                            // A's position.
                             minWidth: PEEK_MIN_WIDTH,
                             minHeight: PEEK_MIN_HEIGHT,
                             maxWidth: PEEK_MAX_WIDTH,
                             grips: FLOAT_GRIPS,
-                            drag: (edge, start, dx, dy) =>
-                              floatResize(edge, start, dx, dy, viewportOf(window), {
-                                minWidth: PEEK_MIN_WIDTH,
-                                minHeight: PEEK_MIN_HEIGHT,
-                                maxWidth: PEEK_MAX_WIDTH,
-                              }),
+                            drag: (edge, start, dx, dy) => {
+                              const view = viewportOf(window);
+                              const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
+                              const pulled = snapResize(edge, dx, dy, (x, y) => floatResize(edge, start, x, y, view, lim), windowBox("b"), view);
+                              popGuides.current = true;
+                              setSnapGuides(pulled.x, pulled.y);
+                              return pulled.box;
+                            },
+                            onDragEnd: clearPopGuides,
                             onResize: (size, changed, box) => {
                               popMove.setPos({ left: box.left, top: box.top });
                               savePopSize(size, changed);
@@ -3585,14 +3639,45 @@ export function ClaudeRail({
                         // bounds), never over the sidebar or the header.
                         bounds: () => rowOf(railRef.current)?.getBoundingClientRect() ?? null,
                         onResize: savePopSize,
-                        // THE WIDTH MAGNET (card-snap.ts): to window B's card.
-                        adjust: (next, edge, start) => {
-                          const row = rowOf(railRef.current)?.getBoundingClientRect();
-                          const s = snapWidth(next, edge, favBox, PEEK_MIN_WIDTH, row ? dragMaxWidth(start, row) : PEEK_MAX_WIDTH);
-                          setSnapGuide(s.guide);
-                          return s.box;
-                        },
-                        onDragEnd: () => setSnapGuide(null),
+                        ...(pinModel
+                          ? {
+                              // WITH THE PIN (window B's card may float): the
+                              // chassis' own drag (`popoverDrag`, the floor and
+                              // the row as above) with the held edge's magnet
+                              // on either axis (rail-move-lib `snapResize`) —
+                              // the width magnet is its left↔left case. Window
+                              // B never moves for window A's card, so its box
+                              // is read as it stands.
+                              drag: (edge, start, dx, dy) => {
+                                if (!isPopoverEdge(edge)) return start;
+                                const view = viewportOf(window);
+                                const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
+                                const row = rowOf(railRef.current)?.getBoundingClientRect();
+                                const floor = bottomClear(start, favBox);
+                                const pulled = snapResize(
+                                  edge,
+                                  dx,
+                                  dy,
+                                  (x, y) => popoverDrag(edge, start, x, y, view, lim, floor, row ?? undefined),
+                                  windowBox("b"),
+                                  view,
+                                );
+                                popGuides.current = true;
+                                setSnapGuides(pulled.x, pulled.y);
+                                return pulled.box;
+                              },
+                            }
+                          : {
+                              // THE WIDTH MAGNET (card-snap.ts): to window B's card.
+                              adjust: (next, edge, start) => {
+                                const row = rowOf(railRef.current)?.getBoundingClientRect();
+                                const s = snapWidth(next, edge, favBox, PEEK_MIN_WIDTH, row ? dragMaxWidth(start, row) : PEEK_MAX_WIDTH);
+                                popGuides.current = true;
+                                setSnapGuide(s.guide);
+                                return s.box;
+                              },
+                            }),
+                        onDragEnd: clearPopGuides,
                       },
                     }
                   : {}),
@@ -3706,7 +3791,7 @@ export function ClaudeRail({
             <button
               type="button"
               className={"sidebar-rail-btn claude-rail-item" + doorOpen(launcher.open, true)}
-              title="Search"
+              {...doorHint("Search", false)}
               aria-label="Search"
               onClick={() => {
                 hideHint();
@@ -3732,7 +3817,7 @@ export function ClaudeRail({
               data-rail-door="bots"
               href="/bots"
               className={"sidebar-rail-btn claude-rail-item" + doorOpen(botsUp, botsCard.pinned)}
-              title={botsTip ? `Bots — ${botsTip}` : "Bots"}
+              {...doorHint(botsTip ? `Bots — ${botsTip}` : "Bots", botsCard.ready && (botsUp || aHovers()))}
               aria-label="Bots"
               {...(botsHere ? { "aria-current": "page" as const } : {})}
               {...(botsCard.ready
@@ -3754,6 +3839,7 @@ export function ClaudeRail({
             >
               {BOTS_ICON}
               {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}
+              {pinMark(botsUp && botsCard.held)}
             </a>
           )}
           <a
@@ -3761,7 +3847,7 @@ export function ClaudeRail({
             data-rail-door="tasks"
             href="/tasks"
             className={"sidebar-rail-btn claude-rail-item" + doorOpen(tasksUp, tasksCard.pinned)}
-            title={tasksTip ? `Tasks — ${tasksTip}` : "Tasks"}
+            {...doorHint(tasksTip ? `Tasks — ${tasksTip}` : "Tasks", tasksCard.ready && (tasksUp || aHovers()))}
             aria-label="Tasks"
             {...(tasksHere ? { "aria-current": "page" as const } : {})}
             {...(tasksCard.ready
@@ -3783,6 +3869,7 @@ export function ClaudeRail({
           >
             {TASKS_ICON}
             {tasksDot && <span className={`sidebar-rail-dot ${tasksDot}`} aria-hidden="true" />}
+            {pinMark(tasksUp && tasksCard.held)}
           </a>
           <button
             ref={plusRef}
@@ -3791,7 +3878,7 @@ export function ClaudeRail({
             className={
               "sidebar-rail-btn claude-rail-item" + doorOpen(!!card?.pop && card.door === PLUS_DOOR, !!card?.pinned)
             }
-            title={plusLabel}
+            {...doorHint(plusLabel, (!!card?.pop && card.door === PLUS_DOOR) || plusHovers())}
             aria-label={plusLabel}
             aria-haspopup="dialog"
             aria-expanded={!!card?.pop}
@@ -3807,6 +3894,7 @@ export function ClaudeRail({
             onPointerLeave={() => plusIntent.leavePlus()}
           >
             <Plus size={16} aria-hidden="true" />
+            {pinMark(popHeld && card?.door === PLUS_DOOR)}
           </button>
         </div>
       )}
@@ -3814,7 +3902,7 @@ export function ClaudeRail({
         <button
           type="button"
           className="sidebar-rail-btn"
-          title="Show the Claude panel"
+          {...doorHint("Show the Claude panel", false)}
           aria-label="Show the Claude panel"
           aria-expanded={false}
           // The pane's HOME (its Recent chats), never a chat (owner,
@@ -3834,7 +3922,7 @@ export function ClaudeRail({
             ref={plusRef}
             type="button"
             className="sidebar-rail-btn claude-rail-item"
-            title={plusLabel}
+            {...doorHint(plusLabel, false)}
             aria-label={plusLabel}
             aria-haspopup="dialog"
             aria-busy={opening || waiting !== null || undefined}
@@ -3887,7 +3975,7 @@ export function ClaudeRail({
                 type="button"
                 data-rail-door="git"
                 className={"sidebar-rail-btn claude-rail-item" + doorOpen(gitUp, gitCard.pinned)}
-                title={gitDoorTitle(gitRepo)}
+                {...doorHint(gitDoorTitle(gitRepo), gitCard.ready && (gitUp || aHovers()))}
                 aria-label={gitLabel}
                 {...(gitCard.ready
                   ? { "aria-haspopup": "dialog" as const, "aria-expanded": gitUp, "aria-controls": GIT_PEEK_ID }
@@ -3912,6 +4000,7 @@ export function ClaudeRail({
                 {GIT_ICON}
                 {gitDots?.top && <span className={`sidebar-rail-dot is-${gitDots.top}`} aria-hidden="true" />}
                 {gitDots?.second && <span className={`sidebar-rail-dot is-${gitDots.second} is-second`} aria-hidden="true" />}
+                {pinMark(gitUp && gitCard.held)}
               </button>
             </div>
           </>
@@ -4147,6 +4236,7 @@ export function ClaudeRail({
                       ) : unread ? (
                         <span className="sidebar-rail-dot is-unread" aria-hidden="true" />
                       ) : null}
+                      {pinMark(peeked && botHeld)}
                     </a>
                   </div>
                 );

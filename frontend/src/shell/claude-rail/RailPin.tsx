@@ -21,7 +21,11 @@ import { pinWords, pressVerdict, viewPress, type PressTarget, type PressWhere } 
  *  icon for pin") — Bootstrap Icons' `pin-angle-fill` (MIT), inlined:
  *  react-icons is not a dependency and one path does not earn one. Angled,
  *  16-unit box. `filled`: the glyph as drawn (a pinned window, and the
- *  favourites-off head's seat); else its outline alone (hover / temp). */
+ *  favourites-off head's seat); else its outline alone (hover / temp).
+ *  MIRRORED on the x axis, everywhere it is drawn (owner, 2026-11-18, first
+ *  of the rail's mark — "invert the pin on x axis so it faces right side" —
+ *  then of the head's own button: "rotate pin icon 180deg, x axis"): the
+ *  point leans down to the right. */
 export function PinAngle({ size = 14, filled = false }: { size?: number; filled?: boolean }) {
   return (
     <svg
@@ -29,6 +33,7 @@ export function PinAngle({ size = 14, filled = false }: { size?: number; filled?
       height={size}
       viewBox="0 0 16 16"
       aria-hidden="true"
+      style={{ transform: "scaleX(-1)" }}
       {...(filled
         ? { fill: "currentColor" }
         : { fill: "none", stroke: "currentColor", strokeWidth: 1, strokeLinejoin: "round" as const, overflow: "visible" })}
@@ -46,8 +51,8 @@ export function RailPinButton({
 }: {
   pinned: boolean;
   onToggle: () => void;
-  /** `head`: the shared head's icon button (`.task-head-btn`, its hint);
-   *  `legacy`: the rail card's own row (`.claude-rail-peek-btn`, a title). */
+  /** `head`: the shared head's icon button (`.task-head-btn`);
+   *  `legacy`: the rail card's own row (`.claude-rail-peek-btn`). */
   variant?: "head" | "legacy";
   /** The card's keyboard landing: with the pin no card has a ×, and the pin
    *  is the head's first button (DoorCard `closeRef`). */
@@ -61,7 +66,9 @@ export function RailPinButton({
       className={(variant === "head" ? "task-head-btn" : "claude-rail-peek-btn") + " rail-pin-btn" + (pinned ? " is-pinned" : "")}
       aria-pressed={pinned}
       aria-label="Pin"
-      {...(variant === "head" ? { "data-hint": words } : { title: words })}
+      // The app's instant caption on either head (platform/lib/hints; owner,
+      // 2026-11-18: the rail's tooltips "consistent and shown instantly").
+      data-hint={words}
       onClick={onToggle}
     >
       <PinAngle size={14} filled={pinned} />

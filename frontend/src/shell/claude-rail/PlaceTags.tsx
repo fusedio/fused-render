@@ -127,7 +127,7 @@ export function PlaceTags({ scope, at, pageRoot, onSelectNode, sessionId, onNavi
                 // tooltip") — in place of the browser's slow `title`, which
                 // would only repeat it a second later. What the press does
                 // stays in the accessible name.
-                {...(icon ? { "data-hint": tag.label } : { title: tag.door.title })}
+                data-hint={icon ? tag.label : tag.door.title}
                 // A tag that acts in place is a button to the reader, with
                 // the link kept for a modified press (a tab).
                 {...(tag.door.select && onSelectNode ? { role: "button" } : {})}
@@ -143,7 +143,7 @@ export function PlaceTags({ scope, at, pageRoot, onSelectNode, sessionId, onNavi
                 {face}
               </a>
             ) : (
-              <span className={cls} {...(icon ? { "data-hint": tag.label } : { title: tag.path })} aria-label={tag.path}>
+              <span className={cls} data-hint={icon ? tag.label : tag.path} aria-label={tag.path}>
                 {face}
               </span>
             )}

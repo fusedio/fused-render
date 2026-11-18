@@ -486,6 +486,25 @@
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
 }
+/* THE PIN ON THE RING OF A PINNED WINDOW (ClaudeRail `pinMark`; owner,
+   2026-11-18: "when we pin we should show a pin icon topleft of the task
+   ring in rail, smaller version, also invert the pin on x axis so it faces
+   right side"): the head's own filled pin (RailPin `PinAngle`), small, at
+   the seat's top-left corner — outside the ring's circle — and mirrored (the
+   glyph itself is, RailPin `PinAngle`), so its point leans in toward the
+   ring it holds. Only while the window is
+   PINNED (not a hover, not a temp card): the wash says "open", the pin says
+   "stays". The head's muted ink; it takes no pointer and no name (the
+   window's pin button says it). On every door of the rail whose window is
+   pinned: a ring, a favourite, a bot's face, a nav door. */
+.claude-rail-pinmark {
+  position: absolute;
+  top: -1px;
+  left: -4px;
+  display: flex;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
 /* The favourite's card (FavouritePeek `#claude-rail-fav-peek`): ONE ABOVE
    THE RAIL'S OWN CARD (45) and its bridge (44), so where the two must
    overlap (a window too small to keep them apart, RailPeek `avoid`) the
@@ -770,6 +789,54 @@
 :where(:is(.claude-rail-peek, .modal-popover).is-movable :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *))
   :where(a[href]) {
   cursor: pointer;
+}
+/* THE GRABBER: A SMALL BAR AT THE TOP EDGE OF A PINNED WINDOW'S GRAB ROW
+   (owner, 2026-11-18: "when it is pinned and we hover over first row let's
+   show the drag handle in middle space over the first row header"). Shown
+   while the pointer is over the row (and through its drag), so the row says
+   what a press on it does before the cursor has to.
+   WHERE IT IS, AND WHY A BAR. Three builds stood six dots in the row itself:
+   in its free space ("the drag icon moves based on the elements on screen,
+   that looks odd … at 50% of the width so it doesn't move"), then at 50%
+   over whatever was there on a plate ("this UI looks bad … no full element
+   goes below it?"), then at 50% and hidden when a tag reached it ("find a
+   better way"). The row's middle is not free ground: tags and titles grow
+   into it. The strip ABOVE the row's content is — the row is 40px tall and
+   nothing in it is taller than 28 — so the handle is the sheet grabber
+   (Apple's sheets: "a small horizontal indicator at the top edge"): one
+   short bar, centred at 50% of the row, in that strip. It never moves, it
+   is never hidden, and nothing can lie under it.
+   Nothing here takes a press of its own: the bar is the row's, and the row
+   is the grab. */
+:is(.claude-rail-peek, .modal-popover).is-movable
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
+  position: relative;
+}
+:is(.claude-rail-peek, .modal-popover).is-movable
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  background: var(--fg-faint);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+/* A one-row head (the Bots and Git cards, a bot's card) keeps a 4px strip
+   above its row: the bar sits in it. */
+.claude-rail-peek.is-movable .claude-rail-peek-head > .claude-rail-peek-row:first-child::after {
+  top: 0;
+}
+:is(.claude-rail-peek, .modal-popover).is-movable
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *):hover::after,
+:is(.claude-rail-peek, .modal-popover).is-dragging
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
+  opacity: 1;
 }
 /* …under the drag: no glide (the box follows the pointer every frame), no
    text selection; and the page's frames take no pointer, so a drag over the

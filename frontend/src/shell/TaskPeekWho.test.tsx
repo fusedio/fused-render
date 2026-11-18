@@ -412,3 +412,16 @@ test("the pencil in the shared head's title half is skipped by the fit ladder (i
   // The block every older caller draws charges its pencil as before.
   expect(render({ task: started }).text()).not.toContain("data-fit-skip");
 });
+
+// The status seat's instant caption says the ring's own word (Bugbot on
+// #2344: it read the lane's raw key, `draft`, once the ring's native tooltip
+// was silenced under it).
+test("the ring's word: the lane's label, \"Blocked\" for a red ring off a card, \"Background\" for the blue one", async () => {
+  const { statusRingWord } = await import("./ScheduleTaskViews");
+  expect(statusRingWord({ status: "draft" })).toBe("Draft");
+  expect(statusRingWord({ status: "done" })).toBe("Done");
+  expect(statusRingWord({ status: "done", failed: true })).toBe("Blocked");
+  // Parked on a card, with an earlier run's flag still set: still waiting.
+  expect(statusRingWord({ status: "needs_attention", failed: true })).not.toBe("Blocked");
+  expect(statusRingWord({ status: "done", background: true })).toBe("Background");
+});

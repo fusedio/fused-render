@@ -21,8 +21,9 @@
 // THE EDGE MAGNET (owner, 2026-11-17; design.md "Round 3 rulings" B9): within
 // EDGE_SNAP_PX the dragged box lands flush with an edge of the other window's
 // card (docked or floating, while it is up — rail-move-store `windowBox`) or
-// of the viewport, each axis on its own, with the dashed guide along that
-// edge (card-snap) until the release.
+// of the viewport — or centred on either (owner, 2026-11-18: "top bottom
+// left right middle everywhere") — each axis on its own, with the dashed
+// guides along every line it stands on (card-snap) until the release.
 //
 // "BACK WHERE I LEFT IT" (owner, 2026-11-17, B10): the stored position is the
 // spot the reader dragged to, and a window that shrinks does NOT rewrite it —
@@ -60,7 +61,7 @@ import {
   windowBox,
   windowPos,
 } from "./rail-move-store";
-import { setSnapGuide, setSnapGuideH } from "./card-snap";
+import { setSnapGuides } from "./card-snap";
 
 /** On <html> while a card is being moved: frames take no pointer, nothing
  *  selects (claude-rail.css). */
@@ -188,8 +189,7 @@ export function useCardMove(o: {
     if (d.raf) cancelAnimationFrame(d.raf);
     if (!d.moved) return;
     // The magnet's guides go with the drag: release, cancel or unmount.
-    setSnapGuide(null);
-    setSnapGuideH(null);
+    setSnapGuides([], []);
     rootClass(false);
     setDragging(false);
     try {
@@ -249,11 +249,11 @@ export function useCardMove(o: {
       const size = { width: d.width, height: d.height };
       const view = viewportOf(window);
       // THE EDGE MAGNET (header): flush with the other window's card or the
-      // viewport within EDGE_SNAP_PX, the guides along what it snapped to.
+      // viewport — an edge or the middle — within EDGE_SNAP_PX, the guides
+      // along every line the box now stands on.
       const snapped = snapEdges(clampPos({ left: d.left + dx, top: d.top + dy }, size, view), size, windowBox(otherWin), view);
       d.latest = snapped.pos;
-      setSnapGuide(snapped.x);
-      setSnapGuideH(snapped.y);
+      setSnapGuides(snapped.x, snapped.y);
       if (!d.raf) {
         d.raf = requestAnimationFrame(() => {
           d.raf = 0;

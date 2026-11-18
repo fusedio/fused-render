@@ -18,18 +18,16 @@
 // hosts `@apps/claude`'s `ChatMount`, so a chat importing it would close an
 // import cycle — and the boundary check (scripts/check-boundaries.mjs) opens a
 // hole for named shell modules one file at a time for the same reason.
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Pencil } from "lucide-react";
 import { renameTask, type Task } from "@platform/lib/api";
 import { TaskStar } from "@platform/ui/TaskStar";
 import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
-import { columnLabel } from "./schedule-lib";
 import { pokeTasks } from "./tasksPulse";
-import { QueueCaptionText, StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
+import { QueueCaptionText, StatusIcon, TaskAgentMark, statusRingWord } from "./ScheduleTaskViews";
 import type { QueueCaption } from "@platform/lib/queue";
 import { TaskIconPick } from "./TaskIconPick";
 import {
-  BACKGROUND_LABEL,
   basename,
   cardTitleLine,
   firstLine,
@@ -275,6 +273,28 @@ export function TaskPeekWho({
   // …and a finished turn whose chat still holds a live background job wears the
   // List row's blue "Background" ring (tasks-lib.liveJobRow).
   const background = !running && liveJobRow(task);
+  // The ring drawn red ("Blocked"): what the ring is handed below, and what
+  // its seat's caption says — one word for both.
+  const ringBroke = running ? false : !!(ring?.failed || ringFailed(task));
+  // IS THE TITLE CLIPPED? Measured, not guessed (RailPeek's own rule): only a
+  // title that does not fit wears the app's instant caption — one fully in
+  // view says nothing twice. Re-read when the title or its box changes.
+  const titleRef = useRef<HTMLSpanElement | null>(null);
+  const [titleClipped, setTitleClipped] = useState(false);
+  const titleShown = part !== "marks" && draft === null;
+  useLayoutEffect(() => {
+    const el = titleRef.current;
+    if (!el) {
+      setTitleClipped(false);
+      return;
+    }
+    const check = () => setTitleClipped(el.scrollWidth > el.clientWidth + 1);
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [title, titleShown]);
   const showMarks = !bare && part !== "title";
   const showTitle = part !== "marks";
   // THE NUMBER'S SEAT, drawn by whichever half holds it (`idAt`).
@@ -305,7 +325,11 @@ export function TaskPeekWho({
         <>
       <span
         className="task-side-peek-status"
-        title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
+        // The app's instant caption (platform/lib/hints), as the head's
+        // buttons have it — not the browser's slow `title` (owner,
+        // 2026-11-18). The ring's own word (`statusRingWord`): "Blocked" on a
+        // red ring, "Draft" on a draft's — never the lane's raw key.
+        data-hint={status ? statusRingWord({ status, failed: ringBroke, background }) : undefined}
       >
         <TaskIconPick
           task={task}
@@ -316,12 +340,15 @@ export function TaskPeekWho({
         >
           <StatusIcon
             status={status}
-            failed={running ? false : ring?.failed || ringFailed(task)}
+            failed={ringBroke}
             background={background}
             icon={task.icon_slot}
             iconPicked={task.icon_picked}
             {...(ring?.unread ? { unread: true } : {})}
             {...(ring?.draftHeld ? { draftHeld: true } : {})}
+            // The seat's instant caption says it (above): no native tooltip
+            // a second later with the same word.
+            quiet
           />
         </TaskIconPick>
         {/* Not while the title is being edited: the host's overlay (the rail
@@ -347,7 +374,11 @@ export function TaskPeekWho({
             // …and the heading role the dialog's `h2` carried before the
             // shared head replaced it (Modal `head`).
             {...(titleId ? { id: titleId, role: "heading", "aria-level": 2 } : {})}
-            title={title}
+            ref={titleRef}
+            // The whole title at once when it is cut short (platform/lib/hints;
+            // owner, 2026-11-18: the windows' tooltips instant, not the
+            // browser's `title`).
+            {...(titleClipped ? { "data-hint": title } : {})}
             // The floor's cap: a short title's floor is its own width
             // (task-head.css `min-width`).
             style={{ "--title-ch": Math.min(Array.from(title).length, 12) } as CSSProperties}
@@ -365,7 +396,7 @@ export function TaskPeekWho({
               // folded the where-tag's word 24px before the row was full.
               {...(part === "title" ? { "data-fit-skip": "" } : {})}
               aria-label="Rename task"
-              title="Rename task"
+              data-hint="Rename task"
               onClick={startRename}
             >
               <Pencil size={12} aria-hidden />
