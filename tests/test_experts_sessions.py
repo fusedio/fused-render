@@ -517,3 +517,120 @@ def test_a_task_learn_cut_short_by_a_restart_after_its_edit_is_not_replayed(expe
     assert sessions.cut_short(expert, "other", 0) is None    # another task
     assert sessions.cut_short(expert, "s1", 0) == {"session_id": "s1", "from_size": 0, "to_size": 10}  # its trigger
     assert sessions.cut_short(expert, "s1", 0) is None       # answers once
+
+
+# ------------------------------------------------------- shutdown races ---
+def test_a_waiter_from_before_a_shutdown_stays_refused_after_a_reopen(expert, monkeypatch):
+    calls = stub(monkeypatch)
+    lock = store.write_lock(expert)
+    lock.acquire()  # a dream waits on its gate when shutdown begins
+    out = []
+    t = threading.Thread(target=lambda: out.append(sessions.run(expert, "dream", "x")))
+    t.start()
+    try:
+        time.sleep(0.2)
+        sessions.shutdown()
+        sessions.reopen()  # the server starts again before the waiter gets its gate
+    finally:
+        lock.release()
+    t.join(5)
+    try:
+        assert out[0]["status"] == "error" and out[0]["error"] == sessions.CLOSED and calls == []
+        assert sessions.run(expert, "dream", "y")["status"] == "done"  # admitted after the reopen: runs
+    finally:
+        sessions.reopen()
+
+
+class _PausedProc:
+    """A harness process whose spawn (Popen) is paused until `go` is set."""
+    entered, go, made = threading.Event(), threading.Event(), []
+
+    def __init__(self, cmd, **kw):
+        type(self).entered.set()
+        assert type(self).go.wait(5)
+        self.pid, self.returncode, self.signals, self.ended = 0, -15, [], threading.Event()
+        type(self).made.append(self)
+
+    def communicate(self, data, timeout=None):
+        assert self.ended.wait(5)  # runs until signalled
+        return b"", b""
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def test_shutdown_while_a_spawn_is_paused_still_ends_it(expert, monkeypatch):
+    from fused_render.bots import claude_cli
+    monkeypatch.setattr(claude_cli, "runnable", lambda: "claude")
+    monkeypatch.setattr(sessions.subprocess, "Popen", _PausedProc)
+    monkeypatch.setattr(sessions, "_signal", lambda p, sig: (p.signals.append(sig), p.ended.set()))
+    _PausedProc.entered.clear(), _PausedProc.go.clear(), _PausedProc.made.clear()
+    res = []
+    spawn = threading.Thread(target=lambda: res.append(sessions.harness(expert, "q", False)))
+    spawn.start()
+    try:
+        assert _PausedProc.entered.wait(5)
+        stop = threading.Thread(target=sessions.shutdown)
+        stop.start()
+        time.sleep(0.2)
+        assert stop.is_alive()  # it cannot snapshot the processes mid-spawn
+        _PausedProc.go.set()
+        stop.join(5)
+        spawn.join(5)
+        assert [p.signals for p in _PausedProc.made] == [[sessions.signal.SIGTERM]]  # tracked, so ended
+        assert res[0]["error"] == sessions.CLOSED and not sessions._PROCS
+        # Once closed, a harness is never spawned at all.
+        _PausedProc.entered.clear()
+        assert sessions.harness(expert, "q", False)["error"] == sessions.CLOSED and not _PausedProc.entered.is_set()
+    finally:
+        _PausedProc.go.set()
+        sessions.reopen()
+
+
+def test_shutdown_waits_for_every_harness_within_one_budget(monkeypatch):
+    """Processes that ignore SIGTERM: signalled together, waited for together, then SIGKILLed; never one budget
+    each."""
+    class Stubborn:
+        def __init__(self):
+            self.signals = []
+
+        def wait(self, timeout=None):
+            if sessions._SIGKILL in self.signals:
+                return -9
+            time.sleep(max(0.0, timeout or 0))
+            raise sessions.subprocess.TimeoutExpired("claude", timeout)
+    procs = [Stubborn() for _ in range(4)]
+    monkeypatch.setattr(sessions, "_signal", lambda p, sig: p.signals.append(sig))
+    monkeypatch.setattr(sessions, "KILL_GRACE_S", 0.2)
+    with sessions._GUARD:
+        sessions._PROCS.update(procs)
+    t0 = time.monotonic()
+    try:
+        sessions.shutdown(budget_s=0.6)
+    finally:
+        with sessions._GUARD:
+            sessions._PROCS.difference_update(procs)
+        sessions.reopen()
+    assert time.monotonic() - t0 < 1.2  # one shared deadline, not 4 x the budget
+    assert all(p.signals == [sessions.signal.SIGTERM, sessions._SIGKILL] for p in procs)
+
+
+def test_a_cut_short_slice_records_only_what_it_was_given(expert, monkeypatch, transcript):
+    """A restart cut short a task-learn after its edit; the task has grown since. Only the interrupted session's
+    slice counts as read: the turns after it stay due."""
+    calls = stub(monkeypatch)
+    transcript.write_text("turn 1\nturn 2\n")
+    slice_size = os.path.getsize(transcript)
+    learn.record_use(expert, "r1")
+    row = sessions._new_row("task-learn", {"session_id": "s1", "from_size": 0, "to_size": slice_size, "to_turns": 2})
+    row["memory_before"] = sessions._sha(store.memory(expert))
+    sessions._save(expert, row)
+    append_memory(expert, "- [1 · 2026-11-18] learned before the restart")
+    with open(transcript, "a") as f:
+        f.write("turn 3\n")
+    _age(transcript)
+    assert learn.run_pass()["sessions"] == 0 and calls == []  # the cut-short slice is not replayed
+    rec = learn._load(expert)["sessions"]["s1"]
+    assert rec["size"] == slice_size and rec["turns"] == 2
+    assert learn.run_pass()["sessions"] == 1  # turn 3 is still due
+    assert "USER| turn 3" in calls[-1]["prompt"] and "turn 1" not in calls[-1]["prompt"]
