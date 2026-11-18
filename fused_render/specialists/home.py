@@ -178,9 +178,53 @@ def sync_workroom(home: str, work: str) -> None:
                 write_text(os.path.join(work, rel), text)
         if read_text(os.path.join(work, "CLAUDE.md"), None) != WORKROOM_CLAUDE:
             write_text(os.path.join(work, "CLAUDE.md"), WORKROOM_CLAUDE)
+        _drop_planted(work)
         ensure_settings(work)
     except OSError:
         pass
+
+
+#: What Claude Code loads natively from a working folder besides CLAUDE.md and `.claude/settings.json`. A breakout
+#: may write anything in its workroom, so whatever it plants there (a skill, an agent, a CLAUDE.local.md, an MCP
+#: server list) is removed before its next turn: only the app decides what the specialist loads (seen live: a script
+#: run in a breakout created `.claude/skills/evil/` and the next turn listed the skill).
+_PLANTED_FILES = ("CLAUDE.local.md", ".mcp.json")
+
+
+def _drop_planted(work: str) -> None:
+    import shutil
+
+    for rel in _PLANTED_FILES:
+        path = os.path.join(work, rel)
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.lexists(path):
+                os.remove(path)
+        except OSError:
+            pass
+    dot = os.path.join(work, ".claude")
+    if os.path.islink(dot):
+        try:
+            os.remove(dot)
+        except OSError:
+            pass
+        return
+    try:
+        names = os.listdir(dot)
+    except OSError:
+        return
+    for name in names:
+        if name == "settings.json":
+            continue
+        path = os.path.join(dot, name)
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.remove(path)
+        except OSError:
+            pass
 
 
 # ------------------------------------------------------------------- skills ---

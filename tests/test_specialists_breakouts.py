@@ -299,6 +299,29 @@ def test_workroom_is_private_and_resynced_each_turn(client, parent):
         assert history.commit(spec.id, "x") is None  # the workroom's files never reach history
 
 
+def test_what_a_breakout_plants_in_its_workroom_is_gone_before_its_next_turn(client, parent):
+    """Seen live: a script run in a breakout created `.claude/skills/evil/` in the workroom and the next turn listed
+    the skill. Skills, agents, CLAUDE.local.md and .mcp.json written there are removed before each turn; the
+    breakout's own scratch files stay."""
+    from fused_render.specialists import breakouts, history
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    bid, work = out["breakout_id"], out["home"]
+    breakouts.set_session(spec.id, bid, "bs-8")
+    planted = [".claude/skills/evil/SKILL.md", ".claude/agents/a.md", ".claude/settings.local.json",
+               "CLAUDE.local.md", ".mcp.json"]
+    for rel in planted + ["scratch.py"]:
+        os.makedirs(os.path.dirname(os.path.join(work, rel)), exist_ok=True)
+        with open(os.path.join(work, rel), "w") as f:
+            f.write("x\n")
+    history.before_turn(spec.id, "breakout", "bs-8")
+    for rel in planted:
+        assert not os.path.exists(os.path.join(work, rel)), rel
+    assert sorted(os.listdir(os.path.join(work, ".claude"))) == ["settings.json"]
+    assert os.path.exists(os.path.join(work, "scratch.py"))
+
+
 def test_a_record_from_before_workrooms_keeps_the_home(client, parent):
     from fused_render.specialists import breakouts, counts
 

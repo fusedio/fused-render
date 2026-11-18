@@ -92,7 +92,14 @@
 }
 
 /* The card's own confirm (Discard), over the top of its chat. */
+/* The card's chat (.claude-rail-peek-chat) is absolutely placed over the whole body, so the confirm floats
+   above it: in the flow it sat UNDER the chat, invisible and unclickable (seen live). */
 .spx-card-confirm {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
   margin: 8px;
   padding: 12px;
   border: 1px solid var(--border);

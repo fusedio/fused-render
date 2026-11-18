@@ -258,3 +258,15 @@ describe("where the card opens", () => {
     }
   });
 });
+
+// Seen live: the Discard confirm sat in the flow under the card's chat, which is
+// absolutely placed over the whole body, so it could be neither seen nor pressed.
+describe("the Discard confirm is above the card's chat", () => {
+  test("it is positioned over the body with a z-index", async () => {
+    const { readFileSync } = await import("node:fs");
+    const css = readFileSync(new URL("./specialist-card.css", import.meta.url), "utf8");
+    const rule = /\.spx-card-confirm\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).toMatch(/position:\s*absolute/);
+    expect(rule).toMatch(/z-index:\s*\d+/);
+  });
+});

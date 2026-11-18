@@ -353,6 +353,19 @@ describe("the Breakout menu", () => {
     expect(briefFromTask([]).problem).toBe("");
   });
 
+  test("an error the task got past is not the problem; 'Exit code N' is skipped; a multi-line command is flattened", () => {
+    const tool = (id: string, command: string, status: string, output: string) => ({
+      kind: "tool", id, name: "Bash", input: { command }, status, output, images: [],
+    });
+    const turn = (segments: unknown[]) => ({ role: "assistant", key: "a", text: "", segments }) as unknown as Turn;
+    const ask = u("Implement tile_bounds", "u1");
+    // Seen live: a recovered failure became "Last error: Exit code 1", Look at `python3 -I -c "`.
+    expect(briefFromTask([ask, turn([tool("t1", 'python3 -I -c "\nimport x"', "error", "Exit code 1"), tool("t2", "pytest", "ok", "1 passed")])]))
+      .toEqual({ problem: "Implement tile_bounds", tried: "", look_at: "" });
+    expect(briefFromTask([ask, turn([tool("t1", 'python3 -c "\nimport x\n"', "error", "Exit code 1\nModuleNotFoundError: x")])]))
+      .toEqual({ problem: "Implement tile_bounds\nLast error: ModuleNotFoundError: x", tried: "", look_at: 'python3 -c " import x "' });
+  });
+
   test("folder triggers", () => {
     expect(folderMatches("/root/work/q4", ["/root/work/q4"])).toBe(true);
     expect(folderMatches("/root/work/q4/sub", ["/root/work/q4"])).toBe(true);

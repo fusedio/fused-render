@@ -45,14 +45,15 @@ export function briefFromTask(turns: readonly Turn[]): Brief {
     if (!error && t.role === "error" && t.text) error = t.text;
     if (!error && t.role === "assistant") {
       const segs = t.segments ?? [];
-      for (let j = segs.length - 1; j >= 0; j--) {
-        const seg = segs[j]!;
-        if (seg.kind === "tool" && seg.status === "error") {
-          error = (seg.output || "").split("\n").find((l) => l.trim()) || "";
-          const inp = seg.input || {};
-          where = String(inp.file_path || inp.command || inp.path || inp.pattern || "").split("\n")[0] || "";
-          break;
-        }
+      // Only an error the turn ENDED on: one the task got past (a later tool
+      // call ran fine) is not the problem (seen live: a recovered `python3 -c`
+      // failure became "Last error: Exit code 1", Look at `python3 -I -c "`).
+      const seg = [...segs].reverse().find((s) => s.kind === "tool");
+      if (seg && seg.status === "error") {
+        const lines = (seg.output || "").split("\n").map((l) => l.trim()).filter(Boolean);
+        error = lines.find((l) => !/^exit code -?\d+$/i.test(l)) || lines[0] || "";
+        const inp = seg.input || {};
+        where = String(inp.file_path || inp.command || inp.path || inp.pattern || "").replace(/\s+/g, " ").trim();
       }
     }
     if (t.role === "user" && t.text?.trim()) {

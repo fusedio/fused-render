@@ -192,3 +192,29 @@ def test_nightly_running_reads_stream_3(app_home, monkeypatch):
     s = make_specialist()
     monkeypatch.setattr(nightly, "running", lambda spec_id: spec_id == s.id)
     assert history._nightly_running(s.id) and not history._nightly_running("other")
+
+
+def test_the_agents_turn_sweep_never_commits_in_a_home(app_home, monkeypatch):
+    """Seen live: a breakout's script appended to the home's memory.md (absolute path) and the agent's generic
+    end-of-turn sweep (`agent._commit_turn`, `Claude: <title>`) committed it before the guard ran, so nothing was
+    put back. Homes keep their own history: the sweep skips anything under the specialists root."""
+    import importlib.util
+
+    from fused_render.claude_agent import AGENT_PATH
+    from fused_render.specialists import breakouts, paths  # noqa: F401 — the agent reads the root off the module
+
+    spec = importlib.util.spec_from_file_location("test_agent_sweep", AGENT_PATH)
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+    monkeypatch.setenv("FUSED_RENDER_WORKSPACE_DIR", os.path.dirname(paths.root()))
+    s = make_specialist()
+    head = history.log(s.id)[0]["sha"]
+    _write(s, "memory.md", "# Memory\n- [m-dead] written by a breakout\n")
+    work = paths.workroom(s.id, "b-000000000001")
+    os.makedirs(work, exist_ok=True)
+    agent._commit_turn(os.path.join(work, "x.txt"), "Brief from the task")
+    agent._commit_turn(os.path.join(s.home, "memory.md"), "main chat")
+    assert history.log(s.id)[0]["sha"] == head
+    monkeypatch.setattr(history, "_main_turn_live", lambda spec_id, sid: False)
+    assert history.guard(s.id) == ["memory.md"]
+    assert "written by a breakout" not in _read(s, "memory.md")

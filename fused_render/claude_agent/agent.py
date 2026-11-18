@@ -7435,6 +7435,13 @@ def _commit_turn(file: str, message: str, backend: str = "") -> None:
     app_dir = _app_dir_for(file)
     if not app_dir:
         return
+    # A specialist's home (`<workspace>/specialists/<name>`, and a breakout's
+    # workroom inside it) keeps its own history: the specialists module
+    # commits a main-chat turn and PUTS BACK what a breakout wrote. This sweep
+    # ran first and committed a breakout's memory/skill rewrite as
+    # "Claude: <brief>", leaving the guard nothing to undo (seen live).
+    if _inside_specialists_root(app_dir):
+        return
     if os.path.isdir(os.path.join(app_dir, ".git")):
         repo_dir, spec = app_dir, "."
     else:
