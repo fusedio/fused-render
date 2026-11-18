@@ -11,6 +11,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import type { SpecialistDetail } from "@platform/lib/specialists-api";
 import { isSpecialistsPath, parseSpecialistsPath, specialistHref } from "./routes";
 import { SpecialistList } from "./components/SpecialistList";
+import { faceColor } from "./components/Face";
 import { MainChat, type ChatHandle } from "./components/MainChat";
 import { FoldedSession, dayLabel, foldedLabel } from "./components/FoldedSession";
 import { SidePanel, type PanelApi } from "./components/SidePanel";
@@ -117,6 +118,23 @@ describe("the list and create (C)", () => {
     expect(made.s).toBe(SPEC);
   });
 
+  test("the face is the shipped seed's object or a plain colour string (live: Canvas seed crashed the list)", () => {
+    expect(faceColor({ shape: "hexagon", color: "#2a9a86", icon: "" }, "x")).toBe("#2a9a86");
+    expect(faceColor("#123456", "x")).toBe("#123456");
+    expect(faceColor(null, "x")).toMatch(/^#/);
+    expect(faceColor({ shape: "hexagon" }, "x")).toMatch(/^#/);
+    const r = render(
+      <SpecialistList
+        rows={[{ id: "c1", name: "Canvas", subject: "c", face: { shape: "hexagon", color: "#2a9a86", icon: "" }, status: "Ready", working: false }]}
+        selected="c1"
+        loading={false}
+        error=""
+        onSelect={() => {}}
+        onCreate={() => {}}
+      />,
+    );
+    expect(textOf(r.root.find((n) => n.type === "a"))).toContain("Canvas");
+  });
   test("triggers parse", () => {
     expect(parseKeywords("a, b\nA")).toEqual(["a", "b"]);
     expect(triggersFrom("", "")).toEqual({ folders: [], keywords: [] });

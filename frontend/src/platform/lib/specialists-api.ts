@@ -17,12 +17,16 @@ export interface Triggers {
   keywords: string[];
 }
 
+/** specialist.json `face`: the shipped Canvas seed uses the bots' face object
+ *  (`{shape, color, icon}`); a PATCH may store a plain string. Both are valid. */
+export type SpecialistFace = string | { shape?: string; color?: string; icon?: string } | null;
+
 /** A row of GET /api/specialists. */
 export interface SpecialistSummary {
   id: string;
   name: string;
   subject: string;
-  face: string;
+  face: SpecialistFace;
   /** One line of status for the list ("Working on …", "Learned 3 things last night"). */
   status: string;
   working: boolean;
@@ -33,7 +37,7 @@ export interface SpecialistDetail {
   id: string;
   name: string;
   subject: string;
-  face: string;
+  face: SpecialistFace;
   model: string;
   effort: string;
   triggers: Triggers;

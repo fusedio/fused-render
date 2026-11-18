@@ -11,8 +11,9 @@
 //
 // Everything is null with the flag off, and inside a specialist session the
 // task-side parts are null too (a breakout cannot open a breakout, P).
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSpecialistsEnabled } from "@platform/lib/specialists-flag";
+import { useSpecialistBreakouts } from "@platform/lib/specialist-breakouts";
 import type { Turn } from "../protocol/controller-api";
 import type { PermissionRow } from "../protocol/types";
 import type { CardActions } from "../ui/CardStack";
@@ -22,7 +23,7 @@ import { OFFER_TOOL, type SpecialistCards } from "./context";
 import { OfferCard } from "./OfferCard";
 import { SendToSpecialist } from "./SendToSpecialist";
 import { isServiceTool, ServiceCardExtra } from "./ServiceCardExtra";
-import { placeEvents, TaskEventChips } from "./TaskEventChips";
+import { endedBreakouts, placeEvents, TaskEventChips } from "./TaskEventChips";
 import { useSpecialistList, useTaskEvents } from "./useTaskEvents";
 import "./task.css";
 
@@ -68,6 +69,25 @@ export function useSpecialistTaskSide(o: TaskSideOptions): TaskSide {
   const task = on && o.claude && !inSpecialist && !!o.file;
   const { events, refresh } = useTaskEvents(o.sessionId, task && !!o.sessionId);
   const specialists = useSpecialistList(task);
+
+  // This task's breakout cards live in the shell, not in this chat: when one
+  // opens, closes or is discarded the server has a new event for this task
+  // (breakout_open / _closed / _discarded), so read the events again then
+  // rather than on the next 15 s poll.
+  const openCards = useSpecialistBreakouts();
+  const cardSig = task
+    ? openCards
+        .filter((c) => c.parentSessionId === o.sessionId)
+        .map((c) => c.breakoutId)
+        .sort()
+        .join(",")
+    : "";
+  const lastSig = useRef(cardSig);
+  useEffect(() => {
+    if (lastSig.current === cardSig) return;
+    lastSig.current = cardSig;
+    refresh();
+  }, [cardSig, refresh]);
 
   // The draft label: shown from the draft's arrival until the next message
   // the reader sends (or Hide).
@@ -124,6 +144,7 @@ export function useSpecialistTaskSide(o: TaskSideOptions): TaskSide {
   }, [on, task, host, specialistKind, specialistId]);
 
   const placed = useMemo(() => placeEvents(o.turns, events), [o.turns, events]);
+  const ended = useMemo(() => endedBreakouts(events), [events]);
   const afterTurn = useMemo(() => {
     if (!task) return undefined;
     return (turn: Turn): ReactNode => {
@@ -148,13 +169,13 @@ export function useSpecialistTaskSide(o: TaskSideOptions): TaskSide {
               />
             </div>
           ) : null}
-          {evs ? <TaskEventChips events={evs} host={host} /> : null}
+          {evs ? <TaskEventChips events={evs} host={host} ended={ended} /> : null}
         </>
       );
     };
-  }, [task, placed, specialists, o.sessionId, o.title, host, refresh]);
+  }, [task, placed, ended, specialists, o.sessionId, o.title, host, refresh]);
 
-  const tail = task && placed.tail.length ? <TaskEventChips events={placed.tail} host={host} /> : null;
+  const tail = task && placed.tail.length ? <TaskEventChips events={placed.tail} host={host} ended={ended} /> : null;
 
   const showMenu = task && !!o.sessionId && (specialists.length > 0 || !!o.onCopyOfChat);
   const dock =

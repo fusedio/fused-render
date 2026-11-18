@@ -96,9 +96,21 @@ export interface ChipHost {
   refresh: () => void;
 }
 
+/** Breakouts that a later event closed or discarded: their earlier
+ *  "Breakout open" chip stays as history, without its Open button (the closed
+ *  chip carries Reopen). */
+export function endedBreakouts(events: readonly TaskEvent[]): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const ev of events) {
+    if ((ev.kind === "breakout_closed" || ev.kind === "breakout_discarded") && ev.breakout_id) out.add(ev.breakout_id);
+  }
+  return out;
+}
+
 export function TaskEventChip({
   ev,
   host,
+  ended,
   reopen = reopenBreakout,
   receipt = getReceipt,
   undoNote = deleteNote,
@@ -106,6 +118,8 @@ export function TaskEventChip({
 }: {
   ev: TaskEvent;
   host: ChipHost;
+  /** `endedBreakouts` of the task's events. */
+  ended?: ReadonlySet<string>;
   // Seams for tests.
   reopen?: typeof reopenBreakout;
   receipt?: typeof getReceipt;
@@ -205,13 +219,14 @@ export function TaskEventChip({
     <div className={"spx-chip-wrap"} data-spx-event={ev.kind}>
       <div className="spx-chip">
         <span className="spx-chip-dot" aria-hidden="true" />
-        <span>{chipText(ev)}</span>
+        <span className="spx-chip-text">{chipText(ev)}</span>
         {ev.kind === "pull" && ev.receipt_id ? (
           <button type="button" className="spx-chip-btn" onClick={() => void onView()} disabled={busy} aria-expanded={shown !== null}>
             {shown !== null ? "Hide" : "View"}
           </button>
         ) : null}
-        {(ev.kind === "breakout_closed" || ev.kind === "breakout_open") && ev.breakout_id ? (
+        {(ev.kind === "breakout_closed" || (ev.kind === "breakout_open" && !ended?.has(ev.breakout_id || ""))) &&
+        ev.breakout_id ? (
           <button type="button" className="spx-chip-btn" onClick={() => void onReopen()} disabled={busy}>
             {ev.kind === "breakout_open" ? "Open" : "Reopen"}
           </button>
@@ -238,12 +253,20 @@ export function TaskEventChip({
   );
 }
 
-export function TaskEventChips({ events, host }: { events: readonly TaskEvent[]; host: ChipHost }) {
+export function TaskEventChips({
+  events,
+  host,
+  ended,
+}: {
+  events: readonly TaskEvent[];
+  host: ChipHost;
+  ended?: ReadonlySet<string>;
+}) {
   if (!events.length) return null;
   return (
     <div className="spx-chips">
       {events.map((ev, i) => (
-        <TaskEventChip key={`${ev.kind}:${ev.at}:${ev.receipt_id || ev.note_id || ev.breakout_id || i}`} ev={ev} host={host} />
+        <TaskEventChip key={`${ev.kind}:${ev.at}:${ev.receipt_id || ev.note_id || ev.breakout_id || i}`} ev={ev} host={host} {...(ended ? { ended } : {})} />
       ))}
     </div>
   );

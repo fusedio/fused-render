@@ -15,15 +15,18 @@
 .spx-chips { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
 .spx-chip-wrap { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .spx-chip {
-  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px;
-  font-size: 12px; padding: 2px 4px 2px 12px; border-radius: 999px;
+  /* One quiet row (TaskOffer mock): the text wraps inside it in a narrow side
+     panel; the dot and the View/Undo/Reopen buttons stay on the row. */
+  display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 6px; max-width: 100%; box-sizing: border-box;
+  font-size: 12px; line-height: 1.35; padding: 3px 4px 3px 10px; border-radius: 14px;
   border: 1px solid var(--spx-tint-border); background: var(--spx-tint-bg); color: var(--spx-tint-text);
 }
+.spx-chip-text { min-width: 0; overflow-wrap: anywhere; }
 .spx-chip.is-quiet { padding: 4px 12px; color: var(--c-dim); border-color: var(--c-border); background: none; }
 .spx-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--spx-tint); flex: none; display: inline-block; }
 .spx-chip-btn {
   font: inherit; font-size: 12px; color: var(--c-fg); background: none; border: 0; border-radius: 999px;
-  padding: 0 10px; min-height: 28px; cursor: pointer; text-decoration: underline;
+  padding: 0 6px; min-height: 24px; flex: none; cursor: pointer; text-decoration: underline;
 }
 .spx-chip-btn:hover:not(:disabled) { background: var(--c-surface); }
 .spx-chip-btn:disabled { opacity: .5; cursor: default; }

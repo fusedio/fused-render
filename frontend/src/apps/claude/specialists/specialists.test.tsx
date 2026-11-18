@@ -8,7 +8,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { publishSpecialistsEnabled, resetSpecialistsFlagForTests } from "@platform/lib/specialists-flag";
-import { getSpecialistBreakouts, resetSpecialistBreakouts } from "@platform/lib/specialist-breakouts";
+import {
+  closeSpecialistBreakoutCard,
+  getSpecialistBreakouts,
+  openSpecialistBreakout,
+  resetSpecialistBreakouts,
+} from "@platform/lib/specialist-breakouts";
 import type { TaskEvent } from "@platform/lib/specialists-api";
 import type { Turn } from "../protocol/controller-api";
 import type { PermissionRow } from "../protocol/types";
@@ -18,7 +23,7 @@ import { OFFER_TOOL, SpecialistCardContext } from "./context";
 import { OfferCard, briefAnswers } from "./OfferCard";
 import { SendToSpecialist, claimOf } from "./SendToSpecialist";
 import { ServiceCardExtra } from "./ServiceCardExtra";
-import { chipText, placeEvents, TaskEventChip } from "./TaskEventChips";
+import { chipText, endedBreakouts, placeEvents, TaskEventChip } from "./TaskEventChips";
 import { useSpecialistTaskSide, type TaskSide } from "./TaskSide";
 import { setSpecialistListForTests } from "./useTaskEvents";
 
@@ -128,6 +133,18 @@ describe("chips", () => {
     });
     expect(asked).toEqual(["c1/b-1"]);
     expect(getSpecialistBreakouts()[0]).toMatchObject({ breakoutId: "b-1", sessionId: "bs1", parentSessionId: "s1", home: "/h" });
+  });
+
+  test("a closed breakout's earlier open chip loses its Open button (live: both Open and Reopen showed)", () => {
+    const evs = [ev({ kind: "breakout_open", breakout_id: "b-1" }), ev({ kind: "breakout_closed", breakout_id: "b-1" })];
+    const ended = endedBreakouts(evs);
+    expect([...ended]).toEqual(["b-1"]);
+    const host = { parentSessionId: "s1", parentFile: "/w", refresh: () => {} };
+    const stale = render(<TaskEventChip ev={evs[0]!} host={host} ended={ended} />);
+    expect(stale.root.findAll((n) => n.type === "button").length).toBe(0);
+    expect(hasText(stale, "Breakout open with the Canvas specialist")).toBe(true);
+    const live = render(<TaskEventChip ev={ev({ kind: "breakout_open", breakout_id: "b-2" })} host={host} ended={ended} />);
+    expect(button(live, "Open")).toBeTruthy();
   });
 
   test("a note chip's Undo deletes the note", async () => {
@@ -471,6 +488,46 @@ describe("with the flag off nothing renders (A)", () => {
     expect(side!.dock).toBeNull();
     // The seam is there for the services card, but an offer row is not ours here.
     expect(side!.cards!.renderCard(offerRow(), fakeActions().actions)).toBeNull();
+  });
+
+  test("the task re-reads its events when one of its breakout cards opens or closes (live: closed chip came 15 s late)", async () => {
+    publishSpecialistsEnabled(true);
+    setSpecialistListForTests(SPECS);
+    const asked: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      if (String(url).includes("/task-events")) asked.push(String(url));
+      return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    try {
+      render(<Probe />);
+      await flush();
+      const before = asked.length;
+      expect(before).toBeGreaterThan(0);
+      let id = "";
+      await act(async () => {
+        id = openSpecialistBreakout({
+          breakoutId: "b-1", specialistId: "c1", specialistName: "Canvas", home: "/h",
+          parentSessionId: "s1", parentFile: "/w/proj", startParams: {},
+        });
+      });
+      await flush();
+      expect(asked.length).toBe(before + 1);
+      await act(async () => closeSpecialistBreakoutCard(id));
+      await flush();
+      expect(asked.length).toBe(before + 2);
+      // Another task's card does not count.
+      await act(async () => {
+        openSpecialistBreakout({
+          breakoutId: "b-9", specialistId: "c1", specialistName: "Canvas", home: "/h",
+          parentSessionId: "other", parentFile: "/w/x", startParams: {},
+        });
+      });
+      await flush();
+      expect(asked.length).toBe(before + 2);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 
   test("on, in a task: Send to a specialist after a message", () => {
