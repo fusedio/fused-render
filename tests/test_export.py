@@ -2,6 +2,8 @@
 import json
 import os
 import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -501,6 +503,37 @@ def test_module_already_an_asset_not_duplicated(tmp_path):
     assert not plan.errors
     assert [a.name for a in plan.assets] == ["helpers.py"]
     assert plan.resources == []
+
+
+def test_export_keeps_dependencies_of_modules_also_served_as_assets(tmp_path):
+    source = tmp_path / "src"
+    page = _write(
+        source,
+        "page.html",
+        "<script>fused.runPython('./report.py', {}); fused.rawUrl('./helpers.py');</script>",
+    )
+    _write(source, "report.py", "import helpers\n\ndef main():\n    return helpers.total\n")
+    _write(source, "helpers.py", "from totals import total\n")
+    _write(source, "totals.py", "total = 42\n")
+    _write(source, "unrelated.py", "import scratch\n")
+    _write(source, "scratch.py", "unused = True\n")
+
+    bundle = tmp_path / "bundle"
+    export_page(str(page), str(bundle), include=["unrelated.py"])
+
+    run = subprocess.run(
+        [sys.executable, "-ES", "-c", "from report import main; print(main())"],
+        cwd=bundle / "files",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "42"
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    assert {asset["name"] for asset in manifest["assets"]} == {"helpers.py", "unrelated.py"}
+    assert manifest["resources"] == [{"key": "totals.py"}]
+    assert not (bundle / "files" / "scratch.py").exists()
 
 
 def test_exclude_module_warns(tmp_path):
