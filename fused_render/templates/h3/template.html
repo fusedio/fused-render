@@ -255,18 +255,31 @@ function fillColorExpr(){
     lo + (hi-lo)*0.75, '#5ec962', hi, '#fde725'];
 }
 
+const HEX_LAYERS = ['hex-fill', 'hex-dot'];
 function addLayers(){
-  for (const id of ['hex-fill', 'hex-line']) if (map.getLayer(id)) map.removeLayer(id);
-  if (map.getSource('hex')) map.removeSource('hex');
+  for (const id of [...HEX_LAYERS, 'hex-line']) if (map.getLayer(id)) map.removeLayer(id);
+  for (const id of ['hex', 'hex-dot']) if (map.getSource(id)) map.removeSource(id);
+  const dotsUntil = gj.features.length
+    ? Math.log2(39136 / h3.getHexagonEdgeLengthAvg(h3.getResolution(data.cells[0]), 'm')) : 0;
   map.addSource('hex', {type: 'geojson', data: gj});
-  const op = +els.opacity.value / 100;
-  map.addLayer({id: 'hex-fill', type: 'fill', source: 'hex',
-    paint: {'fill-color': fillColorExpr(), 'fill-opacity': op,
-            'fill-outline-color': 'rgba(0,0,0,0.25)'}});
-  map.addLayer({id: 'hex-line', type: 'line', source: 'hex',
+  map.addSource('hex-dot', {type: 'geojson', data: {type: 'FeatureCollection', features:
+    gj.features.map(f => ({...f, geometry: {type: 'Point', coordinates: centers[f.id]}}))}});
+  map.addLayer({id: 'hex-fill', type: 'fill', source: 'hex', minzoom: dotsUntil,
+    paint: {'fill-outline-color': 'rgba(0,0,0,0.25)'}});
+  map.addLayer({id: 'hex-dot', type: 'circle', source: 'hex-dot', maxzoom: dotsUntil,
+    paint: {'circle-radius': 2.5}});
+  map.addLayer({id: 'hex-line', type: 'line', source: 'hex', minzoom: dotsUntil,
     paint: {'line-color': '#ffffff',
             'line-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.9, 0],
             'line-width': 1.5}});
+  paintHex();
+}
+function paintHex(){
+  const color = fillColorExpr(), op = +els.opacity.value / 100;
+  map.setPaintProperty('hex-fill', 'fill-color', color);
+  map.setPaintProperty('hex-fill', 'fill-opacity', op);
+  map.setPaintProperty('hex-dot', 'circle-color', color);
+  map.setPaintProperty('hex-dot', 'circle-opacity', op);
   renderLegend();
 }
 
@@ -384,8 +397,7 @@ function maybeAutoStretch(){
   if (lastStats.p98 <= lastStats.p2 || s === autoStretchVal) return;
   autoStretchVal = s;
   if (!map.getLayer('hex-fill')) return;
-  map.setPaintProperty('hex-fill', 'fill-color', fillColorExpr());
-  renderLegend();
+  paintHex();
   drawHist();  // the clip band fillColorExpr() just recomputed
 }
 
@@ -447,12 +459,12 @@ function fitToData(instant = true){
 // ---------------- hover tooltip ----------------
 map.on('mousemove', e => {
   if (!map.getLayer('hex-fill')) return;
-  const feats = map.queryRenderedFeatures(e.point, {layers: ['hex-fill']});
-  if (hoverId !== null){ map.setFeatureState({source: 'hex', id: hoverId}, {hover: false}); hoverId = null; }
+  const feats = map.queryRenderedFeatures(e.point, {layers: HEX_LAYERS});
+  if (hoverId !== null){ map.setFeatureState(hoverId, {hover: false}); hoverId = null; }
   if (!feats.length){ els.mapTip.style.display = 'none'; map.getCanvas().style.cursor = ''; return; }
   const f = feats[0];
-  hoverId = f.id;
-  map.setFeatureState({source: 'hex', id: hoverId}, {hover: true});
+  hoverId = {source: f.source, id: f.id};
+  map.setFeatureState(hoverId, {hover: true});
   map.getCanvas().style.cursor = 'pointer';
   const col = activeColorCol();
   const entries = Object.entries(f.properties).filter(([k]) => k !== '__h3');
@@ -551,7 +563,7 @@ els.path.onkeydown = e => { if (e.key === 'Enter') els.load.onclick(); };
 els.h3Col.onchange = () => fused.params.set('h3col', els.h3Col.value);
 els.colorBy.onchange = () => fused.params.set('colorby', els.colorBy.value);
 els.opacity.oninput = () => {
-  if (map.getLayer('hex-fill')) map.setPaintProperty('hex-fill', 'fill-opacity', +els.opacity.value / 100);
+  if (map.getLayer('hex-fill')) paintHex();
 };
 els.basemap.onchange = () => {
   const show = els.basemap.checked ? 'visible' : 'none';
@@ -564,8 +576,7 @@ els.fitBtn.onclick = () => fitToData(false);
 function onParamsChanged(){
   if (P.file() + '|' + P.h3Col() !== loadedKey || colorMissing()){ loadFile(); return; }
   if (data && map.getLayer('hex-fill')){
-    map.setPaintProperty('hex-fill', 'fill-color', fillColorExpr());
-    renderLegend();
+    paintHex();
     syncControls();
     if (lastStats && lastStats.col !== activeColorCol()) refreshHist();
     else drawHist();
