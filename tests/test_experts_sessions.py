@@ -3,7 +3,6 @@ fence flags, chat rows, and the task-learn due rule with its retry cap."""
 from _bots_conftest import *  # noqa: F401,F403 — app_home (a per-test home and workspace)
 import json
 import os
-import shutil
 import threading
 import time
 
