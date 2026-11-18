@@ -621,6 +621,7 @@ class _Host:
         self.peer = peer
         self.run_dir = req["run_dir"]
         self.cwd = req["cwd"]
+        self.read_dirs = [str(d) for d in (req.get("extra_read_dirs") or []) if d]
         self.model = str(req.get("model") or "auto")
         # THE SESSION — the key of every file this host writes. A resume
         # names it; a fresh chat has none until `session/new` answers, because
@@ -1258,7 +1259,8 @@ class _Host:
             call = params.get("toolCall")
             call = call if isinstance(call, dict) else {}
             name, inp = self._resolve_tool(call)
-            if mode == "acceptEdits" and name in _EDIT_TOOLS:
+            if mode == "acceptEdits" and name in _EDIT_TOOLS \
+                    and self._in_granted_dirs(inp.get("file_path")):
                 self._answer_perm(rid, _permission_outcome(options, {"decision": "allow"}))
                 return
             self._park_permission(rid, call, name, inp, entry)
@@ -1267,6 +1269,22 @@ class _Host:
             if self._answer_perm(rid, {"outcome": {"outcome": "cancelled"}}) \
                     and entry["perm_id"]:
                 _post_card(self.run_dir, "card_cleared", entry["perm_id"])
+
+    def _in_granted_dirs(self, path) -> bool:
+        """Whether `path` (relative to the cwd, symlinks resolved) lies inside
+        the session's cwd or a directory it was granted. acceptEdits allows
+        only those; an edit of anything else (`~/.zshrc`) gets its card."""
+        if not isinstance(path, str) or not path:
+            return False
+        try:
+            target = os.path.realpath(os.path.join(self.cwd, os.path.expanduser(path)))
+            for root in [self.cwd, *self.read_dirs]:
+                root = os.path.realpath(root)
+                if os.path.commonpath([root, target]) == root:
+                    return True
+        except (OSError, ValueError):
+            pass
+        return False
 
     def _resolve_tool(self, call: dict) -> tuple:
         """`(name, input)` for a permission request's `toolCall`: its own

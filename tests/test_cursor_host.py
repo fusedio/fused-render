@@ -99,7 +99,8 @@ class Session:
 
     def __init__(self, agent, tmp_path, resume=False, fake_args=(), env=None,
                  transcript_seed=None, cli_mode="default", messages=(),
-                 seed_bucket=None, model="sonnet-4.5", mcp=None, context=None):
+                 seed_bucket=None, model="sonnet-4.5", mcp=None, context=None,
+                 read_dirs=()):
         import agent_roots  # importable once agent.py seeded the shared dir
         self.agent = agent
         # A resume names its session; a fresh one learns it off the init row,
@@ -154,7 +155,7 @@ class Session:
         req = {"agent": AGENT, "run_dir": self.run_dir, "file": self.cwd,
                "cwd": self.cwd, "pane": False, "cli_mode": cli_mode,
                "session_id": self._sid, "model": model,
-               "effort": "", "extra_read_dirs": [],
+               "effort": "", "extra_read_dirs": list(read_dirs),
                "new_session_id": "", "argv": argv, "backend": "cursor"}
         host_env = dict(os.environ)
         host_env.pop("FUSED_RENDER_ORIGIN", None)
@@ -1834,3 +1835,27 @@ def test_a_card_mode_switch_is_recorded_in_host_json_so_ask_can_switch_back(star
     assert _wait_for(lambda: len(s.perm_requests()) == 2)
     s.decide(s.perm_requests()[1]["id"], decision="deny")
     s.wait_results(2)
+
+
+def test_accept_edits_cards_an_edit_outside_the_cwd_and_granted_dirs(start, tmp_path):
+    """acceptEdits auto-allows an edit only inside the session's cwd or a
+    granted dir; anything else (a dotfile in the home dir, a `..` escape)
+    gets its card."""
+    outside = str(tmp_path / "elsewhere" / "rc.txt")
+    for target in (outside, "../escape.txt"):
+        s = start(cli_mode="acceptEdits", fake_args=["--perm-edit", target])
+        s.say("change it")
+        assert _wait_for(lambda: s.perm_requests()), target
+        assert s.perm_requests()[0]["tool"] in ("Edit", "Write")
+        s.decide(s.perm_requests()[0]["id"], decision="deny")
+        s.wait_results(1)
+
+
+def test_accept_edits_allows_an_edit_inside_a_granted_dir(start, tmp_path):
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    s = start(cli_mode="acceptEdits", read_dirs=[str(granted)],
+              fake_args=["--perm-edit", str(granted / "in.txt"), "--odd-ids"])
+    s.say("change it")
+    s.wait_results(1)
+    assert s.perm_requests() == []
