@@ -39,12 +39,10 @@ def test_streamed_read_matches_local_and_reads_ranges(put, bucket, color_by):  #
     expected = h3_reader.main(local, max_cells=1000)
     col = color_by or "a"
     assert streamed["attrs"] == {col: expected.pop("attrs")[col]}
-    assert {k: v for k, v in streamed.items() if k not in ("file", "attrs")} == \
-        {k: v for k, v in expected.items() if k != "file"}
+    assert {k: v for k, v in streamed.items() if k != "attrs"} == expected
     gets = [rng for _, rng, _ in log if rng != "HEAD"]
     assert gets and all(gets)
-    read = sum(int(b) - int(a) + 1 for a, b in (r[6:].split("-") for r in gets))
-    assert read < len(bucket.objects["/h3.parquet"]) / 2
+    assert bucket.sent["/h3.parquet"] < len(bucket.objects["/h3.parquet"]) / 2
 
 
 @needs_httpfs

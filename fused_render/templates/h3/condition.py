@@ -44,6 +44,10 @@ def is_url(src):
     return src.startswith(("https://", "http://"))
 
 
+def ident(name):
+    return '"%s"' % name.replace('"', '""')
+
+
 def connect(src):
     import duckdb
 
@@ -59,10 +63,11 @@ def connect(src):
 
 def h3_column(con, src):
     cols = {}
-    for name, ptype, lo, hi in con.execute(
-            "SELECT path_in_schema, type, stats_min_value, stats_max_value"
+    for name, ptype, lo, hi, width in con.execute(
+            "SELECT path_in_schema, type, stats_min_value, stats_max_value,"
+            " total_uncompressed_size / greatest(num_values, 1)"
             " FROM parquet_metadata(?)", [src]).fetchall():
-        if ptype not in ("INT64", "BYTE_ARRAY") or "." in name:
+        if ptype not in ("INT64", "BYTE_ARRAY") or "." in name or width > 64:
             continue
         looks = _looks_h3_str if ptype == "BYTE_ARRAY" else _looks_h3_int
         seen = cols.get(name, True)
@@ -81,7 +86,7 @@ def h3_column(con, src):
     if not pending:
         return found
 
-    sel = ", ".join('"%s"' % n.replace('"', '""') for n in pending)
+    sel = ", ".join(map(ident, pending))
     sample = con.execute(f"SELECT {sel} FROM read_parquet(?) LIMIT 128", [src]).fetchall()
     for i, name in enumerate(pending):
         vals = [r[i] for r in sample if r[i] is not None][:50]

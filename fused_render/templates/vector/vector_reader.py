@@ -65,6 +65,9 @@ def _read_ogr(src, cap):
     import pandas as pd
     import pyogrio
 
+    if "://" in src:
+        pyogrio.set_gdal_config_options(GDAL_HTTP)
+        src = "/vsicurl/" + src
     layers = [str(l[0]) for l in pyogrio.list_layers(src)]
     if len(layers) <= 1:
         gdf = pyogrio.read_dataframe(src, max_features=cap)
@@ -76,7 +79,7 @@ def _read_ogr(src, cap):
                 break
             try:
                 part = pyogrio.read_dataframe(src, layer=name, max_features=left)
-            except Exception:  # noqa: BLE001 — skip unreadable sublayers
+            except Exception:  # noqa: BLE001
                 continue
             part = part[part.geometry.notna()]
             if len(part):
@@ -125,29 +128,22 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
     import json
     from concurrent.futures import ThreadPoolExecutor
     import numpy as np
-    import pyogrio
     from shapely import get_coordinates
 
     max_features, table_rows = int(max_features), int(table_rows)
     if not file:
         return {"error": "no file selected"}
-    url = "://" in file
-    if not url:
+    if "://" not in file:
         file = os.path.abspath(os.path.expanduser(file))
         if not os.path.isfile(file):
             return {"error": f"not a file: {file}"}
-    stem, _, ext = file.rpartition(".")
-    parts = ([f"{stem}.{e}" for e in ("shp", "shx", "dbf", "prj", "cpg")]
-             if ext.lower() == "shp" else [file])
+    stem, _, ext = file.split("?")[0].rpartition(".")
+    ext = ext.lower()
+    parts = [f"{stem}.{e}" for e in ("shp", "shx", "dbf", "prj", "cpg")] if ext == "shp" else [file]
     sizes = ThreadPoolExecutor(len(parts)).map(_size, parts)
 
     try:
-        if ext.lower() == "parquet":
-            gdf, total, layers = _read_parquet(file, max_features)
-        else:
-            if url:
-                pyogrio.set_gdal_config_options(GDAL_HTTP)
-            gdf, total, layers = _read_ogr("/vsicurl/" + file if url else file, max_features)
+        gdf, total, layers = (_read_parquet if ext == "parquet" else _read_ogr)(file, max_features)
     except NotVector as e:
         return {"error": str(e)}
     except Exception as e:  # noqa: BLE001

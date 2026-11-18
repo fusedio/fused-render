@@ -1,7 +1,7 @@
 """A local stand-in for an S3 bucket that speaks Range, ETag and If-Match,
 plus the `bucket` fixture that serves it on loopback over plain http (which
-DuckDB's httpfs and GDAL's /vsicurl/ read like any URL). Used by
-tests/test_duckdb_stream.py and tests/test_geotiff_stream.py.
+DuckDB's httpfs and GDAL's /vsicurl/ read like any URL). Used by the
+tests/test_*_stream.py suites.
 """
 import hashlib
 import threading
@@ -16,6 +16,7 @@ class _Bucket:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
         self.log: list = []
+        self.sent: dict[str, int] = {}
         self.deny_next = 0       # answer this many requests with 403
         self.ignore_range = False
         bucket = self
@@ -64,6 +65,8 @@ class _Bucket:
                 self.end_headers()
 
             def _send(self, status, body, etag=None, cr=None):
+                key = self.path.split("?")[0]
+                bucket.sent[key] = bucket.sent.get(key, 0) + len(body)
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(body)))
                 if etag:

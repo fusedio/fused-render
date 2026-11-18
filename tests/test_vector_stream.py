@@ -3,7 +3,7 @@ import os
 import subprocess
 
 import pytest
-from _range_bucket import bucket  # noqa: F401 - the fixture
+from _range_bucket import bucket  # noqa: F401
 
 import fused_render
 from fused_render import projectenv
@@ -80,7 +80,5 @@ def test_geoparquet_streams_only_the_row_groups_it_shows(files, bucket):  # noqa
     size = len(bucket.objects["/v/t.parquet"])
     ranges = [rng for path, rng, _ in bucket.log if path == "/v/t.parquet"]
     assert ranges and all(r and r.startswith("bytes=") for r in ranges)
-    read = sum(int(b) if not a else int(b) - int(a) + 1
-               for a, _, b in (r[6:].partition("-") for r in ranges))
-    assert read < size / 2
+    assert bucket.sent["/v/t.parquet"] < size / 2
     assert "H3 mode" in h3["error"]

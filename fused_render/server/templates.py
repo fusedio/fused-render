@@ -692,8 +692,7 @@ def remote_templates(name: str) -> list:
         path = e.get("path")
         if not path or _is_native(path):
             continue
-        exts = streamed_extensions(path)
-        stream = bool(exts) and lower.endswith(exts)
+        stream = lower.endswith(streamed_extensions(path))
         if stream or not e.get("conditional"):
             out.append({**e, "stream": stream})
     return out

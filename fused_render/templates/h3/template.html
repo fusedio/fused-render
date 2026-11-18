@@ -229,10 +229,9 @@ function buildGeojson(){
 }
 
 // ---------------- coloring ----------------
-function numericCols(){ return data.numeric; }
 function activeColorCol(){
   const want = P.colorBy();
-  const nums = numericCols();
+  const nums = data.numeric;
   return nums.includes(want) ? want : (nums[0] || '');
 }
 function percentiles(vals){
@@ -497,14 +496,7 @@ function renderMeta(){
 
 // ---------------- load ----------------
 let loadedKey = null;
-let signed = null;
-async function readSource(file){
-  if (!/^s3:\/\//i.test(file)) return file;
-  const fresh = signed && signed.address === file && (!signed.expires_at
-    || Date.parse(signed.expires_at) - Date.now() > 60_000);
-  if (!fresh) signed = {address: file, ...(await fused.s3.sign(file))};
-  return signed.url;
-}
+const readSource = async file => /^s3:\/\//i.test(file) ? (await fused.s3.sign(file)).url : file;
 const readCells = params => fused.daemon.run(params).catch(e => {
   if (e && e.type) throw e;
   return fused.runPython('./h3_reader.py', params);
@@ -551,7 +543,7 @@ function syncControls(){
   els.path.value = P.file();
   els.h3Col.innerHTML = data.columns.map(c =>
     `<option value="${esc(c)}"${c === data.h3_col ? ' selected' : ''}>${esc(c)}</option>`).join('');
-  const nums = numericCols();
+  const nums = data.numeric;
   els.colorBy.innerHTML = '<option value="">— single color —</option>' +
     nums.map(c => `<option${c === activeColorCol() ? ' selected' : ''}>${esc(c)}</option>`).join('');
   if (activeColorCol()) els.colorBy.value = activeColorCol();
@@ -563,7 +555,9 @@ els.path.onkeydown = e => { if (e.key === 'Enter') els.load.onclick(); };
 els.h3Col.onchange = () => fused.params.set('h3col', els.h3Col.value);
 els.colorBy.onchange = () => fused.params.set('colorby', els.colorBy.value);
 els.opacity.oninput = () => {
-  if (map.getLayer('hex-fill')) paintHex();
+  if (!map.getLayer('hex-fill')) return;
+  map.setPaintProperty('hex-fill', 'fill-opacity', +els.opacity.value / 100);
+  map.setPaintProperty('hex-dot', 'circle-opacity', +els.opacity.value / 100);
 };
 els.basemap.onchange = () => {
   const show = els.basemap.checked ? 'visible' : 'none';

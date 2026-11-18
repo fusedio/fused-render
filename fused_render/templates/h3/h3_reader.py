@@ -16,10 +16,9 @@ import threading
 
 import duckdb
 
-from condition import connect, h3_column, is_url
+from condition import connect, h3_column, ident, is_url
 
 MAX_CELLS = 80_000
-NUMERIC = ("INTEGER", "UINTEGER", "FLOAT", "DOUBLE", "BOOLEAN")
 
 _stream_db = None
 _stream_lock = threading.Lock()
@@ -37,10 +36,6 @@ def _cursor(file):
         return _stream_db.cursor()
 
 
-def _ident(name):
-    return '"%s"' % name.replace('"', '""')
-
-
 def _cell(v):
     if isinstance(v, (int, float)):
         return int(v) if isinstance(v, int) else (None if v != v else v)
@@ -54,11 +49,8 @@ def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS, color_by:
         file = os.path.abspath(os.path.expanduser(file))
         if not os.path.isfile(file):
             return {"error": f"not a file: {file}"}
-    con = _cursor(file)
-    try:
+    with _cursor(file) as con:
         return _read(con, file, h3_col, color_by, int(max_cells))
-    finally:
-        con.close()
 
 
 def _read(con, file, h3_col, color_by, max_cells):
@@ -78,18 +70,16 @@ def _read(con, file, h3_col, color_by, max_cells):
                 "columns": names, "no_h3": True}
 
     numeric = [n for n, t in types.items()
-               if n != cand and (t in NUMERIC or t.endswith("INT"))]
+               if n != cand and t.endswith(("INT", "INTEGER", "FLOAT", "DOUBLE", "BOOLEAN"))]
     others = [n for n in names if n != cand]
     if is_url(file):
         others = [color_by if color_by in numeric else numeric[0]] if numeric else []
-    h3 = (f"lower(trim({_ident(cand)}))" if types[cand] == "VARCHAR"
-          else f"format('{{:x}}', {_ident(cand)}::UBIGINT)")
-    rows = con.execute(
-        f"SELECT {', '.join([h3] + [_ident(n) for n in others])} FROM read_parquet(?)"
-        f" WHERE {_ident(cand)} IS NOT NULL LIMIT {max_cells}", [file]).fetchall()
+    h3 = (f"lower(trim({ident(cand)}))" if types[cand] == "VARCHAR"
+          else f"format('{{:x}}', {ident(cand)}::UBIGINT)")
+    rows = q(f"SELECT {', '.join([h3] + [ident(n) for n in others])} FROM read_parquet(?)"
+             f" WHERE {ident(cand)} IS NOT NULL LIMIT {max_cells}")
 
     return {
-        "file": file,
         "file_size": size,
         "count": int(total),
         "shown": len(rows),

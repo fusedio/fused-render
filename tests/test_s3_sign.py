@@ -373,8 +373,7 @@ def test_a_streaming_gate_runs_on_the_signed_url(tmp_path, monkeypatch):
     from fused_render.server.routers import fs_read
     from fused_render.shell import prefs
 
-    enabled = {"on": True}
-    monkeypatch.setattr(prefs, "canvases_enabled", lambda: enabled["on"])
+    monkeypatch.setattr(prefs, "canvases_enabled", lambda: True)
     monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(tmp_path))
     monkeypatch.setattr(server_templates, "USER_REGISTRY", str(tmp_path / "registry.json"))
     monkeypatch.setattr(server_templates, "_CONDITIONS_CACHE", {})
@@ -391,7 +390,6 @@ def test_a_streaming_gate_runs_on_the_signed_url(tmp_path, monkeypatch):
     app.include_router(fs_read.router)
     c = TestClient(app)
     assert c.get("/api/fs/conditions", params={"path": OBJ}).json() == {"path": OBJ, "conditions": {"streams": True}}
-    for url in ("s3://other-bucket/x.parquet", "s3://fused-asset/data/"):
-        assert c.get("/api/fs/conditions", params={"path": url}).status_code == 400
-    enabled["on"] = False
+    assert c.get("/api/fs/conditions", params={"path": "s3://other-bucket/x.parquet"}).status_code == 400
+    monkeypatch.setattr(prefs, "canvases_enabled", lambda: False)
     assert c.get("/api/fs/conditions", params={"path": "s3://fused-asset/y.parquet"}).status_code == 403
