@@ -934,28 +934,23 @@ def test_a_change_made_while_a_session_writes_is_not_a_hand_edit(expert, monkeyp
     assert (sessions.writing(expert), sessions.edited_by_hand(expert)) == (False, False)
 
 
-def sessions_ask_prompt(expert, monkeypatch):
-    calls = stub(monkeypatch)
-    sessions.ask(expert, "How?")
-    return calls[0]["prompt"]
-
-
-def test_a_resumed_chat_is_told_how_to_run_every_turn(expert, tmp_path, monkeypatch):
+def test_how_to_run_is_stated_once_and_the_rest_is_the_skill(expert, tmp_path, monkeypatch):
     from fused_render.bots import agent_engine
     _canvases(expert, tmp_path, monkeypatch)
     note = store.run_note(expert)
-    assert "fused workbench --env prod run --engine remote" in note and "nobody can approve it" in note
-    assert note in sessions_ask_prompt(expert, monkeypatch)  # an ask has nobody at a card: refused, change the command
-    note = store.run_note(expert, ask_user=True)        # the chat: the user is asked on a card
-    assert "fused workbench --env prod run --engine remote" in note and "nobody can approve" not in note
-    assert "Approve / Deny card in this chat" in note
+    assert "fused workbench --env prod run --engine remote" in note and "approve" not in note and len(note) < 600
+    calls = stub(monkeypatch)
+    sessions.ask(expert, "How?")
     fresh, _ = agent_engine._expert_message(expert, "run it", past=[], conv={})
     resumed, _ = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s"})
-    assert note in fresh and note in resumed            # a session from before the expert could run never saw it
-    monkeypatch.setattr(expert, "task_via", {"kind": "routine"})  # a routine's turn has nobody at the card either
-    assert store.run_note(expert) in agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s"})[0]
-    assert store.where(expert) in fresh and store.where(expert) not in resumed
+    assert note in calls[0]["prompt"] and note in fresh and store.where(expert, run=True) in fresh
+    assert resumed == f"Today is {sessions.today()}.\n\nMESSAGE: run it"  # nothing restated on a resumed session
+    # What happens outside the rules is the shipped skill's to say, for both kinds of session.
+    skill = open(os.path.join(os.path.dirname(store.__file__), "shipped", "canvas-reference", "skills",
+                              store.RUN_SKILL), encoding="utf-8").read()
+    assert "Approve / Deny card" in skill and "nobody can approve it" in skill and "run --help" in skill
     monkeypatch.delenv(__import__("fused_render.fusedcli", fromlist=["x"]).CLI_DIR_ENV)
+    assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={})[0]
     assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={"session_id": "s"})[0]
 
 

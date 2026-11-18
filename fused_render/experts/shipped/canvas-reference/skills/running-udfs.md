@@ -19,7 +19,7 @@ Every command names the environment right after `fused workbench`:
     fused workbench --env prod run --engine remote <canvas> <udf>
     fused workbench --env unstable run --engine remote <canvas> <udf>
 
-A command without `--env`, or with an environment you were not given, is refused. Copies under a `custom/` folder cannot be run from here: say so. If the user asks for a throwaway run and names no environment, use the environment of the canvas you are talking about; if there is none, ask in the chat, or tell a task session which one you used.
+The command must start exactly like that. One without `--env`, or with an environment you were not given, is outside what you may run (see "What the fence refuses"). Copies under a `custom/` folder cannot be run from here: say so. If the user asks for a throwaway run and names no environment, use the environment of the canvas you are talking about; if there is none, ask in the chat, or tell a task session which one you used.
 
 ## Always the remote engine
 
@@ -60,7 +60,7 @@ For exploration, send source on standard input with a quoted heredoc. `<canvas>`
 
 - The source needs exactly one function decorated with `@fused.udf`.
 - Nothing is saved: the source is sent for this one run and appears on no canvas.
-- Always quote the heredoc word (`<<'EOF'`). An unquoted one is refused.
+- Always quote the heredoc word (`<<'EOF'`). An unquoted one is outside the rules.
 - You cannot create files, so there is no scratch file: stdin is the way.
 - Inside throwaway source, load another UDF by its full name (`fused.load("<owner>/<udf>")`): a bare name may not resolve to the canvas you mean.
 - `--stdin` cannot be combined with `--team`, `--id` or a shared `fc_...` token.
@@ -71,7 +71,12 @@ Results are cached on Fused. The same UDF with the same parameters may return an
 
 ## What the fence refuses
 
-One `fused` command per Bash call. Chaining (`;`, `&&`), writing output to a file (`>`, `tee`), command substitution (`$(...)`, backticks) and every other program are refused, as are all other `fused` commands (push, pull, create, delete, login). `fused workbench --env <env> whoami` is allowed and shows who is signed in. Do not use `--output-file`: read the result from the command's output. A refusal is final; do not try another spelling. In the user's chat a command outside these rules is not refused outright: the user gets an Approve / Deny card for it. Keep to the commands above anyway, and never ask the user to approve something you have not called.
+One `fused` command per Bash call. Chaining (`;`, `&&`), writing output to a file (`>`, `tee`), command substitution (`$(...)`, backticks) and every other program are refused, as are all other `fused` commands (push, pull, create, delete, login). `fused workbench --env <env> whoami` is allowed and shows who is signed in. Do not use `--output-file`: read the result from the command's output. To read a command's flags, these three are allowed as written: `fused workbench --help`, `fused workbench run --help`, `fused workbench udf-schema --help`.
+
+What happens to a command outside these rules depends on who you are talking to:
+
+- A task session's question: it is refused, and nobody can approve it. A refusal is final; do not try another spelling. Change the command to one of the forms above, or say what you could not run.
+- Your chat with the user: it is not refused outright. When you call it, the user gets an Approve / Deny card in the chat and the call waits for their answer. The same goes for a read outside your folders. So never tell the user to approve something you have not called; keep to the forms above whenever they do the job; and when the user denies a call, do not retry it.
 
 ## Reporting
 
