@@ -91,6 +91,13 @@ def test_memory_with_changes_and_hand_edits(client, expert):
     assert j(client.get(f"/api/experts/{expert.id}/memory"))[1]["edited_by_hand"] is True
 
 
+def test_settings_never_write_the_bot_memory_file_of_an_expert(client, expert):
+    before = store.memory(expert)
+    st, out = j(client.post(f"/api/bots/{expert.id}/settings", {"name": "Canvas Helper", "memory": "- a note"}))
+    assert st == 200, out
+    assert not os.path.exists(expert.memory_path) and store.memory(expert) == before
+
+
 def test_seed_once_and_a_deleted_expert_stays_deleted():
     from fused_render import canvases
     assert seed.seed() == ["canvas-reference"]
@@ -152,61 +159,6 @@ def test_a_seed_never_makes_a_second_expert_for_a_shipped_key():
                   expert={"ask_me_about": "x", "shipped": "canvas-reference"})
     assert seed.seed() == ["canvas-reference"]
     assert [x.id for x in store.all_experts()] == [b.id] and seed.seed() == []
-
-
-def test_an_expert_is_not_exported(client, expert, tmp_path):
-    from fused_render.bots import package
-    with pytest.raises(ValueError, match="expert cannot be exported"):
-        package.write(expert.id, memory=True, apps=[], file_name=None, dest_dir=str(tmp_path))
-    st, out = j(client.get(f"/api/bots/{expert.id}/package"))
-    assert st == 400 and out["error"] == package.EXPERT_REFUSAL
-
-
-def test_an_expert_never_takes_a_local_model(client, expert):
-    from fused_render.bots import bot as bm
-    local = next(iter(bm.LOCAL_MODELS))
-    made = registry.create(name="Local Expert", kind="expert", model=local)
-    assert made.meta["model"] == bm.DEFAULT_MODEL
-    with pytest.raises(ValueError, match="Claude model"):
-        bm.check_settings(expert.meta, model=local)
-
-
-# ------------------------------------------------------------ review fixes ---
-def test_settings_never_write_the_bot_memory_file_of_an_expert(client, expert):
-    before = store.memory(expert)
-    st, out = j(client.post(f"/api/bots/{expert.id}/settings", {"name": "Canvas Helper", "memory": "- a note"}))
-    assert st == 200, out
-    assert not os.path.exists(expert.memory_path) and store.memory(expert) == before
-
-
-def _expert_package(path, pub, memory=b"- remember this\n"):
-    from fused_render import appfile_container
-    members = [("bot.json", json.dumps(pub).encode())] + ([(".fused/memory.md", memory)] if memory else [])
-    appfile_container.write(str(path), {"name": pub["name"]}, members, kind="bot")
-    return str(path)
-
-
-def test_an_expert_package_takes_no_local_model_and_no_bot_memory(tmp_path):
-    from fused_render.bots import bot as bm
-    from fused_render.bots import botfile
-    local = next(iter(bm.LOCAL_MODELS))
-    pub = {"name": "Hand Expert", "kind": "expert", "model": local, "expert": {"ask_me_about": "hand-made"}}
-    out = botfile.install(_expert_package(tmp_path / "new.fusedbot", pub), apps=[], memory=True)
-    b = registry.get(out["bot_id"])
-    assert store.is_expert(b) and b.meta["model"] == bm.DEFAULT_MODEL
-    assert botfile.EXPERT_MEMORY_NOT_IMPORTED in out["warnings"]
-    assert not os.path.exists(b.memory_path) and store.memory(b) == store.EMPTY_MEMORY
-    # The update path: the same hand-made package, matched by id.
-    out = botfile.install(_expert_package(tmp_path / "up.fusedbot", {**pub, "id": b.id}), apps=[], memory=True,
-                          mode="update", target=b.id)
-    assert out["updated"] is True and botfile.EXPERT_MEMORY_NOT_IMPORTED in out["warnings"]
-    assert b.meta["model"] == bm.DEFAULT_MODEL and not os.path.exists(b.memory_path)
-
-
-def test_memory_rules_example_is_only_a_format_and_shipped_instructions_end_with_them():
-    shipped = open(os.path.join(seed.SHIPPED_DIR, "canvas-reference", "instructions.md"), encoding="utf-8").read()
-    assert shipped.endswith(store.MEMORY_RULES) and store.DEFAULT_INSTRUCTIONS.endswith(store.MEMORY_RULES)
-    assert "it is not a fact" in store.MEMORY_RULES and "canvas pull" not in store.MEMORY_RULES
 
 
 def test_a_changed_shipped_file_replaces_only_an_unedited_copy(tmp_path, monkeypatch):
@@ -273,3 +225,50 @@ def test_every_earlier_shipped_version_is_listed_and_the_current_one_is_not():
     for key, files in seed.PAST.items():
         for rel, hashes in files.items():
             assert seed._sha(os.path.join(seed.SHIPPED_DIR, key, rel)) not in hashes, rel
+
+
+def test_memory_rules_example_is_only_a_format_and_shipped_instructions_end_with_them():
+    shipped = open(os.path.join(seed.SHIPPED_DIR, "canvas-reference", "instructions.md"), encoding="utf-8").read()
+    assert shipped.endswith(store.MEMORY_RULES) and store.DEFAULT_INSTRUCTIONS.endswith(store.MEMORY_RULES)
+    assert "it is not a fact" in store.MEMORY_RULES and "canvas pull" not in store.MEMORY_RULES
+
+
+def test_an_expert_is_not_exported(client, expert, tmp_path):
+    from fused_render.bots import package
+    with pytest.raises(ValueError, match="expert cannot be exported"):
+        package.write(expert.id, memory=True, apps=[], file_name=None, dest_dir=str(tmp_path))
+    st, out = j(client.get(f"/api/bots/{expert.id}/package"))
+    assert st == 400 and out["error"] == package.EXPERT_REFUSAL
+
+
+def test_an_expert_never_takes_a_local_model(client, expert):
+    from fused_render.bots import bot as bm
+    local = next(iter(bm.LOCAL_MODELS))
+    made = registry.create(name="Local Expert", kind="expert", model=local)
+    assert made.meta["model"] == bm.DEFAULT_MODEL
+    with pytest.raises(ValueError, match="Claude model"):
+        bm.check_settings(expert.meta, model=local)
+
+
+def _expert_package(path, pub, memory=b"- remember this\n"):
+    from fused_render import appfile_container
+    members = [("bot.json", json.dumps(pub).encode())] + ([(".fused/memory.md", memory)] if memory else [])
+    appfile_container.write(str(path), {"name": pub["name"]}, members, kind="bot")
+    return str(path)
+
+
+def test_an_expert_package_takes_no_local_model_and_no_bot_memory(tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile
+    local = next(iter(bm.LOCAL_MODELS))
+    pub = {"name": "Hand Expert", "kind": "expert", "model": local, "expert": {"ask_me_about": "hand-made"}}
+    out = botfile.install(_expert_package(tmp_path / "new.fusedbot", pub), apps=[], memory=True)
+    b = registry.get(out["bot_id"])
+    assert store.is_expert(b) and b.meta["model"] == bm.DEFAULT_MODEL
+    assert botfile.EXPERT_MEMORY_NOT_IMPORTED in out["warnings"]
+    assert not os.path.exists(b.memory_path) and store.memory(b) == store.EMPTY_MEMORY
+    # The update path: the same hand-made package, matched by id.
+    out = botfile.install(_expert_package(tmp_path / "up.fusedbot", {**pub, "id": b.id}), apps=[], memory=True,
+                          mode="update", target=b.id)
+    assert out["updated"] is True and botfile.EXPERT_MEMORY_NOT_IMPORTED in out["warnings"]
+    assert b.meta["model"] == bm.DEFAULT_MODEL and not os.path.exists(b.memory_path)
