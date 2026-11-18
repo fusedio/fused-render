@@ -283,7 +283,7 @@ def test_only_a_chat_and_an_ask_are_told_how_to_run(expert, tmp_path, monkeypatc
     note = (f"copies under {base / 'prod'} are environment `prod`, run with "
             "`fused workbench --env prod run --engine remote <canvas> <udf>`")
     assert note not in store.where(expert) and note in store.where(expert, run=True)
-    assert "You may run UDFs on Fused, always" in store.where(expert, run=True)  # no such skill in its folder yet
+    assert "You may run UDFs on Fused: copies" in store.where(expert, run=True)  # no such skill in its folder yet
     skill = os.path.join(store.expert_dir(expert), "skills", store.RUN_SKILL)
     os.makedirs(os.path.dirname(skill), exist_ok=True)
     open(skill, "w").close()
