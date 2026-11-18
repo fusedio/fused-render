@@ -241,7 +241,10 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot.sel { background: var(--bots-shell-selected); }
 .bots-page .bot .av { grid-row: 1 / 3; }
 .bots-page .bot .av.settings { cursor: pointer; }  /* the selected row's avatar opens Settings, like the header avatar */
-.bots-page .bot .name { grid-column: 2; grid-row: 1; min-width: 0; font-weight: 400; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A flex row so the name (.nm) truncates and the badges after it (SUPER, EXPERT, the routines clock) never shrink. */
+.bots-page .bot .name { grid-column: 2; grid-row: 1; min-width: 0; font-weight: 400; font-size: 13px; overflow: hidden; white-space: nowrap; display: flex; align-items: center; }
+.bots-page .bot .name .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bots-page .bot .name > :not(.nm) { flex-shrink: 0; }
 .bots-page .bot .sub { grid-column: 2 / -1; grid-row: 2; min-width: 0; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .bot .meta { grid-column: 3; grid-row: 1; display: flex; align-items: center; gap: 6px; }
 .bots-page .bot .time { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -253,6 +256,10 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot .name .rt { display: inline-block; vertical-align: -2px; margin-left: 5px; color: var(--muted); }
 .bots-page .bot .name .rt svg { width: 12px; height: 12px; display: block; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
+/* An expert (docs/experts.md): SUPER's badge on the page's accent. */
+/* An expert that did something by itself since its Activity tab was last opened. */
+.bots-page .bot .name .xunread { display: inline-block; width: 6px; height: 6px; margin-left: 5px; border-radius: 50%; background: var(--accent); vertical-align: 2px; }
+.bots-page .bot .name .expert { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); vertical-align: 1px; letter-spacing: .04em; }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */
 .bots-page .bot .name .rt.warn, .bots-page .bot .sub .warn, .bots-page .r .s .warn { color: var(--err); }
 .bots-page .r .s .msg { display: block; color: var(--text); opacity: .85; white-space: pre-wrap; margin-top: 2px; }
@@ -531,7 +538,7 @@ div.bots-page:not(.sideapp) #satabb, div.bots-page.sideapp #sataba { background:
 .bots-page .sabar .winacts .btnlink:hover { color: inherit; text-decoration: underline; }
 .bots-page #saframe { display: none; flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 div.bots-page.sideapp #saframe { display: block; }
-div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap, .info) { display: none; }
+div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap, .info, .xpane) { display: none; }
 .bots-page .msg.approval { align-self: flex-start; background: var(--card); max-width: min(48rem, 90%); }
 /* The approval card is the shared GateCard (platform/ui/gate-card.css); this maps its --gate-* palette onto the page's own. */
 .bots-page .gate-card { --gate-accent: var(--accent); --gate-accent-text: var(--accent-text); --gate-ok: var(--ok); --gate-warn: var(--warn); --gate-err: var(--err); --gate-muted: var(--muted); --gate-line: var(--line); --gate-ground: var(--card); --gate-hover: var(--hover); --gate-pre-bg: var(--inset); --gate-on-accent: var(--accent-ink); }
@@ -608,6 +615,140 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap
 .bots-page .termwrap { position: relative; margin: 0 14px; height: 320px; border-radius: 14px; background: #000; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
 .bots-page:not(.stage) .shotwrap.termup { display: none; }
 div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
+/* An expert's preview column (components/ExpertPane.tsx): no browser; its Activity · Memory · Consults tabs ride the
+   Browser | Terminal strip (.viewsw .satab). The panels (ExpertPanels, root .xpanels) are also mounted in Settings ›
+   Expert, and that dialog portals to <body>, OUTSIDE .bots-page, so every panel rule hangs off .xpanels itself and
+   reads its own --xp-* tokens: the page's tokens inside .bots-page, the shadcn/shell tokens the other Settings tabs
+   use elsewhere (both themes). Buttons are restyled here too, since `.bots-page button` never reaches the dialog. */
+.bots-page .xpane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden auto; padding-bottom: 14px; }
+.bots-page .xp-about { margin: 0 18px 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.bots-page .xp-warn { margin: 0 18px 10px; color: var(--err); font-size: 12px; }
+.xpanels { --xp-text: var(--foreground); --xp-muted: var(--muted-foreground); --xp-line: var(--sh-border); --xp-raised: var(--secondary);
+  --xp-hover: var(--secondary); --xp-on: var(--secondary); --xp-inset: var(--secondary); --xp-accent: var(--bots-shell-accent);
+  --xp-accent-text: var(--bots-shell-accent-text); --xp-ok: #38d591; --xp-warn: #ffb020; --xp-err: var(--destructive);
+  min-width: 0; color: var(--xp-text); }
+[data-theme="light"] .xpanels { --xp-ok: #1f9d5a; --xp-warn: #b7791a; }
+.bots-page .xpanels, [data-theme="light"] .bots-page .xpanels { --xp-text: var(--text); --xp-muted: var(--muted); --xp-line: var(--line); --xp-raised: var(--raised);
+  --xp-hover: var(--hover); --xp-on: var(--card); --xp-inset: var(--inset); --xp-accent: var(--accent); --xp-accent-text: var(--accent-text);
+  --xp-ok: var(--ok); --xp-warn: var(--warn); --xp-err: var(--err); }
+.xpanels, .xpanels * { box-sizing: border-box; }
+.xpanels button { background: var(--xp-raised); color: var(--xp-text); border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 300; }
+.xpanels button:hover { background: var(--xp-hover); }
+.xpanels button:disabled { opacity: .4; cursor: default; }
+.xpanels button:focus-visible { outline: 2px solid var(--xp-accent-text); outline-offset: 2px; }
+.xpanels button.busy { pointer-events: none; }
+.xpanels button.busy > svg { display: none; }
+.xpanels button.busy::before { content: ""; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: bots-spin .7s linear infinite; }
+.xpanels b { font-weight: 400; }
+.xpanels .xp-tabs { display: flex; gap: 4px; }
+.xpanels .xp-tabs .satab { font-size: 11.5px; padding: 4px 10px; border-radius: 999px; background: transparent; color: var(--xp-muted); }
+.xpanels .xp-tabs .satab.on { background: var(--xp-on); color: var(--xp-text); }
+.xpane .xp-panel { margin: 0 14px; }
+/* In the dialog: the tabs sit flush with the other sections; the dialog body (BotSettings' content column) scrolls. */
+.bots-dialog .xpanels .xp-tabs { margin: 4px 0 8px; }
+.xpanels .xp-panel { color: var(--xp-muted); font-size: 12px; line-height: 1.5; }
+.xpanels .xp-bar { display: flex; align-items: center; gap: 10px; padding: 4px 4px 8px; }
+.xpanels .xp-bar .xp-line { flex: 1; min-width: 0; }
+.xpanels .xp-bar button { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.xpanels .xp-status { display: block; color: var(--xp-text); }
+/* The list tabs' cards (XCard: lessons, observations, consults): filter chips, day dividers, one bordered card per row.
+   The header button is the whole click target; detail (a consult's answer, a finding, Forget / Drop) shows only when open. */
+.xpanels .xp-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 8px; }
+.xpanels .xp-filters .xp-chip { padding: 3px 10px; font-size: 11.5px; background: transparent; color: var(--xp-muted); border: 1px solid var(--xp-line); }
+.xpanels .xp-filters .xp-chip:hover:not(:disabled) { background: var(--xp-hover); color: var(--xp-text); }
+.xpanels .xp-filters .xp-chip.on { background: var(--xp-on); color: var(--xp-text); border-color: transparent; }
+.xpanels .xp-chip .xp-n { margin-left: 3px; font-variant-numeric: tabular-nums; opacity: .75; }
+.xpanels .xp-day { margin: 12px 2px 6px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--xp-muted); }
+.xpanels .xp-dayg:first-of-type > .xp-day { margin-top: 2px; }
+.xpanels .xp-cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.xpanels .xp-card { min-width: 0; border: 1px solid var(--xp-line); border-radius: 8px; transition: border-color .15s; }
+.xpanels .xp-card:hover { border-color: color-mix(in srgb, var(--xp-muted) 45%, var(--xp-line)); }
+.xpanels button.xp-card-head { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; padding: 9px 11px; border-radius: 7px; background: transparent;
+  color: var(--xp-text); text-align: left; font-size: 12px; font-weight: inherit; line-height: 1.45; }
+.xpanels button.xp-card-head:hover { background: var(--xp-hover); }
+.xpanels .xp-card.open button.xp-card-head { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.xpanels .xp-card-line { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--xp-muted); white-space: nowrap; }
+.xpanels .xp-cstat { flex: none; display: inline-flex; align-items: center; gap: 5px; font-weight: 500; }
+.xpanels .xp-cstat.tone-ok { color: var(--xp-ok); }
+.xpanels .xp-cstat.tone-warn { color: var(--xp-warn); }
+.xpanels .xp-cstat.tone-accent { color: var(--xp-accent-text); }
+.xpanels .xp-cstat.tone-muted { color: var(--xp-muted); }
+.xpanels .xp-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.xpanels .xp-src { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.xpanels .xp-when { flex: none; }
+.xpanels .xp-chev { flex: none; margin-left: auto; transition: transform .15s; }
+.xpanels .xp-card.open .xp-chev { transform: rotate(180deg); }
+.xpanels .xp-q { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-weight: 500; color: var(--xp-text); overflow-wrap: anywhere; white-space: pre-line; }
+.xpanels .xp-card.open .xp-q { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.xpanels .xp-facts { margin: 0; font-size: 11px; color: var(--xp-muted); overflow-wrap: anywhere; }
+.xpanels .xp-note { opacity: .85; }
+.xpanels .xp-txt { margin: 0; color: var(--xp-text); overflow-wrap: anywhere; }
+.xpanels .xp-about-chip { padding: 1px 8px; border-radius: 6px; background: var(--xp-raised); color: var(--xp-text); font-size: 11px; }
+.xpanels .xp-acts { display: flex; justify-content: flex-end; }
+/* The Activity tab: a card's foot (always shown, under its header: "undone", a failed change's error, a refused undo's
+   reason, and the Undo button on the right), the chips row with "Show everything" at its end, "Show earlier". */
+.xpanels .xp-card-foot { display: flex; align-items: center; gap: 10px; padding: 0 11px 9px; min-width: 0; font-size: 11px; }
+.xpanels .xp-foot-msg { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.xpanels .xp-undone { color: var(--xp-muted); font-style: italic; }
+.xpanels .xp-err { color: var(--xp-err); }
+.xpanels .xp-card.undone .xp-q { color: var(--xp-muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--xp-muted) 60%, transparent); }
+.xpanels button.xp-undo { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: 11px; background: transparent; color: var(--xp-text); border: 1px solid var(--xp-line); }
+.xpanels button.xp-undo:hover { background: var(--xp-hover); }
+.xpanels .xp-toolbar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; padding: 2px 0 8px; }
+.xpanels .xp-toolbar .xp-filters { padding: 0; }
+.xpanels .xp-toolbar .xp-every { margin-left: auto; padding: 3px 10px; font-size: 11.5px; background: transparent; color: var(--xp-muted); border: 1px solid var(--xp-line); }
+.xpanels .xp-toolbar .xp-every:hover { background: var(--xp-hover); color: var(--xp-text); }
+.xpanels .xp-toolbar .xp-every.on { background: var(--xp-on); color: var(--xp-text); border-color: transparent; }
+.xpanels .xp-wait { display: block; }
+.xpanels .xp-earlier { justify-content: center; margin-top: 10px; }
+.xpanels .xp-card-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 11px 11px; min-width: 0; }
+.xpanels .xp-part { min-width: 0; }
+.xpanels .xp-lbl { margin: 0 0 4px; font-size: 10px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--xp-muted); }
+.xpanels .xp-card .xp-ctx { margin: 0; font-style: normal; color: var(--xp-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.xpanels .xp-card .xp-ctx.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+.xpanels button.xp-more { margin-top: 2px; padding: 0; background: none; color: var(--xp-muted); font-size: 11px; text-decoration: underline; text-underline-offset: 2px; }
+.xpanels button.xp-more:hover { background: none; color: var(--xp-text); }
+.xpanels .xp-none { margin: 0; }
+.xpanels .xp-files { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.xpanels button.xp-file { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 8px; border-radius: 6px; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.xpanels button.xp-file.copied { color: var(--xp-ok); font-family: inherit; }
+.xpanels .xp-used { margin: 0; padding-left: 1.2em; color: var(--xp-text); }
+.xpanels .xp-used li { margin: .15em 0; overflow-wrap: anywhere; }
+.xpanels .xp-used li::marker { color: var(--xp-muted); }
+/* The answer as markdown (md(), the chat's renderer): the chat bubble's rules, scoped here (Settings portals outside .bots-page). */
+.xpanels .xp-md { min-width: 0; max-width: 100%; color: var(--xp-text); font-size: 12.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.xpanels .xp-md > * { margin: 0 0 .6em; }
+.xpanels .xp-md > :last-child { margin-bottom: 0; }
+.xpanels .xp-md :is(h1, h2, h3, h4, h5, h6) { font-size: 1em; font-weight: 500; line-height: 1.4; }
+.xpanels .xp-md h1 { font-size: 1.15em; } .xpanels .xp-md h2 { font-size: 1.08em; }
+.xpanels .xp-md strong { font-weight: 600; }
+.xpanels .xp-md :is(ul, ol) { padding-left: 1.4em; }
+.xpanels .xp-md li { margin: .15em 0; }
+.xpanels .xp-md li::marker { color: var(--xp-muted); }
+.xpanels .xp-md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; background: var(--xp-raised); border-radius: 5px; padding: .1em .35em; }
+.xpanels .xp-md pre { max-width: 100%; overflow-x: auto; background: var(--xp-inset); border-radius: 8px; padding: 8px 10px; overflow-wrap: normal; }
+.xpanels .xp-md pre code { background: none; padding: 0; font-size: .92em; white-space: pre; }
+.xpanels .xp-md blockquote { border-left: 3px solid var(--xp-line); margin-left: 0; padding-left: 10px; color: var(--xp-muted); }
+.xpanels .xp-md hr { border: 0; border-top: 1px solid var(--xp-line); }
+.xpanels .xp-md a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.xpanels .xp-md .tablewrap { overflow-x: auto; max-width: 100%; }
+.xpanels .xp-md table { min-width: 100%; border-collapse: collapse; }
+.xpanels .xp-md :is(th, td) { padding: .3em .6em; border-bottom: 1px solid var(--xp-line); vertical-align: top; text-align: left; overflow-wrap: normal; }
+.xpanels .xp-md th { font-weight: 500; color: var(--xp-muted); }
+.xpanels .xp-md .wide .tfoot { display: none; }  /* the thread's table buttons are handled only there */
+/* The Memory tab's budget line (MemoryBudgetLine): "32 of 50 lessons", a thin meter (neutral up to tidy_at, the warning
+   tone beyond it, a tick where tidying starts) and a muted sentence or two. */
+.xpanels .xp-budget { display: flex; flex-direction: column; gap: 4px; padding: 2px 4px 10px; }
+.xpanels .xp-budget-head { display: flex; align-items: baseline; gap: 8px; }
+.xpanels .xp-budget-n { color: var(--xp-text); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.xpanels .xp-meter { position: relative; display: flex; height: 4px; border-radius: 2px; background: var(--xp-raised); overflow: hidden; }
+.xpanels .xp-meter-fill { height: 100%; background: var(--xp-muted); opacity: .7; transition: width .3s; }
+.xpanels .xp-meter-over { height: 100%; background: var(--xp-warn); transition: width .3s; }
+.xpanels .xp-meter-tick { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -1px; background: var(--xp-text); opacity: .35; }
+.xpanels .xp-tidy { color: var(--xp-text); opacity: .85; }
+.xpanels .xp-used.xp-merged { color: var(--xp-muted); font-size: 11.5px; }
+.xpanels .xp-empty { padding: 20px 8px; text-align: center; font-size: 12.5px; line-height: 1.5; color: var(--xp-muted); }
+@media (prefers-reduced-motion: reduce) { .xpanels * { animation: none !important; transition: none !important; } }
 .bots-page .shotwrap img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
 .bots-page .shotwrap .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--card); text-align: center; padding: 20px; font-size: 12px; }
 /* Asleep: Chrome was closed after sitting idle. The last frame stays, dimmed, with a moon; clicking wakes it (take-over relaunches). */

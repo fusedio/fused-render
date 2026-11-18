@@ -153,6 +153,24 @@ def test_skills_save_and_delete(client, ws):
     assert st == 200 and out["skills"] == []
 
 
+def test_an_experts_skills_are_hand_edited_but_never_learned(client, ws, monkeypatch):
+    from fused_render.bots import registry
+
+    bid = make(client)
+    b = registry.get(bid)
+    with b.lock:
+        b.meta["kind"] = "expert"
+        b.save()
+    monkeypatch.setattr(botmod.Bot, "learn_from_last", lambda self: pytest.fail("an expert learned from chat"))
+    st, out = j(client.post(f"/api/bots/{bid}/skills", {"op": "learn"}))
+    assert st == 400 and out["error"] == ("An expert improves its skills by itself (see its Activity tab), or "
+                                         "edit them here.")
+    st, out = j(client.post(f"/api/bots/{bid}/skills", {"op": "save", "name": "Grid", "trigger": "grid", "text": "use the grid"}))
+    assert st == 200 and [s["name"] for s in out["skills"]] == ["grid"]
+    st, out = j(client.post(f"/api/bots/{bid}/skills", {"op": "delete", "rid": "grid"}))
+    assert st == 200 and out["skills"] == []
+
+
 def test_send_starts_a_task(client, ws, monkeypatch):
     started = []
     monkeypatch.setattr(botmod.Bot, "start_task", lambda self, task, label=None, origin="manual", via=None, images=None: started.append((task, label)))

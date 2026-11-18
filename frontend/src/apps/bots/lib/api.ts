@@ -197,8 +197,14 @@ export interface Bot {
   /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).
    *  Plain absolute paths, the user's own: the bot never writes there and only the dialog edits the list. */
   folders?: string[];
-  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); absent for an ordinary bot. */
-  kind?: "bot" | "super";
+  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": a read-only bot with no
+   *  browser that answers questions and learns (docs/experts.md); absent for an ordinary bot. */
+  kind?: "bot" | "super" | "expert";
+  /** Expert only: its manifest, defaults filled (docs/experts.md §3). */
+  expert?: ExpertManifest | null;
+  /** Expert only: false when none of its engines (Claude, Codex, Copilot) is on; `expert_reason` says so in a sentence. */
+  expert_available?: boolean;
+  expert_reason?: string;
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
   super_access?: "ask" | "full";
   face?: Face | null;
@@ -260,6 +266,94 @@ export interface Bot {
   /** Events past the page's cursor for this bot (merged into the store, then dropped). */
   events: BotEvent[];
 }
+
+// ------------------------------------------------------------------ experts (docs/experts.md) ----
+export type ExpertEngine = "auto" | "claude" | "codex" | "copilot";
+/** bot.meta["expert"] with every default filled (experts.store.manifest). */
+export interface ExpertManifest {
+  ask_me_about?: string;
+  reads?: ({ kind: "canvas-mirror"; scopes?: string[] } | { kind: "folder"; path: string } | { kind: string; [k: string]: unknown })[];
+  offered_to?: { targets?: string[] };
+  learns_from?: string[];
+  engine?: ExpertEngine | (string & {});
+  /** "" = the engine's default. */
+  model?: string;
+  /** Off: it still answers and notes what happens, and changes nothing (absent reads as on). */
+  learning?: boolean;
+  memory?: { consolidate_at?: number; consolidate_after_s?: number; propose_at?: number; index_lines?: number };
+  shipped?: string;
+  [k: string]: unknown;
+}
+/** One lesson in memory.json. `trust`: user (said in chat), outcome (from a task), gap (an unanswered consult),
+ *  research (found by the expert looking into a question it could not answer). `kind`: "worked" / "failed" for
+ *  something a task showed works / does not work (anything else: an ordinary lesson). */
+export interface ExpertItem {
+  id: string; claim: string; kind: string; trust: "user" | "outcome" | "gap" | "research" | (string & {}); count: number;
+  sessions: string[]; about: string[]; created: number; updated: number;
+  /** Answers that relied on this lesson (absent on an older server: 0). `count + cited` is how often it was used. */
+  cited?: number;
+  /** When an answer last relied on it, or it was last seen (unix seconds; absent on an older server). */
+  last_used?: number;
+  /** The lessons a tidy merged into this one (generalised; newer servers only). */
+  merged_from?: { id: string; claim: string }[];
+  /** False for a lesson seen once: kept, but not in the index answers draw on until it comes up again. Absent (an
+   *  older server) reads as indexed. */
+  indexed?: boolean;
+  /** Sessions that showed this lesson wrong or too broad (once per session; absent on an older server: 0). Never
+   *  moved into a skill, and flagged in the index answers draw on. */
+  contradicted?: number;
+  contradicted_sessions?: string[];
+  /** Sessions that showed it again without independent evidence (the expert's own advice echoed back); never raises
+   *  `count` (absent on an older server: 0). */
+  confirmed?: number;
+  /** Where a `user` lesson was said: "session" for a correction verified in a task session ("" / absent: chat). */
+  via?: string;
+  /** Earlier wordings, oldest first, when a user correction narrowed the claim. */
+  history?: { claim: string; at: number }[];
+}
+/** A lesson named by the last tidy (the memory budget's `last_tidy`). */
+export interface ExpertTidyRef { id: string; claim: string; why?: string }
+/** The last tidy above `tidy_at`: lessons removed, moved into skills, cut for being over the limit. */
+export interface ExpertLastTidy {
+  at: number; deleted?: ExpertTidyRef[]; promoting?: ExpertTidyRef[]; over_limit?: ExpertTidyRef[];
+  /** Related lessons generalised into one: `into` the new lesson's id, `claim` its claim, `from` the originals. */
+  merged?: { into: string; claim: string; from?: { id: string; claim: string }[] }[];
+}
+/** The memory's budget: at most `limit` lessons; above `tidy_at` each learning run tidies; `total`: lessons held now. */
+export interface ExpertBudget { limit?: number; tidy_at?: number; total?: number; last_tidy?: ExpertLastTidy | null }
+/** GET …/memory: the lessons and the budget. (A server that sends the budget fields beside `items` is read too.) */
+export interface ExpertMemory extends ExpertBudget { items: ExpertItem[]; budget?: ExpertBudget | null }
+export interface ExpertCaller { run_id?: string; session_id?: string; backend?: string; target?: string; canvas?: string }
+/** One consult from an agent session (consults.jsonl). `ms`: how long it took. */
+export interface ExpertConsult {
+  id: string; ts: number; question: string; context: string; answer: string; refs: string[]; used: string[]; unsure: boolean;
+  caller?: ExpertCaller | null; ms: number;
+}
+/** What a change rests on: the session it came from, the user's own words, the file it was read in, the lesson it is
+ *  about. `source` is a path (research), or the task an entry came from: its `canvas`, `target` folder, `backend`,
+ *  and the `files` it touched. */
+export interface ExpertEvidence {
+  session?: string; quote?: string; item?: string;
+  source?: string | { target?: string; backend?: string; canvas?: string; path?: string; files?: string[] } | null;
+}
+export type ExpertAction = "learned" | "counted" | "corrected" | "forgot" | "merged" | "removed" | "skill_updated" | "skill_created" | "skill_restored"
+  | "noticed" | "researched" | "could_not_find" | "skipped" | "undo";
+/** One line of activity.jsonl: one thing the expert did. `summary`: what; `why`: one sentence; `ok: false` with
+ *  `error` for a change that was refused; `quiet` for the lines hidden unless asked. `noticed`: a first
+ *  sighting, kept but not yet used in answers. */
+export interface ExpertActivity {
+  id: string; ts: number; action: ExpertAction | (string & {}); target?: string; summary: string; why?: string;
+  evidence?: ExpertEvidence | null; stage?: string; ok: boolean; undoable?: boolean; undone?: boolean; error?: string; quiet?: boolean;
+}
+/** A learning run in the background, and the step it is on ("" when idle). */
+export interface ExpertLearning { running: boolean; stage: "lessons" | "research" | "distill" | "tidy" | (string & {}) }
+/** GET …/activity: the lines newest first, how many are new since `seen`, how many things wait to be learned. */
+export interface ExpertActivityReply { items: ExpertActivity[]; unread: number; waiting: number; learning?: ExpertLearning | null }
+/** One row of GET /api/experts. `unread`: activity lines since the user last opened its Activity tab. */
+export interface ExpertRow { id: string; name: string; ask_me_about?: string; engine?: string; model?: string; available?: boolean; reason?: string; unread?: number }
+/** `note`: a caveat to show under the Engine menu when this engine is picked (non-empty for Codex, whose reads are not
+ *  fenced by the app). */
+export interface ExpertEngineRow { id: string; label: string; enabled: boolean; models: { id: string; label: string }[]; default_model: string; note?: string }
 
 export interface UsageBotRow { id: string; name: string; today: number; week: number; models: Record<string, number>; errors: number; last: number; live: boolean }
 /** One failed model call behind a bot's `errors` count (GET /api/bots/{id}/failures, newest first, this week).
@@ -541,6 +635,25 @@ export const api = {
   workspaceTake: () => post<{ taken: boolean; error: string }>(`${B}/workspace/take`, {}, "workspace/take"),
   /** Slow (runs each installed starter's setup tool): call after the strip is drawn. null = could not tell. */
   starterStatus: () => get<{ ok: true; ready: Record<string, boolean | null>; why: Record<string, string> }>("/api/bot-apps/starters/status", "starter_status"),
+};
+
+const XP = "/api/experts";
+const xid = (id: string) => `${XP}/${encodeURIComponent(id)}`;
+/** /api/experts/… (docs/experts.md "HTTP"). An expert's id is its bot id. */
+export const expertApi = {
+  list: () => get<ExpertRow[]>(XP, "experts"),
+  activity: (id: string, o: { limit?: number; before?: string; quiet?: boolean } = {}) => {
+    const q = [o.limit ? `limit=${o.limit}` : "", o.before ? `before=${encodeURIComponent(o.before)}` : "", o.quiet ? "quiet=1" : ""].filter(Boolean).join("&");
+    return get<ExpertActivityReply>(`${xid(id)}/activity${q ? `?${q}` : ""}`, "expert activity");
+  },
+  /** Take one change back. A 409 (ApiError, `body.detail`) says why it cannot be undone. */
+  undo: (id: string, aid: string) => post<{ ok: boolean; item: ExpertActivity }>(`${xid(id)}/activity/${encodeURIComponent(aid)}/undo`, {}, "expert undo"),
+  seen: (id: string) => post<Record<string, never>>(`${xid(id)}/activity/seen`, {}, "expert activity seen"),
+  learn: (id: string) => post<{ started: boolean }>(`${xid(id)}/learn`, { force: true }, "expert learn"),
+  memory: (id: string) => get<ExpertMemory>(`${xid(id)}/memory`, "expert memory"),
+  consults: (id: string) => get<{ consults: ExpertConsult[] }>(`${xid(id)}/consults`, "expert consults"),
+  settings: (id: string, body: { engine?: string; model?: string; learning?: boolean }) => post<ExpertManifest>(`${xid(id)}/settings`, body, "expert settings"),
+  engines: (id: string) => get<ExpertEngineRow[]>(`${xid(id)}/engines`, "expert engines"),
 };
 
 /** POST /api/bots/<id>/seen {seq}: the unread mark (Bot.seen_seq). Silent: no banner, no poll after it (store.ts

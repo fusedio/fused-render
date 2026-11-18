@@ -162,6 +162,8 @@ EXPECTED_STARTUP = [
     # Added 2026-10-06: the Bots sub-app's scheduler + iMessage bridge
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",
+    # Added 2026-11-16: the experts' learning pass timer (experts/scheduler.py).
+    "_startup_experts",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and
     # every extension but the built-in `.fused` refused to share.
@@ -200,6 +202,8 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_terminal_sessions",
     # Added 2026-10-06: every loaded bot's task and Chrome (bots/registry.py).
     "_shutdown_bots",
+    # Added 2026-11-16: the experts' timer (experts/scheduler.py).
+    "_shutdown_experts",
     "_shutdown_index_watch",
 ]
 
@@ -258,6 +262,7 @@ EXPECTED_SHUTDOWN_LEAN = [
     "_shutdown_terminal_sessions",
     # A request can start a bot's Chrome in a lean app too.
     "_shutdown_bots",
+    "_shutdown_experts",
 ]
 
 
@@ -781,6 +786,36 @@ def test_no_artifacts_warm_at_boot_and_first_request_lists(tmp_path, monkeypatch
         assert calls == []
         assert client.get("/api/claude-artifacts").json() == {"artifacts": []}
         assert calls == [1]
+
+
+def test_startup_experts_loads_the_roster_modules_before_the_first_spawn(tmp_path, monkeypatch):
+    """agent._expert_roster_live reads experts.store/model off sys.modules and
+    never imports them: the startup hook loads them, cheaply and safely."""
+    import builtins
+
+    from fused_render.experts import scheduler as experts_scheduler
+
+    monkeypatch.setattr(experts_scheduler, "start", lambda: None)
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_experts")
+    seen, real_import = [], builtins.__import__
+
+    def spy(name, *a, **kw):
+        seen.append(name)
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", spy)
+    run(handler())
+    monkeypatch.setattr(builtins, "__import__", real_import)
+    assert {"fused_render.experts.store", "fused_render.experts.model"} <= set(seen)
+
+    def boom(name, *a, **kw):
+        if name.startswith("fused_render.experts"):
+            raise ImportError("broken")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", boom)
+    run(handler())  # never fails startup
+    monkeypatch.setattr(builtins, "__import__", real_import)
 
 
 @pytest.mark.parametrize("enabled", [True, False])

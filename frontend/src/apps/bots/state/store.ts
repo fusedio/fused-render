@@ -243,7 +243,7 @@ let autoOpened: string | null = null;
 export const needsYou = (b: Bot | undefined): boolean => !!b && !!b.control && b.control_by === "bot";
 /** ...and Stage can show it: the task has not ended and the browser is not popped out (nothing to stream). The same
  *  checks that close an auto-opened Stage, so a remount never flashes one open for a poll. */
-const stageable = (b: Bot | undefined): boolean => needsYou(b) && b!.status !== "idle" && b!.status !== "error" && !b!.browser?.headed;
+const stageable = (b: Bot | undefined): boolean => needsYou(b) && b!.kind !== "expert" && b!.status !== "idle" && b!.status !== "error" && !b!.browser?.headed;
 /** Open Stage for the selected bot `id` unless it is already open or the pref is off; with a dialog / menu up, later
  *  (closeDialog / closeMenu). Unsent composer text keeps its focus: the page does not take the keyboard then. */
 function requestStage(id: string): void {
@@ -451,6 +451,8 @@ function applySel(id: string | null): void {
   const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
   // A bot waiting for you in its browser opens Stage the moment you pick it.
   if (b && stageable(b)) requestStage(b.id);
+  // An expert has no browser: a Stage left open for the previous bot closes rather than show it nothing.
+  else if (S.fast && b?.kind === "expert") closeStage();
 }
 
 /** `replace`: the store's own fallback pick (see writeUrl); a user gesture pushes. `sel` is committed BEFORE the

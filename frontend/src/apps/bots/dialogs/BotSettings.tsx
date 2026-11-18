@@ -22,10 +22,12 @@ import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-sel
 import { Switch } from "@platform/shadcn/ui/switch";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { cn } from "@platform/lib/utils";
+import { ExpertPanels } from "../components/ExpertPane";
 import { Face } from "../components/Face";
 import { FolderPlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
-import { ApiError, api, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
+import { ApiError, api, expertApi, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type ExpertEngineRow, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
+import { ENGINE_HELP, LEARNING_HELP, engineNote, engineOptions, modelOptions } from "../lib/expert";
 import { faceOf } from "../lib/face";
 import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
 import { exportBotFile, type BotDialogValue } from "./actions";
@@ -40,7 +42,7 @@ import { Row, Rows } from "./SettingsRow";
 import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 import { SkillsSection } from "./SkillsSection";
 
-export type SettingsTab = "general" | "permissions" | "connections" | "browser" | "skills" | "routines" | "memory" | "phone";
+export type SettingsTab = "general" | "permissions" | "connections" | "browser" | "skills" | "routines" | "memory" | "phone" | "expert";
 
 export interface BotSettingsProps {
   bot: Bot;
@@ -51,11 +53,14 @@ export interface BotSettingsProps {
 
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
+  // An expert (docs/experts.md) has no browser: no Browser tab, no Terminal; its own "Expert" tab holds the engine, the
+  // model and the Activity · Memory · Consults panels (the phone hides the preview column that shows them otherwise).
+  const isExpert = bot.kind === "expert";
   // On the phone (isLanHost) the Connections, Browser and Phone tabs are not drawn: their routes (Preferences,
   // /api/bots/browsers, iMessage) are Mac-side and the LAN door 404s them (lan.py `_DOORS`).
   const lan = isLanHost();
-  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"],
-    ...(lan ? [] : [["connections", "Connections"] as [SettingsTab, string], ["browser", "Browser"] as [SettingsTab, string]]),
+  const tabs: [SettingsTab, string][] = [["general", "General"], ...(isExpert ? [["expert", "Expert"] as [SettingsTab, string]] : []), ["permissions", "Permissions"],
+    ...(lan ? [] : [["connections", "Connections"] as [SettingsTab, string], ...(isExpert ? [] : [["browser", "Browser"] as [SettingsTab, string]])]),
     ["skills", "Skills"], ["routines", "Routines"], ["memory", "Memory"],
     ...(isSuper && !lan ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
   const [tab, setTab] = useState<SettingsTab>(() => (tabs.some(([t]) => t === tab0) ? (tab0 as SettingsTab) : "general"));
@@ -67,7 +72,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
     superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], connections: bot.connections || [], allowRules: bot.allow_rules || [],
     folders: bot.folders || [],
-    browserId: isSuper ? "" : loginValue(bot),
+    browserId: isSuper || isExpert ? "" : loginValue(bot),
   }));
   const [name, setName] = useState(init.name);
   const [model, setModel] = useState(init.model);
@@ -77,8 +82,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [memory, setMemory] = useState(init.memory);
   const [approval, setApproval] = useState<string>(init.approval);
   const [buildAccess, setBuildAccess] = useState<string>(init.buildAccess);
-  // The Terminal row shows for every bot except Super Bot, which has Bash.
-  const terminalFeature = !isSuper;
+  // The Terminal row shows for every bot except Super Bot, which has Bash, and an expert, which is read-only.
+  const terminalFeature = !isSuper && !isExpert;
   const [terminal, setTerminal] = useState(init.terminal);
   const [superAccess, setSuperAccess] = useState<string>(init.superAccess);
   const [encrypt, setEncrypt] = useState(init.encrypt);
@@ -134,7 +139,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [browserId, setBrowserId] = useState(init.browserId);
   // The Logins menu: one option per other browser (bots sharing one collapse into one; Super Bot's browser included),
   // listed as the dialog opened. Super Bot's own row is hidden.
-  const [groups] = useState(() => (isSuper ? [] : loginGroups(getState().bots, bot.id)));
+  const [groups] = useState(() => (isSuper || isExpert ? [] : loginGroups(getState().bots, bot.id)));
   const sharedNames = (bot.shared_with || []).map((o) => o.name).join(", ");
   const appliesToAll = sharedNames ? ` Applies to every bot sharing these logins (${sharedNames}).` : "";
   const [face, setFace] = useState<FaceT | null | undefined>(bot.face);
@@ -145,7 +150,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, ...(terminalFeature ? { terminal } : {}), encrypt, profile, maxSteps,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
-    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, trustedAppsWas: liveTrusted, connections, connectionsWas: liveConnections, folders,
+    kind: isSuper ? "super" : isExpert ? "expert" : "bot", superAccess, browserId, trustedApps, trustedAppsWas: liveTrusted, connections, connectionsWas: liveConnections, folders,
     allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
   // Dirty = what Save would send. The trusted-apps pair is compared as the add / remove diff, not the lists: a tick
   // that lands from a build or a card while the dialog is open changes both lists and is not the user's edit.
@@ -156,10 +161,10 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const okDisabled = fingerprint(read()) === initial;
   const n = name.trim();
 
-  // Your Chrome's profiles and the apps root, listed fresh each time.
+  // Your Chrome's profiles and the apps root, listed fresh each time (no profiles for an expert: it has no browser).
   useEffect(() => {
     let live = true;
-    void act(() => api.profiles(), true).then((r) => { if (live) setProfiles(r?.profiles || []); });
+    if (!isExpert) void act(() => api.profiles(), true).then((r) => { if (live) setProfiles(r?.profiles || []); });
     void act(() => api.apps(), true).then((r) => { if (live) setAppRows(r?.apps || []); });
     return () => { live = false; };
   }, []);
@@ -433,6 +438,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
               </Rows>
             ) : null}
 
+            {tab === "expert" && isExpert ? <ExpertSection bot={bot} /> : null}
+
             {tab === "skills" ? <SkillsSection b={bot} confirm={confirm} /> : null}
             {tab === "routines" ? <RoutinesSection b={bot} confirm={confirm} /> : null}
 
@@ -459,5 +466,58 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Settings › Expert: the engine and model (saved at once through /api/experts/<id>/settings, like the page-wide
+ *  switches: never part of Save), the Learning switch (saved the same way), then the same Activity · Memory · Consults panels as the preview column. The engine
+ *  menu offers Auto and the engines that are switched on (GET …/engines); a new engine resets the model to its default. */
+function ExpertSection({ bot }: { bot: Bot }) {
+  const [rows, setRows] = useState<ExpertEngineRow[]>([]);
+  const [engine, setEngine] = useState<string>(bot.expert?.engine || "auto");
+  const [model, setModel] = useState<string>(bot.expert?.model || "");
+  const [learning, setLearning] = useState<boolean>(bot.expert?.learning !== false);
+  const [saving, setSaving] = useState(false);
+  // The LAN door serves the panels but not …/settings (lan.py): on the phone the two menus show, read-only.
+  const lan = isLanHost(), locked = saving || lan;
+  useEffect(() => {
+    let live = true;
+    void act(() => expertApi.engines(bot.id), true).then((r) => { if (live && Array.isArray(r)) setRows(r); });
+    return () => { live = false; };
+  }, [bot.id]);
+  const save = async (body: { engine?: string; model?: string; learning?: boolean }) => {
+    const was = { engine, model, learning };
+    if (body.engine !== undefined) setEngine(body.engine);
+    if (body.model !== undefined) setModel(body.model);
+    if (body.learning !== undefined) setLearning(body.learning);
+    setSaving(true);
+    try {
+      const m = await act(() => expertApi.settings(bot.id, body));
+      // The server's manifest is the truth (it may resolve or refuse a value); a failure puts the menus back.
+      if (m) { setEngine(m.engine || "auto"); setModel(m.model || ""); setLearning(m.learning !== false); }
+      else { setEngine(was.engine); setModel(was.model); setLearning(was.learning); }
+    } finally { setSaving(false); }
+  };
+  return (
+    <Rows>
+      <Row title="Engine" text={bot.expert_available === false ? bot.expert_reason || "No engine is switched on."
+        : lan ? "Who answers for this expert. Change it on the Mac." : ENGINE_HELP} htmlFor="bmxengine">
+        <NativeSelect className="w-full" id="bmxengine" value={engine} disabled={locked}
+          onChange={(e) => { void save({ engine: e.target.value, model: "" }); }}>
+          {engineOptions(rows, engine).map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
+        </NativeSelect>
+        {engineNote(rows, engine) ? <p className="mt-1.5 text-xs text-muted-foreground" role="note">⚠ {engineNote(rows, engine)}</p> : null}
+      </Row>
+      <Row title="Model" text="The engine's model for this expert's answers. Saved at once." htmlFor="bmxmodel">
+        <NativeSelect className="w-full" id="bmxmodel" value={model} disabled={locked || engine === "auto"}
+          onChange={(e) => { void save({ model: e.target.value }); }}>
+          {modelOptions(rows, engine, model).map(([v, l]) => <NativeSelectOption key={v} value={v}>{l}</NativeSelectOption>)}
+        </NativeSelect>
+      </Row>
+      <Row title="Learning" text={LEARNING_HELP} htmlFor="bmxlearning">
+        <Switch id="bmxlearning" checked={learning} disabled={locked} onCheckedChange={(c) => { void save({ learning: !!c }); }} />
+      </Row>
+      <div className="py-4 last:pb-0"><ExpertPanels b={bot} /></div>
+    </Rows>
   );
 }

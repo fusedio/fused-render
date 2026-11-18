@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Bot, BotEvent } from "./api";
-import { BOT_ROLES, lastTs, runningStatusText, statusLabel } from "./derive";
+import { BOT_ROLES, expertIdleNote, lastTs, runningStatusText, statusLabel } from "./derive";
 
 const bot = (p: Partial<Bot>): Bot => ({ id: "b", name: "b", model: "sonnet", effort: "low", status: "idle", seq: 0, events: [], ...p });
 
@@ -14,6 +14,17 @@ describe("statusLabel", () => {
     expect(statusLabel(bot({ status: "waiting", step_cap: 60 }))).toBe("waiting for you");
     expect(statusLabel(bot({ status: "idle" }))).toBe("idle · browser off");
     expect(statusLabel(bot({ status: "idle", browser: { running: true } }))).toBe("idle");
+  });
+  test("an expert has no browser: never 'browser off'", () => {
+    expect(statusLabel(bot({ kind: "expert", status: "idle" }))).toBe("idle");
+    expect(statusLabel(bot({ kind: "expert", status: "idle", browser: { running: false } }))).toBe("idle");
+    expect(statusLabel(bot({ kind: "expert", status: "running", step: 2 }))).toBe("running · step 2");
+  });
+  test("an expert with no engine says why on its idle line", () => {
+    expect(expertIdleNote(bot({ kind: "expert", expert_available: false, expert_reason: "needs Claude, Codex or Copilot" }))).toBe("needs Claude, Codex or Copilot");
+    expect(expertIdleNote(bot({ kind: "expert", expert_available: true, expert_reason: "x" }))).toBe("");
+    expect(expertIdleNote(bot({ kind: "expert" }))).toBe("");
+    expect(expertIdleNote(bot({ expert_available: false, expert_reason: "x" }))).toBe("");
   });
 });
 
