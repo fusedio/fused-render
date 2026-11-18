@@ -607,8 +607,14 @@ class GtkBackend:
         folder = (GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD)
                   or os.path.expanduser("~/Downloads"))
         os.makedirs(folder, exist_ok=True)
-        download.set_destination(
-            GLib.filename_to_uri(window_policy.download_destination(folder, suggested), None))
+        dest = window_policy.download_destination(folder, suggested)
+        # "finished" follows "failed" too: either way the reserved name is
+        # given back (releasing twice is a no-op).
+        download.connect("finished",
+                         lambda _d: window_policy.release_download_destination(dest))
+        download.connect("failed",
+                         lambda _d, _e: window_policy.release_download_destination(dest))
+        download.set_destination(GLib.filename_to_uri(dest, None))
         return True
 
 

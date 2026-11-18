@@ -262,11 +262,13 @@ class _ChromiumDelegate(NSObject):
     def chromiumView_downloadDidFinish_(self, view, path):
         from AppKit import NSDistributedNotificationCenter
 
+        window_policy.release_download_destination(str(path) if path else None)
         NSDistributedNotificationCenter.defaultCenter().postNotificationName_object_(
             "com.apple.DownloadFileFinished", None)
 
     @_sig(b"v@:@@@")
     def chromiumView_downloadDidFail_error_(self, view, path, message):
+        window_policy.release_download_destination(str(path) if path else None)
         logger.warning("download failed: %s", message)
 
     # ---- dialogs, pickers, permissions ------------------------------------------------
@@ -323,7 +325,10 @@ class _ChromiumDelegate(NSObject):
         # downloads" until it reloads — a workbench canvas framed from its own
         # origin could download one file from its file explorer and then
         # none. Every download still lands under ~/Downloads by
-        # `download_destination`.
+        # `download_destination`. The engine sets the limiter's content
+        # setting to "allow" at start-up (FRCefApp::OnContextInitialized), so
+        # this prompt should no longer be raised at all; granting it stays as
+        # the fallback.
         if kind == "multiple_downloads":
             logger.info("multiple downloads from %s -> grant",
                         origin.absoluteString() if origin is not None else "?")

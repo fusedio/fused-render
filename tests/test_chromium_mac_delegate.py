@@ -172,8 +172,13 @@ def test_download_destination_is_in_downloads_and_unique(mac, tmp_path):
     mac._mw._downloads_dir = lambda: str(tmp_path)
     (tmp_path / "a.txt").write_text("x")
     dest = d.chromiumView_destinationForDownloadWithSuggestedFilename_URL_(None, "a.txt", None)
-    assert dest == window_policy.download_destination(str(tmp_path), "a.txt")
-    assert dest != str(tmp_path / "a.txt")
+    assert dest == str(tmp_path / "a (1).txt")
+    # A second download of the same file before the first finishes gets its
+    # own name; once a download ends its name is given back.
+    again = d.chromiumView_destinationForDownloadWithSuggestedFilename_URL_(None, "a.txt", None)
+    assert again == str(tmp_path / "a (2).txt")
+    d.chromiumView_downloadDidFail_error_(None, again, "interrupted (40)")
+    assert d.chromiumView_destinationForDownloadWithSuggestedFilename_URL_(None, "a.txt", None) == again
 
 
 def test_permissions_granted_for_our_origin_only(mac):
