@@ -868,6 +868,7 @@ def _is_cursor_cli(path: str) -> bool:
     a generic name, so a binary called that is only Cursor's after this."""
     try:
         out = subprocess.run([path, "--version"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace",
                              timeout=10, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return False
