@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import time
+import uuid
 
 from fused_render.experts import store
 
@@ -57,7 +58,15 @@ def _copy(src: str, dst: str, overwrite: bool) -> None:
         to = os.path.join(dst, rel)
         if overwrite or not os.path.exists(to):
             os.makedirs(os.path.dirname(to), exist_ok=True)
-            shutil.copyfile(os.path.join(src, rel), to)
+            # A temp sibling, then a rename: a copy cut short never leaves a partial `to` that a later
+            # non-overwriting pass would take as already copied.
+            tmp = f"{to}.{uuid.uuid4().hex[:8]}.tmp"
+            try:
+                shutil.copyfile(os.path.join(src, rel), tmp)
+                os.replace(tmp, to)
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
 
 
 def _canvas_folder() -> str:

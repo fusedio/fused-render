@@ -1370,7 +1370,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # expert_ask, plus the task-learn timer (experts/scheduler.py), which only
     # ticks in the process that owns the bots and holds its machine-wide lease.
     # `@on_startup`: a lean `open` never learns. Shutdown also ends every side
-    # session's harness process.
+    # session's harness process; `_shutdown_bots` (bots registry.shutdown)
+    # already did that before releasing the bots workspace claim, so this
+    # handler is normally a no-op (kept as the fallback).
     from fused_render.experts.routes import router as experts_router
 
     app.include_router(experts_router)

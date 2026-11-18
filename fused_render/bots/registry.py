@@ -82,6 +82,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import time
 
@@ -1101,7 +1102,21 @@ def shutdown(budget_s: float = 8.0) -> None:
         if t is not None and t.is_alive():
             t.join(max(0.0, started + budget_s - time.monotonic()))
     logger.info("bots shutdown: %d Chrome process(es) told to quit in %.1fs", n, time.monotonic() - started)
+    _end_experts(min(5.0, max(0.0, started + budget_s - time.monotonic())))
     _drop_routines_lock()
+
+
+def _end_experts(budget_s: float) -> None:
+    """The experts' timer and side-session harnesses end BEFORE the workspace claim is released (they write the
+    experts' memory.md and state). Only when the experts were loaded; the server's own `_shutdown_experts`, which
+    runs after this, is then a no-op."""
+    if not any(m in sys.modules for m in ("fused_render.experts.scheduler", "fused_render.experts.sessions")):
+        return
+    try:
+        from fused_render.experts import scheduler as experts_scheduler
+        experts_scheduler.shutdown(budget_s)
+    except Exception:  # noqa: BLE001
+        logger.warning("ending the experts' sessions failed", exc_info=True)
 
 
 def reset_for_tests() -> None:
@@ -1111,6 +1126,9 @@ def reset_for_tests() -> None:
         browser_mod.allow_launches()  # a test that ran shutdown() must not latch the next one
     except Exception:  # noqa: BLE001
         pass
+    experts_sessions = sys.modules.get("fused_render.experts.sessions")
+    if experts_sessions is not None:
+        experts_sessions.reopen()  # likewise: a shutdown closed the experts' side sessions
     with _lock:
         if _sched.get("stop") is not None:
             _sched["stop"].set()
