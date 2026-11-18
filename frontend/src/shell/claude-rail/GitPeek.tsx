@@ -108,7 +108,7 @@ export function GitPeek() {
                 </span>
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
                 {take && (
-                  <button type="button" className="btn claude-rail-peek-open" data-hint="Open the Git panel" onClick={take}>
+                  <button type="button" className="btn claude-rail-peek-open" onClick={take}>
                     Open
                   </button>
                 )}

@@ -148,7 +148,7 @@ export function BotsPeek() {
                 </span>
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
                 {bot && <span className={"claude-rail-peek-words" + (bot.status === "waiting" ? " is-waiting" : "")}>{words}</span>}
-                <button type="button" className="btn claude-rail-peek-open" data-hint="Open this bot's page" onClick={() => api.openPage(botHref(chat))}>
+                <button type="button" className="btn claude-rail-peek-open" onClick={() => api.openPage(botHref(chat))}>
                   Open
                 </button>
               </div>
@@ -166,7 +166,7 @@ export function BotsPeek() {
                 </span>
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
                 {/* "Open bots", the Tasks card's "Open tasks": this door is the page's, not a chat's. */}
-                <button type="button" className="btn claude-rail-peek-open" data-hint="Open the Bots page" onClick={() => api.openPage()}>
+                <button type="button" className="btn claude-rail-peek-open" onClick={() => api.openPage()}>
                   Open bots
                 </button>
               </div>

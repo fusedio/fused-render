@@ -232,6 +232,11 @@ test("the time slot: the time at rest, ↗ Open as its other occupant with the t
   expect(s.b.map(cls)).toEqual(["task-head-open"]);
   expect(s.b[0]!.props["aria-label"]).toBe("Open in Explorer");
   expect(s.b[0]!.props["data-hint"]).toBe("Open in Explorer · Last run 10/26/2026, 12:01:08");
+  // A rail window's door wears no caption (`quiet`): its word says it. The
+  // accessible name stays.
+  const quiet = slot(render(head({ when, open: { href: "/x", label: "Open in Explorer", quiet: true, onOpen: () => {} } })), "task-head-timeslot")!;
+  expect(quiet.b[0]!.props["data-hint"]).toBeUndefined();
+  expect(quiet.b[0]!.props["aria-label"]).toBe("Open in Explorer");
   // The word is its own span, so rung 1 can leave the ↗ alone.
   expect(byClass(r, "task-head-open-word")[0]!.children).toEqual(["Open"]);
   // No Open (a pane IS the page): the time stays, with nothing to trade with.

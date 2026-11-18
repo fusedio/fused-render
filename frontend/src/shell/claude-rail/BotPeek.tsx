@@ -642,7 +642,6 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
                 <button
                   type="button"
                   className="btn claude-rail-peek-open"
-                  data-hint="Open this bot's page"
                   onClick={() => {
                     onOpen(botHref(view.id));
                     onHeld(false);

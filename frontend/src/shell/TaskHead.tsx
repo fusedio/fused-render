@@ -136,6 +136,11 @@ export interface TaskHeadOpen {
   /** The ↗ itself (default on). Off where the door does not leave the page
    *  on screen (the rail card, #2218's rule). */
   arrow?: boolean;
+  /** NO CAPTION on the door (Akshil, 2026-11-18, of a rail window's Open:
+   *  "remove this tooltip from open"): its word says what it does, and the
+   *  panel hung over the head it was pressed in. The rail's windows. The
+   *  accessible name stays (`label`). */
+  quiet?: boolean;
   onOpen(href: string): void | boolean | Promise<boolean | void>;
 }
 
@@ -612,7 +617,7 @@ export function TaskHead({
       className={"task-head-open" + (open.arrow === false ? " is-wordy" : "")}
       href={open.href}
       aria-label={open.label}
-      data-hint={who && whenFact?.title ? `${open.label} · ${whenFact.title}` : open.label}
+      {...(open.quiet ? {} : { "data-hint": who && whenFact?.title ? `${open.label} · ${whenFact.title}` : open.label })}
       onClick={(e) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
         e.preventDefault();

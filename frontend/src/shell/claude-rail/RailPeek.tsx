@@ -1862,6 +1862,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                       label: head.draft ? "Open the draft" : "Open this chat in the Claude panel",
                       // ↗ only for a door that leaves the page on screen (#2218).
                       arrow: openArrow,
+                      // No caption over the window's head (TaskHead `quiet`).
+                      quiet: true,
                       onOpen: (href) => {
                         onOpenChat(href);
                         onHeld(false);
@@ -1926,7 +1928,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   // The word alone (Akshil, 2026-11-16: no arrow beside
                   // "Open", anywhere).
                   className="btn claude-rail-peek-open"
-                  data-hint={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
                   onClick={() => {
                     onOpenChat(head.href!);
                     // The door closes the card too — a held one as well: a
