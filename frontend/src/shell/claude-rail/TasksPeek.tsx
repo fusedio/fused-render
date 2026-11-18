@@ -162,6 +162,10 @@ export function TasksPeek() {
   // left the listing, the entry is asked which session it became and the card
   // follows it there.
   const startedEntry = chat && listing && !task ? pendingEntryId(chat.key) : "";
+  // …AND AN ENTRY THAT IS NOT BECOMING A SESSION SAYS SO: cancelled or failed
+  // before it ran, or silent for the whole look. The body goes back to "no
+  // conversation yet" rather than "Starting…" for ever.
+  const [lostEntry, setLostEntry] = useState("");
   useEffect(() => {
     if (!startedEntry) return;
     let alive = true;
@@ -170,13 +174,22 @@ export function TasksPeek() {
     const again = (ms: number) => {
       // Half a minute of looking: a run that has not said its session by then
       // is not about to, and Back is the way out.
-      if (alive && ++tries < 30) timer = setTimeout(look, ms);
+      if (!alive) return;
+      if (++tries < 30) timer = setTimeout(look, ms);
+      else setLostEntry(startedEntry);
     };
     const look = () => {
       void getSchedule().then((res) => {
         if (!alive) return;
-        const session = res.entries.find((e) => e.id === startedEntry)?.claude_session_id;
-        if (!session) return again(1000);
+        const entry = res.entries.find((e) => e.id === startedEntry);
+        const session = entry?.claude_session_id;
+        if (!session) {
+          if (entry && (entry.state === "error" || entry.state === "cancelled" || entry.state === "missed")) {
+            setLostEntry(startedEntry);
+            return;
+          }
+          return again(1000);
+        }
         // The row's own key when the listing has it (a row is keyed by its
         // session, and this does not assume so), the session otherwise.
         const key = readListing()?.find((t) => t.session_id === session)?.key ?? session;
@@ -503,7 +516,11 @@ export function TasksPeek() {
                   </div>
                 ) : (
                   <p className="claude-rail-peek-note">
-                    {!listing ? "Loading…" : startedEntry ? "Starting the task…" : "This task has no conversation yet."}
+                    {!listing
+                      ? "Loading…"
+                      : startedEntry && lostEntry !== startedEntry
+                        ? "Starting the task…"
+                        : "This task has no conversation yet."}
                   </p>
                 )}
               </div>
