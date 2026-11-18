@@ -103,6 +103,11 @@ def memory_path(bot) -> str:
     return os.path.join(expert_dir(bot), MEMORY)
 
 
+def where(bot) -> str:
+    """The absolute paths a session's prompt states, so the harness never guesses where memory.md is."""
+    return f"Your folder is {expert_dir(bot)}; your memory is {memory_path(bot)}."
+
+
 def state_dir(bot) -> str:
     p = os.path.join(expert_dir(bot), ".fused", "expert")
     os.makedirs(p, exist_ok=True)

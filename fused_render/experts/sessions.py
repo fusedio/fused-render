@@ -453,7 +453,7 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
 def ask(bot, question: str, asker: str = "", caller=None) -> dict:
     """`expert_ask`: a fresh session with the question and a note on who asks. It cannot write memory. `caller`:
     the asking task's `session_id` / `run_id` when known, kept on the row's trigger."""
-    prompt = (f"Today is {today()}. A task session is asking you a question"
+    prompt = (f"Today is {today()}. {store.where(bot)}\nA task session is asking you a question"
               + (f" ({asker})" if asker else "") + ". It is an agent doing real work, not the user.\n"
               "Read memory.md and the skills the question touches, then answer: the answer first, short and "
               "concrete. Where memory and a skill disagree, memory wins. Say so plainly when neither covers it.\n"
@@ -475,7 +475,7 @@ def over_limit(bot) -> bool:
 
 def dream(bot) -> dict:
     lines, nbytes = size(bot)
-    prompt = (f"Today is {today()}. Your memory.md is over its limit: {lines} lines, {nbytes} bytes; the limit is "
+    prompt = (f"Today is {today()}. {store.where(bot)}\nYour memory.md is over its limit:{lines} lines, {nbytes} bytes; the limit is "
               f"{LIMIT_LINES} lines or {LIMIT_BYTES} bytes, whichever comes first.\n"
               "Compact it now: merge lines that say the same thing (add their counts, keep the newest date), drop "
               "old lines with low counts, and get it clearly under the limit. Keep the format and the two "

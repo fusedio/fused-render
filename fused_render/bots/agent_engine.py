@@ -534,8 +534,9 @@ def first_message(bot, task: str, past=None, page: dict | None = None, conv: dic
 
 
 def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tuple:
-    """An expert's turn message: on a fresh session the conversation summary (or digest), then the date and the
-    MESSAGE; a resumed session already holds the rest. Its instructions are the system prompt."""
+    """An expert's turn message: on a fresh session the conversation summary (or digest) and the absolute paths of
+    its folder and memory.md, then the date and the MESSAGE; a resumed session already holds the rest. Its
+    instructions are the system prompt."""
     conv = conv if isinstance(conv, dict) else {}
     parts = []
     if not conv.get("session_id"):
@@ -544,6 +545,7 @@ def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tupl
             past = _call(bot.past_conversation, []) if past is None else past
             summary = "\n".join(past) if past else "(this is the start of the conversation)"
         parts.append("CONVERSATION SO FAR (with the user, oldest first):\n" + summary)
+        parts.append(xstore.where(bot))  # a resumed session already has it
     parts += [f"Today is {xsessions.today()}.", f"MESSAGE: {task}"]
     return "\n\n".join(parts), {}
 
