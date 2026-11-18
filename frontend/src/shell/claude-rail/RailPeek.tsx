@@ -157,6 +157,7 @@ import {
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
 import { chipDoor, chipLabel, chipPath, chipPlace, hasWhereTag, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
 import { queueCaption } from "@platform/lib/queue";
+import { ForceStartButton } from "@shell/ForceStartButton";
 import { PlaceTags } from "./PlaceTags";
 // THE ONE TASK HEAD (design.md "One task head, everywhere"), behind its flag.
 import { TaskHead } from "@shell/TaskHead";
@@ -488,6 +489,10 @@ function PlainBody({ facts }: { facts: SeatFacts }) {
       <p className={"claude-rail-peek-plain-words" + (!words || same ? " is-empty" : "")}>
         {words && !same ? words : draft ? "No description yet." : "No message yet."}
       </p>
+      {/* A QUEUED TASK CAN BE STARTED FROM ITS CARD (Akshil, 2026-11-18): this
+          seat has no chat to carry the verb, so the card carries it. Drawn only
+          once the row says the task stands in a line (`canForceStart`). */}
+      {queue ? <ForceStartButton facts={merged} target={{ key: facts.t.key }} /> : null}
       {meta.length > 0 && <p className="claude-rail-peek-plain-meta">{meta.join(" · ")}</p>}
     </div>
   );
