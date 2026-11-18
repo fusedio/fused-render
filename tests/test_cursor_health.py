@@ -525,7 +525,7 @@ def test_a_second_login_is_refused_while_one_waits_and_cancel_stops_it(tmp_path,
     _real_fake(tmp_path, monkeypatch, "login-hang")
     cursor_login.reset()
     cursor_login.start()
-    with pytest.raises(cursor_login.LoginError, match="already waiting"):
+    with pytest.raises(cursor_login.LoginError, match="^a Cursor sign-in is already waiting"):
         cursor_login.start()
     out = cursor_login.cancel()
     assert out["canceled"] is True and out["in_flight"] is False and out["error"] is None

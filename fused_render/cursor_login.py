@@ -274,7 +274,7 @@ def start() -> dict:
     with _LOCK:
         if _active is not None and _active.alive():
             raise LoginError(
-                "an Cursor sign-in is already waiting in your browser")
+                "a Cursor sign-in is already waiting in your browser")
         try:
             proc, master = _spawn(path)
         except (OSError, ValueError) as exc:
