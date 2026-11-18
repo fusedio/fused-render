@@ -503,6 +503,32 @@ def test_three_failed_attempts_then_give_up_until_it_grows(expert, monkeypatch, 
     assert rec["size"] == os.path.getsize(transcript) and "fails" not in rec
 
 
+def test_a_busy_expert_does_not_use_up_the_pass(expert, monkeypatch, transcript):
+    """A task-learn refused at the gate (the expert's chat holds its memory) starts no harness: it takes none of
+    the pass's limit, and that expert's other due tasks are left for the next pass instead of being refused too."""
+    stub(monkeypatch)
+    monkeypatch.setattr(sessions, "_timeout", lambda: 0.01)
+    for rid, sid in (("r1", "s1"), ("r2", "s2"), ("r3", "s3")):
+        monkeypatch.setattr(learn, "caller", lambda run_id, sid=sid: {"run_id": run_id, "session_id": sid,
+                                                                      "backend": "claude", "target": "/work"})
+        learn.record_use(expert, rid)
+        learn._resolve(expert)
+    task = {"session_id": "s1"}
+    monkeypatch.setattr(learn, "_tasks", lambda: type("T", (), {"_collect": staticmethod(
+        lambda: {s: {"session_id": s} for s in ("s1", "s2", "s3")})})())
+    monkeypatch.setattr(learn, "_session_of", lambda t, tasks: {
+        "session_id": t["session_id"], "size": 10, "last_active": 0, "target": "/work", "backend": "claude"})
+    monkeypatch.setattr(learn, "transcript_markdown", lambda session, since=0, bot=None: ("USER| hi", 1))
+    lock = store.write_lock(expert)
+    lock.acquire()
+    try:
+        assert learn.run_pass(limit=2) == {"sessions": 1, "errors": 1}  # one refusal, then the next expert
+    finally:
+        lock.release()
+    assert [r["error"] for r in sessions.rows(expert)] == [sessions.BUSY]
+    assert learn.run_pass(limit=2) == {"sessions": 2, "errors": 0}  # the limit counts harnesses started
+
+
 def test_a_busy_expert_is_not_a_failed_attempt(expert, monkeypatch, transcript):
     calls = stub(monkeypatch)
     monkeypatch.setattr(sessions, "_timeout", lambda: 0.01)
@@ -885,6 +911,8 @@ def test_a_long_transcript_is_cut_around_the_calls_to_this_expert(expert, monkey
     assert learn.fit(lines[:5], [], 6000) == "\n".join(lines[:5])
     tail = learn.fit(lines, [], 6000)
     assert tail.startswith(learn.CUT) and tail.endswith(lines[-1]) and len(tail) <= 6000 + len(learn.CUT) + 1
+    # a last line longer than the budget: no half line without its speaker tag
+    assert learn.fit(lines + ["USER| " + "y" * 7000], [], 6000) == learn.CUT
 
 
 def test_the_learn_prompt_asks_for_the_experts_own_subject_only(expert):
@@ -960,6 +988,10 @@ def test_calls_side_by_side_share_one_window():
     lines = ["USER| " + "x" * 90 for _ in range(400)]
     md = learn.fit(lines, [100, 101, 300], 6000).split(learn.CUT)
     assert abs(len(md[1]) - len(md[2])) < 300   # the pair at 100/101 does not take two shares
+    # "Close" is measured from the last call that kept a window: a call every few lines is not ONE window at
+    # the first of them (the rest of a long task would be left out).
+    md = learn.fit(lines, list(range(100, 400, 4)), 6000)
+    assert lines[100] in md and md.count(learn.CUT) >= 2 and len(md.split(learn.CUT)) > 4
 
 
 def test_a_change_made_while_a_session_writes_is_not_a_hand_edit(expert, monkeypatch):

@@ -198,8 +198,13 @@ def fit(lines: list, calls: list, cap: int | None = None) -> str:
         return md
     if not calls:
         tail = md[-cap:]
-        return CUT + "\n" + tail[tail.find("\n") + 1:]
-    calls = [c for i, c in enumerate(calls) if not i or c - calls[i - 1] > NEAR]  # else the pair takes two shares
+        cut = tail.find("\n")  # none: the last line alone is over the cap, and half a line has no speaker tag
+        return CUT + ("\n" + tail[cut + 1:] if cut >= 0 else "")
+    anchors = []
+    for c in calls:  # one window for calls close together (else the pair takes two shares), measured from the
+        if not anchors or c - anchors[-1] > NEAR:  # last call KEPT: a call every few lines is not all one window
+            anchors.append(c)
+    calls = anchors
     keep, left = set(), cap
     for step in range(3 * len(lines)):  # far enough for a call at either end to reach the other
         # 0, +1, +2, -1, +3, +4, -2, ...: every third step looks back
@@ -366,8 +371,8 @@ def learn_one(bot, session: dict, rec: dict) -> dict | None:
     """Read one due session's unread part in a task-learn session; record what was read only on success."""
     sid, size = session["session_id"], session["size"]
     from_size, from_lines = _cursor(rec, session)
+    t0 = time.time()  # before the transcript is read: a call made after this may not be in it, and keeps its wait
     md, lines = transcript_markdown(session, from_lines, bot)
-    t0 = time.time()
 
     def answered(r):
         if _num(r.get("called_at")) <= t0:  # a call made while this session ran still gets its own wait
@@ -426,9 +431,10 @@ def run_pass(now=None, limit: int = PER_PASS, stop=None) -> dict:
     tasks = _tasks()
     by_sid = {str(t.get("session_id")): t for t in tasks._collect().values() if t.get("session_id")}
     now = time.time() if now is None else now
+    started = 0  # harnesses started: a session refused at the gate (BUSY) takes none of the pass's `limit`
     for bot, st in used:
         for sid, rec in st["sessions"].items():
-            if out["sessions"] >= limit or (stop is not None and stop.is_set()):
+            if started >= limit or (stop is not None and stop.is_set()):
                 return out
             task = by_sid.get(sid)
             session = _session_of(task, tasks) if task else None
@@ -439,6 +445,9 @@ def run_pass(now=None, limit: int = PER_PASS, stop=None) -> dict:
                 if row is not None:
                     out["sessions"] += 1
                     out["errors"] += row.get("status") != "done"
+                    if row.get("error") in (sessions.BUSY, sessions.CLOSED):
+                        break  # this expert's memory is taken: its other tasks wait, the next expert has its turn
+                    started += 1
             except Exception:  # noqa: BLE001
                 out["errors"] += 1
                 logger.warning("expert %s: task-learn for %s failed", bot.id, sid, exc_info=True)
