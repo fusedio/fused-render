@@ -565,41 +565,32 @@ a.c-waitcard .wc-ahead:hover,
   line-height: 1.5;
   color: var(--c-dim);
 }
-/* THE QUEUE IS A CARD, AND A LINE THAT JOINS IT ARRIVES.
+/* A LINE THAT JOINS THE QUEUE IS PROMINENT FOR A FEW SECONDS, AND QUIET AFTER.
 
-   The lines used to be grey text on the page with nothing around them, and a
-   reader who had just pressed Enter could not tell their words had gone
-   anywhere ("it did not give me any indication… it was showing in the bottom
-   but it is too subtle"). Two things were missing, and neither is a colour:
+   The lines used to be grey text that simply appeared, and a reader who had
+   just pressed Enter could not tell their words had gone anywhere ("it did not
+   give me any indication… it was showing in the bottom but it is too subtle").
+   A permanent card around them answered that and was too much the rest of the
+   time (Akshil, 2026-11-18: "subtle but also prominent only for a few seconds
+   so user knows his message is accepted but in a queue").
 
-   * A SURFACE. The queue wears the composer's own surface, border and corner,
-     sitting directly on top of the box at the box's width — a second, smaller
-     card that was not there a moment ago, beside the caret the reader is
-     looking at. The words are in the ordinary ink: they are the reader's own
-     message, not a caption.
-   * AN ARRIVAL. A line that joins rises into place and sits on a faint wash for
-     a beat, then rests. On a class (`is-arriving`, ui/QueuedStrip
-     `useArrivals`), never the row's mere presence: the strip mounts every time
-     its chat does (a rail card opened on hover, a pane switched back to), and
-     a row that animated on every mount said "just arrived" about a line that
-     had waited for minutes.
+   So the weight is in the ARRIVAL, and only there. For about three seconds the
+   new line sits in the ordinary ink on a soft wash, having risen into place,
+   with the word "Queued" beside it — accepted, and waiting, said outright.
+   Then the wash and the word fade and it is the quiet line again: the muted
+   ink, and a small ring in the Queued colour in front of it, which is all that
+   stays.
 
-   At rest it is still: a neutral card, a small ring in the Queued colour in
-   front of each line, no motion. A card's tile lists the queue read-only
-   (`c-queue-compact`) and keeps the plain lines. */
-.c-queue-strip:not(.c-queue-compact) {
-  width: calc(100% - 40px);
-  max-width: 680px;
-  margin-bottom: 6px;
-  padding: 5px 6px;
-  background: var(--c-surface);
-  border: 1px solid var(--c-border);
-  border-radius: calc(14px * var(--c-zoom, 1));
-}
+   ON A CLASS (`is-arriving`, ui/QueuedStrip `useArrivals`), never the row's
+   mere presence: the strip mounts every time its chat does (a rail card opened
+   on hover, a pane switched back to), and a row that animated on every mount
+   said "just arrived" about a line that had waited for minutes. A card's tile
+   lists the queue read-only (`c-queue-compact`) and keeps the plain lines. */
+/* Edge to edge with the composer under it (the strip's gutter is the box's):
+   the arrival's wash is exactly as wide as the box, never wider. */
 .c-queue-strip:not(.c-queue-compact) .c-queue-row {
-  padding: 2px calc(8px * var(--c-zoom, 1));
+  padding: 1px calc(10px * var(--c-zoom, 1));
   border-radius: calc(9px * var(--c-zoom, 1));
-  color: var(--c-fg);
 }
 .c-queue-strip:not(.c-queue-compact) .c-queue-row::before {
   content: "";
@@ -611,10 +602,26 @@ a.c-waitcard .wc-ahead:hover,
   border: 1.5px solid var(--status-queued);
   border-radius: 50%;
 }
+/* The words hug the left and the gap takes the rest, so the arrival's word can
+   stand right after them and leave without anything moving. */
+.c-queue-strip:not(.c-queue-compact) .c-queue-text {
+  flex: 0 1 auto;
+}
+.c-queue-gap {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.c-queue-tag {
+  flex: none;
+  font-size: calc(11px * var(--c-zoom, 1));
+  font-weight: 500;
+  color: var(--status-queued);
+  animation: c-queue-tag 3000ms ease-out both;
+}
 .c-queue-strip:not(.c-queue-compact) .c-queue-row.is-arriving {
   animation:
     c-queue-rise 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    c-queue-glow 1800ms ease-out;
+    c-queue-glow 3000ms ease-out;
 }
 @keyframes c-queue-rise {
   from {
@@ -624,12 +631,29 @@ a.c-waitcard .wc-ahead:hover,
 }
 @keyframes c-queue-glow {
   0%,
-  35% {
-    background: color-mix(in srgb, var(--c-fg) 10%, transparent);
+  65% {
+    background: color-mix(in srgb, var(--c-fg) 8%, transparent);
+    color: var(--c-fg);
+  }
+}
+@keyframes c-queue-tag {
+  0% {
+    opacity: 0;
+  }
+  8%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .c-queue-strip:not(.c-queue-compact) .c-queue-row.is-arriving {
+    animation: none;
+  }
+  /* The word still says it, without the fade: it leaves with the class. */
+  .c-queue-tag {
     animation: none;
   }
 }

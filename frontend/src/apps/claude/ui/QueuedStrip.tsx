@@ -7,9 +7,9 @@ import { useEffect, useRef, useState } from "react";
 import type { QueuedLine } from "../protocol/queued-lines";
 
 /** How long a line that just joined the queue wears its arrival class — the
- *  length of the CSS arrival (styles/sched.css `c-queue-glow`, 1800ms) and a
- *  little over, so the class never comes off a frame early. */
-export const ARRIVE_FLASH_MS = 1900;
+ *  length of the CSS arrival (styles/sched.css `c-queue-glow` / `c-queue-tag`,
+ *  3000ms) and a little over, so the class never comes off a frame early. */
+export const ARRIVE_FLASH_MS = 3100;
 
 const NONE: ReadonlySet<string> = new Set();
 
@@ -94,6 +94,16 @@ export function QueuedStrip({ lines, running, onSendNow, onPull, compact, ready 
       {lines.map((line) => (
         <li className={arriving.has(line.id) ? "c-queue-row is-arriving" : "c-queue-row"} key={line.id}>
           <span className="c-queue-text">{line.text}</span>
+          {/* "ACCEPTED, AND WAITING", SAID IN A WORD FOR AS LONG AS THE ARRIVAL
+              LASTS (Akshil, 2026-11-18: prominent for a few seconds, subtle
+              after). It hugs the words; the gap after it is what keeps the
+              actions at the far end, so nothing moves when the word goes. */}
+          {compact ? null : (
+            <>
+              {arriving.has(line.id) ? <span className="c-queue-tag">Queued</span> : null}
+              <span className="c-queue-gap" />
+            </>
+          )}
           {compact || line.pending === "sending" ? null : line.pending === "held" ? (
             <span className="c-queue-note">(queued until this turn is done)</span>
           ) : running ? (

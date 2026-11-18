@@ -60,6 +60,7 @@ describe("QueuedStrip", () => {
         .filter((n) => String(n.props.className).split(" ").includes("is-arriving"))
         .map((n) => String(n.findByProps({ className: "c-queue-text" }).props.children));
     return {
+      tags: () => r.root.findAllByProps({ className: "c-queue-tag" }).map((n) => String(n.props.children)),
       arriving,
       set: (next: typeof lines, nowReady = isReady) => {
         isReady = nowReady;
@@ -73,6 +74,7 @@ describe("QueuedStrip", () => {
     // with its queue in it, and nothing just happened (Bugbot, PR #2347).
     const s = mountStrip([{ id: "a", text: "old" }]);
     expect(s.arriving()).toEqual([]);
+    expect(s.tags()).toEqual([]);
     s.set([{ id: "a", text: "old" }]);
     expect(s.arriving()).toEqual([]);
     s.unmount();
@@ -81,6 +83,8 @@ describe("QueuedStrip", () => {
     const s = mountStrip([]);
     s.set([{ id: "a", text: "first" }]);
     expect(s.arriving()).toEqual(["first"]);
+    // …and says so in a word, for as long as the arrival lasts.
+    expect(s.tags()).toEqual(["Queued"]);
     s.set([{ id: "a", text: "first" }, { id: "b", text: "second" }]);
     expect(s.arriving()).toEqual(["first", "second"]);
     // One leaving is not an arrival for the ones that stay.
