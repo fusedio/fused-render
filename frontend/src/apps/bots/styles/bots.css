@@ -647,8 +647,11 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-md blockquote { margin: 0 0 .4em; padding-left: 8px; border-left: 2px solid var(--line); color: var(--muted); }
 .bots-page .xp-md hr { border: 0; border-top: 1px solid var(--line); margin: .5em 0; }
 .bots-page .xp-md .md-link { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
-.bots-page .xp-md .tablewrap { overflow-x: auto; } .bots-page .xp-md table { border-collapse: collapse; }
-.bots-page .xp-md :is(th, td) { padding: .2em .5em; border-bottom: 1px solid var(--line); text-align: left; }
+/* Tables as in a chat bubble (.msg.md): cells do not inherit .xp-md's `overflow-wrap: anywhere`, which under auto
+   table layout makes every cell's min-content one character, so a wide column shreds the short ones; a table
+   wider than the pane scrolls sideways in .tablewrap instead. */
+.bots-page .xp-md .tablewrap { overflow-x: auto; max-width: 100%; } .bots-page .xp-md table { min-width: 100%; border-collapse: collapse; }
+.bots-page .xp-md :is(th, td) { padding: .2em .5em; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; word-break: normal; overflow-wrap: normal; }
 /* A diff as a document (DiffView): one row per line, a +/− gutter, added on green, removed on red and struck,
    context muted; a count bump (removed then added) grouped as a pair. */
 .bots-page .xp-diff { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; padding: 6px; border-radius: 8px; background: var(--inset); border: 1px solid var(--line); max-height: 50vh; overflow: auto; }
