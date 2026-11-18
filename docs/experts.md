@@ -77,7 +77,7 @@ format.
     kind         started by                               fresh session   writes memory   row
     chat         the user, in the bot's main thread (§7)  no (resumes)    yes             only when memory.md changed
     ask          a task calling expert_ask (§8)           yes             no              always
-    task-learn   the timer, for a quiet task (§9)         yes             yes             always
+    task-learn   the timer, after a task's call (§9)      yes             yes             always
     dream        after a write, over the limit (§10)      yes             yes             always
 
 `sessions.run(bot, kind, prompt, trigger)` runs ask, task-learn and dream: take the gate, save a `running` row,
@@ -233,24 +233,35 @@ Codex's `tool_timeout_sec`) sits 60 s above that, so the server's own error arri
 
 ## 9. The task-learn trigger
 
-A task session never formally ends, so a timer finds quiet ones (`learn.py`, `scheduler.py`).
+A task session never formally ends, so a timer decides when to read one (`learn.py`, `scheduler.py`): 5 minutes
+after the task's last call to the expert, whether it is still running or not, and again once it has been idle for
+20 minutes (the sweep for what no call brought in).
 
 **Recording use** (`learn.record_use`, from `expert_context` and `expert_ask`; `expert_list` is not use): the run
 id is resolved to its task session (`learn.caller`: the run dir's `meta.json` and `agent._run_own_session`). Its
 state, in `.fused/expert/read.json`:
 
     {"pending":  {run_id: ts},                    runs whose session id was not known yet (a fresh chat)
-     "sessions": {session_id: {"run_ids": [...last 20], "size": bytes read, "turns": turns read, "at": ts,
+     "sessions": {session_id: {"run_ids": [...last 20], "size": bytes read, "lines": rendered lines read,
+                               "at": ts, "called_at": ts of the last call not read yet,
                                "fails": {"size": n, "count": k}}}}
 
 **The pass** (`learn.run_pass`, once per tick): resolve pending runs to their sessions (a run unresolved after 7
 days is dropped); find each recorded session in the Tasks listing (`tasks._collect`); a session is **due** when
 its transcript file has grown past the recorded `size` (or shrunk below it: a rewritten or compacted transcript
-resets the cursor, `size` and `turns`, to the start and is read again whole; an unchanged size is skipped) and its
-last real activity
-(`session_liveness.tail_activity`: housekeeping rows do not count; else the file's mtime) is at least the idle time
-ago (600 s). Each due session gets ONE task-learn session whose prompt holds only the unread turns (from `turns`
-on; a transcript shorter than that, rewritten or compacted, is read whole), one speaker-tagged line per line
+resets the cursor, `size` and `lines`, to the start and is read again whole; an unchanged size is skipped) and
+either of:
+
+- **after a call**: its last call to this expert (`called_at`, set by `record_use`) is at least 300 s old
+  (`AFTER_CALL_S`). The task may still be running. A newer call starts the wait again, so calls close together
+  are read in one session. `called_at` is cleared when that session ends (kept if a call arrived while it ran).
+- **idle**: its last real activity (`session_liveness.tail_activity`: housekeeping rows do not count; else the
+  file's mtime) is at least the idle time ago (1200 s).
+
+Each due session gets ONE task-learn session whose prompt holds only the unread rendered lines (from `lines`
+on; a transcript shorter than that, rewritten or compacted, is read whole. Lines, not turns: a task working for an
+hour without a user message is one turn that keeps growing). A task that was active within the idle time is
+described to the expert as still running ("remember only what has shown its outcome so far"), one speaker-tagged line per line
 (`USER| `, `AGENT| `, `TOOL| `, `NOTE| `; a line that already starts like a tag is marked `(quoted)`), cut to
 30,000 characters (`learn.fit`), between `<<<TRANSCRIPT` / `TRANSCRIPT>>>` markers, framed as data, and "update
 your memory from this" with the same evidence rule as §3 and one relevance rule: keep only what concerns the
@@ -264,7 +275,8 @@ for the next. A session grown by housekeeping only (no new turns) is marked read
 **Retry and give-up**: the new `size` and `turns` are recorded only after the task-learn session ends `done`, or
 ends `error` with a non-empty `memory_diff` (it changed memory before failing, e.g. a timeout after its edit: a
 retry would see the same evidence beside the updated memory and raise counts twice). A failure that changed nothing
-is counted against the size it tried (`fails`) and retried next pass; after 3 failures (`MAX_FAILS`) at one size
+is counted against the size it tried (`fails`), gives up the after-call wait (a running task grows every pass, so
+the size rule alone would retry forever; the idle pass or the next call tries again) and is retried next pass; after 3 failures (`MAX_FAILS`) at one size
 that session is no longer due until it grows again. A session that never started because the write lock stayed held
 (`BUSY`) or the server was shutting down (`CLOSED`) is not an attempt.
 
@@ -273,8 +285,8 @@ server stops after the expert's edit but before the row ends, the row stays `run
 reading a slice, `learn_one` asks `sessions.cut_short`: a stale `running` task-learn row for the same task and
 the same `from_size` whose `memory_before` no longer matches the file means that slice was already applied, so
 it is recorded as read and not replayed; the row is closed as `interrupted`. `cut_short` returns that row's
-trigger, and the cursor is set to ITS `to_size` / `to_turns` (the slice that session was given), so turns the task
-added after it stay due (a row written before `to_turns` was kept falls back to the current size and turns). A
+trigger, and the cursor is set to ITS `to_size` / `to_lines` (the slice that session was given), so lines the task
+added after it stay due (a row with no `to_lines` falls back to the current size and lines). A
 stale row whose hash still matches changed nothing and the slice is read as usual. A chat or hand edit between
 the two also changes the hash; that slice is then skipped too, the cheaper mistake.
 
@@ -288,7 +300,7 @@ row reads `interrupted`), so the next pass picks the session up again, once; a t
 from where it was left, only its new part.
 
 **The timer** (`scheduler.py`): one daemon thread, armed at server startup (not on Windows); the first tick runs
-90 s after start, then every 300 s ±10 %. A tick runs only in the process that owns the bots
+90 s after start, then every 60 s ±10 %. A tick runs only in the process that owns the bots
 (`registry.owns()`), holds the bots workspace claim, and gets the machine-wide lease `experts-scheduler`
 (`tasks_store.try_acquire_lease`, released after the tick): only one server process on a machine reads the
 transcripts. Shutdown stops the timer and kills every side session's harness: the bots `registry.shutdown` does it
@@ -315,7 +327,7 @@ The row's `trigger` says where it came from:
     chat         {message}                                                      the user's message
     ask          {asker, question, session_id?, run_id?}                         (never writes)
     task-learn   {session_id, run_id?, target, backend, from_size, to_size,      the task session and the slice read
-                  to_turns}
+                  to_lines}
     dream        {lines, bytes}                                                  the size that triggered it
 
 - `sessions.changes(bot)`: the newest 20 rows that changed memory, `[{id, kind, started, trigger}]` ("last changed
@@ -388,8 +400,9 @@ copies are its own.
 
 Environment variables, read when used:
 
-    FUSED_RENDER_EXPERT_IDLE_S          idle time before a task is due (§9)    default 600   any positive number
-    FUSED_RENDER_EXPERT_TICK_S          timer interval (§9)                    default 300   floor 5
+    FUSED_RENDER_EXPERT_AFTER_CALL_S    wait after a task's last call (§9)     default 300   any positive number
+    FUSED_RENDER_EXPERT_IDLE_S          idle time before a task is due (§9)    default 1200  any positive number
+    FUSED_RENDER_EXPERT_TICK_S          timer interval (§9)                    default 60    floor 5
     FUSED_RENDER_EXPERT_START_DELAY_S   first tick after start (§9)            default 90    floor 5
     FUSED_RENDER_EXPERT_TIMEOUT         one harness run, and a writer's wait   default 600   any positive number
                                         for the lock (§4); also widens the

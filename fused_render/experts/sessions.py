@@ -304,7 +304,7 @@ def cut_short(bot, session_id: str, from_size: int) -> dict | None:
     changed memory.md (its row is still `running` though nothing runs it, and memory.md no longer hashes to the
     `memory_before` it noted), else None. Its diff was never computed, so learn.py asks here before reading the
     slice again (the same evidence beside the already-updated memory would raise counts twice) and records as read
-    only the slice that session was given (the trigger's `to_size` / `to_turns`). The row is marked so it answers
+    only the slice that session was given (the trigger's `to_size` / `to_lines`). The row is marked so it answers
     once. A chat or hand edit in between also changes the hash: that slice is then skipped too, the cheaper of the
     two mistakes."""
     d = _rows_dir(bot)

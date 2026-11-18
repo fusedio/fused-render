@@ -168,7 +168,7 @@ export function SessionsPanel({ rows, err, open, onOpen, full, fullErr, nowMs }:
           <p className={fullErr ? "xp-err xp-pending" : "xp-none xp-pending"} role={fullErr ? "alert" : undefined}>{fullErr || "Loading this session…"}</p>
         </div>
       ) : null}
-      {!shown.length ? <p className="xp-empty">No sessions yet. Asks from tasks, learning after a task goes quiet, and dreams (memory compaction) show here.</p> : (
+      {!shown.length ? <p className="xp-empty">No sessions yet. Asks from tasks, learning from tasks that used this expert, and dreams (memory compaction) show here.</p> : (
         <ul className="xp-rows">
           {shown.map((s) => {
             const on = s.id === open;

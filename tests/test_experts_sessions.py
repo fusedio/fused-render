@@ -322,7 +322,7 @@ def test_due_rule_and_only_the_unread_part(expert, monkeypatch, transcript):
     size = os.path.getsize(transcript)
     assert row["kind"] == "task-learn" and row["trigger"] == {
         "session_id": "s1", "run_id": "r1", "target": "/work", "backend": "claude", "from_size": 0, "to_size": size,
-        "to_turns": 1}
+        "to_lines": 1}
     assert learn.run_pass()["sessions"] == 0  # read at this size
     with open(transcript, "a") as f:
         f.write("turn 2\n")
@@ -335,7 +335,7 @@ def test_idle_env_override(monkeypatch):
     monkeypatch.setenv(learn.IDLE_ENV, "30")
     assert learn.idle_s() == 30
     monkeypatch.setenv(learn.IDLE_ENV, "nope")
-    assert learn.idle_s() == learn.IDLE_S == 600
+    assert learn.idle_s() == learn.IDLE_S == 1200
 
 
 def test_pending_run_resolves_later(expert, monkeypatch, transcript):
@@ -416,7 +416,7 @@ def test_a_shrunk_transcript_is_read_again_whole(expert, monkeypatch, transcript
     assert "USER| summary" in calls[-1]["prompt"]
     assert sessions.rows(expert)[0]["trigger"]["from_size"] == 0
     rec = learn._load(expert)["sessions"]["s1"]
-    assert rec["size"] == os.path.getsize(transcript) and rec["turns"] == 1
+    assert rec["size"] == os.path.getsize(transcript) and rec["lines"] == 1
     assert learn.run_pass()["sessions"] == 0
 
 
@@ -623,7 +623,7 @@ def test_a_cut_short_slice_records_only_what_it_was_given(expert, monkeypatch, t
     transcript.write_text("turn 1\nturn 2\n")
     slice_size = os.path.getsize(transcript)
     learn.record_use(expert, "r1")
-    row = sessions._new_row("task-learn", {"session_id": "s1", "from_size": 0, "to_size": slice_size, "to_turns": 2})
+    row = sessions._new_row("task-learn", {"session_id": "s1", "from_size": 0, "to_size": slice_size, "to_lines": 2})
     row["memory_before"] = sessions._sha(store.memory(expert))
     sessions._save(expert, row)
     append_memory(expert, "- [1 · 2026-11-18] learned before the restart")
@@ -632,7 +632,7 @@ def test_a_cut_short_slice_records_only_what_it_was_given(expert, monkeypatch, t
     _age(transcript)
     assert learn.run_pass()["sessions"] == 0 and calls == []  # the cut-short slice is not replayed
     rec = learn._load(expert)["sessions"]["s1"]
-    assert rec["size"] == slice_size and rec["turns"] == 2
+    assert rec["size"] == slice_size and rec["lines"] == 2
     assert learn.run_pass()["sessions"] == 1  # turn 3 is still due
     assert "USER| turn 3" in calls[-1]["prompt"] and "turn 1" not in calls[-1]["prompt"]
 
@@ -756,3 +756,53 @@ def test_a_long_transcript_is_cut_around_the_calls_to_this_expert(expert, monkey
 def test_the_learn_prompt_asks_for_the_experts_own_subject_only(expert):
     p = learn.prompt_for(expert, "USER| hi")
     assert "only what concerns the subject your instructions give you" in p and learn.CUT in p
+
+
+def test_a_running_task_is_read_five_minutes_after_its_last_call(expert, monkeypatch, transcript):
+    calls = stub(monkeypatch)
+    assert learn.AFTER_CALL_S == 300 and learn.after_call_s() == 300
+    t0 = time.time()
+
+    def call_at(ts):
+        with monkeypatch.context() as m:
+            m.setattr(learn.time, "time", lambda: ts)
+            learn.record_use(expert, "r1")
+        assert learn._load(expert)["sessions"]["s1"]["called_at"] == ts
+    call_at(t0 - 250)
+    # the transcript was written just now: the task is running, and the idle pass would not read it
+    assert learn.run_pass(now=t0 + 49)["sessions"] == 0
+    call_at(t0 - 100)  # a second call starts the wait again: both are read in one session
+    assert learn.run_pass(now=t0 + 51)["sessions"] == 0
+    assert learn.run_pass(now=t0 + 201)["sessions"] == 1
+    assert "is still running" in calls[-1]["prompt"] and "gone quiet" not in calls[-1]["prompt"]
+    rec = learn._load(expert)["sessions"]["s1"]
+    assert "called_at" not in rec and rec["lines"] == 1
+    # the task keeps working with no new call: nothing until it has been idle (the sweep)
+    with open(transcript, "a") as f:
+        f.write("turn 2\n")
+    assert learn.run_pass(now=time.time() + 600)["sessions"] == 0
+    _age(transcript)
+    assert learn.run_pass()["sessions"] == 1
+    assert "gone quiet" in calls[-1]["prompt"] and "USER| turn 2" in calls[-1]["prompt"] and "turn 1" not in calls[-1]["prompt"]
+
+
+def test_a_failed_read_of_a_running_task_gives_up_the_after_call_wait(expert, monkeypatch, transcript):
+    stub(monkeypatch, lambda *a: {"ok": False, "error": "boom", "answer": "", "transcript": []})
+    learn.record_use(expert, "r1")
+    later = time.time() + 301
+    assert learn.run_pass(now=later) == {"sessions": 1, "errors": 1}
+    with open(transcript, "a") as f:   # it grew, as a running task does: no retry every pass
+        f.write("turn 2\n")
+    assert learn.run_pass(now=later + 60)["sessions"] == 0
+
+
+def test_the_line_cursor_reads_a_turn_that_kept_growing(expert, monkeypatch):
+    turn = {"role": "assistant", "segments": [{"kind": "text", "text": "one\ntwo"}]}
+    hist = {"turns": [{"role": "user", "text": "go"}, turn]}
+    monkeypatch.setattr(learn, "_agent", lambda: type("A", (), {"_history": staticmethod(lambda *a, **k: hist)})())
+    session = {"session_id": "s1", "target": "/work", "path": ""}
+    md, n = learn.transcript_markdown(session, 0, expert)
+    assert md == "USER| go\nAGENT| one\nAGENT| two" and n == 3
+    turn["segments"].append({"kind": "text", "text": "three"})   # the same turn, still running
+    assert learn.transcript_markdown(session, n, expert) == ("AGENT| three", 4)
+    assert learn.transcript_markdown(session, 9, expert)[0].startswith("USER| go")  # shorter than the cursor: whole

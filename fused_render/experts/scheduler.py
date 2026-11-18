@@ -22,7 +22,7 @@ import time
 
 logger = logging.getLogger(__name__)
 
-TICK_S = 300
+TICK_S = 60   # a task is read 5 minutes after its call (learn.AFTER_CALL_S): a slower tick would stretch that
 STARTUP_DELAY_S = 90.0
 TICK_ENV = "FUSED_RENDER_EXPERT_TICK_S"
 START_DELAY_ENV = "FUSED_RENDER_EXPERT_START_DELAY_S"
