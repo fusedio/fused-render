@@ -601,7 +601,9 @@ replaced only while the installed copy is still what we shipped: its hash is the
 from before hashes were recorded, one of the earlier shipped versions listed in `seed.PAST`. A copy the user (or
 anyone) edited is theirs and is left alone; a missing one is not put back. Changed instructions start a fresh chat
 session, as any instructions change does (§7). When you change a shipped file, add its old hash to `seed.PAST`
-(a test checks the current version is not listed).
+(a test checks the current version is not listed). The description `expert_list` shows (`ask_me_about` in the
+shipped `expert.json`) follows the same rule: an installed expert still carrying an earlier shipped text
+(`seed.PAST_ABOUT`) gets the current one; one the user wrote in Settings is kept (`seed._about`).
 
 ## 15. Developer settings
 

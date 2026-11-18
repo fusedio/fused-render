@@ -109,6 +109,34 @@ def _resync(key: str, given: dict) -> dict:
     return given
 
 
+def follows_shipped(bot, rel: str = "instructions.md") -> bool:
+    """The installed `rel` of a shipped expert is still a version we shipped, so `_resync` replaces it when the
+    shipped file changes. False once it was edited, and for an expert that is not a shipped one."""
+    key = store.manifest(bot)["shipped"]
+    have = _sha(os.path.join(store.expert_dir(bot), rel))
+    if not key or not have:
+        return False
+    return have in {_sha(os.path.join(SHIPPED_DIR, key, rel)), _witness()[2].get(key, {}).get(rel),
+                    *PAST.get(key, {}).get(rel, [])}
+
+
+#: Every earlier shipped `ask_me_about` (the line `expert_list` shows a task): an installed expert still carrying
+#: one of these never had it edited, and gets the current one (`_about`). Add the old text when you change it.
+PAST_ABOUT = {"canvas-reference": ["Writing canvases, the canvas APIs, examples from existing canvases"]}
+
+
+def _about(key: str) -> None:
+    """Give an installed expert the current shipped description, unless the user wrote their own."""
+    b = _existing(key)
+    if b is None:
+        return
+    with open(os.path.join(SHIPPED_DIR, key, "expert.json"), encoding="utf-8") as f:
+        new = store.line(json.load(f).get("ask_me_about"))
+    if new and store.manifest(b)["ask_me_about"] in PAST_ABOUT.get(key, []):
+        b.meta["expert"] = {**(b.meta.get("expert") or {}), "ask_me_about": new}
+        b.save()
+
+
 def _skill_names(key: str) -> list:
     try:
         return sorted(n for n in os.listdir(os.path.join(SHIPPED_DIR, key, "skills")) if n.endswith(".md"))
@@ -198,6 +226,7 @@ def seed() -> list:
             if key in done:
                 offered = skills.get(key) if isinstance(skills.get(key), list) else FIRST_SKILLS.get(key, [])
                 _new_skills(key, offered)
+                _about(key)
             else:
                 seed_one(key)
                 done[key] = time.time()

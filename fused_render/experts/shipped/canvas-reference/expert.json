@@ -1,5 +1,5 @@
 {
   "name": "Canvas Reference",
-  "ask_me_about": "Writing canvases, the canvas APIs, examples from existing canvases",
+  "ask_me_about": "Lessons from past canvas tasks: what works and what fails in canvas.toml, nodes, edges and the fused CLI. Check it before you write or change a canvas; it can also find a working example and run a UDF for you.",
   "face": {"shape": "hexagon", "color": "#2a9a86", "icon": ""}
 }

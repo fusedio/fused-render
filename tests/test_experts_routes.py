@@ -96,7 +96,14 @@ def test_seed_once_and_a_deleted_expert_stays_deleted():
     assert seed.seed() == ["canvas-reference"]
     [b] = store.all_experts()
     assert b.meta["name"] == "Canvas Reference" and store.manifest(b)["shipped"] == "canvas-reference"
-    assert store.manifest(b)["ask_me_about"].startswith("Writing canvases")
+    assert store.manifest(b)["ask_me_about"].startswith("Lessons from past canvas tasks")
+    # An install still carrying an earlier shipped description gets the current one; one the user wrote is kept.
+    for old_text, kept in ((seed.PAST_ABOUT["canvas-reference"][0], False), ("my own words", True)):
+        b.meta["expert"] = {**b.meta["expert"], "ask_me_about": old_text}
+        b.save()
+        seed.seed()
+        got = store.manifest(store.all_experts()[0])["ask_me_about"]
+        assert (got == old_text) is kept and (kept or got.startswith("Lessons from past canvas tasks"))
     assert b.meta["face"]["shape"] == "hexagon"
     assert b.folders() == [os.path.abspath(canvases.canvases_base())]
     d = store.expert_dir(b)
