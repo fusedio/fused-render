@@ -7,8 +7,8 @@ bot's `folders` setting. The witness `<bots root>/experts-seeded.json` lists the
 expert the user deletes stays deleted. A skill file ADDED to the shipped folder later is copied once into an
 installed expert (`_new_skills`; the witness lists the shipped skill names each key has been offered, so one the
 user deletes stays deleted). A shipped file that CHANGED replaces the installed copy only while that copy is still
-what we shipped (`_resync`; the witness records the hash of each file as given): instructions.md or a skill the
-user or anyone edited is theirs and is left alone.
+what we gave (`_resync`; the witness records the hash of each file, and the description, as given): what the
+user or anyone edited is theirs and is left alone, and so is anything the witness has no record of.
 Called by the bots owner after the Super Bot seed (registry._seed_experts).
 """
 from __future__ import annotations
@@ -33,26 +33,12 @@ def witness_path() -> str:
     return os.path.join(bpaths.root(), WITNESS)
 
 
-#: The skills each key shipped with before the witness recorded them: an install from then was offered exactly these.
-FIRST_SKILLS = {"canvas-reference": ["canvas-folder-layout.md", "edges-and-folders.md", "finding-a-reference-canvas.md",
-                                     "fused-cli-canvas-commands.md", "live-clone-vs-reference-copy.md"]}
-
-
-#: Hashes (`_sha`) of every earlier shipped version of a file, for installs from before the witness recorded what
-#: it gave: a copy matching one of these was never edited. Add a file's old hash here when you change the file.
-PAST = {"canvas-reference": {
-    "instructions.md": ["62c58da29d602c8f", "b4d386a0270a1a1a", "b189182d1246ad34", "1864272239c734c0",
-                        "58f5ce3cce43c7b5", "705d28bc7c5754ef"],
-    "skills/canvas-folder-layout.md": ["dcc8a9606ee6d28d", "38953af0627ba825"],
-    "skills/finding-a-reference-canvas.md": ["2c24bd024c045947"],
-    "skills/live-clone-vs-reference-copy.md": ["0a7634eb8be02203", "ffbeda78861daf1a"],
-    "skills/running-udfs.md": ["ee874333d2b5d028", "7d46c614a4e8a72a", "05172db74852c1cc",
-                               "1813dbee30d7e4f5"]}}
+ABOUT = "ask_me_about"  # in the witness's `given`, beside the files: the description as we last gave it
 
 
 def _witness() -> tuple:
     """`(keys, skills, given)`: `{key: when installed}`, `{key: [shipped skill names it has been offered]}` and
-    `{key: {file: hash of that file as we last gave it}}`."""
+    `{key: {file: hash of that file as we last gave it, "ask_me_about": the description as we last gave it}}`."""
     d = store.read_json(witness_path(), {})
     d = d if isinstance(d, dict) else {}
     return tuple(dict(d[k]) if isinstance(d.get(k), dict) else {} for k in ("keys", "skills", "given"))
@@ -76,17 +62,11 @@ def _files(key: str) -> list:
     return ["instructions.md"] + ["skills/" + n for n in _skill_names(key)]
 
 
-def _ours(key: str, rel: str, given: dict) -> set:
-    """The hashes that mean "still the copy we gave": the one recorded in `given`, or, only for an install from
-    before hashes were recorded, every earlier shipped version (`PAST`). With a recorded hash an older version is
-    NOT ours: the user put it back by hand, and it is theirs."""
-    return {given[rel]} if given.get(rel) else set(PAST.get(key, {}).get(rel, []))
-
-
 def _resync(key: str, given: dict) -> dict:
     """Replace each installed file of `key` whose shipped version changed, when the installed copy is still what
-    we shipped (its hash is the one recorded in `given`, or a known earlier version, `PAST`). An edited copy is
-    left alone, and so is a missing one (a deleted skill stays deleted). Returns `given` brought up to date."""
+    we gave (its hash is the one recorded in `given`). An edited copy is left alone, and so is a missing one (a
+    deleted skill stays deleted). The description (`ask_me_about` in the shipped expert.json) follows the same
+    rule. Returns `given` brought up to date."""
     b = _existing(key)
     if b is None:
         return given
@@ -97,40 +77,31 @@ def _resync(key: str, given: dict) -> dict:
         if not have or not new:
             continue
         if have != new:
-            if have not in _ours(key, rel, given):
-                continue  # edited: theirs
+            if have != given.get(rel):
+                continue  # edited, or never recorded: theirs
             _put(src, to)
             logger.info("experts seed: %s/%s updated to the shipped version", key, rel)
         given[rel] = new
+    with open(os.path.join(SHIPPED_DIR, key, "expert.json"), encoding="utf-8") as f:
+        new = store.line(json.load(f).get(ABOUT))
+    have = store.manifest(b)[ABOUT]
+    if new and have != new and have == given.get(ABOUT):
+        b.meta["expert"] = {**(b.meta.get("expert") or {}), ABOUT: new}
+        b.save()
+        have = new
+    if have == new:
+        given[ABOUT] = new
     return given
 
 
 def follows_shipped(bot, rel: str = "instructions.md") -> bool:
-    """The installed `rel` of a shipped expert is still a version we shipped, so `_resync` replaces it when the
+    """The installed `rel` of a shipped expert is still the copy we gave, so `_resync` replaces it when the
     shipped file changes. False once it was edited, and for an expert that is not a shipped one."""
     key = store.manifest(bot)["shipped"]
     have = _sha(os.path.join(store.expert_dir(bot), rel))
     if not key or not have:
         return False
-    given = _witness()[2].get(key, {})
-    return have in {_sha(os.path.join(SHIPPED_DIR, key, rel)), *_ours(key, rel, given if isinstance(given, dict) else {})}
-
-
-#: Every earlier shipped `ask_me_about` (the line `expert_list` shows a task): an installed expert still carrying
-#: one of these never had it edited, and gets the current one (`_about`). Add the old text when you change it.
-PAST_ABOUT = {"canvas-reference": ["Writing canvases, the canvas APIs, examples from existing canvases"]}
-
-
-def _about(key: str) -> None:
-    """Give an installed expert the current shipped description, unless the user wrote their own."""
-    b = _existing(key)
-    if b is None:
-        return
-    with open(os.path.join(SHIPPED_DIR, key, "expert.json"), encoding="utf-8") as f:
-        new = store.line(json.load(f).get("ask_me_about"))
-    if new and store.manifest(b)["ask_me_about"] in PAST_ABOUT.get(key, []):
-        b.meta["expert"] = {**(b.meta.get("expert") or {}), "ask_me_about": new}
-        b.save()
+    return have in {_sha(os.path.join(SHIPPED_DIR, key, rel)), _witness()[2].get(key, {}).get(rel)}
 
 
 def _skill_names(key: str) -> list:
@@ -201,22 +172,17 @@ def seed() -> list:
     out = []
     for key in shipped_keys():
         try:
-            if key in done:
-                offered = skills.get(key) if isinstance(skills.get(key), list) else FIRST_SKILLS.get(key, [])
-                _new_skills(key, offered)
-                # Recorded as soon as the offer is made (a failure below must not offer a deleted skill again),
-                # and ADDED to what was offered before: a skill that leaves the shipped folder for a release
-                # and comes back is not new to an expert whose user deleted it.
-                skills[key] = sorted({*offered, *_skill_names(key)})
-                _about(key)
-            else:
+            if key not in done:
                 seed_one(key)
                 done[key] = time.time()
                 out.append(key)
-                skills[key] = _skill_names(key)
+            elif isinstance(skills.get(key), list):  # no record of what was offered: nothing is offered
+                _new_skills(key, skills[key])
             given[key] = _resync(key, given.get(key) if isinstance(given.get(key), dict) else {})
         except Exception:  # noqa: BLE001 — the next start tries again
             logger.warning("experts seed: %s failed", key, exc_info=True)
+            continue
+        skills[key] = _skill_names(key)
     if json.dumps([done, skills, given], sort_keys=True) != before:
         store.write_json(witness_path(), {"keys": done, "skills": skills, "given": given})
     return out

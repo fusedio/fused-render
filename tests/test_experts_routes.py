@@ -104,13 +104,17 @@ def test_seed_once_and_a_deleted_expert_stays_deleted():
     [b] = store.all_experts()
     assert b.meta["name"] == "Canvas Reference" and store.manifest(b)["shipped"] == "canvas-reference"
     assert store.manifest(b)["ask_me_about"].startswith("Lessons from past canvas tasks")
-    # An install still carrying an earlier shipped description gets the current one; one the user wrote is kept.
-    for old_text, kept in ((seed.PAST_ABOUT["canvas-reference"][0], False), ("my own words", True)):
-        b.meta["expert"] = {**b.meta["expert"], "ask_me_about": old_text}
+    # The shipped description changed since it was given: an install still carrying what it was given gets the
+    # new one; one the user wrote is kept.
+    w = store.read_json(seed.witness_path(), {})
+    w["given"]["canvas-reference"]["ask_me_about"] = "what an earlier version shipped"
+    store.write_json(seed.witness_path(), w)
+    for text, kept in (("what an earlier version shipped", False), ("my own words", True)):
+        b.meta["expert"] = {**b.meta["expert"], "ask_me_about": text}
         b.save()
         seed.seed()
         got = store.manifest(store.all_experts()[0])["ask_me_about"]
-        assert (got == old_text) is kept and (kept or got.startswith("Lessons from past canvas tasks"))
+        assert (got == text) is kept and (kept or got.startswith("Lessons from past canvas tasks"))
     assert b.meta["face"]["shape"] == "hexagon"
     assert b.folders() == [os.path.abspath(canvases.canvases_base())]
     d = store.expert_dir(b)
@@ -125,23 +129,24 @@ def test_seed_once_and_a_deleted_expert_stays_deleted():
 
 
 def test_an_installed_expert_gets_a_shipped_skill_added_later_once():
-    """An install from before a skill was added (the witness lists no skills, or not this one) is handed the new
-    file on the next seed; its other skills and its instructions are left alone, and deleting it sticks."""
+    """An install from before a skill was added (the witness does not list it as offered) is handed the new file
+    on the next seed; its other skills and its instructions are left alone, and deleting it sticks."""
     assert seed.seed() == ["canvas-reference"]
     b = store.all_experts()[0]
     d = store.expert_dir(b)
     new = os.path.join(d, "skills", store.RUN_SKILL)
     assert os.path.isfile(new)
     assert store.read_json(seed.witness_path(), {})["skills"]["canvas-reference"] == seed._skill_names("canvas-reference")
-    # As an older version left it: no running skill, a witness with keys only, files the user changed or deleted.
+    # As an older version left it: no running skill, not on record as offered, files the user changed or deleted.
     os.remove(new)
     os.remove(os.path.join(d, "skills", "edges-and-folders.md"))
     with open(os.path.join(d, "instructions.md"), "w", encoding="utf-8") as f:
         f.write("mine")
     with open(os.path.join(d, "skills", "canvas-folder-layout.md"), "w", encoding="utf-8") as f:
         f.write("# mine")
-    keys = store.read_json(seed.witness_path(), {})["keys"]
-    store.write_json(seed.witness_path(), {"keys": keys})
+    w = store.read_json(seed.witness_path(), {})
+    w["skills"]["canvas-reference"].remove(store.RUN_SKILL)
+    store.write_json(seed.witness_path(), w)
     assert seed.seed() == [] and len(store.all_experts()) == 1
     shipped = os.path.join(seed.SHIPPED_DIR, "canvas-reference", "skills", store.RUN_SKILL)
     assert store.read_text(new) == store.read_text(shipped)
@@ -169,7 +174,8 @@ def test_a_changed_shipped_file_replaces_only_an_unedited_copy(tmp_path, monkeyp
     assert seed.seed() == ["canvas-reference"]
     d = store.expert_dir(store.all_experts()[0])
     given = store.read_json(seed.witness_path(), {})["given"]["canvas-reference"]
-    assert given["instructions.md"] == seed._sha(os.path.join(d, "instructions.md")) and len(given) == 1 + len(seed._skill_names("canvas-reference"))
+    assert given["instructions.md"] == seed._sha(os.path.join(d, "instructions.md"))
+    assert sorted(given) == sorted(["ask_me_about", *seed._files("canvas-reference")])
     src = shipped / "canvas-reference"
     with open(os.path.join(d, "skills", "edges-and-folders.md"), "a", encoding="utf-8") as f:
         f.write("\nmine\n")                       # edited by the user
@@ -182,49 +188,6 @@ def test_a_changed_shipped_file_replaces_only_an_unedited_copy(tmp_path, monkeyp
     assert read("instructions.md").endswith("shipped v2\n") and read("skills/running-udfs.md").endswith("shipped v2\n")
     assert read("skills/edges-and-folders.md").endswith("mine\n")      # an edited copy is theirs
     assert not os.path.exists(os.path.join(d, "skills", "canvas-folder-layout.md"))  # a deleted skill stays deleted
-    # An install from before the witness recorded hashes: a copy matching a known earlier version is unedited.
-    w = store.read_json(seed.witness_path(), {})
-    w.pop("given")
-    store.write_json(seed.witness_path(), w)
-    with open(os.path.join(d, "instructions.md"), "w", encoding="utf-8") as f:
-        f.write("an old shipped text")
-    monkeypatch.setitem(seed.PAST["canvas-reference"], "instructions.md", [seed._sha(os.path.join(d, "instructions.md"))])
-    with open(os.path.join(d, "skills", "running-udfs.md"), "w", encoding="utf-8") as f:
-        f.write("not a version we ever shipped")
-    assert seed.seed() == []
-    assert read("instructions.md").endswith("shipped v2\n") and read("skills/running-udfs.md") == "not a version we ever shipped"
-    # With a hash on record, an earlier version is not ours any more: the user put it back by hand, and it stays.
-    with open(os.path.join(d, "instructions.md"), "w", encoding="utf-8") as f:
-        f.write("an old shipped text")
-    assert seed.seed() == [] and read("instructions.md") == "an old shipped text"
-    assert not seed.follows_shipped(store.all_experts()[0])
-
-
-def test_the_record_of_offered_skills_only_grows_and_survives_a_failed_resync(monkeypatch):
-    """A skill is offered once. The record is kept when the skill leaves the shipped folder (it may come back in
-    a later release, and a user who deleted it must not get it again), and it is written even when the resync
-    that follows the offer fails."""
-    assert seed.seed() == ["canvas-reference"]
-    w = store.read_json(seed.witness_path(), {})
-    w["skills"]["canvas-reference"] = [n for n in w["skills"]["canvas-reference"] if n != store.RUN_SKILL] + ["gone.md"]
-    store.write_json(seed.witness_path(), w)
-    new = os.path.join(store.expert_dir(store.all_experts()[0]), "skills", store.RUN_SKILL)
-    os.remove(new)
-
-    def boom(key, given):
-        raise OSError("disk")
-    monkeypatch.setattr(seed, "_resync", boom)
-    assert seed.seed() == [] and os.path.exists(new)  # offered again (the record said it never was) ...
-    offered = store.read_json(seed.witness_path(), {})["skills"]["canvas-reference"]
-    assert store.RUN_SKILL in offered and "gone.md" in offered  # ... and recorded, with what was offered before
-    os.remove(new)
-    assert seed.seed() == [] and not os.path.exists(new)  # deleted now: it stays deleted
-
-
-def test_every_earlier_shipped_version_is_listed_and_the_current_one_is_not():
-    for key, files in seed.PAST.items():
-        for rel, hashes in files.items():
-            assert seed._sha(os.path.join(seed.SHIPPED_DIR, key, rel)) not in hashes, rel
 
 
 def test_memory_rules_example_is_only_a_format_and_shipped_instructions_end_with_them():
