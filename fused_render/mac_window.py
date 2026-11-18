@@ -1114,10 +1114,9 @@ class _Window:
         delegate._window = None
         delegate._manager = None
         delegate._downloads = []
-        # WebKit's delegate only: the Chromium delegate has no WKDownloads
-        # (its downloads release their names from the engine's callbacks).
-        for dest in getattr(delegate, "_download_dests", {}).values():
-            window_policy.release_download_destination(dest)
+        # A WKDownload still running is not cancelled here and may still be
+        # writing its file, so its name stays reserved (one skipped number at
+        # worst). The Chromium delegate has no such map.
         delegate._download_dests = {}
         logger.debug("window destroyed (%s)", self.key or "home")
 

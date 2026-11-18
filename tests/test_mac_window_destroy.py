@@ -1,6 +1,6 @@
 """Tearing a window down (mac_window.py `_Window._destroy`) works for both
-engines' delegates and gives back the download names a WebKit window still
-held."""
+engines' delegates and keeps the names of downloads a WebKit window still
+had running."""
 import sys
 import types
 
@@ -34,7 +34,9 @@ def test_chromium_window_closes_without_a_download_map():
     assert win.webview is None and delegate._window is None
 
 
-def test_webkit_window_gives_back_names_of_unfinished_downloads(monkeypatch):
+def test_webkit_window_keeps_names_of_unfinished_downloads(monkeypatch):
+    # The WKDownload is not cancelled and may still be writing: its name
+    # must not be handed to another download.
     mw = _mw()
     monkeypatch.setattr(mw.window_policy, "_reserved_destinations", set())
     never = {"/dl/a.zip"}.__contains__
@@ -43,4 +45,4 @@ def test_webkit_window_gives_back_names_of_unfinished_downloads(monkeypatch):
                                      _download_dests={1: dest})
     mw._Window._destroy(_window("webkit", delegate))
     assert delegate._download_dests == {}
-    assert mw.window_policy.download_destination("/dl", "b.zip", exists=never) == dest
+    assert mw.window_policy.download_destination("/dl", "b.zip", exists=never) != dest

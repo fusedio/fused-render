@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import unicodedata
 from urllib.parse import unquote, urlsplit
 
 from fused_render._view_url_codec import (
@@ -355,6 +356,14 @@ _reserved_destinations: set[str] = set()
 _reserved_lock = threading.Lock()
 
 
+def _reservation_key(path: str) -> str:
+    """Names the default macOS filesystem treats as one file share a key:
+    APFS ignores case and Unicode normalization (`Report.csv` is
+    `report.csv`). On a case-sensitive filesystem this only ever costs a
+    skipped number."""
+    return unicodedata.normalize("NFC", path).casefold()
+
+
 def download_destination(downloads_dir: str, suggested: str | None,
                          exists=os.path.exists) -> str:
     """A path under ``downloads_dir`` that does not exist yet, reserved for
@@ -375,10 +384,10 @@ def download_destination(downloads_dir: str, suggested: str | None,
     with _reserved_lock:
         candidate = os.path.join(downloads_dir, name)
         counter = 1
-        while candidate in _reserved_destinations or exists(candidate):
+        while _reservation_key(candidate) in _reserved_destinations or exists(candidate):
             candidate = os.path.join(downloads_dir, f"{stem} ({counter}){ext}")
             counter += 1
-        _reserved_destinations.add(candidate)
+        _reserved_destinations.add(_reservation_key(candidate))
     return candidate
 
 
@@ -388,4 +397,4 @@ def release_download_destination(path: str | None) -> None:
     if not path:
         return
     with _reserved_lock:
-        _reserved_destinations.discard(str(path))
+        _reserved_destinations.discard(_reservation_key(str(path)))

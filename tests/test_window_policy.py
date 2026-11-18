@@ -171,6 +171,20 @@ def test_download_destination_released_name_is_reused_once_free(fresh_reservatio
     assert wp.download_destination("/dl", "canvas.zip", exists=on_disk.__contains__) == "/dl/canvas (1).zip"
 
 
+def test_download_destination_treats_case_and_normalization_variants_as_one(fresh_reservations):
+    # APFS: Report.csv is report.csv, and NFC/NFD spellings are one name.
+    first = wp.download_destination("/dl", "Report.csv", exists=_never)
+    assert first == "/dl/Report.csv"
+    assert wp.download_destination("/dl", "report.csv", exists=_never) == "/dl/report (1).csv"
+    nfc = "caf\u00e9.zip"
+    nfd = "cafe\u0301.zip"
+    assert wp.download_destination("/dl", nfc, exists=_never) == f"/dl/{nfc}"
+    assert wp.download_destination("/dl", nfd, exists=_never) == "/dl/cafe\u0301 (1).zip"
+    # Released under either spelling.
+    wp.release_download_destination("/dl/REPORT.csv")
+    assert wp.download_destination("/dl", "Report.csv", exists=_never) == "/dl/Report.csv"
+
+
 def test_download_destination_sanitises_the_name(fresh_reservations):
     never = lambda _p: False  # noqa: E731
     assert wp.download_destination("/dl", "../../etc/passwd", exists=never) == "/dl/.._.._etc_passwd"
