@@ -6,8 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 
-const { api } = await import("../lib/api");
-const { saveSettings } = await import("./actions");
+const { expertSettingsBody } = await import("./actions");
 const { SkillsSection } = await import("./SkillsSection");
 
 /** Static markup, without base-ui's "useLayoutEffect does nothing on the server" warnings. */
@@ -25,16 +24,11 @@ const value = {
 } as never;
 
 describe("expert settings", () => {
-  test("Save sends name, model, effort, instructions, ask_me_about and folders only", async () => {
-    const sent: unknown[] = [];
-    // `status` too: saveSettings ends in a poll, and an unanswered real fetch (the whole suite in one process) hangs it.
-    const orig = { settings: api.settings, flag: api.flag, profile: api.profile, status: api.status };
-    api.status = (() => Promise.reject(new Error("no server in a test"))) as typeof api.status;
-    api.settings = ((_id: string, body: unknown) => { sent.push(body); return Promise.resolve({ ok: true }); }) as typeof api.settings;
-    api.flag = (() => Promise.resolve({ ok: true })) as typeof api.flag;
-    api.profile = (() => { throw new Error("an expert has no browser profile"); }) as typeof api.profile;
-    try { await saveSettings("x1", value); } finally { Object.assign(api, orig); }
-    expect(sent).toEqual([{ name: "Canvas Reference", model: "sonnet", effort: "low", instructions: "Be brief.", ask_me_about: "Canvases", folders: ["/w/maps"] }]);
+  // The body is tested as a value, not through saveSettings: that ends in the store's shared poll, and with the whole
+  // suite in one process a poll another file left pending would hang this test and leak into the next one.
+  test("Save sends name, model, effort, instructions, ask_me_about and folders only", () => {
+    expect(expertSettingsBody(value)).toEqual({ name: "Canvas Reference", model: "sonnet", effort: "low", instructions: "Be brief.",
+      ask_me_about: "Canvases", folders: ["/w/maps"] });
   });
   test("Skills: the expert's files listed with Edit and delete, write by hand, no Learn from last task", () => {
     const b = { id: "x1", name: "X", status: "idle", seq: 0, kind: "expert",
