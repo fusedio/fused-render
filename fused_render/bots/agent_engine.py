@@ -575,7 +575,8 @@ def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tupl
 # ------------------------------------------------------------- spawning ---
 def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
          super_mode: str | None = None,
-         resume: str | None = None, window: int | None = None, fence: list | None = None) -> list:
+         resume: str | None = None, window: int | None = None, fence: list | None = None,
+         extra_mcp: dict | None = None) -> list:
     """docs §6, verified on claude 2.1.287. No --include-partial-messages
     (thoughts are per text block, and the flag floods stdout). `super_mode` (the
     CLI permission mode, bot.py SUPER_ACCESS values) switches Super Bot on: the
@@ -598,7 +599,9 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
     flags with the expert's own. With an `mcp_file` (its chat, `expert_cards`)
     what the CLI asks about goes to our `permission` MCP tool, the only
     tool that server lists for an expert (`roster_for`): `_expert_permission`;
-    with none (a routine's turn) it is `NO_MCP` and the CLI refuses."""
+    with none (a routine's turn) it is `NO_MCP` and the CLI refuses. `extra_mcp`
+    (an expert with the S3 tools, experts.sessions.s3_server) is the one MCP
+    server a routine's turn gets; the chat's `mcp_file` already lists it."""
     out = [bin_path, "-p",
            "--input-format", "stream-json",
            "--output-format", "stream-json",
@@ -613,7 +616,7 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
         out += ["--autocompact", str(int(window))]
     if fence is not None:
         if not mcp_file:
-            return out + list(fence) + NO_MCP
+            return out + list(fence) + xsessions.mcp_flags(extra_mcp or {})
         # No `--allowedTools mcp__bot__*`: the one tool there is the prompt itself, never the model's to call.
         return out + list(fence) + ["--permission-prompt-tool", f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}",
                                     "--setting-sources=", "--mcp-config", mcp_file, "--strict-mcp-config",
@@ -669,12 +672,13 @@ def system_prompt_for(bot, cwd: str) -> str:
     return SYSTEM_PROMPT + SUPER_PROMPT + f"\nINBOX: {cwd}"
 
 
-def write_mcp_config(path: str, origin: str, bot_id: str, token: str) -> str:
-    """The one-server config: botmcp.py on the app's own python, UTF-8 stdio,
+def write_mcp_config(path: str, origin: str, bot_id: str, token: str, extra: dict | None = None) -> str:
+    """The bot server's config: botmcp.py on the app's own python, UTF-8 stdio,
     and a per-server timeout above the longest wait (claude_agent/agent.py
-    `_write_mcp_config`). 0600: the token is in it."""
+    `_write_mcp_config`). `extra`: more servers beside it (an expert's S3
+    server, experts.sessions.s3_server). 0600: the token is in it."""
     server = os.path.join(os.path.dirname(os.path.abspath(__file__)), "botmcp.py")
-    cfg = {"mcpServers": {MCP_SERVER: {
+    cfg = {"mcpServers": {**(extra or {}), MCP_SERVER: {
         "command": sys.executable,
         "args": [server, origin, bot_id, token],
         "env": {"PYTHONUTF8": "1"},
@@ -906,7 +910,9 @@ def _drive(bot, sess: Turn, proc) -> tuple:
                     uses += 1
                     if str(blk.get("name") or "") != f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}":
                         _doing(bot, _tool_doing(str(blk.get("name") or ""), blk.get("input")))
-                    if sess.builtin_rows and not str(blk.get("name") or "").startswith("mcp__"):
+                    if sess.builtin_rows and not str(blk.get("name") or "").startswith(f"mcp__{MCP_SERVER}__"):
+                        # A built-in, or another server's tool (an expert's S3 tools): the CLI runs it, not
+                        # handle_tool, so its result becomes the `action` row here.
                         _builtin_use(bot, sess, blk)
                     elif str(blk.get("name") or "") != f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}":
                         mcp_uses += 1
@@ -1083,9 +1089,13 @@ def run(bot, task: str, label: str | None = None) -> None:
                 sess.prev_url = u
                 sess.visited[u] = 1  # as if a goto had landed there: coming back later is a revisit
             prompt, sent = first_message(bot, task, None, page=page, conv=conv)
-            # An expert with nobody at the card (a routine) gets no MCP server at all, so no permission prompt.
+            # An expert with nobody at the card (a routine) gets no bot MCP server, so no permission prompt. An
+            # expert gets the S3 tools' server when they are on, decided once for the server and its allow rules.
+            s3 = bool(expert) and xstore.s3_on()
+            extra = xsessions.s3_server(bot) if s3 else {}
             mcp_file = ("" if expert and not expert_cards(bot)
-                        else write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token))
+                        else write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token,
+                                              extra=extra))
             # Super Bot reads its Inbox (cwd) without a prompt; every other read, and every write, reaches
             # `_permission`, whose fence judges by `bot.folder_roots` (docs §6). No --add-dir (was `~` whole).
             sess.cwd = cwd  # before the spawn: the first permission call may land at once
@@ -1093,8 +1103,8 @@ def run(bot, task: str, label: str | None = None) -> None:
                                # An expert: no --autocompact, the CLI compacts its chat by itself (_conversation_plan).
                                resume=resume, window=None if expert else context_window(model),
                                # A user at the card: Claude Code's auto mode. A routine's turn: the default mode.
-                               fence=(xsessions.fence(bot, write=True, run=True, auto=expert_cards(bot))
-                                      if expert else None)), cwd)
+                               fence=(xsessions.fence(bot, write=True, run=True, auto=expert_cards(bot), s3=s3)
+                                      if expert else None), extra_mcp=extra), cwd)
             sess.proc = proc
             threading.Thread(target=_drain_stderr, args=(sess, proc), daemon=True, name=f"bot-stderr-{bot.id}").start()
             if bot.stop_flag.is_set():  # Stop landed while we were spawning
@@ -1592,6 +1602,8 @@ def builtin_label(name: str, inp: dict) -> str:
         return f"list {_home_rel(inp.get('path'))}"
     if name == "Task":
         return f"subagent: {_short(inp.get('description') or inp.get('prompt'), 80)}"
+    if name.startswith("mcp__"):  # another server's tool (an expert's s3_search / s3_read): its own name, unprefixed
+        name = name.split("__", 2)[-1]
     first = next((v for v in inp.values() if isinstance(v, str) and v.strip()), "")
     return f"{name} {_short(first, 80)}".strip()
 

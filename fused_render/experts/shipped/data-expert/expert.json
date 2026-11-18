@@ -1,0 +1,5 @@
+{
+  "name": "Data Expert",
+  "ask_me_about": "The datasets you can reach (today the fused-asset S3 bucket): what exists, how each is laid out, its columns, size and coverage, and how to read it. Ask before you search for or load data; it can look inside files and run a UDF on them.",
+  "face": {"shape": "drop", "color": "#2f7ae5", "icon": ""}
+}

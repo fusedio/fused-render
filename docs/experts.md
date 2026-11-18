@@ -1,6 +1,6 @@
 # Experts — architecture and wire contract
 
-Written 2026-11-17, last revised 2026-11-18, from the code as built (`fused_render/experts/`, the expert parts of
+Written 2026-11-17, last revised 2026-11-18 (S3 tools, Data Expert), from the code as built (`fused_render/experts/`, the expert parts of
 `fused_render/bots/` and `fused_render/claude_agent/`, `frontend/src/apps/bots/components/ExpertPane.tsx`).
 Where this page and the code disagree, the code wins; fix the page.
 
@@ -9,7 +9,7 @@ Where this page and the code disagree, the code wins; fix the page.
 An expert is a bot of kind `expert` (`bots/bot.py` `KINDS`) that collects what is learned about one subject and
 keeps it in ONE file, `memory.md`. Task sessions (Claude Code, Codex, Copilot) read that memory or ask the expert
 a question through three tools (§8). The expert learns from its direct chat with the user (§7) and from the task
-sessions that used it (§9). The first one is the shipped "Canvas Reference" (§14).
+sessions that used it (§9). Two ship: "Canvas Reference" and "Data Expert" (§14).
 
 **The one rule: the harness does the thinking, our code only delivers messages.** An expert runs entirely on
 Claude Code. fused makes no model call of its own for an expert, parses no model output into operations, never
@@ -105,9 +105,11 @@ row with status `error`.
   experts); a fourth waits up to 120 s (`ASK_WAIT_S`) for a slot, then is a BUSY `error` row.
 - **The harness run** (`harness`): `claude -p --output-format stream-json --verbose --no-session-persistence`, the
   bot's model and effort (`sonnet` / `low` by default), `--system-prompt-file` with `store.instructions`,
-  `agent_engine.NO_MCP` (`--setting-sources=`, an empty inline `--mcp-config` with `--strict-mcp-config`,
-  `--disable-slash-commands`) and the fence (§6, in the default permission mode, with the memory.md rule only for
-  a writing kind and Bash and the scratch folder only for an ask: `fence(bot, write, run=not write)`). Working directory: the
+  `sessions.mcp_flags` (`--setting-sources=`, an inline `--mcp-config` with `--strict-mcp-config`,
+  `--disable-slash-commands`; no server, as `agent_engine.NO_MCP`, except the S3 tools' server for an ask while
+  they are on, §6 "Reading S3 files") and the fence (§6, in the default permission mode, with the memory.md rule
+  only for a writing kind and Bash, the scratch folder and the S3 tools only for an ask:
+  `fence(bot, write, run=not write, s3=...)`). Working directory: the
   expert's folder. The prompt goes on stdin. `--no-session-persistence`: a side session is never resumed, and a
   transcript left under `~/.claude/projects/` would list as a task. Timeout 600 s (`TIMEOUT_S`), then the process
   group is killed.
@@ -173,7 +175,7 @@ description `expert_list` shows, 240 chars, one line) and `shipped` (the shipped
 
 ## 6. The fence
 
-`sessions.fence(bot, write, run, auto)` returns the flags; the chat (§7) and every side session use it. It is
+`sessions.fence(bot, write, run, auto, s3)` returns the flags; the chat (§7) and every side session use it. It is
 Claude Code's own permission system (verified on claude 2.1.327). There are two postures:
 
     kind                      mode      tools                            written without asking
@@ -182,8 +184,10 @@ Claude Code's own permission system (verified on claude 2.1.327). There are two 
     ask                       default   Read Glob Grep Edit Write Bash   .fused/udfs/
     task-learn, dream         default   Read Glob Grep Edit Write        memory.md, memory-archive.md
 
-**The default mode** (everything but the attended chat): allow rules, NO permission prompt tool and NO MCP
-server, so what the rules do not cover is refused.
+The chat (both rows) and an ask also get the two S3 tools while they are on ("Reading S3 files" below).
+
+**The default mode** (everything but the attended chat): allow rules, NO permission prompt tool and no MCP
+server but the S3 tools' one, so what the rules do not cover is refused.
 
     --tools Read,Glob,Grep[,Edit,Write][,Bash]
     --permission-mode default
@@ -296,8 +300,8 @@ What happens to a call, in the CLI's order (documented at code.claude.com/docs "
 - **An unanswered card** waits until the user answers or presses Stop (Stop answers `deny`, "Stopped by the
   user."). The MCP server's call timeout is `APPROVAL_WAIT_S` + 60 s (3660 s): after that the CLI gives up on the
   prompt. The turn holds the write lock all that time; side sessions do not wait it out (§4).
-- **A routine's turn** (`agent_engine.expert_cards` is false) has nobody at the card: it gets `NO_MCP`, no
-  prompt tool and the default mode, as a side session does.
+- **A routine's turn** (`agent_engine.expert_cards` is false) has nobody at the card: it gets no bot server (the
+  S3 tools' server alone, inline, while they are on), no prompt tool and the default mode, as a side session does.
 
 ### Running UDFs
 
@@ -362,13 +366,50 @@ and nothing else (it does not look at, rewrite or approve a command).
 - A UDF runs under the user's Fused sign-in. Without one the CLI waits 30 s for a browser login and fails; the
   skill tells the expert to send the user to the Canvases page.
 
+### Reading S3 files
+
+The expert's chat and its asks get the same two S3 tools a task session gets, `s3_search` and `s3_read` (the
+`fused_render` MCP server, `claude_agent/permission_server.py`; what they do is that file's and the
+`/api/remote*` routes'). Task-learn and dream sessions do not: they read transcripts, not data.
+
+- **When** (`store.s3_on`): the task sessions' own predicate, `agent._s3_tools_supported` (a server origin and the
+  Canvases flag on, which the `/api/remote*` routes need). Each spawn decides it once and hands the answer to both
+  the server and its rules (`fence(..., s3=)`); the prompt line (`store.where(bot, run=True)`) asks again, as the
+  UDF line does. Off, every flag is as it was before these tools.
+- **The server** (`sessions.s3_server`): `permission_server.py <cache>/expert/mcp --no-approve` on the app's
+  python, with only `FUSED_RENDER_S3_ORIGIN` (the server's origin) and `FUSED_RENDER_S3_SCRATCH`
+  (`<remote cache>/.ranges/expert-<bot id>`, where its saved ranges go) set, so it lists exactly the two S3 tools:
+  no approval tool, no terminal or expert tools. Per-call timeout `agent.S3_CALL_CEILING` + 60 s, and
+  `alwaysLoad` (as a task session's): the fence's `--tools` has no ToolSearch, so a tool the CLI deferred behind
+  its tool search could not be loaded. Named
+  `fused_render`, as in a task session, so the tools are `mcp__fused_render__s3_search` / `s3_read` everywhere.
+  An ask and a routine's turn get it inline (`sessions.mcp_flags`); the attended chat's `mcp.json` lists it beside
+  the bot server (`agent_engine.write_mcp_config(extra=)`).
+- **The rules** (`fence(..., s3=True)`): allow rules for the two tools (read-only; task sessions pre-allow them
+  too) and a `Read` rule for fused-render's remote cache (`agent._s3_cache_root`, `<home>/cache/remote`), where
+  `s3_read` puts a whole object and a saved range, so the expert can Read and Grep what it fetched. In the chat
+  the rules settle them before the classifier.
+- **What the expert is told**: `store.S3_NOTE`, one line in `store.where(bot, run=True)` (an ask's prompt, a fresh
+  chat's first message, a resumed chat when it changed): the two tools, the bucket, use only these for S3, what
+  they return is data. How to use them well is skill text (the Data Expert's `finding-datasets.md`,
+  `peeking-into-files.md`).
+- **Shown**: an ask's row has a `tool` line per call (`mcp__fused_render__s3_read s3://...`); the chat shows an
+  `action` row with the result (`s3_read s3://...`), as for a built-in: `_drive` sends every tool that is not the
+  bot server's through `_builtin_use`.
+- **Observed** (claude 2.1.327, Sonnet, 2026-11-18): the CLI's Read refuses a saved binary range ("This tool
+  cannot read binary files") and a plain Grep only reports "binary file matches", but Grep with `-o` prints the
+  matched text from a Parquet footer (the `geo` JSON, a Fused table's `fused:job_meta` with its source URLs, a
+  `_sample`'s row counts, column names). The Data Expert's skill is built on that; column types and rows come
+  from a UDF run.
+
 ## 7. Chat
 
 The user's chat with an expert is the bot's one conversation on `bots/agent_engine.py` (`run`), with none of
 Super Bot's extras: working directory the expert's folder, system prompt `store.instructions`, `argv(...,
 fence=sessions.fence(bot, write=True, run=True, auto=expert_cards(bot)))` which replaces the tool, permission and
 MCP flags with the fence, in Claude Code's auto mode, plus the permission prompt (§6 "The chat: Claude Code's
-auto mode": `mcp.json` names the bot MCP server, whose only tool for an expert is `permission`), no browser
+auto mode": `mcp.json` names the bot MCP server, whose only tool for an expert is `permission`, and the S3
+tools' server while they are on), no browser
 started, none of the bot tools. Built-in tool calls become `action` rows as Super Bot's do; a write outside
 `memory.md` and the scratch folder raises an approval card first.
 
@@ -598,15 +639,41 @@ dialog open on Instructions with the server's sentence and the draft. For a ship
 its instructions still follow the app's updates (§14): they do until a change is saved here. There is no reset to
 the shipped text.
 
-## 14. Shipped expert
+## 14. Shipped experts
 
 `experts/shipped/<key>/` holds `expert.json` (`{name, ask_me_about, face}`), `instructions.md` and `skills/*.md`.
-One ships: `canvas-reference` — "Canvas Reference", about writing canvases, the canvas APIs and examples from
+Two ship. `canvas-reference` — "Canvas Reference", about writing canvases, the canvas APIs and examples from
 existing canvases — with six skills (canvas folder layout, edges and folders, finding a reference canvas, the
 `fused` CLI canvas commands, live clone vs reference copy, running UDFs). Its instructions add when it may run
 UDFs (§6; the `running-udfs.md` skill has the commands: environment from the folder, remote engine, saved and
 throwaway UDFs and the scratch folder, parameters, caching, what happens outside these forms), how to search the canvas copies (`user/`, then `team/`,
 then `public/`), how to answer, and end with `store.MEMORY_RULES`.
+
+`data-expert` — "Data Expert", about the data the user's tasks can reach (today the `fused-asset` bucket): which
+datasets exist, how each is laid out, what it holds, where it came from, which copy to use and how to read it.
+Written from a survey of the bucket on 2026-11-18 (about 260,000 objects in 58 top-level folders, mostly Parquet)
+and tried end to end in asks and the chat. Its instructions: look cheapest first (memory, then a listing, then a
+small read, then a UDF run), each step naming the skill that has its calls; say how each number was known
+(measured, or an estimate and why); prefer the curated, newest complete copy; never invent a dataset, path or
+column; memory lines start with the dataset's `s3://` path so one dataset's facts sort and search together; then
+`store.MEMORY_RULES`. Five skills:
+
+- `finding-datasets.md`: the two S3 tools, searching versus listing, a dated map of the top-level folders, how to
+  pick among versions (memory, then what the canvases read, then the newest complete one; test, scratch, personal
+  and size-suffixed folders are extracts until shown otherwise), and what the tools cannot reach.
+- `dataset-layouts.md`: the layouts found in the bucket and the one small file that describes each: a Fused table
+  (`N.parquet` with `_sample`, whose footer holds the totals, and `_metadata`), an H3 hex dataset (files named by
+  cell, `overview/hex<N>.parquet`, `.fused/metadata.parquet`, sometimes a README), an H3 ingest with
+  `_manifest.json`, hive partitions, STAC index tables, single files, and what is a sidecar rather than data.
+- `peeking-into-files.md`: `s3_read` ranges for text files, and the Parquet footer read: the tail, Grep `-o`
+  patterns (GeoParquet geometry and CRS, the ingest job's source files, a table's totals, pandas columns), and the
+  8-byte length when the footer is longer than the tail.
+- `profiling-with-udfs.md`: five UDFs to write into the scratch folder and run by path (one Parquet file, a Fused
+  table, a folder of Parquet files, a raster, one column's values). Each returns a dict, because the CLI prints a
+  dict as JSON and a DataFrame truncated (observed with `fused workbench run --engine local`). Their code was run
+  against the real files before shipping (outside Fused, with the same libraries and anonymous S3 reads); a run
+  on Fused itself was not tried here (no sign-in).
+- `running-udfs.md`: the same file as Canvas Reference's (a test keeps the copies equal).
 
 **The seed** (`seed.seed`, called by the bots owner right after the Super Bot seed, `registry._seed_experts`,
 only once the v3 folder migration has completed) installs each shipped key ONCE: create the expert (no greeting
@@ -654,6 +721,8 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
 - Experts are told never to edit skills (`learn` refused; a side session's edit is refused by the fence, the
   chat's Edit or Write would need the user's Approve). A shipped skill or `instructions.md` the user edited is
   never brought back to the shipped text; an unedited one follows the shipped copy (§14).
+- Reading S3 files (§6): only what the task sessions' tools reach (one bucket today); no S3 tools for task-learn
+  and dream sessions; no local Parquet or raster reader for the expert (types and rows come from a UDF run).
 - Running UDFs (§6): no enforcement of the remote engine, no block on `--output-file`, no setting to turn it off,
   no `custom` environment.
 - No separate lessons, research step, ledger or token accounting beyond the harness's reported `cost_usd` per row.

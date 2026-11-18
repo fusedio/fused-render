@@ -109,8 +109,8 @@ def test_a_shipped_expert_follows_updates_until_its_instructions_are_saved(clien
     shipped = tmp_path / "shipped"
     shutil.copytree(seed.SHIPPED_DIR, shipped)
     monkeypatch.setattr(seed, "SHIPPED_DIR", str(shipped))
-    assert seed.seed() == ["canvas-reference"]
-    [b] = store.all_experts()
+    assert "canvas-reference" in seed.seed()
+    b = seed._existing("canvas-reference")
     st, out = j(client.get(url(b)))
     assert out["shipped"] == "canvas-reference" and out["follows_shipped"] is True
     # A save that changes nothing leaves the file as shipped: it still follows.

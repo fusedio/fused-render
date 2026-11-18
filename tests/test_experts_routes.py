@@ -8,6 +8,9 @@ import pytest
 from fused_render.bots import registry
 from fused_render.experts import learn, seed, sessions, store
 
+#: The shipped experts, in the order `seed.seed` installs them.
+SHIPPED = ["canvas-reference", "data-expert"]
+
 
 def j(resp):
     status, _headers, body = resp
@@ -100,8 +103,9 @@ def test_settings_never_write_the_bot_memory_file_of_an_expert(client, expert):
 
 def test_seed_once_and_a_deleted_expert_stays_deleted():
     from fused_render import canvases
-    assert seed.seed() == ["canvas-reference"]
-    [b] = store.all_experts()
+    assert seed.seed() == SHIPPED
+    b, data = seed._existing("canvas-reference"), seed._existing("data-expert")
+    assert len(store.all_experts()) == 2 and data.meta["name"] == "Data Expert"
     assert b.meta["name"] == "Canvas Reference" and store.manifest(b)["shipped"] == "canvas-reference"
     assert store.manifest(b)["ask_me_about"].startswith("Lessons from past canvas tasks")
     # The shipped description changed since it was given: an install still carrying what it was given gets the
@@ -113,7 +117,7 @@ def test_seed_once_and_a_deleted_expert_stays_deleted():
         b.meta["expert"] = {**b.meta["expert"], "ask_me_about": text}
         b.save()
         seed.seed()
-        got = store.manifest(store.all_experts()[0])["ask_me_about"]
+        got = store.manifest(seed._existing("canvas-reference"))["ask_me_about"]
         assert (got == text) is kept and (kept or got.startswith("Lessons from past canvas tasks"))
     assert b.meta["face"]["shape"] == "hexagon"
     assert b.folders() == [os.path.abspath(canvases.canvases_base())]
@@ -123,16 +127,16 @@ def test_seed_once_and_a_deleted_expert_stays_deleted():
     assert sorted(os.listdir(os.path.join(d, "skills"))) == sorted(os.listdir(os.path.join(shipped, "skills")))
     assert store.memory(b) == store.EMPTY_MEMORY
     assert "memory wins" in store.instructions(b) and "read_file" not in store.instructions(b)
-    assert seed.seed() == [] and len(store.all_experts()) == 1
+    assert seed.seed() == [] and len(store.all_experts()) == 2
     registry.delete(b.id)
-    assert seed.seed() == [] and store.all_experts() == []
+    assert seed.seed() == [] and [x.id for x in store.all_experts()] == [data.id]
 
 
 def test_an_installed_expert_gets_a_shipped_skill_added_later_once():
     """An install from before a skill was added (the witness does not list it as offered) is handed the new file
     on the next seed; its other skills and its instructions are left alone, and deleting it sticks."""
-    assert seed.seed() == ["canvas-reference"]
-    b = store.all_experts()[0]
+    assert seed.seed() == SHIPPED
+    b = seed._existing("canvas-reference")
     d = store.expert_dir(b)
     new = os.path.join(d, "skills", store.RUN_SKILL)
     assert os.path.isfile(new)
@@ -147,7 +151,7 @@ def test_an_installed_expert_gets_a_shipped_skill_added_later_once():
     w = store.read_json(seed.witness_path(), {})
     w["skills"]["canvas-reference"].remove(store.RUN_SKILL)
     store.write_json(seed.witness_path(), w)
-    assert seed.seed() == [] and len(store.all_experts()) == 1
+    assert seed.seed() == [] and len(store.all_experts()) == 2
     shipped = os.path.join(seed.SHIPPED_DIR, "canvas-reference", "skills", store.RUN_SKILL)
     assert store.read_text(new) == store.read_text(shipped)
     assert not os.path.exists(os.path.join(d, "skills", "edges-and-folders.md"))  # an original the user deleted
@@ -162,8 +166,8 @@ def test_a_seed_never_makes_a_second_expert_for_a_shipped_key():
     # What a seed that ended before its witness was written leaves: the expert, no record of it.
     b = bm.create(name="Canvas Reference", kind="expert", greet=False,
                   expert={"ask_me_about": "x", "shipped": "canvas-reference"})
-    assert seed.seed() == ["canvas-reference"]
-    assert [x.id for x in store.all_experts()] == [b.id] and seed.seed() == []
+    assert seed.seed() == SHIPPED
+    assert seed._existing("canvas-reference").id == b.id and len(store.all_experts()) == 2 and seed.seed() == []
 
 
 def test_a_changed_shipped_file_replaces_only_an_unedited_copy(tmp_path, monkeypatch):
@@ -171,8 +175,8 @@ def test_a_changed_shipped_file_replaces_only_an_unedited_copy(tmp_path, monkeyp
     shipped = tmp_path / "shipped"
     shutil.copytree(seed.SHIPPED_DIR, shipped)
     monkeypatch.setattr(seed, "SHIPPED_DIR", str(shipped))
-    assert seed.seed() == ["canvas-reference"]
-    d = store.expert_dir(store.all_experts()[0])
+    assert seed.seed() == SHIPPED
+    d = store.expert_dir(seed._existing("canvas-reference"))
     given = store.read_json(seed.witness_path(), {})["given"]["canvas-reference"]
     assert given["instructions.md"] == seed._sha(os.path.join(d, "instructions.md"))
     assert sorted(given) == sorted(["ask_me_about", *seed._files("canvas-reference")])
@@ -191,9 +195,52 @@ def test_a_changed_shipped_file_replaces_only_an_unedited_copy(tmp_path, monkeyp
 
 
 def test_memory_rules_example_is_only_a_format_and_shipped_instructions_end_with_them():
-    shipped = open(os.path.join(seed.SHIPPED_DIR, "canvas-reference", "instructions.md"), encoding="utf-8").read()
-    assert shipped.endswith(store.MEMORY_RULES) and store.DEFAULT_INSTRUCTIONS.endswith(store.MEMORY_RULES)
+    assert seed.shipped_keys() == SHIPPED
+    for key in SHIPPED:
+        shipped = open(os.path.join(seed.SHIPPED_DIR, key, "instructions.md"), encoding="utf-8").read()
+        assert shipped.endswith(store.MEMORY_RULES), key
+    assert store.DEFAULT_INSTRUCTIONS.endswith(store.MEMORY_RULES)
     assert "it is not a fact" in store.MEMORY_RULES and "canvas pull" not in store.MEMORY_RULES
+
+
+@pytest.mark.parametrize("key", SHIPPED)
+def test_a_shipped_expert_is_installable_as_written(key):
+    """What the seed and the bot's skill form would refuse or cut: a description over one line or its limit, a face
+    the picker cannot draw, a skill over the expert limit, a skill naming a skill file it does not ship."""
+    import re
+    from fused_render.bots import bot as bm
+    folder = os.path.join(seed.SHIPPED_DIR, key)
+    with open(os.path.join(folder, "expert.json"), encoding="utf-8") as f:
+        spec = json.load(f)
+    assert store.line(spec["ask_me_about"]) == spec["ask_me_about"]  # one line, within the limit: never cut
+    bm.check_face({}, spec["face"], strict=True)
+    names = seed._skill_names(key)
+    for rel in ["instructions.md"] + ["skills/" + n for n in names]:
+        text = open(os.path.join(folder, rel), encoding="utf-8").read()
+        assert len(text) <= bm.Bot.EXPERT_SKILL_BODY_CAP or rel == "instructions.md", rel
+        assert len(text) <= store.INSTRUCTIONS_MAX
+        for named in re.findall(r"`(?:skills/)?([a-z0-9-]+\.md)`", text):
+            assert named in names or named in ("memory.md", "memory-archive.md", "instructions.md"), (rel, named)
+
+
+def test_the_running_udfs_skill_is_one_text_in_every_shipped_expert():
+    copies = {key: open(p, encoding="utf-8").read() for key in SHIPPED
+              if os.path.isfile(p := os.path.join(seed.SHIPPED_DIR, key, "skills", store.RUN_SKILL))}
+    assert len(copies) == len(SHIPPED) and len(set(copies.values())) == 1  # edit them together
+
+
+def test_the_data_experts_profiling_udfs_are_one_udf_each():
+    """Each ready UDF in the profiling skill parses, is one `@fused.udf` function and is announced under the file
+    name the skill tells the expert to write."""
+    import ast
+    import re
+    text = open(os.path.join(seed.SHIPPED_DIR, "data-expert", "skills", "profiling-with-udfs.md"), encoding="utf-8").read()
+    blocks = re.findall(r"## [^\n]*`([a-z_]+\.py)`.*?```python\n(.*?)```", text, re.S)
+    assert [n for n, _ in blocks] == ["profile_parquet.py", "profile_table.py", "profile_folder.py",
+                                      "profile_raster.py", "column_values.py"]
+    for name, src in blocks:
+        funcs = [n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)]
+        assert len(funcs) == 1 and ast.unparse(funcs[0].decorator_list[0]) == "fused.udf", name
 
 
 def test_an_expert_is_not_exported(client, expert, tmp_path):

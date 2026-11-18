@@ -875,3 +875,81 @@ def test_shutdown_waits_for_every_harness_within_one_budget(monkeypatch):
         sessions.reopen()
     assert time.monotonic() - t0 < 1.2  # one shared wait, not 4 x the budget
     assert all(p.signals == [sessions.signal.SIGTERM, sessions._SIGKILL] for p in procs)
+
+
+# ----------------------------------------------------------------- S3 tools ---
+S3_RULES = [f"mcp__{store.S3_SERVER}__s3_search", f"mcp__{store.S3_SERVER}__s3_read"]
+
+
+def _s3(monkeypatch, on=True, origin="http://127.0.0.1:9"):
+    from fused_render.bots import paths
+    monkeypatch.setattr(store, "s3_on", lambda: on)
+    monkeypatch.setattr(paths, "server_origin", lambda: origin)
+
+
+def test_fence_allows_the_s3_tools_and_their_cache_only_when_asked(expert):
+    cache = store.s3_cache_root()
+    on = sessions.fence(expert, write=False, run=True, s3=True)
+    assert all(r in on for r in S3_RULES) and f"Read(//{cache.lstrip('/')}/**)" in on
+    off = sessions.fence(expert, write=False, run=True)
+    assert not any(r.startswith("mcp__") or cache.lstrip("/") in r for r in off)
+
+
+def test_an_ask_gets_the_s3_server_and_a_writer_does_not(expert, monkeypatch):
+    from fused_render.bots import claude_cli
+    cmds = []
+
+    class Proc:
+        pid, returncode = 0, 0
+
+        def __init__(self, cmd, **kw):
+            cmds.append(cmd)
+
+        def communicate(self, data, timeout=None):
+            use = {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "mcp__fused_render__s3_read", "input": {"url": "s3://fused-asset/a.csv"}}]}}
+            return (json.dumps(use) + '\n{"type":"result","subtype":"success","result":"ok"}\n').encode(), b""
+    monkeypatch.setattr(claude_cli, "runnable", lambda: "claude")
+    monkeypatch.setattr(sessions.subprocess, "Popen", Proc)
+    _s3(monkeypatch)
+    res = sessions.harness(expert, "q", False)  # an ask
+    servers = json.loads(cmds[-1][cmds[-1].index("--mcp-config") + 1])["mcpServers"]
+    assert list(servers) == [store.S3_SERVER] and all(r in cmds[-1] for r in S3_RULES)
+    entry = servers[store.S3_SERVER]
+    assert entry["args"][0].endswith("permission_server.py") and entry["args"][-1] == "--no-approve"
+    assert entry["alwaysLoad"] is True  # no ToolSearch in the fence's tools: a deferred tool would be unreachable
+    assert entry["env"]["FUSED_RENDER_S3_ORIGIN"] == "http://127.0.0.1:9"
+    assert entry["env"]["FUSED_RENDER_S3_SCRATCH"].startswith(store.s3_cache_root())
+    assert "--strict-mcp-config" in cmds[-1] and "--setting-sources=" in cmds[-1]
+    assert {"role": "tool", "text": "mcp__fused_render__s3_read s3://fused-asset/a.csv"} in res["transcript"]
+    sessions.harness(expert, "q", True)  # a task-learn or a dream: no S3
+    assert cmds[-1][cmds[-1].index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    assert not any(r in cmds[-1] for r in S3_RULES)
+    _s3(monkeypatch, on=False)
+    sessions.harness(expert, "q", False)  # the Canvases flag off: an ask as before
+    assert cmds[-1][cmds[-1].index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    assert not any(r in cmds[-1] for r in S3_RULES)
+
+
+def test_the_s3_server_entry_lists_exactly_the_two_s3_tools(expert, monkeypatch, tmp_path):
+    """The entry an expert's MCP config names, started for real: the task sessions' server with the S3 tools and
+    nothing else (no approval tool, no expert or terminal tools)."""
+    import subprocess
+    _s3(monkeypatch)
+    entry = sessions.s3_server(expert)[store.S3_SERVER]
+    env = {**os.environ, **entry["env"], "FUSED_RENDER_S3_SCRATCH": str(tmp_path / "ranges")}
+    for k in ("FUSED_RENDER_TERMINAL_ORIGIN", "FUSED_RENDER_EXPERT_ORIGIN"):
+        env.pop(k, None)
+    p = subprocess.run([entry["command"], *entry["args"]], env=env, capture_output=True, text=True, timeout=30,
+                       input="\n".join(json.dumps(m) for m in (
+                           {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                           {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})) + "\n")
+    listed = [json.loads(ln) for ln in p.stdout.splitlines() if ln.strip()][-1]["result"]["tools"]
+    assert sorted(t["name"] for t in listed) == ["s3_read", "s3_search"]
+
+
+def test_a_chat_and_an_ask_are_told_about_the_s3_tools_when_they_have_them(expert, monkeypatch):
+    _s3(monkeypatch)
+    assert store.S3_NOTE in store.where(expert, run=True) and store.S3_NOTE not in store.where(expert)
+    _s3(monkeypatch, on=False)
+    assert store.S3_NOTE not in store.where(expert, run=True)
