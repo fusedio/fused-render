@@ -28,8 +28,8 @@ The expert's folder is the bot's own folder (`bot.public_dir`, `bots/paths.bot_f
 
     <expert dir>/
       instructions.md             standing instructions (static; the harness's system prompt)
-      skills/*.md                 static reference files (never rewritten by the expert)
-      memory.md                   the only file the expert writes
+      skills/*.md                 static reference files (the expert is told never to rewrite them)
+      memory.md                   the only file the expert writes unasked (§6)
       .fused/expert/
         sessions/<id>.json        one row per session (§4); the newest 200 are kept
         read.json                 which task sessions used it and how much of each it has read (§9)
@@ -87,7 +87,10 @@ row with status `error`.
 - **The write lock** (`store.write_lock`, one per expert, in-process): task-learn, dream and every chat turn hold
   it, so memory writers run one at a time. A side session waits for it up to the harness timeout (600 s), then
   ends as an `error` row with `error: "the expert is busy; try again in a minute"` (`sessions.BUSY`). A chat turn
-  waits for it with "waiting for the expert's memory" and gives up only on Stop.
+  waits for it with "waiting for the expert's memory" and gives up only on Stop. A chat turn that waits on an
+  approval card (§6) keeps the lock for as long as the user takes; a side session that finds the lock held by
+  such a turn (`bot.meta["waiting_on"]` set, looked at every `LOCK_POLL_S` = 2 s) ends as BUSY at once
+  (`sessions._take`), so a task-learn pass is not held up for 600 s per due session.
 - **Asks** only read and take no lock: up to 3 run at once in the process (`ASK_PARALLEL`, shared by all
   experts); a fourth waits up to 120 s (`ASK_WAIT_S`) for a slot, then is a BUSY `error` row.
 - **The harness run** (`harness`): `claude -p --output-format stream-json --verbose --no-session-persistence`, the
@@ -111,8 +114,8 @@ row with status `error`.
   where memory.md is, followed by "You may also read: <granted folders>." when there are any: instructions and
   skills may name a default location (`~/Fused/canvas`) that is elsewhere on a relocated workspace
   (`FUSED_RENDER_DIR`), and a read at the default path is refused. An ask's prompt and a fresh chat's message
-  (`store.where(bot, run=True)`) add which environment each folder of canvas copies is and the command that runs a
-  UDF there (§6 "Running UDFs").
+  (`store.where(bot, run=True)`) add one line: which environment each folder of canvas copies is and the command
+  prefix that runs a UDF there (§6 "Running UDFs"). A resumed chat session is not told again.
 - **A row** `{id, kind, started, ended, status, trigger, transcript, memory_diff, answer, error?, cost_usd?}`:
   `id` is `<started ms, 13 digits>-<6 hex>`, so names sort by start; `status` is `running` | `done` | `error`, and a
   row still `running` that this process is not running reads as `interrupted` (a restart cut it short);
@@ -156,7 +159,9 @@ description `expert_list` shows, 240 chars, one line) and `shipped` (the shipped
 ## 6. The fence
 
 `sessions.fence(bot, write)` returns the flags; the chat (§7) and every side session use it. It is Claude Code's
-own permission rules (verified on claude 2.1.326; the Bash rules on 2.1.327), with NO permission prompt tool and NO MCP server:
+own permission rules (verified on claude 2.1.326; the Bash rules on 2.1.327). A side session gets them with NO
+permission prompt tool and NO MCP server, so what they do not cover is refused. The chat adds a permission prompt
+tool, so there the same calls ask the user ("Approval cards in the chat" below):
 
     --tools Read,Glob,Grep[,Edit,Write][,Bash]
     --permission-mode default
@@ -181,9 +186,52 @@ own permission rules (verified on claude 2.1.326; the Bash rules on 2.1.327), wi
 - `memory.md` gets the one `Edit` rule (which also covers Write) when `write`.
 - Each rule is written for the path as given and, when different, its realpath (the CLI matches the rule's text).
   Paths are spelled `//<absolute>`; a single slash would be relative to the settings file.
-- Refused, with nobody to ask: every other write or edit (`instructions.md`, `skills/`, any file outside), every
-  read outside the folder and the granted folders, every tool not in `--tools`. The model gets the CLI's refusal
-  as the tool's result; a side-session row lists them as `refused` lines.
+- Outside the rules: every other write or edit (`instructions.md`, `skills/`, any file outside), every read
+  outside the folder and the granted folders, every Bash command the rules do not name. In a side session these
+  are refused with nobody to ask: the model gets the CLI's refusal as the tool's result and the row lists them as
+  `refused` lines. In the chat they raise an approval card.
+- A tool not in `--tools` (web, subagents; Bash when the expert has no environment to run in) does not exist in
+  any session: no card can grant it.
+
+### Approval cards in the chat
+
+In the chat a user is at hand, so a call outside the rules is theirs to decide (observed on claude 2.1.327):
+
+    kind                         outside the rules
+    chat                         approval card in the chat: Approve runs it, Deny refuses it
+    chat turn started by a       refused (no card: nobody is there)
+      routine
+    ask, task-learn, dream       refused
+
+- **Wiring** (`agent_engine.argv` with a `fence` and an `mcp_file`): the fence flags, then
+  `--permission-prompt-tool mcp__bot__permission --setting-sources= --mcp-config <cache>/mcp.json
+  --strict-mcp-config --disable-slash-commands`. The MCP server is the bots' own (`bots/botmcp.py`), the one Super
+  Bot's cards use. For an expert its roster is the `permission` tool alone (`agent_engine.roster_for`), so the
+  expert gets no browser tool and no other bot tool; any other tool name is answered "unknown tool", and the
+  model calling `permission` itself is denied without a card. No `--allowedTools mcp__bot__*`.
+- **The card** (`agent_engine._expert_permission` -> `_permission_card` -> `_gate`, the path Super Bot's built-in
+  calls take): "About to run `<command>`. It is outside what this expert may do without asking. Approve?" with
+  Approve and Deny. Approve answers the CLI `allow` and the call runs; Deny answers `deny` with "DENIED by the
+  user: … Do not retry it", and the same call is not asked twice until the user speaks again. A typed message
+  that is neither yes nor no is kept as an instruction and the card stays up ("Noted; still waiting for Approve /
+  Deny on: …").
+- **What is asked**: everything the CLI would prompt for, whatever the tool: Bash commands, reads outside the
+  folders, and writes or edits of files other than `memory.md` (`instructions.md` and `skills/` included). Nothing
+  is allowed without the card: Super Bot's shortcuts (reads never ask, unattended mode, the folder lens) do not
+  apply to an expert.
+- **No "approve forever"**: the card has no third button and writes no rule (`rule=None`). A rule would live in
+  `bot.json` `allow_rules`, which no Settings page shows for an expert. Every approval is for that one call.
+- **No risk score**: Super Bot's card asks a small model how risky the call is; fused makes no model call for an
+  expert, so the card has none.
+- **Writes**: an approved write changes a file other than `memory.md`. The instructions still tell the expert that
+  `memory.md` is the only file it writes (observed: asked by the user to create another file, it declined and
+  never called Write, so no card came up). The change log (§11) diffs `memory.md` only; an approved write to
+  another file shows in the chat (the card and the `action` row) and nowhere else.
+- **An unanswered card** waits until the user answers or presses Stop (Stop answers `deny`, "Stopped by the
+  user."). The MCP server's call timeout is `APPROVAL_WAIT_S` + 60 s (3660 s): after that the CLI gives up on the
+  prompt. The turn holds the write lock all that time; side sessions do not wait it out (§4).
+- **A routine's turn** (`agent_engine.expert_cards` is false) has nobody at the card: it gets `NO_MCP` and no
+  prompt tool, as a side session does.
 
 ### Running UDFs
 
@@ -193,12 +241,15 @@ gate. Task-learn and dream sessions get no Bash (`fence(..., run=False)`): they 
 Claude Code's own Bash permission rules; our code builds the rules and the prompt line and nothing else (it does
 not look at, rewrite or approve a command).
 
-- **What the expert is told** (`store.run_note`): which folder is which environment, the command that runs a UDF
-  there, that the command must start exactly like that, and that a refused command cannot be approved by anyone,
-  so it must change the command and never ask the user to approve one. An ask's prompt carries it; the chat
-  states it EVERY turn (`agent_engine._expert_message`), since a chat session resumed from before the expert
-  could run, or before an environment was added, would otherwise never see it and guess the form. The three
-  `--help` commands without an environment are allowed so the expert can read the flags.
+- **What the expert is told**: one line, once (`store.run_note`, inside `store.where(bot, run=True)`): which
+  folder is which environment and the command prefix that runs a UDF there, naming the skill. An ask's prompt and
+  a fresh chat session's first message carry it; a resumed chat turn carries nothing. Everything else is in the
+  shipped skill `running-udfs.md`: the exact command form, that the environment is the folder's, the three
+  `--help` commands (allowed without an environment so the expert can read the flags), and what happens to a
+  command outside the rules: in the chat the user gets an Approve / Deny card, so never ask them to approve
+  something not yet called; for a task session's question it is refused, so change the command. A chat session
+  resumed from before the expert could run sees the line only at its next fresh session (§7); it has the Bash tool
+  and the skill file meanwhile.
 - **Which environments** (`store.run_envs`): `prod` and `unstable` (`store.RUN_ENVS`), each only when its folder of
   canvas copies `<canvases base>/<env>` (`canvases.canvases_base()`) exists inside a folder the expert was granted,
   and only when the server wrote the `fused` wrapper (`fusedcli.CLI_DIR_ENV` is set; the wrapper's folder is on
@@ -214,11 +265,12 @@ not look at, rewrite or approve a command).
   rule), which an allow rule cannot require. Its copies are still readable.
 - **Throwaway UDFs** go on standard input with a quoted heredoc (`... run --engine remote scratch --stdin <<'EOF'`),
   or as a `.py` path in the UDF argument (a canvas copy's node file: its source is sent for that run). Nothing is
-  saved and no file is written: the file fence is unchanged (memory.md is still the only write).
+  saved and no file is written: the file rules are unchanged (memory.md is still the only pre-allowed write).
 - **Remote engine**: the skill and the prompt tell the expert to always pass `--engine remote` and never
   `--engine local`. This is an instruction to the expert, not a restriction: no rule refuses `--engine local`,
   which would run the UDF's code on this machine outside the fence.
-- **What Claude Code itself refuses** (observed on claude 2.1.327 with these rules): any other program, any other
+- **What the rules do not cover** (observed on claude 2.1.327; refused in an ask, an approval card in the chat):
+  any other program, any other
   `fused` command (`canvas list`, `login`, `whoami --team`), a command chained with `;` or `&&` to one that is not
   allowed, a pipe into a writing command (`| tee f`), output redirects (`> f`, `>> memory.md`), `$(...)` and
   backticks, an unquoted heredoc, text after the heredoc word, an environment-variable prefix (`FUSED_ENV=x fused
@@ -235,9 +287,10 @@ not look at, rewrite or approve a command).
 
 The user's chat with an expert is the bot's one conversation on `bots/agent_engine.py` (`run`), with none of
 Super Bot's extras: working directory the expert's folder, system prompt `store.instructions`, `argv(...,
-fence=sessions.fence(bot, write=True))` which replaces the tool, permission and MCP flags with the fence plus
-`NO_MCP`, no browser started, no bot MCP server (`mcp.json` is not written). Built-in tool calls become `action`
-rows as Super Bot's do.
+fence=sessions.fence(bot, write=True, run=True))` which replaces the tool, permission and MCP flags with the fence
+plus the permission prompt (§6 "Approval cards in the chat": `mcp.json` names the bot MCP server, whose only tool
+for an expert is `permission`), no browser started, none of the bot tools. Built-in tool calls become `action`
+rows as Super Bot's do; a call outside the fence raises an approval card first.
 
 - **Resumes one session**: each turn is one `claude -p` with `--resume <session>` while the conversation has one
   and the system prompt's hash is unchanged.
@@ -248,7 +301,8 @@ rows as Super Bot's do.
   retry). It is seeded with the digest of the past conversation (`bot.past_conversation`, after any previous
   summary), never a summary model call and never the bot memory curation: an expert's memory is `memory.md`.
 - **The message** (`_expert_message`): on a fresh session `CONVERSATION SO FAR (with the user, oldest first):`
-  and the digest and the folder / memory paths (`store.where`, §4), then always `Today is <date>.` and
+  and the digest and the folder / memory paths with the one line on running UDFs (`store.where(bot, run=True)`,
+  §4), then always `Today is <date>.` and
   `MESSAGE: <text>`. No preamble sections.
 - **Memory**: the turn takes the write lock before spawning (§4), notes `memory.md`, and at the end calls
   `note_chat` (a `chat` row when it changed), releases the lock and calls `after_write` (§10).
@@ -485,8 +539,11 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
 
 ## 16. Deliberately not there
 
-- No undo, no approval step, no quality checks on what the expert writes; the user edits `memory.md` directly.
-- Experts never edit skills (refused by the fence; `learn` refused); a skill it has is never re-synced from the
+- No undo, no approval step, no quality checks on what the expert writes to `memory.md`; the user edits it directly.
+- No approval card outside the chat (side sessions and routine turns refuse), no "approve forever", no risk score
+  on the card, no record of an approved write outside `memory.md` beyond the chat itself (§6).
+- Experts are told never to edit skills (`learn` refused; a side session's edit is refused by the fence, the
+  chat's would need the user's Approve); a skill it has is never re-synced from the
   shipped copy, and neither is `instructions.md` (§14).
 - Running UDFs (§6): no enforcement of the remote engine, no block on `--output-file`, no setting to turn it off,
   no `custom` environment.
