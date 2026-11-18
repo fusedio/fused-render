@@ -45,11 +45,23 @@ function fromPrefs(p: Prefs["task_head_unified"]): boolean {
   return p?.enabled === true;
 }
 
+/** Readers outside React (a store that re-reads on the switch): heard on
+ *  every change, and never counted as a mounted reader — a failed read is
+ *  retried only while a HOOK is up. */
+const watchers = new Set<() => void>();
+export function subscribeTaskHeadUnified(fn: () => void): () => void {
+  watchers.add(fn);
+  return () => {
+    watchers.delete(fn);
+  };
+}
+
 function set(next: boolean) {
   memoWrite(next);
   if (answer === next) return;
   answer = next;
   for (const listener of listeners) listener(next);
+  for (const fn of [...watchers]) fn();
 }
 
 function read(): Promise<void> {
@@ -129,5 +141,5 @@ export function resetTaskHeadUnifiedFlagForTests() {
   } catch {
     /* no storage */
   }
-  for (const listener of listeners) listener(false);
+  for (const listener of listeners) listener(false);  for (const fn of [...watchers]) fn();
 }

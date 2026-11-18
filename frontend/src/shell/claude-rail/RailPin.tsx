@@ -13,7 +13,7 @@
 //     hears a press before whatever it landed on reacts; the ruling waits a
 //     tick for React's capture phase to say whether the press came from the
 //     card's own tree (a menu or picker portaled out of it).
-import { useEffect, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { useAPinned, useBotOpen, useFavPinned } from "@platform/lib/last-chat";
 import { pinWords, pressVerdict, viewPress, type PressTarget, type PressWhere } from "./rail-pin-lib";
 import { useRailFreePins } from "./rail-free-pins-flag";
@@ -88,27 +88,37 @@ export function RailPinButton({
   const replaces = freePins && win !== null && !pinned && sectionPinned(win, { aWord, favKey, botId });
   const title = usePinTitle(replaces ? win : null);
   const words = freePins ? pinHint({ pinned, replaces: replaces ? title : false }) : pinWords(pinned);
+  // Only the icon that raised the mark takes it down: a section has two
+  // icons at once (its pinned window's and its non-pin's).
+  const raisedIt = useRef(false);
+  const lower = () => {
+    if (!raisedIt.current) return;
+    raisedIt.current = false;
+    if (win !== null && doomedWindow() === win) setDoomedWindow(null);
+  };
   const mark = (on: boolean) => {
     if (!freePins || win === null) return;
     const which = on ? doomedBy({ win, cardPinned: pinned, sectionPinned: replaces }) : null;
-    if (which) setDoomedWindow(which);
-    else if (doomedWindow() === win) setDoomedWindow(null);
+    if (which) {
+      raisedIt.current = true;
+      setDoomedWindow(which);
+    } else lower();
   };
   // The icon going (its card closed, or became the pin) takes its mark along.
-  useEffect(
-    () => () => {
-      if (win !== null && doomedWindow() === win) setDoomedWindow(null);
-    },
-    [win],
-  );
+  const lowerRef = useRef(lower);
+  lowerRef.current = lower;
+  useEffect(() => () => lowerRef.current(), []);
   useEffect(() => {
-    if (!replaces && win !== null && doomedWindow() === win) setDoomedWindow(null);
-  }, [replaces, win]);
-  const setRefs = (el: HTMLButtonElement | null) => {
-    own.current = el;
-    if (typeof btnRef === "function") btnRef(el);
-    else if (btnRef) (btnRef as { current: HTMLButtonElement | null }).current = el;
-  };
+    if (!replaces) lowerRef.current();
+  }, [replaces]);
+  const setRefs = useCallback(
+    (el: HTMLButtonElement | null) => {
+      own.current = el;
+      if (typeof btnRef === "function") btnRef(el);
+      else if (btnRef) (btnRef as { current: HTMLButtonElement | null }).current = el;
+    },
+    [btnRef],
+  );
   return (
     <button
       ref={setRefs}

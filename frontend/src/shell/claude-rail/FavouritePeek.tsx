@@ -103,7 +103,8 @@ import {
   useFavPinned,
 } from "@platform/lib/last-chat";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
-import { setBotOpen } from "@platform/lib/last-chat";
+import { setBotOpen, useAPinned } from "@platform/lib/last-chat";
+import { aPinTask } from "./rail-slots-lib";
 import { useRailFreePins } from "./rail-free-pins-flag";
 import { freezeFromDock } from "./rail-move-store";
 import { onOpenAsk } from "./rail-slots-store";
@@ -202,11 +203,13 @@ export function FavouritePeek() {
   useEffect(() => {
     if (pinModel && !freePins && pinnedKey !== null && pinnedKey !== openKey) setFavPinned(null);
   }, [pinModel, freePins, pinnedKey, openKey]);
-  // …and never one chat in both (a hand-over that opened the pinned key):
-  // the pinned window has it.
+  // …and never one chat in both (a hand-over or a restore that opened a
+  // pinned key): the pinned window has it — this section's, or section A's
+  // (a starred chat pinned off the list).
+  const aPinKey = aPinTask(useAPinned());
   useEffect(() => {
-    if (freePins && openKey !== null && openKey === pinnedKey) clearFavOpen(openKey);
-  }, [freePins, openKey, pinnedKey]);
+    if (freePins && openKey !== null && (openKey === pinnedKey || openKey === aPinKey)) clearFavOpen(openKey);
+  }, [freePins, openKey, pinnedKey, aPinKey]);
   // The pinned window's unpin puts its chat back here (rail-slots-store).
   useEffect(() => {
     if (!freePins) return;

@@ -24,6 +24,7 @@ import {
   COLUMN_MIN_HEIGHT,
   PUSH_GAP,
   aPinTask,
+  defaultPinBox,
   doomedBy,
   overlaps,
   parsePinMark,
@@ -116,6 +117,23 @@ describe("one column for the two non-pins", () => {
   });
 });
 
+describe("a pin with no box of its own", () => {
+  const view = { width: 1600, height: 950 };
+  const rail = box(1552, 0, 48, 950);
+  it("window A's stands at the top of the rail, the list card's size", () => {
+    expect(defaultPinBox("a", rail, view)).toEqual({ left: 1552 - PEEK_GAP - 420, top: PEEK_INSET, width: 420, height: 640 });
+  });
+  it("window B's stands on the rail's foot, the favourite card's size", () => {
+    expect(defaultPinBox("b", rail, view)).toEqual({ left: 1552 - PEEK_GAP - 380, top: 950 - PEEK_INSET - 520, width: 380, height: 520 });
+  });
+  it("with no rail it stands at the viewport's right edge, and always inside it", () => {
+    const got = defaultPinBox("a", null, { width: 400, height: 300 });
+    expect(got.left).toBeGreaterThanOrEqual(0);
+    expect(got.left + got.width).toBeLessThanOrEqual(400);
+    expect(got.top + got.height).toBeLessThanOrEqual(300);
+  });
+});
+
 describe("the pin is the task's", () => {
   it("names section A's pinned task off its mark", () => {
     expect(aPinTask("task:abc")).toBe("abc");
@@ -168,9 +186,12 @@ describe("the position store, free pins on", () => {
     setAPinned("task:k1");
     setFavPinned(null);
   });
-  afterEach(() => {
+  afterEach(async () => {
     setAPinned(null);
     setFavPinned(null);
+    // The marks' own settle (last-chat `settlePos`, a 0ms timer) runs here,
+    // not in whatever suite comes next in this process.
+    await new Promise((r) => setTimeout(r, 0));
     resetRailMoveForTests();
     resetRailFreePinsFlagForTests();
     resetTaskHeadUnifiedFlagForTests();
@@ -231,6 +252,14 @@ describe("the position store, free pins on", () => {
     publishWindowBox("a", "pin", box(992, 80, 400, 500), true);
     publishPusher("list", box(972, 60, 420, 641));
     expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
+  });
+  it("turning the unified head off is heard too: the store re-reads", () => {
+    commitWindowBox("a", box(972, 60, 420, 640));
+    publishPusher("list", box(972, 60, 420, 640));
+    expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 420, top: 60 });
+    publishTaskHeadUnified({ enabled: false });
+    expect(windowPos("a")).toEqual({ left: 972, top: 60 });
+    expect(windowSize("a")).toBeNull();
   });
   it("off, nothing is pushed and no size is read", () => {
     commitWindowBox("a", box(972, 60, 420, 640));

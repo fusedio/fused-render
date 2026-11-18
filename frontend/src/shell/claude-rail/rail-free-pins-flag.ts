@@ -9,7 +9,7 @@
 // asked yet", which renders as off — the flag's own default.
 import { useEffect, useState } from "react";
 import { getPrefs, onPrefsWrittenElsewhere, type Prefs } from "@platform/lib/api";
-import { taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
+import { subscribeTaskHeadUnified, taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
 
 /** The last answer, remembered across a reload (task-head-flag's reason: a
  *  pinned window must not stand docked for the first frames, then jump). */
@@ -36,6 +36,15 @@ const RETRY_MS = 15_000;
 let retry: ReturnType<typeof setTimeout> | null = null;
 let generation = 0;
 const listeners = new Set<(v: boolean) => void>();
+/** Readers outside React (rail-move-store): heard on every change of the
+ *  answer — this switch's or the unified head's, which it stands behind — and
+ *  never counted as a mounted reader (a failed read is retried only while a
+ *  hook is up). */
+const watchers = new Set<() => void>();
+function tell(): void {
+  for (const fn of [...watchers]) fn();
+}
+subscribeTaskHeadUnified(tell);
 
 function fromPrefs(p: Prefs["rail_free_pins"]): boolean {
   return p?.enabled === true;
@@ -46,6 +55,7 @@ function set(next: boolean) {
   if (answer === next) return;
   answer = next;
   for (const listener of [...listeners]) listener(next);
+  tell();
 }
 
 function read(): Promise<void> {
@@ -88,11 +98,13 @@ export function useRailFreePins(): boolean {
   useEffect(() => {
     listeners.add(setCurrent);
     setCurrent(answer ?? false);
-    void read();
+    // Asked only with the unified head on: off, the answer is never read, and
+    // a document that never turns it on pays no prefs GET for this switch.
+    if (unified) void read();
     return () => {
       listeners.delete(setCurrent);
     };
-  }, []);
+  }, [unified]);
   return unified && current;
 }
 
@@ -104,10 +116,9 @@ export function railFreePinsNow(): boolean {
 /** Hear the switch change, outside React (rail-move-store re-reads its
  *  positions: a pushed pin is only pushed with the switch on). */
 export function subscribeRailFreePins(fn: () => void): () => void {
-  const l = () => fn();
-  listeners.add(l);
+  watchers.add(fn);
   return () => {
-    listeners.delete(l);
+    watchers.delete(fn);
   };
 }
 
@@ -124,6 +135,7 @@ export function resetRailFreePinsFlagForTests() {
     /* no storage */
   }
   for (const listener of [...listeners]) listener(false);
+  tell();
 }
 export function setRailFreePinsForTests(on: boolean) {
   generation += 1;

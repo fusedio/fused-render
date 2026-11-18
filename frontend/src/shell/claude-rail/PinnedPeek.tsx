@@ -25,7 +25,7 @@
 //   - another card of the section taking the pin: the mark names that one;
 //   - its task gone — archived, erased, unstarred (a favourite's). NOT a view
 //     that does not list it: the window floats and needs no ring.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { useBotsAvailable } from "@platform/lib/bots-available";
 import { useBotsRows } from "@platform/lib/botsPulse";
@@ -53,11 +53,12 @@ import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import { ownPlace, pinnedBots, type RailPlace, type RailRow } from "./claude-rail-lib";
 import { railDoor, railHere, useFavPeekState } from "./fav-peek-store";
 import { useRailFreePins } from "./rail-free-pins-flag";
-import type { RailWindow } from "./rail-move-lib";
+import { viewportOf, type RailWindow } from "./rail-move-lib";
+import { commitWindowBox, subscribeWindowPos, windowPos } from "./rail-move-store";
 import { FAV_HEIGHT, FAV_WIDTH, favLike, type PeekWish } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { aPinWord, viewPress } from "./rail-pin-lib";
-import { aPinTask } from "./rail-slots-lib";
+import { aPinTask, defaultPinBox } from "./rail-slots-lib";
 import { askOpen, registerPinFocus, setPinTitle } from "./rail-slots-store";
 
 export const PIN_A_ID = "claude-rail-pin-a";
@@ -75,6 +76,28 @@ const noRing = () => null;
  *  canvas, else its project folder — a pinned window belongs to no page. */
 function placeOf(t: TaskPulseTask, row: Task | null): RailPlace {
   return ownPlace({ ...t, canvas: t.canvas ?? row?.canvas ?? null });
+}
+
+/** A PINNED WINDOW ALWAYS HAS A BOX (rail-slots-lib `defaultPinBox`): while
+ *  window `win`'s pin is up with no position in its mark — pinned where it
+ *  docked before the switch came on, or by a press that found no card to
+ *  freeze — it is given its section's place beside the rail. Before paint:
+ *  the chassis draws a pinned card only where its window floats. */
+function usePinHasBox(win: RailWindow, up: boolean, rail: HTMLElement | null): boolean {
+  const placed = useSyncExternalStore(
+    subscribeWindowPos,
+    () => windowPos(win) !== null,
+    () => true,
+  );
+  useLayoutEffect(() => {
+    if (!up || placed) return;
+    const r = rail?.getBoundingClientRect();
+    commitWindowBox(win, defaultPinBox(win, r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null, viewportOf(window)));
+  }, [win, up, placed, rail]);
+  // The card is mounted only once the window has its position: the chassis
+  // places and SHOWS a card on its first frame, and one mounted with nowhere
+  // to float would be placed against a ring it does not have and never shown.
+  return placed;
 }
 
 /** A press inside a pinned window (its portaled menus included) is a press
@@ -123,6 +146,7 @@ function PinnedTask({ win }: { win: RailWindow }) {
   const here = useCallback(() => railHere(rail), [rail]);
   const ref = useRef<RailPeekHandle | null>(null);
   const up = seat !== null;
+  const placed = usePinHasBox(win, up, rail);
   // The keyboard's way in (a ring's click on the pinned task), and the name
   // the non-pin's pin icon says it would replace.
   useEffect(() => {
@@ -165,7 +189,7 @@ function PinnedTask({ win }: { win: RailWindow }) {
   );
   useUrlVersion();
   const openIcon = (href: string) => !opensOnThisPage(href, location.pathname);
-  if (!seat || !place) return null;
+  if (!seat || !place || !placed) return null;
   return (
     <RailPeek
       ref={ref}
@@ -213,6 +237,7 @@ function PinnedBot() {
   }, [gone, id]);
   const ref = useRef<BotPeekHandle | null>(null);
   const up = bot !== null;
+  const placed = usePinHasBox("b", up, rail);
   useEffect(() => {
     if (!up) return;
     return registerPinFocus("b", () => !!ref.current?.focusComposer() || !!ref.current?.focusChat());
@@ -230,7 +255,7 @@ function PinnedBot() {
     letGo();
     askOpen({ win: "b", kind: "bot", key: id });
   }, [id, letGo]);
-  if (!bot) return null;
+  if (!bot || !placed) return null;
   return (
     <BotPeek
       ref={ref}

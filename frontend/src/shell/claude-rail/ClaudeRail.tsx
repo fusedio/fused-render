@@ -1901,6 +1901,13 @@ export function ClaudeRail({
   const onBotRingKey = (id: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
     if (e.key === "ArrowLeft") {
       e.preventDefault();
+      // FREE PINS: the pinned bot's ring raises its pinned window (the
+      // press's rule, `pressBotRing`) — never a second card on the same chat.
+      if (freePinsRef.current && botOpen() === id) {
+        noteFrontWindow("b");
+        focusPin("b");
+        return;
+      }
       // The pin is the window's: the keyboard's swap keeps a pinned window B.
       const keep = windowBPinned();
       takeWindowB();
@@ -2524,13 +2531,29 @@ export function ClaudeRail({
   // bot's): its mark is a pinned task's or bot's now, and the shell's pinned
   // window draws it — this rail's card, the non-pin, lets go, or the chat
   // would stand twice.
+  // A card held where it DOCKED has no position of its own yet: frozen where
+  // it stands first, so the pinned window has a box to draw at.
+  // …AND TURNED OFF OVER A FREE PIN: the shell's pinned windows are gone, and
+  // a mark that names a task or a bot with no held card of this rail behind it
+  // would say "window pinned" to the rules of rail-pin-lib with nothing up
+  // (the + card floated at the old pin's spot). The marks go.
+  const freeWas = useRef(freePins);
   useEffect(() => {
-    if (!freePins) return;
+    const was = freeWas.current;
+    freeWas.current = freePins;
+    if (!freePins) {
+      if (!was) return;
+      if (readAPin(aPinned())?.kind === "task" && !heldRef.current) setAPinned(null);
+      if (botOpen() !== null && !botHeldRef.current) setBotOpen(null);
+      return;
+    }
     if (heldRef.current) {
+      if (windowPos("a") === null) freezeFromDock("a");
       setHeld(false);
       intent.dismiss();
     }
     if (botHeldRef.current) {
+      if (windowPos("b") === null) freezeFromDock("b");
       setBotHeld(false);
       botIntent.dismiss();
     }
@@ -2769,8 +2792,7 @@ export function ClaudeRail({
         maxHeight: want.height,
       });
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [favBox, draftCardBox, popMove.floating, popLetGo, freePins, pinModel],
+    [favBox, draftCardBox, popMove.floating, popLetGo, freePins],
   );
   // A DRAFT'S RING IS A POPOVER DOOR (owner, 2026-11-07: a draft "behaves
   // exactly like the +"): its hover previews the New task popover on its

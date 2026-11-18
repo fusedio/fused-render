@@ -63,7 +63,17 @@
 //
 // Everything here needs no DOM, so each rule is proved on its own
 // (rail-slots-lib.test.ts).
-import { PEEK_GAP, PEEK_INSET, peekPlacement, type Box, type PeekWish } from "./rail-peek-lib";
+import {
+  FAV_HEIGHT,
+  FAV_WIDTH,
+  PEEK_GAP,
+  PEEK_INSET,
+  PEEK_MAX_HEIGHT,
+  PEEK_WIDTH,
+  peekPlacement,
+  type Box,
+  type PeekWish,
+} from "./rail-peek-lib";
 import type { Pos, RailWindow, Size } from "./rail-move-lib";
 
 /** A pin's frozen box as the window's mark keeps it: where it stands and —
@@ -108,6 +118,29 @@ export function serialisePinBox(box: Box): string {
     width: Math.round(box.width),
     height: Math.round(box.height),
   });
+}
+
+/** WHERE A PIN WITH NO BOX OF ITS OWN STANDS: a mark the window's storage
+ *  kept with no position beside it — a card pinned where it docked before the
+ *  switch came on, or a pin's press that found no card to freeze. A pinned
+ *  window must never be a mark with nothing drawn (its ring would raise a
+ *  window nobody can see, and its unpin would be out of reach), so it takes
+ *  the place its section's non-pin has: beside the rail — window A's at the
+ *  top of the rail at the list card's default size, window B's on the rail's
+ *  foot at the favourite card's — inside the viewport. `rail`: the rail's box,
+ *  or null on a page with none (the viewport's right edge then). */
+export function defaultPinBox(win: RailWindow, rail: Box | null, viewport: Size): Box {
+  const vw = Number.isFinite(viewport.width) ? viewport.width : 1280;
+  const vh = Number.isFinite(viewport.height) ? viewport.height : 800;
+  const width = Math.min(win === "a" ? PEEK_WIDTH : FAV_WIDTH, Math.max(0, vw - 2 * PEEK_INSET));
+  const height = Math.min(win === "a" ? PEEK_MAX_HEIGHT : FAV_HEIGHT, Math.max(0, vh - 2 * PEEK_INSET));
+  const right = (rail ? rail.left : vw) - PEEK_GAP;
+  const left = Math.max(0, Math.min(right - width, vw - width));
+  const railTop = rail ? rail.top : 0;
+  const railBottom = rail ? rail.top + rail.height : vh;
+  const want = win === "a" ? railTop + PEEK_INSET : railBottom - PEEK_INSET - height;
+  const top = Math.max(0, Math.min(want, vh - height));
+  return { left: Math.round(left), top: Math.round(top), width: Math.round(width), height: Math.round(height) };
 }
 
 /** Do two boxes cover any of each other, counting a `gap` kept between them? */
