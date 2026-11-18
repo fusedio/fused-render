@@ -875,28 +875,30 @@ def _is_cursor_cli(path: str) -> bool:
 
 
 def _cursor_bin() -> str:
-    """Path to the Cursor CLI — `_opencode_bin`'s twin: FUSED_RENDER_CURSOR_BIN
-    (where `cursor_health` publishes a binary only the user's login shell
-    could find), then `cursor-agent` on PATH, then `agent` on PATH, then the
-    known install prefixes (`_CURSOR_CANDIDATES`). Every binary named `agent`
-    must answer `--version` like Cursor's (`_is_cursor_cli`). A stale override
-    is ignored."""
+    """Path to the Cursor CLI — `_opencode_bin`'s twin, in the order
+    `cursor_health.resolve` walks: FUSED_RENDER_CURSOR_BIN (where
+    `cursor_health` publishes a binary only the user's login shell could
+    find), then `cursor-agent` on PATH, then the known `cursor-agent` install
+    paths (`_CURSOR_CANDIDATES`), and only then an `agent`, on PATH or at a
+    known path. Every binary named `agent` must answer `--version` like
+    Cursor's (`_is_cursor_cli`). A stale override is ignored."""
     override = os.environ.get("FUSED_RENDER_CURSOR_BIN")
     if override and os.path.isfile(override):
         return override
     found = shutil.which("cursor-agent")
     if found:
         return found
+    candidates = [os.path.expanduser(os.path.expandvars(c)) for c in _CURSOR_CANDIDATES]
+    for resolved in candidates:
+        if os.path.basename(resolved) != "agent" and os.path.isfile(resolved):
+            return resolved
     found = shutil.which("agent")
     if found and _is_cursor_cli(found):
         return found
-    for candidate in _CURSOR_CANDIDATES:
-        resolved = os.path.expanduser(os.path.expandvars(candidate))
-        if not os.path.isfile(resolved):
-            continue
-        if os.path.basename(resolved) == "agent" and not _is_cursor_cli(resolved):
-            continue
-        return resolved
+    for resolved in candidates:
+        if os.path.basename(resolved) == "agent" and os.path.isfile(resolved) \
+                and _is_cursor_cli(resolved):
+            return resolved
     raise FileNotFoundError(
         "cursor CLI not found — install with `curl https://cursor.com/install "
         "-fsS | bash`, put `cursor-agent` on the PATH of the environment that "

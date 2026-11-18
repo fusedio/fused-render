@@ -3461,3 +3461,22 @@ def test_the_cursor_terminal_command(agent, target):
     fresh = agent._terminal_command(file, backend="cursor")
     assert fresh["backend"] == "cursor"
     assert fresh["command"].endswith("&& cursor-agent") and "--resume" not in fresh["command"]
+
+
+def test_cursor_bin_agrees_with_cursor_healths_resolver(agent, tmp_path, monkeypatch):
+    """A `cursor-agent` in a known install prefix wins over an `agent` on
+    PATH, in the spawn and in the health read alike."""
+    from fused_render import cursor_health
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    monkeypatch.delenv("FUSED_RENDER_CURSOR_BIN", raising=False)
+    monkeypatch.setattr(agent, "_CURSOR_CANDIDATES",
+                        tuple(c for c in agent._CURSOR_CANDIDATES if c.startswith("~")))
+    monkeypatch.setattr(cursor_health, "candidates",
+                        lambda: tuple(c for c in cursor_health.POSIX_CANDIDATES
+                                      if c.startswith("~")))
+    _cursor_script(str(tmp_path / "path" / "agent"), CURSOR_VERSION)
+    named = _cursor_script(str(tmp_path / "h" / ".local" / "bin" / "cursor-agent"),
+                           CURSOR_VERSION)
+    assert agent._cursor_bin() == named
+    assert cursor_health.resolve(allow_shell=False)[0] == named
