@@ -46,8 +46,8 @@
 // and Open — the /tasks page itself — on the right.
 import { Component, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ChevronDown, ChevronUp, X } from "lucide-react";
-import type { Task } from "@platform/lib/api";
-import { queueCaption } from "@platform/lib/queue";
+import { getSchedule, type Task } from "@platform/lib/api";
+import { pendingEntryId, queueCaption } from "@platform/lib/queue";
 import { ForceStartButton, queuedLine } from "@shell/ForceStartButton";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { navigateUrl } from "@platform/lib/router";
@@ -153,6 +153,42 @@ export function TasksPeek() {
     });
   }, [mounted]);
   const task = chat ? (listing?.find((t) => t.key === chat.key) ?? null) : null;
+  // A CHAT THAT WAS QUEUED WITH NO SESSION IS REKEYED WHEN IT STARTS (Bugbot,
+  // PR #2348): its row is `pending:<entry>` until its run mints a session, and
+  // then it is that session's row — so the key this card was opened on names
+  // nothing, and the body fell back to "no conversation yet" over a task that
+  // had just been force-started from this very card. The entry id is the name
+  // that does not move (`api_queue_force`'s own note): once the pending row has
+  // left the listing, the entry is asked which session it became and the card
+  // follows it there.
+  const startedEntry = chat && listing && !task ? pendingEntryId(chat.key) : "";
+  useEffect(() => {
+    if (!startedEntry) return;
+    let alive = true;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const again = (ms: number) => {
+      // Half a minute of looking: a run that has not said its session by then
+      // is not about to, and Back is the way out.
+      if (alive && ++tries < 30) timer = setTimeout(look, ms);
+    };
+    const look = () => {
+      void getSchedule().then((res) => {
+        if (!alive) return;
+        const session = res.entries.find((e) => e.id === startedEntry)?.claude_session_id;
+        if (!session) return again(1000);
+        // The row's own key when the listing has it (a row is keyed by its
+        // session, and this does not assume so), the session otherwise.
+        const key = readListing()?.find((t) => t.session_id === session)?.key ?? session;
+        setChat((was) => (was && pendingEntryId(was.key) === startedEntry ? { key, anchor: null } : was));
+      }, () => again(2000));
+    };
+    look();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [startedEntry]);
   // THE CHAT'S HEAD IS THE SIDE PEEK'S (owner, 2026-11-08: "the top bar in a
   // chat view is confusing, it only tells me the title — show the one we
   // already show there, just hide the × button"): the Tasks page's own panel
@@ -466,7 +502,9 @@ export function TasksPeek() {
                     <ForceStartButton facts={task} target={{ key: task.key }} />
                   </div>
                 ) : (
-                  <p className="claude-rail-peek-note">{listing ? "This task has no conversation yet." : "Loading…"}</p>
+                  <p className="claude-rail-peek-note">
+                    {!listing ? "Loading…" : startedEntry ? "Starting the task…" : "This task has no conversation yet."}
+                  </p>
                 )}
               </div>
             )}
