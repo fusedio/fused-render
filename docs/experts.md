@@ -118,7 +118,10 @@ row with status `error`.
   reopens it, but a session admitted by `run` before a shutdown (the generation it noted) is still refused when it
   gets its gate after the reopen. `harness` checks closed / generation, spawns and registers the process in
   `_PROCS` in one step under `_GUARD`, so a harness is either never spawned or tracked before `shutdown` takes its
-  snapshot; one ended by a shutdown reports `CLOSED` (not a failed attempt, §9).
+  snapshot; one ended by a shutdown reports `CLOSED` (not a failed attempt, §9). What is left of the budget after
+  the harnesses are gone is spent waiting for the sessions still between "harness ended" and "row saved"
+  (`_RUNNING`; a row is saved before it leaves that set), so the caller releases the workspace after them.
+  A session whose expert was deleted meanwhile saves no row (`_save`: it would make the removed folder again).
 - **The prompts** of an ask, a task-learn and a dream, and a fresh chat session's message (§7), state the absolute
   paths: "Your folder is <dir>; your memory is <dir>/memory.md." (`store.where`), so the harness never guesses
   where memory.md is, followed by "You may also read: <granted folders>." when there are any: instructions and
@@ -157,7 +160,10 @@ description `expert_list` shows, 240 chars, one line) and `shipped` (the shipped
   greeting ("Hi, I'm <name>, an expert. Ask me about …"), never a model-written hello.
 - **Not cloned** ("An expert cannot be cloned; create a new expert instead").
 - **Skills**: the bot's `skills/` is the expert's `skills/` (the user may edit them through the bot's skill
-  save / delete); `learn` (learn from the last task) is refused: what it learns goes to memory.
+  save / delete); `learn` (learn from the last task) is refused: what it learns goes to memory. The form's save
+  (`bots/routes.py` `_skills`, for every bot) refuses instead of cutting or replacing: text over the limit
+  (24,000 characters for an expert's reference file, `Bot.EXPERT_SKILL_BODY_CAP`; 6,000 for a playbook) and an
+  Add whose title gives the file name of a skill that exists. An imported expert skill needs no `trigger:` line.
 - **Export refused for now**: `GET /api/bots/<id>/package` and `package.write` raise
   `package.EXPERT_REFUSAL` ("An expert cannot be exported yet: its instructions, skills and memory would not travel
   with it"). Import (`botfile.py`) keeps `kind: "expert"` and its manifest but drops `shipped` (a file must not
@@ -329,9 +335,9 @@ and nothing else (it does not look at, rewrite or approve a command).
   form, the source is sent for that run and nothing is saved on Fused). The skill tells it to look there first
   for a UDF it wrote before, that the files may vanish, and that what it learns still goes to `memory.md`. It is
   not memory: sessions keep diffing `memory.md` only, a scratch file leaves no row and no diff. Three asks may run
-  at once and write the same name; the files are throwaway, so the last write wins. Nothing prunes the folder. It
-  never leaves the machine: an expert cannot be exported or cloned (§5), and task-learn reads task transcripts,
-  not this folder.
+  at once and write the same name; the files are throwaway, so the last write wins. Nothing prunes the folder. The
+  folder itself is never copied anywhere: an expert cannot be exported or cloned (§5), and task-learn reads task
+  transcripts, not this folder. A file's source does leave the machine when it is run: that run sends it to Fused.
 - **Source on standard input** (`... run --engine remote scratch --stdin <<'EOF'`) also works, but not for every
   source outside auto mode. Claude Code's shell check reads the heredoc body as shell text and asks about a
   `{` ... `}` that holds a quote character ("Contains brace with quote character (expansion obfuscation)"),
@@ -378,7 +384,10 @@ started, none of the bot tools. Built-in tool calls become `action` rows as Supe
 - **The message** (`_expert_message`): on a fresh session `CONVERSATION SO FAR (with the user, oldest first):`
   and the digest and the folder / memory paths with the one line on running UDFs (`store.where(bot, run=True)`,
   §4), then always `Today is <date>.` and
-  `MESSAGE: <text>`. No preamble sections.
+  `MESSAGE: <text>`. No preamble sections. A resumed session gets the paths again only when they changed since it
+  was told (a folder granted or taken away, a UDF environment gained or lost; the hash is kept in the
+  conversation's `sent`). The digest is cut to the conversation's summary limit from its END (`_digest`), so the
+  newest exchanges are the ones kept.
 - **Memory**: the turn takes the write lock before spawning (§4), notes `memory.md`, and at the end calls
   `note_chat` (a `chat` row when it changed), releases the lock and calls `after_write` (§10).
 
@@ -465,11 +474,12 @@ your memory from this" with the same evidence rule as §3 and one relevance rule
 subject the expert's instructions give it, since most of a task session is about other things. The cut is centred
 on the lines where the task called THIS expert (`expert_context` / `expert_ask` naming it): the budget is shared
 between those calls, each keeping the lines around it, two after the call for every one before (what the advice
-led to is the evidence), with `[... part cut ...]` where lines were left out. Calls within 5 lines of each other (`expert_context` then `expert_ask`) share one window. A call
+led to is the evidence), with `[... part cut ...]` where lines were left out. Calls within 5 lines of the last call that has a window (`expert_context` then `expert_ask`) share that window. A call
 within 20 lines before the cursor was read before the task had written what came of it, so the start of the next
 slice is kept as its window. An unread part with no such call
 keeps its last 30,000 characters. Our code picks lines by position only; it never judges what is relevant. At most 4 task-learn sessions start per pass; the rest wait
-for the next. A session grown by housekeeping only (no new turns) is marked read without a harness run.
+for the next. One refused at the gate (the expert's memory is held: `BUSY`) is not one of the 4, and that expert's
+other due tasks wait for the next pass while the pass goes on to the next expert. A session grown by housekeeping only (no new turns) is marked read without a harness run.
 
 **Retry and give-up**: the new `size` and `lines` are recorded only after the task-learn session ends `done`, or
 ends `error` with a non-empty `memory_diff` (it changed memory before failing, e.g. a timeout after its edit: a
@@ -620,12 +630,14 @@ short (an expert with that `shipped` key but no witness entry) is finished: miss
 **A skill added to the shipped folder later** (`seed._new_skills`): the witness also lists, per key, the shipped
 skill names that expert has been offered (`skills`; an older witness without the list counts as the first five,
 `seed.FIRST_SKILLS`). On each start a shipped skill not in the list is copied into the installed expert, never
-over a file it has, and the list is updated: offered once, so one the user deletes stays deleted.
+over a file it has, and the list is updated: offered once, so one the user deletes stays deleted. The list only
+grows (a skill that leaves the shipped folder stays on it), and it is written even when the resync below fails.
 
 **A shipped file that changed** (`seed._resync`): the witness records, per key, the hash of each file as we
 last gave it (`given`). On each seed, an installed `instructions.md` or skill whose shipped version changed is
 replaced only while the installed copy is still what we shipped: its hash is the recorded one, or, for an install
-from before hashes were recorded, one of the earlier shipped versions listed in `seed.PAST`. A copy the user (or
+from before hashes were recorded, one of the earlier shipped versions listed in `seed.PAST` (with a hash on
+record `PAST` is not consulted: an earlier version found then was put back by hand, and is theirs). A copy the user (or
 anyone) edited is theirs and is left alone (a changed save in Settings > Instructions is such an edit); a missing one is not put back. Changed instructions start a fresh chat
 session, as any instructions change does (§7). When you change a shipped file, add its old hash to `seed.PAST`
 (a test checks the current version is not listed). The description `expert_list` shows (`ask_me_about` in the
@@ -658,8 +670,8 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
   other side sessions.
 - The scratch folder `.fused/udfs/` (§6): no size limit, no cleanup, no listing in the UI.
 - Experts are told never to edit skills (`learn` refused; a side session's edit is refused by the fence, the
-  chat's Edit or Write would need the user's Approve); a skill it has is never re-synced from the
-  shipped copy, and neither is `instructions.md` (§14).
+  chat's Edit or Write would need the user's Approve). A shipped skill or `instructions.md` the user edited is
+  never brought back to the shipped text; an unedited one follows the shipped copy (§14).
 - Running UDFs (§6): no enforcement of the remote engine, no block on `--output-file`, no setting to turn it off,
   no `custom` environment.
 - No separate lessons, research step, ledger or token accounting beyond the harness's reported `cost_usd` per row.
