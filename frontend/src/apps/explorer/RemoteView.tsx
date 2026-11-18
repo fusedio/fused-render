@@ -630,7 +630,7 @@ export function RemoteView({ location, home }: { location: string; home: string 
         </div>
       </div>
     );
-  } else if ((state.stat.templates ?? []).some((t) => !isSidebarMode(t.mode))) {
+  } else if ((state.stat.templates ?? []).some((t) => !isSidebarMode(t.mode) && !t.conditional)) {
     // Preview drops companion modes (claude, git) for a remote file, so a
     // file bound only to one (a user's ungated `claude` fork) gets the
     // download card below, not a viewer with nothing to show.

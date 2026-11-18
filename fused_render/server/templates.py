@@ -432,12 +432,24 @@ def _conditions_payload(path: str):
     carries the first gate error in list order (a broken gate reports False —
     fail closed — with the reason), matching stat's `template_error` posture.
     """
+    from fused_render import remote_access
+
+    target = path
     try:
-        st = os.stat(path)
+        if path.startswith("s3://"):
+            from fused_render.shell import prefs
+
+            if not prefs.canvases_enabled():
+                return _error("the Fused integration is off — turn on Canvases in Preferences", status=403)
+            bucket, key = remote_access.parse_url(path)
+            target = remote_access.sign_read_url(bucket, key).url
+            entries = remote_templates(key.rsplit("/", 1)[-1])
+        else:
+            entries, _ = _templates_for(path, stat_mod.S_ISDIR(os.stat(path).st_mode))
     except OSError:
         return _error(f"no such file or directory: {path}", status=404)
-    is_dir = stat_mod.S_ISDIR(st.st_mode)
-    entries, _ = _templates_for(path, is_dir)
+    except remote_access.RemoteError as e:
+        return _error(e.message)
 
     gated = []  # [(mode, gate)] — mode keys are unique per list
     for entry in entries:
@@ -452,7 +464,7 @@ def _conditions_payload(path: str):
         if cf is not None:
             gated.append((mode, cf))
 
-    results = _evaluate_conditions(gated, path)
+    results = _evaluate_conditions(gated, target)
     conditions, error = {}, None
     for mode, _gate in gated:
         allowed, err = results[mode]
@@ -669,19 +681,21 @@ def remote_templates(name: str) -> list:
     """The modes a bucket object named `name` opens in, before it is
     downloaded: the same registry resolution a local file gets (user over
     core), each entry marked `stream` when its template streams this
-    extension. The rest open on a downloaded copy. Native and conditional
-    entries are left out (their gates and views need a local path; they
-    appear once the object is cached), and there is no text sniff: there are
-    no local bytes to sniff."""
+    extension. The rest open on a downloaded copy. Native entries are left
+    out, and so is a conditional one unless it streams: its gate then runs on
+    the signed URL (`_conditions_payload`), while any other gate needs a local
+    path. There is no text sniff: there are no local bytes to sniff."""
     entries, _err = _templates_for(name, False, sniff_text=False)
     lower = name.lower()
     out = []
     for e in entries:
         path = e.get("path")
-        if not path or e.get("conditional") or _is_native(path):
+        if not path or _is_native(path):
             continue
         exts = streamed_extensions(path)
-        out.append({**e, "stream": bool(exts) and lower.endswith(exts)})
+        stream = bool(exts) and lower.endswith(exts)
+        if stream or not e.get("conditional"):
+            out.append({**e, "stream": stream})
     return out
 
 

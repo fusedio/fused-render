@@ -368,3 +368,32 @@ def test_remote_stat_reports_templates(monkeypatch):
     assert len(pq["templates"]) > 1
     csv = c.get("/api/remote/stat", params={"url": "s3://fused-asset/a/b.csv"}).json()
     assert csv["templates"] and not any(e["stream"] for e in csv["templates"])
+
+
+def test_a_streaming_gate_runs_on_the_signed_url(tmp_path, monkeypatch):
+    from fused_render.server import templates as server_templates
+    from fused_render.server.routers import fs_read
+    from fused_render.shell import prefs
+
+    enabled = {"on": True}
+    monkeypatch.setattr(prefs, "canvases_enabled", lambda: enabled["on"])
+    monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(tmp_path))
+    monkeypatch.setattr(server_templates, "USER_REGISTRY", str(tmp_path / "registry.json"))
+    monkeypatch.setattr(server_templates, "_CONDITIONS_CACHE", {})
+    (tmp_path / "registry.json").write_text(json.dumps({".parquet": ["streams", "local_only", "_node"]}))
+    for name in ("streams", "local_only"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "template.html").write_text("<html></html>")
+        (tmp_path / name / "condition.py").write_text(f"def main(path):\n    return path == {PUBLIC!r}\n")
+    (tmp_path / "streams" / "pyproject.toml").write_text('[tool.fused-render.template]\nstream = [".parquet"]\n')
+
+    entries = server_templates.remote_templates("x.parquet")
+    assert [(e["mode"], e["stream"], e.get("conditional")) for e in entries] == [("streams", True, True)]
+    app = FastAPI()
+    app.include_router(fs_read.router)
+    c = TestClient(app)
+    assert c.get("/api/fs/conditions", params={"path": OBJ}).json() == {"path": OBJ, "conditions": {"streams": True}}
+    for url in ("s3://other-bucket/x.parquet", "s3://fused-asset/data/"):
+        assert c.get("/api/fs/conditions", params={"path": url}).status_code == 400
+    enabled["on"] = False
+    assert c.get("/api/fs/conditions", params={"path": "s3://fused-asset/y.parquet"}).status_code == 403
