@@ -61,7 +61,7 @@ def file_lock(path: str, blocking: bool = True):
         import fcntl
     except ImportError:  # pragma: no cover — Windows
         fcntl = None
-    fh = open(path, "a+")  # noqa: SIM115
+    fh = open(path, "a+")
     try:
         held = True
         if fcntl is not None:

@@ -1408,6 +1408,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         from fused_render.specialists import flag as _sp_flag
 
         app.exception_handler(_sp_flag.Off)(_sp_flag.off_handler)
+        app.middleware("http")(_sp_flag.off_middleware)
     except Exception:  # noqa: BLE001
         logger.warning("could not load the specialists flag", exc_info=True)
 

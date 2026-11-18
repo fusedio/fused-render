@@ -274,6 +274,15 @@ def closed(spec, bid: str, session_id: str) -> dict:
         raise LookupError(f"no such breakout: {bid}")
     sid = session_id or rec.get("session_id") or ""
     answer = last_answer(spec.home, sid) if sid else ""
+    # One close = one close-out answer: a retry or a restart that reads the same answer gets the same draft and
+    # note back, and files nothing twice.
+    import hashlib
+
+    key = hashlib.sha1(f"{sid}\0{answer}".encode("utf-8")).hexdigest()[:10]
+    label = f"Draft from the {spec.name} specialist · not sent yet"
+    for done in rec.get("closes") or []:
+        if isinstance(done, dict) and done.get("key") == key:
+            return {"draft": done.get("draft") or "", "label": label, "note_id": done.get("note_id") or ""}
     summary = harness.extract_block(answer, "SUMMARY")
     note_block = harness.extract_block(answer, "NOTE")
     title = f"{spec.name} breakout: {(rec.get('brief') or {}).get('problem', '')[:80]}"
@@ -291,21 +300,24 @@ def closed(spec, bid: str, session_id: str) -> dict:
     note_id = ""
     try:
         note = inbox.add(spec.id, kind=kind, claim=claim, basis=basis, evidence=evidence or answer[-4000:],
-                         entry=entry, source={"type": "breakout", "breakout_id": bid, "session_id": sid,
-                                              "title": title})
+                         entry=entry, nid=f"n-close-{bid[2:]}-{key}",
+                         source={"type": "breakout", "breakout_id": bid, "session_id": sid, "title": title})
         note_id = note.get("id", "")
     except Exception:  # noqa: BLE001 — the draft still reaches the task
         logger.exception("specialists: could not file a breakout's note")
     with _LOCK:
         rec = get(spec.id, bid) or rec
-        rec.setdefault("closes", []).append({"at": time.time(), "note_id": note_id, "draft": draft})
+        for done in rec.get("closes") or []:  # a concurrent twin got here first
+            if isinstance(done, dict) and done.get("key") == key:
+                return {"draft": done.get("draft") or "", "label": label, "note_id": done.get("note_id") or ""}
+        rec.setdefault("closes", []).append({"at": time.time(), "note_id": note_id, "draft": draft, "key": key})
         rec["status"] = "closed"
         if sid and not rec.get("session_id"):
             rec["session_id"] = sid
         _save(rec)
     task_events.add(rec["parent"]["session_id"], "breakout_closed", spec.id, spec.name, breakout_id=bid,
                     note_id=note_id, session_id=rec.get("session_id") or "")
-    return {"draft": draft, "label": f"Draft from the {spec.name} specialist · not sent yet", "note_id": note_id}
+    return {"draft": draft, "label": label, "note_id": note_id}
 
 
 def discard(spec, bid: str) -> dict:

@@ -188,14 +188,16 @@ def guard(spec_id: str) -> list[str]:
         return []
 
 
-def _guard_row(spec_id: str, session_id: str, restored: list[str]) -> None:
-    """A `guard` row in the runs log, so the user can see a breakout tried to rewrite what it may not."""
+def _guard_row(spec_id: str, session_id: str, restored: list[str], skipped: str = "") -> None:
+    """A `guard` row in the runs log, so the user can see a breakout tried to rewrite what it may not (or that the
+    guard stood down, and why)."""
     try:
         from fused_render.specialists import harness
 
-        harness.save_row(spec_id, {"kind": "guard", "status": "done", "started": time.time(),
-                                   "ended": time.time(), "trigger": {"session_id": session_id},
-                                   "answer": "Put back: " + ", ".join(restored[:20])})
+        answer = f"Guard skipped: {skipped}" if skipped else "Put back: " + ", ".join(restored[:20])
+        harness.save_row(spec_id, {"kind": "guard", "status": "skipped" if skipped else "done",
+                                   "started": time.time(), "ended": time.time(),
+                                   "trigger": {"session_id": session_id}, "answer": answer})
     except Exception:  # noqa: BLE001
         logger.warning("specialists: could not write the guard row", exc_info=True)
 
@@ -212,11 +214,41 @@ def _main_turn_live(spec_id: str, breakout_session: str) -> bool:
         return False
 
 
+def _nightly_running(spec_id: str) -> bool:
+    """The nightly job holds the home now (stream 3's `nightly.running`: this process, or the home's flock held by
+    another). Its writes are uncommitted until it ends, so a guard now would undo them."""
+    try:
+        from fused_render.specialists import nightly
+
+        return bool(nightly.running(spec_id))
+    except Exception:  # noqa: BLE001 — cannot tell: do not guard (the nightly's work is worth more)
+        return True
+
+
+def before_turn(spec_id: str, kind: str, session_id: str) -> None:
+    """Called when a turn starts in the home (the prompt hook). For a breakout turn, commit whatever tracked change
+    is pending (an uncommitted main-chat edit, a hand edit), so the guard at that turn's Stop only ever undoes what
+    changed DURING the turn. Skipped while the nightly job runs (its writes are committed by the job itself).
+    Never raises."""
+    try:
+        if kind != "breakout" or _nightly_running(spec_id):
+            return
+        commit(spec_id, "pending changes before a breakout turn")
+    except Exception:  # noqa: BLE001
+        logger.warning("specialists: before_turn failed for %s", spec_id, exc_info=True)
+
+
 def after_turn(spec_id: str, kind: str, session_id: str) -> None:
     """Called at the end of every turn of a session in the home (Stop hook). A breakout's turn first restores the
-    guarded paths; then whatever changed is committed. Never raises."""
+    guarded paths; then whatever changed is committed. While the nightly job runs nothing is guarded or committed
+    (a `guard` row says so): the job commits its own run. Never raises."""
     try:
         sid8 = (session_id or "")[:8]
+        if _nightly_running(spec_id):
+            if kind == "breakout":
+                _guard_row(spec_id, session_id, [], skipped="the nightly update was running; its changes were "
+                                                            "left alone and are committed by that run")
+            return
         if kind == "breakout":
             if _main_turn_live(spec_id, session_id):
                 commit(spec_id, f"main chat turn {sid8} (during breakout)".strip())

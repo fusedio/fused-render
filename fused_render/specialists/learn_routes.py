@@ -9,12 +9,17 @@
     GET    …/{id}/inbox                         undigested notes, newest first
     POST   …/{id}/notes                         "Send to a specialist" ({id} may be `general`): a user-said note
     DELETE …/{id}/notes/{nid}                   Undo; 409 once digested
+    POST   …/{id}/notes/{nid}/confirm           the user confirms a user-said note a model wrote: in effect now
+    GET    /api/specialists/general/inbox       notes that fit no specialist
+    POST   /api/specialists/general/notes/{nid}/move {"specialist"}  into that specialist's inbox, same id
+    DELETE /api/specialists/general/notes/{nid}
     GET    …/{id}/drafts                        drafts waiting for the user
     POST   …/{id}/drafts/{did}/send             {"message","session_id"}: Review and send
     POST   …/{id}/drafts/{did}/discard          {"ok":true}
     GET    …/{id}/counts                        B.6 counts
 
-Every route depends on `flag.require` (flag off: 404). POSTs need `X-Fused: 1`. Errors are `{"error": sentence}`.
+Every route depends on `flag.require` (flag off: 404). Every non-GET needs `X-Fused: 1`. The `general` routes are
+declared before the `{id}` ones. Errors are `{"error": sentence}`.
 """
 from __future__ import annotations
 
@@ -61,6 +66,41 @@ def _body(body) -> dict:
     if not isinstance(body, dict):
         raise ValueError("the request body must be a JSON object")
     return body
+
+
+# ----------------------------------------------------------------- general inbox ---
+@router.get(PREFIX + "/general/inbox")
+@_handled
+def general_inbox():
+    from fused_render.specialists import inbox
+    return {"notes": inbox.undigested(inbox.GENERAL)}
+
+
+@router.post(PREFIX + "/general/notes/{nid}/move")
+@_handled
+def general_move(nid: str, body=Body(None), x_fused: str | None = Header(None)):
+    if (bad := _require_fused(x_fused)) is not None:
+        return bad
+    from fused_render.specialists import inbox, store
+    key = _body(body).get("specialist")
+    s = store.find(key) if isinstance(key, str) and key else None
+    if s is None:
+        raise _NotFound(f"no such specialist: {str(key)[:80]}")
+    note = inbox.move(nid, s.id)
+    if note is None:
+        raise _NotFound("no such note in the general inbox")
+    return note
+
+
+@router.delete(PREFIX + "/general/notes/{nid}")
+@_handled
+def general_delete(nid: str, x_fused: str | None = Header(None)):
+    if (bad := _require_fused(x_fused)) is not None:
+        return bad
+    from fused_render.specialists import inbox
+    if not inbox.delete(inbox.GENERAL, nid):
+        raise _NotFound("no such note in the general inbox")
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------------- panel ---
@@ -232,7 +272,9 @@ def note_add(spec_id: str, body=Body(None), x_fused: str | None = Header(None)):
 
 @router.delete(PREFIX + "/{spec_id}/notes/{nid}")
 @_handled
-def note_delete(spec_id: str, nid: str):
+def note_delete(spec_id: str, nid: str, x_fused: str | None = Header(None)):
+    if (bad := _require_fused(x_fused)) is not None:
+        return bad
     from fused_render.specialists import inbox
     if spec_id != inbox.GENERAL:
         _spec(spec_id)
@@ -241,6 +283,22 @@ def note_delete(spec_id: str, nid: str):
     if not inbox.delete(spec_id, nid):
         raise _NotFound("no such note")
     return {"ok": True}
+
+
+@router.post(PREFIX + "/{spec_id}/notes/{nid}/confirm")
+@_handled
+def note_confirm(spec_id: str, nid: str, x_fused: str | None = Header(None)):
+    if (bad := _require_fused(x_fused)) is not None:
+        return bad
+    from fused_render.specialists import inbox
+    _spec(spec_id)
+    try:
+        note = inbox.confirm(spec_id, nid)
+    except ValueError as e:
+        return _error(str(e), 409)
+    if note is None:
+        raise _NotFound("no such note")
+    return note
 
 
 # ------------------------------------------------------------------------ drafts ---

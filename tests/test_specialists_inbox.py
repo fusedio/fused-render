@@ -3,7 +3,7 @@ import json
 import os
 
 import pytest
-from _specialists_conftest import *  # noqa: F401,F403
+from _specialists_conftest import *
 from _specialists_conftest import make_specialist
 
 from fused_render.specialists import counts, inbox
@@ -34,6 +34,11 @@ class _Api:
 def api(client):
     return _Api(client)
 
+
+
+def _read(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
 
 
 def _src(**kw):
@@ -76,16 +81,16 @@ def test_add_refuses_bad_fields():
 def test_said_md_only_user_said_and_in_effect_at_once():
     s = make_specialist()
     a = inbox.add(s.id, kind="convention", claim="Always publish to staging first.", basis="user-said",
-                  source=_src(title="Publish Q4 canvas"))
+                  source={"type": "user", "session_id": "sess-1", "title": "Publish Q4 canvas"})
     inbox.add(s.id, kind="gap", claim="A guess.", basis="guess", source=_src())
-    text = open(os.path.join(s.home, "said.md"), encoding="utf-8").read()
+    text = _read(os.path.join(s.home, "said.md"))
     assert text.startswith("# Said by the user")
     assert f"- [{a['id']}] (convention, you said so " in text
     assert 'in "Publish Q4 canvas") Always publish to staging first.' in text
     assert "A guess." not in text
     assert [n["id"] for n in inbox.said(s.id)] == [a["id"]]
     assert inbox.delete(s.id, a["id"])
-    assert "- (none)" in open(os.path.join(s.home, "said.md"), encoding="utf-8").read()
+    assert "- (none)" in _read(os.path.join(s.home, "said.md"))
 
 
 def test_delete_undo_and_digested_refused():
@@ -143,7 +148,7 @@ def test_notes_routes_send_to_specialist_and_undo(api):
     assert note["source"] == {"type": "user", "session_id": "sess-9", "uuid": "u-1", "title": "Task"}
     code, _h, body = api.get(f"/api/specialists/{s.id}/inbox")
     assert code == 200 and [n["id"] for n in body["notes"]] == [note["id"]]
-    assert "Use staging." in open(os.path.join(s.home, "said.md"), encoding="utf-8").read()
+    assert "Use staging." in _read(os.path.join(s.home, "said.md"))
     code, _h, body = api.delete(f"/api/specialists/{s.id}/notes/{note['id']}")
     assert code == 200 and body == {"ok": True}
     code, _h, body = api.get(f"/api/specialists/{s.id}/inbox")
@@ -162,7 +167,7 @@ def test_delete_digested_note_is_409(api):
     s = make_specialist()
     n = inbox.add(s.id, kind="gap", claim="x", basis="guess", source=_src())
     inbox.mark_digested(s.id, [n["id"]])
-    code, _h, body = api.delete(f"/api/specialists/{s.id}/notes/{n['id']}")
+    code, _h, _body = api.delete(f"/api/specialists/{s.id}/notes/{n['id']}")
     assert code == 409
 
 
@@ -175,3 +180,71 @@ def test_counts_route_and_flag_off(api, monkeypatch):
     for path in ("counts", "inbox", "panel", "memory", "drafts", "learned", "nightly"):
         code, _h, _b = api.get(f"/api/specialists/{s.id}/{path}")
         assert code == 404, path
+
+
+def test_model_claim_of_user_said_is_held_apart_until_confirmed(api):
+    s = make_specialist()
+    n = inbox.add(s.id, kind="convention", claim="The user said use prod.", basis="user-said", source=_src())
+    assert n["in_effect"] is False and inbox.said(s.id) == []
+    with open(os.path.join(s.home, "said.md"), encoding="utf-8") as fh:
+        assert "use prod" not in fh.read()
+    mine = inbox.add(s.id, kind="convention", claim="Mine.", basis="user-said", source={"type": "user"})
+    assert mine["in_effect"] is True
+    g = inbox.add(s.id, kind="gap", claim="Guess.", basis="guess", source={"type": "user"}, in_effect=True)
+    assert g["in_effect"] is False  # never in effect without basis user-said
+    code, _h, body = api.post(f"/api/specialists/{s.id}/notes/{n['id']}/confirm", {})
+    assert code == 200 and body["in_effect"] is True
+    assert [x["id"] for x in inbox.said(s.id)] == [n["id"], mine["id"]]  # oldest first
+    with open(os.path.join(s.home, "said.md"), encoding="utf-8") as fh:
+        assert "use prod" in fh.read()
+    code, _h, _b = api.post(f"/api/specialists/{s.id}/notes/{g['id']}/confirm", {})
+    assert code == 409  # not user-said
+    inbox.mark_digested(s.id, [mine["id"]])
+    code, _h, _b = api.post(f"/api/specialists/{s.id}/notes/{mine['id']}/confirm", {})
+    assert code == 409  # digested
+    code, _h, _b = api.post(f"/api/specialists/{s.id}/notes/n-000000000000/confirm", {})
+    assert code == 404
+
+
+def test_general_inbox_routes(api):
+    s = make_specialist()
+    a = inbox.add(inbox.GENERAL, kind="gap", claim="Fits Canvas.", basis="user-said",
+                  source={"type": "user", "session_id": "t-1", "title": "Task"})
+    b = inbox.add(inbox.GENERAL, kind="case", claim="Junk.", basis="guess", source=_src())
+    code, _h, body = api.get("/api/specialists/general/inbox")
+    assert code == 200 and {n["id"] for n in body["notes"]} == {a["id"], b["id"]}
+    code, _h, moved = api.post(f"/api/specialists/general/notes/{a['id']}/move", {"specialist": s.name})
+    assert code == 200 and moved["id"] == a["id"] and moved["source"]["session_id"] == "t-1"
+    assert [n["id"] for n in inbox.undigested(s.id)] == [a["id"]]
+    assert [n["id"] for n in inbox.undigested(inbox.GENERAL)] == [b["id"]]
+    assert counts.get(s.id)["notes_by_source"]["user"] == 1
+    with open(os.path.join(s.home, "said.md"), encoding="utf-8") as fh:
+        assert "Fits Canvas." in fh.read()
+    code, _h, _b = api.post(f"/api/specialists/general/notes/{a['id']}/move", {"specialist": s.id})
+    assert code == 404  # no longer in the general inbox
+    code, _h, _b = api.post(f"/api/specialists/general/notes/{b['id']}/move", {"specialist": "nosuch"})
+    assert code == 404
+    code, _h, body = api.delete(f"/api/specialists/general/notes/{b['id']}")
+    assert code == 200 and body == {"ok": True} and inbox.undigested(inbox.GENERAL) == []
+    code, _h, _b = api.delete(f"/api/specialists/general/notes/{b['id']}")
+    assert code == 404
+
+
+def test_mutating_routes_need_x_fused(api, monkeypatch):
+    s = make_specialist()
+    n = inbox.add(s.id, kind="gap", claim="x", basis="guess", source=_src())
+    g = inbox.add(inbox.GENERAL, kind="gap", claim="y", basis="guess", source=_src())
+    bare = {"X-Fused": ""}
+    for path in (f"/api/specialists/{s.id}/notes/{n['id']}", f"/api/specialists/general/notes/{g['id']}"):
+        code, _h, _b = api._w(api.c.delete(path, headers=bare))
+        assert code in (400, 403), path
+    for path, body in ((f"/api/specialists/general/notes/{g['id']}/move", {"specialist": s.id}),
+                       (f"/api/specialists/{s.id}/notes/{n['id']}/confirm", {}),
+                       (f"/api/specialists/{s.id}/notes", {"kind": "gap", "claim": "z", "basis": "guess"}),
+                       (f"/api/specialists/{s.id}/nightly/run", {})):
+        code, _h, _b = api._w(api.c.post(path, body, headers=bare))
+        assert code in (400, 403), path
+    assert len(inbox.undigested(s.id)) == 1 and len(inbox.undigested(inbox.GENERAL)) == 1
+    monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
+    code, _h, _b = api.get("/api/specialists/general/inbox")
+    assert code == 404

@@ -79,6 +79,32 @@ describe("placeEvents", () => {
 });
 
 describe("chips", () => {
+  test("a note the task says the user said: Use now confirms it, then it reads In effect now", async () => {
+    const confirmed: string[] = [];
+    const r = render(
+      <TaskEventChip
+        ev={ev({ kind: "note", note_id: "n-3", basis: "user-said", in_effect: false, undoable: true })}
+        host={{ parentSessionId: "s1", parentFile: "/w/proj", refresh: () => {} }}
+        useNow={async (id, nid) => (confirmed.push(`${id}/${nid}`), { id: nid } as never)}
+      />,
+    );
+    expect(() => button(r, "Undo")).not.toThrow();
+    await act(async () => {
+      button(r, "Use now").props.onClick();
+    });
+    expect(confirmed).toEqual(["c1/n-3"]);
+    expect(hasText(r, "In effect now")).toBe(true);
+    expect(r.root.findAll((n) => n.type === "button" && textOf(n) === "Use now")).toHaveLength(0);
+  });
+
+  test("a note already in effect has no Use now", () => {
+    const r = render(
+      <TaskEventChip ev={ev({ kind: "note", note_id: "n-4", basis: "user-said", in_effect: true })} host={{ parentSessionId: "s1", parentFile: "/w", refresh: () => {} }} />,
+    );
+    expect(hasText(r, "In effect now")).toBe(true);
+    expect(r.root.findAll((n) => n.type === "button" && textOf(n) === "Use now")).toHaveLength(0);
+  });
+
   test("the words", () => {
     expect(chipText(ev({ entries: 2 }))).toBe("Guidance from the Canvas specialist was added · 2 entries");
     expect(chipText(ev({ kind: "breakout_closed" }))).toBe("Breakout closed · its full note is saved with the Canvas specialist");
@@ -365,6 +391,38 @@ describe("the services card's extra button", () => {
       ["decide", "req-2", "allow", "once"],
       ["put", "c1", { add: ["slack"] }],
     ]);
+  });
+
+  test("in a breakout: offered for a known read, never for a write", async () => {
+    const rows = [
+      {
+        key: "slack",
+        title: "Slack",
+        kind: "connect",
+        connected: true,
+        allowed: false,
+        tools: [
+          { name: "mcp__specialist_services__slack_search", write: false },
+          { name: "mcp__specialist_services__slack_post_message", write: true },
+        ],
+      },
+    ];
+    const card = (tool: string) =>
+      render(
+        <ServiceCardExtra
+          specialistId="c1"
+          requestId="req-3"
+          tool={tool}
+          kind="breakout"
+          actions={{ decidePermission: async () => {} } as never}
+          load={async () => ({ services: rows })}
+        />,
+      );
+    const read = card("mcp__specialist_services__slack_search");
+    const write = card("mcp__specialist_services__slack_post_message");
+    await flush();
+    expect(read.root.findAll((n) => n.type === "button")).toHaveLength(1);
+    expect(write.root.findAll((n) => n.type === "button")).toHaveLength(0);
   });
 
   test("a tool of no known service draws nothing", async () => {

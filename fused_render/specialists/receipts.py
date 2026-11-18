@@ -111,7 +111,47 @@ def record(spec_id, *, session_id, run_id, cwd, trigger, match, lines, entries=(
     _, write_json = _json()
     with _LOCK:
         write_json(os.path.join(_dir(spec_id), rec["id"] + ".json"), rec)
+        _mark_pulled(rec["session_id"], spec_id, version)
     return rec
+
+
+_SID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _pulled_path(session_id: str) -> str | None:
+    if not isinstance(session_id, str) or not _SID.match(session_id):
+        return None
+    from fused_render.specialists import paths
+
+    return os.path.join(paths.state_root(), "pulled", session_id + ".json")
+
+
+def _mark_pulled(session_id: str, spec_id: str, version: str) -> None:
+    path = _pulled_path(session_id)
+    if path is None:
+        return
+    read_json, write_json = _json()
+    idx = read_json(path, {})
+    idx = idx if isinstance(idx, dict) else {}
+    versions = idx.get(spec_id) if isinstance(idx.get(spec_id), list) else []
+    if version not in versions:
+        idx[spec_id] = (versions + [version])[-50:]
+        try:
+            write_json(path, idx)
+        except OSError:
+            logger.debug("specialists: pulled index", exc_info=True)
+
+
+def pulled(session_id: str, spec_id: str, version: str) -> bool:
+    """Whether task session `session_id` already pulled `spec_id` at memory version `version` (the per-session
+    index `<root>/.state/pulled/<sid>.json`; a signal pull happens once per version). One small file per prompt."""
+    path = _pulled_path(session_id)
+    if path is None:
+        return False
+    read_json, _ = _json()
+    idx = read_json(path, {})
+    versions = idx.get(spec_id) if isinstance(idx, dict) else None
+    return isinstance(versions, list) and version in versions
 
 
 def fill_lines(spec_id: str, rid: str) -> None:

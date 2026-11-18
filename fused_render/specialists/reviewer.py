@@ -156,7 +156,7 @@ def prompt_for(receipt: dict, f: dict) -> str:
 
 
 # ------------------------------------------------------------------------- parse ---
-_KEY = re.compile(r"^\s*(outcome|entries|kind|basis|claim)\s*:\s*(.*?)\s*$", re.I)
+_KEY = re.compile(r"^\s*(outcome|entries|kind|basis|claim)\s*:\s*(.*?)\s*$", re.IGNORECASE)
 
 
 def parse_review(block: str | None) -> dict | None:

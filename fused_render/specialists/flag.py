@@ -28,18 +28,34 @@ def on() -> bool:
         return False
 
 
+#: What an unknown path answers on main (Starlette's own 404): the flag-off answer must be indistinguishable.
+NOT_FOUND = {"detail": "Not Found"}
+PREFIX = "/api/specialists"
+
+
 class Off(HTTPException):
-    """Raised by `require`. A subclass so app.py can answer it as `{"error": "not found"}` (every specialists
-    error is `{"error": sentence}`) without touching how any other route's HTTPException is answered."""
+    """Raised by `require`: exactly the 404 an unknown route gives."""
 
     def __init__(self) -> None:
-        super().__init__(status_code=404, detail="not found")
+        super().__init__(status_code=404, detail=NOT_FOUND["detail"])
 
 
 async def off_handler(request, exc):  # noqa: ARG001 — FastAPI's handler signature
     from fastapi.responses import JSONResponse
 
-    return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(NOT_FOUND, status_code=404)
+
+
+async def off_middleware(request, call_next):
+    """With the flag off, every `/api/specialists*` request answers the unknown-path 404 BEFORE routing, so a
+    malformed body (which FastAPI would reject with a 422 before any dependency ran) or a bad method looks
+    exactly like main. Other paths pass through at the cost of one string test."""
+    path = request.url.path
+    if (path == PREFIX or path.startswith(PREFIX + "/") or path.startswith(PREFIX + "?")) and not on():
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(NOT_FOUND, status_code=404)
+    return await call_next(request)
 
 
 def require() -> None:

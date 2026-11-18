@@ -15,6 +15,10 @@ def test_layout_is_a_claude_code_project(app_home):
     assert os.path.basename(h) == "canvas-pro" and os.path.dirname(h) == paths.root()
     md = open(os.path.join(h, "CLAUDE.md")).read()
     assert md.startswith("# The Canvas Pro specialist")
+    assert "You are the Canvas Pro specialist. Your subject: Fused canvases." in md
+    assert "expert" not in md.lower()
+    assert "except the change list the nightly update is told to write" in md
+    assert "find its owner in people.md, draft the exact message" in md
     assert md.endswith("<!-- fused:imports -->\n@memory.md\n@said.md\n")
     assert json.load(open(os.path.join(h, ".claude", "settings.json"))) == {"autoMemoryEnabled": False}
     assert open(os.path.join(h, ".gitignore")).read() == ".specialist/\ninbox/\nsaid.md\n"
@@ -131,3 +135,13 @@ def test_tasks_collect_hides_home_sessions(app_home, monkeypatch):
     assert not tasks._specialist_session({"path": ""})
     monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
     assert not tasks._specialist_session({"path": "in"})
+
+
+def test_delete_refused_while_the_nightly_job_runs(app_home, monkeypatch):
+    from fused_render.specialists import nightly
+
+    s = make_specialist()
+    monkeypatch.setattr(nightly, "running", lambda spec_id: True)
+    with pytest.raises(store.Busy, match="nightly update is running"):
+        store.delete(s.id)
+    assert os.path.isdir(s.home)

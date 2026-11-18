@@ -3,7 +3,13 @@
     <home>/inbox/<note id>.json             undigested: held apart from every session and pull...
     <home>/inbox/digested/<note id>.json    ...until the nightly job digests it (nightly.py moves it here)
     <root>/.state/general/inbox/<id>.json   the general inbox ("no specialist fits"; `GENERAL`)
-    <home>/said.md                          the user-said undigested notes, in effect at once (`regen_said`)
+    <home>/said.md                          the in-effect undigested notes (`regen_said`)
+
+A note is **in effect at once** (`in_effect`, listed in said.md, loaded by every session and pull) only when its
+basis is `user-said` AND the user made it themselves (source type `user`: "Send to a specialist", `POST …/notes`).
+A model that claims `user-said` (a task, a breakout, the main chat, the reviewer) keeps that basis but the note is
+held apart like any other until the user confirms it (`confirm`); the nightly job weighs an unconfirmed claim of
+user-said as verified.
 
 Only the app writes notes (sessions add them through the `note` tool, tasks through `specialist_note`), so the
 provenance (source, date, app version) is always the app's. `said.md` is regenerated on every add, delete and
@@ -129,9 +135,20 @@ def get(spec_id: str, nid: str) -> dict | None:
     return None
 
 
+def in_effect(note: dict) -> bool:
+    """Whether `note` is in effect now: its own flag, or (a note written before the flag existed) basis user-said
+    from the user's own action."""
+    if not isinstance(note, dict) or note.get("basis") != "user-said":
+        return False
+    if isinstance(note.get("in_effect"), bool):
+        return note["in_effect"]
+    src = note.get("source") if isinstance(note.get("source"), dict) else {}
+    return src.get("type") == "user"
+
+
 def said(spec_id: str) -> list[dict]:
-    """The undigested notes with basis user-said, oldest first: what is in effect at once (§5)."""
-    notes = [n for n in undigested(spec_id) if n.get("basis") == "user-said"]
+    """The undigested notes in effect at once (§5; `in_effect`), oldest first."""
+    notes = [n for n in undigested(spec_id) if in_effect(n)]
     return sorted(notes, key=lambda n: (_at(n), n["id"]))
 
 
@@ -180,10 +197,11 @@ def _source(source) -> dict:
 
 
 def add(spec_id_or_general: str, *, kind: str, claim: str, basis: str, evidence: str = "", entry: str | None = None,
-        outcome: str | None = None, source: dict, nid: str | None = None) -> dict:
+        outcome: str | None = None, source: dict, nid: str | None = None, in_effect: bool | None = None) -> dict:
     """Write one note and return it. Raises ValueError for a bad kind, basis, claim or source, LookupError for an
     unknown specialist. `nid` (the reviewer's `n-review-<rid>`) makes the add idempotent: a note with that id
-    already in the inbox, digested or not, is returned as it is and nothing is written or counted again."""
+    already in the inbox, digested or not, is returned as it is and nothing is written or counted again.
+    `in_effect` defaults to basis user-said from a `user` source; it is never true for another basis."""
     spec_id = spec_id_or_general
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {', '.join(KINDS)}")
@@ -193,6 +211,8 @@ def add(spec_id_or_general: str, *, kind: str, claim: str, basis: str, evidence:
     if not claim:
         raise ValueError("a note needs a claim (one sentence)")
     src = _source(source)
+    effect = (src["type"] == "user") if in_effect is None else bool(in_effect)
+    effect = effect and basis == "user-said"
     folder = inbox_dir(spec_id)
     if nid is not None and not NOTE_ID_RE.match(str(nid)):
         raise ValueError("bad note id")
@@ -204,8 +224,10 @@ def add(spec_id_or_general: str, *, kind: str, claim: str, basis: str, evidence:
         note = {"id": nid or "n-" + uuid.uuid4().hex[:12], "kind": kind, "claim": claim,
                 "evidence": str(evidence or "")[:EVIDENCE_MAX].strip(), "basis": basis,
                 "entry": entry if isinstance(entry, str) and ENTRY_RE.match(entry) else None,
-                "outcome": outcome if outcome in OUTCOMES else None, "source": src,
+                "outcome": outcome if outcome in OUTCOMES else None, "source": src, "in_effect": effect,
                 "at": time.time(), "app_version": _version(), "digested": None}
+        if not _home_or_general(spec_id):
+            raise LookupError(f"no such specialist: {spec_id}")
         write_json(os.path.join(folder, note["id"] + ".json"), note)
     if spec_id != GENERAL:
         _count(spec_id, note, +1)
@@ -250,6 +272,63 @@ def delete(spec_id: str, nid: str) -> bool:
     return True
 
 
+def confirm(spec_id: str, nid: str) -> dict | None:
+    """The user confirms a user-said note a model wrote: it is in effect from now on (said.md). None for an
+    unknown note; ValueError for a digested note or one whose basis is not user-said."""
+    if not isinstance(nid, str) or not NOTE_ID_RE.match(nid):
+        return None
+    try:
+        path = os.path.join(inbox_dir(spec_id), nid + ".json")
+    except LookupError:
+        return None
+    with _LOCK:
+        note = read_json(path)
+        if not isinstance(note, dict) or note.get("id") != nid:
+            if is_digested(spec_id, nid):
+                raise ValueError("This note was already weighed by the nightly update.")
+            return None
+        if note.get("basis") != "user-said":
+            raise ValueError("Only a note that says the user said so can be confirmed.")
+        if note.get("in_effect") is not True:
+            note["in_effect"] = True
+            note["confirmed_at"] = time.time()
+            if not _home_or_general(spec_id):
+                return None
+            write_json(path, note)
+    regen_said(spec_id)
+    return note
+
+
+def move(nid: str, to_spec: str) -> dict | None:
+    """Move a general-inbox note to specialist `to_spec`'s inbox: same id, source and flags kept. None when the
+    general inbox has no such note; LookupError for an unknown specialist."""
+    if not isinstance(nid, str) or not NOTE_ID_RE.match(nid) or to_spec == GENERAL:
+        return None
+    dest = inbox_dir(to_spec)
+    src_path = os.path.join(inbox_dir(GENERAL), nid + ".json")
+    with _LOCK:
+        note = read_json(src_path)
+        if not isinstance(note, dict) or note.get("id") != nid:
+            return None
+        if not _home_or_general(to_spec):
+            raise LookupError(f"no such specialist: {to_spec}")
+        note["moved_from"] = GENERAL
+        write_json(os.path.join(dest, nid + ".json"), note)
+        try:
+            os.unlink(src_path)
+        except OSError:
+            pass
+    if isinstance(note.get("source"), dict) and note["source"].get("type") in SOURCE_TYPES:
+        _count(to_spec, note, +1)
+    regen_said(to_spec)
+    return note
+
+
+def _home_or_general(spec_id: str) -> bool:
+    """The inbox's owner still exists (a home deleted mid-write is never recreated by a note)."""
+    return spec_id == GENERAL or _home(spec_id) is not None
+
+
 def mark_digested(spec_id: str, nids, at: float | None = None) -> list[str]:
     """Move the undigested notes `nids` to inbox/digested/ (stamped `digested`), regenerate said.md. Idempotent:
     a note already moved is skipped. Returns the ids moved now."""
@@ -260,6 +339,8 @@ def mark_digested(spec_id: str, nids, at: float | None = None) -> list[str]:
         for nid in nids or []:
             if not isinstance(nid, str) or not NOTE_ID_RE.match(nid):
                 continue
+            if not _home_or_general(spec_id):
+                break  # the specialist was deleted: never recreate its folder
             src = os.path.join(folder, nid + ".json")
             note = read_json(src)
             if not isinstance(note, dict):

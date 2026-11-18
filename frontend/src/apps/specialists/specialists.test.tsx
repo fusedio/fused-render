@@ -18,6 +18,8 @@ import { CreateSpecialist, parseKeywords, triggersFrom } from "./dialogs/CreateS
 import { LearnedTab, fromLine, type LearnedApi } from "./dialogs/LearnedTab";
 import { GeneralTab, countRows } from "./dialogs/GeneralTab";
 import { SpecialistSettings, TABS } from "./dialogs/SpecialistSettings";
+import { GeneralInbox } from "./dialogs/GeneralInbox";
+import { MemoryTab } from "./dialogs/MemoryTab";
 
 const mounted: ReactTestRenderer[] = [];
 beforeEach(() => installPortalContainer());
@@ -98,9 +100,9 @@ describe("the list and create (C)", () => {
 
   test("create posts name, subject and triggers", async () => {
     const posted: unknown[] = [];
-    let made: SpecialistDetail | null = null;
+    const made: { s: SpecialistDetail | null } = { s: null };
     const r = render(
-      <CreateSpecialist onClose={() => {}} onCreated={(s) => (made = s)} create={async (b) => (posted.push(b), SPEC)} />,
+      <CreateSpecialist onClose={() => {}} onCreated={(s) => (made.s = s)} create={async (b) => (posted.push(b), SPEC)} />,
     );
     const inputs = r.root.findAll((n) => n.type === "input");
     const area = r.root.find((n) => n.type === "textarea");
@@ -112,7 +114,7 @@ describe("the list and create (C)", () => {
       r.root.find((n) => n.type === "form").props.onSubmit({ preventDefault() {} });
     });
     expect(posted[0]).toEqual({ name: "Canvas", subject: "Fused canvases", triggers: { folders: ["/w/q4"], keywords: ["sync", "publish"] } });
-    expect(made).toBe(SPEC);
+    expect(made.s).toBe(SPEC);
   });
 
   test("triggers parse", () => {
@@ -141,7 +143,7 @@ describe("the one chat (D, E)", () => {
   test("mounts the task chat on the home with the main start param and the current session", async () => {
     const { r, mounts } = chatRig();
     await flush();
-    expect(mounts.at(-1)).toMatchObject({
+    expect(mounts[mounts.length - 1]).toMatchObject({
       file: "/w/specialists/canvas",
       sessionId: "s-now",
       extraParams: { specialist: "c1:main" },
@@ -159,7 +161,7 @@ describe("the one chat (D, E)", () => {
       button(r, "Clear").props.onClick();
     });
     expect(cleared).toEqual(["c1"]);
-    const last = mounts.at(-1)!;
+    const last = mounts[mounts.length - 1]!;
     expect("sessionId" in last).toBe(false);
     expect(hasText(r, "Cleared · a new chat starts here")).toBe(true);
     expect(hasText(r, "Now · 3 messages")).toBe(true);
@@ -169,7 +171,7 @@ describe("the one chat (D, E)", () => {
     const { mounts, cleared } = chatRig();
     await flush();
     await act(async () => {
-      (mounts.at(-1)!.onClear as () => void)();
+      (mounts[mounts.length - 1]!.onClear as () => void)();
     });
     expect(cleared).toEqual(["c1"]);
   });
@@ -179,7 +181,7 @@ describe("the one chat (D, E)", () => {
     await flush();
     expect(handle.current!.send("hi")).toBe(false);
     const sent: string[] = [];
-    act(() => (mounts.at(-1)!.onBreakoutState as (s: unknown) => void)({ sessionId: "s-now", turns: [], send: (t: string) => sent.push(t) }));
+    act(() => (mounts[mounts.length - 1]!.onBreakoutState as (s: unknown) => void)({ sessionId: "s-now", turns: [], send: (t: string) => sent.push(t) }));
     expect(handle.current!.send("Revert last night's change")).toBe(true);
     expect(sent).toEqual(["Revert last night's change"]);
   });
@@ -378,6 +380,69 @@ describe("settings (one dialog, six tabs)", () => {
     expect(countRows({ breakouts_opened: 1, repeat_breakouts: 0, pulls: 0, pulls_confirmed: 0, corrections_received: 0, notes_by_source: {} })[0]).toEqual(["Breakouts opened", 1]);
     expect(fromLine(["r-1"])).toBe("From a review of a task");
     expect(fromLine([])).toBe("");
+  });
+});
+
+describe("the general inbox", () => {
+  const note = { id: "n-9", kind: "gap", claim: "Nobody covers the billing export.", basis: "verified", source: { type: "task", title: "Billing" }, at: 0 };
+  test("the quiet line under the list opens it", () => {
+    let opened = 0;
+    const r = render(
+      <SpecialistList rows={[]} selected={null} loading={false} error="" onSelect={() => {}} onCreate={() => {}} generalCount={2} onOpenGeneral={() => opened++} />,
+    );
+    act(() => button(r, "2 notes fit no specialist").props.onClick());
+    expect(opened).toBe(1);
+  });
+
+  test("Give to a specialist, or Delete", async () => {
+    const log: unknown[] = [];
+    let changed = 0;
+    const r = render(
+      <GeneralInbox
+        notes={[note]}
+        specialists={[{ id: "c1", name: "Canvas", subject: "", face: "", status: "", working: false }]}
+        onClose={() => {}}
+        onChanged={() => changed++}
+        api={{
+          moveGeneralNote: async (nid, spec) => (log.push(["move", nid, spec]), note as never),
+          deleteNote: async (id, nid) => (log.push(["delete", id, nid]), { ok: true as const }),
+        }}
+      />,
+    );
+    expect(hasText(r, "Nobody covers the billing export.")).toBe(true);
+    await act(async () => {
+      button(r, "Give").props.onClick();
+    });
+    await act(async () => {
+      button(r, "Delete").props.onClick();
+    });
+    expect(log).toEqual([
+      ["move", "n-9", "c1"],
+      ["delete", "general", "n-9"],
+    ]);
+    expect(changed).toBe(2);
+  });
+});
+
+describe("Settings › Memory inbox", () => {
+  test("In effect now only for a note that is in effect", async () => {
+    const notes = [
+      { id: "n-1", kind: "convention", claim: "Publish to staging first.", basis: "user-said", source: { type: "user" }, at: 0, in_effect: true },
+      { id: "n-2", kind: "convention", claim: "The task says you said so.", basis: "user-said", source: { type: "task" }, at: 0, in_effect: false },
+    ];
+    const r = render(
+      <MemoryTab
+        specialistId="c1"
+        sendToChat={() => true}
+        api={{
+          getMemory: async () => ({ entries: [], raw: "", lines: 0, bytes: 0, limit_lines: 120, limit_bytes: 12000, knowledge: [] }),
+          getInbox: async () => ({ notes }),
+        }}
+      />,
+    );
+    await flush();
+    const rows = r.root.findAll((n) => n.type === "div" && /^spx-note( is-said)?$/.test(String(n.props.className)));
+    expect(rows.map((x) => textOf(x).includes("In effect now"))).toEqual([true, false]);
   });
 });
 

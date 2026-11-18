@@ -98,6 +98,39 @@ def test_stuck_at_n_once_per_signature(client, tmp_path, monkeypatch):
     assert _hook(client, error="No such file", **fail) == {}
 
 
+def test_stuck_on_one_tool_with_different_errors(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_SPECIALIST_STUCK_N", "3")
+    make_specialist("Canvas", "Fused canvases")
+    fail = dict(event="failure", session_id="s5", cwd=str(tmp_path), tool_name="Edit")
+    outs = [_hook(client, error=f"error kind {chr(97 + i)}", **fail) for i in range(7)]
+    assert [bool(o) for o in outs] == [False, False, False, False, True, False, False]  # N + 2, once per tool
+    assert outs[4]["additionalContext"].startswith("The same step has failed 5 times (Edit: different errors")
+
+
+def test_signal_pull_index_is_per_session(client, tmp_path, monkeypatch):
+    from fused_render.specialists import receipts
+
+    make_specialist("Canvas", "Fused canvases", triggers={"folders": [str(tmp_path)], "keywords": []})
+    assert "additionalContext" in _hook(client, event="prompt", session_id="s6", cwd=str(tmp_path), prompt="")
+    # the second prompt reads the small index, not every receipt
+    monkeypatch.setattr(receipts, "all_for", lambda spec_id: pytest.fail("scanned all receipts"))
+    assert _hook(client, event="prompt", session_id="s6", cwd=str(tmp_path), prompt="") == {}
+
+
+def test_prune_drops_old_per_session_state(client, tmp_path):
+    from fused_render.specialists import paths, signals, task_events
+
+    signals.record("old-s", "failure")
+    task_events.add("old-s", "stuck", "x", "X")
+    signals.record("new-s", "failure")
+    old = os.path.join(paths.state_root(), "signals", "old-s.jsonl")
+    old_ev = os.path.join(paths.state_root(), "tasks", "old-s.jsonl")
+    for p in (old, old_ev):
+        os.utime(p, (1, 1))
+    assert task_events.prune() == 2
+    assert not os.path.exists(old) and signals.since("new-s", 0)
+
+
 def test_interrupt_is_a_signal_not_a_failure(client, tmp_path):
     from fused_render.specialists import signals
 
@@ -107,21 +140,42 @@ def test_interrupt_is_a_signal_not_a_failure(client, tmp_path):
     assert [s["kind"] for s in signals.since("s4", 0)] == ["interrupt"]
 
 
-def test_stop_in_a_home_dispatches_the_turn(client, monkeypatch):
-    from fused_render.specialists import breakouts, changes, drafts, history
+def test_turns_in_a_home_dispatch_with_the_right_kind(client, monkeypatch):
+    from fused_render.specialists import breakouts, changes, chat, drafts, history, task_routes
 
-    spec = make_specialist("Canvas", "Fused canvases")
+    spec = make_specialist("Canvas", "Fused canvases", triggers={"folders": [], "keywords": ["canvas"]})
     seen = []
+    monkeypatch.setattr(history, "before_turn", lambda i, k, s: seen.append(("before", i, k, s)), raising=False)
     monkeypatch.setattr(history, "after_turn", lambda i, k, s: seen.append(("history", i, k, s)))
     monkeypatch.setattr(changes, "after_turn", lambda i, s: seen.append(("changes", i, s)))
     monkeypatch.setattr(drafts, "after_turn", lambda i, s: seen.append(("drafts", i, s)))
     monkeypatch.setattr(breakouts, "session_ids", lambda i: {"bs1": "open"})
-    _hook(client, event="stop", session_id="ms1", cwd=spec.home)
-    _hook(client, event="stop", session_id="bs1", cwd=spec.home)
-    assert ("history", spec.id, "main", "ms1") in seen and ("history", spec.id, "breakout", "bs1") in seen
+    monkeypatch.setattr(chat, "main_sessions", lambda i: ["ms1"])
+    monkeypatch.setattr(task_routes, "_kind_from_runs", lambda home, sid: "main" if sid == "fresh-main" else "")
+    for sid in ("ms1", "bs1", "fresh-main", "who-knows"):
+        assert _hook(client, event="prompt", session_id=sid, cwd=spec.home, prompt="canvas") == {}
+        _hook(client, event="stop", session_id=sid, cwd=spec.home)
+    kinds = {s: k for tag, i, k, s in [x for x in seen if x[0] == "history"]}
+    assert kinds == {"ms1": "main", "bs1": "breakout", "fresh-main": "main", "who-knows": "breakout"}
+    befores = {s: k for tag, i, k, s in [x for x in seen if x[0] == "before"]}
+    assert befores == kinds  # the prompt hook snapshots the turn with the same kind
     assert ("changes", spec.id, "ms1") in seen and ("drafts", spec.id, "bs1") in seen
-    # prompts in a home never pull (its own memory is already loaded)
-    assert _hook(client, event="prompt", session_id="ms1", cwd=spec.home, prompt="canvas") == {}
+    from fused_render.specialists import receipts
+    assert receipts.for_session("ms1") == []  # prompts in a home never pull
+
+
+def test_kind_from_the_run_meta(client, monkeypatch, tmp_path):
+    from fused_render.claude_agent import agent_module
+    from fused_render.specialists import task_routes
+
+    agent = agent_module()
+    runs = tmp_path / "runs"
+    (runs / "r1").mkdir(parents=True)
+    (runs / "r1" / "meta.json").write_text(json.dumps({"specialist": {"id": "x", "kind": "main"}}))
+    monkeypatch.setattr(agent, "RUNS", str(runs))
+    monkeypatch.setattr(agent, "_live_runs_in", lambda home: iter([{"run_id": "r1", "sessions": ["s9"]}]))
+    assert task_routes._kind_from_runs("/h", "s9") == "main"
+    assert task_routes._kind_from_runs("/h", "other") == ""
 
 
 def test_bad_session_id_is_ignored(client, tmp_path):

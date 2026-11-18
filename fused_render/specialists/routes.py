@@ -91,6 +91,22 @@ def specialists_policy(specialist: str = Query(""), kind: str = Query(""), sessi
     return {"answer": services.policy(specialist, kind, session_id, tool)}
 
 
+@router.post(PREFIX + "/policy/grant")
+@_handled
+def specialists_policy_grant(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """The permission server, after the user approved a service call's card: one grant for that call, spent by
+    `services.call` (valid `launch.GRANT_TTL_S`). The secret is the run's `FUSED_SPECIALIST_GRANT`."""
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
+    b = _body(body)
+    ok = launch.record_grant(str(b.get("specialist") or ""), str(b.get("kind") or ""),
+                             str(b.get("session_id") or ""), str(b.get("tool") or ""), str(b.get("secret") or ""))
+    if not ok:
+        return _error("bad grant secret", 403)
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------- list ---
 @router.get(PREFIX)
 @_handled
@@ -121,7 +137,10 @@ def specialists_get(spec_id: str):
 
 @router.patch(PREFIX + "/{spec_id}")
 @_handled
-def specialists_patch(spec_id: str, body: dict = Body(...)):
+def specialists_patch(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
     _spec(spec_id)
     b = _body(body)
     fields = {k: b[k] for k in ("name", "subject", "face", "model", "effort", "triggers") if k in b}
@@ -138,9 +157,15 @@ def specialists_patch(spec_id: str, body: dict = Body(...)):
 
 @router.delete(PREFIX + "/{spec_id}")
 @_handled
-def specialists_delete(spec_id: str):
+def specialists_delete(spec_id: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
     _spec(spec_id)
-    store.delete(spec_id)
+    try:
+        store.delete(spec_id)
+    except store.Busy as e:
+        return _error(str(e), 409)
     return {"ok": True}
 
 
@@ -176,7 +201,10 @@ def specialists_charter(spec_id: str):
 
 @router.put(PREFIX + "/{spec_id}/charter")
 @_handled
-def specialists_charter_put(spec_id: str, body: dict = Body(...)):
+def specialists_charter_put(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
     s = _spec(spec_id)
     text = _body(body).get("text")
     if not isinstance(text, str) or not text.strip():
@@ -213,7 +241,11 @@ def specialists_skill(spec_id: str, name: str):
 
 @router.put(PREFIX + "/{spec_id}/skills/{name}")
 @_handled
-def specialists_skill_put(spec_id: str, name: str, body: dict = Body(...)):
+def specialists_skill_put(spec_id: str, name: str, body: dict = Body(...),
+                          x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
     s = _spec(spec_id)
     _skill_name(name)
     text = _body(body).get("text")
@@ -232,7 +264,10 @@ def specialists_skill_put(spec_id: str, name: str, body: dict = Body(...)):
 
 @router.delete(PREFIX + "/{spec_id}/skills/{name}")
 @_handled
-def specialists_skill_delete(spec_id: str, name: str):
+def specialists_skill_delete(spec_id: str, name: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
     s = _spec(spec_id)
     p = hm.skill_path(s.home, _skill_name(name))
     if not os.path.isfile(p):
@@ -258,7 +293,10 @@ def specialists_people(spec_id: str):
 
 @router.put(PREFIX + "/{spec_id}/people")
 @_handled
-def specialists_people_put(spec_id: str, body: dict = Body(...)):
+def specialists_people_put(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
     s = _spec(spec_id)
     rows = _body(body).get("rows")
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
@@ -277,7 +315,11 @@ def specialists_connections(spec_id: str):
 
 @router.put(PREFIX + "/{spec_id}/connections")
 @_handled
-def specialists_connections_put(spec_id: str, body: dict = Body(...)):
+def specialists_connections_put(spec_id: str, body: dict = Body(...),
+                                x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
     _spec(spec_id)
     b = _body(body)
     add, remove = b.get("add") or [], b.get("remove") or []
@@ -342,8 +384,9 @@ NOTE_TOOL_DEF = {
 
 @router.get(PREFIX + "/{spec_id}/session-tools")
 @_handled
-def specialists_session_tools(spec_id: str, kind: str = Query(""), token: str = Query(""), server: str = Query("")):
-    s, rec = _session(spec_id, kind, token, server)
+def specialists_session_tools(spec_id: str, kind: str = Query(""), server: str = Query(""),
+                               x_specialist_token: str | None = Header(default=None)):
+    s, rec = _session(spec_id, kind, x_specialist_token or "", server)
     if rec is None:
         return _error("bad or expired session token", 403)
     if server == "specialist":
@@ -392,13 +435,14 @@ def _note(s, kind: str, rec: dict, session_id: str, args: dict) -> dict:
 
 @router.post(PREFIX + "/{spec_id}/session-tool")
 @_handled
-def specialists_session_tool(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def specialists_session_tool(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None),
+                             x_specialist_token: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard:
         return guard
     b = _body(body)
     kind, server, name = str(b.get("kind") or ""), str(b.get("server") or ""), str(b.get("name") or "")
-    s, rec = _session(spec_id, kind, str(b.get("token") or ""), server)
+    s, rec = _session(spec_id, kind, x_specialist_token or "", server)
     if rec is None:
         return _error("bad or expired session token", 403)
     args = b.get("args") if isinstance(b.get("args"), dict) else {}
@@ -406,4 +450,6 @@ def specialists_session_tool(spec_id: str, body: dict = Body(...), x_fused: str 
         if name != "note" or kind not in ("main", "breakout"):
             return _text(f"error: no tool {name!r} here", True)
         return _note(s, kind, rec, str(b.get("session_id") or ""), args)
-    return services.call(s, kind, name, args)
+    return services.call(s, kind, name, args,
+                         session_id=str(b.get("session_id") or "") or _session_id_for(s.id, kind, rec),
+                         grant_secret=str(rec.get("grant") or ""))

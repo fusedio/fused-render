@@ -69,6 +69,7 @@ div.spx-page {
 .spx-list-status { font-size: 12px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spx-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .spx-dot.is-working { background: var(--status-progress, #60a5fa); }
+.spx-general-line { align-self: flex-start; margin: 0 2px; color: var(--fg-muted); }
 .spx-list-foot { margin: auto 6px 4px; font-size: 12px; color: var(--fg-muted); }
 
 /* Middle: the one chat */

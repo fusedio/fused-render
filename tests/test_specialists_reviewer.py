@@ -1,5 +1,5 @@
 """The reviewer (PLAN C.3; PRODUCT §4 "Reviewer rules"; acceptance S and X for reviews)."""
-from _specialists_conftest import *  # noqa: F401,F403
+from _specialists_conftest import *
 from _specialists_conftest import make_specialist, stub_side
 
 from fused_render.specialists import counts, inbox, receipts, reviewer, signals
@@ -109,8 +109,9 @@ def test_interrupt_signal_carried_into_prompt_and_note(monkeypatch):
     assert "App-observed signals after the pull: interrupt" in calls[0]["prompt"]
     n = inbox.undigested(s.id)[0]
     assert "interrupt" in n["evidence"] and n["basis"] == "user-said"
+    assert n["in_effect"] is False  # a model's claim of user-said is held apart until the user confirms it
     with open(s.home + "/said.md", encoding="utf-8") as fh:
-        assert n["claim"] in fh.read()  # a user-said review note is in effect at once
+        assert n["claim"] not in fh.read()
 
 
 def test_confirmed_by_model_is_a_count(monkeypatch):

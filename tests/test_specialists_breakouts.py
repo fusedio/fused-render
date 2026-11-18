@@ -134,6 +134,12 @@ def test_close_drafts_the_summary_and_files_the_note(client, parent, answer):
     assert answer["calls"] == [(spec.home, "bs-1")]
     rec = breakouts.get(spec.id, bid)
     assert rec["status"] == "closed" and len(rec["closes"]) == 1
+    # a retry of the same close (same answer) files nothing twice
+    status, retry = _post(client, base + "/closed", {"session_id": "bs-1"})
+    assert retry == closed
+    assert len(breakouts.get(spec.id, bid)["closes"]) == 1
+    assert [n["id"] for n in inbox.undigested(spec.id)].count(closed["note_id"]) == 1
+    assert closed["note_id"].startswith("n-close-" + bid[2:])
     # Reopen continues the same session; a second close asks for a follow-up only.
     status, again = _post(client, base + "/reopen")
     assert again == {"session_id": "bs-1", "start_params": {"specialist": f"{spec.id}:breakout:{bid}"},

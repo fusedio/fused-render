@@ -1,7 +1,7 @@
 """The specialists' timer (PLAN C.3; acceptance A for the scheduler, X for recovery)."""
 import os
 
-from _specialists_conftest import *  # noqa: F401,F403
+from _specialists_conftest import *
 from _specialists_conftest import make_specialist, needs_git, stub_side
 
 from fused_render.specialists import nightly, paths, reviewer, scheduler

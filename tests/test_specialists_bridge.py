@@ -25,6 +25,7 @@ class _Stub:
         self.requests = []
         self.policy = "ask"
         self.offer_error = None
+        self.grant_status = 200
         stub = self
 
         class H(BaseHTTPRequestHandler):
@@ -52,6 +53,8 @@ class _Stub:
                 name = self.path.rsplit("/", 1)[-1]
                 if self.headers.get("X-Fused") != "1":
                     return self._json(403, {"error": "no"})
+                if self.path == "/api/specialists/policy/grant":
+                    return self._json(stub.grant_status, {"ok": stub.grant_status == 200})
                 if name == "list":
                     return self._json(200, {"text": "- Canvas (abc): canvases"})
                 if name == "pull":
@@ -129,6 +132,9 @@ def test_tools_listed_with_schemas(tmp_path, stub):
         assert tools["specialist_breakout"]["inputSchema"]["required"] == ["specialist", "problem", "tried", "look_at"]
         assert tools["specialist_note"]["inputSchema"]["required"] == ["kind", "claim", "basis"]
         assert tools["specialist_check"]["inputSchema"]["properties"]["stage"]["enum"] == ["plan", "done"]
+        assert "expert" not in json.dumps([tools[t] for t in TOOLS]).lower()
+        assert "each knows one subject in depth" in tools["specialist_list"]["description"]
+        assert "give the entry id ([m-xxxx])" in tools["specialist_note"]["description"]
     finally:
         s.close()
 
@@ -259,8 +265,12 @@ def test_offer_tool_through_approve_never_parks(tmp_path, stub):
 SERVICE = "mcp__specialist_services__slack_post_message"
 
 
+def _grants(stub):
+    return [b for m, p, b in stub.requests if p == "/api/specialists/policy/grant"]
+
+
 def _policy_server(tmp_path, stub, allow_file=None):
-    env = {"FUSED_SPECIALIST_POLICY": f"{stub.origin}|abc|breakout"}
+    env = {"FUSED_SPECIALIST_POLICY": f"{stub.origin}|abc|breakout", "FUSED_SPECIALIST_GRANT": "sekrit"}
     if allow_file:
         env["FUSED_PERM_ALLOW_FILE"] = str(allow_file)
     return _server(tmp_path, **env)
@@ -278,6 +288,7 @@ def test_policy_allow_skips_the_card(tmp_path, stub):
         (get,) = [r for r in stub.requests if r[0] == "GET"]
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(get[1]).query)
         assert q == {"specialist": ["abc"], "kind": ["breakout"], "session_id": ["S1"], "tool": [SERVICE]}
+        assert _grants(stub) == []  # an allowed service needs no grant
     finally:
         s.close()
 
@@ -294,11 +305,40 @@ def test_policy_ask_always_ignores_the_always_store(tmp_path, stub):
         _answer(req_path, {"decision": "deny", "scope": "once"})
         text = pending.result(10)["result"]["content"][0]["text"]
         assert json.loads(text)["behavior"] == "deny"
+        assert _grants(stub) == []  # a denied card grants nothing
     finally:
         s.close()
 
 
-def test_policy_ask_honours_the_always_store(tmp_path, stub):
+def test_approved_card_posts_a_grant_first(tmp_path, stub):
+    stub.policy = "ask_always"
+    (tmp_path / "runs" / "run7").mkdir(parents=True)
+    (tmp_path / "runs" / "run7" / "meta.json").write_text(json.dumps({"resumed_from": "S2"}))
+    s = _policy_server(tmp_path, stub)
+    try:
+        pending = s.send_async("tools/call", {"name": "approve",
+                                              "arguments": {"tool_name": SERVICE, "input": {"text": "hi"}}})
+        _answer(_await_req(_perm(tmp_path)), {"decision": "allow", "scope": "once"})
+        assert json.loads(pending.result(10)["result"]["content"][0]["text"])["behavior"] == "allow"
+        assert _grants(stub) == [{"specialist": "abc", "kind": "breakout", "session_id": "S2", "tool": SERVICE,
+                                  "secret": "sekrit"}]
+    finally:
+        s.close()
+
+
+def test_a_grant_that_cannot_be_recorded_is_a_deny(tmp_path, stub):
+    stub.policy, stub.grant_status = "ask", 403
+    s = _policy_server(tmp_path, stub)
+    try:
+        pending = s.send_async("tools/call", {"name": "approve", "arguments": {"tool_name": SERVICE, "input": {}}})
+        _answer(_await_req(_perm(tmp_path)), {"decision": "allow", "scope": "once"})
+        out = json.loads(pending.result(10)["result"]["content"][0]["text"])
+        assert out["behavior"] == "deny" and "could not be recorded" in out["message"]
+    finally:
+        s.close()
+
+
+def test_policy_ask_honours_the_always_store_with_a_grant(tmp_path, stub):
     stub.policy = "ask"
     allow = tmp_path / "allow.json"
     allow.write_text(json.dumps({"tools": [SERVICE]}))
@@ -306,6 +346,7 @@ def test_policy_ask_honours_the_always_store(tmp_path, stub):
     try:
         text, _ = _call(s, "approve", {"tool_name": SERVICE, "input": {}})
         assert json.loads(text)["behavior"] == "allow"
+        assert len(_grants(stub)) == 1
     finally:
         s.close()
 

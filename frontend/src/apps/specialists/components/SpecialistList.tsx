@@ -11,6 +11,8 @@ export function SpecialistList({
   error,
   onSelect,
   onCreate,
+  generalCount = 0,
+  onOpenGeneral,
 }: {
   rows: readonly SpecialistSummary[];
   selected: string | null;
@@ -18,6 +20,9 @@ export function SpecialistList({
   error: string;
   onSelect: (id: string) => void;
   onCreate: () => void;
+  /** Notes in the general inbox (no specialist fits). */
+  generalCount?: number;
+  onOpenGeneral?: () => void;
 }) {
   return (
     <nav className="spx-list" aria-label="Specialists">
@@ -57,6 +62,11 @@ export function SpecialistList({
         <p className="spx-muted spx-pad">No specialists yet. Press + to create one.</p>
       ) : null}
       <p className="spx-list-foot">Each specialist is an expert on one subject. Tasks can ask any of them for help.</p>
+      {generalCount > 0 && onOpenGeneral ? (
+        <button type="button" className="spx-linkbtn spx-general-line" onClick={onOpenGeneral}>
+          {generalCount} {generalCount === 1 ? "note fits" : "notes fit"} no specialist
+        </button>
+      ) : null}
     </nav>
   );
 }

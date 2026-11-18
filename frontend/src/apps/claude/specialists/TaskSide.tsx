@@ -104,11 +104,17 @@ export function useSpecialistTaskSide(o: TaskSideOptions): TaskSide {
         if (task && row.tool === OFFER_TOOL) {
           return <OfferCard key={row.id} row={row} actions={actions} host={host} />;
         }
-        if (specialistKind === "main" && isServiceTool(row.tool) && !row.decision) {
+        if ((specialistKind === "main" || specialistKind === "breakout") && isServiceTool(row.tool) && !row.decision) {
           return (
             <div key={row.id} className="spx-service-card">
               <PermCard row={row} liveMode={liveMode} onDecide={actions.decidePermission} />
-              <ServiceCardExtra specialistId={specialistId} requestId={row.id} tool={row.tool} actions={actions} />
+              <ServiceCardExtra
+                specialistId={specialistId}
+                requestId={row.id}
+                tool={row.tool}
+                actions={actions}
+                kind={specialistKind}
+              />
             </div>
           );
         }

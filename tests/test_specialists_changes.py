@@ -2,7 +2,7 @@
 import json
 
 import pytest
-from _specialists_conftest import *  # noqa: F401,F403
+from _specialists_conftest import *
 from _specialists_conftest import make_specialist
 
 from fused_render.specialists import changes, chat, drafts, services

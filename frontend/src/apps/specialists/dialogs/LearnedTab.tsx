@@ -114,6 +114,8 @@ export function LearnedTab({
     });
 
   const waiting = drafts.filter((d) => d.status === "waiting" || d.status === "sending" || !d.status);
+  // A report whose bug was fixed, or that went stale: nothing to do, kept for reference.
+  const closed = drafts.filter((d) => d.status === "closed");
 
   return (
     <div className="spx-tab">
@@ -209,6 +211,19 @@ export function LearnedTab({
           <div className="spx-muted spx-small">Nothing waiting.</div>
         )}
       </section>
+      {closed.length ? (
+        <section className="spx-run" aria-label="Closed reports">
+          <h3 className="spx-muted">Closed reports</h3>
+          <ul className="spx-plain-list">
+            {closed.map((d) => (
+              <li key={d.id} className="spx-muted spx-small">
+                {draftLine(d)}
+                {d.why ? ` · ${d.why}` : ""}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }

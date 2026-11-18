@@ -4,7 +4,7 @@ import os
 import re
 
 import pytest
-from _specialists_conftest import *  # noqa: F401,F403
+from _specialists_conftest import *
 from _specialists_conftest import make_specialist, needs_git, stub_side
 
 from fused_render.specialists import (
@@ -59,7 +59,8 @@ def _setup():
         fh.write(MEMORY)
     history.commit(s.id, "memory")
     src = {"type": "task", "session_id": "sess-1", "title": "Publish"}
-    said = inbox.add(s.id, kind="convention", claim="Always publish to staging first.", basis="user-said", source=src)
+    said = inbox.add(s.id, kind="convention", claim="Always publish to staging first.", basis="user-said",
+                     source={**src, "type": "user"})
     guess = inbox.add(s.id, kind="gap", claim="Maybe publish to prod.", basis="guess", source=src)
     corr = inbox.add(s.id, kind="correction", claim="Retrying does not help; reopen the canvas.", basis="verified",
                      entry="m-3f2a", source=src)
@@ -105,7 +106,7 @@ def test_nightly_digests_with_provenance_and_change_list(monkeypatch):
     argv = " ".join(call["argv"])
     assert "Edit(//" in argv and "memory.md)" in argv and f".specialist/nightly/{res['run']}/changes.json" in argv
     # the bundle: notes framed, user-said first, the correction names its entry
-    notes_md = open(os.path.join(s.home, ".specialist", "nightly", res["run"], "input", "notes.md")).read()
+    notes_md = open_text(os.path.join(s.home, ".specialist", "nightly", res["run"], "input", "notes.md"))
     assert notes_md.index(said["id"]) < notes_md.index(corr["id"]) < notes_md.index(guess["id"])
     block = notes_md[notes_md.index(f"<<<NOTE {corr['id']}"):]
     assert "entry: m-3f2a" in block.split("NOTE>>>")[0] and "basis: verified" in block.split("NOTE>>>")[0]
@@ -117,7 +118,7 @@ def test_nightly_digests_with_provenance_and_change_list(monkeypatch):
     assert "bogus" not in rec["items"][0] and rec["fallback"] is False and rec["status"] == "done"
     assert inbox.undigested(s.id) == []
     assert inbox.get(s.id, said["id"])["digested"]
-    assert "- (none)" in open(os.path.join(s.home, "said.md")).read()
+    assert "- (none)" in open_text(os.path.join(s.home, "said.md"))
     st = nightly.state(s.id)
     assert st["last_ok"] and "active" not in st
     # drafts wait, counts
@@ -139,7 +140,7 @@ def test_notes_not_listed_stay_in_inbox(monkeypatch):
 
 
 def test_invalid_changes_json_falls_back_to_files(monkeypatch):
-    s, said, guess, corr = _setup()
+    s, _said, _guess, _corr = _setup()
 
     def fn(call):
         with open(os.path.join(call["cwd"], "memory.md"), "a", encoding="utf-8") as fh:
@@ -155,7 +156,7 @@ def test_invalid_changes_json_falls_back_to_files(monkeypatch):
     assert len(inbox.undigested(s.id)) == 3  # nothing digested without a valid list
 
 
-def test_over_cap_runs_one_compact_pass(monkeypatch):
+def test_over_cap_compact_pass_merges_into_first_list(monkeypatch):
     s, said, guess, corr = _setup()
     big = "# Memory\n" + "".join(f"- [m-{i:04x}] entry {i} {{basis=guess; seen=1}}\n" for i in range(200))
     small = "# Memory\n- [m-0001] entry 1 {basis=guess; seen=1}\n"
@@ -164,21 +165,141 @@ def test_over_cap_runs_one_compact_pass(monkeypatch):
     def fn(call):
         seen.append(call["prompt"])
         out = _out(call["prompt"])
-        text = big if len(seen) == 1 else small
         with open(os.path.join(call["cwd"], "memory.md"), "w") as fh:
-            fh.write(text)
-        items = [{"kind": "Learned", "text": "lots", "file": "memory.md"}]
-        if len(seen) == 2:
-            items.append({"kind": "Moved", "text": "moved 199 entries", "file": "knowledge/old.md"})
+            fh.write(big if len(seen) == 1 else small)
+        if len(seen) == 1:
+            body = {"summary": "First pass.", "items": [
+                {"kind": "Learned", "text": "Staging first.", "entry": "m-0001", "file": "memory.md",
+                 "from": [said["id"]], "undo": "Remove m-0001."}],
+                "digested": [said["id"], corr["id"]],
+                "drafts": [{"to": {"name": "Ana"}, "subject": "A", "text": "first draft"}]}
+        else:  # the compaction rewrites the file whole, without the first pass's list
+            body = {"summary": "Compacted.", "items": [
+                {"kind": "Moved", "text": "Moved 199 entries.", "file": "knowledge/old.md"}],
+                "digested": [guess["id"]], "drafts": [{"to": {"name": "Bo"}, "subject": "B", "text": "second"}]}
         with open(os.path.join(out, "changes.json"), "w") as fh:
-            json.dump({"summary": "s", "items": items, "digested": []}, fh)
+            json.dump(body, fh)
         return "ok"
     stub_side(monkeypatch, fn=fn)
     res = nightly.run_job(s.id)
     assert len(seen) == 2 and seen[1].startswith("memory.md is 201 lines")
     assert nightly.memory_size(s.id)[0] <= 120
-    kinds = [it["kind"] for it in changes.get(s.id, res["run"])["items"]]
-    assert "Moved" in kinds
+    rec = changes.get(s.id, res["run"])
+    assert [(it["kind"], it["text"]) for it in rec["items"]] == [("Learned", "Staging first."),
+                                                                 ("Moved", "Moved 199 entries.")]
+    assert rec["summary"] == "First pass." and rec["fallback"] is False and len(rec["drafts"]) == 2
+    assert inbox.undigested(s.id) == []  # the union of both passes' digested
+
+
+def test_failed_run_digests_nothing_and_keeps_cursors(monkeypatch):
+    s, said, guess, corr = _setup()
+
+    def fn(call):
+        with open(os.path.join(call["cwd"], "memory.md"), "a") as fh:
+            fh.write("- [m-ffff] early {basis=guess; seen=1}\n")
+        with open(os.path.join(_out(call["prompt"]), "changes.json"), "w") as fh:
+            json.dump({"summary": "early", "items": [{"kind": "Learned", "text": "early", "file": "memory.md"}],
+                       "digested": [said["id"], guess["id"], corr["id"]],
+                       "drafts": [{"to": {"name": "Ana"}, "subject": "s", "text": "t"}]}, fh)
+        return {"ok": False, "error": "timed out", "answer": "", "transcript": []}
+    stub_side(monkeypatch, fn=fn)
+    st = nightly.state(s.id)
+    st["cursors"] = {"keep": {"size": 1, "lines": 1}}
+    nightly._save_state(s.id, st)
+    res = nightly.run_job(s.id)
+    assert res["status"] == "error"
+    assert len(inbox.undigested(s.id)) == 3
+    from fused_render.specialists import drafts
+    assert drafts.waiting(s.id) == []
+    st = nightly.state(s.id)
+    assert st["cursors"] == {"keep": {"size": 1, "lines": 1}} and st.get("last_error") and not st.get("last_ok")
+    rec = changes.get(s.id, res["run"])
+    assert rec["status"] == "error" and rec["items"][0]["text"] == "early"  # what it changed is still listed
+
+
+def test_unconfirmed_user_said_weighs_as_verified(monkeypatch):
+    s = make_specialist()
+    claimed = inbox.add(s.id, kind="convention", claim="Model says the user said X.", basis="user-said",
+                        source={"type": "task", "session_id": "t"})
+    mine = inbox.add(s.id, kind="convention", claim="I said Y.", basis="user-said",
+                     source={"type": "user", "session_id": "t"})
+    calls = stub_side(monkeypatch, fn=_job(MEMORY, []))
+    res = nightly.run_job(s.id)
+    assert "Only a note marked \"confirmed by the user: yes\" counts as user-said" in calls[0]["prompt"]
+    md = open_text(os.path.join(s.home, ".specialist", "nightly", res["run"], "input", "notes.md"))
+    assert md.index(mine["id"]) < md.index(claimed["id"])
+    block = md[md.index(f"<<<NOTE {claimed['id']}"):].split("NOTE>>>")[0]
+    assert "confirmed by the user: no (weigh as verified)" in block
+    assert "confirmed by the user: yes" in md[md.index(f"<<<NOTE {mine['id']}"):].split("NOTE>>>")[0]
+
+
+def open_text(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _sent_report(s, days_ago):
+    import time
+
+    from fused_render.specialists import drafts
+    did = drafts.materialize(s.id, f"20261101-000000-{days_ago:04x}", [{"to": {"name": "Ana"}, "subject": "Bug",
+                                                                       "text": "Sync bug"}])[0]
+    d = drafts.get(s.id, did)
+    d.update(status="sent", sent_at=time.time() - days_ago * 86400)
+    drafts._save(s.id, d)
+    return did
+
+
+def test_open_reports_closed_by_job_or_when_stale(monkeypatch):
+    from fused_render.specialists import drafts, store
+    s = make_specialist()
+    stale = _sent_report(s, 31)
+    fresh = _sent_report(s, 2)
+    calls = stub_side(monkeypatch, fn=_job(MEMORY, []))
+    # no allowed service: open reports alone are no reason for a model run; the stale one is closed by the app
+    assert nightly.run_job(s.id)["status"] == "nothing" and calls == []
+    assert drafts.get(s.id, stale)["status"] == "closed" and drafts.get(s.id, stale)["closed_by"] == "stale"
+    assert drafts.get(s.id, fresh)["status"] == "sent"
+    # with a service to check it with, the job runs and may close it
+    store.update(s.id, connections=["slack"])
+    st = nightly.state(s.id)
+    st.pop("last_ok", None)
+    nightly._save_state(s.id, st)
+    calls = stub_side(monkeypatch, fn=_job(MEMORY, [], extra={"closed_reports": [fresh, "d-zzz"]}))
+    res = nightly.run_job(s.id)
+    assert res["status"] == "done" and len(calls) == 1
+    assert "closed_reports" in calls[0]["prompt"]
+    assert fresh in open_text(os.path.join(s.home, ".specialist", "nightly", res["run"], "input", "receipts.md"))
+    assert drafts.get(s.id, fresh)["status"] == "closed" and drafts.sent(s.id) == []
+
+
+def test_breakout_history_for_repeat_judgement(monkeypatch):
+    import time
+    s = make_specialist()
+    now = time.time()
+    monkeypatch.setattr(breakouts, "for_spec", lambda sid: [
+        {"id": "b-old", "opened": now - 40 * 86400, "status": "closed", "brief": {"problem": "ancient"}},
+        {"id": "b-1", "opened": now - 10 * 86400, "status": "closed", "brief": {"problem": "Sync stalls <<<x>>>"},
+         "closes": [{"draft": "Outcome: workaround - reopen\nFound: ..."}]},
+        {"id": "b-2", "opened": now - 60, "status": "discarded", "brief": {"problem": "Sync stalls again"}}])
+    lines = "\n".join(nightly.breakouts_md(s.id, since=now - 86400, now=now))
+    assert "ancient" not in lines and "Breakouts in the last 30 days (2, 1 new" in lines
+    assert "b-1" in lines and "-> outcome: workaround - reopen" in lines and "<<<" not in lines
+    assert "- NEW b-2" in lines and "discarded, no summary" in lines and "repeat_breakouts" in lines
+
+
+def test_deleted_during_run_recreates_nothing(monkeypatch, tmp_path):
+    import shutil
+    s, *_ = _setup()
+    trash = tmp_path / "trash"
+
+    def fn(call):
+        shutil.move(s.home, trash)  # core's delete moves the home to .state/trash
+        return "ok"
+    stub_side(monkeypatch, fn=fn)
+    res = nightly.run_job(s.id)
+    assert res["status"] == "error" and not os.path.exists(s.home)
+    assert nightly.running(s.id) is False
 
 
 class _FakeAgent:
@@ -211,16 +332,16 @@ def test_reads_main_chat_and_discarded_breakout_sessions(monkeypatch, tmp_path):
     res = nightly.run_job(s.id)
     assert res["status"] == "done" and len(calls) == 1
     sess = os.path.join(s.home, ".specialist", "nightly", res["run"], "input", "sessions")
-    b = open(os.path.join(sess, "sid-b.md")).read()
+    b = open_text(os.path.join(sess, "sid-b.md"))
     assert "breakout (discarded)" in b and "AGENT| Reopening fixed it." in b and "<<<TRANSCRIPT" in b
-    assert "USER| Remember the staging rule" in open(os.path.join(sess, "sid-main.md")).read()
+    assert "USER| Remember the staging rule" in open_text(os.path.join(sess, "sid-main.md"))
     assert nightly.state(s.id)["cursors"]["sid-b"]["lines"] == 2
     # unchanged sessions are not read again
     assert nightly.run_job(s.id)["status"] == "nothing" and len(calls) == 1
 
 
 def test_restart_mid_nightly_closes_interrupted_run(monkeypatch):
-    s, said, guess, corr = _setup()
+    s, said, _guess, _corr = _setup()
 
     def die(call):
         with open(os.path.join(call["cwd"], "memory.md"), "a") as fh:
@@ -246,7 +367,7 @@ def test_restart_mid_nightly_closes_interrupted_run(monkeypatch):
 
 
 def test_restart_while_applying_finishes_once(monkeypatch):
-    s, said, guess, corr = _setup()
+    s, said, _guess, _corr = _setup()
     calls = stub_side(monkeypatch, fn=_job(MEMORY + "- [m-dddd] d {basis=guess; seen=1}\n",
                                             [{"kind": "Learned", "text": "d", "file": "memory.md"}],
                                             digested=[said["id"]],

@@ -5,6 +5,7 @@
 // · Undo". Placed by time (`placeEvents`) after the turn they happened in.
 import { useState } from "react";
 import {
+  confirmNote,
   deleteNote,
   errorText,
   getReceipt,
@@ -101,6 +102,7 @@ export function TaskEventChip({
   reopen = reopenBreakout,
   receipt = getReceipt,
   undoNote = deleteNote,
+  useNow = confirmNote,
 }: {
   ev: TaskEvent;
   host: ChipHost;
@@ -108,11 +110,13 @@ export function TaskEventChip({
   reopen?: typeof reopenBreakout;
   receipt?: typeof getReceipt;
   undoNote?: typeof deleteNote;
+  useNow?: typeof confirmNote;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [shown, setShown] = useState<string | null>(null);
   const [undone, setUndone] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
   const specId = ev.specialist?.id || "";
   const name = ev.specialist?.name || "";
 
@@ -171,6 +175,25 @@ export function TaskEventChip({
     }
   };
 
+  const onUseNow = async () => {
+    if (!ev.note_id) return;
+    setBusy(true);
+    setError("");
+    try {
+      await useNow(specId || "general", ev.note_id);
+      setConfirmed(true);
+      host.refresh();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // A note the TASK says the user said waits for the user: Use now puts it in
+  // effect; until then it is weighed by the nightly update like any other.
+  const saidByUser = ev.kind === "note" && ev.basis === "user-said";
+  const inEffect = confirmed || ev.in_effect === true;
+
   if (undone) {
     return (
       <div className="spx-chip is-quiet" role="status">
@@ -191,6 +214,12 @@ export function TaskEventChip({
         {(ev.kind === "breakout_closed" || ev.kind === "breakout_open") && ev.breakout_id ? (
           <button type="button" className="spx-chip-btn" onClick={() => void onReopen()} disabled={busy}>
             {ev.kind === "breakout_open" ? "Open" : "Reopen"}
+          </button>
+        ) : null}
+        {saidByUser && inEffect ? <span className="spx-chip-said">In effect now</span> : null}
+        {saidByUser && !inEffect && ev.note_id ? (
+          <button type="button" className="spx-chip-btn" onClick={() => void onUseNow()} disabled={busy}>
+            Use now
           </button>
         ) : null}
         {ev.kind === "note" && ev.note_id && ev.undoable !== false ? (

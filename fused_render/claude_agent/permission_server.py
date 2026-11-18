@@ -934,8 +934,8 @@ def _handle_approve(args: dict) -> dict:
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
     if policy != "ask_always" and _chat_allows(tool_name, tool_input):
-        return _text(_permission_result(tool_name, tool_input,
-                                        {"decision": "allow", "scope": "once"}))
+        return _text(_granted(policy, tool_name, tool_input,
+                              {"decision": "allow", "scope": "once"}))
 
     req_id = _request_id()
     _write_atomic(os.path.join(PERM_DIR, req_id + ".req.json"), {
@@ -950,8 +950,21 @@ def _handle_approve(args: dict) -> dict:
     # the human has already answered.
     key = _register_inflight(req_id)
     _post_card_raised(req_id)
-    return _text(_permission_result(tool_name, tool_input,
-                                    _await_approval(req_id, key)))
+    return _text(_granted(policy, tool_name, tool_input, _await_approval(req_id, key)))
+
+
+def _granted(policy: str, tool_name: str, tool_input: dict, decision: dict) -> dict:
+    """`_permission_result`, after recording a one-time grant with the server
+    when an approved call is a specialist service call that needed asking (its
+    tool refuses to run without one). A grant that cannot be recorded is a
+    deny: the call would fail anyway, and the model is told why."""
+    if policy in ("ask", "ask_always") and decision.get("decision") == "allow" \
+            and not _specialist_grant(tool_name):
+        return {"behavior": "deny",
+                "message": "The approval could not be recorded with Fused Render; "
+                           "the service call did not run. Try again.",
+                "decisionClassification": "user_reject"}
+    return _permission_result(tool_name, tool_input, decision)
 
 
 def _handle_app_state(args: dict) -> dict:
@@ -2436,7 +2449,7 @@ _SP_ARG = {"type": "string", "description": "The specialist's name or id, as spe
 _SP_TEXT = lambda cap, d: {"type": "string", "maxLength": cap, "description": d}  # noqa: E731
 SPECIALIST_SCHEMAS = [
     {"name": "specialist_list",
-     "description": "List the user's specialists (experts on one subject each).",
+     "description": "List the user's specialists (each knows one subject in depth).",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "specialist_pull",
      "description": ("Load a specialist's guidance (memory, topic files, skills) into "
@@ -2453,7 +2466,8 @@ SPECIALIST_SCHEMAS = [
     {"name": "specialist_note",
      "description": ("Send a note to a specialist's inbox: something it got wrong, "
                      "missed, or a convention the user stated. Omit specialist when "
-                     "none fits."),
+                     "none fits. For a correction, give the entry id ([m-xxxx]) from "
+                     "the guidance when it had one."),
      "inputSchema": {"type": "object", "properties": {
          "specialist": _SP_ARG, "kind": {"type": "string", "enum": _NOTE_KINDS},
          "claim": _SP_TEXT(300, "One sentence."),
@@ -2474,18 +2488,13 @@ SPECIALIST_SCHEMAS = [
 ]
 
 
-def _specialist_policy(tool_name: str) -> str:
-    """"allow" | "ask" | "ask_always" | "" for a connected-service call of a
-    specialist main chat / breakout (env FUSED_SPECIALIST_POLICY =
-    "<origin>|<id>|<kind>"); "" when the seam does not apply. Failure ⇒ ask."""
+def _policy_ctx():
+    """(origin, specialist id, kind, session id) of a specialist main chat /
+    breakout (env FUSED_SPECIALIST_POLICY = "<origin>|<id>|<kind>"), or None."""
     env = os.environ.get("FUSED_SPECIALIST_POLICY") or ""
-    if not env or not str(tool_name).startswith("mcp__specialist_services__"):
-        return ""
     parts = env.rsplit("|", 2)
     if len(parts) != 3:
-        return "ask"
-    import urllib.parse
-    origin, spec_id, kind = parts
+        return None
     sid = ""
     try:
         with open(os.path.join(os.path.dirname(PERM_DIR), "meta.json"), encoding="utf-8") as fh:
@@ -2493,10 +2502,43 @@ def _specialist_policy(tool_name: str) -> str:
         sid = str(meta.get("session_id") or meta.get("resumed_from") or "")
     except (OSError, ValueError, AttributeError):
         pass
+    return parts[0].rstrip("/"), parts[1], parts[2], sid
+
+
+def _specialist_grant(tool_name: str) -> bool:
+    """Tell the server the user approved this one service call (policy ask /
+    ask_always), so `services.call` runs it: POST /api/specialists/policy/grant
+    with the run's secret (env FUSED_SPECIALIST_GRANT). True when recorded."""
+    ctx = _policy_ctx()
+    if ctx is None:
+        return False
+    origin, spec_id, kind, sid = ctx
+    try:
+        status, _ = _server_http(origin, "POST", "/api/specialists/policy/grant",
+                                 {"specialist": spec_id, "kind": kind, "session_id": sid,
+                                  "tool": tool_name,
+                                  "secret": os.environ.get("FUSED_SPECIALIST_GRANT") or ""}, 2.0)
+    except OSError:
+        return False
+    return status == 200
+
+
+def _specialist_policy(tool_name: str) -> str:
+    """"allow" | "ask" | "ask_always" | "" for a connected-service call of a
+    specialist main chat / breakout (env FUSED_SPECIALIST_POLICY =
+    "<origin>|<id>|<kind>"); "" when the seam does not apply. Failure ⇒ ask."""
+    if not os.environ.get("FUSED_SPECIALIST_POLICY") \
+            or not str(tool_name).startswith("mcp__specialist_services__"):
+        return ""
+    ctx = _policy_ctx()
+    if ctx is None:
+        return "ask"
+    import urllib.parse
+    origin, spec_id, kind, sid = ctx
     query = urllib.parse.urlencode({"specialist": spec_id, "kind": kind,
                                     "session_id": sid, "tool": tool_name})
     try:
-        status, payload = _server_http(origin.rstrip("/"), "GET",
+        status, payload = _server_http(origin, "GET",
                                        "/api/specialists/policy?" + query, None, 2.0)
     except OSError:
         return "ask"

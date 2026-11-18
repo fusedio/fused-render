@@ -172,6 +172,9 @@ export interface Note {
   at: number;
   app_version?: string;
   digested?: number | null;
+  /** True once the note reaches sessions and pulls (said.md). A note a TASK
+   *  says the user said is false until the user confirms it (Use now). */
+  in_effect?: boolean;
 }
 
 export interface SkillRow {
@@ -194,6 +197,10 @@ export interface ServiceRow {
   kind: "connect" | "app" | string;
   connected: boolean;
   allowed: boolean;
+  // CONTRACT: optional per-tool facts, so a breakout's card can tell a read
+  // (may offer "Approve, don't ask again") from a write (never). Absent: the
+  // breakout offers nothing.
+  tools?: { name: string; write: boolean }[];
 }
 
 export interface Counts {
@@ -223,6 +230,9 @@ export interface TaskEvent {
   trigger?: "choice" | "signal" | string;
   note_id?: string;
   undoable?: boolean;
+  /** `note` events: the note's basis, and whether it is in effect yet. */
+  basis?: string;
+  in_effect?: boolean;
   breakout_id?: string;
   session_id?: string;
 }
@@ -351,6 +361,12 @@ export const addNote = (
   },
 ) => post<Note>(`${one(id)}/notes`, body);
 export const deleteNote = (id: string, nid: string) => del<{ ok: true }>(`${one(id)}/notes/${enc(nid)}`);
+/** A note a task said the user said, confirmed by the user: in effect now. */
+export const confirmNote = (id: string, nid: string) => post<Note>(`${one(id)}/notes/${enc(nid)}/confirm`);
+/** The general inbox: notes that fit no specialist. */
+export const getGeneralInbox = () => getJson<{ notes: Note[] }>(`${SPECIALISTS_API}/general/inbox`);
+export const moveGeneralNote = (nid: string, specialist: string) =>
+  post<Note>(`${SPECIALISTS_API}/general/notes/${enc(nid)}/move`, { specialist });
 export const listDrafts = (id: string) => getJson<{ drafts: Draft[] }>(`${one(id)}/drafts`);
 export const sendDraft = (id: string, did: string) =>
   post<{ message: string; session_id: string | null }>(`${one(id)}/drafts/${enc(did)}/send`);

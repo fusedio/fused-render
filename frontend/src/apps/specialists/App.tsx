@@ -7,11 +7,14 @@ import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import {
   errorText,
+  getGeneralInbox,
   getSpecialist,
   listSpecialists,
+  type Note,
   type SpecialistDetail,
   type SpecialistSummary,
 } from "@platform/lib/specialists-api";
+import { GeneralInbox } from "./dialogs/GeneralInbox";
 import { parseSpecialistsPath, specialistHref, specialistsHref } from "./routes";
 import { MainChat, type ChatHandle } from "./components/MainChat";
 import { SidePanel } from "./components/SidePanel";
@@ -33,6 +36,8 @@ export function Specialists() {
   const [creating, setCreating] = useState(false);
   const [settings, setSettings] = useState<SettingsTab | null>(null);
   const [panelKey, setPanelKey] = useState(0);
+  const [general, setGeneral] = useState<Note[]>([]);
+  const [generalOpen, setGeneralOpen] = useState(false);
   const chat = useRef<ChatHandle | null>(null);
   const selected = route.kind === "specialist" ? route.id : null;
 
@@ -47,6 +52,10 @@ export function Specialists() {
         setListError(errorText(err));
         setLoading(false);
       },
+    );
+    getGeneralInbox().then(
+      (r) => setGeneral(Array.isArray(r?.notes) ? r.notes : []),
+      () => {},
     );
   }, []);
   useEffect(() => {
@@ -92,6 +101,8 @@ export function Specialists() {
         error={listError}
         onSelect={(id) => void navigateUrl(specialistHref(id))}
         onCreate={() => setCreating(true)}
+        generalCount={general.length}
+        onOpenGeneral={() => setGeneralOpen(true)}
       />
       {detail ? (
         <>
@@ -125,6 +136,14 @@ export function Specialists() {
           ) : null}
         </main>
       )}
+      {generalOpen ? (
+        <GeneralInbox
+          notes={general}
+          specialists={rows}
+          onClose={() => setGeneralOpen(false)}
+          onChanged={loadList}
+        />
+      ) : null}
       {creating ? (
         <CreateSpecialist
           onClose={() => setCreating(false)}

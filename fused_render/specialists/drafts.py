@@ -2,7 +2,7 @@
 
     <home>/.specialist/drafts/<did>.json
     {"id","at","to":{"name","service","handle"},"subject","text","why","from":{"kind":"nightly","run"},
-     "status":"waiting|sending|sent|discarded"}
+     "status":"waiting|sending|sent|discarded|closed"}
     <home>/.specialist/pending_sends.json   {"<main session id or ''>": {"draft","at"}}
 
 The nightly job only writes them (`materialize`). Nothing sends a draft but the user: **Review and send**
@@ -10,6 +10,9 @@ The nightly job only writes them (`materialize`). Nothing sends a draft but the 
 that session, so the services policy forces a card on the turn's service writes (`send_pending`). When that turn
 ends (`after_turn`, the Stop hook) the draft is `sent` if the turn made a successful service write after the
 message, else it waits again. **Discard** marks it `discarded` (kept on disk, out of the list).
+
+A sent draft is an open report the nightly job follows up, until it is `closed`: by the job (`closed_reports` in
+its changes.json, `close`) or by the app when it is `STALE_S` old (`close_stale`, no model call).
 """
 from __future__ import annotations
 
@@ -26,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 SEND_DRAFT = ("Review and send this draft to {name} through {service} ({handle}). Show me the exact text first, then "
               "send it with the service tool; I will approve the send.\n\nSubject: {subject}\n\n{text}")
-STATUSES = ("waiting", "sending", "sent", "discarded")
+STATUSES = ("waiting", "sending", "sent", "discarded", "closed")
+STALE_S = 30 * 86400
 DRAFT_ID_RE = re.compile(r"^d-[0-9a-f]{12}$")
 SERVICES_PREFIX = "mcp__specialist_services__"
 PENDING_FILE = "pending_sends.json"
@@ -51,7 +55,14 @@ def get(spec_id: str, did: str) -> dict | None:
     return d if isinstance(d, dict) and d.get("id") == did else None
 
 
+def _home_ok(spec_id: str) -> bool:
+    from fused_render.specialists import paths
+    return os.path.isfile(os.path.join(paths.home(spec_id), "specialist.json"))
+
+
 def _save(spec_id: str, d: dict) -> None:
+    if not _home_ok(spec_id):
+        raise LookupError(f"no such specialist: {spec_id}")  # deleted: never recreate its folder
     write_json(os.path.join(_dir(spec_id), d["id"] + ".json"), d)
 
 
@@ -80,6 +91,27 @@ def sent(spec_id: str) -> list[dict]:
     return [d for d in all_drafts(spec_id) if d.get("status") == "sent"]
 
 
+def close(spec_id: str, dids, reason: str) -> list[str]:
+    """Close the sent reports `dids` (no longer followed up). Returns the ids closed now."""
+    done = []
+    with _LOCK:
+        for did in dids or []:
+            d = get(spec_id, did) if isinstance(did, str) else None
+            if d is None or d.get("status") != "sent":
+                continue
+            d.update(status="closed", closed_at=time.time(), closed_by=reason)
+            _save(spec_id, d)
+            done.append(did)
+    return done
+
+
+def close_stale(spec_id: str, now: float | None = None) -> list[str]:
+    """Close every sent report older than `STALE_S` (by when it was sent)."""
+    now = time.time() if now is None else now
+    old = [d["id"] for d in sent(spec_id) if now - float(d.get("sent_at") or d.get("at") or 0) >= STALE_S]
+    return close(spec_id, old, "stale")
+
+
 def _s(v, cap: int) -> str:
     return str(v if isinstance(v, (str, int, float)) else "").strip()[:cap]
 
@@ -91,9 +123,11 @@ def materialize(spec_id: str, run: str, items: list) -> list[str]:
     for i, item in enumerate(items or []):
         if not isinstance(item, dict) or not _s(item.get("text"), 1):
             continue
-        did = "d-" + hashlib.sha1(f"{spec_id}/{run}/{i}".encode()).hexdigest()[:12]  # noqa: S324 — an id
+        did = "d-" + hashlib.sha1(f"{spec_id}/{run}/{i}".encode()).hexdigest()[:12]  # noqa: S324 — an id, not security
         ids.append(did)
         with _LOCK:
+            if not _home_ok(spec_id):
+                break
             if get(spec_id, did) is not None:
                 continue
             to = item.get("to") if isinstance(item.get("to"), dict) else {}

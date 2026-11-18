@@ -40,7 +40,9 @@ logger = logging.getLogger(__name__)
 
 KINDS = ("check", "reviewer", "nightly")
 PARALLEL = 3
-SLOT_WAIT_S = 120.0
+#: How long a check / reviewer waits for a free slot: short, so slot wait + run fits inside the caller's own
+#: timeout and a busy specialist answers BUSY fast instead of outliving the task that asked.
+SLOT_WAIT_S = 30.0
 ROWS_KEPT = 300
 LINE_MAX = 4000
 BUSY = "the specialist is busy; try again in a minute"
@@ -274,6 +276,10 @@ def save_row(spec_id: str, row: dict) -> dict:
     """Write a row (filling `id` when missing). Used here and for app rows such as history's `guard`."""
     if not row.get("id"):
         row["id"] = new_row_id(row.get("started"))
+    if not os.path.isdir(paths.home(spec_id)):
+        # The home was deleted (moved to trash) while this ran: writing would recreate a ghost folder.
+        logger.info("specialists: %s is gone; row %s not saved", spec_id, row["id"])
+        return row
     hm.write_json(os.path.join(_rows_dir(spec_id), os.path.basename(row["id"]) + ".json"), row)
     return row
 

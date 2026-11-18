@@ -19,7 +19,13 @@ def test_main_spec(app_home):
     assert sp["allow"] == ["mcp__specialist__note"]
     assert set(sp["mcp_servers"]) == {"specialist", "specialist_services"}
     entry = sp["mcp_servers"]["specialist"]
-    assert "sessmcp" in os.path.basename(entry["args"][0]) and entry["args"][2:] == [s.id, "main", sp["token"], "specialist"]
+    assert "sessmcp" in os.path.basename(entry["args"][0]) and entry["args"][2:] == [s.id, "main", "-", "specialist"]
+    assert sp["token"] not in json.dumps(entry["args"]) and entry["env"]["FUSED_SPECIALIST_TOKEN"] == sp["token"]
+    for p in (".claude/settings.json", ".claude/settings.local.json"):
+        assert f"Edit(/{h}/{p})" in sp["deny"], p
+    assert not any(r.endswith("/.claude/skills/**)") for r in sp["deny"])  # main may change its skills (F)
+    grant = sp["policy_env"]["FUSED_SPECIALIST_GRANT"]
+    assert len(grant) >= 24 and launch.check_token(s.id, "main", sp["token"])["grant"] == grant
     assert entry["alwaysLoad"] is True and entry["timeout"] > 60_000
     assert sp["hooks"] == {"Stop": [{"hooks": [{"specialist_hook": "stop"}]}]}
     assert "main chat" in sp["append"]

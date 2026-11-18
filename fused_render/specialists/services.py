@@ -130,14 +130,25 @@ def find(spec, kind: str, tool: str) -> dict | None:
     return next((e for e in roster(spec, "main" if kind == "nightly" else kind) if e["name"] == name), None)
 
 
-def call(spec, kind: str, name: str, args) -> dict:
+NEEDS_CARD = "This call needs the user's approval card."
+
+
+def call(spec, kind: str, name: str, args, *, session_id: str = "", grant_secret: str = "") -> dict:
     """Run one service tool for a session of `kind`: `{"content":[{"type":"text","text"}], "isError"}`. Refuses
-    a tool not in that kind's roster (so a nightly can never write) and never raises."""
+    a tool not in that kind's roster (so a nightly can never write). Main/breakout: a call whose `policy` is not
+    `allow` runs only by spending a one-time grant the permission server recorded when the user answered its card
+    (`launch.take_grant` with this run's secret), so the server, not only the CLI's prompt, enforces the card.
+    Never raises."""
     entry = next((e for e in roster(spec, kind) if e["name"] == _strip(str(name or ""))), None)
     if entry is None:
         why = ("the nightly update may only use read-only tools of allowed services" if kind == "nightly"
                else "no such service tool for this specialist")
         return {"content": [{"type": "text", "text": f"error: {why} ({name})"}], "isError": True}
+    if kind in ("main", "breakout") and policy(spec.id, kind, session_id, entry["name"]) != "allow":
+        from fused_render.specialists import launch
+
+        if not launch.take_grant(spec.id, grant_secret, entry["name"]):
+            return {"content": [{"type": "text", "text": NEEDS_CARD}], "isError": True}
     try:
         res = _apptools().run_tool(entry["rec"], args if isinstance(args, dict) else {})
     except Exception as e:  # noqa: BLE001
@@ -158,27 +169,28 @@ def _send_pending(spec_id: str, session_id: str) -> bool:
 
 
 def policy(spec_id: str, kind: str, session_id: str, tool: str) -> str:
-    """`allow` (no card), `ask` (the normal card, "Always approve" honoured) or `ask_always` (a card every time).
+    """`allow` (no card), `ask` (the normal card) or `ask_always` (a card every time; the chat's generic "Always
+    approve" store is skipped, so only the specialist's own "Approve, don't ask again" (`set_allowed`) can stop
+    it asking).
 
-    main:     allowed -> allow, else ask; a write while a draft send is pending in this session -> ask.
-    breakout: allowed and read-only -> allow; a write -> ask_always; else ask.
-    Anything unknown -> ask (fail closed to a card, never to silence)."""
+    main:     a write while a Review-and-send is pending in this session -> ask_always; allowed -> allow;
+              not allowed -> ask_always.
+    breakout: allowed and read-only -> allow; any write -> ask_always; not allowed -> ask_always.
+    Anything unknown -> ask_always (fail closed to a card, never to silence)."""
     from fused_render.specialists import store
 
     spec = store.get(spec_id)
     if spec is None or kind not in ("main", "breakout"):
-        return "ask"
+        return "ask_always"
     e = find(spec, kind, tool)
     if e is None:
-        return "ask_always" if kind == "breakout" else "ask"
+        return "ask_always"
     allowed = e["key"] in allowed_set(spec)
     if kind == "breakout":
-        if e["write"]:
-            return "ask_always"
-        return "allow" if allowed else "ask"
+        return "allow" if allowed and not e["write"] else "ask_always"
     if e["write"] and _send_pending(spec_id, session_id):
-        return "ask"
-    return "allow" if allowed else "ask"
+        return "ask_always"
+    return "allow" if allowed else "ask_always"
 
 
 def set_allowed(spec_id: str, add=(), remove=()) -> list:
@@ -199,10 +211,16 @@ def set_allowed(spec_id: str, add=(), remove=()) -> list:
 
 
 def connections(spec) -> dict:
-    """`{"services":[{"key","title","kind":"connect|app","connected","allowed"}]}` for Settings › Connections:
-    every connect provider (signed in or not) and every local app with tools."""
+    """`{"services":[{"key","title","kind":"connect|app","connected","allowed","tools"}]}` for Settings ›
+    Connections and the approval card: every connect provider (signed in or not) and every local app with tools.
+    `tools` = `[{"name": "mcp__specialist_services__…", "write"}]`, the full names a session sees (same roster
+    code), so the card can map a tool to its service and tell a read from a write; [] when not connected (a
+    service lists tools only while connected)."""
     at = _apptools()
     allowed = allowed_set(spec)
+    tools: dict[str, list] = {}
+    for e in roster(spec, "main"):  # the names a main chat / breakout session sees, exactly
+        tools.setdefault(e["key"], []).append({"name": TOOL_PREFIX + e["name"], "write": e["write"]})
     out, seen = [], set()
     try:
         from fused_render.connect import manager
@@ -221,16 +239,23 @@ def connections(spec) -> dict:
         except Exception:  # noqa: BLE001
             connected = False
         out.append({"key": key, "title": str(getattr(p, "name", "") or key), "kind": "connect",
-                    "connected": connected, "allowed": key in allowed})
+                    "connected": connected, "allowed": key in allowed,
+                    "tools": tools.get(key, [])})
     for rec in _all_records():
         if at.is_connect(rec):
+            key = key_of(rec)
+            if key not in seen:  # a service whose tools list but whose pack the listing missed
+                seen.add(key)
+                out.append({"key": key, "title": title_of(rec), "kind": "connect", "connected": True,
+                            "allowed": key in allowed, "tools": tools.get(key, [])})
             continue
         key = key_of(rec)
         if key in seen:
             continue
         seen.add(key)
-        out.append({"key": key, "title": str(rec.app), "kind": "app", "connected": True, "allowed": key in allowed})
+        out.append({"key": key, "title": str(rec.app), "kind": "app", "connected": True, "allowed": key in allowed,
+                    "tools": tools.get(key, [])})
     for key in sorted(allowed - seen):  # allowed but gone: still shown so it can be removed
         out.append({"key": key, "title": key, "kind": "app" if key.startswith(APP_PREFIX) else "connect",
-                    "connected": False, "allowed": True})
+                    "connected": False, "allowed": True, "tools": []})
     return {"services": out}

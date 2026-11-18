@@ -1,6 +1,7 @@
 """Side sessions (check / reviewer / nightly) with `_spawn` stubbed: argv fence, rows, timeouts, restart (X)."""
 from _specialists_conftest import *  # noqa: F401,F403
 import json
+import os
 import sys
 import textwrap
 import threading
@@ -153,3 +154,17 @@ def test_parallel_cap(app_home, monkeypatch):
     for t in ts:
         t.join(10)
     assert len(harness.rows(s.id)) == 5
+
+
+def test_slot_wait_fits_inside_a_check():
+    assert harness.SLOT_WAIT_S == 30.0
+
+
+def test_rows_never_recreate_a_deleted_home(app_home):
+    from fused_render.specialists import chat, store
+
+    s = make_specialist()
+    store.delete(s.id)
+    harness.save_row(s.id, {"kind": "check", "status": "done", "started": 1.0, "trigger": {}})
+    chat.clear(s.id)
+    assert not os.path.exists(s.home)

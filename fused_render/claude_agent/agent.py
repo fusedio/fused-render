@@ -2839,15 +2839,20 @@ def _specialists_live() -> bool:
         return False
 
 
-def _inside_specialists_root(file: str) -> bool:
-    """String test: is `file` under the specialists root (a home)? Such a
-    session never gets the task tools, so a breakout cannot open one."""
+def _specialists_root() -> str:
+    """The specialists root, off the server's loaded module ("" when none)."""
     try:
         mod = (sys.modules.get("fused_render.specialists.launch")
                or sys.modules.get("fused_render.specialists.paths"))
-        root = os.path.normpath(mod.root()) if mod is not None else ""
+        return os.path.normpath(mod.root()) if mod is not None else ""
     except Exception:  # noqa: BLE001
-        return False
+        return ""
+
+
+def _inside_specialists_root(file: str) -> bool:
+    """String test: is `file` under the specialists root (a home)? Such a
+    session never gets the task tools, so a breakout cannot open one."""
+    root = _specialists_root()
     path = os.path.normpath(os.path.abspath(file or ""))
     return bool(root) and (path == root or path.startswith(root + os.sep))
 
@@ -2872,14 +2877,33 @@ def _specialists_on(run_dir: str, refresh: bool = False) -> bool:
     on = _specialists_live()
     try:
         if on:
+            # The root, so the session host (which cannot see the server's
+            # modules) can grant reads of what a pull points to.
             with _private_open(path) as fh:
-                fh.write("1")
+                fh.write(_specialists_root() or "1")
         elif os.path.exists(path):
             os.remove(path)
     except OSError as exc:
         sys.stderr.write("specialists: could not record: %s\n" % exc)
         return False
     return on
+
+
+def _specialist_read_rules(run_dir: str) -> list:
+    """Read allow rules for what a pull points a task to: each home's
+    memory.md, knowledge/ and skills, and nothing else of the root (not
+    inbox/, .specialist/ or said.md). One glob per kind (a `*` mid-path is
+    honoured, verified with claude 2.1.327), both spellings of the root."""
+    try:
+        with open(os.path.join(run_dir, _SPECIALISTS_FILE), encoding="utf-8") as fh:
+            root = fh.read().strip()
+    except OSError:
+        return []
+    if not os.path.isabs(root):
+        return []
+    return ["Read(//%s/*/%s)" % (_wire_path(d).lstrip("/"), tail)
+            for d in _both_spellings([root])
+            for tail in ("memory.md", "knowledge/**", ".claude/skills/**")]
 
 
 def _specialist_hook_cmd(event: str) -> str:
@@ -2892,8 +2916,8 @@ def _specialist_hook_cmd(event: str) -> str:
 
 def _specialists_note() -> str:
     """TASK_NOTE (PLAN B.7): appended to a task run that has the tools."""
-    return (" SPECIALISTS: the user keeps specialists, each an expert on one "
-            "subject. Call mcp__fused_render__specialist_list when the work may "
+    return (" SPECIALISTS: the user keeps specialists, each of whom knows one "
+            "subject in depth. Call mcp__fused_render__specialist_list when the work may "
             "touch a subject someone knows better, then specialist_pull for "
             "guidance. Use specialist_note to tell a specialist something it got "
             "wrong or missed, or a convention the user stated. If you are stuck "
@@ -5152,7 +5176,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                        else [])
                     + ([str(r) for r in spec.get("allow") or []] if spec else [])
                     + ([f"mcp__{PERMISSION_SERVER}__{t}" for t in SPECIALIST_TOOLS]
-                       if sp_on else []))]
+                       + _specialist_read_rules(run_dir) if sp_on else []))]
     cmd += _plugin_argv(file)
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
@@ -5283,6 +5307,12 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                         hook.setdefault("type", "command")
                         hook.setdefault("timeout", 5)
                 settings.setdefault("hooks", {}).setdefault(event, []).append(group)
+        if not (spec.get("hooks") or {}).get("UserPromptSubmit"):
+            # Every turn in a home starts with the prompt hook: the server
+            # snapshots the home (history.before_turn) for the Stop-time guard.
+            settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
+                {"hooks": [{"type": "command", "command": _specialist_hook_cmd("prompt"),
+                            "timeout": 5}]})
     elif sp_on:
         # A task with the specialist tools: pull by signal on every prompt,
         # stuck detection on every failed tool (both fail open).
@@ -6989,6 +7019,11 @@ def _start(file: str, message: str, session_id: str, model: str,
         if sp_spec.get("error"):
             return {"error": str(sp_spec["error"]),
                     "reason": str(sp_spec.get("reason") or "specialist_refused")}
+    elif _inside_specialists_root(file) and _specialists_pref():
+        # A specialist's home is only ever started as its main chat or a
+        # breakout (with its deny rules); never as a plain task.
+        return {"error": "This folder is a specialist's home; open it from the "
+                         "Specialists page.", "reason": "specialist_home"}
     if fork_at:
         if not session_id or backend != "claude":
             return {"error": "fork is only available for Claude chats",

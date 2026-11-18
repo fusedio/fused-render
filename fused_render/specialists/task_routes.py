@@ -64,6 +64,11 @@ def stuck_window_s() -> float:
     return _num_env("FUSED_RENDER_SPECIALIST_STUCK_WINDOW_S", STUCK_WINDOW_S)
 
 
+def defuse_markers(text) -> str:
+    """Carried text can never open or close a marked block (the nightly prompt's rule)."""
+    return str(text or "").replace("<<<", "‹‹‹").replace(">>>", "›››")
+
+
 class _NotFound(Exception):
     pass
 
@@ -215,8 +220,9 @@ def tool_check(body=Body(None), x_fused: str | None = Header(None)):
 
     transcript = breakouts._transcript_path(who["target"], who["session_id"])
     prompt = CHECK.format(date=time.strftime("%Y-%m-%d"), what="plan" if stage == "plan" else "result",
-                          folder=who["target"] or "(not known)", transcript_path=transcript,
-                          summary=summary.replace("SUMMARY>>>", "SUMMARY>>"))
+                          folder=defuse_markers(who["target"] or "(not known)"),
+                          transcript_path=defuse_markers(transcript),
+                          summary=defuse_markers(summary))
     read_dirs = [d for d in (who["target"], os.path.dirname(transcript) if os.path.isabs(transcript) else "") if d]
     row = harness.run_side(spec, "check", prompt,
                            trigger={"type": "task", "stage": stage, "session_id": who["session_id"],
@@ -304,16 +310,29 @@ def _stuck(session_id: str, cwd: str, tool: str, error) -> str:
     path = os.path.join(paths.state_root(), "stuck", session_id + ".json")
     now = time.time()
     window, n = stuck_window_s(), stuck_n()
+    tool_key = f"tool:{tool}"
+
+    def recent(rows):
+        return [t for t in rows or [] if isinstance(t, (int, float)) and now - t <= window] + [now]
+
     with counts.file_lock(path + ".lock"):
         st = counts.read_json(path, {})
         st = st if isinstance(st, dict) else {}
         sigs = st.get("sigs") if isinstance(st.get("sigs"), dict) else {}
         nudged = st.get("nudged") if isinstance(st.get("nudged"), list) else []
-        times = [t for t in sigs.get(key) or [] if isinstance(t, (int, float)) and now - t <= window] + [now]
+        times = recent(sigs.get(key))
         sigs[key] = times[-50:]
+        # The same tool failing over and over with DIFFERENT errors is circling too: N + 2, once per tool.
+        by_tool = recent(sigs.get(tool_key))
+        sigs[tool_key] = by_tool[-50:]
         fire = len(times) >= n and key not in nudged
         if fire:
             nudged.append(key)
+        elif len(by_tool) >= n + 2 and tool_key not in nudged:
+            fire, times, sig = True, by_tool, "different errors each time"
+            nudged.append(tool_key)
+        if fire and tool_key not in nudged:
+            nudged.append(tool_key)  # one nudge per tool is enough for the second rule
         counts.write_json(path, {"sigs": sigs, "nudged": nudged[-200:]})
     if not fire:
         return ""
@@ -326,17 +345,80 @@ def _stuck(session_id: str, cwd: str, tool: str, error) -> str:
     return STUCK_NUDGE.format(n=len(times), tool=tool or "a tool", signature=sig or "same error", names=names)
 
 
-def _turn_ended(spec_id: str, session_id: str) -> None:
-    from fused_render.specialists import breakouts, chat, history
+def _kind_from_runs(home: str, session_id: str) -> str:
+    """`specialist.kind` from the meta of the live run of `session_id` in `home` (written by agent._start)."""
+    try:
+        from fused_render.claude_agent import agent_module
+
+        agent = agent_module()
+        for i, run in enumerate(agent._live_runs_in(home)):
+            if i >= 50:
+                break
+            if session_id not in (run.get("sessions") or ()):
+                continue
+            meta = counts_read(os.path.join(agent.RUNS, run["run_id"], "meta.json"))
+            sp = meta.get("specialist") if isinstance(meta, dict) else None
+            kind = sp.get("kind") if isinstance(sp, dict) else ""
+            if kind in ("main", "breakout"):
+                return kind
+    except Exception:  # noqa: BLE001
+        logger.debug("specialists: kind from runs", exc_info=True)
+    return ""
+
+
+def counts_read(path: str):
+    from fused_render.specialists import counts
+
+    return counts.read_json(path, {})
+
+
+def session_kind(spec, session_id: str) -> str:
+    """main or breakout for a session in `spec`'s home: the records, else the run's own meta, else breakout (the
+    stricter one: its guard runs)."""
+    from fused_render.specialists import chat
 
     kind = ""
     try:
-        kind = chat.kind_of(spec_id, session_id)
+        kind = chat.kind_of(spec.id, session_id)
     except Exception:  # noqa: BLE001
         pass
-    if not kind:
-        kind = "breakout" if session_id in breakouts.session_ids(spec_id) else "main"
-    history.after_turn(spec_id, kind, session_id)
+    return kind or _kind_from_runs(spec.home, session_id) or "breakout"
+
+
+def _turn_started(spec_id: str, session_id: str) -> None:
+    from fused_render.specialists import history, store
+
+    spec = store.get(spec_id)
+    before = getattr(history, "before_turn", None)
+    if spec is not None and callable(before):
+        before(spec_id, session_kind(spec, session_id), session_id)
+
+
+_PRUNED = {"at": 0.0}
+PRUNE_EVERY_S = 3600.0
+
+
+def _prune_maybe() -> None:
+    """Drop per-session state older than 30 days, at most once an hour per process."""
+    now = time.time()
+    if now - _PRUNED["at"] < PRUNE_EVERY_S:
+        return
+    _PRUNED["at"] = now
+    from fused_render.specialists import task_events
+
+    try:
+        task_events.prune(now)
+    except Exception:  # noqa: BLE001
+        logger.debug("specialists: prune", exc_info=True)
+
+
+def _turn_ended(spec_id: str, session_id: str) -> None:
+    from fused_render.specialists import history, store
+
+    spec = store.get(spec_id)
+    if spec is None:
+        return
+    history.after_turn(spec_id, session_kind(spec, session_id), session_id)
     for mod in ("changes", "drafts"):
         try:
             import importlib
@@ -362,9 +444,12 @@ def hook(body=Body(None), x_fused: str | None = Header(None)):
     if not task_events.valid_session(sid):
         return {}
     home_id = paths.spec_of_path(cwd) if cwd else None
+    _prune_maybe()
     if home_id:
-        # A specialist's own session: only the end of a turn matters (history, changes, drafts).
-        if event == "stop":
+        # A specialist's own session: a turn's start (snapshot for the guard) and end (history, changes, drafts).
+        if event == "prompt":
+            _turn_started(home_id, sid)
+        elif event == "stop":
             _turn_ended(home_id, sid)
         return {}
     if event == "prompt":
@@ -378,7 +463,7 @@ def hook(body=Body(None), x_fused: str | None = Header(None)):
                 version = history.memory_version(spec.id) or ""
             except Exception:  # noqa: BLE001
                 version = ""
-            if receipts.exists_for(spec.id, sid, version):
+            if receipts.pulled(sid, spec.id, version):
                 continue
             rec = pull_for(spec, session_id=sid, run_id="", cwd=cwd, trigger="signal", match=match,
                            background_lines=True)

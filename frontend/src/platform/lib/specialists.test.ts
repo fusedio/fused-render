@@ -23,7 +23,9 @@ import { COMPOSER_DRAFT_EVENT, type ComposerDraftDetail } from "./breakouts";
 import {
   addNote,
   clearChat,
+  confirmNote,
   createBreakout,
+  moveGeneralNote,
   deleteNote,
   patchSpecialist,
   putConnections,
@@ -174,6 +176,20 @@ describe("specialists api", () => {
     await clearChat("c1");
     expect(seen[0]).toMatchObject({ url: "/api/specialists/c1/chat/clear", method: "POST" });
     expect(seen[0]!.headers["X-Fused"]).toBe("1");
+  });
+
+  test("every write carries X-Fused: 1 (POST, PUT, PATCH, DELETE)", async () => {
+    await clearChat("c1");
+    await putConnections("c1", {});
+    await patchSpecialist("c1", { name: "x" });
+    await deleteNote("c1", "n-1");
+    await confirmNote("c1", "n-1");
+    await moveGeneralNote("n-2", "c1");
+    expect(seen.map((s) => s.headers["X-Fused"])).toEqual(["1", "1", "1", "1", "1", "1"]);
+    expect(seen.slice(-2).map((s) => [s.method, s.url, s.body])).toEqual([
+      ["POST", "/api/specialists/c1/notes/n-1/confirm", {}],
+      ["POST", "/api/specialists/general/notes/n-2/move", { specialist: "c1" }],
+    ]);
   });
 
   test("a note goes to the specialist or the general inbox; Undo deletes it", async () => {

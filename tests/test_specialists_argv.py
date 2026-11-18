@@ -117,6 +117,48 @@ def test_task_run_gets_tools_hooks_and_note(agent, tmp_path):
     assert "permissions" not in _settings(argv) or "deny" not in _settings(argv)["permissions"]
 
 
+def test_task_run_may_read_what_a_pull_points_to(agent, tmp_path):
+    rd = _rd(tmp_path)
+    root = str(tmp_path / "ws" / "specialists")
+    (rd / "specialists.on").write_text(root)
+    allowed = _allowed(_argv(agent, rd))
+    wire = "//" + root.lstrip("/")
+    assert {f"Read({wire}/*/memory.md)", f"Read({wire}/*/knowledge/**)",
+            f"Read({wire}/*/.claude/skills/**)"} <= set(allowed)
+    # nothing else of the root: not inbox/, .specialist/, said.md, the root itself
+    assert not [r for r in allowed if root in r and not r.endswith(("/*/memory.md)", "/*/knowledge/**)",
+                                                                     "/*/.claude/skills/**)"))]
+    # an old marker ("1") grants no reads
+    (rd / "specialists.on").write_text("1")
+    assert not [r for r in _allowed(_argv(agent, rd)) if "/*/" in r]
+
+
+def test_start_records_the_root_for_the_read_rules(agent, tmp_path, monkeypatch, start):
+    monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "1")
+    root, _ = _install_modules(monkeypatch, tmp_path, any_exist=True)
+    out, _, run_dir = start(str(tmp_path / "proj"))
+    assert open(os.path.join(run_dir, "specialists.on")).read() == os.path.normpath(root)
+
+
+def test_start_in_a_home_without_specialist_is_refused(agent, tmp_path, monkeypatch, start):
+    monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "1")
+    root, _ = _install_modules(monkeypatch, tmp_path)
+    home = os.path.join(root, "canvas")
+    os.makedirs(home)
+    out, _, _ = start(home)
+    assert out["reason"] == "specialist_home"
+    monkeypatch.setattr(agent, "_breakout_pref", lambda: True)
+    assert start(home, breakout=True)[0]["reason"] == "specialist_home"
+    assert not os.path.isdir(agent.RUNS) or not os.listdir(agent.RUNS)
+    # flag off: unchanged (a plain start runs)
+    monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
+    assert "error" not in start(home)[0]
+
+
+def test_task_note_never_says_expert(agent):
+    assert "expert" not in agent._specialists_note().lower()
+
+
 def test_task_tools_need_an_origin(agent, tmp_path, monkeypatch):
     rd = _rd(tmp_path)
     (rd / "specialists.on").write_text("1")
@@ -148,7 +190,11 @@ def test_breakout_spec_shapes_the_argv(agent, tmp_path):
     assert settings["permissions"]["ask"] == ["mcp__specialist_services"]
     stop = settings["hooks"]["Stop"][0]["hooks"][0]
     assert stop["type"] == "command" and stop["command"].endswith(" stop") and "specialist_hook" in stop["command"]
-    assert "UserPromptSubmit" not in settings["hooks"]
+    # every turn in a home starts with the prompt hook (history.before_turn), none of the task hooks
+    (prompt_group,) = settings["hooks"]["UserPromptSubmit"]
+    assert prompt_group["hooks"][0]["command"].endswith(" prompt")
+    assert "PostToolUseFailure" not in settings["hooks"]
+    assert not [r for r in _allowed(argv) if "/*/knowledge/**" in r]
     allowed = _allowed(argv)
     assert "mcp__specialist__note" in allowed and "Read(//work/proj/**)" in allowed
     assert "mcp__fused_render__specialist_pull" not in allowed

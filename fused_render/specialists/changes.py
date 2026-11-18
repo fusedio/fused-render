@@ -83,10 +83,34 @@ def validate(raw) -> dict | None:
                        "subject": _s(d.get("subject"), 300), "text": _s(d.get("text"), 8000),
                        "why": _s(d.get("why"), TEXT_MAX)})
     dig = raw.get("digested") if isinstance(raw.get("digested"), list) else []
+    closed = raw.get("closed_reports") if isinstance(raw.get("closed_reports"), list) else []
     rb = raw.get("repeat_breakouts")
     return {"summary": _s(raw.get("summary"), TEXT_MAX), "items": items, "drafts": drafts[:10],
-            "digested": [x for x in dig if isinstance(x, str) and re.match(r"^n-[a-z0-9-]{1,64}$", x)],
+            "digested": list(dict.fromkeys(x for x in dig if isinstance(x, str)
+                                           and re.match(r"^n-[a-z0-9-]{1,64}$", x))),
+            "closed_reports": list(dict.fromkeys(x for x in closed if isinstance(x, str)
+                                                 and re.match(r"^d-[0-9a-f]{12}$", x)))[:50],
             "repeat_breakouts": rb if isinstance(rb, int) and not isinstance(rb, bool) and 0 <= rb <= 100 else 0}
+
+
+def merge(first: dict | None, second: dict | None) -> dict | None:
+    """The first pass's validated list with a later pass's (the compaction) added to it: both item lists (an
+    item the second repeats is kept once), both drafts, the union of `digested` and `closed_reports`. The first
+    pass's summary and repeat count win; either alone is returned as it is."""
+    if first is None or second is None:
+        return first if second is None else second
+
+    def key(it):
+        return (it.get("kind"), it.get("text"), it.get("entry"), it.get("file"))
+
+    seen = {key(it) for it in first["items"]}
+    items = first["items"] + [it for it in second["items"] if key(it) not in seen]
+    dseen = {(d["subject"], d["text"]) for d in first["drafts"]}
+    return {"summary": first["summary"] or second["summary"], "items": items[:ITEMS_MAX],
+            "drafts": (first["drafts"] + [d for d in second["drafts"] if (d["subject"], d["text"]) not in dseen])[:10],
+            "digested": list(dict.fromkeys(first["digested"] + second["digested"])),
+            "closed_reports": list(dict.fromkeys(first.get("closed_reports", []) + second.get("closed_reports", []))),
+            "repeat_breakouts": first["repeat_breakouts"] or second["repeat_breakouts"]}
 
 
 def fallback_items(files, before: str) -> list[dict]:
@@ -97,8 +121,16 @@ def fallback_items(files, before: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------- records ---
+def _home_ok(spec_id: str) -> bool:
+    from fused_render.specialists import paths
+    return os.path.isfile(os.path.join(paths.home(spec_id), "specialist.json"))
+
+
 def save(spec_id: str, run: str, *, summary: str, items: list, commit: str | None, row: str, status: str,
-         fallback: bool, drafts: list) -> dict:
+         fallback: bool, drafts: list) -> dict | None:
+    """Write the change list of `run`; None when the specialist was deleted meanwhile (nothing is recreated)."""
+    if not _home_ok(spec_id):
+        return None
     rec = {"run": run, "at": time.time(), "summary": summary, "status": status, "commit": commit or "",
            "row": row, "fallback": fallback, "drafts": list(drafts),
            "items": [{**it, "id": f"i{n}", "commit": commit or ""} for n, it in enumerate(items, 1)]}
@@ -174,7 +206,7 @@ def revert(spec_id: str, run: str, item_id: str) -> dict:
     with _LOCK:
         reverts = _reverts(spec_id)
         prev = reverts.get(f"{run}/{item_id}")
-        if not (isinstance(prev, dict) and prev.get("state") == "done"):
+        if not (isinstance(prev, dict) and prev.get("state") == "done") and _home_ok(spec_id):
             reverts[f"{run}/{item_id}"] = {"session_id": sid, "at": time.time(), "state": "requested"}
             write_json(_reverts_path(spec_id), reverts)
     return {"message": message(rec, item), "session_id": sid or None}
@@ -223,6 +255,8 @@ def after_turn(spec_id, session_id) -> None:
         if not done:
             return
         with _LOCK:
+            if not _home_ok(spec_id):
+                return
             reverts = _reverts(spec_id)
             for key in done:
                 if isinstance(reverts.get(key), dict):

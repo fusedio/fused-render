@@ -86,6 +86,8 @@ def record_start(spec_id: str, session_id: str) -> None:
 
 def clear(spec_id: str) -> dict:
     """Fold the current session; the page then remounts with no session and the next send starts fresh."""
+    if not os.path.isdir(paths.home(spec_id)):
+        return state(spec_id)  # gone: never recreate a ghost home
     with _LOCK:
         raw = hm.read_json(_path(spec_id), {})
         d = state(spec_id)

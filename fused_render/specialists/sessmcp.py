@@ -4,8 +4,8 @@ chat, a breakout or a nightly run, it forwards every tool call to the fused-rend
     argv: <server origin> <specialist id> <kind> <token> <server: specialist|specialist_services>
 
     initialize   -> capabilities.tools
-    tools/list   -> GET  <origin>/api/specialists/<id>/session-tools?kind=&token=&server=   (cached)
-    tools/call   -> POST <origin>/api/specialists/<id>/session-tool {kind, token, server, name, args}, NO timeout
+    tools/list   -> GET  <origin>/api/specialists/<id>/session-tools?kind=&server=   (cached; token in X-Specialist-Token)
+    tools/call   -> POST <origin>/api/specialists/<id>/session-tool {kind, server, name, args} + X-Specialist-Token, NO timeout
                     (a service call can sit behind an approval card); content/isError passed through
     ping         -> {}
 
@@ -15,6 +15,7 @@ copied from `bots/botmcp.py`. Stdlib only, no `fused_render` import (the CLI lau
 from a stable copy that outlives an update).
 """
 import json
+import os
 import sys
 import threading
 import urllib.error
@@ -27,7 +28,8 @@ SERVER_VERSION = "1"
 ORIGIN = (sys.argv[1] if len(sys.argv) > 1 else "").rstrip("/")
 SPEC_ID = sys.argv[2] if len(sys.argv) > 2 else ""
 KIND = sys.argv[3] if len(sys.argv) > 3 else ""
-TOKEN = sys.argv[4] if len(sys.argv) > 4 else ""
+# The token comes in the environment (launch.session_servers); argv carries "-" in its place.
+TOKEN = os.environ.get("FUSED_SPECIALIST_TOKEN") or (sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "-" else "")
 SERVER_NAME = sys.argv[5] if len(sys.argv) > 5 else ""
 
 _stdout_lock = threading.Lock()
@@ -79,8 +81,9 @@ def _tools() -> list:
     global _tools_cache
     with _tools_lock:
         if _tools_cache is None:
-            q = urllib.parse.urlencode({"kind": KIND, "token": TOKEN, "server": SERVER_NAME})
-            with urllib.request.urlopen(_url("session-tools") + "?" + q, timeout=LIST_TIMEOUT) as r:
+            q = urllib.parse.urlencode({"kind": KIND, "server": SERVER_NAME})
+            req = urllib.request.Request(_url("session-tools") + "?" + q, headers={"X-Specialist-Token": TOKEN})
+            with urllib.request.urlopen(req, timeout=LIST_TIMEOUT) as r:
                 data = json.loads(r.read().decode("utf-8"))
             tools = data.get("tools") if isinstance(data, dict) else None
             _tools_cache = tools if isinstance(tools, list) else []
@@ -88,9 +91,10 @@ def _tools() -> list:
 
 
 def _call(name: str, args: dict) -> dict:
-    body = json.dumps({"kind": KIND, "token": TOKEN, "server": SERVER_NAME, "name": name, "args": args}).encode("utf-8")
+    body = json.dumps({"kind": KIND, "server": SERVER_NAME, "name": name, "args": args}).encode("utf-8")
     req = urllib.request.Request(_url("session-tool"), data=body, method="POST",
-                                 headers={"Content-Type": "application/json", "X-Fused": "1"})
+                                 headers={"Content-Type": "application/json", "X-Fused": "1",
+                                          "X-Specialist-Token": TOKEN})
     try:
         # No timeout on purpose: ask / login / an approval card block for as
         # long as the user takes. The CLI's per-server `timeout` is the ceiling.

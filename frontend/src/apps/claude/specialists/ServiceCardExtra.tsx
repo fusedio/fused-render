@@ -3,6 +3,8 @@
 // `mcp__specialist_services__*` tool, plus "Approve, don't ask again" — allow
 // this call once AND add the service to the specialist's allowed list, so the
 // live session's next call of that service is allowed by the policy endpoint.
+// It is the ONLY thing that allows a service (the chat's own "Always approve"
+// does not). In a breakout it is offered for reads only: a write always asks.
 import { useEffect, useState } from "react";
 import {
   errorText,
@@ -18,11 +20,19 @@ export function isServiceTool(tool: string): boolean {
   return tool.startsWith(SERVICE_TOOL_PREFIX);
 }
 
+/** Is `tool` listed as read-only by its service row? (CONTRACT: the optional
+ *  `tools` on GET …/connections rows; absent = not known to be a read.) */
+export function isKnownRead(tool: string, services: readonly ServiceRow[]): boolean {
+  for (const s of services) for (const t of s.tools ?? []) if (t.name === tool) return t.write === false;
+  return false;
+}
+
 export function ServiceCardExtra({
   specialistId,
   requestId,
   tool,
   actions,
+  kind = "main",
   load = getConnections,
   save = putConnections,
 }: {
@@ -30,6 +40,7 @@ export function ServiceCardExtra({
   requestId: string;
   tool: string;
   actions: Pick<CardActions, "decidePermission">;
+  kind?: "main" | "breakout";
   // Seams for tests.
   load?: typeof getConnections;
   save?: typeof putConnections;
@@ -56,6 +67,7 @@ export function ServiceCardExtra({
 
   const key = services ? serviceKeyForTool(tool, services) : null;
   if (!key) return null;
+  if (kind === "breakout" && !isKnownRead(tool, services ?? [])) return null;
   const title = services?.find((s) => s.key === key)?.title || key;
 
   const approveAlways = async () => {

@@ -50,6 +50,10 @@ class Specialist:
         return d
 
 
+class Busy(RuntimeError):
+    """The specialist cannot be changed that way right now; its message is the sentence the route answers."""
+
+
 class Invalid(ValueError):
     """A create/update argument the user must fix; its message is the sentence the route answers."""
 
@@ -261,11 +265,19 @@ def _cancel_live_runs(home: str) -> None:
 
 
 def delete(spec_id: str) -> None:
-    """Move the home to `<root>/.state/trash/<id>-<ts>/` (recoverable by hand, never rm), after cancelling its
+    """Refused (`Busy`) while its nightly job runs. Move the home to `<root>/.state/trash/<id>-<ts>/` (recoverable by hand, never rm), after cancelling its
     live runs and marking its open breakouts `deleted` so a task that holds one gets a clear answer."""
     s = get(spec_id)
     if s is None:
         raise KeyError(spec_id)
+    try:
+        from fused_render.specialists import nightly
+
+        busy = bool(nightly.running(spec_id))
+    except Exception:  # noqa: BLE001 — stream 3 missing: nothing of it can be running
+        busy = False
+    if busy:
+        raise Busy("The nightly update is running for this specialist; delete it when the update has finished.")
     _cancel_live_runs(s.home)
     bdir = os.path.join(s.home, paths.APP_DIR, "breakouts")
     try:
@@ -286,5 +298,5 @@ def delete(spec_id: str) -> None:
     paths._reset()
 
 
-__all__ = ["Specialist", "Invalid", "GENERAL", "all", "any_exist", "get", "find", "create", "update", "delete",
+__all__ = ["Busy", "Specialist", "Invalid", "GENERAL", "all", "any_exist", "get", "find", "create", "update", "delete",
            "clean_triggers", "slugify"]

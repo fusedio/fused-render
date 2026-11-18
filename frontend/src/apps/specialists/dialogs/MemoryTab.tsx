@@ -38,6 +38,8 @@ const KIND: Record<string, string> = {
   case: "Case",
 };
 
+export const NOTE_KIND = KIND;
+
 export function noteSource(n: Note): string {
   const s = n.source || { type: "" };
   const where = s.title ? ` in "${s.title}"` : "";
@@ -172,11 +174,11 @@ export function MemoryTab({
           </div>
           <div className="spx-notes">
             {(notes ?? []).map((n) => (
-              <div key={n.id} className={"spx-note" + (n.basis === "user-said" ? " is-said" : "")}>
+              <div key={n.id} className={"spx-note" + (n.in_effect === true ? " is-said" : "")}>
                 <div className="spx-note-head">
                   <span className="spx-warn">{KIND[n.kind] || n.kind}</span>
-                  <span className={n.basis === "user-said" ? "spx-tint" : "spx-muted"}>
-                    {n.basis === "user-said" ? "In effect now" : "Waiting"}
+                  <span className={n.in_effect === true ? "spx-tint" : "spx-muted"}>
+                    {n.in_effect === true ? "In effect now" : "Waiting"}
                   </span>
                 </div>
                 <span>{n.claim}</span>

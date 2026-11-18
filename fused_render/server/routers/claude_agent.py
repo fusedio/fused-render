@@ -344,11 +344,17 @@ def _mark_breakout(params: dict, envelope: dict) -> None:
         logger.exception("claude agent: could not mark the breakout")
 
 
+#: The agent actions the specialists task side reacts to (agent_hooks.after_agent_call).
+_SPECIALIST_ACTIONS = frozenset({"start", "decide", "cancel", "snapshot_revert"})
+
+
 def _specialist_after(params: dict, envelope: dict) -> None:
     """Tell the specialists task side what an agent call did (docs/specialists/PLAN.md A.5): a main-chat or
     breakout start records its session, a deny / cancel / snapshot_revert is a behaviour signal. Read off
     `sys.modules` and never imported here: with specialists never loaded (flag off) it is one dict lookup.
     Best-effort: it must never fail or slow the call it follows."""
+    if params.get("action") not in _SPECIALIST_ACTIONS:
+        return  # polls, history reads, sends: one string test, no prefs read
     try:
         mod = sys.modules.get("fused_render.specialists.agent_hooks")
         flag = sys.modules.get("fused_render.specialists.flag")
