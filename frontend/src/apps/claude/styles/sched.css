@@ -570,16 +570,22 @@ a.c-waitcard .wc-ahead:hover,
    could not tell their words had gone anywhere ("it did not give me any
    indication"). So the row carries the Queued ring's colour as its marker, and
    on arrival it sits in full ink on a thin wash of that colour for a beat, then
-   settles back to the quiet line. A row is keyed by its line, so the animation
-   plays when the line arrives (and once more if the chat is opened again while
-   the line still waits: the strip mounts with it); the outbox chip under the
-   box (styles/composer.css `.c-outbox`) flashes with it. A card's tile lists
-   the queue read-only and stays still. The corner is a fixed 10px and not a
-   full pill, so a row that wraps in a narrow card is a rounded box. */
+   settles back to the quiet line.
+
+   THE FLASH RIDES A CLASS (`is-arriving`, ui/QueuedStrip `useArrivals`), not
+   the row's presence: the strip mounts every time its chat does — a rail card
+   opened on hover, a pane switched back to — and a row that flashed on every
+   mount said "just arrived" about a line that had waited for minutes. The
+   outbox chip under the box (styles/composer.css `.c-outbox`) flashes with it.
+   A card's tile lists the queue read-only and stays still. The corner is a
+   fixed 10px and not a full pill, so a row that wraps in a narrow card is a
+   rounded box. */
 .c-queue-strip:not(.c-queue-compact) .c-queue-row {
   margin: 0 calc(-8px * var(--c-zoom, 1));
   padding: 1px calc(8px * var(--c-zoom, 1));
   border-radius: calc(10px * var(--c-zoom, 1));
+}
+.c-queue-strip:not(.c-queue-compact) .c-queue-row.is-arriving {
   animation: c-queue-arrive 1800ms ease-out;
 }
 .c-queue-strip:not(.c-queue-compact) .c-queue-row::before {
@@ -600,7 +606,7 @@ a.c-waitcard .wc-ahead:hover,
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .c-queue-strip:not(.c-queue-compact) .c-queue-row {
+  .c-queue-strip:not(.c-queue-compact) .c-queue-row.is-arriving {
     animation: none;
   }
 }

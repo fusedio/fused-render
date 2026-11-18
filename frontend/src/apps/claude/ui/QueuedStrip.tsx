@@ -3,7 +3,61 @@
 // not transcript bubbles; each becomes one when the CLI echoes it. One row per
 // line, with its send-now affordance and, for a line this page still holds in
 // its outbox, the way back into the box.
+import { useEffect, useRef, useState } from "react";
 import type { QueuedLine } from "../protocol/queued-lines";
+
+/** How long a line that just joined the queue wears its arrival class — the
+ *  length of the CSS flash (styles/sched.css `c-queue-arrive`, composer.css
+ *  `c-outbox-flash`, both 1800ms) and a little over, so the class never comes
+ *  off a frame early. */
+export const ARRIVE_FLASH_MS = 1900;
+
+const NONE: ReadonlySet<string> = new Set();
+
+/**
+ * WHICH LINES JUST ARRIVED — the ids that joined `lines` while this strip was
+ * on screen, each for `ARRIVE_FLASH_MS`.
+ *
+ * NOT "EVERY ROW THAT MOUNTS". The strip mounts with its chat, and a chat is
+ * mounted over and over with the same waiting lines in it: a rail card opened
+ * on hover, a pane switched back to, a card closed over the composer. A flash
+ * tied to the row's mere appearance said "your message just went here" about
+ * lines that had been waiting for minutes (Bugbot and the review on PR #2347).
+ * So what is there at mount is already known, and only an id seen for the first
+ * time AFTER that is an arrival.
+ */
+function useArrivals(lines: readonly QueuedLine[]): ReadonlySet<string> {
+  const known = useRef<Set<string> | null>(null);
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const [arriving, setArriving] = useState<ReadonlySet<string>>(NONE);
+  const ids = lines.map((l) => l.id).join("\n");
+  useEffect(() => {
+    const now = ids ? ids.split("\n") : [];
+    const before = known.current;
+    known.current = new Set(now);
+    if (before === null) return;
+    const fresh = now.filter((id) => !before.has(id));
+    if (!fresh.length) return;
+    setArriving((was) => new Set([...was, ...fresh]));
+    const timer = setTimeout(() => {
+      timers.current.delete(timer);
+      setArriving((was) => {
+        const next = new Set(was);
+        for (const id of fresh) next.delete(id);
+        return next.size ? next : NONE;
+      });
+    }, ARRIVE_FLASH_MS);
+    timers.current.add(timer);
+  }, [ids]);
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      for (const timer of pending) clearTimeout(timer);
+      pending.clear();
+    };
+  }, []);
+  return arriving;
+}
 
 export interface QueuedStripProps {
   lines: readonly QueuedLine[];
@@ -17,11 +71,12 @@ export interface QueuedStripProps {
 }
 
 export function QueuedStrip({ lines, running, onSendNow, onPull, compact }: QueuedStripProps) {
+  const arriving = useArrivals(lines);
   if (!lines.length) return null;
   return (
     <ul className={compact ? "c-queue-strip c-queue-compact" : "c-queue-strip"} aria-label="Queued messages">
       {lines.map((line) => (
-        <li className="c-queue-row" key={line.id}>
+        <li className={arriving.has(line.id) ? "c-queue-row is-arriving" : "c-queue-row"} key={line.id}>
           <span className="c-queue-text">{line.text}</span>
           {compact ? null : line.pending === "held" ? (
             <span className="c-queue-note">(queued until this turn is done)</span>

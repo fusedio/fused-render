@@ -581,8 +581,10 @@
    pill with the Queued ring's blue in front of it, in the muted ink rather than
    the faint one, and it FLASHES ONCE when a line joins it: full ink on a blue
    wash for a beat, then back to rest. Loud at the moment the reader is looking
-   at the box, quiet for as long as the line waits. `Composer.tsx` re-keys the
-   chip when the count grows, which is what replays the animation. */
+   at the box, quiet for as long as the line waits. The flash rides a class
+   `Composer.tsx` puts on for an arrival and takes off after it — never the
+   chip's mere presence, which a composer hidden and shown again around a card
+   would replay over a line that had been waiting all along. */
 .c-outbox {
   display: flex;
   align-items: center;
@@ -593,6 +595,8 @@
   border-radius: calc(10px * var(--c-zoom, 1));
   background: color-mix(in srgb, var(--status-queued) 7%, transparent);
   color: var(--c-dim);
+}
+.c-outbox.is-arriving {
   animation: c-outbox-flash 1800ms ease-out;
 }
 .c-outbox::before {
@@ -612,7 +616,7 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .c-outbox {
+  .c-outbox.is-arriving {
     animation: none;
   }
 }
