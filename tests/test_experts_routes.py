@@ -156,3 +156,60 @@ def test_an_expert_never_takes_a_local_model(client, expert):
     assert made.meta["model"] == bm.DEFAULT_MODEL
     with pytest.raises(ValueError, match="Claude model"):
         bm.check_settings(expert.meta, model=local)
+
+
+# ------------------------------------------------------------ review fixes ---
+def test_settings_never_write_the_bot_memory_file_of_an_expert(client, expert):
+    before = store.memory(expert)
+    st, out = j(client.post(f"/api/bots/{expert.id}/settings", {"name": "Canvas Helper", "memory": "- a note"}))
+    assert st == 200, out
+    assert not os.path.exists(expert.memory_path) and store.memory(expert) == before
+
+
+def _expert_package(path, pub, memory=b"- remember this\n"):
+    from fused_render import appfile_container
+    members = [("bot.json", json.dumps(pub).encode())] + ([(".fused/memory.md", memory)] if memory else [])
+    appfile_container.write(str(path), {"name": pub["name"]}, members, kind="bot")
+    return str(path)
+
+
+def test_an_expert_package_takes_no_local_model_and_no_bot_memory(tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile
+    local = next(iter(bm.LOCAL_MODELS))
+    pub = {"name": "Hand Expert", "kind": "expert", "model": local, "expert": {"ask_me_about": "hand-made"}}
+    out = botfile.install(_expert_package(tmp_path / "new.fusedbot", pub), apps=[], memory=True)
+    b = registry.get(out["bot_id"])
+    assert store.is_expert(b) and b.meta["model"] == bm.DEFAULT_MODEL
+    assert botfile.EXPERT_MEMORY_NOT_IMPORTED in out["warnings"]
+    assert not os.path.exists(b.memory_path) and store.memory(b) == store.EMPTY_MEMORY
+    # The update path: the same hand-made package, matched by id.
+    out = botfile.install(_expert_package(tmp_path / "up.fusedbot", {**pub, "id": b.id}), apps=[], memory=True,
+                          mode="update", target=b.id)
+    assert out["updated"] is True and botfile.EXPERT_MEMORY_NOT_IMPORTED in out["warnings"]
+    assert b.meta["model"] == bm.DEFAULT_MODEL and not os.path.exists(b.memory_path)
+
+
+def test_memory_rules_example_is_only_a_format_and_shipped_instructions_end_with_them():
+    shipped = open(os.path.join(seed.SHIPPED_DIR, "canvas-reference", "instructions.md"), encoding="utf-8").read()
+    assert shipped.endswith(store.MEMORY_RULES) and store.DEFAULT_INSTRUCTIONS.endswith(store.MEMORY_RULES)
+    assert "it is not a fact" in store.MEMORY_RULES and "canvas pull" not in store.MEMORY_RULES
+
+
+def test_a_cut_short_seed_copy_leaves_no_partial_file(tmp_path, monkeypatch):
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    (src / "skills").mkdir(parents=True)
+    (src / "instructions.md").write_text("the full text")
+    real = seed.shutil.copyfile
+
+    def partial(a, b):
+        with open(b, "w") as f:
+            f.write("the fu")
+        raise OSError("disk full")
+    monkeypatch.setattr(seed.shutil, "copyfile", partial)
+    with pytest.raises(OSError):
+        seed._copy(str(src), str(dst), overwrite=False)
+    assert os.listdir(dst) == []
+    monkeypatch.setattr(seed.shutil, "copyfile", real)
+    seed._copy(str(src), str(dst), overwrite=False)  # a later non-overwriting pass copies it whole
+    assert (dst / "instructions.md").read_text() == "the full text"
