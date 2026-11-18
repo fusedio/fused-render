@@ -76,13 +76,13 @@ format.
     chat         the user, in the bot's main thread (§7)  no (resumes)    yes             only when memory.md changed
     ask          a task calling expert_ask (§8)           yes             no              always
     task-learn   the timer, for a quiet task (§9)         yes             yes             always
-    compact      after a write, over the limit (§10)      yes             yes             always
+    dream        after a write, over the limit (§10)      yes             yes             always
 
-`sessions.run(bot, kind, prompt, trigger)` runs ask, task-learn and compact: take the gate, save a `running` row,
+`sessions.run(bot, kind, prompt, trigger)` runs ask, task-learn and dream: take the gate, save a `running` row,
 note `memory.md`, call `harness`, note `memory.md` again, save the finished row. It never raises: a failure is a
 row with status `error`.
 
-- **The write lock** (`store.write_lock`, one per expert, in-process): task-learn, compact and every chat turn hold
+- **The write lock** (`store.write_lock`, one per expert, in-process): task-learn, dream and every chat turn hold
   it, so memory writers run one at a time. A side session waits for it up to the harness timeout (600 s), then
   ends as an `error` row with `error: "the expert is busy; try again in a minute"` (`sessions.BUSY`). A chat turn
   waits for it with "waiting for the expert's memory" and gives up only on Stop.
@@ -136,7 +136,7 @@ own permission rules (verified on claude 2.1.326), with NO permission prompt too
     --permission-mode default
     --allowedTools Edit(//<abs>/memory.md) Read(//<granted folder>/**) ...
 
-- Only Read, Glob and Grep exist, plus Edit and Write when the session writes (chat, task-learn, compact; not
+- Only Read, Glob and Grep exist, plus Edit and Write when the session writes (chat, task-learn, dream; not
   ask). No shell, no web, no subagents.
 - Reads inside the working directory (the expert's folder) are the CLI's default, so the expert can read its
   `instructions.md`, `skills/`, `bot.json` and its own `.fused/` (session rows, `read.json`).
@@ -209,17 +209,17 @@ Codex's `tool_timeout_sec`) sits 60 s above that, so the server's own error arri
 
 ## 9. The task-learn trigger
 
-A task session never formally ends, so a timer finds quiet ones (`quiet.py`, `scheduler.py`).
+A task session never formally ends, so a timer finds quiet ones (`learn.py`, `scheduler.py`).
 
-**Recording use** (`quiet.record_use`, from `expert_context` and `expert_ask`; `expert_list` is not use): the run
-id is resolved to its task session (`quiet.caller`: the run dir's `meta.json` and `agent._run_own_session`). Its
+**Recording use** (`learn.record_use`, from `expert_context` and `expert_ask`; `expert_list` is not use): the run
+id is resolved to its task session (`learn.caller`: the run dir's `meta.json` and `agent._run_own_session`). Its
 state, in `.fused/expert/read.json`:
 
     {"pending":  {run_id: ts},                    runs whose session id was not known yet (a fresh chat)
      "sessions": {session_id: {"run_ids": [...last 20], "size": bytes read, "turns": turns read, "at": ts,
                                "fails": {"size": n, "count": k}}}}
 
-**The pass** (`quiet.run_pass`, once per tick): resolve pending runs to their sessions (a run unresolved after 7
+**The pass** (`learn.run_pass`, once per tick): resolve pending runs to their sessions (a run unresolved after 7
 days is dropped); find each recorded session in the Tasks listing (`tasks._collect`); a session is **due** when
 its transcript file has grown past the recorded `size` and its last real activity
 (`session_liveness.tail_activity`: housekeeping rows do not count; else the file's mtime) is at least the idle time
@@ -245,12 +245,12 @@ from where it was left, only its new part.
 (`tasks_store.try_acquire_lease`, released after the tick): only one server process on a machine reads the
 transcripts. Shutdown stops the timer and kills every side session's harness.
 
-## 10. Compaction
+## 10. Dreaming (memory compaction)
 
 The limit is 200 lines or 12 KB (`LIMIT_LINES`, `LIMIT_BYTES`), whichever comes first. After a chat turn and after
-a task-learn session (not after a compact), `sessions.after_write` checks the size; over the limit it queues ONE
-compact session per expert in a background thread (a second is not queued while one is queued or running). The
-compact prompt gives today's date, the size and the limit, and says: merge lines that say the same thing (add the
+a task-learn session (not after a dream), `sessions.after_write` checks the size; over the limit it queues ONE
+dream session per expert in a background thread (a second is not queued while one is queued or running). The
+dream prompt gives today's date, the size and the limit, and says: merge lines that say the same thing (add the
 counts, keep the newest date), drop old low-count lines, get clearly under the limit, keep the format and the two
 headings, edit only `memory.md`. Its row's trigger is `{lines, bytes}`. The expert decides what goes; our code
 ranks and deletes nothing.
@@ -263,7 +263,7 @@ The row's `trigger` says where it came from:
     chat         {message}                                                      the user's message
     ask          {asker, question, session_id?, run_id?}                         (never writes)
     task-learn   {session_id, run_id?, target, backend, from_size, to_size}      the task session and the slice read
-    compact      {lines, bytes}                                                  the size that triggered it
+    dream        {lines, bytes}                                                  the size that triggered it
 
 - `sessions.changes(bot)`: the newest 20 rows that changed memory, `[{id, kind, started, trigger}]` ("last changed
   by"), returned by `GET …/memory`.
@@ -342,7 +342,7 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
 - Experts never edit skills (refused by the fence; `learn` refused); skills are never re-synced from the shipped
   copy.
 - No separate lessons, research step, ledger or token accounting beyond the harness's reported `cost_usd` per row.
-- Task-quiet runs only for tasks that called `expert_context` or `expert_ask`; a task that never did teaches
+- Task-learn runs only for tasks that called `expert_context` or `expert_ask`; a task that never did teaches
   nothing.
 - Export of an expert is refused for now (§5).
 - Gemini and OpenCode tasks get no expert tools (§8).

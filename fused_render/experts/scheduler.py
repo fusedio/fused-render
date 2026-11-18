@@ -2,7 +2,7 @@
 
 One daemon thread: `start()` arms it (idempotent), the first `tick` runs `start_delay_s()` later and then every
 `tick_s()` (developer settings `FUSED_RENDER_EXPERT_TICK_S` / `_START_DELAY_S`); `shutdown()` stops it and ends
-every side session's harness process. A tick runs quiet.py's pass; compaction is queued by the sessions themselves
+every side session's harness process. A tick runs learn.py's pass; a dream (memory compaction) is queued by the sessions themselves
 (sessions.after_write).
 
 ONE PROCESS TICKS: two fused-render servers on one machine must not both read the same transcripts, so a tick
@@ -53,8 +53,8 @@ def _workspace() -> bool:
 
 
 def tick(stop: threading.Event | None = None) -> dict:
-    """One pass. Returns `{"ran": bool, "skipped": why, "quiet": {...}, "errors": n}`. Never raises."""
-    out = {"ran": False, "skipped": "", "quiet": {}, "errors": 0}
+    """One pass. Returns `{"ran": bool, "skipped": why, "learn": {...}, "errors": n}`. Never raises."""
+    out = {"ran": False, "skipped": "", "learn": {}, "errors": 0}
     if not _TICK_LOCK.acquire(blocking=False):
         out["skipped"] = "a tick is already running"
         return out
@@ -72,8 +72,8 @@ def tick(stop: threading.Event | None = None) -> dict:
             out["skipped"] = "another process holds the experts lease"
             return out
         out["ran"] = True
-        from fused_render.experts import quiet
-        out["quiet"] = quiet.run_pass(stop=stop)
+        from fused_render.experts import learn
+        out["learn"] = learn.run_pass(stop=stop)
     except Exception:  # noqa: BLE001 — never out of tick
         out["errors"] += 1
         logger.warning("experts scheduler: tick failed", exc_info=True)

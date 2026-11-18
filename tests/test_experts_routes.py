@@ -6,7 +6,7 @@ import os
 import pytest
 
 from fused_render.bots import registry
-from fused_render.experts import quiet, seed, sessions, store
+from fused_render.experts import learn, seed, sessions, store
 
 
 def j(resp):
@@ -16,7 +16,7 @@ def j(resp):
 
 @pytest.fixture
 def expert(monkeypatch):
-    monkeypatch.setattr(quiet, "caller", lambda run_id: {"run_id": run_id, "session_id": "s-" + run_id,
+    monkeypatch.setattr(learn, "caller", lambda run_id: {"run_id": run_id, "session_id": "s-" + run_id,
                                                          "backend": "claude", "target": "/work/canvas"})
     return registry.create(name="Canvas Helper", kind="expert", expert={"ask_me_about": "Canvases\nand more"})
 
@@ -31,7 +31,7 @@ def test_list_context_and_use_recorded(client, expert):
     assert st == 200, out
     assert out["memory"] == store.memory(expert) and out["memory_path"] == store.memory_path(expert)
     assert out["skills"] == [{"title": "Alpha skill", "path": os.path.join(store.expert_dir(expert), "skills", "a.md")}]
-    assert quiet._load(expert)["sessions"]["s-r1"]["run_ids"] == ["r1"]
+    assert learn._load(expert)["sessions"]["s-r1"]["run_ids"] == ["r1"]
 
 
 def test_context_and_ask_need_the_workspace(client, expert, monkeypatch):
@@ -40,7 +40,7 @@ def test_context_and_ask_need_the_workspace(client, expert, monkeypatch):
                        ("/api/experts/ask", {"expert": expert.id, "question": "q?", "run_id": "r1"})):
         st, out = j(client.post(path, body))
         assert st == 409 and out["reason"] == "workspace_busy", out
-    assert quiet._load(expert)["sessions"] == {}  # no use recorded
+    assert learn._load(expert)["sessions"] == {}  # no use recorded
 
 
 def test_errors(client, expert):
@@ -65,7 +65,7 @@ def test_ask_runs_a_session_and_records_use(client, expert, monkeypatch):
     assert st == 200, out
     assert out["answer"] == "Pull first." and out["id"] == expert.id and out["name"] == "Canvas Helper"
     assert seen["write"] is False and "a claude task session working in /work/canvas" in seen["prompt"]
-    assert quiet._load(expert)["sessions"]["s-r7"]["run_ids"] == ["r7"]
+    assert learn._load(expert)["sessions"]["s-r7"]["run_ids"] == ["r7"]
     st, rows = j(client.get(f"/api/experts/{expert.id}/sessions"))
     assert [r["id"] for r in rows["sessions"]] == [out["session"]] and "transcript" not in rows["sessions"][0]
     assert rows["sessions"][0]["trigger"]["session_id"] == "s-r7"

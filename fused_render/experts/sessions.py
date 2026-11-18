@@ -2,8 +2,8 @@
 
     kind         started by                     writes memory
     ask          a task calling `expert_ask`    no
-    task-learn   the timer (quiet.py)           yes
-    compact      `after_write`, over the limit  yes
+    task-learn   the timer (learn.py)           yes
+    dream        `after_write`, over the limit  yes
     chat         (the user, bots/agent_engine)  yes; a row only when it changed memory.md (`note_chat`)
 
 `run(bot, kind, prompt, trigger)` is the whole story: take the expert's write
@@ -41,11 +41,11 @@ from fused_render.experts import store
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("ask", "task-learn", "compact")      # what `run` starts
+KINDS = ("ask", "task-learn", "dream")      # what `run` starts
 ROW_KINDS = KINDS + ("chat",)                 # what a row may say (chat rows come from `note_chat`)
-WRITERS = frozenset({"task-learn", "compact"})
+WRITERS = frozenset({"task-learn", "dream"})
 CHANGES_SHOWN = 20
-#: The memory limit (docs/experts.md "Compaction"): whichever comes first.
+#: The memory limit (docs/experts.md "Dreaming"): whichever comes first.
 LIMIT_LINES = 200
 LIMIT_BYTES = 12 * 1024
 TIMEOUT_ENV = "FUSED_RENDER_EXPERT_TIMEOUT"
@@ -60,7 +60,7 @@ _ASKS = threading.BoundedSemaphore(ASK_PARALLEL)
 _GUARD = threading.Lock()
 _RUNNING: set = set()          # row ids this process is running
 _PROCS: set = set()            # their harness processes (shutdown)
-_COMPACTING: set = set()       # expert ids with a compact session queued or running
+_DREAMING: set = set()       # expert ids with a dream session queued or running
 
 
 def today() -> str:
@@ -360,7 +360,7 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
             _RUNNING.discard(rec["id"])
         gate.release()
         _save(bot, rec)
-    if writes and kind != "compact":
+    if writes and kind != "dream":
         after_write(bot)
     return rec
 
@@ -389,39 +389,39 @@ def over_limit(bot) -> bool:
     return lines > LIMIT_LINES or nbytes > LIMIT_BYTES
 
 
-def compact(bot) -> dict:
+def dream(bot) -> dict:
     lines, nbytes = size(bot)
     prompt = (f"Today is {today()}. Your memory.md is over its limit: {lines} lines, {nbytes} bytes; the limit is "
               f"{LIMIT_LINES} lines or {LIMIT_BYTES} bytes, whichever comes first.\n"
               "Compact it now: merge lines that say the same thing (add their counts, keep the newest date), drop "
               "old lines with low counts, and get it clearly under the limit. Keep the format and the two "
               "headings. Edit memory.md and nothing else, then say in one line what you did.")
-    return run(bot, "compact", prompt, {"lines": lines, "bytes": nbytes})
+    return run(bot, "dream", prompt, {"lines": lines, "bytes": nbytes})
 
 
 def after_write(bot) -> bool:
     """Called after any session that may have written memory (chat, task-learn): over the limit, queue ONE
-    compact session in the background. True when it queued one."""
+    dream session in the background. True when it queued one."""
     try:
         if not over_limit(bot):
             return False
     except Exception:  # noqa: BLE001
         return False
     with _GUARD:
-        if bot.id in _COMPACTING:
+        if bot.id in _DREAMING:
             return False
-        _COMPACTING.add(bot.id)
+        _DREAMING.add(bot.id)
 
     def body():
         try:
-            compact(bot)
+            dream(bot)
         except Exception:  # noqa: BLE001
-            logger.warning("expert %s: compaction failed", bot.id, exc_info=True)
+            logger.warning("expert %s: dream failed", bot.id, exc_info=True)
         finally:
             with _GUARD:
-                _COMPACTING.discard(bot.id)
+                _DREAMING.discard(bot.id)
 
-    threading.Thread(target=body, daemon=True, name=f"expert-compact-{bot.id}").start()
+    threading.Thread(target=body, daemon=True, name=f"expert-dream-{bot.id}").start()
     return True
 
 

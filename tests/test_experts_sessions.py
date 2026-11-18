@@ -8,7 +8,7 @@ import time
 import pytest
 
 from fused_render.bots import agent_engine, registry
-from fused_render.experts import quiet, sessions, store
+from fused_render.experts import learn, sessions, store
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def test_ask_cannot_write_and_keeps_caller(expert, monkeypatch):
 
 def test_failed_session_is_an_error_row(expert, monkeypatch):
     stub(monkeypatch, lambda b, p, w: {"ok": False, "error": "boom", "answer": "", "transcript": []})
-    row = sessions.run(expert, "compact", "x")
+    row = sessions.run(expert, "dream", "x")
     assert row["status"] == "error" and row["error"] == "boom"
 
 
@@ -122,7 +122,7 @@ def _overlap(monkeypatch, expert, kinds):
 
 
 def test_writers_never_overlap(expert, monkeypatch):
-    assert _overlap(monkeypatch, expert, ["task-learn", "compact", "task-learn"]) == 1
+    assert _overlap(monkeypatch, expert, ["task-learn", "dream", "task-learn"]) == 1
 
 
 def test_asks_run_in_parallel(expert, monkeypatch):
@@ -155,7 +155,7 @@ def test_compaction_threshold(expert, monkeypatch):
     assert sessions.over_limit(expert)
 
 
-def test_a_write_over_the_limit_queues_one_compact(expert, monkeypatch):
+def test_a_write_over_the_limit_queues_one_dream(expert, monkeypatch):
     def body(b, p, w):
         if "over its limit" in p:
             with open(store.memory_path(b), "w", encoding="utf-8") as f:
@@ -165,11 +165,11 @@ def test_a_write_over_the_limit_queues_one_compact(expert, monkeypatch):
     calls = stub(monkeypatch, body)
     sessions.run(expert, "task-learn", "learn")
     deadline = time.time() + 5
-    while time.time() < deadline and not any(r["kind"] == "compact" and r["status"] == "done"
+    while time.time() < deadline and not any(r["kind"] == "dream" and r["status"] == "done"
                                              for r in sessions.rows(expert)):
         time.sleep(0.05)
     kinds = [r["kind"] for r in sessions.rows(expert)]
-    assert kinds.count("compact") == 1 and not sessions.over_limit(expert)
+    assert kinds.count("dream") == 1 and not sessions.over_limit(expert)
     assert sum("over its limit" in c["prompt"] for c in calls) == 1
     assert sessions.after_write(expert) is False  # under the limit now
 
@@ -288,15 +288,15 @@ def transcript(tmp_path, monkeypatch):
     """One task session `s1` whose transcript file is `path`; the rendered turns are the file's lines."""
     path = tmp_path / "s1.jsonl"
     path.write_text("turn 1\n")
-    monkeypatch.setattr(quiet, "_tasks", lambda: FakeTasks([{"session_id": "s1", "path": str(path)}]))
-    monkeypatch.setattr(quiet, "caller", lambda run_id: {"run_id": run_id, "session_id": "s1" if run_id == "r1" else "",
+    monkeypatch.setattr(learn, "_tasks", lambda: FakeTasks([{"session_id": "s1", "path": str(path)}]))
+    monkeypatch.setattr(learn, "caller", lambda run_id: {"run_id": run_id, "session_id": "s1" if run_id == "r1" else "",
                                                          "backend": "claude", "target": "/work"})
-    monkeypatch.setattr(quiet, "_last_active", lambda p, m: m)
+    monkeypatch.setattr(learn, "_last_active", lambda p, m: m)
 
     def md(session, since=0):
         lines = open(session["path"]).read().splitlines()
         return "\n".join("USER| " + ln for ln in lines[since:]), len(lines)
-    monkeypatch.setattr(quiet, "transcript_markdown", md)
+    monkeypatch.setattr(learn, "transcript_markdown", md)
     return path
 
 
@@ -307,83 +307,83 @@ def _age(path, s=3600):
 
 def test_due_rule_and_only_the_unread_part(expert, monkeypatch, transcript):
     calls = stub(monkeypatch)
-    quiet.record_use(expert, "r1")
-    assert quiet._load(expert)["sessions"]["s1"]["run_ids"] == ["r1"]
-    assert quiet.run_pass()["sessions"] == 0  # not idle yet
+    learn.record_use(expert, "r1")
+    assert learn._load(expert)["sessions"]["s1"]["run_ids"] == ["r1"]
+    assert learn.run_pass()["sessions"] == 0  # not idle yet
     _age(transcript)
-    assert quiet.run_pass()["sessions"] == 1
+    assert learn.run_pass()["sessions"] == 1
     assert "USER| turn 1" in calls[-1]["prompt"] and "update your memory" in calls[-1]["prompt"].lower()
     row = sessions.rows(expert)[0]
     size = os.path.getsize(transcript)
     assert row["kind"] == "task-learn" and row["trigger"] == {
         "session_id": "s1", "run_id": "r1", "target": "/work", "backend": "claude", "from_size": 0, "to_size": size}
-    assert quiet.run_pass()["sessions"] == 0  # read at this size
+    assert learn.run_pass()["sessions"] == 0  # read at this size
     with open(transcript, "a") as f:
         f.write("turn 2\n")
     _age(transcript)
-    assert quiet.run_pass()["sessions"] == 1
+    assert learn.run_pass()["sessions"] == 1
     assert "turn 2" in calls[-1]["prompt"] and "turn 1" not in calls[-1]["prompt"]  # a resumed task: only its new part
 
 
 def test_idle_env_override(monkeypatch):
-    monkeypatch.setenv(quiet.IDLE_ENV, "30")
-    assert quiet.idle_s() == 30
-    monkeypatch.setenv(quiet.IDLE_ENV, "nope")
-    assert quiet.idle_s() == quiet.IDLE_S == 600
+    monkeypatch.setenv(learn.IDLE_ENV, "30")
+    assert learn.idle_s() == 30
+    monkeypatch.setenv(learn.IDLE_ENV, "nope")
+    assert learn.idle_s() == learn.IDLE_S == 600
 
 
 def test_pending_run_resolves_later(expert, monkeypatch, transcript):
     stub(monkeypatch)
-    quiet.record_use(expert, "r2")  # a fresh chat: its session is not known yet
-    st = quiet._load(expert)
+    learn.record_use(expert, "r2")  # a fresh chat: its session is not known yet
+    st = learn._load(expert)
     assert "r2" in st["pending"] and st["sessions"] == {}
-    monkeypatch.setattr(quiet, "caller", lambda run_id: {"run_id": run_id, "session_id": "s1",
+    monkeypatch.setattr(learn, "caller", lambda run_id: {"run_id": run_id, "session_id": "s1",
                                                          "backend": "claude", "target": "/work"})
     _age(transcript)
-    assert quiet.run_pass()["sessions"] == 1
-    st = quiet._load(expert)
+    assert learn.run_pass()["sessions"] == 1
+    st = learn._load(expert)
     assert st["pending"] == {} and st["sessions"]["s1"]["run_ids"] == ["r2"]
 
 
 def test_three_failed_attempts_then_give_up_until_it_grows(expert, monkeypatch, transcript):
     calls = stub(monkeypatch, lambda b, p, w: {"ok": False, "error": "harness down", "answer": "", "transcript": []})
-    quiet.record_use(expert, "r1")
+    learn.record_use(expert, "r1")
     _age(transcript)
     for _ in range(3):
-        assert quiet.run_pass() == {"sessions": 1, "errors": 1}
-    assert quiet.run_pass()["sessions"] == 0 and len(calls) == 3
-    rec = quiet._load(expert)["sessions"]["s1"]
+        assert learn.run_pass() == {"sessions": 1, "errors": 1}
+    assert learn.run_pass()["sessions"] == 0 and len(calls) == 3
+    rec = learn._load(expert)["sessions"]["s1"]
     assert rec["size"] == 0 and rec["fails"]["count"] == 3  # nothing recorded as read
     with open(transcript, "a") as f:
         f.write("turn 2\n")
     _age(transcript)
     stub(monkeypatch)
-    assert quiet.run_pass()["sessions"] == 1
-    rec = quiet._load(expert)["sessions"]["s1"]
+    assert learn.run_pass()["sessions"] == 1
+    rec = learn._load(expert)["sessions"]["s1"]
     assert rec["size"] == os.path.getsize(transcript) and "fails" not in rec
 
 
 def test_a_busy_expert_is_not_a_failed_attempt(expert, monkeypatch, transcript):
     calls = stub(monkeypatch)
     monkeypatch.setattr(sessions, "_timeout", lambda: 0.01)
-    quiet.record_use(expert, "r1")
+    learn.record_use(expert, "r1")
     _age(transcript)
     lock = store.write_lock(expert)
     lock.acquire()  # a long chat turn holds the memory
     try:
         for _ in range(4):
-            assert quiet.run_pass() == {"sessions": 1, "errors": 1}
+            assert learn.run_pass() == {"sessions": 1, "errors": 1}
     finally:
         lock.release()
-    assert calls == [] and "fails" not in quiet._load(expert)["sessions"]["s1"]
+    assert calls == [] and "fails" not in learn._load(expert)["sessions"]["s1"]
     assert all(r["error"] == sessions.BUSY for r in sessions.rows(expert))
-    assert quiet.run_pass() == {"sessions": 1, "errors": 0} and len(calls) == 1
+    assert learn.run_pass() == {"sessions": 1, "errors": 0} and len(calls) == 1
 
 
 def test_tick_skips_without_the_workspace_claim(monkeypatch):
     from fused_render.experts import scheduler
     monkeypatch.setattr(registry, "owns", lambda: True)
     monkeypatch.setattr(registry, "workspace_claimed", lambda: False)
-    monkeypatch.setattr(quiet, "run_pass", lambda **k: pytest.fail("a pass without the workspace"))
+    monkeypatch.setattr(learn, "run_pass", lambda **k: pytest.fail("a pass without the workspace"))
     out = scheduler.tick()
     assert out["ran"] is False and "workspace" in out["skipped"]

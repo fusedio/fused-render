@@ -18,7 +18,7 @@ import json
 
 from fastapi import APIRouter, Body, Header, Response
 
-from fused_render.experts import quiet, sessions, store
+from fused_render.experts import learn, sessions, store
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -75,7 +75,7 @@ def expert_context(body=Body(None), x_fused: str | None = Header(None)):
     bot = _expert(body.get("expert"))
     from fused_render.bots import registry
     registry.require_workspace()  # record_use writes into the expert's folder, as ask does
-    quiet.record_use(bot, body.get("run_id"))
+    learn.record_use(bot, body.get("run_id"))
     return {"id": bot.id, "name": store.name(bot), "memory": store.memory(bot), "memory_path": store.memory_path(bot),
             "skills": store.skills(bot)}
 
@@ -94,8 +94,8 @@ def expert_ask(body=Body(None), x_fused: str | None = Header(None)):
         raise ValueError(f"the question is too long (at most {QUESTION_MAX} characters)")
     from fused_render.bots import registry
     registry.require_workspace()  # the ask writes a session row into the expert's folder
-    quiet.record_use(bot, body.get("run_id"))
-    who = quiet.caller(str(body.get("run_id") or ""))
+    learn.record_use(bot, body.get("run_id"))
+    who = learn.caller(str(body.get("run_id") or ""))
     asker = " ".join(p for p in (f"a {who['backend']} task session" if who["backend"] else "",
                                  f"working in {who['target']}" if who["target"] else "") if p)
     row = sessions.ask(bot, question, asker, caller=who)

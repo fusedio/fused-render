@@ -252,7 +252,7 @@ def prompt_for(transcript: str) -> str:
             "<<<TRANSCRIPT\n" + transcript.replace("<<<", "‹‹‹").replace(">>>", "›››") + "\nTRANSCRIPT>>>")
 
 
-def quiet_one(bot, session: dict, rec: dict) -> dict | None:
+def learn_one(bot, session: dict, rec: dict) -> dict | None:
     """Read one due session's unread part in a task-learn session; record what was read only on success."""
     sid, size = session["session_id"], session["size"]
     md, turns = transcript_markdown(session, int(rec.get("turns") or 0))
@@ -300,7 +300,7 @@ def run_pass(now=None, limit: int = PER_PASS, stop=None) -> dict:
             if session is None or not due(rec, session, now):
                 continue
             try:
-                row = quiet_one(bot, session, rec)
+                row = learn_one(bot, session, rec)
                 if row is not None:
                     out["sessions"] += 1
                     out["errors"] += row.get("status") != "done"

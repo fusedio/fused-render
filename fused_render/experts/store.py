@@ -6,7 +6,7 @@
       memory.md                   the only file the expert writes
       .fused/expert/
         sessions/<id>.json        one row per side session (sessions.py)
-        read.json                 which task sessions used it, and how much of each it has read (quiet.py)
+        read.json                 which task sessions used it, and how much of each it has read (learn.py)
 
 Nothing here reads or writes memory.md's content beyond seeding an empty one:
 the expert edits it with the harness's file tools, the user by hand.
@@ -166,7 +166,7 @@ def ensure_layout(bot) -> None:
 
 # ---------------------------------------------------------------- locks, json ---
 def write_lock(bot) -> threading.Lock:
-    """Sessions that write memory run one at a time per expert (chat, task-learn, compact)."""
+    """Sessions that write memory run one at a time per expert (chat, task-learn, dream)."""
     bid = str(getattr(bot, "id", bot))
     with _LOCKS_GUARD:
         return _LOCKS.setdefault(bid, threading.Lock())
