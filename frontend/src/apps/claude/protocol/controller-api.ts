@@ -46,6 +46,15 @@ export interface UserTurn {
   appState?: true;
   uuid?: string;
   /**
+   * `SendOptions.clientId` of the send that drew this bubble — the same id the
+   * server stamps on the run's inbox entry (`InboxMessage.uuid`). It is how the
+   * queue strip knows an inbox entry is THIS bubble, already on screen, and not
+   * a second message with the same words (`protocol/queued-lines`). Only on the
+   * message that OPENS a turn (`sendMessage`): a follow-up's bubble lives in the
+   * strip and is matched there as it always was. A restored turn has none.
+   */
+  clientId?: string;
+  /**
    * WHEN this message was sent, epoch SECONDS. A restored turn takes it from
    * the transcript record's `timestamp` (agent.py `_row_ts`); a live send is
    * stamped by the controller the moment the bubble goes up. Optional on both
@@ -75,8 +84,13 @@ export interface UserTurn {
    * in the queued strip above the composer (`protocol/queued-lines`), not in the
    * transcript; `"notSent"` stays a tagged bubble. Comes off when the real send
    * adopts the row (`addUser` rebuilds the turn without it).
+   *
+   * `"sending"` is a follow-up typed into a LIVE run, from the keypress until the
+   * controller has it (the pane's photograph and the app-state read happen in
+   * between, and can take seconds): it is drawn in the queue strip at once, with
+   * no actions — the page is not holding it, the send is under way.
    */
-  pending?: "queued" | "held" | "notSent";
+  pending?: "queued" | "held" | "notSent" | "sending";
 }
 
 export interface AssistantTurn {

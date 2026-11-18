@@ -565,6 +565,102 @@ a.c-waitcard .wc-ahead:hover,
   line-height: 1.5;
   color: var(--c-dim);
 }
+/* A LINE THAT JOINS THE QUEUE IS PROMINENT FOR A FEW SECONDS, AND QUIET AFTER.
+
+   The lines used to be grey text that simply appeared, and a reader who had
+   just pressed Enter could not tell their words had gone anywhere ("it did not
+   give me any indication… it was showing in the bottom but it is too subtle").
+   A permanent card around them answered that and was too much the rest of the
+   time (Akshil, 2026-11-18: "subtle but also prominent only for a few seconds
+   so user knows his message is accepted but in a queue").
+
+   So the weight is in the ARRIVAL, and only there. For about three seconds the
+   new line sits in the ordinary ink on a soft wash, having risen into place,
+   with the word "Queued" beside it — accepted, and waiting, said outright.
+   Then the wash and the word fade and it is the quiet line again, in the
+   muted ink — nothing of the arrival stays, the Queued ring included: it
+   rides the word and leaves with it.
+
+   ON A CLASS (`is-arriving`, ui/QueuedStrip `useArrivals`), never the row's
+   mere presence: the strip mounts every time its chat does (a rail card opened
+   on hover, a pane switched back to), and a row that animated on every mount
+   said "just arrived" about a line that had waited for minutes. A card's tile
+   lists the queue read-only (`c-queue-compact`) and keeps the plain lines. */
+/* Edge to edge with the composer under it (the strip's gutter is the box's):
+   the arrival's wash is exactly as wide as the box, never wider. */
+.c-queue-strip:not(.c-queue-compact) .c-queue-row {
+  padding: 1px calc(10px * var(--c-zoom, 1));
+  border-radius: calc(9px * var(--c-zoom, 1));
+}
+/* The words hug the left and the gap takes the rest, so the arrival's word can
+   stand right after them and leave without anything moving. */
+.c-queue-strip:not(.c-queue-compact) .c-queue-text {
+  flex: 0 1 auto;
+}
+.c-queue-gap {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.c-queue-tag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--c-zoom, 1));
+  font-size: calc(11px * var(--c-zoom, 1));
+  font-weight: 500;
+  color: var(--status-queued);
+  animation: c-queue-tag 3000ms ease-out both;
+}
+/* The Queued ring, with the word and for as long as the word: a ring left in
+   front of every waiting line kept drawing the eye after the moment had
+   passed (Akshil, 2026-11-18). */
+.c-queue-tag::before {
+  content: "";
+  box-sizing: border-box;
+  width: calc(8px * var(--c-zoom, 1));
+  height: calc(8px * var(--c-zoom, 1));
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+.c-queue-strip:not(.c-queue-compact) .c-queue-row.is-arriving {
+  animation:
+    c-queue-rise 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    c-queue-glow 3000ms ease-out;
+}
+@keyframes c-queue-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes c-queue-glow {
+  0%,
+  65% {
+    background: color-mix(in srgb, var(--c-fg) 8%, transparent);
+    color: var(--c-fg);
+  }
+}
+@keyframes c-queue-tag {
+  0% {
+    opacity: 0;
+  }
+  8%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-queue-strip:not(.c-queue-compact) .c-queue-row.is-arriving {
+    animation: none;
+  }
+  /* The word still says it, without the fade: it leaves with the class. */
+  .c-queue-tag {
+    animation: none;
+  }
+}
 .c-queue-text {
   flex: 1 1 auto;
   min-width: 0;

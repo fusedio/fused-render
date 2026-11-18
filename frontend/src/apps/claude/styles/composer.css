@@ -575,6 +575,13 @@
   line-height: 1.45;
   color: var(--c-faint);
 }
+/* THE OUTBOX HINT ("1 message waiting to send · ↑ to edit it") in the muted ink
+   rather than the faint one: it names a message the reader just sent, and at
+   11.5px the faint ink read as nothing. The message itself is in the queue
+   card above the box (styles/sched.css `.c-queue-strip`). */
+.c-outbox {
+  color: var(--c-dim);
+}
 /* The switched-off agent's line under a closed box (D17): `.c-queued`'s quiet
    line, with its link in the ordinary ink so it reads as the way out. */
 .c-blocked-note a,
