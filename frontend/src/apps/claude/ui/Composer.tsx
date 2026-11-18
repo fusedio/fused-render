@@ -1878,6 +1878,18 @@ export function ComposerCard({
   const [menuIdx, setMenuIdx] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
   const [menuDismissed, setMenuDismissed] = useState<string | null>(null);
+  // THE OUTBOX CHIP FLASHES WHEN A LINE JOINS IT, and only then. The chip's
+  // enter animation (styles/composer.css `.c-outbox`) is the reader's sign that
+  // Enter landed the line here; `seq` is its React key, so a growing count
+  // remounts the chip and plays it again. A count that drops (the drain sent
+  // one, ↑ pulled one back) keeps the key: nothing arrived, nothing flashes.
+  const waitingNow = queuedCount ?? 0;
+  const notSentNow = notSentCount ?? 0;
+  const [outboxFlash, setOutboxFlash] = useState({ waiting: waitingNow, notSent: notSentNow, seq: 0 });
+  if (outboxFlash.waiting !== waitingNow || outboxFlash.notSent !== notSentNow) {
+    const grew = waitingNow > outboxFlash.waiting || notSentNow > outboxFlash.notSent;
+    setOutboxFlash({ waiting: waitingNow, notSent: notSentNow, seq: outboxFlash.seq + (grew ? 1 : 0) });
+  }
   const menuAll = useMemo(() => menuCommands(slashCommands), [slashCommands]);
   const menuQ = onLocalCommand ? (helpOpen && !text ? "" : menuQuery(text)) : null;
   const menuRows = useMemo(
@@ -2516,7 +2528,7 @@ export function ComposerCard({
             Drawn whatever the queue flag says — these are not the project
             queue's, and ↑ is the thing to do about them. */}
         {(queuedCount ?? 0) + (notSentCount ?? 0) > 0 ? (
-          <div className="c-queued c-outbox">{outboxHint(queuedCount ?? 0, notSentCount ?? 0)}</div>
+          <div key={outboxFlash.seq} className="c-queued c-outbox">{outboxHint(queuedCount ?? 0, notSentCount ?? 0)}</div>
         ) : null}
         {/* THE TOOLS' SHELF: a one-track grid whose row goes 1fr → 0fr while the
             composer is idle (styles/composer.css `.c-composer-tools`). A grid

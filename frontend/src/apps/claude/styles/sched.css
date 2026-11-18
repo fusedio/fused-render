@@ -565,6 +565,45 @@ a.c-waitcard .wc-ahead:hover,
   line-height: 1.5;
   color: var(--c-dim);
 }
+/* A LINE THAT JUST JOINED THE QUEUE SAYS SO, ONCE. A new row used to appear as
+   one more grey line above the box, and a reader who had just pressed Enter
+   could not tell their words had gone anywhere ("it did not give me any
+   indication"). So the row carries the Queued ring's colour as its marker, and
+   on arrival it sits in full ink on a thin wash of that colour for a beat, then
+   settles back to the quiet line. A row is keyed by its line, so the animation
+   plays when the line arrives (and once more if the chat is opened again while
+   the line still waits: the strip mounts with it); the outbox chip under the
+   box (styles/composer.css `.c-outbox`) flashes with it. A card's tile lists
+   the queue read-only and stays still. The corner is a fixed 10px and not a
+   full pill, so a row that wraps in a narrow card is a rounded box. */
+.c-queue-strip:not(.c-queue-compact) .c-queue-row {
+  margin: 0 calc(-8px * var(--c-zoom, 1));
+  padding: 1px calc(8px * var(--c-zoom, 1));
+  border-radius: calc(10px * var(--c-zoom, 1));
+  animation: c-queue-arrive 1800ms ease-out;
+}
+.c-queue-strip:not(.c-queue-compact) .c-queue-row::before {
+  content: "";
+  flex: none;
+  align-self: center;
+  box-sizing: border-box;
+  width: calc(8px * var(--c-zoom, 1));
+  height: calc(8px * var(--c-zoom, 1));
+  border: 1.5px solid var(--status-queued);
+  border-radius: 50%;
+}
+@keyframes c-queue-arrive {
+  0%,
+  35% {
+    background: color-mix(in srgb, var(--status-queued) 22%, transparent);
+    color: var(--c-fg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-queue-strip:not(.c-queue-compact) .c-queue-row {
+    animation: none;
+  }
+}
 .c-queue-text {
   flex: 1 1 auto;
   min-width: 0;

@@ -623,6 +623,24 @@ test("the outbox hint names the parked lines under the box, and not-sent rows ap
   expect(pulled).toBe(1);
 });
 
+test("the outbox chip is a NEW node when a line joins it (the flash replays), the same node when one leaves", () => {
+  // The flash is the chip's CSS enter animation, so "replays" means "remounted".
+  const c = mount({ queuedCount: 1 });
+  const chip = () => c.root.findByProps({ className: "c-queued c-outbox" });
+  const first = chip();
+  c.rerender({ queuedCount: 1 });
+  expect(chip()).toBe(first);
+  c.rerender({ queuedCount: 2 });
+  const second = chip();
+  expect(second).not.toBe(first);
+  // The drain sent one, ↑ pulled one back: nothing arrived, nothing flashes.
+  c.rerender({ queuedCount: 1 });
+  expect(chip()).toBe(second);
+  // A stop's hand-back is an arrival too.
+  c.rerender({ queuedCount: 1, notSentCount: 1 });
+  expect(chip()).not.toBe(second);
+});
+
 test("CTRL+Enter while LIVE holds the line until done; Cmd+Enter is never (it is ✓ Done's chord)", () => {
   const now: string[] = [];
   const held: string[] = [];
