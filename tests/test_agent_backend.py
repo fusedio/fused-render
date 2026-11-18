@@ -3482,3 +3482,20 @@ def test_cursor_bin_agrees_with_cursor_healths_resolver(agent, tmp_path, monkeyp
                            CURSOR_VERSION)
     assert agent._cursor_bin() == named
     assert cursor_health.resolve(allow_shell=False)[0] == named
+
+
+def test_the_cursor_terminal_command_uses_the_resolved_binary(agent, target, tmp_path, monkeypatch):
+    """`cursor-agent` when PATH has it; otherwise the located binary (an
+    override, a known path, or the `agent` alias), not a name the shell
+    cannot find."""
+    file, workdir = target
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing"))
+    forced = _exe(str(tmp_path / "odd dir" / "agent"))
+    monkeypatch.setenv("FUSED_RENDER_CURSOR_BIN", forced)
+    out = agent._terminal_command(file, backend="cursor")
+    assert out["command"].endswith("&& '%s'" % forced)
+    on_path = _cursor_script(str(tmp_path / "bin2" / "cursor-agent"), CURSOR_VERSION)
+    monkeypatch.setenv("PATH", str(tmp_path / "bin2"))
+    assert agent._terminal_command(file, backend="cursor")["command"].endswith(
+        "&& cursor-agent")
+    assert on_path

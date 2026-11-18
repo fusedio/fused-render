@@ -2173,7 +2173,16 @@ def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dic
         if session_id:
             argv += ["--session", session_id]
     elif backend == "cursor":
-        argv = ["cursor-agent"]
+        # Spelled `cursor-agent` when PATH resolves it, as Claude's is; else
+        # the located binary (an override, a known path, the `agent` alias).
+        if shutil.which("cursor-agent"):
+            binary = "cursor-agent"
+        else:
+            try:
+                binary = _cursor_bin()
+            except FileNotFoundError:
+                binary = "cursor-agent"
+        argv = [binary]
         if session_id:
             argv += ["--resume", session_id]
     else:
