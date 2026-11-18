@@ -261,6 +261,34 @@ describe("snapEdges: the edge magnet of a head drag (round 3, owner 2026-11-17)"
     // An edge nearer than the centre wins the pull.
     expect(snapEdges({ left: 603, top: 620 }, small, other, VIEW).pos.left).toBe(600);
   });
+  test("an edge on the other card's middle, and the middle on the other card's edge (owner, 2026-11-18)", () => {
+    // The other's middle: x 800, y 300. Its edges: x 600 / 1000, y 100 / 500.
+    const small = { width: 300, height: 200 };
+    // LEFT edge on its middle (x 800).
+    const l = snapEdges({ left: 806, top: 620 }, small, other, VIEW);
+    expect(l.pos.left).toBe(800);
+    expect(l.x).toEqual([{ x: 800, top: 100, bottom: 820 }]);
+    // RIGHT edge on its middle: left 500.
+    const r = snapEdges({ left: 495, top: 620 }, small, other, VIEW);
+    expect(r.pos.left).toBe(500);
+    expect(r.x).toEqual([{ x: 800, top: 100, bottom: 820 }]);
+    // TOP edge on its middle (y 300), BOTTOM edge on it (top 150): a box
+    // 150 tall, so its other edge meets none of the other card's lines.
+    const t = snapEdges({ left: 100, top: 307 }, { width: 300, height: 150 }, other, VIEW);
+    expect(t.pos.top).toBe(300);
+    expect(t.y).toEqual([{ y: 300, left: 100, right: 1000 }]);
+    const b = snapEdges({ left: 100, top: 146 }, { width: 300, height: 150 }, other, VIEW);
+    expect(b.pos.top).toBe(150);
+    expect(b.y).toEqual([{ y: 300, left: 100, right: 1000 }]);
+    // This box's MIDDLE on the other's left edge (x 600): left 450; on its
+    // bottom edge (y 500): top 400.
+    const ml = snapEdges({ left: 455, top: 620 }, small, other, VIEW);
+    expect(ml.pos.left).toBe(450);
+    expect(ml.x).toEqual([{ x: 600, top: 100, bottom: 820 }]);
+    const mb = snapEdges({ left: 100, top: 394 }, small, other, VIEW);
+    expect(mb.pos.top).toBe(400);
+    expect(mb.y).toEqual([{ y: 500, left: 100, right: 1000 }]);
+  });
   test("the app window draws no guide — not its edges, not its middle — and has no pull to its middle (owner, 2026-11-18)", () => {
     // Flush with its edges still (the ruling of 2026-11-17), silently.
     const left = snapEdges({ left: 9, top: 300 }, size, null, VIEW);

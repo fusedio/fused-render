@@ -221,8 +221,9 @@ export function floatResize(edge: MoveEdge, start: Box, dx: number, dy: number, 
  *  also drew the app window's own edges and middle: "why do we have the
  *  whole page left right middle top, I didn't ask for that, I asked for both
  *  pin windows"):
- *    - the MIDDLE is a line too: the dragged box's centre takes the other
- *      card's centre, on either axis;
+ *    - the MIDDLE is a line too, on either axis, for the box and for the
+ *      other card: middle to middle, an edge on the other's middle, the
+ *      middle on the other's edge;
  *    - every line the box ends up on is drawn, not only the one that pulled
  *      it (two cards of one width share a left AND a right edge);
  *    - a line that would fall past the app window is drawn just inside it;
@@ -273,15 +274,18 @@ function cardLines(other: Span | null): AxisLine[] {
 /** Two coordinates that draw on the same pixel (a centre may sit on a half). */
 const LEVEL = 0.5;
 
-/** One axis of the MOVE magnet: the dragged box's edges (`lo`, `lo + len`)
- *  against the other card's edges, its centre against the other card's
- *  centre, and its edges against the app window's (`view`, when known — a
- *  pull with no guide). The nearest within `px` wins — the other card's
- *  before the app window's on a tie, an edge before a centre. Null: nothing
- *  in reach. */
+/** One axis of the MOVE magnet: the dragged box's three lines — its two
+ *  edges (`lo`, `lo + len`) and its middle — against the other card's three,
+ *  every pair (owner, 2026-11-18: "middle of window A only aligns with middle
+ *  of window B, not top or bottom of A or B with the middle of the other —
+ *  fix that"): edge↔edge, middle↔middle, an edge on the other's middle, the
+ *  middle on the other's edge. And its edges against the app window's
+ *  (`view`, when known — a pull with no guide). The nearest within `px` wins
+ *  — the other card's before the app window's on a tie, its edges before its
+ *  middle, this box's edges before its own middle. Null: nothing in reach. */
 function snapAxis(lo: number, len: number, lines: AxisLine[], view: number, px: number): number | null {
   const deltas: number[] = [];
-  for (const l of lines) for (const mine of l.mid ? [lo + len / 2] : [lo, lo + len]) deltas.push(l.at - mine);
+  for (const l of lines) for (const mine of [lo, lo + len, lo + len / 2]) deltas.push(l.at - mine);
   if (Number.isFinite(view)) deltas.push(0 - lo, view - (lo + len));
   let best: number | null = null;
   for (const d of deltas) {
@@ -291,23 +295,36 @@ function snapAxis(lo: number, len: number, lines: AxisLine[], view: number, px: 
   return best === null ? null : lo + best;
 }
 
-/** THE LINES A BOX STANDS ON, on one axis, once placed: every edge line one
- *  of its `edges` meets — the other card's middle too where `edgeOnMid` (a
- *  resize: the held edge may stop on it) — and the middle its own centre
- *  meets. That centre-to-centre line is left out when an edge line is met
- *  too (two cards of one size: the two shared edges say it, the middle would
- *  be a third line for the same fact). Each line once. */
-function metLines(lo: number, len: number, lines: AxisLine[], edges: number[], edgeOnMid: boolean): AxisLine[] {
+/** Which of a box's lines count against the other card's (`metLines`). */
+interface Meets {
+  /** The box's edges that count (a move: both; a resize: the held one). */
+  edges: number[];
+  /** Its middle may stand on one of the other card's EDGES (a move). Its
+   *  middle on the other's middle always counts. */
+  midOnEdge: boolean;
+}
+
+/** THE LINES OF THE OTHER CARD A BOX STANDS ON, on one axis, once placed:
+ *  each of its edges and its middle that one of the box's counted edges
+ *  meets, or the box's own middle. The middle-on-middle line is left out
+ *  when an edge-on-edge line is met too (two cards of one size: the two
+ *  shared edges say it, the middle would be a third line for the same
+ *  fact). Each line once. */
+function metLines(lo: number, len: number, lines: AxisLine[], o: Meets): AxisLine[] {
+  const mid = lo + len / 2;
+  const on = (v: number, l: AxisLine) => Math.abs(v - l.at) <= LEVEL;
   const met: AxisLine[] = [];
-  const has = (l: AxisLine) => met.some((m) => Math.abs(m.at - l.at) <= LEVEL);
+  const has = (l: AxisLine) => met.some((m) => on(m.at, l));
+  let shared = false;
   for (const l of lines) {
-    if (l.mid && !edgeOnMid) continue;
-    if (edges.some((e) => Math.abs(e - l.at) <= LEVEL) && !has(l)) met.push(l);
+    if (l.mid || has(l)) continue;
+    const byEdge = o.edges.some((e) => on(e, l));
+    if (byEdge) shared = true;
+    if (byEdge || (o.midOnEdge && on(mid, l))) met.push(l);
   }
-  const shared = met.some((m) => !m.mid);
   for (const l of lines) {
-    if (!l.mid || shared || has(l)) continue;
-    if (Math.abs(lo + len / 2 - l.at) <= LEVEL) met.push(l);
+    if (!l.mid || has(l)) continue;
+    if (o.edges.some((e) => on(e, l)) || (!shared && on(mid, l))) met.push(l);
   }
   return met;
 }
@@ -322,26 +339,19 @@ function drawnAt(at: number, view: number): number {
 
 /** The guides for a box as it stands (`box`) beside the other card: the
  *  lines of both axes it is on, each run over both cards. `x` / `y`: which
- *  of its edges count on that axis (a move: both; a resize: the one the grip
- *  holds, which may stop on the other card's middle too). */
-function guidesFor(
-  box: Box,
-  other: Box | null,
-  viewport: Size,
-  x: { edges: number[]; edgeOnMid: boolean },
-  y: { edges: number[]; edgeOnMid: boolean },
-): { x: EdgeGuideX[]; y: EdgeGuideY[] } {
+ *  of its lines count on that axis (`Meets`). */
+function guidesFor(box: Box, other: Box | null, viewport: Size, x: Meets, y: Meets): { x: EdgeGuideX[]; y: EdgeGuideY[] } {
   if (!other) return { x: [], y: [] };
   const top = Math.min(box.top, other.top);
   const bottom = Math.max(box.top + box.height, other.top + other.height);
   const left = Math.min(box.left, other.left);
   const right = Math.max(box.left + box.width, other.left + other.width);
-  const xs = metLines(box.left, box.width, cardLines({ lo: other.left, len: other.width }), x.edges, x.edgeOnMid).map((l) => ({
+  const xs = metLines(box.left, box.width, cardLines({ lo: other.left, len: other.width }), x).map((l) => ({
     x: drawnAt(l.at, viewport.width),
     top,
     bottom,
   }));
-  const ys = metLines(box.top, box.height, cardLines({ lo: other.top, len: other.height }), y.edges, y.edgeOnMid).map((l) => ({
+  const ys = metLines(box.top, box.height, cardLines({ lo: other.top, len: other.height }), y).map((l) => ({
     y: drawnAt(l.at, viewport.height),
     left,
     right,
@@ -352,9 +362,9 @@ function guidesFor(
 /** WHERE A HEAD DRAG LANDS WITH THE MAGNET: `pos` the dragged box's top-left
  *  as the drag asks (already inside the viewport), `size` its size, `other`
  *  the other window's card while it is up (docked or floating; null: none).
- *  Each axis on its own: within `px`, the nearest of left↔left, left↔right,
- *  right↔left, right↔right, centre↔centre (and top / bottom / middle the
- *  same) against the other card — or an edge of the app window — wins, and
+ *  Each axis on its own: within `px`, the nearest pair of the box's left /
+ *  right / middle with the other card's left / right / middle (and top /
+ *  bottom / middle the same) — or an edge of the app window — wins, and
  *  the box moves onto it. The result is clamped to the viewport again.
  *  `x` / `y`: every line of the OTHER CARD the box now stands on (none: no
  *  guide), whether the magnet pulled it there or the drag put it there
@@ -374,8 +384,8 @@ export function snapEdges(
     box,
     other,
     viewport,
-    { edges: [box.left, box.left + box.width], edgeOnMid: false },
-    { edges: [box.top, box.top + box.height], edgeOnMid: false },
+    { edges: [box.left, box.left + box.width], midOnEdge: true },
+    { edges: [box.top, box.top + box.height], midOnEdge: true },
   );
   return { pos: at, x: g.x, y: g.y };
 }
@@ -479,8 +489,8 @@ export function snapResize(
     box,
     other,
     viewport,
-    { edges: xGrip ? [heldX(box)] : [], edgeOnMid: true },
-    { edges: yGrip ? [heldY(box)] : [], edgeOnMid: true },
+    { edges: xGrip ? [heldX(box)] : [], midOnEdge: false },
+    { edges: yGrip ? [heldY(box)] : [], midOnEdge: false },
   );
   return { box, x: xGrip ? g.x : none.x, y: yGrip ? g.y : none.y };
 }
