@@ -58,6 +58,13 @@ def test_ask_cannot_write_and_keeps_caller(expert, monkeypatch):
     assert row["trigger"] == {"asker": "a claude task session", "question": "How?", "session_id": "s9", "run_id": "r9"}
 
 
+def test_an_ask_never_records_a_memory_diff(expert, monkeypatch):
+    # A chat or task-learn writing while the ask runs (an ask takes no write lock) is not the ask's change.
+    stub(monkeypatch, lambda b, p, w: append_memory(b, "- [1 · 2026-11-17] Written by a concurrent chat."))
+    row = sessions.ask(expert, "q?")
+    assert row["status"] == "done" and row["memory_diff"] == "" and sessions.changes(expert) == []
+
+
 def test_failed_session_is_an_error_row(expert, monkeypatch):
     stub(monkeypatch, lambda b, p, w: {"ok": False, "error": "boom", "answer": "", "transcript": []})
     row = sessions.run(expert, "dream", "x")
@@ -102,6 +109,19 @@ def test_a_session_that_changed_nothing_keeps_the_hand_edit_note(expert, monkeyp
     append_memory(expert, "- [1 · 2026-11-17] Told in chat.")
     sessions.note_chat(expert, before, "remember")  # a session that did change it: memory is as it left it
     assert sessions.edited_by_hand(expert) is False
+
+
+def test_a_change_made_while_a_session_writes_is_not_a_hand_edit(expert, monkeypatch):
+    seen = []
+
+    def mid_turn(b, p, w):
+        append_memory(b, "- [1 · 2026-11-17] Learned.")
+        seen.append((sessions.writing(b), sessions.edited_by_hand(b)))   # what the memory tab reads mid-turn
+    stub(monkeypatch, mid_turn)
+    sessions.run(expert, "task-learn", "learn")       # leaves the mark
+    sessions.run(expert, "task-learn", "learn more")  # differs from the mark until this session ends
+    assert seen == [(True, False), (True, False)]
+    assert (sessions.writing(expert), sessions.edited_by_hand(expert)) == (False, False)
 
 
 # --------------------------------------------------------------------- lock ---
@@ -409,6 +429,80 @@ def test_an_expert_chat_leaves_compaction_to_the_cli(expert, monkeypatch):
     assert "--autocompact" in agent_engine.argv("claude", "m", "low", "/sp", "/mcp", window=200000)
 
 
+def test_an_expert_never_falls_back_to_the_steps_engine(expert, monkeypatch):
+    import sys
+
+    import fused_render.bots as bots_pkg
+    from fused_render.bots import steps_engine
+    monkeypatch.delattr(bots_pkg, "agent_engine")
+    monkeypatch.setitem(sys.modules, "fused_render.bots.agent_engine", None)  # the import raises
+    monkeypatch.setattr(steps_engine, "run", lambda *a, **k: pytest.fail("the steps engine ran an expert"))
+    said = []
+    monkeypatch.setattr(expert, "emit", lambda role, text, **k: said.append((role, text)))
+    assert expert.start_task("hi") is False
+    assert ("error", "An expert needs the agent engine (Claude Code), which could not load.") in said
+    assert expert.meta.get("status") == "idle" and (expert.thread is None or not expert.thread.is_alive())
+
+
+def test_prompts_name_the_granted_folders_by_their_real_paths(expert, tmp_path):
+    """A relocated workspace: the canvas copies are not at the default path the skills name, so the prompt says
+    where the granted folder really is (a read at the default path would be refused)."""
+    assert "You may also read" not in store.where(expert)
+    granted = tmp_path / "ws" / "canvas"
+    granted.mkdir(parents=True)
+    expert.meta["folders"] = [str(granted)]
+    assert store.where(expert).endswith(f" You may also read: {granted}.")
+
+
+def test_how_to_run_is_stated_once_and_the_rest_is_the_skill(expert, tmp_path, monkeypatch):
+    from fused_render.bots import agent_engine
+    _canvases(expert, tmp_path, monkeypatch)
+    note = store.run_note(expert)
+    assert "fused workbench --env prod run --engine remote" in note and "approve" not in note
+    # Short, apart from the paths it names (a temp dir here, and a longer one on CI).
+    assert len(note.replace(str(tmp_path), "")) < 400
+    calls = stub(monkeypatch)
+    sessions.ask(expert, "How?")
+    fresh, sent = agent_engine._expert_message(expert, "run it", past=[], conv={})
+    resumed, _ = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s", "sent": sent})
+    assert note in calls[0]["prompt"] and note in fresh and store.where(expert, run=True) in fresh
+    assert resumed == f"Today is {sessions.today()}.\n\nMESSAGE: run it"  # nothing restated on a resumed session
+    # ... until what it was told stops being true: a folder granted (or taken away) since is said on the next turn.
+    more = tmp_path / "granted-later"
+    more.mkdir()
+    monkeypatch.setattr(store, "read_folders", lambda bot, was=store.read_folders: was(bot) + [str(more)])
+    told, sent2 = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s", "sent": sent})
+    assert store.where(expert, run=True) in told and str(more) in told and sent2 != sent
+    assert str(more) not in agent_engine._expert_message(expert, "x", past=[], conv={"session_id": "s", "sent": sent2})[0]
+    # What happens outside the rules is the shipped skill's to say, for both kinds of session.
+    skill = open(os.path.join(os.path.dirname(store.__file__), "shipped", "canvas-reference", "skills",
+                              store.RUN_SKILL), encoding="utf-8").read()
+    assert "Approve / Deny card" in skill and "nobody can approve it" in skill and "run --help" in skill
+    assert ".fused/udfs/" in skill and store.udfs_dir(expert) in note  # the scratch folder: the skill, and its path once
+    monkeypatch.delenv(__import__("fused_render.fusedcli", fromlist=["x"]).CLI_DIR_ENV)
+    assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={})[0]
+    assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={"session_id": "s"})[0]
+
+
+def test_a_redirected_memory_file_or_scratch_folder_is_not_written_without_a_card(expert, tmp_path, monkeypatch):
+    """`free_write` answers the chat's edits of memory.md and the scratch folder without a card. When either is
+    a symlink to somewhere outside the expert's folder, the place it points at is not one of the two."""
+    _canvases(expert, tmp_path, monkeypatch)
+    d, scratch, mem = store.expert_dir(expert), store.udfs_dir(expert), store.memory_path(expert)
+    outside = tmp_path / "outside"
+    (outside / "dir").mkdir(parents=True)
+    (outside / "notes.md").write_text("mine")
+    assert store.free_write(expert, mem) and store.free_write(expert, os.path.join(scratch, "a.py"))
+    os.remove(mem)
+    os.symlink(str(outside / "notes.md"), mem)
+    assert not store.free_write(expert, mem) and not store.free_write(expert, "memory.md", d)
+    assert not store.free_write(expert, str(outside / "notes.md"))
+    os.rmdir(scratch)
+    os.symlink(str(outside / "dir"), scratch)
+    assert not store.free_write(expert, os.path.join(scratch, "a.py"))
+    assert not store.free_write(expert, str(outside / "dir" / "a.py"))
+
+
 # -------------------------------------------------------------- task-learn ---
 class FakeTasks:
     def __init__(self, tasks):
@@ -532,23 +626,6 @@ def test_a_busy_expert_is_not_a_failed_attempt(expert, monkeypatch, transcript):
     assert learn.run_pass() == {"sessions": 1, "errors": 0} and len(calls) == 1
 
 
-def test_tick_skips_without_the_workspace_claim(monkeypatch):
-    from fused_render.experts import scheduler
-    monkeypatch.setattr(registry, "owns", lambda: True)
-    monkeypatch.setattr(registry, "workspace_claimed", lambda: False)
-    monkeypatch.setattr(learn, "run_pass", lambda **k: pytest.fail("a pass without the workspace"))
-    out = scheduler.tick()
-    assert out["ran"] is False and "workspace" in out["skipped"]
-
-
-# ------------------------------------------------------------ review fixes ---
-def test_an_ask_never_records_a_memory_diff(expert, monkeypatch):
-    # A chat or task-learn writing while the ask runs (an ask takes no write lock) is not the ask's change.
-    stub(monkeypatch, lambda b, p, w: append_memory(b, "- [1 · 2026-11-17] Written by a concurrent chat."))
-    row = sessions.ask(expert, "q?")
-    assert row["status"] == "done" and row["memory_diff"] == "" and sessions.changes(expert) == []
-
-
 def test_a_shrunk_transcript_is_read_again_whole(expert, monkeypatch, transcript):
     calls = stub(monkeypatch)
     transcript.write_text("turn 1\nturn 2\nturn 3\n")
@@ -577,144 +654,6 @@ def test_a_failed_task_learn_that_changed_memory_counts_as_read(expert, monkeypa
     rec = learn._load(expert)["sessions"]["s1"]
     assert rec["size"] == os.path.getsize(transcript) and "fails" not in rec
     assert learn.run_pass()["sessions"] == 0 and len(calls) == 1  # not retried: counts would be raised twice
-
-
-def test_after_shutdown_no_session_or_dream_starts(expert, monkeypatch):
-    from fused_render.experts import scheduler
-    calls = stub(monkeypatch)
-    sessions.shutdown()
-    try:
-        row = sessions.run(expert, "ask", "q")
-        assert row["status"] == "error" and row["error"] == sessions.CLOSED and calls == []
-        with open(store.memory_path(expert), "w", encoding="utf-8") as f:
-            f.write("x\n" * (sessions.LIMIT_LINES + 1))
-        assert sessions.after_write(expert) is False  # no dream queued after shutdown
-        scheduler.start()  # the server starting again reopens
-        assert sessions.closed() is False
-    finally:
-        scheduler.shutdown(0)
-        sessions.reopen()
-    assert sessions.run(expert, "ask", "q")["status"] == "done"
-
-
-def test_bots_shutdown_ends_the_experts_before_the_claim_goes(monkeypatch):
-    seen = []
-
-    class Proc:
-        def wait(self, timeout=None):
-            return 0
-    proc = Proc()
-    monkeypatch.setattr(sessions, "_signal", lambda p, sig: seen.append("kill"))
-    monkeypatch.setattr(registry, "_drop_routines_lock", lambda: seen.append(("claim", sessions.closed())))
-    with sessions._GUARD:
-        sessions._PROCS.add(proc)
-    try:
-        registry.shutdown(budget_s=0.1)
-    finally:
-        with sessions._GUARD:
-            sessions._PROCS.discard(proc)
-    assert seen == ["kill", ("claim", True)]  # the harness is ended before the claim goes
-    registry.reset_for_tests()  # a later test must be able to run sessions again
-    assert sessions.closed() is False
-
-
-def test_an_expert_never_falls_back_to_the_steps_engine(expert, monkeypatch):
-    import sys
-
-    import fused_render.bots as bots_pkg
-    from fused_render.bots import steps_engine
-    monkeypatch.delattr(bots_pkg, "agent_engine")
-    monkeypatch.setitem(sys.modules, "fused_render.bots.agent_engine", None)  # the import raises
-    monkeypatch.setattr(steps_engine, "run", lambda *a, **k: pytest.fail("the steps engine ran an expert"))
-    said = []
-    monkeypatch.setattr(expert, "emit", lambda role, text, **k: said.append((role, text)))
-    assert expert.start_task("hi") is False
-    assert ("error", "An expert needs the agent engine (Claude Code), which could not load.") in said
-    assert expert.meta.get("status") == "idle" and (expert.thread is None or not expert.thread.is_alive())
-
-
-# ------------------------------------------------------- shutdown races ---
-class _PausedProc:
-    """A harness process whose spawn (Popen) is paused until `go` is set."""
-    entered, go, made = threading.Event(), threading.Event(), []
-
-    def __init__(self, cmd, **kw):
-        type(self).entered.set()
-        assert type(self).go.wait(5)
-        self.pid, self.returncode, self.signals, self.ended = 0, -15, [], threading.Event()
-        type(self).made.append(self)
-
-    def communicate(self, data, timeout=None):
-        assert self.ended.wait(5)  # runs until signalled
-        return b"", b""
-
-    def wait(self, timeout=None):
-        return self.returncode
-
-
-def test_shutdown_while_a_spawn_is_paused_still_ends_it(expert, monkeypatch):
-    from fused_render.bots import claude_cli
-    monkeypatch.setattr(claude_cli, "runnable", lambda: "claude")
-    monkeypatch.setattr(sessions.subprocess, "Popen", _PausedProc)
-    monkeypatch.setattr(sessions, "_signal", lambda p, sig: (p.signals.append(sig), p.ended.set()))
-    _PausedProc.entered.clear(), _PausedProc.go.clear(), _PausedProc.made.clear()
-    res = []
-    spawn = threading.Thread(target=lambda: res.append(sessions.harness(expert, "q", False)))
-    spawn.start()
-    try:
-        assert _PausedProc.entered.wait(5)
-        stop = threading.Thread(target=sessions.shutdown)
-        stop.start()
-        time.sleep(0.2)
-        assert stop.is_alive()  # it cannot snapshot the processes mid-spawn
-        _PausedProc.go.set()
-        stop.join(5)
-        spawn.join(5)
-        assert [p.signals for p in _PausedProc.made] == [[sessions.signal.SIGTERM]]  # tracked, so ended
-        assert res[0]["error"] == sessions.CLOSED and not sessions._PROCS
-        # Once closed, a harness is never spawned at all.
-        _PausedProc.entered.clear()
-        assert sessions.harness(expert, "q", False)["error"] == sessions.CLOSED and not _PausedProc.entered.is_set()
-    finally:
-        _PausedProc.go.set()
-        sessions.reopen()
-
-
-def test_shutdown_waits_for_every_harness_within_one_budget(monkeypatch):
-    """Processes that ignore SIGTERM: signalled together, waited for together, then SIGKILLed; never one budget
-    each."""
-    class Stubborn:
-        def __init__(self):
-            self.signals = []
-
-        def wait(self, timeout=None):
-            if sessions._SIGKILL in self.signals:
-                return -9
-            time.sleep(max(0.0, timeout or 0))
-            raise sessions.subprocess.TimeoutExpired("claude", timeout)
-    procs = [Stubborn() for _ in range(4)]
-    monkeypatch.setattr(sessions, "_signal", lambda p, sig: p.signals.append(sig))
-    with sessions._GUARD:
-        sessions._PROCS.update(procs)
-    t0 = time.monotonic()
-    try:
-        sessions.shutdown(budget_s=0.4)
-    finally:
-        with sessions._GUARD:
-            sessions._PROCS.difference_update(procs)
-        sessions.reopen()
-    assert time.monotonic() - t0 < 1.2  # one shared wait, not 4 x the budget
-    assert all(p.signals == [sessions.signal.SIGTERM, sessions._SIGKILL] for p in procs)
-
-
-def test_prompts_name_the_granted_folders_by_their_real_paths(expert, tmp_path):
-    """A relocated workspace: the canvas copies are not at the default path the skills name, so the prompt says
-    where the granted folder really is (a read at the default path would be refused)."""
-    assert "You may also read" not in store.where(expert)
-    granted = tmp_path / "ws" / "canvas"
-    granted.mkdir(parents=True)
-    expert.meta["folders"] = [str(granted)]
-    assert store.where(expert).endswith(f" You may also read: {granted}.")
 
 
 def _call(expert_name, tool="mcp__fused__expert_ask"):
@@ -814,63 +753,123 @@ def test_a_call_read_without_its_outcome_anchors_the_next_slice(expert, monkeypa
     assert far.startswith(learn.CUT) and "USER| b 60 " not in far
 
 
-def test_a_change_made_while_a_session_writes_is_not_a_hand_edit(expert, monkeypatch):
+def test_tick_skips_without_the_workspace_claim(monkeypatch):
+    from fused_render.experts import scheduler
+    monkeypatch.setattr(registry, "owns", lambda: True)
+    monkeypatch.setattr(registry, "workspace_claimed", lambda: False)
+    monkeypatch.setattr(learn, "run_pass", lambda **k: pytest.fail("a pass without the workspace"))
+    out = scheduler.tick()
+    assert out["ran"] is False and "workspace" in out["skipped"]
+
+
+# ----------------------------------------------------------------- shutdown ---
+def test_after_shutdown_no_session_or_dream_starts(expert, monkeypatch):
+    from fused_render.experts import scheduler
+    calls = stub(monkeypatch)
+    sessions.shutdown()
+    try:
+        row = sessions.run(expert, "ask", "q")
+        assert row["status"] == "error" and row["error"] == sessions.CLOSED and calls == []
+        with open(store.memory_path(expert), "w", encoding="utf-8") as f:
+            f.write("x\n" * (sessions.LIMIT_LINES + 1))
+        assert sessions.after_write(expert) is False  # no dream queued after shutdown
+        scheduler.start()  # the server starting again reopens
+        assert sessions.closed() is False
+    finally:
+        scheduler.shutdown(0)
+        sessions.reopen()
+    assert sessions.run(expert, "ask", "q")["status"] == "done"
+
+
+def test_bots_shutdown_ends_the_experts_before_the_claim_goes(monkeypatch):
     seen = []
 
-    def mid_turn(b, p, w):
-        append_memory(b, "- [1 · 2026-11-17] Learned.")
-        seen.append((sessions.writing(b), sessions.edited_by_hand(b)))   # what the memory tab reads mid-turn
-    stub(monkeypatch, mid_turn)
-    sessions.run(expert, "task-learn", "learn")       # leaves the mark
-    sessions.run(expert, "task-learn", "learn more")  # differs from the mark until this session ends
-    assert seen == [(True, False), (True, False)]
-    assert (sessions.writing(expert), sessions.edited_by_hand(expert)) == (False, False)
+    class Proc:
+        def wait(self, timeout=None):
+            return 0
+    proc = Proc()
+    monkeypatch.setattr(sessions, "_signal", lambda p, sig: seen.append("kill"))
+    monkeypatch.setattr(registry, "_drop_routines_lock", lambda: seen.append(("claim", sessions.closed())))
+    with sessions._GUARD:
+        sessions._PROCS.add(proc)
+    try:
+        registry.shutdown(budget_s=0.1)
+    finally:
+        with sessions._GUARD:
+            sessions._PROCS.discard(proc)
+    assert seen == ["kill", ("claim", True)]  # the harness is ended before the claim goes
+    registry.reset_for_tests()  # a later test must be able to run sessions again
+    assert sessions.closed() is False
 
 
-def test_how_to_run_is_stated_once_and_the_rest_is_the_skill(expert, tmp_path, monkeypatch):
-    from fused_render.bots import agent_engine
-    _canvases(expert, tmp_path, monkeypatch)
-    note = store.run_note(expert)
-    assert "fused workbench --env prod run --engine remote" in note and "approve" not in note
-    # Short, apart from the paths it names (a temp dir here, and a longer one on CI).
-    assert len(note.replace(str(tmp_path), "")) < 400
-    calls = stub(monkeypatch)
-    sessions.ask(expert, "How?")
-    fresh, sent = agent_engine._expert_message(expert, "run it", past=[], conv={})
-    resumed, _ = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s", "sent": sent})
-    assert note in calls[0]["prompt"] and note in fresh and store.where(expert, run=True) in fresh
-    assert resumed == f"Today is {sessions.today()}.\n\nMESSAGE: run it"  # nothing restated on a resumed session
-    # ... until what it was told stops being true: a folder granted (or taken away) since is said on the next turn.
-    more = tmp_path / "granted-later"
-    more.mkdir()
-    monkeypatch.setattr(store, "read_folders", lambda bot, was=store.read_folders: was(bot) + [str(more)])
-    told, sent2 = agent_engine._expert_message(expert, "run it", past=[], conv={"session_id": "s", "sent": sent})
-    assert store.where(expert, run=True) in told and str(more) in told and sent2 != sent
-    assert str(more) not in agent_engine._expert_message(expert, "x", past=[], conv={"session_id": "s", "sent": sent2})[0]
-    # What happens outside the rules is the shipped skill's to say, for both kinds of session.
-    skill = open(os.path.join(os.path.dirname(store.__file__), "shipped", "canvas-reference", "skills",
-                              store.RUN_SKILL), encoding="utf-8").read()
-    assert "Approve / Deny card" in skill and "nobody can approve it" in skill and "run --help" in skill
-    assert ".fused/udfs/" in skill and store.udfs_dir(expert) in note  # the scratch folder: the skill, and its path once
-    monkeypatch.delenv(__import__("fused_render.fusedcli", fromlist=["x"]).CLI_DIR_ENV)
-    assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={})[0]
-    assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={"session_id": "s"})[0]
+class _PausedProc:
+    """A harness process whose spawn (Popen) is paused until `go` is set."""
+    entered, go, made = threading.Event(), threading.Event(), []
+
+    def __init__(self, cmd, **kw):
+        type(self).entered.set()
+        assert type(self).go.wait(5)
+        self.pid, self.returncode, self.signals, self.ended = 0, -15, [], threading.Event()
+        type(self).made.append(self)
+
+    def communicate(self, data, timeout=None):
+        assert self.ended.wait(5)  # runs until signalled
+        return b"", b""
+
+    def wait(self, timeout=None):
+        return self.returncode
 
 
-def test_a_redirected_memory_file_or_scratch_folder_is_not_written_without_a_card(expert, tmp_path, monkeypatch):
-    """`free_write` answers the chat's edits of memory.md and the scratch folder without a card. When either is
-    a symlink to somewhere outside the expert's folder, the place it points at is not one of the two."""
-    _canvases(expert, tmp_path, monkeypatch)
-    d, scratch, mem = store.expert_dir(expert), store.udfs_dir(expert), store.memory_path(expert)
-    outside = tmp_path / "outside"
-    (outside / "dir").mkdir(parents=True)
-    (outside / "notes.md").write_text("mine")
-    assert store.free_write(expert, mem) and store.free_write(expert, os.path.join(scratch, "a.py"))
-    os.remove(mem)
-    os.symlink(str(outside / "notes.md"), mem)
-    assert not store.free_write(expert, mem) and not store.free_write(expert, "memory.md", d)
-    assert not store.free_write(expert, str(outside / "notes.md"))
-    os.rmdir(scratch)
-    os.symlink(str(outside / "dir"), scratch)
-    assert not store.free_write(expert, os.path.join(scratch, "a.py"))
-    assert not store.free_write(expert, str(outside / "dir" / "a.py"))
+def test_shutdown_while_a_spawn_is_paused_still_ends_it(expert, monkeypatch):
+    from fused_render.bots import claude_cli
+    monkeypatch.setattr(claude_cli, "runnable", lambda: "claude")
+    monkeypatch.setattr(sessions.subprocess, "Popen", _PausedProc)
+    monkeypatch.setattr(sessions, "_signal", lambda p, sig: (p.signals.append(sig), p.ended.set()))
+    _PausedProc.entered.clear(), _PausedProc.go.clear(), _PausedProc.made.clear()
+    res = []
+    spawn = threading.Thread(target=lambda: res.append(sessions.harness(expert, "q", False)))
+    spawn.start()
+    try:
+        assert _PausedProc.entered.wait(5)
+        stop = threading.Thread(target=sessions.shutdown)
+        stop.start()
+        time.sleep(0.2)
+        assert stop.is_alive()  # it cannot snapshot the processes mid-spawn
+        _PausedProc.go.set()
+        stop.join(5)
+        spawn.join(5)
+        assert [p.signals for p in _PausedProc.made] == [[sessions.signal.SIGTERM]]  # tracked, so ended
+        assert res[0]["error"] == sessions.CLOSED and not sessions._PROCS
+        # Once closed, a harness is never spawned at all.
+        _PausedProc.entered.clear()
+        assert sessions.harness(expert, "q", False)["error"] == sessions.CLOSED and not _PausedProc.entered.is_set()
+    finally:
+        _PausedProc.go.set()
+        sessions.reopen()
+
+
+def test_shutdown_waits_for_every_harness_within_one_budget(monkeypatch):
+    """Processes that ignore SIGTERM: signalled together, waited for together, then SIGKILLed; never one budget
+    each."""
+    class Stubborn:
+        def __init__(self):
+            self.signals = []
+
+        def wait(self, timeout=None):
+            if sessions._SIGKILL in self.signals:
+                return -9
+            time.sleep(max(0.0, timeout or 0))
+            raise sessions.subprocess.TimeoutExpired("claude", timeout)
+    procs = [Stubborn() for _ in range(4)]
+    monkeypatch.setattr(sessions, "_signal", lambda p, sig: p.signals.append(sig))
+    with sessions._GUARD:
+        sessions._PROCS.update(procs)
+    t0 = time.monotonic()
+    try:
+        sessions.shutdown(budget_s=0.4)
+    finally:
+        with sessions._GUARD:
+            sessions._PROCS.difference_update(procs)
+        sessions.reopen()
+    assert time.monotonic() - t0 < 1.2  # one shared wait, not 4 x the budget
+    assert all(p.signals == [sessions.signal.SIGTERM, sessions._SIGKILL] for p in procs)
