@@ -67,37 +67,40 @@ def _read_ogr(src, cap):
     import pandas as pd
     import pyogrio
 
-    if "://" in src:
+    remote = "://" in src
+    if remote:
         pyogrio.set_gdal_config_options(GDAL_HTTP)
         src = "/vsicurl/" + src
-    layers = [str(l[0]) for l in pyogrio.list_layers(src)]
-    skipped = set()
-    if len(layers) <= 1:
-        gdf = pyogrio.read_dataframe(src, max_features=cap)
-        if "geometry" not in gdf:
-            raise NotVector("this file has no geometry")
-    else:
-        parts = []
-        for name in layers:
-            left = cap - sum(map(len, parts))
-            if left <= 0:
-                break
-            try:
-                part = pyogrio.read_dataframe(src, layer=name, max_features=left)
-                part = part[part.geometry.notna()]
-            except Exception:  # noqa: BLE001
-                skipped.add(name)
-                continue
-            if len(part):
-                part.insert(0, "_layer", name)
-                parts.append(part)
-        if not parts:
-            raise NotVector("no readable features in any layer")
-        gdf = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
-    total = len(gdf) if len(layers) <= 1 and len(gdf) < cap else max(len(gdf), sum(
-        pyogrio.read_info(src, layer=n, force_feature_count=True)["features"] or 0
-        for n in layers if n not in skipped))
-    return gdf, total, layers
+    layers = [str(name) for name, gtype in pyogrio.list_layers(src) if gtype]
+    parts, read, used, capped = [], [], 0, False
+    for name in layers:
+        if used >= cap:
+            capped = True
+            break
+        try:
+            part = pyogrio.read_dataframe(src, layer=name, max_features=cap - used + 1, use_arrow=True)
+        except Exception:  # noqa: BLE001
+            if len(layers) == 1:
+                raise
+            continue
+        read.append(name)
+        capped = capped or len(part) > cap - used
+        part = part.iloc[:cap - used]
+        used += len(part)
+        if len(layers) > 1:
+            part = part[part.geometry.notna()]
+            part.insert(0, "_layer", name)
+        if len(part):
+            parts.append(part)
+    if not parts:
+        raise NotVector("no features with geometry in this file")
+    gdf = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
+    if not capped:
+        return gdf, len(gdf), False, layers
+    counts = [pyogrio.read_info(src, layer=n, force_feature_count=not remote)["features"]
+              for n in read + layers[layers.index(read[-1]) + 1:]]
+    total = None if any(c is None or c < 0 for c in counts) else sum(counts)
+    return gdf, total, total is None or total > used, layers
 
 
 def _read_parquet(file, cap):
@@ -127,7 +130,7 @@ def _read_parquet(file, cap):
     df = table.to_pandas()
     df[col] = shapely.from_wkb(df[col].to_numpy())
     gdf = gpd.GeoDataFrame(df, geometry=col, crs=meta.get("crs", "OGC:CRS84"))
-    return gdf, pf.metadata.num_rows, []
+    return gdf, pf.metadata.num_rows, pf.metadata.num_rows > cap, []
 
 
 def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
@@ -139,7 +142,9 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
     max_features, table_rows = int(max_features), int(table_rows)
     if not file:
         return {"error": "no file selected"}
-    if "://" not in file:
+    if not file.lower().startswith(("http://", "https://")):
+        if "://" in file:
+            return {"error": "only http(s) URLs are read: sign an s3:// address first"}
         file = os.path.abspath(os.path.expanduser(file))
         if not os.path.isfile(file):
             return {"error": f"not a file: {file}"}
@@ -149,12 +154,11 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
     sizes = ThreadPoolExecutor(len(parts)).map(_size, parts)
 
     try:
-        gdf, total, layers = (_read_parquet if ext == "parquet" else _read_ogr)(file, max_features)
+        gdf, total, truncated, layers = (_read_parquet if ext == "parquet" else _read_ogr)(file, max_features)
     except NotVector as e:
         return {"error": str(e)}
     except Exception as e:  # noqa: BLE001
         return {"error": f"could not read vector file: {type(e).__name__}: {e}"}
-    truncated = total > max_features
 
     crs = gdf.crs
     crs_info = {"epsg": (crs.to_epsg() if crs else None),
@@ -215,7 +219,7 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
     return {
         "file_size": sum(sizes),
         "layers": layers,
-        "count": int(total),
+        "count": total,
         "shown": int(len(gdf)),
         "truncated": bool(truncated),
         "simplified_tolerance": simplified,

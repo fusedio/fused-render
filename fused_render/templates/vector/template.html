@@ -193,7 +193,7 @@ const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixe
 // status pill a soft pulse; both switch off the instant a non-loading call
 // (success, error, or empty message) lands.
 function status(msg, err, loading){
-  els.status.innerHTML = msg || '';
+  els.status.textContent = msg || '';
   els.status.style.display = msg ? 'block' : 'none';
   els.status.className = err ? 'err' : (loading ? 'loading' : '');
   els.loadbar.classList.toggle('active', !!loading);
@@ -371,7 +371,7 @@ function renderMeta(){
   const rows = [
     ['file', P.file().split('/').pop()],
     ['size (all sidecars)', human(data.file_size)],
-    ['features', data.count.toLocaleString() + (data.truncated ? ` (showing first ${data.shown.toLocaleString()})` : '')],
+    ['features', (data.count ?? `${data.shown.toLocaleString()}+`).toLocaleString() + (data.truncated ? ` (showing first ${data.shown.toLocaleString()})` : '')],
     ['geometry', data.geometry_types.join(', ')],
     ['CRS', data.crs.epsg ? `EPSG:${data.crs.epsg} — ${data.crs.name}` : (data.crs.name || 'unknown')],
     ['fields', data.schema.map(s => s.name).join(', ')],
@@ -400,20 +400,21 @@ els.fitBtn.onclick = () => fitToData(false);
 // ---------------- convert to GeoParquet ----------------
 els.convertBtn.onclick = async () => {
   if (!P.file()) return;
+  clearTimeout(noteTimer);
   els.convertBtn.disabled = true;
   status('Converting to GeoParquet…', false, true);
   // key:null — convert_parquet.py writes GeoParquet; never cancel it mid-write (D114).
   const r = await fused.runPython('./convert_parquet.py', {file: P.file()}, { key: null })
     .catch(e => ({error: String(e.message || e)}));
   els.convertBtn.disabled = false;
-  if (!r || r.error){ status('Convert failed: ' + esc((r && r.error) || '?'), true); return; }
-  status(`✓ wrote <b>${r.path.split('/').pop()}</b> — ${r.rows.toLocaleString()} rows, ` +
-         `${human(r.size)} (from ${human(r.src_size)}) in ${r.seconds}s ` +
-         `<a id="revealLink" style="cursor:pointer">reveal</a>`);
-  document.getElementById('revealLink').onclick = () =>
-    fetch('/api/fs/reveal', {method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-Fused': '1'},
-      body: JSON.stringify({path: r.path})});
+  if (!r || r.error){ status('Convert failed: ' + ((r && r.error) || '?'), true); return; }
+  status(`✓ wrote ${r.path.split('/').pop()}: ${r.rows.toLocaleString()} rows, ` +
+         `${human(r.size)} (from ${human(r.src_size)}) in ${r.seconds}s `);
+  const reveal = Object.assign(document.createElement('a'), {textContent: 'reveal'});
+  reveal.style.cursor = 'pointer';
+  reveal.onclick = () => fetch('/api/fs/reveal', {method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Fused': '1'}, body: JSON.stringify({path: r.path})});
+  els.status.append(reveal);
   setTimeout(() => { if (!els.status.className) status(''); }, 15000);
 };
 
@@ -493,7 +494,7 @@ async function loadFile(){
     .catch(e => ({error: String(e.message || e)})), styleReady()]);
   if (seq !== loadSeq) return;
   doneSeq = seq;
-  if (!r || r.error){ status(esc((r && r.error) || 'read failed'), true); return; }
+  if (!r || r.error){ status((r && r.error) || 'read failed', true); return; }
   data = r;
   syncControls();
   addLayers();
@@ -501,7 +502,7 @@ async function loadFile(){
   renderMeta();
   renderTable();
   let note = '';
-  if (r.truncated) note = `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} features (preview cap${els.convertBtn.hidden ? '' : ' — GeoParquet conversion uses ALL features'})`;
+  if (r.truncated) note = `showing first ${r.shown.toLocaleString()}${r.count == null ? '' : ` of ${r.count.toLocaleString()}`} features (preview cap${els.convertBtn.hidden ? '' : ' — GeoParquet conversion uses ALL features'})`;
   else if (r.simplified_tolerance) note = 'geometries simplified for preview';
   status(note);
   if (note) noteTimer = setTimeout(() => status(''), 8000);

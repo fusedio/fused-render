@@ -33,7 +33,8 @@ gdf.to_crs(32632).to_file(f"{d}/t.shp")
 gdf.to_parquet(f"{d}/t.parquet", row_group_size=250)
 gdf.drop(columns="geometry").assign(h3_index=1).to_parquet(f"{d}/h3.parquet")
 pyogrio.write_dataframe(gdf.drop(columns="geometry").head(5), f"{d}/m.gpkg", layer="meta")
-gdf.head(40).to_file(f"{d}/m.gpkg", layer="roads", mode="a")
+gdf.head(1000).to_file(f"{d}/m.gpkg", layer="roads", mode="a")
+gdf.head(600).to_file(f"{d}/six.geojson")
 """
 
 _READ = r"""
@@ -107,6 +108,8 @@ def test_a_vrt_is_refused_and_odd_parquet_columns_still_render(tmp_path):
     assert "H3" not in plain["error"]
 
 
-def test_a_geopackage_skips_its_nonspatial_tables(files):
-    gpkg, = _read(files / "m.gpkg")
-    assert sorted(gpkg["layers"]) == ["meta", "roads"] and (gpkg["count"], gpkg["truncated"]) == (40, False)
+def test_counts_skip_nonspatial_tables_and_an_exact_cap_is_not_truncated(files):
+    gpkg, six = _read(files / "m.gpkg", files / "six.geojson")
+    assert gpkg["layers"] == ["roads"]
+    assert (gpkg["count"], gpkg["shown"], gpkg["truncated"]) == (1000, 600, True) and "_layer" not in gpkg["table"][0]
+    assert (six["count"], six["shown"], six["truncated"]) == (600, 600, False)
