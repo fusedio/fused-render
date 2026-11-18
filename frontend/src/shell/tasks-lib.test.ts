@@ -2700,13 +2700,18 @@ describe("the unread mark", () => {
     // flag unconditionally, announcing and tooltipping a waiting ring as
     // "Blocked" — mirror taskStatus's own refusal (schedule-lib.ts) so a row
     // still going never reads as one that broke.
+    // The word is `statusRingWord`'s now (one copy for the ring and for a
+    // host that captions the ring's seat itself, #2344), and the icon reads it.
+    const word = VIEWS.slice(
+      VIEWS.indexOf("export function statusRingWord("),
+      VIEWS.indexOf("export function StatusIcon("),
+    );
+    expect(word).toContain('if (o.failed && o.status !== "needs_attention") return "Blocked";');
     const icon = VIEWS.slice(
       VIEWS.indexOf("export function StatusIcon("),
       VIEWS.indexOf("function IdentityChip("),
     );
-    expect(icon).toContain(
-      "(failed && status !== \"needs_attention\"\n      ? \"Blocked\"",
-    );
+    expect(icon).toContain("statusRingWord({ status, failed, background })");
   });
 
   it("draws that tooltip itself, on a delay, because the app has no component", () => {

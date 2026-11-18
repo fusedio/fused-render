@@ -23,13 +23,11 @@ import { Pencil } from "lucide-react";
 import { renameTask, type Task } from "@platform/lib/api";
 import { TaskStar } from "@platform/ui/TaskStar";
 import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
-import { columnLabel } from "./schedule-lib";
 import { pokeTasks } from "./tasksPulse";
-import { QueueCaptionText, StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
+import { QueueCaptionText, StatusIcon, TaskAgentMark, statusRingWord } from "./ScheduleTaskViews";
 import type { QueueCaption } from "@platform/lib/queue";
 import { TaskIconPick } from "./TaskIconPick";
 import {
-  BACKGROUND_LABEL,
   basename,
   cardTitleLine,
   firstLine,
@@ -329,17 +327,9 @@ export function TaskPeekWho({
         className="task-side-peek-status"
         // The app's instant caption (platform/lib/hints), as the head's
         // buttons have it — not the browser's slow `title` (owner,
-        // 2026-11-18). The ring's own word (StatusIcon): a red ring that is
-        // not parked on a card reads "Blocked", whatever lane it sits in.
-        data-hint={
-          background
-            ? BACKGROUND_LABEL
-            : ringBroke && status !== "needs_attention"
-              ? "Blocked"
-              : status
-                ? columnLabel(status)
-                : undefined
-        }
+        // 2026-11-18). The ring's own word (`statusRingWord`): "Blocked" on a
+        // red ring, "Draft" on a draft's — never the lane's raw key.
+        data-hint={status ? statusRingWord({ status, failed: ringBroke, background }) : undefined}
       >
         <TaskIconPick
           task={task}

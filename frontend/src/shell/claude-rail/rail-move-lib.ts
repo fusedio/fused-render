@@ -109,40 +109,6 @@ export const RAIL_HEAD_SELECTOR =
  *  caller's slot (Modal `head`), never in its body. */
 export const POPOVER_HEAD_SELECTOR = ".task-head-row:not(.modal-body *)";
 
-/** THE DRAG HANDLE'S ROW (claude-rail.css "THE DRAG HANDLE"): the grab row of
- *  a pinned window — `RAIL_HEAD_SELECTOR` and `POPOVER_HEAD_SELECTOR` inside
- *  a box that is `.is-movable`. */
-export const HANDLE_ROW_SELECTOR =
-  ":is(.claude-rail-peek, .modal-popover).is-movable :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)";
-
-/** The row's spacers: room, not content — the handle may stand on them. */
-export const HANDLE_SPACER_SELECTOR = ".task-head-idle, .claude-rail-peek-gap";
-
-/** The handle's dots and the air kept on each side of them. */
-export const HANDLE_PX = 16;
-export const HANDLE_AIR_PX = 6;
-
-/** IS THE ROW'S MIDDLE FREE FOR THE HANDLE? The handle stands at 50% of the
- *  row or NOT AT ALL (owner, 2026-11-18: first "regardless of elements … at
- *  50% of the width so it doesn't move"; then, of a plate that let it stand
- *  over whatever reached the middle: "this UI looks bad … no full element
- *  goes below it?" — a plate cut a tag in two, and a narrow seat could lie
- *  wholly under it, out of reach). So THE ROW'S CONTENT COMES FIRST: `row`
- *  the row's box across, `kids` what it holds (its spacers left out) — free
- *  only when none of them reaches into the dots or the air beside them. The
- *  row is the grab either way; the dots only say so. */
-export function handleClear(
-  row: { left: number; width: number },
-  kids: readonly { left: number; right: number }[],
-  size = HANDLE_PX,
-  air = HANDLE_AIR_PX,
-): boolean {
-  const mid = row.left + row.width / 2;
-  const lo = mid - size / 2 - air;
-  const hi = mid + size / 2 + air;
-  return !kids.some((k) => k.right > k.left && k.right > lo && k.left < hi);
-}
-
 /** The parts of an element a press verdict reads (an Element in the browser;
  *  a stub in a test). */
 export interface MoveTarget {

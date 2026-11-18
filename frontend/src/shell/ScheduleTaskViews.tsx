@@ -755,6 +755,18 @@ export function StopJobButton({
   );
 }
 
+/** THE RING'S OWN WORD — what `StatusIcon` names itself and says in its
+ *  tooltip: "Background" for the blue ring, "Blocked" for a red one that is
+ *  not parked on a card, else the lane's label ("Draft", "Done", …). One
+ *  copy, so a host that captions the ring's seat itself (TaskPeekWho, with
+ *  the ring `quiet`) says the same word (Bugbot on #2344: the head's caption
+ *  read the raw key `draft`). */
+export function statusRingWord(o: { status: BoardColumn; failed?: boolean | undefined; background?: boolean | undefined }): string {
+  if (o.background) return BACKGROUND_LABEL;
+  if (o.failed && o.status !== "needs_attention") return "Blocked";
+  return STATUS_LABELS[o.status] ?? o.status;
+}
+
 export function StatusIcon({
   status,
   failed,
@@ -806,11 +818,7 @@ export function StatusIcon({
   // still going — collapsing it into "Blocked" here would announce and tool
   // a waiting ring as broken.
   const red = failed && !background;
-  const text = label
-    ?? (background ? BACKGROUND_LABEL : undefined)
-    ?? (failed && status !== "needs_attention"
-      ? "Blocked"
-      : (STATUS_LABELS[status] ?? status));
+  const text = label ?? statusRingWord({ status, failed, background });
   const many = taskUnreadLabel(count ?? 0);
   // What the FILL is worth in words. The count when there is one, the bare word
   // when there is not — and nothing at all on a hollow ring, which is the point:

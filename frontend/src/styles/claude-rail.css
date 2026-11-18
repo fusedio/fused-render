@@ -790,57 +790,53 @@
   :where(a[href]) {
   cursor: pointer;
 }
-/* THE DRAG HANDLE, AT THE ROW'S MIDDLE (owner, 2026-11-18: "when it is
-   pinned and we hover over first row let's show the drag handle in middle
-   space over the first row header"): six dots, shown while the pointer is
-   over the grab row of a pinned window (and through its drag), so the row
-   says what a press on it does before the cursor has to.
-   AT 50% OF THE ROW, OR NOT AT ALL. Always the same spot (owner, 2026-11-18,
-   of a build that set it in the row's free space: "the drag icon moves
-   based on the elements on screen, that looks odd … at 50% of the width so
-   it doesn't move"): the row's `::after`, out of the flow at its centre —
-   the window's centre, since the row runs edge to edge. And never over the
-   row's content (owner, same day, of a plate that let it stand on a tag:
-   "this UI looks bad … no full element goes below it?"): where a title, a
-   tag or a seat reaches the middle the row says `data-rail-handle="off"`
-   (useCardMove `installHandleFit`, rail-move-lib `handleClear`) and no dots
-   are drawn. The row grabs either way — the cursor still says so.
-   Nothing here takes a press of its own: the dots are the row's, and the
-   row is the grab. */
+/* THE GRABBER: A SMALL BAR AT THE TOP EDGE OF A PINNED WINDOW'S GRAB ROW
+   (owner, 2026-11-18: "when it is pinned and we hover over first row let's
+   show the drag handle in middle space over the first row header"). Shown
+   while the pointer is over the row (and through its drag), so the row says
+   what a press on it does before the cursor has to.
+   WHERE IT IS, AND WHY A BAR. Three builds stood six dots in the row itself:
+   in its free space ("the drag icon moves based on the elements on screen,
+   that looks odd … at 50% of the width so it doesn't move"), then at 50%
+   over whatever was there on a plate ("this UI looks bad … no full element
+   goes below it?"), then at 50% and hidden when a tag reached it ("find a
+   better way"). The row's middle is not free ground: tags and titles grow
+   into it. The strip ABOVE the row's content is — the row is 40px tall and
+   nothing in it is taller than 28 — so the handle is the sheet grabber
+   (Apple's sheets: "a small horizontal indicator at the top edge"): one
+   short bar, centred at 50% of the row, in that strip. It never moves, it
+   is never hidden, and nothing can lie under it.
+   Nothing here takes a press of its own: the bar is the row's, and the row
+   is the grab. */
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
   position: relative;
 }
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
-  --dot: var(--fg-faint) 1.25px, transparent 1.75px;
   content: "";
   position: absolute;
   left: 50%;
-  top: 50%;
-  width: 16px;
-  height: 16px;
-  transform: translate(-50%, -50%);
-  background-image:
-    radial-gradient(circle at 3px 5.5px, var(--dot)),
-    radial-gradient(circle at 8px 5.5px, var(--dot)),
-    radial-gradient(circle at 13px 5.5px, var(--dot)),
-    radial-gradient(circle at 3px 10.5px, var(--dot)),
-    radial-gradient(circle at 8px 10.5px, var(--dot)),
-    radial-gradient(circle at 13px 10.5px, var(--dot));
-  background-repeat: no-repeat;
+  top: 2px;
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  background: var(--fg-faint);
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--dur-fast) var(--ease-out);
+}
+/* A one-row head (the Bots and Git cards, a bot's card) keeps a 4px strip
+   above its row: the bar sits in it. */
+.claude-rail-peek.is-movable .claude-rail-peek-head > .claude-rail-peek-row:first-child::after {
+  top: 0;
 }
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *):hover::after,
 :is(.claude-rail-peek, .modal-popover).is-dragging
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
   opacity: 1;
-}
-:is(.claude-rail-peek, .modal-popover) :is(.task-head-row, .claude-rail-peek-row)[data-rail-handle="off"]::after {
-  display: none;
 }
 /* …under the drag: no glide (the box follows the pointer every frame), no
    text selection; and the page's frames take no pointer, so a drag over the
