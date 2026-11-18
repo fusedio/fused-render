@@ -374,11 +374,38 @@ function renderRowHint(p: HTMLDivElement, el: Element): boolean {
  *  scroll hides the hint; the browser then reports the element that slid
  *  under the resting pointer, and its hint comes up — until the next scroll
  *  tick hides it again. For a caption that is harmless. A rail ring's ROW
- *  also dims the rail's windows (tasks.css, the scrim on `.is-row.is-on`), so
+ *  also dims the rail's windows (tasks.css, the scrim; `markRowDim`), so
  *  every tick of the wheel blinked the window. A row that came up this way is
  *  marked `is-passing` and dims nothing; the mark goes the moment the pointer
  *  is somewhere new — the reader pointing — or the keyboard brings a hint. */
 let passing = false;
+
+/** WHICH RAIL WINDOW STANDS UNDER THE SCRIM, SAID ON THE ROOT ELEMENT
+ *  (tasks.css reads `:root[data-rail-row-dim]`): the row's window while a row
+ *  is up and the reader is pointing at it, nothing otherwise.
+ *
+ *  ON THE ROOT, NOT ASKED OF THE PANEL WITH `body:has(.hint-panel…)` (Akshil,
+ *  2026-11-18: "the render app feels a bit slow, especially when moving around
+ *  and resizing the tasks"). A `:has()` whose anchor is `body`, with a
+ *  descendant after it, makes the browser treat every element inserted or
+ *  removed ANYWHERE as something that may have changed the answer — and the
+ *  shadcn `group-has-*` rules make that invalidation the whole document. Every
+ *  insert restyled all ~5,800 elements (12.5 ms each, against 0.15 ms), and a
+ *  rail window's resize ran at 34 to 48 frames a second. An attribute written
+ *  here costs a restyle when the row comes up and when it goes, and nothing in
+ *  between. */
+const ROW_DIM_ATTR = "data-rail-row-dim";
+function markRowDim(): void {
+  const root = document.documentElement;
+  const dims = !!panel && panel.classList.contains("is-on") && panel.classList.contains("is-row") && !panel.classList.contains("is-passing");
+  const win = dims ? panel!.getAttribute("data-row-window") : null;
+  if (!win) {
+    if (root.hasAttribute(ROW_DIM_ATTR)) root.removeAttribute(ROW_DIM_ATTR);
+    return;
+  }
+  if (root.getAttribute(ROW_DIM_ATTR) !== win) root.setAttribute(ROW_DIM_ATTR, win);
+}
+
 let pointerX = Number.NaN;
 let pointerY = Number.NaN;
 
@@ -403,6 +430,7 @@ function pointed(e: PointerEvent): void {
   if (!passing) return;
   passing = false;
   if (panel) panel.classList.remove("is-passing");
+  markRowDim();
 }
 
 function show(el: Element, x: number, y: number): void {
@@ -419,6 +447,7 @@ function show(el: Element, x: number, y: number): void {
   p.classList.toggle("is-task", task);
   if (!task) p.classList.remove("is-reply");
   p.classList.add("is-on");
+  markRowDim();
   sizeOnce(p);
   if (anchoredSide(el)) {
     placeBeside(el);
@@ -440,6 +469,7 @@ export function hideHint(): void {
     panel.removeAttribute("data-row-window");
     panel.classList.remove("is-passing");
     panel.style.removeProperty("--hint-row-room");
+    markRowDim();
   }
 }
 
