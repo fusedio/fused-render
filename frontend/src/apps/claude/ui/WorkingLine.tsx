@@ -6,6 +6,7 @@
 // stacked tokens, input bytes, a thinking estimate, a task count and a silence
 // timer in there — a dashboard, not a status (Akshil, 2026-08-28). Everything
 // that was a NUMBER is gone except the clock; what was a number is now a word.
+import { isSpecialistTool, specialistToolLabel } from "../specialists/tool-labels";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { cn } from "@platform/lib/utils";
@@ -99,7 +100,11 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
       // MCP tools arrive as mcp__server__tool — the last segment is the name a
       // person would recognize; the raw id is nobody's vocabulary.
       default:
-        return "Using " + String(t.name).split("__").pop()?.replace(/_/g, " ");
+        // The five specialist tools say what they do (docs/specialists R1).
+        return (
+          specialistToolLabel(t.name, null, { key: t.detail })?.replace(/…$/, "") ??
+          "Using " + String(t.name).split("__").pop()?.replace(/_/g, " ")
+        );
     }
   }
   // Every phase below is the model itself at work; the task registry names a
@@ -129,7 +134,7 @@ function isSetupHook(hook: string | undefined): boolean {
 export function activityDetail(stats: VerbStats): string {
   const act = stats.activity;
   if (isSetupHook(act?.hook)) return "";
-  if (stats.phase === "tooling" && act?.tool?.detail) return act.tool.detail;
+  if (stats.phase === "tooling" && act?.tool?.detail && !isSpecialistTool(act.tool.name)) return act.tool.detail;
   return "";
 }
 

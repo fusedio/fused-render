@@ -1,19 +1,22 @@
 """The launch spec of a specialist main chat or breakout (PLAN A.2, A.7, C.1 notes).
 
 Main chat and breakouts run on the task chat stack with the home as target. `agent._start` calls
-`spec(key, file)` for a start carrying `specialist="<id>:main"` or `"<id>:breakout:<bid>"`, writes the answer to
+`spec(key, file)` for a start carrying `specialist="<id>:main"` (target: the home) or `"<id>:breakout:<bid>"`
+(target: the breakout's workroom, `breakouts.cwd`; CONTRACT C1), writes the answer to
 the run dir as `specialist.json`, and `_claude_argv` folds it into the CLI's argv:
 
     deny        Edit rules (both spellings) for the paths this kind may not write
     ask         rules that force the permission prompt tool even in auto/bypass modes (service calls)
-    allow       pre-allowed rules: the note tool, Read rules for a breakout's parent folder and transcript dir
+    allow       pre-allowed rules: the note tool; for a breakout, Read rules for the home, the parent's folder and
+                its transcript dir
     mcp_servers `specialist` (note) and `specialist_services` (the roster), both `sessmcp.py`
     hooks       Stop -> specialist_hook.py stop (history.after_turn: commit / guard)
     append      one paragraph saying which kind of session this is
-    policy_env  FUSED_SPECIALIST_POLICY for the permission server's policy seam
+    policy_env  FUSED_SPECIALIST_POLICY for the permission server's policy seam (no secret: CONTRACT C2)
     token       the session MCP servers' token (`.state/tokens.json`, 7-day expiry)
 
-Any problem answers `{"error": sentence, "reason": code}` and the start is refused.
+Before answering it rewrites the home's `.claude/settings.json` to the canonical text (R4) and, for a breakout,
+refreshes its workroom. Any problem answers `{"error": sentence, "reason": code}` and the start is refused.
 """
 from __future__ import annotations
 
@@ -66,17 +69,16 @@ def _tokens_path() -> str:
     return os.path.join(paths.state_root(), "tokens.json")
 
 
-def new_token(spec_id: str, kind: str, breakout_id: str = "", grant: str = "") -> str:
-    """A session token for the session MCP servers of one run; `grant` is that run's grant secret (the permission
-    server proves a card was answered with it, `record_grant`)."""
+def new_token(spec_id: str, kind: str, breakout_id: str = "") -> str:
+    """A session token for the session MCP servers of one run. It names the specialist, the kind and the breakout,
+    nothing else: it can call tools, never grant one (CONTRACT C2)."""
     tok = secrets.token_urlsafe(24)
     now = time.time()
     with _TOKENS_LOCK:
         d = hm.read_json(_tokens_path(), {})
         d = {k: v for k, v in (d.items() if isinstance(d, dict) else [])
              if isinstance(v, dict) and float(v.get("exp") or 0) > now}
-        d[tok] = {"spec": spec_id, "kind": kind, "breakout_id": breakout_id, "exp": now + TOKEN_TTL_S,
-                  **({"grant": grant} if grant else {})}
+        d[tok] = {"spec": spec_id, "kind": kind, "breakout_id": breakout_id, "exp": now + TOKEN_TTL_S}
         hm.write_json(_tokens_path(), d)
     return tok
 
@@ -95,23 +97,16 @@ def check_token(spec_id: str, kind: str, token: str) -> dict | None:
 
 
 # ------------------------------------------------------------------- grants ---
-# A service call that is not `allow` runs only after the user answered its card. The permission server (which
-# raised the card) posts a one-time grant with its run's secret; `services.call` consumes it. Keyed by the run's
-# secret and the tool, so the grant can only be spent by the session MCP server of the same run.
+# A service call that is not `allow` runs only after the user answered its card (CONTRACT C2). The grant is
+# recorded by the SERVER when the user's `decide allow` for that card passes through it (`agent._decide` ->
+# `agent_hooks.grant_from_decision`, before the decision is written, so the call can never arrive first); nothing a
+# session can read lets it record one. `services.call` consumes it: one call, within `GRANT_TTL_S`, of the same
+# specialist, kind, breakout, session and tool.
 GRANT_TTL_S = 120.0
 
 
 def _grants_path() -> str:
     return os.path.join(paths.state_root(), "grants.json")
-
-
-def _secret_known(spec_id: str, kind: str, secret: str) -> bool:
-    d = hm.read_json(_tokens_path(), {})
-    now = time.time()
-    return bool(secret) and isinstance(d, dict) and any(
-        isinstance(v, dict) and v.get("spec") == spec_id and v.get("kind") == kind
-        and float(v.get("exp") or 0) > now and secrets.compare_digest(str(v.get("grant") or ""), secret)
-        for v in d.values())
 
 
 def _tool_key(tool: str) -> str:
@@ -120,36 +115,52 @@ def _tool_key(tool: str) -> str:
     return str(tool or "").removeprefix(services.TOOL_PREFIX)
 
 
-def record_grant(spec_id: str, kind: str, session_id: str, tool: str, secret: str) -> bool:
-    """Record a one-time grant (valid `GRANT_TTL_S`). False when the secret is not this run's."""
-    if not _secret_known(spec_id, kind, secret) or not tool:
+def record_grant(spec_id: str, kind: str, breakout_id: str, session_id: str, tool: str, key: str) -> bool:
+    """Record a one-time grant (valid `GRANT_TTL_S`), once per `key` (the card: `<run id>/<request id>`), so a
+    second report of the same decision grants nothing more. Server-side callers only."""
+    if not spec_id or kind not in ("main", "breakout") or not tool or not key:
         return False
     now = time.time()
     with _TOKENS_LOCK:
         d = hm.read_json(_grants_path(), {})
         d = {k: v for k, v in (d.items() if isinstance(d, dict) else []) if isinstance(v, dict)
              and float(v.get("exp") or 0) > now}
-        key = secrets.token_hex(8)
-        d[key] = {"spec": spec_id, "secret": secret, "tool": _tool_key(tool), "session_id": session_id,
-                  "exp": now + GRANT_TTL_S}
+        if key in d or key in _SPENT:
+            return True
+        d[key] = {"spec": spec_id, "kind": kind, "breakout_id": breakout_id or "", "session_id": session_id or "",
+                  "tool": _tool_key(tool), "exp": now + GRANT_TTL_S}
         hm.write_json(_grants_path(), d)
     return True
 
 
-def take_grant(spec_id: str, secret: str, tool: str) -> bool:
-    """Consume one live grant for (specialist, run secret, tool). True when there was one."""
-    if not secret:
-        return False
+#: Card keys whose grant was spent (this process): a late second report of the decision grants nothing.
+_SPENT: dict[str, float] = {}
+
+
+def take_grant(spec_id: str, kind: str, breakout_id: str, session_id: str, tool: str) -> bool:
+    """Consume one live grant for this specialist, kind, breakout and tool (and session, when both sides know
+    it). True when there was one."""
     now, want = time.time(), _tool_key(tool)
     with _TOKENS_LOCK:
         d = hm.read_json(_grants_path(), {})
         d = d if isinstance(d, dict) else {}
-        hit = next((k for k, v in d.items() if isinstance(v, dict) and v.get("spec") == spec_id
-                    and v.get("tool") == want and float(v.get("exp") or 0) > now
-                    and secrets.compare_digest(str(v.get("secret") or ""), secret)), None)
+
+        def fits(v) -> bool:
+            if not isinstance(v, dict) or float(v.get("exp") or 0) <= now:
+                return False
+            if v.get("spec") != spec_id or v.get("kind") != kind or v.get("tool") != want:
+                return False
+            if str(v.get("breakout_id") or "") != str(breakout_id or ""):
+                return False
+            return not (v.get("session_id") and session_id) or v.get("session_id") == session_id
+
+        hit = next((k for k, v in d.items() if fits(v)), None)
         if hit is None:
             return False
         d.pop(hit)
+        _SPENT[hit] = now
+        for k in [k for k, t in _SPENT.items() if now - t > GRANT_TTL_S * 2]:
+            _SPENT.pop(k, None)
         hm.write_json(_grants_path(), {k: v for k, v in d.items()
                                        if isinstance(v, dict) and float(v.get("exp") or 0) > now})
     return True
@@ -288,15 +299,25 @@ def spec(key: str, file: str) -> dict:
     s = store.get(spec_id)
     if s is None:
         return _err("That specialist no longer exists", "no_specialist")
-    if not file or os.path.realpath(file) != os.path.realpath(s.home):
-        return _err("A specialist session must start in the specialist's home folder", "wrong_folder")
     reads, rec = [], None
     if kind == "breakout":
         reads, rec, err = _breakout_reads(spec_id, bid)
         if err:
             return _err(err, "no_breakout")
-    grant = secrets.token_urlsafe(24)
-    token = new_token(spec_id, kind, bid, grant=grant)
+        if not isinstance(rec, dict):
+            return _err("That breakout no longer exists", "no_breakout")
+        if rec.get("status") != "open":
+            return _err("This breakout is closed; reopen it to continue.", "breakout_closed")
+        from fused_render.specialists import breakouts
+
+        folder = breakouts.sync(s, bid)
+        if not file or os.path.realpath(file) != os.path.realpath(folder):
+            return _err("A breakout must start in its own folder", "wrong_folder")
+        reads = [s.home] + reads
+    elif not file or os.path.realpath(file) != os.path.realpath(s.home):
+        return _err("A specialist session must start in the specialist's home folder", "wrong_folder")
+    hm.ensure_settings(s.home)
+    token = new_token(spec_id, kind, bid)
     origin = _origin()
     return {
         "id": spec_id, "kind": kind, "breakout_id": bid, "home": s.home,
@@ -306,6 +327,6 @@ def spec(key: str, file: str) -> dict:
         "mcp_servers": session_servers(s, kind, token=token, breakout_id=bid),
         "hooks": {"Stop": [{"hooks": [{"specialist_hook": "stop"}]}]},
         "append": append_text(s, kind, rec),
-        "policy_env": {"FUSED_SPECIALIST_POLICY": f"{origin}|{spec_id}|{kind}", "FUSED_SPECIALIST_GRANT": grant},
+        "policy_env": {"FUSED_SPECIALIST_POLICY": f"{origin}|{spec_id}|{kind}"},
         "token": token,
     }

@@ -279,9 +279,7 @@ def _rel(spec_id: str, f) -> str:
         return ""
     try:
         from fused_render.specialists import paths
-        home = paths.home(spec_id).rstrip("/") + "/"
-        if f.startswith(home):
-            f = f[len(home):]
+        f = f.removeprefix(paths.home(spec_id).rstrip("/") + "/")
     except Exception:  # noqa: BLE001
         pass
     while f.startswith("./"):

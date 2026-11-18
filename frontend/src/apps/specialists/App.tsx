@@ -38,6 +38,10 @@ export function Specialists() {
   const [panelKey, setPanelKey] = useState(0);
   const [general, setGeneral] = useState<Note[]>([]);
   const [generalOpen, setGeneralOpen] = useState(false);
+  /** The selected chat's own run state (the list's "Working…" before its next poll). */
+  const [runningHere, setRunningHere] = useState(false);
+  /** Narrow layout: the side panel shows over the chat while this is on. */
+  const [sideOpen, setSideOpen] = useState(false);
   const chat = useRef<ChatHandle | null>(null);
   const selected = route.kind === "specialist" ? route.id : null;
 
@@ -70,6 +74,8 @@ export function Specialists() {
   }, [route.kind, rows]);
 
   useEffect(() => {
+    setSideOpen(false);
+    setRunningHere(false);
     if (!selected) {
       setDetail(null);
       return;
@@ -92,8 +98,21 @@ export function Specialists() {
     return ok;
   }, []);
 
+  // Escape closes the narrow layout's panel (not while a dialog is up: its own
+  // Escape is the one that counts).
+  useEffect(() => {
+    if (!sideOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || settings || creating || generalOpen) return;
+      setSideOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sideOpen, settings, creating, generalOpen]);
+
   return (
     <div className="spx-page">
+     <div className={"spx-cols" + (sideOpen ? " is-side-open" : "")}>
       <SpecialistList
         rows={rows}
         selected={selected}
@@ -103,15 +122,36 @@ export function Specialists() {
         onCreate={() => setCreating(true)}
         generalCount={general.length}
         onOpenGeneral={() => setGeneralOpen(true)}
+        runningHere={runningHere}
       />
       {detail ? (
         <>
-          <MainChat specialist={detail} handle={chat} onOpenSettings={() => setSettings("learned")} />
+          <MainChat
+            specialist={detail}
+            handle={chat}
+            onOpenSettings={() => setSettings("learned")}
+            onRunning={setRunningHere}
+            headExtra={
+              <button
+                type="button"
+                className="spx-pill spx-side-toggle"
+                aria-expanded={sideOpen}
+                aria-controls={`spx-side-${detail.id}`}
+                onClick={() => setSideOpen((v) => !v)}
+              >
+                Updates
+              </button>
+            }
+          />
           <SidePanel
             specialistId={detail.id}
             sendToChat={sendToChat}
-            onOpenSettings={(tab) => setSettings(tab)}
+            onOpenSettings={(tab) => {
+              setSideOpen(false);
+              setSettings(tab);
+            }}
             refreshKey={panelKey}
+            onClose={() => setSideOpen(false)}
           />
         </>
       ) : (
@@ -136,6 +176,7 @@ export function Specialists() {
           ) : null}
         </main>
       )}
+     </div>
       {generalOpen ? (
         <GeneralInbox
           notes={general}

@@ -13,8 +13,12 @@ import {
 } from "./specialists-flag";
 import {
   closeSpecialistBreakoutCard,
+  clearSummaryDraft,
   deliverComposerDraft,
   getSpecialistBreakouts,
+  readSummaryDraft,
+  resetSummaryDraftsForTests,
+  summaryDraftText,
   openSpecialistBreakout,
   resetSpecialistBreakouts,
   updateSpecialistBreakout,
@@ -30,6 +34,7 @@ import {
   patchSpecialist,
   putConnections,
   revertMessage,
+  REVERT_PREFIX,
   serviceKeyForTool,
 } from "./specialists-api";
 
@@ -110,8 +115,54 @@ describe("deliverComposerDraft", () => {
     text: "Outcome: solved",
     label: "Draft from the Canvas specialist · not sent yet",
   };
+  const plain: ComposerDraftDetail = { sessionId: "s1", file: "/w/proj", text: "Outcome: solved" };
+  const g = globalThis as unknown as { localStorage?: Storage };
+  const hadStorage = g.localStorage;
+  beforeAll(() => {
+    const m = new Map<string, string>();
+    g.localStorage = {
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => void m.set(k, String(v)),
+      removeItem: (k: string) => void m.delete(k),
+      clear: () => m.clear(),
+      key: () => null,
+      length: 0,
+    } as Storage;
+  });
+  afterAll(() => {
+    g.localStorage = hadStorage;
+  });
+  afterEach(() => resetSummaryDraftsForTests());
 
-  test("a mounted task chat takes it (with its label); nothing is saved", async () => {
+  test("a specialist's summary becomes the task's summary draft; the composer and its saved draft are untouched", async () => {
+    let events = 0;
+    const on = () => void (events += 1);
+    window.addEventListener(COMPOSER_DRAFT_EVENT, on);
+    const saves: string[] = [];
+    const ok = await deliverComposerDraft(
+      { ...detail, name: "Canvas", breakoutId: "b-1" },
+      (_k, t) => (saves.push(t), { ok: true }),
+      () => Promise.resolve(null),
+    );
+    window.removeEventListener(COMPOSER_DRAFT_EVENT, on);
+    expect(ok).toBe(true);
+    expect(events).toBe(0);
+    expect(saves).toEqual([]);
+    const parts = readSummaryDraft("s1", "/w/proj");
+    expect(parts.map((p) => [p.text, p.label, p.name])).toEqual([["Outcome: solved", detail.label!, "Canvas"]]);
+  });
+
+  test("the summary draft survives a reload (localStorage) and a second summary is added below", async () => {
+    await deliverComposerDraft(detail);
+    await deliverComposerDraft({ ...detail, text: "Outcome: workaround" });
+    expect(summaryDraftText(readSummaryDraft("s1", "/w/proj"))).toBe("Outcome: solved\n\nOutcome: workaround");
+    const stored = JSON.parse(localStorage.getItem("fused:specialist-summary-drafts") || "{}") as Record<string, unknown[]>;
+    expect(Object.values(stored)[0]).toHaveLength(2);
+    clearSummaryDraft("s1", "/w/proj");
+    expect(readSummaryDraft("s1", "/w/proj")).toHaveLength(0);
+  });
+
+  test("plain (no label): a mounted task chat takes it; nothing is saved", async () => {
     let seen: ComposerDraftDetail | null = null;
     const on = (e: Event) => {
       seen = (e as CustomEvent<ComposerDraftDetail>).detail;
@@ -119,17 +170,17 @@ describe("deliverComposerDraft", () => {
     };
     window.addEventListener(COMPOSER_DRAFT_EVENT, on);
     const saves: string[] = [];
-    const ok = await deliverComposerDraft(detail, (_k, t) => (saves.push(t), { ok: true }), () => Promise.resolve(null));
+    const ok = await deliverComposerDraft(plain, (_k, t) => (saves.push(t), { ok: true }), () => Promise.resolve(null));
     window.removeEventListener(COMPOSER_DRAFT_EVENT, on);
     expect(ok).toBe(true);
-    expect(seen!.label).toBe(detail.label!);
+    expect(seen!.text).toBe("Outcome: solved");
     expect(saves).toEqual([]);
   });
 
-  test("no chat mounted: appended below the saved draft", async () => {
+  test("plain, no chat mounted: appended below the saved draft", async () => {
     const saves: string[] = [];
     const ok = await deliverComposerDraft(
-      detail,
+      plain,
       (_k, t) => (saves.push(t), { ok: true }),
       () => Promise.resolve({ text: "my words", attachments: [] } as never),
     );
@@ -137,15 +188,9 @@ describe("deliverComposerDraft", () => {
     expect(saves).toEqual(["my words\n\nOutcome: solved"]);
   });
 
-  test("no chat mounted and nothing typed: the summary alone", async () => {
+  test("plain: an unreadable saved draft is never overwritten", async () => {
     const saves: string[] = [];
-    await deliverComposerDraft(detail, (_k, t) => (saves.push(t), { ok: true }), () => Promise.resolve(null));
-    expect(saves).toEqual(["Outcome: solved"]);
-  });
-
-  test("an unreadable saved draft is never overwritten", async () => {
-    const saves: string[] = [];
-    const ok = await deliverComposerDraft(detail, (_k, t) => (saves.push(t), { ok: true }), () => Promise.resolve(undefined));
+    const ok = await deliverComposerDraft(plain, (_k, t) => (saves.push(t), { ok: true }), () => Promise.resolve(undefined));
     expect(ok).toBe(false);
     expect(saves).toEqual([]);
   });
@@ -231,9 +276,10 @@ describe("specialists api", () => {
     expect(serviceKeyForTool("Bash", services)).toBeNull();
   });
 
-  test("the fallback Revert message names the change and its commit", () => {
+  test("the fallback Revert message starts with the C3 prefix, quotes the change, and names no commit (R1, C4)", () => {
     const m = revertMessage({ id: "i1", kind: "New skill", text: "Publish checklist", commit: "abc123", undo: "delete it" }, "r1");
-    expect(m).toContain('New skill, "Publish checklist"');
-    expect(m).toContain("commit abc123");
+    expect(m.startsWith(REVERT_PREFIX + '"Publish checklist"')).toBe(true);
+    expect(m).not.toContain("abc123");
+    expect(m).toContain("delete it");
   });
 });

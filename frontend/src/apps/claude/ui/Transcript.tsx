@@ -171,6 +171,11 @@ export interface TranscriptProps {
    *  event chips placed there by time, and "Send to a specialist". Absent with
    *  the flag off, and the log is what it was. */
   afterTurn?: (turn: ChatState["turns"][number]) => ReactNode;
+  /** SPECIALISTS (docs/specialists R1): inside a specialist session an
+   *  app-written message is drawn as product UI instead of its machine text.
+   *  `undefined` draws the turn as always; anything else (null hides it)
+   *  replaces the turn's row. Absent outside a specialist session. */
+  replaceTurn?: (turn: ChatState["turns"][number]) => ReactNode | undefined;
   /** The chat's working folder (ClaudeChat `chatWorkdir`), threaded down to
    *  every `Turn` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first instead of running wherever the terminal drawer happens to
@@ -202,6 +207,7 @@ export const Transcript = memo(function Transcript({
   trailing,
   cwd,
   afterTurn,
+  replaceTurn,
 }: TranscriptProps) {
   const port = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLDivElement>(null);
@@ -1014,6 +1020,15 @@ export const Transcript = memo(function Transcript({
                 ? new Map(Array.from(plan.after, ([i, ids]) => [i, stack(ids)]))
                 : null;
               const extra = afterTurn ? afterTurn(turn) : null;
+              const swapped = replaceTurn ? replaceTurn(turn) : undefined;
+              if (swapped !== undefined) {
+                return (
+                  <Fragment key={turn.key}>
+                    {swapped}
+                    {extra}
+                  </Fragment>
+                );
+              }
               const row = (
                 <Turn
                   key={turn.key}

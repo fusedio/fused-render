@@ -934,8 +934,11 @@ def _handle_approve(args: dict) -> dict:
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
     if policy != "ask_always" and _chat_allows(tool_name, tool_input):
-        return _text(_granted(policy, tool_name, tool_input,
-                              {"decision": "allow", "scope": "once"}))
+        # A service call let through by the chat's own "Always approve" has
+        # no grant (only a card the user answers records one, server side:
+        # docs/specialists CONTRACT C2), so its tool refuses to run.
+        return _text(_permission_result(tool_name, tool_input,
+                                        {"decision": "allow", "scope": "once"}))
 
     req_id = _request_id()
     _write_atomic(os.path.join(PERM_DIR, req_id + ".req.json"), {
@@ -950,21 +953,9 @@ def _handle_approve(args: dict) -> dict:
     # the human has already answered.
     key = _register_inflight(req_id)
     _post_card_raised(req_id)
-    return _text(_granted(policy, tool_name, tool_input, _await_approval(req_id, key)))
-
-
-def _granted(policy: str, tool_name: str, tool_input: dict, decision: dict) -> dict:
-    """`_permission_result`, after recording a one-time grant with the server
-    when an approved call is a specialist service call that needed asking (its
-    tool refuses to run without one). A grant that cannot be recorded is a
-    deny: the call would fail anyway, and the model is told why."""
-    if policy in ("ask", "ask_always") and decision.get("decision") == "allow" \
-            and not _specialist_grant(tool_name):
-        return {"behavior": "deny",
-                "message": "The approval could not be recorded with Fused Render; "
-                           "the service call did not run. Try again.",
-                "decisionClassification": "user_reject"}
-    return _permission_result(tool_name, tool_input, decision)
+    # A specialist service call's grant is recorded by the server when the
+    # user's decision passes through it (agent._decide), never from here.
+    return _text(_permission_result(tool_name, tool_input, _await_approval(req_id, key)))
 
 
 def _handle_app_state(args: dict) -> dict:
@@ -2503,24 +2494,6 @@ def _policy_ctx():
     except (OSError, ValueError, AttributeError):
         pass
     return parts[0].rstrip("/"), parts[1], parts[2], sid
-
-
-def _specialist_grant(tool_name: str) -> bool:
-    """Tell the server the user approved this one service call (policy ask /
-    ask_always), so `services.call` runs it: POST /api/specialists/policy/grant
-    with the run's secret (env FUSED_SPECIALIST_GRANT). True when recorded."""
-    ctx = _policy_ctx()
-    if ctx is None:
-        return False
-    origin, spec_id, kind, sid = ctx
-    try:
-        status, _ = _server_http(origin, "POST", "/api/specialists/policy/grant",
-                                 {"specialist": spec_id, "kind": kind, "session_id": sid,
-                                  "tool": tool_name,
-                                  "secret": os.environ.get("FUSED_SPECIALIST_GRANT") or ""}, 2.0)
-    except OSError:
-        return False
-    return status == 200
 
 
 def _specialist_policy(tool_name: str) -> str:

@@ -94,7 +94,9 @@ def test_nightly_digests_with_provenance_and_change_list(monkeypatch):
               "from": [said["id"]], "undo": "Remove m-a1b2."}]
     calls = stub_side(monkeypatch, fn=_job(new_mem, items, digested=[said["id"], corr["id"], guess["id"], "n-unknown"],
                                            drafts=[{"to": {"name": "Ana", "service": "slack", "handle": "#canvas"},
-                                                    "subject": "Sync bug", "text": "Hi Ana, ...", "why": "recurs"}]))
+                                                    "subject": "Sync bug", "text": "Hi Ana, ...", "why": "recurs"}],
+                                           extra={"ignored": [{"note": guess["id"], "why": "Too vague."},
+                                                              {"note": "n-unknown", "why": "x"}]}))
     res = nightly.run_job(s.id)
     assert res["status"] == "done", res
     assert len(calls) == 1
@@ -116,6 +118,9 @@ def test_nightly_digests_with_provenance_and_change_list(monkeypatch):
     rec = changes.get(s.id, res["run"])
     assert [it["id"] for it in rec["items"]] == ["i1", "i2"] and rec["items"][0]["commit"] == log[0]["sha"]
     assert "bogus" not in rec["items"][0] and rec["fallback"] is False and rec["status"] == "done"
+    # C4: each entry item carries its exact line before and after, from the run's diff
+    assert rec["items"][0]["before"] == MEMORY.splitlines()[1] and rec["items"][0]["after"] == new_mem.splitlines()[1]
+    assert rec["items"][1]["before"] is None and rec["items"][1]["after"] == new_mem.splitlines()[2]
     assert inbox.undigested(s.id) == []
     assert inbox.get(s.id, said["id"])["digested"]
     assert "- (none)" in open_text(os.path.join(s.home, "said.md"))
@@ -134,7 +139,8 @@ def test_nightly_digests_with_provenance_and_change_list(monkeypatch):
 def test_notes_not_listed_stay_in_inbox(monkeypatch):
     s, said, guess, corr = _setup()
     stub_side(monkeypatch, fn=_job(MEMORY + "- [m-9999] x {basis=guess; seen=1}\n",
-                                    [{"kind": "Learned", "text": "x", "file": "memory.md"}], digested=[said["id"]]))
+                                    [{"kind": "Learned", "text": "x", "file": "memory.md", "from": [said["id"]]}],
+                                    digested=[said["id"], guess["id"], corr["id"]]))
     nightly.run_job(s.id)
     assert {n["id"] for n in inbox.undigested(s.id)} == {guess["id"], corr["id"]}
 
@@ -171,12 +177,12 @@ def test_over_cap_compact_pass_merges_into_first_list(monkeypatch):
             body = {"summary": "First pass.", "items": [
                 {"kind": "Learned", "text": "Staging first.", "entry": "m-0001", "file": "memory.md",
                  "from": [said["id"]], "undo": "Remove m-0001."}],
-                "digested": [said["id"], corr["id"]],
+                "ignored": [{"note": corr["id"], "why": "dup"}],
                 "drafts": [{"to": {"name": "Ana"}, "subject": "A", "text": "first draft"}]}
         else:  # the compaction rewrites the file whole, without the first pass's list
             body = {"summary": "Compacted.", "items": [
                 {"kind": "Moved", "text": "Moved 199 entries.", "file": "knowledge/old.md"}],
-                "digested": [guess["id"]], "drafts": [{"to": {"name": "Bo"}, "subject": "B", "text": "second"}]}
+                "ignored": [guess["id"]], "drafts": [{"to": {"name": "Bo"}, "subject": "B", "text": "second"}]}
         with open(os.path.join(out, "changes.json"), "w") as fh:
             json.dump(body, fh)
         return "ok"
@@ -185,10 +191,12 @@ def test_over_cap_compact_pass_merges_into_first_list(monkeypatch):
     assert len(seen) == 2 and seen[1].startswith("memory.md is 201 lines")
     assert nightly.memory_size(s.id)[0] <= 120
     rec = changes.get(s.id, res["run"])
+    # the entry the run removed with no item of its own gets one (C4)
     assert [(it["kind"], it["text"]) for it in rec["items"]] == [("Learned", "Staging first."),
-                                                                 ("Moved", "Moved 199 entries.")]
+                                                                 ("Moved", "Moved 199 entries."),
+                                                                 ("Changed", "Removed: When a sync stalls, retry.")]
     assert rec["summary"] == "First pass." and rec["fallback"] is False and len(rec["drafts"]) == 2
-    assert inbox.undigested(s.id) == []  # the union of both passes' digested
+    assert inbox.undigested(s.id) == []  # the union of both passes' from and ignored
 
 
 def test_failed_run_digests_nothing_and_keeps_cursors(monkeypatch):
@@ -225,11 +233,13 @@ def test_unconfirmed_user_said_weighs_as_verified(monkeypatch):
                      source={"type": "user", "session_id": "t"})
     calls = stub_side(monkeypatch, fn=_job(MEMORY, []))
     res = nightly.run_job(s.id)
-    assert "Only a note marked \"confirmed by the user: yes\" counts as user-said" in calls[0]["prompt"]
+    prompt = calls[0]["prompt"]
+    assert "is user-said, never verified" in prompt and "weigh it as verified" in prompt
     md = open_text(os.path.join(s.home, ".specialist", "nightly", res["run"], "input", "notes.md"))
     assert md.index(mine["id"]) < md.index(claimed["id"])
     block = md[md.index(f"<<<NOTE {claimed['id']}"):].split("NOTE>>>")[0]
-    assert "confirmed by the user: no (weigh as verified)" in block
+    assert "confirmed by the user: no (a model wrote that the user said it: keep basis user-said, weigh it as " \
+           "verified)" in block
     assert "confirmed by the user: yes" in md[md.index(f"<<<NOTE {mine['id']}"):].split("NOTE>>>")[0]
 
 
@@ -369,8 +379,8 @@ def test_restart_mid_nightly_closes_interrupted_run(monkeypatch):
 def test_restart_while_applying_finishes_once(monkeypatch):
     s, said, _guess, _corr = _setup()
     calls = stub_side(monkeypatch, fn=_job(MEMORY + "- [m-dddd] d {basis=guess; seen=1}\n",
-                                            [{"kind": "Learned", "text": "d", "file": "memory.md"}],
-                                            digested=[said["id"]],
+                                            [{"kind": "Learned", "text": "d", "file": "memory.md",
+                                              "from": [said["id"]]}],
                                             drafts=[{"to": {"name": "Bo"}, "subject": "s", "text": "t"}]))
     real_apply = nightly._apply
     monkeypatch.setattr(nightly, "_apply", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
@@ -407,7 +417,80 @@ def test_validate_caps_and_kinds():
     raw = {"summary": "x" * 900, "items": [{"kind": "Weird", "text": "t" * 900, "entry": "zz"}] * 80,
            "digested": ["n-abc", 3, "bad id"], "repeat_breakouts": -1, "drafts": [{"text": ""}]}
     v = changes.validate(raw)
-    assert len(v["items"]) == 50 and v["items"][0]["kind"] == "Changed" and len(v["items"][0]["text"]) == 500
-    assert v["items"][0]["entry"] is None and v["digested"] == ["n-abc"] and v["repeat_breakouts"] == 0
+    assert len(v["items"]) == 50 and v["items"][0]["kind"] == "Changed" and len(v["items"][0]["text"]) == 160
+    assert v["items"][0]["text"].endswith("…")
+    # C4: `digested` is computed from `from` and `ignored`; the job's own list is not trusted
+    assert v["items"][0]["entry"] is None and v["digested"] == [] and v["repeat_breakouts"] == 0
     assert v["drafts"] == [] and len(v["summary"]) == 500
     assert changes.validate([]) is None and changes.validate({"items": "x"}) is None
+
+
+def test_breakout_transcripts_read_from_their_workroom(monkeypatch, tmp_path):
+    """C1: a breakout's transcript lives under its workroom (`breakouts.session_cwds`); the home is the fallback
+    when that is missing or raises."""
+    s = make_specialist()
+    room = os.path.join(s.home, ".specialist", "breakouts", "b-1", "work")
+    turns = {"sid-b": [{"role": "user", "text": "Brief: fonts"}, {"role": "assistant", "text": "Use /assets."}]}
+    seen = []
+
+    class _Agent(_FakeAgent):
+        def _session_transcript_path(self, workdir, sid):
+            seen.append(workdir)
+            if workdir != room:
+                raise FileNotFoundError(workdir)
+            return super()._session_transcript_path(workdir, sid)
+
+        def _history(self, file, sid, **kw):
+            assert file == room
+            return super()._history(file, sid)
+
+    monkeypatch.setattr(nightly, "_agent", lambda: _Agent(str(tmp_path), turns))
+    monkeypatch.setattr(chat, "state", lambda sid: {"current": None, "folded": []})
+    monkeypatch.setattr(breakouts, "session_ids", lambda sid: {"sid-b": "closed"})
+    monkeypatch.setattr(breakouts, "session_cwds", lambda sid: {"sid-b": room}, raising=False)
+    out = nightly.session_slices(s.id, {})
+    assert [x["session_id"] for x in out] == ["sid-b"] and "AGENT| Use /assets." in out[0]["text"]
+    assert seen == [room]
+    # session_cwds raises: the home is used
+    def boom(sid):
+        raise RuntimeError("x")
+    monkeypatch.setattr(breakouts, "session_cwds", boom, raising=False)
+    seen.clear()
+    assert nightly.session_slices(s.id, {}) == [] and seen == [s.home]
+    assert nightly.breakout_cwds(s.id) == {}
+
+
+def test_status_reports_started_while_running(api, monkeypatch):
+    """C5: GET …/nightly carries `started` (when the running update began), None when none runs."""
+    import threading
+    import time
+    s, *_ = _setup()
+    gate = threading.Event()
+
+    def fn(call):
+        gate.wait(5)
+        return "ok"
+    stub_side(monkeypatch, fn=fn)
+    _code, _h, st = api.get(f"/api/specialists/{s.id}/nightly")
+    assert st["running"] is False and st["started"] is None
+    t0 = time.time()
+    assert api.post(f"/api/specialists/{s.id}/nightly/run", {})[0] == 202
+    _code, _h, st = api.get(f"/api/specialists/{s.id}/nightly")
+    assert st["running"] is True and t0 - 1 <= st["started"] <= time.time()
+    gate.set()
+    for _ in range(200):
+        if not nightly.running(s.id):
+            break
+        time.sleep(0.05)
+    assert nightly.status(s.id)["started"] is None
+
+
+def test_prompt_states_note_accounting_and_plain_text(monkeypatch):
+    s, *_ = _setup()
+    calls = stub_side(monkeypatch, fn=_job(MEMORY, []))
+    nightly.run_job(s.id)
+    p = calls[0]["prompt"]
+    assert '"ignored": [{"note": "n-...", "why": "one sentence"}]' in p and '"digested"' not in p
+    assert "A note in neither stays in the inbox for next time." in p
+    assert "one short plain sentence (under 160 characters)" in p and "No entry ids, note ids" in p
+    assert "raising seen= or confirmed= included" in p

@@ -134,8 +134,8 @@ def test_counts_bump_shape():
     counts.bump("general", "pulls")
     c = counts.get(s.id)
     assert c["pulls"] == 0 and c["notes_by_source"]["breakout"] == 1
-    assert set(c) == {"breakouts_opened", "repeat_breakouts", "pulls", "pulls_confirmed", "corrections_received",
-                      "notes_by_source"}
+    assert set(c) == {"breakouts_opened", "repeat_breakouts", "pulls", "pulls_confirmed", "pulls_unrelated",
+                      "corrections_received", "notes_by_source"}
 
 
 # ------------------------------------------------------------------------ routes ---
@@ -248,3 +248,21 @@ def test_mutating_routes_need_x_fused(api, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
     code, _h, _b = api.get("/api/specialists/general/inbox")
     assert code == 404
+
+
+def test_undo_decrements_notes_by_source(api):
+    """C5: deleting a note (Undo) takes it back out of `notes_by_source`, whatever its source; a general-inbox note
+    moved to a specialist counts there and its Undo there takes it out again."""
+    s = make_specialist()
+    task = inbox.add(s.id, kind="gap", claim="From a task.", basis="guess", source={"type": "task", "session_id": "t"})
+    code, _h, mine = api.post(f"/api/specialists/{s.id}/notes", {"kind": "case", "claim": "Mine.", "basis": "guess"})
+    assert counts.get(s.id)["notes_by_source"]["task"] == 1 and counts.get(s.id)["notes_by_source"]["user"] == 1
+    assert api.delete(f"/api/specialists/{s.id}/notes/{task['id']}")[0] == 200
+    assert api.delete(f"/api/specialists/{s.id}/notes/{mine['id']}")[0] == 200
+    code, _h, c = api.get(f"/api/specialists/{s.id}/counts")
+    assert c["notes_by_source"]["task"] == 0 and c["notes_by_source"]["user"] == 0
+    g = inbox.add(inbox.GENERAL, kind="gap", claim="Lost.", basis="guess", source={"type": "task", "session_id": "t"})
+    api.post(f"/api/specialists/general/notes/{g['id']}/move", {"specialist": s.id})
+    assert counts.get(s.id)["notes_by_source"]["task"] == 1
+    assert api.delete(f"/api/specialists/{s.id}/notes/{g['id']}")[0] == 200
+    assert counts.get(s.id)["notes_by_source"]["task"] == 0

@@ -1,9 +1,13 @@
 """Specialist breakouts opened from a task (PRODUCT §3.3; PLAN A.2 "Specialist breakout", B.3, B.7).
 
-    <home>/.specialist/breakouts/<bid>.json
+    <home>/.specialist/breakouts/<bid>.json     the record
+    <home>/.specialist/breakouts/<bid>/work/    its workroom: the session's working folder (CONTRACT C1)
 
-A breakout is a fresh task-stack session in the specialist's home (`specialist="<id>:breakout:<bid>"`), seeded with
-`BREAKOUT_SEED`. The page drives it: create -> (offer card / Breakout menu) -> the floating card sends the seed ->
+A breakout is a fresh task-stack session (`specialist="<id>:breakout:<bid>"`) whose working folder is its private
+workroom under the home, seeded with `BREAKOUT_SEED`. Running there, its file writes cannot land on memory,
+knowledge, skills or people by relative path whatever tool it uses; the charter and skills still load natively and
+the app copies memory and said.md in before each start and turn (`home.sync_workroom`). A record made before
+workrooms (no `work` key) keeps the home as its folder. The page drives it: create -> (offer card / Breakout menu) -> the floating card sends the seed ->
 Close sends `close_prompt` -> on turn end `closed` reads the SUMMARY and NOTE blocks, drafts the summary into the
 task's composer (page) and files the note in the inbox. Discard keeps the session (the nightly job reads it).
 """
@@ -42,7 +46,7 @@ Files changed: paths, or None
 SUMMARY>>>
 <<<NOTE
 kind: gap | correction | convention | suspected-bug | behaviour | case
-basis: user-said | verified | guess
+basis: user-said | verified | guess (if the user stated it to you in this conversation, the basis is user-said)
 claim: one sentence
 entry: m-xxxx or none
 (then the full evidence: what was tried, what happened, what worked)
@@ -102,6 +106,40 @@ def for_spec(spec_id) -> list[dict]:
 
 def open_now(spec_id) -> list[dict]:
     return [r for r in for_spec(spec_id) if r.get("status") == "open"]
+
+
+def _cwd_of(spec_id: str, rec: dict) -> str:
+    from fused_render.specialists import paths
+
+    if rec.get("work"):
+        return paths.workroom(spec_id, rec["id"])
+    return paths.home(spec_id)
+
+
+def cwd(spec_id: str, bid: str) -> str:
+    """The working folder of breakout `bid` (its workroom; the home for a record made before workrooms). For an
+    unknown breakout, the workroom path it would have."""
+    from fused_render.specialists import paths
+
+    rec = get(spec_id, bid)
+    return _cwd_of(spec_id, rec) if rec is not None else paths.workroom(spec_id, bid)
+
+
+def session_cwds(spec_id) -> dict[str, str]:
+    """session_id -> the folder its transcript is keyed on, for every breakout of `spec_id` with a session."""
+    return {r["session_id"]: _cwd_of(spec_id, r) for r in for_spec(spec_id)
+            if isinstance(r.get("session_id"), str) and r["session_id"]}
+
+
+def sync(spec, bid: str) -> str:
+    """Refresh breakout `bid`'s workroom (what does not load there natively) and answer its folder."""
+    from fused_render.specialists import home as hm
+
+    rec = get(spec.id, bid)
+    folder = _cwd_of(spec.id, rec) if rec is not None else ""
+    if rec is not None and rec.get("work"):
+        hm.sync_workroom(spec.home, folder)
+    return folder
 
 
 def session_ids(spec_id) -> dict[str, str]:
@@ -186,9 +224,10 @@ def create(spec, *, parent: dict, brief: dict, origin: str, request_id: str = ""
            "parent": {"session_id": parent["session_id"][:128], "run_id": str(parent.get("run_id") or "")[:80],
                       "file": parent["file"], "title": str(parent.get("title") or "")[:200]},
            "brief": clean_brief(brief), "session_id": "", "status": "open", "opened": time.time(),
-           "closes": [], "discarded": None}
+           "closes": [], "discarded": None, "work": True}
     with _LOCK:
         _save(rec)
+    sync(spec, rec["id"])
     try:
         from fused_render.specialists import counts
 
@@ -273,7 +312,7 @@ def closed(spec, bid: str, session_id: str) -> dict:
     if rec is None:
         raise LookupError(f"no such breakout: {bid}")
     sid = session_id or rec.get("session_id") or ""
-    answer = last_answer(spec.home, sid) if sid else ""
+    answer = last_answer(_cwd_of(spec.id, rec), sid) if sid else ""
     # One close = one close-out answer: a retry or a restart that reads the same answer gets the same draft and
     # note back, and files nothing twice.
     import hashlib
@@ -317,7 +356,33 @@ def closed(spec, bid: str, session_id: str) -> dict:
         _save(rec)
     task_events.add(rec["parent"]["session_id"], "breakout_closed", spec.id, spec.name, breakout_id=bid,
                     note_id=note_id, session_id=rec.get("session_id") or "")
+    end_hosts(spec.id, rec)
     return {"draft": draft, "label": label, "note_id": note_id}
+
+
+#: How long after Close / Discard the breakout's session host is ended (its Stop hook settles first).
+END_DELAY_S = 2.0
+
+
+def end_hosts(spec_id: str, rec: dict, delay_s: float | None = None) -> None:
+    """End the breakout's session host, in the background: a closed or discarded breakout takes no new turn
+    without Reopen. Claude Code starts a turn by itself when a background job it ran finishes; that turn would
+    happen in the live host, where no start is asked for, so the host itself must go (Reopen resumes the session
+    in a new one, and `launch.spec` refuses any start of a breakout that is not open). Never raises."""
+    if not rec.get("work"):
+        return  # a record from before workrooms shares the home's folder with the main chat: never guess
+
+    def go():
+        try:
+            time.sleep(END_DELAY_S if delay_s is None else delay_s)
+            agent = _agent()
+            folder = _cwd_of(spec_id, rec)
+            for run_id in agent._hosts_in(folder):
+                agent._cancel_run(run_id, interrupt_first=False)
+        except Exception:  # noqa: BLE001
+            logger.debug("specialists: could not end a breakout's host", exc_info=True)
+
+    threading.Thread(target=go, daemon=True, name="specialist-breakout-end").start()
 
 
 def discard(spec, bid: str) -> dict:
@@ -332,6 +397,7 @@ def discard(spec, bid: str) -> dict:
         _save(rec)
     task_events.add(rec["parent"]["session_id"], "breakout_discarded", spec.id, spec.name, breakout_id=bid,
                     session_id=rec.get("session_id") or "")
+    end_hosts(spec.id, rec)
     return rec
 
 
@@ -344,4 +410,4 @@ def reopen(spec, bid: str) -> dict:
             raise LookupError("this specialist's breakout is gone")
         rec["status"] = "open"
         _save(rec)
-    return {"session_id": rec.get("session_id") or "", "start_params": start_params(rec), "home": spec.home}
+    return {"session_id": rec.get("session_id") or "", "start_params": start_params(rec), "home": sync(spec, bid)}

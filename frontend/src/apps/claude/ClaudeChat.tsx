@@ -175,6 +175,7 @@ import { isLanHost } from "@platform/lib/host";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { SpecialistCardContext } from "./specialists/context";
 import { useSpecialistTaskSide } from "./specialists/TaskSide";
+import type { SpecialistSessionProp } from "./specialists/context";
 import { PlaceTags } from "@shell/claude-rail/PlaceTags";
 // THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"),
 // behind its flag: with it on, the strip and the identity line below are one
@@ -395,7 +396,10 @@ export interface ClaudeChatProps {
   /** This chat IS a specialist session: a chat from its first frame, no plain
    *  Breakout control, no specialist task UI; `breakoutPrompt` is sent once and
    *  `onBreakoutState` reports up, as in a breakout card. */
-  specialist?: { id: string; kind: "main" | "breakout" };
+  specialist?: SpecialistSessionProp;
+  /** The composer's idle placeholder in place of "Reply to Claude…" (a
+   *  specialist's main chat and breakout card name who is being replied to). */
+  composerPlaceholder?: string;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -3928,6 +3932,9 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
+  /** SPECIALISTS: "Send to the task" on a summary draft sends what the reader
+   *  typed first and the summary after it, through the composer's own send. */
+  const spxSubmit = useCallback((text: string): boolean => submitBox.current?.(text) ?? false, []);
   /** The specialist side's draft-label seat, filled once its hook has run below. */
   const spxNoteDraft = useRef<(label: string | undefined) => void>(() => {});
   /** SEND BACK lands here: a breakout card's summary arrives as a window event
@@ -5442,8 +5449,14 @@ function ChatBody(props: ChatBodyProps) {
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
       ...(stranded && entered ? { restore: stranded } : {}),
+      // SPECIALISTS: who is being replied to, and no Schedule seat in a
+      // specialist session.
+      ...(props.composerPlaceholder ? { chatPlaceholder: props.composerPlaceholder } : {}),
+      ...(props.specialist ? { noSchedule: true } : {}),
     }),
     [
+      props.composerPlaceholder,
+      !!props.specialist,
       picking,
       breakoutSel,
       openBreakoutFor,
@@ -5856,6 +5869,9 @@ function ChatBody(props: ChatBodyProps) {
     turns: state.turns,
     ...(props.specialist ? { specialist: props.specialist } : {}),
     ...(breakoutGate ? { onCopyOfChat: stableToggle } : {}),
+    running,
+    folder: chatWorkdir(file, pane.noun) || "",
+    submit: spxSubmit,
   });
   spxNoteDraft.current = spx.noteDraft;
   const { onBreakoutControl } = props;
@@ -6167,7 +6183,7 @@ function ChatBody(props: ChatBodyProps) {
   return (
    <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
-   <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
+   <FilePreviewProvider cwd={props.specialist?.folder || chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
     <RemoteControlConfirm open={rc.asking} onGo={rc.start} onCancel={rc.cancel} />
     <div
       ref={rootRef}
@@ -6457,7 +6473,7 @@ function ChatBody(props: ChatBodyProps) {
               followRef={transcriptFollow}
               onOpenCardVisible={setOpenCardVisible}
               jumpRef={jumpToCard}
-              cwd={chatWorkdir(file, pane.noun)}
+              cwd={props.specialist?.folder || chatWorkdir(file, pane.noun)}
               state={transcriptState}
               comebackPending={sched.blocked}
               actions={actions}
@@ -6472,6 +6488,7 @@ function ChatBody(props: ChatBodyProps) {
               {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}
               {...(breakoutGate ? { onBreakoutContext: onContextTurn } : {})}
               {...(spx.afterTurn ? { afterTurn: spx.afterTurn } : {})}
+              {...(spx.replaceTurn ? { replaceTurn: spx.replaceTurn } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}

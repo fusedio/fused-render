@@ -133,12 +133,13 @@ def find(spec, kind: str, tool: str) -> dict | None:
 NEEDS_CARD = "This call needs the user's approval card."
 
 
-def call(spec, kind: str, name: str, args, *, session_id: str = "", grant_secret: str = "") -> dict:
+def call(spec, kind: str, name: str, args, *, session_id: str = "", breakout_id: str = "") -> dict:
     """Run one service tool for a session of `kind`: `{"content":[{"type":"text","text"}], "isError"}`. Refuses
     a tool not in that kind's roster (so a nightly can never write). Main/breakout: a call whose `policy` is not
-    `allow` runs only by spending a one-time grant the permission server recorded when the user answered its card
-    (`launch.take_grant` with this run's secret), so the server, not only the CLI's prompt, enforces the card.
-    Never raises."""
+    `allow` runs only by spending the one-time grant the SERVER recorded when the user allowed its card
+    (`launch.take_grant`; CONTRACT C2), so the server, not only the CLI's prompt, enforces the card: a session that
+    calls the route itself, with everything it can read, gets `NEEDS_CARD`. `session_id` and `breakout_id` are the
+    server's own idea of the calling session (the token's record), never the caller's word. Never raises."""
     entry = next((e for e in roster(spec, kind) if e["name"] == _strip(str(name or ""))), None)
     if entry is None:
         why = ("the nightly update may only use read-only tools of allowed services" if kind == "nightly"
@@ -147,7 +148,7 @@ def call(spec, kind: str, name: str, args, *, session_id: str = "", grant_secret
     if kind in ("main", "breakout") and policy(spec.id, kind, session_id, entry["name"]) != "allow":
         from fused_render.specialists import launch
 
-        if not launch.take_grant(spec.id, grant_secret, entry["name"]):
+        if not launch.take_grant(spec.id, kind, breakout_id, session_id, entry["name"]):
             return {"content": [{"type": "text", "text": NEEDS_CARD}], "isError": True}
     try:
         res = _apptools().run_tool(entry["rec"], args if isinstance(args, dict) else {})

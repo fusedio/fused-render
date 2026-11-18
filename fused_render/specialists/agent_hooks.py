@@ -4,6 +4,9 @@
 
 * `start` with a `specialist` param: main chat -> `chat.record_start`; breakout -> the minted session on its record.
 * `decide` deny -> signal `deny`; `cancel` -> `stop`; `snapshot_revert` -> `undo` (against the task session).
+* `decide` allow on a specialist session's service card -> the one-time grant `services.call` spends (CONTRACT
+  C2). `agent._decide` calls `grant_from_decision` itself BEFORE writing the decision (so the call it lets through
+  can never reach `services.call` first); the post-hook repeats it, which records nothing twice.
 
 Never raises (the router wraps it too).
 """
@@ -47,6 +50,46 @@ def _offer_card(run_id, request_id) -> bool:
         return False
 
 
+SERVICE_PREFIX = "mcp__specialist_services__"
+
+
+def grant_from_decision(run_id, request_id) -> bool:
+    """The user allowed card `request_id` of run `run_id`: when that card asks for a specialist service tool and
+    the run is a specialist main chat / breakout, record the one-time grant for (specialist, kind, breakout,
+    session, tool). Only the server calls this, on the user's decide; never raises."""
+    import json
+    import os
+    import re
+
+    ok = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
+    if not (isinstance(run_id, str) and ok.match(run_id) and isinstance(request_id, str) and ok.match(request_id)):
+        return False
+    try:
+        from fused_render.claude_agent import agent_module
+        from fused_render.specialists import flag, launch
+
+        if not flag.on():
+            return False
+        run_dir = os.path.join(agent_module().RUNS, run_id)
+        with open(os.path.join(run_dir, "perm", request_id + ".req.json"), encoding="utf-8") as fh:
+            tool = str(json.load(fh).get("tool") or "")
+        if not tool.startswith(SERVICE_PREFIX):
+            return False
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+        sp = meta.get("specialist") if isinstance(meta, dict) else None
+        if not isinstance(sp, dict) or sp.get("kind") not in ("main", "breakout") or not sp.get("id"):
+            return False
+        session = str(meta.get("session_id") or meta.get("resumed_from") or "")
+        return launch.record_grant(str(sp["id"]), str(sp["kind"]), str(sp.get("breakout_id") or ""), session, tool,
+                                   f"{run_id}/{request_id}")
+    except (OSError, ValueError, AttributeError, ImportError):
+        return False
+    except Exception:  # noqa: BLE001
+        logger.exception("specialists: could not record a service grant")
+        return False
+
+
 def after_agent_call(action: str, params: dict, envelope: dict) -> None:
     try:
         _after(action, params if isinstance(params, dict) else {}, envelope)
@@ -74,7 +117,11 @@ def _after(action: str, params: dict, envelope: dict) -> None:
             breakouts.set_session(parts[0], parts[2], sid)
         return
     if action == "decide":
-        if str(params.get("decision") or "") == "allow" or not res:
+        if str(params.get("decision") or "") == "allow":
+            if res.get("decision") == "allow":
+                grant_from_decision(params.get("run_id"), params.get("request_id"))
+            return
+        if not res:
             return
         if _offer_card(params.get("run_id"), params.get("request_id")):
             return  # "Keep trying" on an offer is not the user refusing the task's work

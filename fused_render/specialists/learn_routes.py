@@ -1,10 +1,12 @@
 """`/api/specialists/{id}/…`: the learning loop's HTTP API (PLAN B.5 "Learning").
 
     GET    …/{id}/panel                         the specialist page's right panel
-    GET    …/{id}/learned?limit=5               the latest change lists, each item with its state
-    POST   …/{id}/changes/{run}/{item}/revert   {"message","session_id"}: the page sends it into the main chat
+    GET    …/{id}/learned?limit=5               the latest change lists ("at" = the run's time), each item with its
+                                                state: active | reverting | reverted | changed
+    POST   …/{id}/changes/{run}/{item}/revert   {"message","session_id"}: the page sends it into the main chat;
+                                                409 {"error","reason":"gone"} for an item reverted or changed since
     POST   …/{id}/nightly/run                   202 {"row"} / 409 {"error","reason":"busy"}
-    GET    …/{id}/nightly                       {"last_ok","running","last_row"}
+    GET    …/{id}/nightly                       {"last_ok","running","last_row","last_run","started"}
     GET    …/{id}/memory                        always-loaded entries with provenance, size against the cap, knowledge
     GET    …/{id}/inbox                         undigested notes, newest first
     POST   …/{id}/notes                         "Send to a specialist" ({id} may be `general`): a user-said note
@@ -150,7 +152,10 @@ def revert(spec_id: str, run: str, item: str, x_fused: str | None = Header(None)
         return bad
     from fused_render.specialists import changes
     _spec(spec_id)
-    return changes.revert(spec_id, run, item)
+    try:
+        return changes.revert(spec_id, run, item)
+    except changes.Gone as e:
+        return JSONResponse({"error": str(e), "reason": "gone"}, status_code=409)
 
 
 # ----------------------------------------------------------------------- nightly ---

@@ -30,6 +30,11 @@ export interface SpecialistSummary {
   /** One line of status for the list ("Working on …", "Learned 3 things last night"). */
   status: string;
   working: boolean;
+  /** C5: the specialist's model, the default of its chats (R7). Absent on an
+   *  older server. */
+  model?: string;
+  /** Present when the server sends the triggers on the list (it may not). */
+  triggers?: Triggers;
 }
 
 /** GET /api/specialists/{id}. */
@@ -225,12 +230,23 @@ export interface Commit {
 
 /** A task event (B.3): what a task's transcript shows a chip for. */
 export interface TaskEvent {
-  kind: "pull" | "note" | "breakout_open" | "breakout_closed" | "breakout_discarded" | "stuck" | string;
+  kind:
+    | "pull"
+    | "note"
+    | "breakout_open"
+    | "breakout_closed"
+    | "breakout_discarded"
+    | "breakout_deleted"
+    | "stuck"
+    | string;
   /** Epoch seconds. */
   at: number;
   specialist: { id: string; name: string };
   receipt_id?: string;
+  /** `pull`: how many memory entries, skills and topic files were added (C5). */
   entries?: number;
+  skills?: number;
+  knowledge?: number;
   trigger?: "choice" | "signal" | string;
   note_id?: string;
   undoable?: boolean;
@@ -239,6 +255,14 @@ export interface TaskEvent {
   in_effect?: boolean;
   breakout_id?: string;
   session_id?: string;
+}
+
+/** C5: what a pull added, laid out for a person (GET …/receipts/{rid} `view`). */
+export interface ReceiptView {
+  memory?: { id?: string; text: string; basis?: string }[];
+  said?: { text: string }[];
+  knowledge?: { title: string }[];
+  skills?: { name: string; description?: string }[];
 }
 
 export interface Brief {
@@ -320,7 +344,7 @@ export const getHistory = (id: string, path?: string) =>
 export const getTaskEvents = (sessionId: string) =>
   getJson<{ events: TaskEvent[] }>(`${SPECIALISTS_API}/task-events?session_id=${enc(sessionId)}`);
 export const getReceipt = (id: string, rid: string) =>
-  getJson<{ receipt: Record<string, unknown>; text: string }>(`${one(id)}/receipts/${enc(rid)}`);
+  getJson<{ receipt: Record<string, unknown>; text: string; view?: ReceiptView }>(`${one(id)}/receipts/${enc(rid)}`);
 export const createBreakout = (
   id: string,
   body: {
@@ -350,7 +374,12 @@ export const revertChange = (id: string, run: string, item: string) =>
   post<{ message: string; session_id: string | null }>(`${one(id)}/changes/${enc(run)}/${enc(item)}/revert`);
 export const runNightly = (id: string) => post<{ row: string }>(`${one(id)}/nightly/run`);
 export const getNightly = (id: string) =>
-  getJson<{ last_ok: number | null; running: boolean; last_row: Record<string, unknown> | string | null }>(`${one(id)}/nightly`);
+  getJson<{
+    last_ok: number | null;
+    running: boolean;
+    last_row: Record<string, unknown> | string | null;
+    started?: number | null;
+  }>(`${one(id)}/nightly`);
 export const getMemory = (id: string) => getJson<SpecialistMemory>(`${one(id)}/memory`);
 export const getInbox = (id: string) => getJson<{ notes: Note[] }>(`${one(id)}/inbox`);
 /** `id` may be "general" — the general inbox for "no specialist fits". */
@@ -394,6 +423,29 @@ async function patchJson<T>(url: string, body: unknown): Promise<T> {
   return data;
 }
 
+/** C5: the specialist behind this route was deleted (410 `reason: "deleted"`,
+ *  or a 404 / 410 for the specialist itself). */
+export function isSpecialistDeleted(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: number; body?: { reason?: unknown } | null };
+  if (e.body && typeof e.body === "object" && e.body.reason === "deleted") return true;
+  return e.status === 410;
+}
+
+const FACE_PALETTE = ["#1f8f7e", "#3b6fd8", "#9a5bd6", "#c4683b", "#2f8f3f", "#b8456b", "#6b7a1f", "#2f7f9f"];
+
+/** A specialist face's colour: a `#rgb`/`#rrggbb` in `face` (the string, or the
+ *  object's `color`), else a stable pick from the id. One rule for every place
+ *  a face is drawn (the page, the breakout card). */
+export function specialistFaceColor(face: SpecialistFace | undefined, id: string): string {
+  const raw = typeof face === "string" ? face : face && typeof face === "object" ? face.color : "";
+  const c = typeof raw === "string" ? raw.trim() : "";
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c)) return c;
+  let h = 0;
+  for (const ch of id || "x") h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return FACE_PALETTE[h % FACE_PALETTE.length]!;
+}
+
 /** A thrown fetch error as one sentence for the UI. */
 export function errorText(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;
@@ -402,14 +454,23 @@ export function errorText(err: unknown): string {
 
 // ── wording shared by the page and the task side ──────────────────────────
 
-/** B.7 REVERT, used only when the server's answer has no message of its own. */
-export function revertMessage(item: ChangeItem, run: string): string {
+/** The revert request (C3/C4 prefix), used only when the server's answer has
+ *  no message of its own. The change's text is the first quoted string, which
+ *  is what the thread shows ("Asked to undo: <text>"). */
+export function revertMessage(item: ChangeItem, _run?: string): string {
   return (
-    `Revert last night's change: ${item.kind}, "${item.text}" (nightly update ${run}` +
-    `${item.commit ? `, commit ${item.commit}` : ""}; how to undo: ${item.undo || "put it back"}). ` +
-    "Put memory, knowledge and skills back the way they were before that change, keep the notes it came from, and tell me what you changed."
+    `${REVERT_PREFIX}"${String(item.text || "").replace(/"/g, "'")}" (${item.kind}). ` +
+    `How to undo it: ${item.undo || "put it back as it was"}. Change only that, never restore whole files from git, ` +
+    "keep the notes it came from, and tell me in plain words what you changed."
   );
 }
+
+// ── C3: the fixed first characters of app-written messages ────────────────
+// The backend pins these with tests; the thread renders by them (R1).
+export const SEED_PREFIX = 'Brief from the task "';
+export const CLOSE_OUT_PREFIX = "The user is closing this breakout";
+export const REVERT_PREFIX = "Undo this change from the latest update: ";
+export const SEND_DRAFT_PREFIX = "Review and send this draft to ";
 
 /** The services key in an `mcp__specialist_services__<key>_<tool>` tool name. */
 export const SERVICE_TOOL_PREFIX = "mcp__specialist_services__";

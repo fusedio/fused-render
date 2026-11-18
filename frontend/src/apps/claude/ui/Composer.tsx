@@ -373,6 +373,11 @@ export interface ComposerCardProps {
   /** The landing card's kind-dependent placeholder (`homePlaceholderFor`,
    *  T:5392). Unset keeps the markup's own kind-free wording. */
   placeholder?: string;
+  /** SPECIALISTS: the chat variant's idle placeholder, in place of
+   *  "Reply to Claude…" ("Reply to the Canvas specialist"). */
+  chatPlaceholder?: string;
+  /** SPECIALISTS: no "Schedule this as a task" seat (a specialist session). */
+  noSchedule?: boolean;
   /**
    * Follow-ups the CLI never delivered, handed BACK to the box they were typed
    * in (`still_queued`, T:15911). `seq` is what re-delivers the same text (two
@@ -612,6 +617,8 @@ export function ComposerCard({
   navLockedReason,
   autoFocus,
   placeholder,
+  chatPlaceholder,
+  noSchedule = false,
   restore,
   boxRef: hostBoxRef,
   submitRef,
@@ -2435,7 +2442,7 @@ export function ComposerCard({
                   // it ("Ask Claude about this project…"); the markup's own
                   // kind-free wording stands until then (T:5392).
                   placeholder || homePlaceholderForAgent(agentWord)
-                : chatPlaceholderFor(agentWord)
+                : chatPlaceholder || chatPlaceholderFor(agentWord)
           }
           spellCheck={false}
           // AND GRAMMARLY OFF, all three spellings, exactly as T:4156-4157 and
@@ -2587,7 +2594,7 @@ export function ComposerCard({
           {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two
               are the ways this draft leaves the box — now, or as a task
               (T:4174-4183). The landing card's copy is never blocked. */}
-          <SchedButton
+          {noSchedule ? null : <SchedButton
             file={file}
             sessionId={sessionId}
             draft={draft}
@@ -2636,7 +2643,7 @@ export function ComposerCard({
             // place.
             episode={readEpisode}
             onHopChange={setHopping}
-          />
+          />}
           <button
             className="c-send"
             type="submit"

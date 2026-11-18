@@ -31,8 +31,9 @@ export function SendToSpecialist({
   sessionId: string;
   title?: string;
   specialists: readonly SpecialistSummary[];
-  /** The task's events changed (a `note` event). */
-  onSent?: () => void;
+  /** A note was sent from this message (`sent`), or its Undo took it back.
+   *  The host hides that note's chip: this line carries the one Undo. */
+  onSent?: (noteId: string, sent: boolean) => void;
   // Seams for tests.
   add?: typeof addNote;
   undo?: typeof deleteNote;
@@ -72,7 +73,7 @@ export function SendToSpecialist({
         source: { session_id: sessionId, ...(uuid ? { uuid } : {}), ...(title ? { title } : {}) },
       });
       setSent({ spec, name, id: note.id });
-      onSent?.();
+      onSent?.(note.id, true);
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -86,7 +87,7 @@ export function SendToSpecialist({
     try {
       await undo(sent.spec, sent.id);
       setSent(null);
-      onSent?.();
+      onSent?.(sent.id, false);
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -99,7 +100,9 @@ export function SendToSpecialist({
       {sent ? (
         <>
           <span className="spx-send-sent" role="status">
-            {sent.spec === GENERAL_INBOX ? "Sent to the general inbox" : `Sent to the ${sent.name} specialist's inbox`}
+            {sent.spec === GENERAL_INBOX
+              ? "Sent to the general inbox"
+              : `Sent to the ${sent.name} specialist · it uses this from now on`}
           </span>
           <button type="button" className="spx-linkbtn" onClick={() => void onUndo()} disabled={busy}>
             Undo
@@ -119,6 +122,9 @@ export function SendToSpecialist({
       )}
       {open ? (
         <div className="spx-bmenu-pop spx-send-pop" role="menu" aria-label="Send this message to">
+          <div className="spx-bmenu-head" aria-hidden="true">
+            Send this message to a specialist. It will use this from now on.
+          </div>
           {specialists.map((s) => (
             <button key={s.id} type="button" role="menuitem" className="spx-bmenu-item" onClick={() => void send(s.id, s.name)}>
               <span className="spx-chip-dot" aria-hidden="true" />

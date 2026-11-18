@@ -368,6 +368,8 @@ def run_side(spec, kind: Literal["check", "reviewer", "nightly"], prompt: str, *
     try:
         save_row(spec.id, rec)
         try:
+            # R4: the app owns the home's project settings; a hook a session planted there never runs here.
+            hm.ensure_settings(spec.home)
             servers = _services_servers(spec, kind) if (services and kind == "nightly") else {}
             binary = claude_bin()
             if not binary:

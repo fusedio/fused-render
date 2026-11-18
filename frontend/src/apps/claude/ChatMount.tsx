@@ -27,6 +27,7 @@ import {
 import { isChunkLoadError } from "@platform/lib/chunk-load";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { announcePaneSession } from "@platform/lib/peek-session";
+import type { SpecialistSessionProp } from "./specialists/context";
 
 /**
  * A URL-BACKED CHAT SAYS WHICH SESSION IT SHOWS while it is mounted
@@ -293,7 +294,11 @@ export interface ChatMountProps {
   onClear?: () => void;
   /** This chat IS a specialist session: no plain Breakout control and no
    *  specialist task UI inside it; with `onBreakoutState` it reports up. */
-  specialist?: { id: string; kind: "main" | "breakout" };
+  specialist?: SpecialistSessionProp;
+  /** The composer's idle placeholder in place of "Reply to Claude…" (the
+   *  Specialists page: "Message the <name> specialist"; a breakout card:
+   *  "Reply to the <name> specialist"). */
+  placeholder?: string;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -406,6 +411,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.extraParams ? { extraParams: props.extraParams } : {})}
         {...(props.onClear ? { onClear: props.onClear } : {})}
         {...(props.specialist ? { specialist: props.specialist } : {})}
+        {...(props.placeholder ? { composerPlaceholder: props.placeholder } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}

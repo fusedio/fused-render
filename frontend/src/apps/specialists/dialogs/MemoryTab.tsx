@@ -10,6 +10,7 @@ import {
   type Note,
   type SpecialistMemory,
 } from "@platform/lib/specialists-api";
+import { clip, secondPerson } from "../lib/api-extra";
 
 const BASIS: Record<string, string> = {
   verified: "Verified",
@@ -40,9 +41,34 @@ const KIND: Record<string, string> = {
 
 export const NOTE_KIND = KIND;
 
+/**
+ * An entry's `from` (written by the model or the nightly job: "user main
+ * chat", "breakout b-12ab", "nightly 2026-11-18") in plain words, ids dropped.
+ */
+export function fromLabel(from: string): string {
+  const raw = (from || "").trim();
+  if (!raw) return "";
+  const t = raw.toLowerCase();
+  if (/\buser\b/.test(t) && /\bmain\b|\bchat\b/.test(t)) return "You told it in its chat";
+  if (/\bmain\b/.test(t) && /\bchat\b/.test(t)) return "Its chat with you";
+  if (/\buser\b/.test(t)) return "You told it";
+  if (/\bbreakouts?\b/.test(t)) return "A breakout from one of your tasks";
+  if (/\breview/.test(t)) return "The review of a task";
+  if (/\bnightly\b|\bupdate\b/.test(t)) return "An update";
+  if (/\btasks?\b/.test(t)) return "One of your tasks";
+  if (/\bseed\b|\bshipped\b/.test(t)) return "It came with the specialist";
+  // Unknown words: keep them, without ids, hashes or dates in machine form.
+  const words = raw
+    .replace(/\b[a-z]{1,2}-[0-9a-f][0-9a-f-]{3,}\b/gi, "")
+    .replace(/\b[0-9a-f]{7,}\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : "";
+}
+
 export function noteSource(n: Note): string {
   const s = n.source || { type: "" };
-  const where = s.title ? ` in "${s.title}"` : "";
+  const where = s.title ? ` in "${clip(s.title, 60)}"` : "";
   const how: Record<string, string> = {
     task: "From a task",
     breakout: "From a breakout",
@@ -93,9 +119,8 @@ export function MemoryTab({
   const entry = mem?.entries.find((e) => e.id === sel) ?? null;
   const ask = () => {
     if (!entry) return;
-    const msg =
-      `I want to change your memory entry [${entry.id}] "${entry.text}". ` +
-      "Ask me what should change, then change it and tell me what you changed.";
+    // In the user's own words: it shows in the chat as what they said (R1).
+    const msg = `I want to change this in your memory: "${entry.text}". Ask me what should change, then change it.`;
     if (!sendToChat(msg)) setError("The chat is not ready yet.");
   };
 
@@ -114,7 +139,9 @@ export function MemoryTab({
             {error}
           </div>
         ) : null}
-        {mem && !mem.entries.length ? <div className="spx-muted">Nothing in memory yet.</div> : null}
+        {mem && !mem.entries.length ? (
+          <div className="spx-empty-note">Nothing in memory yet. Tell it something to remember in its chat.</div>
+        ) : null}
         <div className="spx-entries" role="listbox" aria-label="Memory entries">
           {(mem?.entries ?? []).map((e) => (
             <button
@@ -125,39 +152,53 @@ export function MemoryTab({
               className={"spx-entry" + (e.id === sel ? " is-selected" : "")}
               onClick={() => setSel(e.id)}
             >
-              <span className="spx-strong">{e.text || e.raw}</span>
+              <span className="spx-strong">{secondPerson(e.text || e.raw)}</span>
               <span className={"spx-small " + (e.basis === "guess" ? "spx-warn" : "spx-muted")}>{entryMeta(e)}</span>
             </button>
           ))}
         </div>
-        <h3>Topic knowledge</h3>
-        <div className="spx-muted spx-small">Opened only when the work needs it</div>
-        <ul className="spx-knowledge">
-          {(mem?.knowledge ?? []).map((k) => (
-            <li key={k.path} title={k.path}>
-              {k.title}
-            </li>
-          ))}
-          {mem && !mem.knowledge.length ? <li className="spx-muted">None yet.</li> : null}
-        </ul>
+        <div className="spx-run-head">
+          <h3>Topic knowledge</h3>
+          <span className="spx-muted spx-small">Opened only when the work needs it</span>
+        </div>
+        {mem && !mem.knowledge.length ? (
+          <div className="spx-empty-note">No topic knowledge yet. The update writes it when a subject needs more than a line.</div>
+        ) : (
+          <ul className="spx-knowledge">
+            {(mem?.knowledge ?? []).map((k) => (
+              <li key={k.path}>{k.title}</li>
+            ))}
+          </ul>
+        )}
       </div>
       <div className="spx-memory-col">
         {entry ? (
           <section className="spx-entry-detail" aria-label="Selected entry">
             <div className="spx-eyebrow">Selected entry</div>
-            <div className="spx-strong">{entry.text}</div>
+            <div className="spx-strong">{secondPerson(entry.text)}</div>
             <dl className="spx-grid">
               <dt>Basis</dt>
               <dd>{basisLabel(entry.basis)}</dd>
               <dt>Came from</dt>
-              <dd>{entry.from || "—"}</dd>
+              <dd>{fromLabel(entry.from) || "Not recorded"}</dd>
               <dt>Last confirmed</dt>
-              <dd>{entry.confirmed || "—"}</dd>
+              <dd>{entry.confirmed || "Not yet"}</dd>
               <dt>Retires when</dt>
-              <dd>{entry.retires || "never"}</dd>
-              <dt>Id</dt>
-              <dd>{entry.id}</dd>
+              <dd>{entry.retires ? secondPerson(entry.retires) : "Never"}</dd>
             </dl>
+            <details className="spx-details">
+              <summary>Details</summary>
+              <dl className="spx-grid">
+                <dt>Entry id</dt>
+                <dd>{entry.id}</dd>
+                {entry.from ? (
+                  <>
+                    <dt>Recorded as</dt>
+                    <dd>{entry.from}</dd>
+                  </>
+                ) : null}
+              </dl>
+            </details>
             <div className="spx-row-gap">
               <button type="button" className="btn btn-secondary" onClick={ask}>
                 Ask the specialist to change this
@@ -165,14 +206,18 @@ export function MemoryTab({
             </div>
           </section>
         ) : null}
-        <section aria-label="Inbox">
+        <section aria-label="Inbox" className="spx-inbox">
           <div className="spx-run-head">
             <h3>Inbox</h3>
             <span className="spx-muted spx-small">
-              {notes === null ? "…" : `${notes.length} ${notes.length === 1 ? "note" : "notes"} waiting for tonight's update`}
+              {notes === null
+                ? "…"
+                : notes.length
+                  ? `${notes.length} ${notes.length === 1 ? "note" : "notes"} waiting for the next update`
+                  : ""}
             </span>
           </div>
-          <div className="spx-notes">
+          <div className="spx-notes" tabIndex={notes && notes.length > 2 ? 0 : undefined} aria-label="Notes">
             {(notes ?? []).map((n) => (
               <div key={n.id} className={"spx-note" + (n.in_effect === true ? " is-said" : "")}>
                 <div className="spx-note-head">
@@ -181,13 +226,13 @@ export function MemoryTab({
                     {n.in_effect === true ? "In effect now" : "Waiting"}
                   </span>
                 </div>
-                <span>{n.claim}</span>
+                <span>{secondPerson(n.claim)}</span>
                 <span className="spx-muted spx-small">{noteSource(n)}</span>
               </div>
             ))}
-            {notes && !notes.length ? <div className="spx-muted spx-small">The inbox is empty.</div> : null}
+            {notes && !notes.length ? <div className="spx-empty-note">No notes waiting.</div> : null}
           </div>
-          <p className="spx-muted spx-small">
+          <p className="spx-muted spx-small spx-inbox-foot">
             Notes are held apart from memory until the nightly update weighs them. Only what you said yourself takes effect
             straight away.
           </p>

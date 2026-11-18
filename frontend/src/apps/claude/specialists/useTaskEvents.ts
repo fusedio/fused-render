@@ -68,6 +68,20 @@ export function readSpecialistList(force = false): Promise<readonly SpecialistSu
   return listReading;
 }
 
+/** A specialist's name for what a tool call named it by (its id, or its name
+ *  already), from the list this page has read. An id not in the list yet is
+ *  answered with nothing (and the list is read for next time). */
+export function specialistNameNow(key: string): string {
+  const k = (key || "").trim();
+  if (!k) return "";
+  const rows = listCache?.rows;
+  if (!rows) void readSpecialistList();
+  const hit = rows?.find((r) => r.id === k) ?? rows?.find((r) => r.name.toLowerCase() === k.toLowerCase());
+  if (hit) return hit.name;
+  // An id-shaped key (hex, 8+) is not a name to show.
+  return /^[0-9a-f-]{8,}$/i.test(k) ? "" : k;
+}
+
 /** Test seam. */
 export function setSpecialistListForTests(rows: readonly SpecialistSummary[] | null): void {
   listCache = rows ? { at: Date.now(), rows } : null;

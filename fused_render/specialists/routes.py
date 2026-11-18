@@ -59,7 +59,9 @@ def _body(body) -> dict:
 
 
 def _working(s: store.Specialist) -> bool:
-    return bool(store.live_runs(s.home))
+    """The main chat's turn is live: a run with an open turn in the home's own folder (breakouts run in their
+    workrooms), or a turn whose prompt hook fired and whose Stop has not."""
+    return history.main_turn_open(s.id) or bool(store.main_live_runs(s.home))
 
 
 def _status(s: store.Specialist, working: bool) -> str:
@@ -73,13 +75,15 @@ def _status(s: store.Specialist, working: bool) -> str:
 
 def _row(s: store.Specialist) -> dict:
     w = _working(s)
-    return {"id": s.id, "name": s.name, "subject": s.subject, "face": s.face, "status": _status(s, w), "working": w}
+    return {"id": s.id, "name": s.name, "subject": s.subject, "face": s.face, "model": s.model,
+            "status": _status(s, w), "working": w}
 
 
 def _detail(s: store.Specialist) -> dict:
+    w = _working(s)
     return {"id": s.id, "name": s.name, "subject": s.subject, "face": s.face, "model": s.model, "effort": s.effort,
             "triggers": s.triggers, "home": s.home, "connections": s.connections, "created": s.created,
-            "shipped": s.shipped, "status": _status(s, _working(s)),
+            "shipped": s.shipped, "status": _status(s, w), "working": w,
             **({} if history.available() else {"history": history.STATUS_OFF})}
 
 
@@ -89,22 +93,6 @@ def _detail(s: store.Specialist) -> dict:
 def specialists_policy(specialist: str = Query(""), kind: str = Query(""), session_id: str = Query(""),
                        tool: str = Query("")):
     return {"answer": services.policy(specialist, kind, session_id, tool)}
-
-
-@router.post(PREFIX + "/policy/grant")
-@_handled
-def specialists_policy_grant(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """The permission server, after the user approved a service call's card: one grant for that call, spent by
-    `services.call` (valid `launch.GRANT_TTL_S`). The secret is the run's `FUSED_SPECIALIST_GRANT`."""
-    guard = _require_fused(x_fused)
-    if guard:
-        return guard
-    b = _body(body)
-    ok = launch.record_grant(str(b.get("specialist") or ""), str(b.get("kind") or ""),
-                             str(b.get("session_id") or ""), str(b.get("tool") or ""), str(b.get("secret") or ""))
-    if not ok:
-        return _error("bad grant secret", 403)
-    return {"ok": True}
 
 
 # ------------------------------------------------------------------- list ---
@@ -212,7 +200,7 @@ def specialists_charter_put(spec_id: str, body: dict = Body(...), x_fused: str |
     if len(text) > hm.CHARTER_MAX:
         return _error(f"the charter is limited to {hm.CHARTER_MAX:,} characters", 400)
     hm.write_text(_charter_path(s), hm.with_imports(text))
-    history.commit(s.id, "settings: charter")
+    history.commit(s.id, "settings: charter", ["CLAUDE.md"])
     return {"text": hm.read_text(_charter_path(s)), "path": _charter_path(s)}
 
 
@@ -258,7 +246,7 @@ def specialists_skill_put(spec_id: str, name: str, body: dict = Body(...),
         first = next((ln.strip("# ").strip() for ln in text.splitlines() if ln.strip()), name)
         text = hm.skill_text(name, first[:300], text)
     hm.write_text(hm.skill_path(s.home, name), text)
-    history.commit(s.id, f"settings: skill {name}")
+    history.commit(s.id, f"settings: skill {name}", [os.path.join(".claude", "skills", name)])
     return {"name": name, "text": hm.read_text(hm.skill_path(s.home, name))}
 
 
@@ -279,7 +267,7 @@ def specialists_skill_delete(spec_id: str, name: str, x_fused: str | None = Head
         for d in dirs:
             os.rmdir(os.path.join(root, d))
     os.rmdir(folder)
-    history.commit(s.id, f"settings: delete skill {name}")
+    history.commit(s.id, f"settings: delete skill {name}", [os.path.join(".claude", "skills", name)])
     return {"ok": True}
 
 
@@ -302,7 +290,7 @@ def specialists_people_put(spec_id: str, body: dict = Body(...), x_fused: str | 
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
         return _error("'rows' must be a list of objects", 400)
     hm.write_people(s.home, rows[:500])
-    history.commit(s.id, "settings: people")
+    history.commit(s.id, "settings: people", ["people.md"])
     return {"rows": hm.people_rows(s.home), "path": os.path.join(s.home, "people.md")}
 
 
@@ -450,6 +438,7 @@ def specialists_session_tool(spec_id: str, body: dict = Body(...), x_fused: str 
         if name != "note" or kind not in ("main", "breakout"):
             return _text(f"error: no tool {name!r} here", True)
         return _note(s, kind, rec, str(b.get("session_id") or ""), args)
-    return services.call(s, kind, name, args,
-                         session_id=str(b.get("session_id") or "") or _session_id_for(s.id, kind, rec),
-                         grant_secret=str(rec.get("grant") or ""))
+    # The session and breakout are the server's own (the token's record), never the caller's word: a grant is
+    # spent only by the session whose card the user answered.
+    return services.call(s, kind, name, args, session_id=_session_id_for(s.id, kind, rec),
+                         breakout_id=str(rec.get("breakout_id") or ""))

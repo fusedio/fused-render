@@ -10,7 +10,7 @@ import { useState } from "react";
 
 import { severityLabel } from "@platform/lib/risk";
 import { cn } from "@platform/lib/utils";
-import { GateCard, type GateStatus } from "@platform/ui/GateCard";
+import { GateCard, type GateAction, type GateStatus } from "@platform/ui/GateCard";
 
 import type { ChatController } from "../protocol/controller-api";
 import {
@@ -32,6 +32,9 @@ export interface PermCardProps {
    *  param, which applies to the next spawn (T:13884-13886). */
   liveMode?: PermissionMode;
   onDecide: ChatController["decidePermission"];
+  /** SPECIALISTS: more buttons at the end of the card's own action row
+   *  ("Approve, don't ask again" on a connected service's card). */
+  moreActions?: GateAction[];
 }
 
 /**
@@ -116,7 +119,7 @@ function statusFor(
   return { cls: "deny", text: "✗ Denied" };
 }
 
-export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
+export function PermCard({ row, liveMode, onDecide, moreActions }: PermCardProps) {
   const [sent, setSent] = useState(false);
   const [threw, setThrew] = useState("");
 
@@ -212,7 +215,7 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
         disabled: posting,
         title: c.title || undefined,
         onClick: () => void send(c.decision, c.scope, c.mode),
-      }))}
+      })).flatMap((a, i) => (i === 0 && moreActions?.length ? [a, ...moreActions] : [a]))}
       status={{ tone: status.cls as GateStatus["tone"], text: status.text }}
     />
   );

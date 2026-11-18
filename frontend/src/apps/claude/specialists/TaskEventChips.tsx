@@ -3,16 +3,19 @@
 // was added · 2 entries · View", "Breakout closed · its full note is saved
 // with the Canvas specialist · Reopen", "Sent to the Canvas specialist's inbox
 // · Undo". Placed by time (`placeEvents`) after the turn they happened in.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   confirmNote,
   deleteNote,
   errorText,
   getReceipt,
+  isSpecialistDeleted,
+  listBreakouts,
   reopenBreakout,
+  type ReceiptView,
   type TaskEvent,
 } from "@platform/lib/specialists-api";
-import { openSpecialistBreakout } from "@platform/lib/specialist-breakouts";
+import { chatAnchorOf, openSpecialistBreakout } from "@platform/lib/specialist-breakouts";
 import type { Turn } from "../protocol/controller-api";
 
 /** The time a turn happened, epoch seconds, or null when it carries none:
@@ -67,13 +70,45 @@ export function placeEvents(
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/** What a pull added, counted: "2 memory entries, 1 skill". */
+export function pullCounts(ev: Pick<TaskEvent, "entries" | "skills" | "knowledge">): string {
+  const parts: string[] = [];
+  if (ev.entries) parts.push(plural(ev.entries, "memory entry", "memory entries"));
+  if (ev.knowledge) parts.push(plural(ev.knowledge, "topic file", "topic files"));
+  if (ev.skills) parts.push(plural(ev.skills, "skill", "skills"));
+  return parts.join(", ");
+}
+
+/** The general inbox ("no specialist fits") is not a specialist. */
+export function isGeneralInbox(ev: TaskEvent): boolean {
+  const id = ev.specialist?.id || "";
+  const name = (ev.specialist?.name || "").trim().toLowerCase();
+  return id === "general" || !id || name === "general" || name === "general inbox";
+}
+
+/** One event per breakout, its latest state (C5 sends one already; an older
+ *  server sent one per transition, which drew three stacked chips). */
+export function latestPerBreakout(events: readonly TaskEvent[]): TaskEvent[] {
+  const last = new Map<string, TaskEvent>();
+  for (const ev of events) {
+    if (!ev.kind.startsWith("breakout_") || !ev.breakout_id) continue;
+    const prev = last.get(ev.breakout_id);
+    if (!prev || (ev.at || 0) >= (prev.at || 0)) last.set(ev.breakout_id, ev);
+  }
+  return events.filter((ev) => !ev.kind.startsWith("breakout_") || !ev.breakout_id || last.get(ev.breakout_id) === ev);
+}
+
 /** The chip's words, without its buttons. Exported for tests. */
 export function chipText(ev: TaskEvent): string {
   const name = ev.specialist?.name || "a";
   switch (ev.kind) {
-    case "pull":
-      return `Guidance from the ${name} specialist was added · ${plural(ev.entries ?? 0, "entry", "entries")}`;
+    case "pull": {
+      const n = pullCounts(ev);
+      return `Guidance from the ${name} specialist was added${n ? ` · ${n}` : ""}`;
+    }
     case "note":
+      if (isGeneralInbox(ev)) return "Sent to the general inbox";
+      if (ev.basis === "user-said" && ev.in_effect !== true) return `Note for the ${name} specialist · The task says you stated this`;
       return `Sent to the ${name} specialist's inbox`;
     case "breakout_open":
       return `Breakout open with the ${name} specialist`;
@@ -81,6 +116,8 @@ export function chipText(ev: TaskEvent): string {
       return `Breakout closed · its full note is saved with the ${name} specialist`;
     case "breakout_discarded":
       return `Breakout with the ${name} specialist discarded · no summary`;
+    case "breakout_deleted":
+      return `Breakout with the ${name} specialist · specialist deleted`;
     case "stuck":
       return "The same step kept failing · the task was told it may offer a specialist a breakout";
     default:
@@ -92,6 +129,8 @@ export interface ChipHost {
   parentSessionId: string;
   parentFile: string;
   parentTitle?: string;
+  /** The task's folder, for file links in the breakout's replies. */
+  parentFolder?: string;
   /** Re-read the events after an action here changed them. */
   refresh: () => void;
 }
@@ -102,9 +141,82 @@ export interface ChipHost {
 export function endedBreakouts(events: readonly TaskEvent[]): ReadonlySet<string> {
   const out = new Set<string>();
   for (const ev of events) {
-    if ((ev.kind === "breakout_closed" || ev.kind === "breakout_discarded") && ev.breakout_id) out.add(ev.breakout_id);
+    if (
+      (ev.kind === "breakout_closed" || ev.kind === "breakout_discarded" || ev.kind === "breakout_deleted") &&
+      ev.breakout_id
+    )
+      out.add(ev.breakout_id);
   }
   return out;
+}
+
+/** THE GUIDANCE A PULL ADDED, as a person reads it (C5 `view`): never the raw
+ *  payload, its receipt line or its provenance braces. */
+export function ReceiptSheet({ view }: { view: ReceiptView }) {
+  const memory = view.memory ?? [];
+  const said = view.said ?? [];
+  const knowledge = view.knowledge ?? [];
+  const skills = view.skills ?? [];
+  const empty = !memory.length && !said.length && !knowledge.length && !skills.length;
+  return (
+    <div className="spx-receipt" role="region" aria-label="What the guidance added">
+      {empty ? <div className="spx-receipt-empty">Nothing from memory matched this task.</div> : null}
+      {memory.length ? (
+        <section>
+          <h4>From memory</h4>
+          <ul>
+            {memory.map((m, i) => (
+              <li key={m.id || i}>{m.text}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {said.length ? (
+        <section>
+          <h4>You said</h4>
+          <ul>
+            {said.map((m, i) => (
+              <li key={i}>{m.text}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {knowledge.length ? (
+        <section>
+          <h4>Topic knowledge</h4>
+          <ul>
+            {knowledge.map((k, i) => (
+              <li key={i}>{k.title}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {skills.length ? (
+        <section>
+          <h4>Skills</h4>
+          <ul>
+            {skills.map((k, i) => (
+              <li key={i}>
+                <span className="spx-receipt-name">{k.name}</span>
+                {k.description ? ` · ${k.description}` : ""}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+/** A receipt answer with no `view` (an older server): the readable lines of
+ *  its text only — no receipt line, no ids, no provenance braces. */
+export function viewFromText(text: string): ReceiptView {
+  const memory: { text: string }[] = [];
+  for (const raw of (text || "").split("\n")) {
+    const m = /^\s*-\s*(?:\[[^\]]*\]\s*)?(.+?)\s*(?:\{[^}]*\})?\s*$/.exec(raw);
+    if (m && m[1]) memory.push({ text: m[1] });
+  }
+  return { memory };
 }
 
 export function TaskEventChip({
@@ -112,6 +224,7 @@ export function TaskEventChip({
   host,
   ended,
   reopen = reopenBreakout,
+  records = listBreakouts,
   receipt = getReceipt,
   undoNote = deleteNote,
   useNow = confirmNote,
@@ -122,13 +235,16 @@ export function TaskEventChip({
   ended?: ReadonlySet<string>;
   // Seams for tests.
   reopen?: typeof reopenBreakout;
+  records?: typeof listBreakouts;
   receipt?: typeof getReceipt;
   undoNote?: typeof deleteNote;
   useNow?: typeof confirmNote;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [shown, setShown] = useState<string | null>(null);
+  const [shown, setShown] = useState<ReceiptView | null>(null);
+  const [gone, setGone] = useState(false);
+  const self = useRef<HTMLDivElement>(null);
   const [undone, setUndone] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const specId = ev.specialist?.id || "";
@@ -144,9 +260,12 @@ export function TaskEventChip({
     setError("");
     try {
       const r = await receipt(specId, ev.receipt_id);
-      setShown(r.text || "");
+      setShown(r.view && typeof r.view === "object" ? r.view : viewFromText(r.text || ""));
     } catch (err) {
-      setError(errorText(err));
+      if (isSpecialistDeleted(err) || (err as { status?: number })?.status === 404) {
+        setGone(true);
+        setError(`The ${name || "specialist"} specialist was deleted, so its guidance can't be shown.`);
+      } else setError(errorText(err));
     } finally {
       setBusy(false);
     }
@@ -157,6 +276,12 @@ export function TaskEventChip({
     setError("");
     try {
       const r = await reopen(specId, ev.breakout_id);
+      // The brief, for the thread's brief box (best effort: the seed's own
+      // text is the fallback).
+      const rec = await records(host.parentSessionId).then(
+        (x) => x.breakouts?.find((b) => b.id === ev.breakout_id),
+        () => undefined,
+      );
       openSpecialistBreakout({
         breakoutId: ev.breakout_id,
         specialistId: specId,
@@ -167,9 +292,15 @@ export function TaskEventChip({
         ...(host.parentTitle ? { parentTitle: host.parentTitle } : {}),
         ...(r.session_id ? { sessionId: r.session_id } : {}),
         startParams: r.start_params || {},
+        ...(rec?.brief ? { brief: rec.brief } : {}),
+        ...(host.parentFolder ? { parentFolder: host.parentFolder } : {}),
+        ...(chatAnchorOf(self.current) ? { anchor: chatAnchorOf(self.current)! } : {}),
       });
     } catch (err) {
-      setError(errorText(err));
+      if (isSpecialistDeleted(err) || (err as { status?: number })?.status === 404) {
+        setGone(true);
+        setError(`The ${name || "specialist"} specialist was deleted. Its breakout can't be reopened.`);
+      } else setError(errorText(err));
     } finally {
       setBusy(false);
     }
@@ -211,27 +342,28 @@ export function TaskEventChip({
   if (undone) {
     return (
       <div className="spx-chip is-quiet" role="status">
-        <span>Note removed from the {name || "general"} inbox</span>
+        <span>{isGeneralInbox(ev) ? "Note removed from the general inbox" : `Note removed from the ${name} specialist's inbox`}</span>
       </div>
     );
   }
   return (
-    <div className={"spx-chip-wrap"} data-spx-event={ev.kind}>
+    <div className={"spx-chip-wrap"} data-spx-event={ev.kind} ref={self}>
       <div className="spx-chip">
         <span className="spx-chip-dot" aria-hidden="true" />
-        <span className="spx-chip-text">{chipText(ev)}</span>
-        {ev.kind === "pull" && ev.receipt_id ? (
+        <span className="spx-chip-text">{chipText(saidByUser ? { ...ev, in_effect: inEffect } : ev)}</span>
+        {ev.kind === "pull" && ev.receipt_id && !gone ? (
           <button type="button" className="spx-chip-btn" onClick={() => void onView()} disabled={busy} aria-expanded={shown !== null}>
             {shown !== null ? "Hide" : "View"}
           </button>
         ) : null}
         {(ev.kind === "breakout_closed" || (ev.kind === "breakout_open" && !ended?.has(ev.breakout_id || ""))) &&
-        ev.breakout_id ? (
+        ev.breakout_id &&
+        !gone ? (
           <button type="button" className="spx-chip-btn" onClick={() => void onReopen()} disabled={busy}>
             {ev.kind === "breakout_open" ? "Open" : "Reopen"}
           </button>
         ) : null}
-        {saidByUser && inEffect ? <span className="spx-chip-said">In effect now</span> : null}
+        {saidByUser && inEffect ? <span className="spx-chip-said">It uses this from now on</span> : null}
         {saidByUser && !inEffect && ev.note_id ? (
           <button type="button" className="spx-chip-btn" onClick={() => void onUseNow()} disabled={busy}>
             Use now
@@ -248,7 +380,7 @@ export function TaskEventChip({
           {error}
         </div>
       ) : null}
-      {shown !== null ? <pre className="spx-chip-view">{shown || "(empty)"}</pre> : null}
+      {shown !== null ? <ReceiptSheet view={shown} /> : null}
     </div>
   );
 }
@@ -266,7 +398,8 @@ export function TaskEventChips({
   return (
     <div className="spx-chips">
       {events.map((ev, i) => (
-        <TaskEventChip key={`${ev.kind}:${ev.at}:${ev.receipt_id || ev.note_id || ev.breakout_id || i}`} ev={ev} host={host} {...(ended ? { ended } : {})} />
+        <TaskEventChip
+          key={ev.breakout_id ? `breakout:${ev.breakout_id}` : `${ev.kind}:${ev.at}:${ev.receipt_id || ev.note_id || i}`} ev={ev} host={host} {...(ended ? { ended } : {})} />
       ))}
     </div>
   );

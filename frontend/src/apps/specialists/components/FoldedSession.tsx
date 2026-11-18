@@ -1,11 +1,17 @@
 // AN EARLIER SESSION OF THE ONE CHAT, folded under a marker line (PRODUCT §2
 // "Clear", §8): "Monday · Set up the Q4 canvas · 22 messages · Show". Show
 // reads that session's transcript (`/api/claude-sessions/history`, the chat's
-// own read) and draws it read-only, as a plain list of turns (PLAN D.1: the
-// cheaper equivalent of a read-only chat).
-import { useState } from "react";
+// own read) and draws it read-only as chat: the user's turns as bubbles, the
+// specialist's replies through the chat's own markdown renderer. The whole
+// fold sits in a framed, dimmed box so it never reads as the live thread.
+import { lazy, Suspense, useState } from "react";
 import { fetchHistory } from "@apps/claude/protocol/history";
 import type { FoldedSession as Folded } from "@platform/lib/specialists-api";
+import { clip } from "../lib/api-extra";
+
+// The chat's markdown (marked → DOMPurify). Lazy: the chat itself loads it
+// lazily too, so a page that never opens a fold never pays for it.
+const MarkdownView = lazy(() => import("@apps/claude/ui/MarkdownView").then((m) => ({ default: m.MarkdownView })));
 
 /** "Today", "Yesterday", a weekday within the week, else a short date. */
 export function dayLabel(epochS: number, now: Date = new Date()): string {
@@ -21,12 +27,24 @@ export function dayLabel(epochS: number, now: Date = new Date()): string {
 
 export function foldedLabel(f: Folded, now?: Date): string {
   const parts = [dayLabel(f.started || f.ended, now)];
-  if (f.title) parts.push(f.title);
+  if (f.title) parts.push(clip(f.title, 60));
   if (typeof f.messages === "number") parts.push(`${f.messages} ${f.messages === 1 ? "message" : "messages"}`);
   return parts.join(" · ");
 }
 
 type Row = { role: string; text: string; key: string };
+
+/** A marker: one unbroken rule with the label and its control sitting on it. */
+export function Marker({ label, now = false, children }: { label: string; now?: boolean; children?: React.ReactNode }) {
+  return (
+    <div className={"spx-marker" + (now ? " is-now" : "")}>
+      <span className="spx-marker-label" title={label}>
+        <span className="spx-marker-text">{label}</span>
+        {children}
+      </span>
+    </div>
+  );
+}
 
 export function FoldedSession({
   folded,
@@ -41,6 +59,7 @@ export function FoldedSession({
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState("");
+  const bodyId = `spx-fold-${folded.session_id}`;
 
   const toggle = async () => {
     if (open) {
@@ -65,17 +84,14 @@ export function FoldedSession({
   };
 
   return (
-    <div className="spx-folded" data-session={folded.session_id}>
-      <div className="spx-marker">
-        <span className="spx-marker-line" aria-hidden="true" />
-        <span>{foldedLabel(folded)}</span>
-        <button type="button" className="spx-linkbtn" aria-expanded={open} onClick={() => void toggle()}>
+    <div className={"spx-folded" + (open ? " is-open" : "")} data-session={folded.session_id}>
+      <Marker label={foldedLabel(folded)}>
+        <button type="button" className="spx-linkbtn" aria-expanded={open} aria-controls={bodyId} onClick={() => void toggle()}>
           {open ? "Hide" : "Show"}
         </button>
-        <span className="spx-marker-line" aria-hidden="true" />
-      </div>
+      </Marker>
       {open ? (
-        <div className="spx-folded-body">
+        <div className="spx-folded-body" id={bodyId} aria-label="Earlier chat, read-only">
           {error ? (
             <div className="spx-error" role="alert">
               {error}
@@ -83,11 +99,19 @@ export function FoldedSession({
           ) : rows === null ? (
             <div className="spx-muted">Loading…</div>
           ) : rows.length ? (
-            rows.map((r) => (
-              <div key={r.key} className={"spx-folded-turn is-" + r.role}>
-                {r.text}
-              </div>
-            ))
+            rows.map((r) =>
+              r.role === "user" ? (
+                <div key={r.key} className="spx-folded-turn is-user">
+                  {r.text}
+                </div>
+              ) : (
+                <div key={r.key} className="spx-folded-turn is-assistant">
+                  <Suspense fallback={<div className="spx-plain">{r.text}</div>}>
+                    <MarkdownView text={r.text} className="spx-md" />
+                  </Suspense>
+                </div>
+              ),
+            )
           ) : (
             <div className="spx-muted">Nothing was said in this session.</div>
           )}

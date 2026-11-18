@@ -2,6 +2,7 @@
 // charter, the counts we keep, and delete.
 import { useEffect, useState } from "react";
 import { Field, Select, TextArea, TextInput } from "@platform/ui/field/fields";
+import { notify } from "@platform/lib/notifications";
 import {
   deleteSpecialist,
   errorText,
@@ -13,9 +14,10 @@ import {
   type SpecialistDetail,
 } from "@platform/lib/specialists-api";
 import { triggersFrom } from "./CreateSpecialist";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { EFFORTS, MODELS, MODEL_HINT, optionLabel } from "../lib/api-extra";
 
-export const MODELS = ["", "sonnet", "opus", "haiku"] as const;
-export const EFFORTS = ["", "low", "medium", "high"] as const;
+export { MODELS, EFFORTS, optionLabel, MODEL_HINT };
 
 /** The §9 counts as label/value rows. */
 export function countRows(c: Counts): [string, number][] {
@@ -50,14 +52,13 @@ export function GeneralTab({
   onSaved,
   onDeleted,
   api = DEFAULT_API,
-  confirm = (t: string) => window.confirm(t),
 }: {
   specialist: SpecialistDetail;
   onSaved: (s: SpecialistDetail) => void;
   onDeleted: () => void;
   api?: GeneralApi;
-  confirm?: (text: string) => boolean;
 }) {
+  const [confirming, setConfirming] = useState(false);
   const [name, setName] = useState(specialist.name);
   const [subject, setSubject] = useState(specialist.subject);
   const [folders, setFolders] = useState((specialist.triggers?.folders ?? []).join("\n"));
@@ -116,19 +117,16 @@ export function GeneralTab({
     }
   };
   const remove = async () => {
-    if (
-      !confirm(
-        `Delete the ${specialist.name} specialist? Its home folder moves to the trash folder of specialists; open breakouts stop.`,
-      )
-    )
-      return;
     setBusy(true);
     setError("");
     try {
       await api.deleteSpecialist(specialist.id);
+      setConfirming(false);
+      notify({ title: `${specialist.name} specialist deleted`, tone: "info" });
       onDeleted();
     } catch (e) {
       setError(errorText(e));
+      setConfirming(false);
       setBusy(false);
     }
   };
@@ -155,11 +153,11 @@ export function GeneralTab({
           <TextInput value={keywords} onChange={(e) => setKeywords(e.target.value)} />
         </Field>
         <div className="spx-row-gap">
-          <Field label="Model for its side sessions">
+          <Field label="Model" hint={MODEL_HINT}>
             <Select value={model} onChange={(e) => setModel(e.target.value)}>
               {MODELS.map((m) => (
                 <option key={m} value={m}>
-                  {m ? m[0].toUpperCase() + m.slice(1) : "Default"}
+                  {optionLabel(m)}
                 </option>
               ))}
             </Select>
@@ -168,14 +166,25 @@ export function GeneralTab({
             <Select value={effort} onChange={(e) => setEffort(e.target.value)}>
               {EFFORTS.map((m) => (
                 <option key={m} value={m}>
-                  {m ? m[0].toUpperCase() + m.slice(1) : "Default"}
+                  {optionLabel(m)}
                 </option>
               ))}
             </Select>
           </Field>
         </div>
-        <Field label="Charter" hint="What the subject is and how it behaves. Its memory is kept apart and is not edited here.">
-          <TextArea rows={8} className="spx-mono" value={charter ?? ""} disabled={charter === null} onChange={(e) => setCharter(e.target.value)} />
+        <Field
+          label="Charter"
+          hint="What it is an expert on and how it works, in its own words. It reads this at the start of every session. Its memory is kept apart and is not edited here."
+        >
+          <TextArea
+            rows={14}
+            className="spx-prose spx-charter"
+            value={charter ?? ""}
+            placeholder={charter === null ? "Loading…" : ""}
+            disabled={charter === null}
+            onChange={(e) => setCharter(e.target.value)}
+            spellCheck
+          />
         </Field>
         {error ? (
           <div className="spx-error" role="alert">
@@ -210,10 +219,19 @@ export function GeneralTab({
         )}
       </section>
       <section aria-label="Delete" className="spx-danger-zone">
-        <button type="button" className="btn btn-danger" onClick={() => void remove()} disabled={busy}>
+        <button type="button" className="btn btn-danger" onClick={() => setConfirming(true)} disabled={busy}>
           Delete this specialist
         </button>
+        <p className="spx-muted spx-small">Its home folder moves to the specialists' trash; open breakouts stop.</p>
       </section>
+      {confirming ? (
+        <ConfirmDialog
+          title={`Delete the ${specialist.name} specialist?`}
+          text="Its memory, skills and chat go with it: the home folder moves to the specialists' trash folder, and any open breakouts stop."
+          onCancel={() => setConfirming(false)}
+          onConfirm={remove}
+        />
+      ) : null}
     </div>
   );
 }

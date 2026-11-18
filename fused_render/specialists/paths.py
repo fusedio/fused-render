@@ -82,6 +82,35 @@ def app_dir(spec_id: str) -> str:
     return os.path.join(home(spec_id), APP_DIR)
 
 
+def workroom(spec_id: str, bid: str) -> str:
+    """`<home>/.specialist/breakouts/<bid>/work`: a breakout's private working folder (CONTRACT C1), not created."""
+    return os.path.join(app_dir(spec_id), "breakouts", bid, "work")
+
+
+def trashed_home(spec_id: str) -> str | None:
+    """The newest `<root>/.state/trash/<id>-<ts>/` a deleted specialist's home was moved to, else None."""
+    if not spec_id or os.sep in spec_id or spec_id.startswith("."):
+        return None
+    trash = os.path.join(state_root(), "trash")
+    try:
+        names = [n for n in os.listdir(trash) if n.startswith(spec_id + "-") and n[len(spec_id) + 1:].isdigit()]
+    except OSError:
+        return None
+    if not names:
+        return None
+    return os.path.join(trash, max(names, key=lambda n: int(n[len(spec_id) + 1:])))
+
+
+def hidden_from_tasks(cwd: str) -> bool:
+    """R6: a session whose cwd is inside the specialists root is never a task, whether the flag is on or off. A
+    string test first; then the root must exist (a user who never turned the flag on has none, so nothing they
+    have can ever be hidden). Never raises."""
+    try:
+        return bool(cwd) and is_inside_root(cwd) and os.path.isdir(root())
+    except Exception:  # noqa: BLE001 — "cannot tell" must not hide a task
+        return False
+
+
 def is_inside_root(path: str) -> bool:
     """Pure string test: is `path` inside `<root>/` (a home or root state)? No disk access, no flag check."""
     if not path:

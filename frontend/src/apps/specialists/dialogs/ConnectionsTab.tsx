@@ -1,8 +1,22 @@
 // Settings › Connections (PRODUCT §7): which connected services and local app
 // tools this specialist may use without asking. Same meaning as a bot's
-// connections; the sign-in itself is the app's one global sign-in.
+// connections; the sign-in itself is the app's one global sign-in, so a row
+// that is not signed in is drawn off, with a "Sign in" link to that page.
 import { useEffect, useState } from "react";
+import { navigateUrl } from "@platform/lib/router";
 import { errorText, getConnections, putConnections, type ServiceRow } from "@platform/lib/specialists-api";
+import { CONNECTIONS_HREF } from "../lib/api-extra";
+
+/** The service's name for a reader: its title, or its key made readable. */
+export function serviceTitle(s: Pick<ServiceRow, "key" | "title">): string {
+  const t = (s.title || "").trim();
+  if (t && t !== s.key) return t;
+  const words = s.key
+    .replace(/^[a-z]+:/i, "")
+    .replace(/[_-]+/g, " ")
+    .trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : s.key;
+}
 
 export function ConnectionsTab({
   specialistId,
@@ -41,6 +55,7 @@ export function ConnectionsTab({
     }
   };
 
+  const anyOff = (services ?? []).some((s) => !s.connected);
   return (
     <div className="spx-tab">
       <p className="spx-muted spx-small">
@@ -52,29 +67,67 @@ export function ConnectionsTab({
           {error}
         </div>
       ) : null}
-      {services === null ? <div className="spx-muted">Loading…</div> : null}
+      {services === null && !error ? <div className="spx-muted">Loading…</div> : null}
       {services && !services.length ? (
-        <div className="spx-muted">No services are connected. Connect one in Settings › Connections first.</div>
+        <div className="spx-empty-note">
+          No services are connected yet.{" "}
+          <a
+            href={CONNECTIONS_HREF}
+            className="spx-link"
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+              e.preventDefault();
+              void navigateUrl(CONNECTIONS_HREF);
+            }}
+          >
+            Connect one in Settings
+          </a>
+          .
+        </div>
       ) : null}
-      <ul className="spx-plain-list">
-        {(services ?? []).map((s) => (
-          <li key={s.key} className="spx-service-row">
-            <label className="spx-check">
-              <input
-                type="checkbox"
-                checked={s.allowed}
-                disabled={busy !== null || (!s.connected && !s.allowed)}
-                onChange={() => void toggle(s)}
-              />
-              <span className="spx-strong">{s.title}</span>
-            </label>
-            <span className="spx-muted spx-small">
-              {s.kind === "app" ? "Local app" : "Connected service"}
-              {s.connected ? "" : " · not signed in"}
-            </span>
-          </li>
-        ))}
+      <ul className="spx-plain-list spx-services">
+        {(services ?? []).map((s) => {
+          const off = !s.connected && !s.allowed;
+          const id = `spx-conn-${specialistId}-${s.key}`;
+          return (
+            <li key={s.key} className={"spx-service-row" + (!s.connected ? " is-off" : "")}>
+              <label className="spx-check" htmlFor={id}>
+                <input
+                  id={id}
+                  type="checkbox"
+                  checked={s.allowed}
+                  disabled={busy !== null || off}
+                  onChange={() => void toggle(s)}
+                />
+                <span className="spx-strong">{serviceTitle(s)}</span>
+              </label>
+              <span className="spx-service-meta spx-small">
+                <span className="spx-muted">{s.kind === "app" ? "Local app" : "Connected service"}</span>
+                {s.connected ? null : (
+                  <>
+                    <span className="spx-muted"> · not signed in · </span>
+                    <a
+                      href={CONNECTIONS_HREF}
+                      className="spx-link"
+                      aria-label={`Sign in to ${serviceTitle(s)}`}
+                      onClick={(e) => {
+                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                        e.preventDefault();
+                        void navigateUrl(CONNECTIONS_HREF);
+                      }}
+                    >
+                      Sign in
+                    </a>
+                  </>
+                )}
+              </span>
+            </li>
+          );
+        })}
       </ul>
+      {anyOff ? (
+        <p className="spx-muted spx-small">Sign in once in the app's Connections settings; then allow the service here.</p>
+      ) : null}
     </div>
   );
 }

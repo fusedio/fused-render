@@ -1,4 +1,4 @@
-// THE RIGHT COLUMN (PRODUCT §8; mock-up Main.dc.html): Learned last night
+// THE RIGHT COLUMN (PRODUCT §8; mock-up Main.dc.html): the latest update
 // (already in effect; each item has Revert; See all), Waiting for you (drafts
 // to people: Review and send, Discard), Inbox (count, View), and at the
 // bottom a quiet "In your tasks". Breakouts are not listed or openable here.
@@ -14,12 +14,12 @@ import {
   errorText,
   getPanel,
   revertChange,
-  revertMessage,
   sendDraft,
   type ChangeItem,
   type Draft,
   type SpecialistPanel,
 } from "@platform/lib/specialists-api";
+import { revertFallback, revertable, secondPerson, whenText } from "../lib/api-extra";
 
 export const PANEL_POLL_MS = 30_000;
 
@@ -51,6 +51,7 @@ export function SidePanel({
   sendToChat,
   onOpenSettings,
   refreshKey = 0,
+  onClose,
   api = DEFAULT_API,
 }: {
   specialistId: string;
@@ -59,6 +60,8 @@ export function SidePanel({
   onOpenSettings: (tab: "learned" | "memory") => void;
   /** Bumped by the page to re-read now. */
   refreshKey?: number;
+  /** The narrow layout shows the panel over the chat; this closes it. */
+  onClose?: () => void;
   api?: PanelApi;
 }) {
   const [panel, setPanel] = useState<SpecialistPanel | null>(null);
@@ -94,7 +97,7 @@ export function SidePanel({
     setError("");
     try {
       const r = await api.revertChange(specialistId, run, item.id);
-      if (!sendToChat(r.message || revertMessage(item, run))) {
+      if (!sendToChat(r.message || revertFallback(item))) {
         setError("The chat is not ready yet. Try Revert again in a moment.");
         return;
       }
@@ -142,7 +145,12 @@ export function SidePanel({
   const inbox = panel?.inbox?.count ?? 0;
 
   return (
-    <aside className="spx-side" aria-label="What changed">
+    <aside className="spx-side" id={`spx-side-${specialistId}`} aria-label="Updates">
+      {onClose ? (
+        <button type="button" className="spx-pill spx-side-close" onClick={onClose}>
+          Close
+        </button>
+      ) : null}
       {error ? (
         <div className="spx-error" role="alert">
           {error}
@@ -150,7 +158,7 @@ export function SidePanel({
       ) : null}
       <section className="spx-side-sec" aria-labelledby={`spx-learned-${specialistId}`}>
         <div className="spx-side-head">
-          <h2 id={`spx-learned-${specialistId}`}>Learned last night</h2>
+          <h2 id={`spx-learned-${specialistId}`}>Latest update</h2>
           {learned && learned.total > 0 ? (
             <button type="button" className="spx-linkbtn" onClick={() => onOpenSettings("learned")}>
               See all {learned.total}
@@ -159,20 +167,25 @@ export function SidePanel({
         </div>
         {learned && learned.items.length ? (
           <>
-            <div className="spx-muted spx-small">Already in effect. Revert anything that looks wrong.</div>
+            <div className="spx-muted spx-small">
+              {learned.at ? `${whenText(learned.at)} · ` : ""}Already in effect. Revert anything that looks wrong.
+            </div>
             {learned.items.map((item) => {
               const reverted = item.state === "reverted";
-              const pending = item.state === "reverting" || requested.has(item.id);
+              const changed = item.state === "changed";
+              const pending = item.state === "reverting" || (requested.has(item.id) && revertable(item.state));
               return (
                 <div key={item.id} className="spx-item">
-                  <span className={reverted ? "spx-struck" : ""}>{item.text}</span>
+                  <span className={reverted ? "spx-struck" : ""}>{secondPerson(item.text)}</span>
                   <div className="spx-item-foot">
                     <span className={"spx-kind " + kindClass(item.kind)}>{item.kind}</span>
                     {reverted ? (
                       <span className="spx-small spx-warn">Reverted</span>
+                    ) : changed ? (
+                      <span className="spx-small spx-muted">Changed since</span>
                     ) : pending ? (
                       <span className="spx-small spx-muted">Revert asked in the chat</span>
-                    ) : (
+                    ) : !revertable(item.state) ? null : (
                       <button
                         type="button"
                         className="spx-pill"
@@ -219,7 +232,7 @@ export function SidePanel({
         <h2 id={`spx-inbox-${specialistId}`}>Inbox</h2>
         <div className="spx-item-foot">
           <span className="spx-small">
-            {inbox === 0 ? "No notes waiting" : `${inbox} ${inbox === 1 ? "note" : "notes"} waiting for tonight's update`}
+            {inbox === 0 ? "No notes waiting" : `${inbox} ${inbox === 1 ? "note" : "notes"} waiting for the next update`}
           </span>
           <button type="button" className="spx-linkbtn" onClick={() => onOpenSettings("memory")}>
             View

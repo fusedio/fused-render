@@ -27,6 +27,8 @@ from fused_render.specialists.counts import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
+# C3: the frontend recognises the send request by this prefix; tests pin it.
+SEND_DRAFT_PREFIX = "Review and send this draft to "
 SEND_DRAFT = ("Review and send this draft to {name} through {service} ({handle}). Show me the exact text first, then "
               "send it with the service tool; I will approve the send.\n\nSubject: {subject}\n\n{text}")
 STATUSES = ("waiting", "sending", "sent", "discarded", "closed")

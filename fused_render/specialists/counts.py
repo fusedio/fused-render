@@ -2,7 +2,7 @@
 shares (`read_json`, `write_json`, `file_lock`).
 
     <home>/.specialist/counts.json
-    {"breakouts_opened", "repeat_breakouts", "pulls", "pulls_confirmed", "corrections_received",
+    {"breakouts_opened", "repeat_breakouts", "pulls", "pulls_confirmed", "pulls_unrelated", "corrections_received",
      "notes_by_source": {"task", "breakout", "main", "reviewer", "user", "nightly"}}
 
 Nothing acts on them: they are for the user to see whether the specialist is working. `bump` never raises (a
@@ -20,7 +20,7 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-KEYS = ("breakouts_opened", "repeat_breakouts", "pulls", "pulls_confirmed", "corrections_received")
+KEYS = ("breakouts_opened", "repeat_breakouts", "pulls", "pulls_confirmed", "pulls_unrelated", "corrections_received")
 SOURCES = ("task", "breakout", "main", "reviewer", "user", "nightly")
 FILE = "counts.json"
 

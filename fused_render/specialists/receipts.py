@@ -204,11 +204,33 @@ def _last_activity(rec: dict) -> float | None:
         return None
 
 
+def _task_live(rec: dict, live: dict) -> bool:
+    """The task session of `rec` has a run with a turn open now (working, or waiting on a card: the turn stays
+    open while a permission card waits). `live` caches the scan per working folder for one `due_for_review`."""
+    sid, cwd = rec.get("session_id") or "", rec.get("cwd") or ""
+    if not sid or not cwd:
+        return False
+    try:
+        from fused_render.claude_agent import agent_module
+
+        agent = agent_module()
+        folder = agent._workdir(cwd)
+        if folder not in live:
+            live[folder] = set()
+            for run in agent._live_runs_in(folder):
+                live[folder] |= set(run.get("sessions") or ())
+        return sid in live[folder]
+    except Exception:  # noqa: BLE001 — cannot tell: the idle rule alone decides, as before
+        return False
+
+
 def due_for_review(now: float) -> list[tuple[str, dict]]:
-    """(specialist id, receipt) for every receipt whose review is pending and whose task has been idle
-    `REVIEW_IDLE_S` (by its transcript's last activity), oldest pull first."""
+    """(specialist id, receipt) for every receipt whose review is pending, whose task has been idle
+    `REVIEW_IDLE_S` (by its transcript's last activity) and whose task run is not live now (a task waiting on a
+    card writes nothing to its transcript, yet it is mid-turn), oldest pull first."""
     idle = review_idle_s()
     out = []
+    live: dict = {}
     for spec_id in _spec_ids():
         for rec in all_for(spec_id):
             review = rec.get("review") if isinstance(rec.get("review"), dict) else {}
@@ -217,7 +239,7 @@ def due_for_review(now: float) -> list[tuple[str, dict]]:
             last = _last_activity(rec)
             if last is None:
                 last = float(rec.get("at") or 0)
-            if now - last >= idle:
+            if now - last >= idle and not _task_live(rec, live):
                 out.append((spec_id, rec))
     return sorted(out, key=lambda p: float(p[1].get("at") or 0))
 

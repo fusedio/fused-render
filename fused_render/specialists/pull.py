@@ -107,3 +107,54 @@ def compose(spec, trigger: str, match: dict | None, receipt_id: str = "") -> tup
         "If this guidance turns out wrong or incomplete, send a note with specialist_note.",
     ]
     return "\n".join(parts), entries, said_ids
+
+
+def counts(spec) -> dict:
+    """`{"skills": n, "knowledge": n}` a pull of `spec` lists (the pull chip's numbers, CONTRACT C5)."""
+    return {"skills": len(_skills(spec.home)), "knowledge": len(_knowledge(spec.home))}
+
+
+_MEM_LINE = re.compile(r"^- \[(m-[0-9a-f]{4,8})\]\s*(.*?)\s*(?:\{([^{}]*)\})?\s*$")
+_SAID_LINE = re.compile(r"^- \[n-[a-z0-9-]+\]\s*(?:\([^()]*\)\s*)?(.*?)\s*$")
+_BASIS = re.compile(r"(?:^|;)\s*basis\s*=\s*([a-z-]+)", re.I)
+_SECTION = re.compile(r"^--- (.+?) ---$")
+
+
+def view(text: str) -> dict:
+    """What a pull gave, as plain product UI (CONTRACT C5 receipt `view`): read back from the PULL text the task
+    was given, never re-read from the home (it may have changed since):
+    `{"memory":[{"id","text","basis"}], "said":[{"text"}], "knowledge":[{"title"}], "skills":[{"name","description"}]}`.
+    No ids of notes, no provenance braces, no paths."""
+    out: dict = {"memory": [], "said": [], "knowledge": [], "skills": []}
+    section = ""
+    for raw in str(text or "").splitlines():
+        ln = raw.rstrip()
+        m = _SECTION.match(ln)
+        if m:
+            name = m.group(1)
+            section = ("memory" if name == "memory" else "said" if name.startswith("said by the user")
+                       else "knowledge" if name.startswith("topic knowledge") else "skills"
+                       if name.startswith("skills") else "")
+            continue
+        if not ln.startswith("- ") or not section:
+            continue
+        if section == "memory":
+            m = _MEM_LINE.match(ln)
+            if m:
+                b = _BASIS.search(m.group(3) or "")
+                out["memory"].append({"id": m.group(1), "text": m.group(2).replace("‒‒‒ ", "--- "),
+                                      "basis": b.group(1).lower() if b else ""})
+        elif section == "said":
+            m = _SAID_LINE.match(ln)
+            if m and m.group(1):
+                out["said"].append({"text": m.group(1).replace("‒‒‒ ", "--- ")})
+        elif section == "knowledge":
+            title = ln[2:].rsplit(" — ", 1)[0].strip()
+            if title:
+                out["knowledge"].append({"title": title})
+        elif section == "skills":
+            body = ln[2:].rsplit(" — ", 1)[0]
+            name, _, desc = body.partition(":")
+            if name.strip():
+                out["skills"].append({"name": name.strip(), "description": desc.strip()})
+    return out

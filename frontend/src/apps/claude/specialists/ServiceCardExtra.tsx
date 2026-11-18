@@ -5,7 +5,8 @@
 // live session's next call of that service is allowed by the policy endpoint.
 // It is the ONLY thing that allows a service (the chat's own "Always approve"
 // does not). In a breakout it is offered for reads only: a write always asks.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import type { GateAction } from "@platform/ui/GateCard";
 import {
   errorText,
   getConnections,
@@ -33,6 +34,7 @@ export function ServiceCardExtra({
   tool,
   actions,
   kind = "main",
+  card,
   load = getConnections,
   save = putConnections,
 }: {
@@ -41,6 +43,9 @@ export function ServiceCardExtra({
   tool: string;
   actions: Pick<CardActions, "decidePermission">;
   kind?: "main" | "breakout";
+  /** The approval card itself, drawn with "Approve, don't ask again" inside
+   *  its own action row (`moreActions`); absent, the button stands alone. */
+  card?: (moreActions: GateAction[] | undefined) => ReactNode;
   // Seams for tests.
   load?: typeof getConnections;
   save?: typeof putConnections;
@@ -66,9 +71,11 @@ export function ServiceCardExtra({
   }, [specialistId, load]);
 
   const key = services ? serviceKeyForTool(tool, services) : null;
-  if (!key) return null;
-  if (kind === "breakout" && !isKnownRead(tool, services ?? [])) return null;
-  const title = services?.find((s) => s.key === key)?.title || key;
+  const row = key ? services?.find((s) => s.key === key) : undefined;
+  // Offered only where it does something: a service not yet allowed, and in a
+  // breakout only for a known read (a write always asks there).
+  const offer = !!key && !row?.allowed && !done && !(kind === "breakout" && !isKnownRead(tool, services ?? []));
+  const title = row?.title || key || "";
 
   const approveAlways = async () => {
     setBusy(true);
@@ -84,6 +91,36 @@ export function ServiceCardExtra({
     }
   };
 
+  if (card) {
+    const more: GateAction[] | undefined = offer
+      ? [
+          {
+            key: "spx-approve-always",
+            text: "Approve, don't ask again",
+            kind: "default",
+            disabled: busy,
+            title: `Allow this call, and let the specialist use ${title} without asking from now on`,
+            onClick: () => void approveAlways(),
+          },
+        ]
+      : undefined;
+    return (
+      <div className="spx-service-card">
+        {card(more)}
+        {done || error ? (
+          <div className="spx-service-extra">
+            {done ? <span role="status">{title} is allowed for this specialist from now on.</span> : null}
+            {error ? (
+              <span className="spx-chip-error" role="alert">
+                {error}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+  if (!key || (!offer && !done)) return null;
   return (
     <div className="spx-service-extra">
       {done ? (

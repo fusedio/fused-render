@@ -154,8 +154,12 @@ def pull_for(spec, *, session_id: str, run_id: str, cwd: str, trigger: str, matc
         threading.Thread(target=receipts.fill_lines, args=(spec.id, rid), daemon=True,
                          name="specialist-receipt-lines").start()
     _bump(spec.id, "pulls")
+    try:
+        n = pull.counts(spec)
+    except Exception:  # noqa: BLE001
+        n = {"skills": 0, "knowledge": 0}
     task_events.add(session_id, "pull", spec.id, spec.name, receipt_id=rid, entries=len(entries),
-                    trigger=trigger, session_id=session_id)
+                    trigger=trigger, session_id=session_id, skills=n["skills"], knowledge=n["knowledge"])
     return rec
 
 
@@ -296,17 +300,76 @@ def tool_offer_result(body=Body(None), x_fused: str | None = Header(None)):
 
 
 # ------------------------------------------------------------------- hook ---
-def _signature(error) -> str:
-    first = str(error or "").strip().splitlines()[0] if str(error or "").strip() else ""
+_EXIT_LINE = re.compile(r"^exit code (-?\d+)$", re.I)
+#: Commands whose exit status 1 with nothing on stderr means "found nothing" / "differs" / "false", not a failure.
+_BENIGN_CMDS = frozenset({"grep", "egrep", "fgrep", "rg", "ag", "ack", "git-grep", "diff", "cmp", "test", "[", "[[",
+                          "which", "command", "type", "pgrep"})
+_SEGMENTS = re.compile(r"\|\||&&|[|;]")
+
+
+def _error_line(error) -> str:
+    """The error's first meaningful line (a Bash failure's `Exit code N` line is skipped when more follows),
+    digits folded, at most 160 characters."""
+    lines = [ln.strip() for ln in str(error or "").splitlines() if ln.strip()]
+    rest = [ln for ln in lines if not _EXIT_LINE.match(ln)]
+    first = (rest or lines or [""])[0]
     return re.sub(r"\d+", "#", first)[:160]
 
 
-def _stuck(session_id: str, cwd: str, tool: str, error) -> str:
-    """Count this failure; the STUCK_NUDGE text the first time a signature reaches the threshold, else ""."""
+def _input_key(tool_input) -> str:
+    """The call's input, normalised: a command's words, else the path / pattern / url, else the sorted JSON."""
+    if not isinstance(tool_input, dict):
+        return ""
+    for k in ("command", "file_path", "notebook_path", "path", "pattern", "url", "query"):
+        v = tool_input.get(k)
+        if isinstance(v, str) and v.strip():
+            return " ".join(v.split())[:300]
+    try:
+        import json
+
+        return json.dumps(tool_input, sort_keys=True, ensure_ascii=False, default=str)[:300]
+    except (TypeError, ValueError):
+        return ""
+
+
+def _benign(tool: str, tool_input, error) -> bool:
+    """A Bash call that merely found nothing: exit code 1, nothing else said, and a search / compare / test
+    command in it (`grep` with no match, `diff` of two different files, `test -f` of a missing file)."""
+    if tool != "Bash" or not isinstance(tool_input, dict):
+        return False
+    lines = [ln.strip() for ln in str(error or "").splitlines() if ln.strip()]
+    if len(lines) != 1:
+        return False
+    m = _EXIT_LINE.match(lines[0])
+    if not m or m.group(1) != "1":
+        return False
+    for seg in _SEGMENTS.split(str(tool_input.get("command") or "")):
+        words = seg.split()
+        while words and ("=" in words[0] and not words[0].startswith("=")):  # FOO=bar grep …
+            words = words[1:]
+        if words and words[0] in ("!", "sudo", "env", "time", "command", "xargs"):
+            words = words[1:]
+        if words and (os.path.basename(words[0]) in _BENIGN_CMDS
+                      or (os.path.basename(words[0]) == "git" and len(words) > 1 and words[1] in ("grep", "diff"))):
+            return True
+    return False
+
+
+def _signature(tool: str, tool_input, error) -> str:
+    """"Identical" failure: the same tool, the same normalised input and the same error line."""
+    return f"{tool}|{_input_key(tool_input)}|{_error_line(error)}"
+
+
+def _stuck(session_id: str, cwd: str, tool: str, error, tool_input=None) -> str:
+    """Count this failure; the STUCK_NUDGE text the first time a signature reaches the threshold, else "".
+    Identical failures (`_signature`) count toward N; any failure of the tool counts toward the N + 2
+    different-errors rule; a benign exit (`_benign`) counts toward neither."""
     from fused_render.specialists import counts, paths, store, task_events
 
-    sig = _signature(error)
-    key = f"{tool}|{sig}"
+    if _benign(tool, tool_input, error):
+        return ""
+    sig = _error_line(error)
+    key = _signature(tool, tool_input, error)
     path = os.path.join(paths.state_root(), "stuck", session_id + ".json")
     now = time.time()
     window, n = stuck_window_s(), stuck_n()
@@ -372,11 +435,23 @@ def counts_read(path: str):
     return counts.read_json(path, {})
 
 
-def session_kind(spec, session_id: str) -> str:
-    """main or breakout for a session in `spec`'s home: the records, else the run's own meta, else breakout (the
-    stricter one: its guard runs)."""
+def _in_workroom(spec, cwd: str) -> bool:
+    if not cwd:
+        return False
+    from fused_render.specialists import paths
+
+    root = os.path.join(os.path.normpath(spec.home), paths.APP_DIR, "breakouts")
+    p = os.path.normpath(os.path.abspath(cwd))
+    return p.startswith(root + os.sep)
+
+
+def session_kind(spec, session_id: str, cwd: str = "") -> str:
+    """main or breakout for a session of `spec`: a session working in a breakout's workroom is a breakout (C1);
+    otherwise the records, else the run's own meta, else breakout (the stricter one: its guard runs)."""
     from fused_render.specialists import chat
 
+    if _in_workroom(spec, cwd):
+        return "breakout"
     kind = ""
     try:
         kind = chat.kind_of(spec.id, session_id)
@@ -385,13 +460,13 @@ def session_kind(spec, session_id: str) -> str:
     return kind or _kind_from_runs(spec.home, session_id) or "breakout"
 
 
-def _turn_started(spec_id: str, session_id: str) -> None:
+def _turn_started(spec_id: str, session_id: str, cwd: str = "") -> None:
     from fused_render.specialists import history, store
 
     spec = store.get(spec_id)
     before = getattr(history, "before_turn", None)
     if spec is not None and callable(before):
-        before(spec_id, session_kind(spec, session_id), session_id)
+        before(spec_id, session_kind(spec, session_id, cwd), session_id)
 
 
 _PRUNED = {"at": 0.0}
@@ -412,13 +487,13 @@ def _prune_maybe() -> None:
         logger.debug("specialists: prune", exc_info=True)
 
 
-def _turn_ended(spec_id: str, session_id: str) -> None:
+def _turn_ended(spec_id: str, session_id: str, cwd: str = "") -> None:
     from fused_render.specialists import history, store
 
     spec = store.get(spec_id)
     if spec is None:
         return
-    history.after_turn(spec_id, session_kind(spec, session_id), session_id)
+    history.after_turn(spec_id, session_kind(spec, session_id, cwd), session_id)
     for mod in ("changes", "drafts"):
         try:
             import importlib
@@ -448,9 +523,9 @@ def hook(body=Body(None), x_fused: str | None = Header(None)):
     if home_id:
         # A specialist's own session: a turn's start (snapshot for the guard) and end (history, changes, drafts).
         if event == "prompt":
-            _turn_started(home_id, sid)
+            _turn_started(home_id, sid, cwd)
         elif event == "stop":
-            _turn_ended(home_id, sid)
+            _turn_ended(home_id, sid, cwd)
         return {}
     if event == "prompt":
         prompt = body.get("prompt") if isinstance(body.get("prompt"), str) else ""
@@ -475,7 +550,7 @@ def hook(body=Body(None), x_fused: str | None = Header(None)):
             signals.record(sid, "interrupt", {"tool": tool})
             return {}
         signals.record(sid, "failure", {"tool": tool, "error": str(body.get("error") or "")[:300]})
-        nudge = _stuck(sid, cwd, tool, body.get("error"))
+        nudge = _stuck(sid, cwd, tool, body.get("error"), body.get("tool_input"))
         return {"additionalContext": nudge} if nudge else {}
     return {}
 
@@ -511,15 +586,26 @@ def breakouts_of_task(parent_session_id: str = Query("")):
 @router.get(PREFIX + "/{spec_id}/receipts/{rid}")
 @_handled
 def receipt_view(spec_id: str, rid: str):
-    from fused_render.specialists import receipts, store
+    """What a pull gave: the receipt, its exact text and `view` (plain product UI, CONTRACT C5). A deleted
+    specialist's receipts are read from its trashed home, so a task's View keeps answering."""
+    from fused_render.specialists import paths, pull, receipts, store
 
-    if store.get(spec_id) is None:
-        raise _NotFound("This specialist no longer exists.")
-    rec = receipts.get(spec_id, rid)
+    rec = receipts.get(spec_id, rid) if store.get(spec_id) is not None else None
+    deleted = False
+    if rec is None and store.get(spec_id) is None:
+        trashed = paths.trashed_home(spec_id)
+        if trashed and receipts.RID_RE.match(rid or ""):
+            from fused_render.specialists import counts
+
+            got = counts.read_json(os.path.join(trashed, paths.APP_DIR, "receipts", rid + ".json"), None)
+            rec, deleted = (got if isinstance(got, dict) else None), True
+        if rec is None and not trashed:
+            raise _NotFound("This specialist no longer exists.")
     if rec is None:
         raise _NotFound("no such receipt")
     text = rec.get("text") or ""
-    return {"receipt": {k: v for k, v in rec.items() if k != "text"}, "text": text}
+    return {"receipt": {k: v for k, v in rec.items() if k != "text"}, "text": text, "view": pull.view(text),
+            **({"deleted": True} if deleted else {})}
 
 
 # -------------------------------------------------------------- breakouts ---
@@ -543,15 +629,26 @@ def breakout_create(spec_id: str, body=Body(None), x_fused: str | None = Header(
 
     rec = breakouts.create(spec, parent=body.get("parent"), brief=body.get("brief"),
                            origin=str(body.get("origin") or ""), request_id=str(body.get("request_id") or ""))
-    return {"breakout_id": rec["id"], "home": spec.home, "seed": breakouts.seed(rec),
+    # "home" is the folder the card's chat runs in: the breakout's workroom (CONTRACT C1).
+    return {"breakout_id": rec["id"], "home": breakouts.cwd(spec.id, rec["id"]), "seed": breakouts.seed(rec),
             "start_params": breakouts.start_params(rec), "name": spec.name}
 
 
+DELETED = {"error": "This specialist was deleted.", "reason": "deleted"}
+
+
 def _breakout_action(spec_id: str, bid: str, x_fused, fn):
+    """close-prompt / closed / discard / reopen. A specialist that was deleted answers 410 `DELETED` (C5), so the
+    card can say so and be dismissed."""
     if (bad := _require_fused(x_fused)) is not None:
         return bad
+    from fused_render.specialists import breakouts, paths, store
+
+    if store.get(spec_id) is None and paths.trashed_home(spec_id):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(DELETED, status_code=410)
     spec = _store_spec(spec_id)
-    from fused_render.specialists import breakouts
 
     if breakouts.get(spec.id, bid) is None:
         raise _NotFound("no such breakout")

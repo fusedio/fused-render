@@ -4144,6 +4144,18 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
         # "✓ Allowed" for a tool claude never ran — a permission UI telling the
         # user their grant took effect when it provably did not.
         payload = {"decision": "expired"}
+    if payload.get("decision") == "allow" \
+            and str(tool or "").startswith("mcp__specialist_services__"):
+        # A specialist session's service card (docs/specialists CONTRACT C2):
+        # the server records the one-time grant `services.call` spends, from
+        # the user's own decision and BEFORE it is written, so the call it lets
+        # through can never arrive first. Off `sys.modules`: never imported.
+        hooks = sys.modules.get("fused_render.specialists.agent_hooks")
+        try:
+            if hooks is not None:
+                hooks.grant_from_decision(run_id, request_id)
+        except Exception as exc:  # noqa: BLE001 — the call then refuses, never runs
+            sys.stderr.write("specialists: grant not recorded: %r\n" % (exc,))
     _write_decision(perm_dir, request_id, payload)
     # Report what is on disk, never what was clicked — the losing half of a
     # double-click must not show a verdict the tool will never see — and read it
@@ -8253,6 +8265,62 @@ def _live_runs_in(folder: str):
             sessions = {s for s in (_run_own_session(run_dir, meta),
                                     str(meta.get("resumed_from") or "")) if s}
             yield {"run_id": name, "backend": _meta_backend(meta), "sessions": sessions}
+
+
+def _live_runs_under(folder: str):
+    """`_live_runs_in` for `folder` AND every folder below it (a specialist's
+    home and its breakouts' workrooms, docs/specialists CONTRACT C1), in ONE
+    scan of the runs tree: lexical, so a target is matched by its absolute
+    spelling only."""
+    root = os.path.abspath(folder).rstrip(os.sep)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        target = meta.get("file", "") if isinstance(meta, dict) else ""
+        if not target:
+            continue
+        w = os.path.abspath(_workdir(target))
+        if w != root and not w.startswith(root + os.sep):
+            continue
+        if not _alive(run_dir):
+            continue
+        turn_open, _tasks_pending = _turn_state_fold(run_dir, {}, partial=True)
+        if turn_open:
+            sessions = {s for s in (_run_own_session(run_dir, meta),
+                                    str(meta.get("resumed_from") or "")) if s}
+            yield {"run_id": name, "backend": _meta_backend(meta), "sessions": sessions}
+
+
+def _hosts_in(folder: str) -> list:
+    """Run ids whose claude process is still up (turn open or idle between
+    turns) with `folder` as their working folder. A specialist breakout's
+    Close / Discard ends these (docs/specialists CONTRACT, fix wave item 11)."""
+    workdir = os.path.abspath(folder)
+    real = os.path.realpath(folder)
+    out = []
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return out
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        target = meta.get("file", "") if isinstance(meta, dict) else ""
+        if target and _same_workdir(target, workdir, real) and _alive(run_dir):
+            out.append(name)
+    return out
 
 
 def _live_session_in(folder: str) -> dict:

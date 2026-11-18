@@ -199,3 +199,21 @@ def test_parse_review_rejects_garbage():
     p = reviewer.parse_review("outcome: gap\nentries: m-aaaa, m-bbbb\nkind: weird\nbasis: no\nclaim: c\n\nev1\nev2")
     assert p["kind"] == "case" and p["basis"] == "guess" and p["entries"] == ["m-aaaa", "m-bbbb"]
     assert p["evidence"] == "ev1\nev2"
+
+
+def test_unrelated_failure_is_a_count_not_a_note(monkeypatch):
+    """C5: a pulled task that failed for a reason outside the specialist's subject adds no note."""
+    s = make_specialist()
+    calls = stub_side(monkeypatch, answer="<<<REVIEW\noutcome: unrelated\nentries: none\nkind: gap\nbasis: verified\n"
+                                          "claim: The gh CLI was missing.\nREVIEW>>>")
+    reviews = {}
+    _fake_receipts(monkeypatch, reviews)
+    before = _turns()
+    rec = _receipt(before)
+    res = reviewer.review_one(s.id, rec, turns=before + [_ok_tool(status="error")])
+    assert res["outcome"] == "unrelated" and inbox.undigested(s.id) == []
+    assert reviews[rec["id"]]["state"] == "done" and reviews[rec["id"]]["outcome"] == "unrelated"
+    assert counts.get(s.id)["pulls_unrelated"] == 1 and counts.get(s.id)["pulls_confirmed"] == 0
+    prompt = calls[0]["prompt"]
+    assert "unrelated = what went wrong" in prompt and "When in doubt, unrelated." in prompt
+    assert "unused = your guidance was relevant" in prompt

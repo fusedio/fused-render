@@ -9,6 +9,7 @@
 // EVERY string below goes in as a text node. The one exception is a plan
 // (D248), which is markdown the model wrote for a human and goes through
 // MarkdownView like the reply itself.
+import { specialistToolLabel } from "../specialists/tool-labels";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/shadcn/ui/collapsible";
@@ -487,7 +488,10 @@ function ChipHeaderView({
   status,
   model,
 }: ChipHeaderProps & { model: SubagentChipModel }) {
-  const pretty = seg.orphan ? model.title : prettyToolName(raw);
+  const pretty = seg.orphan
+    ? model.title
+    : // The five specialist tools say what they do (docs/specialists R1).
+      (specialistToolLabel(raw, seg.input, { done: seg.status !== "running" }) ?? prettyToolName(raw));
   // A COPILOT TOOL WE HAVE NO NAME FOR arrives under its free-text ACP title
   // (D14) and draws as a plain chip; its ACP `kind` ("execute", "edit",
   // "fetch", …) is the one classifier it has, so it rides as the chip's hint

@@ -231,13 +231,27 @@ def update(spec_id: str, **fields) -> Specialist:
     hm.write_json(os.path.join(s.home, paths.MANIFEST), s.manifest())
     from fused_render.specialists import history
 
-    history.commit(s.id, "settings: " + ", ".join(sorted(fields)) if fields else "settings")
+    history.commit(s.id, "settings: " + ", ".join(sorted(fields)) if fields else "settings",
+                   [paths.MANIFEST, "triggers.json"])
     return s
 
 
 def live_runs(home: str) -> list[dict]:
-    """Agent runs with a turn open in this home: `[{run_id, backend, sessions}]` (agent._live_runs_in). [] when
-    the agent module is not importable or anything fails: callers use it to refuse or skip, never to crash."""
+    """Agent runs with a turn open anywhere in this home, its breakouts' workrooms included:
+    `[{run_id, backend, sessions}]` (agent._live_runs_under). [] when the agent module is not importable or
+    anything fails: callers use it to refuse or skip, never to crash."""
+    try:
+        from fused_render.claude_agent import agent_module
+
+        agent = agent_module()
+        scan = getattr(agent, "_live_runs_under", None) or agent._live_runs_in
+        return list(scan(home))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def main_live_runs(home: str) -> list[dict]:
+    """Agent runs with a turn open in the home's own folder: the main chat (breakouts run in their workrooms)."""
     try:
         from fused_render.claude_agent import agent_module
 

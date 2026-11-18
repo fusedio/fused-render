@@ -17,7 +17,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("pull", "note", "breakout_open", "breakout_closed", "breakout_discarded", "stuck")
+KINDS = ("pull", "note", "breakout_open", "breakout_closed", "breakout_discarded", "breakout_deleted", "stuck")
+BREAKOUT_KINDS = ("breakout_open", "breakout_closed", "breakout_discarded", "breakout_deleted")
 _SID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _LOCK = threading.Lock()
 
@@ -47,6 +48,8 @@ def event(kind: str, spec_id: str, name: str = "", **fields) -> dict:
     out = {"kind": kind, "at": time.time(), "specialist": {"id": spec_id, "name": name or _name(spec_id)},
            "receipt_id": "", "entries": 0, "trigger": "", "note_id": "", "undoable": False,
            "breakout_id": "", "session_id": ""}
+    if kind == "pull":
+        out.update(skills=0, knowledge=0)  # what the pull listed besides memory (CONTRACT C5)
     if kind == "note":
         # The note's basis, and whether it is in effect now (said.md): a model-claimed user-said note waits for
         # the user, so the chip can offer "Use now".
@@ -95,7 +98,31 @@ def for_session(session_id: str) -> list[dict]:
     """Every TaskEvent of task session `session_id`, oldest first (index rows + the inbox's notes)."""
     if not valid_session(session_id):
         return []
-    events = [r for r in recorded(session_id) if r.get("kind") != "note"]
+    events: list[dict] = []
+    by_bid: dict[str, dict] = {}
+    for r in recorded(session_id):
+        kind, bid = r.get("kind"), r.get("breakout_id")
+        if kind == "note":
+            continue
+        if kind in BREAKOUT_KINDS and bid:
+            # One event per breakout (CONTRACT C5), at the place it opened, whose kind is its current state.
+            ev = by_bid.get(bid)
+            if ev is None:
+                by_bid[bid] = ev = dict(r)
+                events.append(ev)
+            else:
+                ev["kind"] = kind
+                for k in ("note_id", "session_id"):
+                    if r.get(k):
+                        ev[k] = r[k]
+            continue
+        events.append(r)
+    for bid, ev in by_bid.items():
+        state = _breakout_state((ev.get("specialist") or {}).get("id") or "", bid)
+        if state:
+            ev["kind"] = state[0]
+            if state[1]:
+                ev["session_id"] = state[1]
     try:
         from fused_render.specialists import inbox
 
@@ -119,6 +146,29 @@ def for_session(session_id: str) -> list[dict]:
     except Exception:  # noqa: BLE001 — the inbox is another stream's; chips without notes still answer
         logger.debug("specialists: notes for task events", exc_info=True)
     return sorted(events, key=lambda e: float(e.get("at") or 0))
+
+
+_STATE_KIND = {"open": "breakout_open", "closed": "breakout_closed", "discarded": "breakout_discarded",
+               "deleted": "breakout_deleted"}
+
+
+def _breakout_state(spec_id: str, bid: str) -> tuple[str, str] | None:
+    """(event kind of the breakout's current state, its session id) from its record; `breakout_deleted` when its
+    specialist is gone; None when it cannot be told (the recorded events stand)."""
+    try:
+        from fused_render.specialists import breakouts, store
+
+        if not spec_id:
+            return None
+        if store.get(spec_id) is None:
+            return "breakout_deleted", ""
+        rec = breakouts.get(spec_id, bid)
+        if rec is None:
+            return None
+        kind = _STATE_KIND.get(str(rec.get("status") or ""))
+        return (kind, str(rec.get("session_id") or "")) if kind else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 PRUNE_AFTER_S = 30 * 86400

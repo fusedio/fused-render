@@ -9,9 +9,9 @@
 //   Edit brief     the three fields become editable; Open breakout sends the
 //                  edited brief, which is what the specialist sees.
 //   Keep trying    decide deny.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { createBreakout, errorText, type Brief } from "@platform/lib/specialists-api";
-import { openSpecialistBreakout } from "@platform/lib/specialist-breakouts";
+import { chatAnchorOf, openSpecialistBreakout } from "@platform/lib/specialist-breakouts";
 import type { CardActions } from "../ui/CardStack";
 import type { PermissionRow } from "../protocol/types";
 import { unansweredReasonOf } from "../protocol/unanswered";
@@ -21,6 +21,7 @@ export interface OfferHost {
   parentSessionId: string;
   parentFile: string;
   parentTitle?: string;
+  parentFolder?: string;
   runId?: string;
   /** Re-read the task's events (the breakout_open chip). */
   refresh?: () => void;
@@ -66,6 +67,7 @@ export function OfferCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const resolved = !!row.decision;
+  const self = useRef<HTMLElement>(null);
 
   const open = async () => {
     const b = { problem: brief.problem.trim(), tried: brief.tried.trim(), look_at: brief.look_at.trim() };
@@ -102,6 +104,9 @@ export function OfferCard({
         ...(host.parentTitle ? { parentTitle: host.parentTitle } : {}),
         seed: made.seed,
         startParams: made.start_params || {},
+        brief: b,
+        ...(host.parentFolder ? { parentFolder: host.parentFolder } : {}),
+        ...(chatAnchorOf(self.current) ? { anchor: chatAnchorOf(self.current)! } : {}),
       });
       host.refresh?.();
     } catch (err) {
@@ -151,7 +156,7 @@ export function OfferCard({
   );
 
   return (
-    <section className={"spx-offer" + (resolved ? " is-resolved" : "")} aria-label={`Hand this to the ${name} specialist?`} data-perm-id={row.id}>
+    <section ref={self} className={"spx-offer" + (resolved ? " is-resolved" : "")} aria-label={`Hand this to the ${name} specialist?`} data-perm-id={row.id}>
       <div className="spx-offer-who">
         <span className="spx-chip-dot" aria-hidden="true" />
         {name} specialist
