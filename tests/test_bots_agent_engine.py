@@ -1346,23 +1346,6 @@ def test_expert_chat_card_denied_then_approved(server, fake_cli, monkeypatch, tm
     assert any(e["text"] == "Denied; the expert will try something else." for e in bot.events)
 
 
-def test_a_declined_command_does_not_refuse_another_that_begins_alike(server, fake_cli, monkeypatch, tmp_path):
-    """The card's label cuts a command at 120 characters; the refusal is remembered by the whole command, so a
-    different one with the same beginning still reaches the user (it was answered "denied earlier" unseen)."""
-    bot = expert_bot(tmp_path)
-    head = "python -c 'print(1)' " + "x" * 130
-    t = start(bot, [_perm("Bash", command=head + " --one"), _perm("Bash", command=head + " --two"),
-                    _perm("Bash", command=head + "  --one"), {"result": "done"}], monkeypatch)
-    first = bot.wait_event("approval")
-    bot.say("no")
-    second = bot.wait_event("approval", pred=lambda ev: ev["seq"] != first["seq"])
-    assert second and second["detail"] == first["detail"]  # the same label, another command
-    bot.say("yes")
-    finish(t)
-    assert _answer(fake_cli, 1)["behavior"] == "allow"
-    assert "DENIED EARLIER" in _answer(fake_cli, 2)["message"] and bot.roles().count("approval") == 2
-
-
 def test_a_rebuilt_expert_session_keeps_the_newest_exchanges(tmp_path):
     """No summary call for an expert: the note is the previous note plus the digest, and what the rollover keeps
     is its END (the previous note alone could fill the cap and push every recent exchange out)."""

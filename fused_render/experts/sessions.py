@@ -299,8 +299,6 @@ def _rows_dir(bot) -> str:
 
 
 def _save(bot, row: dict) -> None:
-    if getattr(bot, "deleted", False):
-        return  # deleted while this session ran: a late row would make `<folder>/.fused/expert/` again (state_dir)
     store.write_json(os.path.join(_rows_dir(bot), row["id"] + ".json"), row)
 
 
@@ -333,8 +331,6 @@ def _left_path(bot) -> str:
 def _mark_left(bot) -> None:
     """memory.md as the writing session that just ended left it (`edited_by_hand`). Called only when that session
     changed it: one that changed nothing (a chat "hi") must not clear a hand edit's note."""
-    if getattr(bot, "deleted", False):
-        return  # as `_save`
     store.write_json(_left_path(bot), {"sha256": _sha(store.memory(bot)), "at": time.time()})
 
 

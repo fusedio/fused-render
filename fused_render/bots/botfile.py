@@ -1150,8 +1150,7 @@ def _write_skills(b, members: list[tuple[str, bytes]], warnings: list[str]) -> N
     so a failure while writing leaves the old folder whole. A `*.md` file the package lacks is gone afterwards;
     anything else in the folder (not a playbook: export never ships it) is carried over. A playbook with no
     trigger or no steps is still written (it never runs until edited) and said in a warning."""
-    from fused_render.bots.bot import Bot, is_expert
-    expert = is_expert(getattr(b, "meta", None) or {})
+    from fused_render.bots.bot import Bot
     d = b.skills_dir
     parent = os.path.dirname(d)
     if not members and not os.path.lexists(d):
@@ -1166,10 +1165,7 @@ def _write_skills(b, members: list[tuple[str, bytes]], warnings: list[str]) -> N
             if n not in keep:
                 continue
             _title, trigger, body = Bot._parse_skill(raw.decode("utf-8", errors="replace"))
-            if expert:  # a reference file the expert reads by its path: no trigger to match, nothing "runs"
-                if not body:
-                    warnings.append(f"skill {n}: it has no text")
-            elif not trigger or not body:
+            if not trigger or not body:
                 warnings.append(f"playbook {n}: it has no {'trigger' if not trigger else 'steps'}; it never runs until you add one")
             with open(os.path.join(tmp, n + ".md"), "xb") as f:
                 f.write(raw)

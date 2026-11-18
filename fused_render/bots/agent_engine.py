@@ -1709,10 +1709,7 @@ def _expert_permission(bot, sess: Turn, args: dict, name: str, inp: dict):
 
 def _permission_card(bot, sess: Turn, args: dict, name: str, inp: dict, preview: str, rule, why: str):
     """The approval card for one built-in call and its answer on the permission wire. None on Stop."""
-    # A shell command is remembered whole: its label is cut to 120 characters, and two commands that begin alike
-    # would share one refusal (the second answered "denied earlier" without the user ever seeing it).
-    denied = ("Bash", " ".join(str(inp.get("command") or "").split())) if name == "Bash" else preview
-    if denied in sess.denied:
+    if preview in sess.denied:
         bot.emit("note", f"Not asking again: the user already declined to {preview}.")
         return _permission_answer(False, args, f"DENIED EARLIER by the user: {preview}. Do not retry it; do something else "
                                                "or finish and say what you could not do.")
@@ -1733,7 +1730,7 @@ def _permission_card(bot, sess: Turn, args: dict, name: str, inp: dict, preview:
                 bot.inbox[:0] = raw
         return _permission_answer(True, args)
     bot.emit("system", f"Denied; {'the expert' if sess.is_expert else 'Super Bot'} will try something else.")
-    sess.denied.add(denied)
+    sess.denied.add(preview)
     why_not = f' They said: "{said}".' if said and said.lower() not in ("deny", "no", "n") else ""
     return _permission_answer(False, args, f"DENIED by the user: {preview}.{why_not} Do not retry it; do something else "
                                            "or finish and say what you could not do." + "".join(f"\n{n}" for n in notes))

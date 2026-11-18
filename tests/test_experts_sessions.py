@@ -857,18 +857,6 @@ def test_how_to_run_is_stated_once_and_the_rest_is_the_skill(expert, tmp_path, m
     assert store.run_note(expert) == "" and "run UDFs" not in agent_engine._expert_message(expert, "hi", past=[], conv={"session_id": "s"})[0]
 
 
-def test_a_session_that_ends_after_its_expert_was_deleted_writes_nothing(expert, monkeypatch):
-    """Deleting an expert removes its folder; a side session still running then must not make
-    `<folder>/.fused/expert/sessions/` again with its final row."""
-    def gone(bot, prompt, write):
-        bot.deleted = True
-        shutil.rmtree(store.expert_dir(bot))
-        return {"ok": True, "answer": "late", "transcript": []}
-    monkeypatch.setattr(sessions, "harness", gone)
-    row = sessions.ask(expert, "q")
-    assert row["status"] == "done" and not os.path.exists(store.expert_dir(expert))
-
-
 def test_a_redirected_memory_file_or_scratch_folder_is_not_written_without_a_card(expert, tmp_path, monkeypatch):
     """`free_write` answers the chat's edits of memory.md and the scratch folder without a card. When either is
     a symlink to somewhere outside the expert's folder, the place it points at is not one of the two."""

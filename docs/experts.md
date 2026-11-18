@@ -116,7 +116,6 @@ row with status `error`.
   spawns and registers the process in `_PROCS` in one step under `_GUARD`, so a harness is either never spawned or
   tracked before `shutdown` takes its snapshot: no `claude` process outlives the app. One ended by a shutdown
   reports `CLOSED` (not a failed attempt, §9).
-  A session whose expert was deleted meanwhile saves no row (`_save`: it would make the removed folder again).
 - **The prompts** of an ask, a task-learn and a dream, and a fresh chat session's message (§7), state the absolute
   paths: "Your folder is <dir>; your memory is <dir>/memory.md." (`store.where`), so the harness never guesses
   where memory.md is, followed by "You may also read: <granted folders>." when there are any: instructions and
