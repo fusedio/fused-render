@@ -116,6 +116,11 @@ export interface FoldStretch {
   secs: number;
 }
 
+/** The seeded greeting that carries the "Connect your phone" door to Settings > Phone: Super Bot's only. An expert's
+ *  greeting is a `seed` line too (bot.py `create`), but the phone is Super Bot's alone (docs/bots.md). */
+export const offersPhone = (e: BotEvent, kind: string | undefined): boolean =>
+  e.role === "done" && e.source === "seed" && kind === "super";
+
 /** The `done` / `error` bubble a task ends on. A retried `error` ("Model call failed", no `trace`: the engine carries
  *  on) is a step, not an end; only one with a `trace` (process death, three strikes) closes the task. Cards (hand-off
  *  result, build notice) and the seeded greeting are not closers. */
