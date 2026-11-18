@@ -31,7 +31,7 @@ describe("MemoryPanel", () => {
     expect(out).toContain("edit the file by hand");
     expect(out).toContain(">task in maps (claude)<");
     expect(out).toContain(">“Always pull first”<");
-    expect(out).toContain(">30 min ago<");
+    expect(out).toContain(">30m ago<");
     expect(out.indexOf("task in maps")).toBeLessThan(out.indexOf("Always pull first"));
   });
   test("no hand note when not edited; empty file and no changes say so", () => {

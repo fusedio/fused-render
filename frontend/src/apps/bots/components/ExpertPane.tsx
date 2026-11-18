@@ -13,8 +13,8 @@
 // the banner.
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { expertApi, type Bot, type ExpertChange, type ExpertMemory, type ExpertSession } from "../lib/api";
-import { changedMemory, costLabel, diffDoc, duration, kindLabel, memoryUsage, newestFirst, originOf, roleTag, statusOf, turnIsMarkdown } from "../lib/expert";
-import { fmtAgo, fmtWhen } from "../lib/format";
+import { agoShort, changedMemory, diffDoc, duration, kindLabel, memoryUsage, newestFirst, originOf, roleTag, statusOf, turnIsMarkdown } from "../lib/expert";
+import { fmtWhen, fmtWhenShort } from "../lib/format";
 import { revealWithin } from "../lib/scroll";
 import { errMsg } from "../state/store";
 import { MdDoc } from "./MdDoc";
@@ -103,7 +103,7 @@ export function SessionHead({ s, nowMs }: { s: ExpertSession; nowMs?: number }) 
         <span className={`xp-kind k-${s.kind}`}>{kindLabel(s.kind)}</span>
         <span className={`xp-st tone-${st.tone}`}><span className="xp-dot" aria-hidden="true" />{st.text}</span>
         {changedMemory(s) ? <span className="xp-chg" title="This session changed memory.md">changed memory</span> : null}
-        <span className="xp-when" title={fmtWhen(s.started)}>{fmtAgo(s.started, nowMs)}{took ? ` · ${took}` : ""}{costLabel(s.cost_usd)}</span>
+        <span className="xp-when" title={fmtWhen(s.started)}>{agoShort(s.started, nowMs, fmtWhenShort)}{took ? ` · ${took}` : ""}</span>
       </span>
       {origin ? <span className="xp-origin">{origin}</span> : null}
     </>
@@ -136,7 +136,7 @@ export function MemoryPanel({ memory, err, onChange, nowMs }: {
                 <button type="button" className="xp-change" onClick={() => onChange(c)} title="Open this session and its diff">
                   <span className={`xp-kind k-${c.kind}`}>{kindLabel(c.kind)}</span>
                   <span className="xp-origin">{origin}</span>
-                  <span className="xp-when" title={fmtWhen(c.started)}>{fmtAgo(c.started, nowMs)}</span>
+                  <span className="xp-when" title={fmtWhen(c.started)}>{agoShort(c.started, nowMs, fmtWhenShort)}</span>
                 </button>
               </li>
             );

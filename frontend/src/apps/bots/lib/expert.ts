@@ -2,7 +2,7 @@
 // status, time), the memory size line, and a unified diff of memory.md read as rows of a document (added, removed,
 // a removed + added pair, unchanged context). No fetching, no React.
 import type { ExpertMemory, ExpertSession, ExpertTrigger } from "./api";
-import { fmtBytes, fmtDur } from "./format";
+import { fmtBytes } from "./format";
 
 /** The kinds as the pane names them; an unknown kind shows as sent. */
 export const KIND_LABEL: Record<string, string> = { chat: "chat", ask: "ask", "task-learn": "task-learn", dream: "dream" };
@@ -51,8 +51,23 @@ export function originOf(kind: string, t: ExpertTrigger | null | undefined): str
 /** Did this session change memory.md? (The change log is the sessions where this holds.) */
 export const changedMemory = (s: Pick<ExpertSession, "memory_diff">): boolean => !!(s.memory_diff || "").trim();
 
-/** How long it ran ("12 s", "3 min"); "" while running or under a second. */
-export const duration = (s: Pick<ExpertSession, "started" | "ended">): string => (s.ended && s.started ? fmtDur(s.ended - s.started) : "");
+/** How long it ran, short ("12s", "3m", "2h"): the card's one line has little room. "" while running or under a second. */
+export function duration(s: Pick<ExpertSession, "started" | "ended">): string {
+  const sec = s.ended && s.started ? Math.round(s.ended - s.started) : 0;
+  if (sec < 1) return "";
+  return sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.round(sec / 60)}m` : `${Math.round(sec / 3600)}h`;
+}
+
+/** When a session started, short ("now", "2m ago", "3h ago", "4d ago"; older than a week as the date `older` gives). */
+export function agoShort(ts: number, nowMs: number | undefined, older: (ts: number, nowMs?: number) => string): string {
+  if (!ts) return "";
+  const sec = Math.max(0, (nowMs ?? Date.now()) / 1000 - ts);
+  if (sec < 60) return "now";
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  if (sec < 7 * 86400) return `${Math.floor(sec / 86400)}d ago`;
+  return older(ts, nowMs);
+}
 
 /** Newest first (the server sends them so; sorted again here so a merged list cannot come out of order). */
 export const newestFirst = (rows: readonly ExpertSession[]): ExpertSession[] => [...rows].sort((a, b) => (b.started || 0) - (a.started || 0));
@@ -121,10 +136,6 @@ export function memoryUsage(m: Pick<ExpertMemory, "lines" | "bytes" | "limit_lin
   const b = m.limit_bytes ? `${fmtBytes(bytes)} of ${fmtBytes(m.limit_bytes)}` : fmtBytes(bytes);
   return { text: `${l} · ${b}`, over: (!!m.limit_lines && lines > m.limit_lines) || (!!m.limit_bytes && bytes > m.limit_bytes) };
 }
-
-/** What the harness reported the session cost, " · $0.03"; "" when it reported nothing. */
-export const costLabel = (usd: number | null | undefined): string =>
-  typeof usd === "number" && usd > 0 ? ` · $${usd < 0.01 ? usd.toFixed(3) : usd.toFixed(2)}` : "";
 
 /** Whether a transcript line is the expert's own text, rendered as markdown; "prompt", "tool" and "refused" lines (and
  *  any other role) stay plain preformatted text. */

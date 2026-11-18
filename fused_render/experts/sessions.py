@@ -391,15 +391,18 @@ def diff(before: str, after: str) -> str:
                                         "memory.md (before)", "memory.md (after)", n=1))
 
 
-def run(bot, kind: str, prompt: str, trigger=None) -> dict:
-    """One side session, start to saved row. Never raises: a failure is a row with status `error`."""
+def run(bot, kind: str, prompt: str, trigger=None, gen=None) -> dict:
+    """One side session, start to saved row. Never raises: a failure is a row with status `error`. `gen`: the
+    shutdown generation the session was QUEUED in (a dream queued by `after_write`); one queued before a shutdown
+    is refused even when it only gets here after a `reopen`."""
     if kind not in KINDS:
         raise ValueError(f"unknown session kind {kind!r}")
     rec = _new_row(kind, trigger)
     writes = kind in WRITERS
     gate = store.write_lock(bot) if writes else _ASKS
     with _GUARD:
-        shut, gen = _STATE["closed"], _STATE["gen"]  # admitted in this generation
+        shut = _STATE["closed"] or (gen is not None and gen != _STATE["gen"])
+        gen = _STATE["gen"] if gen is None else gen  # admitted in this generation
     if shut or not gate.acquire(timeout=_timeout() if writes else ASK_WAIT_S):
         rec.update(status="error", ended=time.time(), error=CLOSED if shut or closed() else BUSY)
         _save(bot, rec)
@@ -445,7 +448,7 @@ def run(bot, kind: str, prompt: str, trigger=None) -> dict:
         gate.release()
         _save(bot, rec)
     if writes and kind != "dream":
-        after_write(bot)
+        after_write(bot, gen)
     return rec
 
 
@@ -473,32 +476,35 @@ def over_limit(bot) -> bool:
     return lines > LIMIT_LINES or nbytes > LIMIT_BYTES
 
 
-def dream(bot) -> dict:
+def dream(bot, gen=None) -> dict:
     lines, nbytes = size(bot)
-    prompt = (f"Today is {today()}. {store.where(bot)}\nYour memory.md is over its limit:{lines} lines, {nbytes} bytes; the limit is "
+    prompt = (f"Today is {today()}. {store.where(bot)}\nYour memory.md is over its limit: {lines} lines, {nbytes} bytes; the limit is "
               f"{LIMIT_LINES} lines or {LIMIT_BYTES} bytes, whichever comes first.\n"
               "Compact it now: merge lines that say the same thing (add their counts, keep the newest date), drop "
               "old lines with low counts, and get it clearly under the limit. Keep the format and the two "
               "headings. Edit memory.md and nothing else, then say in one line what you did.")
-    return run(bot, "dream", prompt, {"lines": lines, "bytes": nbytes})
+    return run(bot, "dream", prompt, {"lines": lines, "bytes": nbytes}, gen)
 
 
-def after_write(bot) -> bool:
+def after_write(bot, gen=None) -> bool:
     """Called after any session that may have written memory (chat, task-learn): over the limit, queue ONE
-    dream session in the background. True when it queued one."""
+    dream session in the background. True when it queued one. `gen`: the generation the calling session ran in;
+    a session from before a shutdown queues nothing after a `reopen`, and the dream carries the generation it was
+    queued in, so one whose thread only starts after a shutdown and reopen is refused by `run`."""
     try:
         if not over_limit(bot):
             return False
     except Exception:  # noqa: BLE001
         return False
     with _GUARD:
-        if _STATE["closed"] or bot.id in _DREAMING:
+        if _STATE["closed"] or bot.id in _DREAMING or (gen is not None and gen != _STATE["gen"]):
             return False
         _DREAMING.add(bot.id)
+        queued_in = _STATE["gen"]
 
     def body():
         try:
-            dream(bot)
+            dream(bot, queued_in)
         except Exception:  # noqa: BLE001
             logger.warning("expert %s: dream failed", bot.id, exc_info=True)
         finally:
@@ -518,6 +524,19 @@ def reopen() -> None:
     """Let sessions start again (scheduler.start; a test after a shutdown)."""
     with _GUARD:
         _STATE["closed"] = False
+
+
+def begin_shutdown() -> list:
+    """Close and signal every harness WITHOUT waiting: the first thing a quit does for the experts (bots
+    registry.shutdown, before the browsers take their share of the budget), so no harness is left unsignalled if
+    the rest of the quit runs out of time. Returns the processes signalled; `shutdown` does the waiting."""
+    with _GUARD:
+        _STATE["closed"] = True
+        _STATE["gen"] += 1
+        procs = list(_PROCS)
+    for p in procs:
+        _signal(p, signal.SIGTERM)
+    return procs
 
 
 def shutdown(budget_s: float = 4.0) -> None:

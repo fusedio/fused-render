@@ -1092,6 +1092,14 @@ def shutdown(budget_s: float = 8.0) -> None:
             b.stop()
         except Exception:  # noqa: BLE001
             logger.warning("bot %s: stop failed", getattr(b, "id", "?"), exc_info=True)
+    # The experts' harnesses are signalled now, before the Chromes take their share of the budget: a quit that
+    # runs out of time below must not leave one unsignalled (`_end_experts` at the end does the waiting).
+    xs = sys.modules.get("fused_render.experts.sessions")
+    if xs is not None:
+        try:
+            xs.begin_shutdown()
+        except Exception:  # noqa: BLE001
+            logger.warning("signalling the experts' sessions failed", exc_info=True)
     try:
         n = browsers.stop_all(budget_s)
     except Exception:  # noqa: BLE001

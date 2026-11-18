@@ -478,7 +478,8 @@ def test_bots_shutdown_ends_the_experts_before_the_claim_goes(monkeypatch):
     finally:
         with sessions._GUARD:
             sessions._PROCS.discard(proc)
-    assert seen == ["kill", ("claim", True)]
+    # Signalled first thing (begin_shutdown, before the Chromes), again when waited for; the claim goes last.
+    assert seen[0] == "kill" and seen[-1] == ("claim", True) and set(seen[:-1]) == {"kill"}
     registry.reset_for_tests()  # a later test must be able to run sessions again
     assert sessions.closed() is False
 
@@ -634,3 +635,40 @@ def test_a_cut_short_slice_records_only_what_it_was_given(expert, monkeypatch, t
     assert rec["size"] == slice_size and rec["turns"] == 2
     assert learn.run_pass()["sessions"] == 1  # turn 3 is still due
     assert "USER| turn 3" in calls[-1]["prompt"] and "turn 1" not in calls[-1]["prompt"]
+
+
+def test_a_dream_queued_before_a_shutdown_is_refused_after_a_reopen(expert, monkeypatch):
+    """A dream carries the generation it was queued in: its thread starting only after a shutdown and a reopen
+    must not run, and an old session finishing after the reopen queues nothing."""
+    ran = []
+    monkeypatch.setattr(sessions, "harness", lambda bot, prompt, write: ran.append(1) or {"ok": True, "answer": "", "transcript": []})
+    sessions.reopen()
+    with sessions._GUARD:
+        old = sessions._STATE["gen"]
+    sessions.shutdown()
+    sessions.reopen()
+    row = sessions.dream(expert, old)
+    assert row["status"] == "error" and row["error"] == sessions.CLOSED and not ran
+    with open(store.memory_path(expert), "a", encoding="utf-8") as f:
+        f.write("- [1 · 2026-11-18] filler\n" * (sessions.LIMIT_LINES + 5))
+    assert sessions.over_limit(expert)
+    assert sessions.after_write(expert, old) is False       # a session from before the shutdown
+    assert sessions.dream(expert)["status"] == "done" and ran  # a new one runs
+
+
+def test_begin_shutdown_signals_without_waiting(monkeypatch):
+    sent = []
+
+    class P:
+        pid = 1
+    p = P()
+    monkeypatch.setattr(sessions, "_signal", lambda proc, sig: sent.append((proc, sig)))
+    with sessions._GUARD:
+        sessions._PROCS.add(p)
+    try:
+        assert sessions.begin_shutdown() == [p]
+        assert sent == [(p, sessions.signal.SIGTERM)] and sessions.closed()
+    finally:
+        with sessions._GUARD:
+            sessions._PROCS.discard(p)
+        sessions.reopen()

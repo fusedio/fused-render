@@ -285,7 +285,8 @@ from where it was left, only its new part.
 (`registry.owns()`), holds the bots workspace claim, and gets the machine-wide lease `experts-scheduler`
 (`tasks_store.try_acquire_lease`, released after the tick): only one server process on a machine reads the
 transcripts. Shutdown stops the timer and kills every side session's harness: the bots `registry.shutdown` does it
-(`_end_experts`, `scheduler.shutdown` on what is left of its budget, at most 5 s) right before it releases the bots
+(`_end_experts`, `scheduler.shutdown` on what is left of its budget, at most 5 s; the harnesses are already
+signalled at the start of the quit, `sessions.begin_shutdown`, before the Chromes use their share) right before it releases the bots
 workspace claim, so no harness still writes `memory.md` once another server can take the claim; the server's later
 `_shutdown_experts` handler is then a no-op.
 
@@ -345,9 +346,10 @@ column (`ExpertPane.tsx`) has no browser; in its place two tabs:
 - **Memory**: `memory.md` rendered as markdown, read-only, its path, its size against the limit, a note when it was
   edited by hand since a session last wrote it, and Changes (the sessions that changed it); a change opens on the
   Sessions tab.
-- **Sessions**: the rows, newest first, with kind (chat, ask, task-learn, dream), origin, time, status, cost and a
-  "changed memory" tag when the row has a diff. A row opens in place to its error if any, its memory diff, and its
-  prompt and transcript.
+- **Sessions**: the rows, newest first, with kind (chat, ask, task-learn, dream), origin, status, and when and how
+  long in short form ("2m ago · 12s"). A row that changed memory carries a "changed memory" tag; on a card narrower
+  than 340 px the tag is left out so the line never wraps. The row's cost is stored (`cost_usd`) but not shown. A row
+  opens in place to its error if any, its memory diff, and its prompt and transcript.
 
 A memory diff is never shown as raw diff text (`lib/expert.ts diffDoc`, `MdDoc.tsx`): the file headers and hunk
 marks are dropped and each line's markdown is rendered, added lines on a green ground with `+`, removed lines on

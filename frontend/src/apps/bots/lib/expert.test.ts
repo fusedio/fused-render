@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExpertSession } from "./api";
-import { changedMemory, costLabel, diffDoc, duration, kindLabel, memoryUsage, newestFirst, oneLine, originOf, settingsWords, skillFormWords, statusOf, turnIsMarkdown } from "./expert";
+import { agoShort, changedMemory, diffDoc, duration, kindLabel, memoryUsage, newestFirst, oneLine, originOf, settingsWords, skillFormWords, statusOf, turnIsMarkdown } from "./expert";
 
 const row = (p: Partial<ExpertSession>): ExpertSession => ({ id: "s", kind: "ask", started: 100, ended: 112, status: "done", memory_diff: "", ...p });
 const DIFF = "--- a/memory.md\n+++ b/memory.md\n@@ -1,2 +1,2 @@\n ## Works\n-- [1 · 2026-11-16] Pull first.\n+- [2 · 2026-11-17] Pull first.\n+- [1 · 2026-11-17] New fact.\n";
@@ -86,12 +86,17 @@ describe("rows", () => {
     expect(rows.map((s) => s.id)).toEqual(["a", "b", "c"]);  // not sorted in place
   });
   test("duration and cost", () => {
-    expect(duration(row({}))).toBe("12 s");
+    expect(duration(row({}))).toBe("12s");
     expect(duration(row({ ended: null }))).toBe("");
-    expect(costLabel(0.034)).toBe(" · $0.03");
-    expect(costLabel(0.004)).toBe(" · $0.004");
-    expect(costLabel(undefined)).toBe("");
-    expect(costLabel(0)).toBe("");
+    expect(duration(row({ started: 100, ended: 100 + 190 }))).toBe("3m");
+    expect(duration(row({ started: 100, ended: 100 + 2 * 3600 }))).toBe("2h");
+    const now = 1_000_000_000, older = () => "12 Nov";
+    expect(agoShort(0, now, older)).toBe("");
+    expect(agoShort(now / 1000 - 20, now, older)).toBe("now");
+    expect(agoShort(now / 1000 - 125, now, older)).toBe("2m ago");
+    expect(agoShort(now / 1000 - 3 * 3600, now, older)).toBe("3h ago");
+    expect(agoShort(now / 1000 - 4 * 86400, now, older)).toBe("4d ago");
+    expect(agoShort(now / 1000 - 9 * 86400, now, older)).toBe("12 Nov");
   });
 });
 

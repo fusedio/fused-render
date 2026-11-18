@@ -671,7 +671,7 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .bots-page .xp-pending { padding: 8px 10px; }
 /* Kind tag, status, the "changed memory" chip: one line, the origin under it. */
-.bots-page .xp-line { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; white-space: nowrap; }
+.bots-page .xp-line { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; white-space: nowrap; overflow: hidden; }
 .bots-page .xp-kind { flex: none; padding: 0 6px; border-radius: 6px; background: var(--raised); color: var(--text); font-size: 10.5px; }
 .bots-page .xp-st { flex: none; display: inline-flex; align-items: center; gap: 5px; }
 .bots-page .xp-st.tone-ok { color: var(--ok); } .bots-page .xp-st.tone-err { color: var(--err); }
@@ -681,7 +681,10 @@ div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .xp-when { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; }
 .bots-page .xp-origin { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .bots-page :is(.xp-rows, .xp-changes) { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.bots-page .xp-row { min-width: 0; border: 1px solid var(--line); border-radius: 8px; }
+.bots-page .xp-row { min-width: 0; border: 1px solid var(--line); border-radius: 8px; container-type: inline-size; }
+/* A narrow card has no room for the "changed memory" tag beside kind, status and time: it goes first, and the line
+   never wraps or pushes the time out (the opened card still shows the diff). */
+@container (max-width: 340px) { .bots-page .xp-chg { display: none; } }
 .bots-page .xp-row.open { margin-bottom: 4px; }
 .bots-page :is(button.xp-head, .xp-head.static, button.xp-change) { display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 0; padding: 7px 10px;
   border-radius: 7px; background: transparent; color: var(--muted); text-align: left; font-size: 12px; font-weight: inherit; line-height: 1.45; }
