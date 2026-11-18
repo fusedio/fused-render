@@ -591,9 +591,15 @@ button.tasks-caret,
    the + popover), a favourite's is window B (the favourite's card, a bot's).
    The other window is not what the reader is about to replace, and stays
    lit. */
-body:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .claude-rail-peek:not(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after,
-body:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after,
-body:has(.hint-panel.is-row.is-on[data-row-window="b"]:not(.is-passing)) .claude-rail-peek:is(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after {
+/* SAID ON THE ROOT, NEVER ASKED WITH `body:has(.hint-panel…)` (hints.ts
+   `markRowDim`; Akshil, 2026-11-18: the app "feels a bit slow, especially when
+   moving around and resizing the tasks"): a `:has()` anchored on body, html or
+   :root with a descendant after it restyles the WHOLE document on every
+   element inserted or removed anywhere. hints.ts writes the dimmed window on
+   the root element — only while a row is up and not passing. */
+:root[data-rail-row-dim="a"] .claude-rail-peek:not(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after,
+:root[data-rail-row-dim="a"] .modal-popover .modal-dialog.new-task-dialog::after,
+:root[data-rail-row-dim="b"] .claude-rail-peek:is(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after {
   opacity: 1;
 }
 .hint-row {

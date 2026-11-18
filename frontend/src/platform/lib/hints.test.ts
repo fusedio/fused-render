@@ -327,6 +327,32 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     expect(hide.slice(0, hide.indexOf("\n}"))).toContain('panel.classList.remove("is-passing");');
   });
 
+  it("says which window is dimmed on the root element — while a row is up and not passing, and at no other time (2026-11-18)", () => {
+    const mark = fn("markRowDim");
+    expect(SRC).toContain('const ROW_DIM_ATTR = "data-rail-row-dim";');
+    // Up, a row, and the reader's own: all three, read off the panel.
+    expect(mark).toContain(
+      'const dims = !!panel && panel.classList.contains("is-on") && panel.classList.contains("is-row") && !panel.classList.contains("is-passing");',
+    );
+    expect(mark).toContain('const win = dims ? panel!.getAttribute("data-row-window") : null;');
+    // Written only when it changes: a pointer move over the same ring shows
+    // the same row again, and must cost no restyle.
+    expect(mark).toContain("if (root.hasAttribute(ROW_DIM_ATTR)) root.removeAttribute(ROW_DIM_ATTR);");
+    expect(mark).toContain("if (root.getAttribute(ROW_DIM_ATTR) !== win) root.setAttribute(ROW_DIM_ATTR, win);");
+    // Every place the three facts change says so: the row coming up, the row
+    // going, and the passing mark lifting under a pointer that moved.
+    const body = (name: string) => {
+      const from = SRC.slice(SRC.indexOf(name));
+      return from.slice(0, from.indexOf("\n}"));
+    };
+    const show = body("function show(");
+    expect(show.indexOf("markRowDim();")).toBeGreaterThan(show.indexOf('p.classList.add("is-on");'));
+    const hide = body("export function hideHint");
+    expect(hide.indexOf("markRowDim();")).toBeGreaterThan(hide.indexOf('panel.classList.remove("is-passing");'));
+    const pointed = body("function pointed(");
+    expect(pointed.indexOf("markRowDim();")).toBeGreaterThan(pointed.indexOf('panel.classList.remove("is-passing");'));
+  });
+
   it("a hide takes the row form and its width with it", () => {
     // The panel is shared: a plain hint shown next must not come up a 420px
     // row-shaped box.
@@ -362,15 +388,22 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
     // for + new button, bots and tasks as well"): window A in the Modal
     // chassis, named beside the cards. Its `::before` is the accent line.
     expect(TASKS_CSS).toContain(
-      'body:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .claude-rail-peek:not(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after,\nbody:has(.hint-panel.is-row.is-on[data-row-window="a"]:not(.is-passing)) .modal-popover .modal-dialog.new-task-dialog::after,\nbody:has(.hint-panel.is-row.is-on[data-row-window="b"]:not(.is-passing)) .claude-rail-peek:is(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after {\n  opacity: 1;\n}',
+      ':root[data-rail-row-dim="a"] .claude-rail-peek:not(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after,\n:root[data-rail-row-dim="a"] .modal-popover .modal-dialog.new-task-dialog::after,\n:root[data-rail-row-dim="b"] .claude-rail-peek:is(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after {\n  opacity: 1;\n}',
     );
     // No scrim for a row the SCROLL brought (2026-11-17: "when I scroll there
-    // is a little flash of the overlay that comes in and goes out"): no rule
-    // dims on `.is-row.is-on` alone any more.
-    expect(TASKS_CSS).not.toContain("body:has(.hint-panel.is-row.is-on) ");
-    // …and none dims BOTH windows: every "on" rule names the row's window
-    // (2026-11-17: "it darkens both instead of only … one of the window").
-    expect(TASKS_CSS).not.toContain("body:has(.hint-panel.is-row.is-on:not(.is-passing))");
+    // is a little flash of the overlay that comes in and goes out"), and none
+    // that dims BOTH windows (2026-11-17: "it darkens both instead of only …
+    // one of the window"): every "on" rule names the window hints.ts wrote on
+    // the root, which it writes only for a row that is not passing.
+    expect(TASKS_CSS).not.toContain(":root[data-rail-row-dim] ");
+    // NEVER ASKED WITH `:has()` ON THE PAGE'S ROOT (2026-11-18: the app "feels
+    // a bit slow, especially when moving around and resizing the tasks"): a
+    // `:has()` anchored on body, html or :root with a descendant after it
+    // restyles the whole document on every element inserted or removed.
+    // (The rules, not the comments that name the mistake.)
+    const rules = TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(rules).not.toMatch(/(^|[\s,}])(body|html|:root)[^,{]*:has\([^{]*\)\s+[^,{]+[,{]/m);
+    expect(rules).not.toContain(".hint-panel.is-row.is-on[data-row-window");
     const newTask = readFileSync(join(import.meta.dir, "../../styles/new-task.css"), "utf8");
     expect(newTask).toContain(".new-task-dialog::before {");
     expect(newTask).not.toContain(".new-task-dialog::after");
