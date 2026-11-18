@@ -294,6 +294,32 @@ def test_a_changed_shipped_file_replaces_only_an_unedited_copy(tmp_path, monkeyp
         f.write("not a version we ever shipped")
     assert seed.seed() == []
     assert read("instructions.md").endswith("shipped v2\n") and read("skills/running-udfs.md") == "not a version we ever shipped"
+    # With a hash on record, an earlier version is not ours any more: the user put it back by hand, and it stays.
+    with open(os.path.join(d, "instructions.md"), "w", encoding="utf-8") as f:
+        f.write("an old shipped text")
+    assert seed.seed() == [] and read("instructions.md") == "an old shipped text"
+    assert not seed.follows_shipped(store.all_experts()[0])
+
+
+def test_the_record_of_offered_skills_only_grows_and_survives_a_failed_resync(monkeypatch):
+    """A skill is offered once. The record is kept when the skill leaves the shipped folder (it may come back in
+    a later release, and a user who deleted it must not get it again), and it is written even when the resync
+    that follows the offer fails."""
+    assert seed.seed() == ["canvas-reference"]
+    w = store.read_json(seed.witness_path(), {})
+    w["skills"]["canvas-reference"] = [n for n in w["skills"]["canvas-reference"] if n != store.RUN_SKILL] + ["gone.md"]
+    store.write_json(seed.witness_path(), w)
+    new = os.path.join(store.expert_dir(store.all_experts()[0]), "skills", store.RUN_SKILL)
+    os.remove(new)
+
+    def boom(key, given):
+        raise OSError("disk")
+    monkeypatch.setattr(seed, "_resync", boom)
+    assert seed.seed() == [] and os.path.exists(new)  # offered again (the record said it never was) ...
+    offered = store.read_json(seed.witness_path(), {})["skills"]["canvas-reference"]
+    assert store.RUN_SKILL in offered and "gone.md" in offered  # ... and recorded, with what was offered before
+    os.remove(new)
+    assert seed.seed() == [] and not os.path.exists(new)  # deleted now: it stays deleted
 
 
 def test_every_earlier_shipped_version_is_listed_and_the_current_one_is_not():

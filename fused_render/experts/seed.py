@@ -87,6 +87,13 @@ def _files(key: str) -> list:
     return ["instructions.md"] + ["skills/" + n for n in _skill_names(key)]
 
 
+def _ours(key: str, rel: str, given: dict) -> set:
+    """The hashes that mean "still the copy we gave": the one recorded in `given`, or, only for an install from
+    before hashes were recorded, every earlier shipped version (`PAST`). With a recorded hash an older version is
+    NOT ours: the user put it back by hand, and it is theirs."""
+    return {given[rel]} if given.get(rel) else set(PAST.get(key, {}).get(rel, []))
+
+
 def _resync(key: str, given: dict) -> dict:
     """Replace each installed file of `key` whose shipped version changed, when the installed copy is still what
     we shipped (its hash is the one recorded in `given`, or a known earlier version, `PAST`). An edited copy is
@@ -101,7 +108,7 @@ def _resync(key: str, given: dict) -> dict:
         if not have or not new:
             continue
         if have != new:
-            if have not in {given.get(rel), *PAST.get(key, {}).get(rel, [])}:
+            if have not in _ours(key, rel, given):
                 continue  # edited: theirs
             _put(src, to)
             logger.info("experts seed: %s/%s updated to the shipped version", key, rel)
@@ -116,8 +123,8 @@ def follows_shipped(bot, rel: str = "instructions.md") -> bool:
     have = _sha(os.path.join(store.expert_dir(bot), rel))
     if not key or not have:
         return False
-    return have in {_sha(os.path.join(SHIPPED_DIR, key, rel)), _witness()[2].get(key, {}).get(rel),
-                    *PAST.get(key, {}).get(rel, [])}
+    given = _witness()[2].get(key, {})
+    return have in {_sha(os.path.join(SHIPPED_DIR, key, rel)), *_ours(key, rel, given if isinstance(given, dict) else {})}
 
 
 #: Every earlier shipped `ask_me_about` (the line `expert_list` shows a task): an installed expert still carrying
@@ -226,16 +233,19 @@ def seed() -> list:
             if key in done:
                 offered = skills.get(key) if isinstance(skills.get(key), list) else FIRST_SKILLS.get(key, [])
                 _new_skills(key, offered)
+                # Recorded as soon as the offer is made (a failure below must not offer a deleted skill again),
+                # and ADDED to what was offered before: a skill that leaves the shipped folder for a release
+                # and comes back is not new to an expert whose user deleted it.
+                skills[key] = sorted({*offered, *_skill_names(key)})
                 _about(key)
             else:
                 seed_one(key)
                 done[key] = time.time()
                 out.append(key)
+                skills[key] = _skill_names(key)
             given[key] = _resync(key, given.get(key) if isinstance(given.get(key), dict) else {})
         except Exception:  # noqa: BLE001 — the next start tries again
             logger.warning("experts seed: %s failed", key, exc_info=True)
-            continue
-        skills[key] = _skill_names(key)
     if json.dumps([done, skills, given], sort_keys=True) != before:
         store.write_json(witness_path(), {"keys": done, "skills": skills, "given": given})
     return out
