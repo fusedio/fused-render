@@ -115,13 +115,17 @@ def udfs_dir(bot) -> str:
 
 def free_write(bot, path, cwd: str = "") -> bool:
     """`path` is one the expert's chat writes without an approval card: memory.md, or a file inside the scratch
-    folder when the expert may run UDFs. Judged on real paths (a symlink out of the scratch folder is not in it)."""
+    folder when the expert may run UDFs. Judged on real paths (a symlink out of the scratch folder is not in it),
+    and the two places must themselves be where they belong: a memory.md or a scratch folder that is a symlink to
+    somewhere outside the expert's folder is not written without a card."""
     if not isinstance(path, str) or not path:
         return False
+    home = os.path.realpath(expert_dir(bot))
     real = os.path.realpath(os.path.join(cwd or expert_dir(bot), os.path.expanduser(path)))
-    if real == os.path.realpath(memory_path(bot)):
+    if real == os.path.join(home, MEMORY):  # not realpath(memory_path): that follows a memory.md linked elsewhere
         return True
-    return bool(run_envs(bot)) and real.startswith(os.path.realpath(udfs_dir(bot)) + os.sep)
+    scratch = os.path.join(home, ".fused", "udfs")
+    return bool(run_envs(bot)) and os.path.realpath(udfs_dir(bot)) == scratch and real.startswith(scratch + os.sep)
 
 
 def where(bot, run: bool = False) -> str:
