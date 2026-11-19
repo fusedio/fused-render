@@ -543,7 +543,7 @@ const ENTRIES = [
     description: "One header for every task view: the Tasks page panel, the chat panes, the rail cards and the New task card.",
     keywords: "task header unified head close back prev next status star open kebab card panel rail",
   },
-  // SPECIALISTS (docs/specialists): the nav entry, the page, and the task-side
+  // SPECIALISTS (docs/specialists.md): the nav entry, the page, and the task-side
   // tools and cards. Off by default; off, nothing of it exists.
   {
     id: "specialists",

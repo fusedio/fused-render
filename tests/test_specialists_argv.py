@@ -1,4 +1,4 @@
-"""agent.py's specialist seams (docs/specialists PLAN A.7): `_claude_argv`, `_write_mcp_config`, `_start`, `_decide`.
+"""agent.py's specialist seams (docs/specialists.md): `_claude_argv`, `_write_mcp_config`, `_start`, `_decide`.
 
 Flag off (no `specialist.json` / `specialists.on` in the run dir) the argv and mcp.json are exactly what they were;
 a task run with the tools gets five pre-allowed tools, two hooks and the TASK_NOTE; a specialist's main chat or

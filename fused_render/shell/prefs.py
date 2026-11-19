@@ -497,7 +497,7 @@ def chat_recap_enabled() -> bool:
 
 
 def specialists_enabled() -> bool:
-    """Whether Specialists (docs/specialists/) are on (default off — experimental). Env
+    """Whether Specialists (docs/specialists.md) are on (default off — experimental). Env
     `FUSED_RENDER_SPECIALISTS` "1"/"0" wins both ways; else only a stored `true` is on. Off, no page, no
     routes, no task tools, no timers and no folders."""
     env = os.environ.get("FUSED_RENDER_SPECIALISTS")
@@ -2041,7 +2041,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             )
         _store(prefs)
     if isinstance(body.get("specialists_enabled"), bool):
-        # AFTER the write, best-effort (docs/specialists/PLAN.md A.5): on seeds the shipped specialists and
+        # AFTER the write, best-effort (docs/specialists.md): on seeds the shipped specialists and
         # starts the learning scheduler; off stops the scheduler. Never allowed to fail the preference write.
         _specialists_switched(body["specialists_enabled"])
     if body.get("canvases_embed_proxy") is False:

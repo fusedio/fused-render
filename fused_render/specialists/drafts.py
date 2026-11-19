@@ -93,6 +93,12 @@ def sent(spec_id: str) -> list[dict]:
     return [d for d in all_drafts(spec_id) if d.get("status") == "sent"]
 
 
+def closed(spec_id: str, limit: int = 10) -> list[dict]:
+    """Reports that were sent and are no longer followed up (fixed, or not worth following), newest closed first."""
+    out = [d for d in all_drafts(spec_id) if d.get("status") == "closed"]
+    return sorted(out, key=lambda d: float(d.get("closed_at") or d.get("at") or 0), reverse=True)[:max(0, limit)]
+
+
 def close(spec_id: str, dids, reason: str) -> list[str]:
     """Close the sent reports `dids` (no longer followed up). Returns the ids closed now."""
     done = []
@@ -211,16 +217,15 @@ def send_pending(spec_id, session_id) -> bool:
 
 
 def _is_write(spec_id: str, tool: str) -> bool:
-    """Whether service tool `tool` (full MCP name) writes, from the roster's description prefix (B.4:
-    `[<Service title>, read-only|writes]`). Unknown tools count as writes."""
+    """Whether service tool `tool` (full MCP name) writes: the roster's own `write` flag (the same one the
+    connections route lists as `tools: [{name, write}]`). Unknown tools count as writes."""
     try:
         from fused_render.specialists import services, store
         spec = store.get(spec_id)
         short = tool[len(SERVICES_PREFIX):]
         for t in services.roster(spec, "main") if spec is not None else []:
             if isinstance(t, dict) and t.get("name") == short:
-                desc = str(t.get("description") or "")
-                return "read-only]" not in desc.split("\n", 1)[0]
+                return bool(t.get("write", True))
     except Exception:  # noqa: BLE001
         logger.debug("drafts: roster unavailable", exc_info=True)
     return True

@@ -1,5 +1,5 @@
 // The `specialists` experimental flag (`specialists_enabled`, shell/prefs.py;
-// docs/specialists/PLAN.md A.2, A.6 point 7) for every layer that may not
+// docs/specialists.md) for every layer that may not
 // import apps/claude: the shell's nav row and route, the Specialists page, and
 // the task-side surfaces inside the chat.
 //

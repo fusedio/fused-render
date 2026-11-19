@@ -457,7 +457,9 @@ def item_state(it: dict, revert: dict | None, home: str, now: dict[str, str]) ->
     if isinstance(revert, dict):
         return "reverted" if revert.get("state") == "done" else "reverting"
     if it.get("entry") and ("before" in it or "after" in it):
-        if now.get(str(it["entry"])) != it.get("after"):
+        cur, after = now.get(str(it["entry"])), it.get("after")
+        # A later update that only raised the entry's counts did not change what this one wrote.
+        if cur != after and not bookkeeping_only(after, cur):
             return "changed"
     elif it.get("remove") and not os.path.exists(os.path.join(home, str(it["remove"]))):
         return "changed"
@@ -592,6 +594,9 @@ def revert(spec_id: str, run: str, item_id: str) -> dict:
         if _home_ok(spec_id):
             reverts[f"{run}/{item_id}"] = {"session_id": sid, "at": time.time(), "state": "requested"}
             write_json(_reverts_path(spec_id), reverts)
+        cur = now.get(str(item.get("entry") or ""))
+        if item.get("after") and cur and cur != item["after"]:
+            item = {**item, "after": cur}  # only its counts moved since: undo from the line as it reads now
     return {"message": message(rec, item), "session_id": sid or None}
 
 

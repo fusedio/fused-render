@@ -203,3 +203,15 @@ def test_switching_the_flag_on_reopens_a_closed_harness(app_home, monkeypatch):
         assert not harness.closed()
     finally:
         harness.reopen()
+
+
+def test_spawn_marks_a_process_stopped_from_outside_as_killed(tmp_path):
+    """Polish 5: SIGTERM from outside (an app restart) is `killed`, not the session's own error."""
+    from fused_render.specialists import harness
+    call = {"argv": ["sh", "-c", "kill -TERM $$"], "cwd": str(tmp_path), "env": None, "prompt": "x",
+            "timeout_s": 10, "kind": "nightly", "spec_id": "s", "row_id": "r"}
+    out = harness._spawn(call)
+    assert out["killed"] is True and not out["ok"] and "stopped" in out["error"]
+    call["argv"] = ["sh", "-c", "exit 3"]
+    out = harness._spawn(call)
+    assert not out.get("killed") and "exited (code 3)" in out["error"]

@@ -1,4 +1,4 @@
-// THE CARD SEAM for specialists (docs/specialists PLAN C.4): `CardStack` asks
+// THE CARD SEAM for specialists (docs/specialists.md): `CardStack` asks
 // this context first for each permission row, and draws its own card when the
 // answer is null. ClaudeChat provides it only while the `specialists` flag is
 // on, so with the flag off `CardStack` is exactly what it was.

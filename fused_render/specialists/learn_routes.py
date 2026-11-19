@@ -16,7 +16,7 @@
     GET    /api/specialists/general/inbox       notes that fit no specialist
     POST   /api/specialists/general/notes/{nid}/move {"specialist"}  into that specialist's inbox, same id
     DELETE /api/specialists/general/notes/{nid}
-    GET    …/{id}/drafts                        drafts waiting for the user
+    GET    …/{id}/drafts                        drafts waiting for the user, then the latest closed reports
     POST   …/{id}/drafts/{did}/send             {"message","session_id"}: Review and send
     POST   …/{id}/drafts/{did}/discard          {"ok":true}
     GET    …/{id}/counts                        B.6 counts
@@ -330,7 +330,8 @@ def note_confirm(spec_id: str, nid: str, x_fused: str | None = Header(None)):
 def drafts_list(spec_id: str):
     from fused_render.specialists import drafts
     _spec(spec_id)
-    return {"drafts": drafts.waiting(spec_id)}
+    # Waiting first, then the latest closed reports (each says its `status`): Settings › Learned lists both.
+    return {"drafts": drafts.waiting(spec_id) + drafts.closed(spec_id)}
 
 
 @router.post(PREFIX + "/{spec_id}/drafts/{did}/send")

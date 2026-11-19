@@ -360,3 +360,17 @@ def test_policy_unreachable_means_ask(tmp_path):
         assert json.loads(pending.result(10)["result"]["content"][0]["text"])["behavior"] == "deny"
     finally:
         s.close()
+
+
+def test_offer_wait_env_parsed_safely_and_ceiling_covers_calls(monkeypatch):
+    """Polish 11/12: a bad or non-positive OFFER_WAIT env is the default (never an import error); the MCP
+    timeout's specialist ceiling covers both the offer wait and the check."""
+    from fused_render.claude_agent import agent, permission_server as ps
+    name = "FUSED_RENDER_SPECIALIST_OFFER_WAIT_S"
+    for bad in ("abc", "-5", "0", "inf", ""):
+        monkeypatch.setenv(name, bad)
+        assert ps._env_seconds(name, 900) == 900.0
+    monkeypatch.setenv(name, "30")
+    assert ps._env_seconds(name, 900) == 30.0
+    assert agent.SPECIALIST_OFFER_CEILING > max(ps.OFFER_WAIT_S, ps.SPECIALIST_CHECK_TIMEOUT)
+    assert not hasattr(agent, "SPECIALIST_CALL_CEILING")

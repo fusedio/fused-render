@@ -92,7 +92,7 @@ export function CardStack({
           // trust it over `parkedIn`, which can name a different turn.
           !!p.decision && (only ? true : p.parkedIn === turnKey),
   );
-  // SPECIALISTS (docs/specialists): the offer card and the services card's
+  // SPECIALISTS (docs/specialists.md): the offer card and the services card's
   // extra button. Absent (flag off), every row falls through as before.
   const specialist = useContext(SpecialistCardContext);
   if (!shown.length) return null;

@@ -524,6 +524,16 @@ def _run_locked(spec_id: str, run: str, manual: bool) -> dict:
         st.pop("active", None)
         _save_state(spec_id, st)
         return {"status": "busy", "run": run}
+    if row.get("killed"):
+        # Its process was stopped from outside (an app restart, the system): an interrupted run, like one a
+        # restart cut off. What it changed is listed, its notes stay for next time.
+        st = state(spec_id)
+        active = st.get("active") or {}
+        active.update(row=row_id, ok=False)
+        st["active"] = active
+        _save_state(spec_id, st)
+        rec = _apply(spec_id, active, None, interrupted=True)
+        return {"status": "error", "run": run, "changes": rec}
     validated = _read_changes(spec_id, run)
     if not _home_ok(spec_id):
         return {"status": "error", "run": run, "error": "the specialist was deleted"}

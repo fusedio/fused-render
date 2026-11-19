@@ -84,7 +84,7 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Specialists (docs/specialists): the nav entry, the page and the task-side
+// Specialists (docs/specialists.md): the nav entry, the page and the task-side
 // tools. Published so the sidebar beside this page shows or drops its row at once.
 export function SpecialistsControl({ prefs, onChange }: PrefControlProps) {
   return (

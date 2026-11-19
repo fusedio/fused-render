@@ -3246,8 +3246,8 @@ def _bot_session(task: dict) -> bool:
 
 
 def _specialist_session(task: dict) -> bool:
-    """A transcript of a specialist's own session (its main chat, a breakout in its workroom; docs/specialists/
-    PLAN.md A.5): a conversation on the specialists page or a breakout card, not a task. Hidden whether the flag
+    """A transcript of a specialist's own session (its main chat, a breakout in its workroom; docs/specialists.md):
+    a conversation on the specialists page or a breakout card, not a task. Hidden whether the flag
     is on or off (CONTRACT R6): a string test on the transcript's cwd, then the specialists root must exist, so a
     user who never turned specialists on has nothing hidden. `paths` imports nothing heavy."""
     if not task["path"]:

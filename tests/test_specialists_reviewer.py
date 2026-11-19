@@ -88,6 +88,7 @@ def test_failure_after_pull_yields_one_note(monkeypatch):
     assert n["id"] == "n-review-r-0123456789ab" and n["kind"] == "correction" and n["entry"] == "m-3f2a"
     assert n["outcome"] == "correction" and n["source"]["type"] == "reviewer"
     assert n["source"]["receipt_id"] == rec["id"] and "failed twice" in n["evidence"]
+    assert n["source"]["title"] == "Publish the canvas"  # polish 13: the task's first prompt when it has no title
     assert reviews[rec["id"]]["state"] == "done" and reviews[rec["id"]]["note"] == n["id"]
     # run again (e.g. a restart before the settle was saved): no second run, no second note
     res = reviewer.review_one(s.id, rec, turns=turns)
@@ -238,3 +239,18 @@ def test_restart_after_the_review_finished_settles_without_a_second_run(monkeypa
                                           "basis: verified\nclaim: x\nREVIEW>>>")
     assert reviewer.review_one(s.id, rec, turns=turns)["outcome"] == "unrelated"
     assert calls == [] and reviews[rec["id"]]["state"] == "done" and reviews[rec["id"]].get("attempts", 1) == 1
+
+
+def test_review_note_title_prefers_the_tasks_title(monkeypatch):
+    """Polish 13: the user's own title, then the Tasks list's AI title, then the first prompt."""
+    from fused_render import tasks_store
+    rec = {"session_id": "sess-1"}
+    f = {"first_prompt": "Publish the canvas " + "and more words " * 10}
+    monkeypatch.setattr(tasks_store, "settings_state", lambda: {})
+    t = reviewer.task_title(rec, f)
+    assert t.startswith("Publish the canvas and more") and t.endswith("…") and len(t) <= 80
+    monkeypatch.setattr(tasks_store, "settings_state", lambda: {"sess-1": {"ai_title": {"text": "Q4 publish"}}})
+    assert reviewer.task_title(rec, f) == "Q4 publish"
+    monkeypatch.setattr(tasks_store, "settings_state", lambda: {"sess-1": {"custom_title": "My publish",
+                                                                           "ai_title": {"text": "Q4 publish"}}})
+    assert reviewer.task_title(rec, f) == "My publish"

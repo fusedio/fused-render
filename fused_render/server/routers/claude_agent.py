@@ -349,7 +349,7 @@ _SPECIALIST_ACTIONS = frozenset({"start", "decide", "cancel", "snapshot_revert"}
 
 
 def _specialist_after(params: dict, envelope: dict) -> None:
-    """Tell the specialists task side what an agent call did (docs/specialists/PLAN.md A.5): a main-chat or
+    """Tell the specialists task side what an agent call did (docs/specialists.md): a main-chat or
     breakout start records its session, a deny / cancel / snapshot_revert is a behaviour signal. Read off
     `sys.modules` and never imported here: with specialists never loaded (flag off) it is one dict lookup.
     Best-effort: it must never fail or slow the call it follows."""

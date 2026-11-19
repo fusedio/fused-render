@@ -1,5 +1,5 @@
 // SPECIALIST BREAKOUTS — the shell's open specialist breakout cards
-// (docs/specialists/PLAN.md B.9, PRODUCT §3.3). A MODULE STORE like
+// (docs/specialists.md). A MODULE STORE like
 // breakouts.ts: a card is requested from inside a task chat (the offer card,
 // the Breakout menu, a closed chip's Reopen) and drawn by the one overlay the
 // shell mounts (shell/breakout/BreakoutCards → SpecialistBreakoutCard).

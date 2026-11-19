@@ -1,5 +1,5 @@
 // SPECIALISTS — typed fetchers for every `/api/specialists…` route the UI calls
-// (docs/specialists/PLAN.md B.5) and the shapes they answer with (B.2, B.3,
+// (docs/specialists.md) and the shapes they answer with (B.2, B.3,
 // B.6). Platform, not apps/specialists, because the task side of the feature
 // lives inside the chat (apps/claude/specialists) and the shell's breakout card
 // (shell/breakout/SpecialistBreakoutCard) calls them too, and neither may

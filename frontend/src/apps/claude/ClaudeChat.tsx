@@ -387,7 +387,7 @@ export interface ClaudeChatProps {
     /** Send `text` as a new message in this chat, the way a typed one goes. */
     send?: (text: string) => void;
   }) => void;
-  /** SPECIALISTS (docs/specialists PLAN B.9): fields merged into every
+  /** SPECIALISTS (docs/specialists.md): fields merged into every
    *  `start` body — `{specialist: "<id>:main"}` / `"<id>:breakout:<bid>"`. */
   extraParams?: Record<string, string>;
   /** `/clear` (and the host's own Clear) call this instead of going back to
@@ -3949,7 +3949,7 @@ function ChatBody(props: ChatBodyProps) {
       if (!sid || d.sessionId !== sid || d.file !== file) return;
       strandSeq.current += 1;
       setStranded({ text: d.text, seq: strandSeq.current });
-      // A specialist breakout's summary says who it is from (docs/specialists).
+      // A specialist breakout's summary says who it is from (docs/specialists.md).
       spxNoteDraft.current(d.label);
       // Handled: the breakout must not also write the persisted draft.
       e.preventDefault();
@@ -5857,7 +5857,7 @@ function ChatBody(props: ChatBodyProps) {
   const togglePickingRef = useRef(togglePicking);
   togglePickingRef.current = togglePicking;
   const stableToggle = useCallback(() => togglePickingRef.current(), []);
-  // SPECIALISTS (docs/specialists): the task side of the feature — offer card,
+  // SPECIALISTS (docs/specialists.md): the task side of the feature — offer card,
   // chips, Send to a specialist, the Breakout control, the draft label — and
   // the services card in a specialist's own chat. Inert with the flag off.
   const spx = useSpecialistTaskSide({

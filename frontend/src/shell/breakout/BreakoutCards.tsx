@@ -415,7 +415,7 @@ export function AgentPeekCard({
 export default function BreakoutCards() {
   const cards = useBreakouts();
   const peeks = useAgentPeeks();
-  // SPECIALIST BREAKOUTS (docs/specialists): the same chrome, stacked after the
+  // SPECIALIST BREAKOUTS (docs/specialists.md): the same chrome, stacked after the
   // plain ones. The store is empty unless the flag is on (only the task side,
   // itself flag-gated, opens one).
   const specialistCards = useSpecialistBreakouts();

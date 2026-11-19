@@ -124,8 +124,30 @@ def facts(receipt: dict, turns=None) -> dict:
         sigs = list(signals.since(str(receipt.get("session_id") or ""), float(receipt.get("at") or 0)) or [])
     except Exception:  # noqa: BLE001
         logger.debug("specialists reviewer: signals unavailable", exc_info=True)
+    first = next((str(t.get("text") or "") for _, t in users if str(t.get("text") or "").strip()), "")
     return {"lines": lines, "since": since, "failures": len(failures), "user_messages": len(later_users),
-            "signals": sigs}
+            "signals": sigs, "first_prompt": first}
+
+
+def task_title(receipt: dict, f: dict | None = None) -> str:
+    """The task's title for a review note's source: the user's own title, else the Tasks list's AI title, else
+    the task's first prompt (one line, cut at 80). "" when none is known."""
+    sid = str(receipt.get("session_id") or "")
+    title = str(receipt.get("title") or "").strip()
+    if not title and sid:
+        try:
+            from fused_render import tasks_store
+            st = tasks_store.settings_state() or {}
+            title = tasks_store.session_title(st, sid) or (tasks_store.session_ai_title(st, sid) or {}).get("text", "")
+        except Exception:  # noqa: BLE001
+            logger.debug("specialists reviewer: no task title for %s", sid, exc_info=True)
+    if not title and f:
+        title = str(f.get("first_prompt") or "")
+    title = " ".join(title.split())
+    if len(title) > 80:
+        cut = title[:79]
+        title = (cut[:cut.rindex(" ")] if " " in cut[40:] else cut).rstrip(" ,;:.-") + "…"
+    return title
 
 
 def quiet(f: dict) -> bool:
@@ -276,7 +298,7 @@ def review_one(spec_id: str, receipt: dict, turns=None) -> dict:
         evidence = (evidence + "\n\n" if evidence else "") + "App-observed signals after the pull: " + sig
     source = {"type": "reviewer", "session_id": str(receipt.get("session_id") or ""),
               "run_id": str(receipt.get("run_id") or ""), "line": f["since"], "receipt_id": rid,
-              "title": str(receipt.get("title") or "")}
+              "title": task_title(receipt, f)}
     try:
         note = inbox.add(spec_id, kind=parsed["kind"], claim=claim, basis=parsed["basis"], evidence=evidence,
                          entry=(parsed["entries"] or [None])[0], outcome=parsed["outcome"], source=source, nid=nid)

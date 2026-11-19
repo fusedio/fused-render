@@ -1,4 +1,4 @@
-// THE SPECIALIST SIDE OF ONE CHAT MOUNT (docs/specialists PLAN C.4), in one
+// THE SPECIALIST SIDE OF ONE CHAT MOUNT (docs/specialists.md), in one
 // hook so ClaudeChat carries a handful of lines for the whole feature:
 //
 //   cards       the CardStack seam (context.tsx): the offer card in a task, the

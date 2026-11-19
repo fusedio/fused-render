@@ -1,4 +1,4 @@
-// The task side of specialists (docs/specialists PLAN C.4 tests): chips placed
+// The task side of specialists (docs/specialists.md tests): chips placed
 // by time, the offer card's decide bodies, the Breakout control, Send to a
 // specialist with Undo, the services card's extra button, the CardStack seam,
 // and nothing at all with the flag off.

@@ -1395,7 +1395,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001 — never worth failing startup
             logger.warning("could not start the experts scheduler", exc_info=True)
 
-    # Specialists (fused_render/specialists/, docs/specialists/): `/api/specialists*`. Every route answers 404
+    # Specialists (fused_render/specialists/, docs/specialists.md): `/api/specialists*`. Every route answers 404
     # while the flag is off (`flag.require`), so including them changes nothing then. task_routes goes FIRST:
     # its literal paths (`/api/specialists/breakouts`, `/task-events`) must win over the core `/{id}` route.
     # Each include is its own try: one stream's broken module must not take the others (or the app) down.

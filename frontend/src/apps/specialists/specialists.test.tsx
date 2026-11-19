@@ -850,6 +850,23 @@ describe("polish: Learned list and its counts", () => {
     expect(hasText(r, "No changes.")).toBe(true);
   });
 
+  test("closed reports are listed apart from the drafts waiting (polish 9)", async () => {
+    const api = learnedApi({
+      listDrafts: async () => ({
+        drafts: [
+          { id: "d-1", at: 0, to: { name: "Ana", service: "Slack", handle: "" }, subject: "Sync bug", text: "", why: "", status: "waiting" },
+          { id: "d-2", at: 0, to: { name: "Bo", service: "Slack", handle: "" }, subject: "Old bug", text: "", why: "Fixed upstream", status: "closed" },
+        ],
+      }),
+    });
+    const r = render(<LearnedTab specialistId="c1" sendToChat={() => true} api={api} />);
+    await flush();
+    const closed = r.root.find((n) => n.type === "section" && n.props["aria-label"] === "Closed reports");
+    expect(textOf(closed)).toContain("Old bug");
+    expect(textOf(closed)).toContain("Fixed upstream");
+    expect(textOf(closed)).not.toContain("Sync bug");
+  });
+
   test("an interrupted update that changed nothing gets one quiet line", async () => {
     const api = learnedApi({
       getLearned: async () => ({ runs: [] }),
@@ -862,6 +879,9 @@ describe("polish: Learned list and its counts", () => {
   });
 
   test("Learned · N new stays while the tab is up, and is gone once the user moves on", async () => {
+    // The tabs read the server through the default API: hold every read so nothing lands in this test.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (() => new Promise(() => {})) as unknown as typeof fetch;
     const el = (tab: "learned" | "memory") => (
       <SpecialistSettings specialist={SPEC} tab={tab} onTab={() => {}} onClose={() => {}} sendToChat={() => true} onSaved={() => {}} onDeleted={() => {}} learnedCount={6} />
     );
@@ -872,8 +892,9 @@ describe("polish: Learned list and its counts", () => {
     const tab = r.root.find((n) => n.type === LearnedTab);
     act(() => tab.props.onSeen());
     expect(label()).toBe("Learned · 6 new");
-    await act(async () => r.update(el("memory")));
+    act(() => r.update(el("memory")));
     expect(label()).toBe("Learned");
+    globalThis.fetch = realFetch;
   });
 
   test("the list's foot never calls a specialist an expert", () => {

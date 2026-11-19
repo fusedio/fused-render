@@ -159,7 +159,7 @@ def _is_root(path: str) -> bool:
 
 
 def _specialist_home(project: str) -> bool:
-    """A path inside a specialist's home (docs/specialists/PLAN.md A.2), with the flag on: "no folder", so its
+    """A path inside a specialist's home (docs/specialists.md), with the flag on: "no folder", so its
     main chat and its breakouts run in parallel and never queue behind each other. Read off `sys.modules`, never
     imported: with specialists never loaded (flag off) this is one dict lookup and False. Not cached with the
     folder keys, because the flag can flip while the server runs."""

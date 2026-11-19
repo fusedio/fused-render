@@ -191,7 +191,7 @@ registerNativeView(NODE_MODE, () => import("@apps/canvases").then((m) => ({ defa
 // Bots (ported from FusedBot): browser bots, each driving its own Chrome
 // window. The page carries its own scoped stylesheet in the lazy chunk.
 const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
-// Specialists (docs/specialists): each knows one subject in depth and has one chat.
+// Specialists (docs/specialists.md): each knows one subject in depth and has one chat.
 // Behind the `specialists` flag; the page and its stylesheet are their own chunk.
 const Specialists = lazy(() => import("@apps/specialists").then((m) => ({ default: m.Specialists })));
 

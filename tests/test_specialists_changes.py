@@ -126,26 +126,41 @@ def test_draft_waits_send_raises_card_and_settles(monkeypatch, api):
     # sent through a service write tool
     drafts.send(s.id, did)
     monkeypatch.setattr(services, "roster", lambda spec, kind: [
-        {"name": "slack_post_message", "description": "[Slack, writes] Post a message"}])
+        {"name": "slack_post_message", "key": "slack", "title": "Slack", "write": True, "rec": {}}])
     _agent(monkeypatch, {"main-1": [{"role": "user", "text": msg}, {"role": "assistant", "text": "Sent.", "segments": [
         {"kind": "tool", "name": "mcp__specialist_services__slack_post_message", "status": "ok", "input": {}}]}]})
     drafts.after_turn(s.id, "main-1")
     assert drafts.get(s.id, did)["status"] == "sent" and drafts.waiting(s.id) == []
     code, _h, body = api.post(f"/api/specialists/{s.id}/drafts/{did}/discard", {})
     assert code == 400
+    # polish 9: a sent report is not listed; once the nightly closes it, it is, by its status
+    assert api.get(f"/api/specialists/{s.id}/drafts")[2]["drafts"] == []
+    assert drafts.close(s.id, [did], "nightly") == [did]
+    listed = api.get(f"/api/specialists/{s.id}/drafts")[2]["drafts"]
+    assert [(d["id"], d["status"]) for d in listed] == [(did, "closed")]
+    assert drafts.waiting(s.id) == []
 
 
 def test_read_only_service_call_is_not_a_send(monkeypatch):
+    """Polish 8: the roster's real `write` flag decides (its entries have no description): a read after
+    Review-and-send leaves the draft waiting; a write marks it sent."""
     s = make_specialist()
     did = _draft(s)
     monkeypatch.setattr(chat, "state", lambda sid: {"current": "m", "folded": []})
     msg = drafts.send(s.id, did)["message"]
     monkeypatch.setattr(services, "roster", lambda spec, kind: [
-        {"name": "slack_search", "description": "[Slack, read-only] Search"}])
+        {"name": "slack_search", "key": "slack", "title": "Slack", "write": False, "rec": {}},
+        {"name": "slack_post_message", "key": "slack", "title": "Slack", "write": True, "rec": {}}])
     _agent(monkeypatch, {"m": [{"role": "user", "text": msg}, {"role": "assistant", "text": "", "segments": [
         {"kind": "tool", "name": "mcp__specialist_services__slack_search", "status": "ok", "input": {}}]}]})
     drafts.after_turn(s.id, "m")
     assert drafts.get(s.id, did)["status"] == "waiting"
+    msg = drafts.send(s.id, did)["message"]
+    _agent(monkeypatch, {"m": [{"role": "user", "text": msg}, {"role": "assistant", "text": "", "segments": [
+        {"kind": "tool", "name": "mcp__specialist_services__slack_search", "status": "ok", "input": {}},
+        {"kind": "tool", "name": "mcp__specialist_services__slack_post_message", "status": "ok", "input": {}}]}]})
+    drafts.after_turn(s.id, "m")
+    assert drafts.get(s.id, did)["status"] == "sent"
 
 
 def test_discard_removes_from_waiting(api):
@@ -410,3 +425,26 @@ def test_learned_new_count_clears_when_seen(api):
     assert api.post(f"/api/specialists/{s.id}/learned/seen", {"run": "x"})[0] == 404
     api.post(f"/api/specialists/{s.id}/learned/seen", {"run": later})
     assert changes.seen_run(s.id) == later and changes.new_count(s.id) == 0
+
+
+def test_later_count_bump_keeps_item_revertable(monkeypatch, api):
+    """Polish 7: a later update that only raised an entry's seen= must not turn an item into "Changed since";
+    Revert then works from the line as it reads now."""
+    import os
+    s = make_specialist()
+    after = "- [m-a1b2] Publish to staging first. {basis=user-said; seen=1; confirmed=2026-11-18}"
+    now = "- [m-a1b2] Publish to staging first. {basis=user-said; seen=4; confirmed=2026-11-19}"
+    changes.save(s.id, RUN, summary="s", commit="", row="", status="done", fallback=False, drafts=[],
+                 items=[{"kind": "Learned", "text": "Publish to staging first.", "entry": "m-a1b2",
+                         "file": "memory.md", "from": [], "before": None, "after": after}])
+    with open(os.path.join(s.home, "memory.md"), "w") as fh:
+        fh.write("# Memory\n" + now + "\n")
+    assert changes.runs(s.id)[0]["items"][0]["state"] == "active"
+    monkeypatch.setattr(chat, "state", lambda sid: {"current": "m", "folded": []})
+    msg = changes.revert(s.id, RUN, "i1")["message"]
+    assert f"In memory.md, delete this exact line:\n{now}" in msg
+    # a real wording change since still reads "Changed since"
+    it = changes.runs(s.id)[0]["items"][0]
+    home, cur = changes._home_now(s.id)
+    cur = {"m-a1b2": "- [m-a1b2] Publish to prod. {basis=user-said; seen=4}"}
+    assert changes.item_state(it, None, home, cur) == "changed"

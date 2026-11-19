@@ -2797,15 +2797,16 @@ def _expert_stamped(run_dir: str) -> bool:
 
 
 # The specialists' task tools (permission_server.SPECIALIST_TOOLS) and the
-# launch spec of a specialist's own main chat / breakout (docs/specialists
-# PLAN A.7). Both are recorded in the run dir by `_start` (the server) and read
+# launch spec of a specialist's own main chat / breakout (docs/specialists.md).
+# Both are recorded in the run dir by `_start` (the server) and read
 # back by `_claude_argv` (the session host), like `experts.on`. Absent files
 # leave every argv byte-identical.
 SPECIALIST_TOOLS = ("specialist_list", "specialist_pull", "specialist_check",
                     "specialist_note", "specialist_breakout")
-# A check is a side session (harness 600 s + 60); an offer card waits up to
-# permission_server.OFFER_WAIT_S (900), the larger, so that is the ceiling.
-SPECIALIST_CALL_CEILING = 660 + 60
+# The longest specialist call bounds the MCP server's timeout: a check is a side
+# session (permission_server.SPECIALIST_CHECK_TIMEOUT, 660 s), an offer card
+# waits up to permission_server.OFFER_WAIT_S (900 s). The offer is the larger,
+# so it alone is the ceiling (tests pin that it stays above the check).
 SPECIALIST_OFFER_CEILING = 900 + 60
 _SPECIALIST_SPEC_FILE = "specialist.json"
 _SPECIALISTS_FILE = "specialists.on"
@@ -4146,7 +4147,7 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
         payload = {"decision": "expired"}
     if payload.get("decision") == "allow" \
             and str(tool or "").startswith("mcp__specialist_services__"):
-        # A specialist session's service card (docs/specialists CONTRACT C2):
+        # A specialist session's service card (docs/specialists.md):
         # the server records the one-time grant `services.call` spends, from
         # the user's own decision and BEFORE it is written, so the call it lets
         # through can never arrive first. Off `sys.modules`: never imported.
@@ -8276,7 +8277,7 @@ def _live_runs_in(folder: str):
 
 def _live_runs_under(folder: str):
     """`_live_runs_in` for `folder` AND every folder below it (a specialist's
-    home and its breakouts' workrooms, docs/specialists CONTRACT C1), in ONE
+    home and its breakouts' workrooms, docs/specialists.md), in ONE
     scan of the runs tree: lexical, so a target is matched by its absolute
     spelling only."""
     root = os.path.abspath(folder).rstrip(os.sep)
@@ -8309,7 +8310,7 @@ def _live_runs_under(folder: str):
 def _hosts_in(folder: str) -> list:
     """Run ids whose claude process is still up (turn open or idle between
     turns) with `folder` as their working folder. A specialist breakout's
-    Close / Discard ends these (docs/specialists CONTRACT, fix wave item 11)."""
+    Close / Discard ends these (docs/specialists.md)."""
     workdir = os.path.abspath(folder)
     real = os.path.realpath(folder)
     out = []
@@ -10423,7 +10424,7 @@ def _tool_detail(name, inp) -> str:
     elif name == CANVAS_OPEN_TOOL:
         d = "Open %s to take a screenshot" % (inp.get("name") or "the canvas")
     elif name.startswith("mcp__fused_render__specialist_"):
-        # The specialist asked (docs/specialists), so the status line can say
+        # The specialist asked (docs/specialists.md), so the status line can say
         # "Asking the Canvas specialist…" rather than "a specialist".
         d = inp.get("specialist") if isinstance(inp.get("specialist"), str) else ""
     else:
@@ -15804,7 +15805,7 @@ def main(action: str = "start", file: str = "", message: str = "",
                       typed=typed, breakout=breakout in ("1", "resume"),
                       breakout_resume=breakout == "resume",
                       # A specialist's main chat / breakout, "<id>:main" or
-                      # "<id>:breakout:<bid>" (docs/specialists PLAN A.7).
+                      # "<id>:breakout:<bid>" (docs/specialists.md).
                       specialist=specialist)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about

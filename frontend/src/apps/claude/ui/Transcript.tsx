@@ -167,7 +167,7 @@ export interface TranscriptProps {
    *  whatever the reader scrolled to, and read as a ghost of a message already
    *  answered above it (Akshil, 2026-10-04). */
   trailing?: ReactNode;
-  /** SPECIALISTS (docs/specialists): drawn right after a turn — the task's
+  /** SPECIALISTS (docs/specialists.md): drawn right after a turn — the task's
    *  event chips placed there by time, and "Send to a specialist". Absent with
    *  the flag off, and the log is what it was. */
   afterTurn?: (turn: ChatState["turns"][number]) => ReactNode;

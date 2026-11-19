@@ -830,9 +830,11 @@ send** (`POST …/drafts/{did}/send`) marks it `sending`, records a pending send
 <name> through <service> (<handle>). Show me the exact text first, then send it with the service tool; I will
 approve the send." then the subject and text). While it is pending, a service write in that session always asks
 (§7). When that turn ends (`drafts.after_turn`) the draft is `sent` (with `sent_at`) if a successful
-`mcp__specialist_services__*` call follows the message in the conversation, else `waiting` again. **Discard** marks
+`mcp__specialist_services__*` call that writes (the roster's `write` flag, the same one the connections route
+lists) follows the message in the conversation, else `waiting` again; a read-only call does not count. **Discard** marks
 it `discarded`. A sent draft is an open report the job follows up until it is `closed` (by the job's
-`closed_reports`, or 30 days after it was sent).
+`closed_reports`, or 30 days after it was sent). Settings › Learned lists the latest closed reports under
+"Closed reports" (`GET …/drafts` returns them after the waiting ones, each with its `status`).
 
 **Restart.** `nightly.json.active` says how far a run got. `nightly.recover` (when the scheduler thread starts, and
 before every run) finishes a run at stage `applying` from its `validated.json`, and closes a run cut off at stage
@@ -1021,7 +1023,7 @@ Unknown specialist, breakout or receipt: 404; a bad body: 400.
 | POST `…/{id}/notes` (`{id}` may be `general`) | `{"kind","claim","basis","evidence"?,"entry"?,"source":{"session_id","uuid"?,"title"?}}` | the note (source type `user`) |
 | DELETE `…/{id}/notes/{nid}` | | `{"ok": true}`; 409 once digested |
 | POST `…/{id}/notes/{nid}/confirm` | | the note; 409 digested or not user-said |
-| GET `…/{id}/drafts` | | `{"drafts":[draft]}` (waiting or sending) |
+| GET `…/{id}/drafts` | | `{"drafts":[draft]}`: waiting or sending, then the 10 latest `closed` (by `status`) |
 | POST `…/{id}/drafts/{did}/send` | | `{"message","session_id"}`; 400 already sent or discarded |
 | POST `…/{id}/drafts/{did}/discard` | | `{"ok": true}`; 400 already sent |
 | GET `…/{id}/counts` | | the counts |
@@ -1062,7 +1064,7 @@ specialist). A sidebar row after Bots, flag on only. Three columns, like the Bot
 
 | Tab | Shows |
 |---|---|
-| Learned ("· N new": items of updates newer than the last one opened here; opening the tab marks the newest seen, and the count clears once the user leaves the tab) | the 5 latest updates, each item with its kind, Revert and state; Run now ("Updating… started N s ago" while it runs, polling `…/nightly`); a line when the last update stopped early and changed nothing; Waiting for you (drafts, Review and send, Discard) |
+| Learned ("· N new": items of updates newer than the last one opened here; opening the tab marks the newest seen, and the count clears once the user leaves the tab) | the 5 latest updates, each item with its kind, Revert and state; Run now ("Updating… started N s ago" while it runs, polling `…/nightly`); a line when the last update stopped early and changed nothing; Waiting for you (drafts, Review and send, Discard); Closed reports (reports no longer followed up) |
 | Memory | Always loaded: the entries in plain words with basis and size against the cap; a selected entry's basis, where it came from, last confirmed, retires when, its id under Details, and "Ask the specialist to change this" (a message into the main chat); Topic knowledge (titles); the Inbox (kind, claim, source, "In effect now" or "Waiting") |
 | Skills | list, read, edit, add (name, when to use it, steps), delete |
 | People | the table: area, owner, service (a connected one), handle or channel, notes |
@@ -1133,8 +1135,9 @@ function that runs a side-session process).
 - Any user message after a pull makes the task not quiet, so it gets a reviewer run; the app cannot tell a
   correction from any other message without a model.
 - A breakout's Edit and Write tools are refused inside its own workroom too (the `.specialist/**` deny rule covers
-  it).
-- A draft counts as sent when any successful service call follows the send request in the conversation (§6).
+  it). Claude Code's rules follow gitignore semantics with no exceptions (verified: a deny on `<dir>/*` refuses a
+  write in `<dir>/work/`), so the deny cannot be narrowed without listing every file under `.specialist/`, which
+  would not cover breakouts and records made later.
 - The breakout card store is in-page: after a reload, open breakouts come back as chips with Reopen, not as cards.
 - Per-task state under `.state/{tasks,signals,stuck,pulled}/` goes after 30 days untouched, and with it that task's
   chips.

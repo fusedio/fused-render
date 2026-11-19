@@ -936,7 +936,7 @@ def _handle_approve(args: dict) -> dict:
     if policy != "ask_always" and _chat_allows(tool_name, tool_input):
         # A service call let through by the chat's own "Always approve" has
         # no grant (only a card the user answers records one, server side:
-        # docs/specialists CONTRACT C2), so its tool refuses to run.
+        # docs/specialists.md), so its tool refuses to run.
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
 
@@ -2275,7 +2275,7 @@ EXPERT_SCHEMAS = [
 
 # ------------------------------------------------------------ specialists
 #
-# The specialist task tools (docs/specialists PLAN A.8, B.4), through the
+# The specialist task tools (docs/specialists.md), through the
 # server's `/api/specialists/tools/<name>`. Listed only when agent.py stamped
 # `FUSED_RENDER_SPECIALIST_ORIGIN` (a task run with at least one specialist).
 # `specialist_breakout` raises its own offer card here, with the approval
@@ -2286,7 +2286,16 @@ SPECIALIST_TOOLS = ("specialist_list", "specialist_pull", "specialist_check",
 SPECIALIST_OFFER_TOOL = "mcp__%s__specialist_breakout" % SERVER_NAME
 #: How long an offer card waits for the user (agent.SPECIALIST_OFFER_CEILING
 #: sits above it); a check runs a side session (harness 600 s) plus slack.
-OFFER_WAIT_S = float(os.environ.get("FUSED_RENDER_SPECIALIST_OFFER_WAIT_S", "900"))
+def _env_seconds(name: str, default: float) -> float:
+    """A positive number of seconds from env `name`; a missing, bad or non-positive value is `default`."""
+    try:
+        v = float(os.environ.get(name) or 0)
+    except ValueError:
+        v = 0.0
+    return v if 0 < v < float("inf") else float(default)
+
+
+OFFER_WAIT_S = _env_seconds("FUSED_RENDER_SPECIALIST_OFFER_WAIT_S", 900)
 SPECIALIST_CHECK_TIMEOUT = 600 + 60
 _NOTE_KINDS = ["gap", "correction", "convention", "suspected-bug", "behaviour", "case"]
 OFFER_ACCEPTED = ("The user opened a breakout with the %s specialist for: %s. It is "

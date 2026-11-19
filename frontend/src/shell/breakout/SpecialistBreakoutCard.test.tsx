@@ -1,4 +1,4 @@
-// The specialist breakout card (docs/specialists PLAN C.4): the chat it mounts,
+// The specialist breakout card (docs/specialists.md): the chat it mounts,
 // the close flow that drafts the summary into the task's composer, and Discard.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();

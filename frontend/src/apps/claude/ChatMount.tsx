@@ -287,7 +287,7 @@ export interface ChatMountProps {
   onBreakoutControl?: (ctl: { available: boolean; picking: boolean; toggle: () => void } | null) => void;
   /** With `breakout`: the chat's own session id + transcript, for Send back. */
   onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void; send?: (text: string) => void }) => void;
-  /** SPECIALISTS (docs/specialists PLAN B.9): fields merged into every `start`
+  /** SPECIALISTS (docs/specialists.md): fields merged into every `start`
    *  body — `{specialist: "<id>:main"}` or `"<id>:breakout:<bid>"`. */
   extraParams?: Record<string, string>;
   /** `/clear` and the host's Clear call this instead of going back to Chats. */

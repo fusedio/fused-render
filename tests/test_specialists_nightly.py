@@ -531,3 +531,16 @@ def test_nightly_with_only_bookkeeping_lists_nothing(monkeypatch):
     run = changes.runs(s.id)[0]
     assert run["summary"] == "Nothing new was learned; 1 entry was confirmed again."
     assert said["id"] not in {n["id"] for n in inbox.undigested(s.id)}
+
+
+def test_job_killed_from_outside_reads_interrupted(monkeypatch):
+    """Polish 5 (live): an app restart SIGTERMs the job (exit 143); that is an interruption, not an error."""
+    s, said, _guess, _corr = _setup()
+    from fused_render.specialists import harness
+    monkeypatch.setattr(harness, "_spawn", lambda call: {"ok": False, "answer": "", "transcript": [], "killed": True,
+                                                         "error": "Claude Code was stopped (code 143)"})
+    res = nightly.run_job(s.id)
+    assert res["status"] == "error" and res["changes"] == {}
+    assert nightly.status(s.id)["stopped_empty"] == "interrupted"
+    assert said["id"] in {n["id"] for n in inbox.undigested(s.id)}
+    assert "active" not in nightly.state(s.id)

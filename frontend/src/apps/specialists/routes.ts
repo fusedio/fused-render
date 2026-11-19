@@ -1,4 +1,4 @@
-// The /specialists URL space (docs/specialists/PLAN.md C.4), spelled once here
+// The /specialists URL space (docs/specialists.md), spelled once here
 // like apps/bots/routes.ts: the shell's dispatcher, the sidebar and the page
 // all ask this module.
 //

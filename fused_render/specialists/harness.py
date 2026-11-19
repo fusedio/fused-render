@@ -47,6 +47,8 @@ ROWS_KEPT = 300
 LINE_MAX = 4000
 BUSY = "the specialist is busy; try again in a minute"
 CLOSED = "the server is shutting down; no new specialist session starts"
+#: Exit codes of a process stopped by SIGTERM / SIGKILL / SIGINT (as a negative signal or a shell's 128 + n).
+KILLED_CODES = (-15, -9, -2, 143, 137, 130)
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "low"
 
@@ -237,6 +239,11 @@ def _spawn(call: dict) -> dict:
         if result is None and closed():
             out["error"] = CLOSED
             return out
+        if result is None and (proc.returncode or 0) in KILLED_CODES:
+            # Stopped from outside (the app restarting, the system): an interruption, not the session's error.
+            out["killed"] = True
+            out["error"] = f"Claude Code was stopped (code {proc.returncode}) before it answered"
+            return out
         if result is None:
             tail = err.decode("utf-8", "replace").strip()[-400:]
             out["error"] = (f"Claude Code exited (code {proc.returncode}) without an answer"
@@ -389,6 +396,8 @@ def run_side(spec, kind: Literal["check", "reviewer", "nightly"], prompt: str, *
                    transcript=res.get("transcript") or [], answer=res.get("answer") or "")
         if res.get("error"):
             rec["error"] = res["error"]
+        if res.get("killed"):
+            rec["killed"] = True
         if res.get("cost_usd") is not None:
             rec["cost_usd"] = res["cost_usd"]
     finally:

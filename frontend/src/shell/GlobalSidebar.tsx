@@ -494,7 +494,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // PREFIX, like AI Models below: /bots/<id> and /bots/tasks are the same page
   // through a different door, not a second destination (apps/bots/routes.ts).
   const botsActive = isBotsPath(pathname);
-  // Specialists (docs/specialists): a row after Bots, only with the flag on.
+  // Specialists (docs/specialists.md): a row after Bots, only with the flag on.
   const specialistsOn = useSpecialistsEnabled();
   const specialistsActive = isSpecialistsPath(pathname);
   const tasksActive = pathname === "/tasks";

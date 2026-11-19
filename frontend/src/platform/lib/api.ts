@@ -1586,7 +1586,7 @@ export interface Prefs {
   // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
   // default). Optional like `queue`: absent reads as off.
   breakout?: { enabled: boolean };
-  // Specialists (`specialists_enabled`, shell/prefs.py; docs/specialists).
+  // Specialists (`specialists_enabled`, shell/prefs.py; docs/specialists.md).
   // Experimental, off by default. Optional like `breakout`: absent reads as off.
   specialists?: { enabled: boolean };
   // The slow in-canvas screenshot fallback on a Mac

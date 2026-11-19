@@ -1,4 +1,4 @@
-"""Claude Code hook for the specialists feature (docs/specialists PLAN A.7, C.2).
+"""Claude Code hook for the specialists feature (docs/specialists.md).
 
 agent.py attaches it (through `--settings`) as:
 

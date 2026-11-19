@@ -1,6 +1,6 @@
 """`/api/specialists*`: the core HTTP API (PLAN B.5 "Core").
 
-Every route depends on `flag.require` (flag off: 404 `{"error": "not found"}`, as if the route did not exist).
+Every route depends on `flag.require` (flag off: 404 `{"detail": "Not Found"}`, as if the route did not exist).
 POSTs need `X-Fused: 1` (PUT/PATCH/DELETE are preflighted by the browser anyway). Errors are `{"error": sentence}`:
 400 a bad body, 404 an unknown specialist, 409 a conflict. Routes are plain `def`s (FastAPI's threadpool): they
 read files and run git, never on the event loop.
