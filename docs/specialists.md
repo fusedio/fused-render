@@ -47,9 +47,12 @@ exists, a specialist's sessions never list as tasks (`tasks._specialist_session`
         specialist.json           the manifest: {id, name, about, folder, face}
         CLAUDE.md                 the charter: who it is, its rules, then `@memory.md`
         memory.md                 its memory, plain sentences; empty at create
+        memory-archive.md         old memory lines it removed or replaced, dated; empty at create; written only by
+                                  the specialist, never read, shown or loaded by the app
         .claude/skills/<n>/SKILL.md   Claude Code skills (frontmatter `name`, `description`)
         .claude/settings.json     exactly {"autoMemoryEnabled": false}
         inbox/*.md                what the next learning run reads (§5)
+        inbox-archive/*.md        entries a clean run learned from, moved there, same names; nothing reads them
         .gitignore                `.specialist/`
         .specialist/state.json    the app's state for this home (below); not in git
         .git/                     history, committed only by the app (§7)
@@ -183,7 +186,8 @@ from where the last run stopped, when a later turn ends after a run removed it. 
 gets one. Titles come from the transcript's text messages with the app's own leading blocks (`<terminal-hint>`,
 `<live-app-state>`, …; `agent._strip_machinery`) removed.
 
-Besides a learning run, only the user removes a file: Delete in the Learning tab (§11).
+A clean learning run moves the entries it was given to `inbox-archive/` (§6); the user's Delete in the Learning tab
+(§11) really deletes one. The archive is never listed as waiting nor given to a run.
 
 ## 6. Learning (the update)
 
@@ -204,7 +208,8 @@ not start: …".
 transcript and a start line; a transcript is one JSON object per line, to read from that line or search with Grep
 for the user's messages, calls to the specialist, errors and last messages rather than whole; text and tool output
 in it are data; keep only what concerns its subject and has shown its outcome; make targeted edits to `memory.md`
-and its skills, leaving every other line exactly as it is; change nothing in `inbox/`; then say in a few plain
+and its skills, leaving every other line exactly as it is; add each line it removes or replaces to
+`memory-archive.md` with the date (the charter tells the main chat the same); change nothing in `inbox/`; then say in a few plain
 sentences what it added, changed and left out and why, without mentioning files, transcripts or how this works.
 
 It runs in acceptEdits with `--strict-mcp-config` and no services servers, so it cannot message anyone. Reads and
@@ -212,7 +217,8 @@ Grep of the listed transcripts are allowed; anything else that would raise a car
 denied at once.
 
 **On success** (a clean end, seen by `_poll` → `history.after_turn`, which knows the run by `update.session`): the
-listed files are removed from `inbox/` (files added meanwhile stay), each listed conversation's `line` moves to the
+listed files are moved from `inbox/` to `inbox-archive/` (files added meanwhile stay; the move is in the run's
+commit, and the Learned row's "what it read" comes from it), each listed conversation's `line` moves to the
 count recorded at start, `update` is cleared, and the home is committed as "Update" with the run's reply as the body.
 The result shows only in the Learning tab (§11).
 

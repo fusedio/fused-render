@@ -85,8 +85,9 @@ prepared excerpts.
 ## Decision, 2026-11-19: archive instead of delete
 
 Nothing the specialist learned from is hard-deleted. After a learning run, the entries it was given are moved from
-`inbox/` to `inbox-archive/` in its folder. When a memory line is removed or replaced, the old line goes into
-`memory-archive.md`. Both are plain files kept for reference: not shown in the UI, not loaded into the
+`inbox/` to `inbox-archive/` in its folder. When a memory line is removed or replaced because it is out of date, no longer relevant or merged into
+another, the old line goes into `memory-archive.md`. A line the user says is wrong is simply deleted and is not
+archived. Both are plain files kept for reference: not shown in the UI, not loaded into the
 specialist's context, and not enforced by the app. The memory archive is kept by instruction only (the learning
 run's prompt and the specialist's description say to do it). An entry the user deletes from Waiting is really
 deleted, since it was never learned from.

@@ -159,15 +159,17 @@ def turn_ended(target: str, session_id: str) -> bool:
 
 
 def after_turn(home: str, session_id: str) -> None:
-    """A clean turn of a session in the home ended. A learning run's turn removes the inbox files it was given, moves
+    """A clean turn of a session in the home ended. A learning run's turn moves the inbox files it was given to
+    `inbox-archive/`, moves
     each listed conversation's start line to where the run began, and commits "Update" with its reply as the body;
     any other commits "Chat: <first words of the prompt>"."""
     msgs, _ = chat.messages(chat.transcript(home, session_id))
     up = chat.load(home)["update"]
     if up and up["session"] == session_id:
-        for name in up["files"]:
+        os.makedirs(os.path.join(home, "inbox-archive"), exist_ok=True)
+        for name in up["files"]:  # kept, not deleted: nothing reads them
             try:
-                os.remove(os.path.join(home, "inbox", name))
+                os.replace(os.path.join(home, "inbox", name), os.path.join(home, "inbox-archive", name))
             except OSError:
                 pass
 
@@ -188,11 +190,12 @@ def after_turn(home: str, session_id: str) -> None:
 
 def changes(home: str) -> list[dict]:
     """`[{sha, at, label, read, changed}]`, newest first: every learning run ("Update"; `read` counts the inbox
-    entries it removed) and every other commit that changed memory or skills, the first commit excepted."""
+    entries it moved to the archive) and every other commit that changed memory or skills, the first commit excepted."""
     if not available() or not os.path.isdir(os.path.join(home, ".git")):
         return []
     rows = []
-    for block in _git(home, "log", "--format=%x1e%H%x1f%ct%x1f%P%x1f%s", "--name-status").stdout.split("\x1e")[1:]:
+    log = _git(home, "log", "--no-renames", "--format=%x1e%H%x1f%ct%x1f%P%x1f%s", "--name-status").stdout
+    for block in log.split("\x1e")[1:]:
         head, _, files = block.partition("\n")
         sha, at, parents, subject = head.split("\x1f")
         names = [ln.split("\t") for ln in files.splitlines() if "\t" in ln]
@@ -209,7 +212,8 @@ def learned(home: str, sha: str) -> dict:
     subject, _, reply = _git(home, "show", "-s", "--format=%s%x1f%b", sha).stdout.partition("\x1f")
     if subject != "Update":
         return {}
-    gone = _git(home, "show", "--format=", "--name-only", "--diff-filter=D", sha, "--", "inbox").stdout.split()
+    gone = _git(home, "show", "--no-renames", "--format=", "--name-only", "--diff-filter=D", sha, "--",
+                "inbox").stdout.split()
     return {"reply": reply.strip(), "read": [notes.parse(_git(home, "show", f"{sha}^:{n}").stdout) for n in gone]}
 
 

@@ -31,8 +31,8 @@ TOKEN_TTL_S = 7 * 24 * 3600
 DENY = (".git/**", paths.APP_DIR + "/**", ".claude/settings.json", ".claude/settings.local.json")
 APPEND = {
     "main": "This is your main chat with the user.",
-    "breakout": ("This is a breakout beside one of the user's tasks. Your next learning run reads this conversation, so "
-                 "do not edit memory.md or your skills here."),
+    "breakout": ("This is a breakout beside one of the user's tasks. Your next learning run reads this "
+                 "conversation, so do not edit memory.md or your skills here."),
     "update": ("This is your learning run; nobody is watching it. Work only with the files in this folder and the "
                "transcripts your inbox entries name."),
 }
@@ -74,8 +74,8 @@ def session_servers(spec: store.Specialist) -> dict:
     # A send waits behind its approval card, as long as the permission server waits.
     timeout = (int(agent._permission_wait()) + 60) * 1000
     return {server: {"command": agent._stable_python(),
-                     "args": [script, bpaths.server_origin_quiet(), spec.id, token, f"api/specialists/{spec.id}/{server}",
-                              server],
+                     "args": [script, bpaths.server_origin_quiet(), spec.id, token,
+                              f"api/specialists/{spec.id}/{server}", server],
                      "env": {"PYTHONUTF8": "1"}, "timeout": timeout, **agent._ALWAYS_LOAD_KEYS["claude"]}
             for server in services.SERVERS}
 
