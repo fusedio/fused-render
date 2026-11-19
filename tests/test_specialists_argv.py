@@ -96,14 +96,13 @@ def test_a_spec_folds_rules_servers_and_prompt(agent, rd):
     assert _after(argv, "--permission-mode") == "auto"  # the user's pill
 
 
-def test_an_update_spec_carries_the_unattended_env_and_no_ask_rule(agent, rd):
-    spec = dict(SPEC, kind="update", ask=[], mcp_servers={}, append="",
-                policy_env={"FUSED_SPECIALIST_UNATTENDED": "1"})
+def test_an_update_spec_keeps_the_send_ask_rule_and_carries_the_unattended_env(agent, rd):
+    spec = dict(SPEC, kind="update", append="", policy_env={"FUSED_SPECIALIST_UNATTENDED": "1"})
     (rd / "specialist.json").write_text(json.dumps(spec))
-    argv = _argv(agent, rd, file="/w/specialists/canvas", cli_mode="acceptEdits")
-    assert "ask" not in _settings(argv)["permissions"]
+    argv = _argv(agent, rd, file="/w/specialists/canvas", cli_mode="auto")
+    assert _settings(argv)["permissions"]["ask"] == ["mcp__specialist_sends"]  # its card is refused at once
     assert _mcp(rd)["fused_render"]["env"]["FUSED_SPECIALIST_UNATTENDED"] == "1"
-    assert list(_mcp(rd)) == ["fused_render"]
+    assert _after(argv, "--permission-mode") == "auto"
 
 
 # ------------------------------------------------------------------ _start ---

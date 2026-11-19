@@ -92,14 +92,22 @@ specialist's context, and not enforced by the app. The memory archive is kept by
 run's prompt and the specialist's description say to do it). An entry the user deletes from Waiting is really
 deleted, since it was never learned from.
 
-## Decision, 2026-11-19: the learning run is not fenced
+## Decision, 2026-11-19: specialist agents are not constrained
 
-The owner asked why the learning run's tools were constrained and chose to open them up. It runs with the same
-tools as the specialist's own chat, in Claude Code's Auto mode, where the harness's own classifier decides what is
-safe. Two limits remain because nobody is watching, not because the run is distrusted: anything that would wait for
-a person is refused at once, and a send to a connected service still needs approval, so an unattended run cannot
-send. Accepted risk: transcripts contain other programs' output, and the run acts on what it reads without a
-person in the loop.
+The owner's principle for these agents: "let the AI free". No tool limits, deny rules, allow lists or forced
+approvals exist for a specialist's sessions (its chat, a breakout, a learning run and the readers it starts). The
+learning run uses the freest permission mode the app supports. Connected services behave like any other tool
+under the session's permission mode, so the earlier rule "a send always asks" is withdrawn. A specialist's chat and
+breakouts default to the app's most permissive mode; the user can still change the mode. What remains protects the
+app's own process and data, not the agent's freedom: the app cleans its git configuration before it commits, a
+learning run and a conversation with the same specialist do not overlap, and a failed run changes nothing.
+
+Accepted risks, stated to the owner: transcripts contain other programs' output, and an unattended learning run
+acts on what it reads with nobody approving, including through connected services.
+
+The learning prompt's shape (owner's design): the learning run, usually on Sonnet, starts one Haiku reader per
+conversation entry in parallel; each reads its transcript and reports what is useful for the specialist's subject;
+the learning run then decides across all reports and the notes.
 
 ## Cut list
 
