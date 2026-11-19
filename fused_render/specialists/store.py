@@ -141,13 +141,12 @@ def end_idle_hosts(home: str) -> None:
     from fused_render.claude_agent import agent_module
 
     agent = agent_module()
-    live = {r["run_id"] for r in agent._live_runs_in(home)}
-    for run_id in agent._hosts_in(home):
-        if run_id not in live:
-            agent._cancel_run(run_id, interrupt_first=False)
+    for run in agent._live_runs_in(home, idle=True):
+        if not run["turn_open"]:
+            agent._cancel_run(run["run_id"], interrupt_first=False)
             # Ending a session between turns is no stop: with the marker the chat shows "Stopped." under its reply.
             try:
-                os.remove(os.path.join(agent.RUNS, run_id, "cancelled"))
+                os.remove(os.path.join(agent.RUNS, run["run_id"], "cancelled"))
             except OSError:
                 pass
 
@@ -160,8 +159,8 @@ def delete(spec_id: str) -> None:
     from fused_render.claude_agent import agent_module
 
     agent = agent_module()
-    for run_id in agent._hosts_in(s.home):
-        agent._cancel_run(run_id, interrupt_first=False)
+    for run in agent._live_runs_in(s.home, idle=True):
+        agent._cancel_run(run["run_id"], interrupt_first=False)
     trash = os.path.join(paths.state_root(), "trash")
     os.makedirs(trash, exist_ok=True)
     shutil.move(s.home, os.path.join(trash, f"{s.id}-{int(time.time())}"))

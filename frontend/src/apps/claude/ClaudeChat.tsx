@@ -4550,10 +4550,13 @@ function ChatBody(props: ChatBodyProps) {
   const actions = useMemo(
     () => ({
       // Allowing a task's specialist_breakout opens the breakout it asked for,
-      // seeded with the task's last exchange, with its reason as the question.
+      // seeded with the task's last exchange, with its reason as the question,
+      // once the allow has landed.
       decidePermission: (...a: Parameters<typeof controller.decidePermission>) => {
-        const row = a[1] === "allow" ? controller.getState().permissions.find((p) => p.id === a[0]) : undefined;
-        if (row?.tool === SPECIALIST_BREAKOUT_TOOL) {
+        return controller.decidePermission(...a).then(() => {
+          // The row as the server answered (a held or failed decision is not an allow).
+          const row = controller.getState().permissions.find((p) => p.id === a[0]);
+          if (row?.tool !== SPECIALIST_BREAKOUT_TOOL || row.decision !== "allow" || row.queuedAhead !== undefined) return;
           const { specialist, reason } = row.input as { specialist?: string; reason?: string };
           // By id, or by name ignoring case and spacing, as the server's `store.find`.
           const key = (specialist || "").split(/\s+/).filter(Boolean).join(" ");
@@ -4563,8 +4566,7 @@ function ChatBody(props: ChatBodyProps) {
             const last = turns[turns.length - 1];
             if (s && last) openBreakoutFor(exchangeKeys(turns, last.key), reason, { id: s.id, name: s.name, home: s.home });
           }, () => {});
-        }
-        return controller.decidePermission(...a);
+        });
       },
       answerQuestion: controller.answerQuestion,
       decidePlan: controller.decidePlan,

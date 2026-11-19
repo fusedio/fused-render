@@ -3,9 +3,8 @@
 // chat's breakout "With" read one answer.
 //
 // The same module-level cache + subscribe shape as canvases-flag.ts: one read
-// per page load through the single-flight `getPrefsShared` (so it shares the
-// GET the chat's own feature-flag read fires — apps/claude/feature-flag.ts also
-// publishes here from that read), a generation guard so a read that departed
+// per page load through the single-flight `getPrefsShared` (shared with the
+// other flag modules), a generation guard so a read that departed
 // before a publish cannot overwrite it, and `publishSpecialistsEnabled` for the
 // Preferences toggle.
 //
@@ -41,25 +40,11 @@ export function readSpecialistsFlag(): Promise<void> {
   return reading;
 }
 
-/** Hand over a known-fresh answer (the toggle's PUT reply, or the chat's own
- *  prefs read in apps/claude/feature-flag.ts). */
+/** Hand over a known-fresh answer (the toggle's PUT reply). */
 export function publishSpecialistsEnabled(on: boolean): void {
   generation += 1;
   reading = Promise.resolve();
   set(on === true);
-}
-
-/** The publish generation, taken by another prefs reader when its GET departs
- *  (apps/claude/feature-flag.ts) and handed back with its answer. */
-export function specialistsFlagStamp(): number {
-  return generation;
-}
-
-/** Another reader's prefs answer, honoured only when nothing fresher was
- *  published while its GET was in flight. */
-export function feedSpecialistsEnabled(on: boolean, stamp: number): void {
-  if (stamp !== generation) return;
-  publishSpecialistsEnabled(on);
 }
 
 /** The flag right now — a plain read for code outside React. */

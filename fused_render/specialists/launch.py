@@ -3,9 +3,10 @@
 `agent._start` calls `spec(key, file)` for a start carrying `specialist="<id>:<kind>"` (target: the home), writes
 the answer to the run dir, and `_claude_argv` folds it into the CLI's argv:
 
+    kind        main, breakout or update (`_start` records no pill settings for an update)
     deny        Edit rules for the app's own files (`.git`, `.specialist`, the project's Claude Code settings)
     ask         `mcp__specialist_sends`: a send to a connected service raises the approval card in every mode
-    mcp_servers the session MCP servers (`sessmcp.py`) for the connected services' reads and sends
+    mcp_servers the session MCP servers (`bots/botmcp.py`) for the connected services' reads and sends
     append      one sentence saying which kind of session this is
     policy_env  for the update, FUSED_SPECIALIST_UNATTENDED: the permission server denies at once anything that
                 would raise a card, since nobody is there to answer it
@@ -35,11 +36,6 @@ APPEND = {
 _TOKENS_LOCK = threading.Lock()
 
 
-def root() -> str:
-    """The specialists root (agent.py's string test for "inside a home")."""
-    return paths.root()
-
-
 # ------------------------------------------------------------------- tokens ---
 def _tokens_path() -> str:
     return os.path.join(paths.state_root(), "tokens.json")
@@ -62,21 +58,22 @@ def check_token(spec_id: str, token: str) -> bool:
 
 
 # ------------------------------------------------------------------ servers ---
-def session_servers(spec: store.Specialist, kind: str) -> dict:
-    """`{name: mcp entry}` for `sessmcp.py <origin> <id> <kind> - <server>`, one per services server."""
+def session_servers(spec: store.Specialist) -> dict:
+    """`{name: mcp entry}`, one per services server: the bots' stdio pipe (`bots/botmcp.py`) pointed at
+    `/api/specialists/<id>/<server>/` (routes.py)."""
     from fused_render.bots import paths as bpaths
     from fused_render.claude_agent import agent_module
 
     agent = agent_module()
-    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessmcp.py")
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bots", "botmcp.py")
     script = agent._stable_script(src) or src
-    # The token travels in the environment, not argv (a process list shows argv to anyone).
-    env = {"PYTHONUTF8": "1", "FUSED_SPECIALIST_TOKEN": new_token(spec.id)}
+    token = new_token(spec.id)
     # A send waits behind its approval card, as long as the permission server waits.
     timeout = (int(agent._permission_wait()) + 60) * 1000
     return {server: {"command": agent._stable_python(),
-                     "args": [script, bpaths.server_origin_quiet(), spec.id, kind, "-", server],
-                     "env": env, "timeout": timeout, **agent._ALWAYS_LOAD_KEYS["claude"]}
+                     "args": [script, bpaths.server_origin_quiet(), spec.id, token, f"api/specialists/{spec.id}/{server}",
+                              server],
+                     "env": {"PYTHONUTF8": "1"}, "timeout": timeout, **agent._ALWAYS_LOAD_KEYS["claude"]}
             for server in services.SERVERS}
 
 
@@ -101,8 +98,8 @@ def spec(key: str, file: str) -> dict:
     hm.ensure_settings(s.home)
     history.commit_edits(s.home)
     update = kind == "update"
-    return {"id": s.id, "kind": kind, "home": s.home, "deny": _edit_rules(s.home),
+    return {"kind": kind, "deny": _edit_rules(s.home),
             "ask": [] if update else ["mcp__specialist_sends"],
-            "mcp_servers": {} if update else session_servers(s, kind),
+            "mcp_servers": {} if update else session_servers(s),
             "append": APPEND[kind],
             "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if update else {}}

@@ -1402,16 +1402,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     app.include_router(sp_tools.router)
     app.include_router(sp_routes.router)
-    app.exception_handler(sp_flag.Off)(sp_flag.off_handler)
     app.middleware("http")(sp_flag.off_middleware)
 
     @on_startup
     async def _startup_specialists():
         if not sp_flag.on():
             return
-        # agent.py and the agent router's post-hook read these two off sys.modules.
-        import fused_render.specialists.agent_hooks  # noqa: F401
-        import fused_render.specialists.launch  # noqa: F401
         from fused_render.specialists import scheduler, seed
 
         await asyncio.to_thread(seed.seed)

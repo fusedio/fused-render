@@ -2,7 +2,8 @@
 forwards every tool call to the fused-render server, where the agent engine runs
 it against the bot's browser.
 
-    argv: <server origin> <bot id> <task token>
+    argv: <server origin> <bot id> <task token> [<base path> <server name>]
+          (a specialist's session: `api/specialists/<id>/<server>`, specialists/launch.py)
 
     initialize   -> capabilities.tools
     tools/list   -> GET  <origin>/api/bots/<id>/tools?token=<token>   (cached for the process)
@@ -27,12 +28,13 @@ import urllib.parse
 import urllib.request
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_NAME = "bot"
 SERVER_VERSION = "1"
 
 ORIGIN = (sys.argv[1] if len(sys.argv) > 1 else "").rstrip("/")
 BOT_ID = sys.argv[2] if len(sys.argv) > 2 else ""
 TOKEN = sys.argv[3] if len(sys.argv) > 3 else ""
+BASE = sys.argv[4] if len(sys.argv) > 4 else "api/bots/" + urllib.parse.quote(BOT_ID, safe="")
+SERVER_NAME = sys.argv[5] if len(sys.argv) > 5 else "bot"
 
 _stdout_lock = threading.Lock()
 _tools_lock = threading.Lock()
@@ -63,7 +65,7 @@ def _send(payload: dict) -> None:
 
 
 def _url(path: str) -> str:
-    return "%s/api/bots/%s/%s" % (ORIGIN, urllib.parse.quote(BOT_ID, safe=""), path)
+    return "%s/%s/%s" % (ORIGIN, BASE, path)
 
 
 def _http_error(exc: Exception) -> str:
@@ -74,8 +76,8 @@ def _http_error(exc: Exception) -> str:
             msg = body.get("error") if isinstance(body, dict) else None
         except (ValueError, OSError):
             msg = None
-        return "the bot server refused the call (HTTP %d): %s" % (exc.code, msg or exc.reason)
-    return "the bot server could not be reached: %s" % exc
+        return "the server refused the call (HTTP %d): %s" % (exc.code, msg or exc.reason)
+    return "the server could not be reached: %s" % exc
 
 
 def _tools() -> list:
@@ -103,7 +105,7 @@ def _call(name: str, args: dict) -> dict:
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return {"content": [{"type": "text", "text": "error: " + _http_error(exc)}], "isError": True}
     if not isinstance(data, dict) or not isinstance(data.get("content"), list):
-        return {"content": [{"type": "text", "text": "error: the bot server sent no tool result"}], "isError": True}
+        return {"content": [{"type": "text", "text": "error: the server sent no tool result"}], "isError": True}
     return {"content": data["content"], "isError": bool(data.get("isError"))}
 
 

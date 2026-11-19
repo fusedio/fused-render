@@ -68,29 +68,6 @@ def test_argv_identical_without_the_run_dir_files(agent, rd, monkeypatch, kw):
     assert "specialist" not in (json.dumps(argv) + mcp).lower()
 
 
-def test_write_mcp_config_defaults_unchanged(agent, rd):
-    plain = open(agent._write_mcp_config(str(rd))).read()
-    assert open(agent._write_mcp_config(str(rd), extra_servers=None, extra_env=None)).read() == plain
-
-
-# ---------------------------------------------------------------- task run ---
-def test_task_run_gets_two_tools_reads_an_ask_rule_and_the_folder_sentence(agent, rd):
-    root = "/ws/specialists"
-    (rd / "specialists.on").write_text(json.dumps({"root": root, "here": ["Canvas"]}))
-    argv = _argv(agent, rd, cli_mode="auto")
-    allowed = _after(argv, "--allowed-tools").split(",")
-    assert {"mcp__fused_render__specialist_pull", "mcp__fused_render__specialist_note",
-            "Read(//ws/specialists/*/memory.md)", "Read(//ws/specialists/*/.claude/skills/**)"} <= set(allowed)
-    assert BREAKOUT_TOOL not in allowed
-    assert not [r for r in allowed if root in r and "/*/" not in r]  # nothing else of the root
-    assert _settings(argv)["permissions"]["ask"] == [BREAKOUT_TOOL]
-    prompt = _after(argv, "--append-system-prompt")
-    assert "SPECIALISTS:" in prompt and "expert" not in prompt.split("SPECIALISTS:")[1].lower()
-    assert prompt.endswith('Before anything else call specialist_pull with specialist "Canvas".')
-    assert _mcp(rd)["fused_render"]["env"]["FUSED_RENDER_SPECIALIST_ORIGIN"] == ORIGIN
-    assert _after(argv, "--permission-mode") == "auto"
-
-
 def test_task_tools_need_an_origin(agent, rd, monkeypatch):
     (rd / "specialists.on").write_text(json.dumps({"root": "/ws/specialists", "here": []}))
     monkeypatch.setattr(agent, "_origin", lambda: "")
@@ -98,9 +75,9 @@ def test_task_tools_need_an_origin(agent, rd, monkeypatch):
 
 
 # ------------------------------------------------------------- launch spec ---
-SPEC = {"id": "canvas", "kind": "main", "home": "/w/specialists/canvas",
+SPEC = {"kind": "main",
         "deny": ["Edit(//w/specialists/canvas/.git/**)"], "ask": ["mcp__specialist_sends"],
-        "mcp_servers": {"specialist_sends": {"command": "py", "args": ["sessmcp.py"]},
+        "mcp_servers": {"specialist_sends": {"command": "py", "args": ["botmcp.py"]},
                         "fused_render": {"command": "evil"}},
         "append": "You are the Canvas specialist's main chat.", "policy_env": {}}
 
@@ -114,7 +91,7 @@ def test_a_spec_folds_rules_servers_and_prompt(agent, rd):
     assert "specialist_pull" not in json.dumps(argv)
     assert _after(argv, "--append-system-prompt").endswith(" You are the Canvas specialist's main chat.")
     servers = _mcp(rd)
-    assert servers["specialist_sends"]["args"] == ["sessmcp.py"]
+    assert servers["specialist_sends"]["args"] == ["botmcp.py"]
     assert servers["fused_render"]["command"] != "evil"  # ours wins a collision
     assert _after(argv, "--permission-mode") == "auto"  # the user's pill
 

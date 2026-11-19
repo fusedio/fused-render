@@ -5126,7 +5126,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # only when the wrapper actually exists (see _fused_cli_note).
     cmd += ["--append-system-prompt",
             _appended_prompt(file, pane, breakout=breakout, s3=s3, experts=experts)
-            + (" " + spec["append"] if spec and spec["append"] else "")
+            + (" " + spec["append"] if spec else "")
             + (_specialists_note(task["here"]) if task else "")]
     settings: dict = {}
     if breakout:
@@ -8111,10 +8111,12 @@ def _live_run_in(folder: str) -> dict:
     return {"run_id": ""}
 
 
-def _live_runs_in(folder: str):
+def _live_runs_in(folder: str, idle: bool = False):
     """Every run with a turn open anywhere in `folder` (`_live_run_in`'s
-    match), newest first, lazily: `{run_id, backend, sessions}`, where
-    `sessions` holds the ids the run answers to — its own conversation
+    match), newest first, lazily: `{run_id, backend, sessions, turn_open}`;
+    with `idle`, also the runs whose session is up between turns (the
+    specialists end a home's idle sessions before its update). `sessions`
+    holds the ids the run answers to — its own conversation
     (`_run_own_session`) and the one it resumed (`resumed_from`). The canvas
     sync asks "is a turn of a session OTHER than the one whose Stop just
     fired still open here?" (`turn_end`): a Stop can arrive while its own
@@ -8138,30 +8140,11 @@ def _live_runs_in(folder: str):
         if not _alive(run_dir):
             continue
         turn_open, _tasks_pending = _turn_state_fold(run_dir, {}, partial=True)
-        if turn_open:
+        if turn_open or idle:
             sessions = {s for s in (_run_own_session(run_dir, meta),
                                     str(meta.get("resumed_from") or "")) if s}
-            yield {"run_id": name, "backend": _meta_backend(meta), "sessions": sessions}
-
-
-def _hosts_in(folder: str) -> list:
-    """Run ids whose claude process is still up (turn open or idle between
-    turns) with `folder` as their working folder: the specialists end a home's
-    idle host before its update runs."""
-    workdir = os.path.abspath(folder)
-    real = os.path.realpath(folder)
-    out = []
-    try:
-        names = sorted(os.listdir(RUNS), reverse=True)
-    except OSError:
-        return out
-    for name in names:
-        run_dir = os.path.join(RUNS, name)
-        meta = _read_run_json(run_dir, "meta.json") or {}
-        target = meta.get("file", "")
-        if target and _same_workdir(target, workdir, real) and _alive(run_dir):
-            out.append(name)
-    return out
+            yield {"run_id": name, "backend": _meta_backend(meta), "sessions": sessions,
+                   "turn_open": turn_open}
 
 
 def _live_session_in(folder: str) -> dict:

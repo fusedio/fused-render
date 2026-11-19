@@ -48,6 +48,9 @@ test("tabs, Edit, note delete, a change's diff", async () => {
   await settle();
   expect(calls).toContain(`DELETE ${S}/notes/n1.md`);
 
+  expect(calls).not.toContain(`GET ${S}/changes`);  // the log is read only while its box is open
+  act(() => r.root.find((n) => n.type === "details" && !!n.props.onToggle).props.onToggle({ currentTarget: { open: true } }));
+  await settle();
   act(() => byText(r, "Update").parent!.parent!.props.onClick());
   await settle();
   expect(calls).toContain(`GET ${S}/changes/abc`);

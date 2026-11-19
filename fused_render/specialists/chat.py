@@ -135,6 +135,7 @@ def task_title(path: str) -> str:
     return words(next((m["text"] for m in msgs if m["role"] == "user"), "")) or "a task"
 
 
+UPDATE_TAG = "<specialist-update>"
 _LAST: dict[str, tuple[int, dict | None]] = {}
 
 
@@ -151,5 +152,8 @@ def last(home: str, session_id: str | None) -> dict | None:
     hit = _LAST.get(path)
     if hit is None or hit[0] != size:
         msgs, _ = messages(path)
-        hit = _LAST[path] = (size, msgs[-1] if msgs else None)
+        m = msgs[-1] if msgs else None
+        if m and m["text"].startswith(UPDATE_TAG):  # update.PROMPT, shown as the chat shows it
+            m = {**m, "text": "Update"}
+        hit = _LAST[path] = (size, m)
     return hit[1]

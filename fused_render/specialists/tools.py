@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Body, Depends, Header
+from fastapi import APIRouter, Body, Header
 
 from fused_render.server.common import _error, _require_fused
-from fused_render.specialists import chat, flag, notes, store
+from fused_render.specialists import chat, notes, store
 from fused_render.specialists import home as hm
 
-router = APIRouter(prefix="/api/specialists/tools", dependencies=[Depends(flag.require)])
+router = APIRouter(prefix="/api/specialists/tools")
 NOTE_MAX = 2000
 REASON_MAX = 300
 

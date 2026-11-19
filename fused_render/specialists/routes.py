@@ -1,6 +1,6 @@
 """`/api/specialists*`: the Bots page's routes and the session MCP servers' door.
 
-Every route depends on `flag.require` (flag off: the unknown-path 404). Writes need `X-Fused: 1`. Errors are
+With the switch off every path is the unknown-path 404 (`flag.off_middleware`). Writes need `X-Fused: 1`. Errors are
 `{"error": sentence}`: 400 a bad body, 404 an unknown specialist, 409 a taken name or a busy specialist. Routes are
 plain `def`s (FastAPI's threadpool): they read files and run git, never on the event loop.
 """
@@ -9,14 +9,14 @@ from __future__ import annotations
 import functools
 import os
 
-from fastapi import APIRouter, Body, Depends, Header, Query
+from fastapi import APIRouter, Body, Header, Query
 from fastapi.responses import JSONResponse
 
 from fused_render.server.common import _error, _require_fused
-from fused_render.specialists import chat, flag, history, launch, notes, services, store, update
+from fused_render.specialists import chat, history, launch, notes, services, store, update
 from fused_render.specialists import home as hm
 
-router = APIRouter(dependencies=[Depends(flag.require)])
+router = APIRouter()
 P = "/api/specialists"
 FIELDS = ("name", "about", "folder", "face")
 
@@ -163,30 +163,30 @@ def specialists_update(spec_id: str, x_fused: str | None = Header(default=None))
 
 
 # ------------------------------------------------------- session MCP door ---
-def _session(spec_id: str, token: str | None, server: str):
+# `bots/botmcp.py` for one services server of a session (launch.session_servers); after the routes above, so a
+# literal segment such as `changes` wins.
+def _session(spec_id: str, token: str, server: str):
     s = _spec(spec_id)
-    if not launch.check_token(spec_id, token or ""):
+    if not launch.check_token(spec_id, token):
         return s, _error("bad or expired session token", 403)
     if server not in services.SERVERS:
         raise ValueError("unknown server")
     return s, None
 
 
-@router.get(P + "/{spec_id}/session-tools")
+@router.get(P + "/{spec_id}/{server}/tools")
 @_handled
-def specialists_session_tools(spec_id: str, server: str = Query(""),
-                               x_specialist_token: str | None = Header(default=None)):
-    _, refused = _session(spec_id, x_specialist_token, server)
+def specialists_session_tools(spec_id: str, server: str, token: str = Query("")):
+    _, refused = _session(spec_id, token, server)
     return refused or {"tools": services.mcp_tools(server)}
 
 
-@router.post(P + "/{spec_id}/session-tool")
+@router.post(P + "/{spec_id}/{server}/tool")
 @_handled
-def specialists_session_tool(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None),
-                             x_specialist_token: str | None = Header(default=None)):
+def specialists_session_tool(spec_id: str, server: str, body: dict = Body(...),
+                             x_fused: str | None = Header(default=None)):
     if guard := _require_fused(x_fused):
         return guard
-    server = str(body.get("server") or "")
-    s, refused = _session(spec_id, x_specialist_token, server)
+    s, refused = _session(spec_id, str(body.get("token") or ""), server)
     args = body.get("args") if isinstance(body.get("args"), dict) else {}
     return refused or services.call(s, server, str(body.get("name") or ""), args)

@@ -14,10 +14,8 @@ _stop: threading.Event | None = None
 
 
 def tick() -> None:
-    from fused_render.specialists import flag, store, update
+    from fused_render.specialists import store, update
 
-    if not flag.on():
-        return
     now = time.time()
     for spec in store.all():
         try:

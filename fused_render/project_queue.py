@@ -46,13 +46,13 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 import threading
 import time
 
 from fused_render import current_apps, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.index.ignore import MountGuard
+from fused_render.specialists import paths as sp_paths
 
 logger = logging.getLogger(__name__)
 
@@ -158,20 +158,6 @@ def _is_root(path: str) -> bool:
     return os.path.dirname(native) == native
 
 
-def _specialist_home(project: str) -> bool:
-    """A path inside a specialist's home (docs/specialists-v2.md), with the flag on: "no folder", so its
-    main chat and its breakouts run in parallel and never queue behind each other. Read off `sys.modules`, never
-    imported: with specialists never loaded (flag off) this is one dict lookup and False. Not cached with the
-    folder keys, because the flag can flip while the server runs."""
-    mod = sys.modules.get("fused_render.specialists.paths")
-    if mod is None:
-        return False
-    try:
-        return bool(mod.flag_on_and_inside(project))
-    except Exception:  # noqa: BLE001 — never let this break queueing
-        return False
-
-
 def queue_key(project: str) -> str:
     """The working tree a task edits, canonical — the key everything queues on.
 
@@ -210,7 +196,8 @@ def queue_key(project: str) -> str:
     """
     if not isinstance(project, str) or not project or not os.path.isabs(project):
         return ""
-    if _specialist_home(project):
+    # A specialist's home has no queue: its main chat and breakouts run side by side (docs/specialists-v2.md).
+    if sp_paths.flag_on_and_inside(project):
         return ""
     cached = _KEY_CACHE.get(project)
     if cached is not None:

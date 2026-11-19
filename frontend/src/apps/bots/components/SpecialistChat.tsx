@@ -6,12 +6,13 @@ import { Fragment, useCallback, useEffect, useState, type MutableRefObject } fro
 import type { Specialist } from "@platform/lib/specialists";
 import { ChatMount } from "@apps/claude";
 import { fetchHistory } from "@apps/claude/protocol/history";
+import { isUpdateMark } from "@apps/claude/protocol/wire";
 import { specialistApi, type SpecialistChat as Chat } from "../lib/api";
 import { fmtTime, fmtWhen } from "../lib/format";
 import { actSpecialist, errMsg, showBanner } from "../state/store";
 import { MdDoc } from "./MdDoc";
 
-type Said = { role: string; text: string };
+type Line = { role: string; text: string };
 /** A turn the server started in a specialist's main chat (Update now; `detail` is its id): the chat reloads to
  *  follow it, as a mounted chat only follows runs it started itself. */
 export const SPECIALIST_TURN_EVENT = "fused:specialist-turn";
@@ -20,7 +21,7 @@ export function SpecialistChat({ s, clearRef }: { s: Specialist; clearRef: Mutab
   const [chat, setChat] = useState<Chat | null>(null);
   const [epoch, setEpoch] = useState(0);  // a Clear remounts the chat with no session
   const [open, setOpen] = useState(false);
-  const [earlier, setEarlier] = useState<Record<string, Said[]> | null>(null);
+  const [earlier, setEarlier] = useState<Record<string, Line[]> | null>(null);
   useEffect(() => { void specialistApi.chat(s.id).then(setChat, (e) => showBanner(errMsg(e))); }, [s.id]);
   useEffect(() => {
     const on = (e: Event) => {
@@ -52,14 +53,18 @@ export function SpecialistChat({ s, clearRef }: { s: Specialist; clearRef: Mutab
     <>
       {marks.length ? (
         <div className="thread earlier">
-          {marks.map((f, i) => (
+          {/* Hide where Show was: on top, not under the conversation it opened. */}
+          {open ? <div className="cleared"><button aria-expanded onClick={toggle}>Hide earlier conversation</button></div> : null}
+          {marks.map((f) => (
             <Fragment key={f.session_id}>
-              {open ? (earlier?.[f.session_id] || []).map((t, j) => t.role === "user"
+              {open ? (earlier?.[f.session_id] || []).map((t, j) => isUpdateMark(t.text)
+                ? <div key={j} className="msg note">Update</div>
+                : t.role === "user"
                 ? <div key={j} className="msg user">{t.text}</div>
                 : <div key={j} className="msg done md"><MdDoc text={t.text} /></div>) : null}
               <div className="cleared" title={fmtWhen(f.at)}>
                 <span className="lbl">Context cleared · {fmtTime(f.at)}</span>
-                {i === marks.length - 1 ? <button aria-expanded={open} onClick={toggle}>{open ? "Hide" : "Show"} earlier conversation</button> : null}
+                {open ? null : <button aria-expanded={false} onClick={toggle}>Show earlier conversation</button>}
               </div>
             </Fragment>
           ))}

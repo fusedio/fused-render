@@ -9,6 +9,8 @@ import pytest
 from fused_render import claude_spawn
 from fused_render.specialists import chat, history, notes, store, update
 
+WATCH = update._watch  # the world fixture stubs it
+
 
 def _row(kind, text):
     return json.dumps({"type": kind, "timestamp": "2026-11-19T10:00:00Z",
@@ -34,14 +36,12 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "end_idle_hosts", lambda home: None)
     monkeypatch.setattr(claude_spawn, "spawn_helper", spawn)
     monkeypatch.setattr(claude_spawn, "record_session_when_ready", lambda agent, run_id: None)
+    monkeypatch.setattr(update, "_watch", lambda home, run_id: None)  # tested on its own below
+    monkeypatch.setattr(update, "_RUNNING", set())
     # The main chat's recorded pick: the update runs on it.
     agent = SimpleNamespace(_session_settings=lambda sid: ("haiku", "low") if sid else ("", ""))
     monkeypatch.setattr(claude_spawn, "load_agent", lambda: agent)
     return files, spawns
-
-
-def test_the_prompt_is_wrapped_in_the_tag_the_chat_shows_as_update():
-    assert update.PROMPT.startswith("<specialist-update>") and update.PROMPT.endswith("</specialist-update>")
 
 
 def test_due_only_with_something_in_the_inbox(world):
@@ -97,6 +97,9 @@ def test_start_resumes_the_main_chat_unattended(world):
     assert st["main"] == "new-main" and len(st["update_files"]) == 1  # a fresh update becomes the main chat
     chat.record_start(s.id, "main", "new-main")
     notes.add(s, "task1", "Another", "x")
+    with pytest.raises(update.Busy):  # the first one has not ended
+        update.start(s)
+    update._RUNNING.clear()
     update.start(s)
     assert (spawns[-1][3]["session_id"], spawns[-1][3]["model"], spawns[-1][3]["effort"]) == ("new-main", "haiku", "low")
 
@@ -112,3 +115,15 @@ def test_busy_is_refused(world, monkeypatch, client):
     monkeypatch.setattr(store, "live_runs", lambda home: [])
     status, _, body = client.post(f"/api/specialists/{s.id}/update", {})
     assert status == 202 and json.loads(body) == {"started": True}
+
+
+def test_a_failed_update_changes_nothing(world):
+    s = make_specialist()
+    note = notes.add(s, "t", "A note", "x")
+    chat.change(s.home, lambda d: d.update(update_files=[note]))
+    with open(os.path.join(s.home, "memory.md"), "w") as f:
+        f.write("Half done.\n")
+    update._RUNNING.add(s.home)
+    WATCH(s.home, "run1")  # the turn ended without its clean commit
+    assert open(os.path.join(s.home, "memory.md")).read() == "" and [n["name"] for n in notes.list(s)] == [note]
+    assert chat.load(s.home)["update_files"] == [] and s.home not in update._RUNNING

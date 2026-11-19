@@ -24,15 +24,14 @@ def test_main_and_breakout_get_the_services_and_a_send_always_asks():
     for kind in ("main", "breakout"):
         sp = launch.spec(f"{s.id}:{kind}", s.home)
         json.dumps(sp)  # the run dir stores it
-        assert sp["kind"] == kind and sp["home"] == s.home and sp["policy_env"] == {}
+        assert sp["kind"] == kind and sp["policy_env"] == {}
         assert set(_deny(s.home)) <= set(sp["deny"]) and not any("memory.md" in r for r in sp["deny"])
         assert sp["ask"] == ["mcp__specialist_sends"]
         assert set(sp["mcp_servers"]) == set(services.SERVERS)
         entry = sp["mcp_servers"]["specialist_sends"]
-        assert "sessmcp" in os.path.basename(entry["args"][0]) and entry["args"][2:] == [s.id, kind, "-",
-                                                                                         "specialist_sends"]
-        token = entry["env"]["FUSED_SPECIALIST_TOKEN"]
-        assert token not in json.dumps(entry["args"]) and entry["timeout"] > 60_000
+        assert "botmcp" in os.path.basename(entry["args"][0]) and entry["timeout"] > 60_000
+        token = entry["args"][3]
+        assert entry["args"][4:] == [f"api/specialists/{s.id}/specialist_sends", "specialist_sends"]
         assert launch.check_token(s.id, token) and not launch.check_token("other", token)
     assert "breakout" in sp["append"] and "do not edit memory.md" in sp["append"]
 

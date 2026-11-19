@@ -367,6 +367,17 @@ const ENTRIES = [
     keywords: "breakout fork side chat research read-only",
     badge: "Beta",
   },
+  // SPECIALISTS (docs/specialists-v2.md): a kind of bot on the Bots page, and
+  // the task tools and the breakout's "With". Off by default; off, nothing of it exists.
+  {
+    id: "specialists",
+    group: "tasks",
+    section: "Running",
+    label: "Specialists",
+    description: "A kind of bot on the Bots page that knows one subject and keeps its own memory and skills. Tasks get its guidance, send it notes, and can open a breakout with it. Once a day it updates its memory from what they did.",
+    keywords: "specialist bot memory skills breakout notes update",
+    badge: "Beta",
+  },
   {
     id: "claude-max-sessions",
     group: "tasks",
@@ -542,17 +553,6 @@ const ENTRIES = [
     label: "Unified task header",
     description: "One header for every task view: the Tasks page panel, the chat panes, the rail cards and the New task card.",
     keywords: "task header unified head close back prev next status star open kebab card panel rail",
-  },
-  // SPECIALISTS (docs/specialists-v2.md): a kind of bot on the Bots page, and
-  // the task tools and the breakout's "With". Off by default; off, nothing of it exists.
-  {
-    id: "specialists",
-    group: "features",
-    section: "Sidebar",
-    label: "Specialists",
-    description: "A kind of bot on the Bots page that knows one subject and keeps its own memory and skills. Tasks get its guidance, send it notes, and can open a breakout with it. Once a day it updates its memory from what they did.",
-    keywords: "specialist bot memory skills breakout notes update",
-    badge: "Beta",
   },
   {
     id: "monitor",

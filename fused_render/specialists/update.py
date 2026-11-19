@@ -19,10 +19,11 @@ from fused_render import claude_spawn
 from fused_render.specialists import chat, history, notes, store
 
 PROMPT = ("<specialist-update>\n"
-          "Time for your update. Read each of these files in inbox/ with the Read tool: notes sent to you and the "
-          "parts of tasks and breakouts that used you since your last update.\n{files}\n"
-          "Fold what is worth keeping into memory.md and your skills; leave inbox/ as it is, the app clears it. "
-          "Then answer in a few plain sentences: what you added, what you changed, and what you left out and why.\n"
+          "Time for your update. Read each of these files with the Read tool: notes sent to you, and the parts of "
+          "tasks and breakouts that used you since your last update.\n{files}\n"
+          "Fold what is worth keeping into memory.md and your skills; change nothing in inbox/. Then tell the user "
+          "in a few plain sentences what you added, what you changed, and what you left out and why. Do not mention "
+          "files, folders, notes, the inbox, the app or how this update works.\n"
           "</specialist-update>")
 DAY_S = 24 * 3600
 #: The tail of one turn's part kept for the inbox; older text of a very long one is left out.
@@ -32,12 +33,16 @@ _FROM = re.compile(r'(?:titled|began with) ("(?:[^"\\]|\\.)*")')
 
 
 class Busy(RuntimeError):
-    pass
+    """The update cannot start now; its message is the sentence the user sees."""
+
+
+_LOCK = threading.Lock()
+_RUNNING: set[str] = set()  # homes with an update between its start and its end (the scheduler and Update now)
 
 
 def due(spec: store.Specialist, now: float) -> bool:
     return (now - chat.load(spec.home)["last_update"] >= DAY_S and bool(notes.list(spec))
-            and not store.live_runs(spec.home))
+            and spec.home not in _RUNNING and not store.live_runs(spec.home))
 
 
 def _excerpt(msgs: list[dict]) -> str:
@@ -67,34 +72,49 @@ def gather(spec: store.Specialist, sid: str, kind: str) -> None:
 
 
 def start(spec: store.Specialist) -> bool:
-    """Start the update; False when nothing is waiting. `Busy` while a session is working in the home."""
+    """Start the update; False when nothing is waiting. `Busy` while a session is working in the home, or when it
+    could not start."""
     home = spec.home
-    if store.live_runs(home):
-        raise Busy("The specialist is working; try again when it has finished.")
-    files = [n["name"] for n in notes.list(spec)]
-    if not files:
-        return False
-    # So the update's own commit shows the notes leaving inbox/.
-    history.commit(home, "Notes waiting", ["inbox"])
-    chat.change(home, lambda d: d.update(last_update=time.time(), update_files=files))
-    store.end_idle_hosts(home)
-    main = chat.load(home)["main"]
-    # On the model and effort the user picked for the main chat ("" for each: the CLI's default).
-    model, effort = claude_spawn.load_agent()._session_settings(main or "")
-    # Named, so the turn need not list the folder: its Bash asks, and nobody is there to answer.
-    prompt = PROMPT.format(files="\n".join(f"- inbox/{f}" for f in files))
-    res = claude_spawn.spawn_helper(home, prompt, "acceptEdits", session_id=main or "", model=model, effort=effort,
-                                    isolate_mcp=True, specialist=f"{spec.id}:update")
-    if res.get("error"):
-        raise RuntimeError(res["error"])
-    if not main:
-        chat.record_start(spec.id, "main", res["session_id"])
-    threading.Thread(target=_watch, args=(home, res["run_id"]), daemon=True, name="specialist-update").start()
-    return True
+    with _LOCK:
+        if home in _RUNNING or store.live_runs(home):
+            raise Busy("The specialist is working; try again when it has finished.")
+        files = [n["name"] for n in notes.list(spec)]
+        if not files:
+            return False
+        _RUNNING.add(home)
+    try:
+        # So the update's own commit shows the notes leaving inbox/.
+        history.commit(home, "Notes waiting", ["inbox"])
+        chat.change(home, lambda d: d.update(last_update=time.time(), update_files=files))
+        store.end_idle_hosts(home)
+        main = chat.load(home)["main"]
+        # On the model and effort the user picked for the main chat ("" for each: the CLI's default).
+        model, effort = claude_spawn.load_agent()._session_settings(main or "")
+        # Named, so the turn need not list the folder: its Bash asks, and nobody is there to answer.
+        prompt = PROMPT.format(files="\n".join(f"- inbox/{f}" for f in files))
+        res = claude_spawn.spawn_helper(home, prompt, "acceptEdits", session_id=main or "", model=model, effort=effort,
+                                        isolate_mcp=True, specialist=f"{spec.id}:update")
+        if res.get("error"):
+            chat.change(home, lambda d: d.update(update_files=[]))
+            raise Busy(f"The update could not start: {res['error']}")
+        if not main:
+            chat.record_start(spec.id, "main", res["session_id"])
+        threading.Thread(target=_watch, args=(home, res["run_id"]), daemon=True, name="specialist-update").start()
+        return True
+    except BaseException:
+        _RUNNING.discard(home)
+        raise
 
 
 def _watch(home: str, run_id: str) -> None:
-    """Poll the run to its end (the poll commits the turn), then end its host so the user's next message starts
-    the main chat under its own launch spec."""
-    claude_spawn.record_session_when_ready(claude_spawn.load_agent(), run_id)
-    store.end_idle_hosts(home)
+    """Poll the run to its end (a clean end commits it and clears `update_files`), then end its host so the user's
+    next message starts the main chat under its own launch spec. A turn that failed or was stopped changes nothing:
+    memory and skills go back to the last commit and the inbox stays for the next update."""
+    try:
+        claude_spawn.record_session_when_ready(claude_spawn.load_agent(), run_id)
+        store.end_idle_hosts(home)
+        if chat.load(home)["update_files"]:
+            history.restore(home)
+            chat.change(home, lambda d: d.update(update_files=[]))
+    finally:
+        _RUNNING.discard(home)

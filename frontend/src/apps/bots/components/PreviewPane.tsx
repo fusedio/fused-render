@@ -241,7 +241,7 @@ export function PreviewPane() {
   return (
     <section className="preview">
       <header>
-        <button id="pclose" className="ptog" title={expert ? "Hide the memory pane" : "Hide the browser preview"} onClick={closePreview}>
+        <button id="pclose" className="ptog" title={b?.specialist ? "Hide the specialist's memory and skills" : expert ? "Hide the expert's memory and sessions" : "Hide the browser preview"} onClick={closePreview}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
         </button>
         <span style={{ flex: 1 }} />

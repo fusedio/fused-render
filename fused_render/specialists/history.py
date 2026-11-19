@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 #: Identity for app commits when the user has none configured (env only fills it in, never overrides theirs).
 _IDENT = ("Fused specialists", "specialists@fused.invalid")
 KNOWLEDGE = ("memory.md", ".claude/skills")
-UPDATE_TAG = "<specialist-update>"
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -109,31 +108,53 @@ def commit(home: str, message: str, only: Sequence[str] = (".",)) -> None:
 
 
 def commit_edits(home: str) -> None:
-    """Commit a hand edit of memory or skills, unless a session is open in the home: a turn that just ended is
-    committed by the next poll of its run (`after_turn`), which may come after this, and an idle session ends about
-    30 s after its turn."""
+    """Commit what changed in memory or skills since the last commit, unless a session is open in the home (a turn
+    that just ended is committed by its run's next poll, `after_turn`; an idle session ends about 30 s after its
+    turn). A change no newer than the main chat's transcript is that chat's turn, which no page polled: it gets the
+    turn's label. A newer one is the user's hand edit."""
     from fused_render.claude_agent import agent_module
 
-    if not agent_module()._hosts_in(home):
-        commit(home, "You edited memory", KNOWLEDGE)
+    if not available() or next(agent_module()._live_runs_in(home, idle=True), None) is not None:
+        return
+    dirty = _git(home, "status", "--porcelain", "-z", "--untracked-files=all", "--", *KNOWLEDGE).stdout.split("\0")
+    edited = max((os.path.getmtime(os.path.join(home, ln[3:])) for ln in dirty
+                  if ln[3:] and os.path.exists(os.path.join(home, ln[3:]))), default=0.0)
+    main = chat.load(home)["main"]
+    try:
+        by_chat = bool(main) and edited and os.path.getmtime(chat.transcript(home, main)) >= edited
+    except OSError:
+        by_chat = False
+    if by_chat:
+        after_turn(home, main)
+    commit(home, "You edited memory", KNOWLEDGE)
+
+
+def restore(home: str) -> None:
+    """Memory and skills back to the last commit (a failed update's edits)."""
+    if available():
+        for path in KNOWLEDGE:  # one at a time: a path HEAD lacks fails the whole checkout
+            _git(home, "checkout", "HEAD", "--", path)
+        _git(home, "clean", "-fdq", "--", *KNOWLEDGE)
 
 
 def turn_ended(target: str, session_id: str) -> bool:
-    """`agent._poll`'s one call after a clean turn of any session. A turn in a home is committed here (True: the
-    agent commits nothing); a breakout's turn, and a turn of a task that used a specialist, also go to the inbox."""
+    """`agent._poll`'s one call after a clean turn of any session, with the switch on. A turn in a home is committed
+    here (True: the agent commits nothing); a breakout's turn, and a turn of a task that used a specialist, also go to
+    the inbox."""
     from fused_render.specialists import flag, paths, store, update
 
+    if not flag.on():
+        return False
     spec = store.get(paths.spec_of_path(target) or "")
-    if spec is not None:
-        if session_id in chat.load(spec.home)["breakouts"]:
-            update.gather(spec, session_id, "breakouts")
-        after_turn(spec.home, session_id)
-        return True
-    if flag.on() and not paths.is_inside_root(target):
-        for spec in store.all():
-            if session_id in chat.load(spec.home)["tasks"]:
-                update.gather(spec, session_id, "tasks")
-    return paths.is_inside_root(target)
+    if spec is None:
+        for s in store.all():
+            if session_id in chat.load(s.home)["tasks"]:
+                update.gather(s, session_id, "tasks")
+        return False
+    if session_id in chat.load(spec.home)["breakouts"]:
+        update.gather(spec, session_id, "breakouts")
+    after_turn(spec.home, session_id)
+    return True
 
 
 def after_turn(home: str, session_id: str) -> None:
@@ -144,7 +165,7 @@ def after_turn(home: str, session_id: str) -> None:
     if not users:
         return
     prompt = msgs[users[-1]]["text"]
-    if prompt.startswith(UPDATE_TAG):
+    if prompt.startswith(chat.UPDATE_TAG):
         answer = "\n\n".join(m["text"] for m in msgs[users[-1] + 1:])
         for name in chat.load(home)["update_files"]:
             try:

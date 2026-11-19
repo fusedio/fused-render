@@ -34,8 +34,7 @@ def _specialist_routes():
             for m in sorted(getattr(route, "methods", None) or ()):
                 if m in ("HEAD", "OPTIONS"):
                     continue
-                out.append((m, route.path.replace("{spec_id}", "abc").replace("{id}", "abc")
-                            .replace("{path:path}", "x").replace("{", "").replace("}", "")))
+                out.append((m, route.path.replace("{spec_id}", "abc").replace("{", "").replace("}", "")))
     return out
 
 
@@ -50,8 +49,6 @@ def test_flag_env_and_pref(app_home, monkeypatch):
     assert flag.on() and prefs.specialists_enabled()
     prefs.write_pref("specialists_enabled", "yes")  # only a stored true is on
     assert not flag.on() and not prefs.specialists_enabled()
-    with pytest.raises(flag.Off):
-        flag.require()
 
 
 def test_flag_off_every_route_is_404_and_nothing_is_created(client, monkeypatch):
@@ -86,7 +83,7 @@ def test_prefs_get_and_put(client, monkeypatch):
     calls = []
     monkeypatch.setattr(seed, "seed", lambda: calls.append("seed") or [])
     monkeypatch.setattr(scheduler, "start", lambda: calls.append("start"))
-    monkeypatch.setattr(scheduler, "stop", lambda budget_s=2.0: calls.append("stop"))
+    monkeypatch.setattr(scheduler, "stop", lambda: calls.append("stop"))
     monkeypatch.delenv("FUSED_RENDER_SPECIALISTS")
     st, body = _call(client, "GET", "/api/prefs")
     assert st == 200 and json.loads(body)["specialists"] == {"enabled": False}
@@ -105,22 +102,3 @@ def test_prefs_get_and_put(client, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as e:
         urllib.request.urlopen(r)
     assert e.value.code == 400
-
-
-def test_router_post_hook_only_for_a_specialist_start(monkeypatch):
-    import sys
-    import types
-
-    from fused_render.server.routers import claude_agent
-
-    monkeypatch.delitem(sys.modules, "fused_render.specialists.agent_hooks", raising=False)
-    claude_agent._specialist_after({"action": "start", "specialist": "a:main"}, {})  # not loaded: nothing
-    seen = []
-    fake = types.ModuleType("fused_render.specialists.agent_hooks")
-    fake.after_agent_call = lambda action, params, env: seen.append(action)
-    monkeypatch.setitem(sys.modules, "fused_render.specialists.agent_hooks", fake)
-    claude_agent._specialist_after({"action": "poll"}, {})
-    claude_agent._specialist_after({"action": "start"}, {"result": {}})
-    assert seen == []
-    claude_agent._specialist_after({"action": "start", "specialist": "a:main"}, {"result": {}})
-    assert seen == ["start"]

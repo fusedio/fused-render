@@ -71,7 +71,8 @@ def test_delete_ends_its_sessions_and_moves_the_home_to_trash(monkeypatch):
     agent = agent_module()
     s = make_specialist()
     ended = []
-    monkeypatch.setattr(agent, "_hosts_in", lambda folder: ["r1", "r2"] if folder == s.home else [])
+    monkeypatch.setattr(agent, "_live_runs_in", lambda folder, idle=False: iter(
+        [{"run_id": "r1", "turn_open": True}, {"run_id": "r2", "turn_open": False}] if folder == s.home else []))
     monkeypatch.setattr(agent, "_cancel_run", lambda run_id, interrupt_first=True: ended.append(run_id))
     store.delete(s.id)
     assert ended == ["r1", "r2"] and not os.path.exists(s.home) and store.get(s.id) is None
@@ -91,8 +92,8 @@ def test_end_idle_hosts_leaves_a_live_turn_and_marks_no_stop(monkeypatch, tmp_pa
         (tmp_path / run_id / "cancelled").write_text("1")
 
     monkeypatch.setattr(agent, "RUNS", str(tmp_path))
-    monkeypatch.setattr(agent, "_hosts_in", lambda folder: ["live", "idle"])
-    monkeypatch.setattr(agent, "_live_runs_in", lambda folder: iter([{"run_id": "live", "sessions": set()}]))
+    monkeypatch.setattr(agent, "_live_runs_in", lambda folder, idle=False: iter(
+        [{"run_id": "live", "turn_open": True}, {"run_id": "idle", "turn_open": False}]))
     monkeypatch.setattr(agent, "_cancel_run", cancel)
     store.end_idle_hosts("/any")
     assert ended == ["idle"]
@@ -120,7 +121,7 @@ def test_seed_installs_each_shipped_specialist_once_when_canvases_is_on_too(monk
     assert "## Subject\nYou know how Fused canvases" in open(os.path.join(canvas.home, "CLAUDE.md")).read()
     seed.seed()
     assert len(store.all()) == 2  # once only
-    monkeypatch.setattr(agent_module(), "_hosts_in", lambda folder: [])
+    monkeypatch.setattr(agent_module(), "_live_runs_in", lambda folder, idle=False: iter([]))
     store.delete(canvas.id)
     seed.seed()
     assert [s.name for s in store.all()] == ["Data"]  # a deleted one stays deleted

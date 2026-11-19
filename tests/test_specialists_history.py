@@ -86,7 +86,7 @@ def test_a_hand_edit_waits_while_a_session_is_open(monkeypatch):
     s = make_specialist()
     _edit(s.home, "memory.md", "By hand.\n")
     # Open, even between turns: a turn that has ended is committed by its run's next poll, with its own label.
-    monkeypatch.setattr(agent_module(), "_hosts_in", lambda folder: ["r"])
+    monkeypatch.setattr(agent_module(), "_live_runs_in", lambda folder, idle=False: iter([{"run_id": "r"}]))
     history.commit_edits(s.home)
     assert history.changes(s.home) == []
 
@@ -98,3 +98,27 @@ def test_planted_repository_config_is_dropped(transcript):
     _edit(s.home, "memory.md", "x\n")
     history.commit_edits(s.home)
     assert "filter" not in open(os.path.join(s.home, ".git", "config")).read()
+
+
+def test_a_chat_turn_no_page_polled_keeps_its_label_and_a_later_hand_edit_is_yours(transcript):
+    s = make_specialist()
+    chat.record_start(s.id, "main", "sid")
+    _edit(s.home, "memory.md", "We use parquet.\n")
+    transcript([_row("user", "Remember parquet"), _row("assistant", [{"type": "text", "text": "Noted."}])])
+    history.commit_edits(s.home)
+    assert _git(s.home, "log", "-1", "--format=%s").strip() == "Chat: Remember parquet"
+    os.utime(os.path.join(s.home, "memory.md"))  # a later edit than the transcript
+    t = os.path.getmtime(os.path.join(s.home, "memory.md"))
+    os.utime(chat.transcript(s.home, "sid"), (t - 60, t - 60))
+    _edit(s.home, "memory.md", "We use parquet. Always.\n")
+    history.commit_edits(s.home)
+    assert _git(s.home, "log", "-1", "--format=%s").strip() == "You edited memory"
+
+
+def test_restore_drops_a_failed_update_s_edits(transcript):
+    s = make_specialist()
+    _edit(s.home, "memory.md", "Half done.\n")
+    _edit(s.home, ".claude/skills/new/SKILL.md", "x")
+    history.restore(s.home)
+    assert open(os.path.join(s.home, "memory.md")).read() == ""
+    assert not os.path.exists(os.path.join(s.home, ".claude", "skills", "new"))

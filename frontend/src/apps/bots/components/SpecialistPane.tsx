@@ -3,7 +3,8 @@
 //   Skills    each skill's name and description; a row opens to its text. Read-only: the user asks the specialist.
 // Under both: "Notes waiting · n" (each note with Delete, the one place a note is removed) and "Changes · n", the
 // specialist's git history over memory and skills, newest first; a row opens to its diff.
-// Data: /api/specialists/<id>/… on mount, when a turn moves the row and every 10 s while the page is visible.
+// Data: /api/specialists/<id>/… on mount, when a turn moves the row and every 10 s while the page is visible;
+// Changes (a git log, which first commits a hand edit) only while its box is open, and again when memory changed.
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { spaLinkProps } from "@platform/lib/router";
 import type { Specialist } from "@platform/lib/specialists";
@@ -22,8 +23,8 @@ type Data = {
   memory: string;
   skills: { name: string; description: string; text: string }[];
   notes: { name: string; text: string; at: number }[];
-  changes: { sha: string; at: number; label: string }[];
 };
+type Change = { sha: string; at: number; label: string };
 
 function useSpecialistData(s: Specialist) {
   const [data, setData] = useState<Data | null>(null);
@@ -35,8 +36,8 @@ function useSpecialistData(s: Specialist) {
   }, []);
   useEffect(() => {
     let live = true;
-    void Promise.all([specialistApi.memory(s.id), specialistApi.skills(s.id), specialistApi.notes(s.id), specialistApi.changes(s.id)])
-      .then(([m, sk, n, c]) => { if (live) { setData({ memory: m.text, skills: sk.skills, notes: n.notes, changes: c.changes }); setErr(""); } },
+    void Promise.all([specialistApi.memory(s.id), specialistApi.skills(s.id), specialistApi.notes(s.id)])
+      .then(([m, sk, n]) => { if (live) { setData({ memory: m.text, skills: sk.skills, notes: n.notes }); setErr(""); } },
         (e) => { if (live) setErr(errMsg(e)); });
     return () => { live = false; };
   }, [s.id, s.last?.at, s.working, tick]);
@@ -66,6 +67,14 @@ export function SpecialistPane({ s }: { s: Specialist }) {
     if (diff?.sha !== sha) void specialistApi.diff(s.id, sha).then((r) => setDiff({ sha, text: r.diff }), (e) => setDiff({ sha, text: "", err: errMsg(e) }));
   };
   const deleteNote = (name: string) => { void actSpecialist(() => specialistApi.deleteNote(s.id, name)).then(reload); };
+  const [chOpen, setChOpen] = useState(false);
+  const [changes, setChanges] = useState<Change[] | null>(null);
+  useEffect(() => {
+    if (!chOpen) return;
+    let live = true;
+    void specialistApi.changes(s.id).then((c) => { if (live) setChanges(c.changes); }, () => {});
+    return () => { live = false; };
+  }, [chOpen, s.id, s.last?.at, s.working, data?.memory]);
 
   return (
     <div className="xpane" id="xpane">
@@ -100,11 +109,11 @@ export function SpecialistPane({ s }: { s: Specialist }) {
               </ul>
             </details>
           ) : null}
-          <details className="xp-chbox">
-            <summary className="xp-lbl xp-chhead">Changes · {data.changes.length}</summary>
-            {data.changes.length ? (
+          <details className="xp-chbox" onToggle={(e) => setChOpen(e.currentTarget.open)}>
+            <summary className="xp-lbl xp-chhead">Changes{changes ? ` · ${changes.length}` : ""}</summary>
+            {!changes ? <p className="xp-none">Loading…</p> : changes.length ? (
               <ul className="xp-rows">
-                {data.changes.map((c) => (
+                {changes.map((c) => (
                   <Row key={c.sha} open={open === c.sha} onOpen={() => openChange(c.sha)}
                     head={<span className="xp-line"><span className="xp-origin">{c.label}</span><span className="xp-when" title={fmtWhen(c.at)}>{agoShort(c.at, undefined, fmtWhenShort)}</span></span>}>
                     {diff?.sha !== c.sha ? <p className="xp-none">Loading…</p> : diff.err ? <p className="xp-err" role="alert">{diff.err}</p> : <DiffView diff={diff.text} />}

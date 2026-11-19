@@ -1,14 +1,11 @@
 """The three task tools: the server's routes (`/api/specialists/tools/*`), the notes they write, and the
 permission server's side (schemas, the unattended update's refusal, sends never answered by "Always approve")."""
 from _specialists_conftest import *  # noqa: F401,F403
-from _specialists_conftest import needs_git
 import importlib.util
 import json
 import os
 
 import pytest
-
-pytestmark = needs_git
 
 
 @pytest.fixture

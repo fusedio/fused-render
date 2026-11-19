@@ -4,7 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isLanHost } from "@platform/lib/host";
 import type { Bot, BotEvent } from "../lib/api";
-import { activeHandoff, lastBotMsg, lastTs, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
+import { activeHandoff, lastBotMsg, lastTs, previewLine, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
 import { botOrder } from "../lib/order";
@@ -46,7 +46,7 @@ export interface RowProps {
 export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
   const evs = S.events[b.id] || EMPTY, spec = b.specialist, sel = selProp ?? b.id === S.sel;
   const n = spec ? Number(spec.new) : unreadCount(b);
-  const msg = spec ? spec.last?.text || spec.about : lastBotMsg(evs), ts = spec ? spec.last?.at || 0 : lastTs(evs), glyph = routineGlyph(b), note = b.status === "idle" ? routineNote(b) : null;
+  const msg = spec ? previewLine(spec.last?.text || spec.about) : lastBotMsg(evs), ts = spec ? spec.last?.at || 0 : lastTs(evs), glyph = routineGlyph(b), note = b.status === "idle" ? routineNote(b) : null;
   // Super Bot with a hand-off in flight (docs §11): that outranks its last message, which is "I asked <Bot>…" anyway.
   const ho = b.kind === "super" ? activeHandoff(b) : null;
   // The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. Only on the

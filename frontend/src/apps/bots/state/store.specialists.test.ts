@@ -1,4 +1,4 @@
-// SPECIALIST ROWS IN THE BOTS STORE (docs/specialists-v2.md, plan risk 3): the page's poll appends the specialists
+// SPECIALIST ROWS IN THE BOTS STORE (docs/specialists-v2.md): the page's poll appends the specialists
 // to the bots; off the page it never asks for them. Opening a specialist marks it seen through its own route, never
 // the bots backend's `open` or `seen`, which do not know it. Its menu has only what its routes do.
 import { installDomShim } from "@platform/lib/testDomShim";

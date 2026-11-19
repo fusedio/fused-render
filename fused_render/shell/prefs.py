@@ -1493,14 +1493,11 @@ def _forced_by(env_name: str, override) -> str | None:
 
 
 def _specialists_switched(on: bool) -> None:
-    """On: load the modules agent.py reads off `sys.modules`, seed the shipped specialists and start the daily
-    update; off: stop it. Best-effort: never fails the preference write."""
+    """On: seed the shipped specialists and start the daily update; off: stop it. Best-effort: never fails the
+    preference write."""
     try:
         if on and specialists_enabled():
-            import fused_render.specialists.agent_hooks  # noqa: F401
-            import fused_render.specialists.history  # noqa: F401
-            import fused_render.specialists.launch  # noqa: F401
-            from fused_render.specialists import scheduler, seed, store  # noqa: F401
+            from fused_render.specialists import scheduler, seed
 
             seed.seed()
             scheduler.start()

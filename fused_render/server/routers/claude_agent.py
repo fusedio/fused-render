@@ -46,7 +46,6 @@ import importlib.util
 import json
 import logging
 import os
-import sys
 import threading
 import time
 import traceback
@@ -345,11 +344,16 @@ def _mark_breakout(params: dict, envelope: dict) -> None:
 
 
 def _specialist_after(params: dict, envelope: dict) -> None:
-    """A specialist's chat started: its session is recorded (agent_hooks). Off
-    `sys.modules`, so with specialists never loaded this is one dict lookup."""
-    hooks = sys.modules.get("fused_render.specialists.agent_hooks")
-    if hooks is not None and params.get("specialist"):
-        hooks.after_agent_call(str(params.get("action") or ""), params, envelope)
+    """A specialist's main chat or breakout (`specialist: "<id>:<kind>"`)
+    started: record its session, for the pane's chat and the breakout's inbox
+    file (specialists/chat.py)."""
+    res = envelope.get("result")
+    if params.get("action") == "start" and params.get("specialist") \
+            and isinstance(res, dict) and res.get("session_id"):
+        from fused_render.specialists import chat
+
+        spec_id, _, kind = str(params["specialist"]).partition(":")
+        chat.record_start(spec_id, kind, str(res["session_id"]))
 
 
 async def agent_dispatch(body: dict, call: dict | None) -> Response:
