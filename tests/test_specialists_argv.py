@@ -68,8 +68,20 @@ def test_argv_identical_without_the_run_dir_files(agent, rd, monkeypatch, kw):
     assert "specialist" not in (json.dumps(argv) + mcp).lower()
 
 
+TASK = {"root": "/ws/specialists", "all": [["Canvas", "Fused canvases"], ["Data", ""]], "here": []}
+
+
+def test_a_task_s_prompt_names_the_specialists_and_its_folder_s_one(agent, rd):
+    (rd / "specialists.on").write_text(json.dumps(TASK))
+    prompt = _after(_argv(agent, rd), "--append-system-prompt")
+    assert "knows one subject: Canvas (Fused canvases); Data. Call " in prompt and "Before anything" not in prompt
+    (rd / "specialists.on").write_text(json.dumps(dict(TASK, here=["Canvas"])))
+    assert _after(_argv(agent, rd), "--append-system-prompt").endswith(
+        'Before anything else call specialist_pull with specialist "Canvas".')
+
+
 def test_task_tools_need_an_origin(agent, rd, monkeypatch):
-    (rd / "specialists.on").write_text(json.dumps({"root": "/ws/specialists", "here": []}))
+    (rd / "specialists.on").write_text(json.dumps(TASK))
     monkeypatch.setattr(agent, "_origin", lambda: "")
     assert "specialist" not in json.dumps(_argv(agent, rd))
 
@@ -83,7 +95,7 @@ SPEC = {"kind": "main",
 
 def test_a_spec_folds_servers_and_prompt(agent, rd):
     (rd / "specialist.json").write_text(json.dumps(SPEC))
-    (rd / "specialists.on").write_text(json.dumps({"root": "/w/specialists", "here": []}))  # a spec wins
+    (rd / "specialists.on").write_text(json.dumps(TASK))  # a spec wins
     argv = _argv(agent, rd, file="/w/specialists/canvas", cli_mode="auto")
     assert "ask" not in _settings(argv).get("permissions", {})
     assert "specialist_pull" not in json.dumps(argv)
@@ -151,7 +163,7 @@ def modules(monkeypatch, tmp_path):
     paths.root = lambda: root
     paths.is_inside_root = lambda p: os.path.abspath(p).startswith(root)
     store = types.ModuleType("store")
-    store.all = lambda: ["Canvas"]
+    store.all = lambda: [types.SimpleNamespace(name="Canvas", about="Fused canvases")]
     store.for_folder = lambda p: ["Canvas"] if p == str(tmp_path / "proj") else []
     launch = types.ModuleType("launch")
     launch.calls = []
@@ -174,7 +186,8 @@ def test_flag_off_starts_record_nothing_and_refuse_specialist_keys(agent, start,
 
 def test_a_task_records_the_root_and_its_folders_specialists(agent, start, modules, tmp_path):
     _, run_dir = start(str(tmp_path / "proj"))
-    assert json.load(open(os.path.join(run_dir, "specialists.on"))) == {"root": modules.root, "here": ["Canvas"]}
+    assert json.load(open(os.path.join(run_dir, "specialists.on"))) == {
+        "root": modules.root, "all": [["Canvas", "Fused canvases"]], "here": ["Canvas"]}
     modules.store.all = lambda: []
     _, run_dir = start(str(tmp_path / "proj"))
     assert not os.path.exists(os.path.join(run_dir, "specialists.on"))

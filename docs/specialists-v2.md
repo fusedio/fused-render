@@ -119,6 +119,15 @@ evidence). With it comes a soft size rule: keep memory under about 200 lines by 
 oldest, lowest-count lines to the memory archive. All of it is by instruction only; the app reads and enforces
 nothing. Accepted costs: lines are no longer plain sentences, and the Learned diffs show count changes.
 
+## Decision, 2026-11-19: a task's prompt names the specialists
+
+A task was told only that specialists exist and had to spend a call (`specialist_pull` with no name) to learn who
+they are, so a task outside a specialist's folder could finish without ever looking. Decided: the paragraph a task's
+prompt already carries lists every specialist by name with its "expert on" text, and `specialist_pull` requires a
+name. No separate list tool: a call with a wrong or missing name is answered with the current list, which covers a
+mistyped name and a specialist created after the task started. Accepted cost: one short line per specialist in
+every task's prompt; past roughly 15 to 20 specialists the list should be capped.
+
 ## Cut list
 
 Removed from version 1: the side panel; the Learned tab; the general inbox and "Send to a specialist"; the People

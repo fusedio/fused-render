@@ -40,13 +40,12 @@ def _post(client, name, body):
     return status, json.loads(raw or b"null")
 
 
-def test_pull_without_a_name_lists_the_specialists(client, used):
-    assert _post(client, "pull", {"run_id": "run1"}) == (200, {"text": "The user has no specialists."})
+def test_pull_without_a_name_is_told_who_there_is(client, used):
     from fused_render.specialists import store
 
     store.create("Canvas", "Fused canvases")
-    _, body = _post(client, "pull", {"run_id": "run1"})
-    assert "- Canvas: Fused canvases" in body["text"].splitlines() and used == []
+    status, out = _post(client, "pull", {"run_id": "run1"})
+    assert status == 404 and "- Canvas: Fused canvases" in out["error"].splitlines() and used == []
 
 
 def test_pull_gives_memory_and_skills_and_records_the_task(client, used, canvas):
@@ -113,7 +112,7 @@ def test_the_three_tools_are_listed_only_with_the_origin(monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_SPECIALIST_ORIGIN", "http://127.0.0.1:1")
     tools = {t["name"]: t["inputSchema"] for t in ps._dispatch("tools/list", {})["tools"]}
     assert [n for n in tools if n.startswith("specialist_")] == list(ps.SPECIALIST_TOOLS)
-    assert tools["specialist_pull"].get("required") is None
+    assert tools["specialist_pull"]["required"] == ["specialist"]
     assert tools["specialist_note"]["properties"]["note"]["maxLength"] == 2000
     assert tools["specialist_breakout"]["required"] == ["specialist", "reason"]
     assert tools["specialist_breakout"]["properties"]["reason"]["maxLength"] == 300
