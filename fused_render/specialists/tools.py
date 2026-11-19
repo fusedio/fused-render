@@ -84,7 +84,8 @@ def note(body=Body(None), x_fused: str | None = Header(None)):
     spec, who, values = _call(body, x_fused, ("note", NOTE_MAX))
     if who is None:
         return spec
-    notes.add(spec, who["session_id"], f"Note from a task in {who['target'] or 'an unknown folder'}", values[0])
+    title = chat.task_title(chat.transcript(who["target"], who["session_id"])) if who["target"] else "a task"
+    notes.add(spec, who["session_id"], f'Note from task "{title}"', values[0])
     return {"text": f"Sent to the {spec.name} specialist. It reads its notes at its next update."}
 
 

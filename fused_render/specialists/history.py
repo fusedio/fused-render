@@ -1,6 +1,7 @@
 """The home's history: a git repository only the app commits to.
 
-Commits: after every clean chat turn that changed files (`after_turn`, from `agent._poll`), "Chat: <first words>",
+Commits: after every clean chat turn that changed files (`after_turn`, from `agent._poll` through `turn_ended`),
+"Chat: <first words>" (inbox/ left out),
 or "Update" with the update's answer as the body; a hand edit of memory or skills, "You edited memory", committed
 the next time the app looks (`commit_edits`: before a specialist session starts and when Changes is listed).
 "Changes" is the log of memory.md and the skills. Before any commit the app rewrites `.claude/settings.json` and
@@ -117,6 +118,24 @@ def commit_edits(home: str) -> None:
         commit(home, "You edited memory", KNOWLEDGE)
 
 
+def turn_ended(target: str, session_id: str) -> bool:
+    """`agent._poll`'s one call after a clean turn of any session. A turn in a home is committed here (True: the
+    agent commits nothing); a breakout's turn, and a turn of a task that used a specialist, also go to the inbox."""
+    from fused_render.specialists import flag, paths, store, update
+
+    spec = store.get(paths.spec_of_path(target) or "")
+    if spec is not None:
+        if session_id in chat.load(spec.home)["breakouts"]:
+            update.gather(spec, session_id, "breakouts")
+        after_turn(spec.home, session_id)
+        return True
+    if flag.on() and not paths.is_inside_root(target):
+        for spec in store.all():
+            if session_id in chat.load(spec.home)["tasks"]:
+                update.gather(spec, session_id, "tasks")
+    return paths.is_inside_root(target)
+
+
 def after_turn(home: str, session_id: str) -> None:
     """A clean turn of a session in the home ended. An update turn removes the inbox files it was given and
     commits "Update" with its answer as the body; any other commits "Chat: <first words of the prompt>"."""
@@ -135,8 +154,8 @@ def after_turn(home: str, session_id: str) -> None:
         chat.change(home, lambda d: d.update(update_files=[]))
         commit(home, "Update\n\n" + answer if answer else "Update")
         return
-    words = " ".join(prompt.split())
-    commit(home, "Chat: " + (words[:60] + "…" if len(words) > 60 else words))
+    # inbox/ is left for the update's "Notes waiting" commit.
+    commit(home, "Chat: " + chat.words(prompt), (".", ":(exclude)inbox"))
 
 
 def changes(home: str) -> list[dict]:

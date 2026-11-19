@@ -1,7 +1,7 @@
 """Notes waiting for a specialist's next update: one markdown file each in `<home>/inbox/`.
 
-A task's `specialist_note` adds one, the update writes the unread parts of tasks and breakouts as more, and the
-pane lists and deletes them. The file is the whole note: no kinds, no states.
+A task's `specialist_note` adds one; each breakout and each task that used the specialist has one the app appends
+its turns to (`update.gather`); the pane lists and deletes them. The file is the whole note: no kinds, no states.
 """
 from __future__ import annotations
 
@@ -25,6 +25,12 @@ def add(spec, sid: str, title: str, text: str) -> str:
     with open(os.path.join(_dir(spec), name), "w", encoding="utf-8") as fh:
         fh.write("# %s\n\n%s\n" % (title, text.strip()))
     return name
+
+
+def append(spec, name: str, text: str) -> None:
+    """Add `text` at the end of note `name` (a breakout's or a task's file, one turn at a time)."""
+    with open(os.path.join(_dir(spec), name), "a", encoding="utf-8") as fh:
+        fh.write(text.strip() + "\n\n")
 
 
 def list(spec) -> list[dict]:  # noqa: A001 — the contract's name

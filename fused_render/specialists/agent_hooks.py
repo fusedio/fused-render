@@ -1,7 +1,7 @@
 """The router's hook after an `/api/claude/agent` call, while specialists are on.
 
 A `start` with a `specialist` key ("<id>:main" / "<id>:breakout") records the session it answered with, so the
-pane knows the main chat and the update knows the breakouts. Never raises.
+pane knows the main chat and a breakout's turns reach the inbox (`history.turn_ended`). Never raises.
 """
 from __future__ import annotations
 

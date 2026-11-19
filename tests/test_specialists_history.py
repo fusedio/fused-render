@@ -39,8 +39,10 @@ def test_a_chat_turn_commits_with_its_first_words(transcript):
     transcript([_row("user", "Remember that " + "we always use parquet files " * 4),
                 _row("assistant", [{"type": "text", "text": "Noted."}])])
     _edit(s.home, "memory.md", "We use parquet.\n")
+    _edit(s.home, "inbox/brk.md", "# A breakout\n")
     history.after_turn(s.home, "sid")
     subject = _git(s.home, "log", "-1", "--format=%s").strip()
+    assert _git(s.home, "status", "--porcelain").strip() == "?? inbox/"  # left for the "Notes waiting" commit
     assert subject.startswith("Chat: Remember that we always") and subject.endswith("…") and len(subject) == 67
     history.after_turn(s.home, "sid")  # nothing changed: no commit
     assert _git(s.home, "rev-list", "--count", "HEAD").strip() == "2"

@@ -3,8 +3,8 @@
 `<home>/.specialist/state.json`:
     main          the main chat's session id (the page mounts it; Clear folds it and the next send starts fresh)
     folded        earlier main chats, `[{session_id, at}]`, oldest first
-    breakouts     `{session_id: transcript lines the update has read}`
-    tasks         `{session_id: {target, lines_read}}`, the tasks that used the specialist
+    breakouts     `{session_id: {lines_read, file}}`: transcript lines already written to its inbox file
+    tasks         `{session_id: {target, lines_read, file}}`, the tasks that used the specialist, likewise
     seen          when the user last looked at the chat
     last_update   when the update last looked for work
     update_files  the inbox files the update in progress was given
@@ -50,7 +50,7 @@ def record_start(spec_id: str, kind: str, session_id: str) -> None:
 
     def fn(d):
         if kind == "breakout":
-            d["breakouts"].setdefault(session_id, 0)
+            d["breakouts"].setdefault(session_id, {"lines_read": 0, "file": ""})
         elif d["main"] != session_id:
             if d["main"]:
                 d["folded"].append({"session_id": d["main"], "at": time.time()})
@@ -61,7 +61,7 @@ def record_start(spec_id: str, kind: str, session_id: str) -> None:
 def record_task(spec_id: str, session_id: str, target: str) -> None:
     home = paths.home(spec_id)
     if session_id and os.path.isdir(home):
-        change(home, lambda d: d["tasks"].setdefault(session_id, {"target": target, "lines_read": 0}))
+        change(home, lambda d: d["tasks"].setdefault(session_id, {"target": target, "lines_read": 0, "file": ""}))
 
 
 def view(home: str) -> dict:
@@ -121,6 +121,18 @@ def messages(path: str, start: int = 0) -> tuple[list[dict], int]:
                 at = 0.0
             out.append({"role": row["type"], "text": text, "at": at})
     return out, len(lines)
+
+
+def words(text: str) -> str:
+    """The first words of `text`, as a title."""
+    w = " ".join(text.split())
+    return w[:60] + "…" if len(w) > 60 else w
+
+
+def task_title(path: str) -> str:
+    """A task's title as its list shows it by default: the first words of its first message."""
+    msgs, _ = messages(path)
+    return words(next((m["text"] for m in msgs if m["role"] == "user"), "")) or "a task"
 
 
 _LAST: dict[str, tuple[int, dict | None]] = {}

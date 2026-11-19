@@ -1,4 +1,4 @@
-"""The update: nothing waiting means no run; unread parts of tasks and breakouts become inbox notes; the start."""
+"""The update: due from the inbox alone; a breakout's or a task's turn end writes its inbox file once; the start."""
 from _specialists_conftest import *  # noqa: F401,F403
 import json
 import os
@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from fused_render import claude_spawn
-from fused_render.specialists import chat, notes, store, update
+from fused_render.specialists import chat, history, notes, store, update
 
 
 def _row(kind, text):
@@ -44,32 +44,44 @@ def test_the_prompt_is_wrapped_in_the_tag_the_chat_shows_as_update():
     assert update.PROMPT.startswith("<specialist-update>") and update.PROMPT.endswith("</specialist-update>")
 
 
-def test_nothing_waiting_means_no_run(world):
+def test_due_only_with_something_in_the_inbox(world):
     _, spawns = world
     s = make_specialist()
-    assert update.due(s, 10 ** 10)
+    assert not update.due(s, 10 ** 10)
     assert update.start(s) is False and spawns == []
+    notes.add(s, "t", "A note", "x")
+    assert update.due(s, 10 ** 10)
+    update.start(s)
     assert not update.due(s, chat.load(s.home)["last_update"] + 60)
 
 
-def test_unread_parts_become_notes_and_the_cursors_move(world, tmp_path):
+def test_turn_ends_write_breakouts_and_tasks_to_the_inbox_once(world, tmp_path):
     files, _ = world
     s = make_specialist()
-    chat.record_task(s.id, "task1", str(tmp_path))
     chat.record_start(s.id, "breakout", "brk1")
+    files["brk1"] = [_row("user", 'From 2 messages of their main chat titled "Fix the \\"big\\" canvas". Why parquet?'),
+                     _row("assistant", "Columnar.")]
+    assert history.turn_ended(s.home, "brk1") is True  # a turn in the home: committed there
+    (brk,) = notes.list(s)
+    assert brk["text"].startswith('# Breakout from "Fix the "big" canvas"') and "**Claude:** Columnar." in brk["text"]
+    history.turn_ended(s.home, "brk1")
+    assert notes.list(s)[0]["text"] == brk["text"]  # nothing written twice
+    files["brk1"].append(_row("user", "And CSV?"))
+    history.turn_ended(s.home, "brk1")
+    assert notes.list(s)[0]["text"].endswith("**User:** And CSV?\n\n")
+
     files["task1"] = [_row("user", "Fix the canvas"), _row("assistant", "Done: used parquet.")]
-    files["brk1"] = [_row("user", "Why parquet?")]
-    names = update.prepare(s)
-    texts = sorted(n["text"] for n in notes.list(s))
-    assert len(names) == 2 and texts[0].startswith("# From a breakout\n\n**User:** Why parquet?")
-    assert texts[1] == f"# From a task in {tmp_path}\n\n**User:** Fix the canvas\n\n**Claude:** Done: used parquet.\n"
-    for n in names:
-        notes.delete(s, n)
-    assert update.prepare(s) == []  # read already
+    assert history.turn_ended(str(tmp_path), "task1") is False  # no specialist used: nothing
+    assert len(notes.list(s)) == 1
+    chat.record_task(s.id, "task1", str(tmp_path))
+    assert history.turn_ended(str(tmp_path), "task1") is False  # the agent commits a task's turn itself
+    task = next(n for n in notes.list(s) if n["name"] != brk["name"])
+    assert task["text"] == '# Task "Fix the canvas"\n\n\n**User:** Fix the canvas\n\n**Claude:** Done: used parquet.\n\n'
+    notes.delete(s, task["name"])  # an update read it
     files["task1"].append(_row("user", "One more thing"))
-    (name,) = update.prepare(s)
-    assert "One more thing" in open(os.path.join(s.home, "inbox", name)).read()
-    assert "Fix the canvas" not in open(os.path.join(s.home, "inbox", name)).read()
+    history.turn_ended(str(tmp_path), "task1")
+    new = next(n for n in notes.list(s) if n["name"] != brk["name"])
+    assert "One more thing" in new["text"] and "Done: used parquet" not in new["text"]
 
 
 def test_start_resumes_the_main_chat_unattended(world):

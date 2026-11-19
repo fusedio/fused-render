@@ -74,7 +74,7 @@ def test_note_writes_one_inbox_file(client, used, canvas):
                                           "note": "The user publishes to staging first."})
     assert status == 200 and "Canvas" in body["text"]
     (row,) = notes.list(canvas)
-    assert row["text"].startswith("# Note from a task in ")
+    assert row["text"].startswith("# Note from task \"")  # its title, never a path
     assert row["text"].endswith("The user publishes to staging first.\n")
     assert used and notes.delete(canvas, row["name"]) and notes.list(canvas) == []
     assert not notes.delete(canvas, row["name"]) and not notes.delete(canvas, "../memory.md")
