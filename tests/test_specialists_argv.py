@@ -102,6 +102,15 @@ def test_a_spec_s_gated_tools_ask_in_every_mode(agent, rd):
         assert _settings(argv)["permissions"]["ask"] == [gated]
 
 
+def test_a_spec_can_hand_over_the_workbench_skills(agent, rd, monkeypatch):
+    monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: "/plugins/workbench")
+    (rd / "specialist.json").write_text(json.dumps(SPEC))
+    assert "/plugins/workbench" not in _argv(agent, rd, file="/w/specialists/canvas")  # a home is no canvas clone
+    (rd / "specialist.json").write_text(json.dumps(dict(SPEC, workbench_skills=True)))
+    argv = _argv(agent, rd, file="/w/specialists/canvas")
+    assert argv[argv.index("/plugins/workbench") - 1] == "--plugin-dir"
+
+
 def test_an_update_spec_carries_the_unattended_env(agent, rd):
     spec = dict(SPEC, kind="update", append="", policy_env={"FUSED_SPECIALIST_UNATTENDED": "1"})
     (rd / "specialist.json").write_text(json.dumps(spec))

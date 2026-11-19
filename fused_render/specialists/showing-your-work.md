@@ -16,9 +16,16 @@ Finish steps 2 to 4 within one turn: the folder publishes itself to the user's F
 
 ## The formats: never guess them
 
-- `canvas.toml` and the row keys: your skill on the canvas folder layout if you have one, else a canvas under the user's canvas copies (`~/Fused/canvas/<env>/user/`). Read a working one before you write yours.
-- A widget's JSON is a fixed schema (JSON-UI). Write one only from a format reference you were given or by adapting a working widget: Grep the canvas copies for `*.json` node files and copy the nearest one. If you have neither a reference nor an example, say so and show the UDF instead; never invent widget JSON.
-- A UDF is a `.py` file with one `@fused.udf` function. Copy the shape from a UDF in the canvas copies.
+When the message that starts your session says you have the `workbench` skills, invoke the one for a file **before** you write or change that file, every time, however small the change:
+
+- `workbench:json-ui-schemas` for any `.json` widget. A widget's JSON is a fixed schema (JSON-UI): each component takes only the props its schema lists, and one unknown prop makes the whole widget show a validation error instead of rendering. Take every component and prop from the skill, never from memory or from what looks natural.
+- `workbench:fused-udfs` for any `.py` UDF.
+- `workbench:canvas-toml` before the first `canvas.toml` edit.
+- `workbench:html-template-nodes` for any `.html` node.
+
+`canvas validate` does not check a widget's components or props, so a canvas that validates can still hold a widget that fails to render. After writing a widget, re-read it against the schema: every `type` is a component the skill lists, and every key under `props` is one that component lists.
+
+Without those skills: copy `canvas.toml` rows and the UDF shape from a working canvas under the user's canvas copies (`~/Fused/canvas/<env>/user/`), and write a widget only by adapting a working one (Grep the canvas copies for `*.json` node files and copy the nearest). If you have neither a skill nor an example, say so and show the UDF instead; never invent widget JSON.
 
 ## When the user asks for a change
 

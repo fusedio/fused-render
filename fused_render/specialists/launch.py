@@ -8,6 +8,8 @@ the answer to the run dir, and `_claude_argv` folds it into the CLI's argv:
     append      one sentence saying which kind of session this is
     policy_env  for the update, FUSED_SPECIALIST_UNATTENDED: the permission server denies at once anything that
                 would raise a card, since nobody is there to answer it
+    workbench_skills  a main chat with the canvas tools only: hand the session the `workbench` plugin's format
+                skills (canvas.toml, UDFs, JSON-UI widgets), as a canvas task gets them
     ask         a main chat with the canvas tools only: the tools that raise the approval card in every mode
                 (`canvas_create`, show.py)
 
@@ -98,7 +100,8 @@ def spec(key: str, file: str) -> dict:
         history.commit(s.home, "Settings", ["CLAUDE.md"])
     history.commit_edits(s.home)
     canvas = kind == "main" and show.on()  # the main chat only: a breakout and a learning run show nothing
+    skills = canvas and show.skills()
     return {"kind": kind, "mcp_servers": session_servers(s, canvas),
-            "append": APPEND[kind] + (" " + show.note() if canvas else ""),
+            "append": APPEND[kind] + (" " + show.note(skills) if canvas else ""),
             "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if run else {},
-            **({"ask": show.ASK} if canvas else {})}
+            **({"ask": show.ASK} if canvas else {}), **({"workbench_skills": True} if skills else {})}

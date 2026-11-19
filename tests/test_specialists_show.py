@@ -67,6 +67,22 @@ def test_only_the_main_chat_gets_the_canvas_server(base, monkeypatch):
     assert _text(show.call(s, "show", {"path": "/x"})).startswith("error: canvases are not available")
 
 
+def test_a_main_chat_is_handed_the_workbench_skills(base, monkeypatch):
+    from fused_render import skill_plugin
+    s = make_specialist()
+    fetched = []
+    monkeypatch.setattr(skill_plugin, "workbench_plugin_root", lambda: None)
+    monkeypatch.setattr(skill_plugin, "sync_workbench_plugin", lambda: fetched.append(1) and None)
+    off = launch.spec(f"{s.id}:main", s.home)  # never fetched and the fetch fails: the tools still come
+    assert fetched == [1] and "workbench_skills" not in off and "workbench:" not in off["append"]
+    assert show.SERVER in off["mcp_servers"]
+    monkeypatch.setattr(skill_plugin, "workbench_plugin_root", lambda: "/plugins/workbench")
+    on = launch.spec(f"{s.id}:main", s.home)
+    assert on["workbench_skills"] is True and fetched == [1]  # on disk already: no fetch on the start path
+    assert "`workbench:json-ui-schemas` for any `.json` widget" in on["append"]
+    assert "workbench_skills" not in launch.spec(f"{s.id}:breakout", s.home)
+
+
 def test_the_skill_names_the_tools_as_the_session_sees_them():
     text = open(show.SKILL, encoding="utf-8").read()
     for name in show.TOOLS:

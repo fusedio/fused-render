@@ -511,8 +511,17 @@ session's permission mode like everything else a specialist does (§3): in Auto 
 Ask each raises the ordinary card. The canvas folder publishes itself (the canvas sync), so what the specialist writes there reaches
 the user's Fused account.
 
+**The format skills.** A main chat with the tools is also handed the `workbench` plugin (`--plugin-dir`), the
+canvas.toml, UDF, HTML-node and JSON-UI widget references a task in a canvas clone gets: `launch.spec` sets
+`workbench_skills`, and `agent._plugin_argv(file, workbench=True)` passes the root although a home is outside the
+canvas roots. `show.skills` fetches the skills once at that start when they were never fetched (bounded, best
+effort; without them the tools still come and the sentence about the skills is left out). `canvas validate` does
+not check a widget's components or props, so the skill is what keeps a widget from failing to render; nothing in
+the app checks a widget before its card appears.
+
 **What it is told.** `launch.spec` adds to the main chat's `append` the two tool names and the path of
-`specialists/showing-your-work.md`, which it reads first: the steps (canvas, node files, their rows,
+`specialists/showing-your-work.md`, which it reads first, and, when it has them, that it must invoke the
+`workbench` skill for a file before writing it (`workbench:json-ui-schemas` for any widget): the steps (canvas, node files, their rows,
 validate, show), never guessing the widget format, editing the same files when the user asks for a change, and
 what to leave alone. The file is the app's and is read in place, so every specialist follows the current text;
 nothing is written into a home.

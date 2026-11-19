@@ -83,13 +83,29 @@ def envs() -> tuple[list, str]:
     return sorted({*fusedcli.WORKBENCH_ENV_CHOICES, default}), default
 
 
-def note() -> str:
-    """The sentences a main chat that has the tools is told (`launch.spec`'s `append`)."""
+def skills() -> bool:
+    """Make sure the `workbench` skills (the canvas.toml, UDF and JSON-UI widget format references a canvas task
+    is handed) are on disk for a main chat about to start, fetching them once when they never were. True when
+    there is a root to hand the session (`launch.spec`'s `workbench_skills`). Never raises."""
+    try:
+        from fused_render import skill_plugin
+        return bool(skill_plugin.workbench_plugin_root() or skill_plugin.sync_workbench_plugin())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def note(skills: bool = False) -> str:
+    """The sentences a main chat that has the tools is told (`launch.spec`'s `append`); `skills` when the
+    session is also handed the `workbench` skills."""
     return (f"You can show the user your work: read {SKILL} first. `mcp__{SERVER}__{CREATE}` makes a new canvas of "
             "theirs and returns its folder, you write its node files (`<name>.py` UDFs, `<name>.json` widgets) and "
             f"their canvas.toml rows there, and `mcp__{SERVER}__{SHOW}` puts a card in the chat that opens a node or "
             "the canvas live. Do this when the user asks to see, build or change something; they keep improving it "
-            "by telling you, and you edit the same files.")
+            "by telling you, and you edit the same files."
+            + (" You have the `workbench` skills for the formats, and must invoke the one for a file before you "
+               "write or change it, however small the change: `workbench:json-ui-schemas` for any `.json` widget, "
+               "`workbench:fused-udfs` for any `.py` UDF, `workbench:canvas-toml` before the first canvas.toml "
+               "edit, `workbench:html-template-nodes` for any `.html` node." if skills else ""))
 
 
 def made(home: str) -> list:
