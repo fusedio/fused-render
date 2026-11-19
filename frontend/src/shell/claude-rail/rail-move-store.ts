@@ -9,10 +9,10 @@
 // `raised`).
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { setWindowPosMark, subscribeWindowPosMark, windowPosMark } from "@platform/lib/last-chat";
-import { serialisePos, type Pos, type RailWindow, type Size } from "./rail-move-lib";
+import { clampPos, serialisePos, viewportOf, type Pos, type RailWindow, type Size } from "./rail-move-lib";
 import type { Box } from "./rail-peek-lib";
 import { railFreePinsNow, subscribeRailFreePins } from "./rail-free-pins-flag";
-import { parsePinMark, pushedPos, serialisePinBox, type PinMark } from "./rail-slots-lib";
+import { parsePinMark, pushedPins, pushedPos, serialisePinBox, type PinAt, type PinMark } from "./rail-slots-lib";
 
 const live: Record<RailWindow, Pos | null> = { a: null, b: null };
 let front: RailWindow | null = null;
@@ -43,23 +43,48 @@ function stored(win: RailWindow): PinMark | null {
  *  rewritten by a push: when the non-pin goes, the pin is drawn at home. */
 const pushers = new Map<string, { win: RailWindow; box: Box }>();
 let pushVersion = 0;
-/** The last answer per window, so a re-read with nothing changed hands back
- *  the same object. */
-const pushedCache: Record<RailWindow, { mark: PinMark; version: number; w: number; h: number; pos: Pos } | null> = { a: null, b: null };
+/** The last answer, so a re-read with nothing changed hands back the same
+ *  objects. BOTH pins are solved together (rail-slots-lib `pushedPins`): a pin
+ *  the push moved is in the other's way too. */
+let solved: { key: string; marks: [PinMark | null, PinMark | null]; out: Record<RailWindow, Pos | null> } | null = null;
+
+/** A pin as the solver reads it: its home, and the size it is drawn at — its
+ *  frozen one, else its card's live box. None known: it cannot be told what
+ *  it lies under, and is not pushed. */
+function pinAt(win: RailWindow): PinAt | null {
+  const mark = stored(win);
+  if (!mark) return null;
+  const size: Size | null = mark.size ?? pinBox(win);
+  if (!size) return null;
+  // WHERE IT IS DRAWN, not where its mark says: a window narrower than the
+  // spot the pin was left at draws it squeezed inside (rail-move-lib
+  // `floatPlacement`), and it is THAT box a non-pin covers.
+  const view = viewportOf(typeof window === "undefined" ? undefined : window);
+  const width = Math.min(size.width, view.width);
+  const height = Math.min(size.height, view.height);
+  const at = clampPos(mark.pos, { width, height }, view);
+  const pos = at.left === mark.pos.left && at.top === mark.pos.top ? mark.pos : at;
+  return { pos, size: { width, height } };
+}
 
 function pushedFor(win: RailWindow, mark: PinMark): Pos {
-  // The size the pin is drawn at: its frozen one, else its card's live box.
-  const size: Size | null = mark.size ?? pinBox(win);
-  if (!size) return mark.pos;
-  const c = pushedCache[win];
-  if (c && c.mark === mark && c.version === pushVersion && c.w === size.width && c.h === size.height) return c.pos;
-  const pos = pushedPos(
-    mark.pos,
-    size,
-    [...pushers.values()].map((p) => p.box),
-  );
-  pushedCache[win] = { mark, version: pushVersion, w: size.width, h: size.height, pos };
-  return pos;
+  const a = pinAt("a");
+  const b = pinAt("b");
+  const sig = (p: PinAt | null) => (p ? `${p.pos.left},${p.pos.top},${p.size.width}x${p.size.height}` : "-");
+  const key = `${pushVersion}|${sig(a)}|${sig(b)}`;
+  const ma = stored("a");
+  const mb = stored("b");
+  if (!solved || solved.key !== key || solved.marks[0] !== ma || solved.marks[1] !== mb) {
+    solved = {
+      key,
+      marks: [ma, mb],
+      out: pushedPins(
+        { a, b },
+        [...pushers.values()].map((p) => p.box),
+      ),
+    };
+  }
+  return solved.out[win] ?? mark.pos;
 }
 
 /** Where window `win` floats now — the drag on now, else the stored mark
@@ -127,6 +152,20 @@ export function freezeFromDock(win: RailWindow): boolean {
   const box = dockBox(win);
   if (!box) return false;
   pinEpochs[win] += 1;
+  // PINNING FREEZES THE WHOLE PICTURE (rail-slots-lib): the other window's
+  // pin, if this card had pushed it aside, stays where it is drawn — its
+  // pushed position is its home from here on. Left alone it would slide back
+  // the moment this card stopped pushing, under the pin this card becomes.
+  const other: RailWindow = win === "a" ? "b" : "a";
+  const pushed = pinAt(other);
+  if (pushed) {
+    const mine = [...pushers.values()].filter((p) => p.win === win).map((p) => p.box);
+    const drawn = pushedPos(pushed.pos, pushed.size, mine);
+    if (drawn !== pushed.pos) {
+      const kept = stored(other)?.size ?? null;
+      setWindowPosMark(other, kept ? serialisePinBox({ ...drawn, ...kept }) : serialisePos(drawn));
+    }
+  }
   // THE CARD BEING PINNED STOPS PUSHING, NOW (owner, 2026-11-18: "when i click
   // pin the whole window moves"): it is this window's non-pin until its next
   // render says otherwise, and a pin frozen under its own old box would be
@@ -284,8 +323,7 @@ export function resetRailMoveForTests(): void {
   boxes.b.clear();
   pushers.clear();
   pushVersion += 1;
-  pushedCache.a = null;
-  pushedCache.b = null;
+  solved = null;
   setWindowPosMark("a", null);
   setWindowPosMark("b", null);
   notify();

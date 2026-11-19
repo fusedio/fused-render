@@ -436,8 +436,17 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   // …but not where it FLOATS: window A places itself as if it were not there.
   // …and never from the PINNED window's own card (`pinSlot`, free pins): it
   // floats, and its silence must not wipe the box the non-pin bot card says.
+  // …but the card that TAKES the pin lets go of the box it said as the
+  // non-pin, once, as its role changes — or the list's card would keep
+  // sitting short above a window that now floats.
+  const wasPinSlot = useRef(pinSlot);
   useEffect(() => {
-    if (pinSlot) return;
+    const was = wasPinSlot.current;
+    wasPinSlot.current = pinSlot;
+    if (pinSlot) {
+      if (!was) publishFavBox(null, "bot");
+      return;
+    }
     publishFavBox(visible && pinned && !move.floating ? box : null, "bot");
   }, [visible, pinned, box, move.floating, pinSlot]);
   useEffect(

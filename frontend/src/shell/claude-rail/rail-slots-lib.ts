@@ -79,6 +79,16 @@
 // (rail-move-store `pinEpoch`); its × fades it out where it is; a push
 // glides, and glides back.
 //
+// PINNING FREEZES THE WHOLE PICTURE (owner, 2026-11-19: "when we pin it shifts
+// back in and overlap happens on them"). A non-pin that is pinned stops
+// pushing — and a pin it had pushed aside would slide home, under the new
+// pin. So the pin's press freezes every window where it is DRAWN: the other
+// pin's pushed position becomes its home (rail-move-store `freezeFromDock`).
+// The list's non-pin shares the rail's column with window B's NON-PIN only
+// (owner, 2026-11-19, of a build that kept it short above a pinned favourite
+// too: "this limiting on 50% height is bad"): over a pin it stands at its
+// full height, and pushes it.
+//
 // Everything here needs no DOM, so each rule is proved on its own
 // (rail-slots-lib.test.ts).
 import {
@@ -176,25 +186,63 @@ export function overlaps(a: Box, b: Box, gap = 0): boolean {
 export const PUSH_GAP = PEEK_GAP;
 
 /** WHERE A PIN IS DRAWN WITH THE NON-PINS UP (header "A NON-PIN PUSHES A
- *  PIN"): `home` its own position, `size` its size, `docks` the clicked-open
- *  non-pin windows standing now (neither a hover's preview nor another pin is
- *  ever one). A pin clear of them all stands at home. One under a non-pin
- *  moves LEFT — the non-pins stand against the rail, at the right — until it
- *  is clear of every one, the gap kept; a move can land it under the other
- *  non-pin, so it is asked again, at most once per non-pin. With no room left
- *  of them (it would cross the viewport's left edge) it is not moved at all:
- *  it stays at home and the non-pin lies over it. Only `left` ever changes. */
+ *  PIN"): `home` its own position, `size` its size, `docks` what stands in
+ *  its way — the clicked-open non-pin windows (never a hover's preview), and,
+ *  for the second of two pins, the first one where its push put it
+ *  (`pushedPins`). A pin clear of them all stands at home. One under any of
+ *  them moves LEFT — the non-pins stand against the rail, at the right —
+ *  until it is clear of every one, the gap kept; a move can land it under
+ *  another, so it is asked again, at most once per obstacle.
+ *  WITH NO ROOM TO CLEAR THEM it goes as far left as the viewport lets it
+ *  (owner, 2026-11-19: "otherwise … the user would lose window and task"):
+ *  part of it shows beside the non-pin, where staying put left it wholly
+ *  covered. Only `left` ever changes. */
 export function pushedPos(home: Pos, size: Size, docks: readonly Box[], gap = PUSH_GAP): Pos {
   if (docks.length === 0) return home;
   let left = home.left;
   for (let i = 0; i <= docks.length; i++) {
     const at = { left, top: home.top, width: size.width, height: size.height };
     const hit = docks.find((d) => overlaps(at, d, gap));
-    if (!hit) return left === home.left ? home : { left: Math.round(left), top: home.top };
+    if (!hit) break;
     left = hit.left - gap - size.width;
-    if (left < 0) return home;
+    if (left <= 0) {
+      left = Math.min(0, home.left);
+      break;
+    }
   }
-  return home;
+  return left === home.left ? home : { left: Math.round(left), top: home.top };
+}
+
+/** A pin as the solver reads it: where it stands and how big it is. */
+export interface PinAt {
+  pos: Pos;
+  size: Size;
+}
+
+/** BOTH PINS AT ONCE (owner, 2026-11-19, of a pushed pin landing on the other
+ *  one: the user "would lose window and task"). Each pin is pushed clear of
+ *  the non-pins as `pushedPos` says — the one standing nearer the rail first;
+ *  and a pin that push MOVED is in the other's way too, so the two never end
+ *  up stacked by the system's own doing. Two pins the reader laid over each
+ *  other stay as they are ("two pins don't push each other"): only a pin a
+ *  non-pin moved pushes, and everything is back home when the non-pin goes. */
+export function pushedPins(
+  pins: Partial<Record<RailWindow, PinAt | null>>,
+  docks: readonly Box[],
+  gap = PUSH_GAP,
+): Record<RailWindow, Pos | null> {
+  const out: Record<RailWindow, Pos | null> = { a: null, b: null };
+  const order = (["a", "b"] as const)
+    .filter((w) => !!pins[w])
+    .sort((p, q) => pins[q]!.pos.left + pins[q]!.size.width - (pins[p]!.pos.left + pins[p]!.size.width));
+  const moved: Box[] = [];
+  for (const w of order) {
+    const pin = pins[w]!;
+    const pos = pushedPos(pin.pos, pin.size, moved.length ? [...docks, ...moved] : docks, gap);
+    out[w] = pos;
+    if (pos !== pin.pos) moved.push({ left: pos.left, top: pos.top, width: pin.size.width, height: pin.size.height });
+  }
+  return out;
 }
 
 /** The least height the section A non-pin keeps above the section B one

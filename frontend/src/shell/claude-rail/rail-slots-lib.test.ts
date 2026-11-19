@@ -31,6 +31,7 @@ import {
   pinHint,
   pinOf,
   placeColumn,
+  pushedPins,
   pushedPos,
   sectionPinned,
   serialisePinBox,
@@ -98,10 +99,38 @@ describe("a non-pin pushes a pin", () => {
     // Left of A it would still lie over B (taller than A's foot): left of B too.
     expect(pushedPos(home, size, [a, b])).toEqual({ left: 800 - PUSH_GAP - 400, top: 100 });
   });
-  it("stays at home with no room to its left: the non-pin lies over it", () => {
+  it("with no room to clear it, goes as far left as it can: part of it shows", () => {
     const narrow = box(300, 60, 420, 640);
     const home = { left: 320, top: 80 };
-    expect(pushedPos(home, size, [narrow])).toBe(home);
+    expect(pushedPos(home, size, [narrow])).toEqual({ left: 0, top: 80 });
+    // Already at the edge: nothing to gain, it stays.
+    const edge = { left: 0, top: 80 };
+    expect(pushedPos(edge, size, [narrow])).toBe(edge);
+  });
+});
+
+describe("both pins at once", () => {
+  const dock = box(972, 60, 420, 640);
+  const at = (left: number, top: number, width = 400, height = 500) => ({ pos: { left, top }, size: { width, height } });
+  it("a pin the push moved is in the other pin's way: they do not end up stacked", () => {
+    // A under the non-pin by the rail; B standing just where A would land.
+    const a = at(992, 80);
+    const b = at(560, 100);
+    const got = pushedPins({ a, b }, [dock]);
+    expect(got.a).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
+    expect(got.b).toEqual({ left: 972 - PUSH_GAP - 400 - PUSH_GAP - 400, top: 100 });
+  });
+  it("two pins the reader laid over each other stay so, with nothing pushing", () => {
+    const a = at(100, 80);
+    const b = at(150, 100);
+    const got = pushedPins({ a, b }, [dock]);
+    expect(got.a).toBe(a.pos);
+    expect(got.b).toBe(b.pos);
+  });
+  it("one pin alone is pushed as before; none: nothing", () => {
+    const a = at(992, 80);
+    expect(pushedPins({ a }, [dock])).toEqual({ a: { left: 972 - PUSH_GAP - 400, top: 80 }, b: null });
+    expect(pushedPins({}, [dock])).toEqual({ a: null, b: null });
   });
 });
 
@@ -276,6 +305,29 @@ describe("the position store, free pins on", () => {
     publishWindowBox("a", "pin", box(992, 80, 400, 500), true);
     publishPusher("a", "list", box(972, 60, 420, 641));
     expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
+  });
+  it("pinning freezes the whole picture: a pin this card pushed aside stays where it is drawn", () => {
+    // Window A's pin, tall, by the rail; window B's non-pin opens over its foot and pushes it.
+    commitWindowBox("a", box(972, 60, 420, 800));
+    publishWindowBox("b", "fav", box(1012, 440, 380, 480));
+    publishPusher("b", "fav", box(1012, 440, 380, 480));
+    const pushed = { left: 1012 - PUSH_GAP - 420, top: 60 };
+    expect(windowPos("a")).toEqual(pushed);
+    // The favourite is pinned: it stops pushing — and window A's pin does NOT slide back under it.
+    freezeFromDock("b");
+    expect(windowPos("a")).toEqual(pushed);
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
+    expect(windowPos("b")).toEqual({ left: 1012, top: 440 });
+  });
+  it("…but a pin pushed by its OWN section's non-pin still goes home when that closes", () => {
+    commitWindowBox("b", box(1012, 440, 380, 480));
+    publishPusher("b", "fav", box(1012, 440, 380, 480));
+    publishWindowBox("a", "list", box(972, 60, 420, 300));
+    publishPusher("a", "list", box(972, 60, 420, 300));
+    // Window A's card is pinned: only what IT pushed is frozen — window B's pin is pushed by B's own non-pin.
+    freezeFromDock("a");
+    publishPusher("b", "fav", null);
+    expect(windowPos("b")).toEqual({ left: 1012, top: 440 });
   });
   it("turning the unified head off is heard too: the store re-reads", () => {
     commitWindowBox("a", box(972, 60, 420, 640));

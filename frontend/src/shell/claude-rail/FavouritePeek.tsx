@@ -568,6 +568,17 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
     },
     [slot],
   );
+  // A CARD THAT TAKES THE PIN LETS GO OF ITS PLACE IN THE RAIL'S COLUMN, once,
+  // as its role changes (owner, 2026-11-19: "this limiting on 50% height is
+  // bad"): until a moment ago it was the non-pin and said where it stood, so
+  // the list's card sat short above it — and a pinned window says nothing
+  // more, so that box stood for good and the list's card never grew back.
+  const wasPinRole = useRef(pinRole);
+  useEffect(() => {
+    const was = wasPinRole.current;
+    wasPinRole.current = pinRole;
+    if (pinRole && !was) publishFavBox(null, "fav");
+  }, [pinRole]);
   // The keyboard's way into the pinned window (a ring's click on the pinned
   // favourite), and the name the non-pin's pin icon says it would replace.
   const peekRef = useRef<RailPeekHandle | null>(null);
