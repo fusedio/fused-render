@@ -76,31 +76,28 @@ def test_task_tools_need_an_origin(agent, rd, monkeypatch):
 
 # ------------------------------------------------------------- launch spec ---
 SPEC = {"kind": "main",
-        "deny": ["Edit(//w/specialists/canvas/.git/**)"], "ask": ["mcp__specialist_sends"],
-        "mcp_servers": {"specialist_sends": {"command": "py", "args": ["botmcp.py"]},
+        "mcp_servers": {"specialist_services": {"command": "py", "args": ["botmcp.py"]},
                         "fused_render": {"command": "evil"}},
         "append": "You are the Canvas specialist's main chat.", "policy_env": {}}
 
 
-def test_a_spec_folds_rules_servers_and_prompt(agent, rd):
+def test_a_spec_folds_servers_and_prompt(agent, rd):
     (rd / "specialist.json").write_text(json.dumps(SPEC))
     (rd / "specialists.on").write_text(json.dumps({"root": "/w/specialists", "here": []}))  # a spec wins
     argv = _argv(agent, rd, file="/w/specialists/canvas", cli_mode="auto")
-    perms = _settings(argv)["permissions"]
-    assert perms["deny"] == SPEC["deny"] and perms["ask"] == ["mcp__specialist_sends"]
+    assert "ask" not in _settings(argv).get("permissions", {})
     assert "specialist_pull" not in json.dumps(argv)
     assert _after(argv, "--append-system-prompt").endswith(" You are the Canvas specialist's main chat.")
     servers = _mcp(rd)
-    assert servers["specialist_sends"]["args"] == ["botmcp.py"]
+    assert servers["specialist_services"]["args"] == ["botmcp.py"]
     assert servers["fused_render"]["command"] != "evil"  # ours wins a collision
     assert _after(argv, "--permission-mode") == "auto"  # the user's pill
 
 
-def test_an_update_spec_keeps_the_send_ask_rule_and_carries_the_unattended_env(agent, rd):
+def test_an_update_spec_carries_the_unattended_env(agent, rd):
     spec = dict(SPEC, kind="update", append="", policy_env={"FUSED_SPECIALIST_UNATTENDED": "1"})
     (rd / "specialist.json").write_text(json.dumps(spec))
     argv = _argv(agent, rd, file="/w/specialists/canvas", cli_mode="auto")
-    assert _settings(argv)["permissions"]["ask"] == ["mcp__specialist_sends"]  # its card is refused at once
     assert _mcp(rd)["fused_render"]["env"]["FUSED_SPECIALIST_UNATTENDED"] == "1"
     assert _after(argv, "--permission-mode") == "auto"
 
@@ -223,23 +220,6 @@ def test_a_message_waits_while_its_specialist_learns(agent, monkeypatch):
     learn = types.SimpleNamespace(LEARNING="learning", learning=lambda home: home == "/w/specialists/canvas")
     monkeypatch.setitem(sys.modules, "fused_render.specialists.update", learn)
     assert agent._send("main1", "hello") == {"error": "learning"}
-
-
-# ------------------------------------------------------------------ _decide ---
-@pytest.mark.parametrize("tool, granted", [("mcp__specialist_sends__notion_create_page", True),
-                                           ("mcp__specialist_services__notion_search", False), ("Bash", False)])
-def test_allowing_a_send_records_its_grant_before_the_decision(agent, monkeypatch, tool, granted):
-    perm = os.path.join(agent.RUNS, "run1", "perm")
-    os.makedirs(perm)
-    with open(os.path.join(perm, "req1.req.json"), "w") as fh:
-        json.dump({"id": "req1", "tool": tool, "input": {}}, fh)
-    monkeypatch.setattr(agent, "_alive", lambda run_dir: True)
-    grants = []
-    services = types.SimpleNamespace(record_grant=lambda run, req: grants.append(
-        (run, req, os.path.exists(os.path.join(perm, "req1.res.json")))))
-    monkeypatch.setitem(sys.modules, "fused_render.specialists.services", services)
-    assert agent._decide("run1", "req1", "allow", "once")["decision"] == "allow"
-    assert grants == ([("run1", "req1", False)] if granted else [])
 
 
 def test_status_line_names_the_specialist(agent):

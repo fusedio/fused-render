@@ -113,6 +113,7 @@ test("a specialist breakout names the specialist and runs in its home", () => {
   expect(seen["file"]).toBe("/w/specialists/canvas");
   expect(seen["breakout"]).toBe(true);
   expect(seen["extraParams"]).toEqual({ specialist: "canvas:breakout" });
+  expect(seen["permission"]).toBe("auto"); // the freest mode, as a default the pill can change
 });
 
 // A mount that reports a fixed breakout state once.

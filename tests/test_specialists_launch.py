@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from fused_render.specialists import launch, services, store
+from fused_render.specialists import launch, store
 
 
 @pytest.fixture(autouse=True)
@@ -13,35 +13,27 @@ def _idle(monkeypatch):
     monkeypatch.setattr(store, "live_runs", lambda home: [])
 
 
-def _deny(home):
-    h = home.lstrip("/")
-    return [f"Edit(//{h}/{p})" for p in (".git/**", ".specialist/**", ".claude/settings.json",
-                                         ".claude/settings.local.json")]
-
-
-def test_main_and_breakout_get_the_services_and_a_send_always_asks():
+def test_main_and_breakout_get_the_services_and_no_rules():
     s = make_specialist()
     for kind in ("main", "breakout"):
         sp = launch.spec(f"{s.id}:{kind}", s.home)
         json.dumps(sp)  # the run dir stores it
         assert sp["kind"] == kind and sp["policy_env"] == {}
-        assert set(_deny(s.home)) <= set(sp["deny"]) and not any("memory.md" in r for r in sp["deny"])
-        assert sp["ask"] == ["mcp__specialist_sends"]
-        assert set(sp["mcp_servers"]) == set(services.SERVERS)
-        entry = sp["mcp_servers"]["specialist_sends"]
+        assert "deny" not in sp and "ask" not in sp
+        assert set(sp["mcp_servers"]) == {"specialist_services"}
+        entry = sp["mcp_servers"]["specialist_services"]
         assert "botmcp" in os.path.basename(entry["args"][0]) and entry["timeout"] > 60_000
         token = entry["args"][3]
-        assert entry["args"][4:] == [f"api/specialists/{s.id}/specialist_sends", "specialist_sends"]
+        assert entry["args"][4:] == [f"api/specialists/{s.id}/specialist_services", "specialist_services"]
         assert launch.check_token(s.id, token) and not launch.check_token("other", token)
-    assert "breakout" in sp["append"] and "do not edit memory.md" in sp["append"]
+    assert "breakout" in sp["append"]
 
 
 def test_a_learning_run_has_the_chat_s_tools_and_nobody_to_ask():
     s = make_specialist()
     sp, main = launch.spec(f"{s.id}:update", s.home), launch.spec(f"{s.id}:main", s.home)
-    assert (sp["ask"], set(sp["mcp_servers"])) == (main["ask"], set(main["mcp_servers"]))  # a send still asks...
-    assert sp["policy_env"] == {"FUSED_SPECIALIST_UNATTENDED": "1"}  # ...and the card is refused at once
-    assert set(_deny(s.home)) <= set(sp["deny"])
+    assert set(sp["mcp_servers"]) == set(main["mcp_servers"])
+    assert sp["policy_env"] == {"FUSED_SPECIALIST_UNATTENDED": "1"}  # a card would wait for nobody: refused at once
 
 
 def test_refusals(monkeypatch, tmp_path):

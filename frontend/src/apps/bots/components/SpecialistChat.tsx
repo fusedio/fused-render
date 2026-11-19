@@ -59,7 +59,7 @@ export function SpecialistChat({ s, clearRef }: { s: Specialist; clearRef: Mutab
       ) : null}
       {chat ? (
         <ChatMount key={epoch} file={s.home} backend="claude" {...(chat.session_id ? { sessionId: chat.session_id } : {})}
-          extraParams={{ specialist: `${s.id}:main` }} onClear={clear} chatOnly peek noAnnTools paramsSource="memory" />
+          extraParams={{ specialist: `${s.id}:main` }} permission="auto" onClear={clear} chatOnly peek noAnnTools paramsSource="memory" />
       ) : null}
     </>
   );

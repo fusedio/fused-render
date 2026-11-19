@@ -930,9 +930,9 @@ def _handle_approve(args: dict) -> dict:
         # rather than park one for an hour.
         return _text({"behavior": "deny", "decisionClassification": "user_reject",
                       "message": "Nobody is here to approve this; it is refused."})
-    # A send to a connected service, and a specialist breakout, ask every
-    # time: the chat's "Always approve" never answers for one.
-    if not tool_name.startswith(ALWAYS_ASK) and _chat_allows(tool_name, tool_input):
+    # A specialist breakout asks every time: it is how the user opens one, so
+    # the chat's "Always approve" never answers for it.
+    if tool_name != SPECIALIST_BREAKOUT and _chat_allows(tool_name, tool_input):
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
 
@@ -2277,8 +2277,7 @@ EXPERT_SCHEMAS = [
 # before it ever runs.
 
 SPECIALIST_TOOLS = ("specialist_pull", "specialist_note", "specialist_breakout")
-SPECIALIST_SENDS = "mcp__specialist_sends__"
-ALWAYS_ASK = (SPECIALIST_SENDS, "mcp__fused_render__specialist_breakout")
+SPECIALIST_BREAKOUT = "mcp__fused_render__specialist_breakout"
 
 
 def _specialist_origin() -> str:

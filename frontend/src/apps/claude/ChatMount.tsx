@@ -252,6 +252,10 @@ export interface ChatMountProps {
    *  the two above: it names the agent for the frames before the chat's own
    *  history says it, and the history's answer outranks it from then on. */
   backend?: string;
+  /** `permission` — the mode a chat with nothing recorded starts in, in place
+   *  of the user's default: a specialist's chats start in "auto". A seed like
+   *  `model`: the pill's own pick outranks it. */
+  permission?: string;
   /** `msg` — ONE TURN inside the conversation, to open scrolled to. The
    *  transcript stamps `data-msg` on every turn it draws and the param is spent
    *  the moment the named one is on screen (params/store.ts). Handed over by
@@ -354,6 +358,7 @@ export function ChatMount(props: ChatMountProps) {
     if (props.model) seed.model = props.model;
     if (props.effort) seed.effort = props.effort;
     if (props.backend) seed.backend = props.backend;
+    if (props.permission) seed.permission = props.permission;
     return createMemoryParamsStore(seed);
   });
   useHostIds(memory, props.sessionId, props.runId, props.msgAnchor);

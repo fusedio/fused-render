@@ -110,13 +110,13 @@ def test_the_session_door_needs_the_token(client, monkeypatch):
     monkeypatch.setattr(services, "mcp_tools", lambda server: [{"name": f"{server}-tool"}])
     monkeypatch.setattr(services, "call", lambda spec, server, name, args:
                         calls.append((spec.id, server, name, args)) or {"content": [], "isError": False})
-    path = f"/api/specialists/{s.id}/specialist_sends/tools"
+    path = f"/api/specialists/{s.id}/specialist_services/tools"
     assert req(client, "GET", path)[0] == 403
-    assert req(client, "GET", path + "?token=" + token) == (200, {"tools": [{"name": "specialist_sends-tool"}]})
+    assert req(client, "GET", path + "?token=" + token) == (200, {"tools": [{"name": "specialist_services-tool"}]})
     other = make_specialist("Other", "x")
-    assert req(client, "GET", f"/api/specialists/{other.id}/specialist_sends/tools?token={token}")[0] == 403
+    assert req(client, "GET", f"/api/specialists/{other.id}/specialist_services/tools?token={token}")[0] == 403
     assert req(client, "GET", f"/api/specialists/{s.id}/specialist/tools?token={token}")[0] == 400
     body = {"name": "slack_post", "args": {"text": "hi"}}
-    assert req(client, "POST", f"/api/specialists/{s.id}/specialist_sends/tool", body)[0] == 403
-    st, _ = req(client, "POST", f"/api/specialists/{s.id}/specialist_sends/tool", dict(body, token=token))
-    assert st == 200 and calls == [(s.id, "specialist_sends", "slack_post", {"text": "hi"})]
+    assert req(client, "POST", f"/api/specialists/{s.id}/specialist_services/tool", body)[0] == 403
+    st, _ = req(client, "POST", f"/api/specialists/{s.id}/specialist_services/tool", dict(body, token=token))
+    assert st == 200 and calls == [(s.id, "specialist_services", "slack_post", {"text": "hi"})]

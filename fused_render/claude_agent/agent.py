@@ -2865,13 +2865,6 @@ def _specialists_note(here: list) -> str:
     return note
 
 
-def _add_rules(settings: dict, key: str, rules: list) -> None:
-    if not rules:
-        return
-    have = settings.setdefault("permissions", {}).setdefault(key, [])
-    have += [r for r in rules if r not in have]
-
-
 #: Each harness's per-server "never defer this server's tools" key, for
 #: `_write_mcp_config(always_load=...)`. Claude Code: `alwaysLoad` (a CLI
 #: that predates it strips it, as it does `timeout`). Copilot CLI:
@@ -4066,12 +4059,6 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
         # "✓ Allowed" for a tool claude never ran — a permission UI telling the
         # user their grant took effect when it provably did not.
         payload = {"decision": "expired"}
-    if payload.get("decision") == "allow" and tool.startswith("mcp__specialist_sends__"):
-        # The server's one-time grant for this send, recorded before the
-        # decision is written so the call it lets through cannot come first.
-        services = sys.modules.get("fused_render.specialists.services")
-        if services is not None:
-            services.record_grant(run_id, request_id)
     _write_decision(perm_dir, request_id, payload)
     # Report what is on disk, never what was clicked — the losing half of a
     # double-click must not show a verdict the tool will never see — and read it
@@ -5211,16 +5198,14 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     if denies:
         deny = settings.setdefault("permissions", {}).setdefault("deny", [])
         deny += [rule for rule in denies if rule not in deny]
+    if task:
+        # The breakout tool always shows the user's card, in every mode.
+        settings.setdefault("permissions", {}).setdefault("ask", []).append(
+            f"mcp__{PERMISSION_SERVER}__specialist_breakout")
     # The one-shot allow for a call the auto-mode classifier refused (see
     # `_allow_denied`), in every chat with a session id. It joins the PreToolUse list the branch
     # above built, AFTER that branch's own hook, so a breakout's refusal (exit
     # 2) still wins over this hook's allow.
-    if spec:
-        _add_rules(settings, "deny", spec["deny"])
-        _add_rules(settings, "ask", spec["ask"])
-    elif task:
-        # The breakout tool always shows the user's card, in every mode.
-        _add_rules(settings, "ask", [f"mcp__{PERMISSION_SERVER}__specialist_breakout"])
     grants_path = _chat_allow_once_path(new_session_id or session_id)
     if grants_path:
         settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
@@ -7224,7 +7209,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # written on exactly the condition it always was (a model or an effort
     # to say), not for every Claude session there is.
     # Not for a specialist's update: it runs inside the main chat, whose pills
-    # must keep the chat's own settings, not the update's acceptEdits.
+    # must keep the chat's own settings, not the update's.
     if not (sp_spec and sp_spec["kind"] == "update"):
         _record_settings(new_session_id or session_id, model, effort,
                          backend if backend in _SELF_MINTED_ID_BACKENDS else "",

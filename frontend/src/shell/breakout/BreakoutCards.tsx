@@ -285,7 +285,7 @@ export function Card({
         <Mount
           file={card.specialist?.home || card.cwd || card.file}
           breakout
-          {...(card.specialist ? { extraParams: { specialist: `${card.specialist.id}:breakout` } } : {})}
+          {...(card.specialist ? { extraParams: { specialist: `${card.specialist.id}:breakout` }, permission: "auto" } : {})}
           backend="claude"
           breakoutContext={card.context}
           {...(card.prompt ? { breakoutPrompt: card.prompt, onBreakoutPromptSent: () => consumeBreakoutPrompt(card.id) } : {})}
