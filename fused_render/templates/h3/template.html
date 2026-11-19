@@ -148,7 +148,7 @@ const P = {
   showAll: () => fused.params.get('showall') === '1',
 };
 const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
-function status(msg, err){ els.status.innerHTML = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+function status(msg, err){ els.status.textContent = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
 function showMapSkeleton(){ els.mapSkeleton.classList.add('active'); }
 function hideMapSkeleton(){ els.mapSkeleton.classList.remove('active'); }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -229,13 +229,9 @@ function buildGeojson(){
 }
 
 // ---------------- coloring ----------------
-function numericCols(){
-  return Object.keys(data.attrs).filter(c =>
-    data.attrs[c].some(v => typeof v === 'number'));
-}
 function activeColorCol(){
   const want = P.colorBy();
-  const nums = numericCols();
+  const nums = data.numeric;
   return nums.includes(want) ? want : (nums[0] || '');
 }
 function percentiles(vals){
@@ -258,18 +254,31 @@ function fillColorExpr(){
     lo + (hi-lo)*0.75, '#5ec962', hi, '#fde725'];
 }
 
+const HEX_LAYERS = ['hex-fill', 'hex-dot'];
 function addLayers(){
-  for (const id of ['hex-fill', 'hex-line']) if (map.getLayer(id)) map.removeLayer(id);
-  if (map.getSource('hex')) map.removeSource('hex');
+  for (const id of [...HEX_LAYERS, 'hex-line']) if (map.getLayer(id)) map.removeLayer(id);
+  for (const id of ['hex', 'hex-dot']) if (map.getSource(id)) map.removeSource(id);
+  const cell = data.cells.find(c => h3.isValidCell(c));
+  const dotsUntil = cell ? Math.max(0, Math.log2(39136 / h3.getHexagonEdgeLengthAvg(h3.getResolution(cell), 'm'))) : 0;
   map.addSource('hex', {type: 'geojson', data: gj});
-  const op = +els.opacity.value / 100;
-  map.addLayer({id: 'hex-fill', type: 'fill', source: 'hex',
-    paint: {'fill-color': fillColorExpr(), 'fill-opacity': op,
-            'fill-outline-color': 'rgba(0,0,0,0.25)'}});
-  map.addLayer({id: 'hex-line', type: 'line', source: 'hex',
+  map.addSource('hex-dot', {type: 'geojson', data: {type: 'FeatureCollection', features:
+    gj.features.map(f => ({...f, geometry: {type: 'Point', coordinates: centers[f.id]}}))}});
+  map.addLayer({id: 'hex-fill', type: 'fill', source: 'hex', minzoom: dotsUntil,
+    paint: {'fill-outline-color': 'rgba(0,0,0,0.25)'}});
+  map.addLayer({id: 'hex-dot', type: 'circle', source: 'hex-dot', maxzoom: dotsUntil,
+    paint: {'circle-radius': 2.5}});
+  map.addLayer({id: 'hex-line', type: 'line', source: 'hex', minzoom: dotsUntil,
     paint: {'line-color': '#ffffff',
             'line-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.9, 0],
             'line-width': 1.5}});
+  paintHex();
+}
+function paintHex(){
+  const color = fillColorExpr(), op = +els.opacity.value / 100;
+  map.setPaintProperty('hex-fill', 'fill-color', color);
+  map.setPaintProperty('hex-fill', 'fill-opacity', op);
+  map.setPaintProperty('hex-dot', 'circle-color', color);
+  map.setPaintProperty('hex-dot', 'circle-opacity', op);
   renderLegend();
 }
 
@@ -287,7 +296,7 @@ let histSel = null;
 
 function viewportStats(){
   const col = activeColorCol();
-  if (!col || !centers) return null;
+  if (!centers || !(col in data.attrs)) return null;
   const b = map.getBounds();
   const w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
   const vals = [];
@@ -387,8 +396,7 @@ function maybeAutoStretch(){
   if (lastStats.p98 <= lastStats.p2 || s === autoStretchVal) return;
   autoStretchVal = s;
   if (!map.getLayer('hex-fill')) return;
-  map.setPaintProperty('hex-fill', 'fill-color', fillColorExpr());
-  renderLegend();
+  paintHex();
   drawHist();  // the clip band fillColorExpr() just recomputed
 }
 
@@ -450,12 +458,12 @@ function fitToData(instant = true){
 // ---------------- hover tooltip ----------------
 map.on('mousemove', e => {
   if (!map.getLayer('hex-fill')) return;
-  const feats = map.queryRenderedFeatures(e.point, {layers: ['hex-fill']});
-  if (hoverId !== null){ map.setFeatureState({source: 'hex', id: hoverId}, {hover: false}); hoverId = null; }
+  const feats = map.queryRenderedFeatures(e.point, {layers: HEX_LAYERS});
+  if (hoverId !== null){ map.setFeatureState(hoverId, {hover: false}); hoverId = null; }
   if (!feats.length){ els.mapTip.style.display = 'none'; map.getCanvas().style.cursor = ''; return; }
   const f = feats[0];
-  hoverId = f.id;
-  map.setFeatureState({source: 'hex', id: hoverId}, {hover: true});
+  hoverId = {source: f.source, id: f.id};
+  map.setFeatureState(hoverId, {hover: true});
   map.getCanvas().style.cursor = 'pointer';
   const col = activeColorCol();
   const entries = Object.entries(f.properties).filter(([k]) => k !== '__h3');
@@ -475,7 +483,7 @@ function renderMeta(){
   const res = data.cells.length ? h3.getResolution(data.cells[0]) : '—';
   els.metaBody.innerHTML =
     `<h2>File <a id="metaClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><table>${rows({
-      file: esc(data.file.split('/').pop()),
+      file: esc(P.file().split('/').pop()),
       size: human(data.file_size),
       rows: data.count.toLocaleString() + (data.truncated ? ` (showing ${data.shown.toLocaleString()})` : ''),
       'h3 column': esc(data.h3_col),
@@ -487,19 +495,34 @@ function renderMeta(){
 }
 
 // ---------------- load ----------------
-let loadedKey = null;
+let loadedKey = null, pendingKey = null, loadSeq = 0, doneSeq = 0, noteTimer;
+const readSource = async file => /^s3:\/\//i.test(file) ? (await fused.s3.sign(file)).url : file;
+const readCells = params => fused.daemon.run(params).catch(e => {
+  if (e && e.type) throw e;
+  return fused.runPython('./h3_reader.py', params);
+});
+const colorMissing = () => data && activeColorCol() && !(activeColorCol() in data.attrs);
 
 async function loadFile(){
   const file = P.file();
+  els.browse.hidden = /^s3:\/\//i.test(file);
   if (!file){ status('no file — use Browse or enter a .parquet path'); hideMapSkeleton(); return; }
   const key = file + '|' + P.h3Col();
-  if (key === loadedKey) return;
+  if (key === loadedKey && !colorMissing()) return;
+  const want = key + '|' + P.colorBy();
+  if (want === pendingKey) return;
+  pendingKey = want;
+  clearTimeout(noteTimer);
   showMapSkeleton();
+  const seq = ++loadSeq;
   try {
     status('Reading parquet…');
-    await styleReady();
-    const r = await fused.runPython('./h3_reader.py', {file, h3_col: P.h3Col()})
-      .catch(e => ({error: String(e.message || e)}));
+    const [r] = await Promise.all([readSource(file)
+      .then(src => seq === loadSeq ? readCells({file: src, h3_col: P.h3Col(), color_by: P.colorBy()}) : null)
+      .catch(e => ({error: String(e.message || e)})), styleReady()]);
+    if (seq !== loadSeq) return;
+    doneSeq = seq;
+    pendingKey = null;
     if (!r || r.error){
       if (r && r.no_h3 && r.columns){
         els.h3Col.innerHTML = '<option value="">— pick H3 column —</option>' +
@@ -509,18 +532,18 @@ async function loadFile(){
       return;
     }
     data = r;
-    loadedKey = key;
     status(`Building ${r.shown.toLocaleString()} hexagons…`);
     gj = buildGeojson();
     syncControls();
     addLayers();
-    fitToData();
+    if (key !== loadedKey) fitToData();
+    loadedKey = key;
     renderMeta();
     refreshHist();
     status(r.truncated ? `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} cells` : '');
-    if (r.truncated) setTimeout(() => status(''), 8000);
+    if (r.truncated) noteTimer = setTimeout(() => status(''), 8000);
   } finally {
-    hideMapSkeleton();
+    if (seq === loadSeq) hideMapSkeleton();
   }
 }
 
@@ -528,7 +551,7 @@ function syncControls(){
   els.path.value = P.file();
   els.h3Col.innerHTML = data.columns.map(c =>
     `<option value="${esc(c)}"${c === data.h3_col ? ' selected' : ''}>${esc(c)}</option>`).join('');
-  const nums = numericCols();
+  const nums = data.numeric;
   els.colorBy.innerHTML = '<option value="">— single color —</option>' +
     nums.map(c => `<option${c === activeColorCol() ? ' selected' : ''}>${esc(c)}</option>`).join('');
   if (activeColorCol()) els.colorBy.value = activeColorCol();
@@ -540,7 +563,9 @@ els.path.onkeydown = e => { if (e.key === 'Enter') els.load.onclick(); };
 els.h3Col.onchange = () => fused.params.set('h3col', els.h3Col.value);
 els.colorBy.onchange = () => fused.params.set('colorby', els.colorBy.value);
 els.opacity.oninput = () => {
-  if (map.getLayer('hex-fill')) map.setPaintProperty('hex-fill', 'fill-opacity', +els.opacity.value / 100);
+  if (!map.getLayer('hex-fill')) return;
+  map.setPaintProperty('hex-fill', 'fill-opacity', +els.opacity.value / 100);
+  map.setPaintProperty('hex-dot', 'circle-opacity', +els.opacity.value / 100);
 };
 els.basemap.onchange = () => {
   const show = els.basemap.checked ? 'visible' : 'none';
@@ -551,10 +576,10 @@ els.metaBtn.onclick = () => els.metaPanel.style.display = els.metaPanel.style.di
 els.fitBtn.onclick = () => fitToData(false);
 
 function onParamsChanged(){
-  if (P.file() + '|' + P.h3Col() !== loadedKey){ loadFile(); return; }
+  if (P.file() + '|' + P.h3Col() !== loadedKey || colorMissing()){ loadFile(); return; }
+  if (doneSeq !== loadSeq){ doneSeq = ++loadSeq; pendingKey = null; hideMapSkeleton(); status(''); }
   if (data && map.getLayer('hex-fill')){
-    map.setPaintProperty('hex-fill', 'fill-color', fillColorExpr());
-    renderLegend();
+    paintHex();
     syncControls();
     if (lastStats && lastStats.col !== activeColorCol()) refreshHist();
     else drawHist();
@@ -572,12 +597,12 @@ els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ?
 async function refreshExplorer(dir){
   const r = await fused.runPython('./browse.py', { dir, exts: '.parquet', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
   if (!r || r.error) return;
-  els.crumbs.innerHTML = r.crumbs.map(c => `<a data-p="${c.path}">${c.label}</a>`).join(' / ');
+  els.crumbs.innerHTML = r.crumbs.map(c => `<a data-p="${esc(c.path)}">${esc(c.label)}</a>`).join(' / ');
   els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
   const entries = [...r.dirs, ...r.files];
   els.explorerList.innerHTML = entries.map(e =>
-    `<div class="row" data-p="${e.path}" data-d="${e.is_dir ? 1 : 0}">
-       <span class="ic">${e.is_dir ? '📁' : '⬡'}</span><span class="nm">${e.name}</span>
+    `<div class="row" data-p="${esc(e.path)}" data-d="${e.is_dir ? 1 : 0}">
+       <span class="ic">${e.is_dir ? '📁' : '⬡'}</span><span class="nm">${esc(e.name)}</span>
        <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:#6b7178">empty</div>';
   els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
     if (row.dataset.d === '1') refreshExplorer(row.dataset.p);

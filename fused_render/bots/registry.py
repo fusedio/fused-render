@@ -112,7 +112,10 @@ _OWNER = {"fh": None, "lean": False, "ready": False, "elect_lock": threading.Loc
           # must land before this process's next pass). `ws_lock`: the workspace steps run under it, whether from
           # the pass or from take_workspace() on a request thread, so they never run twice at once (an RLock:
           # take_workspace holds it while _workspace_steps takes it again).
-          "ws_yield_until": 0.0, "ws_lock": threading.RLock()}
+          "ws_yield_until": 0.0, "ws_lock": threading.RLock(),
+          # `experts_seeded`: the shipped experts' seed ran in this process (`_seed_experts`), so an Experts flag
+          # turned on later need not seed again (`_seed_experts_once`).
+          "experts_seeded": False}
 WS_LOCK = ".routines.lock"
 WS_YIELD_COOLDOWN_S = 30.0
 WS_YIELD_BUDGET_S = 8.0
@@ -698,7 +701,13 @@ def _seed_super() -> None:
 
 def _seed_experts() -> None:
     """The shipped experts (experts/seed.py), right after the Super Bot seed and under the same gates: until the
-    v3 migration has stamped, a legacy expert would be invisible and seeded twice. A failure logs, never blocks."""
+    v3 migration has stamped, a legacy expert would be invisible and seeded twice. Only while the Experts flag is
+    on (docs/experts.md §17): off, nothing is seeded, and the first owner pass that sees it on seeds then
+    (`_seed_experts_once`). A failure logs, never blocks."""
+    from fused_render import experts
+    if not experts.enabled():
+        logger.info("experts seed skipped: the Experts flag is off")
+        return
     from fused_render.bots import migrate_v3
     if not os.path.exists(migrate_v3.stamp_path()) or _legacy_bots_remain():
         logger.info("experts seed skipped: the v3 folder migration has not completed")
@@ -706,8 +715,23 @@ def _seed_experts() -> None:
     try:
         from fused_render.experts import seed
         seed.seed()
+        _OWNER["experts_seeded"] = True
     except Exception:  # noqa: BLE001 — startup goes on without the shipped experts
         logger.warning("experts seed failed", exc_info=True)
+
+
+def _seed_experts_once() -> None:
+    """The seed for an Experts flag turned on after startup: run on an owner pass (never on a request thread, the
+    workspace steps' rule) once the flag reads on and this ownership has not seeded yet. Under `ws_lock`, so it
+    never runs beside `_workspace_steps`. The seed's own witness keeps it to once per shipped expert."""
+    if _OWNER.get("experts_seeded"):
+        return
+    from fused_render import experts
+    if not experts.enabled():
+        return
+    with _OWNER["ws_lock"]:
+        if not _OWNER.get("experts_seeded") and _OWNER["ws_ready"]:
+            _seed_experts()
 
 
 def _legacy_bots_remain() -> bool:
@@ -863,8 +887,13 @@ def _pass() -> None:
         return  # another home's owner sweeps and ticks this workspace; re-tried next pass
     _write_ws_record()  # the claimant's heartbeat, read by workspace_info() in other homes
     _sweep_handoffs()
+    _seed_experts_once()
+    from fused_render import experts
+    experts_on = experts.enabled()
     for b in all():
         try:
+            if not experts_on and _botmod().is_expert(getattr(b, "meta", None)):
+                continue  # Experts flag off (docs/experts.md §17): a hidden expert's routines wait, nothing is lost
             b.tick_routines()
         except Exception:  # noqa: BLE001
             logger.warning("routine tick failed for %s", getattr(b, "id", "?"), exc_info=True)

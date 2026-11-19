@@ -2748,13 +2748,26 @@ _EXPERTS_FILE = "experts.on"
 _EXPERT_BACKENDS = ("claude", "codex", "copilot")
 
 
+def _experts_pref() -> bool:
+    """Whether the Experts experimental flag is on: `experts_enabled` stored
+    True in `<home>/prefs.json`, the rule `shell/prefs.py::experts_enabled`
+    keeps; a stdlib read for the same reason as `_canvases_pref`."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(prefs, dict) and prefs.get("experts_enabled") is True
+
+
 def _experts_live() -> bool:
-    """Whether at least one expert exists, with a server origin to call.
+    """Whether the Experts flag is on and at least one expert exists, with a
+    server origin to call.
     Read off `fused_render.experts.store` ONLY when this process already has
     it loaded (the server's startup hook imports it), never imported from
     here (SPEC PY-15), and only in the process that owns the bots, so a spawn
     never triggers the bots election. Never raises: any failure is no."""
-    if not _origin():
+    if not _origin() or not _experts_pref():
         return False
     try:
         store = sys.modules.get("fused_render.experts.store")

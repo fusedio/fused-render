@@ -242,6 +242,23 @@ function current(): BotPulseRow[] {
   return rows;
 }
 
+/** HAS AN ANSWER LANDED IN THIS DOCUMENT (a poll's, or the Bots page's
+ *  `publishBots`)? Until then the rows are only what the last session
+ *  remembered (`memoRows`) — or nothing — and say nothing about which bots
+ *  exist now: an empty list is "not asked yet", not "none". A reader that
+ *  lets something go when its bot is gone (the rail's pinned bot window)
+ *  waits for this. */
+let answered = false;
+export function botsPulseAnswered(): boolean {
+  return answered;
+}
+
+/** The rows as they stand now, outside React (the same answer the hooks
+ *  hold, without a render's lag). */
+export function botsRowsNow(): BotPulseRow[] {
+  return rows;
+}
+
 async function poll() {
   if (inFlight) return;
   inFlight = true;
@@ -271,6 +288,7 @@ function schedule() {
 /** An answer landed — the page's own or this module's. */
 export function publishBots(rows: BotPulseRow[]) {
   generation += 1;
+  answered = true;
   recompute(rows);
   schedule();
 }
@@ -344,6 +362,7 @@ const EMPTY_ROWS: BotPulseRow[] = [];
 export function resetBotsPulseForTests() {
   pulse = EMPTY_BOTS_PULSE;
   rows = [];
+  answered = false;
   try {
     localStorage.removeItem(ROWS_KEY);
   } catch {

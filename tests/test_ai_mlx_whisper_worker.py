@@ -120,7 +120,13 @@ class FakeTranscribeModule(types.ModuleType):
         #: Set when `transcribe` RETURNS, so a test can land a cancel in the
         #: window between the work finishing and the tick that carries the ✕
         #: being answered — the race the last-second guard is about.
+        #: NOTE: `done` fires inside `transcribe()`'s `finally`, i.e. BEFORE the
+        #: call has returned to the runner's thread, stored its value and exited.
+        #: A test that must know the work is finished as the runner sees it
+        #: (`_finished`: thread dead AND value stored) waits on `finished()`.
         self.done = threading.Event()
+        #: The thread the last `transcribe()` ran on — the runner's decode thread.
+        self.thread = None
         self._live = 0
         self._lock = threading.Lock()
 
@@ -137,7 +143,16 @@ class FakeTranscribeModule(types.ModuleType):
         # this attribute is present, so its presence/absence is a test axis.
         self.tqdm = types.SimpleNamespace(tqdm=object())
 
+    def finished(self, timeout=5):
+        """Block until the decode thread has RETURNED and exited, not merely
+        reached the end of `transcribe()` — the state `_finished` checks."""
+        if not self.done.wait(timeout):
+            return False
+        self.thread.join(timeout)
+        return not self.thread.is_alive()
+
     def transcribe(self, audio, **kwargs):
+        self.thread = threading.current_thread()
         self.calls.append({"audio": audio, **kwargs})
         with self._lock:
             self._live += 1
@@ -609,7 +624,11 @@ def test_a_cancel_that_lands_as_the_transcript_FINISHES_still_writes_it(
 
     def slow_tick(job=None, **fields):
         if "Transcribing" in str(fields.get("detail") or ""):
-            assert transcribe.done.wait(5), "the fake decode never finished"
+            # The decode thread itself, not just `transcribe()`'s last line:
+            # `done` fires before the value is stored and the thread exits, and
+            # a tick answered in that gap is a cancel that genuinely landed
+            # while the work was still running — the OTHER path.
+            assert transcribe.finished(5), "the fake decode never finished"
             base.cancel_on_tick = len(base.ticks) + 1
         return real_report(job=job, **fields)
 
@@ -1690,7 +1709,7 @@ def test_a_cancel_between_CLIPS_is_honoured_and_writes_nothing(
 
     def slow_tick(job=None, **fields):
         if "Transcribing" in str(fields.get("detail") or ""):
-            assert transcribe.done.wait(5)
+            assert transcribe.finished(5)
             base.cancel_on_tick = len(base.ticks) + 1
         return real_report(job=job, **fields)
 

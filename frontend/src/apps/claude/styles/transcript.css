@@ -2176,6 +2176,14 @@
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s ease-out;
+  /* The pill lives INSIDE the `pre`, so a drag/triple-click selection over the
+     code would otherwise carry its "copy"/"run" label into the clipboard. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+.chat-root pre .copywrap {
+  -webkit-user-select: none;
+  user-select: none;
 }
 /* Left of copy, its own fixed offset rather than a shared flex row: the
    sticky (chip-body) and no-padding (pre.diff) `.copywrap` rules above are

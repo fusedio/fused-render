@@ -1630,6 +1630,12 @@ def _handle_s3_search(args: dict) -> dict:
     if cursor and not path:
         return _error_result("`cursor` continues a folder listing: pass it "
                              "with the same `path`")
+    summary, bad = _s3_bool(args, "summary")
+    if bad:
+        return bad
+    if summary and (not path or cursor):
+        return _error_result("`summary` sums one folder: pass it with `path` "
+                             "and no `cursor`")
     limit, bad = _s3_int(args, "limit")
     if bad:
         return bad
@@ -1641,6 +1647,8 @@ def _handle_s3_search(args: dict) -> dict:
         params["path"] = path
         if cursor:
             params["cursor"] = cursor
+        if summary:
+            params["summary"] = "1"
     try:
         status, payload = _server_http(
             _s3_origin(), "GET",
@@ -2056,7 +2064,12 @@ S3_SCHEMAS = [
             "folder, folders first, every file, paged with `cursor`. Search to "
             "find a dataset, then list its folder to see all its files. Each hit "
             "has `url`, `is_dir`, `size` (bytes) and `modified` (either may be "
-            "null). `truncated: true` means there is more: in a listing, pass "
+            "null); in a listing a folder's `size`, `files` and `modified` are "
+            "its WHOLE subtree's (bytes, file count, newest file). `path` with "
+            "`summary: true` sums that folder instead: total `files` and `bytes`, "
+            "`newest`, its `largest` children and its `extensions` by bytes, and "
+            "`index_fetched` (when the index was fetched) — the measured answer "
+            "to how big a dataset or the bucket is. `truncated: true` means there is more: in a listing, pass "
             "the returned `cursor` with the same `path`; in a search (whose "
             "`cursor` is always null), narrow the query or raise `limit`. "
             "Read-only. If the index is still loading, the error says so: wait a "
@@ -2072,6 +2085,8 @@ S3_SCHEMAS = [
                           "description": "Most hits to return (default 20, max 200)."},
                 "cursor": {"type": "string",
                            "description": "The `cursor` of a previous listing of the same `path`, to continue it."},
+                "summary": {"type": "boolean",
+                            "description": "With `path`: return that folder's totals (files, bytes, newest, largest children, extensions) instead of listing it."},
             },
         },
     },

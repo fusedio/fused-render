@@ -1869,7 +1869,9 @@ export default function Listing({
               copied={copiedSet.has(childPath)}
             />
           </td>
-          <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
+          {/* A local folder's size is its inode's, not its contents': blank. An S3
+              folder's is its whole subtree's, summed from the index. */}
+          <td className="size">{entry.is_dir && !remote ? "" : formatSize(entry.size)}</td>
           <td className="mtime" title={formatMtimeFull(entry.mtime)}>
             {formatMtime(entry.mtime)}
           </td>

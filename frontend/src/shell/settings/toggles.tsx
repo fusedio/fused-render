@@ -12,7 +12,9 @@ import {
   putCanvasRailPeekEnabled,
   putTaskFavouritesEnabled,
   putTaskHeadUnifiedEnabled,
+  putRailFreePinsEnabled,
   putTaskIconsEnabled,
+  putExpertsEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -30,6 +32,7 @@ import {
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishTaskHeadUnified } from "../task-head-flag";
+import { publishRailFreePins } from "../claude-rail/rail-free-pins-flag";
 import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { publishFavouritesParent, publishTaskFavourites } from "@platform/lib/favourites-flag";
 import { publishTaskIcons } from "@platform/lib/task-icons-flag";
@@ -358,6 +361,32 @@ export function TaskHeadUnifiedControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
+// FREE PINS ON THE RAIL (owner, 2026-11-18): a child of the unified header —
+// the pin icon is drawn only with it on, so with it off the row reads inert
+// (the favourites row's idiom above), the stored answer still shown.
+export function RailFreePinsControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.rail_free_pins?.enabled === true;
+  const parentOn = prefs.task_head_unified?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="rail-free-pins"
+      checked={on}
+      put={putRailFreePinsEnabled}
+      after={(next) => publishRailFreePins(next.rail_free_pins)}
+      disabled={!parentOn}
+      off={!parentOn}
+      status={
+        !parentOn
+          ? "Needs Unified task header."
+          : on
+            ? "On — a pin freezes its window where it stands; other chats open in a second window beside the rail."
+            : "Off — a pinned window swaps what it shows, as before."
+      }
+      onChange={onChange}
+    />
+  );
+}
+
 // TASK ICONS (owner, 2026-11-10, experiment): a FAVOURITE wears one of 299
 // glyphs in place of its status ring (2026-11-11: only a starred task); the
 // icon pressed while a title is being edited opens a picker. Off, the ring
@@ -374,6 +403,26 @@ export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
         on
           ? "On — a favourite wears its own small picture in place of the status ring, in the ring's colour; click it while editing the title to choose another."
           : "Off — the plain status ring."
+      }
+      onChange={onChange}
+    />
+  );
+}
+
+// EXPERTS (docs/experts.md §17): no publish — the server leaves experts out
+// of every bot listing while this is off, so the Bots page and the sidebar
+// follow on their next poll. Off hides them; nothing is deleted.
+export function ExpertsControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.experts?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="experts"
+      checked={on}
+      put={putExpertsEnabled}
+      status={
+        on
+          ? "On — expert bots are listed on the Bots page and task sessions can consult them."
+          : "Off — expert bots are hidden. Their memory is kept and comes back when you turn this on."
       }
       onChange={onChange}
     />

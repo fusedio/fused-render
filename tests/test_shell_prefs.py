@@ -1739,6 +1739,25 @@ def test_task_head_unified_defaults_off_toggles_and_rejects_junk(tmp_path, monke
     assert prefs_mod.task_head_unified_enabled() is False
 
 
+def test_rail_free_pins_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """The rail's free-pins flag: same opt-in idiom."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["rail_free_pins"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"rail_free_pins_enabled": True},
+                      headers=FUSED).json()
+    assert body["rail_free_pins"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["rail_free_pins_enabled"] is True
+    assert prefs_mod.rail_free_pins_enabled() is True
+    bad = client.put("/api/prefs", json={"rail_free_pins_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "rail_free_pins_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"rail_free_pins_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.rail_free_pins_enabled() is False
+
+
 def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
     """The collapsed Claude rail's hover preview card (Settings › Canvases):
     same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""

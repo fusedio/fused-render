@@ -549,6 +549,11 @@ export function annotationsForTests(): AnnotationsApi | null {
   return annForTests;
 }
 
+/** How many more times, and how far apart, the capture probe is asked after a
+ *  failure (see `probeTry`). */
+const PROBE_RETRIES = 3;
+const PROBE_RETRY_MS = 4000;
+
 /**
  * Resolve the param store before the chat itself mounts, so the body's hook
  * list never has to branch. A missing target is the one hard stop: with no
@@ -1981,9 +1986,19 @@ function ChatBody(props: ChatBodyProps) {
    * (`shots/noteSourcesProbe`).
    */
   const [micShown, setMicShown] = useState(true);
+  // THE COMPOSER'S OWN MIC (dictation, `ui/MicButton`) reads the same probe,
+  // on the Bots composer's stricter rule: the button exists only once the
+  // machine has said it can record — never on a probe that has not answered.
+  const [dictate, setDictate] = useState(false);
+  // A PROBE THAT FAILED IS ASKED AGAIN (Bugbot, PR #2372): `dictate` only ever
+  // turns on from an answer, so a chat that loaded before the capture route
+  // was up would otherwise never draw the mic. Three more asks, a few seconds
+  // apart, then it waits for the next arm like before.
+  const [probeTry, setProbeTry] = useState(0);
   const annArmed = ann.mode !== "off";
   useEffect(() => {
     let live = true;
+    let retry = 0;
     void captureSources()
       .then((sources) => {
         // BEFORE the `live` gate and outside it: this is module state about the
@@ -1994,6 +2009,7 @@ function ChatBody(props: ChatBodyProps) {
         if (!live) return;
         const audio = sources.audio;
         setMicShown(audio?.available !== false);
+        setDictate(audio?.available === true);
         // AND SAY WHY THE SEAT WENT (T:7801). The reason string is CP-11's, and
         // it names a browser that CAN record — so a reader with no seat and no
         // explanation at least has the console to go on. Swallowing it left
@@ -2004,12 +2020,16 @@ function ChatBody(props: ChatBodyProps) {
         }
       })
       .catch(() => {
-        /* no answer is not a NO: the seat stays */
+        /* no answer is not a NO: the walkthrough's seat stays */
+        if (live && probeTry < PROBE_RETRIES) {
+          retry = window.setTimeout(() => setProbeTry((n) => n + 1), PROBE_RETRY_MS);
+        }
       });
     return () => {
       live = false;
+      window.clearTimeout(retry);
     };
-  }, [annArmed]);
+  }, [annArmed, probeTry]);
 
   /**
    * The recorder's state, told to the mode machine (T:8114's `.busy` seat) and
@@ -4346,13 +4366,8 @@ function ChatBody(props: ChatBodyProps) {
   /** A worktree menu is MOUNTED and has said this folder is in a repo
    *  (`WorktreeMenu.onReady`). Compact mounts none, and a peek only with `headerInPeek`; a non-repo says false. */
   const worktreeReady = useRef(false);
-  // The same answer as state, for what is DRAWN off it: the menu's element
-  // exists before (and whether or not) its pill does — it renders nothing for
-  // a folder outside any repo.
-  const [worktreePill, setWorktreePill] = useState(false);
   const onWorktreeReady = useCallback((isRepo: boolean) => {
     worktreeReady.current = isRepo;
-    setWorktreePill(isRepo);
   }, []);
   // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
   // own head and by `/tasks`, and remembered globally (`useTasksOpen`). An empty
@@ -5404,6 +5419,7 @@ function ChatBody(props: ChatBodyProps) {
       hasQueued,
       onPaste,
       onAttachFiles,
+      dictate,
       // The chip row is ABOVE the control row and changes the composer's height,
       // never the row's width — but T re-measures on exactly this kind of change
       // (its MutationObserver watches the rows' subtree), and the footnote's
@@ -5504,6 +5520,7 @@ function ChatBody(props: ChatBodyProps) {
       attach.capturing,
       onPaste,
       onAttachFiles,
+      dictate,
       pane.paneNoun,
       ann.chips,
       ann.hasSendable,
@@ -6056,27 +6073,12 @@ function ChatBody(props: ChatBodyProps) {
         ) : null}
       </span>
     ) : null;
-  // ONE TAG, THEN "+x", BESIDE A PANE'S TOOLS (Akshil, 2026-11-17: "in this
-  // view where we have buttons we directly do 1 +x — we don't show PR and WT
-  // tags more than one because we also have buttons"): where the head seats
-  // tools and already shows the worktree tag, every pull request goes behind
-  // one "+N". With no worktree tag the first PR is the tag ("PR #12 +2") —
-  // so the tag has to be on screen, not merely mounted: the menu draws no
-  // pill outside a repo (`worktreePill`; CodeRabbit on #2313).
-  // Tools that are DRAWN: the strip's own gate (`stripSeatsShown` — a target
-  // that cannot be annotated seats none; CodeRabbit on #2313), or the canvas
-  // camera that stands in for it.
-  const headHasTools = stripSeatsShown || !!canvasShotSeat;
-  const headWorktreeTag = !!shownHint || (!!worktreeMenu && worktreePill);
-  const headChipsExtra =
-    props.prChip && head.task ? (
-      <>
-        <TaskPrChip task={head.task} collapsed={headHasTools && headWorktreeTag} />
-        {props.headerExtra}
-      </>
-    ) : (
-      props.headerExtra
-    );
+  // THE PR TAG STANDS WHOLE BESIDE A PANE'S TOOLS TOO (Akshil, 2026-11-19:
+  // "PR should have higher priority on visibility in all these views") —
+  // `headerExtra`, the same chip the slim line draws. It was folded behind
+  // one "+N" wherever a worktree tag was up (2026-11-17, "one tag then +x");
+  // the branch tag gives instead now — it is shown whole or not at all, and
+  // leaves before the PR tag does (TaskHead, row-fit `TASK_HEAD_PANEL_DROPS`).
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
@@ -6117,7 +6119,7 @@ function ChatBody(props: ChatBodyProps) {
           <>
             {shownHint ? null : worktreeMenu}
             <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
-            {headChipsExtra}
+            {headerExtra}
           </>
         ) : null
       }

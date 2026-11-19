@@ -290,6 +290,11 @@ export function setAPinned(word: string | null): void {
   if (word === null) settlePos("a");
 }
 
+/** What the pinned window A shows, live. */
+export function useAPinned(): string | null {
+  return useSyncExternalStore(aPinnedMark.subscribe, aPinnedMark.get, aPinnedMark.get);
+}
+
 /** `onLastChatStorage`, for the favourite's pin. */
 export function onFavPinnedStorage(e: Pick<StorageEvent, "key" | "storageArea">): void {
   favPinnedMark.onStorage(e);

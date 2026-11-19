@@ -165,13 +165,25 @@ description `expert_list` shows, 240 chars, one line) and `shipped` (the shipped
   (`bots/routes.py` `_skills`, for every bot) refuses instead of cutting or replacing: text over the limit
   (24,000 characters for an expert's reference file, `Bot.EXPERT_SKILL_BODY_CAP`; 6,000 for a playbook) and an
   Add whose title gives the file name of a skill that exists. An imported expert skill needs no `trigger:` line.
-- **Export refused for now**: `GET /api/bots/<id>/package` and `package.write` raise
-  `package.EXPERT_REFUSAL` ("An expert cannot be exported yet: its instructions, skills and memory would not travel
-  with it"). Import (`botfile.py`) keeps `kind: "expert"` and its manifest but drops `shipped` (a file must not
-  claim to be a shipped expert); updating a bot from a package of the other kind is refused. A local model in an
-  expert package becomes the default model (new install and update alike, as `create` does). A package's
-  `.fused/memory.md` is never written for an expert: the install result carries the warning
-  `botfile.EXPERT_MEMORY_NOT_IMPORTED` ("memory: an expert's memory is not imported").
+- **Export and import** (`bots/package.py`, `bots/botfile.py`, the same `.fusedbot` a bot exports to, docs/bots.md
+  §17; "Export expert…" in the bot menu and Settings): everything travels as for a bot — settings (`kind`, the
+  `expert` manifest without `shipped`: a file must not claim to be a shipped expert), skills, README.md, icon.svg,
+  apps, routines — and memory only when the exporter ticks it. Three things differ. **Instructions**: bot.json's
+  `instructions` carries what the harness runs with (`store.folder_instructions`: `instructions.md`, the default
+  text when it is missing, plus a legacy extra), and an install writes that text to the new expert's
+  `instructions.md` and clears the bot.json key, so the extra is never applied twice. **Memory**: the expert's own
+  `memory.md` travels as `.fused/memory.md` and `memory-archive.md` as `.fused/memory-archive.md` (both in the
+  skills + memory text cap); an install with memory writes them back under the expert's write lock, waiting up to
+  `botfile.EXPERT_MEMORY_WAIT_S` (30 s) for a task-learn or dream, else the warning "memory: the expert was busy
+  writing its own memory; not replaced". The two files are one memory: an install with memory makes both the
+  package's, emptying `memory.md` or removing the archive when the package lacks it. An update without memory keeps the expert's own. **Skills** are held to
+  `Bot.EXPERT_SKILL_BODY_CAP`, not a playbook's cap, and a skill with no `trigger:` gets no warning. What stays on
+  the Mac: `.fused/expert/` (sessions, read.json, left.json), `.fused/udfs/`, and the granted folders (`folders`,
+  private, as every bot's): an import copies no folder grant. Where grants are enforced (side sessions and asks, §6)
+  an imported expert reads and runs nothing outside its own folder until it is granted some; the attended chat has
+  no read boundary at the granted folders (§16). Export refuses an `instructions.md` that is a link, and reads
+  `memory.md` and its archive together under the expert's write lock (waiting `package.EXPERT_MEMORY_WAIT_S`, 30 s). A local model in an expert package becomes the default model (new install and update alike, as `create`
+  does); updating a bot from a package of the other kind is refused.
 
 ## 6. The fence
 
@@ -339,7 +351,7 @@ and nothing else (it does not look at, rewrite or approve a command).
   for a UDF it wrote before, that the files may vanish, and that what it learns still goes to `memory.md`. It is
   not memory: sessions keep diffing `memory.md` only, a scratch file leaves no row and no diff. Three asks may run
   at once and write the same name; the files are throwaway, so the last write wins. Nothing prunes the folder. The
-  folder itself is never copied anywhere: an expert cannot be exported or cloned (§5), and task-learn reads task
+  folder itself is never copied anywhere: an export leaves it out, an expert cannot be cloned (§5), and task-learn reads task
   transcripts, not this folder. A file's source does leave the machine when it is run: that run sends it to Fused.
 - **Source on standard input** (`... run --engine remote scratch --stdin <<'EOF'`) also works, but not for every
   source outside auto mode. Claude Code's shell check reads the heredoc body as shell text and asks about a
@@ -627,7 +639,8 @@ shown as a pair. Text from memory is rendered as text, never as HTML.
 
 Settings for an expert are General (name, "Ask me about", model, effort; no step cap, no approval setting, no
 "What it should do" box), Instructions, Permissions (only the folders it may read) and Skills (the files under `skills/`: list, edit, add,
-delete; no "learn from last task", since an expert never edits its skills). No Export button.
+delete; no "learn from last task", since an expert never edits its skills). The footer's "Export expert" opens
+the same export dialog as a bot's (§5), without the Approval row.
 
 **Instructions** (`dialogs/InstructionsSection.tsx`) is a section of its own in the dialog's rail: `instructions.md`
 as plain text in one editor that fills the section and scrolls inside itself, with the character count against
@@ -728,6 +741,34 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
 - No separate lessons, research step, ledger or token accounting beyond the harness's reported `cost_usd` per row.
 - Task-learn runs only for tasks that called `expert_context` or `expert_ask`; a task that never did teaches
   nothing.
-- Export of an expert is refused for now (§5).
 - Gemini and OpenCode tasks get no expert tools (§8).
 - Only Claude Code runs an expert (chat and side sessions).
+
+## 17. The Experts flag
+
+Experts are an experimental feature behind `experts_enabled` (`<home>/prefs.json`, `shell/prefs.py`
+`experts_enabled`; Settings > Experimental flags > Bots > "Expert bots"), **off by default**: only a stored `true`
+is on. One reader for the server, `fused_render.experts.enabled()` (never raises; a failed read is off); agent.py
+reads the same key with its own stdlib read (`_experts_pref`), as it does for Canvases.
+
+**Off hides, never deletes.** Nothing on disk is touched: the expert's folder, `bot.json`, `memory.md`, the
+archive, its sessions, `read.json` and its chat stay as they are, so turning the flag back on brings every expert
+back with the same memory. While it is off:
+
+- **Listings**: `GET /api/bots` (the Bots page and the phone), `/api/bots/pulse` (the sidebar and the Claude rail)
+  and `/api/bots/roster` (apps) leave experts out (`bots/routes._hidden_expert`). The pages follow on their next
+  poll; there is no client-side flag module.
+- **Running one**: `POST /api/bots` with `kind: "expert"`, a send (`/api/bots/{id}/send`, an app's send) to an
+  expert, and installing an expert `.fusedbot` are refused with a sentence that names the switch. An expert's
+  routines do not fire (`registry._pass`); one that came due while off fires on the first pass after it is on.
+- **Task sessions**: `agent._experts_live` is false, so a new task gets no expert tools and no `EXPERTS:` note
+  (§8). `GET /api/experts` lists nothing and `context` / `ask` answer 404 "experts are turned off", for a task
+  that was given the tools before the flag went off.
+- **Task-learn**: the timer's tick does nothing (§9). `read.json` keeps its cursors, so tasks that used an expert
+  before the flag went off are read once it is on again.
+- **The shipped seed** (§14) does not run. The first owner pass (≤ 20 s, `registry._seed_experts_once`) after the
+  flag reads on seeds then, once per server run; the witness keeps it to once per shipped expert as before, so an
+  existing user's experts are not made twice and one they deleted stays deleted.
+
+What stays reachable while off: the expert routes the Bots page's Expert pane reads (`/{id}/memory`, `/sessions`,
+`/instructions`) and the bot routes by id; nothing links to them while the expert is not listed.

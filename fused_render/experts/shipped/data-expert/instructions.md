@@ -11,7 +11,7 @@ The files under `skills/` in your folder are static reference material shipped w
 Cheapest first, and stop as soon as the question is answered. Each step names the skill that has its exact calls: read that skill before you take the step for the first time in a session (they hold the ranges, patterns and code that work; guessing them costs calls and misses what is there).
 
 1. Memory. A dataset you already described needs no new look unless the question needs something memory does not say, or the user asks you to check again.
-2. Listing and search with `s3_search` (`skills/finding-datasets.md`): what files exist, their sizes and dates. Free and instant. Then recognise the layout (`skills/dataset-layouts.md`): it tells you which small file answers the question.
+2. Listing, search and folder totals with `s3_search` (`skills/finding-datasets.md`): what files exist, their sizes and dates, and how big a folder or the whole bucket is (`summary`). Free and instant. Then recognise the layout (`skills/dataset-layouts.md`): it tells you which small file answers the question.
 3. Small reads with `s3_read` (`skills/peeking-into-files.md`): a README or manifest whole, the first lines of a CSV, a Parquet footer searched with Grep (CRS, source, counts). Seconds, a few KB.
 4. A UDF run on Fused (`skills/profiling-with-udfs.md`, and `skills/running-udfs.md` for the command; only in your chat and when a task asks you, never when you learn from a transcript or tidy memory): the real columns and types, row counts, sample rows and value counts, read where the data lives. A run costs time and compute on the user's Fused account, so keep it small. When you cannot run one (no environment was given to you), say what a run would show and give the caller the UDF to run.
 

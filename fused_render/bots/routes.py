@@ -139,6 +139,21 @@ IDLE_SHOT_TIMEOUT_S = 3
 RECOVER_EVERY_S = 3  # the stuck-Google-popup probe during a take-over (routes._status_bot)
 
 
+def _experts_on() -> bool:
+    """The Experts experimental flag (experts.enabled; docs/experts.md §17). Read once per request."""
+    from fused_render import experts
+    return experts.enabled()
+
+
+def _hidden_expert(b, experts_on: bool) -> bool:
+    """An expert while the Experts flag is off: left out of every listing (the page, the sidebar's pulse, the app
+    roster), never deleted — its folder and memory stay on disk and it is listed again once the flag is on."""
+    return not experts_on and _botmod().is_expert(b.meta)
+
+
+EXPERTS_OFF = "Experts are turned off. Turn them on in Settings > Experimental flags."
+
+
 def _bot(bid):
     return registry.get(bid)
 
@@ -312,8 +327,11 @@ def bots_status(cursors: str = Query(default=""), shot_for: str = Query(default=
         cur = {}
     quick = _truthy(fast)
     out = []
+    experts_on = _experts_on()
     for b in registry.all():
         try:
+            if _hidden_expert(b, experts_on):
+                continue
             out.append(_status_bot(b, shot_for, quick, cur))
         except Exception:  # noqa: BLE001 — one broken bot must not blank the list
             continue
@@ -332,8 +350,11 @@ def bots_pulse():
     carries. No side effects: `_status_bot`'s idle-sleep and popup checks belong to the page's poll, not to a
     sidebar that asks every 30 s from every window. Hidden bots are listed with their flag; the client drops them."""
     out = []
+    experts_on = _experts_on()
     for b in registry.all():
         try:
+            if _hidden_expert(b, experts_on):
+                continue
             m = b.meta
             # `seq` as the page's own row would carry it: `events_since` lifts the counter over lines another process
             # appended (an iMessage reply via botsend.py), and with no page open nothing else does — which is exactly
@@ -371,6 +392,8 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     kind = body.get("kind") or "bot"
     if kind not in bm.KINDS:
         raise ValueError(f"kind must be one of {', '.join(bm.KINDS)}")
+    if kind == "expert" and not _experts_on():
+        raise ValueError(EXPERTS_OFF)
     browser = body.get("browser_id") or ""
     if not isinstance(browser, str):
         raise ValueError("browser_id must be a browser id")
@@ -666,6 +689,8 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
     if not text:
         raise ValueError("empty message")
     answers = body.get("answers")  # a relayed card's button (docs §11): the seq the click meant, else None
+    if _hidden_expert(_bot(bid), _experts_on()):
+        raise ValueError(EXPERTS_OFF)  # a page or phone still showing the expert from before the flag went off
     registry.require_workspace()
     try:
         _bot(bid).send(text, reply_to=body.get("reply_to"), forever=bool(body.get("forever")),
@@ -686,13 +711,11 @@ def _package():
 @_handled
 def bot_package_plan(bid: str):
     """What exporting this bot as a `.fusedbot` would carry (package.plan): the export dialog's whole model."""
-    from fused_render.bots.bot import is_expert, is_super
+    from fused_render.bots.bot import is_super
     try:
         meta = _store().read_meta(bid)
         if is_super(meta):  # before the plan: no scan of a bot that can never be exported
             raise ValueError("Super Bot cannot be exported: it is this machine's own assistant")
-        if is_expert(meta):
-            raise ValueError(_package().EXPERT_REFUSAL)
     except (FileNotFoundError, LookupError):
         raise ValueError(f"no such bot {bid}")
     except OSError as e:
@@ -1157,9 +1180,10 @@ def _app_bot(b):
 @_handled
 def bots_roster():
     out = []
+    experts_on = _experts_on()
     for b in registry.all():
         try:
-            if not b.deleted:
+            if not b.deleted and not _hidden_expert(b, experts_on):
                 out.append(_app_bot(b))
         except Exception:  # noqa: BLE001 — one broken bot must not blank the roster
             continue
@@ -1212,6 +1236,8 @@ def _app_send(bid, body, x_fused_page=None):
     files = body.get("files") if isinstance(body.get("files"), list) else []
     if not text and not files:
         raise ValueError("empty message")
+    if _hidden_expert(b, _experts_on()):
+        raise ValueError(EXPERTS_OFF)
     from fused_render.bots.channels import base as chan  # lazy, like the rest of the bot layer (module docstring)
     addr = _own_addr(key, body["addr"]) if body.get("addr") else None
     via = chan.via(chan.APP_KIND, addr) if addr else chan.app_via(key, time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex())

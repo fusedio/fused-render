@@ -226,7 +226,7 @@ def test_render_refuses_a_native_template():
 def test_builtin_parquet_default_is_duckdb():
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude",
+    assert [e["mode"] for e in entries] == ["duckdb", "structure", "vector", "h3", "claude",
             "geometry_editor"]
     assert entries[0]["path"].replace(os.sep, "/").endswith("duckdb/template.html")
 
@@ -878,24 +878,39 @@ def test_condition_reevaluated_per_call(user_dir, csv_file):
     assert conditions(csv_file)[0] == {"special": True}
 
 
-def test_conditions_run_concurrently(user_dir, csv_file):
+def test_conditions_run_concurrently(user_dir, csv_file, monkeypatch):
     # Independent gates are evaluated in parallel, so total time is the slowest
-    # single gate, not their sum. Four ~0.3s sleeps would take ~1.2s serially;
-    # concurrently they finish in well under that. Generous margin for CI jitter.
-    import time
+    # single gate, not their sum. Proven with a rendezvous rather than a stopwatch:
+    # every gate waits on one barrier sized to the number of gates, so the call
+    # can only answer True for all of them if all four are running AT ONCE.
+    # Serial evaluation would leave the first gate alone at the barrier until its
+    # timeout breaks it, and every gate would deny. (Timing the call instead was
+    # racy: on a loaded CI runner the fixed overhead alone can blow any wall-clock
+    # bound, with no change in concurrency.) The timeout is only a liveness bound
+    # for the failing case; a passing run never waits on it.
+    import sys
+    import threading
+    import types
 
-    sleep = "import time\ndef main(path):\n    time.sleep(0.3)\n    return True\n"
     names = [f"cond{i}" for i in range(4)]
+    shared = types.ModuleType("_fused_test_cond_barrier")
+    shared.barrier = threading.Barrier(len(names))
+    monkeypatch.setitem(sys.modules, shared.__name__, shared)
+
+    gate = (
+        f"import {shared.__name__} as shared\n"
+        "def main(path):\n"
+        "    shared.barrier.wait(timeout=10)\n"
+        "    return True\n"
+    )
     for name in names:
-        user_dir.template(name, condition=sleep)
+        user_dir.template(name, condition=gate)
     user_dir.registry({".csv": names})
 
-    t = time.perf_counter()
     cond, error = conditions(csv_file)
-    elapsed = time.perf_counter() - t
 
-    assert cond == {name: True for name in names} and error is None
-    assert elapsed < 0.9, f"expected concurrent (~0.3s), got {elapsed:.2f}s (serial would be ~1.2s)"
+    assert error is None, f"gates did not all run at once (serial evaluation?): {error}"
+    assert cond == {name: True for name in names}
 
 
 def test_condition_pool_failure_falls_back_to_serial(user_dir, csv_file, tmp_path, monkeypatch):

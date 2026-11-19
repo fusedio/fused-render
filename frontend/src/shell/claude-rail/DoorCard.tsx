@@ -67,8 +67,10 @@ import {
   viewportOf,
   type MoveEdge,
 } from "./rail-move-lib";
-import { useWindowBox, windowBox, windowPos } from "./rail-move-store";
+import { commitWindowBox, freezeFromDock, magnetBox, usePusher, useWindowBox } from "./rail-move-store";
 import { useCardMove } from "./useCardMove";
+import { railFreePinsNow, useRailFreePins } from "./rail-free-pins-flag";
+import { placeColumn } from "./rail-slots-lib";
 import {
   PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
@@ -216,6 +218,12 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   });
   const floatingRef = useRef(false);
   floatingRef.current = move.floating;
+  // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box the
+  // window's mark holds; not pinned, it shares the rail's column with window
+  // B's non-pin and pushes the pins it would cover.
+  const freePins = useRailFreePins() && pinModel;
+  const freePinsRef = useRef(false);
+  freePinsRef.current = freePins;
 
   // WHERE IT STANDS (header): left of the rail, its top level with the rail's
   // door, at window A's size, clamped inside the row.
@@ -231,14 +239,14 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const place = (): Box | null => {
     // FLOATING: at the window's position, window A's size, inside the
     // viewport; never "no room" (rail-move-lib).
-    const at = floatingRef.current ? windowPos("a") : null;
-    if (at) return floatPlacement(at, cardSize(), viewportOf(window));
+    const at = floatingRef.current ? move.at() : null;
+    if (at) return floatPlacement(at, (freePinsRef.current ? move.size() : null) ?? cardSize(), viewportOf(window));
     const d = store.doorOf(rail);
     if (!rail || !d || !row) return null;
     const r = rail.getBoundingClientRect();
     railLeft.current = r.left;
     const size = cardSize();
-    return placeClear(d.getBoundingClientRect(), r, row.getBoundingClientRect(), favBox, {
+    return (freePinsRef.current ? placeColumn : placeClear)(d.getBoundingClientRect(), r, row.getBoundingClientRect(), favBox, {
       width: size.width,
       maxHeight: size.height,
     });
@@ -283,7 +291,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
       corner,
       el: e.currentTarget,
       floating: move.floating,
-      other: pinModelRef.current ? windowBox("b") : null,
+      other: pinModelRef.current ? magnetBox("b", move.floating) : null,
     };
     dragLast.current = null;
     setResizing(corner);
@@ -337,6 +345,12 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    // A FREE PIN'S RESIZE IS THE PIN'S ALONE (rail-slots-lib): the window's
+    // frozen box, never the shared size.
+    if (start?.floating && freePinsRef.current) {
+      if (save && last && !sameBox(last, start.box)) commitWindowBox("a", last);
+      return;
+    }
     // A FLOATING card's left or top grip moved its corner: the window stands
     // there now (rail-move-lib).
     if (save && start?.floating && last && (last.left !== start.box.left || last.top !== start.box.top))
@@ -369,7 +383,9 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     [],
   );
   // Its live box for window B's head drag (rail-move-store `windowBox`).
-  useWindowBox("a", pinModel && visible ? box : null);
+  useWindowBox("a", pinModel && visible ? box : null, freePins && move.floating);
+  // A clicked-open non-pin pushes the pins it covers (rail-slots-lib).
+  usePusher("a", freePins && visible && !move.floating && card.pinned ? box : null);
   // Window A's box, for window B's grips to snap to (card-snap.ts).
   // …but not where it FLOATS: window B places itself as if it were not there.
   useEffect(() => {
@@ -579,7 +595,22 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   );
 
   const held = card.held;
-  const togglePin = useCallback(() => store.setHeld(!store.state().held), [store]);
+  const togglePin = useCallback(() => {
+    const held = store.state().held;
+    // FREE PINS: a pinned card's seat is its × — it closes (rail-slots-lib "A
+    // PINNED WINDOW CLOSES BY ITS ×").
+    // The card's own close (`close`), not the store's alone: it hands the
+    // keyboard back to the door first (CodeRabbit on #2349 — the × pressed
+    // by keyboard left the focus in a card gone inert).
+    if (held && railFreePinsNow()) {
+      close();
+      return;
+    }
+    // …and the pin's press freezes the window where it stands, before the
+    // hold makes it float (rail-move-store `freezeFromDock`).
+    if (!held && railFreePinsNow()) freezeFromDock("a");
+    store.setHeld(!held);
+  }, [store, close]);
   const api = useMemo<DoorCardApi>(
     () => ({
       visible,

@@ -464,6 +464,13 @@ def for_app(app_dir: str, purpose=None) -> dict | None:
 
 
 def _finish(job: dict, status: str, *, error: str | None = None) -> None:
+    if status == "failed":
+        # A failed job keeps nothing: its scratch worktree is removed (and
+        # unregistered from the app's repo) BEFORE "failed" is visible, so
+        # whoever sees the failure never sees the app still holding it.
+        with _lock:
+            wt, job["worktree"] = job["worktree"], None
+        _cleanup(wt)
     with _lock:
         if job["status"] == "discarded":
             return
