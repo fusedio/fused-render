@@ -179,8 +179,10 @@ description `expert_list` shows, 240 chars, one line) and `shipped` (the shipped
   package's, emptying `memory.md` or removing the archive when the package lacks it. An update without memory keeps the expert's own. **Skills** are held to
   `Bot.EXPERT_SKILL_BODY_CAP`, not a playbook's cap, and a skill with no `trigger:` gets no warning. What stays on
   the Mac: `.fused/expert/` (sessions, read.json, left.json), `.fused/udfs/`, and the granted folders (`folders`,
-  private, as every bot's): an imported expert reads and runs nothing outside its own folder until it is granted
-  some. A local model in an expert package becomes the default model (new install and update alike, as `create`
+  private, as every bot's): an import copies no folder grant. Where grants are enforced (side sessions and asks, §6)
+  an imported expert reads and runs nothing outside its own folder until it is granted some; the attended chat has
+  no read boundary at the granted folders (§16). Export refuses an `instructions.md` that is a link, and reads
+  `memory.md` and its archive together under the expert's write lock (waiting `package.EXPERT_MEMORY_WAIT_S`, 30 s). A local model in an expert package becomes the default model (new install and update alike, as `create`
   does); updating a bot from a package of the other kind is refused.
 
 ## 6. The fence

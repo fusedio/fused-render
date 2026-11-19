@@ -344,3 +344,40 @@ def test_a_hand_made_expert_package_takes_no_local_model_and_its_memory_goes_to_
     assert out["updated"] is True and out["warnings"] == []
     assert b.meta["model"] == bm.DEFAULT_MODEL and not os.path.exists(b.memory_path)
     assert store.memory(b) == "- updated\n"
+
+
+def test_an_expert_export_refuses_a_linked_instructions_file(expert, tmp_path):
+    from fused_render.bots import package
+    secret = tmp_path / "elsewhere.md"
+    secret.write_text("not the expert's\n")
+    os.remove(store.instructions_path(expert))
+    os.symlink(secret, store.instructions_path(expert))
+    with pytest.raises(ValueError, match="instructions.md is a link"):
+        package.plan(expert.id)
+    with pytest.raises(ValueError, match="instructions.md is a link"):
+        package.write(expert.id, memory=False, apps=[], file_name=None, dest_dir=str(tmp_path / "out"))
+
+
+def test_an_expert_export_reads_memory_under_its_write_lock(expert, tmp_path, monkeypatch):
+    from fused_render.bots import package
+    monkeypatch.setattr(package, "EXPERT_MEMORY_WAIT_S", 0.05)
+    lock = store.write_lock(expert)
+    with lock:  # a dream or chat turn is writing
+        with pytest.raises(ValueError, match="writing its memory"):
+            package.write(expert.id, memory=True, apps=[], file_name="busy", dest_dir=str(tmp_path))
+        # Without memory nothing waits on the lock.
+        assert os.path.isfile(package.write(expert.id, memory=False, apps=[], file_name="ok", dest_dir=str(tmp_path)))
+    assert os.path.isfile(package.write(expert.id, memory=True, apps=[], file_name="free", dest_dir=str(tmp_path)))
+
+
+def test_an_empty_memory_member_replaces_the_experts_memory(expert, tmp_path):
+    from fused_render.bots import botfile
+    _write(store.memory_path(expert), "old fact\n")
+    _write(store.archive_path(expert), "old archive\n")
+    pub = {"name": expert.meta["name"], "kind": "expert", "id": expert.id}
+    from fused_render import appfile_container
+    path = str(tmp_path / "empty.fusedbot")
+    appfile_container.write(path, {"name": pub["name"]}, [("bot.json", json.dumps(pub).encode()),
+                                                           (".fused/memory.md", b"")], kind="bot")
+    botfile.install(path, apps=[], memory=True, mode="update", target=expert.id)
+    assert store.memory(expert) == store.EMPTY_MEMORY and not os.path.exists(store.archive_path(expert))

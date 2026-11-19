@@ -1174,7 +1174,7 @@ def _write_expert_files(b, instructions: str | None, mem: tuple[str | None, str 
             logger.warning("bot package: instructions.md not written for %s", b.id, exc_info=True)
             warnings.append(f"instructions: {e or e.__class__.__name__}")
     text, archive = mem or (None, None)
-    if not (text or archive):
+    if text is None and archive is None:  # not asked, or the package carries no memory: the expert keeps its own
         return
     lock = xstore.write_lock(b)
     if not lock.acquire(timeout=EXPERT_MEMORY_WAIT_S):

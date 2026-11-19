@@ -294,6 +294,11 @@ def _public(bid: str) -> tuple[str, bytes, dict, dict]:
         # The expert's real instructions are its instructions.md, not the (legacy) bot.json key: ship what the
         # harness runs with, so the importer's expert behaves as this one does (botfile writes it back to the file).
         from fused_render.experts import store as xstore
+        ipath = os.path.join(bpaths.bot_folder(bid), xstore.INSTRUCTIONS)
+        if os.path.lexists(ipath) and not _regular(ipath):
+            # Nothing exported is ever read through a link (_regular); a missing file is the default text.
+            raise ValueError(f"{xstore.INSTRUCTIONS} is a link or not a regular file; this expert cannot be exported "
+                             "until it is a plain file")
         public["instructions"] = xstore.folder_instructions(bpaths.bot_folder(bid), meta)
         if isinstance(public.get("expert"), dict):
             # `shipped` names an expert this app ships; a file never claims to be one (botfile drops it too).
@@ -381,6 +386,26 @@ def _memory_files(bid: str, meta: dict) -> list[tuple[str, str]]:
     else:
         files = [(MEMORY_MEMBER, os.path.join(bpaths.bot_private(bid), "memory.md"))]
     return [(rel, p) for rel, p in files if _regular(p)]
+
+
+#: How long an export waits for an expert's memory writers (a chat turn, a task-learn, a dream) to finish.
+EXPERT_MEMORY_WAIT_S = 30
+
+
+def _locked_read(bid: str, files: list[tuple[str, str]]) -> list[tuple[str, bytes]]:
+    """[(member, bytes)] of an expert's memory files, read together under its write lock (experts.store.write_lock)."""
+    from fused_render.experts import store as xstore
+    lock = xstore.write_lock(bid)
+    if not lock.acquire(timeout=EXPERT_MEMORY_WAIT_S):
+        raise ValueError("the expert is writing its memory; try again in a minute, or export without memory")
+    try:
+        out = []
+        for rel, p in files:
+            with open(p, "rb") as f:
+                out.append((rel, f.read(TEXT_MAX_BYTES + 1)))  # over the cap is refused by write() anyway
+        return out
+    finally:
+        lock.release()
 
 
 def _regular(path: str) -> bool:
@@ -638,9 +663,13 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
         else:
             log.warning("bot %s: icon.svg is over %d bytes; exported without it", bid, appfile.MAX_ICON_BYTES)
     mem = _memory_files(bid, meta) if memory else []
-    for rel, mpath in mem:
-        members.append((rel, mpath))
-        text_bytes += _size(mpath)
+    if mem and _is_expert(meta):
+        # An expert's memory is two files a dream edits one after the other: read both under its write lock (as an
+        # install writes them), so the package holds a pair no session was halfway through.
+        mem = _locked_read(bid, mem)
+    for rel, src in mem:
+        members.append((rel, src))
+        text_bytes += _size(src) if isinstance(src, str) else len(src)
     if text_bytes > TEXT_MAX_BYTES:
         what = "skills and memory are" if mem else "skills are"
         raise ValueError(f"{what} too large to export ({text_bytes} bytes > {TEXT_MAX_BYTES})")
@@ -663,7 +692,7 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
             bundled.append(folder)
         rows.append(row)
 
-    declared = len(raw) + sum(_size(src) for rel, src in members[1:] if isinstance(src, str)) \
+    declared = len(raw) + sum(_size(src) if isinstance(src, str) else len(src) for rel, src in members[1:]) \
         + sum(r["bytes"] for r in rows)
     if declared > PACKAGE_MAX_BYTES:
         raise ValueError(f"this bot is too large to export ({declared} bytes > {PACKAGE_MAX_BYTES})")
