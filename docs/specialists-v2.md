@@ -11,6 +11,51 @@ Review pages (private artifacts, owner's account):
 - Overview: the user's journey, then the engine: https://claude.ai/artifact/Cs3g9dyEWS3bh4Dnejwkcr
 - V1 walkthrough (screenshots and videos): https://claude.ai/artifact/VgCPvJnDveSZQcbeYBZJpo
 
+## Direction change, 2026-11-19: merge into Bots
+
+The owner leans towards putting specialists on the Bots page rather than a
+separate page, because having both Bots and Specialists in the sidebar is
+confusing. Not yet final; three questions are open (below).
+
+Finding that drives this: the Bots page already has **Expert bots**
+(`docs/experts.md`, `fused_render/experts/`, about 1,900 lines). An expert
+already is a chat that remembers one subject: `memory.md`, skills, three task
+tools (`expert_list`, `expert_context`, `expert_ask`), learning from the tasks
+that used it a few minutes after they call it, memory compaction, a Memory
+pane with Edit and a Changes list with a diff per session.
+
+Proposed shape of the merge: do not add a third kind. Extend the Expert kind
+with what it lacks, behind the experimental switch:
+
+1. Breakout "With" an expert, beside a task (the plain breakout card pointed
+   at the expert's folder, instructions and memory).
+2. A note tool, so any task, or the user through a task, can tell an expert
+   something even if the task never consulted it.
+3. Automatic help in a folder the expert is assigned to.
+4. Messaging an owner through connected services, with approval, from the
+   expert's attended chat or breakout. Do this last.
+
+Consequences for the rest of this file:
+
+- "Specialists page", "Memory pane" and "Creating one" are already built as
+  the Bots page, the expert's pane and its Settings. Nothing to build there.
+- The inbox plus nightly update would not be built. The expert's existing
+  after-task learning stays, and notes and breakout conversations feed it.
+- The update trace is the existing Changes list (one row per session that
+  changed memory, with its diff), not git commits. A chat message per update
+  is probably not wanted when learning happens several times a day.
+- Memory keeps the expert format: one fact per line with a count and a date,
+  under "Works" and "Does not work".
+- Most of the v1 specialists code on this branch is not carried over. Worth
+  porting: launching a breakout session into a specialist folder, the note
+  tool, the folder hook.
+- The earlier instruction "do not touch other systems" no longer holds: this
+  changes Bots and experts code. New abilities stay behind the switch.
+
+Open questions put to the owner: the name (Expert or Specialist); whether to
+keep the expert's after-task learning in place of the inbox and nightly
+update; whether an update should still post a chat message.
+
 ## What is decided and what is not
 
 Decided by the owner:
