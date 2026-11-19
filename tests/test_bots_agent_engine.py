@@ -1425,6 +1425,47 @@ def test_expert_has_no_bot_tools_and_cannot_call_the_prompt(server, fake_cli, mo
     assert _answer(fake_cli)["behavior"] == "deny" and "approval" not in bot.roles()
 
 
+def test_expert_shows_its_work_as_a_card(server, fake_cli, monkeypatch, tmp_path):
+    """An attended chat that may show its work (experts/show.py): the two tools are on the roster and allowed by
+    name, `canvas_create` is an action row, and `show` leaves the row that carries the card under the expert's line."""
+    from fused_render.experts import show as xshow
+    bot = expert_bot(tmp_path)
+    view = {"kind": "widget", "path": "/c/prod/user/Mine/chart.json", "title": "Sales", "canvas": "Mine", "env": "prod"}
+    monkeypatch.setattr(xshow, "on", lambda b: True)
+    monkeypatch.setattr(xshow, "canvas_create", lambda b, args: (f"create canvas {args['name']}", "The canvas Mine (prod) is ready.", True))
+    monkeypatch.setattr(xshow, "show", lambda b, args: (("show chart.json", "The card is in the chat.", view) if args["path"].endswith(".json")
+                                                         else ("show x", "error: no such file: x", None)))
+    run_task(bot, [{"tool": "canvas_create", "args": {"name": "Mine"}},
+                   {"tool": "show", "args": {"path": "/c/prod/user/Mine/chart.json", "note": "Sales by month:"}},
+                   {"tool": "show", "args": {"path": "x"}}, {"tool": "goto", "args": {"url": "https://shop.test/"}},
+                   {"result": "ok"}], monkeypatch)
+    argv = fake_cli("argv")[0]["argv"]
+    assert fake_cli("tools")[0]["tools"] == ["permission", "canvas_create", "show"]
+    assert "mcp__bot__canvas_create" in argv and "mcp__bot__show" in argv and "mcp__bot__*" not in argv
+    with open(argv[argv.index("--mcp-config") + 1], encoding="utf-8") as f:
+        assert json.load(f)["mcpServers"]["bot"]["alwaysLoad"] is True
+    results = [c["result"] for c in fake_cli("call")]
+    assert "is ready" in results[0] and "card is in the chat" in results[1] and "no such file" in results[2]
+    assert "unknown tool 'goto'" in results[3]  # still none of the bot tools
+    cards = [e for e in bot.events if e.get("view")]
+    assert [(e["role"], e["text"], e["view"]) for e in cards] == [("thought", "Sales by month:", view)]
+    acts = [(e["text"], e["result"]) for e in bot.events if e["role"] == "action"]
+    assert acts == [("create canvas Mine", "The canvas Mine (prod) is ready."), ("show x", "error: no such file: x")]
+
+
+def test_expert_without_canvases_or_a_user_has_no_show_tools(server, fake_cli, monkeypatch, tmp_path):
+    from fused_render.experts import show as xshow
+    bot = expert_bot(tmp_path)  # canvases off: the roster of before
+    run_task(bot, [{"tool": "show", "args": {"path": "/x"}}, {"result": "ok"}], monkeypatch)
+    assert fake_cli("tools")[0]["tools"] == ["permission"] and "unknown tool 'show'" in fake_cli("call")[0]["result"]
+    assert not any("mcp__bot__show" in x for x in fake_cli("argv")[0]["argv"])
+    # A routine's turn: nobody to open a card, so no rule and no line in the message even where canvases are on.
+    monkeypatch.setattr(xshow, "on", lambda b: True)
+    bot.task_via = {"kind": chan_base.ROUTINE_KIND}
+    run_task(bot, [{"result": "ok"}], monkeypatch)
+    assert not any("mcp__bot__" in x for x in fake_cli("argv")[-1]["argv"])
+
+
 def test_expert_routine_turn_has_no_card_path(server, fake_cli, monkeypatch, tmp_path):
     bot = expert_bot(tmp_path)
     bot.task_via = {"kind": chan_base.ROUTINE_KIND}

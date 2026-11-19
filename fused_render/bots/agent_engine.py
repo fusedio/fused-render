@@ -94,6 +94,7 @@ from urllib.parse import quote
 from fused_render import _platform, permission_risk
 from fused_render.bots import apptools, channels, claude_cli, paths, tools
 from fused_render.experts import sessions as xsessions
+from fused_render.experts import show as xshow
 from fused_render.experts import store as xstore
 
 # The step cap (bot.MAX_STEPS / SUPER_MAX_STEPS, or the bot's own `max_steps`): --max-turns does not exist on this
@@ -362,10 +363,11 @@ def _check(bot, token) -> Turn:
 
 def roster_for(bot, token) -> list:
     """`GET /api/bots/<id>/tools`: the task's tool list (MCP tools/list shape). An expert's is the permission
-    prompt alone (its chat's approval cards): it has no browser and none of the bot tools."""
+    prompt (its chat's approval cards) and, when it may show its work (`xshow.on`), the two tools that make a
+    canvas and put a card in the chat: it has no browser and none of the bot tools."""
     _check(bot, token)
     if xstore.is_expert(bot):
-        return [{"name": tools.PERMISSION_TOOL, **tools.PERMISSION_SPEC}]
+        return [{"name": tools.PERMISSION_TOOL, **tools.PERMISSION_SPEC}] + (xshow.specs() if xshow.on(bot) else [])
     return tools.roster(bot)
 
 
@@ -555,7 +557,7 @@ def _expert_message(bot, task: str, past=None, conv: dict | None = None) -> tupl
     instructions are the system prompt."""
     conv = conv if isinstance(conv, dict) else {}
     parts = []
-    where = xstore.where(bot, run=True)
+    where = xstore.where(bot, run=True, show=expert_cards(bot))  # the show tools: only with a user at the card
     sent = {"where": _sha(where)}
     if not conv.get("session_id"):
         summary = (conv.get("summary") or "").strip()
@@ -617,7 +619,8 @@ def argv(bin_path: str, model: str, effort: str, sp_file: str, mcp_file: str,
     if fence is not None:
         if not mcp_file:
             return out + list(fence) + xsessions.mcp_flags(extra_mcp or {})
-        # No `--allowedTools mcp__bot__*`: the one tool there is the prompt itself, never the model's to call.
+        # No `--allowedTools mcp__bot__*`: the prompt itself is never the model's to call. The two show tools
+        # (experts/show.py) are allowed by name, in the fence's own rule list (`fence(show=True)`).
         return out + list(fence) + ["--permission-prompt-tool", f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}",
                                     "--setting-sources=", "--mcp-config", mcp_file, "--strict-mcp-config",
                                     "--disable-slash-commands"]
@@ -672,17 +675,21 @@ def system_prompt_for(bot, cwd: str) -> str:
     return SYSTEM_PROMPT + SUPER_PROMPT + f"\nINBOX: {cwd}"
 
 
-def write_mcp_config(path: str, origin: str, bot_id: str, token: str, extra: dict | None = None) -> str:
+def write_mcp_config(path: str, origin: str, bot_id: str, token: str, extra: dict | None = None,
+                     always_load: bool = False) -> str:
     """The bot server's config: botmcp.py on the app's own python, UTF-8 stdio,
     and a per-server timeout above the longest wait (claude_agent/agent.py
     `_write_mcp_config`). `extra`: more servers beside it (an expert's S3
-    server, experts.sessions.s3_server). 0600: the token is in it."""
+    server, experts.sessions.s3_server). `always_load` (an expert with the show tools): the bot server's tools
+    are never put behind the CLI's tool search, which an expert's `--tools` has no ToolSearch to reach (the S3
+    server's entry carries the same key). 0600: the token is in it."""
     server = os.path.join(os.path.dirname(os.path.abspath(__file__)), "botmcp.py")
     cfg = {"mcpServers": {**(extra or {}), MCP_SERVER: {
         "command": sys.executable,
         "args": [server, origin, bot_id, token],
         "env": {"PYTHONUTF8": "1"},
         "timeout": (APPROVAL_WAIT_S + 60) * 1000,
+        **({"alwaysLoad": True} if always_load else {}),
     }}}
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1108,9 +1115,12 @@ def run(bot, task: str, label: str | None = None) -> None:
             # expert gets the S3 tools' server when they are on, decided once for the server and its allow rules.
             s3 = bool(expert) and xstore.s3_on()
             extra = xsessions.s3_server(bot) if s3 else {}
+            # The show tools (experts/show.py): only with a user at the card, decided once for the roster's
+            # server entry and the fence's allow rules.
+            show = bool(expert) and expert_cards(bot) and xshow.on(bot)
             mcp_file = ("" if expert and not expert_cards(bot)
                         else write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token,
-                                              extra=extra))
+                                              extra=extra, always_load=show))
             # Super Bot reads its Inbox (cwd) without a prompt; every other read, and every write, reaches
             # `_permission`, whose fence judges by `bot.folder_roots` (docs §6). No --add-dir (was `~` whole).
             sess.cwd = cwd  # before the spawn: the first permission call may land at once
@@ -1118,7 +1128,7 @@ def run(bot, task: str, label: str | None = None) -> None:
                                # An expert: no --autocompact, the CLI compacts its chat by itself (_conversation_plan).
                                resume=resume, window=None if expert else context_window(model),
                                # A user at the card: Claude Code's auto mode. A routine's turn: the default mode.
-                               fence=(xsessions.fence(bot, write=True, run=True, auto=expert_cards(bot), s3=s3)
+                               fence=(xsessions.fence(bot, write=True, run=True, auto=expert_cards(bot), s3=s3, show=show)
                                       if expert else None), extra_mcp=extra), cwd)
             sess.proc = proc
             threading.Thread(target=_drain_stderr, args=(sess, proc), daemon=True, name=f"bot-stderr-{bot.id}").start()
@@ -1439,6 +1449,8 @@ def _handle_core(bot, sess: Turn, name: str, args: dict) -> dict:
     if bot.stop_flag.is_set():
         return _stopped()
     if sess.is_expert and name != tools.PERMISSION_TOOL:
+        if name in xshow.TOOLS and expert_cards(bot) and xshow.on(bot):
+            return _expert_show(bot, sess, name, args)
         return _result(f"error: unknown tool {name!r}", error=True)  # an expert has none of the bot tools
     notes = []
     msgs = bot._drain_inbox()
@@ -1717,6 +1729,25 @@ def _permission(bot, sess: Turn, args: dict):
 
 
 EXPERT_CARD_WHY = "It is outside what this expert may do without asking."
+
+
+def _expert_show(bot, sess: Turn, name: str, args: dict) -> dict:
+    """An expert's two own tools (experts/show.py, docs/experts.md §17). `canvas_create` is one `action` row, as a
+    built-in call is; `show` is the row that carries the card (`view`), under the expert's one line. Neither is
+    the model's text: what the tool returns goes back to the model, the row is for the user."""
+    sess.steps += 1
+    bot.set_status("running", step=sess.steps, step_cap=sess.max_steps)
+    if name == xshow.CREATE:
+        label, text, ok = xshow.canvas_create(bot, args)
+        bot.emit("action", label, result=tools.ui_summary(name, text), detail=text)
+        return _result(text, error=not ok)
+    label, text, view = xshow.show(bot, args)
+    if view is None:
+        bot.emit("action", label, result=tools.ui_summary(name, text), detail=text)
+        return _result(text, error=True)
+    line = xstore.line(args.get("note"), 200) or f"Here's {view['title']}:"
+    bot.emit("thought", line, view=view)
+    return _result(text)
 
 
 def _expert_permission(bot, sess: Turn, args: dict, name: str, inp: dict):

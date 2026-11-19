@@ -508,6 +508,18 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .appmsg .frame { display: none; height: 60vh; min-height: 320px; border-top: 1px solid var(--line); background: var(--bg); }
 .bots-page .appmsg.open .frame { display: block; }
 .bots-page .appmsg .frame iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+/* An expert's `show` card (ViewCard): the app card's row, one button. Its overlay is the platform Modal, portalled to
+   <body>, so those rules are not under .bots-page. */
+.bots-page .appmsg.viewmsg .ico { font-size: 13px; }
+.modal-dialog.bots-view-modal { width: min(1200px, 94vw); height: 88vh; }
+.modal-dialog.bots-view-modal .modal-body { padding: 0; overflow: hidden; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.bots-view-modal .bots-view-body { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.bots-view-modal .bots-view-body > * { flex: 1 1 auto; min-height: 0; }
+.bots-view-modal .bots-view-frame { display: block; width: 100%; height: 100%; border: 0; }
+.bots-view-modal .bots-view-missing { padding: 32px 24px; text-align: center; opacity: .7; }
+.bots-view-modal .bots-view-sub { margin-left: 8px; font-size: 11.5px; font-weight: 400; opacity: .6; }
+.bots-view-modal .bots-view-btn { padding: 3px 10px; border: 1px solid rgba(128, 128, 128, .35); border-radius: 6px; background: transparent; color: inherit; font-size: 12px; cursor: pointer; }
+.bots-view-modal .bots-view-btn:hover { border-color: currentColor; }
 /* Hand-off card (docs §11): Super Bot's line about a task it gave another bot. Same box as .appmsg; the body is the bot
    markdown bubble with its own box stripped, the pill says where the hand-off stands. */
 .bots-page .handoff-card { flex: none; align-self: flex-start; width: min(42rem, 78%); background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; font-size: 13px; animation: bots-msg-in .18s cubic-bezier(.22,1,.36,1); }

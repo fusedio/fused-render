@@ -1,6 +1,6 @@
 # Experts — architecture and wire contract
 
-Written 2026-11-17, last revised 2026-11-18 (S3 tools, Data Expert), from the code as built (`fused_render/experts/`, the expert parts of
+Written 2026-11-17, last revised 2026-11-19 (showing work in the chat, §17), from the code as built (`fused_render/experts/`, the expert parts of
 `fused_render/bots/` and `fused_render/claude_agent/`, `frontend/src/apps/bots/components/ExpertPane.tsx`).
 Where this page and the code disagree, the code wins; fix the page.
 
@@ -35,6 +35,7 @@ The expert's folder is the bot's own folder (`bot.public_dir`, `bots/paths.bot_f
         sessions/<id>.json        one row per session (§4); the newest 200 are kept
         read.json                 which task sessions used it and how much of each it has read (§9)
         left.json                 memory.md's sha256 as the last writing session left it (§11)
+        canvases.json             the canvases it made with `canvas_create` (§17)
       .fused/udfs/*.py            throwaway UDF files the expert writes to run them (§6 "Running UDFs"); a
                                   cache, not memory: no row, no diff, never pruned
 
@@ -71,7 +72,8 @@ sentence>`, "only shows the format; it is not a fact"): memory beats skills, so 
 repeated as advice.
 
 - read memory before answering; `memory.md` is the only file it may write; never edit `instructions.md` or
-  `skills/`, never create files (the one exception: throwaway UDF files in `.fused/udfs/`);
+  `skills/`, never create files (two exceptions: throwaway UDF files in `.fused/udfs/`, and the files of a
+  canvas it made to show the user its work, §17);
 - worth remembering: what worked, what failed and why, corrections from the user, facts not in the skills; not
   worth it: one-off details of one task, anything a skill already says;
 - a fact seen again raises its count and sets today's date, never a second line; a new fact starts at count 1;
@@ -196,7 +198,9 @@ Claude Code's own permission system (verified on claude 2.1.327). There are two 
     ask                       default   Read Glob Grep Edit Write Bash   .fused/udfs/
     task-learn, dream         default   Read Glob Grep Edit Write        memory.md, memory-archive.md
 
-The chat (both rows) and an ask also get the two S3 tools while they are on ("Reading S3 files" below).
+The chat (both rows) and an ask also get the two S3 tools while they are on ("Reading S3 files" below). The
+attended chat alone also gets `canvas_create` and `show`, and writes the node files of a canvas it made without
+asking (§17).
 
 **The default mode** (everything but the attended chat): allow rules, NO permission prompt tool and no MCP
 server but the S3 tools' one, so what the rules do not cover is refused.
@@ -656,7 +660,7 @@ the shipped text.
 
 `experts/shipped/<key>/` holds `expert.json` (`{name, ask_me_about, face}`), `instructions.md` and `skills/*.md`.
 Two ship. `canvas-reference` — "Canvas Reference", about writing canvases, the canvas APIs and examples from
-existing canvases — with six skills (canvas folder layout, edges and folders, finding a reference canvas, the
+existing canvases — with seven skills (showing work, §17; canvas folder layout, edges and folders, finding a reference canvas, the
 `fused` CLI canvas commands, live clone vs reference copy, running UDFs). Its instructions add when it may run
 UDFs (§6; the `running-udfs.md` skill has the commands: environment from the folder, remote engine, saved and
 throwaway UDFs and the scratch folder, parameters, caching, what happens outside these forms), how to search the canvas copies (`user/`, then `team/`,
@@ -669,7 +673,7 @@ and tried end to end in asks and the chat. Its instructions: look cheapest first
 small read, then a UDF run), each step naming the skill that has its calls; say how each number was known
 (measured, or an estimate and why); prefer the curated, newest complete copy; never invent a dataset, path or
 column; memory lines start with the dataset's `s3://` path so one dataset's facts sort and search together; then
-`store.MEMORY_RULES`. Five skills:
+`store.MEMORY_RULES`. Six skills (the sixth is `showing-your-work.md`, §17):
 
 - `finding-datasets.md`: the two S3 tools, searching versus listing, a dated map of the top-level folders, how to
   pick among versions (memory, then what the canvases read, then the newest complete one; test, scratch, personal
@@ -724,6 +728,9 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
 ## 16. Deliberately not there
 
 - No undo, no approval step, no quality checks on what the expert writes to `memory.md`; the user edits it directly.
+- Showing work (§17): nothing rendered inside the thread itself, no card for a file that is not a canvas or a
+  canvas node (a scratch UDF, a CSV, an image), no show tools for asks, routine turns or other bot kinds, no
+  delete of a canvas the expert made, no list of them in the UI, no check of what it wrote there.
 - No approval card outside the chat (side sessions and routine turns refuse), no "approve forever", no risk score
   on the card, no record of an approved write outside `memory.md` beyond the chat itself (§6).
 - In the attended chat (auto mode, §6): no read boundary at the granted folders, no card for what Claude Code's
@@ -743,3 +750,78 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
   nothing.
 - Gemini and OpenCode tasks get no expert tools (§8).
 - Only Claude Code runs an expert (chat and side sessions).
+
+## 17. Showing work in the chat
+
+Owner, 2026-11-19: an expert should be able to write UDFs and widgets (in a new canvas if need be), show them to
+the user, and improve them when the user says so; rendering inside the chat is too slow, so the chat shows a card
+and the card opens an overlay that draws the thing the way the explorer does. Built in `experts/show.py`,
+`agent_engine._expert_show` and `frontend/src/apps/bots/components/ViewCard.tsx`. The one rule (§1) holds: the two
+tools deliver (a folder, a row); the expert writes every file itself and our code reads none of them.
+
+**When** (`show.on`): the attended chat only (`agent_engine.expert_cards`), the Canvases preference on, and at
+least one environment the expert may run UDFs in (`store.run_envs`). Decided once per spawn and handed to the
+roster's server entry and the fence. An ask, a task-learn, a dream and a routine's turn have neither tool, are
+not told about them, and get no rule.
+
+**The two tools** are on the bots' own MCP server, beside the permission prompt (`roster_for`), so their names are
+`mcp__bot__canvas_create` and `mcp__bot__show`. Every other tool name is still "unknown tool" for an expert.
+
+    canvas_create   name, env?    makes a canvas on Fused and its live clone here; returns the folder
+    show            path, note?   puts a card in the chat for a canvas or one node of one
+
+- `canvas_create` (`show.canvas_create`) makes the Canvases page's own three calls, in this process:
+  `canvases.api_canvases_create`, `api_canvases_clone`, `_sync_start_response`. The watcher is started before the
+  expert writes anything on purpose: a watcher that first sees a folder of seconds-old files takes them as already
+  published (`canvases._FRESH_WINDOW_S`). A sync that does not start (another fused-render owns the clone) does
+  not fail the tool; the card's view starts it. The name is the CLI's alphabet; `env` is one of `store.run_envs`
+  (left out when there is one). A name the user already has a canvas under is refused, unless the expert made
+  that canvas, in which case its folder comes back and nothing is created. What Fused refuses (not signed in, a
+  taken name) goes back to the expert as the tool's error. The canvas is recorded in
+  `.fused/expert/canvases.json` (`show.made`, the newest 200). The chat shows one `action` row.
+- `show` (`show.show`) says what the path is and nothing else: a canvas folder (or its `canvas.toml`) directly
+  under an environment's `user/`, or a node file by the node view's own rule (`canvases.canvas_node_file`: at the
+  root of a `user/<canvas>` folder, with a row in its `canvas.toml`). Any canvas under `user/` can be shown, not
+  only one the expert made. Anything else is an error that tells the expert what a node is. On success the chat
+  gets a `thought` row, the expert's `note` (else "Here's <title>:"), carrying
+  `view: {kind: canvas|udf|widget|html|note, path, title, canvas, env}`.
+
+**Writing the files** is Edit / Write, as for everything else. In the chat every edit asks (§6), and
+`store.free_write` now also answers `allow` for a file directly in the folder of a canvas the expert made
+(`show.made_file`): any name that is not a dot file and not `CLAUDE.md`, nothing in a subfolder, judged on real
+paths, only while that folder is a real folder (not a link) at `<clones root>/<name>` for the recorded
+environment and name, and only while `show.on`. So a `canvases.json` edited by hand cannot point the rule at
+another folder. An edit of any other canvas of the user's raises the approval card, as before. The folder
+publishes itself (the canvas sync), so what the expert writes there reaches the user's Fused account without a
+card: that is the feature, and it is limited to canvases the expert created.
+
+**The fence** (`sessions.fence(show=True)`, `show.rules`): allow rules for the two tools by name (never
+`mcp__bot__*`: the prompt is not the model's to call), `Bash(fused workbench --env <env> canvas validate:*)` per
+environment, and a Read rule for the `workbench` skills folder when this machine has it
+(`skill_plugin.workbench_plugin_root`: the canvas.toml, UDF and JSON-UI widget references; the shipped skills do
+not hold the widget schema). The classifier's guidance (`_auto_settings`) gains one `allow` sentence naming the
+folders of the canvases the expert made (the newest 20), so deleting a node file there with a shell command is
+routine. The bot server's entry in `mcp.json` carries `alwaysLoad` for such a chat
+(`write_mcp_config(always_load=)`), as the S3 server's does: `--tools` has no ToolSearch.
+
+**What the expert is told**: one line in the chat's `store.where(bot, run=True, show=True)` (`show.note`): the two
+tools, that it writes the node files itself without asking, and where the format references are. The rest is the
+shipped skill `showing-your-work.md` (one text in both shipped experts, a test keeps them equal; offered to
+installed experts by `seed._new_skills`): the steps, never guessing the widget format, editing the same files
+when the user asks for a change, what asks first. Both shipped `instructions.md` have a "Showing your work"
+section, and `MEMORY_RULES` names the second exception to "never create other files". An expert whose
+instructions predate this learns of it from the prompt line and the tool descriptions.
+
+**The UI** (`ViewCard.tsx`): a row with a `view` gets a card under its bubble: an icon, the title, "Widget · in
+<canvas> · <env>", and one Open button. Collapsed it mounts nothing of the work. Open raises one overlay (the
+platform `Modal`): a node is drawn by the `_node` native view (`platform/ui/NativeView`, the canvases app's
+`NodeView`: the same component the explorer mounts for that file, which clones, starts the sync, signs in and
+frames the hosted workbench as needed); a whole canvas is its workspace page in a frame (`/canvases/<env>/<name>
+?embed=1`). The head has "Open canvas" and, for a node, "Open in explorer". Closing unmounts the view. Because
+the view reads the files through the canvas sync, an edit the expert makes while it is open shows there without
+a new card.
+
+**Not verified here**: the two tools against a real Fused sign-in and a real `claude` (this was built without
+either): that the CLI lists both tools with `alwaysLoad` and the allow rules settle them before the classifier,
+and that a fresh clone's watcher publishes the expert's first files. The canvases calls, the fence flags, the
+row and the card are covered by tests with those two ends stubbed.
