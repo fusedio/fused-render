@@ -370,6 +370,28 @@ def test_an_expert_export_reads_memory_under_its_write_lock(expert, tmp_path, mo
     assert os.path.isfile(package.write(expert.id, memory=True, apps=[], file_name="free", dest_dir=str(tmp_path)))
 
 
+def test_an_archive_made_while_the_export_waits_is_exported(expert, tmp_path, monkeypatch):
+    """Which memory files exist is decided under the lock: a dream that creates the archive and releases the lock
+    just as the export takes it must not leave the archive out."""
+    from fused_render import appfile_container
+    from fused_render.bots import package
+    assert not os.path.exists(store.archive_path(expert))
+    real = store.write_lock(expert)
+
+    class DreamFinishesFirst:
+        def acquire(self, timeout=-1):
+            _write(store.archive_path(expert), "- [1 · 2026-11-19] moved by a dream\n")
+            return real.acquire(timeout=timeout)
+
+        def release(self):
+            real.release()
+
+    monkeypatch.setattr(store, "write_lock", lambda bot: DreamFinishesFirst())
+    out = package.write(expert.id, memory=True, apps=[], file_name="dream", dest_dir=str(tmp_path))
+    idx = appfile_container.read_index(out, max_entries=100, max_entry_bytes=1 << 24, max_total_bytes=1 << 26, kind="bot")
+    assert ".fused/memory-archive.md" in {f["path"] for f in idx["files"]}
+
+
 def test_an_empty_memory_member_replaces_the_experts_memory(expert, tmp_path):
     from fused_render.bots import botfile
     _write(store.memory_path(expert), "old fact\n")

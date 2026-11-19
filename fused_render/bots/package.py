@@ -392,15 +392,16 @@ def _memory_files(bid: str, meta: dict) -> list[tuple[str, str]]:
 EXPERT_MEMORY_WAIT_S = 30
 
 
-def _locked_read(bid: str, files: list[tuple[str, str]]) -> list[tuple[str, bytes]]:
-    """[(member, bytes)] of an expert's memory files, read together under its write lock (experts.store.write_lock)."""
+def _locked_read(bid: str, meta: dict) -> list[tuple[str, bytes]]:
+    """[(member, bytes)] of an expert's memory files, chosen AND read under its write lock (experts.store.write_lock):
+    which files exist is decided inside it too, so an archive a dream makes while the export waits is not missed."""
     from fused_render.experts import store as xstore
     lock = xstore.write_lock(bid)
     if not lock.acquire(timeout=EXPERT_MEMORY_WAIT_S):
         raise ValueError("the expert is writing its memory; try again in a minute, or export without memory")
     try:
         out = []
-        for rel, p in files:
+        for rel, p in _memory_files(bid, meta):
             with open(p, "rb") as f:
                 out.append((rel, f.read(TEXT_MAX_BYTES + 1)))  # over the cap is refused by write() anyway
         return out
@@ -662,11 +663,14 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
             members.append(("icon.svg", icon))
         else:
             log.warning("bot %s: icon.svg is over %d bytes; exported without it", bid, appfile.MAX_ICON_BYTES)
-    mem = _memory_files(bid, meta) if memory else []
-    if mem and _is_expert(meta):
-        # An expert's memory is two files a dream edits one after the other: read both under its write lock (as an
-        # install writes them), so the package holds a pair no session was halfway through.
-        mem = _locked_read(bid, mem)
+    if not memory:
+        mem = []
+    elif _is_expert(meta):
+        # An expert's memory is two files a dream edits one after the other: choose and read both under its write
+        # lock (as an install writes them), so the package holds a pair no session was halfway through.
+        mem = _locked_read(bid, meta)
+    else:
+        mem = _memory_files(bid, meta)
     for rel, src in mem:
         members.append((rel, src))
         text_bytes += _size(src) if isinstance(src, str) else len(src)
