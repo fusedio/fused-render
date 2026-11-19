@@ -211,11 +211,12 @@ def _list(url, cursor) -> dict:
     next_cursor = page.get("cursor") or None
     if not raw and not next_cursor and prefix and _index_answer("has_dir", prefix) is False:
         raise _missing(bucket, prefix)
-    # The index already orders dirs first, then files, by name.
+    # The index already orders dirs first, then files, by name. A folder's
+    # size and mtime are its whole subtree's (bytes, newest file), from
+    # remote_index.list_dir.
     entries = [{"url": canonical_url(bucket, e["key"]), "name": e["name"],
                 "is_dir": bool(e["is_dir"]),
-                "size": None if e["is_dir"] else e.get("size"),
-                "mtime": None if e["is_dir"] else e.get("mtime")} for e in raw]
+                "size": e.get("size"), "mtime": e.get("mtime")} for e in raw]
     return {"url": canonical_url(bucket, prefix), "entries": entries, "cursor": next_cursor}
 
 
