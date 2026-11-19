@@ -381,7 +381,7 @@ const PIN_FADE_MS = 320;
 let pageRailPath = typeof location !== "undefined" ? location.pathname : "";
 const pinNoop = () => {};
 const pinNoRing = () => null;
-import { useCardMove } from "./useCardMove";
+import { setRailResizing, useCardMove } from "./useCardMove";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import { taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
 import { aPinWord, cardMode, doorSelector, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress } from "./rail-pin-lib";
@@ -2304,6 +2304,9 @@ export function ClaudeRail({
   const clearPopGuides = useCallback(() => {
     if (!popGuides.current) return;
     popGuides.current = false;
+    // The + card's grip came up (useCardMove `setRailResizing`): pins it
+    // pushed glide again.
+    setRailResizing(false);
     setSnapGuides([], []);
   }, []);
   useEffect(() => {
@@ -3993,6 +3996,7 @@ export function ClaudeRail({
                               const view = viewportOf(window);
                               const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
                               const pulled = snapResize(edge, dx, dy, (x, y) => floatResize(edge, start, x, y, view, lim), magnetBox("b", true), view);
+                              if (!popGuides.current) setRailResizing(true);
                               popGuides.current = true;
                               setSnapGuides(pulled.x, pulled.y);
                               return pulled.box;
@@ -4043,7 +4047,8 @@ export function ClaudeRail({
                                   magnetBox("b", false),
                                   view,
                                 );
-                                popGuides.current = true;
+                                if (!popGuides.current) setRailResizing(true);
+                              popGuides.current = true;
                                 setSnapGuides(pulled.x, pulled.y);
                                 return pulled.box;
                               },
@@ -4053,7 +4058,8 @@ export function ClaudeRail({
                               adjust: (next, edge, start) => {
                                 const row = rowOf(railRef.current)?.getBoundingClientRect();
                                 const s = snapWidth(next, edge, favBox, PEEK_MIN_WIDTH, row ? dragMaxWidth(start, row) : PEEK_MAX_WIDTH);
-                                popGuides.current = true;
+                                if (!popGuides.current) setRailResizing(true);
+                              popGuides.current = true;
                                 setSnapGuide(s.guide);
                                 return s.box;
                               },

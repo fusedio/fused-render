@@ -7,7 +7,7 @@
 //
 // …and which window was pressed last, for the stacking (rail-move-lib
 // `raised`).
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { setWindowPosMark, subscribeWindowPosMark, windowPosMark } from "@platform/lib/last-chat";
 import { clampPos, serialisePos, viewportOf, type Pos, type RailWindow, type Size } from "./rail-move-lib";
 import type { Box } from "./rail-peek-lib";
@@ -326,7 +326,9 @@ export function usePusher(win: RailWindow, box: Box | null): void {
   const top = box?.top;
   const width = box?.width;
   const height = box?.height;
-  useEffect(() => {
+  // In the layout phase: a pin this card pushes re-renders before the paint
+  // that shows this card's new box, not a frame after it.
+  useLayoutEffect(() => {
     publishPusher(win, id, left === undefined || top === undefined || width === undefined || height === undefined ? null : { left, top, width, height });
   }, [win, id, left, top, width, height]);
   useEffect(() => () => publishPusher(win, id, null), [win, id]);

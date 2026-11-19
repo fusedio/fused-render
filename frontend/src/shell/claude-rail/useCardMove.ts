@@ -68,6 +68,39 @@ import { setSnapGuides } from "./card-snap";
 import { useRailFreePins } from "./rail-free-pins-flag";
 import { useDoomedWindow } from "./rail-slots-store";
 
+/** WHERE A FLOATING CARD IS DRAWN THIS RENDER: `box` as its chassis placed
+ *  it, moved to the window's position now (`pos`, inside the viewport) — or
+ *  `box` itself for a card that does not float. */
+export function drawnBox<B extends { left: number; top: number; width: number; height: number }>(box: B | null, pos: Pos | null): B | null {
+  if (!box || !pos) return box;
+  const at = clampPos(pos, box, viewportOf(typeof window === "undefined" ? undefined : window));
+  return at.left === box.left && at.top === box.top ? box : { ...box, left: at.left, top: at.top };
+}
+
+/** On <html> while a rail card's GRIP is held (a resize): a pin the resized
+ *  non-pin pushes follows it frame by frame, with no glide (claude-rail.css;
+ *  owner, 2026-11-19: "when we resize the non-pin window the movement of
+ *  pinned windows based on that is a bit sluggish and not responsive"). The
+ *  glide is for a push that arrives all at once — a window opening or
+ *  closing; under a drag it trailed the edge by the transition's length. */
+export const RESIZING_CLASS = "rail-card-resizing";
+let resizers = 0;
+/** A grip went down (`true`) or came up (`false`); counted, so two cards
+ *  cannot clear each other's. */
+export function setRailResizing(on: boolean): void {
+  resizers = Math.max(0, resizers + (on ? 1 : -1));
+  if (typeof document === "undefined") return;
+  document.documentElement.classList.toggle(RESIZING_CLASS, resizers > 0);
+}
+/** `resizing`: this card's grip is held. Lowered on release and on unmount. */
+export function useRailResizing(resizing: boolean): void {
+  useEffect(() => {
+    if (!resizing) return;
+    setRailResizing(true);
+    return () => setRailResizing(false);
+  }, [resizing]);
+}
+
 /** On <html> while a card is being moved: frames take no pointer, nothing
  *  selects (claude-rail.css). */
 export const MOVING_CLASS = "rail-card-moving";
