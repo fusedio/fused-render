@@ -15,7 +15,8 @@ export { exportBot };
 export function runMenuAction(a: MenuAction, b: Bot): void {
   const id = b.id;
   if (b.specialist) {
-    if (a === "delete") void askConfirm(`Delete "${b.name}"?`, "It leaves the Bots list, and its folder moves to the specialists' trash folder.").then((ok) => { if (ok) void actSpecialist(() => specialistApi.remove(id)); });
+    if (a === "export") void exportBot(b);
+    else if (a === "delete") void askConfirm(`Delete "${b.name}"?`, "It leaves the Bots list, and its folder moves to the specialists' trash folder.").then((ok) => { if (ok) void actSpecialist(() => specialistApi.remove(id)); });
     else openDialog({ kind: "settings", id });
     return;
   }

@@ -107,6 +107,24 @@ def specialists_chat_clear(spec_id: str, x_fused: str | None = Header(default=No
     return chat.clear(_spec(spec_id).home)
 
 
+@router.get(P + "/{spec_id}/chat/export")
+@_handled
+def specialists_chat_export(spec_id: str):
+    """The main chat as Markdown, `{name, text}`: the task chat's own export (`routers/tasks._export_markdown`), titled
+    with the specialist's name. Earlier, cleared chats are not in it."""
+    from fused_render.claude_agent import agent_module
+    from fused_render.server.routers import tasks
+
+    s = _spec(spec_id)
+    sid = chat.load(s.home)["main"]
+    if not sid:
+        return _error("There is no chat to export yet.", 409)
+    hist = agent_module()._history(s.home, sid, transcript=chat.transcript(s.home, sid))
+    task = {"title": s.name, "target": s.home, "session_id": sid}
+    return {"name": tasks._export_name(task, "md"),
+            "text": tasks._export_markdown(task, hist.get("turns") or [], hist.get("backend") or "")}
+
+
 @router.post(P + "/{spec_id}/seen")
 @_handled
 def specialists_seen(spec_id: str, x_fused: str | None = Header(default=None)):

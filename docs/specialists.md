@@ -358,6 +358,7 @@ last reply, or after Clear the last folded chat's, so the row keeps its place; o
                                                   the row; commits "Settings"
     DELETE /api/specialists/{id}                  {"ok": true}; ends its sessions, moves the home to trash
     GET    /api/specialists/{id}/chat             {"session_id", "folded": [{session_id, at}]}
+    GET    /api/specialists/{id}/chat/export      {"name", "text"}: the main chat as Markdown; 409 with no chat yet
     POST   /api/specialists/{id}/chat/clear       the same object, after folding the main chat
     POST   /api/specialists/{id}/seen             {"ok": true}; sets `seen` to now (the Learning tab opened)
     GET    /api/specialists/{id}/memory           {"text"}
@@ -408,7 +409,10 @@ tab was last opened; opening the chat does not clear it). Pin, hide, mark as rea
   or "Read n entries, changed nothing", opening to what it read, its reply and its diff (or "It changed nothing."),
   any other change to its diff (the Expert pane's `DiffView`). Opening the tab posts `seen`. Memory, skills and
   entries reload on mount, when the row moves, and every 10 s; the Learned list only while the tab is open.
-- **The `≡` menu** (`menuIcons.tsx`, `BotMenu.tsx`): Settings… and Delete… (confirm: "It leaves the Bots list, and its folder moves to the
+- **The `≡` menu** (`menuIcons.tsx`, `BotMenu.tsx`): Settings…, Export transcript (`GET …/chat/export`, `{name,
+  text}`: the current main chat through the task chat's own `routers/tasks._export_markdown`, titled with the
+  specialist's name; earlier, cleared chats are not in it; with no chat yet it answers 409 "There is no chat to export
+  yet.") and Delete… (confirm: "It leaves the Bots list, and its folder moves to the
   specialists' trash folder.", then DELETE).
 
 **In a task.** The three tools read as plain words (`apps/claude/specialists/tool-labels.ts`, used by `ToolChip.tsx`

@@ -612,6 +612,8 @@ export const specialistApi = {
   remove: (id: string) => request<Ok>("DELETE", sid(id), undefined, "delete specialist"),
   chat: (id: string) => get<SpecialistChat>(`${sid(id)}/chat`, "specialist chat"),
   clear: (id: string) => post<SpecialistChat>(`${sid(id)}/chat/clear`, {}, "specialist clear"),
+  /** Its main chat as Markdown (the task chat's export). */
+  exportChat: (id: string) => get<{ name: string; text: string }>(`${sid(id)}/chat/export`, "export"),
   seen: (id: string) => post<Ok>(`${sid(id)}/seen`, {}, "specialist seen"),
   memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "specialist memory"),
   skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "specialist skills"),

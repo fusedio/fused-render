@@ -54,8 +54,8 @@ describe("specialist rows", () => {
     expect(calls.some((c) => c.startsWith("POST /api/bots/canvas") || c.endsWith("/seen"))).toBe(false);
   });
 
-  test("the menu: Settings…, Update now, Delete…", () => {
+  test("the menu: Settings…, Export transcript, Delete…", () => {
     const row = getState().bots.find((b) => b.id === "canvas")!;
-    expect(menuItems(row, { live: true }).map((i) => (i === "hr" ? "hr" : i.a))).toEqual(["settings", "hr", "delete"]);
+    expect(menuItems(row, { live: true }).map((i) => (i === "hr" ? "hr" : i.a))).toEqual(["settings", "export", "hr", "delete"]);
   });
 });
