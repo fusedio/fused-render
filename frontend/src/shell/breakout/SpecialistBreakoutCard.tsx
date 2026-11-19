@@ -210,6 +210,8 @@ export function SpecialistBreakoutCard({
         label: r.label || `Draft from the ${card.specialistName} specialist · not sent yet`,
         name: card.specialistName,
         breakoutId: card.breakoutId,
+        specialistId: card.specialistId,
+        ...(r.close ? { close: r.close } : {}),
       });
       if (!ok) {
         setError("Could not put the summary in the task's message box. The card stays open.");

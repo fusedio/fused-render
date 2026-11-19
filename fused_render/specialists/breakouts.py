@@ -321,7 +321,7 @@ def closed(spec, bid: str, session_id: str) -> dict:
     label = f"Draft from the {spec.name} specialist · not sent yet"
     for done in rec.get("closes") or []:
         if isinstance(done, dict) and done.get("key") == key:
-            return {"draft": done.get("draft") or "", "label": label, "note_id": done.get("note_id") or ""}
+            return {"draft": done.get("draft") or "", "label": label, "note_id": done.get("note_id") or "", "close": key}
     summary = harness.extract_block(answer, "SUMMARY")
     note_block = harness.extract_block(answer, "NOTE")
     title = f"{spec.name} breakout: {(rec.get('brief') or {}).get('problem', '')[:80]}"
@@ -348,8 +348,10 @@ def closed(spec, bid: str, session_id: str) -> dict:
         rec = get(spec.id, bid) or rec
         for done in rec.get("closes") or []:  # a concurrent twin got here first
             if isinstance(done, dict) and done.get("key") == key:
-                return {"draft": done.get("draft") or "", "label": label, "note_id": done.get("note_id") or ""}
-        rec.setdefault("closes", []).append({"at": time.time(), "note_id": note_id, "draft": draft, "key": key})
+                return {"draft": done.get("draft") or "", "label": label, "note_id": done.get("note_id") or "",
+                        "close": key}
+        rec.setdefault("closes", []).append({"at": time.time(), "note_id": note_id, "draft": draft, "key": key,
+                                             "draft_state": "pending"})
         rec["status"] = "closed"
         if sid and not rec.get("session_id"):
             rec["session_id"] = sid
@@ -357,7 +359,53 @@ def closed(spec, bid: str, session_id: str) -> dict:
     task_events.add(rec["parent"]["session_id"], "breakout_closed", spec.id, spec.name, breakout_id=bid,
                     note_id=note_id, session_id=rec.get("session_id") or "")
     end_hosts(spec.id, rec)
-    return {"draft": draft, "label": label, "note_id": note_id}
+    return {"draft": draft, "label": label, "note_id": note_id, "close": key}
+
+
+#: A close's summary draft, waiting above the task's composer until the user sends or clears it. A close recorded
+#: before draft states existed has none: its draft lived in the page, so it is not pending.
+DRAFT_STATES = ("pending", "sent", "cleared")
+_DRAFT_DONE = ("sent", "cleared")
+
+
+class DraftConflict(Exception):
+    """The draft cannot move to the asked state (already the other one, none waiting, breakout discarded)."""
+
+
+def _find_close(rec: dict, close) -> dict:
+    closes = [c for c in rec.get("closes") or [] if isinstance(c, dict)]
+    if isinstance(close, int) and not isinstance(close, bool):
+        if 0 <= close < len(closes):
+            return closes[close]
+    elif isinstance(close, str) and close:
+        for c in closes:
+            if c.get("key") == close:
+                return c
+    raise LookupError("no such close")
+
+
+def set_draft_state(spec, bid: str, close, state: str) -> dict:
+    """Mark close `close` (its index in `closes` or its `key`) of breakout `bid` as `sent` or `cleared`.
+    Idempotent: asking for the state it already has answers the record again. Raises ValueError for a bad state,
+    LookupError for an unknown breakout or close, DraftConflict when no draft is waiting."""
+    if state not in _DRAFT_DONE:
+        raise ValueError("state must be sent or cleared")
+    with _LOCK:
+        rec = get(spec.id, bid)
+        if rec is None:
+            raise LookupError(f"no such breakout: {bid}")
+        done = _find_close(rec, close)
+        now = done.get("draft_state")
+        if now == state:
+            return dict(rec, name=spec.name)
+        if rec.get("status") in ("discarded", "deleted"):
+            raise DraftConflict("This breakout was discarded; it has no draft waiting.")
+        if now != "pending":
+            raise DraftConflict(f"This draft was already {now}." if now in _DRAFT_DONE else "No draft is waiting.")
+        done["draft_state"] = state
+        done["draft_at"] = time.time()
+        _save(rec)
+    return dict(rec, name=spec.name)
 
 
 #: How long after Close / Discard the breakout's session host is ended (its Stop hook settles first).
@@ -394,6 +442,9 @@ def discard(spec, bid: str) -> dict:
             raise LookupError(f"no such breakout: {bid}")
         rec["status"] = "discarded"
         rec["discarded"] = time.time()
+        for done in rec.get("closes") or []:  # a discarded breakout has no draft waiting in its task
+            if isinstance(done, dict) and done.get("draft_state") == "pending":
+                done["draft_state"] = "cleared"
         _save(rec)
     task_events.add(rec["parent"]["session_id"], "breakout_discarded", spec.id, spec.name, breakout_id=bid,
                     session_id=rec.get("session_id") or "")

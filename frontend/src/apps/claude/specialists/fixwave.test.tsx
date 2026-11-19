@@ -5,12 +5,11 @@
 // inside the card's own row.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { publishSpecialistsEnabled, resetSpecialistsFlagForTests } from "@platform/lib/specialists-flag";
 import {
-  addSummaryDraft,
   readSummaryDraft,
   resetSpecialistBreakouts,
   resetSummaryDraftsForTests,
@@ -181,48 +180,122 @@ describe("protocol never shows (R1, C3)", () => {
 });
 
 describe("the summary draft, its own block above the composer", () => {
+  // The server: the task's breakout records, and the …/draft route marking a close.
+  const realFetch = globalThis.fetch;
+  type Close = { at: number; note_id: string; draft: string; key: string; draft_state: string };
+  let closes: Close[] = [];
+  let posts: { url: string; body: unknown }[] = [];
+  let failPosts = false;
+  const record = () => ({
+    id: "b-000000000001",
+    specialist: "c1",
+    name: "Canvas",
+    origin: "hand",
+    parent: { session_id: "s1", file: "/w/proj" },
+    brief: { problem: "sync", tried: "", look_at: "" },
+    session_id: "bs",
+    status: "closed",
+    opened: 0,
+    closes,
+    discarded: null,
+  });
+  beforeEach(() => {
+    closes = [];
+    posts = [];
+    failPosts = false;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if ((init?.method || "GET") === "POST" && u.endsWith("/draft")) {
+        const body = JSON.parse(String(init!.body)) as { close: string; state: string };
+        posts.push({ url: u, body });
+        if (failPosts) return new Response(JSON.stringify({ error: "down" }), { status: 500 });
+        const c = closes.find((x) => x.key === body.close);
+        if (c) c.draft_state = body.state;
+        return new Response(JSON.stringify(record()), { status: 200 });
+      }
+      if (u.startsWith("/api/specialists/breakouts?")) return new Response(JSON.stringify({ breakouts: [record()] }), { status: 200 });
+      if (u.startsWith("/api/specialists/task-events?")) return new Response(JSON.stringify({ events: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: "nope" }), { status: 404 });
+    }) as typeof fetch;
+  });
+  afterAll(() => {
+    globalThis.fetch = realFetch;
+  });
   function Host(p: { submit: (t: string) => boolean }) {
     const side = useSpecialistTaskSide({ claude: true, sessionId: "s1", file: "/w/proj", turns: [], submit: p.submit });
     return <>{side.dock}</>;
   }
-  test("labelled, laid out, Send to the task sends through the composer (typed words first) and clears it", async () => {
+  // fetch → json → state: a few turns of the loop
+  const settle = () =>
+    act(async () => {
+      for (let i = 0; i < 5; i += 1) await new Promise((res) => setTimeout(res, 0));
+    });
+  const FULL = "Outcome: solved\nFound: a bug\nDo next: publish\nFiles changed: None\nFull session: Canvas breakout: sync";
+
+  test("built from the server's pending closes when the chat mounts; Send to the task sends it (typed words first) and marks it sent", async () => {
     publishSpecialistsEnabled(true);
     setSpecialistListForTests([]);
-    addSummaryDraft("s1", "/w/proj", {
-      text: "Outcome: solved\nFound: a bug\nDo next: publish\nFiles changed: None\nFull session: Canvas breakout: sync",
-      label: "Draft from the Canvas specialist · not sent yet",
-      name: "Canvas",
-      at: 1,
-    });
+    closes = [
+      { at: 1, note_id: "", draft: "Outcome: already sent", key: "k0", draft_state: "sent" },
+      { at: 2, note_id: "", draft: FULL, key: "k1", draft_state: "pending" },
+    ];
     const sent: string[] = [];
     const r = render(<Host submit={(t) => (sent.push(t), true)} />);
+    await settle();
     const t = textOf(r.root);
     expect(t).toContain("Draft from the Canvas specialist · not sent yet");
     for (const label of ["Outcome", "Found", "Do next", "Files changed", "Full session"]) expect(t).toContain(label);
+    expect(t).not.toContain("already sent");
     expect(() => button(r, "Clear draft")).not.toThrow();
     await act(async () => {
-      button(r, "Send to the task").props.onClick();
+      await button(r, "Send to the task").props.onClick();
     });
-    expect(sent).toEqual(["Outcome: solved\nFound: a bug\nDo next: publish\nFiles changed: None\nFull session: Canvas breakout: sync"]);
-    expect(readSummaryDraft("s1", "/w/proj")).toHaveLength(0);
+    expect(sent).toEqual([FULL]);
+    expect(posts).toEqual([{ url: "/api/specialists/c1/breakouts/b-000000000001/draft", body: { close: "k1", state: "sent" } }]);
+    expect(readSummaryDraft("s1")).toHaveLength(0);
     expect(textOf(r.root)).not.toContain("Draft from");
+    // a remount (a reload) reads the server again: still gone
+    act(() => mounted.pop()!.unmount());
+    resetSummaryDraftsForTests();
+    const again = render(<Host submit={() => true} />);
+    await settle();
+    expect(textOf(again.root)).not.toContain("Draft from");
     resetSpecialistsFlagForTests();
   });
 
-  test("a send the composer refuses keeps the draft and says so; Clear draft drops it", async () => {
+  test("a send the composer refuses keeps the draft and says so; Clear draft marks it cleared", async () => {
     publishSpecialistsEnabled(true);
     setSpecialistListForTests([]);
-    addSummaryDraft("s1", "/w/proj", { text: "Outcome: solved", label: "L", name: "Canvas", at: 1 });
+    closes = [{ at: 1, note_id: "", draft: "Outcome: solved", key: "k1", draft_state: "pending" }];
     const r = render(<Host submit={() => false} />);
+    await settle();
     await act(async () => {
-      button(r, "Send to the task").props.onClick();
+      await button(r, "Send to the task").props.onClick();
     });
-    expect(readSummaryDraft("s1", "/w/proj")).toHaveLength(1);
+    expect(posts).toEqual([]);
+    expect(readSummaryDraft("s1")).toHaveLength(1);
     expect(textOf(r.root)).toContain("can't send right now");
     await act(async () => {
-      button(r, "Clear draft").props.onClick();
+      await button(r, "Clear draft").props.onClick();
     });
-    expect(readSummaryDraft("s1", "/w/proj")).toHaveLength(0);
+    expect(posts.map((p) => p.body)).toEqual([{ close: "k1", state: "cleared" }]);
+    expect(closes[0]!.draft_state).toBe("cleared");
+    expect(readSummaryDraft("s1")).toHaveLength(0);
+    resetSpecialistsFlagForTests();
+  });
+
+  test("a Clear the server refuses keeps the draft and says so", async () => {
+    publishSpecialistsEnabled(true);
+    setSpecialistListForTests([]);
+    closes = [{ at: 1, note_id: "", draft: "Outcome: solved", key: "k1", draft_state: "pending" }];
+    failPosts = true;
+    const r = render(<Host submit={() => true} />);
+    await settle();
+    await act(async () => {
+      await button(r, "Clear draft").props.onClick();
+    });
+    expect(readSummaryDraft("s1")).toHaveLength(1);
+    expect(textOf(r.root)).toContain("Could not clear the draft");
     resetSpecialistsFlagForTests();
   });
 });

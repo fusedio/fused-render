@@ -7,6 +7,7 @@
     POST /api/specialists/{id}/breakouts                                    open a breakout (offer / by hand)
     GET  /api/specialists/breakouts?parent_session_id=                      a task's breakouts
     POST /api/specialists/{id}/breakouts/{bid}/{close-prompt,closed,discard,reopen}
+    POST /api/specialists/{id}/breakouts/{bid}/draft    {"close": index|key, "state": "sent"|"cleared"}
 
 Every route answers 404 with the flag off (`flag.require`). POSTs need `X-Fused: 1`. Errors `{"error": sentence}`.
 `check` is a sync `def`: the side session it waits on never blocks the event loop. No model call happens here
@@ -682,6 +683,20 @@ def breakout_discard(spec_id: str, bid: str, x_fused: str | None = Header(None))
     def go(s, b):
         b.discard(s, bid)
         return {"ok": True}
+    return _breakout_action(spec_id, bid, x_fused, go)
+
+
+@router.post(PREFIX + "/{spec_id}/breakouts/{bid}/draft")
+@_handled
+def breakout_draft(spec_id: str, bid: str, body=Body(None), x_fused: str | None = Header(None)):
+    """A close's summary draft was sent to the task or cleared (docs/specialists.md §5): the record answers.
+    Idempotent; 409 when no draft is waiting there (already the other state, or the breakout was discarded)."""
+    def go(s, b):
+        data = _body(body)
+        try:
+            return b.set_draft_state(s, bid, data.get("close"), str(data.get("state") or ""))
+        except b.DraftConflict as e:
+            return _error(str(e), 409)
     return _breakout_action(spec_id, bid, x_fused, go)
 
 

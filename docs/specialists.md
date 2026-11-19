@@ -183,9 +183,11 @@ it changes exactly when the text does.
     {"id", "specialist", "origin": offer|hand, "request_id",
      "parent": {"session_id", "run_id", "file", "title"}, "brief": {"problem", "tried", "look_at"},
      "session_id", "status": open|closed|discarded|deleted, "opened",
-     "closes": [{"at", "note_id", "draft", "key"}], "discarded": ts|null, "work": true}
+     "closes": [{"at", "note_id", "draft", "key", "draft_state": pending|sent|cleared, "draft_at"?}],
+     "discarded": ts|null, "work": true}
 
-A record without `work` (made before workrooms) keeps the home as its folder.
+A record without `work` (made before workrooms) keeps the home as its folder. A close without `draft_state` (made
+before draft states) has no draft waiting.
 
 **Change list** `.specialist/changes/<run>.json` (§6):
 
@@ -625,19 +627,22 @@ plain words ("Getting guidance from the Canvas specialist…", "Asking the Canva
   - **the note**: the NOTE block's fields (unknown kind `case`, unknown basis `guess`, claim default "Breakout on:
     <problem>"), or, with no block, kind `case`, basis `guess` and the last 4000 characters of the answer as
     evidence; source `breakout` with the breakout and session; id `n-close-…` from a hash of session and answer;
-  - appends `{at, note_id, draft, key}` to `closes`, sets `closed`, records the task event, and ends the breakout's
+  - appends `{at, note_id, draft, key, draft_state: "pending"}` to `closes`, sets `closed`, records the task event, and ends the breakout's
     session host 2 s later (`end_hosts`: Claude Code starts a turn by itself when a background job finishes; a
     closed breakout must take no turn until Reopen).
 
   The same answer read twice (a retry, a restart) returns the same draft and note and files nothing twice. The note
   is saved whether or not the draft is ever sent.
 - **The summary draft in the task**: a block of its own above the task's composer (`TaskSide.tsx`
-  `SummaryDraftBlock`, `specialist-breakouts.ts` `addSummaryDraft`), kept per task chat in localStorage: "Draft from
+  `SummaryDraftBlock`, `specialist-breakouts.ts` `useSummaryDraft`). It is kept on the server (D1386: a fact the user
+  would miss across a relaunch, never browser storage): the block is the task's closes whose `draft_state` is
+  `pending`, of breakouts not discarded or deleted, read from `GET …/breakouts?parent_session_id=` when the task's
+  chat mounts and again when a breakout of the task closes; the page holds that answer in memory only. "Draft from
   the <name> specialist · not sent yet", the summary laid out with Outcome and Do next first, **Send to the task** and
-  **Clear draft**. It is at most 40 % of the chat pane's height (`DRAFT_MAX_SHARE`): the head and buttons stay, the
+  **Clear draft**; each marks its closes `sent` or `cleared` (`POST …/draft`) and the block drops them. It is at most 40 % of the chat pane's height (`DRAFT_MAX_SHARE`): the head and buttons stay, the
   body scrolls. What the reader typed stays in the composer and goes first when sent. After a second close the newest
   summary is on top and earlier ones fold behind "Earlier summary".
-- **Discard**: no summary and no note; `status: discarded`; the session's transcript stays, and the nightly job
+- **Discard**: no summary and no note; `status: discarded`, and a close's draft still pending becomes `cleared`; the session's transcript stays, and the nightly job
   still reads it (§6). The host is ended as on close.
 - **Reopen** (`POST …/reopen`, from the closed chip): `status: open` again; answers `{session_id, start_params,
   home: <the workroom>}` and the card resumes that session. A second close drafts a follow-up.
@@ -999,7 +1004,8 @@ a prompt hook within the last 120 s whose Stop has not come), "Updated <Mon DD>"
 | GET `/api/specialists/{id}/receipts/{rid}` | | `{"receipt" (without text),"text","view","deleted"?}` |
 | POST `/api/specialists/{id}/breakouts` | `{"parent":{"session_id","file","run_id"?,"title"?},"brief":{"problem","tried","look_at"},"origin":"offer"\|"hand","request_id"?}` | `{"breakout_id","home","seed","start_params","name"}` |
 | POST `…/{id}/breakouts/{bid}/close-prompt` | | `{"message"}`; 410 deleted |
-| POST `…/{id}/breakouts/{bid}/closed` | `{"session_id"}` | `{"draft","label","note_id"}`; 410 deleted |
+| POST `…/{id}/breakouts/{bid}/closed` | `{"session_id"}` | `{"draft","label","note_id","close"}` (`close`: the close's `key`); 410 deleted |
+| POST `…/{id}/breakouts/{bid}/draft` | `{"close": index\|key, "state": "sent"\|"cleared"}` | record + `"name"`; idempotent; 404 unknown close; 409 no draft waiting (already the other state, a close from before draft states, or the breakout discarded); 410 deleted |
 | POST `…/{id}/breakouts/{bid}/discard` | | `{"ok": true}`; 410 deleted |
 | POST `…/{id}/breakouts/{bid}/reopen` | | `{"session_id","start_params","home"}`; 410 deleted |
 

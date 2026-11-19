@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSpecialistsEnabled } from "@platform/lib/specialists-flag";
 import {
-  clearSummaryDraft,
+  resolveSummaryDraft,
   summaryDraftText,
   useSpecialistBreakouts,
   useSummaryDraft,
@@ -104,8 +104,8 @@ export function SummaryDraftBlock({
   onSend,
 }: {
   parts: readonly SummaryDraftPart[];
-  onClear: () => void;
-  onSend: () => void;
+  onClear: () => unknown;
+  onSend: () => unknown;
 }) {
   const ref = useRef<HTMLElement | null>(null);
   const [maxH, setMaxH] = useState<number | null>(null);
@@ -231,24 +231,34 @@ export function useSpecialistTaskSide(o: TaskSideOptions): TaskSide {
     return sentHere.size ? one.filter((e) => !(e.kind === "note" && e.note_id && sentHere.has(e.note_id))) : one;
   }, [rawEvents, sentHere]);
 
-  // THE SUMMARY DRAFT of a closed breakout, kept until sent or cleared.
-  const draftParts = useSummaryDraft(task ? o.sessionId : "", o.file);
+  // THE SUMMARY DRAFT of a closed breakout, kept on the server until sent or
+  // cleared: read when this chat mounts and again whenever a breakout of this
+  // task closes (its event count moves), here or in another window.
+  const closedSig = task
+    ? rawEvents.filter((e) => e.kind === "breakout_closed").map((e) => `${e.breakout_id}@${e.at}`).join(",")
+    : "";
+  const draftParts = useSummaryDraft(task ? o.sessionId : "", closedSig);
   const [draftError, setDraftError] = useState("");
   const { submit } = o;
-  const sendDraft = useCallback(() => {
-    const text = summaryDraftText(draftParts);
+  const sendDraft = useCallback(async () => {
+    const parts = draftParts;
+    const text = summaryDraftText(parts);
     if (!text) return;
-    if (submit?.(text)) {
-      clearSummaryDraft(o.sessionId, o.file);
-      setDraftError("");
-    } else {
+    if (!submit?.(text)) {
       setDraftError("The message box can't send right now. Try again in a moment.");
+      return;
     }
-  }, [draftParts, submit, o.sessionId, o.file]);
-  const clearDraft = useCallback(() => {
-    clearSummaryDraft(o.sessionId, o.file);
     setDraftError("");
-  }, [o.sessionId, o.file]);
+    if (!(await resolveSummaryDraft(o.sessionId, parts, "sent"))) {
+      setDraftError("Sent. The draft could not be marked as sent, so it may show again; clear it then.");
+    }
+  }, [draftParts, submit, o.sessionId]);
+  const clearDraft = useCallback(async () => {
+    setDraftError("");
+    if (!(await resolveSummaryDraft(o.sessionId, draftParts, "cleared"))) {
+      setDraftError("Could not clear the draft. Try again in a moment.");
+    }
+  }, [draftParts, o.sessionId]);
 
   const noteDraft = useCallback((_label: string | undefined) => {
     // A specialist's summary no longer travels through the composer (it is
@@ -339,7 +349,7 @@ export function useSpecialistTaskSide(o: TaskSideOptions): TaskSide {
   const showMenu = task && !!o.sessionId && specialists.length > 0;
   const hasDraft = task && draftParts.length > 0;
   const dock =
-    on && (hasDraft || showMenu) ? (
+    on && (hasDraft || showMenu || (task && !!draftError)) ? (
       <div className="spx-dock">
         {showMenu ? (
           <BreakoutMenu
@@ -351,7 +361,7 @@ export function useSpecialistTaskSide(o: TaskSideOptions): TaskSide {
           />
         ) : null}
         {hasDraft ? <SummaryDraftBlock parts={draftParts} onClear={clearDraft} onSend={sendDraft} /> : null}
-        {hasDraft && draftError ? (
+        {draftError ? (
           <div className="spx-chip-error" role="alert">
             {draftError}
           </div>

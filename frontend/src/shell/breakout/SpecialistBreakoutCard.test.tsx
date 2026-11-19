@@ -67,7 +67,7 @@ function setup(over: Partial<SpecialistCardDeps> = {}, seed = "Brief from the ta
   };
   const deps: SpecialistCardDeps = {
     closePrompt: async (s, b) => (log.push(["close-prompt", s, b]), { message: "CLOSE_OUT" }),
-    breakoutClosed: async (s, b, sid) => (log.push(["closed", s, b, sid]), { draft: "Outcome: solved", label: "Draft from the Canvas specialist · not sent yet", note_id: "n-1" }),
+    breakoutClosed: async (s, b, sid) => (log.push(["closed", s, b, sid]), { draft: "Outcome: solved", label: "Draft from the Canvas specialist · not sent yet", note_id: "n-1", close: "k1" }),
     discardBreakout: async (s, b) => (log.push(["discard", s, b]), { ok: true as const }),
     deliver: async (d: ComposerDraftDetail) => (log.push(["deliver", d]), true),
     detail: async () => ({ model: "claude-haiku-4-5", face: "#123456" }),
@@ -137,6 +137,9 @@ test("Close: close-prompt into the breakout, then the summary as a labelled draf
       label: "Draft from the Canvas specialist · not sent yet",
       name: "Canvas",
       breakoutId: "b-1",
+      // what the task's draft block marks sent / cleared on the server
+      specialistId: "c1",
+      close: "k1",
     },
   ]);
   expect(getSpecialistBreakouts()).toHaveLength(0);

@@ -392,3 +392,115 @@ def test_hosts_in_and_live_runs_under(tmp_path, monkeypatch):
     assert agent._hosts_in(str(work)) == ["r2"]
     assert sorted(r["run_id"] for r in agent._live_runs_under(str(home))) == ["r1", "r2"]
     assert [r["run_id"] for r in agent._live_runs_in(str(home))] == ["r1"]
+
+
+# ------------------------------------------------------- the summary draft ---
+def _listed(client, sid="task-1"):
+    return json.loads(client.get("/api/specialists/breakouts?parent_session_id=" + sid)[2])["breakouts"]
+
+
+@needs_git
+def test_a_close_draft_waits_on_the_server_until_sent_or_cleared(client, parent, answer):
+    """D1386: the summary draft is a fact the user would miss across a relaunch, so whether it still waits
+    above the task's composer is kept on the breakout record, not in the browser."""
+    from fused_render.specialists import breakouts
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    bid = out["breakout_id"]
+    base = f"/api/specialists/{spec.id}/breakouts/{bid}"
+    breakouts.set_session(spec.id, bid, "bs-1")
+    _, first = _post(client, base + "/closed", {"session_id": "bs-1"})
+    # the close answers its key (additive) and is recorded pending
+    assert set(first) == {"draft", "label", "note_id", "close"}
+    [close] = _listed(client)[0]["closes"]
+    assert close["draft_state"] == "pending" and close["key"] == first["close"] and close["draft"] == first["draft"]
+
+    # by key: sent; again: the same answer (idempotent); the other state: 409
+    status, rec = _post(client, base + "/draft", {"close": first["close"], "state": "sent"})
+    assert status == 200, rec
+    assert rec["id"] == bid and rec["name"] == "Canvas" and rec["closes"][0]["draft_state"] == "sent"
+    assert _post(client, base + "/draft", {"close": first["close"], "state": "sent"})[1]["closes"] == rec["closes"]
+    status, err = _post(client, base + "/draft", {"close": 0, "state": "cleared"})
+    assert status == 409 and "already sent" in err["error"]
+    assert _listed(client)[0]["closes"][0]["draft_state"] == "sent"
+
+    # a second close is pending again; by index: cleared
+    _post(client, base + "/reopen")
+    answer["text"] = "Only prose."
+    _, second = _post(client, base + "/closed", {"session_id": "bs-1"})
+    states = [c["draft_state"] for c in _listed(client)[0]["closes"]]
+    assert states == ["sent", "pending"]
+    status, rec = _post(client, base + "/draft", {"close": 1, "state": "cleared"})
+    assert status == 200 and [c["draft_state"] for c in rec["closes"]] == ["sent", "cleared"]
+    assert rec["closes"][1]["key"] == second["close"]
+
+
+@pytest.mark.parametrize("body,status", [
+    ({"close": 0, "state": "pending"}, 400),
+    ({"close": 0, "state": ""}, 400),
+    ({"close": 7, "state": "sent"}, 404),
+    ({"close": "nope", "state": "sent"}, 404),
+    ({"close": True, "state": "sent"}, 404),
+    ({"state": "sent"}, 404),
+])
+def test_draft_route_validates(client, parent, answer, body, status):
+    from fused_render.specialists import breakouts
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    bid = out["breakout_id"]
+    breakouts.set_session(spec.id, bid, "bs-1")
+    _post(client, f"/api/specialists/{spec.id}/breakouts/{bid}/closed", {"session_id": "bs-1"})
+    assert _post(client, f"/api/specialists/{spec.id}/breakouts/{bid}/draft", body)[0] == status
+    assert _post(client, f"/api/specialists/{spec.id}/breakouts/b-000000000000/draft",
+                 {"close": 0, "state": "sent"})[0] == 404
+    assert _post(client, f"/api/specialists/nope/breakouts/{bid}/draft", {"close": 0, "state": "sent"})[0] == 404
+    # the X-Fused guard, as on the sibling routes
+    st, _, _ = client.post(f"/api/specialists/{spec.id}/breakouts/{bid}/draft", {"close": 0, "state": "sent"},
+                           headers={"X-Fused": ""})
+    assert st == 403
+    assert _listed(client)[0]["closes"][0]["draft_state"] == "pending"
+
+
+def test_a_discarded_breakout_has_no_pending_draft(client, parent, answer):
+    from fused_render.specialists import breakouts
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    bid = out["breakout_id"]
+    base = f"/api/specialists/{spec.id}/breakouts/{bid}"
+    breakouts.set_session(spec.id, bid, "bs-1")
+    _post(client, base + "/closed", {"session_id": "bs-1"})
+    _post(client, base + "/reopen")
+    _post(client, base + "/discard")
+    assert [c["draft_state"] for c in _listed(client)[0]["closes"]] == ["cleared"]
+    status, err = _post(client, base + "/draft", {"close": 0, "state": "sent"})
+    assert status == 409 and "discarded" in err["error"]
+    assert _post(client, base + "/draft", {"close": 0, "state": "cleared"})[0] == 200  # idempotent
+
+
+def test_a_close_from_before_draft_states_is_not_pending(client, parent):
+    """Its draft lived in the page; the server never says it waits, and it cannot be marked."""
+    from fused_render.specialists import breakouts
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    bid = out["breakout_id"]
+    rec = breakouts.get(spec.id, bid)
+    rec["closes"] = [{"at": 1.0, "note_id": "", "draft": "Outcome: old", "key": "k0"}]
+    rec["status"] = "closed"
+    breakouts._save(rec)
+    assert "draft_state" not in _listed(client)[0]["closes"][0]
+    assert _post(client, f"/api/specialists/{spec.id}/breakouts/{bid}/draft", {"close": "k0", "state": "sent"})[0] \
+        == 409
+
+
+def test_draft_route_answers_410_for_a_deleted_specialist(client, parent):
+    from fused_render.specialists import store
+
+    spec = make_specialist("Canvas", "Fused canvases")
+    _, out = _open(client, spec, parent)
+    store.delete(spec.id)
+    assert _post(client, f"/api/specialists/{spec.id}/breakouts/{out['breakout_id']}/draft",
+                 {"close": 0, "state": "sent"})[0] == 410

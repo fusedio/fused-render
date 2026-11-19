@@ -287,8 +287,21 @@ export interface BreakoutRecord {
   session_id: string;
   status: "open" | "closed" | "discarded" | "deleted" | string;
   opened: number;
-  closes: { at: number; note_id: string; draft: string }[];
+  closes: BreakoutClose[];
   discarded: number | null;
+}
+
+/** Whether a close's summary draft still waits above the task's composer
+ *  (docs/specialists.md §5). A close recorded before draft states has none. */
+export type DraftState = "pending" | "sent" | "cleared";
+
+/** One close of a breakout: its summary draft and where that draft stands. */
+export interface BreakoutClose {
+  at: number;
+  note_id: string;
+  draft: string;
+  key?: string;
+  draft_state?: DraftState;
 }
 
 export interface BreakoutCreated {
@@ -303,6 +316,8 @@ export interface BreakoutClosed {
   draft: string;
   label: string;
   note_id: string;
+  /** The close's key: what `setBreakoutDraft` names it by. */
+  close?: string;
 }
 
 // ── routes ────────────────────────────────────────────────────────────────
@@ -366,6 +381,9 @@ export const breakoutClosed = (id: string, bid: string, sessionId: string) =>
   post<BreakoutClosed>(`${one(id)}/breakouts/${enc(bid)}/closed`, { session_id: sessionId });
 export const discardBreakout = (id: string, bid: string) =>
   post<{ ok: true }>(`${one(id)}/breakouts/${enc(bid)}/discard`);
+/** The summary draft of one close was sent to the task or cleared: the record answers. */
+export const setBreakoutDraft = (id: string, bid: string, close: string | number, state: "sent" | "cleared") =>
+  post<BreakoutRecord>(`${one(id)}/breakouts/${enc(bid)}/draft`, { close, state });
 export const reopenBreakout = (id: string, bid: string) =>
   post<{ session_id: string; start_params: Record<string, string>; home: string }>(
     `${one(id)}/breakouts/${enc(bid)}/reopen`,

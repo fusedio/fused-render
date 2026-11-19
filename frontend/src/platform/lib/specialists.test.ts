@@ -12,11 +12,14 @@ import {
   specialistsFlagStamp,
 } from "./specialists-flag";
 import {
+  addSummaryDraft,
   closeSpecialistBreakoutCard,
-  clearSummaryDraft,
   deliverComposerDraft,
   getSpecialistBreakouts,
+  loadSummaryDraft,
   readSummaryDraft,
+  resolveSummaryDraft,
+  summaryDraftFromRecords,
   resetSummaryDraftsForTests,
   summaryDraftText,
   openSpecialistBreakout,
@@ -30,6 +33,8 @@ import {
   confirmNote,
   createBreakout,
   moveGeneralNote,
+  setBreakoutDraft,
+  type BreakoutRecord,
   deleteNote,
   patchSpecialist,
   putConnections,
@@ -108,6 +113,25 @@ describe("specialist breakout cards", () => {
   });
 });
 
+function close(key: string, draft: string, draft_state: "pending" | "sent" | "cleared" | undefined, at: number) {
+  return { at, note_id: "", draft, key, ...(draft_state ? { draft_state } : {}) };
+}
+function rec(id: string, name: string, status: string, closes: BreakoutRecord["closes"]): BreakoutRecord {
+  return {
+    id,
+    specialist: `c-${name}`,
+    name,
+    origin: "hand",
+    parent: { session_id: "s1", file: "/w/proj" },
+    brief: { problem: "p", tried: "", look_at: "" },
+    session_id: "bs",
+    status,
+    opened: 0,
+    closes,
+    discarded: null,
+  };
+}
+
 describe("deliverComposerDraft", () => {
   const detail: ComposerDraftDetail = {
     sessionId: "s1",
@@ -116,23 +140,24 @@ describe("deliverComposerDraft", () => {
     label: "Draft from the Canvas specialist · not sent yet",
   };
   const plain: ComposerDraftDetail = { sessionId: "s1", file: "/w/proj", text: "Outcome: solved" };
-  const g = globalThis as unknown as { localStorage?: Storage };
-  const hadStorage = g.localStorage;
+  // The server: GET …/breakouts answers `records`; every request is noted.
+  const realFetch = globalThis.fetch;
+  let records: BreakoutRecord[] = [];
+  let calls: { url: string; method: string; body: unknown }[] = [];
   beforeAll(() => {
-    const m = new Map<string, string>();
-    g.localStorage = {
-      getItem: (k: string) => m.get(k) ?? null,
-      setItem: (k: string, v: string) => void m.set(k, String(v)),
-      removeItem: (k: string) => void m.delete(k),
-      clear: () => m.clear(),
-      key: () => null,
-      length: 0,
-    } as Storage;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method || "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      return new Response(JSON.stringify({ breakouts: records }), { status: 200 });
+    }) as typeof fetch;
   });
   afterAll(() => {
-    g.localStorage = hadStorage;
+    globalThis.fetch = realFetch;
   });
-  afterEach(() => resetSummaryDraftsForTests());
+  afterEach(() => {
+    resetSummaryDraftsForTests();
+    records = [];
+    calls = [];
+  });
 
   test("a specialist's summary becomes the task's summary draft; the composer and its saved draft are untouched", async () => {
     let events = 0;
@@ -140,7 +165,7 @@ describe("deliverComposerDraft", () => {
     window.addEventListener(COMPOSER_DRAFT_EVENT, on);
     const saves: string[] = [];
     const ok = await deliverComposerDraft(
-      { ...detail, name: "Canvas", breakoutId: "b-1" },
+      { ...detail, name: "Canvas", breakoutId: "b-1", specialistId: "c1", close: "k1" },
       (_k, t) => (saves.push(t), { ok: true }),
       () => Promise.resolve(null),
     );
@@ -148,18 +173,73 @@ describe("deliverComposerDraft", () => {
     expect(ok).toBe(true);
     expect(events).toBe(0);
     expect(saves).toEqual([]);
-    const parts = readSummaryDraft("s1", "/w/proj");
-    expect(parts.map((p) => [p.text, p.label, p.name])).toEqual([["Outcome: solved", detail.label!, "Canvas"]]);
+    // shown at once, then read back from the server (which holds it pending)
+    const parts = readSummaryDraft("s1");
+    expect(parts.map((p) => [p.text, p.label, p.name, p.close])).toEqual([["Outcome: solved", detail.label!, "Canvas", "k1"]]);
+    expect(calls.map((c) => [c.method, c.url])).toEqual([["GET", "/api/specialists/breakouts?parent_session_id=s1"]]);
   });
 
-  test("the summary draft survives a reload (localStorage) and a second summary is added below", async () => {
-    await deliverComposerDraft(detail);
-    await deliverComposerDraft({ ...detail, text: "Outcome: workaround" });
-    expect(summaryDraftText(readSummaryDraft("s1", "/w/proj"))).toBe("Outcome: solved\n\nOutcome: workaround");
-    const stored = JSON.parse(localStorage.getItem("fused:specialist-summary-drafts") || "{}") as Record<string, unknown[]>;
-    expect(Object.values(stored)[0]).toHaveLength(2);
-    clearSummaryDraft("s1", "/w/proj");
-    expect(readSummaryDraft("s1", "/w/proj")).toHaveLength(0);
+  test("no browser storage: the draft is whatever the server says is pending", async () => {
+    const g = globalThis as unknown as { localStorage?: unknown };
+    const had = g.localStorage;
+    let touched = 0;
+    g.localStorage = new Proxy({}, { get: () => (touched += 1, () => null) });
+    records = [
+      rec("b-1", "Canvas", "closed", [close("k1", "Outcome: solved", "sent", 1), close("k2", "Outcome: workaround", "pending", 3)]),
+      rec("b-2", "Data", "discarded", [close("k3", "Outcome: dropped", "pending", 2)]),
+      rec("b-3", "Data", "open", [close("k4", "Outcome: old page", undefined, 2)]),
+    ];
+    expect(await loadSummaryDraft("s1")).toBe(true);
+    expect(readSummaryDraft("s1").map((p) => [p.text, p.name, p.specialistId, p.breakoutId, p.close, p.label])).toEqual([
+      ["Outcome: workaround", "Canvas", "c-Canvas", "b-1", "k2", "Draft from the Canvas specialist · not sent yet"],
+    ]);
+    records = [];
+    await loadSummaryDraft("s1");
+    expect(readSummaryDraft("s1")).toHaveLength(0);
+    g.localStorage = had;
+    expect(touched).toBe(0);
+  });
+
+  test("a second summary is added below; Send/Clear mark each close on the server and drop it", async () => {
+    records = [rec("b-1", "Canvas", "closed", [close("k1", "Outcome: solved", "pending", 1), close("k2", "Outcome: workaround", "pending", 2)])];
+    await loadSummaryDraft("s1");
+    const parts = readSummaryDraft("s1");
+    expect(summaryDraftText(parts)).toBe("Outcome: solved\n\nOutcome: workaround");
+    expect(await resolveSummaryDraft("s1", parts, "sent")).toBe(true);
+    expect(calls.filter((c) => c.method === "POST").map((c) => [c.url, c.body])).toEqual([
+      ["/api/specialists/c-Canvas/breakouts/b-1/draft", { close: "k1", state: "sent" }],
+      ["/api/specialists/c-Canvas/breakouts/b-1/draft", { close: "k2", state: "sent" }],
+    ]);
+    expect(readSummaryDraft("s1")).toHaveLength(0);
+  });
+
+  test("a failed mark keeps that part; a gone close (404/409/410) counts as done", async () => {
+    addSummaryDraft("s1", { text: "A", label: "L", name: "Canvas", specialistId: "c1", breakoutId: "b-1", close: "k1", at: 1 });
+    addSummaryDraft("s1", { text: "B", label: "L", name: "Canvas", specialistId: "c1", breakoutId: "b-1", close: "k2", at: 2 });
+    const mark = (_id: string, _bid: string, k: string) =>
+      Promise.reject(Object.assign(new Error("x"), { status: k === "k1" ? 409 : 500 }));
+    expect(await resolveSummaryDraft("s1", readSummaryDraft("s1"), "cleared", mark)).toBe(false);
+    expect(readSummaryDraft("s1").map((p) => p.close)).toEqual(["k2"]);
+  });
+
+  test("a read that started before a local change does not bring a resolved draft back", async () => {
+    addSummaryDraft("s1", { text: "A", label: "L", name: "Canvas", specialistId: "c1", breakoutId: "b-1", close: "k1", at: 1 });
+    let answer!: (v: { breakouts: BreakoutRecord[] }) => void;
+    const slow = loadSummaryDraft("s1", () => new Promise((res) => (answer = res)));
+    await resolveSummaryDraft("s1", readSummaryDraft("s1"), "cleared", () => Promise.resolve({}));
+    answer({ breakouts: [rec("b-1", "Canvas", "closed", [close("k1", "A", "pending", 1)])] });
+    await slow;
+    expect(readSummaryDraft("s1")).toHaveLength(0);
+  });
+
+  test("setBreakoutDraft posts {close, state} to …/draft", async () => {
+    await setBreakoutDraft("c1", "b-1", 0, "cleared");
+    expect(calls[0]).toEqual({ url: "/api/specialists/c1/breakouts/b-1/draft", method: "POST", body: { close: 0, state: "cleared" } });
+  });
+
+  test("summaryDraftFromRecords tolerates junk", () => {
+    expect(summaryDraftFromRecords(null)).toEqual([]);
+    expect(summaryDraftFromRecords([rec("b-1", "Canvas", "closed", [null as never])])).toEqual([]);
   });
 
   test("plain (no label): a mounted task chat takes it; nothing is saved", async () => {
