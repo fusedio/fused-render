@@ -11,6 +11,7 @@ import { useSyncExternalStore } from "react";
 import { isLanHost } from "@platform/lib/host";
 import { api, apiHooks, isWorkspaceBusy, markBotSeen, specialistApi, type Bot, type BotEvent, type Face, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
 import { listSpecialists, type Specialist } from "@platform/lib/specialists";
+import { readSpecialistsFlag, specialistsEnabledNow } from "@platform/lib/specialists-flag";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
 import { landingBot } from "../lib/landing";
 import { botHasUnread } from "@platform/lib/botsPulse";
@@ -536,7 +537,8 @@ export const setBuildsChip = (patch: Partial<BuildsChip>): void => commit({ buil
 // ------------------------------------------------------------------ specialists ----
 // The page lists specialists (docs/specialists-v2.md) as rows of their own kind: read from /api/specialists at most
 // every SPECIALISTS_MS and right after a specialist action, never off the page or on the phone. The bots backend
-// does not know them. With the switch off the route is a 404, so there are no rows.
+// does not know them. With the switch off nothing is asked; the first poll waits for the switch, so a fresh load of
+// /bots/<specialist> finds its row.
 const SPECIALISTS_MS = 10_000;
 let specRows: Bot[] = [], specAt = 0;
 const asBot = (s: Specialist): Bot => ({
@@ -544,7 +546,10 @@ const asBot = (s: Specialist): Bot => ({
   model: "", effort: "", face: s.face as Face | null, created: s.last?.at || 0,
 });
 async function specialistBots(): Promise<Bot[]> {
-  if (isLanHost() || Date.now() - specAt < SPECIALISTS_MS) return specRows;
+  if (isLanHost()) return [];
+  await readSpecialistsFlag();
+  if (!specialistsEnabledNow()) { specAt = 0; return []; }
+  if (Date.now() - specAt < SPECIALISTS_MS) return specRows;
   specAt = Date.now();
   specRows = await listSpecialists().then((r) => r.map(asBot), () => []);
   return specRows;

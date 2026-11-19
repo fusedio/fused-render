@@ -47,8 +47,8 @@ def card(monkeypatch, tmp_path):
 
 
 def test_reads_and_sends_are_two_servers(ran):
-    reads = services.mcp_tools(SPEC, "specialist_services")
-    sends = services.mcp_tools(SPEC, "specialist_sends")
+    reads = services.mcp_tools("specialist_services")
+    sends = services.mcp_tools("specialist_sends")
     assert [t["name"] for t in reads] == ["notion_search"] and reads[0]["description"].startswith("[")
     assert [t["name"] for t in sends] == ["notion_create_page"]
     assert services.call(SPEC, "specialist_services", "notion_create_page", {})["isError"]

@@ -176,8 +176,8 @@ def _session(spec_id: str, token: str | None, server: str):
 @_handled
 def specialists_session_tools(spec_id: str, server: str = Query(""),
                                x_specialist_token: str | None = Header(default=None)):
-    s, refused = _session(spec_id, x_specialist_token, server)
-    return refused or {"tools": services.mcp_tools(s, server)}
+    _, refused = _session(spec_id, x_specialist_token, server)
+    return refused or {"tools": services.mcp_tools(server)}
 
 
 @router.post(P + "/{spec_id}/session-tool")

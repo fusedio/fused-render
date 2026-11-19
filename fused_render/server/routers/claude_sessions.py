@@ -104,7 +104,7 @@ def _session_cwd(jsonl_path: str) -> str | None:
 
 
 def _specialist_home(cwd: str) -> bool:
-    """A specialist's home (docs/specialists.md): its main chat and breakouts run there, so it would lead every
+    """A specialist's home (docs/specialists-v2.md): its main chat and breakouts run there, so it would lead every
     "recent folders" list, and a task started there is refused. Same seam as the Tasks list's
     `_specialist_session`: read off `sys.modules`, so with specialists never loaded (flag off) it is one dict
     lookup and nothing changes."""

@@ -104,7 +104,7 @@ def test_the_session_door_needs_the_token(client, monkeypatch):
     s = make_specialist()
     token = launch.new_token(s.id)
     calls = []
-    monkeypatch.setattr(services, "mcp_tools", lambda spec, server: [{"name": f"{server}-tool"}])
+    monkeypatch.setattr(services, "mcp_tools", lambda server: [{"name": f"{server}-tool"}])
     monkeypatch.setattr(services, "call", lambda spec, server, name, args:
                         calls.append((spec.id, server, name, args)) or {"content": [], "isError": False})
     path = f"/api/specialists/{s.id}/session-tools?server=specialist_sends"

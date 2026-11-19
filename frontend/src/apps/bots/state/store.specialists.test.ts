@@ -8,6 +8,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 const { pollOnce, getState, openBot, setState } = await import("./store");
 const { setBotsRoot } = await import("../lib/root");
 const { menuItems } = await import("../components/menuIcons");
+const { publishSpecialistsEnabled, resetSpecialistsFlagForTests } = await import("@platform/lib/specialists-flag");
 
 const realFetch = globalThis.fetch;
 const calls: string[] = [];
@@ -21,7 +22,7 @@ const bots = { ts: 1, usage: null, imessage: null, bots: [{ id: "b1", name: "Hel
 };
 beforeEach(() => { calls.length = 0; });
 // The store is one module for every suite in the run: leave it as found.
-afterAll(() => { setBotsRoot(null); setState({ bots: [], sel: null, events: {}, cursors: {}, seen: {} }); (globalThis as { fetch: unknown }).fetch = realFetch; });
+afterAll(() => { setBotsRoot(null); resetSpecialistsFlagForTests(); setState({ bots: [], sel: null, events: {}, cursors: {}, seen: {} }); (globalThis as { fetch: unknown }).fetch = realFetch; });
 
 describe("specialist rows", () => {
   test("off the page: the bots only, and no specialists request", async () => {
@@ -30,8 +31,17 @@ describe("specialist rows", () => {
     expect(calls.some((c) => c.includes("/api/specialists"))).toBe(false);
   });
 
-  test("on the page: appended after the bots as their own kind; opening one marks it seen on its own route only", async () => {
+  test("on the page with the switch off: no specialists request", async () => {
     setBotsRoot({ isConnected: true } as HTMLElement);
+    publishSpecialistsEnabled(false);
+    await pollOnce();
+    expect(getState().bots.map((b) => b.id)).toEqual(["b1"]);
+    expect(calls.some((c) => c.includes("/api/specialists"))).toBe(false);
+  });
+
+  test("on the page: appended after the bots as their own kind; opening one marks it seen on its own route only", async () => {
+    publishSpecialistsEnabled(true);
+    setState({ bots: [] });
     await pollOnce();
     const row = getState().bots.find((b) => b.id === "canvas");
     expect(getState().bots.map((b) => b.id)).toEqual(["b1", "canvas"]);

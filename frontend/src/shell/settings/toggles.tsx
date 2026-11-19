@@ -84,8 +84,8 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Specialists (docs/specialists.md): the nav entry, the page and the task-side
-// tools. Published so the sidebar beside this page shows or drops its row at once.
+// Specialists (docs/specialists-v2.md): their Bots rows, the task tools and the
+// breakout's "With". Published so an open page shows or drops them at once.
 export function SpecialistsControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow

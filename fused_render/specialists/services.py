@@ -63,7 +63,7 @@ def _schema(rec) -> dict:
     return {"type": "object", "properties": props, **({"required": req} if req else {})}
 
 
-def mcp_tools(spec, server: str) -> list[dict]:
+def mcp_tools(server: str) -> list[dict]:
     """One server's tools as MCP definitions; each description names its service."""
     verb = "sends" if server == "specialist_sends" else "reads"
     return [{"name": name, "description": f"[{title}, {verb}] {rec.description or ''}".strip()[:1024],

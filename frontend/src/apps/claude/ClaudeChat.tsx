@@ -4555,8 +4555,10 @@ function ChatBody(props: ChatBodyProps) {
         const row = a[1] === "allow" ? controller.getState().permissions.find((p) => p.id === a[0]) : undefined;
         if (row?.tool === SPECIALIST_BREAKOUT_TOOL) {
           const { specialist, reason } = row.input as { specialist?: string; reason?: string };
+          // By id, or by name ignoring case and spacing, as the server's `store.find`.
+          const key = (specialist || "").split(/\s+/).filter(Boolean).join(" ");
           void listSpecialists().then((all) => {
-            const s = all.find((x) => x.name === specialist);
+            const s = all.find((x) => x.id === key || x.name.toLowerCase() === key.toLowerCase());
             const turns = controller.getState().turns;
             const last = turns[turns.length - 1];
             if (s && last) openBreakoutFor(exchangeKeys(turns, last.key), reason, { id: s.id, name: s.name, home: s.home });

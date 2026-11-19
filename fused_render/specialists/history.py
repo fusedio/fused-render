@@ -147,8 +147,16 @@ def changes(home: str) -> list[dict]:
 
 
 def diff(home: str, sha: str) -> str | None:
-    """That commit's diff, or None for anything that is not one of the home's commits."""
+    """That commit's hunks over memory and skills (no file headers), or None for anything that is not one of the
+    home's commits."""
     if not re.fullmatch(r"[0-9a-f]{7,40}", sha or "") or not available():
         return None
-    res = _git(home, "show", "--format=", "--no-color", "--no-ext-diff", sha, "--")
-    return res.stdout if res.returncode == 0 else None
+    res = _git(home, "show", "--format=", "--no-color", "--no-ext-diff", sha, "--", *KNOWLEDGE)
+    if res.returncode:
+        return None
+    out, hunk = [], False
+    for ln in res.stdout.splitlines(keepends=True):
+        hunk = ln.startswith("@@") or (hunk and not ln.startswith("diff --git"))
+        if hunk:
+            out.append(ln)
+    return "".join(out)

@@ -25,7 +25,8 @@ function set(next: boolean) {
   for (const listener of [...listeners]) listener(next);
 }
 
-function read(): Promise<void> {
+/** The first answer (or the one published since): what `specialistsEnabledNow` reads once it settles. */
+export function readSpecialistsFlag(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
   reading = getPrefsShared()
@@ -72,7 +73,7 @@ export function useSpecialistsEnabled(): boolean {
   useEffect(() => {
     listeners.add(setCurrent);
     setCurrent(enabled);
-    void read();
+    void readSpecialistsFlag();
     return () => {
       listeners.delete(setCurrent);
     };

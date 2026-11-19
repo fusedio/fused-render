@@ -71,7 +71,10 @@ def test_changes_lists_memory_and_skills_only_and_hand_edits(transcript):
     (row,) = history.changes(s.home)  # neither "Created" nor the inbox-only commit
     assert row["label"] == "You edited memory" and row["at"] > 0
     diff = history.diff(s.home, row["sha"])
-    assert "+By hand." in diff and "skills/x/SKILL.md" in diff
+    # Hunks only, both files, no file headers: the pane renders every line it gets.
+    assert "+By hand." in diff and "+name: x" in diff
+    assert all(ln.startswith(("@@", " ", "+", "-", "\\")) and not ln.startswith(("+++", "---"))
+               for ln in diff.splitlines())
     assert history.diff(s.home, "not-a-sha") is None and history.diff(s.home, "0" * 40) is None
 
 
