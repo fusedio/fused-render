@@ -245,7 +245,7 @@ export function PreviewPane() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
         </button>
         <span style={{ flex: 1 }} />
-        <button id="pmore" className="ptog" title={b?.specialist ? "Settings, update now, delete" : expert ? "Settings, export, pin, hide, delete" : "Open live view, settings, routines, skills, clone, delete"} disabled={!b} onClick={onMore}>
+        <button id="pmore" className="ptog" title={b?.specialist ? "Settings, delete" : expert ? "Settings, export, pin, hide, delete" : "Open live view, settings, routines, skills, clone, delete"} disabled={!b} onClick={onMore}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
         </button>
       </header>

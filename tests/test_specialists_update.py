@@ -144,3 +144,18 @@ def test_a_turn_the_watch_gave_up_on_is_stopped_before_the_restore(world, monkey
     monkeypatch.setattr(history, "restore", lambda home: events.append(("restore", home)))
     WATCH(s.home, "run1")
     assert events == [("stop", "run1"), ("restore", s.home)]
+
+
+def test_a_run_the_server_lost_is_settled_as_failed(world, monkeypatch):
+    s = make_specialist()
+    note = notes.add(s, "t", 'Note from task "x"', "x")
+    chat.change(s.home, lambda d: d.update(update={"session": "learn1", "files": [note], "lines": {}}))
+    with open(os.path.join(s.home, "memory.md"), "w") as f:
+        f.write("Half done.\n")
+    monkeypatch.setattr(store, "live_runs", lambda home: [{"run_id": "run1"}])
+    update.settle(s)  # still going: left alone
+    assert chat.load(s.home)["update"] is not None
+    monkeypatch.setattr(store, "live_runs", lambda home: [])
+    update.settle(s)  # gone after a restart: as a failed run
+    assert open(os.path.join(s.home, "memory.md")).read() == "" and [n["name"] for n in notes.list(s)] == [note]
+    assert chat.load(s.home)["update"] is None

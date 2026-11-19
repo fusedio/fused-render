@@ -179,7 +179,8 @@ def after_turn(home: str, session_id: str) -> None:
                     rec.update(line=up["lines"].get(sid, rec["line"]), file="")
             d["update"] = None
         chat.change(home, fn)
-        answer = "\n\n".join(m["text"] for m in msgs if m["role"] == "assistant")
+        # Its final message only: earlier text blocks are its working notes.
+        answer = next((m["text"] for m in reversed(msgs) if m["role"] == "assistant"), "")
         commit(home, "Update\n\n" + answer if answer else "Update")
         return
     users = [m for m in msgs if m["role"] == "user"]

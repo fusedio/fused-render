@@ -50,7 +50,8 @@ def _fields(body) -> dict:
 
 def _row(s: store.Specialist) -> dict:
     st = chat.load(s.home)
-    last = chat.last(s.home, st["main"])
+    # After Clear, the folded chat's last message keeps the row's place.
+    last = chat.last(s.home, st["main"] or (st["folded"][-1]["session_id"] if st["folded"] else ""))
     return {**s.manifest(), "home": s.home, "working": bool(store.live_runs(s.home)),
             "last": {"text": last["text"], "at": last["at"]} if last else None,
             # Learning: a run in progress, when the last one ended, and whether one ended since the user last

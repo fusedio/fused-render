@@ -55,7 +55,8 @@ def test_a_learning_run_removes_only_its_files_and_is_listed_even_when_it_change
     history.commit(s.home, "Notes waiting", ["inbox"])
     _edit(s.home, "inbox/late.md", "arrived during the run")
     chat.change(s.home, lambda d: d.update(update={"session": "sid", "files": ["a.md", "b.md"], "lines": {}}))
-    transcript([_row("user", update.PROMPT), _row("assistant", [{"type": "text", "text": "Nothing new."}])])
+    transcript([_row("user", update.PROMPT), _row("assistant", [{"type": "text", "text": "Start a reader."}]),
+                _row("assistant", [{"type": "text", "text": "Nothing new."}])])  # the final message only
     history.after_turn(s.home, "sid")
     assert sorted(os.listdir(os.path.join(s.home, "inbox"))) == ["late.md"] and chat.load(s.home)["update"] is None
     assert sorted(os.listdir(os.path.join(s.home, "inbox-archive"))) == ["a.md", "b.md"]  # kept, not deleted

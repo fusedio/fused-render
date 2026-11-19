@@ -19,6 +19,7 @@ def tick() -> None:
     now = time.time()
     for spec in store.all():
         try:
+            update.settle(spec)
             if update.due(spec, now):
                 update.start(spec)
         except Exception:  # noqa: BLE001 — one specialist's failure must not stop the others'

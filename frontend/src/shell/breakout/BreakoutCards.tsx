@@ -206,7 +206,7 @@ export function Card({
         return;
       }
       // A specialist breakout can act (a message sent with the user's approval): the task must know who wrote this.
-      const byline = card.specialist ? `From the ${card.specialist.name} specialist's breakout (it can act with your approval):\n\n` : "";
+      const byline = card.specialist ? `From the ${card.specialist.name} specialist's breakout (it can act as well as research):\n\n` : "";
       void sendBackBreakout(card.id, byline + buildHandoffDraft(slice)).then((ok) => {
         if (!ok) setError("Could not hand the summary back. The card stays open.");
       });
