@@ -543,6 +543,17 @@ const ENTRIES = [
     description: "One header for every task view: the Tasks page panel, the chat panes, the rail cards and the New task card.",
     keywords: "task header unified head close back prev next status star open kebab card panel rail",
   },
+  // FREE PINS ON THE RAIL (shell/claude-rail/rail-free-pins-flag): a child of
+  // the unified header — the pin icon only exists with it on.
+  {
+    id: "rail-free-pins",
+    group: "features",
+    section: "Sidebar",
+    label: "Free rail pins",
+    description: "A pinned rail window keeps the exact place and size it had when you pinned it, and never moves or resizes on its own. Other chats open in a second window beside the rail, so up to four windows can stand at once: one pinned and one not, for the list and for favourites. Needs Unified task header on.",
+    keywords: "pin pinned window rail float overlap move resize four windows push task favourite bot",
+    child: true,
+  },
   // EXPERTS (docs/experts.md §17; owner, 2026-11-19): off by default. Off
   // hides every expert bot and stops what runs for them; their memory stays
   // on disk and is there again when this is turned back on.
