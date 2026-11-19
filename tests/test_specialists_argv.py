@@ -212,6 +212,14 @@ def test_main_passes_main_and_breakout_keys_but_never_an_update(agent, monkeypat
     assert seen == ["canvas:main", "canvas:breakout", ""]
 
 
+def test_a_message_never_joins_an_update(agent):
+    run_dir = os.path.join(agent.RUNS, "upd1")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "specialist.json"), "w") as fh:
+        json.dump({"kind": "update"}, fh)
+    assert "updating" in agent._send("upd1", "hello")["error"]
+
+
 # ------------------------------------------------------------------ _decide ---
 @pytest.mark.parametrize("tool, granted", [("mcp__specialist_sends__notion_create_page", True),
                                            ("mcp__specialist_services__notion_search", False), ("Bash", False)])

@@ -53,7 +53,7 @@ def _row(s: store.Specialist) -> dict:
     last = chat.last(s.home, st["main"])
     return {**s.manifest(), "home": s.home, "working": bool(store.live_runs(s.home)),
             "last": {"text": last["text"], "at": last["at"]} if last else None,
-            "new": bool(last and last["role"] == "assistant" and last["at"] > st["seen"])}
+            "new": bool(last and last["at"] > st["seen"])}
 
 
 @router.get(P)

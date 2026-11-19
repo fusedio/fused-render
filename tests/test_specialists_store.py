@@ -125,3 +125,16 @@ def test_seed_installs_each_shipped_specialist_once_when_canvases_is_on_too(monk
     store.delete(canvas.id)
     seed.seed()
     assert [s.name for s in store.all()] == ["Data"]  # a deleted one stays deleted
+
+
+def test_seed_leaves_a_name_the_user_took(monkeypatch, tmp_path):
+    from fused_render.shell import prefs
+
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(tmp_path / "canvas"))
+    monkeypatch.setattr(prefs, "canvases_enabled", lambda: True)
+    mine = make_specialist("Canvas", "my own canvases")
+    seed.seed()
+    assert sorted(s.about for s in store.all() if s.name == "Canvas") == [mine.about]
+    assert {s.name for s in store.all()} == {"Canvas", "Data"}
+    seed.seed()  # marked done: no retry
+    assert len(store.all()) == 2

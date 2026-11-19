@@ -94,5 +94,5 @@ def breakout(body=Body(None), x_fused: str | None = Header(None)):
     spec, who, _ = _call(body, x_fused, ("reason", REASON_MAX))
     if who is None:
         return spec
-    return {"text": f"The user opened a breakout with the {spec.name} specialist on this. Leave that problem to "
+    return {"text": f"The user approved a breakout with the {spec.name} specialist on this. Leave that problem to "
                     "it and carry on with the rest of the task; the user will bring back what it finds."}

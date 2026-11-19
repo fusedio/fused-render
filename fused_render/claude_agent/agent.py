@@ -8423,6 +8423,10 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # Bounded: the stop's own wait can run ~40 s, past the request budget.
     if not _join_pending_stop(run_dir, timeout=_SEND_JOIN_WAIT_SEC):
         return {"error": "stop in progress — try again in a moment"}
+    # A specialist's update runs unattended (no cards, its own servers): a
+    # message must not join it. The page hands the words back to send after.
+    if (_read_run_json(run_dir, _SPECIALIST_SPEC_FILE) or {}).get("kind") == "update":
+        return {"error": "the specialist is updating its memory; send this when it has finished"}
     try:
         with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
             host = json.load(fh)

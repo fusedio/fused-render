@@ -147,8 +147,9 @@ nothing fetches the guidance for it.
   specialist (`- <name>: <about>`), descriptions framed as data.
 - Note: writes `inbox/<…>.md` titled `Note from task "<first words of the task>"` and answers "Sent to the <name>
   specialist. It reads its notes at its next update."
-- Breakout: "The user opened a breakout with the <name> specialist on this. Leave that problem to it and carry on
-  …". The tool runs only after the user allowed the card; opening the breakout itself is the page's job (§11).
+- Breakout: "The user approved a breakout with the <name> specialist on this. Leave that problem to it and carry on
+  …". The tool runs only after the user allowed the card, which asks every time, like a send (§8); opening the
+  breakout itself is the page's job (§11).
 - An unknown specialist is a 404 whose sentence names the ones there are; a missing or too long field is a 400.
 
 Every call that names a specialist records the calling task (`experts.learn.caller(run_id)` resolves the run to its
@@ -209,10 +210,15 @@ the main chat: that is the one chat message. The chat draws the prompt as a quie
 `Turn.tsx`), and the Bots row's preview shows "Update" for it (`chat.last`).
 
 **On failure** (`update._watch`, a daemon thread that polls the run to its end through
-`claude_spawn.record_session_when_ready`): if `update_files` is still set, the turn did not end cleanly (an error,
-a Stop, or no end within that poll's hour), so `history.restore` puts `memory.md` and `.claude/skills` back to the
-last commit and `update_files` is cleared. Nothing is committed, the notes stay, and the app posts no message of its
+`claude_spawn.record_session_when_ready`): a turn still going when that poll gives up (an hour) is stopped first.
+Then, if `update_files` is still set, the turn did not end cleanly (an error, a Stop, or that hour), so
+`history.restore` puts `memory.md` and `.claude/skills` back to the last commit and `update_files` is cleared. Nothing is committed, the notes stay, and the app posts no message of its
 own. `last_update` was already set, so the timer tries again 24 h later.
+
+**A message typed while the update runs** is refused (`agent._send` refuses a follow-up into an update run): the
+chat shows "Could not send: the specialist is updating its memory; send this when it has finished", so it never runs
+under the update's unattended rules. Sent after the update, it starts a new session host with the main chat's own
+launch spec and settings.
 
 ## 7. History and the Changes list
 
@@ -253,7 +259,8 @@ bots' roster (`bots/apptools.registry()`), with the tokens staying in the server
   starts `[<service>, reads]` or `[<service>, sends]`. The MCP timeout is the permission wait plus 60 s.
 - **A send always asks.** Three things keep it true. The launch spec's ask rule `mcp__specialist_sends` makes the
   CLI raise the app's approval card for every send in every permission mode. The permission server never answers a
-  send from the chat's "always approve" list. And the server runs a send only by spending a grant:
+  send, or a task's `specialist_breakout`, from the chat's "always approve" list (`permission_server.ALWAYS_ASK`);
+  neither card offers "Always approve". And the server runs a send only by spending a grant:
   `agent._decide`, when the user allows a card for `mcp__specialist_sends__*`, calls `services.record_grant` before
   it writes the decision; `services.call` takes one unspent grant for that specialist and tool (valid 120 s, each
   card grants once) or answers "This send needs the user's approval card." A session that calls the route itself,
@@ -276,7 +283,8 @@ the two kinds on one subject:
 **When they are created** (`seed.seed`): only while both Specialists and Canvases are on (their subjects need the
 S3 tools and canvas copies): at server startup, and when either switch is turned on. Each key is installed once;
 `.state/seeded.json` lists the keys done, so one the user deletes stays deleted and a key shipped later is still
-installed. The skills are the expert's skill files turned into Claude Code skills (`seed._skill`): the `# Title`
+installed. A shipped specialist whose name the user has already given one of their own is marked done and not
+installed, so a taken name never stops the server starting. The skills are the expert's skill files turned into Claude Code skills (`seed._skill`): the `# Title`
 and `trigger:` line become the description "<title>. Use when the work involves: <trigger words>", and "this
 expert" becomes "this specialist". Later changes to the shipped files or the expert's skills do not reach an
 installed specialist.
@@ -394,7 +402,5 @@ The two kinds solve nearly the same problem and are kept apart on purpose, to co
 - Nothing enforces that a breakout leaves memory alone, or that memory stays plain sentences: both are prompt text.
 - No limit on the inbox, on one inbox file or on `memory.md`, and no compaction. Inbox files are committed ("Notes
   waiting") before each update, so task excerpts stay in the home's git history.
-- An update still running after the hour `record_session_when_ready` polls is treated as failed: memory and skills
-  are restored under it.
 - No export, clone or import of a specialist; no editing skills from the pane (ask the specialist).
 - Only Claude runs a specialist, and only Claude tasks get its tools; plain breakouts get none.

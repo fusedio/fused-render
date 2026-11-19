@@ -165,7 +165,7 @@ def after_turn(home: str, session_id: str) -> None:
     if not users:
         return
     prompt = msgs[users[-1]]["text"]
-    if prompt.startswith(chat.UPDATE_TAG):
+    if prompt.startswith("<specialist-update>"):  # update.PROMPT
         answer = "\n\n".join(m["text"] for m in msgs[users[-1] + 1:])
         for name in chat.load(home)["update_files"]:
             try:

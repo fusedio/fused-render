@@ -135,13 +135,13 @@ def task_title(path: str) -> str:
     return words(next((m["text"] for m in msgs if m["role"] == "user"), "")) or "a task"
 
 
-UPDATE_TAG = "<specialist-update>"
 _LAST: dict[str, tuple[int, dict | None]] = {}
 
 
 def last(home: str, session_id: str | None) -> dict | None:
-    """The main chat's last message, `{role, text, at}`, re-read only when the transcript grew (the Bots list asks
-    every few seconds)."""
+    """The main chat's last reply, `{role, text, at}` (as a bot's row shows its bot's last message: the user's own
+    lines carry the chat's wire tags), re-read only when the transcript grew (the Bots list asks every few
+    seconds)."""
     if not session_id:
         return None
     path = transcript(home, session_id)
@@ -152,8 +152,5 @@ def last(home: str, session_id: str | None) -> dict | None:
     hit = _LAST.get(path)
     if hit is None or hit[0] != size:
         msgs, _ = messages(path)
-        m = msgs[-1] if msgs else None
-        if m and m["text"].startswith(UPDATE_TAG):  # update.PROMPT, shown as the chat shows it
-            m = {**m, "text": "Update"}
-        hit = _LAST[path] = (size, m)
+        hit = _LAST[path] = (size, next((m for m in reversed(msgs) if m["role"] == "assistant"), None))
     return hit[1]

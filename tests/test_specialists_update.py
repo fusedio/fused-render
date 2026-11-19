@@ -127,3 +127,16 @@ def test_a_failed_update_changes_nothing(world):
     WATCH(s.home, "run1")  # the turn ended without its clean commit
     assert open(os.path.join(s.home, "memory.md")).read() == "" and [n["name"] for n in notes.list(s)] == [note]
     assert chat.load(s.home)["update_files"] == [] and s.home not in update._RUNNING
+
+
+def test_a_turn_the_watch_gave_up_on_is_stopped_before_the_restore(world, monkeypatch):
+    s = make_specialist()
+    chat.change(s.home, lambda d: d.update(update_files=["n.md"]))
+    events = []
+    agent = claude_spawn.load_agent()
+    monkeypatch.setattr(agent, "_cancel_run", lambda run_id, interrupt_first=True: events.append(("stop", run_id)),
+                        raising=False)
+    monkeypatch.setattr(store, "live_runs", lambda home: [{"run_id": "run1"}])  # still going after the hour
+    monkeypatch.setattr(history, "restore", lambda home: events.append(("restore", home)))
+    WATCH(s.home, "run1")
+    assert events == [("stop", "run1"), ("restore", s.home)]

@@ -144,9 +144,10 @@ def approve(monkeypatch, tmp_path):
     return lambda tool: json.loads(ps._handle_approve({"tool_name": tool, "input": {}})["content"][0]["text"])
 
 
-def test_a_send_always_raises_its_card(approve, tmp_path):
+def test_a_send_and_a_breakout_always_raise_their_card(approve, tmp_path):
     assert approve("Bash")["behavior"] == "allow"
     assert approve("mcp__specialist_sends__notion_create_page")["message"] == "parked"
+    assert approve("mcp__fused_render__specialist_breakout")["message"] == "parked"
     assert approve("mcp__specialist_services__notion_search")["behavior"] == "allow"
 
 

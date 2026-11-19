@@ -109,9 +109,13 @@ def start(spec: store.Specialist) -> bool:
 def _watch(home: str, run_id: str) -> None:
     """Poll the run to its end (a clean end commits it and clears `update_files`), then end its host so the user's
     next message starts the main chat under its own launch spec. A turn that failed or was stopped changes nothing:
-    memory and skills go back to the last commit and the inbox stays for the next update."""
+    memory and skills go back to the last commit and the inbox stays for the next update. A turn still going when
+the poll gives up (an hour) is stopped first."""
     try:
-        claude_spawn.record_session_when_ready(claude_spawn.load_agent(), run_id)
+        agent = claude_spawn.load_agent()
+        claude_spawn.record_session_when_ready(agent, run_id)
+        if any(r["run_id"] == run_id for r in store.live_runs(home)):
+            agent._cancel_run(run_id, interrupt_first=False)  # the poll gave up on a turn still going: stop it
         store.end_idle_hosts(home)
         if chat.load(home)["update_files"]:
             history.restore(home)

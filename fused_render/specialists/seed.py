@@ -3,7 +3,8 @@ experts (`experts/shipped/<expert>/`, named by `specialist.json`'s `expert`), fo
 
 Each is installed once, while Specialists and Canvases are both on: their subjects are canvases and the bucket the
 S3 tools read, which the Canvases switch gates. `<root>/.state/seeded.json` lists the keys installed, so one the
-user deletes stays deleted and one shipped later is still installed. Its skills are the expert's (`# Title`, then a
+user deletes stays deleted and one shipped later is still installed; one whose name the user already gave a
+specialist of their own is marked done and not installed. Its skills are the expert's (`# Title`, then a
 `trigger:` line) turned into Claude Code skills whose description is the title and the trigger words. `"folder":
 "canvases"` gives it the canvas copies folder, the one the shipped experts are granted, so a task in a canvas copy
 gets its guidance by itself.
@@ -40,6 +41,10 @@ def seed() -> None:
     done = hm.read_json(marker, [])
     for key in sorted(set(os.listdir(SHIPPED)) - set(done)):
         man = hm.read_json(os.path.join(SHIPPED, key, "specialist.json"), {})
+        done.append(key)
+        if store.find(man["name"]):  # the user has one by that name: theirs stands
+            hm.write_json(marker, done)
+            continue
         skills_dir = os.path.join(EXPERTS, man["expert"], "skills")
         skills = {n[:-3]: _skill(hm.read_text(os.path.join(skills_dir, n)), n[:-3])
                   for n in sorted(os.listdir(skills_dir)) if n.endswith(".md")}
@@ -48,5 +53,4 @@ def seed() -> None:
             os.makedirs(folder, exist_ok=True)  # where the canvas copies go; none may be cloned yet
         store.create(man["name"], man["about"], folder, man["face"],
                      subject=hm.read_text(os.path.join(SHIPPED, key, "subject.md")), skills=skills)
-        done.append(key)
         hm.write_json(marker, done)
