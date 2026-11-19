@@ -13,6 +13,7 @@ import {
   putTaskFavouritesEnabled,
   putTaskHeadUnifiedEnabled,
   putTaskIconsEnabled,
+  putExpertsEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -358,6 +359,26 @@ export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
         on
           ? "On — a favourite wears its own small picture in place of the status ring, in the ring's colour; click it while editing the title to choose another."
           : "Off — the plain status ring."
+      }
+      onChange={onChange}
+    />
+  );
+}
+
+// EXPERTS (docs/experts.md §17): no publish — the server leaves experts out
+// of every bot listing while this is off, so the Bots page and the sidebar
+// follow on their next poll. Off hides them; nothing is deleted.
+export function ExpertsControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.experts?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="experts"
+      checked={on}
+      put={putExpertsEnabled}
+      status={
+        on
+          ? "On — expert bots are listed on the Bots page and task sessions can consult them."
+          : "Off — expert bots are hidden. Their memory is kept and comes back when you turn this on."
       }
       onChange={onChange}
     />

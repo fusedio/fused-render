@@ -17,6 +17,20 @@ def j(resp):
     return status, json.loads(body or b"{}")
 
 
+def set_flag(on: bool) -> None:
+    """The Experts flag (`experts_enabled` in prefs.json, docs/experts.md §17), as the Settings switch stores it."""
+    from fused_render.shell import prefs, storage
+    data = prefs.read_prefs()
+    data["experts_enabled"] = on
+    storage.write_json(prefs._path(), data)
+
+
+@pytest.fixture(autouse=True)
+def experts_on(app_home):
+    """Every test here runs with experts on unless it turns them off (the flag is off by default)."""
+    set_flag(True)
+
+
 @pytest.fixture
 def expert(monkeypatch):
     monkeypatch.setattr(learn, "caller", lambda run_id: {"run_id": run_id, "session_id": "s-" + run_id,
@@ -403,3 +417,81 @@ def test_an_empty_memory_member_replaces_the_experts_memory(expert, tmp_path):
                                                            (".fused/memory.md", b"")], kind="bot")
     botfile.install(path, apps=[], memory=True, mode="update", target=expert.id)
     assert store.memory(expert) == store.EMPTY_MEMORY and not os.path.exists(store.archive_path(expert))
+
+
+# -- the Experts flag (docs/experts.md §17) -----------------------------------------------------------------------
+
+def _listed(client, path):
+    st, out = j(client.get(path))
+    assert st == 200, out
+    return [b["id"] for b in out["bots"]]
+
+
+def test_flag_off_hides_experts_and_on_brings_them_back_with_their_memory(client, expert):
+    plain = registry.create(name="Plain Bot")
+    with open(store.memory_path(expert), "a", encoding="utf-8") as f:
+        f.write("- [3 · 2026-11-18] Kept across the flag.\n")
+    memory = store.memory(expert)
+    for path in ("/api/bots", "/api/bots/pulse", "/api/bots/roster"):
+        assert expert.id in _listed(client, path) and plain.id in _listed(client, path)
+
+    set_flag(False)
+    for path in ("/api/bots", "/api/bots/pulse", "/api/bots/roster"):
+        ids = _listed(client, path)
+        assert expert.id not in ids and plain.id in ids, path
+    # The task sessions' doors find nothing; the timer does nothing.
+    st, out = j(client.get("/api/experts"))
+    assert st == 200 and out == []
+    for path, body in (("/api/experts/context", {"expert": expert.id, "run_id": "r1"}),
+                       ("/api/experts/ask", {"expert": expert.id, "question": "q?", "run_id": "r1"})):
+        st, out = j(client.post(path, body))
+        assert st == 404 and "turned off" in out["error"], out
+    assert learn._load(expert)["sessions"] == {}  # no use recorded
+    from fused_render.experts import scheduler
+    tick = scheduler.tick()
+    assert tick["ran"] is False and "flag" in tick["skipped"]
+    # Nothing runs one: a send to it, or a new one.
+    st, out = j(client.post(f"/api/bots/{expert.id}/send", {"text": "hi"}))
+    assert st == 400 and "Experimental flags" in out["error"], out
+    st, out = j(client.post("/api/bots", {"kind": "expert", "name": "Another"}))
+    assert st == 400 and "Experimental flags" in out["error"], out
+    # Nothing was deleted.
+    assert os.path.isdir(store.expert_dir(expert)) and store.memory(expert) == memory
+
+    set_flag(True)
+    for path in ("/api/bots", "/api/bots/pulse", "/api/bots/roster"):
+        assert expert.id in _listed(client, path)
+    assert store.memory(expert) == memory
+    st, out = j(client.get("/api/experts"))
+    assert [x["id"] for x in out] == [expert.id]
+
+
+def test_flag_off_refuses_an_expert_package(tmp_path):
+    from fused_render.bots import botfile
+    set_flag(False)
+    pkg = _expert_package(tmp_path / "x.fusedbot", {"name": "Imported", "kind": "expert", "model": "sonnet"})
+    with pytest.raises(botfile.BotFileError, match="experts are turned off"):
+        botfile.install(pkg, apps=[], memory=True)
+    assert store.all_experts() == []
+
+
+def test_the_shipped_seed_waits_for_the_flag(monkeypatch, tmp_path):
+    from fused_render.bots import migrate_v3
+    stamp = tmp_path / "stamp"
+    stamp.write_text("{}")
+    monkeypatch.setattr(migrate_v3, "stamp_path", lambda: str(stamp))
+    monkeypatch.setattr(registry, "_legacy_bots_remain", lambda: False)
+    calls = []
+    monkeypatch.setattr(seed, "seed", lambda: calls.append(1) or [])
+    monkeypatch.setitem(registry._OWNER, "ws_ready", True)
+    monkeypatch.setitem(registry._OWNER, "experts_seeded", False)
+
+    set_flag(False)
+    registry._seed_experts()  # the startup step
+    registry._seed_experts_once()  # an owner pass
+    assert calls == [] and registry._OWNER["experts_seeded"] is False
+
+    set_flag(True)
+    registry._seed_experts_once()
+    registry._seed_experts_once()  # once per server run
+    assert calls == [1] and registry._OWNER["experts_seeded"] is True

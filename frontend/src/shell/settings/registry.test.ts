@@ -158,9 +158,9 @@ describe("visibility", () => {
   test("Experimental flags keeps its sections in order, Windows last", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
     const secs = sectionsOf(visibleSettings(on), "features").map((s) => s.section);
-    expect(secs).toEqual(["Sidebar", "Windows"]);
+    expect(secs).toEqual(["Sidebar", "Bots", "Windows"]);
     // Without the capability the group is what it was.
-    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Sidebar"]);
+    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Sidebar", "Bots"]);
   });
 });
 

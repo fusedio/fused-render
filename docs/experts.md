@@ -743,3 +743,32 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
   nothing.
 - Gemini and OpenCode tasks get no expert tools (§8).
 - Only Claude Code runs an expert (chat and side sessions).
+
+## 17. The Experts flag
+
+Experts are an experimental feature behind `experts_enabled` (`<home>/prefs.json`, `shell/prefs.py`
+`experts_enabled`; Settings > Experimental flags > Bots > "Expert bots"), **off by default**: only a stored `true`
+is on. One reader for the server, `fused_render.experts.enabled()` (never raises; a failed read is off); agent.py
+reads the same key with its own stdlib read (`_experts_pref`), as it does for Canvases.
+
+**Off hides, never deletes.** Nothing on disk is touched: the expert's folder, `bot.json`, `memory.md`, the
+archive, its sessions, `read.json` and its chat stay as they are, so turning the flag back on brings every expert
+back with the same memory. While it is off:
+
+- **Listings**: `GET /api/bots` (the Bots page and the phone), `/api/bots/pulse` (the sidebar and the Claude rail)
+  and `/api/bots/roster` (apps) leave experts out (`bots/routes._hidden_expert`). The pages follow on their next
+  poll; there is no client-side flag module.
+- **Running one**: `POST /api/bots` with `kind: "expert"`, a send (`/api/bots/{id}/send`, an app's send) to an
+  expert, and installing an expert `.fusedbot` are refused with a sentence that names the switch. An expert's
+  routines do not fire (`registry._pass`); one that came due while off fires on the first pass after it is on.
+- **Task sessions**: `agent._experts_live` is false, so a new task gets no expert tools and no `EXPERTS:` note
+  (§8). `GET /api/experts` lists nothing and `context` / `ask` answer 404 "experts are turned off", for a task
+  that was given the tools before the flag went off.
+- **Task-learn**: the timer's tick does nothing (§9). `read.json` keeps its cursors, so tasks that used an expert
+  before the flag went off are read once it is on again.
+- **The shipped seed** (§14) does not run. The first owner pass (≤ 20 s, `registry._seed_experts_once`) after the
+  flag reads on seeds then, once per server run; the witness keeps it to once per shipped expert as before, so an
+  existing user's experts are not made twice and one they deleted stays deleted.
+
+What stays reachable while off: the expert routes the Bots page's Expert pane reads (`/{id}/memory`, `/sessions`,
+`/instructions`) and the bot routes by id; nothing links to them while the expert is not listed.

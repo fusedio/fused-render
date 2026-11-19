@@ -1608,6 +1608,10 @@ export interface Prefs {
   // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
   // its status ring. Optional: absent (older server) reads as off.
   task_icons?: { enabled: boolean };
+  // Expert bots (`experts_enabled`, shell/prefs.py; off by default,
+  // docs/experts.md §17). Off hides experts — the server leaves them out of
+  // every bot listing — and deletes nothing. Optional: absent reads as off.
+  experts?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2193,6 +2197,10 @@ export function putTaskHeadUnifiedEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_icons_enabled: enabled });
+}
+
+export function putExpertsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { experts_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */

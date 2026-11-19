@@ -984,6 +984,11 @@ def _install(path: str, *, apps: list[str], memory: bool, mode: str, target: str
     pub = _bot_json(path, idx)
     if pub.get("kind") == "super":
         raise BotFileError("this package is a Super Bot; there is one per Mac and it cannot be imported")
+    if _is_expert_pkg(pub):
+        from fused_render import experts
+        if not experts.enabled():  # docs/experts.md §17: it would install hidden
+            raise BotFileError("this package is an expert, and experts are turned off; "
+                               "turn them on in Settings > Experimental flags first")
     registry.require_owner()
     if bot_id:
         return _install_into(path, idx, bot_id, apps)

@@ -48,6 +48,14 @@ def _handled(fn):
     return wrap
 
 
+def _offered():
+    """The task sessions' doors (list, context, ask) answer as if there were no expert while the Experts flag is
+    off (docs/experts.md §17): a task started while it was on may still list the tools; they find nothing."""
+    from fused_render import experts
+    if not experts.enabled():
+        raise _NotFound("experts are turned off")
+
+
 def _expert(key):
     bot = store.find(key)
     if bot is None:
@@ -64,6 +72,9 @@ def _body(body) -> dict:
 @router.get(PREFIX)
 @_handled
 def experts_list():
+    from fused_render import experts
+    if not experts.enabled():
+        return []
     return [{"id": b.id, "name": store.name(b), "ask_me_about": store.manifest(b)["ask_me_about"]}
             for b in store.all_experts()]
 
@@ -74,6 +85,7 @@ def expert_context(body=Body(None), x_fused: str | None = Header(None)):
     if (bad := _require_fused(x_fused)) is not None:
         return bad
     body = _body(body)
+    _offered()
     bot = _expert(body.get("expert"))
     from fused_render.bots import registry
     registry.require_workspace()  # record_use writes into the expert's folder, as ask does
@@ -88,6 +100,7 @@ def expert_ask(body=Body(None), x_fused: str | None = Header(None)):
     if (bad := _require_fused(x_fused)) is not None:
         return bad
     body = _body(body)
+    _offered()
     bot = _expert(body.get("expert"))
     question = str(body.get("question") or "").strip()
     if not question:

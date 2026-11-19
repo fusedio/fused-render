@@ -557,6 +557,17 @@ def task_icons_enabled() -> bool:
     return read_prefs().get("task_icons_enabled") is True
 
 
+def experts_enabled() -> bool:
+    """Whether EXPERTS are offered (docs/experts.md §17; experiment, owner
+    2026-11-19): expert bots in the Bots page and the sidebar, the expert
+    tools in task sessions, the task-learn timer, the shipped-expert seed and
+    expert package imports. Default off; only a stored `true` is on. Off
+    HIDES experts and never deletes one: their folders and memory stay on
+    disk, and turning this on again brings them back as they were.
+    """
+    return read_prefs().get("experts_enabled") is True
+
+
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
@@ -1279,6 +1290,8 @@ def _prefs_response() -> dict:
         "task_head_unified": {"enabled": task_head_unified_enabled()},
         # Task icons in place of the status ring (`task_icons_enabled`; off).
         "task_icons": {"enabled": task_icons_enabled()},
+        # Expert bots (`experts_enabled`; off — hidden, never deleted).
+        "experts": {"enabled": experts_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1652,6 +1665,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["task_icons_enabled"] = value
             changed = True
+        if "experts_enabled" in body:
+            value = body.get("experts_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'experts_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["experts_enabled"] = value
+            changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
             if not isinstance(value, bool):
@@ -1969,7 +1989,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'canvas_shot_slow_fallback_enabled', "
                           "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
                           "'task_head_unified_enabled', "
-                          "'task_icons_enabled', "
+                          "'task_icons_enabled', 'experts_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

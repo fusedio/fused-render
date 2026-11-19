@@ -188,8 +188,10 @@ def agent(tmp_path, monkeypatch):
     return mod
 
 
-def _experts(monkeypatch, bots, owns=True):
-    """Stand-ins for the modules the server's startup hook loads."""
+def _experts(monkeypatch, bots, owns=True, flag=True):
+    """Stand-ins for the modules the server's startup hook loads, and the Experts flag (on unless `flag=False`)."""
+    with open(os.path.join(os.environ["FUSED_RENDER_HOME_DIR"], "prefs.json"), "w", encoding="utf-8") as fh:
+        json.dump({"experts_enabled": flag}, fh)
     store = types.SimpleNamespace(all_experts=lambda: list(bots))
     reg = types.SimpleNamespace(owns=lambda: owns)
     monkeypatch.setitem(sys.modules, "fused_render.experts.store", store)
@@ -217,6 +219,9 @@ def test_live_check(agent, monkeypatch):
     assert not agent._experts_live()
     _experts(monkeypatch, [object()])
     assert agent._experts_live()
+    _experts(monkeypatch, [object()], flag=False)  # the Experts flag off (docs/experts.md §17): no tools
+    assert not agent._experts_live()
+    _experts(monkeypatch, [object()])
     monkeypatch.delenv("FUSED_RENDER_ORIGIN")
     assert not agent._experts_live()
 
