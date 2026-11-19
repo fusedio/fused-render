@@ -367,17 +367,6 @@ const ENTRIES = [
     keywords: "breakout fork side chat research read-only",
     badge: "Beta",
   },
-  // SPECIALISTS (docs/specialists-v2.md): a kind of bot on the Bots page, and
-  // the task tools and the breakout's "With". Off by default; off, nothing of it exists.
-  {
-    id: "specialists",
-    group: "tasks",
-    section: "Running",
-    label: "Specialists",
-    description: "A kind of bot on the Bots page that knows one subject and keeps its own memory and skills. Tasks get its guidance, send it notes, and can open a breakout with it. Once a day it updates its memory from what they did.",
-    keywords: "specialist bot memory skills breakout notes update",
-    badge: "Beta",
-  },
   {
     id: "claude-max-sessions",
     group: "tasks",
@@ -575,6 +564,17 @@ const ENTRIES = [
     label: "Expert bots",
     description: "Bots that keep one memory file about one subject — Canvas Reference and Data Expert ship with the app — and that your Claude, Codex and Copilot tasks can consult. Turning this off hides them and stops their learning; their memory is kept for when you turn it back on.",
     keywords: "expert experts memory canvas reference data expert bot learn ask",
+  },
+  // SPECIALISTS (docs/specialists-v2.md): a kind of bot on the Bots page, and
+  // the task tools and the breakout's "With". Off by default; off, nothing of
+  // it exists. Beside Expert bots: the two solve the same problem two ways.
+  {
+    id: "specialists",
+    group: "features",
+    section: "Bots",
+    label: "Specialists",
+    description: "A kind of bot on the Bots page that knows one subject and keeps its own memory and skills. Tasks get its guidance, send it notes, and can open a breakout with it. Once a day it updates its memory from what they did.",
+    keywords: "specialist bot memory skills breakout notes update learn",
   },
   {
     id: "monitor",

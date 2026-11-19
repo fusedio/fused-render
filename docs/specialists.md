@@ -19,8 +19,9 @@ code's "update"), a background session once a day or on Learn now, that folds wh
 pointers to the tasks, breakouts and chats that involved it) into memory and skills (§5, §6).
 
 **The switch.** `shell/prefs.specialists_enabled()`: env `FUSED_RENDER_SPECIALISTS` `"1"` or `"0"` wins both ways,
-else only a stored `specialists_enabled: true` in `prefs.json` is on. Off by default (the "Specialists" switch,
-Beta, under Chats & tasks > Running in Preferences; `shell/settings/registry.ts`). Off means:
+else only a stored `specialists_enabled: true` in `prefs.json` is on. Off by default (the "Specialists" switch
+on the Experimental flags page of Preferences, under Bots, beside "Expert bots"; `shell/settings/registry.ts`). Off
+means:
 
 - every `/api/specialists*` request is the unknown-path 404 before routing (`flag.off_middleware`);
 - no rows, no Specialist card under + New bot, no "With" in the breakout pick bar (`platform/lib/specialists-flag.ts`,
