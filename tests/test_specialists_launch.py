@@ -57,3 +57,25 @@ def test_a_start_commits_a_hand_edit_and_resets_the_settings():
     launch.spec(f"{s.id}:main", s.home)
     assert [c["label"] for c in history.changes(s.home)] == ["You edited memory"]
     assert json.load(open(os.path.join(s.home, ".claude", "settings.json"))) == {"autoMemoryEnabled": False}
+
+
+@needs_git
+def test_a_start_brings_an_older_charter_up_to_date_and_keeps_its_subject():
+    import subprocess
+
+    from fused_render.specialists import history
+    from fused_render.specialists import home as hm
+
+    s = make_specialist()
+    path = os.path.join(s.home, "CLAUDE.md")
+    with open(path, "w") as f:
+        f.write("# An older charter\nKeep memory as plain sentences.\n\n" + hm.SUBJECT_MARK + "Tiles are 512 px.\n")
+    subprocess.run(["git", "-C", s.home, "commit", "-qam", "old"], check=True)
+    launch.spec(f"{s.id}:main", s.home)
+    assert open(path).read() == hm.charter(s.name, s.about, "Tiles are 512 px.")
+    log = lambda: subprocess.run(["git", "-C", s.home, "log", "--format=%s"], capture_output=True, text=True).stdout
+    assert log().splitlines()[0] == "Settings" and not history.changes(s.home)
+    before, mtime = log(), os.path.getmtime(path)
+    launch.spec(f"{s.id}:main", s.home)  # up to date: not rewritten, nothing committed
+    assert (log(), os.path.getmtime(path)) == (before, mtime)
+

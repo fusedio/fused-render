@@ -72,10 +72,15 @@ def charter(name: str, about: str, subject: str = "") -> str:
     return text + ("\n" + SUBJECT_MARK + subject.strip() + "\n" if subject.strip() else "")
 
 
-def rewrite_charter(home: str, name: str, about: str) -> None:
-    """After a rename or a new "about": the charter again, keeping its subject section."""
-    _, mark, subject = read_text(os.path.join(home, "CLAUDE.md")).partition(SUBJECT_MARK)
-    write_text(os.path.join(home, "CLAUDE.md"), charter(name, about, subject if mark else ""))
+def rewrite_charter(home: str, name: str, about: str) -> bool:
+    """The current charter, keeping its subject section (after a rename, a new "about", or a newer template);
+    True when the file changed."""
+    old = read_text(os.path.join(home, "CLAUDE.md"))
+    _, mark, subject = old.partition(SUBJECT_MARK)
+    new = charter(name, about, subject if mark else "")
+    if new != old:
+        write_text(os.path.join(home, "CLAUDE.md"), new)
+    return new != old
 
 
 def lay_out(home: str, manifest: dict, subject: str = "") -> None:

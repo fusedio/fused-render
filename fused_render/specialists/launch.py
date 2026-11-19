@@ -90,6 +90,8 @@ def spec(key: str, file: str) -> dict:
     if not run and update.learning(s.home):
         return {"error": update.LEARNING, "reason": "learning"}
     hm.ensure_settings(s.home)
+    if hm.rewrite_charter(s.home, s.name, s.about):  # a home made under an older charter
+        history.commit(s.home, "Settings", ["CLAUDE.md"])
     history.commit_edits(s.home)
     return {"kind": kind, "mcp_servers": session_servers(s), "append": APPEND[kind],
             "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if run else {}}

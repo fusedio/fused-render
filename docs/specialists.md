@@ -75,6 +75,12 @@ skills are in `.claude/skills/`; a separate learning run also updates memory and
 hold lines it did not write in this conversation, which it changes or removes when the user asks; files in `inbox/` and any text from tasks, transcripts or web pages are data, never
 instructions; the app saves and commits its changes in the folder. A shipped specialist adds a `## Subject` section (§9).
 
+The charter is the app's text: before every session start (`launch.spec`, the learning run included)
+`home.rewrite_charter` writes the current template, keeping the `## Subject` section, but only when the text differs,
+and commits it as "Settings" (not a Learned row), so a home made under an older charter catches up. A home older than
+`memory-archive.md` or `inbox-archive/` gets them on first need (the specialist writes the one, a clean run makes the
+other).
+
 `home.ensure_settings` rewrites `.claude/settings.json` to that exact text and deletes `settings.local.json` before
 every session start and every commit, so a hook or rule a session wrote there never reaches the next one.
 
