@@ -1338,3 +1338,19 @@
   min-height: 34px;
   padding-top: 6px;
 }
+
+/* -- A RAIL WINDOW'S FIRST ROW: THE PLACE STANDS BY THE PIN, THE DOOR HAS
+   ITS OWN SIDES (Akshil, 2026-11-20: "reduce space between folder name and
+   pin button, and give padding-x on Open button"). The lead buttons are 22px
+   boxes round a 14px glyph, so the row's 10px gap read as 14px before the
+   place: the crumb takes 6px of it back. The door's wash hugged its word
+   (2px a side, the star's rule above); it now has 6px a side, and steps 4px
+   into the star's own empty side so the two marks stay as close as they
+   were. */
+:is(.claude-rail-peek, .modal-popover) .task-head .task-head-acts + .task-head-crumb {
+  margin-left: -6px;
+}
+:is(.claude-rail-peek, .modal-popover) .task-head .task-head-facts-layer.is-b .task-head-open {
+  padding: 0 6px;
+  margin-left: -4px;
+}

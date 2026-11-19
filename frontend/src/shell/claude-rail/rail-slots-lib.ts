@@ -38,8 +38,10 @@
 // A NON-PIN PUSHES A PIN OUT OF ITS WAY ("non pin windows will push the
 // pins"), ON A CLICK ONLY (owner's answer, 2026-11-18: a hover's preview lies
 // over the pins and moves nothing — sweeping the rail must not shake them):
-// while a clicked-open non-pin stands, a pin under it is DRAWN to its left,
-// clear of it (`pushedPos`). Nothing is stored: the pin's own position — its
+// while a clicked-open non-pin stands, a pin under it is DRAWN clear of it
+// (`pushedPos`) — UP in its own column first, cut shorter if it must be
+// (owner, 2026-11-20), and to its LEFT when there is no way up. Nothing is
+// stored: the pin's own position — its
 // home — is untouched, so when the non-pin closes the pin is drawn at home
 // again ("they will be pushed back when non pins are closed by click
 // outside"). With no room to its left the pin stays and the non-pin lies over
@@ -102,6 +104,7 @@ import {
   FAV_WIDTH,
   PEEK_GAP,
   PEEK_INSET,
+  PEEK_MIN_HEIGHT,
   PEEK_MAX_HEIGHT,
   PEEK_WIDTH,
   peekPlacement,
@@ -191,26 +194,71 @@ export function overlaps(a: Box, b: Box, gap = 0): boolean {
  *  own cards keep from the rail and from each other. */
 export const PUSH_GAP = PEEK_GAP;
 
+/** The least height a pin is shrunk to before it is pushed aside instead: a
+ *  chat card's own floor (rail-peek-lib). */
+export const PUSH_MIN_HEIGHT = PEEK_MIN_HEIGHT;
+
+/** Where a pushed pin is drawn: its position, and its height when the push
+ *  cut it (`pushedPos` "UP FIRST"). No `height`: its own. */
+export interface PushedPos extends Pos {
+  height?: number;
+}
+
 /** WHERE A PIN IS DRAWN WITH THE NON-PINS UP (header "A NON-PIN PUSHES A
  *  PIN"): `home` its own position, `size` its size, `docks` what stands in
  *  its way — the clicked-open non-pin windows (never a hover's preview), and,
  *  for the second of two pins, the first one where its push put it
- *  (`pushedPins`). A pin clear of them all stands at home. One under any of
- *  them moves LEFT — the non-pins stand against the rail, at the right —
- *  until it is clear of every one, the gap kept; a move can land it under
- *  another, so it is asked again, at most once per obstacle.
+ *  (`pushedPins`). A pin clear of them all stands at home.
+ *  UP FIRST, THEN LEFT (owner, 2026-11-20: "we try to push window up first,
+ *  then we push it to left"). A pin a non-pin covers from below — a
+ *  favourite's or a bot's window opening at the rail's foot — steps UP in its
+ *  own column until it is clear, the gap kept; one too tall to clear it whole
+ *  goes to the top (`floor`) and is drawn SHORTER, down to PUSH_MIN_HEIGHT
+ *  ("it will remember the size of pin and shrink and push it up … the only
+ *  case where it shrinks"). The cut is drawn, never stored: the pin's size is
+ *  its own again the moment nothing cuts it.
+ *  With no room above — the non-pin stands at the top of the column, or a
+ *  second one does — it moves LEFT at its full height, until it is clear of
+ *  every one; a move can land it under another, so it is asked again, at most
+ *  once per obstacle.
  *  WITH NO ROOM TO CLEAR THEM it goes as far left as the viewport lets it
  *  (owner, 2026-11-19: "otherwise … the user would lose window and task"):
  *  part of it shows beside the non-pin, where staying put left it wholly
- *  covered. Only `left` ever changes. */
-export function pushedPos(home: Pos, size: Size, docks: readonly Box[], gap = PUSH_GAP): Pos {
+ *  covered.
+ *  `keepOff`: boxes the step UP must not land on — the other pin, where the
+ *  reader did not lay the two over each other (`pushedPins`). Up onto one of
+ *  them is no way up: left. */
+export function pushedPos(
+  home: Pos,
+  size: Size,
+  docks: readonly Box[],
+  gap = PUSH_GAP,
+  floor = PEEK_INSET,
+  keepOff: readonly Box[] = [],
+): PushedPos {
   if (docks.length === 0) return home;
+  const own: Box = { left: home.left, top: home.top, width: size.width, height: size.height };
+  // COVERED, not merely near (owner, 2026-11-19: a pin beside a window that
+  // does not cover it "moves … i don't think so"): only a real overlap
+  // pushes; the gap is how far clear the pushed pin then stands.
+  const hits = docks.filter((d) => overlaps(own, d));
+  if (hits.length === 0) return home;
+  // UP: its foot no lower than the highest window that covers it.
+  const foot = Math.min(...hits.map((d) => d.top)) - gap;
+  const top = Math.max(Math.min(floor, home.top), Math.min(home.top, foot - size.height));
+  const height = Math.min(size.height, foot - top);
+  if (height >= Math.min(size.height, PUSH_MIN_HEIGHT)) {
+    const up: Box = { left: home.left, top, width: size.width, height };
+    if (!docks.some((d) => overlaps(up, d)) && !keepOff.some((d) => overlaps(up, d))) {
+      const at: PushedPos = { left: home.left, top: Math.round(top) };
+      if (height < size.height) at.height = Math.round(height);
+      return at;
+    }
+  }
+  // LEFT, at its own height.
   let left = home.left;
   for (let i = 0; i <= docks.length; i++) {
     const at = { left, top: home.top, width: size.width, height: size.height };
-    // COVERED, not merely near (owner, 2026-11-19: a pin beside a window that
-    // does not cover it "moves … i don't think so"): only a real overlap
-    // pushes; the gap is how far clear the pushed pin then stands.
     const hit = docks.find((d) => overlaps(at, d));
     if (!hit) break;
     left = hit.left - gap - size.width;
@@ -239,17 +287,27 @@ export function pushedPins(
   pins: Partial<Record<RailWindow, PinAt | null>>,
   docks: readonly Box[],
   gap = PUSH_GAP,
-): Record<RailWindow, Pos | null> {
-  const out: Record<RailWindow, Pos | null> = { a: null, b: null };
+): Record<RailWindow, PushedPos | null> {
+  const out: Record<RailWindow, PushedPos | null> = { a: null, b: null };
   const order = (["a", "b"] as const)
     .filter((w) => !!pins[w])
     .sort((p, q) => pins[q]!.pos.left + pins[q]!.size.width - (pins[p]!.pos.left + pins[p]!.size.width));
   // The pins already placed, each with the box it had at home.
-  const placed: { home: Box; at: Box; moved: boolean }[] = [];
+  const placed: { win: RailWindow; home: Box; at: Box; moved: boolean }[] = [];
   for (const w of order) {
     const pin = pins[w]!;
-    const boxAt = (pos: Pos): Box => ({ left: pos.left, top: pos.top, width: pin.size.width, height: pin.size.height });
-    let pos = pushedPos(pin.pos, pin.size, docks, gap);
+    const boxAt = (pos: PushedPos): Box => ({ left: pos.left, top: pos.top, width: pin.size.width, height: pos.height ?? pin.size.height });
+    // The other pin, unless the reader laid the two over each other: a step
+    // up must not land this one on it.
+    const keepOff: Box[] = [];
+    for (const o of order) {
+      if (o === w) continue;
+      const done = placed.find((p) => p.win === o);
+      const theirs: Box = done ? done.at : { ...pins[o]!.pos, ...pins[o]!.size };
+      const home: Box = done ? done.home : theirs;
+      if (!overlaps(boxAt(pin.pos), home)) keepOff.push(theirs);
+    }
+    let pos = pushedPos(pin.pos, pin.size, docks, gap, PEEK_INSET, keepOff);
     // A PIN THE PUSH MOVED IS IN THIS ONE'S WAY ONLY WHERE IT REALLY LANDS ON
     // IT (owner, 2026-11-19, of two pins stacked one above the other, the
     // lower one clear of the non-pin: "it moves one way off than the other …
@@ -260,10 +318,11 @@ export function pushedPins(
       if (!other.moved) continue;
       if (overlaps(boxAt(pin.pos), other.home)) continue;
       if (!overlaps(boxAt(pos), other.at)) continue;
-      pos = pushedPos(pos, pin.size, [...docks, other.at], gap);
+      // Asked again from home, the moved pin one more thing in its way.
+      pos = pushedPos(pin.pos, pin.size, [...docks, other.at], gap, PEEK_INSET, keepOff);
     }
     out[w] = pos;
-    placed.push({ home: boxAt(pin.pos), at: boxAt(pos), moved: pos !== pin.pos });
+    placed.push({ win: w, home: boxAt(pin.pos), at: boxAt(pos), moved: pos !== pin.pos });
   }
   return out;
 }
