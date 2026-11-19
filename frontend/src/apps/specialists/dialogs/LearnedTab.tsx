@@ -1,4 +1,4 @@
-// Settings › Learned (PRODUCT §6, §8; mock-up Learned.dc.html): every change of
+// Settings › Learned (docs/specialists.md §6 "Revert", §9; mock-up Learned.dc.html): every change of
 // the recent updates — already in effect, each with Revert — the drafts to
 // people waiting for the user, and Run now.
 //
@@ -6,7 +6,7 @@
 // GET …/nightly every few seconds; when the run ends it reads the changes again
 // on its own. Revert sends a plain-words request into the main chat and the
 // dialog stays open, saying "Revert asked in the chat" until the item reads
-// `reverted` (or `changed`: something else touched that entry since, C4).
+// `reverted` (or `changed`: something else touched that entry since).
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   discardDraft,

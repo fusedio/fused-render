@@ -1,4 +1,4 @@
-// THE GENERAL INBOX (PRODUCT §4 "No specialist fits"): notes that went to no
+// THE GENERAL INBOX (docs/specialists.md §6 "The inbox"): notes that went to no
 // specialist. Each can be given to one (POST …/general/notes/{nid}/move) or
 // deleted. Opened from the quiet line under the list.
 import { useState } from "react";

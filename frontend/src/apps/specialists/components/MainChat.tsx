@@ -1,8 +1,7 @@
-// THE ONE CHAT (PRODUCT §2 "Main chat is one conversation per specialist",
-// §8; PLAN A.2 "Clear"). The task chat stack (`ChatMount`) on the specialist's
+// THE ONE CHAT: one conversation per specialist (docs/specialists.md §3, §9). The task chat stack (`ChatMount`) on the specialist's
 // home with `{specialist: "<id>:main"}` on every start, so it gets Claude
 // Code's full privileges, approval cards, Stop and resume for free. Its model
-// starts as the specialist's own (R7); the composer's pill can change it.
+// starts as the specialist's own; the composer's pill can change it.
 //
 // Clear (button and `/clear`) → POST …/chat/clear folds the current session,
 // and the chat remounts with no session: the next send starts a fresh one in

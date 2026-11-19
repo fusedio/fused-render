@@ -1,4 +1,4 @@
-"""Drafts to people that wait for the user (PRODUCT §6 "Drafts to people are never sent by the job"; PLAN B.6).
+"""Drafts to people that wait for the user (docs/specialists.md §6 "The nightly job"; the job never sends them).
 
     <home>/.specialist/drafts/<did>.json
     {"id","at","to":{"name","service","handle"},"subject","text","why","from":{"kind":"nightly","run"},
@@ -27,7 +27,7 @@ from fused_render.specialists.counts import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
-# C3: the frontend recognises the send request by this prefix; tests pin it.
+# The frontend recognises the send request by this prefix; tests pin it.
 SEND_DRAFT_PREFIX = "Review and send this draft to "
 SEND_DRAFT = ("Review and send this draft to {name} through {service} ({handle}). Show me the exact text first, then "
               "send it with the service tool; I will approve the send.\n\nSubject: {subject}\n\n{text}")

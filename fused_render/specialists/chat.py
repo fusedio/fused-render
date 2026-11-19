@@ -1,4 +1,4 @@
-"""A specialist's one main chat (PRODUCT §2, PLAN A.2 "Clear").
+"""A specialist's one main chat (docs/specialists.md §3 "Main chat and breakouts").
 
 `<home>/.specialist/chat.json` = `{"current": session_id | null, "folded": [...]}`. The page mounts the chat on
 `current`; Clear folds it (newest last) and the next send starts a fresh Claude Code session in the home, so

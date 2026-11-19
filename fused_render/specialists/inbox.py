@@ -1,4 +1,4 @@
-"""The inbox: raw notes a specialist has not weighed yet (PRODUCT §4, §5; PLAN B.1, B.2).
+"""The inbox: raw notes a specialist has not weighed yet (docs/specialists.md §6 "The inbox").
 
     <home>/inbox/<note id>.json             undigested: held apart from every session and pull...
     <home>/inbox/digested/<note id>.json    ...until the nightly job digests it (nightly.py moves it here)

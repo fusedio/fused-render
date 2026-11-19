@@ -25,7 +25,7 @@ def test_main_spec(app_home):
         assert f"Edit(/{h}/{p})" in sp["deny"], p
     assert not any(r.endswith("/.claude/skills/**)") for r in sp["deny"])  # main may change its skills (F)
     assert sp["policy_env"] == {"FUSED_SPECIALIST_POLICY": sp["policy_env"]["FUSED_SPECIALIST_POLICY"]}
-    assert "grant" not in launch.check_token(s.id, "main", sp["token"])  # no secret a session could read (C2)
+    assert "grant" not in launch.check_token(s.id, "main", sp["token"])  # no secret a session could read
     assert entry["alwaysLoad"] is True and entry["timeout"] > 60_000
     assert sp["hooks"] == {"Stop": [{"hooks": [{"specialist_hook": "stop"}]}]}
     assert "main chat" in sp["append"]
@@ -98,7 +98,7 @@ def test_token_expiry(app_home, monkeypatch):
 
 
 def test_every_session_start_rewrites_the_home_settings(app_home):
-    """R4: whatever a session wrote to the home's project settings is gone before the next session starts."""
+    """Whatever a session wrote to the home's project settings is gone before the next session starts."""
     s = make_specialist()
     p = os.path.join(s.home, ".claude", "settings.json")
     with open(p, "w") as f:

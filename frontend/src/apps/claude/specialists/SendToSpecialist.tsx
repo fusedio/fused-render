@@ -1,4 +1,4 @@
-// "SEND TO A SPECIALIST" on a message (PRODUCT §4, §8; PLAN D.2 #8): any
+// "SEND TO A SPECIALIST" on a message (docs/specialists.md §6 "The inbox", §9): any
 // message of a task can go to a specialist's inbox as a note — basis
 // `user-said`, so it is in effect at once — or to the general inbox when none
 // fits. No approval card; a sent chip with Undo instead.

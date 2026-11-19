@@ -1,4 +1,4 @@
-// THE OFFER CARD (PRODUCT §3.3.1, PLAN A.2 "Offer card"): a task called
+// THE OFFER CARD (docs/specialists.md §4 "The offer card…"): a task called
 // `specialist_breakout`, the permission server raised a card for it, and this
 // draws it as "Hand this to the <name> specialist?" with the brief and three
 // answers.
@@ -27,7 +27,7 @@ export interface OfferHost {
   refresh?: () => void;
 }
 
-/** The brief the card was raised with (PLAN A.8 input fields). */
+/** The brief the card was raised with (the `specialist_breakout` input fields). */
 export function briefOf(row: PermissionRow): Brief {
   const input = (row.input || {}) as Record<string, unknown>;
   const s = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : "");

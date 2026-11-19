@@ -14,7 +14,7 @@ import type { PermissionMode, PermissionRow } from "../protocol/types";
 export const OFFER_TOOL = "mcp__fused_render__specialist_breakout";
 
 /** The `specialist` prop of a chat that IS a specialist session. The optional
- *  facts let the thread show the product view of app-written messages (R1):
+ *  facts let the thread show the product view of app-written messages (docs/specialists.md §5):
  *  `name` for the words, `brief` for the seed's brief box, and `folder` (the
  *  task's folder) so file links in the replies resolve there, not in the
  *  breakout's private workroom. */

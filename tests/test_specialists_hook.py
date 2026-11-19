@@ -300,7 +300,7 @@ def test_script_stop_prints_nothing_and_fails_open():
 
 
 def test_a_turn_in_a_workroom_is_a_breakout(client, monkeypatch):
-    """C1: a breakout works in `<home>/.specialist/breakouts/<bid>/work`; its hooks resolve to the specialist and
+    """A breakout works in `<home>/.specialist/breakouts/<bid>/work`; its hooks resolve to the specialist and
     the turn is a breakout's whatever the records say."""
     from fused_render.specialists import chat, history
 

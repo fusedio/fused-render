@@ -1,4 +1,4 @@
-"""What each nightly update changed, and Revert (PRODUCT §6; PLAN A.2 "Change list", B.6; CONTRACT C4).
+"""What each nightly update changed, and Revert (docs/specialists.md §6 "The nightly job", "Revert").
 
     <home>/.specialist/changes/<run>.json
     {"run","at","summary","status":"done|interrupted|error","commit","row","fallback":bool,"drafts":[ids],
@@ -45,7 +45,7 @@ ENTRY_ID_RE = re.compile(r"\[?\bm-[0-9a-f]{4,8}\b\]?")
 MEMORY = "memory.md"
 SKILLS = ".claude/skills/"
 
-# C3: the frontend recognises the revert request by this prefix; tests pin it.
+# The frontend recognises the revert request by this prefix; tests pin it.
 REVERT_PREFIX = "Undo this change from the latest update: "
 REVERT_TAIL = ("Change only this. Leave every other line and every other file as it is, never restore whole files "
                "from git and do not run git at all (the app saves your change). When you answer, say in one plain "
@@ -94,7 +94,7 @@ def _note_id(v) -> str:
 
 
 def validate(raw) -> dict | None:
-    """The job's changes.json (B.6, C4) cleaned: unknown keys dropped, item text one short sentence, at most
+    """The job's changes.json cleaned: unknown keys dropped, item text one short sentence, at most
     `ITEMS_MAX` items, an item without text dropped, an unknown kind read as `Changed`. `ignored` is the notes the
     job weighed and deliberately left out (`[{"note","why"}]`). `digested` is computed: the note ids in some item's
     `from` or in `ignored` (a note in neither stays in the inbox). None when it is not a JSON object with an `items`
@@ -138,7 +138,7 @@ def validate(raw) -> dict | None:
 
 
 def digested_of(items: list, ignored: list) -> list[str]:
-    """C4: the notes a run accounted for: named in an item's `from`, or in `ignored`."""
+    """The notes a run accounted for: named in an item's `from`, or in `ignored`."""
     out = [_note_id(x) for it in items or [] for x in it.get("from") or []]
     out += [g.get("note") for g in ignored or [] if isinstance(g, dict)]
     return list(dict.fromkeys(x for x in out if x))
@@ -191,7 +191,7 @@ def entry_text(line: str | None) -> str:
 
 
 def _plain(text: str, before: str | None, after: str | None) -> str:
-    """Item text with no entry id in it (R1): an id is replaced by what the entry says."""
+    """Item text with no entry id in it: an id is replaced by what the entry says."""
     if not ENTRY_ID_RE.search(text or ""):
         return text
     words = entry_text(after) or entry_text(before)
@@ -233,7 +233,7 @@ def _not_a_change(it: dict) -> bool:
 
 
 def reconcile(items: list, before_text: str, after_text: str) -> list[dict]:
-    """C4: the change list made to match memory.md's diff. Each item naming an entry gets that entry's exact line
+    """The change list made to match memory.md's diff. Each item naming an entry gets that entry's exact line
     `before` and `after` the run (None: absent); every entry the run added, changed or removed that no item names
     gets a `Changed` item of its own. Items keep their order; added items follow, in memory.md's order.
 
@@ -348,7 +348,7 @@ def build_items(spec_id: str, items: list, sha: str) -> list[dict]:
 
 
 def build(spec_id: str, items: list, sha: str) -> tuple[list[dict], int]:
-    """The change list of the run committed as `sha`, reconciled with that commit's diff (C4): memory entries
+    """The change list of the run committed as `sha`, reconciled with that commit's diff: memory entries
     (`reconcile`), a file or skill folder the run created (`remove`), the diff of any other file an item names
     (`diff`), and one `Changed` item per changed file no item covers. Also returns how many entries were only
     confirmed again (not items)."""
@@ -541,7 +541,7 @@ def _current(spec_id: str) -> str:
 
 
 def _instruction(item: dict) -> str:
-    """What exactly to undo, from the run's diff (C4)."""
+    """What exactly to undo, from the run's diff."""
     before, after = item.get("before"), item.get("after")
     if item.get("entry") and ("before" in item or "after" in item) and (before or after):
         if before and after:
@@ -566,7 +566,7 @@ def _instruction(item: dict) -> str:
 
 
 def message(rec: dict, item: dict) -> str:
-    """The REVERT request (C3 prefix, C4). Its first line names the change; the app finds it by that line."""
+    """The REVERT request (it starts with `REVERT_PREFIX`). Its first line names the change; the app finds it by that line."""
     text = sentence(str(item.get("text") or item.get("kind") or "this change")).replace('"', "'")
     return f'{REVERT_PREFIX}"{text}"\n\n{_instruction(item)}\n\n{REVERT_TAIL}'
 

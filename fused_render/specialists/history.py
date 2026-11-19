@@ -1,11 +1,11 @@
-"""The home's history: a git repository the app commits to (PLAN A.2 "History / undo").
+"""The home's history: a git repository the app commits to (docs/specialists.md §2 "History").
 
 Commits are app-made: after each main-chat or breakout turn (the Stop hook calls `after_turn`), after each nightly
 run, after each Settings save. `.gitignore` keeps app state, the inbox and said.md out, so the log holds only what
 the specialist knows (charter, memory, knowledge, skills, people, triggers).
 
 A breakout must never rewrite those files. It runs in its own workroom (`<home>/.specialist/breakouts/<bid>/work`,
-CONTRACT C1), so no relative-path write of any tool can reach them; Edit rules refuse the absolute paths. What is
+docs/specialists.md §3), so no relative-path write of any tool can reach them; Edit rules refuse the absolute paths. What is
 left is an approved interpreter or shell command that writes an absolute path into the home. The Stop-time `guard`
 is the second layer for that: at a breakout turn's end it puts every protected tracked path back the way HEAD has
 it, but ONLY when no main-chat turn and no nightly run was live during that turn (then it cannot tell whose change
@@ -13,7 +13,7 @@ is whose, so it does nothing and commits nothing; a `guard` row says so). A brea
 
 Who commits what: a main-chat turn commits everything in the home (its Stop); a Settings save commits only the
 paths it wrote (`commit(paths=...)`); the nightly job commits its run. Before any commit the app rewrites the home's
-`.claude/settings.json` to the canonical text, removes `settings.local.json` (R4) and drops any repository config
+`.claude/settings.json` to the canonical text, removes `settings.local.json` and drops any repository config
 a session could have planted (`_sanitize_repo`), so history never records anything else there and no git command
 of the app runs a command a session configured. Without git every function degrades to a no-op (`available()`
 False), never an error.

@@ -1,4 +1,4 @@
-// Settings › Connections (PRODUCT §7): which connected services and local app
+// Settings › Connections (docs/specialists.md §7): which connected services and local app
 // tools this specialist may use without asking. Same meaning as a bot's
 // connections; the sign-in itself is the app's one global sign-in, so a row
 // that is not signed in is drawn off, with a "Sign in" link to that page.

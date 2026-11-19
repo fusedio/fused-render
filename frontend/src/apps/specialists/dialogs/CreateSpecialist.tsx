@@ -1,4 +1,4 @@
-// "+ New specialist" (PRODUCT §1): a name, a one-line subject, and the
+// "+ New specialist" (docs/specialists.md §9): a name, a one-line subject, and the
 // optional "when to bring me in" triggers — folders and keywords.
 import { useRef, useState } from "react";
 import { Modal } from "@platform/ui/modal/Modal";

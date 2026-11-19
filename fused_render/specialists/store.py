@@ -1,4 +1,4 @@
-"""The specialists the user keeps: one home folder each under `paths.root()` (PLAN B.1).
+"""The specialists the user keeps: one home folder each under `paths.root()` (docs/specialists.md §2).
 
 The manifest `specialist.json` is the record (id, name, subject, face, model, effort, connections, created,
 shipped); `triggers.json` beside it holds "when to bring me in" and is tracked in git because the nightly job edits

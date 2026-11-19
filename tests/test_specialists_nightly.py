@@ -1,4 +1,4 @@
-"""The nightly job (PLAN C.3; PRODUCT §5, §6; acceptance O, T, X for nightly)."""
+"""The nightly job (docs/specialists.md §6 "The nightly job")."""
 import json
 import os
 import re
@@ -118,7 +118,7 @@ def test_nightly_digests_with_provenance_and_change_list(monkeypatch):
     rec = changes.get(s.id, res["run"])
     assert [it["id"] for it in rec["items"]] == ["i1", "i2"] and rec["items"][0]["commit"] == log[0]["sha"]
     assert "bogus" not in rec["items"][0] and rec["fallback"] is False and rec["status"] == "done"
-    # C4: each entry item carries its exact line before and after, from the run's diff
+    # Each entry item carries its exact line before and after, from the run's diff
     assert rec["items"][0]["before"] == MEMORY.splitlines()[1] and rec["items"][0]["after"] == new_mem.splitlines()[1]
     assert rec["items"][1]["before"] is None and rec["items"][1]["after"] == new_mem.splitlines()[2]
     assert inbox.undigested(s.id) == []
@@ -191,7 +191,7 @@ def test_over_cap_compact_pass_merges_into_first_list(monkeypatch):
     assert len(seen) == 2 and seen[1].startswith("memory.md is 201 lines")
     assert nightly.memory_size(s.id)[0] <= 120
     rec = changes.get(s.id, res["run"])
-    # the entry the run removed with no item of its own gets one (C4)
+    # the entry the run removed with no item of its own gets one
     assert [(it["kind"], it["text"]) for it in rec["items"]] == [("Learned", "Staging first."),
                                                                  ("Moved", "Moved 199 entries."),
                                                                  ("Changed", "Removed: When a sync stalls, retry.")]
@@ -421,14 +421,14 @@ def test_validate_caps_and_kinds():
     v = changes.validate(raw)
     assert len(v["items"]) == 50 and v["items"][0]["kind"] == "Changed" and len(v["items"][0]["text"]) == 160
     assert v["items"][0]["text"].endswith("…")
-    # C4: `digested` is computed from `from` and `ignored`; the job's own list is not trusted
+    # `digested` is computed from `from` and `ignored`; the job's own list is not trusted
     assert v["items"][0]["entry"] is None and v["digested"] == [] and v["repeat_breakouts"] == 0
     assert v["drafts"] == [] and len(v["summary"]) == 500
     assert changes.validate([]) is None and changes.validate({"items": "x"}) is None
 
 
 def test_breakout_transcripts_read_from_their_workroom(monkeypatch, tmp_path):
-    """C1: a breakout's transcript lives under its workroom (`breakouts.session_cwds`); the home is the fallback
+    """A breakout's transcript lives under its workroom (`breakouts.session_cwds`); the home is the fallback
     when that is missing or raises."""
     s = make_specialist()
     room = os.path.join(s.home, ".specialist", "breakouts", "b-1", "work")
@@ -463,7 +463,7 @@ def test_breakout_transcripts_read_from_their_workroom(monkeypatch, tmp_path):
 
 
 def test_status_reports_started_while_running(api, monkeypatch):
-    """C5: GET …/nightly carries `started` (when the running update began), None when none runs."""
+    """GET …/nightly carries `started` (when the running update began), None when none runs."""
     import threading
     import time
     s, *_ = _setup()

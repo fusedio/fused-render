@@ -1,5 +1,5 @@
 // The left column: every specialist (face, name, one line of status) and the
-// round "+" that creates one (PRODUCT §8; mock-up Main.dc.html). A specialist
+// round "+" that creates one (docs/specialists.md §9; mock-up Main.dc.html). A specialist
 // whose main chat is running says "Working…" with a dot. Notes that fit no
 // specialist show as a quiet row of their own, with a count.
 import type { SpecialistSummary } from "@platform/lib/specialists-api";

@@ -1,5 +1,5 @@
 // THE QUIET CHIPS a task's transcript shows for its specialist events
-// (PRODUCT §3.2, §3.3.7, §4; PLAN B.3): "Guidance from the Canvas specialist
+// (docs/specialists.md §4 "Task events and chips"): "Guidance from the Canvas specialist
 // was added · 2 entries · View", "Breakout closed · its full note is saved
 // with the Canvas specialist · Reopen", "Sent to the Canvas specialist's inbox
 // · Undo". Placed by time (`placeEvents`) after the turn they happened in.
@@ -86,7 +86,7 @@ export function isGeneralInbox(ev: TaskEvent): boolean {
   return id === "general" || !id || name === "general" || name === "general inbox";
 }
 
-/** One event per breakout, its latest state (C5 sends one already; an older
+/** One event per breakout, its latest state (the server sends one already; an older
  *  server sent one per transition, which drew three stacked chips). */
 export function latestPerBreakout(events: readonly TaskEvent[]): TaskEvent[] {
   const last = new Map<string, TaskEvent>();
@@ -150,7 +150,7 @@ export function endedBreakouts(events: readonly TaskEvent[]): ReadonlySet<string
   return out;
 }
 
-/** THE GUIDANCE A PULL ADDED, as a person reads it (C5 `view`): never the raw
+/** THE GUIDANCE A PULL ADDED, as a person reads it (the receipt's `view`): never the raw
  *  payload, its receipt line or its provenance braces. */
 export function ReceiptSheet({ view }: { view: ReceiptView }) {
   const memory = view.memory ?? [];

@@ -1,4 +1,4 @@
-"""The guidance text a task pulls from a specialist (PRODUCT §3.2; PLAN B.7 `PULL`).
+"""The guidance text a task pulls from a specialist (docs/specialists.md §4 "The five tools").
 
 No session starts: the task gets memory.md as it is, the user-said notes not yet digested (marked as such), and the
 lists of topic knowledge and skills with their absolute paths so it can Read them. Other undigested notes are held
@@ -110,7 +110,7 @@ def compose(spec, trigger: str, match: dict | None, receipt_id: str = "") -> tup
 
 
 def counts(spec) -> dict:
-    """`{"skills": n, "knowledge": n}` a pull of `spec` lists (the pull chip's numbers, CONTRACT C5)."""
+    """`{"skills": n, "knowledge": n}` a pull of `spec` lists (the pull chip's numbers)."""
     return {"skills": len(_skills(spec.home)), "knowledge": len(_knowledge(spec.home))}
 
 
@@ -121,7 +121,7 @@ _SECTION = re.compile(r"^--- (.+?) ---$")
 
 
 def view(text: str) -> dict:
-    """What a pull gave, as plain product UI (CONTRACT C5 receipt `view`): read back from the PULL text the task
+    """What a pull gave, as plain product UI (the receipt's `view`): read back from the PULL text the task
     was given, never re-read from the home (it may have changed since):
     `{"memory":[{"id","text","basis"}], "said":[{"text"}], "knowledge":[{"title"}], "skills":[{"name","description"}]}`.
     No ids of notes, no provenance braces, no paths."""

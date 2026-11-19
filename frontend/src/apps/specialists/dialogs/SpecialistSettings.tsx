@@ -1,4 +1,4 @@
-// SETTINGS: one dialog with tabs (PRODUCT §8; mock-ups Learned.dc.html and
+// SETTINGS: one dialog with tabs (docs/specialists.md §9; mock-ups Learned.dc.html and
 // Memory.dc.html) — Learned, Memory, Skills, People, Connections, General.
 // Underlined tabs ("Learned · N new"), Done in the head, one fixed height so
 // switching tabs never makes the dialog jump, and no wider than the window.

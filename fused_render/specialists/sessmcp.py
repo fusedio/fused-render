@@ -1,4 +1,4 @@
-"""A specialist session's stdio MCP server (PLAN B.4 "Session MCP servers"): spawned by `claude` for a main
+"""A specialist session's stdio MCP server (docs/specialists.md §7): spawned by `claude` for a main
 chat, a breakout or a nightly run, it forwards every tool call to the fused-render server.
 
     argv: <server origin> <specialist id> <kind> <token> <server: specialist|specialist_services>

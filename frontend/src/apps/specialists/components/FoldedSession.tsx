@@ -1,5 +1,5 @@
-// AN EARLIER SESSION OF THE ONE CHAT, folded under a marker line (PRODUCT §2
-// "Clear", §8): "Monday · Set up the Q4 canvas · 22 messages · Show". Show
+// AN EARLIER SESSION OF THE ONE CHAT, folded under a marker line (docs/specialists.md
+// §9): "Monday · Set up the Q4 canvas · 22 messages · Show". Show
 // reads that session's transcript (`/api/claude-sessions/history`, the chat's
 // own read) and draws it read-only as chat: the user's turns as bubbles, the
 // specialist's replies through the chat's own markdown renderer. The whole

@@ -1,4 +1,4 @@
-"""Receipts: which task pulled which specialist's guidance, when, at which memory version (PRODUCT §1, §3.2; PLAN B.3).
+"""Receipts: which task pulled which specialist's guidance, when, at which memory version (docs/specialists.md §2 "Ids and formats", §4).
 
     <home>/.specialist/receipts/<rid>.json
 

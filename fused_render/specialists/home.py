@@ -1,4 +1,4 @@
-"""A specialist's home folder: its layout (PLAN B.1) and the small readers/writers the routes use.
+"""A specialist's home folder: its layout (docs/specialists.md §2) and the small readers/writers the routes use.
 
 The home is an ordinary Claude Code project: `CLAUDE.md` (the charter, which imports `memory.md` and `said.md`),
 `.claude/skills/<name>/SKILL.md`, `.claude/settings.json` turning Claude Code's auto memory off (memory here is
@@ -17,7 +17,7 @@ from fused_render.specialists import paths
 IMPORTS_MARK = "<!-- fused:imports -->"
 IMPORTS_BLOCK = IMPORTS_MARK + "\n@memory.md\n@said.md\n"
 GITIGNORE = ".specialist/\ninbox/\nsaid.md\n"
-#: The home's `.claude/settings.json`, exactly (R4): the app owns it and rewrites it before every session of any
+#: The home's `.claude/settings.json`, exactly: the app owns it and rewrites it before every session of any
 #: kind starts in the home (`ensure_settings`), so nothing a session wrote there (a hook, a permission rule) ever
 #: reaches another session. `settings.local.json` is removed at the same moments.
 SETTINGS = {"autoMemoryEnabled": False}
@@ -136,7 +136,7 @@ SETTINGS_TEXT = json.dumps(SETTINGS, indent=2) + "\n"
 
 
 def ensure_settings(folder: str) -> bool:
-    """Make `<folder>/.claude/settings.json` exactly the canonical text and remove `settings.local.json` (R4).
+    """Make `<folder>/.claude/settings.json` exactly the canonical text and remove `settings.local.json`.
     True when anything changed. Never raises (a session must still start; the next start retries)."""
     changed = False
     try:
@@ -156,7 +156,7 @@ def ensure_settings(folder: str) -> bool:
 
 
 # ------------------------------------------------------------------ workroom ---
-#: A breakout's private working folder (CONTRACT C1): `<home>/.specialist/breakouts/<bid>/work/`. Claude Code run
+#: A breakout's private working folder (docs/specialists.md §3): `<home>/.specialist/breakouts/<bid>/work/`. Claude Code run
 #: there loads the home's CLAUDE.md (an ancestor) and its project skills natively, but NOT the charter's
 #: `@memory.md`/`@said.md` imports (outside the working folder) nor the home's `.claude/settings.json` (verified
 #: with claude 2.1.327). So the app writes copies of memory.md and said.md, a CLAUDE.md importing them and the

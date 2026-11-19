@@ -1,4 +1,4 @@
-"""Where specialists live on disk (PLAN B.1).
+"""Where specialists live on disk (docs/specialists.md §2).
 
 `root()` is `<workspace>/specialists`; each specialist's home is a direct child named by its slug; `.state/` beside
 them is root state (not a home). Nothing here creates a folder: with the flag off no code path may make
@@ -83,7 +83,7 @@ def app_dir(spec_id: str) -> str:
 
 
 def workroom(spec_id: str, bid: str) -> str:
-    """`<home>/.specialist/breakouts/<bid>/work`: a breakout's private working folder (CONTRACT C1), not created."""
+    """`<home>/.specialist/breakouts/<bid>/work`: a breakout's private working folder (docs/specialists.md §3), not created."""
     return os.path.join(app_dir(spec_id), "breakouts", bid, "work")
 
 
@@ -102,7 +102,7 @@ def trashed_home(spec_id: str) -> str | None:
 
 
 def hidden_from_tasks(cwd: str) -> bool:
-    """R6: a session whose cwd is inside the specialists root is never a task, whether the flag is on or off. A
+    """A session whose cwd is inside the specialists root is never a task, whether the flag is on or off. A
     string test first; then the root must exist (a user who never turned the flag on has none, so nothing they
     have can ever be hidden). Never raises."""
     try:

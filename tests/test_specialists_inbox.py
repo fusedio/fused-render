@@ -1,4 +1,4 @@
-"""Inbox, said.md, counts and the notes routes (PLAN C.3; PRODUCT §4, §5, §9; acceptance R)."""
+"""Inbox, said.md, counts and the notes routes (docs/specialists.md §6 "The inbox")."""
 import json
 import os
 
@@ -251,7 +251,7 @@ def test_mutating_routes_need_x_fused(api, monkeypatch):
 
 
 def test_undo_decrements_notes_by_source(api):
-    """C5: deleting a note (Undo) takes it back out of `notes_by_source`, whatever its source; a general-inbox note
+    """Deleting a note (Undo) takes it back out of `notes_by_source`, whatever its source; a general-inbox note
     moved to a specialist counts there and its Undo there takes it out again."""
     s = make_specialist()
     task = inbox.add(s.id, kind="gap", claim="From a task.", basis="guess", source={"type": "task", "session_id": "t"})

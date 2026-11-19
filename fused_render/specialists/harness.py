@@ -1,4 +1,4 @@
-"""Side sessions: one-shot `claude -p` runs of a specialist (check, reviewer, nightly; PLAN A.1, C.1).
+"""Side sessions: one-shot `claude -p` runs of a specialist (check, reviewer, nightly; docs/specialists.md §3 "Side sessions").
 
 A side session has nobody to answer a permission prompt, so it runs in the `default` permission mode with no
 prompt tool: whatever no allow rule covers is refused by Claude Code itself. The fence is the argv (`argv`):
@@ -132,7 +132,7 @@ def claude_bin() -> str:
 
 def argv(spec, kind: str, *, read_dirs: Sequence[str] = (), write_globs: Sequence[str] = (),
          services: bool = False, servers: dict | None = None, binary: str = "claude") -> list[str]:
-    """The `claude -p` argv of a side session (PLAN C.1 notes). `servers`: the MCP servers to list (only the
+    """The `claude -p` argv of a side session. `servers`: the MCP servers to list (only the
     nightly's services server today)."""
     tools = "Read,Glob,Grep" + (",Edit,Write" if write_globs else "")
     rules = read_rules(read_dirs) + edit_rules(spec.home, write_globs)
@@ -375,7 +375,7 @@ def run_side(spec, kind: Literal["check", "reviewer", "nightly"], prompt: str, *
     try:
         save_row(spec.id, rec)
         try:
-            # R4: the app owns the home's project settings; a hook a session planted there never runs here.
+            # The app owns the home's project settings; a hook a session planted there never runs here.
             hm.ensure_settings(spec.home)
             servers = _services_servers(spec, kind) if (services and kind == "nightly") else {}
             binary = claude_bin()

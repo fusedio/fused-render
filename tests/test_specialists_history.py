@@ -116,7 +116,7 @@ def test_guard_stands_down_when_a_main_turn_ran_during_the_breakout_turn(app_hom
 
 
 def test_settings_and_repo_config_are_the_apps(app_home):
-    """R4: whatever a session wrote to the home's project settings never reaches history, and repository config a
+    """Whatever a session wrote to the home's project settings never reaches history, and repository config a
     session planted (a clean filter runs a command inside the app's own `git add`) is dropped before a commit."""
     import json
 

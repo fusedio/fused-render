@@ -1,11 +1,11 @@
-"""The router's post-dispatch hook for agent calls (PLAN A.5 `claude_agent.py`, C.2).
+"""The router's post-dispatch hook for agent calls (docs/specialists.md §7 for the grant).
 
 `after_agent_call(action, params, envelope)` runs after every `/api/claude/agent` call while the flag is on:
 
 * `start` with a `specialist` param: main chat -> `chat.record_start`; breakout -> the minted session on its record.
 * `decide` deny -> signal `deny`; `cancel` -> `stop`; `snapshot_revert` -> `undo` (against the task session).
-* `decide` allow on a specialist session's service card -> the one-time grant `services.call` spends (CONTRACT
-  C2). `agent._decide` calls `grant_from_decision` itself BEFORE writing the decision (so the call it lets through
+* `decide` allow on a specialist session's service card -> the one-time grant `services.call` spends.
+  `agent._decide` calls `grant_from_decision` itself BEFORE writing the decision (so the call it lets through
   can never reach `services.call` first); the post-hook repeats it, which records nothing twice.
 
 Never raises (the router wraps it too).

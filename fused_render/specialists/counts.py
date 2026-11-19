@@ -1,4 +1,4 @@
-"""The counts a specialist keeps for the user (PRODUCT §9, PLAN B.6), and the small file helpers the learning loop
+"""The counts a specialist keeps for the user (docs/specialists.md §2 "Ids and formats"), and the small file helpers the learning loop
 shares (`read_json`, `write_json`, `file_lock`).
 
     <home>/.specialist/counts.json

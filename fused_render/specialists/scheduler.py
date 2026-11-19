@@ -1,4 +1,4 @@
-"""The specialists' timer (PLAN A.2 "Nightly scheduler", C.3).
+"""The specialists' timer (docs/specialists.md §6 "The scheduler").
 
 One daemon thread, started only while the flag is on (`start`, the server's startup hook and the prefs switch;
 idempotent). The first tick runs `start_delay_s()` after it, then every `tick_s()` (`FUSED_RENDER_SPECIALIST_TICK_S`

@@ -30,7 +30,7 @@ export interface SpecialistSummary {
   /** One line of status for the list ("Working on …", "Learned 3 things last night"). */
   status: string;
   working: boolean;
-  /** C5: the specialist's model, the default of its chats (R7). Absent on an
+  /** The specialist's model, the default of its chats. Absent on an
    *  older server. */
   model?: string;
   /** Present when the server sends the triggers on the list (it may not). */
@@ -210,7 +210,7 @@ export interface ServiceRow {
   kind: "connect" | "app" | string;
   connected: boolean;
   allowed: boolean;
-  // CONTRACT: optional per-tool facts, so a breakout's card can tell a read
+  // Optional per-tool facts, so a breakout's card can tell a read
   // (may offer "Approve, don't ask again") from a write (never). Absent: the
   // breakout offers nothing.
   tools?: { name: string; write: boolean }[];
@@ -247,7 +247,7 @@ export interface TaskEvent {
   at: number;
   specialist: { id: string; name: string };
   receipt_id?: string;
-  /** `pull`: how many memory entries, skills and topic files were added (C5). */
+  /** `pull`: how many memory entries, skills and topic files were added. */
   entries?: number;
   skills?: number;
   knowledge?: number;
@@ -261,7 +261,7 @@ export interface TaskEvent {
   session_id?: string;
 }
 
-/** C5: what a pull added, laid out for a person (GET …/receipts/{rid} `view`). */
+/** What a pull added, laid out for a person (GET …/receipts/{rid} `view`). */
 export interface ReceiptView {
   memory?: { id?: string; text: string; basis?: string }[];
   said?: { text: string }[];
@@ -323,7 +323,7 @@ export const patchSpecialist = (
   id: string,
   body: Partial<Pick<SpecialistDetail, "name" | "subject" | "face" | "model" | "effort" | "triggers">>,
 ) =>
-  // CONTRACT: B.5 says PATCH; `mutateJson` speaks PUT/POST/DELETE only, so the
+  // The route is PATCH (docs/specialists.md §8); `mutateJson` speaks PUT/POST/DELETE only, so the
   // PATCH goes through fetch with the same guard header.
   patchJson<SpecialistDetail>(one(id), body);
 export const deleteSpecialist = (id: string) => del<{ ok: true }>(one(id));
@@ -427,7 +427,7 @@ async function patchJson<T>(url: string, body: unknown): Promise<T> {
   return data;
 }
 
-/** C5: the specialist behind this route was deleted (410 `reason: "deleted"`,
+/** The specialist behind this route was deleted (410 `reason: "deleted"`,
  *  or a 404 / 410 for the specialist itself). */
 export function isSpecialistDeleted(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
@@ -458,7 +458,7 @@ export function errorText(err: unknown): string {
 
 // ── wording shared by the page and the task side ──────────────────────────
 
-/** The revert request (C3/C4 prefix), used only when the server's answer has
+/** The revert request (`REVERT_PREFIX`), used only when the server's answer has
  *  no message of its own. The change's text is the first quoted string, which
  *  is what the thread shows ("Asked to undo: <text>"). */
 export function revertMessage(item: ChangeItem, _run?: string): string {
@@ -469,8 +469,8 @@ export function revertMessage(item: ChangeItem, _run?: string): string {
   );
 }
 
-// ── C3: the fixed first characters of app-written messages ────────────────
-// The backend pins these with tests; the thread renders by them (R1).
+// ── The fixed first characters of app-written messages (docs/specialists.md §5) ──
+// The backend pins these with tests; the thread renders by them.
 export const SEED_PREFIX = 'Brief from the task "';
 export const CLOSE_OUT_PREFIX = "The user is closing this breakout";
 export const REVERT_PREFIX = "Undo this change from the latest update: ";
@@ -486,7 +486,7 @@ export function sanitizeToolPart(s: string): string {
 
 /** Which allowed-list key a services tool belongs to: the longest service key
  *  whose sanitised form prefixes the tool's own part. */
-// CONTRACT: B.4 names service tools `<key>_<tool>` (sanitised, possibly
+// The server names service tools `<key>_<tool>` (sanitised, possibly
 // truncated with a hash). There is no route that maps a tool name back to its
 // key, so the card matches it against GET …/connections. A truncated name of a
 // very long key would not match and the button is then not drawn.

@@ -1,4 +1,4 @@
-"""The shipped specialists, installed the first time the flag is on (PRODUCT §1, scenario B).
+"""The shipped specialists, installed the first time the flag is on (docs/specialists.md §2 "Create, seed, delete").
 
 One today: Canvas. Its manifest and subject section live in `shipped/canvas/`; its skills are COPIED from the
 experts' shipped Canvas material (`fused_render/experts/shipped/canvas-reference/skills/*.md`), never moved, so

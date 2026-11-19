@@ -69,7 +69,7 @@ def test_create_seeds_the_brief_and_counts(client, parent):
     status, out = _open(client, spec, parent, brief={"problem": "Edited problem", "tried": "t", "look_at": "l"})
     assert status == 200, out
     bid = out["breakout_id"]
-    # "home" is the breakout's private workroom (C1), with what does not load there natively copied in
+    # "home" is the breakout's private workroom, with what does not load there natively copied in
     work = os.path.join(spec.home, ".specialist", "breakouts", bid, "work")
     assert out["home"] == work == breakouts.cwd(spec.id, bid) and out["name"] == "Canvas"
     for rel in ("memory.md", "said.md"):
@@ -165,7 +165,7 @@ def test_close_drafts_the_summary_and_files_the_note(client, parent, answer):
     assert note2["kind"] == "case" and note2["basis"] == "guess" and "just prose" in note2["evidence"]
     assert len(breakouts.get(spec.id, bid)["closes"]) == 2
     kinds = [e["kind"] for e in _events(client)]
-    assert kinds == ["breakout_closed"]  # one event per breakout, its current state (C5)
+    assert kinds == ["breakout_closed"]  # one event per breakout, its current state
     listed = json.loads(client.get("/api/specialists/breakouts?parent_session_id=task-1")[2])["breakouts"]
     assert [(b["id"], b["name"], b["status"]) for b in listed] == [(bid, "Canvas", "closed")]
 
@@ -226,7 +226,7 @@ def test_deleted_specialist_with_an_open_breakout(client, parent):
     assert sorted(ended) == ["run-b", "run-m"] and os.path.realpath(out["home"]) in asked
     listed = json.loads(client.get("/api/specialists/breakouts?parent_session_id=task-1")[2])["breakouts"]
     assert [(x["id"], x["status"], x["name"]) for x in listed] == [(bid, "deleted", "Canvas")]
-    for action in ("close-prompt", "closed", "discard", "reopen"):  # C5: 410, so the card can be dismissed
+    for action in ("close-prompt", "closed", "discard", "reopen"):  # 410, so the card can be dismissed
         assert _post(client, f"/api/specialists/{spec.id}/breakouts/{bid}/{action}") == (
             410, {"error": "This specialist was deleted.", "reason": "deleted"})
     assert _post(client, f"/api/specialists/never-was/breakouts/{bid}/discard")[0] == 404
@@ -265,7 +265,7 @@ def test_after_agent_call_records_sessions_and_signals(client, parent, monkeypat
 
 # ------------------------------------------------------------ fix wave (BE-1) ---
 def test_app_written_prefixes_are_pinned(client, parent):
-    """CONTRACT C3: the frontend recognises app-written messages by these exact first characters."""
+    """The frontend recognises app-written messages by these exact first characters."""
     from fused_render.specialists import breakouts
 
     spec = make_specialist("Canvas", "Fused canvases")
@@ -274,13 +274,13 @@ def test_app_written_prefixes_are_pinned(client, parent):
     assert breakouts.BREAKOUT_SEED.startswith('Brief from the task "')
     assert breakouts.CLOSE_OUT.startswith("The user is closing this breakout")
     assert breakouts.CLOSE_OUT_FOLLOWUP.startswith("The user is closing this breakout")
-    # C6's basis rule rides in the close-out request
+    # The user-said basis rule rides in the close-out request
     for text in (breakouts.CLOSE_OUT, breakouts.CLOSE_OUT_FOLLOWUP):
         assert "if the user stated it to you in this conversation, the basis is user-said" in text
 
 
 def test_charter_of_a_new_home_says_no_ids_and_no_git(client):
-    """CONTRACT C6 (new homes only)."""
+    """A new home's charter: plain words, no git, the user-said basis rule (new homes only)."""
     spec = make_specialist("Canvas", "Fused canvases")
     with open(os.path.join(spec.home, "CLAUDE.md")) as f:
         charter = f.read()
@@ -291,7 +291,7 @@ def test_charter_of_a_new_home_says_no_ids_and_no_git(client):
 
 
 def test_workroom_is_private_and_resynced_each_turn(client, parent):
-    """C1: the workroom lives under `.specialist/` (gitignored, so nothing written there is ever committed), the
+    """The workroom lives under `.specialist/` (gitignored, so nothing written there is ever committed), the
     transcript lookups use it, and the prompt hook refreshes its memory copy each turn."""
     from fused_render.specialists import breakouts, history
 

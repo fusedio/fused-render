@@ -8,7 +8,7 @@
 //   tail        chips older than every timed turn.
 //   dock        above the composer: the summary draft and the Breakout control.
 //   replaceTurn inside a specialist session: app-written messages drawn as
-//               product UI, never as their machine text (R1, protocol-view).
+//               product UI, never as their machine text (protocol-view).
 //   noteDraft   kept for the composer-draft listener (a plain draft has no label).
 //
 // Everything is null with the flag off, and inside a specialist session the
@@ -328,7 +328,7 @@ export function useSpecialistTaskSide(o: TaskSideOptions): TaskSide {
 
   const tail = task && placed.tail.length ? <TaskEventChips events={placed.tail} host={host} ended={ended} /> : null;
 
-  // R1: inside a specialist session, the app's own messages as product UI.
+  // Inside a specialist session, the app's own messages as product UI.
   const brief = o.specialist?.brief;
   const taskTitle = o.specialist?.taskTitle;
   const replaceTurn = useMemo(() => {

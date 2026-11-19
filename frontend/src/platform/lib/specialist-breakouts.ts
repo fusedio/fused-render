@@ -4,7 +4,7 @@
 // the Breakout menu, a closed chip's Reopen) and drawn by the one overlay the
 // shell mounts (shell/breakout/BreakoutCards → SpecialistBreakoutCard).
 //
-// In-page only (PLAN D.2 #12): after a reload the task lists its breakouts
+// In-page only (docs/specialists.md §11): after a reload the task lists its breakouts
 // from the server as chips with Reopen.
 import { useSyncExternalStore } from "react";
 import type { Brief } from "./specialists-api";
@@ -99,7 +99,7 @@ export function resetSpecialistBreakouts(): void {
   emit([]);
 }
 
-// ── THE SUMMARY DRAFT (PRODUCT §3.3.7) ────────────────────────────────────
+// ── THE SUMMARY DRAFT (docs/specialists.md §5) ────────────────────────────────
 // A closed breakout's summary waits as its OWN block above the task's
 // composer ("Draft from the Canvas specialist · not sent yet", Clear draft,
 // Send to the task) until the reader sends or clears it. It is kept per task

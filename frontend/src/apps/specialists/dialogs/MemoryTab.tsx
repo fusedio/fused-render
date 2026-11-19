@@ -1,4 +1,4 @@
-// Settings › Memory (PRODUCT §8; mock-up Memory.dc.html): the always-loaded
+// Settings › Memory (docs/specialists.md §9; mock-up Memory.dc.html): the always-loaded
 // entries with their provenance, the topic knowledge, and the inbox — each
 // note's kind, basis and source, "In effect now" for what the user said.
 import { useEffect, useState } from "react";
@@ -119,7 +119,7 @@ export function MemoryTab({
   const entry = mem?.entries.find((e) => e.id === sel) ?? null;
   const ask = () => {
     if (!entry) return;
-    // In the user's own words: it shows in the chat as what they said (R1).
+    // In the user's own words: it shows in the chat as what they said.
     const msg = `I want to change this in your memory: "${entry.text}". Ask me what should change, then change it.`;
     if (!sendToChat(msg)) setError("The chat is not ready yet.");
   };

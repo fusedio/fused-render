@@ -1,4 +1,4 @@
-// FE-A's additions to the specialists API (fix wave CONTRACT C4, C5). The
+// FE-A's additions to the specialists API (the routes are in docs/specialists.md §8). The
 // shared fetchers live in platform/lib/specialists-api.ts (FE-B owns it);
 // what only the Specialists page needs is spelled here.
 import { getJson, mutateJson } from "@platform/lib/api";
@@ -6,7 +6,7 @@ import { SPECIALISTS_API, type ChangeItem, type SpecialistSummary } from "@platf
 
 const one = (id: string) => `${SPECIALISTS_API}/${encodeURIComponent(id)}`;
 
-/** GET …/nightly (C5): `started` is the live run's start, epoch seconds. */
+/** GET …/nightly: `started` is the live run's start, epoch seconds. */
 export interface NightlyStatus {
   last_ok: number | null;
   running: boolean;
@@ -28,10 +28,10 @@ export function stoppedLine(why: string | null | undefined): string | null {
   return null;
 }
 
-/** A list row with C5's `model`. */
+/** A list row with the specialist's `model`. */
 export type SpecialistRow = SpecialistSummary & { model?: string };
 
-/** C3: the fixed first characters of the revert request. */
+/** The fixed first characters of the revert request. */
 export const REVERT_PREFIX = "Undo this change from the latest update: ";
 
 /** Used only when the server's answer carries no message of its own. */
@@ -39,7 +39,7 @@ export function revertFallback(item: ChangeItem): string {
   return `${REVERT_PREFIX}"${item.text}". Change only that, and tell me in plain words what you changed.`;
 }
 
-/** C4 item states: Revert is offered only on an active item. */
+/** Item states: Revert is offered only on an active item. */
 export function revertable(state: string | undefined): boolean {
   return !state || state === "active";
 }
@@ -98,6 +98,6 @@ export const MODELS = ["", "sonnet", "opus", "haiku"] as const;
 export const EFFORTS = ["", "low", "medium", "high"] as const;
 /** "Default" for "", else the word with a capital. */
 export const optionLabel = (m: string) => (m ? m[0].toUpperCase() + m.slice(1) : "Default");
-/** R7: what the one model setting means. */
+/** What the one model setting means. */
 export const MODEL_HINT =
   "The default for its chat, its breakouts and its background work. The chat's model pill can still change it for one chat.";

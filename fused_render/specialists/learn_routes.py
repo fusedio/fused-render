@@ -1,4 +1,4 @@
-"""`/api/specialists/{id}/…`: the learning loop's HTTP API (PLAN B.5 "Learning").
+"""`/api/specialists/{id}/…`: the learning loop's HTTP API (docs/specialists.md §8 "Learning").
 
     GET    …/{id}/panel                         the specialist page's right panel
     GET    …/{id}/learned?limit=5               the latest change lists ("at" = the run's time), each item with its
@@ -276,7 +276,7 @@ def inbox_list(spec_id: str):
 @_handled
 def note_add(spec_id: str, body=Body(None), x_fused: str | None = Header(None)):
     """"Send to a specialist" on a message: the user's choice, so basis is the body's (the page sends
-    user-said, PLAN D.2 #8) and the source is `user` with the message's session."""
+    user-said) and the source is `user` with the message's session."""
     if (bad := _require_fused(x_fused)) is not None:
         return bad
     from fused_render.specialists import inbox

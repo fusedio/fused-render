@@ -925,7 +925,7 @@ def _handle_approve(args: dict) -> dict:
         # Decided here, before anything is parked: no req card, no inflight
         # entry, no queue notification for a call that will never wait.
         return _text(refused)
-    # A specialist session's connected-service call (PLAN A.8): the server's
+    # A specialist session's connected-service call (docs/specialists.md §7): the server's
     # policy may allow it outright, or forbid the chat's "Always approve".
     policy = _specialist_policy(tool_name) if os.environ.get("FUSED_SPECIALIST_POLICY") else ""
     # The offer tool raises its own card when it runs; never a second one here.
@@ -2393,7 +2393,7 @@ def _handle_specialist_note(args: dict) -> dict:
 
 
 def _handle_specialist_breakout(args: dict) -> dict:
-    """The offer card (PLAN A.8): parked in PERM_DIR like an approval, answered
+    """The offer card (docs/specialists.md §4): parked in PERM_DIR like an approval, answered
     by the page's decide (allow + edited brief / deny), capped at OFFER_WAIT_S.
     Returns when answered; never waits on the breakout itself."""
     brief = {}

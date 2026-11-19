@@ -1,8 +1,8 @@
-"""The launch spec of a specialist main chat or breakout (PLAN A.2, A.7, C.1 notes).
+"""The launch spec of a specialist main chat or breakout (docs/specialists.md §3).
 
 Main chat and breakouts run on the task chat stack with the home as target. `agent._start` calls
 `spec(key, file)` for a start carrying `specialist="<id>:main"` (target: the home) or `"<id>:breakout:<bid>"`
-(target: the breakout's workroom, `breakouts.cwd`; CONTRACT C1), writes the answer to
+(target: the breakout's workroom, `breakouts.cwd`), writes the answer to
 the run dir as `specialist.json`, and `_claude_argv` folds it into the CLI's argv:
 
     deny        Edit rules (both spellings) for the paths this kind may not write
@@ -12,10 +12,10 @@ the run dir as `specialist.json`, and `_claude_argv` folds it into the CLI's arg
     mcp_servers `specialist` (note) and `specialist_services` (the roster), both `sessmcp.py`
     hooks       Stop -> specialist_hook.py stop (history.after_turn: commit / guard)
     append      one paragraph saying which kind of session this is
-    policy_env  FUSED_SPECIALIST_POLICY for the permission server's policy seam (no secret: CONTRACT C2)
+    policy_env  FUSED_SPECIALIST_POLICY for the permission server's policy seam (no secret)
     token       the session MCP servers' token (`.state/tokens.json`, 7-day expiry)
 
-Before answering it rewrites the home's `.claude/settings.json` to the canonical text (R4) and, for a breakout,
+Before answering it rewrites the home's `.claude/settings.json` to the canonical text and, for a breakout,
 refreshes its workroom. Any problem answers `{"error": sentence, "reason": code}` and the start is refused.
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ BREAKOUT_DENY = hm.PROTECTED
 MAIN_DENY = (".git/**", ".specialist/**", "inbox/**", "said.md", ".claude/settings.json",
              ".claude/settings.local.json")
 #: How `ask` names service tools. "server": one rule for the whole server; "tools": one rule per roster tool
-#: (the fallback PLAN D.1 names, used when a whole-server ask rule does not force the prompt in auto mode).
+#: (the fallback, used when a whole-server ask rule does not force the prompt in auto mode).
 ASK_MODE = "server"
 _TOKENS_LOCK = threading.Lock()
 
@@ -71,7 +71,7 @@ def _tokens_path() -> str:
 
 def new_token(spec_id: str, kind: str, breakout_id: str = "") -> str:
     """A session token for the session MCP servers of one run. It names the specialist, the kind and the breakout,
-    nothing else: it can call tools, never grant one (CONTRACT C2)."""
+    nothing else: it can call tools, never grant one (docs/specialists.md §7)."""
     tok = secrets.token_urlsafe(24)
     now = time.time()
     with _TOKENS_LOCK:
@@ -97,7 +97,7 @@ def check_token(spec_id: str, kind: str, token: str) -> dict | None:
 
 
 # ------------------------------------------------------------------- grants ---
-# A service call that is not `allow` runs only after the user answered its card (CONTRACT C2). The grant is
+# A service call that is not `allow` runs only after the user answered its card (docs/specialists.md §7). The grant is
 # recorded by the SERVER when the user's `decide allow` for that card passes through it (`agent._decide` ->
 # `agent_hooks.grant_from_decision`, before the decision is written, so the call can never arrive first); nothing a
 # session can read lets it record one. `services.call` consumes it: one call, within `GRANT_TTL_S`, of the same

@@ -1,4 +1,4 @@
-// THE BREAKOUT CONTROL inside a task (PRODUCT §3.3.3): "Open a breakout with"
+// THE BREAKOUT CONTROL inside a task (docs/specialists.md §9 "Inside a task"): "Open a breakout with"
 // — "A copy of this chat" (today's breakout, unchanged, only where it is on)
 // and one row per specialist, the ones whose folder triggers match this task
 // first under "Suggested". A menu: arrow keys move, Enter picks, Escape closes.

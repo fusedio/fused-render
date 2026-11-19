@@ -1,4 +1,4 @@
-// Settings › General (PRODUCT §8, §9): name, subject, triggers, model, the
+// Settings › General (docs/specialists.md §9): name, subject, triggers, model, the
 // charter, the counts we keep, and delete.
 import { useEffect, useState } from "react";
 import { Field, Select, TextArea, TextInput } from "@platform/ui/field/fields";

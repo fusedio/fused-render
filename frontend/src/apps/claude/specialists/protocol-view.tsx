@@ -1,4 +1,4 @@
-// PROTOCOL NEVER SHOWS (docs/specialists R1, CONTRACT C3). Inside a specialist
+// PROTOCOL NEVER SHOWS (docs/specialists.md §5 "App-written messages"). Inside a specialist
 // session (its main chat, a breakout card) the app writes some messages for
 // the model: the breakout's seed, the close-out request and its marked reply,
 // a revert request, a "review and send" request. The thread recognises them by
@@ -21,7 +21,7 @@ import {
 } from "@platform/lib/specialists-api";
 import type { Turn } from "../protocol/controller-api";
 
-/** An older server's revert wording, still in transcripts written before C4. */
+/** An older server's revert wording, still in older transcripts. */
 const OLD_REVERT_PREFIX = "Revert last night's change: ";
 
 export type ProtocolKind = "seed" | "close-request" | "close-reply" | "revert" | "send-draft";

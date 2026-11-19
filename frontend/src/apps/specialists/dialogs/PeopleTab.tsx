@@ -1,4 +1,4 @@
-// Settings › People (PRODUCT §1): area → owner → how to reach them (which
+// Settings › People (docs/specialists.md §7): area → owner → how to reach them (which
 // connected service, which handle or channel). One row per person, saved whole
 // (PUT …/people commits people.md). Service is a choice of the specialist's
 // connected services (GET …/connections). Wide: a table-like grid with one

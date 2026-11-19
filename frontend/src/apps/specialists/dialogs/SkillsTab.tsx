@@ -1,5 +1,5 @@
-// Settings › Skills (PRODUCT §1 "Skills: procedures in Claude Code's skill
-// format; nightly job, user"): the list, and one skill to read, edit, save or
+// Settings › Skills (skills in Claude Code's skill format, written
+// by the nightly job and the user; docs/specialists.md §2): the list, and one skill to read, edit, save or
 // delete. The file is SKILL.md with a front-matter head; the reader edits its
 // name and description as fields and the steps as text, never the raw YAML.
 // Any other front-matter keys are kept as they were.

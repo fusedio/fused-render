@@ -1,4 +1,4 @@
-"""Connected services for specialists (PRODUCT §7, PLAN A.2 "Connected services", C.1 notes).
+"""Connected services for specialists (docs/specialists.md §7).
 
 The roster is the bots' one: `apptools.registry()` = local app tools (apps with an MCP manifest) + every connected
 service's tools (`apptools.connect_records()`), the token kept in the server. Per specialist the manifest's
@@ -137,7 +137,7 @@ def call(spec, kind: str, name: str, args, *, session_id: str = "", breakout_id:
     """Run one service tool for a session of `kind`: `{"content":[{"type":"text","text"}], "isError"}`. Refuses
     a tool not in that kind's roster (so a nightly can never write). Main/breakout: a call whose `policy` is not
     `allow` runs only by spending the one-time grant the SERVER recorded when the user allowed its card
-    (`launch.take_grant`; CONTRACT C2), so the server, not only the CLI's prompt, enforces the card: a session that
+    (`launch.take_grant`), so the server, not only the CLI's prompt, enforces the card: a session that
     calls the route itself, with everything it can read, gets `NEEDS_CARD`. `session_id` and `breakout_id` are the
     server's own idea of the calling session (the token's record), never the caller's word. Never raises."""
     entry = next((e for e in roster(spec, kind) if e["name"] == _strip(str(name or ""))), None)

@@ -1,4 +1,4 @@
-"""The nightly job: the one writer of what a specialist knows (PRODUCT §5, §6; PLAN A.2, B.6, C.3).
+"""The nightly job: the one writer of what a specialist knows (docs/specialists.md §6 "The nightly job").
 
 `run(spec_id)` is the whole story, under the home's `flock(.specialist/nightly.lock)`:
 
@@ -14,7 +14,7 @@
 3. `changes.json` is validated (`changes.validate`); missing or invalid, the change list is one `Changed` item per
    file the run changed, and no note is digested. Still over the memory cap: one `NIGHTLY_COMPACT` pass.
 4. Apply (`_apply`, idempotent): drafts written (`drafts.materialize`), the notes the job accounted for (named in
-   an item's `from` or in `ignored`, C4; only notes it was shown) moved to `inbox/digested/`, cursors advanced, ONE
+   an item's `from` or in `ignored`; only notes it was shown) moved to `inbox/digested/`, cursors advanced, ONE
    commit `nightly <run>`, the change list reconciled with that commit's diff (`changes.build_items`: every changed
    memory entry has an item with its exact line before and after) and saved with that sha, `nightly.json.last_ok`.
 
@@ -238,7 +238,7 @@ def _sessions(spec_id: str) -> list[tuple[str, str]]:
 
 
 def breakout_cwds(spec_id: str) -> dict[str, str]:
-    """C1: {session id: working directory} of the breakouts (their private workrooms); {} when unknown, and then
+    """{session id: working directory} of the breakouts (their private workrooms); {} when unknown, and then
     the home is where their transcripts are looked up."""
     try:
         from fused_render.specialists import breakouts
@@ -574,7 +574,7 @@ def _apply(spec_id: str, active: dict, validated: dict | None, interrupted: bool
     draft_ids = drafts.materialize(spec_id, run, good.get("drafts") or []) if good else []
     if good:
         shown = set(active.get("notes") or [])
-        # C4: only a note named in an item's `from` or in `ignored` is digested.
+        # Only a note named in an item's `from` or in `ignored` is digested.
         accounted = changes.digested_of(good.get("items") or [], good.get("ignored") or [])
         inbox.mark_digested(spec_id, [n for n in accounted if n in shown])
         drafts.close(spec_id, good.get("closed_reports") or [], "nightly")
@@ -583,7 +583,7 @@ def _apply(spec_id: str, active: dict, validated: dict | None, interrupted: bool
     if existing is not None:
         rec = existing
     else:
-        # C4: reconciled with the run's diff (entry items carry the exact lines; uncovered changes get items).
+        # Reconciled with the run's diff (entry items carry the exact lines; uncovered changes get items).
         # Entries whose words did not change (only seen= / confirmed= / from=) are counted, not listed.
         items, confirmed = changes.build(spec_id, list((validated or {}).get("items") or []), sha)
         if interrupted:
@@ -645,7 +645,7 @@ def recover(spec_id: str) -> dict | None:
 
 # ------------------------------------------------------------------------ status ---
 def status(spec_id: str) -> dict:
-    """C5: `started` is when the running update began (None when none runs)."""
+    """`started` is when the running update began (None when none runs)."""
     st = state(spec_id)
     is_running = running(spec_id)
     started = None

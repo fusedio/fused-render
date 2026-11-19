@@ -1,4 +1,4 @@
-"""`/api/specialists…` task side (PLAN B.5 "Task side"; PRODUCT §3.2, §3.3, §4).
+"""`/api/specialists…` task side (docs/specialists.md §4, §5; routes in §8 "Task side").
 
     POST /api/specialists/tools/{list,pull,check,note,offer,offer-result}   the task tools (permission_server)
     POST /api/specialists/hook                                              specialist_hook.py (prompt/failure/stop)
@@ -454,7 +454,7 @@ def _in_workroom(spec, cwd: str) -> bool:
 
 
 def session_kind(spec, session_id: str, cwd: str = "") -> str:
-    """main or breakout for a session of `spec`: a session working in a breakout's workroom is a breakout (C1);
+    """main or breakout for a session of `spec`: a session working in a breakout's workroom is a breakout;
     otherwise the records, else the run's own meta, else breakout (the stricter one: its guard runs)."""
     from fused_render.specialists import chat
 
@@ -594,7 +594,7 @@ def breakouts_of_task(parent_session_id: str = Query("")):
 @router.get(PREFIX + "/{spec_id}/receipts/{rid}")
 @_handled
 def receipt_view(spec_id: str, rid: str):
-    """What a pull gave: the receipt, its exact text and `view` (plain product UI, CONTRACT C5). A deleted
+    """What a pull gave: the receipt, its exact text and `view` (plain product UI). A deleted
     specialist's receipts are read from its trashed home, so a task's View keeps answering."""
     from fused_render.specialists import paths, pull, receipts, store
 
@@ -637,7 +637,7 @@ def breakout_create(spec_id: str, body=Body(None), x_fused: str | None = Header(
 
     rec = breakouts.create(spec, parent=body.get("parent"), brief=body.get("brief"),
                            origin=str(body.get("origin") or ""), request_id=str(body.get("request_id") or ""))
-    # "home" is the folder the card's chat runs in: the breakout's workroom (CONTRACT C1).
+    # "home" is the folder the card's chat runs in: the breakout's workroom (docs/specialists.md §3).
     return {"breakout_id": rec["id"], "home": breakouts.cwd(spec.id, rec["id"]), "seed": breakouts.seed(rec),
             "start_params": breakouts.start_params(rec), "name": spec.name}
 
@@ -646,7 +646,7 @@ DELETED = {"error": "This specialist was deleted.", "reason": "deleted"}
 
 
 def _breakout_action(spec_id: str, bid: str, x_fused, fn):
-    """close-prompt / closed / discard / reopen. A specialist that was deleted answers 410 `DELETED` (C5), so the
+    """close-prompt / closed / discard / reopen. A specialist that was deleted answers 410 `DELETED`, so the
     card can say so and be dismissed."""
     if (bad := _require_fused(x_fused)) is not None:
         return bad

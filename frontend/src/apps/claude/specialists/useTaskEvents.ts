@@ -1,5 +1,5 @@
 // The specialist events of ONE task session (GET /api/specialists/task-events,
-// PLAN B.3/B.5): pulls, notes, breakouts opened/closed/discarded, stuck
+// docs/specialists.md §4): pulls, notes, breakouts opened/closed/discarded, stuck
 // nudges. Read when the session is known, again every POLL_MS while mounted,
 // and on demand (`refresh`) after this page did something that adds one.
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -104,8 +104,8 @@ export function useSpecialistList(enabled: boolean): readonly SpecialistSummary[
 }
 
 /** The specialist a tool input names: by id, then by name (case-insensitive). */
-// CONTRACT: the offer card's input carries `specialist` (what the task passed:
-// a name or an id) and `name` (PLAN A.8). The page resolves either against the
+// The offer card's input carries `specialist` (what the task passed:
+// a name or an id) and `name`. The page resolves either against the
 // list rather than trusting one of them to be the id.
 export function resolveSpecialist(
   rows: readonly SpecialistSummary[],

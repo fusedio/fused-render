@@ -101,7 +101,7 @@ test("the chat runs in the home as a specialist session, sending the brief once"
     extraParams: { specialist: "c1:breakout:b-1" },
     specialist: { id: "c1", kind: "breakout", name: "Canvas", taskTitle: "Publish Q4 canvas" },
     breakoutPrompt: "Brief from the task",
-    // R7: the specialist's model is the chat's default; who is being replied to.
+    // The specialist's model is the chat's default; who is being replied to.
     model: "claude-haiku-4-5",
     placeholder: "Reply to the Canvas specialist",
   });

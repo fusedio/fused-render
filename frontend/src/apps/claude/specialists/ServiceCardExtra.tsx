@@ -1,5 +1,4 @@
-// A CONNECTED SERVICE'S CARD in a specialist's main chat (PRODUCT §7, PLAN A.2
-// "Connected services"): the ordinary approval card for an
+// A CONNECTED SERVICE'S CARD in a specialist's main chat (docs/specialists.md §7): the ordinary approval card for an
 // `mcp__specialist_services__*` tool, plus "Approve, don't ask again" — allow
 // this call once AND add the service to the specialist's allowed list, so the
 // live session's next call of that service is allowed by the policy endpoint.
@@ -21,7 +20,7 @@ export function isServiceTool(tool: string): boolean {
   return tool.startsWith(SERVICE_TOOL_PREFIX);
 }
 
-/** Is `tool` listed as read-only by its service row? (CONTRACT: the optional
+/** Is `tool` listed as read-only by its service row? (From the optional
  *  `tools` on GET …/connections rows; absent = not known to be a read.) */
 export function isKnownRead(tool: string, services: readonly ServiceRow[]): boolean {
   for (const s of services) for (const t of s.tools ?? []) if (t.name === tool) return t.write === false;

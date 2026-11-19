@@ -1,4 +1,4 @@
-"""Revert and drafts (PLAN C.3; PRODUCT §6; acceptance U, V) and the panel / learned / memory routes."""
+"""Revert and drafts (docs/specialists.md §6 "Revert") and the panel / learned / memory routes."""
 import json
 
 import pytest
@@ -65,7 +65,7 @@ def test_revert_message_and_state(monkeypatch, api):
     code, _h, body = api.post(f"/api/specialists/{s.id}/changes/{RUN}/i2/revert", {})
     assert code == 200 and body["session_id"] == "main-1"
     msg = body["message"]
-    # C3 prefix; an item with no diff lines (an old record) falls back to its undo sentence; never a commit
+    # REVERT_PREFIX; an item with no diff lines (an old record) falls back to its undo sentence; never a commit
     assert msg.startswith('Undo this change from the latest update: "Reopen, do not retry."\n')
     assert "Put back retry." in msg and "abc1234" not in msg and RUN not in msg
     assert "never restore whole files from git" in msg and "do not mention ids or commits" in msg
@@ -203,9 +203,9 @@ def test_panel_and_memory_routes(api, monkeypatch):
     assert m["knowledge"] == [{"title": "Sync troubles", "path": s.home + "/knowledge/sync.md"}]
 
 
-# ------------------------------------------------------------------- C3 / C4 ---
+# ------------------------------------------------------- app-written prefixes ---
 def test_app_message_prefixes_are_pinned(monkeypatch):
-    """C3: the frontend recognises these app-written messages by their first characters."""
+    """The frontend recognises these app-written messages by their first characters."""
     assert changes.REVERT_PREFIX == "Undo this change from the latest update: "
     assert drafts.SEND_DRAFT_PREFIX == "Review and send this draft to "
     assert drafts.SEND_DRAFT.startswith(drafts.SEND_DRAFT_PREFIX)

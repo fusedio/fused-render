@@ -1,4 +1,4 @@
-// THE RIGHT COLUMN (PRODUCT §8; mock-up Main.dc.html): the latest update
+// THE RIGHT COLUMN (docs/specialists.md §9; mock-up Main.dc.html): the latest update
 // (already in effect; each item has Revert; See all), Waiting for you (drafts
 // to people: Review and send, Discard), Inbox (count, View), and at the
 // bottom a quiet "In your tasks". Breakouts are not listed or openable here.

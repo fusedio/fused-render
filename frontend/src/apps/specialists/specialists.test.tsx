@@ -1,4 +1,4 @@
-// The Specialists page (docs/specialists PLAN C.4 tests): routes, the list and
+// The Specialists page (docs/specialists.md §9): routes, the list and
 // create, the one chat's Clear and folded sessions, the side panel's Revert
 // and drafts, the settings tabs, and the flag gates in the shell.
 import { installDomShim, installPortalContainer, removePortalContainer } from "@platform/lib/testDomShim";

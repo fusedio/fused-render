@@ -2916,7 +2916,7 @@ def _specialist_hook_cmd(event: str) -> str:
 
 
 def _specialists_note() -> str:
-    """TASK_NOTE (PLAN B.7): appended to a task run that has the tools."""
+    """The specialists note: appended to a task run that has the tools."""
     return (" SPECIALISTS: the user keeps specialists, each of whom knows one "
             "subject in depth. Call mcp__fused_render__specialist_list when the work may "
             "touch a subject someone knows better, then specialist_pull for "
@@ -5300,7 +5300,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # above built, AFTER that branch's own hook, so a breakout's refusal (exit
     # 2) still wins over this hook's allow.
     if spec:
-        # A specialist's main chat / breakout (launch spec, PLAN A.7): its deny
+        # A specialist's main chat / breakout (launch spec, docs/specialists.md §3): its deny
         # and ask rules and its hooks (Stop) beside whatever is above.
         perms = settings.setdefault("permissions", {})
         for key in ("deny", "ask"):
@@ -7011,7 +7011,7 @@ def _start(file: str, message: str, session_id: str, model: str,
                     "reason": "breakout_fresh_only", "backend": backend}
     sp_spec = None
     if specialist:
-        # A specialist's main chat or breakout (PLAN A.7): Claude only, flag
+        # A specialist's main chat or breakout (docs/specialists.md §3): Claude only, flag
         # on, never the research-only breakout or a fork; the launch spec
         # (deny/ask/allow rules, servers, hooks, prompt) comes from the server.
         if not _specialists_pref():

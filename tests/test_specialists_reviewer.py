@@ -1,4 +1,4 @@
-"""The reviewer (PLAN C.3; PRODUCT §4 "Reviewer rules"; acceptance S and X for reviews)."""
+"""The reviewer (docs/specialists.md §6 "The reviewer")."""
 from _specialists_conftest import *
 from _specialists_conftest import make_specialist, stub_side
 
@@ -203,7 +203,7 @@ def test_parse_review_rejects_garbage():
 
 
 def test_unrelated_failure_is_a_count_not_a_note(monkeypatch):
-    """C5: a pulled task that failed for a reason outside the specialist's subject adds no note."""
+    """A pulled task that failed for a reason outside the specialist's subject adds no note."""
     s = make_specialist()
     calls = stub_side(monkeypatch, answer="<<<REVIEW\noutcome: unrelated\nentries: none\nkind: gap\nbasis: verified\n"
                                           "claim: The gh CLI was missing.\nREVIEW>>>")

@@ -1,4 +1,4 @@
-"""Behaviour signals recorded against a task session (PRODUCT §4; PLAN A.2 "Behaviour signals").
+"""Behaviour signals recorded against a task session (docs/specialists.md §4 "Signals").
 
     <root>/.state/signals/<session_id>.jsonl    one {"kind","at","detail"} per line
 

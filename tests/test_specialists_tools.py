@@ -1,5 +1,5 @@
-"""The task tools' routes (`/api/specialists/tools/*`, PLAN B.5 task side): list, pull (G), check (I), note (R),
-offer; receipts and the task's chips; deletion with pending receipts (Z). Side sessions are stubbed."""
+"""The task tools' routes (`/api/specialists/tools/*`, docs/specialists.md §8 "Task side"): list, pull, check,
+note, offer; receipts and the task's chips; deletion with pending receipts. Side sessions are stubbed."""
 import json
 import os
 
@@ -76,11 +76,11 @@ def test_pull_by_choice_records_a_receipt_and_includes_only_said_notes(client, t
     (ev,) = [e for e in _events(client) if e["kind"] == "pull"]
     assert ev["receipt_id"] == rec["id"] and ev["entries"] == 2 and ev["trigger"] == "choice"
     assert ev["specialist"] == {"id": spec.id, "name": "Canvas"}
-    assert ev["knowledge"] == 1 and ev["skills"] == 0  # C5
+    assert ev["knowledge"] == 1 and ev["skills"] == 0
     status, _, raw = client.get(f"/api/specialists/{spec.id}/receipts/{rec['id']}")
     view = json.loads(raw)
     assert status == 200 and view["text"] == text and "text" not in view["receipt"]
-    # C5 `view`: plain product UI, no receipt line, no provenance braces, no paths, no note ids
+    # The receipt's `view`: plain product UI, no receipt line, no provenance braces, no paths, no note ids
     assert view["view"] == {
         "memory": [{"id": "m-3f2a", "text": "When a sync stalls, reopen the canvas.", "basis": "verified"},
                    {"id": "m-0b1c", "text": "Use the staging space.", "basis": "guess"}],

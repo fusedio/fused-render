@@ -1,4 +1,4 @@
-"""`/api/specialists*`: the core HTTP API (PLAN B.5 "Core").
+"""`/api/specialists*`: the core HTTP API (docs/specialists.md §8 "Core").
 
 Every route depends on `flag.require` (flag off: 404 `{"detail": "Not Found"}`, as if the route did not exist).
 POSTs need `X-Fused: 1` (PUT/PATCH/DELETE are preflighted by the browser anyway). Errors are `{"error": sentence}`:

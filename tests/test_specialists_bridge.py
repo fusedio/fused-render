@@ -1,4 +1,4 @@
-"""The specialist task tools and the services policy seam on the per-run permission server (PLAN A.8, B.4).
+"""The specialist task tools and the services policy seam on the per-run permission server (docs/specialists.md §4, §7).
 
 The server is driven over its own stdio JSON-RPC against a stub HTTP server standing in for `/api/specialists`;
 the `claude` CLI is never invoked.
@@ -311,7 +311,7 @@ def test_policy_ask_always_ignores_the_always_store(tmp_path, stub):
 
 
 def test_an_approved_card_posts_nothing(tmp_path, stub):
-    """CONTRACT C2: the permission server never grants; the server records the grant from the user's decide."""
+    """The permission server never grants; the server records the grant from the user's decide."""
     stub.policy = "ask_always"
     (tmp_path / "runs" / "run7").mkdir(parents=True)
     (tmp_path / "runs" / "run7" / "meta.json").write_text(json.dumps({"resumed_from": "S2"}))

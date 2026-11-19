@@ -1,7 +1,7 @@
-"""Specialist breakouts opened from a task (PRODUCT §3.3; PLAN A.2 "Specialist breakout", B.3, B.7).
+"""Specialist breakouts opened from a task (docs/specialists.md §5).
 
     <home>/.specialist/breakouts/<bid>.json     the record
-    <home>/.specialist/breakouts/<bid>/work/    its workroom: the session's working folder (CONTRACT C1)
+    <home>/.specialist/breakouts/<bid>/work/    its workroom: the session's working folder (docs/specialists.md §3)
 
 A breakout is a fresh task-stack session (`specialist="<id>:breakout:<bid>"`) whose working folder is its private
 workroom under the home, seeded with `BREAKOUT_SEED`. Running there, its file writes cannot land on memory,

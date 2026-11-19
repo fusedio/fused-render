@@ -140,7 +140,7 @@ def _service_card(run_id, spec_id, kind, session_id, tool, bid=""):
 
 
 def test_a_session_alone_cannot_make_a_service_call_run(client, fake_roster, monkeypatch):
-    """QA (privileges) defect 2 / CONTRACT C2: the session's token, with everything its run dir holds (the launch
+    """QA (privileges) defect 2: the session's token, with everything its run dir holds (the launch
     spec as `specialist.json`, meta), cannot record a grant; only the user's `decide allow` through the agent
     router does, and that grant is spent once by that session only."""
     from fused_render.claude_agent import agent_module
@@ -299,7 +299,7 @@ def test_sessmcp_pipe_against_the_server(client, fake_roster):
 
 
 def test_working_while_the_main_chats_turn_is_live(client, monkeypatch):
-    """C5: `working` is true from the main chat's prompt hook to its Stop (and while a run's turn is open in the
+    """`working` is true from the main chat's prompt hook to its Stop (and while a run's turn is open in the
     home); a breakout's live turn, in its workroom, does not make the main chat look busy."""
     from fused_render.specialists import history
 

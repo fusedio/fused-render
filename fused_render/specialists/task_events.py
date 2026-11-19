@@ -1,4 +1,4 @@
-"""What the task transcript shows about specialists (PLAN B.3 "Task event", B.5 `task-events`).
+"""What the task transcript shows about specialists (docs/specialists.md §4 "Task events and chips").
 
     <root>/.state/tasks/<session_id>.jsonl    one TaskEvent per line (pull, stuck, breakout_*)
 
@@ -49,7 +49,7 @@ def event(kind: str, spec_id: str, name: str = "", **fields) -> dict:
            "receipt_id": "", "entries": 0, "trigger": "", "note_id": "", "undoable": False,
            "breakout_id": "", "session_id": ""}
     if kind == "pull":
-        out.update(skills=0, knowledge=0)  # what the pull listed besides memory (CONTRACT C5)
+        out.update(skills=0, knowledge=0)  # what the pull listed besides memory
     if kind == "note":
         # The note's basis, and whether it is in effect now (said.md): a model-claimed user-said note waits for
         # the user, so the chip can offer "Use now".
@@ -105,7 +105,7 @@ def for_session(session_id: str) -> list[dict]:
         if kind == "note":
             continue
         if kind in BREAKOUT_KINDS and bid:
-            # One event per breakout (CONTRACT C5), at the place it opened, whose kind is its current state.
+            # One event per breakout, at the place it opened, whose kind is its current state.
             ev = by_bid.get(bid)
             if ev is None:
                 by_bid[bid] = ev = dict(r)

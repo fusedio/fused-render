@@ -1,4 +1,4 @@
-// A SPECIALIST BREAKOUT CARD (PRODUCT §3.3.4–9, PLAN C.4): the floating
+// A SPECIALIST BREAKOUT CARD (docs/specialists.md §5): the floating
 // breakout card's chrome (`FloatingCard`), holding an ordinary chat that runs
 // in the breakout's workroom as a fresh session (never the research-only
 // `breakout` posture). Header: the specialist's face and name, "Breakout from
@@ -7,7 +7,7 @@
 // second card cascades clearly below the first one's head.
 //
 //   first open  the brief (`seed`) is sent once as the first message; the
-//               thread draws it as the brief box (R1, protocol-view).
+//               thread draws it as the brief box (protocol-view).
 //   Close       POST close-prompt → send it into the breakout (the thread
 //               hides it; the head says "Writing the summary…") → when that
 //               turn ends POST closed → the summary becomes the task's summary
@@ -146,7 +146,7 @@ export function SpecialistBreakoutCard({
     }),
   );
 
-  // The specialist's model is the chat's default (R7); a deleted specialist
+  // The specialist's model is the chat's default; a deleted specialist
   // has no chat to open.
   const detail = deps.detail;
   useEffect(() => {

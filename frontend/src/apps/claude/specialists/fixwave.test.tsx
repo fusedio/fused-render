@@ -1,4 +1,4 @@
-// The fix wave on the task side (docs/specialists R1, C3, C5): protocol never
+// The fix wave on the task side (docs/specialists.md §4, §5): protocol never
 // shows, the summary draft as its own block, one chip per breakout, a
 // readable guidance sheet, product words for the five tools, the Breakout
 // menu's keys / Suggested / pre-filled brief, and the services card's button

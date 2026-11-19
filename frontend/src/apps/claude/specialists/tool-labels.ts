@@ -1,5 +1,5 @@
-// THE FIVE SPECIALIST TOOLS AS PRODUCT TEXT (docs/specialists R1): wherever the
-// task chat names a tool call — the status line while it runs, the tool chip —
+// THE FIVE SPECIALIST TOOLS AS USER-FACING TEXT (docs/specialists.md §4 "The
+// five tools"): wherever the task chat names a tool call — the status line while it runs, the tool chip —
 // `mcp__fused_render__specialist_check` reads "Asking the Canvas specialist to
 // review the plan…", never "fused render: specialist check".
 import { specialistNameNow } from "./useTaskEvents";

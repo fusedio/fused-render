@@ -1,4 +1,4 @@
-/* SPECIALISTS INSIDE A CHAT (docs/specialists PRODUCT §8 "Inside a task"):
+/* SPECIALISTS INSIDE A CHAT (docs/specialists.md §9 "Inside a task"):
    the event chips, the offer card, the Breakout control, "Send to a
    specialist", the draft label and the services card's extra button. Chat
    tokens (`--c-*`, styles/chat.css) throughout; the one colour of our own is
@@ -169,7 +169,7 @@
 .spx-summary-row { display: contents; }
 .spx-proto-val { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--c-fg); }
 
-/* App-written messages inside a specialist session, as product UI (R1). */
+/* App-written messages inside a specialist session, as product UI (see protocol-view.tsx). */
 .spx-proto { max-width: 640px; margin: 8px 0 12px; font-size: 13px; }
 .spx-proto-head { font-size: 12px; font-weight: 600; color: var(--spx-tint-text); margin-bottom: 6px; }
 .spx-proto-brief .spx-offer-brief { background: var(--c-card-bg); }

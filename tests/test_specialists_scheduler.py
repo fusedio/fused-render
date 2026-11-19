@@ -1,4 +1,4 @@
-"""The specialists' timer (PLAN C.3; acceptance A for the scheduler, X for recovery)."""
+"""The specialists' timer (docs/specialists.md §6 "The scheduler")."""
 import os
 
 from _specialists_conftest import *

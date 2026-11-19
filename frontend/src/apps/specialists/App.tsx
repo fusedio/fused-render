@@ -1,4 +1,4 @@
-// THE SPECIALISTS PAGE (PRODUCT §8; mock-up Main.dc.html), mounted by the
+// THE SPECIALISTS PAGE (docs/specialists.md §9; mock-up Main.dc.html), mounted by the
 // shell for every /specialists* path while the flag is on (shell/App.tsx).
 // Laid out like the Bots page: the list on the left, ONE chat in the middle,
 // the side panel on the right. There is no list of conversations.

@@ -137,7 +137,7 @@ def test_tasks_collect_hides_home_sessions(app_home, monkeypatch):
     assert tasks._specialist_session({"path": "in"})
     assert not tasks._specialist_session({"path": "out"})
     assert not tasks._specialist_session({"path": ""})
-    # R6: hidden with the flag off too (the root exists), in a breakout's workroom too
+    # Hidden with the flag off too (the root exists), in a breakout's workroom too
     monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
     assert tasks._specialist_session({"path": "in"})
     work = os.path.join(s.home, ".specialist", "breakouts", "b-1", "work")
@@ -146,7 +146,7 @@ def test_tasks_collect_hides_home_sessions(app_home, monkeypatch):
 
 
 def test_tasks_collect_hides_nothing_without_a_root(app_home, monkeypatch):
-    """R6: a user who never turned specialists on has no root, so a folder that merely sits where it would be is
+    """A user who never turned specialists on has no root, so a folder that merely sits where it would be is
     still listed."""
     from fused_render import tasks_store
     from fused_render.server.routers import tasks
