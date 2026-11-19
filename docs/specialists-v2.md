@@ -63,6 +63,15 @@ whether an update is running or when the last one was. "Learned" shows every upd
 for an update, what it read, what it said and the diff, including an update that changed nothing. "Update now"
 leaves the menu, and the two small disclosures leave the Memory tab.
 
+## Decision, 2026-11-19: learning runs in its own background session
+
+The owner does not want the run that distils the inbox into memory and skills to happen in the main chat or to
+appear in it. Each run is a separate Claude Code session started in the specialist's folder, in the background. Its
+result is seen in the Learning tab (what it read, what it said, the diff), not as a chat message. Undo is telling
+the specialist what to remove, or editing memory. Because the run no longer has the main chat in view, the main
+chat being written to the inbox (above) is what carries those conversations to it. In the UI the run is called
+learning ("Learn now", "Learned"), not an update and not a dream: Expert bots use "dream" for a different job.
+
 ## Cut list
 
 Removed from version 1: the side panel; the Learned tab; the general inbox and "Send to a specialist"; the People
