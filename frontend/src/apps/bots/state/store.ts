@@ -429,7 +429,8 @@ const OPEN_RETRY_MS = 3_000;
  *  itself (one a minute) and finishes a recent open on its own once it lands, so asking often is cheap and a fallback. */
 function sendOpen(id: string): void {
   const spec = botById(id)?.specialist;
-  if (spec) { if (spec.new) void actSpecialist(() => specialistApi.seen(id)); return; }
+  // No poll after it: the next one reads the row again (a poll here would send this again while the row says new).
+  if (spec) { if (spec.new) void specialistApi.seen(id).then(() => { specAt = 0; }, () => {}); return; }
   if (openedOnce.has(id) || (openRetryAt[id] || 0) > Date.now()) return;
   openedOnce.add(id);
   void act(() => api.open(id), true).then((r) => {

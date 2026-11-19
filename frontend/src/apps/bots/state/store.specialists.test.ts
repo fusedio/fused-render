@@ -5,7 +5,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 
-const { pollOnce, getState, openBot } = await import("./store");
+const { pollOnce, getState, openBot, setState } = await import("./store");
 const { setBotsRoot } = await import("../lib/root");
 const { menuItems } = await import("../components/menuIcons");
 
@@ -20,7 +20,8 @@ const bots = { ts: 1, usage: null, imessage: null, bots: [{ id: "b1", name: "Hel
   return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
 };
 beforeEach(() => { calls.length = 0; });
-afterAll(() => { setBotsRoot(null); (globalThis as { fetch: unknown }).fetch = realFetch; });
+// The store is one module for every suite in the run: leave it as found.
+afterAll(() => { setBotsRoot(null); setState({ bots: [], sel: null, events: {}, cursors: {}, seen: {} }); (globalThis as { fetch: unknown }).fetch = realFetch; });
 
 describe("specialist rows", () => {
   test("off the page: the bots only, and no specialists request", async () => {
