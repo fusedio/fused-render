@@ -8,6 +8,7 @@ Version 1 was judged over-engineered and too complex to use (review of
 Review pages (private artifacts, owner's account):
 
 - UX v2 proposal, screen by screen with mock-ups: https://claude.ai/artifact/HQK3nifhM4YuH3AtUYicxd
+- Overview: the user's journey, then the engine: https://claude.ai/artifact/Cs3g9dyEWS3bh4Dnejwkcr
 - V1 walkthrough (screenshots and videos): https://claude.ai/artifact/VgCPvJnDveSZQcbeYBZJpo
 
 ## What is decided and what is not
@@ -98,12 +99,49 @@ helps in by itself. The model is chosen in the message box like any chat.
 - The specialist breakout keeps the same privileges as the main chat.
 - The plain breakout is itself a beta switch, so Specialists on implies it on.
 
+## The journey
+
+1. Make one: name, what it is an expert on, optional folder.
+2. Teach it by talking in its chat; it writes memory at once.
+3. Start a task in its folder; it helps by itself ("Used the … specialist").
+4. A task, or the user through a task, sends it a note ("Sent a note to …").
+5. When stuck, start a breakout "With" the specialist, or approve the task's
+   offer. The task keeps working.
+6. Talk it through in the card. If the problem is someone else's, it offers
+   to tell them; every send needs approval.
+7. Send back puts a handoff note in the task's message box.
+8. Once a day or on Update now, it folds what it gathered into memory and
+   says what it did in its chat. Then back to step 3.
+
+## The engine
+
+- **A folder, not a database.** `CLAUDE.md` (who it is, pulls in memory),
+  `memory.md`, skills, `inbox/`, and git history. An ordinary Claude Code
+  project.
+- **Conversations are normal Claude Code sessions in that folder**, on the
+  same chat engine as tasks. The main chat reads and writes memory directly.
+- **Tasks get three tools:** get guidance (memory plus matching skills; fetched
+  automatically in the specialist's folder), send a note (a file in `inbox/`),
+  open a breakout (raises the approval card).
+- **A breakout is the plain breakout pointed at the folder.** It has the main
+  chat's abilities but does not edit memory itself. There is no close-out
+  note: the update reads the breakout's conversation later. (Proposed; this
+  replaces v1's marked summary-and-note block.)
+- **The update is one scheduled run** (next section). It never sends messages
+  to people.
+- **History is git.** The app commits after every chat turn that changed
+  something, every manual edit and every update.
+- **Messages to people** go through the app's connected services, with the
+  app's approval card, only in a live chat or breakout.
+- **Experimental switch, off by default.** Off means no page, no tools, no
+  "With" choice; tasks behave as today.
+
 ## The update and its history
 
 - Runs once a day while the app is open and idle, or from Update now.
 - With no notes there is no run, no commit and no message.
 - It is one unattended run in the specialist's folder. It reads the waiting
-  notes and the tasks that used the specialist, edits memory and skills, and
+  notes, the tasks that used the specialist and its breakouts, edits memory and skills, and
   removes the notes it read, whether used or left out.
 - **Record:** one git commit per run in the specialist's folder. The diff is
   the trace: notes leave `inbox/`, lines appear in memory or a skill. The
