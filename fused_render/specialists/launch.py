@@ -5,7 +5,8 @@ the answer to the run dir, and `_claude_argv` folds it into the CLI's argv:
 
     kind        main, breakout or update (`_start` records no pill settings for an update)
     deny        Edit rules for the app's own files (`.git`, `.specialist`, the project's Claude Code settings)
-    allow       for a learning run, Read and Grep on exactly the transcripts its inbox entries point to
+    allow       for a learning run, the three exact grep commands (`update.greps`) on each transcript its inbox
+                entries point to: those commands and nothing else, never for a chat, a breakout or a task
     ask         `mcp__specialist_sends`: a send to a connected service raises the approval card in every mode
     mcp_servers the session MCP servers (`bots/botmcp.py`) for the connected services' reads and sends
     append      one sentence saying which kind of session this is
@@ -106,7 +107,7 @@ def spec(key: str, file: str) -> dict:
     st = chat.load(s.home)
     reads = [r["path"] for r in st["sources"].values() if run and st["update"] and r["file"] in st["update"]["files"]]
     return {"kind": kind, "deny": _rules("Edit", [os.path.join(s.home, g) for g in DENY]),
-            "allow": _rules("Read", reads) + _rules("Grep", reads),
+            "allow": _rules("Read", reads) + [f"Bash({c})" for r in reads for c in update.greps(r)],
             "ask": [] if run else ["mcp__specialist_sends"],
             "mcp_servers": {} if run else session_servers(s),
             "append": APPEND[kind],

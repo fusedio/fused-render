@@ -26,7 +26,7 @@ def test_main_and_breakout_get_the_services_and_a_send_always_asks():
         json.dumps(sp)  # the run dir stores it
         assert sp["kind"] == kind and sp["policy_env"] == {}
         assert set(_deny(s.home)) <= set(sp["deny"]) and not any("memory.md" in r for r in sp["deny"])
-        assert sp["ask"] == ["mcp__specialist_sends"]
+        assert sp["ask"] == ["mcp__specialist_sends"] and sp["allow"] == []  # grep is the learning run's only
         assert set(sp["mcp_servers"]) == set(services.SERVERS)
         entry = sp["mcp_servers"]["specialist_sends"]
         assert "botmcp" in os.path.basename(entry["args"][0]) and entry["timeout"] > 60_000
@@ -39,7 +39,7 @@ def test_main_and_breakout_get_the_services_and_a_send_always_asks():
 def test_the_update_runs_unattended_with_no_servers():
     s = make_specialist()
     sp = launch.spec(f"{s.id}:update", s.home)
-    assert sp["mcp_servers"] == {} and sp["ask"] == []
+    assert sp["mcp_servers"] == {} and sp["ask"] == [] and sp["allow"] == []  # no entries listed: no grep
     assert sp["policy_env"] == {"FUSED_SPECIALIST_UNATTENDED": "1"}
     assert set(_deny(s.home)) <= set(sp["deny"])
 
