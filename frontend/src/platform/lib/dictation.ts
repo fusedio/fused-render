@@ -211,6 +211,8 @@ export async function transcribeTake(
 // ---- can this machine record at all -----------------------------------------
 
 let canRecord: Promise<boolean> | null = null;
+const CAN_DICTATE_RETRIES = 3;
+const CAN_DICTATE_RETRY_MS = 4000;
 
 /** Test-only: forget the probe's answer. */
 export function resetCanDictateForTests(): void {
@@ -228,12 +230,14 @@ export function resetCanDictateForTests(): void {
  */
 export function useCanDictate(enabled = true): boolean {
   const [can, setCan] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!enabled) return;
     let live = true;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     // Only an ANSWER is kept: a probe that failed (the server still starting)
-    // is asked again by the next mount rather than hiding the mic for the
-    // life of the page.
+    // is asked again — a few times here, a few seconds apart, and by the next
+    // mount after that — rather than hiding the mic for the life of the page.
     const asked = (canRecord ??= captureSources().then((sources) => sources.audio?.available === true));
     asked.then(
       (ok) => {
@@ -241,12 +245,16 @@ export function useCanDictate(enabled = true): boolean {
       },
       () => {
         if (canRecord === asked) canRecord = null;
+        if (live && attempt < CAN_DICTATE_RETRIES) {
+          retry = setTimeout(() => setAttempt((n) => n + 1), CAN_DICTATE_RETRY_MS);
+        }
       },
     );
     return () => {
       live = false;
+      clearTimeout(retry);
     };
-  }, [enabled]);
+  }, [enabled, attempt]);
   return enabled && can;
 }
 

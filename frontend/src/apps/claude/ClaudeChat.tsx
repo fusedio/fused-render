@@ -541,6 +541,11 @@ export function annotationsForTests(): AnnotationsApi | null {
   return annForTests;
 }
 
+/** How many more times, and how far apart, the capture probe is asked after a
+ *  failure (see `probeTry`). */
+const PROBE_RETRIES = 3;
+const PROBE_RETRY_MS = 4000;
+
 /**
  * Resolve the param store before the chat itself mounts, so the body's hook
  * list never has to branch. A missing target is the one hard stop: with no
@@ -1976,9 +1981,15 @@ function ChatBody(props: ChatBodyProps) {
   // on the Bots composer's stricter rule: the button exists only once the
   // machine has said it can record — never on a probe that has not answered.
   const [dictate, setDictate] = useState(false);
+  // A PROBE THAT FAILED IS ASKED AGAIN (Bugbot, PR #2372): `dictate` only ever
+  // turns on from an answer, so a chat that loaded before the capture route
+  // was up would otherwise never draw the mic. Three more asks, a few seconds
+  // apart, then it waits for the next arm like before.
+  const [probeTry, setProbeTry] = useState(0);
   const annArmed = ann.mode !== "off";
   useEffect(() => {
     let live = true;
+    let retry = 0;
     void captureSources()
       .then((sources) => {
         // BEFORE the `live` gate and outside it: this is module state about the
@@ -2000,12 +2011,16 @@ function ChatBody(props: ChatBodyProps) {
         }
       })
       .catch(() => {
-        /* no answer is not a NO: the seat stays */
+        /* no answer is not a NO: the walkthrough's seat stays */
+        if (live && probeTry < PROBE_RETRIES) {
+          retry = window.setTimeout(() => setProbeTry((n) => n + 1), PROBE_RETRY_MS);
+        }
       });
     return () => {
       live = false;
+      window.clearTimeout(retry);
     };
-  }, [annArmed]);
+  }, [annArmed, probeTry]);
 
   /**
    * The recorder's state, told to the mode machine (T:8114's `.busy` seat) and

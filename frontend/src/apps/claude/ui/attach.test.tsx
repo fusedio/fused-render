@@ -630,6 +630,60 @@ test("the mic: shown only where the machine can record, right of the paperclip, 
   expect(buttons(/\bc-micbtn\b/)[0]!.props.title).toBe("Waiting on a scheduled message");
 });
 
+test("a live take holds Schedule: a hop never leaves with words still on their way back", async () => {
+  // Bugbot, PR #2372: the hop files what the box held when Continue was pressed
+  // and then leaves for the task card, so a take still recording or being
+  // transcribed would land in neither place.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (url === "/api/capture" && (!init?.method || init.method === "GET")) {
+      return json({ sources: { audio: { available: true, granted: true, reason: null } } });
+    }
+    if (url === "/api/capture/start") {
+      return json({ id: "c1", mode: "audio", path: "/r/a.m4a", jobId: "cap1", maxSeconds: 120, state: "recording" });
+    }
+    if (url === "/api/jobs") return json({ jobs: [{ id: "cap1", state: "running" }] });
+    return json({ id: "c1", mode: "audio", state: "cancelled", path: null, url: null, seconds: 1, maxSeconds: 120, jobId: "cap1" });
+  }) as unknown as typeof fetch;
+  let renderer: ReactTestRenderer | undefined;
+  try {
+    act(() => {
+      renderer = create(
+        <ComposerCard
+          variant="chat"
+          file="/p/app.py"
+          sessionId=""
+          controls={controls}
+          status="idle"
+          back="/explorer/view/p"
+          onSend={() => {}}
+          onStop={() => {}}
+          dictate
+        />,
+      );
+    });
+    const one = (cls: RegExp) =>
+      renderer!.root.findAll((n) => n.type === "button" && cls.test(n.props.className ?? ""))[0]!;
+    expect(one(/\bc-schedbtn\b/).props.disabled).toBe(false);
+    await act(async () => {
+      one(/\bc-micbtn\b/).props.onClick();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(one(/\bc-micbtn\b/).props.className).toContain("is-rec");
+    expect(one(/\bc-schedbtn\b/).props.disabled).toBe(true);
+    expect(one(/\bc-schedbtn\b/).props.title).toBe("Finish or discard the dictation first");
+  } finally {
+    // Unmounting cancels the take; the stub answers that call too.
+    await act(async () => {
+      renderer?.unmount();
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("the tray's own record is what a send and an unmount read — not the last render", async () => {
   // WHAT `live.current` IS FOR, and why a render is too late to write it.
   //

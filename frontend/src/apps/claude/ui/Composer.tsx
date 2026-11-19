@@ -81,6 +81,8 @@ export const homePlaceholderForAgent = (agent: string) => `Ask ${agent}…`;
  *  real sentence is `schedBlockReason`'s, threaded through `blockedReason`; this
  *  is the floor, so a dead control is never a dead control with nothing to say. */
 export const BLOCKED_SEND_TITLE = "Waiting on a scheduled message";
+/** Why Schedule is off while a dictation is recording or being transcribed. */
+export const MIC_HOLDS_SCHEDULE = "Finish or discard the dictation first";
 
 /** Where the composer's own controls open: shadcn/Base UI popovers and menus
  *  (`platform/shadcn/ui/popover`, `dropdown-menu`) and any dialog. Focus
@@ -1749,16 +1751,8 @@ export function ComposerCard({
   // (`spent`), a ↑ walk ends, the sentence is theirs (`typedRef`) — and the
   // caret is put after them once the render that paints them has landed.
   const caretAfter = useRef<number | null>(null);
-  /** Words that came back while a schedule hop held the box (`hopping`): the
-   *  hop has latched what the box holds and is about to file it, so nothing is
-   *  written under it. They land when the hop lets go. */
-  const heldWords = useRef<string | null>(null);
   const onDictated = useCallback(
     (words: string) => {
-      if (hoppingRef.current) {
-        heldWords.current = heldWords.current ? heldWords.current + " " + words : words;
-        return;
-      }
       const box = boxRef.current;
       const held = box ? box.value : textRef.current;
       const from = box ? (box.selectionStart ?? held.length) : held.length;
@@ -1782,12 +1776,6 @@ export function ComposerCard({
       /* a box that is not in a document refuses the call */
     }
   }, [text, boxRef]);
-  useEffect(() => {
-    const words = heldWords.current;
-    if (hopping || words === null) return;
-    heldWords.current = null;
-    onDictated(words);
-  }, [hopping, onDictated]);
   const mic = useDictation({
     requester: "shell:chat-composer",
     onText: onDictated,
@@ -1818,13 +1806,17 @@ export function ComposerCard({
   useEffect(() => {
     const was = micChat.current;
     micChat.current = { sessionId, file };
-    if (was.file !== file || (!!was.sessionId && was.sessionId !== sessionId)) {
-      heldWords.current = null;
-      micCancel();
-    }
+    if (was.file !== file || (!!was.sessionId && was.sessionId !== sessionId)) micCancel();
   }, [sessionId, file, micCancel]);
   /** A take being recorded or transcribed. The card stays open through it, so
-   *  the one seat that shows the clock and stops the take is always in view. */
+   *  the one seat that shows the clock and stops the take is always in view.
+   *
+   *  AND A TAKE AND A SCHEDULE HOP NEVER OVERLAP (Bugbot, PR #2372). The hop
+   *  files the words the box held when Continue was pressed and then leaves
+   *  for the task card, so words still on their way back from a take would be
+   *  in neither place. One set of words, one gesture at a time: the mic is off
+   *  while a hop is out (`hopping`), and Schedule is off — its open confirm
+   *  taken down — while a take is live. */
   const micLive = !!dictate && (mic.rec || mic.busy);
 
   const fit = useRowFit(
@@ -2742,12 +2734,14 @@ export function ComposerCard({
             // The block reads the SAME `blocked` the box does — never a second
             // read of the schedule, because a parallel notion of "is this session
             // blocked" is two answers to one question (T:17233-17236).
-            disabled={(variant === "chat" && !!blocked) || !!navLocked}
+            disabled={(variant === "chat" && !!blocked) || !!navLocked || micLive}
             {...(navLocked && navLockedReason
               ? { disabledReason: navLockedReason }
               : variant === "chat" && blocked && blockedReason
                 ? { disabledReason: blockedReason }
-                : {})}
+                : micLive
+                  ? { disabledReason: MIC_HOLDS_SCHEDULE }
+                  : {})}
             onCancel={focusBox}
             onNavigate={onNavigate}
             // THE HOP EMPTIES A SESSION-LESS BOX, and only that one. Continue
