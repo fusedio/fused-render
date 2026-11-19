@@ -53,6 +53,16 @@ it to remember something it still writes memory at once; the inbox copy is the f
 main chat that it did not write down is still read by the next update. The update's own turns are never written
 to the inbox.
 
+## Decision, 2026-11-19: the learning must be visible
+
+After using the build, the owner found the inbox a black box: "Update now" sat in a menu, appeared to do nothing,
+and nothing showed what was waiting or what had been learned. They want that visible but subtle and tucked away.
+Decided: the pane gets a third tab, Learning, with two lists. "Waiting" shows every entry the next update will read
+(a note, a breakout, a task, a chat), each openable and deletable, with Update now beside it and a line saying
+whether an update is running or when the last one was. "Learned" shows every update and every change to memory:
+for an update, what it read, what it said and the diff, including an update that changed nothing. "Update now"
+leaves the menu, and the two small disclosures leave the Memory tab.
+
 ## Cut list
 
 Removed from version 1: the side panel; the Learned tab; the general inbox and "Send to a specialist"; the People
