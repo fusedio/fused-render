@@ -1336,7 +1336,7 @@ main's fresh index with the review entries of the S3 copy
 head is remembered per worker, so it is not re-downloaded per request).
 `fused_app_github` stays as it is.
 
-The canvas is pushed with `fused workbench --env unstable canvas push .`
+The canvas is pushed with `fused --env unstable canvas push .`
 from inside the folder (`canvas.toml` gets one `[[canvas.nodes]]` row per
 UDF, same keys as the existing row). The owner shares the canvas and gives
 the share URL; until then `FUSED_RENDER_MARKETPLACE_API` carries it. The

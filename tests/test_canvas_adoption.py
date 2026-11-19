@@ -84,7 +84,7 @@ def _flag(harness, name="alpha"):
 
 
 def _pulls(harness):
-    return [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]
+    return [c for c in harness.calls() if c[:2] == ["canvas", "pull"]
             and "--force" in c]
 
 
@@ -122,7 +122,7 @@ def test_opening_a_reference_copy_clones_it_in_place(harness, tmp_path, monkeypa
     with m._flight_lock:
         m._tick()
     assert m.push_state == "idle" and m._dirty_since is None and m._base_collection_id == "c1"
-    assert [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]] == []
+    assert [c for c in harness.calls() if c[:2] == ["canvas", "push"]] == []
     # The id the sync learned is the marker's now.
     assert canvas_marker.read(str(folder)).id == "c1"
 
@@ -136,7 +136,7 @@ def test_the_marker_is_live_before_the_pull_starts(harness, tmp_path, monkeypatc
     real = canvases_mod._run_cli
 
     def run_cli(args, timeout, env):
-        if args[:3] == ["workbench", "canvas", "pull"]:
+        if args[:2] == ["canvas", "pull"]:
             seen["sync"] = canvas_marker.sync_of(str(folder))
             seen["id"] = canvas_marker.read(str(folder)).id
             seen["flag"] = _flag(harness).exists()
@@ -253,7 +253,7 @@ def test_with_an_external_cli_the_copy_is_unmarked_not_marked(harness, monkeypat
     real = canvases_mod._run_cli
 
     def run_cli(args, timeout, env):
-        if args[:3] == ["workbench", "canvas", "pull"]:
+        if args[:2] == ["canvas", "pull"]:
             seen["marker"] = (folder / MARKER).exists()
         return real(args, timeout, env)
 
@@ -395,7 +395,7 @@ def test_a_clone_stops_this_processs_mirror_run_first(harness, tmp_path, monkeyp
     assert again != pid
     assert _wait_for(lambda: canvas_mirror.status(ENV)["state"] == "ok", timeout=15)
     assert (folder / "a.py").read_text() == "a1\n"
-    assert len([c for c in harness.calls() if c[:6] == MIRROR_ARGV]) == 2
+    assert len([c for c in harness.calls() if c[:len(MIRROR_ARGV)] == MIRROR_ARGV]) == 2
 
 
 def test_sync_start_on_a_clone_still_at_its_old_path_stops_the_mirror_run_and_moves_it(
@@ -512,8 +512,8 @@ def test_rename_and_delete_run_with_the_mirror_held(harness, tmp_path, monkeypat
     real = canvases_mod._run_cli
 
     def run_cli(args, timeout, env):
-        if args[:3] in (["workbench", "canvas", "rename"], ["workbench", "canvas", "delete"]):
-            held[args[2]] = canvas_mirror.status(ENV)["held"]
+        if args[:2] in (["canvas", "rename"], ["canvas", "delete"]):
+            held[args[1]] = canvas_mirror.status(ENV)["held"]
         return real(args, timeout, env)
 
     monkeypatch.setattr(canvases_mod, "_run_cli", run_cli)
@@ -683,7 +683,7 @@ def test_rename_rereads_the_target_right_before_it_removes_it(harness, tmp_path,
     real = canvases_mod._run_cli
 
     def run_cli(args, timeout, env):
-        if args[:4] == ["workbench", "canvas", "rename", "alpha"]:
+        if args[:3] == ["canvas", "rename", "alpha"]:
             canvas_marker.write_live(str(target), name="gamma", collection_id="col-g")
         return real(args, timeout, env)
 
@@ -694,7 +694,7 @@ def test_rename_rereads_the_target_right_before_it_removes_it(harness, tmp_path,
     assert (target / "keep.txt").read_text() == "keep\n"
     assert canvas_marker.read(str(target)).sync == "live"
     assert (harness.clones / "alpha" / "canvas.toml").is_file()
-    assert ["workbench", "canvas", "rename", "gamma", "alpha"] in harness.calls()
+    assert ["canvas", "rename", "gamma", "alpha"] in harness.calls()
 
 
 def test_rename_clears_an_adoption_flag_left_under_the_new_name(harness, tmp_path, monkeypatch):

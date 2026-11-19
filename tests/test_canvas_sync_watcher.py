@@ -113,8 +113,8 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
     # The mid-push write re-armed the debounce: a second push follows.
     status = _wait_sync(lambda s: s["push_seq"] >= 2 and s["push_state"] == "idle")
     assert status["push_seq"] >= 2, status
-    pushes = [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
-    assert pushes and pushes[0][3] == copy_dir and pushes[0][4:] == ["--canvas", "alpha"]
+    pushes = [c for c in harness.calls() if c[:2] == ["canvas", "push"]]
+    assert pushes and pushes[0][2] == copy_dir and pushes[0][3:] == ["--canvas", "alpha"]
     assert not os.path.exists(copy_dir), "the frozen copy outlived its push"
     actions = [e["action"] for e in harness.client.get(
         "/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]]
@@ -287,7 +287,7 @@ def test_the_manual_push_waits_its_turn_behind_a_running_push(
     second.join(10)
     assert [(a.status_code, a.json()["ok"]) for a in answers] == [(200, True), (200, True)], \
         [a.text for a in answers]
-    assert len([c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]) == pushes
+    assert len([c for c in harness.calls() if c[:2] == ["canvas", "push"]]) == pushes
 
 
 # -- pid lock ------------------------------------------------------------------
@@ -1129,7 +1129,7 @@ def test_a_wholesale_pull_waits_for_a_live_claude_session(
     body = _pull_when_stale(harness)
     assert body["ok"] is True, body
     forces = [c for c in harness.calls()
-              if c[:3] == ["workbench", "canvas", "pull"] and "--force" in c]
+              if c[:2] == ["canvas", "pull"] and "--force" in c]
     assert len(forces) == 1, forces  # the clone's only
     assert (harness.clones / "alpha" / "remote_udf.py").exists()
     s2d = _state(harness)["legs"]["server_to_disk"]
@@ -1156,7 +1156,7 @@ def test_the_manual_push_refuses_over_a_server_change(harness, tmp_path, monkeyp
     assert body["code"] == "server_changed", body
     assert body["server_stale"]["udfs"] == [{"slug": "a", "kind": "changed"}]
     assert "a (changed)" in body["error"], body
-    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    assert not [c for c in harness.calls() if c[:2] == ["canvas", "push"]]
 
     monkeypatch.setattr(canvases_mod, "_shim_zip_command", lambda cli: working)
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
@@ -1654,7 +1654,7 @@ def test_identical_server_files_say_nothing_will_change(harness, tmp_path, monke
 
 
 def _push_argvs(harness):
-    return [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    return [c for c in harness.calls() if c[:2] == ["canvas", "push"]]
 
 
 def test_a_push_carries_if_match_and_merges_then_retries_on_412(harness, tmp_path, monkeypatch,

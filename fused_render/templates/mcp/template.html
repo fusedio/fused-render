@@ -273,7 +273,7 @@
 //      `fused` executable exists, and whether the recorded signatures still
 //      match the code (the drift verdict).
 //   2. `manifest.py` — the WRITE: the `[[tool]]` tables in the folder's
-//      `mcp.toml`, which is the contract `fused app serve` consumes. All
+//      `mcp.toml`, which is the contract `fused-render app serve` consumes. All
 //      validation lives there, so this page never decides what is legal; it
 //      renders the refusal payload.
 //   3. `/api/claude-config/mcp` — registration, through the SAME module the
@@ -507,8 +507,8 @@ async function refreshRegistration() {
 //
 // A pure function (not inlined at the one call site) so
 // tests/test_mcp_panel.py can pin this exact shape without a browser.
-function registrationDefinition(fused, path) {
-  return { command: fused, args: ["app", "serve", path] };
+function registrationDefinition(command, path) {
+  return { command: command, args: ["app", "serve", path] };
 }
 
 async function toggleRegistration() {
@@ -525,7 +525,7 @@ async function toggleRegistration() {
   // dereferencing a null report.
   // `registrationChecked` too: acting on a probe that has not answered would be
   // guessing which of add/remove the click means.
-  if (!report || !report.ok || !report.fused || !registrationChecked) return;
+  if (!report || !report.ok || !report.command || !registrationChecked) return;
   const name = serverName();
   await guard(async () => {
     if (registered) {
@@ -536,7 +536,7 @@ async function toggleRegistration() {
       registered = false;
       say("Unregistered " + name + ".");
     } else {
-      const definition = registrationDefinition(report.fused, report.path);
+      const definition = registrationDefinition(report.command, report.path);
       const out = await callConfig({
         action: "add",
         name: name,
@@ -788,14 +788,15 @@ function renderDriftBanner(parent) {
 }
 
 function renderState(parent) {
-  if (!report.fused) {
+  if (!report.command) {
     const note = text("div", "note bad");
-    note.appendChild(text("b", null, "No `fused` CLI available."));
+    note.appendChild(text("b", null, "No `fused-render` command available."));
     note.appendChild(text("div", null,
-      "Tools can be curated and saved, but registration needs the `fused` "
-      + "command this app itself provides — an MCP entry pointing at a binary "
-      + "that is missing (or at some other `fused` that happens to be on PATH) "
-      + "would fail inside Claude, so Register is disabled."));
+      "Tools can be curated and saved, but registration needs the "
+      + "`fused-render` command this app itself writes at startup — an MCP "
+      + "entry pointing at a binary that is missing (or at some other "
+      + "`fused-render` that happens to be on PATH) would fail inside Claude, "
+      + "so Register is disabled."));
     parent.appendChild(note);
     return;
   }
@@ -803,7 +804,7 @@ function renderState(parent) {
     const note = text("div", "note good");
     note.appendChild(text("b", null, "Registered as " + serverName() + "."));
     note.appendChild(text("div", null,
-      "A Claude session runs `" + report.fused + " app serve " + report.path
+      "A Claude session runs `" + report.command + " app serve " + report.path
       + "`. Saved changes to the manifest are picked up the next time it starts."));
     parent.appendChild(note);
   }
@@ -1034,9 +1035,9 @@ function renderRegistration() {
   if (!report || !report.ok) {
     label.textContent = "Not an app folder";
     disabled = true;
-  } else if (!report.fused) {
+  } else if (!report.command) {
     label.textContent = "Registration unavailable";
-    hint = "no `fused` CLI";
+    hint = "no `fused-render` command";
     disabled = true;
   } else if (probeFailed) {
     label.textContent = "Registration state unknown";

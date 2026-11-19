@@ -295,7 +295,7 @@ def test_the_registration_line_says_which_of_four_states_it_is_in():
     assert "Registration state unknown" in render    # the probe could not tell
     assert "Registered in Claude" in render          # yes
     assert "Not registered" in render                # no
-    assert "Registration unavailable" in render      # no `fused` CLI at all
+    assert "Registration unavailable" in render      # no `fused-render` wrapper at all
     # The two that must not be clickable are the two that have no direction.
     assert "!registrationChecked" in render
     assert "disabled = true" in render
@@ -368,7 +368,7 @@ def test_registration_is_null_guarded_independently_of_the_button():
     panel = _read(TEMPLATE)
     toggle = panel[panel.index("async function toggleRegistration()"):]
     guard = toggle[:toggle.index("await guard(")]
-    assert "!report || !report.ok || !report.fused" in guard
+    assert "!report || !report.ok || !report.command" in guard
 
 
 # ------------------------------------------------------------ registration
@@ -377,13 +377,13 @@ def test_registration_is_null_guarded_independently_of_the_button():
 # Register. Pinned here, run for real (not just grepped).
 
 
-def test_registration_command_is_the_bare_resolved_fused_path_posix():
+def test_registration_command_is_the_bare_resolved_wrapper_path_posix():
     [definition] = run_cases([{
         "fn": "registrationDefinition",
-        "fused": "/Users/anna/.fused-render/branches/main/fused-bin/fused",
+        "command": "/Users/anna/.fused-render/branches/main/fused-bin/fused-render",
         "path": "/Users/anna/my app",
     }])
     assert definition == {
-        "command": "/Users/anna/.fused-render/branches/main/fused-bin/fused",
+        "command": "/Users/anna/.fused-render/branches/main/fused-bin/fused-render",
         "args": ["app", "serve", "/Users/anna/my app"],
     }

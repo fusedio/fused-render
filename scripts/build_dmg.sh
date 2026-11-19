@@ -970,8 +970,8 @@ rm -rf "$BUILD_DIR/pil-venv"
 #     artifacts:
 #     - Contents/Resources/bin/fused: a terminal wrapper over the SAME baked-in CLI
 #       (bundled python + fused_render/_fused_cli.py shim), for commands a user
-#       runs in a terminal (e.g. a sign-in). fusedcli.setup_cli_hint names
-#       this path when running packaged.
+#       runs in a terminal (`fused login`). fusedcli.setup_cli_hint names this
+#       path when running packaged.
 #     - a smoke test invoking real CLI verbs through the shim, so a py2app
 #       packaging gap (an untraced dynamic import, a dropped data dir - see
 #       setup_py2app.py's fused-deps block) fails the BUILD, not the user's first
@@ -1004,9 +1004,11 @@ exec env -u PYTHONPATH PYTHONHOME="\$RES" "\$RES/../MacOS/python" "\$RES/lib/${P
 WRAPPER
 chmod +x "$WRAPPER_PATH"
 
-# --help imports the whole click command tree; `workbench canvas validate` on a
-# minimal canvas exercises the canvas models (pydantic et al) that canvas sync
-# runs on every publish (canvases.py's _SyncManager validates before a push).
+# --help imports the whole click command tree; `canvas validate` on a minimal
+# canvas exercises the canvas models (pydantic et al) that canvas sync runs on
+# every publish (canvases.py's _SyncManager validates before a push). The
+# shim runs `fused.cli`, which has no `share` or `env` group: probing those
+# would fail every build.
 SMOKE_CANVAS="$BUILD_DIR/smoke-canvas"
 rm -rf "$SMOKE_CANVAS"
 mkdir -p "$SMOKE_CANVAS"
@@ -1020,10 +1022,9 @@ smoke_probe() {
   fi
 }
 smoke_probe --help
-smoke_probe share --help
-smoke_probe workbench canvas validate "$SMOKE_CANVAS"
+smoke_probe canvas validate "$SMOKE_CANVAS"
 rm -rf "$SMOKE_CANVAS"
-echo "    fused --help / share --help / workbench canvas validate OK"
+echo "    fused --help / canvas validate OK"
 
 # ---------------------------------------------------------------------------
 # 4d-bis. Bundle uv (D176). NOT a convenience: the install loader (SPEC PY-18)

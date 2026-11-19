@@ -74,11 +74,11 @@ def fused_cli() -> FusedCli | None:
 
       1. FUSED_RENDER_FUSED_BIN — trusted verbatim, split into an argv so a
          compound command works (e.g. "uv run fused"); quote a component that
-         contains spaces (see _split_override). Mirrors the flow app's
-         OPENFUSED_BIN seam; also how tests substitute a stub CLI.
+         contains spaces (see _split_override). Also how tests substitute a
+         stub CLI.
       2. the `fused` package importable in THIS interpreter — run as
          ``[sys.executable, _fused_cli.py]`` (the shim sets argv[0] and calls
-         fused._cli.main). Covers a venv server that pip-installed the
+         fused.cli.main). Covers a venv server that pip-installed the
          [fused] extra AND the packaged macOS app, whose py2app bundle has no
          console scripts but bakes the fused package in (build_dmg.sh) and
          whose sys.executable is a real re-invokable interpreter (the
@@ -121,18 +121,14 @@ _PINNED_FUSED_RE = re.compile(r"^fused(?:\[[^\]]*\])?==")
 
 def _pinned_fused_version() -> str | None:
     """What THIS project pins `fused` to, from fused-render's own installed
-    metadata (``fused==X`` or ``fused[extra1,extra2]==X`` in Requires-Dist) —
-    the only source that exists at runtime, since a shipped app has no
-    pyproject.toml.
+    metadata (``fused==X`` in Requires-Dist, behind the `[fused]` extra's
+    marker) — the only source that exists at runtime, since a shipped app has
+    no pyproject.toml.
 
-    The optional `[...]` extras group must be matched and stripped, not just
-    the bare name: `[bundled]`/`[fused]` pin `fused[aws,mcp]==...` (since fused
-    2.9.3b9/b10, boto3, pyarrow, `pyjwt[crypto]` and mcp sit behind those extras,
-    so a bare `fused==` pin no longer builds a working DMG venv or a startable
-    `fused app serve`; the pyproject.toml comment on that line has the detail). A plain `startswith("fused==")`
-    check would silently stop matching the moment extras were added, turning
-    this drift check into a permanent no-op with no failing test — exactly the
-    class of defect `test_the_pin_is_discoverable_at_runtime` exists to catch.
+    An optional `[...]` extras group on the name is matched and stripped too,
+    so the check survives the pin gaining extras instead of silently turning
+    into a permanent no-op — the class of defect
+    `test_the_pin_is_discoverable_at_runtime` exists to catch.
     """
     try:
         from importlib.metadata import PackageNotFoundError, requires
@@ -156,7 +152,7 @@ def log_cli_provenance() -> str | None:
     and return the warning text (or None when all is well).
 
     A DEVELOPER diagnostic, not user-facing. For a shipping user there is no
-    other fused: the DMG bakes the pre-release wheel into the app's own
+    other fused: the DMG bakes the release wheel into the app's own
     interpreter and `fused_cli()`'s second branch is the only path they take —
     so both states this reports (an explicit override, or an installed fused
     that does not match the pin) are conditions only a dev checkout reaches.
@@ -273,49 +269,15 @@ CLI_DIR_ENV = "FUSED_RENDER_FUSED_CLI_DIR"
 CLI_BIN_SUBDIR = "fused-bin"
 
 
-# The env var `fused app serve` reads to pick the interpreter its compute
-# backend runs tools on (openfused #364, fused >= 2.9.3b7; OPENFUSED_ prefix,
-# not FUSED_). Unset means the CLI's legacy behaviour — a stdlib venv of its
-# own — which is why the wrapper below always names it.
-APP_SERVE_PYTHON_ENV = "OPENFUSED_APP_SERVE_PYTHON"
+# The env var that carries the `fused-render` wrapper's absolute path to the
+# templates: set by `export_render_wrapper` before the server serves, read only
+# by `templates/shared/appenv.py:render_bin`. Absent means "no wrapper", and the
+# MCP panel then does not offer registration.
+RENDER_BIN_ENV = "FUSED_RENDER_BIN"
 
-
-def _app_serve_python() -> str:
-    """The interpreter `fused app serve` should compute tools on: OURS.
-
-    Exactly `engine.get_backend()`'s `python_executable=envinstall.script_python()`
-    — the same call, not a second resolution of the same question — because the
-    venv cache key is (interpreter identity + sorted requirements): equal inputs
-    mean a tool resolves the environment the PAGE already built instead of
-    filling a parallel one nothing else reads, and a tool with no declared
-    dependencies runs on that interpreter rather than in a bare stdlib venv.
-
-    `script_python()` returning None means "ours" (D214: a standalone 3.12 in a
-    dev checkout, None in every packaged build that already runs 3.12), and the
-    backend resolves that None to the interpreter it is running IN — so None maps
-    to `sys.executable` here. Verbatim, deliberately: `os.path.realpath` of a
-    venv's python names the BASE interpreter, which is a different identity and
-    therefore a different venv key than our own runs use.
-
-    Cheap enough for the pre-serve path that calls it: the resolution is at most
-    two bounded, `close_fds=False` spawns (`uv python find` plus a version probe)
-    and is memoized once it succeeds — the same measurement every /api/run
-    pre-flight already makes, just made one step earlier.
-
-    Never raises — a wrapper is best-effort (see `export_fused_cli_env`), and
-    importing `envinstall` drags in the app's own machinery, so an ImportError
-    here must degrade to "this interpreter" rather than take the wrapper down.
-    """
-    try:
-        from fused_render import envinstall
-
-        resolved = envinstall.script_python()
-    except Exception:  # noqa: BLE001 — best-effort: fall back to ours
-        logger.warning("could not resolve the script interpreter for %s; "
-                       "using %s", APP_SERVE_PYTHON_ENV, sys.executable,
-                       exc_info=True)
-        resolved = None
-    return resolved or sys.executable
+# The wrapper's filename inside the fused-bin dir: what an MCP entry runs as
+# `fused-render app serve <dir>`.
+RENDER_WRAPPER_NAME = "fused-render"
 
 
 def _wrapper_text(cli: FusedCli) -> str:
@@ -329,7 +291,7 @@ def _wrapper_text(cli: FusedCli) -> str:
         `~/Fused/canvas/<env>/` it is that `<env>`, because the path segment
         IS the clone's environment (D1382) and a session in a prod clone must
         reach prod even when the default is another env — a bare `fused
-        workbench canvas pull`/`validate`/`whoami` there would otherwise hit
+        canvas pull`/`validate`/`whoami` there would otherwise hit
         the wrong Fused. Both `$PWD` and `pwd -P` are matched against both
         the base as given and its realpath, so a symlinked path (macOS
         `/var` → `/private/var`, a symlinked home) still matches. Outside a
@@ -337,20 +299,12 @@ def _wrapper_text(cli: FusedCli) -> str:
         CUSTOM_WORKBENCH_ENV is the exception at both steps: a custom clone,
         or a custom default, leaves FUSED_ENV unset (and unexported), so the
         CLI keeps the endpoint `~/.fused/settings.toml` names.
-      * OPENFUSED_APP_SERVE_PYTHON defaults to `_app_serve_python()`, so the
-        `fused app serve` the MCP panel registers globally (SPEC MC-5) computes
-        its tools on the interpreter page runs use — see that helper. Baked at
-        generation time, which is once per server start, and the wrapper is
-        rewritten on every start: an interpreter that only appears later (a 3.12
-        download landing mid-session) takes effect on the next one, exactly like
-        a changed FUSED_RENDER_FUSED_BIN.
       * an EXTERNAL cli gets PYTHONHOME/PYTHONPATH unset (same scrub as
         child_env — the packaged app's bundle-scoped interpreter vars break
         any other Python). The in-interpreter shim keeps them: they are what
         make sys.executable work in the bundle.
     """
     env_name = workbench_env()
-    serve_python = _app_serve_python()
     lines = ["#!/bin/sh",
              "# generated by fused-render (fusedcli.export_fused_cli_env);",
              "# rewritten on every server start — do not edit.",
@@ -360,10 +314,7 @@ def _wrapper_text(cli: FusedCli) -> str:
                      f"FUSED_ENV={shlex.quote(env_name)}")
     # Exported only when set: an unset FUSED_ENV is how a custom run keeps
     # the settings.toml endpoint.
-    lines += ['[ -z "${FUSED_ENV:-}" ] || export FUSED_ENV',
-             f'[ -n "${{{APP_SERVE_PYTHON_ENV}:-}}" ] || '
-             f"{APP_SERVE_PYTHON_ENV}={shlex.quote(serve_python)}",
-             f"export {APP_SERVE_PYTHON_ENV}"]
+    lines.append('[ -z "${FUSED_ENV:-}" ] || export FUSED_ENV')
     if cli.external:
         lines.append("unset PYTHONHOME PYTHONPATH")
     quoted = " ".join(shlex.quote(part) for part in cli.command)
@@ -401,6 +352,66 @@ def _clone_env_lines() -> list[str]:
             "fi"]
 
 
+def _write_executable(path: str, text: str) -> None:
+    """Write `text` to `path` as an executable script, creating its dir.
+
+    Written beside and renamed over: the wrappers are also REWRITTEN while the
+    server runs (the default environment changed, PUT /api/prefs), and a Claude
+    session exec'ing one in that instant must see the old file or the new one,
+    never a truncated one.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+    os.chmod(tmp, os.stat(tmp).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    os.replace(tmp, path)
+
+
+def render_wrapper_text() -> str:
+    """The `fused-render` wrapper: this interpreter running `fused_render.cli`.
+
+    No console script exists in the packaged builds, so the wrapper names the
+    interpreter and module outright, the way the supervisor starts the server.
+    PYTHONHOME is baked in only when this process genuinely needs one (the py2app
+    bundle, `engine.interpreter_home`): an MCP host starts the entry with none of
+    our environment, and there it is what makes the interpreter run. Nothing else
+    from this process's environment is persisted.
+    """
+    lines = ["#!/bin/sh",
+             "# generated by fused-render (fusedcli.export_render_wrapper);",
+             "# rewritten on every server start — do not edit."]
+    from fused_render import engine
+
+    home = engine.interpreter_home()
+    if home:
+        lines.append(f"export PYTHONHOME={shlex.quote(home)}")
+    lines.append(f'exec {shlex.quote(sys.executable)} -m fused_render.cli "$@"')
+    return "\n".join(lines) + "\n"
+
+
+def export_render_wrapper() -> str | None:
+    """Write the `fused-render` wrapper under home_dir()/fused-bin and publish its
+    path in RENDER_BIN_ENV; returns the path, or None when it cannot be written.
+
+    Independent of the `fused` CLI: `fused-render app serve` runs on this
+    interpreter alone, so the wrapper exists on a machine without the `[fused]`
+    extra. Regenerated on every call, once before the server serves. Never
+    raises.
+    """
+    from fused_render.shell.storage import home_dir
+
+    wrapper = os.path.join(home_dir(), CLI_BIN_SUBDIR, RENDER_WRAPPER_NAME)
+    try:
+        _write_executable(wrapper, render_wrapper_text())
+    except OSError as exc:
+        logger.warning("could not write the fused-render wrapper at %s: %s", wrapper, exc)
+        os.environ.pop(RENDER_BIN_ENV, None)
+        return None
+    os.environ[RENDER_BIN_ENV] = wrapper
+    return wrapper
+
+
 def export_fused_cli_env() -> str | None:
     """Write a `fused` wrapper the sessions we spawn can run, put its dir on
     PATH, and publish it for the templates; returns the wrapper dir, or None
@@ -430,17 +441,7 @@ def export_fused_cli_env() -> str | None:
     bin_dir = os.path.join(home_dir(), CLI_BIN_SUBDIR)
     wrapper = os.path.join(bin_dir, "fused")
     try:
-        os.makedirs(bin_dir, exist_ok=True)
-        # Written beside and renamed over: the wrapper is also REWRITTEN while
-        # the server runs (the default environment changed, PUT /api/prefs),
-        # and a Claude session exec'ing `fused` in that instant must see the
-        # old file or the new one, never a truncated one.
-        tmp = wrapper + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="") as fh:
-            fh.write(_wrapper_text(cli))
-        os.chmod(tmp, os.stat(tmp).st_mode
-                 | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        os.replace(tmp, wrapper)
+        _write_executable(wrapper, _wrapper_text(cli))
     except OSError as exc:
         logger.warning("could not write the fused CLI wrapper at %s: %s",
                        wrapper, exc)
@@ -453,14 +454,10 @@ def export_fused_cli_env() -> str | None:
     return bin_dir
 
 
-def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
-    """The child environment for a fused CLI run.
+def child_env(cli: FusedCli) -> dict[str, str]:
+    """The child environment for a fused CLI run. The env target is the
+    caller's to set (`set_fused_env`).
 
-    OPENFUSED_ENV targets the chosen env when one is given (the CLI's own
-    override channel). Callers that have no env to target (canvases.py's
-    `fused login`/`canvas push`/`canvas pull`) pass None and get the variable
-    CLEARED instead of inherited, so an ambient value in the server's own
-    environment can't leak an unrelated env target into the child.
     For an EXTERNAL cli (FUSED_RENDER_FUSED_BIN), interpreter-scoped vars are
     scrubbed: inside the packaged macOS app the process carries PYTHONHOME/
     PYTHONPATH pointing into the bundle, which would break any other Python's
@@ -469,10 +466,6 @@ def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
     work in the bundle.
     """
     child = dict(os.environ)
-    if env_name is not None:
-        child["OPENFUSED_ENV"] = env_name
-    else:
-        child.pop("OPENFUSED_ENV", None)
     if cli.external:
         for var in ("PYTHONHOME", "PYTHONPATH"):
             child.pop(var, None)
@@ -481,7 +474,7 @@ def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
 
 def setup_cli_hint() -> str:
     """The command users type in a terminal for one-time CLI setup
-    (`fused cloud setup`, `fused cloud login`).
+    (`fused login`).
 
     Inside the packaged macOS app (py2app sets sys.frozen) there is no
     user-facing `fused` on PATH — but the bundle ships a terminal wrapper
@@ -502,12 +495,18 @@ def setup_cli_hint() -> str:
     return "fused"
 
 
+# What release fused prints when a call needs a login: the refresh refusal names
+# `fused login`, and a missing credentials file says "credentials not found".
+_LOGIN_HINT = re.compile(r"\bfused login\b|credentials not found", re.IGNORECASE)
+
+
 def cli_error(stderr: str, fallback: str) -> str:
     """Last non-empty stderr line with click's `Error: ` prefix stripped — the
     CLI's messages already name the fix, so they reach the UI verbatim.
 
-    One adjustment: login errors say `fused cloud login`, which doesn't
-    resolve inside the packaged app (no `fused` on PATH) — when the bundled
+    One adjustment: login errors say `fused login` (backticked or not) or that
+    credentials were not found, and `fused` doesn't resolve inside the packaged
+    app (no `fused` on PATH) — when the bundled
     wrapper is the setup CLI, its real path is appended so the instruction is
     runnable as printed.
     """
@@ -515,8 +514,8 @@ def cli_error(stderr: str, fallback: str) -> str:
     message = lines[-1] if lines else fallback
     message = message.removeprefix("Error: ")
     setup = setup_cli_hint()
-    if setup != "fused" and "fused cloud login" in message:
-        message += f" (in this app: {setup} cloud login)"
+    if setup != "fused" and _LOGIN_HINT.search(message):
+        message += f" (in this app: {setup} login)"
     return message
 
 

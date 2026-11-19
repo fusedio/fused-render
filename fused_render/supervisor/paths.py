@@ -156,7 +156,6 @@ class DesktopPaths:
     def child_environment(
         self, instance_id: str, token: str, tools_dir: Path
     ) -> dict[str, str]:
-        openfused = self.state / "openfused"
         env = {
             "FUSED_RENDER_HOME": str(self.state),
             "FUSED_RENDER_CACHE_DIR": str(self.cache),
@@ -168,10 +167,6 @@ class DesktopPaths:
             "FUSED_RENDER_BRANCH": "",
             "FUSED_RENDER_DESKTOP_INSTANCE_ID": instance_id,
             "FUSED_RENDER_DESKTOP_INSTANCE_TOKEN": token,
-            "OPENFUSED_ENVS_FILE": str(openfused / "envs.json"),
-            "OPENFUSED_FUSED_CLOUD_CREDENTIALS": str(openfused / "fused-cloud-credentials.json"),
-            "OPENFUSED_SECRETS_FILE": str(openfused / "secrets.json"),
-            "OPENFUSED_WORKSPACES_DIR": str(openfused / "workspaces"),
             "UV_CACHE_DIR": str(self.cache / "uv"),
             # CLAUDE_CONFIG_DIR is deliberately NOT set here. It used to point at
             # <state>/claude to keep our run transcripts out of ~/.claude/projects,

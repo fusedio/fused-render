@@ -1,6 +1,6 @@
 """Reference canvases: run `fused canvas mirror` in the background (D1477).
 
-`fused workbench canvas mirror --output <env root>` pulls every canvas the
+`fused canvas mirror --output <env root>` pulls every canvas the
 signed-in account can reach — its own, its team's, the public catalog — into
 `~/Fused/canvas/<env>/{user,team,public}/` as read-only reference copies an
 agent greps for examples. The command owns those copies (their marker says
@@ -418,7 +418,7 @@ def summary(env: str) -> dict:
 
 
 def _argv(cli, env: str) -> list[str]:
-    return [*cli.command, "workbench", "--format", "json", "canvas", "mirror",
+    return [*cli.command, "--format", "json", "canvas", "mirror",
             "--output", _root(env)]
 
 

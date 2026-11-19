@@ -456,7 +456,7 @@ def test_delete_runs_on_the_server_and_removes_a_reference_copy_of_that_canvas(h
     res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"},
                               headers=GUARD)
     assert res.status_code == 200, res.text
-    assert ["workbench", "canvas", "delete", "alpha"] in harness.calls()
+    assert ["canvas", "delete", "alpha"] in harness.calls()
     assert not (harness.clones / "alpha").exists()
     # Another scope's folder of the same name is not this canvas's.
     assert (harness.root / "team" / "alpha" / "canvas.toml").is_file()
@@ -488,7 +488,7 @@ def test_a_marker_write_does_not_dirty_the_clone(harness, tmp_path, monkeypatch,
     with m._flight_lock:
         m._tick()
     assert m.disk_rev == rev and m.push_state == "idle" and m._dirty_since is None
-    assert [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]] == []
+    assert [c for c in harness.calls() if c[:2] == ["canvas", "push"]] == []
     # Nothing but the marker itself appeared in the folder (no staging file).
     assert sorted(os.listdir(clone)) == sorted(
         [".fusedignore", MARKER, "CLAUDE.md", *_BASE_FILES])
@@ -641,7 +641,7 @@ def test_a_hard_pull_puts_the_marker_back_and_leaves_the_clone_clean(
     assert _marker(harness).sync == "live" and _marker(harness).id == "c1"
     assert (clone / MARKER).stat().st_mtime > 1               # deleted by the pull, rewritten
     assert m._dirty_since is None and m.push_state == "idle"
-    assert [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]] == []
+    assert [c for c in harness.calls() if c[:2] == ["canvas", "push"]] == []
 
 
 def test_the_marker_follows_a_recreated_canvas_to_its_new_id(
@@ -713,6 +713,6 @@ def test_rename_leaves_a_reference_copy_where_it_is(harness, monkeypatch):
     res = harness.client.post("/api/canvases/rename", headers=GUARD,
                               json={"env": ENV, "name": "alpha", "new_name": "gamma"})
     assert res.status_code == 200, res.text
-    assert ["workbench", "canvas", "rename", "alpha", "gamma"] in harness.calls()
+    assert ["canvas", "rename", "alpha", "gamma"] in harness.calls()
     assert (harness.clones / "alpha" / MARKER).is_file()
     assert not (harness.clones / "gamma").exists()
