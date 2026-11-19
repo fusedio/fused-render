@@ -21,6 +21,7 @@ import { approvalParts } from "@platform/lib/approvalParts";
 import { GateCard } from "@platform/ui/GateCard";
 
 import { ApprovalCard } from "./ApprovalCard";
+import { ViewCard, viewOf } from "./ViewCard";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
 
@@ -358,7 +359,8 @@ function body({ e, botId, botName, botKind, reaction, live, chosen, appsRoot, on
   // An app card follows the bubble when the event carries `app` (finished build, `show` action) or when the text links a
   // built app — a bot's older message, or a "Copy state" link the user pasted, which reopens the app at that state.
   const app = e.app?.dir ? e.app : appFromText(e.text, appsRoot);
-  const card = app ? <AppCard app={app} onBeside={onBeside} /> : null;
+  const view = e.view ? viewOf(e.view) : null;
+  const card = view ? <ViewCard view={view} /> : app ? <AppCard app={app} onBeside={onBeside} /> : null;
   if (!e.reply?.text) return <>{bubble}{card}</>;
   return (
     <>
