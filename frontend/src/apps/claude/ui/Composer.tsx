@@ -61,6 +61,8 @@ import { PermissionSelect } from "./PermissionSelect";
 import { agentLabel, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { copyToTaskShots, SchedButton } from "./SchedButton";
 import { AttachButton } from "./AttachButton";
+import { MicButton } from "./MicButton";
+import { insertAt, useDictation } from "@platform/lib/dictation";
 import { outboxHint } from "./outbox";
 
 /** The send button's tooltip, while a run is live. */
@@ -79,6 +81,8 @@ export const homePlaceholderForAgent = (agent: string) => `Ask ${agent}…`;
  *  real sentence is `schedBlockReason`'s, threaded through `blockedReason`; this
  *  is the floor, so a dead control is never a dead control with nothing to say. */
 export const BLOCKED_SEND_TITLE = "Waiting on a scheduled message";
+/** Why Schedule is off while a dictation is recording or being transcribed. */
+export const MIC_HOLDS_SCHEDULE = "Finish or discard the dictation first";
 
 /** Where the composer's own controls open: shadcn/Base UI popovers and menus
  *  (`platform/shadcn/ui/popover`, `dropdown-menu`) and any dialog. Focus
@@ -126,10 +130,11 @@ function applyFit(row: HTMLElement, fit: RowFit): void {
   const flags = fitFlags(fit);
   row.classList.toggle("is-compact", flags.compact);
   row.classList.toggle("is-tight", flags.tight);
-  // The two seat-dropping rungs are classes because what they drop is a
+  // The seat-dropping rungs are classes because what they drop is a
   // `display: none` the stylesheet owns — `readRow` then prices the hidden
   // seat at nothing, gap included, and the measurement is of THAT row.
   row.classList.toggle("is-slim", flags.slim);
+  row.classList.toggle("is-lean", flags.lean);
   row.classList.toggle("is-bare", flags.bare);
   row.classList.toggle("is-stack", flags.stack);
   for (const select of Array.from(
@@ -478,6 +483,14 @@ export interface ComposerCardProps {
    */
   onAttachFiles?(files: File[]): void;
   /**
+   * THE MIC (MicButton; owner, 2026-11-19: "add mic to task exactly like the
+   * bots"): this machine can record, so the box takes dictation — a press
+   * records, a second press stops, and the words land at the caret for
+   * review. Absent or false: no button ("absent beats dead", the rule the
+   * paperclip and the camera seat follow).
+   */
+  dictate?: boolean;
+  /**
    * THE CAMERA'S OLD SEAT, immediately left of Schedule (T:4166-4171). The
    * screenshot button lived here as a pill and moved into the `#anncta` strip on
    * 2026-08-27 because it acts on the PREVIEW rather than on this draft — so
@@ -623,6 +636,7 @@ export function ComposerCard({
   onDiscardAttachments,
   onPaste,
   onAttachFiles,
+  dictate,
   camera,
   fitRevision,
   back,
@@ -1729,6 +1743,84 @@ export function ComposerCard({
   const ctxUsage = context && contextInput(context) > 0 ? context : null;
   const ctxWarn = ctxUsage ? warnLine(ctxModel, ctxUsage) : "";
 
+  // ---- DICTATION (MicButton; `@platform/lib/dictation`) ---------------------
+  //
+  // The Bots composer's flow on this box: the words land AT THE CARET (or over
+  // the selection), never sent on their own. They are the reader's words, so
+  // they take the road a keystroke takes — the stale-render latch stands down
+  // (`spent`), a ↑ walk ends, the sentence is theirs (`typedRef`) — and the
+  // caret is put after them once the render that paints them has landed.
+  const caretAfter = useRef<number | null>(null);
+  const onDictated = useCallback(
+    (words: string) => {
+      const box = boxRef.current;
+      const held = box ? box.value : textRef.current;
+      const from = box ? (box.selectionStart ?? held.length) : held.length;
+      const to = box ? (box.selectionEnd ?? from) : from;
+      const next = insertAt(held, from, to, words);
+      spent.current = null;
+      typedRef.current = true;
+      histIdx.current = null;
+      caretAfter.current = next.caret;
+      setText(next.value);
+    },
+    [boxRef],
+  );
+  useLayoutEffect(() => {
+    const at = caretAfter.current;
+    if (at === null) return;
+    caretAfter.current = null;
+    try {
+      boxRef.current?.setSelectionRange(at, at);
+    } catch {
+      /* a box that is not in a document refuses the call */
+    }
+  }, [text, boxRef]);
+  const mic = useDictation({
+    requester: "shell:chat-composer",
+    onText: onDictated,
+    onMessage: (title, tone) => notify({ title, tone }),
+    // The reader reviews what landed: the box takes the keyboard back, which
+    // also opens a folded card over the words — UNLESS THEY HAVE GONE TO TYPE
+    // SOMEWHERE ELSE. A first transcription can take minutes (the speech
+    // model's install), and a caret pulled out of another field mid-word is
+    // worse than a box that waits to be clicked.
+    onSettled: () => {
+      const box = boxRef.current;
+      if (!box || box.disabled) return;
+      const doc = box.ownerDocument;
+      const at = doc.activeElement;
+      if (at && at !== doc.body && at !== box) return;
+      box.focus({ preventScroll: true });
+    },
+    doc: () => boxRef.current?.ownerDocument,
+  });
+  // A TAKE BELONGS TO THE CHAT IT WAS STARTED IN. This card outlives a switch
+  // of conversation (the pane re-points at another session, or another file),
+  // and words that came back after it would land in — and autosave under —
+  // the other chat's draft. So the switch throws the take away. A new chat
+  // being given its session id ("" → id) is the same conversation, not a
+  // switch.
+  const micCancel = mic.cancel;
+  // A LAYOUT effect: it runs inside the commit that re-points the card, so no
+  // transcript can be delivered between that commit and the cancel.
+  const micChat = useRef({ sessionId, file });
+  useLayoutEffect(() => {
+    const was = micChat.current;
+    micChat.current = { sessionId, file };
+    if (was.file !== file || (!!was.sessionId && was.sessionId !== sessionId)) micCancel();
+  }, [sessionId, file, micCancel]);
+  /** A take being recorded or transcribed. The card stays open through it, so
+   *  the one seat that shows the clock and stops the take is always in view.
+   *
+   *  AND A TAKE AND A SCHEDULE HOP NEVER OVERLAP (Bugbot, PR #2372). The hop
+   *  files the words the box held when Continue was pressed and then leaves
+   *  for the task card, so words still on their way back from a take would be
+   *  in neither place. One set of words, one gesture at a time: the mic is off
+   *  while a hop is out (`hopping`), and Schedule is off — its open confirm
+   *  taken down — while a take is live. */
+  const micLive = !!dictate && (mic.rec || mic.busy);
+
   const fit = useRowFit(
     rowRef,
     columnRef,
@@ -1741,7 +1833,11 @@ export function ComposerCard({
     // `composerRowNeed` and "9%" → "100%" does not.
     `${controls.model}|${controls.effort}|${controls.permission}|${
       controls.ready === false ? 0 : 1
-    }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${ctxUsage ? 1 : 0}|${String(fitRevision ?? "")}`,
+    }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${ctxUsage ? 1 : 0}|${
+      // THE MIC IS IN THE KEY TOO: the seat arriving is a control plus a gap,
+      // and a take widens it by its clock.
+      dictate ? (mic.rec ? 2 : mic.busy ? 3 : 1) : 0
+    }|${String(fitRevision ?? "")}`,
   );
 
   // THIS IS THE NATIVE `initialFocus`, and it has to be, because a modal's
@@ -2269,7 +2365,7 @@ export function ComposerCard({
     [boxRef],
   );
 
-  const collapsed = variant === "chat" && !active && !blocked;
+  const collapsed = variant === "chat" && !active && !blocked && !micLive;
   // The chat text zoom reaches the textarea only while the card is OPEN
   // (chat.css), so folding/unfolding changes its line height with no new
   // value or width for the auto-grow hook to hear: re-fit on the flip, or a
@@ -2304,6 +2400,9 @@ export function ComposerCard({
     setOpened(true);
     boxRef.current?.focus({ preventScroll: true });
   }, [boxRef]);
+  // THE FOLDED MIC'S PRESS OPENS THE CARD: the take's clock and its stop are
+  // the shelf seat's, and the words land in the box the card is opening on.
+  const openForMic = smallCard ? openSmallCard : focusBox;
   // WHICH AGENT THE BOX SPEAKS TO (D18): the pill's answer, else the catalog's
   // default. Subscribed, so the first read and a Preferences switch repaint.
   const agents = useAgentBackends();
@@ -2409,6 +2508,18 @@ export function ComposerCard({
                   {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
                 />
               ) : null}
+              {/* THE MIC WHILE FOLDED, right of the clip as in the shelf. */}
+              {dictate ? (
+                <MicButton
+                  mic={mic}
+                  className="c-mic-idle"
+                  hidden={!collapsed}
+                  skipTab
+                  disabled={!!navLocked || hopping}
+                  {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
+                  onPress={openForMic}
+                />
+              ) : null}
               {meta}
             </div>
           );
@@ -2428,6 +2539,9 @@ export function ComposerCard({
           placeholder={
             blocked && blockedPlaceholder
               ? blockedPlaceholder
+              : micLive && mic.busy
+                ? // What the transcription is doing, where the words will land.
+                  mic.note || "Transcribing…"
               : pickPlaceholder
                 ? pickPlaceholder
                 : variant === "home"
@@ -2509,6 +2623,14 @@ export function ComposerCard({
           }}
           {...(onPaste ? { onPaste } : {})}
         />
+        {/* WHAT THE TRANSCRIPTION IS DOING, SAID ALOUD: the placeholder only
+            shows in an empty box, and the mic's tooltip needs a pointer. A
+            polite live region, outside the measured row. */}
+        {dictate ? (
+          <span className="sr-only" role="status">
+            {mic.busy ? mic.note || "Transcribing…" : ""}
+          </span>
+        ) : null}
         {/* THE AGENT IS OFF (D17): the placeholder says so; this is the link. */}
         {blockedNote ? <div className="c-queued c-blocked-note">{blockedNote}</div> : null}
         {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding,
@@ -2584,6 +2706,19 @@ export function ComposerCard({
                   : {})}
             />
           ) : null}
+          {/* THE MIC, right of the clip (the Bots order: attach, then mic). Off
+              when the box is, and while a schedule hop holds the words. */}
+          {dictate ? (
+            <MicButton
+              mic={mic}
+              disabled={(variant === "chat" && !!blocked) || !!navLocked || hopping}
+              {...(navLocked && navLockedReason
+                ? { disabledReason: navLockedReason }
+                : variant === "chat" && blocked && blockedReason
+                  ? { disabledReason: blockedReason }
+                  : {})}
+            />
+          ) : null}
           {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two
               are the ways this draft leaves the box — now, or as a task
               (T:4174-4183). The landing card's copy is never blocked. */}
@@ -2609,12 +2744,14 @@ export function ComposerCard({
             // The block reads the SAME `blocked` the box does — never a second
             // read of the schedule, because a parallel notion of "is this session
             // blocked" is two answers to one question (T:17233-17236).
-            disabled={(variant === "chat" && !!blocked) || !!navLocked}
+            disabled={(variant === "chat" && !!blocked) || !!navLocked || micLive}
             {...(navLocked && navLockedReason
               ? { disabledReason: navLockedReason }
               : variant === "chat" && blocked && blockedReason
                 ? { disabledReason: blockedReason }
-                : {})}
+                : micLive
+                  ? { disabledReason: MIC_HOLDS_SCHEDULE }
+                  : {})}
             onCancel={focusBox}
             onNavigate={onNavigate}
             // THE HOP EMPTIES A SESSION-LESS BOX, and only that one. Continue
