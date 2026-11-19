@@ -373,10 +373,12 @@ const ONE_SLOT: readonly Slot[] = ["x"];
 /** How long a closed pinned list card stays mounted to fade (var(--dur-med)
  *  and a frame or two). */
 const PIN_FADE_MS = 320;
-/** How long "this rail has no ring for the pin" must hold before the pin goes
- *  (ClaudeRail "A PIN GOES WITH ITS RING"): a page's own rail; the shell's
- *  fallback rail waits 2.5 times as long. */
-const PIN_RING_SETTLE_MS = 400;
+/** THE PASSING FALLBACK RAIL (ClaudeRail "A PIN GOES WITH ITS RING"): the path
+ *  a page's own rail last stood on — the path the document loaded on until
+ *  one has. The shell's fallback rail standing on that same path is the gap
+ *  between two of the page's rails (a load; the page swapping its rail as
+ *  its pane opens), not another view. */
+let pageRailPath = typeof location !== "undefined" ? location.pathname : "";
 const pinNoop = () => {};
 const pinNoRing = () => null;
 import { useCardMove } from "./useCardMove";
@@ -2404,13 +2406,16 @@ export function ClaudeRail({
   // Git / + card whose door this rail does not draw, go. Window B's pins are
   // never asked: a favourite's ring and a bot's face stand in every rail.
   //
-  // ONCE THIS RAIL HAS SETTLED, not on its first frame: the shell's fallback
-  // rail (FallbackRail — favourites only, no list) stands for a beat on every
-  // load before the page's own rail mounts, and a rail's list and its Git
-  // door land a moment after it does. So the verdict must HOLD for
-  // PIN_RING_SETTLE_MS on the same rail — longer for the fallback, which may
-  // be that passing one — and a rail that goes meanwhile takes its verdict
-  // with it. A reload on the view the pin was made on keeps it.
+  // AT ONCE, with no wait (owner, 2026-11-19, of a build that held the
+  // verdict for a moment: "don't add deliberate wait because you think we need
+  // it"). What a wait stood in for is said outright instead: the shell's
+  // fallback rail (FallbackRail — favourites only, no list) stands in for a
+  // beat whenever the page has no rail of its own up — on every document
+  // load, and while the page swaps its rail as its pane opens — and THAT
+  // passing rail has no say (`bootFallback`: the fallback, on the very path a
+  // page rail last stood on). On another path it is the view's own rail, and
+  // it has. The list is judged once the pulse answered, the Git door once
+  // its repo did.
   const pinDoorA = freePins && aWord !== null && aPinTask(aWord) === null ? aWord : null;
   const pinRingGone = pinKeyA !== null && !seats.some((x) => x.pulse.key === pinKeyA);
   // The Git door is there once the repo answered (`undefined`: not yet).
@@ -2421,30 +2426,28 @@ export function ClaudeRail({
       : pinDoorA === "bots"
         ? !(botsOffered && navDoors)
         : pinDoorA !== null && !navDoors;
-  const pinOrphanA = freePins && shown && (tasksPulseLoaded() || rows.length > 0) && (pinRingGone || pinDoorGone);
+  useLayoutEffect(() => {
+    if (!favouritesOnly && typeof location !== "undefined") pageRailPath = location.pathname;
+  });
+  const bootFallback = favouritesOnly && typeof location !== "undefined" && location.pathname === pageRailPath;
+  const pinOrphanA =
+    freePins && shown && !bootFallback && (tasksPulseLoaded() || rows.length > 0) && (pinRingGone || pinDoorGone);
   useEffect(() => {
     if (!pinOrphanA) return;
-    const key = pinKeyA;
+    if (pinKeyA) {
+      if (aPinned() === aPinWord({ kind: "task", key: pinKeyA })) setAPinned(null);
+      return;
+    }
     const door = pinDoorA;
-    const id = window.setTimeout(
-      () => {
-        if (key) {
-          if (aPinned() === aPinWord({ kind: "task", key })) setAPinned(null);
-          return;
-        }
-        if (!door || aPinned() !== door) return;
-        if (door === "tasks") closeTasksCard();
-        else if (door === "bots") closeBotsCard();
-        else if (door === "git") closeGitCard();
-        else if (door === aPinWord({ kind: "plus" })) setCardCloseSignal((n) => n + 1);
-        // A card that is not mounted on this page has no hold to drop: the
-        // mark goes by hand.
-        if (aPinned() === door) setAPinned(null);
-      },
-      favouritesOnly ? PIN_RING_SETTLE_MS * 2.5 : PIN_RING_SETTLE_MS,
-    );
-    return () => window.clearTimeout(id);
-  }, [pinOrphanA, pinKeyA, pinDoorA, favouritesOnly]);
+    if (!door || aPinned() !== door) return;
+    if (door === "tasks") closeTasksCard();
+    else if (door === "bots") closeBotsCard();
+    else if (door === "git") closeGitCard();
+    else if (door === aPinWord({ kind: "plus" })) setCardCloseSignal((n) => n + 1);
+    // A card that is not mounted on this page has no hold to drop: the mark
+    // goes by hand.
+    if (aPinned() === door) setAPinned(null);
+  }, [pinOrphanA, pinKeyA, pinDoorA]);
   // ONE CARD BESIDE THE RAIL (owner, 2026-11-07: "either new task thing
   // should be open or window A — new task thing is like window A but diff
   // UI"): the New task popover and the rail's other cards — window A (the

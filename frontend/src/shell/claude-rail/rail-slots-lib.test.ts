@@ -92,10 +92,12 @@ describe("a non-pin pushes a pin", () => {
     const home = { left: 992, top: 80 };
     expect(pushedPos(home, size, [dock])).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
   });
-  it("counts the gap: a pin a hair off the non-pin is still pushed clear", () => {
+  it("a pin beside the non-pin, a hair off it, is not covered and does not move", () => {
     const home = { left: 972 - 400 - 2, top: 80 };
     expect(overlaps({ ...home, ...size }, dock)).toBe(false);
-    expect(pushedPos(home, size, [dock])).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
+    expect(pushedPos(home, size, [dock])).toBe(home);
+    // One pixel under it: covered, and pushed clear by the whole gap.
+    expect(pushedPos({ left: 972 - 400 + 1, top: 80 }, size, [dock])).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
   });
   it("does not move a pin above or below the non-pin", () => {
     const home = { left: 992, top: 60 + 640 + PUSH_GAP };
@@ -129,6 +131,24 @@ describe("both pins at once", () => {
     expect(got.a).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
     expect(got.b).toEqual({ left: 972 - PUSH_GAP - 400 - PUSH_GAP - 400, top: 100 });
   });
+  it("two pins stacked one above the other: only the one the non-pin covers moves", () => {
+    // The non-pin by the rail is short; the top pin lies under it, the lower one is clear.
+    const short = box(972, 60, 420, 400);
+    const top = at(700, 60, 420, 500);
+    const low = at(700, 562, 420, 300);
+    const got = pushedPins({ a: top, b: low }, [short]);
+    expect(got.a).toEqual({ left: 972 - PUSH_GAP - 420, top: 60 });
+    // The lower pin only TOUCHES where the top one lands: it does not move.
+    expect(got.b).toBe(low.pos);
+  });
+  it("…and the other way round: the non-pin covers only the LOWER pin, the top one stays", () => {
+    const foot = box(1012, 562, 380, 380);
+    const top = at(700, 60, 420, 500);
+    const low = at(860, 562, 420, 380);
+    const got = pushedPins({ a: low, b: top }, [foot]);
+    expect(got.a).toEqual({ left: 1012 - PUSH_GAP - 420, top: 562 });
+    expect(got.b).toBe(top.pos);
+  });
   it("two pins the reader laid over each other stay so, with nothing pushing", () => {
     const a = at(100, 80);
     const b = at(150, 100);
@@ -140,6 +160,60 @@ describe("both pins at once", () => {
     const a = at(992, 80);
     expect(pushedPins({ a }, [dock])).toEqual({ a: { left: 972 - PUSH_GAP - 400, top: 80 }, b: null });
     expect(pushedPins({}, [dock])).toEqual({ a: null, b: null });
+  });
+});
+
+describe("the push, over 4000 random layouts", () => {
+  // A small seeded generator: the same layouts every run.
+  let seed = 20261119;
+  const rnd = (lo: number, hi: number) => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return Math.round(lo + (seed / 4294967296) * (hi - lo));
+  };
+  const VIEW = 1600;
+  const cover = (p: { left: number; top: number; width: number; height: number }, d: typeof p) => overlaps(p, d);
+  it("only a covered pin moves; a moved pin clears what covered it or stands at the left edge; naming the pins the other way changes nothing", () => {
+    for (let i = 0; i < 4000; i++) {
+      const docks = Array.from({ length: rnd(1, 2) }, () => {
+        const width = rnd(360, 722);
+        return box(VIEW - 56 - width, rnd(0, 500), width, rnd(240, 900));
+      });
+      const mk = () => {
+        const width = rnd(360, 722);
+        return { pos: { left: rnd(0, VIEW - width), top: rnd(0, 600) }, size: { width, height: rnd(240, 900) } };
+      };
+      const a = mk();
+      const b = rnd(0, 3) === 0 ? null : mk();
+      const got = pushedPins({ a, b }, docks);
+      const swapped = pushedPins({ a: b, b: a }, docks);
+      const where = `layout ${i}`;
+      // Naming them the other way round gives the same picture.
+      expect([where, swapped.b]).toEqual([where, got.a]);
+      expect([where, swapped.a]).toEqual([where, got.b]);
+      const pins = [
+        { pin: a, at: got.a! },
+        ...(b ? [{ pin: b, at: got.b! }] : []),
+      ];
+      const boxOf = (p: typeof a, at: { left: number; top: number }) => ({ left: at.left, top: at.top, width: p.size.width, height: p.size.height });
+      for (const [n, { pin, at }] of pins.entries()) {
+        const home = boxOf(pin, pin.pos);
+        const now = boxOf(pin, at);
+        const other = pins[1 - n];
+        const moved = at !== pin.pos;
+        // Only `left` ever changes, and only leftwards.
+        expect([where, at.top]).toEqual([where, pin.pos.top]);
+        expect([where, at.left <= pin.pos.left]).toEqual([where, true]);
+        const underDock = docks.some((d) => cover(home, d));
+        const underMovedPin =
+          !!other && other.at !== other.pin.pos && !cover(home, boxOf(other.pin, other.pin.pos)) && cover(home, boxOf(other.pin, other.at));
+        // A pin nothing covers stays exactly where it is.
+        if (!underDock && !underMovedPin) expect([where, moved]).toEqual([where, false]);
+        // A pin that moved is clear of every non-pin, or went as far as the edge.
+        if (moved) expect([where, at.left === 0 || !docks.some((d) => cover(now, d))]).toEqual([where, true]);
+        // A pin under a non-pin never stays put while there is room to its left.
+        if (underDock && pin.pos.left > 0) expect([where, moved]).toEqual([where, true]);
+      }
+    }
   });
 });
 

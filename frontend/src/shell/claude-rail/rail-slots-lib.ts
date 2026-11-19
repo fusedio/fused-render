@@ -208,7 +208,10 @@ export function pushedPos(home: Pos, size: Size, docks: readonly Box[], gap = PU
   let left = home.left;
   for (let i = 0; i <= docks.length; i++) {
     const at = { left, top: home.top, width: size.width, height: size.height };
-    const hit = docks.find((d) => overlaps(at, d, gap));
+    // COVERED, not merely near (owner, 2026-11-19: a pin beside a window that
+    // does not cover it "moves … i don't think so"): only a real overlap
+    // pushes; the gap is how far clear the pushed pin then stands.
+    const hit = docks.find((d) => overlaps(at, d));
     if (!hit) break;
     left = hit.left - gap - size.width;
     if (left <= 0) {
@@ -241,12 +244,26 @@ export function pushedPins(
   const order = (["a", "b"] as const)
     .filter((w) => !!pins[w])
     .sort((p, q) => pins[q]!.pos.left + pins[q]!.size.width - (pins[p]!.pos.left + pins[p]!.size.width));
-  const moved: Box[] = [];
+  // The pins already placed, each with the box it had at home.
+  const placed: { home: Box; at: Box; moved: boolean }[] = [];
   for (const w of order) {
     const pin = pins[w]!;
-    const pos = pushedPos(pin.pos, pin.size, moved.length ? [...docks, ...moved] : docks, gap);
+    const boxAt = (pos: Pos): Box => ({ left: pos.left, top: pos.top, width: pin.size.width, height: pin.size.height });
+    let pos = pushedPos(pin.pos, pin.size, docks, gap);
+    // A PIN THE PUSH MOVED IS IN THIS ONE'S WAY ONLY WHERE IT REALLY LANDS ON
+    // IT (owner, 2026-11-19, of two pins stacked one above the other, the
+    // lower one clear of the non-pin: "it moves one way off than the other …
+    // i don't think so"): the two boxes must truly cover each other — two
+    // that merely touch, a gap's width apart, do not — and must not have done
+    // so at home, where the reader laid them. A pin nothing covers stays.
+    for (const other of placed) {
+      if (!other.moved) continue;
+      if (overlaps(boxAt(pin.pos), other.home)) continue;
+      if (!overlaps(boxAt(pos), other.at)) continue;
+      pos = pushedPos(pos, pin.size, [...docks, other.at], gap);
+    }
     out[w] = pos;
-    if (pos !== pin.pos) moved.push({ left: pos.left, top: pos.top, width: pin.size.width, height: pin.size.height });
+    placed.push({ home: boxAt(pin.pos), at: boxAt(pos), moved: pos !== pin.pos });
   }
   return out;
 }
