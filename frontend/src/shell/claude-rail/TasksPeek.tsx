@@ -63,6 +63,7 @@ import { TaskPeekWho } from "@shell/TaskPeekWho";
 // flag: both of this card's heads — the list's and the chat's — on one chassis
 // at one height, so the list↔chat swap no longer jumps 26→44px.
 import { TaskHead } from "@shell/TaskHead";
+import { TaskPrChip } from "@shell/TaskPrChip";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
@@ -289,6 +290,9 @@ export function TasksPeek() {
                 lead={{ kind: "back", label: "Back to tasks", onPress: () => setChat(null), ref: api.backRef }}
                 {...(api.pin ? { pinNode: <RailPinButton pinned={api.pin.pinned} onToggle={api.pin.onToggle} /> } : {})}
                 task={task}
+                // The task's pull request, after the chat's branch tag
+                // (Akshil, 2026-11-19: "a PR thing on this tab").
+                chips={task ? <TaskPrChip task={task} /> : null}
                 chipsRef={setChipsHost}
                 statusRef={setStatusHost}
                 // The ring's Archive leaves the chat for the list, as the ⋮'s.

@@ -161,6 +161,7 @@ import { ForceStartButton } from "@shell/ForceStartButton";
 import { PlaceTags } from "./PlaceTags";
 // THE ONE TASK HEAD (design.md "One task head, everywhere"), behind its flag.
 import { TaskHead } from "@shell/TaskHead";
+import { TaskPrChip } from "@shell/TaskPrChip";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { openInTasksItem } from "@platform/ui/openInTasks";
@@ -238,6 +239,9 @@ const ALL_GRIPS: readonly ResizeEdge[] = ["l", "t", "b", "tl", "bl"];
 
 /** The server's cap on a task's name (TaskPeekWho's). */
 const TITLE_MAX_LENGTH = 200;
+/** No head seat (RailPeek's chip and status seats): one object, so setting
+ *  "none" twice is not a state change. */
+const NO_SEAT: { key: string | null; el: HTMLElement | null } = { key: null, el: null };
 
 /** What one seat is, for the head and the body: the pulse row, the full row
  *  once held, and the answers both halves ask (RailPeek `seatFacts`). */
@@ -1263,6 +1267,30 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the pulse.
   const favsOn = useTaskFavourites();
   const unified = useTaskHeadUnified();
+  // THE HEAD'S TAG SEATS (Akshil, 2026-11-19: "I would rather have a PR thing
+  // on this tab and also know about the branch"): the shown chat portals its
+  // branch tag into the head's chips (ChatMount `headChipsHost`) and its pause
+  // word beside the identity (`headStatusHost`) — the Tasks card's chat head,
+  // which had them; a task's own card had neither, nor the PR tag.
+  //
+  // EACH SEAT REMEMBERS WHICH CHAT'S HEAD IT IS IN. The head is keyed on the
+  // chat, so a swap to another chat makes new seats — and for one render the
+  // new chat would be handed the old head's seats, mount its worktree menu
+  // into a node about to be thrown away, and mount it again in the new one
+  // (two worktree listings a swap; review, 2026-11-19). A seat is given only
+  // to the chat it was made for.
+  const headKeyRef = useRef<string | null>(null);
+  headKeyRef.current = viewKey;
+  const [chipsSeat, setChipsSeat] = useState<{ key: string | null; el: HTMLElement | null }>(NO_SEAT);
+  const [statusSeat, setStatusSeat] = useState<{ key: string | null; el: HTMLElement | null }>(NO_SEAT);
+  const setChipsHost = useCallback(
+    (el: HTMLElement | null) => setChipsSeat(el ? { key: headKeyRef.current, el } : NO_SEAT),
+    [],
+  );
+  const setStatusHost = useCallback(
+    (el: HTMLElement | null) => setStatusSeat(el ? { key: headKeyRef.current, el } : NO_SEAT),
+    [],
+  );
   // "Open in Tasks" reads the page's path: a card kept across a hop re-reads it.
   useUrlVersion();
   const [starMark, setStarMark] = useState<StarMark | null>(null);
@@ -1845,6 +1873,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   }
                 : {})}
               onRenamed={onReload}
+              // The task's pull request, and the chat's branch tag before it.
+              {...(head.t.session_id && !head.draft
+                ? { chips: <TaskPrChip task={head.merged as Task} />, chipsRef: setChipsHost, statusRef: setStatusHost }
+                : {})}
               stacked="auto"
               // Measured only while the card is up.
               fitEnabled={!!shownKey}
@@ -2132,6 +2164,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // card shows another chat or closes.
                     smallCard
                     smallCardShown={!!shown && t.key === shown.pulse.key}
+                    // Only the chat the head names fills the head's seats, and
+                    // only while the card is up: a card that has closed keeps
+                    // its last chat mounted, and its seats would keep that
+                    // chat's worktree menu and pause word (a listing each)
+                    // alive behind a card nobody is looking at.
+                    {...(unified && shownKey && t.key === viewKey && chipsSeat.key === t.key && statusSeat.key === t.key
+                      ? { headChipsHost: chipsSeat.el, headStatusHost: statusSeat.el }
+                      : {})}
                   />
                 ) : (
                   // NO SESSION YET — a draft, or a scheduled task that has not

@@ -4333,13 +4333,8 @@ function ChatBody(props: ChatBodyProps) {
   /** A worktree menu is MOUNTED and has said this folder is in a repo
    *  (`WorktreeMenu.onReady`). Compact mounts none, and a peek only with `headerInPeek`; a non-repo says false. */
   const worktreeReady = useRef(false);
-  // The same answer as state, for what is DRAWN off it: the menu's element
-  // exists before (and whether or not) its pill does — it renders nothing for
-  // a folder outside any repo.
-  const [worktreePill, setWorktreePill] = useState(false);
   const onWorktreeReady = useCallback((isRepo: boolean) => {
     worktreeReady.current = isRepo;
-    setWorktreePill(isRepo);
   }, []);
   // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
   // own head and by `/tasks`, and remembered globally (`useTasksOpen`). An empty
@@ -6017,27 +6012,12 @@ function ChatBody(props: ChatBodyProps) {
         ) : null}
       </span>
     ) : null;
-  // ONE TAG, THEN "+x", BESIDE A PANE'S TOOLS (Akshil, 2026-11-17: "in this
-  // view where we have buttons we directly do 1 +x — we don't show PR and WT
-  // tags more than one because we also have buttons"): where the head seats
-  // tools and already shows the worktree tag, every pull request goes behind
-  // one "+N". With no worktree tag the first PR is the tag ("PR #12 +2") —
-  // so the tag has to be on screen, not merely mounted: the menu draws no
-  // pill outside a repo (`worktreePill`; CodeRabbit on #2313).
-  // Tools that are DRAWN: the strip's own gate (`stripSeatsShown` — a target
-  // that cannot be annotated seats none; CodeRabbit on #2313), or the canvas
-  // camera that stands in for it.
-  const headHasTools = stripSeatsShown || !!canvasShotSeat;
-  const headWorktreeTag = !!shownHint || (!!worktreeMenu && worktreePill);
-  const headChipsExtra =
-    props.prChip && head.task ? (
-      <>
-        <TaskPrChip task={head.task} collapsed={headHasTools && headWorktreeTag} />
-        {props.headerExtra}
-      </>
-    ) : (
-      props.headerExtra
-    );
+  // THE PR TAG STANDS WHOLE BESIDE A PANE'S TOOLS TOO (Akshil, 2026-11-19:
+  // "PR should have higher priority on visibility in all these views") —
+  // `headerExtra`, the same chip the slim line draws. It was folded behind
+  // one "+N" wherever a worktree tag was up (2026-11-17, "one tag then +x");
+  // the branch tag gives instead now — it is shown whole or not at all, and
+  // leaves before the PR tag does (TaskHead, row-fit `TASK_HEAD_PANEL_DROPS`).
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
@@ -6078,7 +6058,7 @@ function ChatBody(props: ChatBodyProps) {
           <>
             {shownHint ? null : worktreeMenu}
             <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
-            {headChipsExtra}
+            {headerExtra}
           </>
         ) : null
       }

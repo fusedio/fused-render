@@ -27,6 +27,20 @@ test("a task whose title names a PR gets a link chip to GitHub", () => {
   expect(JSON.stringify(r.toJSON())).toContain("123");
 });
 
+test("the tag draws a pull-request glyph and keeps its words: a head shows the glyph, the old line the word (2026-11-19)", async () => {
+  const r = render(task({ prs: [{ repo: "a/b", number: 12, url: "u" }] }));
+  const a = r.root.findByProps({ className: "task-pr-chip" });
+  expect(a.findAllByProps({ className: "task-pr-word" })).toHaveLength(1);
+  expect(JSON.stringify(r.toJSON())).toContain("task-pr-glyph");
+  expect(a.props["aria-label"]).toBe("Open pull request 12 on GitHub");
+  // The glyph is off unless a host turns it on; the shared head does, and
+  // drops the word.
+  const dot = await Bun.file(new URL("../platform/ui/task-pr-dot.css", import.meta.url)).text();
+  expect(dot).toContain(".task-pr-glyph {\n  display: none;");
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  expect(css).toContain(".task-head-chips .task-pr-chip .task-pr-glyph {\n  display: block;");
+});
+
 test("a pull-request link in the title carries its own repo", () => {
   const r = render(task({ title: "see https://github.com/a/b/pull/9" }));
   expect(r.root.findByType("a").props.href).toBe("https://github.com/a/b/pull/9");

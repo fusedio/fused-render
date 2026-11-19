@@ -732,10 +732,14 @@ export const PEEK_HEAD_DROPS = [
  * cumulatively:
  *
  *   1. the where-tag's word (TaskHead `where`: Canvas, the node, the file —
- *      its icon stays; Akshil, 2026-11-16) and the worktree pill (the chat's
- *      portaled seat in the chips);
- *   2. the PR chip — the chips show only while there is width for them, one
- *      at a time, and give before the title is cut;
+ *      its icon stays; Akshil, 2026-11-16) and the BRANCH TAG (the worktree
+ *      pill and the worktree hint), whole: its name is shown in full or the
+ *      tag is not shown at all — never cut, never an icon alone (Akshil,
+ *      2026-11-19: "let's not show the worktree icon, let's show it full
+ *      only, if width is there");
+ *   2. the PR chip — THE LAST TAG TO LEAVE (2026-11-19: "priority PR first,
+ *      then worktree if there is space as width opens"), and it gives before
+ *      the title is cut;
  *   3. the facts, where the title still cannot be read whole beside them.
  *      In a panel or a pane the time leaves; its door comes back as the ↗
  *      while the head is pointed at. In a rail window (`.is-window`: a card
@@ -763,7 +767,8 @@ export const PEEK_HEAD_DROPS = [
  * tags, a pane's tools and the facts — and what gives, cumulatively, is:
  *
  *   1. the tools' WORDS (Screenshot, Comment, Annotate become icon buttons);
- *   2. the worktree pill (the chat's portaled seat);  3. the other tags;
+ *   2. the branch tag, whole (shown in full or not at all, 2026-11-19);
+ *   3. the PR chip — the last tag to leave (2026-11-19);
  *   4. the time;  5. the tools themselves;  6. the ↑↓ chevrons;
  *   7. the place and the where-tag are cut.
  *
@@ -773,7 +778,7 @@ export const PEEK_HEAD_DROPS = [
  */
 export const TASK_HEAD_PANEL_DROPS = [
   ".task-head-seats .c-lbl",
-  ".task-head-chips-host",
+  ".task-head-chips-host, .task-head-chips .chat-worktree-menu, .task-head-chips .chat-worktree-hint",
   ".task-head-chips",
   ".task-head-time",
   ".task-head-seats",
@@ -785,7 +790,7 @@ export const TASK_HEAD_PANEL_DROPS = [
 export const TASK_HEAD_PANEL_FIT = [0, 0, 1, 2, 3, 5, 6, 7] as const;
 
 export const TASK_HEAD_DROPS = [
-  ".task-head-where .place-tag-word, .task-head-chips-host",
+  ".task-head-where .place-tag-word, .task-head-chips-host, .task-head-chips .chat-worktree-menu, .task-head-chips .chat-worktree-hint",
   ".task-head-chips",
   ".task-head-time",
   ".task-head-title-seat",
@@ -794,11 +799,11 @@ export const TASK_HEAD_DROPS = [
   ".task-head-place",
 ] as const;
 
-/** The rung at which the facts give (the chips went first). */
+/** The `data-fit` rung at which the facts give (the chips went first). */
 export const TASK_HEAD_FACTS_LEVEL = 3;
 
-/** The rung at which a rail window's title takes its own row (TaskHead
- *  `stacked`). */
+/** The `data-fit` rung at which a rail window's title takes its own row
+ *  (TaskHead `stacked`). */
 export const TASK_HEAD_STACK_LEVEL = 4;
 
 /** What a title must keep on row 1 before it is given a row of its own
@@ -847,6 +852,7 @@ export function taskHeadNeed(head: HTMLElement): number {
       // is charged for the wider one either way.
       rowWants += factsSpare(row);
       if (!isWindow && level >= TASK_HEAD_FACTS_LEVEL) rowWants += hoverDelta(row, ".task-head-timeslot");
+      if (isWindow) rowWants -= crumbGive(row);
     }
     need = Math.max(need, rowWants);
   }
@@ -870,6 +876,63 @@ function factsSpare(row: HTMLElement): number {
     widest = Math.max(widest, layer.getBoundingClientRect().width);
   }
   return widest - now;
+}
+
+/** What a tag of a rail window's crumb keeps when the crumb gives width: its
+ *  pill and a few letters ("fus…"). */
+export const TASK_HEAD_CRUMB_TAG = 48;
+/** The crumb's chevron and the gap on each side of it (task-head.css). */
+const TASK_HEAD_CRUMB_SEP = 19;
+
+/**
+ * A RAIL WINDOW'S CRUMB GIVES WIDTH — ONCE THE BRANCH TAG HAS GONE, AND
+ * BEFORE THE PR CHIP DOES (Akshil, 2026-11-19: "PR should have higher
+ * priority on visibility … when width is smaller"). The stylesheet holds the
+ * crumb at its width while the branch tag stands (`data-fit="0"`), so until
+ * then it is charged whole and this is nothing. After, it shrinks and
+ * ellipsises, and `rowNeed` charges a seat that shrinks what it occupies NOW
+ * — so the row always "needed" exactly the head's width, give or take a
+ * rounded half pixel, and whether the PR chip stood beside a shortened folder
+ * or left with the folder whole was a coin toss (measured at 320px,
+ * 2026-11-19: 318.3 against 318).
+ *
+ * What the crumb is charged instead is THE FLOOR IT MAY BE CUT TO: each tag
+ * the lesser of its whole width and `TASK_HEAD_CRUMB_TAG`. Returned as the
+ * difference from what `rowNeed` charged — NEGATIVE once a tag has been
+ * squeezed below its floor, which is the row saying it no longer fits, so
+ * the PR chip leaves there and not when the folder's name is down to nothing.
+ */
+export function crumbGive(row: HTMLElement): number {
+  if (typeof row.querySelector !== "function") return 0;
+  const crumb = row.querySelector<HTMLElement>(".task-head-crumb");
+  if (!crumb) return 0;
+  // Held (`flex: 0 0 auto`): charged its whole width, which is the point.
+  if (!((Number.parseFloat(getComputedStyle(crumb).flexShrink) || 0) > 0)) return 0;
+  let tags = 0;
+  let floor = 0;
+  for (const kid of Array.from(crumb.children) as HTMLElement[]) {
+    const cls = typeof kid.className === "string" ? kid.className.split(" ") : [];
+    if (!cls.includes("task-head-place") && !cls.includes("task-head-where")) continue;
+    tags += 1;
+    floor += Math.min(tagWhole(kid), TASK_HEAD_CRUMB_TAG);
+  }
+  if (!tags) return 0;
+  if (tags > 1) floor += TASK_HEAD_CRUMB_SEP;
+  return rowNeed(crumb) - floor;
+}
+
+/** A crumb tag's width with nothing cut: what it occupies now, plus what
+ *  each of its ellipsised words is short by. */
+function tagWhole(tag: HTMLElement): number {
+  let whole = tag.getBoundingClientRect().width;
+  const inner = typeof tag.querySelectorAll === "function" ? Array.from(tag.querySelectorAll<HTMLElement>("*")) : [];
+  for (const el of inner) {
+    // A word: a leaf of the tag. (A box's own `scrollWidth` would count the
+    // same missing letters a second time.)
+    if (el.children.length) continue;
+    whole += Math.max(0, (el.scrollWidth || 0) - (el.clientWidth || 0));
+  }
+  return whole;
 }
 
 /** The b control a folded fact slot shows while the head is pointed at: one glyph. */

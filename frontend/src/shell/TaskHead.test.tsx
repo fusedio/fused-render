@@ -481,10 +481,18 @@ test("the chip seat hands the chat a node to portal into, at the head of the chi
 });
 
 test("the ladder: the chips one at a time, the facts, a rail window's title row, seats, chevrons, the place's cap — never the id slot", async () => {
-  const { TASK_HEAD_DROPS, TASK_HEAD_FACTS_LEVEL, TASK_HEAD_STACK_LEVEL, TASK_HEAD_TITLE_ROOM, TASK_HEAD_TITLE_MAX } = await import("./row-fit");
+  const {
+    TASK_HEAD_DROPS,
+    TASK_HEAD_FACTS_LEVEL,
+    TASK_HEAD_STACK_LEVEL,
+    TASK_HEAD_TITLE_ROOM,
+    TASK_HEAD_TITLE_MAX,
+  } = await import("./row-fit");
   expect([...TASK_HEAD_DROPS]).toEqual([
-    // Rung 1 also folds the where-tag's word to its icon (2026-11-16).
-    ".task-head-where .place-tag-word, .task-head-chips-host",
+    // Rung 1 folds the where-tag's word to its icon (2026-11-16) and takes
+    // the branch tag away whole — wherever it stands: a host's portaled
+    // seat, or a pane's own pill and hint (2026-11-19). Then the PR chip.
+    ".task-head-where .place-tag-word, .task-head-chips-host, .task-head-chips .chat-worktree-menu, .task-head-chips .chat-worktree-hint",
     ".task-head-chips",
     ".task-head-time",
     ".task-head-title-seat",
@@ -515,9 +523,30 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   expect(css).not.toContain('.task-head.is-stacked:is([data-fit="6"], [data-fit="7"]) .task-head-where');
   const from = (n: number) =>
     `:is(${[1, 2, 3, 4, 5, 6, 7].filter((k) => k >= n).map((k) => `[data-fit="${k}"]`).join(", ")})`;
-  // The chips give first, one at a time: the worktree pill, then the PR chip.
-  expect(css).toContain(`.task-head${from(1)} .task-head-chips-host {`);
+  // The tags give first, one at a time: the branch tag, whole, then the PR
+  // chip — the last tag to leave (2026-11-19: "priority PR first, then
+  // worktree if there is space").
+  expect(css).toContain(
+    `.task-head${from(1)} .task-head-chips-host,\n` +
+      `.task-head${from(1)} .task-head-chips :is(.chat-worktree-menu, .chat-worktree-hint) {\n  display: none;`,
+  );
   expect(css).toContain(`.task-head${from(2)} .task-head-chips {`);
+  // A branch name is whole or the tag is gone — never an icon alone, never
+  // cut: the pill does not shrink, and the chip seat is no longer capped
+  // around a cut name.
+  expect(css).not.toContain(".chat-worktree-btn > span {\n  display: none;");
+  expect(css).not.toContain("is-branch-off");
+  // A seat that held only the branch tag leaves no gap behind.
+  expect(css).toContain(
+    `.task-head${from(1)} .task-head-chips:not(:has(> :not(.task-head-chips-host, .chat-worktree-menu, .chat-worktree-hint))) {\n  display: none;`,
+  );
+  // A rail window holds its crumb while the branch tag stands, so the tag
+  // gives before the folder's name is cut.
+  expect(css).toContain('.task-head.is-two-line.is-window[data-fit="0"] .task-head-crumb,');
+  expect(css).toContain(".task-head-chips .chat-worktree-menu {\n  display: flex;\n  flex: 0 0 auto;");
+  expect(css).not.toContain(".task-head-chips {\n  max-width: 220px;");
+  // In the head the PR tag is its glyph and the number.
+  expect(css).toContain(".task-head-chips .task-pr-chip .task-pr-word {\n  display: none;");
   const facts = ":is(.task-head-countslot, .task-head-timeslot)";
   // IN A RAIL WINDOW NOTHING MOVES (2026-11-16): the facts never fold there
   // and no slot collapses — every seat holds its box at rest and under the
@@ -1016,11 +1045,55 @@ test("a rail window's facts and acts are two layers of one box; a panel keeps th
   expect(byClass(pane, "task-head-timeslot")).toHaveLength(1);
 });
 
+test("a rail window's shrinking crumb is charged the floor it may be cut to, never what it occupies now (2026-11-19)", async () => {
+  const { crumbGive, TASK_HEAD_CRUMB_TAG } = await import("./row-fit");
+  const FLEX = { ...STYLE, display: "flex", flexShrink: "1" };
+  /** A folder tag: 18px of pill around a 72px word, the word cut to `shown`. */
+  const crumbOf = (shown: number, shrink = "1") => {
+    const word = {
+      className: "schedule-tv-id-name",
+      getBoundingClientRect: () => ({ width: shown }),
+      scrollWidth: 72,
+      clientWidth: shown,
+      children: [],
+      textContent: "fused-render",
+      __style: { ...STYLE, flexShrink: "1" },
+    };
+    const pill = {
+      className: "schedule-tv-id",
+      getBoundingClientRect: () => ({ width: shown + 18 }),
+      scrollWidth: shown + 18,
+      clientWidth: shown + 18,
+      children: [word],
+      __style: { ...FLEX, paddingLeft: "9px", paddingRight: "9px" },
+    };
+    const place = {
+      className: "task-head-place",
+      getBoundingClientRect: () => ({ width: shown + 18 }),
+      children: [pill],
+      querySelectorAll: () => [pill, word],
+      __style: FLEX,
+    };
+    const crumb = { className: "task-head-crumb", children: [place], __style: { ...FLEX, flexShrink: shrink } };
+    return { querySelector: () => crumb } as unknown as HTMLElement;
+  };
+  expect(TASK_HEAD_CRUMB_TAG).toBe(48);
+  // Whole (90px) and free to shrink: charged the 48px floor, so 42 comes off.
+  expect(crumbGive(crumbOf(72))).toBe(42);
+  // Cut to 63px: still charged 48 — the PR chip stays beside a shortened name.
+  expect(crumbGive(crumbOf(45))).toBe(15);
+  // Cut below the floor (38px): the row is 10px short, and says so — it used
+  // to read as fitting exactly, down to a name of no letters at all.
+  expect(crumbGive(crumbOf(20))).toBe(-10);
+  // Held (the branch tag still stands): charged whole, nothing comes off.
+  expect(crumbGive(crumbOf(72, "0"))).toBe(0);
+});
+
 test("a two-line panel folds in its own order: the tools' words, then the tags, the time, the tools (2026-11-17)", async () => {
   const { TASK_HEAD_PANEL_DROPS, TASK_HEAD_PANEL_FIT } = await import("./row-fit");
   expect([...TASK_HEAD_PANEL_DROPS]).toEqual([
     ".task-head-seats .c-lbl",
-    ".task-head-chips-host",
+    ".task-head-chips-host, .task-head-chips .chat-worktree-menu, .task-head-chips .chat-worktree-hint",
     ".task-head-chips",
     ".task-head-time",
     ".task-head-seats",
