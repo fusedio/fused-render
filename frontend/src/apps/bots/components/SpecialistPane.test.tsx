@@ -63,7 +63,8 @@ test("Memory with Edit, read-only Skills, and Learning: what waits, Learn now, a
 
   act(() => byText(r, "Read 2 entries, changed nothing").parent!.parent!.props.onClick());
   await settle();
-  expect(text(r)).toContain('Note \\"Sync\\", Breakout \\"Fix it\\"');
+  const read = r.root.findAll((n) => n.props.className === "xp-head static", { deep: false });
+  expect(read.map((n) => n.findByProps({ className: "xp-origin" }).props.children)).toEqual(["Sync", "Fix it"]);  // one per line
   expect(text(r)).toContain("Nothing new.");
   expect(text(r)).toContain("It changed nothing.");
   act(() => r.unmount());

@@ -129,7 +129,16 @@ export function SpecialistPane({ s }: { s: Specialist }) {
                   <Row key={c.sha} open={open === c.sha} onOpen={() => openChange(c.sha)}
                     head={<span className="xp-line"><span className="xp-origin">{runLabel(c)}</span>{when(c.at)}</span>}>
                     {detail?.sha !== c.sha ? <p className="xp-none">Loading…</p> : detail.err ? <p className="xp-err" role="alert">{detail.err}</p> : <>
-                      {detail.read ? <p className="xp-none">Read: {detail.read.map((r) => `${KIND[r.kind] || "Note"} "${r.title}"`).join(", ")}</p> : null}
+                      {detail.read ? <>
+                        <p className="xp-lbl">Read</p>
+                        <ul className="xp-rows">
+                          {detail.read.map((r, i) => (
+                            <li key={i} className="xp-row"><div className="xp-head static">
+                              <span className="xp-line">{KIND[r.kind] || "Note"}<span className="xp-origin">{r.title}</span></span>
+                            </div></li>
+                          ))}
+                        </ul>
+                      </> : null}
                       {detail.reply ? <div className="xp-md"><MdDoc text={detail.reply} /></div> : null}
                       {detail.read && !detail.diff.trim() ? <p className="xp-none">It changed nothing.</p> : <DiffView diff={detail.diff} />}
                     </>}
