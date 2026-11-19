@@ -171,7 +171,7 @@ def test_tools_listed_after_the_terminals_with_their_schemas(tmp_path, stub):
             "approve", "terminal_list", "terminal_read", "terminal_send",
             "s3_search", "s3_read"]
         search, read = tools[-2], tools[-1]
-        assert set(search["inputSchema"]["properties"]) == {"query", "path", "limit", "cursor"}
+        assert set(search["inputSchema"]["properties"]) == {"query", "path", "limit", "cursor", "summary"}
         assert "required" not in search["inputSchema"]
         assert set(read["inputSchema"]["properties"]) == {
             "url", "offset", "length", "save", "allow_large"}

@@ -262,8 +262,13 @@ def instructions(bot) -> str:
     the file is missing or empty). A legacy extra (`meta["instructions"]`, typed in a Settings box an expert no
     longer has, or set by Super Bot) follows under a heading until the Instructions page saves,
     which folds it into the file (`save_instructions`)."""
-    text = read_text(instructions_path(bot)).strip() or DEFAULT_INSTRUCTIONS.strip()
-    extra = legacy_instructions(bot)
+    return folder_instructions(expert_dir(bot), _meta_of(bot))
+
+
+def folder_instructions(folder: str, meta: dict) -> str:
+    """`instructions` for an expert read off disk, without a live Bot (bots/package.py exports this text)."""
+    text = read_text(os.path.join(folder, INSTRUCTIONS)).strip() or DEFAULT_INSTRUCTIONS.strip()
+    extra = str((meta or {}).get("instructions") or "").strip()
     return text + ("\n\n## From the user (Settings)\n\n" + extra if extra and extra not in text else "")
 
 

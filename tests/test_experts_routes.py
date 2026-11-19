@@ -243,12 +243,72 @@ def test_the_data_experts_profiling_udfs_are_one_udf_each():
         assert len(funcs) == 1 and ast.unparse(funcs[0].decorator_list[0]) == "fused.udf", name
 
 
-def test_an_expert_is_not_exported(client, expert, tmp_path):
-    from fused_render.bots import package
-    with pytest.raises(ValueError, match="expert cannot be exported"):
-        package.write(expert.id, memory=True, apps=[], file_name=None, dest_dir=str(tmp_path))
-    st, out = j(client.get(f"/api/bots/{expert.id}/package"))
-    assert st == 400 and out["error"] == package.EXPERT_REFUSAL
+def _write(path, text):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _read(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def test_an_expert_exports_and_installs_with_its_own_files(client, expert, tmp_path):
+    """Instructions, skills (over a playbook's size cap), settings and, only when asked, memory and its archive
+    travel; the expert installed from the file digests like its package."""
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, package
+    from fused_render import appfile_container
+    _write(store.instructions_path(expert), "Answer about canvases.\n")
+    expert.meta["instructions"] = "And be brief."  # a legacy extra: travels folded into the instructions
+    expert.meta["expert"]["shipped"] = "canvas-reference"
+    expert.save()
+    big = "# Layout\n\n" + "x" * (bm.Bot.SKILL_BODY_CAP + 100)  # a reference file, no trigger
+    _write(os.path.join(store.expert_dir(expert), "skills", "layout.md"), big)
+    _write(store.memory_path(expert), "## Works\n- [1 · 2026-11-19] it works\n")
+    _write(store.archive_path(expert), "- [1 · 2026-10-01] an old fact\n")
+
+    st, plan = j(client.get(f"/api/bots/{expert.id}/package"))
+    assert st == 200 and plan["public"]["kind"] == "expert"
+    assert plan["public"]["instructions"].startswith("Answer about canvases.") and "And be brief." in plan["public"]["instructions"]
+    assert "shipped" not in plan["public"]["expert"]
+    assert plan["memory_bytes"] > 0 and [s["name"] for s in plan["skills"]] == ["layout"]
+
+    bare = package.write(expert.id, memory=False, apps=[], file_name="bare", dest_dir=str(tmp_path))
+    idx = appfile_container.read_index(bare, max_entries=100, max_entry_bytes=1 << 24, max_total_bytes=1 << 26, kind="bot")
+    names = {f["path"] for f in idx["files"]}
+    assert "skills/layout.md" in names and not names & {".fused/memory.md", ".fused/memory-archive.md"}
+    full = package.write(expert.id, memory=True, apps=[], file_name="full", dest_dir=str(tmp_path))
+    assert botfile.probe(full)["memory"] is True and botfile.probe(full)["bot"]["state"] == "same"
+
+    registry.delete(expert.id)  # install where the expert is not, so the package id is free
+    out = botfile.install(full, apps=[], memory=True)
+    assert out["warnings"] == []
+    b = registry.get(out["bot_id"])
+    assert b.id == expert.id and store.is_expert(b) and store.manifest(b)["ask_me_about"] == "Canvases and more"
+    assert store.manifest(b)["shipped"] == "" and b.meta["instructions"] == ""
+    assert store.instructions(b) == plan["public"]["instructions"]
+    assert _read(os.path.join(store.expert_dir(b), "skills", "layout.md")) == big
+    assert store.memory(b) == "## Works\n- [1 · 2026-11-19] it works\n"
+    assert _read(store.archive_path(b)) == "- [1 · 2026-10-01] an old fact\n"
+    assert botfile.probe(full)["bot"]["state"] == "same"
+
+    # An update keeps its own memory unless asked, and takes the package's instructions.
+    _write(store.memory_path(b), "mine\n")
+    _write(store.instructions_path(b), "Edited here.\n")
+    out = botfile.install(bare, apps=[], memory=False, mode="update", target=b.id)
+    assert out["updated"] is True and store.memory(b) == "mine\n"
+    assert store.instructions(b) == plan["public"]["instructions"]
+    botfile.install(full, apps=[], memory=True, mode="update", target=b.id)
+    assert store.memory(b).endswith("it works\n")
+    # Memory is one unit: a package with memory.md but no archive leaves no archive behind.
+    _write(store.memory_path(b), "only memory\n")
+    os.remove(store.archive_path(b))
+    no_archive = package.write(b.id, memory=True, apps=[], file_name="noarch", dest_dir=str(tmp_path))
+    _write(store.memory_path(b), "mine\n")
+    _write(store.archive_path(b), "stale\n")
+    botfile.install(no_archive, apps=[], memory=True, mode="update", target=b.id)
+    assert store.memory(b) == "only memory\n" and not os.path.exists(store.archive_path(b))
 
 
 def test_an_expert_never_takes_a_local_model(client, expert):
@@ -267,18 +327,79 @@ def _expert_package(path, pub, memory=b"- remember this\n"):
     return str(path)
 
 
-def test_an_expert_package_takes_no_local_model_and_no_bot_memory(tmp_path):
+def test_a_hand_made_expert_package_takes_no_local_model_and_its_memory_goes_to_memory_md(tmp_path):
     from fused_render.bots import bot as bm
     from fused_render.bots import botfile
     local = next(iter(bm.LOCAL_MODELS))
     pub = {"name": "Hand Expert", "kind": "expert", "model": local, "expert": {"ask_me_about": "hand-made"}}
     out = botfile.install(_expert_package(tmp_path / "new.fusedbot", pub), apps=[], memory=True)
     b = registry.get(out["bot_id"])
-    assert store.is_expert(b) and b.meta["model"] == bm.DEFAULT_MODEL
-    assert botfile.EXPERT_MEMORY_NOT_IMPORTED in out["warnings"]
-    assert not os.path.exists(b.memory_path) and store.memory(b) == store.EMPTY_MEMORY
+    assert store.is_expert(b) and b.meta["model"] == bm.DEFAULT_MODEL and out["warnings"] == []
+    # The expert's own memory.md, never the bot memory file; no instructions in the file = the default ones.
+    assert not os.path.exists(b.memory_path) and store.memory(b) == "- remember this\n"
+    assert store.instructions(b) == store.DEFAULT_INSTRUCTIONS.strip()
     # The update path: the same hand-made package, matched by id.
-    out = botfile.install(_expert_package(tmp_path / "up.fusedbot", {**pub, "id": b.id}), apps=[], memory=True,
-                          mode="update", target=b.id)
-    assert out["updated"] is True and botfile.EXPERT_MEMORY_NOT_IMPORTED in out["warnings"]
+    out = botfile.install(_expert_package(tmp_path / "up.fusedbot", {**pub, "id": b.id}, memory=b"- updated\n"),
+                          apps=[], memory=True, mode="update", target=b.id)
+    assert out["updated"] is True and out["warnings"] == []
     assert b.meta["model"] == bm.DEFAULT_MODEL and not os.path.exists(b.memory_path)
+    assert store.memory(b) == "- updated\n"
+
+
+def test_an_expert_export_refuses_a_linked_instructions_file(expert, tmp_path):
+    from fused_render.bots import package
+    secret = tmp_path / "elsewhere.md"
+    secret.write_text("not the expert's\n")
+    os.remove(store.instructions_path(expert))
+    os.symlink(secret, store.instructions_path(expert))
+    with pytest.raises(ValueError, match="instructions.md is a link"):
+        package.plan(expert.id)
+    with pytest.raises(ValueError, match="instructions.md is a link"):
+        package.write(expert.id, memory=False, apps=[], file_name=None, dest_dir=str(tmp_path / "out"))
+
+
+def test_an_expert_export_reads_memory_under_its_write_lock(expert, tmp_path, monkeypatch):
+    from fused_render.bots import package
+    monkeypatch.setattr(package, "EXPERT_MEMORY_WAIT_S", 0.05)
+    lock = store.write_lock(expert)
+    with lock:  # a dream or chat turn is writing
+        with pytest.raises(ValueError, match="writing its memory"):
+            package.write(expert.id, memory=True, apps=[], file_name="busy", dest_dir=str(tmp_path))
+        # Without memory nothing waits on the lock.
+        assert os.path.isfile(package.write(expert.id, memory=False, apps=[], file_name="ok", dest_dir=str(tmp_path)))
+    assert os.path.isfile(package.write(expert.id, memory=True, apps=[], file_name="free", dest_dir=str(tmp_path)))
+
+
+def test_an_archive_made_while_the_export_waits_is_exported(expert, tmp_path, monkeypatch):
+    """Which memory files exist is decided under the lock: a dream that creates the archive and releases the lock
+    just as the export takes it must not leave the archive out."""
+    from fused_render import appfile_container
+    from fused_render.bots import package
+    assert not os.path.exists(store.archive_path(expert))
+    real = store.write_lock(expert)
+
+    class DreamFinishesFirst:
+        def acquire(self, timeout=-1):
+            _write(store.archive_path(expert), "- [1 · 2026-11-19] moved by a dream\n")
+            return real.acquire(timeout=timeout)
+
+        def release(self):
+            real.release()
+
+    monkeypatch.setattr(store, "write_lock", lambda bot: DreamFinishesFirst())
+    out = package.write(expert.id, memory=True, apps=[], file_name="dream", dest_dir=str(tmp_path))
+    idx = appfile_container.read_index(out, max_entries=100, max_entry_bytes=1 << 24, max_total_bytes=1 << 26, kind="bot")
+    assert ".fused/memory-archive.md" in {f["path"] for f in idx["files"]}
+
+
+def test_an_empty_memory_member_replaces_the_experts_memory(expert, tmp_path):
+    from fused_render.bots import botfile
+    _write(store.memory_path(expert), "old fact\n")
+    _write(store.archive_path(expert), "old archive\n")
+    pub = {"name": expert.meta["name"], "kind": "expert", "id": expert.id}
+    from fused_render import appfile_container
+    path = str(tmp_path / "empty.fusedbot")
+    appfile_container.write(path, {"name": pub["name"]}, [("bot.json", json.dumps(pub).encode()),
+                                                           (".fused/memory.md", b"")], kind="bot")
+    botfile.install(path, apps=[], memory=True, mode="update", target=expert.id)
+    assert store.memory(expert) == store.EMPTY_MEMORY and not os.path.exists(store.archive_path(expert))

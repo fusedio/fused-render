@@ -40,9 +40,9 @@ export function menuItems(b: Bot, opts: { live?: boolean } = {}): MenuItem[] {
   // An expert has Skills (its reference files, edited by you) but no Routines.
   out.push({ a: "skills", label: "Skills…", icon: MI.skills });
   if (!expert) out.push({ a: "routines", label: "Routines…", icon: MI.routines });
-  // Export bot… writes the `.fusedbot` package (dialogs/ExportBot.tsx); Super Bot is one per Mac and never travels,
-  // and an expert's folder (instructions, skills, memory) does not travel in one (the backend refuses both).
-  if (!ea && !expert) out.push({ a: "exportFile", label: "Export bot…", icon: MI.package });
+  // Export bot… writes the `.fusedbot` package (dialogs/ExportBot.tsx); Super Bot is one per Mac and never travels
+  // (the backend refuses it). An expert travels in the same package: its instructions, skills and, if ticked, memory.
+  if (!ea) out.push({ a: "exportFile", label: expert ? "Export expert…" : "Export bot…", icon: MI.package });
   out.push({ a: "export", label: "Export transcript", icon: MI.export });
   // Clone shares the source's logins (one browser); the second row is the old behaviour, a copy of them.
   if (!ea && !expert) out.push({ a: "clone", label: "Clone", icon: MI.clone }, { a: "cloneCopy", label: "Clone with a copy of its logins", icon: MI.clone });
