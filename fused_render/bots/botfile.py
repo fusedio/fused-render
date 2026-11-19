@@ -1162,7 +1162,8 @@ EXPERT_MEMORY_WAIT_S = 30
 def _write_expert_files(b, instructions: str | None, mem: tuple[str | None, str | None] | None,
                         warnings: list[str]) -> None:
     """An expert's own files from the package (docs/experts.md §5): `instructions` into instructions.md, and
-    (when the importer asked for memory and the package has it) memory.md and memory-archive.md, under the
+    (when the importer asked for memory and the package has some) memory.md and memory-archive.md REPLACED as a
+    unit (a part the package lacks is emptied / removed), under the
     expert's write lock so no task-learn or dream writes between. A busy lock or a failed write is a warning:
     the bot exists by now."""
     from fused_render.experts import store as xstore
@@ -1180,10 +1181,13 @@ def _write_expert_files(b, instructions: str | None, mem: tuple[str | None, str 
         warnings.append("memory: the expert was busy writing its own memory; not replaced")
         return
     try:
-        if text:
-            xstore.write_text(xstore.memory_path(b), text)
+        # memory.md and its archive are one memory: the expert's becomes the package's as a whole (as an update's
+        # README.md and icon.svg do), so a part the package lacks is emptied or removed, never left over.
+        xstore.write_text(xstore.memory_path(b), text or xstore.EMPTY_MEMORY)
         if archive:
             xstore.write_text(xstore.archive_path(b), archive)
+        elif os.path.lexists(xstore.archive_path(b)):
+            os.unlink(xstore.archive_path(b))
     except OSError as e:
         logger.warning("bot package: memory not written for %s", b.id, exc_info=True)
         warnings.append(f"memory: {e or e.__class__.__name__}")

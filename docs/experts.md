@@ -175,7 +175,8 @@ description `expert_list` shows, 240 chars, one line) and `shipped` (the shipped
   `memory.md` travels as `.fused/memory.md` and `memory-archive.md` as `.fused/memory-archive.md` (both in the
   skills + memory text cap); an install with memory writes them back under the expert's write lock, waiting up to
   `botfile.EXPERT_MEMORY_WAIT_S` (30 s) for a task-learn or dream, else the warning "memory: the expert was busy
-  writing its own memory; not replaced". An update without memory keeps the expert's own. **Skills** are held to
+  writing its own memory; not replaced". The two files are one memory: an install with memory makes both the
+  package's, emptying `memory.md` or removing the archive when the package lacks it. An update without memory keeps the expert's own. **Skills** are held to
   `Bot.EXPERT_SKILL_BODY_CAP`, not a playbook's cap, and a skill with no `trigger:` gets no warning. What stays on
   the Mac: `.fused/expert/` (sessions, read.json, left.json), `.fused/udfs/`, and the granted folders (`folders`,
   private, as every bot's): an imported expert reads and runs nothing outside its own folder until it is granted

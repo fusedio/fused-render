@@ -301,6 +301,14 @@ def test_an_expert_exports_and_installs_with_its_own_files(client, expert, tmp_p
     assert store.instructions(b) == plan["public"]["instructions"]
     botfile.install(full, apps=[], memory=True, mode="update", target=b.id)
     assert store.memory(b).endswith("it works\n")
+    # Memory is one unit: a package with memory.md but no archive leaves no archive behind.
+    _write(store.memory_path(b), "only memory\n")
+    os.remove(store.archive_path(b))
+    no_archive = package.write(b.id, memory=True, apps=[], file_name="noarch", dest_dir=str(tmp_path))
+    _write(store.memory_path(b), "mine\n")
+    _write(store.archive_path(b), "stale\n")
+    botfile.install(no_archive, apps=[], memory=True, mode="update", target=b.id)
+    assert store.memory(b) == "only memory\n" and not os.path.exists(store.archive_path(b))
 
 
 def test_an_expert_never_takes_a_local_model(client, expert):
