@@ -1,0 +1,154 @@
+# Specialists v2: the plan for the rebuild
+
+Status: a plan. Nothing in this file is built. `docs/specialists.md` describes
+version 1 as it exists on this branch; this file says what the rebuild changes.
+Version 1 was judged over-engineered and too complex to use (review of
+2026-11-19). The direction below came out of that review.
+
+Review pages (private artifacts, owner's account):
+
+- UX v2 proposal, screen by screen with mock-ups: https://claude.ai/artifact/HQK3nifhM4YuH3AtUYicxd
+- V1 walkthrough (screenshots and videos): https://claude.ai/artifact/VgCPvJnDveSZQcbeYBZJpo
+
+## What is decided and what is not
+
+Decided by the owner:
+
+- V1's UX is too complex and must be cut down. Remove any feature that does not
+  give real value.
+- No new colours. Use the app's existing tokens and components.
+- The memory update ("dream") runs once a day, or by hand. Running it more
+  often is a possible follow-up and is out of scope.
+- The update's trace is one commit, one chat message and the Changes list (see
+  "The update and its history"). It must stay very simple.
+
+Proposed and awaiting the owner's go-ahead: everything else in this file.
+
+Still open: whether Specialists stays a separate page or becomes a kind of bot
+in the Bots list. Working assumption: separate page while experimental, as
+originally instructed; nothing in Bots is touched.
+
+## Rules for the rebuild
+
+1. Reuse before building. The Bots page already has a Memory pane (Memory,
+   Edit, Changes) and a `≡` menu. The plain breakout already has pick mode,
+   the floating card, Send back and Close. The Claude chat already has tool
+   rows and an approval card. V2 uses these as they are.
+2. No specialist-only colours. Delete `--spx-tint`, `--spx-draft`, `--spx-warn`,
+   `--spx-card-tint`. Use `--bg`, `--bg-alt`, `--row-bg-hover`, `--fg`,
+   `--fg-muted`, `--border`, `--accent`, and the chat's `--c-accent`.
+3. Never show machinery: no entry ids, note kinds, note states, item states,
+   provenance fields, commit hashes.
+4. The specialist's chat is the one place it tells the user anything.
+
+## The three ideas
+
+1. A specialist is a chat that remembers. Its page copies the Bots layout.
+2. Tasks use it by themselves. The user sees an ordinary tool row.
+3. Breakout puts it beside the task, through the existing breakout flow.
+
+## Screens
+
+### Specialists page
+
+- Layout as Bots: list (face, name, last message, time, a dot when there is
+  something new), chat, and a right pane that is closed until opened.
+- Header: Clear, and the pane toggle. Clear folds the earlier chat into one
+  line with Show, as approved earlier.
+- No side panel. No settings dialog with tabs.
+- Faces come from the Bots face picker.
+
+### Memory pane (replaces Settings)
+
+- Tabs: Memory, Skills. Memory is plain sentences with Edit (direct text edit).
+- Who owns what is a sentence in memory, not a People table.
+- `▸ Notes waiting · n`: open to read or delete waiting notes.
+- `▸ Changes · n`: the history list (below).
+- `≡` menu: Settings… (name, one-line description, optional folder), Update
+  now, Delete….
+- Connected services are the app's own. Every send asks with the app's
+  approval card. No per-specialist allow-list.
+
+### Creating one
+
+Two fields: name, and what it is an expert on. One optional field: a folder it
+helps in by itself. The model is chosen in the message box like any chat.
+
+### Inside a task
+
+- "Used the <name> specialist" and "Sent a note to the <name> specialist" are
+  ordinary collapsed tool rows. Opening one shows what was given or sent; Undo
+  for a note is inside.
+- No "Use now". A note waits for the next update.
+- No "Send to a specialist" button, no picker, no general inbox. A note always
+  names a specialist.
+
+### Breakout
+
+- Start: the existing flow (More options, Breakout…, pick exchanges, type the
+  question, Start breakout). The pick bar gains one control, "With", to choose
+  a specialist or leave it plain. No second Breakout button, no brief form.
+- When the task offers: the standard approval card, one sentence, Open and
+  Not now. The task decides when to offer; there is no stuck detector.
+- Card: the plain breakout card. Where it says "research only" it names the
+  specialist. Same "n messages from…" seed row. Same Send back and Close.
+- Send back writes a handoff note into the task's message box as text, unsent.
+  Close asks "Discard this breakout?" and leaves nothing in the task. No
+  closed chip, no Reopen.
+- The specialist breakout keeps the same privileges as the main chat.
+- The plain breakout is itself a beta switch, so Specialists on implies it on.
+
+## The update and its history
+
+- Runs once a day while the app is open and idle, or from Update now.
+- With no notes there is no run, no commit and no message.
+- It is one unattended run in the specialist's folder. It reads the waiting
+  notes and the tasks that used the specialist, edits memory and skills, and
+  removes the notes it read, whether used or left out.
+- **Record:** one git commit per run in the specialist's folder. The diff is
+  the trace: notes leave `inbox/`, lines appear in memory or a skill. The
+  commit message is a few plain sentences the update writes: what it added,
+  what it changed, what it left out and why.
+- **Notification:** the same sentences, posted once as a message in the
+  specialist's chat. To undo something the user replies; an Undo link is only
+  a shortcut that sends "Undo: <line>".
+- **Looking back:** Changes in the Memory pane. An update is one row
+  ("Update · date"), beside rows for the user's own edits and chat turns that
+  changed memory. Opening a row shows its diff.
+- A failed run commits nothing, keeps the notes, and posts one chat line.
+- Removed from v1: the structured change list and its validator, reconciling
+  it with the diff, item kinds and states, the note-to-change mapping, the
+  "ignored" list, entry ids and per-entry metadata in memory, "confirmed
+  again" counts, the "seen" marker, the Learned tab and Revert tracking.
+- Given up: clicking one memory line to see its source note, and a "Reverted"
+  mark on an undone change.
+
+## Cut list
+
+Removed: side panel; Learned tab; general inbox; "Send to a specialist";
+People tab; Connections tab and per-specialist allow-list; overnight drafts to
+owners; trigger words, effort and the charter editor; second Breakout button
+and its menu; brief form; stuck detector; plan-check tool; after-task
+reviewer; structured change list.
+
+Simplified: memory entries (plain text); notes inbox (one line with a count);
+guidance and note chips (tool rows); offer card (approval card); summary
+(handoff note in the message box); Close and Discard (Send back and Close).
+
+Kept: the chat that remembers, Clear and the folded earlier chat; guidance
+reaching tasks by folder or by the task's judgement; notes from any task;
+breakout beside a task with both working; update applied by default with
+undo; messaging an owner through connected services with approval; the
+experimental flag, off by default.
+
+Tools handed to a task go from five to three: get guidance, send a note, open
+a breakout.
+
+## Known trade-offs
+
+- A rule stated inside a task takes effect at the next update, not at once.
+  Telling the specialist in its own chat, or Update now, covers urgent cases.
+- No overnight reports to owners; the specialist offers during a live chat.
+- The task's judgement replaces the stuck counter, so it may offer less often.
+- No reopening a closed breakout from the task.
+- Every send to a service asks.

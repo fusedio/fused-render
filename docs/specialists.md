@@ -1,5 +1,8 @@
 # Specialists — architecture and wire contract
 
+> **A simpler version 2 is planned.** This file describes version 1 as built. The plan for the rebuild, with what is
+> removed and why, is in `docs/specialists-v2.md`.
+
 Written 2026-11-18 from the code as built (`fused_render/specialists/`, `fused_render/claude_agent/specialist_hook.py`,
 the specialist seams in `claude_agent/agent.py` and `claude_agent/permission_server.py`, `frontend/src/apps/specialists/`,
 `frontend/src/apps/claude/specialists/`, `frontend/src/shell/breakout/SpecialistBreakoutCard.tsx`,
