@@ -16,10 +16,8 @@ missing).
 """
 
 import asyncio
-import importlib
 import json
 import os
-import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -1395,61 +1393,35 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001 — never worth failing startup
             logger.warning("could not start the experts scheduler", exc_info=True)
 
-    # Specialists (fused_render/specialists/, docs/specialists.md): `/api/specialists*`. Every route answers 404
-    # while the flag is off (`flag.require`), so including them changes nothing then. task_routes goes FIRST:
-    # its literal paths (`/api/specialists/breakouts`, `/task-events`) must win over the core `/{id}` route.
-    # Each include is its own try: one stream's broken module must not take the others (or the app) down.
-    for _sp_mod in ("task_routes", "routes", "learn_routes"):
-        try:
-            app.include_router(importlib.import_module(f"fused_render.specialists.{_sp_mod}").router)
-        except Exception:  # noqa: BLE001
-            logger.warning("could not load the specialists %s router", _sp_mod, exc_info=True)
-    try:
-        from fused_render.specialists import flag as _sp_flag
+    # Specialists (fused_render/specialists/, docs/specialists-v2.md): `/api/specialists*`, every route the
+    # unknown-path 404 while the flag is off. The tools router goes first: its literal `/tools/*` paths must win
+    # over the `/{id}` routes.
+    from fused_render.specialists import flag as sp_flag
+    from fused_render.specialists import routes as sp_routes
+    from fused_render.specialists import tools as sp_tools
 
-        app.exception_handler(_sp_flag.Off)(_sp_flag.off_handler)
-        app.middleware("http")(_sp_flag.off_middleware)
-    except Exception:  # noqa: BLE001
-        logger.warning("could not load the specialists flag", exc_info=True)
+    app.include_router(sp_tools.router)
+    app.include_router(sp_routes.router)
+    app.exception_handler(sp_flag.Off)(sp_flag.off_handler)
+    app.middleware("http")(sp_flag.off_middleware)
 
     @on_startup
     async def _startup_specialists():
-        try:
-            from fused_render.specialists import flag as sp_flag
+        if not sp_flag.on():
+            return
+        # agent.py and the agent router's post-hook read these two off sys.modules.
+        import fused_render.specialists.agent_hooks  # noqa: F401
+        import fused_render.specialists.launch  # noqa: F401
+        from fused_render.specialists import scheduler, seed
 
-            if not sp_flag.on():
-                return  # off: no module loaded for the spawn side, no folder, no thread
-            # The spawn side (claude_agent/agent.py) and the router's post-hook read these off sys.modules.
-            import fused_render.specialists.launch  # noqa: F401
-            from fused_render.specialists import harness as sp_harness
-
-            sp_harness.reopen()  # a previous shutdown in this process left it closed
-            try:
-                import fused_render.specialists.agent_hooks  # noqa: F401
-            except Exception:  # noqa: BLE001
-                logger.warning("could not load the specialists agent hooks", exc_info=True)
-            from fused_render.specialists import seed as sp_seed
-
-            await asyncio.to_thread(sp_seed.seed)
-            if _platform.IS_WINDOWS:
-                return
-            from fused_render.specialists import scheduler as sp_scheduler
-
-            await asyncio.to_thread(sp_scheduler.start)
-        except Exception:  # noqa: BLE001 — never worth failing startup
-            logger.warning("could not start specialists", exc_info=True)
+        await asyncio.to_thread(seed.seed)
+        scheduler.start()
 
     @on_shutdown_always
     async def _shutdown_specialists():
-        sched = sys.modules.get("fused_render.specialists.scheduler")
-        harn = sys.modules.get("fused_render.specialists.harness")
-        try:
-            if sched is not None:
-                await asyncio.to_thread(sched.stop)
-            if harn is not None:
-                await asyncio.to_thread(harn.shutdown, 2.0)
-        except Exception:  # noqa: BLE001
-            logger.warning("could not stop specialists", exc_info=True)
+        from fused_render.specialists import scheduler
+
+        scheduler.stop()
 
     # Share an app as a public link (share_app.py): the .fused export handed
     # to the user's Fused account as a one-node canvas, through the same

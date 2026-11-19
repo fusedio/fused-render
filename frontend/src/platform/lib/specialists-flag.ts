@@ -1,7 +1,6 @@
 // The `specialists` experimental flag (`specialists_enabled`, shell/prefs.py;
-// docs/specialists.md) for every layer that may not
-// import apps/claude: the shell's nav row and route, the Specialists page, and
-// the task-side surfaces inside the chat.
+// docs/specialists-v2.md), in platform so the Bots page, the shell and the
+// chat's breakout "With" read one answer.
 //
 // The same module-level cache + subscribe shape as canvases-flag.ts: one read
 // per page load through the single-flight `getPrefsShared` (so it shares the
@@ -16,19 +15,12 @@ import { useEffect, useState } from "react";
 import { getPrefsShared } from "@platform/lib/api";
 
 let enabled = false;
-/** Has a read landed or a publish happened — is `enabled` an answer yet? */
-let known = false;
 let reading: Promise<void> | null = null;
 let generation = 0;
 const listeners = new Set<(v: boolean) => void>();
 
 function set(next: boolean) {
-  const wasKnown = known;
-  known = true;
-  if (enabled === next) {
-    if (!wasKnown) for (const listener of [...listeners]) listener(next);
-    return;
-  }
+  if (enabled === next) return;
   enabled = next;
   for (const listener of [...listeners]) listener(next);
 }
@@ -88,25 +80,9 @@ export function useSpecialistsEnabled(): boolean {
   return current;
 }
 
-/** `null` until the first answer, then the flag: for the one reader that must
- *  not act on "not read yet" — the route's redirect away from /specialists. */
-export function useSpecialistsFlagAnswer(): boolean | null {
-  useSpecialistsEnabled(); // subscribes and triggers the one read
-  const [, bump] = useState(0);
-  useEffect(() => {
-    const l = () => bump((n) => n + 1);
-    listeners.add(l);
-    return () => {
-      listeners.delete(l);
-    };
-  }, []);
-  return known ? enabled : null;
-}
-
 /** Test seam: back to "not read yet, off". Notifies mounted readers. */
 export function resetSpecialistsFlagForTests(): void {
   generation += 1;
   reading = null;
   set(false);
-  known = false;
 }

@@ -81,6 +81,7 @@ locally like shell/bookmarks.py's guard is.
 import logging
 import os
 import re
+import sys
 import threading
 import time
 
@@ -497,9 +498,8 @@ def chat_recap_enabled() -> bool:
 
 
 def specialists_enabled() -> bool:
-    """Whether Specialists (docs/specialists.md) are on (default off — experimental). Env
-    `FUSED_RENDER_SPECIALISTS` "1"/"0" wins both ways; else only a stored `true` is on. Off, no page, no
-    routes, no task tools, no timers and no folders."""
+    """Whether Specialists are on (default off — experimental). Env `FUSED_RENDER_SPECIALISTS` "1"/"0" wins
+    both ways; else only a stored `true` is on. Off, no Bots rows, no routes, no task tools, no timers."""
     env = os.environ.get("FUSED_RENDER_SPECIALISTS")
     if env in ("1", "0"):
         return env == "1"
@@ -509,8 +509,9 @@ def specialists_enabled() -> bool:
 def breakout_enabled() -> bool:
     """Whether Breakout (research-only side chats seeded from selected messages)
     is available (default off — opt-in beta). Off, no Breakout buttons render
-    and the agent refuses `breakout` starts. Only a stored `true` is on."""
-    return read_prefs().get("breakout_enabled") is True
+    and the agent refuses `breakout` starts. Only a stored `true` is on, or
+    Specialists on (a specialist's breakout is the plain one)."""
+    return specialists_enabled() or read_prefs().get("breakout_enabled") is True
 
 
 def canvas_shot_slow_fallback_enabled() -> bool:
@@ -1492,33 +1493,19 @@ def _forced_by(env_name: str, override) -> str | None:
 
 
 def _specialists_switched(on: bool) -> None:
+    """On: load the modules agent.py reads off `sys.modules`, seed the shipped specialist and start the daily
+    update; off: stop it. Best-effort: never fails the preference write."""
     try:
-        from fused_render.specialists import flag as sp_flag
+        if on and specialists_enabled():
+            import fused_render.specialists.agent_hooks  # noqa: F401
+            import fused_render.specialists.history  # noqa: F401
+            import fused_render.specialists.launch  # noqa: F401
+            from fused_render.specialists import scheduler, seed, store  # noqa: F401
 
-        if on and sp_flag.on():
-            import fused_render.specialists.launch  # noqa: F401 — agent.py reads it off sys.modules
-            from fused_render.specialists import harness as sp_harness
-            from fused_render.specialists import seed as sp_seed
-
-            sp_harness.reopen()  # an earlier app shutdown in this process leaves it closed
-
-            try:
-                import fused_render.specialists.agent_hooks  # noqa: F401 — the router's post-hook
-            except Exception:  # noqa: BLE001
-                logger.warning("specialists: agent hooks not loaded", exc_info=True)
-            sp_seed.seed()
-            from fused_render import _platform as _sp_platform
-
-            if not _sp_platform.IS_WINDOWS:
-                from fused_render.specialists import scheduler as sp_scheduler
-
-                sp_scheduler.start()
-        elif not on:
-            import sys
-
-            mod = sys.modules.get("fused_render.specialists.scheduler")
-            if mod is not None:
-                mod.stop()
+            seed.seed()
+            scheduler.start()
+        elif not on and "fused_render.specialists.scheduler" in sys.modules:
+            sys.modules["fused_render.specialists.scheduler"].stop()
     except Exception:  # noqa: BLE001
         logger.exception("specialists: switching on/off failed")
 
@@ -2041,8 +2028,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             )
         _store(prefs)
     if isinstance(body.get("specialists_enabled"), bool):
-        # AFTER the write, best-effort (docs/specialists.md): on seeds the shipped specialists and
-        # starts the learning scheduler; off stops the scheduler. Never allowed to fail the preference write.
+        # AFTER the write, like `lan_enabled`.
         _specialists_switched(body["specialists_enabled"])
     if body.get("canvases_embed_proxy") is False:
         # AFTER the write, like `lan_enabled`: stop the listener now rather

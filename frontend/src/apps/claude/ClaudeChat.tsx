@@ -44,7 +44,8 @@ import {
 } from "@platform/lib/drafts";
 import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
-import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type ComposerDraftDetail } from "@platform/lib/breakouts";
+import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type BreakoutSpecialist, type ComposerDraftDetail } from "@platform/lib/breakouts";
+import { listSpecialists } from "@platform/lib/specialists";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
@@ -157,6 +158,7 @@ import {
 } from "./ui";
 import { ComposerGate, waitingKind } from "./ui/WaitingBar";
 import { BreakoutSelectionBar } from "./ui/BreakoutSelectionBar";
+import { SPECIALIST_BREAKOUT_TOOL } from "./specialists/tool-labels";
 import { pickDefault, pickPlan } from "./ui/TurnPick";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
@@ -173,9 +175,6 @@ import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { isLanHost } from "@platform/lib/host";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
-import { SpecialistCardContext } from "./specialists/context";
-import { useSpecialistTaskSide } from "./specialists/TaskSide";
-import type { SpecialistSessionProp } from "./specialists/context";
 import { PlaceTags } from "@shell/claude-rail/PlaceTags";
 // THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"),
 // behind its flag: with it on, the strip and the identity line below are one
@@ -387,19 +386,12 @@ export interface ClaudeChatProps {
     /** Send `text` as a new message in this chat, the way a typed one goes. */
     send?: (text: string) => void;
   }) => void;
-  /** SPECIALISTS (docs/specialists.md): fields merged into every
-   *  `start` body — `{specialist: "<id>:main"}` / `"<id>:breakout:<bid>"`. */
+  /** Fields merged into every `start` body (a specialist's chat:
+   *  `{specialist: "<id>:main"}`). Such a chat opens as a chat and has no
+   *  Schedule seat. */
   extraParams?: Record<string, string>;
-  /** `/clear` (and the host's own Clear) call this instead of going back to
-   *  Chats: a specialist's one chat starts a fresh session in place. */
+  /** `/clear` calls this instead of going back to Chats. */
   onClear?: () => void;
-  /** This chat IS a specialist session: a chat from its first frame, no plain
-   *  Breakout control, no specialist task UI; `breakoutPrompt` is sent once and
-   *  `onBreakoutState` reports up, as in a breakout card. */
-  specialist?: SpecialistSessionProp;
-  /** The composer's idle placeholder in place of "Reply to Claude…" (a
-   *  specialist's main chat and breakout card name who is being replied to). */
-  composerPlaceholder?: string;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -2190,8 +2182,7 @@ function ChatBody(props: ChatBodyProps) {
         // A BREAKOUT CARD IS A CHAT FROM ITS FIRST FRAME: it has no landing to
         // show, and a Home row would load another conversation into it.
         props.breakout ||
-        // …and so is a specialist's chat: it has no landing, no list of chats.
-        !!props.specialist ||
+        props.extraParams ||
         params.get("session_id") ||
         // A CHAT THAT HAS NEVER RUN IS STILL A CHAT (`QUEUED_PARAM`): it has a
         // waiting bubble, a task number and a line to be in, and landing on the
@@ -3932,11 +3923,6 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
-  /** SPECIALISTS: "Send to the task" on a summary draft sends what the reader
-   *  typed first and the summary after it, through the composer's own send. */
-  const spxSubmit = useCallback((text: string): boolean => submitBox.current?.(text) ?? false, []);
-  /** The specialist side's draft-label seat, filled once its hook has run below. */
-  const spxNoteDraft = useRef<(label: string | undefined) => void>(() => {});
   /** SEND BACK lands here: a breakout card's summary arrives as a window event
    *  addressed to this chat's session + folder, and goes through the same seat a
    *  stranded line uses (appended to what the reader has typed, draft in step). */
@@ -3949,8 +3935,6 @@ function ChatBody(props: ChatBodyProps) {
       if (!sid || d.sessionId !== sid || d.file !== file) return;
       strandSeq.current += 1;
       setStranded({ text: d.text, seq: strandSeq.current });
-      // A specialist breakout's summary says who it is from (docs/specialists.md).
-      spxNoteDraft.current(d.label);
       // Handled: the breakout must not also write the persisted draft.
       e.preventDefault();
     };
@@ -3964,7 +3948,7 @@ function ChatBody(props: ChatBodyProps) {
   /** Set once `onFollowUp` exists (it is defined further down this body). */
   const breakoutSendRef = useRef<((text: string) => void) | null>(null);
   useEffect(() => {
-    if ((props.breakout || props.specialist) && onBreakoutState) {
+    if (props.breakout && onBreakoutState) {
       onBreakoutState({
         sessionId: state.sessionId || "",
         turns: state.turns,
@@ -3974,7 +3958,7 @@ function ChatBody(props: ChatBodyProps) {
         send: (text: string) => breakoutSendRef.current?.(text),
       });
     }
-  }, [props.breakout, !!props.specialist, onBreakoutState, controller, state.sessionId, state.turns, state.status]);
+  }, [props.breakout, onBreakoutState, controller, state.sessionId, state.turns, state.status]);
 
   /** The title this chat's header names it by, for the breakout chip. Written
    *  where the header's task row is read. */
@@ -3983,7 +3967,7 @@ function ChatBody(props: ChatBodyProps) {
    *  allowed while a run is active: the breakout is its own session. */
   const breakoutCwdRef = useRef<string | undefined>(undefined);
   const openBreakoutFor = useCallback(
-    (keys: readonly string[], prompt?: string) => {
+    (keys: readonly string[], prompt?: string, specialist?: BreakoutSpecialist) => {
       const st = controller.getState();
       const sid = st.sessionId || params.get("session_id") || "";
       if (!props.onBreakout || !sid || !file) return;
@@ -3996,6 +3980,7 @@ function ChatBody(props: ChatBodyProps) {
         context,
         forkKey: [...keys].sort().join("|"),
         ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
+        ...(specialist ? { specialist } : {}),
       });
     },
     [controller, params, file, props.onBreakout],
@@ -4009,6 +3994,8 @@ function ChatBody(props: ChatBodyProps) {
   pickingRef.current = picking;
   /** The turns picked for the next breakout (whole exchanges). */
   const [pickedKeys, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
+  /** The pick bar's "With": the specialist the breakout runs with, or none. */
+  const [withSpecialist, setWithSpecialist] = useState<BreakoutSpecialist>();
   // Only keys of turns still on screen count: a re-keyed transcript or another
   // session leaves the old keys behind, and they must not size the selection
   // or reach the context.
@@ -4411,7 +4398,6 @@ function ChatBody(props: ChatBodyProps) {
             notify({ title: "Breakout chats cannot be cleared; close the card instead", tone: "info" });
             return false;
           }
-          // A specialist's one chat clears in place (its host folds the session).
           if (props.onClear) {
             props.onClear();
             return true;
@@ -4563,7 +4549,21 @@ function ChatBody(props: ChatBodyProps) {
 
   const actions = useMemo(
     () => ({
-      decidePermission: controller.decidePermission,
+      // Allowing a task's specialist_breakout opens the breakout it asked for,
+      // seeded with the task's last exchange, with its reason as the question.
+      decidePermission: (...a: Parameters<typeof controller.decidePermission>) => {
+        const row = a[1] === "allow" ? controller.getState().permissions.find((p) => p.id === a[0]) : undefined;
+        if (row?.tool === SPECIALIST_BREAKOUT_TOOL) {
+          const { specialist, reason } = row.input as { specialist?: string; reason?: string };
+          void listSpecialists().then((all) => {
+            const s = all.find((x) => x.name === specialist);
+            const turns = controller.getState().turns;
+            const last = turns[turns.length - 1];
+            if (s && last) openBreakoutFor(exchangeKeys(turns, last.key), reason, { id: s.id, name: s.name, home: s.home });
+          }, () => {});
+        }
+        return controller.decidePermission(...a);
+      },
       answerQuestion: controller.answerQuestion,
       decidePlan: controller.decidePlan,
       dismissCard: controller.dismissCard,
@@ -4571,7 +4571,7 @@ function ChatBody(props: ChatBodyProps) {
       addNote: controller.addNote,
       navigate: onNavigate,
     }),
-    [controller, onNavigate],
+    [controller, onNavigate, openBreakoutFor],
   );
 
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);
@@ -5418,7 +5418,7 @@ function ChatBody(props: ChatBodyProps) {
             pickSubmit: {
               canStart: breakoutSel.size > 0,
               onStart: (text: string) => {
-                openBreakoutFor([...breakoutSel], text);
+                openBreakoutFor([...breakoutSel], text, withSpecialist);
                 setPicking(false);
                 setBreakoutSel(new Set());
               },
@@ -5449,16 +5449,13 @@ function ChatBody(props: ChatBodyProps) {
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
       ...(stranded && entered ? { restore: stranded } : {}),
-      // SPECIALISTS: who is being replied to, and no Schedule seat in a
-      // specialist session.
-      ...(props.composerPlaceholder ? { chatPlaceholder: props.composerPlaceholder } : {}),
-      ...(props.specialist ? { noSchedule: true } : {}),
+      ...(props.extraParams ? { noSchedule: true } : {}),
     }),
     [
-      props.composerPlaceholder,
-      !!props.specialist,
+      props.extraParams,
       picking,
       breakoutSel,
+      withSpecialist,
       openBreakoutFor,
       file,
       state.sessionId,
@@ -5617,12 +5614,12 @@ function ChatBody(props: ChatBodyProps) {
   // strict-mode replay; the store forgets it so a remount cannot resend.
   const breakoutPromptSent = useRef(false);
   useEffect(() => {
-    const text = props.breakout || props.specialist ? props.breakoutPrompt : undefined;
+    const text = props.breakout ? props.breakoutPrompt : undefined;
     if (!text || breakoutPromptSent.current) return;
     breakoutPromptSent.current = true;
     props.onBreakoutPromptSent?.();
     onSend(text, { model: defaults.model, effort: defaults.effort, permission: defaults.permission });
-  }, [props.breakout, !!props.specialist, props.breakoutPrompt, props.onBreakoutPromptSent, onSend, defaults.model, defaults.effort, defaults.permission]);
+  }, [props.breakout, props.breakoutPrompt, props.onBreakoutPromptSent, onSend, defaults.model, defaults.effort, defaults.permission]);
   const headsup = useHeadsUp({
     runId: state.runId || state.lastRunId || "",
     running,
@@ -5836,6 +5833,7 @@ function ChatBody(props: ChatBodyProps) {
     }
     const pre = pickDefault(controller.getState().turns);
     setBreakoutSel(new Set(pre));
+    setWithSpecialist(undefined);
     setPicking(true);
   };
   const startBreakout = () => {
@@ -5843,7 +5841,7 @@ function ChatBody(props: ChatBodyProps) {
     // The composer spends its words into the breakout's first message.
     if (pickStartRef.current) pickStartRef.current();
     else {
-      openBreakoutFor([...breakoutSel]);
+      openBreakoutFor([...breakoutSel], undefined, withSpecialist);
       setPicking(false);
       setBreakoutSel(new Set());
     }
@@ -5852,28 +5850,11 @@ function ChatBody(props: ChatBodyProps) {
   // on a message both start a breakout under it.
   const breakoutGate = !!(
     breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file
-  ) && !props.specialist;
+  );
   gateRef.current = breakoutGate;
   const togglePickingRef = useRef(togglePicking);
   togglePickingRef.current = togglePicking;
   const stableToggle = useCallback(() => togglePickingRef.current(), []);
-  // SPECIALISTS (docs/specialists.md): the task side of the feature — offer card,
-  // chips, Send to a specialist, the Breakout control, the draft label — and
-  // the services card in a specialist's own chat. Inert with the flag off.
-  const spx = useSpecialistTaskSide({
-    claude: chatBackend === "claude",
-    sessionId: state.sessionId || "",
-    file: file || "",
-    ...(state.runId ? { runId: state.runId } : {}),
-    ...(breakoutTitle.current ? { title: breakoutTitle.current } : {}),
-    turns: state.turns,
-    ...(props.specialist ? { specialist: props.specialist } : {}),
-    ...(breakoutGate ? { onCopyOfChat: stableToggle } : {}),
-    running,
-    folder: chatWorkdir(file, pane.noun) || "",
-    submit: spxSubmit,
-  });
-  spxNoteDraft.current = spx.noteDraft;
   const { onBreakoutControl } = props;
   useEffect(() => {
     onBreakoutControl?.({ available: breakoutGate, picking, toggle: stableToggle });
@@ -6183,7 +6164,7 @@ function ChatBody(props: ChatBodyProps) {
   return (
    <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
-   <FilePreviewProvider cwd={props.specialist?.folder || chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
+   <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
     <RemoteControlConfirm open={rc.asking} onGo={rc.start} onCancel={rc.cancel} />
     <div
       ref={rootRef}
@@ -6467,13 +6448,12 @@ function ChatBody(props: ChatBodyProps) {
               </>
             ) : null}
             <TasksContext.Provider value={tasksById}>
-            <SpecialistCardContext.Provider value={spx.cards}>
             <AllowDeniedContext.Provider value={allowDenied}>
             <Transcript
               followRef={transcriptFollow}
               onOpenCardVisible={setOpenCardVisible}
               jumpRef={jumpToCard}
-              cwd={props.specialist?.folder || chatWorkdir(file, pane.noun)}
+              cwd={chatWorkdir(file, pane.noun)}
               state={transcriptState}
               comebackPending={sched.blocked}
               actions={actions}
@@ -6487,8 +6467,6 @@ function ChatBody(props: ChatBodyProps) {
               {...(chatBackend === "claude" && !running && !props.breakout ? { onFork } : {})}
               {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}
               {...(breakoutGate ? { onBreakoutContext: onContextTurn } : {})}
-              {...(spx.afterTurn ? { afterTurn: spx.afterTurn } : {})}
-              {...(spx.replaceTurn ? { replaceTurn: spx.replaceTurn } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
@@ -6543,12 +6521,10 @@ function ChatBody(props: ChatBodyProps) {
                       onStopRepeat={() => void deleteWaiting(row.entryId, row.stopId)}
                     />
                   ))}
-                {spx.tail}
                 </>
               }
             />
             </AllowDeniedContext.Provider>
-            </SpecialistCardContext.Provider>
             </TasksContext.Provider>
             {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
                 the box: one line until opened. Not in the compact cut — a tile
@@ -6624,12 +6600,12 @@ function ChatBody(props: ChatBodyProps) {
                 </button>
               </div>
             ) : null}
-            {/* SPECIALISTS: the draft label and the Breakout control. */}
-            {!compact ? spx.dock : null}
             {/* BREAKOUT PICK MODE: the picked exchanges, above the composer. */}
             {breakoutGate && picking ? (
               <BreakoutSelectionBar
                 count={state.turns.filter((t) => t.role === "user" && breakoutSel.has(t.key)).length}
+                specialist={withSpecialist}
+                onSpecialist={setWithSpecialist}
                 onStart={startBreakout}
                 onCancel={() => {
                   setPicking(false);

@@ -14,10 +14,15 @@ import { act, clearContextOn, cur, eventsOf, onSelectChange, openDialog, useBots
 import { Composer, type ReplyTo } from "./Composer";
 import { Face } from "./Face";
 import { ReactionPicker, type ReactionReq } from "./ReactionPicker";
+import { SpecialistChat } from "./SpecialistChat";
 import { Thread } from "./Thread";
 import { Toast } from "./Toast";
 import { ThreadSearch } from "./ThreadSearch";
 import { ToBottom } from "./ToBottom";
+
+const CLEAR_ICON = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 21-4.3-4.3a2.4 2.4 0 0 1 0-3.4l9.6-9.6a2.4 2.4 0 0 1 3.4 0l5.6 5.6a2.4 2.4 0 0 1 0 3.4L13 21" /><path d="M22 21H7" /><path d="m5 11 9 9" /></svg>
+);
 
 export function ChatPane() {
   useBots();
@@ -30,9 +35,10 @@ export function ChatPane() {
   // A reply and an open picker belong to one bot.
   useEffect(() => onSelectChange(() => { setReply(null); setPick(null); }), []);
   const closePick = useCallback(() => setPick(null), []);
+  const spec = b?.specialist, specClear = useRef<(() => void) | null>(null);
 
-  // Subtitle only while something is happening; an idle bot is just its name.
-  const sub = !b || b.status === "idle" ? "" : (b.status === "running" && b.note ? b.note : statusLabel(b)) + (b.title ? " · " + b.title : "");
+  // Subtitle only while something is happening; an idle bot is just its name. A specialist's chat shows its own.
+  const sub = !b || b.status === "idle" || spec ? "" : (b.status === "running" && b.note ? b.note : statusLabel(b)) + (b.title ? " · " + b.title : "");
   // Something to clear (lib/commands canClear, shared with the composer's /clear): an idle bot whose newest shown
   // message is not already a Clear context marker.
   const clear = canClear(b, b ? eventsOf(b.id) : []), clearable = clear.ok;
@@ -63,27 +69,34 @@ export function ChatPane() {
             Only between tasks and with the browser handed back (the backend refuses otherwise); a no-op right after a clear.
             Behind the page-wide "Clear context button" switch (Settings, store clearContextOn; off by default): off, no button;
             the composer's /clear command (lib/commands) stays. */}
-        {clearContextOn() ? (
+        {/* A specialist's Clear is always there (its chat is the task chat): it folds the session away (SpecialistChat). */}
+        {spec ? (
+          <button id="cclear" className="ptog" title="Clear: a fresh chat; the earlier one stays above it, folded" onClick={() => specClear.current?.()}>
+            {CLEAR_ICON}
+          </button>
+        ) : clearContextOn() ? (
           <button id="cclear" className="ptog" disabled={!clearable} onClick={() => { if (b) void act(() => api.clearContext(b.id)); }}
             title={clearable ? "Clear context: the bot starts fresh; this chat keeps the earlier messages, folded" : clear.why}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 21-4.3-4.3a2.4 2.4 0 0 1 0-3.4l9.6-9.6a2.4 2.4 0 0 1 3.4 0l5.6 5.6a2.4 2.4 0 0 1 0 3.4L13 21" /><path d="M22 21H7" /><path d="m5 11 9 9" /></svg>
+            {CLEAR_ICON}
           </button>
         ) : null}
-        <ThreadSearch open={search.open} q={search.q} count={searchN} disabled={!b}
+        {spec ? null : <ThreadSearch open={search.open} q={search.q} count={searchN} disabled={!b}
           onOpen={() => setSearch((s) => ({ ...s, open: true }))}
           onClose={() => setSearch({ open: false, q: "" })}
-          onQuery={(q) => setSearch((s) => ({ ...s, q }))} />
-        <button id="rcol" className="ptog" title={b?.kind === "expert" ? "Show the expert's memory and sessions" : "Show the browser preview"} onClick={toggleRight}>
+          onQuery={(q) => setSearch((s) => ({ ...s, q }))} />}
+        <button id="rcol" className="ptog" title={b?.kind === "expert" ? "Show the expert's memory and sessions" : spec ? "Show the specialist's memory and skills" : "Show the browser preview"} onClick={toggleRight}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>
         </button>
       </header>
       <Toast id="ctoast" />
+      {spec ? <div className="tw"><SpecialistChat key={spec.id} s={spec} clearRef={specClear} /></div> : <>
       <div className="tw">
         <Thread b={b} threadRef={threadRef} searchQ={search.open ? searchQuery(search.q) : ""} onSearchCount={setSearchN}
           onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} />
         <ToBottom threadRef={threadRef} />
       </div>
       <Composer b={b} reply={reply} setReply={setReply} threadRef={threadRef} />
+      </>}
       <ReactionPicker req={pick} onClose={closePick} />
     </section>
   );

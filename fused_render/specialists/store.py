@@ -1,342 +1,163 @@
-"""The specialists the user keeps: one home folder each under `paths.root()` (docs/specialists.md §2).
-
-The manifest `specialist.json` is the record (id, name, subject, face, model, effort, connections, created,
-shipped); `triggers.json` beside it holds "when to bring me in" and is tracked in git because the nightly job edits
-it too. Nothing here caches a Specialist: every read is a file read, so several server processes and the nightly
-job never disagree.
+"""The specialists the user keeps: one home folder each under `paths.root()`, its manifest `specialist.json` the
+record. Nothing is cached: every read is a file read.
 """
 from __future__ import annotations
 
-import logging
 import os
 import re
 import shutil
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 
+from fused_render.specialists import history, paths
 from fused_render.specialists import home as hm
-from fused_render.specialists import paths
 
-logger = logging.getLogger(__name__)
-
-GENERAL = "general"
 NAME_MAX = 80
-SUBJECT_MAX = 300
-MODELS = ("", "sonnet", "opus", "haiku")
-EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
-_CREATE_LOCK = threading.Lock()
+ABOUT_MAX = 300
+_LOCK = threading.Lock()
 
 
 @dataclass
 class Specialist:
     id: str
     name: str
-    subject: str = ""
-    face: dict | str = ""
-    model: str = ""
-    effort: str = ""
-    triggers: dict = field(default_factory=lambda: {"folders": [], "keywords": []})
-    connections: list = field(default_factory=list)
-    created: float = 0.0
-    shipped: str = ""
-    home: str = ""
+    about: str
+    folder: str
+    face: dict | None
+    home: str
 
     def manifest(self) -> dict:
-        d = asdict(self)
-        d.pop("home", None)
-        d.pop("triggers", None)
-        return d
-
-
-class Busy(RuntimeError):
-    """The specialist cannot be changed that way right now; its message is the sentence the route answers."""
+        return {"id": self.id, "name": self.name, "about": self.about, "folder": self.folder, "face": self.face}
 
 
 class Invalid(ValueError):
     """A create/update argument the user must fix; its message is the sentence the route answers."""
 
 
-def _line(v, cap: int) -> str:
-    return " ".join(str(v or "").split())[:cap]
+class Taken(Invalid):
+    pass
 
 
-def clean_triggers(t) -> dict:
-    if t is None:
-        return {"folders": [], "keywords": []}
-    if not isinstance(t, dict):
-        raise Invalid("'triggers' must be an object with 'folders' and 'keywords'")
-    folders, keywords = t.get("folders") or [], t.get("keywords") or []
-    if not isinstance(folders, list) or not isinstance(keywords, list):
-        raise Invalid("'triggers.folders' and 'triggers.keywords' must be lists")
-    fo = []
-    for f in folders:
-        f = os.path.expanduser(str(f or "").strip())
-        if not f:
-            continue
-        if not os.path.isabs(f):
-            raise Invalid(f"trigger folder {f!r} must be an absolute path")
-        f = os.path.normpath(f)
-        if f not in fo:
-            fo.append(f)
-    kw = []
-    for k in keywords:
-        k = _line(k, 60)
-        if k and k.lower() not in [x.lower() for x in kw]:
-            kw.append(k)
-    return {"folders": fo[:50], "keywords": kw[:50]}
-
-
-def _from_home(folder: str) -> Specialist | None:
+def _load(folder: str) -> Specialist | None:
     m = hm.read_json(os.path.join(folder, paths.MANIFEST), None)
-    if not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"]:
+    if not isinstance(m, dict) or not m.get("id"):
         return None
-    trig = hm.read_json(os.path.join(folder, "triggers.json"), {})
-    try:
-        trig = clean_triggers(trig if isinstance(trig, dict) else {})
-    except Invalid:
-        trig = {"folders": [], "keywords": []}
-    conns = m.get("connections")
-    return Specialist(id=m["id"], name=str(m.get("name") or m["id"]), subject=str(m.get("subject") or ""),
-                      face=m.get("face") or "", model=str(m.get("model") or ""), effort=str(m.get("effort") or ""),
-                      triggers=trig, connections=[str(c) for c in conns] if isinstance(conns, list) else [],
-                      created=float(m.get("created") or 0.0), shipped=str(m.get("shipped") or ""), home=folder)
+    return Specialist(id=m["id"], name=m.get("name") or m["id"], about=m.get("about") or "",
+                      folder=m.get("folder") or "", face=m.get("face") or None, home=folder)
 
 
-def all() -> list[Specialist]:  # noqa: A001 — the B.8 name
-    found = paths._scan(paths.root())
-    out = [s for s in (_from_home(f) for f in found.values()) if s]
-    return sorted(out, key=lambda s: (s.created, s.name.lower()))
-
-
-def any_exist() -> bool:
-    """At least one specialist exists. Cheap and never raises (agent.py asks on every task start)."""
-    try:
-        r = paths.root()
-        if not os.path.isdir(r):
-            return False
-        return any(not n.startswith(".") and os.path.isfile(os.path.join(r, n, paths.MANIFEST))
-                   for n in os.listdir(r))
-    except OSError:
-        return False
+def all() -> list[Specialist]:  # noqa: A001
+    found = (_load(f) for f in paths.scan().values())
+    return sorted((s for s in found if s), key=lambda s: s.name.lower())
 
 
 def get(spec_id: str) -> Specialist | None:
-    if not spec_id or not isinstance(spec_id, str) or spec_id == GENERAL:
-        return None
-    folder = paths.home(spec_id)
-    s = _from_home(folder) if os.path.isdir(folder) else None
+    s = _load(paths.home(spec_id)) if spec_id else None
     return s if s and s.id == spec_id else None
 
 
 def find(key: str) -> Specialist | None:
     """By id, then by name (case-insensitive, whitespace folded)."""
-    key = (key or "").strip()
-    if not key:
-        return None
-    s = get(key)
-    if s:
-        return s
-    want = " ".join(key.split()).lower()
-    return next((s for s in all() if " ".join(s.name.split()).lower() == want), None)
+    key = " ".join((key or "").split())
+    return get(key) or next((s for s in all() if s.name.lower() == key.lower()), None) if key else None
 
 
-def slugify(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48].strip("-") or "specialist"
+def for_folder(path: str) -> list[str]:
+    """Names of the specialists whose folder holds `path`."""
+    p = os.path.normpath(os.path.abspath(path or ""))
+    return [s.name for s in all() if s.folder and (p == s.folder or p.startswith(s.folder.rstrip(os.sep) + os.sep))]
 
 
-def _free_slug(name: str) -> str:
-    base = slugify(name)
-    r = paths.root()
-    slug, n = base, 2
-    while os.path.exists(os.path.join(r, slug)):
-        slug, n = f"{base}-{n}", n + 1
-    return slug
+def _clean(fields: dict, own_id: str = "") -> dict:
+    out = {}
+    if "name" in fields:
+        out["name"] = " ".join(str(fields["name"] or "").split())[:NAME_MAX]
+        if not out["name"]:
+            raise Invalid("A specialist needs a name")
+        other = find(out["name"])
+        if other and other.id != own_id:
+            raise Taken(f"A specialist named {out['name']} already exists")
+    if "about" in fields:
+        out["about"] = " ".join(str(fields["about"] or "").split())[:ABOUT_MAX]
+        if not out["about"]:
+            raise Invalid("Say what the specialist is an expert on")
+    if "folder" in fields:
+        f = os.path.expanduser(str(fields["folder"] or "").strip())
+        if f and not os.path.isdir(f):
+            raise Invalid(f"{f} is not a folder")
+        out["folder"] = os.path.normpath(os.path.abspath(f)) if f else ""
+    if "face" in fields:
+        if fields["face"] is not None and not isinstance(fields["face"], dict):
+            raise Invalid("'face' must be an object")
+        out["face"] = fields["face"] or None
+    return out
 
 
-def create(name: str, subject: str, triggers: dict | None = None, shipped: str = "", *,
-           charter: str | None = None, face=None) -> Specialist:
-    """Make a new home (layout, charter, git history with its first commit) and return the specialist.
-    `charter`: the CLAUDE.md text (the seed passes the Canvas one); default the B.7 CHARTER."""
-    name = _line(name, NAME_MAX)
-    subject = _line(subject, SUBJECT_MAX)
-    if not name:
-        raise Invalid("A specialist needs a name")
-    if name.lower() == GENERAL:
-        raise Invalid("'general' is reserved for the general inbox; pick another name")
-    trig = clean_triggers(triggers)
-    with _CREATE_LOCK:
-        if find(name):
-            raise Invalid(f"A specialist named {name!r} already exists")
-        sid = uuid.uuid4().hex[:8]
-        folder = os.path.join(paths.root(), _free_slug(name))
-        spec = Specialist(id=sid, name=name, subject=subject, face=face or "", triggers=trig,
-                          created=time.time(), shipped=shipped or "", home=folder)
-        os.makedirs(folder, exist_ok=False)
-        hm.ensure_layout(folder, spec=spec.manifest(),
-                         charter=charter if charter is not None else hm.render_charter(name, subject))
-        hm.write_json(os.path.join(folder, "triggers.json"), trig)
+def create(name: str, about: str, folder: str = "", face: dict | None = None, *, subject: str = "",
+           skills: dict[str, str] | None = None) -> Specialist:
+    """A new home with its first commit. `subject` (a charter section) and `skills` (`{name: SKILL.md text}`) are
+    the shipped Canvas specialist's content."""
+    with _LOCK:
+        f = _clean({"name": name, "about": about, "folder": folder, "face": face})
+        slug = re.sub(r"[^a-z0-9]+", "-", f["name"].lower()).strip("-")[:48] or "specialist"
+        home, n = os.path.join(paths.root(), slug), 2
+        while os.path.exists(home):
+            home, n = os.path.join(paths.root(), f"{slug}-{n}"), n + 1
+        s = Specialist(id=uuid.uuid4().hex[:8], home=home, **f)
+        os.makedirs(home)
+        hm.lay_out(home, s.manifest(), subject)
+        for skill, text in (skills or {}).items():
+            hm.write_text(hm.skill_path(home, skill), text)
         paths._reset()
-    from fused_render.specialists import history
-
-    history.init(folder, f"create the {name} specialist")
-    return spec
+    history.init(home)
+    return s
 
 
 def update(spec_id: str, **fields) -> Specialist:
-    """Change any of name, subject, face, model, effort, triggers, connections. Triggers are committed (they are
-    tracked); manifest fields are committed too, so history shows every Settings save."""
     s = get(spec_id)
     if s is None:
         raise KeyError(spec_id)
-    unknown = set(fields) - {"name", "subject", "face", "model", "effort", "triggers", "connections"}
-    if unknown:
-        raise Invalid(f"unknown field(s): {', '.join(sorted(unknown))}")
-    if "name" in fields:
-        name = _line(fields["name"], NAME_MAX)
-        if not name:
-            raise Invalid("A specialist needs a name")
-        other = find(name)
-        if other and other.id != s.id:
-            raise Invalid(f"A specialist named {name!r} already exists")
-        if name.lower() == GENERAL:
-            raise Invalid("'general' is reserved for the general inbox; pick another name")
-        s.name = name
-    if "subject" in fields:
-        s.subject = _line(fields["subject"], SUBJECT_MAX)
-    if "face" in fields:
-        f = fields["face"]
-        if f is not None and not isinstance(f, (dict, str)):
-            raise Invalid("'face' must be an object or a string")
-        s.face = f or ""
-    if "model" in fields:
-        m = str(fields["model"] or "")
-        if m not in MODELS and not re.match(r"^claude-[a-z0-9.\-\[\]]+$", m):
-            raise Invalid(f"unknown model {m!r}")
-        s.model = m
-    if "effort" in fields:
-        e = str(fields["effort"] or "")
-        if e not in EFFORTS:
-            raise Invalid(f"effort must be one of {', '.join(x for x in EFFORTS if x)}")
-        s.effort = e
-    if "connections" in fields:
-        c = fields["connections"]
-        if not isinstance(c, list):
-            raise Invalid("'connections' must be a list")
-        s.connections = list(dict.fromkeys(str(x) for x in c if str(x or "").strip()))
-    if "triggers" in fields:
-        s.triggers = clean_triggers(fields["triggers"])
-        hm.write_json(os.path.join(s.home, "triggers.json"), s.triggers)
+    for k, v in _clean(fields, s.id).items():
+        setattr(s, k, v)
     hm.write_json(os.path.join(s.home, paths.MANIFEST), s.manifest())
-    from fused_render.specialists import history
-
-    history.commit(s.id, "settings: " + ", ".join(sorted(fields)) if fields else "settings",
-                   [paths.MANIFEST, "triggers.json"])
+    hm.rewrite_charter(s.home, s.name, s.about)
+    history.commit(s.home, "Settings", [paths.MANIFEST, "CLAUDE.md"])
     return s
 
 
 def live_runs(home: str) -> list[dict]:
-    """Agent runs with a turn open anywhere in this home, its breakouts' workrooms included:
-    `[{run_id, backend, sessions}]` (agent._live_runs_under). [] when the agent module is not importable or
-    anything fails: callers use it to refuse or skip, never to crash."""
-    try:
-        from fused_render.claude_agent import agent_module
+    """Agent runs with a turn open in the home (main chat, breakouts, an update)."""
+    from fused_render.claude_agent import agent_module
 
-        agent = agent_module()
-        scan = getattr(agent, "_live_runs_under", None) or agent._live_runs_in
-        return list(scan(home))
-    except Exception:  # noqa: BLE001
-        return []
+    return list(agent_module()._live_runs_in(home))
 
 
-def main_live_runs(home: str) -> list[dict]:
-    """Agent runs with a turn open in the home's own folder: the main chat (breakouts run in their workrooms)."""
-    try:
-        from fused_render.claude_agent import agent_module
+def end_idle_hosts(home: str) -> None:
+    """End the session hosts idling between turns in the home: a live host takes the next message under its own
+    launch spec, so an update must not resume the main chat inside the chat's host, nor the chat inside the
+    update's."""
+    from fused_render.claude_agent import agent_module
 
-        return list(agent_module()._live_runs_in(home))
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def live_run_ids(home: str) -> list[str]:
-    return [r["run_id"] for r in live_runs(home) if r.get("run_id")]
-
-
-def _cancel_live_runs(home: str) -> None:
-    """Best effort: stop any agent run whose target is inside this home (main chat, breakouts)."""
-    try:
-        for run_id in live_run_ids(home):
-            try:
-                from fused_render.claude_agent import agent_module
-
-                agent_module()._cancel(run_id)
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception:  # noqa: BLE001
-        logger.warning("specialists: could not cancel live runs in %s", home, exc_info=True)
-
-
-def _end_hosts(home: str) -> None:
-    """Best effort: end the held-open session hosts (idle between turns) of the main chat and every breakout
-    workroom. Cancelling the live TURNS is not enough: seen live, a breakout card kept chatting with the deleted
-    specialist's host after the delete (its next message started a turn in the trashed home)."""
-    try:
-        from fused_render.claude_agent import agent_module
-
-        agent = agent_module()
-        folders = [home]
-        bdir = os.path.join(home, paths.APP_DIR, "breakouts")
-        try:
-            folders += [os.path.join(bdir, n, "work") for n in os.listdir(bdir)
-                        if os.path.isdir(os.path.join(bdir, n, "work"))]
-        except OSError:
-            pass
-        for folder in folders:
-            for run_id in agent._hosts_in(folder):
-                try:
-                    agent._cancel_run(run_id, interrupt_first=False)
-                except Exception:  # noqa: BLE001
-                    pass
-    except Exception:  # noqa: BLE001
-        logger.warning("specialists: could not end the session hosts in %s", home, exc_info=True)
+    agent = agent_module()
+    live = {r["run_id"] for r in agent._live_runs_in(home)}
+    for run_id in agent._hosts_in(home):
+        if run_id not in live:
+            agent._cancel_run(run_id, interrupt_first=False)
 
 
 def delete(spec_id: str) -> None:
-    """Refused (`Busy`) while its nightly job runs. Move the home to `<root>/.state/trash/<id>-<ts>/` (recoverable by hand, never rm), after cancelling its
-    live runs and marking its open breakouts `deleted` so a task that holds one gets a clear answer."""
+    """End every session in the home, then move it to `<root>/.state/trash/<id>-<ts>/` (recoverable by hand)."""
     s = get(spec_id)
     if s is None:
         raise KeyError(spec_id)
-    try:
-        from fused_render.specialists import nightly
+    from fused_render.claude_agent import agent_module
 
-        busy = bool(nightly.running(spec_id))
-    except Exception:  # noqa: BLE001 — stream 3 missing: nothing of it can be running
-        busy = False
-    if busy:
-        raise Busy("The nightly update is running for this specialist; delete it when the update has finished.")
-    _cancel_live_runs(s.home)
-    _end_hosts(s.home)
-    bdir = os.path.join(s.home, paths.APP_DIR, "breakouts")
-    try:
-        names = os.listdir(bdir)
-    except OSError:
-        names = []
-    for n in names:
-        if not n.endswith(".json"):
-            continue
-        p = os.path.join(bdir, n)
-        rec = hm.read_json(p, None)
-        if isinstance(rec, dict) and rec.get("status") == "open":
-            rec["status"] = "deleted"
-            hm.write_json(p, rec)
+    agent = agent_module()
+    for run_id in agent._hosts_in(s.home):
+        agent._cancel_run(run_id, interrupt_first=False)
     trash = os.path.join(paths.state_root(), "trash")
     os.makedirs(trash, exist_ok=True)
     shutil.move(s.home, os.path.join(trash, f"{s.id}-{int(time.time())}"))
     paths._reset()
-
-
-__all__ = ["Busy", "Specialist", "Invalid", "GENERAL", "all", "any_exist", "get", "find", "create", "update", "delete",
-           "clean_triggers", "slugify"]

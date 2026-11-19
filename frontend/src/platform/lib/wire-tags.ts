@@ -16,3 +16,6 @@ export const TERMINAL_HINT_TAG = "terminal-hint";
 /** The wire block a breakout's first message carries: the selected parent
  *  messages, quoted as background. `wire.ts` strips and parses it. */
 export const BREAKOUT_CTX_TAG = "breakout-context";
+/** The fixed prompt of a specialist's update turn (update.PROMPT on the
+ *  server) is wrapped in this tag; the chat draws it as a quiet "Update" line. */
+export const SPECIALIST_UPDATE_TAG = "specialist-update";

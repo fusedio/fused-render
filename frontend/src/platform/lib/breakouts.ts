@@ -47,6 +47,14 @@ export interface BreakoutRequest {
   forkKey?: string;
   /** The breakout's first message, typed in the composer while picking. */
   prompt?: string;
+  /** Run the breakout with this specialist, in its home. */
+  specialist?: BreakoutSpecialist;
+}
+
+export interface BreakoutSpecialist {
+  id: string;
+  name: string;
+  home: string;
 }
 
 export interface BreakoutCard {
@@ -61,6 +69,7 @@ export interface BreakoutCard {
   forkKey?: string;
   /** Sent once as the card's first message; `consumeBreakoutPrompt` drops it. */
   prompt?: string;
+  specialist?: BreakoutSpecialist;
 }
 
 /** The window event Send back raises; `ClaudeChat` listens for its own chat. */
@@ -70,10 +79,6 @@ export interface ComposerDraftDetail {
   sessionId: string;
   file: string;
   text: string;
-  /** Who the draft is from, drawn over the composer until it is sent
-   *  ("Draft from the Canvas specialist · not sent yet"). Specialist breakouts
-   *  set it; a plain Send back does not. */
-  label?: string;
 }
 
 let cards: readonly BreakoutCard[] = [];
@@ -115,6 +120,7 @@ export function openBreakout(req: BreakoutRequest): string {
     context: req.context,
     ...(req.forkKey ? { forkKey: req.forkKey } : {}),
     ...(req.prompt ? { prompt: req.prompt } : {}),
+    ...(req.specialist ? { specialist: req.specialist } : {}),
   };
   emit([...cards, card]);
   return card.id;

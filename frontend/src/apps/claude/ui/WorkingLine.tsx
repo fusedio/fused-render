@@ -6,13 +6,13 @@
 // stacked tokens, input bytes, a thinking estimate, a task count and a silence
 // timer in there — a dashboard, not a status (Akshil, 2026-08-28). Everything
 // that was a NUMBER is gone except the clock; what was a number is now a word.
-import { isSpecialistTool, specialistToolLabel } from "../specialists/tool-labels";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { cn } from "@platform/lib/utils";
 
 import type { RunStatus, Working } from "../protocol/controller-api";
 import { explicitModelLabel, isAgentTool, taskVerb } from "../protocol/tasks";
+import { isSpecialistTool, specialistToolLabel } from "../specialists/tool-labels";
 import type { Activity, RetryInfo, TaskRecord } from "../protocol/types";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { useAgent } from "./agent-context";
@@ -100,9 +100,8 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
       // MCP tools arrive as mcp__server__tool — the last segment is the name a
       // person would recognize; the raw id is nobody's vocabulary.
       default:
-        // The five specialist tools say what they do (docs/specialists R1).
         return (
-          specialistToolLabel(t.name, null, { key: t.detail })?.replace(/…$/, "") ??
+          specialistToolLabel(t.name, t.detail, false) ??
           "Using " + String(t.name).split("__").pop()?.replace(/_/g, " ")
         );
     }

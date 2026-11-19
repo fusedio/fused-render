@@ -206,7 +206,7 @@ def resolve_target(value, field: str = "target"):
     return resolved, None
 
 
-SPECIALIST_HOME = "This folder is a specialist's home; open it from the Specialists page."
+SPECIALIST_HOME = "This folder is a specialist's home; open it from the Bots page."
 
 
 def specialist_home_refusal(resolved: str):

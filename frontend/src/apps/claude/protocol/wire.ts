@@ -21,7 +21,7 @@
 // Pure TS: no DOM, no React.
 
 import { BREAKOUT_FILES_TAG } from "@platform/lib/breakout-context";
-import { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG } from "@platform/lib/wire-tags";
+import { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, SPECIALIST_UPDATE_TAG, TERMINAL_HINT_TAG } from "@platform/lib/wire-tags";
 
 export { formatBreakoutContext } from "@platform/lib/breakout-context";
 export { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG };
@@ -105,6 +105,12 @@ export const INTERRUPT_MARK_TOOL = "[Request interrupted by user for tool use]";
 export function isInterruptMark(text: string | undefined | null): boolean {
   const t = (text ?? "").trim();
   return t === INTERRUPT_MARK || t === INTERRUPT_MARK_TOOL;
+}
+
+/** Is this user row a specialist's update prompt (the app's, not the reader's)? */
+export function isUpdateMark(text: string | undefined | null): boolean {
+  const t = (text ?? "").trim();
+  return t.startsWith(`<${SPECIALIST_UPDATE_TAG}>`) && t.endsWith(`</${SPECIALIST_UPDATE_TAG}>`);
 }
 
 // ---- the pictures block ----------------------------------------------------

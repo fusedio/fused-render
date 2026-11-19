@@ -14,7 +14,7 @@ import { splitCommand } from "../protocol/commands";
 import { viewKind, type SegmentKind } from "../protocol/segments";
 import { toolChipSummary } from "../protocol/summaries";
 import { unansweredNotices } from "../protocol/unanswered";
-import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound, type AnnotationWire } from "../protocol/wire";
+import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, isUpdateMark, parseInbound, type AnnotationWire } from "../protocol/wire";
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
@@ -182,6 +182,13 @@ export const Turn = memo(function Turn({
           ⏹
         </span>
         <span>Interrupted by you</span>
+      </div>
+    );
+  }
+  if (turn.role === "user" && isUpdateMark(turn.text)) {
+    return (
+      <div className="turn note">
+        <span>Update</span>
       </div>
     );
   }

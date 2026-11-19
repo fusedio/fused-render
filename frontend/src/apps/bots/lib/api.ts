@@ -2,6 +2,7 @@
 // Every call goes through request(): one place counts calls in flight, reports a call still pending after STALL_MS
 // (the store shows it in the banner) and logs anything slower than SLOW_MS. The store installs those hooks
 // (apiHooks) at load, so this module imports nothing from it.
+import type { Specialist } from "@platform/lib/specialists";
 
 // ------------------------------------------------------------------ wire types (§2) ----
 /** `note`: a muted harness line in the thread ("Already ran …", "Still waiting for Approve / Deny on …"); not a bubble, not reactable. */
@@ -198,10 +199,13 @@ export interface Bot {
    *  Plain absolute paths, the user's own: the bot never writes there and only the dialog edits the list. */
   folders?: string[];
   /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": no browser, one
-   *  memory file it keeps itself, tapped by task sessions (docs/experts.md); absent for an ordinary bot. */
-  kind?: "bot" | "super" | "expert";
+   *  memory file it keeps itself, tapped by task sessions (docs/experts.md); "specialist": a row the page makes from
+   *  /api/specialists (docs/specialists-v2.md), not a bot the bots backend knows; absent for an ordinary bot. */
+  kind?: "bot" | "super" | "expert" | "specialist";
   /** Expert only: its settings (experts.store.manifest). */
   expert?: ExpertManifest | null;
+  /** Specialist only: its row (state/store.ts specialistBots). */
+  specialist?: Specialist;
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
   super_access?: "ask" | "full";
   face?: Face | null;
@@ -431,7 +435,7 @@ export class ApiError extends Error {
  *  holds the workspace claim. The page offers to take it over (POST /api/bots/workspace/take). */
 export function isWorkspaceBusy(e: unknown): e is ApiError { return e instanceof ApiError && e.status === 409 && e.body?.reason === "workspace_busy"; }
 
-type Method = "GET" | "POST" | "DELETE";
+type Method = "GET" | "POST" | "PATCH" | "DELETE";
 export async function request<T>(method: Method, url: string, body?: unknown, label?: string): Promise<T> {
   const t0 = performance.now(), name = label || url.replace(/^\/api\/(bots\/)?/, "").split("?")[0] || "status";
   inflight++;
@@ -592,6 +596,27 @@ export const expertApi = {
   instructions: (id: string) => get<ExpertInstructions>(`${xid(id)}/instructions`, "expert instructions"),
   /** Writes instructions.md whole. Refused (400, a sentence) when empty or over the limit: nothing is cut. */
   saveInstructions: (id: string, text: string) => post<ExpertInstructions>(`${xid(id)}/instructions`, { text }, "expert instructions"),
+};
+
+const sid = (id: string) => `/api/specialists/${encodeURIComponent(id)}`;
+export interface SpecialistBody { name: string; about: string; folder: string; face: Face | null }
+export interface SpecialistChat { session_id: string | null; folded: { session_id: string; at: number }[] }
+/** /api/specialists/<id>/… (fused_render/specialists/routes.py). */
+export const specialistApi = {
+  create: (body: SpecialistBody) => post<Specialist>("/api/specialists", body, "new specialist"),
+  patch: (id: string, body: SpecialistBody) => request<Specialist>("PATCH", sid(id), body, "specialist settings"),
+  remove: (id: string) => request<Ok>("DELETE", sid(id), undefined, "delete specialist"),
+  chat: (id: string) => get<SpecialistChat>(`${sid(id)}/chat`, "specialist chat"),
+  clear: (id: string) => post<SpecialistChat>(`${sid(id)}/chat/clear`, {}, "specialist clear"),
+  seen: (id: string) => post<Ok>(`${sid(id)}/seen`, {}, "specialist seen"),
+  memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "specialist memory"),
+  skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "specialist skills"),
+  notes: (id: string) => get<{ notes: { name: string; text: string; at: number }[] }>(`${sid(id)}/notes`, "specialist notes"),
+  deleteNote: (id: string, name: string) => request<Ok>("DELETE", `${sid(id)}/notes/${encodeURIComponent(name)}`, undefined, "delete note"),
+  changes: (id: string) => get<{ changes: { sha: string; at: number; label: string }[] }>(`${sid(id)}/changes`, "specialist changes"),
+  diff: (id: string, sha: string) => get<{ diff: string }>(`${sid(id)}/changes/${encodeURIComponent(sha)}`, "specialist diff"),
+  /** `started` false: nothing was waiting. */
+  update: (id: string) => post<{ started: boolean }>(`${sid(id)}/update`, {}, "specialist update"),
 };
 
 /** POST /api/bots/<id>/seen {seq}: the unread mark (Bot.seen_seq). Silent: no banner, no poll after it (store.ts

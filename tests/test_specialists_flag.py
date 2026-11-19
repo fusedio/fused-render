@@ -1,5 +1,5 @@
 """Scenario A (backend): with the flag off no route answers, no folder or thread appears, and the seams are inert.
-Also the pref (`specialists_enabled`), its env override, and the page routes."""
+Also the pref (`specialists_enabled`) and its env override."""
 from _specialists_conftest import *  # noqa: F401,F403
 import json
 import os
@@ -29,12 +29,8 @@ def _specialist_routes():
     import importlib
 
     out = []
-    for mod in ("routes", "task_routes", "learn_routes"):
-        try:
-            r = importlib.import_module(f"fused_render.specialists.{mod}").router
-        except Exception:  # noqa: BLE001 — another stream's module mid-work
-            continue
-        for route in r.routes:
+    for mod in ("routes", "tools"):
+        for route in importlib.import_module(f"fused_render.specialists.{mod}").router.routes:
             for m in sorted(getattr(route, "methods", None) or ()):
                 if m in ("HEAD", "OPTIONS"):
                     continue
@@ -84,12 +80,6 @@ def test_flag_off_every_route_is_404_and_nothing_is_created(client, monkeypatch)
         assert st == 404 and json.loads(body) == json.loads(_call(client, "GET", "/no-such-page-at-all")[1])
 
 
-def test_flag_on_page_routes_serve_the_shell(client):
-    for p in ("/specialists", "/specialists/abc"):
-        st, body = _call(client, "GET", p)
-        assert st == 200 and b"<html" in body.lower()
-
-
 def test_prefs_get_and_put(client, monkeypatch):
     from fused_render.specialists import scheduler, seed
 
@@ -117,29 +107,20 @@ def test_prefs_get_and_put(client, monkeypatch):
     assert e.value.code == 400
 
 
-def test_router_post_hook_is_inert_when_off(monkeypatch):
+def test_router_post_hook_only_for_a_specialist_start(monkeypatch):
     import sys
     import types
 
     from fused_render.server.routers import claude_agent
 
+    monkeypatch.delitem(sys.modules, "fused_render.specialists.agent_hooks", raising=False)
+    claude_agent._specialist_after({"action": "start", "specialist": "a:main"}, {})  # not loaded: nothing
     seen = []
     fake = types.ModuleType("fused_render.specialists.agent_hooks")
     fake.after_agent_call = lambda action, params, env: seen.append(action)
     monkeypatch.setitem(sys.modules, "fused_render.specialists.agent_hooks", fake)
-    claude_agent._specialist_after({"action": "start"}, {"result": {}})
-    assert seen == ["start"]
-    monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "0")
-    claude_agent._specialist_after({"action": "start"}, {"result": {}})
-    assert seen == ["start"]
-    # a poll is one string test: the flag is never read
-    reads = []
-    monkeypatch.setattr(flag, "on", lambda: reads.append(1) or True)
     claude_agent._specialist_after({"action": "poll"}, {})
-    claude_agent._specialist_after({"action": "history"}, {})
-    assert reads == [] and seen == ["start"]
-    claude_agent._specialist_after({"action": "cancel"}, {})
-    assert reads == [1] and seen == ["start", "cancel"]
-    fake.after_agent_call = lambda *a: 1 / 0  # never raises out
-    monkeypatch.setenv("FUSED_RENDER_SPECIALISTS", "1")
-    claude_agent._specialist_after({"action": "decide"}, {})
+    claude_agent._specialist_after({"action": "start"}, {"result": {}})
+    assert seen == []
+    claude_agent._specialist_after({"action": "start", "specialist": "a:main"}, {"result": {}})
+    assert seen == ["start"]

@@ -16,6 +16,7 @@ import {
   composeOutgoing,
   formatAnnotations,
   isMarkerOnly,
+  isUpdateMark,
   MARKER_ANN,
   MARKER_FILE,
   MARKER_IMG,
@@ -471,4 +472,9 @@ describe("<breakout-context>", () => {
     expect(blockRank(block)).toBeLessThan(blockRank(notes));
     expect(block.startsWith("<" + BREAKOUT_CTX_TAG + ">")).toBe(true);
   });
+});
+
+test("a specialist's update prompt is the app's, by its tag (update.PROMPT pins the same)", () => {
+  expect(isUpdateMark("<specialist-update>\nFold in what is waiting.\n</specialist-update>\n")).toBe(true);
+  expect(isUpdateMark("Tell me about <specialist-update>")).toBe(false);
 });

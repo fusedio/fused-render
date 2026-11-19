@@ -8,11 +8,12 @@ const mi = (d: ReactNode) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
 );
 
-export type MenuIcon = "live" | "settings" | "routines" | "skills" | "export" | "package" | "clone" | "pin" | "unpin" | "hide" | "unhide" | "read" | "delete";
+export type MenuIcon = "live" | "settings" | "update" | "routines" | "skills" | "export" | "package" | "clone" | "pin" | "unpin" | "hide" | "unhide" | "read" | "delete";
 
 export const MI: Record<MenuIcon, ReactNode> = {
   live: mi(<><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></>),
   settings: mi(<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></>),
+  update: mi(<><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" /><path d="M3 21v-5h5" /><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" /><path d="M21 3v5h-5" /></>),
   routines: mi(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>),
   skills: mi(<path d="m12 3 2.4 5.2 5.6.7-4.1 3.9 1 5.6L12 15.7l-4.9 2.7 1-5.6L4 8.9l5.6-.7z" />),
   export: mi(<><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></>),
@@ -26,12 +27,15 @@ export const MI: Record<MenuIcon, ReactNode> = {
   delete: mi(<><path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path d="M6 7l1 13h10l1-13" /><path d="M9 7V4h6v3" /></>),
 };
 
-export type MenuAction = "live" | "settings" | "routines" | "skills" | "exportFile" | "export" | "clone" | "cloneCopy" | "pin" | "hide" | "read" | "delete";
+export type MenuAction = "live" | "settings" | "update" | "routines" | "skills" | "exportFile" | "export" | "clone" | "cloneCopy" | "pin" | "hide" | "read" | "delete";
 export type MenuItem = { a: MenuAction; label: string; icon: ReactNode; danger?: boolean } | "hr";
 
 /** openMenu's rows, in order, the same wherever the menu opens (a row's right-click or the preview header's ☰, which
  *  alone leads with "Open live view"). Skills… and Routines… open Settings on that section. */
 export function menuItems(b: Bot, opts: { live?: boolean } = {}): MenuItem[] {
+  // A specialist is not a bot of the bots backend: only what its own routes do.
+  if (b.specialist) return [{ a: "settings", label: "Settings…", icon: MI.settings }, { a: "update", label: "Update now", icon: MI.update },
+    "hr", { a: "delete", label: "Delete…", icon: MI.delete, danger: true }];
   const { live } = opts, out: MenuItem[] = [], ea = b.kind === "super", expert = b.kind === "expert";
   // An expert has no browser: no live view, and no clone (the backend refuses one).
   if (live && !expert) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");

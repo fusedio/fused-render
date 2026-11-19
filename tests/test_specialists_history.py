@@ -1,220 +1,92 @@
-"""The home's git history: app commits, the log, and the breakout guard that puts protected files back (Q, F)."""
+"""The home's git history: Chat and Update commits, the update's inbox files, hand edits, and Changes."""
 from _specialists_conftest import *  # noqa: F401,F403
+import json
 import os
+import subprocess
 
+import pytest
 
-from fused_render.specialists import chat, harness, history
+from fused_render.specialists import chat, history, store, update
 
 pytestmark = needs_git
 
 
-def _write(spec, rel, text):
-    p = os.path.join(spec.home, rel)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w") as f:
+def _git(home, *args):
+    return subprocess.run(["git", "-C", home, *args], capture_output=True, text=True).stdout
+
+
+def _row(kind, content):
+    return json.dumps({"type": kind, "timestamp": "2026-11-19T10:00:00Z", "message": {"content": content}})
+
+
+@pytest.fixture
+def transcript(tmp_path, monkeypatch):
+    """`write(rows)` sets the transcript every session reads."""
+    path = tmp_path / "t.jsonl"
+    monkeypatch.setattr(chat, "transcript", lambda target, sid: str(path))
+    monkeypatch.setattr(store, "live_runs", lambda home: [])
+    return lambda rows: path.write_text("\n".join(rows) + "\n")
+
+
+def _edit(home, rel, text):
+    os.makedirs(os.path.dirname(os.path.join(home, rel)), exist_ok=True)
+    with open(os.path.join(home, rel), "w") as f:
         f.write(text)
 
 
-def _read(spec, rel):
-    with open(os.path.join(spec.home, rel)) as f:
-        return f.read()
-
-
-def test_create_commits_and_log(app_home):
+def test_a_chat_turn_commits_with_its_first_words(transcript):
     s = make_specialist()
-    log = history.log(s.id)
-    assert len(log) == 1 and log[0]["message"].startswith("create") and "CLAUDE.md" in log[0]["files"]
-    assert history.commit(s.id, "nothing") is None  # nothing changed
-    _write(s, "memory.md", "# Memory\n- [m-1a2b] A fact. {basis=user-said}\n")
-    _write(s, "inbox/n-1.json", "{}")  # ignored: inbox is untracked
-    sha = history.commit(s.id, "main chat turn")
-    assert sha and history.diff_files(s.id, sha) == ["memory.md"]
-    assert [c["message"] for c in history.log(s.id, "memory.md")] == ["main chat turn", log[0]["message"]]
+    transcript([_row("user", "Remember that " + "we always use parquet files " * 4),
+                _row("assistant", [{"type": "text", "text": "Noted."}])])
+    _edit(s.home, "memory.md", "We use parquet.\n")
+    history.after_turn(s.home, "sid")
+    subject = _git(s.home, "log", "-1", "--format=%s").strip()
+    assert subject.startswith("Chat: Remember that we always") and subject.endswith("…") and len(subject) == 67
+    history.after_turn(s.home, "sid")  # nothing changed: no commit
+    assert _git(s.home, "rev-list", "--count", "HEAD").strip() == "2"
 
 
-def test_memory_version_follows_content(app_home):
+def test_an_update_removes_only_the_files_it_was_given(transcript):
     s = make_specialist()
-    v1 = history.memory_version(s.id)
-    assert len(v1) == 8
-    _write(s, "memory.md", "# Memory\n- x\n")
-    v2 = history.memory_version(s.id)
-    assert v2 != v1
-    history.commit(s.id, "c")
-    assert history.memory_version(s.id) == v2  # a commit does not change the version, the text does
+    _edit(s.home, "inbox/a.md", "note a")
+    _edit(s.home, "inbox/late.md", "arrived during the update")
+    chat.change(s.home, lambda d: d.update(update_files=["a.md"]))
+    transcript([_row("user", update.PROMPT),
+                _row("assistant", [{"type": "tool_use", "name": "Edit"}]),
+                _row("assistant", [{"type": "text", "text": "Added one line about parquet."}])])
+    _edit(s.home, "memory.md", "We use parquet.\n")
+    history.after_turn(s.home, "sid")
+    assert sorted(os.listdir(os.path.join(s.home, "inbox"))) == ["late.md"]
+    assert _git(s.home, "log", "-1", "--format=%B").strip() == "Update\n\nAdded one line about parquet."
+    assert chat.load(s.home)["update_files"] == []
 
 
-def test_main_turn_commits(app_home):
+def test_changes_lists_memory_and_skills_only_and_hand_edits(transcript):
     s = make_specialist()
-    _write(s, "memory.md", "# Memory\n- remembered\n")
-    history.after_turn(s.id, "main", "sess-abcdef12")
-    assert history.log(s.id)[0]["message"] == "main chat turn sess-abc"
+    _edit(s.home, "inbox/n.md", "a note")
+    history.commit(s.home, "Notes waiting", ["inbox"])
+    _edit(s.home, "memory.md", "By hand.\n")
+    _edit(s.home, ".claude/skills/x/SKILL.md", "---\nname: x\n---\n")
+    history.commit_edits(s.home)
+    (row,) = history.changes(s.home)  # neither "Created" nor the inbox-only commit
+    assert row["label"] == "You edited memory" and row["at"] > 0
+    diff = history.diff(s.home, row["sha"])
+    assert "+By hand." in diff and "skills/x/SKILL.md" in diff
+    assert history.diff(s.home, "not-a-sha") is None and history.diff(s.home, "0" * 40) is None
 
 
-def test_breakout_guard_restores_protected_paths(app_home, monkeypatch):
+def test_a_hand_edit_waits_while_a_session_works(monkeypatch):
     s = make_specialist()
-    monkeypatch.setattr(history, "_main_turn_live", lambda spec_id, sid: False)
-    before_mem, before_md = _read(s, "memory.md"), _read(s, "CLAUDE.md")
-    _write(s, "memory.md", "# Memory\n- rewritten by a breakout\n")
-    _write(s, "CLAUDE.md", "hijacked")
-    _write(s, "knowledge/new.md", "sneaky")
-    _write(s, ".claude/skills/evil/SKILL.md", "---\nname: evil\n---\n")
-    _write(s, "scratch.txt", "allowed scratch")  # not protected: left alone, never committed by a breakout
-    head = history.log(s.id)[0]["sha"]
-    history.after_turn(s.id, "breakout", "sess-b")
-    assert _read(s, "memory.md") == before_mem and _read(s, "CLAUDE.md") == before_md
-    assert not os.path.exists(os.path.join(s.home, "knowledge", "new.md"))
-    assert not os.path.exists(os.path.join(s.home, ".claude", "skills", "evil"))  # no empty folder left behind
-    assert os.path.isdir(os.path.join(s.home, ".claude", "skills")) and os.path.isdir(os.path.join(s.home, "knowledge"))
-    assert history.log(s.id)[0]["sha"] == head  # a breakout turn commits nothing
-    assert _read(s, "scratch.txt") == "allowed scratch"
-    guard = [r for r in harness.rows(s.id) if r["kind"] == "guard"]
-    assert len(guard) == 1 and "memory.md" in guard[0]["answer"]
+    _edit(s.home, "memory.md", "By hand.\n")
+    monkeypatch.setattr(store, "live_runs", lambda home: [{"run_id": "r"}])
+    history.commit_edits(s.home)
+    assert history.changes(s.home) == []
 
 
-def test_breakout_guard_skips_while_main_chat_is_live(app_home, monkeypatch):
-    """QA defect 1: with a main turn live, the breakout's Stop neither undoes nor commits anything (it cannot tell
-    whose change is whose); the main turn's own Stop commits what is there, as main."""
+def test_planted_repository_config_is_dropped(transcript):
     s = make_specialist()
-    chat.record_start(s.id, "main-1")
-    monkeypatch.setattr(chat, "session_live", lambda spec_id, sid: sid == "main-1")
-    head = history.log(s.id)[0]["sha"]
-    _write(s, "memory.md", "# Memory\n- written by main chat\n")
-    history.after_turn(s.id, "breakout", "sess-b")
-    assert "written by main chat" in _read(s, "memory.md")
-    assert history.log(s.id)[0]["sha"] == head  # nothing committed on the breakout's behalf
-    (row,) = [r for r in harness.rows(s.id) if r["kind"] == "guard"]
-    assert row["status"] == "skipped" and "main chat was working" in row["answer"]
-    monkeypatch.setattr(chat, "session_live", lambda spec_id, sid: False)
-    history.after_turn(s.id, "main", "main-1")
-    assert history.log(s.id)[0]["message"] == "main chat turn main-1"
-
-
-def test_guard_stands_down_when_a_main_turn_ran_during_the_breakout_turn(app_home, monkeypatch):
-    """A main turn that started and ended inside the breakout's turn: at the breakout's Stop nothing is live, yet
-    the guard must not undo (or commit) anything either."""
-    s = make_specialist()
-    monkeypatch.setattr(chat, "session_live", lambda spec_id, sid: False)
-    head = history.log(s.id)[0]["sha"]
-    history.before_turn(s.id, "breakout", "sess-b")
-    history.before_turn(s.id, "main", "main-1")
-    assert history.main_turn_open(s.id)
-    _write(s, "memory.md", "# Memory\n- main, uncommitted for a moment\n")
-    history.after_turn(s.id, "breakout", "sess-b")  # main still open: hands off
-    assert "main, uncommitted" in _read(s, "memory.md") and history.log(s.id)[0]["sha"] == head
-    history.before_turn(s.id, "breakout", "sess-b")  # next breakout turn, main still live: no "pending" commit
-    assert history.log(s.id)[0]["sha"] == head
-    history.after_turn(s.id, "main", "main-1")
-    assert not history.main_turn_open(s.id)
-    assert history.log(s.id)[0]["message"] == "main chat turn main-1"
-    _write(s, "memory.md", "# Memory\n- stray, by absolute path\n")
-    history.after_turn(s.id, "breakout", "sess-b")  # main ended after this breakout turn began: still hands off
-    assert "stray" in _read(s, "memory.md")
-    history.before_turn(s.id, "breakout", "sess-b")  # a fresh turn with nothing else live: the stray is pending
-    _write(s, "people.md", "rewritten\n")
-    history.after_turn(s.id, "breakout", "sess-b")
-    assert _read(s, "people.md") != "rewritten\n"
-
-
-def test_settings_and_repo_config_are_the_apps(app_home):
-    """Whatever a session wrote to the home's project settings never reaches history, and repository config a
-    session planted (a clean filter runs a command inside the app's own `git add`) is dropped before a commit."""
-    import json
-
-    s = make_specialist()
-    _write(s, ".claude/settings.json", json.dumps({"hooks": {"Stop": [{"hooks": [{"command": "touch /tmp/x"}]}]}}))
-    _write(s, ".claude/settings.local.json", "{}")
-    marker = os.path.join(s.home, "filter-ran")
     with open(os.path.join(s.home, ".git", "config"), "a") as f:
-        f.write(f'[filter "evil"]\n\tclean = sh -c \'touch {marker}; cat\'\n')
-    os.makedirs(os.path.join(s.home, ".git", "info"), exist_ok=True)
-    with open(os.path.join(s.home, ".git", "info", "attributes"), "w") as f:
-        f.write("* filter=evil\n")
-    _write(s, "memory.md", "# Memory\n- main\n")
-    history.after_turn(s.id, "main", "sess-m")
-    assert not os.path.exists(marker)
-    assert json.loads(_read(s, ".claude/settings.json")) == {"autoMemoryEnabled": False}
-    assert not os.path.exists(os.path.join(s.home, ".claude", "settings.local.json"))
-    assert history.log(s.id)[0]["files"] == ["memory.md"]
-    assert "evil" not in _read(s, ".git/config")
-
-
-def test_a_settings_save_commits_only_its_own_paths(app_home):
-    s = make_specialist()
-    _write(s, "memory.md", "# Memory\n- a stray change\n")
-    _write(s, "people.md", "| Area | Owner |\n")
-    sha = history.commit(s.id, "settings: people", ["people.md"])
-    assert sha and history.diff_files(s.id, sha) == ["people.md"]
-    assert history.commit(s.id, "nothing", ["knowledge/none.md"]) is None
-
-
-def test_no_git_degrades(app_home, monkeypatch):
-    s = make_specialist()
-    monkeypatch.setattr(history, "available", lambda: False)
-    assert history.commit(s.id, "x") is None and history.log(s.id) == [] and history.guard(s.id) == []
-    history.after_turn(s.id, "breakout", "s")  # never raises
-
-
-def test_guard_stands_down_while_the_nightly_job_runs(app_home, monkeypatch):
-    s = make_specialist()
-    monkeypatch.setattr(history, "_main_turn_live", lambda spec_id, sid: False)
-    monkeypatch.setattr(history, "_nightly_running", lambda spec_id: True)
-    head = history.log(s.id)[0]["sha"]
-    _write(s, "memory.md", "# Memory\n- written by the nightly job\n")
-    history.after_turn(s.id, "breakout", "sess-b")
-    assert "nightly job" in _read(s, "memory.md")  # not undone
-    assert history.log(s.id)[0]["sha"] == head  # and not committed as the breakout's
-    (row,) = [r for r in harness.rows(s.id) if r["kind"] == "guard"]
-    assert row["status"] == "skipped" and "nightly update was running" in row["answer"]
-    history.before_turn(s.id, "breakout", "sess-b")
-    assert history.log(s.id)[0]["sha"] == head
-
-
-def test_before_turn_commits_pending_changes_so_the_guard_undoes_only_the_turn(app_home, monkeypatch):
-    s = make_specialist()
-    monkeypatch.setattr(history, "_main_turn_live", lambda spec_id, sid: False)
-    monkeypatch.setattr(history, "_nightly_running", lambda spec_id: False)
-    _write(s, "memory.md", "# Memory\n- an uncommitted main-chat edit\n")
-    history.before_turn(s.id, "breakout", "sess-b")
-    assert history.log(s.id)[0]["message"] == "pending changes before a breakout turn"
-    _write(s, "memory.md", "# Memory\n- rewritten during the breakout turn\n")
-    history.after_turn(s.id, "breakout", "sess-b")
-    assert _read(s, "memory.md") == "# Memory\n- an uncommitted main-chat edit\n"
-    history.before_turn(s.id, "main", "sess-m")  # a main turn commits nothing up front
-    _write(s, "memory.md", "# Memory\n- main\n")
-    history.before_turn(s.id, "main", "sess-m")
-    assert history.log(s.id)[0]["message"] == "pending changes before a breakout turn"
-    history.after_turn(s.id, "main", "sess-m")
-
-
-def test_nightly_running_reads_stream_3(app_home, monkeypatch):
-    from fused_render.specialists import nightly
-
-    s = make_specialist()
-    monkeypatch.setattr(nightly, "running", lambda spec_id: spec_id == s.id)
-    assert history._nightly_running(s.id) and not history._nightly_running("other")
-
-
-def test_the_agents_turn_sweep_never_commits_in_a_home(app_home, monkeypatch):
-    """Seen live: a breakout's script appended to the home's memory.md (absolute path) and the agent's generic
-    end-of-turn sweep (`agent._commit_turn`, `Claude: <title>`) committed it before the guard ran, so nothing was
-    put back. Homes keep their own history: the sweep skips anything under the specialists root."""
-    import importlib.util
-
-    from fused_render.claude_agent import AGENT_PATH
-    from fused_render.specialists import breakouts, paths  # noqa: F401 — the agent reads the root off the module
-
-    spec = importlib.util.spec_from_file_location("test_agent_sweep", AGENT_PATH)
-    agent = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(agent)
-    monkeypatch.setenv("FUSED_RENDER_WORKSPACE_DIR", os.path.dirname(paths.root()))
-    s = make_specialist()
-    head = history.log(s.id)[0]["sha"]
-    _write(s, "memory.md", "# Memory\n- [m-dead] written by a breakout\n")
-    work = paths.workroom(s.id, "b-000000000001")
-    os.makedirs(work, exist_ok=True)
-    agent._commit_turn(os.path.join(work, "x.txt"), "Brief from the task")
-    agent._commit_turn(os.path.join(s.home, "memory.md"), "main chat")
-    assert history.log(s.id)[0]["sha"] == head
-    monkeypatch.setattr(history, "_main_turn_live", lambda spec_id, sid: False)
-    assert history.guard(s.id) == ["memory.md"]
-    assert "written by a breakout" not in _read(s, "memory.md")
+        f.write('[filter "x"]\n\tclean = cat\n')
+    _edit(s.home, "memory.md", "x\n")
+    history.commit_edits(s.home)
+    assert "filter" not in open(os.path.join(s.home, ".git", "config")).read()

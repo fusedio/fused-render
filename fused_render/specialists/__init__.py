@@ -1,6 +1,3 @@
-"""Specialists: each knows one subject and lives in a home folder that is an ordinary Claude Code project.
-
-See docs/specialists.md. Everything here is behind the
-`specialists` feature flag (`flag.on()`); with it off nothing in this package runs, creates folders or answers
-routes.
+"""Specialists (docs/specialists-v2.md): each knows one subject and lives in a home folder that is an ordinary Claude
+Code project. Behind the `specialists` flag (`flag.on()`): off, nothing here runs, creates folders or answers routes.
 """

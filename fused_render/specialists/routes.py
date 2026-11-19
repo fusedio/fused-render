@@ -1,34 +1,24 @@
-"""`/api/specialists*`: the core HTTP API (docs/specialists.md §8 "Core").
+"""`/api/specialists*`: the Bots page's routes and the session MCP servers' door.
 
-Every route depends on `flag.require` (flag off: 404 `{"detail": "Not Found"}`, as if the route did not exist).
-POSTs need `X-Fused: 1` (PUT/PATCH/DELETE are preflighted by the browser anyway). Errors are `{"error": sentence}`:
-400 a bad body, 404 an unknown specialist, 409 a conflict. Routes are plain `def`s (FastAPI's threadpool): they
-read files and run git, never on the event loop.
-
-Literal paths (`/policy`) are declared before `/{spec_id}` so the parameter route never swallows them; stream 2's
-literal task-side paths are included before this router in server/app.py for the same reason.
+Every route depends on `flag.require` (flag off: the unknown-path 404). Writes need `X-Fused: 1`. Errors are
+`{"error": sentence}`: 400 a bad body, 404 an unknown specialist, 409 a taken name or a busy specialist. Routes are
+plain `def`s (FastAPI's threadpool): they read files and run git, never on the event loop.
 """
 from __future__ import annotations
 
 import functools
 import os
-import time
 
 from fastapi import APIRouter, Body, Depends, Header, Query
+from fastapi.responses import JSONResponse
 
 from fused_render.server.common import _error, _require_fused
-from fused_render.specialists import chat, flag, harness, history, launch, services, store
+from fused_render.specialists import chat, flag, history, launch, notes, services, store, update
 from fused_render.specialists import home as hm
 
 router = APIRouter(dependencies=[Depends(flag.require)])
-PREFIX = "/api/specialists"
-SERVERS = ("specialist", "specialist_services")
-NOTE_KINDS = ("gap", "correction", "convention", "suspected-bug", "behaviour", "case")
-BASES = ("user-said", "verified", "guess")
-
-
-class _NotFound(Exception):
-    pass
+P = "/api/specialists"
+FIELDS = ("name", "about", "folder", "face")
 
 
 def _handled(fn):
@@ -36,414 +26,167 @@ def _handled(fn):
     def wrap(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
-        except _NotFound as e:
-            return _error(str(e), 404)
         except KeyError:
             return _error("no such specialist", 404)
+        except (store.Taken, update.Busy) as e:
+            return _error(str(e), 409)
         except ValueError as e:
-            return _error(str(e) or "bad request", 400)
+            return _error(str(e), 400)
     return wrap
 
 
 def _spec(spec_id: str) -> store.Specialist:
     s = store.get(spec_id)
     if s is None:
-        raise _NotFound("no such specialist")
+        raise KeyError(spec_id)
     return s
 
 
-def _body(body) -> dict:
-    if not isinstance(body, dict):
-        raise ValueError("the request body must be a JSON object")
+def _fields(body) -> dict:
+    if not isinstance(body, dict) or set(body) - set(FIELDS):
+        raise ValueError(f"the body is an object with any of {', '.join(FIELDS)}")
     return body
 
 
-#: How long a main turn's prompt hook alone says "working" when no open turn is seen in the runs (the moment
-#: between the hook and the run's first line); past it, only a live run does.
-WORKING_BRIDGE_S = 120.0
-
-
-def _working(s: store.Specialist) -> bool:
-    """The main chat's turn is live: a run with an open turn in the home's own folder (breakouts run in their
-    workrooms), or a turn whose prompt hook fired and whose Stop has not."""
-    return bool(store.main_live_runs(s.home)) or history.main_turn_open(s.id, WORKING_BRIDGE_S)
-
-
-def _status(s: store.Specialist, working: bool) -> str:
-    if working:
-        return "Working now"
-    rows = [r for r in harness.rows(s.id, 5) if r.get("kind") == "nightly" and r.get("status") == "done"]
-    if rows:
-        return "Updated " + time.strftime("%b %d", time.localtime(rows[0].get("ended") or rows[0]["started"]))
-    return "Ready"
-
-
 def _row(s: store.Specialist) -> dict:
-    w = _working(s)
-    return {"id": s.id, "name": s.name, "subject": s.subject, "face": s.face, "model": s.model,
-            "status": _status(s, w), "working": w}
+    st = chat.load(s.home)
+    last = chat.last(s.home, st["main"])
+    return {**s.manifest(), "home": s.home, "working": bool(store.live_runs(s.home)),
+            "last": {"text": last["text"], "at": last["at"]} if last else None,
+            "new": bool(last and last["role"] == "assistant" and last["at"] > st["seen"])}
 
 
-def _detail(s: store.Specialist) -> dict:
-    w = _working(s)
-    return {"id": s.id, "name": s.name, "subject": s.subject, "face": s.face, "model": s.model, "effort": s.effort,
-            "triggers": s.triggers, "home": s.home, "connections": s.connections, "created": s.created,
-            "shipped": s.shipped, "status": _status(s, w), "working": w,
-            **({} if history.available() else {"history": history.STATUS_OFF})}
-
-
-# ------------------------------------------------------------- literal paths ---
-@router.get(PREFIX + "/policy")
-@_handled
-def specialists_policy(specialist: str = Query(""), kind: str = Query(""), session_id: str = Query(""),
-                       tool: str = Query("")):
-    return {"answer": services.policy(specialist, kind, session_id, tool)}
-
-
-# ------------------------------------------------------------------- list ---
-@router.get(PREFIX)
+@router.get(P)
 @_handled
 def specialists_list():
     return [_row(s) for s in store.all()]
 
 
-@router.post(PREFIX)
+@router.post(P)
 @_handled
 def specialists_create(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
+    if guard := _require_fused(x_fused):
         return guard
-    b = _body(body)
-    try:
-        s = store.create(str(b.get("name") or ""), str(b.get("subject") or ""), triggers=b.get("triggers"))
-    except store.Invalid as e:
-        msg = str(e)
-        return _error(msg, 409 if "already exists" in msg else 400)
-    return _detail(s)
+    f = _fields(body)
+    return _row(store.create(str(f.get("name") or ""), str(f.get("about") or ""), str(f.get("folder") or ""),
+                             f.get("face")))
 
 
-@router.get(PREFIX + "/{spec_id}")
-@_handled
-def specialists_get(spec_id: str):
-    return _detail(_spec(spec_id))
-
-
-@router.patch(PREFIX + "/{spec_id}")
+@router.patch(P + "/{spec_id}")
 @_handled
 def specialists_patch(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
+    if guard := _require_fused(x_fused):
         return guard
-    _spec(spec_id)
-    b = _body(body)
-    fields = {k: b[k] for k in ("name", "subject", "face", "model", "effort", "triggers") if k in b}
-    unknown = set(b) - set(fields)
-    if unknown:
-        return _error(f"unknown field(s): {', '.join(sorted(unknown))}", 400)
-    try:
-        s = store.update(spec_id, **fields)
-    except store.Invalid as e:
-        msg = str(e)
-        return _error(msg, 409 if "already exists" in msg else 400)
-    return _detail(s)
+    return _row(store.update(spec_id, **_fields(body)))
 
 
-@router.delete(PREFIX + "/{spec_id}")
+@router.delete(P + "/{spec_id}")
 @_handled
 def specialists_delete(spec_id: str, x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
+    if guard := _require_fused(x_fused):
         return guard
-    _spec(spec_id)
-    try:
-        store.delete(spec_id)
-    except store.Busy as e:
-        return _error(str(e), 409)
+    store.delete(spec_id)
     return {"ok": True}
 
 
-# ------------------------------------------------------------------- chat ---
-@router.get(PREFIX + "/{spec_id}/chat")
+@router.get(P + "/{spec_id}/chat")
 @_handled
 def specialists_chat(spec_id: str):
-    _spec(spec_id)
-    return chat.state(spec_id)
+    return chat.view(_spec(spec_id).home)
 
 
-@router.post(PREFIX + "/{spec_id}/chat/clear")
+@router.post(P + "/{spec_id}/chat/clear")
 @_handled
 def specialists_chat_clear(spec_id: str, x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
+    if guard := _require_fused(x_fused):
         return guard
-    _spec(spec_id)
-    return chat.clear(spec_id)
+    return chat.clear(_spec(spec_id).home)
 
 
-# ---------------------------------------------------------------- charter ---
-def _charter_path(s) -> str:
-    return os.path.join(s.home, "CLAUDE.md")
-
-
-@router.get(PREFIX + "/{spec_id}/charter")
+@router.post(P + "/{spec_id}/seen")
 @_handled
-def specialists_charter(spec_id: str):
-    s = _spec(spec_id)
-    return {"text": hm.read_text(_charter_path(s)), "path": _charter_path(s)}
-
-
-@router.put(PREFIX + "/{spec_id}/charter")
-@_handled
-def specialists_charter_put(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
+def specialists_seen(spec_id: str, x_fused: str | None = Header(default=None)):
+    if guard := _require_fused(x_fused):
         return guard
-    s = _spec(spec_id)
-    text = _body(body).get("text")
-    if not isinstance(text, str) or not text.strip():
-        return _error("'text' must be a non-empty string", 400)
-    if len(text) > hm.CHARTER_MAX:
-        return _error(f"the charter is limited to {hm.CHARTER_MAX:,} characters", 400)
-    hm.write_text(_charter_path(s), hm.with_imports(text))
-    history.commit(s.id, "settings: charter", ["CLAUDE.md"])
-    return {"text": hm.read_text(_charter_path(s)), "path": _charter_path(s)}
+    chat.mark_seen(_spec(spec_id).home)
+    return {"ok": True}
 
 
-# ----------------------------------------------------------------- skills ---
-def _skill_name(name: str) -> str:
-    if not hm.skill_name_ok(name):
-        raise ValueError("a skill name is lowercase letters, digits and dashes (at most 64)")
-    return name
+@router.get(P + "/{spec_id}/memory")
+@_handled
+def specialists_memory(spec_id: str):
+    return {"text": hm.read_text(os.path.join(_spec(spec_id).home, "memory.md"))}
 
 
-@router.get(PREFIX + "/{spec_id}/skills")
+@router.get(P + "/{spec_id}/skills")
 @_handled
 def specialists_skills(spec_id: str):
     return {"skills": hm.skills(_spec(spec_id).home)}
 
 
-@router.get(PREFIX + "/{spec_id}/skills/{name}")
+@router.get(P + "/{spec_id}/notes")
 @_handled
-def specialists_skill(spec_id: str, name: str):
-    s = _spec(spec_id)
-    p = hm.skill_path(s.home, _skill_name(name))
-    if not os.path.isfile(p):
-        raise _NotFound("no such skill")
-    return {"name": name, "text": hm.read_text(p)}
+def specialists_notes(spec_id: str):
+    return {"notes": notes.list(_spec(spec_id))}
 
 
-@router.put(PREFIX + "/{spec_id}/skills/{name}")
+@router.delete(P + "/{spec_id}/notes/{name}")
 @_handled
-def specialists_skill_put(spec_id: str, name: str, body: dict = Body(...),
-                          x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
+def specialists_note_delete(spec_id: str, name: str, x_fused: str | None = Header(default=None)):
+    if guard := _require_fused(x_fused):
         return guard
-    s = _spec(spec_id)
-    _skill_name(name)
-    text = _body(body).get("text")
-    if not isinstance(text, str) or not text.strip():
-        return _error("'text' must be a non-empty string", 400)
-    if len(text) > hm.SKILL_MAX:
-        return _error(f"a skill is limited to {hm.SKILL_MAX:,} characters", 400)
-    if not hm.frontmatter(text).get("description"):
-        # Claude Code finds a skill by its frontmatter; give a bare text one, described by its first line.
-        first = next((ln.strip("# ").strip() for ln in text.splitlines() if ln.strip()), name)
-        text = hm.skill_text(name, first[:300], text)
-    hm.write_text(hm.skill_path(s.home, name), text)
-    history.commit(s.id, f"settings: skill {name}", [os.path.join(".claude", "skills", name)])
-    return {"name": name, "text": hm.read_text(hm.skill_path(s.home, name))}
+    return {"ok": True} if notes.delete(_spec(spec_id), name) else _error("no such note", 404)
 
 
-@router.delete(PREFIX + "/{spec_id}/skills/{name}")
+@router.get(P + "/{spec_id}/changes")
 @_handled
-def specialists_skill_delete(spec_id: str, name: str, x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
+def specialists_changes(spec_id: str):
+    home = _spec(spec_id).home
+    history.commit_edits(home)
+    return {"changes": history.changes(home)}
+
+
+@router.get(P + "/{spec_id}/changes/{sha}")
+@_handled
+def specialists_change(spec_id: str, sha: str):
+    text = history.diff(_spec(spec_id).home, sha)
+    return _error("no such change", 404) if text is None else {"diff": text}
+
+
+@router.post(P + "/{spec_id}/update")
+@_handled
+def specialists_update(spec_id: str, x_fused: str | None = Header(default=None)):
+    if guard := _require_fused(x_fused):
         return guard
-    s = _spec(spec_id)
-    p = hm.skill_path(s.home, _skill_name(name))
-    if not os.path.isfile(p):
-        raise _NotFound("no such skill")
-    folder = os.path.dirname(p)
-    for root, dirs, files in os.walk(folder, topdown=False):
-        for f in files:
-            os.remove(os.path.join(root, f))
-        for d in dirs:
-            os.rmdir(os.path.join(root, d))
-    os.rmdir(folder)
-    history.commit(s.id, f"settings: delete skill {name}", [os.path.join(".claude", "skills", name)])
-    return {"ok": True}
-
-
-# ----------------------------------------------------------------- people ---
-@router.get(PREFIX + "/{spec_id}/people")
-@_handled
-def specialists_people(spec_id: str):
-    s = _spec(spec_id)
-    return {"rows": hm.people_rows(s.home), "path": os.path.join(s.home, "people.md")}
-
-
-@router.put(PREFIX + "/{spec_id}/people")
-@_handled
-def specialists_people_put(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
-        return guard
-    s = _spec(spec_id)
-    rows = _body(body).get("rows")
-    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
-        return _error("'rows' must be a list of objects", 400)
-    hm.write_people(s.home, rows[:500])
-    history.commit(s.id, "settings: people", ["people.md"])
-    return {"rows": hm.people_rows(s.home), "path": os.path.join(s.home, "people.md")}
-
-
-# ------------------------------------------------------------ connections ---
-@router.get(PREFIX + "/{spec_id}/connections")
-@_handled
-def specialists_connections(spec_id: str):
-    return services.connections(_spec(spec_id))
-
-
-@router.put(PREFIX + "/{spec_id}/connections")
-@_handled
-def specialists_connections_put(spec_id: str, body: dict = Body(...),
-                                x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
-        return guard
-    _spec(spec_id)
-    b = _body(body)
-    add, remove = b.get("add") or [], b.get("remove") or []
-    if not isinstance(add, list) or not isinstance(remove, list):
-        return _error("'add' and 'remove' must be lists", 400)
-    services.set_allowed(spec_id, add=[str(x) for x in add], remove=[str(x) for x in remove])
-    return services.connections(_spec(spec_id))
-
-
-# ------------------------------------------------------------ history/runs ---
-@router.get(PREFIX + "/{spec_id}/history")
-@_handled
-def specialists_history(spec_id: str, path: str = Query(""), limit: int = Query(50)):
-    _spec(spec_id)
-    if path and (os.path.isabs(path) or ".." in path.replace("\\", "/").split("/")):
-        return _error("'path' must be relative to the specialist's home", 400)
-    return {"commits": history.log(spec_id, path or None, max(1, min(int(limit), 500)))}
-
-
-@router.get(PREFIX + "/{spec_id}/runs")
-@_handled
-def specialists_runs(spec_id: str, limit: int = Query(100)):
-    _spec(spec_id)
-    return {"runs": harness.rows(spec_id, max(1, min(int(limit), 300)))}
-
-
-@router.get(PREFIX + "/{spec_id}/runs/{rid}")
-@_handled
-def specialists_run(spec_id: str, rid: str):
-    _spec(spec_id)
-    r = harness.row(spec_id, rid)
-    if r is None:
-        raise _NotFound("no such run")
-    return r
+    started = update.start(_spec(spec_id))
+    return JSONResponse({"started": started}, status_code=202 if started else 200)
 
 
 # ------------------------------------------------------- session MCP door ---
-def _session(spec_id: str, kind: str, token: str, server: str):
+def _session(spec_id: str, token: str | None, server: str):
     s = _spec(spec_id)
-    if server not in SERVERS:
+    if not launch.check_token(spec_id, token or ""):
+        return s, _error("bad or expired session token", 403)
+    if server not in services.SERVERS:
         raise ValueError("unknown server")
-    rec = launch.check_token(spec_id, kind, token)
-    if rec is None:
-        return s, None
-    return s, rec
+    return s, None
 
 
-NOTE_TOOL_DEF = {
-    "name": "note",
-    "description": ("Send a note to your own inbox: something you got wrong, missed, a convention the user stated, "
-                    "a suspected bug, or a case worth remembering. The nightly update weighs it. Never write files "
-                    "under inbox/ yourself."),
-    "inputSchema": {"type": "object", "additionalProperties": False, "required": ["kind", "claim", "basis"],
-                    "properties": {
-                        "kind": {"type": "string", "enum": list(NOTE_KINDS)},
-                        "claim": {"type": "string", "maxLength": 300, "description": "one sentence"},
-                        "evidence": {"type": "string", "maxLength": 4000},
-                        "basis": {"type": "string", "enum": list(BASES)},
-                        "entry": {"type": "string", "description": "the memory entry id (m-xxxx) it concerns"}}},
-}
-
-
-@router.get(PREFIX + "/{spec_id}/session-tools")
+@router.get(P + "/{spec_id}/session-tools")
 @_handled
-def specialists_session_tools(spec_id: str, kind: str = Query(""), server: str = Query(""),
+def specialists_session_tools(spec_id: str, server: str = Query(""),
                                x_specialist_token: str | None = Header(default=None)):
-    s, rec = _session(spec_id, kind, x_specialist_token or "", server)
-    if rec is None:
-        return _error("bad or expired session token", 403)
-    if server == "specialist":
-        return {"tools": [NOTE_TOOL_DEF] if kind in ("main", "breakout") else []}
-    return {"tools": services.mcp_tools(s, kind)}
+    s, refused = _session(spec_id, x_specialist_token, server)
+    return refused or {"tools": services.mcp_tools(s, server)}
 
 
-def _text(t: str, err: bool = False) -> dict:
-    return {"content": [{"type": "text", "text": t}], "isError": err}
-
-
-def _session_id_for(spec_id: str, kind: str, rec: dict) -> str:
-    """The session a session MCP server belongs to: the breakout's recorded session, or main chat's current."""
-    if kind == "breakout" and rec.get("breakout_id"):
-        try:
-            from fused_render.specialists import breakouts
-
-            b = breakouts.get(spec_id, rec["breakout_id"])
-            return str((b or {}).get("session_id") or "")
-        except Exception:  # noqa: BLE001
-            return ""
-    if kind == "main":
-        return chat.state(spec_id).get("current") or ""
-    return ""
-
-
-def _note(s, kind: str, rec: dict, session_id: str, args: dict) -> dict:
-    k, claim, basis = args.get("kind"), str(args.get("claim") or "").strip(), args.get("basis")
-    if k not in NOTE_KINDS:
-        return _text(f"error: kind must be one of {', '.join(NOTE_KINDS)}", True)
-    if basis not in BASES:
-        return _text(f"error: basis must be one of {', '.join(BASES)}", True)
-    if not claim:
-        return _text("error: claim is required (one sentence)", True)
-    try:
-        from fused_render.specialists import inbox
-
-        note = inbox.add(s.id, kind=k, claim=claim[:300], basis=basis, evidence=str(args.get("evidence") or "")[:4000],
-                         entry=(str(args.get("entry")) if args.get("entry") else None),
-                         source={"type": kind, "session_id": session_id or _session_id_for(s.id, kind, rec),
-                                 "breakout_id": rec.get("breakout_id") or ""})
-    except Exception as e:  # noqa: BLE001 — stream 3's inbox missing or refusing
-        return _text(f"error: the note was not saved ({e})", True)
-    return _text(f"Saved to your inbox ({note.get('id', '')}).")
-
-
-@router.post(PREFIX + "/{spec_id}/session-tool")
+@router.post(P + "/{spec_id}/session-tool")
 @_handled
 def specialists_session_tool(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None),
                              x_specialist_token: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard:
+    if guard := _require_fused(x_fused):
         return guard
-    b = _body(body)
-    kind, server, name = str(b.get("kind") or ""), str(b.get("server") or ""), str(b.get("name") or "")
-    s, rec = _session(spec_id, kind, x_specialist_token or "", server)
-    if rec is None:
-        return _error("bad or expired session token", 403)
-    args = b.get("args") if isinstance(b.get("args"), dict) else {}
-    if server == "specialist":
-        if name != "note" or kind not in ("main", "breakout"):
-            return _text(f"error: no tool {name!r} here", True)
-        return _note(s, kind, rec, str(b.get("session_id") or ""), args)
-    # The session and breakout are the server's own (the token's record), never the caller's word: a grant is
-    # spent only by the session whose card the user answered.
-    return services.call(s, kind, name, args, session_id=_session_id_for(s.id, kind, rec),
-                         breakout_id=str(rec.get("breakout_id") or ""))
+    server = str(body.get("server") or "")
+    s, refused = _session(spec_id, x_specialist_token, server)
+    args = body.get("args") if isinstance(body.get("args"), dict) else {}
+    return refused or services.call(s, server, str(body.get("name") or ""), args)

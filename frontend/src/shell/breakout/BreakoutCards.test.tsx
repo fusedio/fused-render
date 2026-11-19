@@ -96,6 +96,25 @@ test("the note reads research only", () => {
   expect(mount().r.root.findByProps({ className: "breakout-note" }).children.join("")).toBe("research only");
 });
 
+test("a specialist breakout names the specialist and runs in its home", () => {
+  let seen: Record<string, unknown> = {};
+  const Spy = (props: Record<string, unknown>) => {
+    seen = props;
+    return null;
+  };
+  const specialist = { id: "canvas", name: "Canvas", home: "/w/specialists/canvas" };
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<Card card={{ ...(card as object), specialist } as never} index={0} mount={Spy as never} />, {
+      createNodeMock: () => el,
+    });
+  });
+  expect(r.root.findByProps({ className: "breakout-note" }).children.join("")).toBe("with the Canvas specialist");
+  expect(seen["file"]).toBe("/w/specialists/canvas");
+  expect(seen["breakout"]).toBe(true);
+  expect(seen["extraParams"]).toEqual({ specialist: "canvas:breakout" });
+});
+
 // A mount that reports a fixed breakout state once.
 const reporting = (s: unknown) => () => {
   const P = (props: { onBreakoutState?: (s: never) => void }) => {

@@ -45,9 +45,6 @@ import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
-import { isSpecialistsPath, SPECIALISTS_PREFIX } from "@apps/specialists/routes";
-import { useSpecialistsEnabled } from "@platform/lib/specialists-flag";
-import { SPECIALISTS_ICON } from "@shell/nav-icons";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { botsPulseTitle, botsRunningLabel, botsWaitingLabel, useBotsPulse } from "@platform/lib/botsPulse";
 import { marketplacePulseTitle, useMarketplacePulse } from "@platform/lib/marketplacePulse";
@@ -494,9 +491,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // PREFIX, like AI Models below: /bots/<id> and /bots/tasks are the same page
   // through a different door, not a second destination (apps/bots/routes.ts).
   const botsActive = isBotsPath(pathname);
-  // Specialists (docs/specialists.md): a row after Bots, only with the flag on.
-  const specialistsOn = useSpecialistsEnabled();
-  const specialistsActive = isSpecialistsPath(pathname);
   const tasksActive = pathname === "/tasks";
   // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
   // through a different tab, not a second destination, so every one of the five
@@ -943,17 +937,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           },
         ]
       : []),
-    ...(specialistsOn
-      ? [
-          {
-            key: "specialists",
-            label: "Specialists",
-            icon: SPECIALISTS_ICON,
-            href: SPECIALISTS_PREFIX,
-            active: specialistsActive,
-          },
-        ]
-      : []),
     ...(railNav
       ? []
       : [
@@ -1053,15 +1036,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               // Errors have no dot and no words, so the row itself carries the
               // sentence; the rail says it through its label either way.
               title={botsTip}
-            />
-          )}
-          {specialistsOn && (
-            <NavItem
-              href={SPECIALISTS_PREFIX}
-              id="specialists-link"
-              label="Specialists"
-              icon={SPECIALISTS_ICON}
-              active={specialistsActive}
             />
           )}
           {/* Tasks took Inbox's place as well as its job: the two pages showed

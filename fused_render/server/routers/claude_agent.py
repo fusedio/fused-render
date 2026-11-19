@@ -344,27 +344,12 @@ def _mark_breakout(params: dict, envelope: dict) -> None:
         logger.exception("claude agent: could not mark the breakout")
 
 
-#: The agent actions the specialists task side reacts to (agent_hooks.after_agent_call).
-_SPECIALIST_ACTIONS = frozenset({"start", "decide", "cancel", "snapshot_revert"})
-
-
 def _specialist_after(params: dict, envelope: dict) -> None:
-    """Tell the specialists task side what an agent call did (docs/specialists.md): a main-chat or
-    breakout start records its session, a deny / cancel / snapshot_revert is a behaviour signal. Read off
-    `sys.modules` and never imported here: with specialists never loaded (flag off) it is one dict lookup.
-    Best-effort: it must never fail or slow the call it follows."""
-    if params.get("action") not in _SPECIALIST_ACTIONS:
-        return  # polls, history reads, sends: one string test, no prefs read
-    try:
-        mod = sys.modules.get("fused_render.specialists.agent_hooks")
-        flag = sys.modules.get("fused_render.specialists.flag")
-        if mod is None or flag is None or not flag.on():
-            return
-        hook = getattr(mod, "after_agent_call", None)
-        if callable(hook):
-            hook(str(params.get("action") or ""), params, envelope if isinstance(envelope, dict) else {})
-    except Exception:  # noqa: BLE001
-        logger.exception("claude agent: the specialists hook failed")
+    """A specialist's chat started: its session is recorded (agent_hooks). Off
+    `sys.modules`, so with specialists never loaded this is one dict lookup."""
+    hooks = sys.modules.get("fused_render.specialists.agent_hooks")
+    if hooks is not None and params.get("specialist"):
+        hooks.after_agent_call(str(params.get("action") or ""), params, envelope)
 
 
 async def agent_dispatch(body: dict, call: dict | None) -> Response:

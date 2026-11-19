@@ -373,10 +373,7 @@ export interface ComposerCardProps {
   /** The landing card's kind-dependent placeholder (`homePlaceholderFor`,
    *  T:5392). Unset keeps the markup's own kind-free wording. */
   placeholder?: string;
-  /** SPECIALISTS: the chat variant's idle placeholder, in place of
-   *  "Reply to Claude…" ("Reply to the Canvas specialist"). */
-  chatPlaceholder?: string;
-  /** SPECIALISTS: no "Schedule this as a task" seat (a specialist session). */
+  /** No "Schedule this as a task" seat (a specialist's chat). */
   noSchedule?: boolean;
   /**
    * Follow-ups the CLI never delivered, handed BACK to the box they were typed
@@ -617,7 +614,6 @@ export function ComposerCard({
   navLockedReason,
   autoFocus,
   placeholder,
-  chatPlaceholder,
   noSchedule = false,
   restore,
   boxRef: hostBoxRef,
@@ -2442,7 +2438,7 @@ export function ComposerCard({
                   // it ("Ask Claude about this project…"); the markup's own
                   // kind-free wording stands until then (T:5392).
                   placeholder || homePlaceholderForAgent(agentWord)
-                : chatPlaceholder || chatPlaceholderFor(agentWord)
+                : chatPlaceholderFor(agentWord)
           }
           spellCheck={false}
           // AND GRAMMARLY OFF, all three spellings, exactly as T:4156-4157 and

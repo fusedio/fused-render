@@ -1,27 +1,28 @@
-"""Connected services for specialists (docs/specialists.md §7).
+"""The app's connected services in a specialist's main chat and breakouts.
 
-The roster is the bots' one: `apptools.registry()` = local app tools (apps with an MCP manifest) + every connected
-service's tools (`apptools.connect_records()`), the token kept in the server. Per specialist the manifest's
-`connections` lists the allowed services, keyed as the bots key them: a connect key (`notion`) or
-`app:<normalised app folder>` for a local app.
-
-Who sees what (`roster`): main chat and breakout get every service's tools (allowed or not: one not allowed asks
-through the card, and "Approve, don't ask again" ticks it); the nightly job gets only the read-only tools of allowed
-services; check and reviewer get none. Every call runs here (`call`), behind the session MCP server
-(`sessmcp.py`), and the permission prompt tool asks `policy` first whether to card it.
+The roster is the bots' one (`apptools.registry()`: local app tools and connected services' tools; the tokens stay
+in the server), split in two session MCP servers: reads in `specialist_services`, sends in `specialist_sends`. The
+launch spec gives sends an ask rule, so the CLI raises the app's card for each one in every permission mode, and
+`call` runs a send only by spending the one-time grant `agent._decide` recorded (`record_grant`) when the user
+allowed that card, so a session calling the route itself gets nowhere.
 """
 from __future__ import annotations
 
 import hashlib
-import logging
+import json
+import os
 import re
+import threading
+import time
 
-logger = logging.getLogger(__name__)
-
-APP_PREFIX = "app:"
+SERVERS = ("specialist_services", "specialist_sends")
+SENDS_PREFIX = "mcp__specialist_sends__"
+GRANT_TTL_S = 120.0
 NAME_MAX = 64
-SERVER = "specialist_services"
-TOOL_PREFIX = f"mcp__{SERVER}__"
+NEEDS_CARD = "This send needs the user's approval card."
+_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean", list: "array", dict: "object"}
+_GRANTS: dict[str, tuple[str, str, float]] = {}  # "<run>/<request>" -> (specialist id, tool, expiry)
+_LOCK = threading.Lock()
 
 
 def _apptools():
@@ -30,233 +31,82 @@ def _apptools():
     return apptools
 
 
-def norm(key: str) -> str:
-    k = str(key or "").strip()
-    if k.lower().startswith(APP_PREFIX):
-        return APP_PREFIX + _apptools().norm_app(k[len(APP_PREFIX):])
-    return _apptools().norm_app(k)
-
-
-def key_of(rec) -> str:
-    at = _apptools()
-    return norm(at.connect_key(rec)) if at.is_connect(rec) else APP_PREFIX + at.norm_app(rec.app)
-
-
-def title_of(rec) -> str:
-    at = _apptools()
-    return at.connect_title(at.connect_key(rec)) if at.is_connect(rec) else str(rec.app)
-
-
 def tool_name(key: str, tool: str) -> str:
-    """`<key>_<tool>` in MCP's charset, at most 64 chars (truncated + a 6-hex hash of the full name, so two long
-    names never collide)."""
+    """`<service>_<tool>` in MCP's charset, at most 64 characters (a long one ends in a hash of the full name)."""
     raw = f"{key}_{tool}"
     name = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_") or "tool"
     if len(name) > NAME_MAX:
-        h = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:6]
-        name = name[:NAME_MAX - 7].rstrip("_") + "_" + h
+        name = name[:NAME_MAX - 7].rstrip("_") + "_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:6]
     return name
 
 
-def _all_records() -> list:
-    try:
-        return list(_apptools().registry())
-    except Exception:  # noqa: BLE001 — a broken roster must not break a session
-        logger.debug("specialists: roster failed", exc_info=True)
-        return []
-
-
-def is_write(rec) -> bool:
-    try:
-        return bool(_apptools().is_write(rec))
-    except Exception:  # noqa: BLE001
-        return True
-
-
-def allowed_set(spec) -> set:
-    return {norm(k) for k in (getattr(spec, "connections", None) or [])}
-
-
-def _schema(rec) -> dict:
-    sp = getattr(rec, "spec", None)
-    sch = getattr(sp, "input_schema", None)
-    if isinstance(sch, dict):
-        return sch
-    props, req = {}, []
-    for p in getattr(rec, "params", None) or []:
-        t = {str: "string", int: "integer", float: "number", bool: "boolean", list: "array", dict: "object"}
-        props[p.name] = {"type": t.get(p.annotation, "string")} if p.annotation in t else {}
-        if not p.has_default:
-            req.append(p.name)
-    return {"type": "object", "properties": props, **({"required": req} if req else {})}
-
-
-def roster(spec, kind: str) -> list[dict]:
-    """`[{"name","key","title","write","rec"}]` the session of `kind` may see (module docstring)."""
-    if kind not in ("main", "breakout", "nightly"):
-        return []
-    allowed = allowed_set(spec)
-    out, seen = [], set()
-    for rec in _all_records():
-        key = key_of(rec)
-        write = is_write(rec)
-        if kind == "nightly" and (key not in allowed or write):
+def _roster(server: str) -> dict:
+    """`{name: (record, service title)}` for one server: reads or sends."""
+    at = _apptools()
+    out = {}
+    for rec in at.registry():
+        if at.is_write(rec) != (server == "specialist_sends"):
             continue
-        name = tool_name(key, rec.name)
-        if name in seen:
-            continue
-        seen.add(name)
-        out.append({"name": name, "key": key, "title": title_of(rec), "write": write, "rec": rec})
+        key = at.connect_key(rec) if at.is_connect(rec) else at.norm_app(rec.app)
+        title = at.connect_title(key) if at.is_connect(rec) else str(rec.app)
+        out.setdefault(tool_name(key, rec.name), (rec, title))
     return out
 
 
-def mcp_tools(spec, kind: str) -> list[dict]:
-    """The roster as MCP tool definitions; each description says which service and whether it writes."""
-    tools = []
-    for e in roster(spec, kind):
-        desc = str(getattr(e["rec"], "description", "") or "").strip()
-        tag = f"[{e['title']}, {'writes' if e['write'] else 'read-only'}]"
-        tools.append({"name": e["name"], "description": f"{tag} {desc}".strip()[:1024],
-                      "inputSchema": _schema(e["rec"])})
-    return tools
+def _schema(rec) -> dict:
+    sch = getattr(getattr(rec, "spec", None), "input_schema", None)
+    if isinstance(sch, dict):
+        return sch
+    params = getattr(rec, "params", None) or []
+    props = {p.name: ({"type": _TYPES[p.annotation]} if p.annotation in _TYPES else {}) for p in params}
+    req = [p.name for p in params if not p.has_default]
+    return {"type": "object", "properties": props, **({"required": req} if req else {})}
 
 
-def _strip(tool: str) -> str:
-    return tool[len(TOOL_PREFIX):] if tool.startswith(TOOL_PREFIX) else tool
+def mcp_tools(spec, server: str) -> list[dict]:
+    """One server's tools as MCP definitions; each description names its service."""
+    verb = "sends" if server == "specialist_sends" else "reads"
+    return [{"name": name, "description": f"[{title}, {verb}] {rec.description or ''}".strip()[:1024],
+             "inputSchema": _schema(rec)} for name, (rec, title) in _roster(server).items()]
 
 
-def find(spec, kind: str, tool: str) -> dict | None:
-    name = _strip(str(tool or ""))
-    return next((e for e in roster(spec, "main" if kind == "nightly" else kind) if e["name"] == name), None)
+def _take_grant(spec_id: str, tool: str) -> bool:
+    now = time.time()
+    with _LOCK:
+        for key, (sid, t, exp) in list(_GRANTS.items()):
+            if exp <= now:
+                _GRANTS.pop(key)
+            elif sid == spec_id and t == tool:
+                _GRANTS[key] = (sid, "", exp)  # spent, but kept till expiry: the same card never grants twice
+                return True
+    return False
 
 
-NEEDS_CARD = "This call needs the user's approval card."
-
-
-def call(spec, kind: str, name: str, args, *, session_id: str = "", breakout_id: str = "") -> dict:
-    """Run one service tool for a session of `kind`: `{"content":[{"type":"text","text"}], "isError"}`. Refuses
-    a tool not in that kind's roster (so a nightly can never write). Main/breakout: a call whose `policy` is not
-    `allow` runs only by spending the one-time grant the SERVER recorded when the user allowed its card
-    (`launch.take_grant`), so the server, not only the CLI's prompt, enforces the card: a session that
-    calls the route itself, with everything it can read, gets `NEEDS_CARD`. `session_id` and `breakout_id` are the
-    server's own idea of the calling session (the token's record), never the caller's word. Never raises."""
-    entry = next((e for e in roster(spec, kind) if e["name"] == _strip(str(name or ""))), None)
+def call(spec, server: str, name: str, args) -> dict:
+    """Run one tool of `server`: `{content, isError}`. A send spends a grant first. Never raises."""
+    entry = _roster(server).get(name)
     if entry is None:
-        why = ("the nightly update may only use read-only tools of allowed services" if kind == "nightly"
-               else "no such service tool for this specialist")
-        return {"content": [{"type": "text", "text": f"error: {why} ({name})"}], "isError": True}
-    if kind in ("main", "breakout") and policy(spec.id, kind, session_id, entry["name"]) != "allow":
-        from fused_render.specialists import launch
+        return {"content": [{"type": "text", "text": f"error: no such tool ({name})"}], "isError": True}
+    if server == "specialist_sends" and not _take_grant(spec.id, name):
+        return {"content": [{"type": "text", "text": NEEDS_CARD}], "isError": True}
+    res = _apptools().run_tool(entry[0], args if isinstance(args, dict) else {})
+    return {"content": [{"type": "text", "text": str(res.text or "")}], "isError": not res.ok}
 
-        if not launch.take_grant(spec.id, kind, breakout_id, session_id, entry["name"]):
-            return {"content": [{"type": "text", "text": NEEDS_CARD}], "isError": True}
+
+def record_grant(run_id: str, request_id: str) -> None:
+    """The user allowed card `request_id` of run `run_id`, a send in a specialist's session: grant that one send
+    for GRANT_TTL_S. Recording the same card twice grants it once."""
+    from fused_render.claude_agent import agent_module
+    from fused_render.specialists import paths
+
+    run_dir = os.path.join(agent_module().RUNS, run_id)
     try:
-        res = _apptools().run_tool(entry["rec"], args if isinstance(args, dict) else {})
-    except Exception as e:  # noqa: BLE001
-        return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
-    text = str(getattr(res, "text", "") or "")
-    if getattr(res, "dropped", None):
-        text += "\n(ignored unknown arguments: " + ", ".join(res.dropped) + ")"
-    return {"content": [{"type": "text", "text": text}], "isError": not bool(getattr(res, "ok", False))}
-
-
-def _send_pending(spec_id: str, session_id: str) -> bool:
-    try:
-        from fused_render.specialists import drafts
-
-        return bool(drafts.send_pending(spec_id, session_id))
-    except Exception:  # noqa: BLE001 — stream 3 not there yet, or nothing pending
-        return False
-
-
-def policy(spec_id: str, kind: str, session_id: str, tool: str) -> str:
-    """`allow` (no card), `ask` (the normal card) or `ask_always` (a card every time; the chat's generic "Always
-    approve" store is skipped, so only the specialist's own "Approve, don't ask again" (`set_allowed`) can stop
-    it asking).
-
-    main:     a write while a Review-and-send is pending in this session -> ask_always; allowed -> allow;
-              not allowed -> ask_always.
-    breakout: allowed and read-only -> allow; any write -> ask_always; not allowed -> ask_always.
-    Anything unknown -> ask_always (fail closed to a card, never to silence)."""
-    from fused_render.specialists import store
-
-    spec = store.get(spec_id)
-    if spec is None or kind not in ("main", "breakout"):
-        return "ask_always"
-    e = find(spec, kind, tool)
-    if e is None:
-        return "ask_always"
-    allowed = e["key"] in allowed_set(spec)
-    if kind == "breakout":
-        return "allow" if allowed and not e["write"] else "ask_always"
-    if e["write"] and _send_pending(spec_id, session_id):
-        return "ask_always"
-    return "allow" if allowed else "ask_always"
-
-
-def set_allowed(spec_id: str, add=(), remove=()) -> list:
-    """Edit the allowed list against the live one (a card's "don't ask again" may land while Settings is open)."""
-    from fused_render.specialists import store
-
-    spec = store.get(spec_id)
-    if spec is None:
-        raise KeyError(spec_id)
-    cur = [norm(k) for k in spec.connections if norm(k)]
-    drop = {norm(k) for k in remove or ()}
-    cur = [k for k in dict.fromkeys(cur) if k not in drop]
-    for k in add or ():
-        k = norm(k)
-        if k and k not in cur:
-            cur.append(k)
-    return store.update(spec_id, connections=cur).connections
-
-
-def connections(spec) -> dict:
-    """`{"services":[{"key","title","kind":"connect|app","connected","allowed","tools"}]}` for Settings ›
-    Connections and the approval card: every connect provider (signed in or not) and every local app with tools.
-    `tools` = `[{"name": "mcp__specialist_services__…", "write"}]`, the full names a session sees (same roster
-    code), so the card can map a tool to its service and tell a read from a write; [] when not connected (a
-    service lists tools only while connected)."""
-    at = _apptools()
-    allowed = allowed_set(spec)
-    tools: dict[str, list] = {}
-    for e in roster(spec, "main"):  # the names a main chat / breakout session sees, exactly
-        tools.setdefault(e["key"], []).append({"name": TOOL_PREFIX + e["name"], "write": e["write"]})
-    out, seen = [], set()
-    try:
-        from fused_render.connect import manager
-        from fused_render.connect import registry as creg
-
-        provs = list(creg.providers())
-    except Exception:  # noqa: BLE001
-        provs, manager = [], None
-    for p in provs:
-        key = norm(getattr(p, "key", "") or "")
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        try:
-            connected = bool(manager.is_connected(p.key)) if manager else False
-        except Exception:  # noqa: BLE001
-            connected = False
-        out.append({"key": key, "title": str(getattr(p, "name", "") or key), "kind": "connect",
-                    "connected": connected, "allowed": key in allowed,
-                    "tools": tools.get(key, [])})
-    for rec in _all_records():
-        if at.is_connect(rec):
-            key = key_of(rec)
-            if key not in seen:  # a service whose tools list but whose pack the listing missed
-                seen.add(key)
-                out.append({"key": key, "title": title_of(rec), "kind": "connect", "connected": True,
-                            "allowed": key in allowed, "tools": tools.get(key, [])})
-            continue
-        key = key_of(rec)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"key": key, "title": str(rec.app), "kind": "app", "connected": True, "allowed": key in allowed,
-                    "tools": tools.get(key, [])})
-    for key in sorted(allowed - seen):  # allowed but gone: still shown so it can be removed
-        out.append({"key": key, "title": key, "kind": "app" if key.startswith(APP_PREFIX) else "connect",
-                    "connected": False, "allowed": True, "tools": []})
-    return {"services": out}
+        with open(os.path.join(run_dir, "perm", request_id + ".req.json"), encoding="utf-8") as fh:
+            tool = str(json.load(fh).get("tool") or "")
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            spec_id = paths.spec_of_path(str(json.load(fh).get("file") or ""))
+    except (OSError, ValueError, AttributeError):
+        return
+    if spec_id and tool.startswith(SENDS_PREFIX):
+        with _LOCK:
+            _GRANTS.setdefault(f"{run_id}/{request_id}", (spec_id, tool[len(SENDS_PREFIX):], time.time() + GRANT_TTL_S))

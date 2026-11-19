@@ -1,43 +1,23 @@
-// THE FIVE SPECIALIST TOOLS AS USER-FACING TEXT (docs/specialists.md §4 "The
-// five tools"): wherever the task chat names a tool call — the status line while it runs, the tool chip —
-// `mcp__fused_render__specialist_check` reads "Asking the Canvas specialist to
-// review the plan…", never "fused render: specialist check".
-import { specialistNameNow } from "./useTaskEvents";
-
-const TOOL_RE = /^mcp__fused[_-]render__specialist_(list|pull|check|note|breakout)$/;
+// The three specialist task tools as plain words (docs/specialists-v2.md), for
+// the tool row and the status line: "Used the Canvas specialist", never
+// "fused render: specialist pull".
+const TOOL_RE = /^mcp__fused[_-]render__specialist_(pull|note|breakout)$/;
+/** The tool whose allowed card opens a breakout with the specialist it names. */
+export const SPECIALIST_BREAKOUT_TOOL = "mcp__fused_render__specialist_breakout";
 
 export function isSpecialistTool(name: unknown): boolean {
   return TOOL_RE.test(String(name ?? ""));
 }
 
-/** The label for a specialist tool call, or null for any other tool.
- *  `key` is what the call names the specialist by (its input's `specialist`,
- *  or the status line's detail): a name, or an id resolved against the list. */
-export function specialistToolLabel(
-  name: unknown,
-  input?: Record<string, unknown> | null,
-  opts: { done?: boolean; key?: string } = {},
-): string | null {
-  const m = TOOL_RE.exec(String(name ?? ""));
+/** The label for a specialist tool call, or null for any other tool. `name` is
+ *  the specialist the call names (its input's `specialist`, or the status
+ *  line's detail, which is the same); only pull may name none. */
+export function specialistToolLabel(tool: unknown, name: unknown, done: boolean): string | null {
+  const m = TOOL_RE.exec(String(tool ?? ""));
   if (!m) return null;
-  const raw = typeof input?.specialist === "string" ? input.specialist : opts.key || "";
-  const spec = raw ? specialistNameNow(raw) : "";
-  const who = spec ? `the ${spec} specialist` : "a specialist";
-  const done = !!opts.done;
-  switch (m[1]) {
-    case "list":
-      return done ? "Listed specialists" : "Listing specialists…";
-    case "pull":
-      return done ? `Got guidance from ${who}` : `Getting guidance from ${who}…`;
-    case "check": {
-      const what = input?.stage === "done" ? "the result" : "the plan";
-      return done ? `Asked ${who} to review ${what}` : `Asking ${who} to review ${what}…`;
-    }
-    case "note":
-      if (!raw) return done ? "Sent a note to the general inbox" : "Sending a note to the general inbox…";
-      return done ? `Sent a note to ${who}` : `Sending a note to ${who}…`;
-    case "breakout":
-      return done ? `Offered a breakout to ${who}` : `Offering a breakout to ${who}…`;
-  }
-  return null;
+  const who = `the ${typeof name === "string" ? name : ""} specialist`;
+  if (m[1] === "pull" && !name) return done ? "Looked up the specialists" : "Looking up the specialists";
+  if (m[1] === "pull") return done ? `Used ${who}` : `Using ${who}`;
+  if (m[1] === "note") return done ? `Sent a note to ${who}` : `Sending a note to ${who}`;
+  return `Breakout with ${who}`;
 }

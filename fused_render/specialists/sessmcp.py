@@ -1,18 +1,17 @@
-"""A specialist session's stdio MCP server (docs/specialists.md §7): spawned by `claude` for a main
-chat, a breakout or a nightly run, it forwards every tool call to the fused-render server.
+"""A specialist session's stdio MCP server: spawned by `claude` for a main chat or a breakout, it forwards every
+tool call to the fused-render server.
 
-    argv: <server origin> <specialist id> <kind> <token> <server: specialist|specialist_services>
+    argv: <server origin> <specialist id> <kind> <token> <server: specialist_services|specialist_sends>
 
     initialize   -> capabilities.tools
     tools/list   -> GET  <origin>/api/specialists/<id>/session-tools?kind=&server=   (cached; token in X-Specialist-Token)
     tools/call   -> POST <origin>/api/specialists/<id>/session-tool {kind, server, name, args} + X-Specialist-Token, NO timeout
-                    (a service call can sit behind an approval card); content/isError passed through
+                    (a send sits behind an approval card); content/isError passed through
     ping         -> {}
 
-One script, two servers: `specialist` lists the `note` tool, `specialist_services` the specialist's service
-roster (`services.roster`). The roster, the token check and every rule live in the server; this file is a pipe,
-copied from `bots/botmcp.py`. Stdlib only, no `fused_render` import (the CLI launches it with the app's own python
-from a stable copy that outlives an update).
+One script, two servers: the service reads and the sends (`services.py`). The roster, the token check and every
+rule live in the server; this file is a pipe, copied from `bots/botmcp.py`. Stdlib only, no `fused_render` import
+(the CLI launches it with the app's own python from a stable copy that outlives an update).
 """
 import json
 import os

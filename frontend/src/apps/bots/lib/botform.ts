@@ -1,6 +1,7 @@
 // What the two bot dialogs share (dialogs/CreateBot.tsx, dialogs/BotSettings.tsx): the model and effort menus, the
 // app-folder normalisation the Trusted apps list matches on, and the Logins choice (which browser's sign-ins to share).
 import type { Bot } from "./api";
+import { noBrowser } from "./derive";
 
 export const MODELS: [string, string][] = [
   ["haiku", "Haiku · Fast"], ["sonnet", "Sonnet · Balanced"], ["opus", "Opus · Deep reasoning"], ["fable", "Fable · Autonomous agents"],
@@ -25,7 +26,7 @@ export function loginGroups(bots: Bot[], self?: string): { id: string; name: str
   const out = new Map<string, { id: string; name: string; names: string[] }>();
   for (const b of bots) {
     // An expert has no browser: never a set of logins to share.
-    if (b.id === self || b.kind === "expert") continue;
+    if (b.id === self || noBrowser(b)) continue;
     const k = browserOf(b), g = out.get(k) || { id: k, name: "", names: [] };
     g.names.push(b.name);
     if (!g.name && b.browser_name) g.name = b.browser_name;
