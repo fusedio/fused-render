@@ -1,5 +1,5 @@
 # Finding datasets
-trigger: find data, which dataset, where is, is there data on, s3_search, list, folder, bucket, fused-asset, version, newest, latest, overture release, census, buildings, crops, elevation, land cover, weather, h3, hex
+trigger: find data, which dataset, how big, size, total, bytes, disk usage, largest, file count, where is, is there data on, s3_search, list, folder, bucket, fused-asset, version, newest, latest, overture release, census, buildings, crops, elevation, land cover, weather, h3, hex
 
 ## The tools
 
@@ -8,9 +8,16 @@ Two tools reach the S3 data, the same ones a task session has: `mcp__fused_rende
 `s3_search` takes exactly one of:
 
 - `query`: a substring of object keys and folder names, for example `{"query": "tract"}`. It returns the best-ranked folders and files, at most three hits per file name, and never lists a whole dataset. Folders whose name starts with a dot are hidden from a search. Use it to find where something lives.
-- `path`: one folder, for example `{"path": "s3://fused-asset/census/"}`. It lists ONE level, folders first, then every file with `size` (bytes) and `modified`. `truncated: true` means more: call again with the returned `cursor` and the same `path`. `limit` goes up to 200 per page.
+- `path`: one folder, for example `{"path": "s3://fused-asset/census/"}`. It lists ONE level, folders first, then every file with `size` (bytes) and `modified`. A folder hit's `size`, `files` and `modified` are its whole subtree's: every file below it, at any depth. `truncated: true` means more: call again with the returned `cursor` and the same `path`. `limit` goes up to 200 per page.
+- `path` with `summary: true`, for example `{"path": "s3://fused-asset/misc/", "summary": true}`: that folder's totals instead of a listing. You get `files`, `bytes`, `newest`, its `largest` children (folders and files, with bytes, files and newest), its `extensions` by bytes, and `index_fetched`. `s3://fused-asset/` sums the whole bucket.
+
+A field this page names but the result lacks (a folder hit with `size: null` and no `files`, or `summary` refused) means an older fused-render. Say sizes are unavailable there; never guess them.
 
 Both read fused-render's own index of the bucket, so they are instant and cost nothing. An `index_not_ready` error means the index is still loading: wait a few seconds and call again. The index is refreshed about once a day, so a file written today may not be in it yet.
+
+## How big is it
+
+Answer size questions (how big is the bucket, a dataset, a folder; where the space goes; how many files) with `summary`, never from folder names and never with a UDF. One call per folder is enough: the bucket root's `largest` names the big top-level folders; a second `summary` on one of them breaks it down further. The numbers are measured from the index: quote them with `index_fetched`, because files written since then are not counted. Bytes are bytes: say TB/GB with 1 GB = 10^9 bytes.
 
 ## How to search
 
