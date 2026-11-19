@@ -15,6 +15,27 @@ def expert():
     return registry.create(name="Test Expert", kind="expert", expert={"ask_me_about": "testing things"})
 
 
+@pytest.fixture(autouse=True)
+def kicks(monkeypatch):
+    """The off-thread fetch of the workbench skills, recorded and never started (no thread, no git)."""
+    from fused_render import canvases
+    calls = []
+    monkeypatch.setattr(canvases, "_kick_workbench_skills", lambda: calls.append(1))
+    return calls
+
+
+def _skills(root, names=("json-ui-schemas", "canvas-toml", "fused-udfs", "html-template-nodes")):
+    """A loadable workbench plugin tree at `root` (the manifest and every skill `skill_plugin` requires)."""
+    from fused_render import skill_plugin as sp
+    os.makedirs(os.path.join(root, sp.MANIFEST_DIR), exist_ok=True)
+    open(os.path.join(root, sp.MANIFEST_DIR, sp.MANIFEST_NAME), "w").write("{}")
+    for name in set(sp.WORKBENCH_SKILLS) | set(names):
+        os.makedirs(os.path.join(root, "skills", name), exist_ok=True)
+        open(os.path.join(root, "skills", name, "SKILL.md"), "w").write(f"# {name}\n")
+    open(os.path.join(root, "skills", "json-ui-schemas", "reference.md"), "w").write("## text\n")
+    return str(root)
+
+
 @pytest.fixture
 def base(expert, tmp_path, monkeypatch):
     """A canvases base granted to the expert, the `fused` wrapper and the Canvases feature on."""
@@ -210,3 +231,119 @@ def test_the_showing_skill_is_one_text_in_every_shipped_expert():
     for k in keys:
         text = open(os.path.join(seed.SHIPPED_DIR, k, "instructions.md"), encoding="utf-8").read()
         assert "## Showing your work" in text and f"skills/{show.SKILL}" in text
+
+
+# ------------------------------------------------------------- the workbench skills (format references) ---
+def _published(monkeypatch):
+    """A staged generation of the skills, published the way `skill_plugin.export_workbench_plugin_env` does."""
+    from fused_render import skill_plugin as sp
+    gen = _skills(os.path.join(sp.workbench_staged_dir(), "g-abc"))
+    monkeypatch.setenv(sp.WORKBENCH_PLUGIN_DIR_ENV, gen)
+    return gen
+
+
+def test_skills_root_is_the_spliced_generation_sessions_get(monkeypatch, tmp_path):
+    from fused_render import skill_plugin as sp
+    monkeypatch.delenv(sp.WORKBENCH_PLUGIN_DIR_ENV, raising=False)
+    monkeypatch.setattr(sp, "workbench_plugin_root", lambda: None)
+    assert show.skills_root() == ""  # nothing fetched yet
+    gen = _published(monkeypatch)
+    assert show.skills_root() == gen  # the staged copy, never the raw clone beside it
+    # A clone fetched (by another process) but nothing published in this one: staged and published now.
+    monkeypatch.delenv(sp.WORKBENCH_PLUGIN_DIR_ENV)
+    monkeypatch.setattr(sp, "workbench_plugin_root", lambda: str(tmp_path / "clone"))
+    monkeypatch.setattr(sp, "export_workbench_plugin_env", lambda: gen)
+    assert show.skills_root() == gen
+    # A published path that is no longer a complete tree is not handed out.
+    monkeypatch.setattr(sp, "workbench_plugin_root", lambda: None)
+    monkeypatch.setenv(sp.WORKBENCH_PLUGIN_DIR_ENV, str(tmp_path / "gone"))
+    assert show.skills_root() == ""
+
+
+def test_the_fence_reads_every_generation_and_kicks_the_fetch(expert, base, monkeypatch, kicks, tmp_path):
+    from fused_render import skill_plugin as sp
+    monkeypatch.delenv(sp.WORKBENCH_PLUGIN_DIR_ENV, raising=False)
+    monkeypatch.setattr(sp, "workbench_plugin_root", lambda: None)
+    parent = f"Read(//{sp.workbench_staged_dir().lstrip('/')}/**)"
+    # Nothing fetched yet: the rule is there anyway (the skills arrive after the spawn), and the fetch is kicked.
+    flags = sessions.fence(expert, write=True, run=True, auto=True, show=True)
+    assert parent in flags and kicks == [1]
+    assert not any("workbench-plugin/g-" in f for f in flags)  # never one generation: a refresh replaces it
+    for cmd in ("canvas validate", "json-ui validate", "json-ui schemas"):
+        assert f"Bash(fused workbench --env prod {cmd}:*)" in flags
+    assert not kicks[1:] and sessions.fence(expert, write=True, run=True, auto=True)  # no kick without the tools
+    assert kicks == [1]
+    _published(monkeypatch)
+    flags = sessions.fence(expert, write=True, run=True, auto=True, show=True)
+    assert [f for f in flags if f.startswith("Read(") and "workbench" in f] == [parent]
+    # A root outside the staged folder (the raw clone, when staging failed) gets its own rule; a glob in it, none.
+    other = _skills(tmp_path / "clone" / "workbench")
+    monkeypatch.setenv(sp.WORKBENCH_PLUGIN_DIR_ENV, other)
+    assert f"Read(//{other.lstrip('/')}/**)" in sessions.fence(expert, write=True, run=True, auto=True, show=True)
+    odd = _skills(tmp_path / "cl[o]ne" / "workbench")
+    monkeypatch.setenv(sp.WORKBENCH_PLUGIN_DIR_ENV, odd)
+    flags = sessions.fence(expert, write=True, run=True, auto=True, show=True)
+    assert parent in flags and not any("cl[o]ne" in f for f in flags)
+
+
+def test_the_expert_is_told_which_reference_to_read_for_each_file(expert, base, monkeypatch):
+    from fused_render import skill_plugin as sp
+    monkeypatch.delenv(sp.WORKBENCH_PLUGIN_DIR_ENV, raising=False)
+    monkeypatch.setattr(sp, "workbench_plugin_root", lambda: None)
+    line = show.note(expert)
+    assert "not on this machine yet" in line and "canvas_create" in line and "workbench-plugin" not in line
+    gen = _published(monkeypatch)
+    line = show.note(expert)
+    for rel in ("json-ui-schemas/SKILL.md", "json-ui-schemas/reference.md", "canvas-toml/SKILL.md",
+                "fused-udfs/SKILL.md", "html-template-nodes/SKILL.md"):
+        assert os.path.join(gen, "skills", rel) in line, rel
+    assert "not on this machine yet" not in line and sp.workbench_staged_dir() in line  # where a newer one would be
+    assert line in store.where(expert, run=True, show=True)
+    # Only what is there is named.
+    os.remove(os.path.join(gen, "skills", "json-ui-schemas", "reference.md"))
+    assert "reference.md" not in show.note(expert) and "json-ui-schemas/SKILL.md" in show.note(expert)
+
+
+class _Lock:
+    """`canvases._SKILLS_FETCH_LOCK` as a spy: the timeout it is waited on with (rule 4 of the flake skill)."""
+    def __init__(self, held=True, then=None):
+        self.held, self.waits, self.then = held, [], then
+
+    def locked(self):
+        return self.held
+
+    def acquire(self, timeout=-1):
+        self.waits.append(timeout)
+        if self.then:
+            self.then()
+        self.held = False
+        return True
+
+    def release(self):
+        pass
+
+
+def test_canvas_create_waits_for_the_references_and_names_them(expert, base, monkeypatch, kicks):
+    from fused_render import canvases, skill_plugin as sp
+    _fused(monkeypatch, base)
+    monkeypatch.delenv(sp.WORKBENCH_PLUGIN_DIR_ENV, raising=False)
+    monkeypatch.setattr(sp, "workbench_plugin_root", lambda: None)
+    # None on this machine: the fetch in flight is waited for, bounded, and its result is named.
+    lock = _Lock(then=lambda: _published(monkeypatch))
+    monkeypatch.setattr(canvases, "_SKILLS_FETCH_LOCK", lock)
+    label, text, ok = show.canvas_create(expert, {"name": "A"})
+    assert ok and kicks and lock.waits == [show.SKILLS_WAIT_S]
+    gen = sp.workbench_staged_dir() + os.sep + "g-abc"
+    assert os.path.join(gen, "skills", "json-ui-schemas", "reference.md") in text
+    assert os.path.join(gen, "skills", "canvas-toml", "SKILL.md") in text
+    # Already there: no wait at all.
+    lock.waits.clear()
+    assert show.canvas_create(expert, {"name": "B"})[2] and lock.waits == []
+    # The fetch failed: the tool still succeeds and says so.
+    monkeypatch.delenv(sp.WORKBENCH_PLUGIN_DIR_ENV)
+    monkeypatch.setattr(canvases, "_SKILLS_FETCH_LOCK", _Lock())
+    label, text, ok = show.canvas_create(expert, {"name": "C"})
+    assert ok and "could not be fetched" in text and "Do not guess" in text
+    # A kick that raises fails nothing either.
+    monkeypatch.setattr(canvases, "_kick_workbench_skills", lambda: 1 / 0)
+    assert show.canvas_create(expert, {"name": "D"})[2]

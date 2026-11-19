@@ -33,9 +33,11 @@ TOOLS = {
     CREATE: {
         "description": (
             "Make a new, empty Fused canvas of the user's and its editable folder on this machine, for work you want "
-            "to show them (UDFs, widgets). Returns the folder. You then write the node files into that folder "
-            "yourself with Write / Edit, and their rows in its canvas.toml. Only when the user asked you to build "
-            "or show something; never for a throwaway run (use your scratch folder for those)."),
+            "to show them (UDFs, widgets). The user is asked to approve it first (call it without asking them in "
+            "words; if they deny it, do not retry). Returns the folder and the format references to read. You then "
+            "write the node files into that folder yourself with Write / Edit, and their rows in its canvas.toml. "
+            "Only when the user asked you to build or show something; never for a throwaway run (use your scratch "
+            "folder for those)."),
         "inputSchema": {"type": "object", "required": ["name"], "properties": {
             "name": {"type": "string", "description": "The canvas name: letters, digits and underscores only."},
             "env": {"type": "string", "description": "The Fused environment (`prod` or `unstable`). Leave it out "
@@ -77,43 +79,126 @@ def specs() -> list:
 
 
 def rules(bot) -> list:
-    """The fence's allow rules for a chat that has the tools (`sessions.fence(show=True)`): the two tools, the
-    read-only `canvas validate` per environment, and a Read rule for the workbench skills (the canvas.toml, UDF
-    and widget format references), when this machine has them."""
+    """The fence's allow rules for a chat that has the tools (`sessions.fence(show=True)`, once per spawn): the two
+    tools, the read-only `canvas validate` and `json-ui validate` / `json-ui schemas` per environment, and a Read
+    rule for the folder of staged `workbench` skills (the canvas.toml, UDF and widget format references). The rule
+    names the stable parent (`skill_plugin.workbench_staged_dir`), not one generation: the skills may arrive after
+    the spawn (`ensure_skills` starts the fetch here, off-thread) and a refresh stages a new `g-<stamp>` beside the
+    old one. Also kicks that fetch: this is evaluated exactly when such a chat is spawned."""
     from fused_render.experts import sessions
+    ensure_skills()
     out = [f"mcp__{SERVER}__{name}" for name in TOOLS]
-    out += [f"Bash(fused workbench --env {env} canvas validate:*)" for env, _ in store.run_envs(bot)]
-    refs = skills_root()
-    if refs and not (sessions._GLOB_CHARS & set(refs + os.path.realpath(refs))):
+    for env, _ in store.run_envs(bot):
+        out += [f"Bash(fused workbench --env {env} canvas validate:*)",
+                f"Bash(fused workbench --env {env} json-ui validate:*)",
+                f"Bash(fused workbench --env {env} json-ui schemas:*)"]
+    folders = []
+    try:
+        from fused_render import skill_plugin
+        folders.append(skill_plugin.workbench_staged_dir())
+    except Exception:  # noqa: BLE001
+        pass
+    root = skills_root()
+    if root and not any(_inside(root, f) for f in folders):
+        folders.append(root)  # a raw clone published because staging failed, or a developer's override
+    for refs in folders:
+        if sessions._GLOB_CHARS & set(refs + os.path.realpath(refs)):
+            continue  # the rule is a glob with no escape: no rule rather than a wider one
         out += [f"Read({sessions._rule_path(p)}/**)" for p in sessions._spellings(refs)]
     return out
 
 
-def skills_root() -> str:
-    """The folder of `workbench` skills fused-render fetched for canvas sessions ("" when there is none yet):
-    the authoritative canvas.toml, UDF and JSON-UI widget references, which the expert may read."""
+def _inside(path: str, folder: str) -> bool:
+    return os.path.realpath(path).startswith(os.path.realpath(folder) + os.sep)
+
+
+#: Seconds `canvas_create` waits for a fetch of the workbench skills when none are on this machine yet (a first
+#: shallow clone of a small public repo; `skill_plugin` bounds the git calls themselves at 60 s).
+SKILLS_WAIT_S = 30.0
+#: The format reference for each kind of file the expert writes, under the skills root (`skills_root`).
+REFERENCES = (("widget (.json)", ("json-ui-schemas/SKILL.md", "json-ui-schemas/reference.md")),
+              ("canvas.toml", ("canvas-toml/SKILL.md",)),
+              ("UDF (.py)", ("fused-udfs/SKILL.md",)),
+              ("HTML node (.html)", ("html-template-nodes/SKILL.md",)))
+
+
+def ensure_skills(wait: float = 0.0) -> str:
+    """Start the fetch of the `workbench` skills (`canvases._kick_workbench_skills`: off-thread, rate-limited in
+    `skill_plugin`, a no-op while one runs) and return `skills_root()`. `wait` > 0 and nothing on this machine yet:
+    wait up to that many seconds for the fetch in flight to finish. Never raises, never fails a caller."""
     try:
-        from fused_render import skill_plugin
-        root = skill_plugin.workbench_plugin_root()
-        return root if isinstance(root, str) and os.path.isdir(root) else ""
+        from fused_render import canvases
+        canvases._kick_workbench_skills()
+        if wait > 0 and not skills_root():
+            lock = canvases._SKILLS_FETCH_LOCK  # held by the fetch thread until it has synced and exported
+            if lock.acquire(timeout=wait):
+                lock.release()
     except Exception:  # noqa: BLE001
+        pass
+    return skills_root()
+
+
+def skills_root() -> str:
+    """The `workbench` skills as fused-render's canvas sessions get them ("" when this machine has none yet): the
+    SPLICED generation `skill_plugin` staged and published (`export_workbench_plugin_env`, run by every sync), with
+    the standalone-only pull / push guidance taken out. It is read from what that export published in this process
+    rather than by calling the export, which copies and hashes the whole tree: this runs on every chat message
+    (`store.where`). When nothing is published but a fetched clone is there (fetched by another process), it is
+    staged and published now. The raw clone comes back only when `skill_plugin` itself fell back to it."""
+    try:
+        from fused_render import canvases, skill_plugin as sp
+        live = os.environ.get(sp.WORKBENCH_PLUGIN_DIR_ENV) or ""
+        if live and sp._is_loadable(live, sp.WORKBENCH_SKILLS):
+            return live
+        if sp.workbench_plugin_root() and not canvases._SKILLS_FETCH_LOCK.locked():  # a fetch in flight exports
+            root = sp.export_workbench_plugin_env()
+            return root if root and sp._is_loadable(root, sp.WORKBENCH_SKILLS) else ""
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def references(root: str) -> list:
+    """`[(kind, [absolute paths])]`: the format references under `root` that are there, in `REFERENCES` order."""
+    out = []
+    for kind, rels in REFERENCES if root else ():
+        paths = [os.path.join(root, "skills", *rel.split("/")) for rel in rels]
+        if paths := [p for p in paths if os.path.isfile(p)]:
+            out.append((kind, paths))
+    return out
+
+
+def _refs_text(root: str) -> str:
+    """The references as one sentence for the expert (with `root` known), "" when none is there."""
+    refs = references(root)
+    if not refs:
         return ""
+    parent = os.path.dirname(root)
+    return ("Read the format reference for each kind of file before you write it, never guess a format: "
+            + "; ".join(f"{kind}: {' and '.join(paths)}" for kind, paths in refs)
+            + (f" (if one of these is gone, a newer copy is in the newest `g-*` folder of {parent})."
+               if os.path.basename(root).startswith("g-") else "."))
 
 
 def note(bot) -> str:
-    """The one line a chat that has the tools is told (`store.where(show=True)`; "" without them)."""
+    """The one line a chat that has the tools is told (`store.where(show=True)`; "" without them). The references
+    are named by their current, concrete paths: `store.where` is hashed per message and a resumed session is told
+    again when it changes (`agent_engine._expert_message`), so a new generation of the skills is re-told."""
     if not on(bot):
         return ""
     skill = os.path.join(store.expert_dir(bot), "skills", SKILL)
-    refs = skills_root()
+    root = skills_root()
+    refs = _refs_text(root)
     return ("You can show the user your work"
             + (f" (read {skill} first)" if os.path.isfile(skill) else "")
-            + f": `mcp__{SERVER}__{CREATE}` makes a new canvas of theirs and returns its folder, you write its node "
-              "files (`<name>.py` UDFs, `<name>.json` widgets) and their canvas.toml rows there without asking, and "
-              f"`mcp__{SERVER}__{SHOW}` puts a card in the chat that opens a node or the canvas live. Do this when "
-              "the user asks to see, build or change something; they keep improving it by telling you, and you edit "
-              "the same files."
-            + (f" The canvas.toml, UDF and widget format references are under {refs}." if refs else ""))
+            + f": `mcp__{SERVER}__{CREATE}` asks the user, then makes a new canvas of theirs and returns its folder, "
+              "you write its node files (`<name>.py` UDFs, `<name>.json` widgets) and their canvas.toml rows there "
+              f"without asking, and `mcp__{SERVER}__{SHOW}` puts a card in the chat that opens a node or the canvas "
+              "live. Do this when the user asks to see, build or change something; they keep improving it by telling "
+              "you, and you edit the same files. "
+            + (refs or "The format references for canvas.toml, UDFs and widgets are not on this machine yet (they "
+                       f"are being fetched); `{CREATE}`'s result names them once they are. Until you have read them, "
+                       "never guess a format."))
 
 
 # ------------------------------------------------------------- made canvases ---
@@ -212,6 +297,9 @@ def canvas_create(bot, args: dict) -> tuple:
     _note_made(bot, env, name, folder)
     # Best effort: another fused-render may own the clone's sync, and the card's view starts it again anyway.
     started = _refusal(canvases._sync_start_response(env, name)) is None
+    # The format references the expert writes from: fetched now if this machine has none yet (bounded; a failed
+    # fetch does not fail the tool, the text says so).
+    refs = _refs_text(ensure_skills(wait=SKILLS_WAIT_S))
     return label, (
         f"The canvas {name} ({env}) is ready. Its folder: {folder}\n"
         "It may hold one starter node, `udf.py`: keep, change or remove it (file and canvas.toml row together).\n"
@@ -219,7 +307,10 @@ def canvas_create(bot, args: dict) -> tuple:
         "canvas.toml with a targeted edit (re-read canvas.toml first). These writes need no approval.\n"
         f"Then check it with `fused workbench --env {env} canvas validate {folder}` and call `{SHOW}` with the "
         "node file's path."
-        + ("" if started else "\nIts sync has not started yet; it starts when the user opens the card.")), True
+        + ("" if started else "\nIts sync has not started yet; it starts when the user opens the card.")
+        + "\n" + (refs or "The format references (canvas.toml, UDFs, widgets) could not be fetched to this machine. "
+                           "Do not guess a format: copy the shape of a working node from the canvas copies you may "
+                           "read, and if there is no widget to copy, show a UDF only.")), True
 
 
 def show(bot, args: dict) -> tuple:

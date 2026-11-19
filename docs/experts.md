@@ -304,7 +304,9 @@ What happens to a call, in the CLI's order (documented at code.claude.com/docs "
 - **What raises one**: every Edit or Write of a file other than `memory.md` and the scratch files
   (`instructions.md` and `skills/` included, and any file outside the folder); what the classifier would block
   once it has blocked twice in a row; and, where the CLI has no auto mode, everything it would prompt for.
-  The only calls answered without a card are those two write targets, by path.
+  The only calls answered without a card are those two write targets, by path (and, where showing work is on,
+  the files of a canvas the expert made, §17). The expert's own `canvas_create` tool raises the same card before
+  it makes a canvas on Fused (§17); that card is a tool result, not a permission answer.
 - **No "approve forever"**: the card has no third button and writes no rule (`rule=None`). A rule would live in
   `bot.json` `allow_rules`, which no Settings page shows for an expert. Every approval is for that one call.
 - **No risk score**: Super Bot's card asks a small model how risky the call is; fused makes no model call for an
@@ -779,6 +781,16 @@ not told about them, and get no rule.
   that canvas, in which case its folder comes back and nothing is created. What Fused refuses (not signed in, a
   taken name) goes back to the expert as the tool's error. The canvas is recorded in
   `.fused/expert/canvases.json` (`show.made`, the newest 200). The chat shows one `action` row.
+  **It asks first** (owner, 2026-11-19: "Create canvas should be inside approval card"): before any of those
+  calls, `agent_engine._expert_show` raises the approval card of §6 (`_gate`, no "approve forever", no risk
+  score): "About to create the canvas `<name>` on Fused (`<env>`). It makes a new canvas on your Fused account.
+  Approve?". Approve runs the tool as above; Deny creates nothing and returns an error, "DENIED by the user: … Do
+  not retry it", and the same call is not asked again until the user speaks (`sess.denied`); Stop returns the
+  stopped result. Messages typed before or while the card is up ride on the tool's result as instructions, never
+  as the card's answer. No card for a call that would create nothing on Fused
+  (`agent_engine._canvas_create_preview`, which mirrors `show.canvas_create`'s early refusals: a bad name, no
+  such environment, a folder of the user's under that name, and the expert's own canvas whose folder holds a
+  `canvas.toml`): it runs at once and returns what it returns. `show` never asks.
 - `show` (`show.show`) says what the path is and nothing else: a canvas folder (or its `canvas.toml`) directly
   under an environment's `user/`, or a node file by the node view's own rule (`canvases.canvas_node_file`: at the
   root of a `user/<canvas>` folder, with a row in its `canvas.toml`). Any canvas under `user/` can be shown, not
@@ -796,21 +808,48 @@ publishes itself (the canvas sync), so what the expert writes there reaches the 
 card: that is the feature, and it is limited to canvases the expert created.
 
 **The fence** (`sessions.fence(show=True)`, `show.rules`): allow rules for the two tools by name (never
-`mcp__bot__*`: the prompt is not the model's to call), `Bash(fused workbench --env <env> canvas validate:*)` per
-environment, and a Read rule for the `workbench` skills folder when this machine has it
-(`skill_plugin.workbench_plugin_root`: the canvas.toml, UDF and JSON-UI widget references; the shipped skills do
-not hold the widget schema). The classifier's guidance (`_auto_settings`) gains one `allow` sentence naming the
-folders of the canvases the expert made (the newest 20), so deleting a node file there with a shell command is
-routine. The bot server's entry in `mcp.json` carries `alwaysLoad` for such a chat
+`mcp__bot__*`: the prompt is not the model's to call), `Bash(fused workbench --env <env> canvas validate:*)`,
+`json-ui validate:*` and `json-ui schemas:*` per environment (all read-only), and a Read rule for the folder of
+staged `workbench` skills, `skill_plugin.workbench_staged_dir()` (`<home>/workbench-plugin/**`, both spellings,
+none when the path has glob characters): the parent of every generation, not one `g-<stamp>`, so the rule holds
+when the skills arrive after the spawn or a refresh stages a new generation. A root outside it (the raw clone,
+published only when staging failed) gets its own rule. The classifier's guidance (`_auto_settings`) gains one
+`allow` sentence naming the folders of the canvases the expert made (the newest 20), so deleting a node file
+there with a shell command is routine. The bot server's entry in `mcp.json` carries `alwaysLoad` for such a chat
 (`write_mcp_config(always_load=)`), as the S3 server's does: `--tools` has no ToolSearch.
 
+**The format references** are the `workbench` skills (`json-ui-schemas` with its `reference.md`, `canvas-toml`,
+`fused-udfs`, `html-template-nodes`, ...). fused-render does not ship them: `skill_plugin` shallow-clones
+`fusedio/skills` into `<home>/workbench-skills` on canvas paths only (rate-limited: a retry a minute while there
+is none, a refresh every 6 h) and stages a spliced copy (standalone-only pull / push guidance taken out) as
+`<home>/workbench-plugin/g-<stamp>`, published in `FUSED_RENDER_WORKBENCH_PLUGIN_DIR`. `show.skills_root` is that
+published generation (read from the variable this process's export set, not by calling the export, which copies
+the tree and would run on every message; a clone that is there with nothing published is staged and published
+then), "" when there is none. Two triggers here: `show.rules`, i.e. every spawn of a chat that has the tools,
+kicks the fetch (`show.ensure_skills` -> `canvases._kick_workbench_skills`: off-thread and never waited on, so a
+spawn never waits on the network); and `canvas_create`, after its three calls, kicks it again and, when nothing
+is on this machine yet, waits for the fetch in flight up to `show.SKILLS_WAIT_S` (30 s). Its result then names
+the references by path, or says they could not be fetched (the tool still succeeds). So the expert lacks them
+only when the fetch failed (no network, no `git`, GitHub unreachable) or, in a chat that has made no canvas yet,
+until the first fetch lands. The kick also retires the legacy `fused` plugin, as every canvas path's kick does.
+
 **What the expert is told**: one line in the chat's `store.where(bot, run=True, show=True)` (`show.note`): the two
-tools, that it writes the node files itself without asking, and where the format references are. The rest is the
-shipped skill `showing-your-work.md` (one text in both shipped experts, a test keeps them equal; offered to
-installed experts by `seed._new_skills`): the steps, never guessing the widget format, editing the same files
-when the user asks for a change, what asks first. Both shipped `instructions.md` have a "Showing your work"
-section, and `MEMORY_RULES` names the second exception to "never create other files". An expert whose
-instructions predate this learns of it from the prompt line and the tool descriptions.
+tools, that creating a canvas asks the user, that it writes the node files itself without asking, and the
+concrete path of the reference for each kind of file that is there (widget: `json-ui-schemas/SKILL.md` and its
+`reference.md`; canvas.toml: `canvas-toml/SKILL.md`; UDF: `fused-udfs/SKILL.md`; HTML node:
+`html-template-nodes/SKILL.md`; each under `<generation>/skills/`), plus "if one of these is gone, a newer copy is
+in the newest `g-*` folder of <parent>". Concrete paths rather than only "the newest folder": `where` is hashed
+per message and a resumed session is told again when it changes (`agent_engine._expert_message`), so a new
+generation is re-told, and the generation sessions were handed last is kept until the next switch. With none on
+the machine the line says so, and that `canvas_create`'s result names them. The rest is the shipped skill
+`showing-your-work.md` (one text in both shipped experts, a test keeps them equal; offered to installed experts by
+`seed._new_skills`): the steps; creating a canvas asks the user (call it, do not ask in words, do not retry a
+denial); which reference to read before each kind of file (Grep the long `reference.md` for the widget's
+`## <type>` section); that those texts are written for a live clone, so "the folder publishes itself, never push
+or pull" applies and their `canvas_screenshot` is `show` here; editing the same files when the user asks for a
+change; what asks first. Both shipped `instructions.md` have a "Showing your work" section, and `MEMORY_RULES`
+names the second exception to "never create other files". An expert whose instructions predate this learns of it
+from the prompt line and the tool descriptions.
 
 **The UI** (`ViewCard.tsx`): a row with a `view` gets a card under its bubble: an icon, the title, "Widget · in
 <canvas> · <env>", and one Open button. Collapsed it mounts nothing of the work. Open raises one overlay (the
