@@ -118,6 +118,8 @@ async def api_remote_index_rank(request: Request, q: str = Query(default=""),
 #: Hits per call when `limit` is absent, and the most one call returns.
 SEARCH_LIMIT = 20
 SEARCH_LIMIT_MAX = 200
+# How many largest children and extensions a summary lists.
+SUMMARY_TOP = 15
 
 
 def _not_ready() -> JSONResponse:
@@ -133,9 +135,34 @@ def _not_ready() -> JSONResponse:
     return _error(message, "index_not_ready", 503)
 
 
-def _hit(url: str, is_dir: bool, size, mtime) -> dict:
-    return {"url": url, "is_dir": is_dir, "size": None if is_dir else size,
-            "modified": None if is_dir else remote_access.iso_utc(mtime)}
+def _hit(url: str, is_dir: bool, size, mtime, n_files=None) -> dict:
+    """One hit. A search's folder hit has no size or time (null); a listing's
+    folder hit has its whole subtree's: `size` in bytes, `files` and the
+    newest file's `modified` (remote_index.list_dir)."""
+    hit = {"url": url, "is_dir": is_dir, "size": size,
+           "modified": None if mtime is None else remote_access.iso_utc(mtime)}
+    if is_dir:
+        hit["files"] = n_files
+    return hit
+
+
+def _summary(bucket: str, prefix: str) -> dict | JSONResponse:
+    remote_index.retry_if_needed()
+    out = remote_index.summary(prefix, SUMMARY_TOP)
+    if out is None:
+        return _not_ready()
+    if prefix and not out["files"] and remote_index.has_dir(prefix) is False:
+        return _error(f"{canonical_url(bucket, prefix)} does not exist", "not_found", 404)
+    iso = remote_access.iso_utc
+    return {"bucket": bucket, "mode": "summary", "url": canonical_url(bucket, prefix),
+            "files": out["files"], "bytes": out["bytes"],
+            "newest": None if out["newest"] is None else iso(out["newest"]),
+            "largest": [{"url": canonical_url(bucket, c["key"]), "is_dir": c["is_dir"],
+                         "bytes": c["bytes"], "files": c["files"],
+                         "newest": None if c["newest"] is None else iso(c["newest"])}
+                        for c in out["children"]],
+            "extensions": out["extensions"],
+            "index_fetched": None if not out["index_fetched_at"] else iso(out["index_fetched_at"])}
 
 
 def _search_list(bucket: str, prefix: str, cursor: str | None, limit: int,
@@ -156,7 +183,7 @@ def _search_list(bucket: str, prefix: str, cursor: str | None, limit: int,
         return _error(f"{canonical_url(bucket, prefix)} does not exist", "not_found", 404)
     return {"bucket": bucket, "mode": "list",
             "hits": [_hit(canonical_url(bucket, e["key"]), bool(e["is_dir"]),
-                          e.get("size"), e.get("mtime")) for e in entries],
+                          e.get("size"), e.get("mtime"), e.get("n_files")) for e in entries],
             "truncated": nxt is not None, "cursor": nxt}
 
 
@@ -165,6 +192,7 @@ async def api_remote_index_search(request: Request, q: str = Query(default=""),
                                   path: str = Query(default=""),
                                   limit: str = Query(default=""),
                                   cursor: str = Query(default=""),
+                                  summary: str = Query(default=""),
                                   x_fused: str | None = Header(default=None)):
     # Only fused-render's own tool server calls this (it sends X-Fused).
     if _require_fused(x_fused) is not None:
@@ -178,6 +206,10 @@ async def api_remote_index_search(request: Request, q: str = Query(default=""),
                       "bad_url", 400)
     if cursor and not has_path:
         return _error("'cursor' continues a folder listing; it needs 'path'", "bad_url", 400)
+    want_summary = summary.strip().lower() in ("1", "true", "yes")
+    if want_summary and (not has_path or cursor):
+        return _error("'summary' sums one folder: give it with 'path' and no 'cursor'",
+                      "bad_url", 400)
     try:
         limit_n = int(limit) if limit.strip() else SEARCH_LIMIT
     except ValueError:
@@ -195,6 +227,12 @@ async def api_remote_index_search(request: Request, q: str = Query(default=""),
         if len(cursor) > 4096:
             return _error("the listing cursor is not valid", "bad_url", 400)
         prefix = key if (not key or key.endswith("/")) else key + "/"
+        if want_summary:
+            try:
+                return await asyncio.to_thread(_summary, bucket, prefix)
+            except Exception:  # noqa: BLE001 - details (local paths) stay in the log
+                logger.exception("remote index summary failed for %r", prefix)
+                return _error("summing the S3 folder failed", "internal", 500)
         try:
             return await asyncio.to_thread(_search_list, bucket, prefix, cursor or None,
                                            limit_n, prefix[:-1] if prefix != key else None)

@@ -472,7 +472,9 @@ def list_dir(prefix: str, cursor: str | None = None,
     `{entries: [{key, name, is_dir, size, mtime}], cursor}`, child folders
     first then files, each by name (byte order), `limit` (at most
     `PAGE_SIZE`) per page. None when the store is not ready. A folder's key
-    ends in "/" and carries no size or mtime. `cursor` is opaque (an
+    ends in "/"; its `size`, `n_files` and `mtime` are its whole subtree's
+    (bytes, file count, newest file), summed from the files table at query
+    time (`_subtree_totals`); a file's `n_files` is None. `cursor` is opaque (an
     offset, advanced by the entries returned, so pages of different sizes
     chain without gaps); a malformed one raises ValueError. A missing
     folder lists as empty — ask `has_dir` first.
@@ -508,18 +510,98 @@ def list_dir(prefix: str, cursor: str | None = None,
         rows = con.execute(
             "SELECT grp, name, size, mtime FROM (" + " UNION ALL ".join(branches)
             + f") ORDER BY grp, name LIMIT {page + 1} OFFSET {offset}").fetchall()
+        totals = (_subtree_totals(con, cfg, parts, d)
+                  if any(r[0] == 0 for r in rows[:page]) else {})
     finally:
         con.close()
     key_base = d[len(root) + 1:] + "/" if d != root else ""
     entries = []
     for grp, name, size, mtime in rows[:page]:
         is_dir = grp == 0
+        if is_dir:
+            # A folder with no file anywhere below it (only empty subfolders) has no row: zero.
+            size, n_files, mtime = totals.get(name, (0, 0, None))
+        else:
+            n_files = None
         entries.append({"key": key_base + name + ("/" if is_dir else ""),
                         "name": name, "is_dir": is_dir,
-                        "size": None if is_dir else int(size or 0),
-                        "mtime": None if is_dir else float(mtime or 0.0)})
+                        "size": int(size or 0), "n_files": n_files,
+                        "mtime": (None if mtime is None else float(mtime)) if is_dir
+                        else float(mtime or 0.0)})
     nxt = f"o{offset + page}" if len(rows) > page else None
     return {"entries": entries, "cursor": nxt}
+
+
+def _subtree_totals(con, cfg, parts, d: str) -> dict:
+    """`{child folder name: (bytes, files, newest mtime)}` for every folder
+    directly under `d`, each over its WHOLE subtree. dirs.parquet's own
+    `total_size`/`n_files` count only a folder's direct files, so these are
+    summed from the files table: one range scan over `d`'s partitions,
+    grouped by the first path segment below `d`. The bucket root scans every
+    row (~260k in 2026-11): well under a second in DuckDB."""
+    if not parts:
+        return {}
+    from fused_render.index.query import files_src
+
+    lo, hi = d + "/", d + "0"
+    cut = len(lo) + 1  # SQL substr is 1-based
+    rows = con.execute(
+        f"SELECT split_part(substr(path, {cut}), '/', 1) AS child, sum(size), count(*), max(mtime) "
+        f"FROM {files_src(cfg, parts)} "
+        f"WHERE path >= '{_sq(lo)}' AND path < '{_sq(hi)}' AND dir <> '{_sq(d)}' "
+        "GROUP BY child").fetchall()
+    return {r[0]: (int(r[1] or 0), int(r[2] or 0), r[3]) for r in rows}
+
+
+def summary(prefix: str, top: int = 10) -> dict | None:
+    """How big folder `prefix` ("" = bucket root, else ending in "/") is, from
+    the index alone: `{files, bytes, newest, children, extensions,
+    index_fetched_at}`. `children` is the `top` largest entries directly
+    under it (folders by subtree, files by size: `{key, is_dir, bytes,
+    files, newest}`); `extensions` the `top` extensions by bytes (`{ext,
+    files, bytes}`, "" for none). `newest` is an epoch time or None. None
+    when the store is not ready; a missing folder sums to zero files — ask
+    `has_dir` first."""
+    opened = _open_store()
+    if opened is None:
+        return None
+    cfg, root, m = opened
+    from fused_render.index.query import files_src, prune
+
+    top = max(1, min(int(top), 100))
+    d = _dir_path(root, prefix)
+    lo, hi = d + "/", d + "0"
+    key_base = d[len(root) + 1:] + "/" if d != root else ""
+    parts = prune(m.get("partitions") or [], lo)
+    out = {"files": 0, "bytes": 0, "newest": None, "children": [], "extensions": [],
+           "index_fetched_at": _read_state().get("fetched_at")}
+    if not parts:
+        return out
+    src = files_src(cfg, parts)
+    where = f"path >= '{_sq(lo)}' AND path < '{_sq(hi)}'"
+    cut = len(lo) + 1
+    con = _connect()
+    try:
+        files, total, newest = con.execute(
+            f"SELECT count(*), sum(size), max(mtime) FROM {src} WHERE {where}").fetchone()
+        children = con.execute(
+            f"SELECT split_part(substr(path, {cut}), '/', 1) AS child, dir <> '{_sq(d)}' AS is_dir, "
+            f"sum(size) AS b, count(*), max(mtime) FROM {src} WHERE {where} "
+            f"GROUP BY child, is_dir ORDER BY b DESC, child LIMIT {top}").fetchall()
+        exts = con.execute(
+            f"SELECT coalesce(ext, '') AS e, count(*), sum(size) AS b FROM {src} WHERE {where} "
+            f"GROUP BY e ORDER BY b DESC, e LIMIT {top}").fetchall()
+    finally:
+        con.close()
+    out.update(
+        files=int(files or 0), bytes=int(total or 0),
+        newest=None if newest is None else float(newest),
+        children=[{"key": key_base + c + ("/" if is_dir else ""), "is_dir": bool(is_dir),
+                   "bytes": int(b or 0), "files": int(n or 0),
+                   "newest": None if t is None else float(t)}
+                  for c, is_dir, b, n, t in children],
+        extensions=[{"ext": e, "files": int(n or 0), "bytes": int(b or 0)} for e, n, b in exts])
+    return out
 
 
 # --- ingest -------------------------------------------------------------------
