@@ -29,6 +29,7 @@ import { TaskPeekWho } from "./TaskPeekWho";
 // THE SHARED TASK HEAD on the open chat (design.md, "One task head,
 // everywhere"), behind its flag; off, the chat's head below is unchanged.
 import { TaskHead } from "./TaskHead";
+import { TaskPrChip } from "./TaskPrChip";
 import { useTaskHeadUnified } from "./task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
@@ -159,6 +160,8 @@ import { cardTitleLine, projectMatches, taskChatTarget, taskColumn, taskHref, ti
 // `title` (held back a second, drawn by the OS, unstylable) could do it.
 import { FitPath, usePathTip } from "./PathTip";
 import { onDraftChange } from "./tasksPulse";
+import { ForceStartButton, queuedLine } from "./ForceStartButton";
+import type { QueueFacts } from "@platform/lib/queue";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -5201,6 +5204,8 @@ export default function NewJobModal({
   const [pendingSession, setPendingSession] = useState("");
   const [pendingDue, setPendingDue] = useState("");
   const [pendingError, setPendingError] = useState("");
+  // Bumped by a Force start press: the poll below starts over at its quick pace.
+  const [pendingKick, setPendingKick] = useState(0);
   useEffect(() => {
     if (!pendingEntry || pendingSession) return;
     let alive = true;
@@ -5238,7 +5243,7 @@ export default function NewJobModal({
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, [pendingEntry, pendingSession]);
+  }, [pendingEntry, pendingSession, pendingKick]);
   const chatOpen = !!landingChat || !!pendingEntry;
   const leaveChat = () => {
     setLandingChat(null);
@@ -5271,6 +5276,14 @@ export default function NewJobModal({
   // MARKED READ LIKE THE TASKS CARD DOES (TasksPeek, task-open-read): the open
   // chat, while the card shows it and the window is in view.
   const chatPulse = useTasksPulseRows(landing);
+  // WHERE THE WAITING TASK STANDS, for the placeholder below. Its row when the
+  // Recent list has it — and the pulse's copy of it when it does not: that
+  // list is the LANDING folder's, and a task created here for another folder
+  // (the Folder pill; the home page, which has no folder) never appears in it.
+  // The pulse is every task's, and carries the same three queue fields
+  // (routers/tasks.py `_PULSE_FIELDS`).
+  const waitFacts: QueueFacts | null = liveChat
+    ?? (pendingEntry ? chatPulse.find((t) => t.key === `pending:${pendingEntry}`) ?? null : null);
   const docVisible = useDocumentVisible();
   // …and only while the card is SHOWN: not while a page hop has it hidden
   // (plus-card-store), when a reply would be marked read unseen.
@@ -6145,6 +6158,8 @@ export default function NewJobModal({
             title={liveChat ? undefined : (name || fields.title || "New task")}
             titleId={titleId}
             open={chatHref ? { href: chatHref, label: "Open this chat", onOpen: (h) => openFromLanding(h) } : null}
+            // The task's pull request, after the chat's branch tag.
+            chips={liveChat ? <TaskPrChip task={liveChat} /> : null}
             chipsRef={setChipsHost}
             statusRef={setStatusHost}
             kebab={chatKebab}
@@ -6163,8 +6178,20 @@ export default function NewJobModal({
               ? pendingError
               : pendingDue && new Date(pendingDue).getTime() > Date.now() + 60_000
                 ? `Scheduled — it runs ${new Date(pendingDue).toLocaleString()}.`
-                : "Starting the task…"}
+                // A TASK WAITING FOR ITS FOLDER IS NOT STARTING (Akshil,
+                // 2026-11-18): it says where it stands, and the button under
+                // it is the way to stop waiting.
+                : queuedLine(waitFacts) || "Starting the task…"}
           </p>
+          {!pendingError && waitFacts && (pendingEntry || liveChat) ? (
+            <ForceStartButton
+              facts={waitFacts}
+              target={pendingEntry ? { entry_id: pendingEntry } : { key: liveChat!.key }}
+              // The entry's poll may be on its slow cadence by now (a task
+              // queued for minutes): the press starts it over.
+              onDone={() => setPendingKick((n) => n + 1)}
+            />
+          ) : null}
         </div>
       )}
       {chatOpen && chatSession && (

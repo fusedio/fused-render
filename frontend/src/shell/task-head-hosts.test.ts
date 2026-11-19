@@ -157,6 +157,34 @@ test("the panel's ⋮ filing moves the panel only while it still shows that task
   expect(src).not.toContain("            advancePast(t.key, lastOrderWithKey.current);\n          }}");
 });
 
+test("every rail window names the task's pull request, after the chat's branch tag (2026-11-19)", () => {
+  // The Tasks card's chat and the New task card's chat had the branch tag and
+  // no PR tag; a task's own card (hover, pinned, favourite) had neither.
+  const tasks = read("claude-rail/TasksPeek.tsx");
+  expect(between(tasks, "{unified ? (", ") : chat ? (")).toContain("chips={task ? <TaskPrChip task={task} /> : null}");
+  const form = read("NewJobModal.tsx");
+  expect(between(form, "{...(chatOpen && unified ? {", "} : {})}")).toContain(
+    "chips={liveChat ? <TaskPrChip task={liveChat} /> : null}",
+  );
+  const card = read("claude-rail/RailPeek.tsx");
+  expect(card).toContain(
+    "? { chips: <TaskPrChip task={head.merged as Task} />, chipsRef: setChipsHost, statusRef: setStatusHost }",
+  );
+  // Only the chat the head names fills the head's seats — the card keeps
+  // several chats mounted — and only while the card is up; each seat
+  // remembers the chat whose head it was made in, so a swap never hands the
+  // new chat the old head's seats.
+  expect(card).toContain(
+    "{...(unified && shownKey && t.key === viewKey && chipsSeat.key === t.key && statusSeat.key === t.key",
+  );
+  expect(card).toContain("? { headChipsHost: chipsSeat.el, headStatusHost: statusSeat.el }");
+  expect(card).toContain("(el: HTMLElement | null) => setChipsSeat(el ? { key: headKeyRef.current, el } : NO_SEAT),");
+  // A pane's PR tag is never folded behind "+N" for the branch tag's sake.
+  const chat = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
+  expect(chat).toContain("<TaskPrChip task={head.task} />");
+  expect(chat).not.toContain("collapsed=");
+});
+
 test("every chat host hands the chat both seats: the chips and the pause word's own", () => {
   for (const f of ["TaskPeek.tsx", "claude-rail/TasksPeek.tsx", "NewJobModal.tsx", "TaskCards.tsx"]) {
     const src = read(f);

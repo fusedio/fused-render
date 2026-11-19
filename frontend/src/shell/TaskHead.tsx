@@ -83,7 +83,7 @@
 // what it does on Archive and Delete (advance to the next task, go back to the
 // list, close the dialog) is the host's business; the head only seats it. The
 // same for `chips` and `seats`.
-import { useCallback, useEffect, useState, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, ChevronUp, MessageSquare, X } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 import { queueCaption, type QueueFacts } from "@platform/lib/queue";
@@ -368,7 +368,7 @@ export function TaskHead({
   // words, then the tags, then the time, then the tools.
   const panelLadder = twoLine && !isWindow;
   // Measured on the whole head — both rows — so a rung can answer either.
-  const [level, headRef] = useStripFit(
+  const [measured, headRef] = useStripFit(
     panelLadder ? DROPS_PANEL : stacked === false ? DROPS_NO_STACK : DROPS_ALL,
     fitEnabled,
     taskHeadNeed,
@@ -376,6 +376,13 @@ export function TaskHead({
     // so is the other ladder.
     `${task?.key ?? ""}\n${queue?.title ?? task?.title ?? ""}\n${panelLadder ? "panel" : ""}`,
   );
+  // A LADDER SWITCHED OFF KEEPS ITS LAST RUNG (a rail card measures only
+  // while it is up, RailPeek `fitEnabled`): the card is still on screen while
+  // it fades, and dropping to rung 0 there brought the branch tag back into a
+  // row with no room for it. A head that was never measured stays at 0.
+  const lastLevel = useRef(0);
+  if (fitEnabled) lastLevel.current = measured;
+  const level = fitEnabled ? measured : lastLevel.current;
   // The one-row rung whose folds the stylesheet draws (`data-fit`).
   const fit = panelLadder ? (TASK_HEAD_PANEL_FIT[level] ?? 7) : level;
   const seatsTight = panelLadder && level >= 1;

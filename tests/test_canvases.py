@@ -195,8 +195,10 @@ def main():
         # (another run holds the root), mirror_lock (hold ROOT/.mirror.lock
         # like the real one: left behind if killed), mirror_started_file
         # (touched once running), mirror_delay, mirror_progress (stderr
-        # lines), mirror_swap (folders rewritten AFTER the delay, each only
-        # if its marker still says mirror: the real command's re-check),
+        # lines), mirror_gate_file (after the delay, wait until the test
+        # creates this file: a handshake instead of racing a fixed sleep),
+        # mirror_swap (folders rewritten AFTER the delay and the gate, each
+        # only if its marker still says mirror: the real command's re-check),
         # mirror_stdout (raw text instead of the document), mirror_result,
         # mirror_exit.
         import time as _t
@@ -242,6 +244,17 @@ def main():
             sys.stderr.flush()
         if scenario.get("mirror_delay"):
             _t.sleep(scenario["mirror_delay"])
+        if scenario.get("mirror_gate_file"):
+            # Bounded so a test that never opens the gate fails instead of
+            # hanging the worker — and on expiry the run EXITS without
+            # swapping: going ahead would throw away the very ordering the
+            # gate exists to enforce.
+            _gate_by = _t.time() + 60
+            while not os.path.exists(scenario["mirror_gate_file"]):
+                if _t.time() >= _gate_by:
+                    sys.stderr.write("mirror gate never opened\n")
+                    sys.exit(3)
+                _t.sleep(0.02)
         for swap in scenario.get("mirror_swap", []):
             folder = os.path.join(root, swap["path"])
             marker = os.path.join(folder, ".fused-canvas.json")
@@ -1227,6 +1240,32 @@ def test_sync_pulls_remote_changes_when_clean(harness, monkeypatch):
     assert (harness.clones / "alpha" / "remote_udf.py").exists()
     time.sleep(0.4)
     assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    _stop_sync("alpha")
+
+
+def test_sync_poll_ignores_a_cache_only_dry_run_diff(harness, monkeypatch):
+    """External CLI (no shims): a clean clone holding only a local
+    `__pycache__` — invisible to the fingerprint that gates the poll — is
+    listed by the real CLI's dry-run as files to remove. That is not a remote
+    move: the canvas must not go server-stale and hold its pushes."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.set_scenario({"pull_dry": "would prompt: remove __pycache__/a.cpython-312.pyc\n"
+                                      "would prompt: remove sub/__pycache__/b.pyc\n"})
+
+    def dry_runs():
+        return [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]
+                and "--dry-run" in c]
+
+    seen = len(dry_runs())
+    deadline = time.time() + 10
+    while time.time() < deadline and len(dry_runs()) < seen + 3:
+        time.sleep(0.05)
+    assert len(dry_runs()) >= seen + 3
+    assert _sync_view("alpha")["server_stale"] is None
     _stop_sync("alpha")
 
 

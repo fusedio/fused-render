@@ -2,6 +2,7 @@
   ".parquet": [
     "duckdb",
     "structure",
+    "vector",
     "h3",
     "claude",
     "geometry_editor"

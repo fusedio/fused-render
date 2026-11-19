@@ -227,10 +227,12 @@ _READ_ROUTES = frozenset({"/api/fs/raw", "/api/fs/stat", "/api/fs/list", "/api/f
 def _resolve(value, anchor) -> str | None:
     """A path argument as the inner route will see it: absolute as-is, relative
     against the directory of ``anchor`` (the page's own path). None = cannot
-    resolve (relative with no anchor) — treated as out of scope."""
+    resolve (a URL, or relative with no anchor) — treated as out of scope."""
     if not isinstance(value, str) or not value.strip():
         return None
     value = os.path.expanduser(value.strip())
+    if "://" in value:
+        return None
     if os.path.isabs(value):
         return value
     if not isinstance(anchor, str) or not os.path.isabs(anchor):
@@ -377,6 +379,13 @@ _DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | Non
     (re.compile(rf"^/api/bots/{_BOT}/steps/[A-Za-z0-9_.-]+$"), frozenset({"GET"}), None),
     (re.compile(rf"^/api/bots/{_BOT}/send$"), frozenset({"POST"}), None),
     (re.compile(rf"^/api/bots/{_BOT}/({'|'.join(_DOOR_BOT_OPS)})$"), frozenset({"POST"}), None),
+    # Experts (docs/experts.md): the Bots app's Expert pane, reads only, and
+    # the expert's instructions; never `context` / `ask` (a task session's doors: `ask` runs the expert).
+    (re.compile(r"^/api/experts$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/experts/[A-Za-z0-9_-]+/(memory|sessions)$"), frozenset({"GET"}), None),
+    # Settings > Instructions, read and save: a settings write, like `settings` and `skills` above.
+    (re.compile(r"^/api/experts/[A-Za-z0-9_-]+/instructions$"), frozenset({"GET", "POST"}), None),
+    (re.compile(r"^/api/experts/[A-Za-z0-9_-]+/sessions/[A-Za-z0-9_-]+$"), frozenset({"GET"}), None),
     (re.compile(r"^/api/claude/agent$"), frozenset({"POST"}), ("action", _DOOR_AGENT_ACTIONS)),
     (re.compile(r"^/api/claude/artifacts$"), frozenset({"POST"}), ("action", frozenset({"list", "live"}))),
     (re.compile(r"^/api/claude/worktrees$"), frozenset({"POST"}), ("action", frozenset({"list"}))),

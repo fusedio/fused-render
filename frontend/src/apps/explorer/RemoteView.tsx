@@ -18,7 +18,8 @@
 //     on the `s3://` address, with its mode switcher: a mode whose template
 //     streams the object (its pyproject.toml `[tool.fused-render.template]
 //     stream`) frames the address and reads only what it shows, under a
-//     "Streaming from S3" bar with Download; every other mode shows the
+//     "Streaming from S3" bar with Download (and keeps streaming while a
+//     download another mode started runs); every other mode shows the
 //     download card in its pane, and opens on the cached copy once it lands;
 //   - an uncached file with no modes → the download card: at once up to
 //     `warn_bytes`, behind a notice above it (shown every time), with
@@ -490,11 +491,13 @@ function RemoteCachedFile({
  *
  *  Once a download is asked for — a pane's Download or automatic start, or
  *  the bar's Download (the duckdb grid points at it on a sort that would
- *  scan most of the file) — the whole file is downloading: every mode,
- *  streaming ones included, shows the card, and a card mounted by a mode
- *  switch joins the running download instead of asking again. So the shown
- *  pane is always the one watching when the copy lands. A cancelled
- *  download puts the modes back. */
+ *  scan most of the file) — the whole file is downloading: a card mounted by
+ *  a mode switch joins the running download instead of asking again, and
+ *  re-stats onto the copy when it lands. A streaming mode keeps streaming
+ *  through it: a download started in another mode's pane (often on its own,
+ *  for a file under `warn_bytes`) is no reason to take the stream away. Only
+ *  the mode whose bar's Download was pressed gives its pane to the card. A
+ *  cancelled download puts the modes back. */
 function RemoteUncachedFile({
   stat,
   onRenderedTitle,
@@ -505,8 +508,14 @@ function RemoteUncachedFile({
   onDone: () => void;
 }) {
   const [downloading, setDownloading] = useState(false);
+  // Streaming modes whose own bar's Download was pressed: they show the card.
+  const [downloadIn, setDownloadIn] = useState<ReadonlySet<string>>(() => new Set());
   const templates = stat.templates ?? [];
-  const streams = (mode: string) => !downloading && templates.some((t) => t.mode === mode && t.stream);
+  const streams = (mode: string) => !downloadIn.has(mode) && templates.some((t) => t.mode === mode && t.stream);
+  const cancelled = () => {
+    setDownloading(false);
+    setDownloadIn(new Set());
+  };
   const remoteContent: RemoteContent = {
     pane: (mode) =>
       streams(mode) ? null : (
@@ -515,7 +524,7 @@ function RemoteUncachedFile({
           onDone={onDone}
           autoStart={downloading}
           onStarted={() => setDownloading(true)}
-          onCancelled={() => setDownloading(false)}
+          onCancelled={cancelled}
         />
       ),
     banner: (mode) =>
@@ -523,7 +532,14 @@ function RemoteUncachedFile({
         <div className="listing-snapshot-banner">
           Streaming from S3: only the parts you view are read
           {stat.size !== null ? ` (${formatSize(stat.size)} in the bucket)` : ""}.
-          <button type="button" className="listing-snapshot-back" onClick={() => setDownloading(true)}>
+          <button
+            type="button"
+            className="listing-snapshot-back"
+            onClick={() => {
+              setDownloading(true);
+              setDownloadIn((s) => new Set(s).add(mode));
+            }}
+          >
             Download
           </button>
         </div>

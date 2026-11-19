@@ -153,18 +153,10 @@
   --c-annlbl: none;
 }
 
-/* A HEAD PINNED STACKED (`stacked: true`) keeps its chips on row 1 until rung
-   1 folds them; at the card's floor that row can still be tight, so the chip
-   seat may shrink there and the pill ellipsise inside it. */
-.task-head.is-stacked .task-head-chips {
-  flex: 0 1 auto;
-  min-width: 0;
-}
-.task-head.is-stacked .task-head-chips > *,
-.task-head.is-stacked .task-head-chips .chat-worktree-btn {
-  max-width: 100%;
-  min-width: 0;
-}
+/* (A stacked head's chips used to shrink on row 1 and the pill ellipsised
+   inside them. A branch name is whole or the tag is not shown now — "THE
+   BRANCH TAG", below — so the seat holds its width in every head and the
+   ladder does the folding.) */
 
 /* THE TITLE IS AS WIDE AS ITS WORDS, never stretched (2026-11-16): its seat
    (`.task-side-peek-who`) takes the row's slack, not the title. A title that
@@ -232,7 +224,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  /* Same rule as `.task-head-place`: held at its width (capped below) so the
+  /* Same rule as `.task-head-place`: held at its width so the
      ladder sees the overflow and folds chips → seats → chevrons → stacks the
      identity → the number, rather than the count/when chips being clipped
      out of the seat. */
@@ -246,20 +238,24 @@
 .task-head-chips-host {
   display: contents;
 }
+/* THE BRANCH TAG (the chat's worktree pill, and the worktree hint that stands
+   in for it): WHOLE OR NOT AT ALL, never a cut name and never an icon alone
+   (Akshil, 2026-11-19: "let's show it full only, if width is there"). So it
+   holds its width — the row overflows honestly and the ladder takes the tag
+   away (rung 1, below) — where it used to shrink and ellipsise
+   ("docs/h3-ag…") while the PR chip beside it had no room at all. No cap: a
+   name too long for the row is a tag that is not shown. */
 .task-head-chips .chat-worktree-menu {
   display: flex;
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
   margin-left: 0;
 }
 .task-head-chips .chat-worktree-btn {
+  flex: 0 0 auto;
   min-width: 0;
-  max-width: 100%;
+  max-width: none;
 }
 .task-head-chips .chat-worktree-hint {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
   margin-left: 0;
   overflow: hidden;
 }
@@ -273,10 +269,21 @@
   align-items: center;
   gap: 4px;
 }
+/* THE PR TAG IS ITS GLYPH AND THE NUMBER here (Akshil, 2026-11-19: "PR icon
+   + #1373"): the pull-request glyph says "PR", so the word goes
+   (platform/ui/TaskPrChip draws both; the old slim line keeps the word). */
+.task-head-chips .task-pr-chip .task-pr-glyph {
+  display: block;
+  flex: 0 0 auto;
+}
+.task-head-chips .task-pr-chip .task-pr-word {
+  display: none;
+}
 .task-head-chips .task-pr-chip,
 .task-head-chips .task-pr-more {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   margin: 0;
   padding: 2px 8px;
   font: inherit;
@@ -456,11 +463,20 @@
   background: rgba(var(--tint), 0.16);
   border-color: var(--border);
 }
-/* 1, 2. THE CHIPS, ONE AT A TIME (Akshil, 2026-11-16: "worktree and pr show
-   when there is width available, incrementally"): the first things to give,
-   before the title is cut by a letter — the worktree pill (the chat's
-   portaled seat), then the PR chip. */
-.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-chips-host {
+/* 1, 2. THE TAGS, ONE AT A TIME (Akshil, 2026-11-16: "worktree and pr show
+   when there is width available, incrementally"; 2026-11-19: "let's not show
+   the worktree icon, let's show it full only, if width is there — but
+   priority PR first, then worktree if there is space as width opens"): the
+   first things to give, before the title is cut by a letter — the branch
+   tag, whole (the chat's portaled seat in a host's head, the pill and the
+   hint themselves in a pane's), and only then the PR chip. */
+.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-chips-host,
+.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-chips :is(.chat-worktree-menu, .chat-worktree-hint) {
+  display: none;
+}
+/* …and a seat that held nothing but the branch tag goes with it, so a task
+   with no pull request leaves no gap where its tag was. */
+.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-chips:not(:has(> :not(.task-head-chips-host, .chat-worktree-menu, .chat-worktree-hint))) {
   display: none;
 }
 .task-head:is([data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-chips {
@@ -568,23 +584,17 @@
    charges a shrinking text seat `min(width, 72)`, so a title that siblings had
    already crushed to 0 counted as 0 and the row "fit" with no title in it
    (QA, 2026-11-10: a worktree pill and a PR chip ate the whole line). With the
-   floor stated in CSS the row overflows instead, the ladder sees it and folds;
-   the chips cap below so a long branch name shares the line rather than
-   taking it. */
+   floor stated in CSS the row overflows instead, the ladder sees it and
+   folds. */
 .task-head .task-side-peek-who .task-side-peek-title {
   /* …but never wider than the title itself: a two-letter title held 72px of
      blank that the ladder then paid for with the time and a pane's seats.
      `--title-ch` is the title's length in characters, capped (TaskPeekWho). */
   min-width: min(72px, calc(var(--title-ch, 12) * 1ch));
 }
-.task-head-chips {
-  max-width: 220px;
-}
-/* …and the pill keeps a readable stub ("wor…") rather than collapsing to its
-   outline; the PR chips are short and never shrink. */
-.task-head-chips .chat-worktree-btn {
-  min-width: 56px;
-}
+/* (The chips were capped at 220px and the pill kept a stub, "wor…"; the
+   branch tag is whole or gone instead now — "THE BRANCH TAG", above.) The
+   PR chips are short and never shrink. */
 .task-head-chips .task-pr-chips {
   flex: 0 0 auto;
 }
@@ -662,6 +672,9 @@
 .nt-form-head .task-head-chips {
   flex: 0 1 auto;
   overflow: visible;
+  /* The cap every head's chips had until 2026-11-19 (the branch tag is whole
+     or not shown now); the form's Folder and When pills keep it. */
+  max-width: 220px;
 }
 
 /* THE ARMED ✕ (a dirty form's first close): `.deploy-close.is-armed`'s warm
@@ -1156,6 +1169,18 @@
 .task-head.is-two-line:not(.is-window)[data-fit="7"] .task-head-crumb > :is(.task-head-place, .task-head-where) {
   flex: 0 1 auto;
   max-width: 96px;
+}
+
+/* A RAIL WINDOW'S CRUMB HOLDS ITS WIDTH WHILE THE BRANCH TAG STANDS (Akshil,
+   2026-11-19). A window's crumb gives width and ellipsises (above), and the
+   ladder charges a seat that gives only a floor — so a whole branch name
+   stood beside a folder cut to "fus…". Held, the row overflows honestly and
+   the branch tag gives first. From there (rung 1 on) the crumb gives as it
+   always did, and the PR chip stands beside a shortened folder: the last tag
+   to leave. */
+.task-head.is-two-line.is-window[data-fit="0"] .task-head-crumb,
+.task-head.is-two-line.is-window[data-fit="0"] .task-head-crumb > :is(.task-head-place, .task-head-where) {
+  flex: 0 0 auto;
 }
 
 /* ROW 1'S FOLD ORDER IN A PANEL (row-fit `TASK_HEAD_PANEL_DROPS`; Akshil,

@@ -91,6 +91,16 @@ def _rows(path):
     return out
 
 
+def _json_file(path):
+    """The JSON object at `path` once it is all there; None while it is
+    missing or still being written (empty, or cut short)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
 class Session:
     """One host subprocess against the fake, with the files it writes."""
 
@@ -339,6 +349,10 @@ def test_a_spawn_without_a_model_adopts_the_sessions_current_one(start, agent):
     assert s.sid
     assert s.out()[0]["model"] == "auto"
     assert agent._session_settings(s.sid) == ("auto", "")
+    # `s.sid` waited for the init row in out.jsonl; the host writes the D18
+    # notice into the transcript just AFTER it (`write_init`, then
+    # `write_first_turn_notice`), so the transcript may still be empty here.
+    assert _wait_for(lambda: s.tx())
     assert s.tx()[0]["summary"] == "Handled by Google Gemini · model auto"
 
 
@@ -860,8 +874,15 @@ def test_an_interrupt_cancels_the_turn_and_answers_once(start, agent):
     assert any(e.get("msg", {}).get("method") == "session/cancel" for e in s.fake())
     answers = _perm_answers(s, _perm_rpc_id(s))
     assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-no"]
-    res = json.load(open(os.path.join(s.run_dir, "perm", card["id"] + ".res.json")))
-    assert res == {"decision": "deny", "reason": "cancelled"}
+    # `reject_pending` answers the RPC FIRST (that is what sets `done` and
+    # makes the card's id final) and only then writes the deny on disk, from
+    # the reader thread that handled the interrupt — so the fake can log the
+    # `o-no` answer, and the cancelled reply's `result` land, before the
+    # `.res.json` exists. Wait for the file itself (whole: it is written in
+    # place, O_EXCL as the first-writer-wins latch, so it can be read empty).
+    res_path = os.path.join(s.run_dir, "perm", card["id"] + ".res.json")
+    assert _wait_for(lambda: _json_file(res_path) is not None)
+    assert _json_file(res_path) == {"decision": "deny", "reason": "cancelled"}
     assert agent._permissions(s.run_dir)[0]["decision"] == "deny"
     p = agent._poll(os.path.basename(s.run_dir))
     assert p["done"] and p["error"]

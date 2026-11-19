@@ -187,7 +187,7 @@ export interface RemoteStat {
   path: string | null;
   warn_bytes: number;
   /** The modes the object opens in before it is downloaded (D1492): the
-   *  registry's list for its name, without gated or native modes. `stream`
+   *  registry's list for its name, without native or non-streaming gated modes. `stream`
    *  marks a template that reads the `s3://` address itself (its
    *  pyproject.toml `[tool.fused-render.template] stream`); the others open
    *  on a downloaded copy. Absent from an older server; empty for a folder. */
@@ -198,6 +198,8 @@ export interface RemoteTemplateEntry extends TemplateEntry {
   stream: boolean;
 }
 
+/** One row of a folder listing. A folder's `size` and `mtime` are its whole
+ *  subtree's (bytes, newest file); null from a server older than that. */
 export interface RemoteEntry {
   url: string;
   name: string;

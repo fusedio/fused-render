@@ -554,6 +554,17 @@ const ENTRIES = [
     keywords: "pin pinned window rail float overlap move resize four windows push task favourite bot",
     child: true,
   },
+  // EXPERTS (docs/experts.md §17; owner, 2026-11-19): off by default. Off
+  // hides every expert bot and stops what runs for them; their memory stays
+  // on disk and is there again when this is turned back on.
+  {
+    id: "experts",
+    group: "features",
+    section: "Bots",
+    label: "Expert bots",
+    description: "Bots that keep one memory file about one subject — Canvas Reference and Data Expert ship with the app — and that your Claude, Codex and Copilot tasks can consult. Turning this off hides them and stops their learning; their memory is kept for when you turn it back on.",
+    keywords: "expert experts memory canvas reference data expert bot learn ask",
+  },
   {
     id: "monitor",
     group: "general",

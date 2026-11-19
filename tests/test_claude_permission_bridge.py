@@ -2547,6 +2547,25 @@ def test_strict_mcp_flag_follows_the_mcp_config_pair(agent, tmp_path, monkeypatc
     assert "--strict-mcp-config" not in _argv_for(agent, tmp_path)
 
 
+def test_claude_run_marks_our_server_always_load(agent, tmp_path, monkeypatch):
+    """The Claude CLI gets our server with `alwaysLoad: true`, so its tools
+    sit in the model's list from turn one rather than behind ToolSearch.
+    Plugin servers copied in for a lean run are left as the CLI would load
+    them, and no other harness's key rides along."""
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_plugin_mcp_servers",
+                        lambda h: {"plugin_srv": {"command": "x"}})
+    argv = _argv_for(agent, tmp_path, strict_mcp=True)
+    with open(argv[argv.index("--mcp-config") + 1]) as fh:
+        servers = json.load(fh)["mcpServers"]
+    assert servers[agent.PERMISSION_SERVER]["alwaysLoad"] is True
+    assert "deferTools" not in servers[agent.PERMISSION_SERVER]
+    assert "alwaysLoad" not in servers["plugin_srv"]
+    with open(agent._write_mcp_config(str(tmp_path / "run"), False, approve=False)) as fh:
+        bare = json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]
+    assert "alwaysLoad" not in bare and "deferTools" not in bare
+
+
 def _start_req(agent, tmp_path, monkeypatch, *, pref, isolate):
     target = tmp_path / "sample.html"
     target.write_text("<html></html>")

@@ -95,6 +95,15 @@ export function parseMdStage(text: string): string {
   return wrapWide(stage!.lexer(text));
 }
 
+/** The same Marked instance's tokens, for a renderer that builds React elements from them (components/MdDoc.tsx: the
+ *  expert pane's memory.md and its diffs) instead of an HTML string. Inline `text`, `codespan` and `escape` tokens
+ *  carry their text HTML-escaped (marked's lexer does that), so such a renderer unescapes them before React escapes
+ *  them again. */
+export function mdTokens(src: unknown): Token[] {
+  setup();
+  return stage!.lexer(String(src ?? "").replace(/\r/g, ""));
+}
+
 export function md(src: unknown): string {
   // `•` bullets (OpenBot-era bot output) read as lists; an unclosed fence mid-stream closes at EOF.
   let text = String(src ?? "").replace(/\r/g, "").replace(/^(\s*)•\s+/gm, "$1- ");

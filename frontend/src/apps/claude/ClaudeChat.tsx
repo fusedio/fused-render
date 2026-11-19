@@ -3177,7 +3177,21 @@ function ChatBody(props: ChatBodyProps) {
       // bubble is the markers `stripBlocks` builds out of the composed wire,
       // and only the controller can write those. A PARKED line's bubble is
       // already up: adopt it rather than post a second.
-      const optimisticKey = parked ? parked.bubble : text ? controller.postOptimisticUser(text) : "";
+      //
+      // A FOLLOW-UP INTO A LIVE RUN IS IN THE QUEUE FROM THE KEYPRESS ("sending").
+      // Its row used to be a plain transcript bubble until the controller had
+      // it — after the queue's admission, the pane's photograph and the
+      // app-state read, which is seconds on a busy page — and only THEN moved
+      // into the strip above the box. A reader who pressed Enter looked at the
+      // queue, saw nothing, and could not tell the message had been taken
+      // ("my msg took like 10 sec to show up in the queue"). The tag comes off
+      // when the send's own bubble adopts the row (`addUser`), by which time the
+      // controller names it as queued (`queuedKeys`): one row, never moved.
+      const optimisticKey = parked
+        ? parked.bubble
+        : text
+          ? controller.postOptimisticUser(text, followUp ? "sending" : undefined)
+          : "";
       void (async () => {
         let taken = false;
         let counted = false;
@@ -3575,6 +3589,18 @@ function ChatBody(props: ChatBodyProps) {
             await sent;
           } catch {
             ok = false;
+          }
+          // THE "sending" TAG NEVER OUTLIVES ITS SEND. Every road through the
+          // controller either adopts the row (the tag comes off with it) or
+          // drops it; this is for the one that does neither — a throw before
+          // the controller's own bubble went up. Left tagged, the row would sit
+          // in the queue for ever, hidden from the transcript. Untagged it is
+          // what it was before this tag existed: a plain bubble.
+          if (
+            optimisticKey
+            && controller.getState().turns.some((t) => t.key === optimisticKey && t.role === "user" && t.pending === "sending")
+          ) {
+            controller.setOptimisticPending(optimisticKey, undefined);
           }
           // MY send, asked of my own id — and spent, whichever way it went.
           done(ok && !returnedSends.current.delete(sendId));
@@ -4307,13 +4333,8 @@ function ChatBody(props: ChatBodyProps) {
   /** A worktree menu is MOUNTED and has said this folder is in a repo
    *  (`WorktreeMenu.onReady`). Compact mounts none, and a peek only with `headerInPeek`; a non-repo says false. */
   const worktreeReady = useRef(false);
-  // The same answer as state, for what is DRAWN off it: the menu's element
-  // exists before (and whether or not) its pill does — it renders nothing for
-  // a folder outside any repo.
-  const [worktreePill, setWorktreePill] = useState(false);
   const onWorktreeReady = useCallback((isRepo: boolean) => {
     worktreeReady.current = isRepo;
-    setWorktreePill(isRepo);
   }, []);
   // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
   // own head and by `/tasks`, and remembered globally (`useTasksOpen`). An empty
@@ -4837,7 +4858,9 @@ function ChatBody(props: ChatBodyProps) {
     () => queuedLines({ turns: state.turns, queuedKeys: state.queuedKeys, inbox: state.inbox }),
     [state.turns, state.queuedKeys, state.inbox],
   );
-  const hasQueued = queuedView.lines.some((l) => l.pending !== "held");
+  // A line still on its way to the run ("sending") is not yet something to send
+  // now or pull back: the composer's queue verbs wait until it has landed.
+  const hasQueued = queuedView.lines.some((l) => l.pending !== "held" && l.pending !== "sending");
   const transcriptState = useMemo(
     () =>
       queuedView.hiddenKeys.size
@@ -5989,27 +6012,12 @@ function ChatBody(props: ChatBodyProps) {
         ) : null}
       </span>
     ) : null;
-  // ONE TAG, THEN "+x", BESIDE A PANE'S TOOLS (Akshil, 2026-11-17: "in this
-  // view where we have buttons we directly do 1 +x — we don't show PR and WT
-  // tags more than one because we also have buttons"): where the head seats
-  // tools and already shows the worktree tag, every pull request goes behind
-  // one "+N". With no worktree tag the first PR is the tag ("PR #12 +2") —
-  // so the tag has to be on screen, not merely mounted: the menu draws no
-  // pill outside a repo (`worktreePill`; CodeRabbit on #2313).
-  // Tools that are DRAWN: the strip's own gate (`stripSeatsShown` — a target
-  // that cannot be annotated seats none; CodeRabbit on #2313), or the canvas
-  // camera that stands in for it.
-  const headHasTools = stripSeatsShown || !!canvasShotSeat;
-  const headWorktreeTag = !!shownHint || (!!worktreeMenu && worktreePill);
-  const headChipsExtra =
-    props.prChip && head.task ? (
-      <>
-        <TaskPrChip task={head.task} collapsed={headHasTools && headWorktreeTag} />
-        {props.headerExtra}
-      </>
-    ) : (
-      props.headerExtra
-    );
+  // THE PR TAG STANDS WHOLE BESIDE A PANE'S TOOLS TOO (Akshil, 2026-11-19:
+  // "PR should have higher priority on visibility in all these views") —
+  // `headerExtra`, the same chip the slim line draws. It was folded behind
+  // one "+N" wherever a worktree tag was up (2026-11-17, "one tag then +x");
+  // the branch tag gives instead now — it is shown whole or not at all, and
+  // leaves before the PR tag does (TaskHead, row-fit `TASK_HEAD_PANEL_DROPS`).
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
@@ -6050,7 +6058,7 @@ function ChatBody(props: ChatBodyProps) {
           <>
             {shownHint ? null : worktreeMenu}
             <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
-            {headChipsExtra}
+            {headerExtra}
           </>
         ) : null
       }
@@ -6560,6 +6568,7 @@ function ChatBody(props: ChatBodyProps) {
               onSendNow={onSendQueuedNow}
               onPull={onPullPending}
               compact={compact}
+              ready={!state.historyLoading && !state.adopting}
             />
             {!compact ? (
               <ComposerGate
