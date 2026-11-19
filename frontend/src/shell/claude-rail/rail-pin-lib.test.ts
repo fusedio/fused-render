@@ -93,7 +93,7 @@ describe("the transition table (design.md), row by row", () => {
   });
 });
 
-describe("ringClick: a ring opens, it never closes, and no double-click pins (owner, 2026-11-17)", () => {
+describe("ringClick: every rail icon toggles its temp card closed; a pinned card ignores its own icon; no double-click pins", () => {
   test("a click on a closed card's ring, or another ring, opens temp (rows 1–3)", () => {
     expect(ringClick({ mode: "closed", own: false })).toBe("open");
     expect(ringClick({ mode: "temp", own: false })).toBe("open");
@@ -105,20 +105,21 @@ describe("ringClick: a ring opens, it never closes, and no double-click pins (ow
   test("the hover card's own ring: the click makes it temp", () => {
     expect(ringClick({ mode: "hover", own: true })).toBe("open");
   });
-  test("the ring of an OPEN card does nothing: temp stays temp, pinned stays pinned", () => {
-    expect(ringClick({ mode: "temp", own: true })).toBe("keep");
-    expect(ringClick({ mode: "temp", own: true, windowPinned: true })).toBe("keep");
+  test("the icon of a TEMP card closes it (owner, 2026-11-19); a pinned card's icon does nothing", () => {
+    expect(ringClick({ mode: "temp", own: true })).toBe("close");
+    expect(ringClick({ mode: "temp", own: true, windowPinned: true })).toBe("close");
     expect(ringClick({ mode: "pinned", own: true })).toBe("keep");
     expect(ringClick({ mode: "pinned", own: true, windowPinned: true })).toBe("keep");
   });
-  test("it never closes and never unpins, whatever the state", () => {
+  test("it never unpins: only a temp card's own icon closes, whatever the window", () => {
     const acts = new Set<string>();
     for (const mode of MODES) for (const own of [true, false]) for (const windowPinned of [true, false]) acts.add(ringClick({ mode, own, windowPinned }));
-    expect([...acts].sort()).toEqual(["keep", "open", "pin"]);
+    expect([...acts].sort()).toEqual(["close", "keep", "open", "pin"]);
+    expect(ringClick({ mode: "pinned", own: true })).not.toBe("close");
   });
-  test("a double-click walked: the first click opens temp, the second lands on the open card and keeps it temp", () => {
+  test("a double-click walked: the first click opens temp, the second lands on the open card and closes it", () => {
     expect(ringClick({ mode: "closed", own: false })).toBe("open");
-    expect(ringClick({ mode: "temp", own: true })).toBe("keep");
+    expect(ringClick({ mode: "temp", own: true })).toBe("close");
   });
 });
 

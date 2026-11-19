@@ -53,6 +53,10 @@
    * not because it varies. */
   --qr-paper: #fff;
   --tile-fg: #fff; /* letter on a solid fallback app tile, same in both themes */
+  /* A microphone that is recording (the composers' dictation seat): the Bots
+     composer's red with white on it, the same in both themes. */
+  --rec-bg: #d9363e;
+  --rec-fg: #fff;
   /* The spinner drawn ON that paper: black at two strengths, the same in both
    * themes for the same reason the paper is. Tokens so the no-literals rule
    * holds (tests/test_theme.py), not because they vary. */
@@ -451,6 +455,8 @@
   --warning: #8f6a10;
   --qr-paper: #fff; /* same in both themes — see the dark palette's note */
   --tile-fg: #fff;
+  --rec-bg: #d9363e;
+  --rec-fg: #fff;
   --qr-ink-soft: rgb(0 0 0 / 12%);
   --qr-ink: rgb(0 0 0 / 45%);
 
