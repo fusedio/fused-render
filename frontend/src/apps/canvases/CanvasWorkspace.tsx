@@ -83,9 +83,11 @@
 //            body channel draws its own pane and chips and ignores this; an
 //            older one shows its expand chip while the pane is shut and its
 //            collapse chip while it is up.
-//   parent → { type: "fused-embed-pan", dx, dy }  on every tick of a seam drag,
-//            half the pane's width change: the canvas pans to keep its visible
-//            centre put, as the workbench's own sidebar drags do.
+//   The workbench still accepts a `fused-embed-pan` { dx, dy } (made for
+//   the overlay pane of #1867), but this page never sends it: the pane shares
+//   the row, so every change of the pane's width (seam drag, rail pull, open,
+//   shut) resizes the frame, and the workbench's own ResizeObserver keeps the
+//   canvas's visible centre put. A pan on top of that moved the canvas twice.
 // Keyed by UDF NAME, never a React Flow node id (those are regenerated every
 // load): the node's source is `<clone>/<udfName>.py` (widgets: `.json`).
 //
@@ -3081,20 +3083,22 @@ export default function CanvasWorkspace({
   // pointer-events are disabled on both panes while dragging).
   useEffect(() => {
     if (!dragging) return;
-    // Seeded from the seam's RENDERED position as the drag starts, so the
-    // first tick pans like every later one. Not `leftFrac` alone: the pane's
-    // floor (PANE_MIN_W) and the canvas's flex-shrink can hold the seam left
-    // of the ratio `leftFrac` names after a window shrink, and seeding from
-    // that ratio would pan the canvas by the whole gap on the first move.
-    // The ratio is snapped to the seam too, so the pane does not jump either.
-    let prevFrac: number | null = leftFracRef.current;
+    // The ratio is snapped to the seam's RENDERED position as the drag
+    // starts, so the pane does not jump: the pane's floor (PANE_MIN_W) and
+    // the canvas's flex-shrink can hold the seam left of the ratio `leftFrac`
+    // names after a window shrink.
+    //
+    // NO PAN from here: the pane shares the row, so the drag resizes the
+    // frame, and the workbench's own ResizeObserver keeps the canvas's
+    // visible centre put, as it does for a window resize or its code pane.
+    // A host pan on top of that moved the canvas twice (header:
+    // fused-embed-pan).
     {
       const row = rowRef.current;
       const canvas = row?.firstElementChild as HTMLElement | null | undefined;
       const rowW = row?.getBoundingClientRect().width ?? 0;
       if (canvas && rowW > 0) {
         const actual = canvas.getBoundingClientRect().width / rowW;
-        prevFrac = actual;
         if (Math.abs(actual - leftFracRef.current) > 0.001) setLeftFrac(actual);
       }
     }
@@ -3124,19 +3128,6 @@ export default function CanvasWorkspace({
       const minFrac = rect.width > 0 ? Math.min(maxFrac, CANVAS_MIN_W / rect.width) : 0.15;
       const frac = Math.min(maxFrac, Math.max(minFrac, (e.clientX - rect.left) / rect.width));
       setLeftFrac(frac);
-      // Half the pane's width change, to the canvas (header: fused-embed-pan)
-      // — from the drag itself, so a window resize mid-drag never pans twice.
-      if (prevFrac !== null && frac !== prevFrac) {
-        const frame = frameRef.current;
-        const origin = baseOriginRef.current;
-        if (frame?.contentWindow && origin) {
-          frame.contentWindow.postMessage(
-            { type: "fused-embed-pan", dx: (rect.width * (frac - prevFrac)) / 2, dy: 0 },
-            origin,
-          );
-        }
-      }
-      prevFrac = frac;
     };
     const onUp = () => setDragging(false);
     window.addEventListener("mousemove", onMove);
@@ -3175,7 +3166,6 @@ export default function CanvasWorkspace({
     }
     root.classList.add("side-reopening");
     let opened = false;
-    let prevFrac: number | null = null;
     // One pass of the pull at the pointer (rail-pull `railPullAt`). ONCE OPEN,
     // the rail may still stand past the pane (favourites on, rail-peek-lib
     // `railInset`) — the pane ends at its edge, as the seam's drag above
@@ -3194,21 +3184,12 @@ export default function CanvasWorkspace({
       if (!at) return;
       const { frac } = at;
       setLeftFrac(frac);
+      // No pan, as the seam's drag: the frame resizes and the workbench
+      // keeps its own centre.
       if (!opened) {
         opened = true;
         setSideOpen(true);
-      } else if (prevFrac !== null && frac !== prevFrac) {
-        // Half the pane's width change, to the canvas — as the seam's drag.
-        const frame = frameRef.current;
-        const origin = baseOriginRef.current;
-        if (frame?.contentWindow && origin) {
-          frame.contentWindow.postMessage(
-            { type: "fused-embed-pan", dx: (rect.width * (frac - prevFrac)) / 2, dy: 0 },
-            origin,
-          );
-        }
       }
-      prevFrac = frac;
     };
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== e.pointerId) return;
