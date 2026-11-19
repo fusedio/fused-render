@@ -50,8 +50,11 @@ export function MicButton({
     <button
       type="button"
       className={cls}
+      // The NAME says what a press does now ("Dictate" / "Stop recording"), so
+      // it is not also a toggle with a pressed state — the two together read
+      // as "Stop recording, pressed".
       aria-label={label}
-      aria-pressed={mic.rec}
+      {...(mic.busy ? { "aria-busy": true, "aria-disabled": true } : {})}
       title={title}
       // A RUNNING TAKE STAYS STOPPABLE, whatever disabled the seat meanwhile.
       disabled={!!disabled && !live}

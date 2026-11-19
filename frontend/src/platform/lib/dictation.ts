@@ -231,13 +231,18 @@ export function useCanDictate(enabled = true): boolean {
   useEffect(() => {
     if (!enabled) return;
     let live = true;
-    canRecord ??= captureSources().then(
-      (sources) => sources.audio?.available === true,
-      () => false,
+    // Only an ANSWER is kept: a probe that failed (the server still starting)
+    // is asked again by the next mount rather than hiding the mic for the
+    // life of the page.
+    const asked = (canRecord ??= captureSources().then((sources) => sources.audio?.available === true));
+    asked.then(
+      (ok) => {
+        if (live) setCan(ok);
+      },
+      () => {
+        if (canRecord === asked) canRecord = null;
+      },
     );
-    void canRecord.then((ok) => {
-      if (live) setCan(ok);
-    });
     return () => {
       live = false;
     };
@@ -277,6 +282,10 @@ export interface Dictation {
   note: string;
   /** The button's press: start a take, or stop the one running. */
   toggle(): void;
+  /** Throw away whatever is in flight — a take being recorded, or one still
+   *  being transcribed — without a word or a message. For a composer whose box
+   *  has just become another conversation's. */
+  cancel(): void;
 }
 
 export function useDictation(opts: DictationOptions): Dictation {
@@ -288,6 +297,9 @@ export function useDictation(opts: DictationOptions): Dictation {
   const busy = useRef(false);
   const starting = useRef(false);
   const live = useRef(true);
+  /** Which take the box is waiting on; `cancel()` moves it, and a transcription
+   *  that comes back to an older number has nowhere to land. */
+  const gen = useRef(0);
 
   const sync = () =>
     setUi((m) => ({
@@ -313,6 +325,8 @@ export function useDictation(opts: DictationOptions): Dictation {
       }
       return;
     }
+    const mine = gen.current;
+    const current = () => live.current && gen.current === mine;
     busy.current = true;
     sync();
     note(jobNote(null));
@@ -326,18 +340,20 @@ export function useDictation(opts: DictationOptions): Dictation {
         took.path,
         o.current.requester,
         (text) => {
-          if (live.current) note(text);
+          if (current()) note(text);
         },
-        (message, tone) => o.current.onMessage(message, tone),
+        (message, tone) => {
+          if (current()) o.current.onMessage(message, tone);
+        },
         o.current.deps,
       );
-      if (!live.current) return;
+      if (!current()) return;
       const text = said.replace(/\s+/g, " ").trim();
       if (text) o.current.onText(text);
       else o.current.onMessage("Didn't catch any speech in that recording.", "info");
     } catch (e) {
       const t = e as TypedError;
-      if (t?.type === "cancelled" || !live.current) return;
+      if (t?.type === "cancelled" || !current()) return;
       o.current.onMessage(
         t?.type === "capture_error"
           ? "The recording failed to save; please try again."
@@ -345,10 +361,14 @@ export function useDictation(opts: DictationOptions): Dictation {
         "error",
       );
     } finally {
-      busy.current = false;
-      if (live.current) {
-        sync();
-        o.current.onSettled?.();
+      // A cancelled take's state is no longer this call's to settle: a newer
+      // take may already be recording.
+      if (gen.current === mine) {
+        busy.current = false;
+        if (live.current) {
+          sync();
+          o.current.onSettled?.();
+        }
       }
     }
   };
@@ -429,5 +449,12 @@ export function useDictation(opts: DictationOptions): Dictation {
     void (take.current ? stopRef.current() : startRef.current());
   }, []);
 
-  return { rec: ui.rec, busy: ui.busy, time: ui.time, note: ui.note, toggle };
+  const cancel = useCallback(() => {
+    gen.current += 1;
+    busy.current = false;
+    if (take.current) void stopRef.current(true);
+    else if (live.current) setUi({ rec: false, busy: false, time: "", note: "" });
+  }, []);
+
+  return { rec: ui.rec, busy: ui.busy, time: ui.time, note: ui.note, toggle, cancel };
 }

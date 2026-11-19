@@ -737,9 +737,15 @@ select.c-pill {
   line-height: 1;
 }
 .c-micbtn.is-rec,
-.c-mic-idle.is-rec {
+.c-mic-idle.is-rec,
+/* …and under the pointer too: the pill's own hover would repaint it neutral. */
+.c-pill.c-micbtn.is-rec:hover:not(:disabled),
+.c-mic-idle.is-rec:hover {
   background-color: #d9363e;
   color: #fff;
+}
+.c-pill.c-micbtn.is-rec:hover:not(:disabled) {
+  filter: brightness(1.1);
 }
 .c-micbtn.is-rec svg,
 .c-mic-idle.is-rec svg {

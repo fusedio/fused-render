@@ -1749,8 +1749,16 @@ export function ComposerCard({
   // (`spent`), a ↑ walk ends, the sentence is theirs (`typedRef`) — and the
   // caret is put after them once the render that paints them has landed.
   const caretAfter = useRef<number | null>(null);
+  /** Words that came back while a schedule hop held the box (`hopping`): the
+   *  hop has latched what the box holds and is about to file it, so nothing is
+   *  written under it. They land when the hop lets go. */
+  const heldWords = useRef<string | null>(null);
   const onDictated = useCallback(
     (words: string) => {
+      if (hoppingRef.current) {
+        heldWords.current = heldWords.current ? heldWords.current + " " + words : words;
+        return;
+      }
       const box = boxRef.current;
       const held = box ? box.value : textRef.current;
       const from = box ? (box.selectionStart ?? held.length) : held.length;
@@ -1774,18 +1782,47 @@ export function ComposerCard({
       /* a box that is not in a document refuses the call */
     }
   }, [text, boxRef]);
+  useEffect(() => {
+    const words = heldWords.current;
+    if (hopping || words === null) return;
+    heldWords.current = null;
+    onDictated(words);
+  }, [hopping, onDictated]);
   const mic = useDictation({
     requester: "shell:chat-composer",
     onText: onDictated,
     onMessage: (title, tone) => notify({ title, tone }),
     // The reader reviews what landed: the box takes the keyboard back, which
-    // also opens a folded card over the words.
+    // also opens a folded card over the words — UNLESS THEY HAVE GONE TO TYPE
+    // SOMEWHERE ELSE. A first transcription can take minutes (the speech
+    // model's install), and a caret pulled out of another field mid-word is
+    // worse than a box that waits to be clicked.
     onSettled: () => {
       const box = boxRef.current;
-      if (box && !box.disabled) box.focus({ preventScroll: true });
+      if (!box || box.disabled) return;
+      const doc = box.ownerDocument;
+      const at = doc.activeElement;
+      if (at && at !== doc.body && !formRef.current?.contains(at)) return;
+      box.focus({ preventScroll: true });
     },
     doc: () => boxRef.current?.ownerDocument,
   });
+  // A TAKE BELONGS TO THE CHAT IT WAS STARTED IN. This card outlives a switch
+  // of conversation (the pane re-points at another session, or another file),
+  // and words that came back after it would land in — and autosave under —
+  // the other chat's draft. So the switch throws the take away. A new chat
+  // being given its session id ("" → id) is the same conversation, not a
+  // switch.
+  const micCancel = mic.cancel;
+  const micChat = useRef({ sessionId, file });
+  useEffect(() => {
+    const was = micChat.current;
+    micChat.current = { sessionId, file };
+    if (was.file !== file || (!!was.sessionId && was.sessionId !== sessionId)) {
+      heldWords.current = null;
+      micCancel();
+    }
+  }, [sessionId, file, micCancel]);
   /** A take being recorded or transcribed. The card stays open through it, so
    *  the one seat that shows the clock and stops the take is always in view. */
   const micLive = !!dictate && (mic.rec || mic.busy);

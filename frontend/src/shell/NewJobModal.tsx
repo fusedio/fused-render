@@ -5169,7 +5169,16 @@ export default function NewJobModal({
       setText(next.value);
     },
     onMessage: (title, tone) => notify({ title, tone }),
-    onSettled: () => askRef.current?.focus({ preventScroll: true }),
+    // The box takes the caret back, unless the reader has gone to type
+    // somewhere outside this card meanwhile (the chat composer's rule).
+    onSettled: () => {
+      const box = askRef.current;
+      if (!box) return;
+      const at = box.ownerDocument.activeElement;
+      const card = box.closest('[role="dialog"]');
+      if (at && at !== box.ownerDocument.body && !card?.contains(at)) return;
+      box.focus({ preventScroll: true });
+    },
     doc: () => askRef.current?.ownerDocument,
   });
   useLayoutEffect(() => {
