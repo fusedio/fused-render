@@ -802,35 +802,42 @@
    goes below it?"), then at 50% and hidden when a tag reached it ("find a
    better way"). The row's middle is not free ground: tags and titles grow
    into it. The strip ABOVE the row's content is — the row is 40px tall and
-   nothing in it is taller than 28 — so the handle is the sheet grabber
-   (Apple's sheets: "a small horizontal indicator at the top edge"): one
-   short bar, centred at 50% of the row, in that strip. It never moves, it
-   is never hidden, and nothing can lie under it.
+   nothing in it is taller than 28 — so the handle sits there, centred at
+   50% of the row. It never moves, it is never hidden, and nothing can lie
+   under it.
+   SIX DOTS, NOT A BAR (owner, 2026-11-19: "icon change on drag handle have
+   it like 6 dots icon"). The first build of this strip drew one short bar
+   (the sheet grabber); it is now the grip glyph laid flat, three dots by
+   two, each 2px with 2px between. Drawn as one repeated radial gradient:
+   no markup, no icon to load.
+   ITS OWN BAND (owner, 2026-11-19: "position same, just handle overlap").
+   Six dots are 6px tall where the bar was 3, and at the top edge they sat
+   on the card's border with a tag 3px under them. So a two-line head's
+   grab row sets its content 2px lower (4px of top padding inside the same
+   40px box: the row does not grow) and the dots stand 3px from the edge,
+   3px clear of a tag below. A one-row head already has that padding.
    Nothing here takes a press of its own: the bar is the row's, and the row
    is the grab. */
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
   position: relative;
 }
+:is(.claude-rail-peek, .modal-popover).is-movable .task-head-row:not(.claude-rail-peek-body *, .modal-body *) {
+  padding-top: 4px;
+}
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *)::after {
   content: "";
   position: absolute;
   left: 50%;
-  top: 2px;
-  width: 28px;
-  height: 3px;
-  border-radius: 2px;
+  top: 3px;
+  width: 10px;
+  height: 6px;
   transform: translateX(-50%);
-  background: var(--fg-faint);
+  background: radial-gradient(circle at 1px 1px, var(--fg-muted) 0.9px, transparent 1.1px) 0 0 / 4px 4px;
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--dur-fast) var(--ease-out);
-}
-/* A one-row head (the Bots and Git cards, a bot's card) keeps a 4px strip
-   above its row: the bar sits in it. */
-.claude-rail-peek.is-movable .claude-rail-peek-head > .claude-rail-peek-row:first-child::after {
-  top: 0;
 }
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *):hover::after,
