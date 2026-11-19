@@ -76,8 +76,10 @@ def start(spec: store.Specialist) -> bool:
     chat.change(home, lambda d: d.update(update_files=files))
     store.end_idle_hosts(home)
     main = chat.load(home)["main"]
-    res = claude_spawn.spawn_helper(home, PROMPT, "acceptEdits", session_id=main or "", isolate_mcp=True,
-                                    specialist=f"{spec.id}:update")
+    # On the model and effort the user picked for the main chat ("" for each: the CLI's default).
+    model, effort = claude_spawn.load_agent()._session_settings(main or "")
+    res = claude_spawn.spawn_helper(home, PROMPT, "acceptEdits", session_id=main or "", model=model, effort=effort,
+                                    isolate_mcp=True, specialist=f"{spec.id}:update")
     if res.get("error"):
         raise RuntimeError(res["error"])
     if not main:

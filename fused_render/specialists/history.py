@@ -108,10 +108,12 @@ def commit(home: str, message: str, only: Sequence[str] = (".",)) -> None:
 
 
 def commit_edits(home: str) -> None:
-    """Commit a hand edit of memory or skills, unless a session is working in the home (its turn commits it)."""
-    from fused_render.specialists import store
+    """Commit a hand edit of memory or skills, unless a session is open in the home: a turn that just ended is
+    committed by the next poll of its run (`after_turn`), which may come after this, and an idle session ends about
+    30 s after its turn."""
+    from fused_render.claude_agent import agent_module
 
-    if not store.live_runs(home):
+    if not agent_module()._hosts_in(home):
         commit(home, "You edited memory", KNOWLEDGE)
 
 

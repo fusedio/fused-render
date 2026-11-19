@@ -78,10 +78,13 @@ def test_changes_lists_memory_and_skills_only_and_hand_edits(transcript):
     assert history.diff(s.home, "not-a-sha") is None and history.diff(s.home, "0" * 40) is None
 
 
-def test_a_hand_edit_waits_while_a_session_works(monkeypatch):
+def test_a_hand_edit_waits_while_a_session_is_open(monkeypatch):
+    from fused_render.claude_agent import agent_module
+
     s = make_specialist()
     _edit(s.home, "memory.md", "By hand.\n")
-    monkeypatch.setattr(store, "live_runs", lambda home: [{"run_id": "r"}])
+    # Open, even between turns: a turn that has ended is committed by its run's next poll, with its own label.
+    monkeypatch.setattr(agent_module(), "_hosts_in", lambda folder: ["r"])
     history.commit_edits(s.home)
     assert history.changes(s.home) == []
 

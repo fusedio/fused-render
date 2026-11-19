@@ -7223,9 +7223,12 @@ def _start(file: str, message: str, session_id: str, model: str,
     # only: an absent one reads as Claude, so a Claude chat's record is
     # written on exactly the condition it always was (a model or an effort
     # to say), not for every Claude session there is.
-    _record_settings(new_session_id or session_id, model, effort,
-                     backend if backend in _SELF_MINTED_ID_BACKENDS else "",
-                     named_permission)
+    # Not for a specialist's update: it runs inside the main chat, whose pills
+    # must keep the chat's own settings, not the update's acceptEdits.
+    if not (sp_spec and sp_spec["kind"] == "update"):
+        _record_settings(new_session_id or session_id, model, effort,
+                         backend if backend in _SELF_MINTED_ID_BACKENDS else "",
+                         named_permission)
     _canvas_turn_start(file, backend)
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not

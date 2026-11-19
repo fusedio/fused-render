@@ -2,6 +2,7 @@
 from _specialists_conftest import *  # noqa: F401,F403
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,7 +34,9 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "end_idle_hosts", lambda home: None)
     monkeypatch.setattr(claude_spawn, "spawn_helper", spawn)
     monkeypatch.setattr(claude_spawn, "record_session_when_ready", lambda agent, run_id: None)
-    monkeypatch.setattr(claude_spawn, "load_agent", lambda: None)
+    # The main chat's recorded pick: the update runs on it.
+    agent = SimpleNamespace(_session_settings=lambda sid: ("haiku", "low") if sid else ("", ""))
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: agent)
     return files, spawns
 
 
@@ -76,13 +79,13 @@ def test_start_resumes_the_main_chat_unattended(world):
     assert update.start(s) is True
     ((target, prompt, mode, kw),) = spawns
     assert (target, prompt, mode) == (s.home, update.PROMPT, "acceptEdits")
-    assert kw == {"session_id": "", "isolate_mcp": True, "specialist": f"{s.id}:update"}
+    assert kw == {"session_id": "", "model": "", "effort": "", "isolate_mcp": True, "specialist": f"{s.id}:update"}
     st = chat.load(s.home)
     assert st["main"] == "new-main" and len(st["update_files"]) == 1  # a fresh update becomes the main chat
     chat.record_start(s.id, "main", "new-main")
     notes.add(s, "task1", "Another", "x")
     update.start(s)
-    assert spawns[-1][3]["session_id"] == "new-main"
+    assert (spawns[-1][3]["session_id"], spawns[-1][3]["model"], spawns[-1][3]["effort"]) == ("new-main", "haiku", "low")
 
 
 def test_busy_is_refused(world, monkeypatch, client):

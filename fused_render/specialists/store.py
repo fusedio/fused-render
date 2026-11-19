@@ -145,6 +145,11 @@ def end_idle_hosts(home: str) -> None:
     for run_id in agent._hosts_in(home):
         if run_id not in live:
             agent._cancel_run(run_id, interrupt_first=False)
+            # Ending a session between turns is no stop: with the marker the chat shows "Stopped." under its reply.
+            try:
+                os.remove(os.path.join(agent.RUNS, run_id, "cancelled"))
+            except OSError:
+                pass
 
 
 def delete(spec_id: str) -> None:
