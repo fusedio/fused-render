@@ -77,7 +77,6 @@ def test_task_tools_need_an_origin(agent, rd, monkeypatch):
 # ------------------------------------------------------------- launch spec ---
 SPEC = {"kind": "main",
         "deny": ["Edit(//w/specialists/canvas/.git/**)"], "ask": ["mcp__specialist_sends"],
-        "allow": ["Read(//t/x.jsonl)"],
         "mcp_servers": {"specialist_sends": {"command": "py", "args": ["botmcp.py"]},
                         "fused_render": {"command": "evil"}},
         "append": "You are the Canvas specialist's main chat.", "policy_env": {}}
@@ -89,7 +88,6 @@ def test_a_spec_folds_rules_servers_and_prompt(agent, rd):
     argv = _argv(agent, rd, file="/w/specialists/canvas", cli_mode="auto")
     perms = _settings(argv)["permissions"]
     assert perms["deny"] == SPEC["deny"] and perms["ask"] == ["mcp__specialist_sends"]
-    assert "Read(//t/x.jsonl)" in perms["allow"]
     assert "specialist_pull" not in json.dumps(argv)
     assert _after(argv, "--append-system-prompt").endswith(" You are the Canvas specialist's main chat.")
     servers = _mcp(rd)

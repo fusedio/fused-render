@@ -87,15 +87,9 @@ def test_a_run_is_a_fresh_session_given_exactly_its_entries(world, tmp_path):
     assert update.start(s) is True
     ((target, prompt, mode, kw),) = spawns
     (entry,) = notes.list(s)
-    assert (target, mode) == (s.home, "acceptEdits") and f"- inbox/{entry['name']}" in prompt
-    assert kw == {"model": "haiku", "effort": "low", "isolate_mcp": True, "specialist": f"{s.id}:update"}
+    assert (target, mode) == (s.home, "auto") and f"- inbox/{entry['name']}" in prompt
+    assert kw == {"model": "haiku", "effort": "low", "specialist": f"{s.id}:update"}
     assert chat.load(s.home)["update"] == {"session": "learn1", "files": [entry["name"]], "lines": {"task1": 2}}
-    path = str(tmp_path / "task1.jsonl")
-    assert all(c in prompt for c in update.greps(path))  # listed under its entry
-    # The run may run exactly those commands on exactly that transcript; nothing else is allowed.
-    allow = launch.spec(f"{s.id}:update", s.home)["allow"]
-    assert [r for r in allow if r.startswith("Bash(")] == [f"Bash({c})" for c in update.greps(path)]
-    assert all(r.endswith("task1.jsonl)") for r in allow)
     assert launch.spec(f"{s.id}:main", s.home)["reason"] == "learning"  # the chat waits for it
     with pytest.raises(update.Busy):
         update.start(s)

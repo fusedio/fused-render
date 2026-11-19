@@ -5217,7 +5217,6 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # 2) still wins over this hook's allow.
     if spec:
         _add_rules(settings, "deny", spec["deny"])
-        _add_rules(settings, "allow", spec["allow"])
         _add_rules(settings, "ask", spec["ask"])
     elif task:
         # The breakout tool always shows the user's card, in every mode.

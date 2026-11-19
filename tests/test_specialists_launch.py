@@ -26,7 +26,7 @@ def test_main_and_breakout_get_the_services_and_a_send_always_asks():
         json.dumps(sp)  # the run dir stores it
         assert sp["kind"] == kind and sp["policy_env"] == {}
         assert set(_deny(s.home)) <= set(sp["deny"]) and not any("memory.md" in r for r in sp["deny"])
-        assert sp["ask"] == ["mcp__specialist_sends"] and sp["allow"] == []  # grep is the learning run's only
+        assert sp["ask"] == ["mcp__specialist_sends"]
         assert set(sp["mcp_servers"]) == set(services.SERVERS)
         entry = sp["mcp_servers"]["specialist_sends"]
         assert "botmcp" in os.path.basename(entry["args"][0]) and entry["timeout"] > 60_000
@@ -36,11 +36,11 @@ def test_main_and_breakout_get_the_services_and_a_send_always_asks():
     assert "breakout" in sp["append"] and "do not edit memory.md" in sp["append"]
 
 
-def test_the_update_runs_unattended_with_no_servers():
+def test_a_learning_run_has_the_chat_s_tools_and_nobody_to_ask():
     s = make_specialist()
-    sp = launch.spec(f"{s.id}:update", s.home)
-    assert sp["mcp_servers"] == {} and sp["ask"] == [] and sp["allow"] == []  # no entries listed: no grep
-    assert sp["policy_env"] == {"FUSED_SPECIALIST_UNATTENDED": "1"}
+    sp, main = launch.spec(f"{s.id}:update", s.home), launch.spec(f"{s.id}:main", s.home)
+    assert (sp["ask"], set(sp["mcp_servers"])) == (main["ask"], set(main["mcp_servers"]))  # a send still asks...
+    assert sp["policy_env"] == {"FUSED_SPECIALIST_UNATTENDED": "1"}  # ...and the card is refused at once
     assert set(_deny(s.home)) <= set(sp["deny"])
 
 
