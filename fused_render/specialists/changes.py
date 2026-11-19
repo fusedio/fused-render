@@ -201,10 +201,44 @@ def _plain(text: str, before: str | None, after: str | None) -> str:
     return rest or text
 
 
+# The parts of an entry's provenance that only count use: raising them is not a change a person needs to read.
+BOOKKEEPING = ("seen", "confirmed", "from")
+
+
+def words(line: str | None) -> str:
+    """An entry line with its bookkeeping (`seen=`, `confirmed=`, `from=`) taken out of its `{…}` provenance: what
+    a person would notice changed. The basis, `retires=` and the words themselves stay."""
+    t = ENTRY_LINE_RE.sub("", str(line or ""), count=1)
+    m = re.search(r"\s*\{([^{}]*)\}\s*$", t)
+    if not m:
+        return t.strip()
+    keep = [p.strip() for p in m.group(1).split(";")
+            if p.strip() and p.split("=", 1)[0].strip().lower() not in BOOKKEEPING]
+    return (t[:m.start()].strip() + (" {" + "; ".join(keep) + "}" if keep else "")).strip()
+
+
+def bookkeeping_only(before: str | None, after: str | None) -> bool:
+    """The run changed this entry's counts and nothing else (its words, basis and retirement are the same)."""
+    return before is not None and after is not None and before != after and words(before) == words(after)
+
+
+def _not_a_change(it: dict) -> bool:
+    """An item about a memory entry whose words the run did not change (only its counts, or nothing)."""
+    if not it.get("entry") or not ("before" in it or "after" in it):
+        return False
+    if str(it.get("file") or MEMORY).rsplit("/", 1)[-1] != MEMORY:
+        return False
+    b, a = it.get("before"), it.get("after")
+    return b == a or bookkeeping_only(b, a)
+
+
 def reconcile(items: list, before_text: str, after_text: str) -> list[dict]:
     """C4: the change list made to match memory.md's diff. Each item naming an entry gets that entry's exact line
     `before` and `after` the run (None: absent); every entry the run added, changed or removed that no item names
-    gets a `Changed` item of its own. Items keep their order; added items follow, in memory.md's order."""
+    gets a `Changed` item of its own. Items keep their order; added items follow, in memory.md's order.
+
+    An entry whose words did not change (only `seen=` / `confirmed=` / `from=` did) is NOT an item, whether the job
+    listed it or not: `confirmed_again` counts those."""
     b, a = entries(before_text), entries(after_text)
     out = []
     for it in items or []:
@@ -213,22 +247,44 @@ def reconcile(items: list, before_text: str, after_text: str) -> list[dict]:
         if e and (e in b or e in a):
             it["before"], it["after"] = b.get(e), a.get(e)
             it["text"] = _plain(str(it.get("text") or ""), it["before"], it["after"])
+        if _not_a_change(it):
+            continue
         out.append(it)
-    covered = {it.get("entry") for it in out if it.get("entry")}
-    changed = [e for e in list(a) + [e for e in b if e not in a] if b.get(e) != a.get(e) and e not in covered]
+    named = {it.get("entry") for it in items or [] if isinstance(it, dict) and it.get("entry")}
+    changed = [e for e in list(a) + [e for e in b if e not in a]
+               if b.get(e) != a.get(e) and e not in named and not bookkeeping_only(b.get(e), a.get(e))]
     for e in changed:
         old, new = b.get(e), a.get(e)
         if old is None:
             text = f"Added: {entry_text(new)}"
         elif new is None:
             text = f"Removed: {entry_text(old)}"
-        elif entry_text(old) == entry_text(new):
-            text = f"Updated how often this was seen or confirmed: {entry_text(new)}"
         else:
             text = f"Changed: {entry_text(new)}"
         out.append({"kind": FALLBACK_KIND, "text": sentence(text), "entry": e, "file": MEMORY, "from": [],
                     "undo": "", "before": old, "after": new})
     return out[:ITEMS_MAX]
+
+
+def confirmed_again(before_text: str, after_text: str) -> int:
+    """How many entries the run only re-confirmed (their counts rose, their words stayed)."""
+    b, a = entries(before_text), entries(after_text)
+    return sum(1 for e in a if bookkeeping_only(b.get(e), a.get(e)))
+
+
+def _other_lines(text: str) -> list[str]:
+    return [ln.rstrip() for ln in str(text or "").splitlines() if ln.strip() and not ENTRY_LINE_RE.match(ln)]
+
+
+def summary_line(summary: str, items: list, confirmed: int) -> str:
+    """The run's summary with the re-confirmed entries counted in plain words (they are not items)."""
+    summary = str(summary or "").strip()
+    if not confirmed:
+        return summary
+    again = f"{confirmed} {'entry was' if confirmed == 1 else 'entries were'} confirmed again."
+    if not items:
+        return f"Nothing new was learned; {again}"
+    return f"{summary} {again}".strip()
 
 
 def _skill_dir(p: str) -> str | None:
@@ -288,17 +344,28 @@ def _rel(spec_id: str, f) -> str:
 
 
 def build_items(spec_id: str, items: list, sha: str) -> list[dict]:
+    return build(spec_id, items, sha)[0]
+
+
+def build(spec_id: str, items: list, sha: str) -> tuple[list[dict], int]:
     """The change list of the run committed as `sha`, reconciled with that commit's diff (C4): memory entries
     (`reconcile`), a file or skill folder the run created (`remove`), the diff of any other file an item names
-    (`diff`), and one `Changed` item per changed file no item covers."""
+    (`diff`), and one `Changed` item per changed file no item covers. Also returns how many entries were only
+    confirmed again (not items)."""
     items = list(items or [])
     if not sha:
-        return items[:ITEMS_MAX]
+        return items[:ITEMS_MAX], 0
     status = name_status(spec_id, sha)
+    confirmed, covered_mem = 0, False
     if MEMORY in status:
-        items = reconcile(items, file_at(spec_id, f"{sha}^", MEMORY), file_at(spec_id, sha, MEMORY))
+        mem_before, mem_after = file_at(spec_id, f"{sha}^", MEMORY), file_at(spec_id, sha, MEMORY)
+        items = reconcile(items, mem_before, mem_after)
+        confirmed = confirmed_again(mem_before, mem_after)
+        # Every line of memory.md that is not an entry is as it was: the entries' items (or their counts) are
+        # the whole change, never a "Changed the file memory.md" item on top.
+        covered_mem = _other_lines(mem_before) == _other_lines(mem_after)
     added = {p for p, st in status.items() if st == "A"}
-    covered = set()
+    covered = {MEMORY} if covered_mem else set()
     for it in items:
         f = _rel(spec_id, it.get("file"))
         if it.get("entry") and ("before" in it or "after" in it):
@@ -338,7 +405,7 @@ def build_items(spec_id: str, items: list, sha: str) -> list[dict]:
         else:
             fb["diff"] = file_diff(spec_id, sha, fb["file"])
         items.append(fb)
-    return items[:ITEMS_MAX]
+    return items[:ITEMS_MAX], confirmed
 
 
 # ---------------------------------------------------------------------- records ---
@@ -348,11 +415,13 @@ def _home_ok(spec_id: str) -> bool:
 
 
 def save(spec_id: str, run: str, *, summary: str, items: list, commit: str | None, row: str, status: str,
-         fallback: bool, drafts: list) -> dict | None:
-    """Write the change list of `run`; None when the specialist was deleted meanwhile (nothing is recreated)."""
+         fallback: bool, drafts: list, confirmed: int = 0) -> dict | None:
+    """Write the change list of `run`; None when the specialist was deleted meanwhile (nothing is recreated).
+    `confirmed`: entries the run only confirmed again (counted, not items)."""
     if not _home_ok(spec_id):
         return None
-    rec = {"run": run, "at": time.time(), "summary": summary, "status": status, "commit": commit or "",
+    rec = {"run": run, "at": time.time(), "summary": summary, "confirmed": int(confirmed or 0),
+           "status": status, "commit": commit or "",
            "row": row, "fallback": fallback, "drafts": list(drafts),
            "items": [{**it, "id": f"i{n}", "commit": commit or ""} for n, it in enumerate(items, 1)]}
     write_json(path(spec_id, run), rec)
@@ -396,11 +465,18 @@ def item_state(it: dict, revert: dict | None, home: str, now: dict[str, str]) ->
 
 
 def _with_state(spec_id: str, rec: dict, reverts: dict | None = None, now: tuple | None = None) -> dict:
+    """The record as the page shows it: each item with its state, entries whose words did not change dropped (a
+    record written before they were counted) and counted, and `summary_line` as the summary."""
     reverts = _reverts(spec_id) if reverts is None else reverts
     home, current = _home_now(spec_id) if now is None else now
+    raw = rec.get("items") or []
+    kept = [it for it in raw if not _not_a_change(it)]
+    confirmed = int(rec.get("confirmed") or 0) + sum(
+        1 for it in raw if _not_a_change(it) and bookkeeping_only(it.get("before"), it.get("after")))
     items = [{**it, "state": item_state(it, reverts.get(f"{rec['run']}/{it.get('id')}"), home, current)}
-             for it in rec.get("items") or []]
-    return {**rec, "items": items}
+             for it in kept]
+    return {**rec, "items": items, "confirmed": confirmed,
+            "summary": summary_line(str(rec.get("summary") or ""), items, confirmed)}
 
 
 def runs(spec_id: str, limit: int = 5) -> list[dict]:
@@ -420,6 +496,37 @@ def runs(spec_id: str, limit: int = 5) -> list[dict]:
         if len(out) >= max(1, int(limit)):
             break
     return out
+
+
+# ------------------------------------------------------------------- seen / new ---
+def _seen_path(spec_id: str) -> str:
+    return os.path.join(_app(spec_id), "learned-seen.json")
+
+
+def seen_run(spec_id: str) -> str:
+    """The newest update the user has looked at in the Learned tab ("" when never)."""
+    r = read_json(_seen_path(spec_id), {})
+    run = r.get("run") if isinstance(r, dict) else ""
+    return run if isinstance(run, str) and RUN_RE.match(run) else ""
+
+
+def mark_seen(spec_id: str, run: str) -> str:
+    """Opening the Learned tab: every update up to `run` is seen. Never moves back. Returns the seen run."""
+    if not isinstance(run, str) or not RUN_RE.match(run):
+        raise LookupError("no such update")
+    with _LOCK:
+        cur = seen_run(spec_id)
+        if run > cur and _home_ok(spec_id):
+            write_json(_seen_path(spec_id), {"run": run, "at": time.time()})
+            cur = run
+    return cur
+
+
+def new_count(spec_id: str, recs: list[dict] | None = None) -> int:
+    """"Learned · N new": the items of the updates newer than the last one seen."""
+    seen = seen_run(spec_id)
+    recs = runs(spec_id, limit=50) if recs is None else recs
+    return sum(len(r.get("items") or []) for r in recs if str(r.get("run") or "") > seen)
 
 
 # ------------------------------------------------------------------------ revert ---

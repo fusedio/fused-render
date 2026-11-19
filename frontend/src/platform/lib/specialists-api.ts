@@ -97,8 +97,11 @@ export interface ChangeItem {
 export interface LearnedRun {
   run: string;
   at: number;
+  /** Already says "N entries were confirmed again" (those are counted, never items). */
   summary: string;
   items: ChangeItem[];
+  /** Entries the update only confirmed again (their words did not change). */
+  confirmed?: number;
 }
 
 export interface DraftTo {
@@ -128,7 +131,8 @@ export interface HelpingTask {
 
 /** GET …/{id}/panel — the specialist page's right column. */
 export interface SpecialistPanel {
-  learned: { run: string; at: number; summary: string; items: ChangeItem[]; total: number } | null;
+  /** `new`: items of the updates newer than the last one opened in the Learned tab ("Learned · N new"). */
+  learned: { run: string; at: number; summary: string; items: ChangeItem[]; total: number; new?: number } | null;
   waiting: Draft[];
   inbox: { count: number };
   tasks: { helping_now: HelpingTask[]; guided_week: number };

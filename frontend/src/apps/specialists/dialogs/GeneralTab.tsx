@@ -175,7 +175,7 @@ export function GeneralTab({
         </div>
         <Field
           label="Charter"
-          hint="What it is an expert on and how it works, in its own words. It reads this at the start of every session. Its memory is kept apart and is not edited here."
+          hint="What it knows and how it works, in its own words. It reads this at the start of every session. Its memory is kept apart and is not edited here."
         >
           <TextArea
             rows={14}

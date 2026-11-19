@@ -25,9 +25,11 @@ import { dayLabel } from "../components/FoldedSession";
 import {
   agoText,
   getNightlyStatus,
+  markLearnedSeen,
   revertFallback,
   revertable,
   secondPerson,
+  stoppedLine,
   whenText,
   type NightlyStatus,
 } from "../lib/api-extra";
@@ -60,6 +62,7 @@ export interface LearnedApi {
   revertChange: typeof revertChange;
   sendDraft: typeof sendDraft;
   discardDraft: typeof discardDraft;
+  markSeen?: (id: string, run: string) => Promise<unknown>;
 }
 const DEFAULT_API: LearnedApi = {
   getLearned,
@@ -69,6 +72,7 @@ const DEFAULT_API: LearnedApi = {
   revertChange,
   sendDraft,
   discardDraft,
+  markSeen: markLearnedSeen,
 };
 
 /** One change: one line, the rest ("From …", the full text) behind More. */
@@ -125,8 +129,11 @@ export function LearnedTab({
   sendAndClose = sendToChat,
   api = DEFAULT_API,
   now = () => Date.now(),
+  onSeen,
 }: {
   specialistId: string;
+  /** The latest update was marked seen (the dialog's "N new" can clear). */
+  onSeen?: () => void;
   /** Send into the main chat, keeping the dialog open (Revert). */
   sendToChat: (text: string) => boolean;
   /** Send into the main chat and close the dialog (Review and send). */
@@ -143,6 +150,7 @@ export function LearnedTab({
   const [requested, setRequested] = useState<ReadonlySet<string>>(new Set());
   const [, tick] = useState(0);
   const wasRunning = useRef(false);
+  const seenRun = useRef("");
 
   const loadChanges = useCallback(() => {
     api.getLearned(specialistId, 5).then((r) => setRuns(r.runs || []), (e) => setError(errorText(e)));
@@ -156,7 +164,19 @@ export function LearnedTab({
     loadNightly();
   }, [loadChanges, loadNightly]);
 
+  // Opening the tab marks the newest update seen ("Learned · N new" clears, per specialist, on the server).
+  const latest = runs?.[0]?.run || "";
+  useEffect(() => {
+    if (!latest || seenRun.current === latest) return;
+    seenRun.current = latest;
+    void api.markSeen?.(specialistId, latest).then(
+      () => onSeen?.(),
+      () => {},
+    );
+  }, [api, specialistId, latest, onSeen]);
+
   const running = !!nightly?.running;
+  const stoppedEmpty = nightly?.stopped_empty || null;
   // A live run: ask again every few seconds, and tick the "started N s ago".
   useEffect(() => {
     if (!running) return;
@@ -171,10 +191,11 @@ export function LearnedTab({
   useEffect(() => {
     if (wasRunning.current && !running) {
       loadChanges();
-      setNote("The update finished. Its changes are below.");
+      // Stopped early with nothing to list: the quiet "interrupted" line says it instead.
+      setNote(stoppedEmpty ? "" : "The update finished. Its changes are below.");
     }
     wasRunning.current = running;
-  }, [running, loadChanges]);
+  }, [running, loadChanges, stoppedEmpty]);
 
   // A revert is pending: re-read until the item settles (reverted / changed).
   const pendingIds = (runs ?? []).flatMap((r) =>
@@ -243,6 +264,7 @@ export function LearnedTab({
   // A report whose bug was fixed, or that went stale: nothing to do, kept for reference.
   const closed = drafts.filter((d) => d.status === "closed");
   const started = nightly?.started || 0;
+  const stopped = running ? null : stoppedLine(nightly?.stopped_empty);
 
   return (
     <div className="spx-tab">
@@ -271,8 +293,13 @@ export function LearnedTab({
           {error}
         </div>
       ) : null}
+      {stopped && !note ? (
+        <div className="spx-muted spx-small spx-stopped" role="status">
+          {stopped}
+        </div>
+      ) : null}
       {runs === null ? <div className="spx-muted">Loading…</div> : null}
-      {runs && !runs.length && !running ? (
+      {runs && !runs.length && !running && !stopped ? (
         <div className="spx-empty-note">No updates yet. The first one runs on its own once a day, or press Run now.</div>
       ) : null}
       {(runs ?? []).map((run, ri) => (

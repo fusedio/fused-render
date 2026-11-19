@@ -365,8 +365,10 @@ def test_restart_mid_nightly_closes_interrupted_run(monkeypatch):
     st = nightly.state(s.id)
     assert st["active"]["stage"] == "running"
     run = st["active"]["run"]
+    assert nightly.status(s.id)["stopped_empty"] is None
     rec = nightly.recover(s.id)
     assert rec["status"] == "interrupted" and [it["file"] for it in rec["items"]] == ["memory.md"]
+    assert nightly.status(s.id)["stopped_empty"] is None  # it changed something: listed, not "changed nothing"
     assert history.log(s.id, limit=1)[0]["message"] == f"nightly {run} (interrupted)"
     assert len(inbox.undigested(s.id)) == 3 and "active" not in nightly.state(s.id)
     assert not nightly.state(s.id).get("last_ok")
@@ -493,4 +495,39 @@ def test_prompt_states_note_accounting_and_plain_text(monkeypatch):
     assert '"ignored": [{"note": "n-...", "why": "one sentence"}]' in p and '"digested"' not in p
     assert "A note in neither stays in the inbox for next time." in p
     assert "one short plain sentence (under 160 characters)" in p and "No entry ids, note ids" in p
-    assert "raising seen= or confirmed= included" in p
+    assert "never list it as an item" in p and "Raising seen= or confirmed=" in p
+
+
+def test_interrupted_run_that_changed_nothing_is_reported(monkeypatch):
+    """Polish 5: a run cut off before it changed anything leaves no change list; status says so until the next run."""
+    s, said, _guess, _corr = _setup()
+
+    def die(call):
+        raise KeyboardInterrupt
+
+    from fused_render.specialists import harness
+    monkeypatch.setattr(harness, "_spawn", die)
+    with pytest.raises(KeyboardInterrupt):
+        nightly.run_job(s.id)
+    assert nightly.recover(s.id) == {}
+    assert nightly.status(s.id)["stopped_empty"] == "interrupted"
+    calls = stub_side(monkeypatch, fn=_job(MEMORY, [], digested=[said["id"]]))
+    assert nightly.run_job(s.id)["status"] == "done" and len(calls) == 1
+    assert nightly.status(s.id)["stopped_empty"] is None
+
+
+@needs_git
+def test_nightly_with_only_bookkeeping_lists_nothing(monkeypatch):
+    """Polish 1: a run that only raised seen= / confirmed= lists no item (even when the job listed them) and says
+    so in plain words; its notes are still digested."""
+    s, said, _guess, _corr = _setup()
+    bumped = MEMORY.replace("seen=1; confirmed=2026-11-01; from=x", "seen=4; confirmed=2026-11-18; from=x, b-1")
+    items = [{"kind": "Learned", "text": "The sync rule was pulled again and is still in use.", "entry": "m-3f2a",
+              "file": "memory.md", "from": [said["id"]]}]
+    stub_side(monkeypatch, fn=_job(bumped, items))
+    res = nightly.run_job(s.id)
+    assert res["status"] == "done"
+    assert res["changes"]["items"] == [] and res["changes"]["confirmed"] == 1
+    run = changes.runs(s.id)[0]
+    assert run["summary"] == "Nothing new was learned; 1 entry was confirmed again."
+    assert said["id"] not in {n["id"] for n in inbox.undigested(s.id)}

@@ -2,7 +2,7 @@
 // Memory.dc.html) — Learned, Memory, Skills, People, Connections, General.
 // Underlined tabs ("Learned · N new"), Done in the head, one fixed height so
 // switching tabs never makes the dialog jump, and no wider than the window.
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Modal } from "@platform/ui/modal/Modal";
 import { getPanel, type SpecialistDetail } from "@platform/lib/specialists-api";
 import { Face, initialsFor } from "../components/Face";
@@ -44,23 +44,30 @@ export function SpecialistSettings({
   sendToChat: (text: string) => boolean;
   onSaved: (s: SpecialistDetail) => void;
   onDeleted: () => void;
-  /** "Learned · N new": the latest update's change count (default: read from the panel). */
+  /** "Learned · N new": items in updates newer than the last one opened (default: read from the panel). */
   learnedCount?: number;
 }) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [fetched, setFetched] = useState<number | null>(null);
+  /** The Learned tab marked the latest update seen: the count clears once the user moves on from it. */
+  const [seen, setSeen] = useState(false);
   useEffect(() => {
     if (learnedCount !== undefined) return;
     let live = true;
     getPanel(specialist.id).then(
-      (p) => live && setFetched(p.learned?.total ?? 0),
+      (p) => live && setFetched(p.learned?.new ?? 0),
       () => {},
     );
     return () => {
       live = false;
     };
   }, [specialist.id, learnedCount]);
-  const newCount = learnedCount ?? fetched ?? 0;
+  const onSeen = useCallback(() => setSeen(true), []);
+  // While the Learned tab is up the number stays, so the user sees what was new; it is gone after.
+  const newCount = seen && tab !== "learned" ? 0 : (learnedCount ?? fetched ?? 0);
+  useEffect(() => {
+    if (seen && tab !== "learned") setFetched(0);
+  }, [seen, tab]);
 
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const i = TABS.findIndex((t) => t.id === tab);
@@ -121,7 +128,7 @@ export function SpecialistSettings({
       </div>
       <div role="tabpanel" id={panelId} aria-labelledby={`${panelId}-${tab}`} className="spx-tabpanel" tabIndex={-1}>
         {tab === "learned" ? (
-          <LearnedTab specialistId={specialist.id} sendToChat={sendToChat} sendAndClose={sendAndClose} />
+          <LearnedTab specialistId={specialist.id} sendToChat={sendToChat} sendAndClose={sendAndClose} onSeen={onSeen} />
         ) : null}
         {tab === "memory" ? <MemoryTab specialistId={specialist.id} sendToChat={sendAndClose} /> : null}
         {tab === "skills" ? <SkillsTab specialistId={specialist.id} /> : null}

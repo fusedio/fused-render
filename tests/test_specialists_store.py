@@ -83,6 +83,10 @@ def test_seed_once_copies_canvas_never_moves(app_home):
     assert names == sorted(n[:-3] for n in before)
     sk = open(home.skill_path(s.home, "running-udfs")).read()
     assert sk.startswith("---\nname: running-udfs\ndescription: \"Running UDFs on Fused. Use when")
+    # polish 4: the experts' files say "this expert"; a specialist never calls itself that
+    for k in home.skills(s.home):
+        assert "expert" not in open(home.skill_path(s.home, k["name"])).read().lower(), k["name"]
+    assert "this specialist's sources" in open(home.skill_path(s.home, "edges-and-folders")).read()
     md = open(os.path.join(s.home, "CLAUDE.md")).read()
     assert "## Subject" in md and "remote engine" in md and "memory-archive" not in md and "expert_ask" not in md
     assert open(os.path.join(s.home, "memory.md")).read() == home.MEMORY_EMPTY

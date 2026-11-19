@@ -64,7 +64,7 @@ Rules:
 - memory.md is now {lines} lines / {bytes} bytes; it must end at most {max_lines} lines and {max_bytes} bytes.
 - Keep the entry format of CLAUDE.md. Give every new entry a new [m-xxxx] id. Never run git.
 When done, write {out}/changes.json in exactly this shape (no other file there): {schema}
-The change list must match what you changed: one item for every change to a file, raising seen= or confirmed= included ("entry" names the entry, "file" the file). An item's "text" is one short plain sentence (under 160 characters) a user can read: what you now know or do. No entry ids, note ids, file paths or commits in "text"; ids go in "entry" and "from".
+The change list is what a person would want to know changed: a new entry, a corrected one, a retired or moved one, a new skill or check, a change to People or to triggers. One item per such change ("entry" names the entry, "file" the file). Raising seen= or confirmed=, or adding to from=, is bookkeeping: do it, but never list it as an item (the app counts those itself). An item's "text" is one short plain sentence (under 160 characters) a user can read: what you now know or do. No entry ids, note ids, file paths or commits in "text"; ids go in "entry" and "from".
 Every note in notes.md ends in exactly one place: in the "from" of the item(s) it led to, or in "ignored" with one sentence why (duplicate, off subject, too vague, a one-off state). A note in neither stays in the inbox for next time.
 Then say in one line what you did."""
 
@@ -504,6 +504,7 @@ def _run_locked(spec_id: str, run: str, manual: bool) -> dict:
     bundle = build_input(spec_id, run, st)
     if bundle["empty"]:
         st.update(last_ok=time.time(), last_nothing=time.time())
+        st.pop("empty_stop", None)
         _save_state(spec_id, st)
         shutil.rmtree(bundle["out"], ignore_errors=True)
         return {"status": "nothing", "run": run}
@@ -573,7 +574,8 @@ def _apply(spec_id: str, active: dict, validated: dict | None, interrupted: bool
         rec = existing
     else:
         # C4: reconciled with the run's diff (entry items carry the exact lines; uncovered changes get items).
-        items = changes.build_items(spec_id, list((validated or {}).get("items") or []), sha)
+        # Entries whose words did not change (only seen= / confirmed= / from=) are counted, not listed.
+        items, confirmed = changes.build(spec_id, list((validated or {}).get("items") or []), sha)
         if interrupted:
             summary = "The update was cut short (the app stopped). What it had changed is listed; its notes stay " \
                       "in the inbox for the next update."
@@ -585,7 +587,7 @@ def _apply(spec_id: str, active: dict, validated: dict | None, interrupted: bool
         if items or draft_ids or validated is not None:
             rec = changes.save(spec_id, run, summary=summary, items=items, commit=sha, row=str(active.get("row") or ""),
                                status="done" if ok else ("interrupted" if interrupted else "error"),
-                               fallback=validated is None, drafts=draft_ids)
+                               fallback=validated is None, drafts=draft_ids, confirmed=confirmed)
             if good and good.get("repeat_breakouts"):
                 counts.bump(spec_id, "repeat_breakouts", good["repeat_breakouts"])
     st = state(spec_id)
@@ -597,6 +599,11 @@ def _apply(spec_id: str, active: dict, validated: dict | None, interrupted: bool
         st["last_error"] = time.time()
     st["last_run"] = run
     st["last_row"] = str(active.get("row") or "")
+    # A run that stopped early and left nothing to list would be invisible: the Learned tab says so instead.
+    if not ok and not rec and existing is None:
+        st["empty_stop"] = {"run": run, "why": "interrupted" if interrupted else "error"}
+    else:
+        st.pop("empty_stop", None)
     st.pop("active", None)
     _save_state(spec_id, st)
     return rec or {}
@@ -637,8 +644,11 @@ def status(spec_id: str) -> dict:
         with _GUARD:
             started = _STARTED.get(spec_id)
         started = started or active.get("started")
+    stop = st.get("empty_stop") if isinstance(st.get("empty_stop"), dict) else {}
+    stopped = stop.get("why") if stop.get("run") and stop.get("run") == st.get("last_run") else None
     return {"last_ok": st.get("last_ok"), "running": is_running, "started": started,
-            "last_row": st.get("last_row") or None, "last_run": st.get("last_run") or None}
+            "last_row": st.get("last_row") or None, "last_run": st.get("last_run") or None,
+            "stopped_empty": stopped}
 
 
 def every_s() -> float:

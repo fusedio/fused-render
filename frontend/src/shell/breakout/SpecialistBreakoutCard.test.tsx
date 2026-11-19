@@ -11,7 +11,7 @@ import {
   resetSpecialistBreakouts,
 } from "@platform/lib/specialist-breakouts";
 import type { ComposerDraftDetail } from "@platform/lib/breakouts";
-import { cardBox, DELETED_POLL_MS, SpecialistBreakoutCard, type SpecialistCardDeps } from "./SpecialistBreakoutCard";
+import { cardBox, clipTitle, DELETED_POLL_MS, SpecialistBreakoutCard, type SpecialistCardDeps } from "./SpecialistBreakoutCard";
 
 const winStubs: Record<string, unknown> = { innerWidth: 2000, innerHeight: 1500 };
 const globalStubs: Record<string, unknown> = {
@@ -290,5 +290,15 @@ describe("the Discard confirm is above the card's chat", () => {
     const rule = /\.spx-card-confirm\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
     expect(rule).toMatch(/position:\s*absolute/);
     expect(rule).toMatch(/z-index:\s*\d+/);
+  });
+});
+
+describe("polish: the header's task title", () => {
+  test("a long title is cut at a word near 40 characters; a short one is kept", () => {
+    const long = 'VB67247: First call mcp__fused_render_specialist_breakout with specialist "Tiles", problem "tile_bounds"';
+    expect(clipTitle(long)).toBe("VB67247: First call…");
+    expect(clipTitle("Publish the Q4 canvas and check the sync log today")).toBe("Publish the Q4 canvas and check the…");
+    expect(clipTitle("Publish Q4 canvas")).toBe("Publish Q4 canvas");
+    expect(clipTitle("Publish the Q4 canvas and check the sync log today").length).toBeLessThanOrEqual(41);
   });
 });

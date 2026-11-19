@@ -17,7 +17,7 @@ export const BOTS_ICON = (
   </svg>
 );
 
-// Specialists (docs/specialists): lucide `graduation-cap` — an expert on one
+// Specialists (docs/specialists): lucide `graduation-cap` — one who knows one
 // subject. Drawn inline like the Bots head so the rail and the row match.
 export const SPECIALISTS_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

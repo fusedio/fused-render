@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 
 from fused_render.specialists import home as hm
@@ -47,7 +48,8 @@ def skill_from_expert(text: str, stem: str) -> str:
     if i < len(lines) and lines[i].lower().startswith("trigger:"):
         trigger, i = lines[i].split(":", 1)[1].strip(), i + 1
     desc = title + (f". Use when the work involves: {trigger}" if trigger else "")
-    body = "\n".join(lines[i:]).strip()
+    # The experts' files call themselves "this expert"; here it is a specialist (PRODUCT: never "expert").
+    body = re.sub(r"\b(this|the) expert\b", r"\1 specialist", "\n".join(lines[i:]).strip())
     return hm.skill_text(stem, desc[:1000], f"# {title}\n\n{body}")
 
 

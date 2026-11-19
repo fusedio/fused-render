@@ -1,7 +1,7 @@
 // FE-A's additions to the specialists API (fix wave CONTRACT C4, C5). The
 // shared fetchers live in platform/lib/specialists-api.ts (FE-B owns it);
 // what only the Specialists page needs is spelled here.
-import { getJson } from "@platform/lib/api";
+import { getJson, mutateJson } from "@platform/lib/api";
 import { SPECIALISTS_API, type ChangeItem, type SpecialistSummary } from "@platform/lib/specialists-api";
 
 const one = (id: string) => `${SPECIALISTS_API}/${encodeURIComponent(id)}`;
@@ -12,8 +12,21 @@ export interface NightlyStatus {
   running: boolean;
   last_row: Record<string, unknown> | string | null;
   started?: number | null;
+  /** The last update stopped early and changed nothing ("interrupted" | "error"), else null. */
+  stopped_empty?: "interrupted" | "error" | string | null;
 }
 export const getNightlyStatus = (id: string) => getJson<NightlyStatus>(`${one(id)}/nightly`);
+
+/** Opening the Learned tab: every update up to `run` is seen ("Learned · N new" clears). */
+export const markLearnedSeen = (id: string, run: string) =>
+  mutateJson<{ seen: string; new: number }>("POST", `${one(id)}/learned/seen`, { run });
+
+/** The quiet line for an update that stopped early and changed nothing (null: none). */
+export function stoppedLine(why: string | null | undefined): string | null {
+  if (why === "interrupted") return "The last update was interrupted and changed nothing. Run now to try again.";
+  if (why === "error") return "The last update stopped with an error and changed nothing. Run now to try again.";
+  return null;
+}
 
 /** A list row with C5's `model`. */
 export type SpecialistRow = SpecialistSummary & { model?: string };

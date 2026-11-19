@@ -214,19 +214,60 @@ def test_sentence_and_plain_text():
 
 
 def test_reconcile_lists_every_changed_entry():
-    """QA defect 4: a run raised seen= with no item; the list must still show it, with its exact lines."""
+    """QA defect 4: every entry whose words the run changed has an item, with its exact lines. An entry whose
+    counts alone rose (seen= / confirmed= / from=) is not an item: it is counted as confirmed again."""
     old = ("# Memory\n- [m-0001] Keep. {basis=guess; seen=1}\n- [m-0002] Seen more. {basis=verified; seen=1}\n"
-           "- [m-0003] Gone. {basis=guess; seen=1}\n")
-    new = ("# Memory\n- [m-0001] Keep. {basis=guess; seen=1}\n- [m-0002] Seen more. {basis=verified; seen=12}\n"
-           "- [m-0004] Fresh. {basis=user-said; seen=1}\n")
+           "- [m-0003] Gone. {basis=guess; seen=1}\n- [m-0005] Was a guess. {basis=guess; seen=1}\n")
+    new = ("# Memory\n- [m-0001] Keep. {basis=guess; seen=1}\n"
+           "- [m-0002] Seen more. {basis=verified; seen=12; confirmed=2026-11-18; from=breakout b-1}\n"
+           "- [m-0004] Fresh. {basis=user-said; seen=1}\n- [m-0005] Was a guess. {basis=verified; seen=2}\n")
     items = changes.reconcile([{"kind": "Learned", "text": "Fresh.", "entry": "m-0004", "file": "memory.md",
                                 "from": ["n-1"]}], old, new)
     got = [(it["kind"], it["entry"], it["before"], it["after"]) for it in items]
     assert got == [("Learned", "m-0004", None, "- [m-0004] Fresh. {basis=user-said; seen=1}"),
-                   ("Changed", "m-0002", "- [m-0002] Seen more. {basis=verified; seen=1}",
-                    "- [m-0002] Seen more. {basis=verified; seen=12}"),
+                   ("Changed", "m-0005", "- [m-0005] Was a guess. {basis=guess; seen=1}",
+                    "- [m-0005] Was a guess. {basis=verified; seen=2}"),
                    ("Changed", "m-0003", "- [m-0003] Gone. {basis=guess; seen=1}", None)]
-    assert items[1]["text"].startswith("Updated how often this was seen") and items[2]["text"] == "Removed: Gone."
+    assert items[2]["text"] == "Removed: Gone."
+    assert changes.confirmed_again(old, new) == 1
+
+
+def test_bookkeeping_is_counted_not_listed():
+    """Polish 1: the job listed "pulled again and still in use" items; they are not changes a person reads."""
+    old = ("# Memory\n- [m-7a01] Codeword is MANGO. {basis=user-said; seen=3; confirmed=2026-11-17; from=user}\n"
+           "- [m-7a02] Tiles are 512 px. {basis=user-said; seen=3; from=user}\n"
+           "- [m-7a03] y counts from the top. {basis=user-said; seen=1}\n")
+    new = ("# Memory\n- [m-7a01] Codeword is MANGO. {basis=user-said; seen=6; confirmed=2026-11-18; from=user, b-1}\n"
+           "- [m-7a02] Tiles are 512 px. {basis=user-said; seen=6; from=user}\n"
+           "- [m-7a03] y counts from the top, never TMS. {basis=user-said; seen=2}\n")
+    listed = [{"kind": "Learned", "text": "The codeword rule was pulled again and is still in use.", "entry": "m-7a01",
+               "file": "memory.md", "from": []},
+              {"kind": "Learned", "text": "The tile size rule was pulled again.", "entry": "m-7a02", "from": []}]
+    items = changes.reconcile(listed, old, new)
+    # the job forgot the real wording change: the app adds it; the two bookkeeping items are gone
+    assert [(it["kind"], it["entry"]) for it in items] == [("Changed", "m-7a03")]
+    assert items[0]["text"] == "Changed: y counts from the top, never TMS."
+    assert changes.confirmed_again(old, new) == 2
+    assert changes.words(new.splitlines()[1]) == "Codeword is MANGO. {basis=user-said}"
+    assert changes.summary_line("Read 2 notes.", items, 2) == "Read 2 notes. 2 entries were confirmed again."
+    assert changes.summary_line("Read 2 notes.", [], 5) == "Nothing new was learned; 5 entries were confirmed again."
+    assert changes.summary_line("Read 2 notes.", [], 1) == "Nothing new was learned; 1 entry was confirmed again."
+    assert changes.summary_line("Read 2 notes.", items, 0) == "Read 2 notes."
+
+
+def test_old_record_with_bookkeeping_items_reads_clean(api):
+    """A change list saved before polish 1 still listed bookkeeping: it is dropped and counted when read."""
+    s = make_specialist()
+    b = "- [m-7a01] Codeword is MANGO. {basis=user-said; seen=3; from=user}"
+    a = "- [m-7a01] Codeword is MANGO. {basis=user-said; seen=6; from=user}"
+    changes.save(s.id, RUN, summary="Read 1 note.", commit="", row="", status="done", fallback=False, drafts=[],
+                 items=[{"kind": "Learned", "text": "Pulled again.", "entry": "m-7a01", "file": "memory.md",
+                         "from": [], "before": b, "after": a}])
+    code, _h, body = api.get(f"/api/specialists/{s.id}/learned")
+    run = body["runs"][0]
+    assert run["items"] == [] and run["summary"] == "Nothing new was learned; 1 entry was confirmed again."
+    code, _h, p = api.get(f"/api/specialists/{s.id}/panel")
+    assert p["learned"]["total"] == 0 and p["learned"]["new"] == 0
 
 
 def test_ignored_and_from_decide_digested():
@@ -295,8 +336,8 @@ def test_revert_names_one_change_and_marks_the_rest(monkeypatch, api):
     run = rec["run"]
     by = {it["text"]: it for it in rec["items"]}
     assert set(by) == {"Sync stalls: reopen, do not retry.", "Publish to staging first.",
-                       "A check for stalled syncs.", "Added the file knowledge/fonts.md.",
-                       "Updated how often this was seen or confirmed: Fonts load from /assets."}
+                       "A check for stalled syncs.", "Added the file knowledge/fonts.md."}
+    assert rec["confirmed"] == 1  # m-a002's seen= rose: counted, not an item
     first = rec["items"][0]
     monkeypatch.setattr(chat, "state", lambda sid: {"current": "main-1", "folded": []})
     code, _h, body = api.post(f"/api/specialists/{s.id}/changes/{run}/{first['id']}/revert", {})
@@ -349,3 +390,23 @@ def test_whole_file_restore_marks_every_other_item_changed(monkeypatch, api):
     other = rec["items"][1]["id"]
     code, _h, body = api.post(f"/api/specialists/{s.id}/changes/{rec['run']}/{other}/revert", {})
     assert code == 409 and "changed since" in body["error"]
+
+
+def test_learned_new_count_clears_when_seen(api):
+    """Polish 2: "Learned · N new" counts items of updates newer than the last one opened; opening clears it."""
+    s = make_specialist()
+    _seed_changes(s)
+    code, _h, p = api.get(f"/api/specialists/{s.id}/panel")
+    assert p["learned"]["new"] == 2
+    code, _h, body = api.post(f"/api/specialists/{s.id}/learned/seen", {"run": RUN})
+    assert code == 200 and body == {"seen": RUN, "new": 0}
+    assert api.get(f"/api/specialists/{s.id}/panel")[2]["learned"]["new"] == 0
+    later = "20261119-030000-beef"
+    changes.save(s.id, later, summary="s", commit="", row="", status="done", fallback=False, drafts=[],
+                 items=[{"kind": "Learned", "text": "One more.", "entry": None, "file": "people.md", "from": []}])
+    assert api.get(f"/api/specialists/{s.id}/panel")[2]["learned"]["new"] == 1
+    # never moves back; a bad run id is a 404
+    assert api.post(f"/api/specialists/{s.id}/learned/seen", {"run": RUN})[2]["new"] == 1
+    assert api.post(f"/api/specialists/{s.id}/learned/seen", {"run": "x"})[0] == 404
+    api.post(f"/api/specialists/{s.id}/learned/seen", {"run": later})
+    assert changes.seen_run(s.id) == later and changes.new_count(s.id) == 0

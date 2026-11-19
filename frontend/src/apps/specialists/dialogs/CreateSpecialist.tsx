@@ -63,7 +63,7 @@ export function CreateSpecialist({
   const submit = async () => {
     const errs: { name?: string; subject?: string } = {};
     if (!name.trim()) errs.name = "Give it a name.";
-    if (!subject.trim()) errs.subject = "Say in one line what it is an expert on.";
+    if (!subject.trim()) errs.subject = "Say in one line what subject it knows.";
     setFieldErr(errs);
     if (errs.name || errs.subject) {
       (errs.name ? first : subjectRef).current?.focus();
@@ -152,7 +152,7 @@ export function CreateSpecialist({
             {...(fieldErr.name ? { "aria-describedby": errId("name") } : {})}
           />
         </Field>
-        <Field label="Subject" required hint={errHint("subject", "One line: what it is an expert on.")}>
+        <Field label="Subject" required hint={errHint("subject", "One line: the subject it knows in depth.")}>
           <TextInput
             ref={subjectRef}
             value={subject}

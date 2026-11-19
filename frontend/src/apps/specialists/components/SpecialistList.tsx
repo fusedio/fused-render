@@ -90,7 +90,7 @@ export function SpecialistList({
           </span>
         </button>
       ) : null}
-      <p className="spx-list-foot">Each specialist is an expert on one subject. Tasks can ask any of them for help.</p>
+      <p className="spx-list-foot">Each specialist knows one subject in depth. Tasks can ask any of them for help.</p>
     </nav>
   );
 }

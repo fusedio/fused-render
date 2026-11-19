@@ -550,8 +550,8 @@ const ENTRIES = [
     group: "features",
     section: "Sidebar",
     label: "Specialists",
-    description: "Experts on one subject each, with their own memory and skills. Chat with one on its own page, and tasks can borrow its guidance or hand it a problem in a breakout. Each one learns from what happened overnight.",
-    keywords: "specialist expert memory skills breakout learn nightly inbox",
+    description: "Each one knows one subject in depth and has its own memory and skills. Chat with one on its own page, and tasks can borrow its guidance or hand it a problem in a breakout. Each one learns from what happened overnight.",
+    keywords: "specialist memory skills breakout learn nightly inbox",
     badge: "Beta",
   },
   {

@@ -243,6 +243,7 @@ function panelApi(over: Partial<PanelApi> = {}): PanelApi & { log: unknown[] } {
         at: 0,
         summary: "Read 9 notes.",
         total: 4,
+        new: 4,
         items: [
           { id: "i1", kind: "Learned", text: "When a sync stalls, reopen the canvas.", state: "active" },
           { id: "i2", kind: "Corrected", text: "Filters are re-linked after a layout change.", state: "reverted" },
@@ -793,5 +794,93 @@ describe("dialogs", () => {
     });
     expect(hasText(r, "Creating…")).toBe(true);
     await act(async () => resolve(SPEC));
+  });
+});
+
+describe("polish: Learned list and its counts", () => {
+  test("See all follows the unseen count; a bookkeeping-only update says so", async () => {
+    const api = panelApi({
+      getPanel: async () => ({
+        learned: { run: "r2", at: 0, summary: "Nothing new was learned; 5 entries were confirmed again.", total: 0, new: 0, items: [] },
+        waiting: [],
+        inbox: { count: 0 },
+        tasks: { helping_now: [], guided_week: 0 },
+      }),
+    });
+    const r = render(<SidePanel specialistId="c1" sendToChat={() => true} onOpenSettings={() => {}} api={api} />);
+    await flush();
+    expect(hasText(r, "Nothing new was learned; 5 entries were confirmed again.")).toBe(true);
+    expect(hasText(r, "See all")).toBe(false);
+    const seen = panelApi({ getPanel: async () => ({ ...(await panelApi().getPanel("c1")), learned: { ...(await panelApi().getPanel("c1")).learned!, new: 0 } }) });
+    const r2 = render(<SidePanel specialistId="c1" sendToChat={() => true} onOpenSettings={() => {}} api={seen} />);
+    await flush();
+    expect(() => button(r2, "See all")).not.toThrow();
+    expect(hasText(r2, "See all 4")).toBe(false);
+  });
+
+  function learnedApi(over: Partial<LearnedApi> = {}): LearnedApi & { seen: string[] } {
+    const seen: string[] = [];
+    return {
+      seen,
+      getLearned: async () => ({
+        runs: [
+          { run: "r2", at: 0, summary: "Nothing new was learned; 3 entries were confirmed again.", items: [], confirmed: 3 },
+          { run: "r1", at: 0, summary: "Read 2 notes.", items: [{ id: "i1", kind: "Learned", text: "Publish to staging first." }] },
+        ],
+      }),
+      listDrafts: async () => ({ drafts: [] }),
+      getNightly: async () => ({ last_ok: null, running: false, last_row: null }),
+      runNightly: async () => ({ row: "x" }) as never,
+      revertChange: async () => ({ message: "", session_id: null }),
+      sendDraft: async () => ({ message: "", session_id: null }),
+      discardDraft: async () => ({ ok: true as const }),
+      markSeen: async (id, run) => (seen.push(`${id}/${run}`), { seen: run, new: 0 }),
+      ...over,
+    };
+  }
+
+  test("opening Learned marks the newest update seen, once", async () => {
+    const api = learnedApi();
+    let told = 0;
+    const r = render(<LearnedTab specialistId="c1" sendToChat={() => true} api={api} onSeen={() => told++} />);
+    await flush();
+    expect(api.seen).toEqual(["c1/r2"]);
+    expect(told).toBe(1);
+    expect(hasText(r, "Nothing new was learned; 3 entries were confirmed again.")).toBe(true);
+    expect(hasText(r, "No changes.")).toBe(true);
+  });
+
+  test("an interrupted update that changed nothing gets one quiet line", async () => {
+    const api = learnedApi({
+      getLearned: async () => ({ runs: [] }),
+      getNightly: async () => ({ last_ok: null, running: false, last_row: null, stopped_empty: "interrupted" }),
+    });
+    const r = render(<LearnedTab specialistId="c1" sendToChat={() => true} api={api} />);
+    await flush();
+    expect(hasText(r, "The last update was interrupted and changed nothing. Run now to try again.")).toBe(true);
+    expect(hasText(r, "No updates yet")).toBe(false);
+  });
+
+  test("Learned · N new stays while the tab is up, and is gone once the user moves on", async () => {
+    const el = (tab: "learned" | "memory") => (
+      <SpecialistSettings specialist={SPEC} tab={tab} onTab={() => {}} onClose={() => {}} sendToChat={() => true} onSaved={() => {}} onDeleted={() => {}} learnedCount={6} />
+    );
+    const r = render(el("learned"));
+    const label = () => textOf(r.root.findAll((n) => n.props.role === "tab")[0]!);
+    expect(label()).toBe("Learned · 6 new");
+    // the tab marks it seen
+    const tab = r.root.find((n) => n.type === LearnedTab);
+    act(() => tab.props.onSeen());
+    expect(label()).toBe("Learned · 6 new");
+    await act(async () => r.update(el("memory")));
+    expect(label()).toBe("Learned");
+  });
+
+  test("the list's foot never calls a specialist an expert", () => {
+    const r = render(
+      <SpecialistList rows={[]} selected={null} loading={false} error="" onSelect={() => {}} onCreate={() => {}} generalCount={0} onOpenGeneral={() => {}} />,
+    );
+    expect(hasText(r, "Each specialist knows one subject in depth. Tasks can ask any of them for help.")).toBe(true);
+    expect(textOf(r.root).toLowerCase()).not.toContain("expert");
   });
 });

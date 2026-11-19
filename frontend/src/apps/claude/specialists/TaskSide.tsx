@@ -13,7 +13,7 @@
 //
 // Everything is null with the flag off, and inside a specialist session the
 // task-side parts are null too (a breakout cannot open a breakout, P).
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSpecialistsEnabled } from "@platform/lib/specialists-flag";
 import {
   clearSummaryDraft,
@@ -30,7 +30,7 @@ import { PermCard } from "../ui/PermCard";
 import { BreakoutMenu } from "./BreakoutMenu";
 import { OFFER_TOOL, type SpecialistCards, type SpecialistSessionProp } from "./context";
 import { OfferCard } from "./OfferCard";
-import { parseSummary, protocolTurnView, SummaryRows } from "./protocol-view";
+import { parseSummary, protocolTurnView, SummaryRows, type SummaryField } from "./protocol-view";
 import { SendToSpecialist } from "./SendToSpecialist";
 import { isServiceTool, ServiceCardExtra } from "./ServiceCardExtra";
 import { endedBreakouts, latestPerBreakout, placeEvents, TaskEventChips } from "./TaskEventChips";
@@ -82,8 +82,22 @@ function finishedTools(turns: readonly Turn[]): number {
   return n;
 }
 
+/** In the draft block the two rows a reader acts on come first. */
+export const DRAFT_FIRST = ["Outcome", "Do next"];
+export function draftFields(text: string): SummaryField[] {
+  const fields = parseSummary(text);
+  const first = DRAFT_FIRST.flatMap((l) => fields.filter((f) => f.label === l));
+  return [...first, ...fields.filter((f) => !DRAFT_FIRST.includes(f.label))];
+}
+
+/** The draft block's share of the chat pane's height; the body scrolls inside. */
+export const DRAFT_MAX_SHARE = 0.4;
+
 /** THE SUMMARY DRAFT, its own block above the composer (TaskReturn mock):
- *  who it is from, the summary laid out, Clear draft and Send to the task. */
+ *  who it is from, the summary laid out, Clear draft and Send to the task.
+ *  At most ~40% of the chat pane tall (the body scrolls, the head and the
+ *  buttons stay), Outcome and Do next first, and after a second close the
+ *  newest summary on top with the earlier ones folded behind "Earlier summary". */
 export function SummaryDraftBlock({
   parts,
   onClear,
@@ -93,7 +107,23 @@ export function SummaryDraftBlock({
   onClear: () => void;
   onSend: () => void;
 }) {
-  if (!parts.length) return null;
+  const ref = useRef<HTMLElement | null>(null);
+  const [maxH, setMaxH] = useState<number | null>(null);
+  const hasParts = parts.length > 0;
+  useLayoutEffect(() => {
+    const pane = ref.current?.closest(".c-chat") as HTMLElement | null;
+    if (!pane) return;
+    const fit = () => {
+      const h = pane.clientHeight;
+      if (h > 0) setMaxH(Math.max(120, Math.round(h * DRAFT_MAX_SHARE)));
+    };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(pane);
+    return () => ro.disconnect();
+  }, [hasParts]);
+  if (!hasParts) return null;
   const names = [...new Set(parts.map((p) => p.name).filter(Boolean))];
   const label =
     names.length === 1
@@ -101,15 +131,27 @@ export function SummaryDraftBlock({
       : names.length > 1
         ? `Draft from the ${names.join(" and ")} specialists · not sent yet`
         : parts[0]!.label;
+  // Newest first; the rest stay one click away.
+  const ordered = [...parts].sort((a, b) => (b.at || 0) - (a.at || 0));
+  const [latest, ...earlier] = ordered;
   return (
-    <section className="spx-draft" aria-label={label}>
+    <section
+      ref={ref}
+      className="spx-draft"
+      aria-label={label}
+      style={maxH ? { maxHeight: `${maxH}px` } : undefined}
+    >
       <div className="spx-draft-head">
         <span className="spx-draft-label-text">{label}</span>
         <span className="spx-draft-label-hint">Add your own words in the message box; they go first.</span>
       </div>
       <div className="spx-draft-body">
-        {parts.map((p, i) => (
-          <SummaryRows key={`${p.at}:${i}`} fields={parseSummary(p.text)} />
+        <SummaryRows fields={draftFields(latest!.text)} />
+        {earlier.map((p, i) => (
+          <details key={`${p.at}:${i}`} className="spx-draft-earlier">
+            <summary>{earlier.length > 1 ? `Earlier summary ${i + 1}` : "Earlier summary"}</summary>
+            <SummaryRows fields={draftFields(p.text)} />
+          </details>
         ))}
       </div>
       <div className="spx-draft-actions">

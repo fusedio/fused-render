@@ -6,7 +6,8 @@
     POST   …/{id}/changes/{run}/{item}/revert   {"message","session_id"}: the page sends it into the main chat;
                                                 409 {"error","reason":"gone"} for an item reverted or changed since
     POST   …/{id}/nightly/run                   202 {"row"} / 409 {"error","reason":"busy"}
-    GET    …/{id}/nightly                       {"last_ok","running","last_row","last_run","started"}
+    GET    …/{id}/nightly                       {"last_ok","running","last_row","last_run","started","stopped_empty"}
+    POST   …/{id}/learned/seen {"run"}          the Learned tab was opened: updates up to `run` are seen
     GET    …/{id}/memory                        always-loaded entries with provenance, size against the cap, knowledge
     GET    …/{id}/inbox                         undigested notes, newest first
     POST   …/{id}/notes                         "Send to a specialist" ({id} may be `general`): a user-said note
@@ -111,12 +112,13 @@ def general_delete(nid: str, x_fused: str | None = Header(None)):
 def panel(spec_id: str):
     from fused_render.specialists import changes, drafts, inbox
     _spec(spec_id)
-    runs = changes.runs(spec_id, limit=1)
+    runs = changes.runs(spec_id, limit=50)
     learned = None
     if runs:
         r = runs[0]
+        # `new`: items of the updates newer than the last one opened in the Learned tab ("Learned · N new").
         learned = {"run": r["run"], "at": r.get("at"), "summary": r.get("summary", ""),
-                   "items": r["items"][:3], "total": len(r["items"])}
+                   "items": r["items"][:3], "total": len(r["items"]), "new": changes.new_count(spec_id, runs)}
     helping, guided = [], 0
     try:
         from fused_render.specialists import breakouts
@@ -141,8 +143,24 @@ def learned(spec_id: str, limit: int = 5):
     from fused_render.specialists import changes
     _spec(spec_id)
     return {"runs": [{"run": r["run"], "at": r.get("at"), "summary": r.get("summary", ""), "status": r.get("status"),
-                      "commit": r.get("commit", ""), "items": r["items"]}
+                      "commit": r.get("commit", ""), "items": r["items"],
+                      "confirmed": r.get("confirmed", 0)}
                      for r in changes.runs(spec_id, limit=max(1, min(int(limit), 50)))]}
+
+
+@router.post(PREFIX + "/{spec_id}/learned/seen")
+@_handled
+def learned_seen(spec_id: str, body: dict = Body(default={}), x_fused: str | None = Header(None)):
+    """The Learned tab was opened: the updates up to `run` are seen (the "N new" count clears)."""
+    if (bad := _require_fused(x_fused)) is not None:
+        return bad
+    from fused_render.specialists import changes
+    _spec(spec_id)
+    try:
+        run = changes.mark_seen(spec_id, str((body or {}).get("run") or ""))
+    except LookupError:
+        raise _NotFound("no such update") from None
+    return {"seen": run, "new": changes.new_count(spec_id)}
 
 
 @router.post(PREFIX + "/{spec_id}/changes/{run}/{item}/revert")

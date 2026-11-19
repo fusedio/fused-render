@@ -149,14 +149,22 @@
 .spx-receipt-empty { color: var(--c-dim); }
 
 /* The summary draft: its own block above the composer (TaskReturn mock). */
+/* At most ~40% of the chat pane (TaskSide sets the px from the pane's height;
+   40vh before it has measured): the head and the buttons stay, the body
+   scrolls. The dock never shrinks the composer: the log gives way instead. */
+.spx-dock { flex: 0 0 auto; }
 .spx-draft {
   border: 1px solid var(--spx-tint); border-radius: 10px; background: var(--c-card-bg);
   padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 13px;
-  max-height: 40vh; overflow: auto;
+  max-height: 40vh; min-height: 0; overflow: hidden;
 }
-.spx-draft-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; font-size: 12px; }
-.spx-draft-body { display: flex; flex-direction: column; gap: 10px; }
-.spx-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.spx-draft-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; font-size: 12px; flex: none; }
+.spx-draft-body { display: flex; flex-direction: column; gap: 10px; flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+.spx-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; flex: none; }
+.spx-draft-earlier > summary { cursor: pointer; color: var(--c-dim); font-size: 12px; padding: 2px 0; }
+.spx-draft-earlier[open] > summary { margin-bottom: 6px; }
+/* With a draft above it the open composer keeps at least three lines. */
+.c-chat:has(.spx-draft) .c-composer:not(.is-idle) textarea { min-height: calc(4.5em + 8px); }
 .spx-summary-rows { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 12px; }
 .spx-summary-row { display: contents; }
 .spx-proto-val { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--c-fg); }

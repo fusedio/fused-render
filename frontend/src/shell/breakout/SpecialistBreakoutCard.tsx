@@ -79,6 +79,16 @@ const CASCADE_X = 28;
 /** Where a card opens: beside the task's chat when there is room (to its
  *  left, over the middle pane; else to its right), otherwise at the window's
  *  left edge; each further card steps down and in. Viewport px. */
+/** A task title for the card's header: at most `max` characters, cut at a word, with an ellipsis. */
+export const TITLE_MAX = 40;
+export function clipTitle(title: string, max = TITLE_MAX): string {
+  const t = (title || "").replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const sp = cut.lastIndexOf(" ");
+  return (sp >= max * 0.4 ? cut.slice(0, sp) : cut).replace(/[\s,.;:·(\-]+$/, "") + "…";
+}
+
 export function cardBox(
   anchor: CardData["anchor"] | undefined,
   cascade: number,
@@ -278,7 +288,10 @@ export function SpecialistBreakoutCard({
   };
 
   const name = card.specialistName;
-  const from = card.parentTitle ? `Breakout from ${card.parentTitle}` : "Breakout from this task";
+  // The task's title can be a whole prompt: the header shows ~40 characters of it, cut at a word, and
+  // the hint holds all of it. The specialist's name above it is never cut.
+  const fullFrom = card.parentTitle ? `Breakout from ${card.parentTitle}` : "Breakout from this task";
+  const from = card.parentTitle ? `Breakout from ${clipTitle(card.parentTitle)}` : fullFrom;
   const second = deleted ? "This specialist was deleted" : closing ? "Writing the summary…" : from;
   const head = (
     <span className="spx-card-who">
@@ -291,7 +304,7 @@ export function SpecialistBreakoutCard({
       </span>
       <span className="spx-card-lines">
         <span className="spx-card-name">{name} specialist</span>
-        <span className={"spx-card-from" + (closing ? " is-busy" : "")} data-hint={from} role={closing ? "status" : undefined}>
+        <span className={"spx-card-from" + (closing ? " is-busy" : "")} data-hint={fullFrom} role={closing ? "status" : undefined}>
           {second}
         </span>
       </span>
@@ -304,7 +317,7 @@ export function SpecialistBreakoutCard({
       label={`Breakout with the ${name} specialist`}
       title={`${name} specialist`}
       note={second}
-      noteHint={from}
+      noteHint={fullFrom}
       head={head}
       className="is-specialist"
       initialBox={box}

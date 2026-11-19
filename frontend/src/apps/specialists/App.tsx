@@ -166,7 +166,7 @@ export function Specialists() {
               <div className="spx-empty-copy">
                 <h1>Specialists</h1>
                 <p className="spx-muted">
-                  A specialist is an expert on one subject with its own memory and skills. Chat with it here; your tasks can
+                  A specialist knows one subject in depth and has its own memory and skills. Chat with it here; your tasks can
                   borrow its guidance or hand it a problem.
                 </p>
                 <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>

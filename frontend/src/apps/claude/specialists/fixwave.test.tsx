@@ -29,7 +29,7 @@ import {
 } from "./protocol-view";
 import { ServiceCardExtra } from "./ServiceCardExtra";
 import { latestPerBreakout, ReceiptSheet, TaskEventChip, viewFromText } from "./TaskEventChips";
-import { useSpecialistTaskSide, type TaskSide } from "./TaskSide";
+import { draftFields, SummaryDraftBlock, useSpecialistTaskSide, type TaskSide } from "./TaskSide";
 import { specialistToolLabel } from "./tool-labels";
 import { setSpecialistListForTests } from "./useTaskEvents";
 
@@ -224,6 +224,35 @@ describe("the summary draft, its own block above the composer", () => {
     });
     expect(readSummaryDraft("s1", "/w/proj")).toHaveLength(0);
     resetSpecialistsFlagForTests();
+  });
+});
+
+describe("polish: the summary draft fits the narrow pane", () => {
+  const first = { text: "Outcome: first try\nFound: old finding\nDo next: old step", label: "L", name: "Tiles", at: 1 };
+  const second = { text: "Found: a long finding\nFiles changed: None\nDo next: check the caller\nOutcome: reported", label: "L", name: "Tiles", at: 2 };
+
+  test("Outcome and Do next come first", () => {
+    expect(draftFields(second.text).map((f) => f.label)).toEqual(["Outcome", "Do next", "Found", "Files changed"]);
+  });
+
+  test("capped at 40% of the chat pane, newest summary on top, the earlier one behind Earlier summary", () => {
+    let r!: ReactTestRenderer;
+    const pane = { clientHeight: 500 };
+    act(() => {
+      r = create(<SummaryDraftBlock parts={[first, second]} onClear={() => {}} onSend={() => {}} />, {
+        createNodeMock: (el) => (el.type === "section" ? { closest: (sel: string) => (sel === ".c-chat" ? pane : null) } : null),
+      });
+    });
+    mounted.push(r);
+    const section = r.root.find((n) => n.type === "section");
+    expect(section.props.style).toEqual({ maxHeight: "200px" });
+    const body = r.root.find((n) => n.props.className === "spx-draft-body");
+    // the newest summary's rows are the first thing in the body, Outcome first
+    expect(textOf(body).startsWith("Outcomereported")).toBe(true);
+    const earlier = r.root.findAll((n) => n.type === "details");
+    expect(earlier).toHaveLength(1);
+    expect(textOf(earlier[0]!.find((n) => n.type === "summary"))).toBe("Earlier summary");
+    expect(textOf(earlier[0]!)).toContain("first try");
   });
 });
 

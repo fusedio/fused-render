@@ -161,9 +161,10 @@ export function SidePanel({
       <section className="spx-side-sec" aria-labelledby={`spx-learned-${specialistId}`}>
         <div className="spx-side-head">
           <h2 id={`spx-learned-${specialistId}`}>Latest update</h2>
-          {learned && learned.total > 0 ? (
+          {learned && (learned.total > 0 || (learned.new ?? 0) > 0) ? (
             <button type="button" className="spx-linkbtn" onClick={() => onOpenSettings("learned")}>
-              See all {learned.total}
+              {/* The same number as "Learned · N new": what the user has not opened yet. */}
+              {(learned.new ?? 0) > 0 ? `See all ${learned.new}` : "See all"}
             </button>
           ) : null}
         </div>
@@ -204,7 +205,13 @@ export function SidePanel({
             })}
           </>
         ) : (
-          <div className="spx-muted spx-small">{panel ? "Nothing changed in the last update." : "Loading…"}</div>
+          <div className="spx-muted spx-small">
+            {!panel
+              ? "Loading…"
+              : learned?.summary?.startsWith("Nothing new was learned")
+                ? learned.summary
+                : "Nothing changed in the last update."}
+          </div>
         )}
       </section>
 
