@@ -1,7 +1,7 @@
 """A local stand-in for an S3 bucket that speaks Range, ETag and If-Match,
 plus the `bucket` fixture that serves it on loopback over plain http (which
-DuckDB's httpfs and GDAL's /vsicurl/ read like any URL). Used by
-tests/test_duckdb_stream.py and tests/test_geotiff_stream.py.
+DuckDB's httpfs and GDAL's /vsicurl/ read like any URL). Used by the
+tests/test_*_stream.py suites.
 """
 import hashlib
 import threading
@@ -16,6 +16,8 @@ class _Bucket:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
         self.log: list = []
+        self.sent: dict[str, int] = {}
+        self.lock = threading.Lock()
         self.deny_next = 0       # answer this many requests with 403
         self.ignore_range = False
         bucket = self
@@ -41,7 +43,8 @@ class _Bucket:
                     return self._send(412, b"")
                 if rng and not bucket.ignore_range:
                     a, _, b = rng[6:].partition("-")
-                    a, b = int(a), min(int(b), len(data) - 1)
+                    a, b = ((int(a), min(int(b), len(data) - 1)) if a
+                            else (max(0, len(data) - int(b)), len(data) - 1))
                     if a >= len(data):
                         return self._send(416, b"")
                     return self._send(206, data[a:b + 1], etag,
@@ -63,6 +66,9 @@ class _Bucket:
                 self.end_headers()
 
             def _send(self, status, body, etag=None, cr=None):
+                key = self.path.split("?")[0]
+                with bucket.lock:
+                    bucket.sent[key] = bucket.sent.get(key, 0) + len(body)
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(body)))
                 if etag:

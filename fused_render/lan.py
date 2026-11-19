@@ -227,10 +227,12 @@ _READ_ROUTES = frozenset({"/api/fs/raw", "/api/fs/stat", "/api/fs/list", "/api/f
 def _resolve(value, anchor) -> str | None:
     """A path argument as the inner route will see it: absolute as-is, relative
     against the directory of ``anchor`` (the page's own path). None = cannot
-    resolve (relative with no anchor) — treated as out of scope."""
+    resolve (a URL, or relative with no anchor) — treated as out of scope."""
     if not isinstance(value, str) or not value.strip():
         return None
     value = os.path.expanduser(value.strip())
+    if "://" in value:
+        return None
     if os.path.isabs(value):
         return value
     if not isinstance(anchor, str) or not os.path.isabs(anchor):

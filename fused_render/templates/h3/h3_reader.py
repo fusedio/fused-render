@@ -1,124 +1,94 @@
 """H3 hexagon preview reader for fused-render.
 
-Reads a parquet file with the app's bundled duckdb, finds the H3 cell-index
-column (by name, else by validating the uint64 bit pattern), and returns
-cell ids as hex strings plus the attribute columns. Boundary polygons are
-computed client-side with h3-js, so no H3 python dependency is needed.
-"""
+Reads a parquet file (a local path, or a streamed S3 object's signed https URL
+read with DuckDB's httpfs), finds the H3 cell-index column with condition.py's
+footer-first detection, and returns cell ids as hex strings plus attribute
+columns. Boundary polygons are computed client-side with h3-js.
 
-H3_NAMES = ("hex", "h3", "h3_index", "h3index", "h3_cell", "cell", "cell_id",
-            "hex_id", "h3_id", "index")
+DuckDB fetches whole column chunks of the row groups a LIMIT touches, so a
+streamed object reads only the H3 column and the colour column. Streamed reads
+share one DuckDB per process (the folder's warm worker): httpfs, the footer
+and the chunks already fetched stay loaded, so a colour change moves only the
+new column.
+"""
+import os
+import threading
+
+import duckdb
+
+from condition import connect, h3_column, ident, is_url
+
 MAX_CELLS = 80_000
 
-
-def _looks_h3_int(v):
-    # H3 cell index: mode field (bits 59-62) == 1, high bit 0
-    try:
-        v = int(v)
-    except (TypeError, ValueError):
-        return False
-    return v > 0 and (v >> 63) == 0 and ((v >> 59) & 0xF) == 1
+_stream_db = None
+_stream_lock = threading.Lock()
 
 
-def _looks_h3_str(v):
-    s = str(v).strip().lower()
-    if not (8 <= len(s) <= 16):
-        return False
-    try:
-        return _looks_h3_int(int(s, 16))
-    except ValueError:
-        return False
+def _cursor(file):
+    global _stream_db
+    if not is_url(file):
+        return duckdb.connect()
+    with _stream_lock:
+        if _stream_db is None:
+            _stream_db = connect(file)
+        return _stream_db.cursor()
 
 
-def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS):
-    import os
-    max_cells = int(max_cells)
+def _cell(v):
+    if isinstance(v, (int, float)):
+        return int(v) if isinstance(v, int) else (None if v != v else v)
+    return None if v is None else str(v)[:120]
+
+
+def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS, color_by: str = ""):
     if not file:
         return {"error": "no file selected"}
-    file = os.path.abspath(os.path.expanduser(file))
-    if not os.path.isfile(file):
-        return {"error": f"not a file: {file}"}
+    if not is_url(file):
+        file = os.path.abspath(os.path.expanduser(file))
+        if not os.path.isfile(file):
+            return {"error": f"not a file: {file}"}
+    with _cursor(file) as con:
+        return _read(con, file, h3_col, color_by, int(max_cells))
 
-    import duckdb
-    con = duckdb.connect()
-    q = lambda sql: con.execute(sql).fetchall()
-    src = file.replace("'", "''")
+
+def _read(con, file, h3_col, color_by, max_cells):
+    q = lambda sql: con.execute(sql, [file]).fetchall()
     try:
-        schema = q(f"DESCRIBE SELECT * FROM '{src}'")
-        total = q(f"SELECT count(*) FROM '{src}'")[0][0]
-    except Exception as e:  # noqa: BLE001
+        types = dict(r[:2] for r in q("DESCRIBE SELECT * FROM read_parquet(?)"))
+        total = q("SELECT count(*) FROM read_parquet(?)")[0][0]
+        size = q("SELECT size FROM read_blob(?)")[0][0]
+        cand = h3_col or h3_column(con, file)
+    except duckdb.Error as e:
         return {"error": f"could not read parquet: {type(e).__name__}: {e}"}
-    cols = [(s[0], s[1]) for s in schema]
-
-    # ---- find the H3 column: explicit > name match > value sniff ----
-    sample = q(f"SELECT * FROM '{src}' LIMIT 200")
-    names = [c[0] for c in cols]
-
-    def col_ok(i):
-        vals = [r[i] for r in sample if r[i] is not None][:50]
-        if not vals:
-            return False
-        good = sum(1 for v in vals
-                   if (_looks_h3_int(v) if not isinstance(v, str) else _looks_h3_str(v)))
-        return good >= max(1, int(len(vals) * 0.9))
-
-    cand = None
-    if h3_col:
-        if h3_col not in names:
+    names = list(types)
+    if cand not in types:
+        if h3_col:
             return {"error": f"column not found: {h3_col}", "columns": names}
-        cand = h3_col
-    else:
-        for n in H3_NAMES:
-            if n in [x.lower() for x in names]:
-                i = [x.lower() for x in names].index(n)
-                if col_ok(i):
-                    cand = names[i]
-                    break
-        if cand is None:
-            for i, n in enumerate(names):
-                if col_ok(i):
-                    cand = n
-                    break
-    if cand is None:
         return {"error": "no H3 index column detected — pick one manually",
                 "columns": names, "no_h3": True}
 
-    ci = names.index(cand)
-    is_str = isinstance(next((r[ci] for r in sample if r[ci] is not None), None), str)
-
-    # ---- pull cells + attributes ----
+    numeric = [n for n, t in types.items()
+               if n != cand and t.endswith(("INT", "INTEGER", "FLOAT", "DOUBLE", "BOOLEAN"))]
     others = [n for n in names if n != cand]
-    sel_h3 = (f'lower(trim("{cand}"))' if is_str
-              else f'format(\'{{:x}}\', "{cand}"::UBIGINT)')
-    sel = ", ".join([f'{sel_h3} AS __h3'] + [f'"{n}"' for n in others])
-    rows = q(f"SELECT {sel} FROM '{src}' WHERE \"{cand}\" IS NOT NULL LIMIT {max_cells}")
-
-    cells = [r[0] for r in rows]
-    attrs = {}
-    for j, n in enumerate(others):
-        vals = []
-        for r in rows:
-            v = r[j + 1]
-            if v is None:
-                vals.append(None)
-            elif isinstance(v, (int, float, bool)):
-                f = float(v)
-                vals.append(None if f != f else (int(v) if isinstance(v, int) or isinstance(v, bool) else f))
-            else:
-                vals.append(str(v)[:120])
-        attrs[n] = vals
+    if is_url(file):
+        others = [color_by if color_by in numeric else numeric[0]] if numeric else []
+    num = "INT" in types[cand]
+    val = f"TRY_CAST({ident(cand)} AS UBIGINT)" if num else f"lower(trim({ident(cand)}::VARCHAR))"
+    h3 = f"format('{{:x}}', {val})" if num else val
+    rows = q(f"SELECT {', '.join([h3] + [ident(n) for n in others])} FROM read_parquet(?)"
+             f" WHERE {val} IS NOT NULL LIMIT {max_cells}")
 
     return {
-        "file": file,
-        "file_size": os.path.getsize(file),
+        "file_size": size,
         "count": int(total),
-        "shown": len(cells),
-        "truncated": bool(total > len(cells)),
+        "shown": len(rows),
+        "truncated": bool(total > len(rows)),
         "h3_col": cand,
         "columns": names,
-        "schema": [{"name": c[0], "dtype": c[1]} for c in cols],
-        "cells": cells,
-        "attrs": attrs,
+        "numeric": numeric,
+        "schema": [{"name": n, "dtype": t} for n, t in types.items()],
+        "cells": [r[0] for r in rows],
+        "attrs": {n: [_cell(r[j]) for r in rows] for j, n in enumerate(others, 1)},
     }
 
 
