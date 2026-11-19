@@ -12,6 +12,9 @@ import { actSpecialist, errMsg, showBanner } from "../state/store";
 import { MdDoc } from "./MdDoc";
 
 type Said = { role: string; text: string };
+/** A turn the server started in a specialist's main chat (Update now; `detail` is its id): the chat reloads to
+ *  follow it, as a mounted chat only follows runs it started itself. */
+export const SPECIALIST_TURN_EVENT = "fused:specialist-turn";
 
 export function SpecialistChat({ s, clearRef }: { s: Specialist; clearRef: MutableRefObject<(() => void) | null> }) {
   const [chat, setChat] = useState<Chat | null>(null);
@@ -19,6 +22,13 @@ export function SpecialistChat({ s, clearRef }: { s: Specialist; clearRef: Mutab
   const [open, setOpen] = useState(false);
   const [earlier, setEarlier] = useState<Record<string, Said[]> | null>(null);
   useEffect(() => { void specialistApi.chat(s.id).then(setChat, (e) => showBanner(errMsg(e))); }, [s.id]);
+  useEffect(() => {
+    const on = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === s.id) void specialistApi.chat(s.id).then((c) => { setChat(c); setEpoch((n) => n + 1); }, () => {});
+    };
+    window.addEventListener(SPECIALIST_TURN_EVENT, on);
+    return () => window.removeEventListener(SPECIALIST_TURN_EVENT, on);
+  }, [s.id]);
 
   const clear = useCallback(() => {
     void actSpecialist(() => specialistApi.clear(s.id)).then((c) => {
