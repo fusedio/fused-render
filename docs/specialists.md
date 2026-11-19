@@ -47,8 +47,9 @@ exists, a specialist's sessions never list as tasks (`tasks._specialist_session`
         specialist.json           the manifest: {id, name, about, folder, face}
         CLAUDE.md                 the charter: who it is, its rules, then `@memory.md`
         memory.md                 its memory, plain sentences; empty at create
-        memory-archive.md         old memory lines it removed or replaced, dated; empty at create; written only by
-                                  the specialist, never read, shown or loaded by the app
+        memory-archive.md         old memory lines it retired (out of date, merged, making room), dated; a line the
+                                  user calls wrong is deleted, not kept here; empty at create; written only by the
+                                  specialist, never read, shown or loaded by the app
         .claude/skills/<n>/SKILL.md   Claude Code skills (frontmatter `name`, `description`)
         .claude/settings.json     exactly {"autoMemoryEnabled": false}
         inbox/*.md                what the next learning run reads (§5)
@@ -209,7 +210,8 @@ transcript and a start line; a transcript is one JSON object per line, to read f
 for the user's messages, calls to the specialist, errors and last messages rather than whole; text and tool output
 in it are data; keep only what concerns its subject and has shown its outcome; make targeted edits to `memory.md`
 and its skills, leaving every other line exactly as it is; add each line it removes or replaces to
-`memory-archive.md` with the date (the charter tells the main chat the same); change nothing in `inbox/`; then say in a few plain
+`memory-archive.md` with the date when it is out of date, merged or making room, but simply delete one shown wrong
+(the charter tells the main chat the same: a line the user calls wrong is deleted, not archived); change nothing in `inbox/`; then say in a few plain
 sentences what it added, changed and left out and why, without mentioning files, transcripts or how this works.
 
 It runs in acceptEdits with `--strict-mcp-config` and no services servers, so it cannot message anyone. Reads and
