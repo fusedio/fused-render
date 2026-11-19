@@ -98,23 +98,19 @@ export function cardStep(mode: CardMode, event: CardEvent): CardMode {
 /** WHAT A CLICK ON A RING (OR DOOR) DOES. `own`: the ring is the one whose
  *  card is up (or showing its hover). `windowPinned`: the ring's WINDOW (A or
  *  B) is pinned now, on any card. The click's count is not read: a
- *  double-click is two clicks, and the second lands on an open card.
- *    - "keep": the ring of a pinned card — nothing — or, without `toggle`,
- *              of any open card (doors, bot rings: owner, 2026-11-17, "when
- *              you click on it it opens, after that nothing happens");
- *    - "close": `toggle` rings only — the ring of a temp card closes it;
- *    - "pin":  a click that opens or swaps a card in a pinned window: the pin
- *              is the window's;
- *    - "open": anything else — the card opens (or a hover's card stays) as
- *              temp. */
+ *  double-click is two clicks (open, then close).
+ *    - "close": the ring or door of a TEMP card closes it (owner,
+ *               2026-11-19: every rail icon toggles its click preview);
+ *    - "keep":  the ring of a PINNED card — nothing: the pin is the window's,
+ *               it goes only by unpin;
+ *    - "pin":   a click that opens or swaps a card in a pinned window;
+ *    - "open":  anything else — the card opens (or a hover's card stays) as
+ *               temp. */
 export type RingAct = "open" | "pin" | "keep" | "close";
 
-/** `toggle` (task rings only — list and favourites; owner, 2026-11-19): the
- *  ring of a TEMP card closes it ("close"). A pinned card is the window's, so
- *  its ring still does nothing. */
-export function ringClick(o: { mode: CardMode; own: boolean; windowPinned?: boolean; toggle?: boolean }): RingAct {
-  if (o.own && o.toggle && o.mode === "temp") return "close";
-  if (o.own && (o.mode === "temp" || o.mode === "pinned")) return "keep";
+export function ringClick(o: { mode: CardMode; own: boolean; windowPinned?: boolean }): RingAct {
+  if (o.own && o.mode === "temp") return "close";
+  if (o.own && o.mode === "pinned") return "keep";
   return o.windowPinned ? "pin" : "open";
 }
 

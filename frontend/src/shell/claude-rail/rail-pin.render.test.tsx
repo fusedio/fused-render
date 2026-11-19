@@ -2,8 +2,8 @@
 // 2026-11-17). Every door × the transitions that need the rail: a click is
 // temp, one press outside (the page, not the rail) closes it, the pin icon —
 // the only pin — pins and outside presses are ignored, the pin icon again is
-// temp; a ring or door never closes its own card and a double-click is just
-// two clicks; the rail and window A / B are the view, so a press there closes
+// temp; a ring or door closes its own TEMP card (never a pinned one) and a
+// double-click is open then close; the rail and window A / B are the view, so a press there closes
 // no temp card; the hop rows 13–17; and the switch off keeps every rule it
 // had. Real modules throughout, as ClaudeRail.render.test.tsx;
 // the document's and the window's listeners are recorded so a press, a key
@@ -672,9 +672,11 @@ describe("the bot ring's card (window B), switch on", () => {
     await press(ring(r));
     await escapeOnBody();
     expect(botCardState().key).toBeNull();
-    // A double-click is two clicks: open, then nothing — temp.
+    // A double-click is two clicks: open, then close.
     await press(ring(r), 1);
     await press(ring(r), 2);
+    expect(botCardState().key).toBeNull();
+    await press(ring(r));
     expect(botCardState()).toMatchObject({ key: "b1", held: false });
     await botPinIcon(r);
     expect(botCardState()).toMatchObject({ key: "b1", held: true });
@@ -691,7 +693,10 @@ describe("the bot ring's card (window B), switch on", () => {
     await botPinIcon(r);
     expect(botCardState().held).toBe(false);
     expect(botOpen()).toBeNull();
-    // Its ring never closes it; an outside press does.
+    // Its ring closes a temp card; an outside press does too.
+    expect(botCardState()).toMatchObject({ key: "b1", held: false });
+    await press(ring(r), 1);
+    expect(botCardState().key).toBeNull();
     await press(ring(r), 1);
     expect(botCardState()).toMatchObject({ key: "b1", held: false });
     await pressAt(NOWHERE);
@@ -730,7 +735,7 @@ describe("the bot ring's card (window B), switch on", () => {
 });
 
 describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
-  test("Tasks: a press is temp, one press outside closes it; its own door and the rail are not outside; its door never closes nor pins it; the pin icon pins; the frame closes temp only", async () => {
+  test("Tasks: a press is temp, one press outside closes it; its own door and the rail are not outside; its door closes a temp card, never pins it; the pin icon pins; the frame closes temp only", async () => {
     const off = registerTasksCard();
     const r = await mount({ unified: true });
     const door = () => byLabel(r, "Tasks")[0]!;
@@ -746,9 +751,11 @@ describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
     await press(door(), 1);
     await frameBlur();
     expect(tasksCardState().up).toBe(false);
-    // A double-click is two clicks: open, then nothing — temp.
+    // A double-click is two clicks: open, then close.
     await press(door(), 1);
     await press(door(), 2);
+    expect(tasksCardState().up).toBe(false);
+    await press(door(), 1);
     expect(tasksCardState()).toMatchObject({ up: true, pinned: true, held: false });
     expect(aPinned()).toBeNull();
     // The pin icon (DoorCard `togglePin`).
@@ -765,18 +772,19 @@ describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
     await press(door(), 1);
     await press(door(), 2);
     expect(tasksCardState()).toMatchObject({ up: true, held: true });
-    // The pin icon again: temp; its door still leaves it up.
+    // The pin icon again: temp; its door closes it.
     await act(async () => tasksCardStore.setHeld(false));
     expect(tasksCardState()).toMatchObject({ up: true, pinned: true, held: false });
     expect(aPinned()).toBeNull();
     await press(door(), 1);
-    expect(tasksCardState()).toMatchObject({ up: true, held: false });
+    expect(tasksCardState().up).toBe(false);
+    await press(door(), 1);
     await pressAt(NOWHERE);
     expect(tasksCardState().up).toBe(false);
     off();
   });
 
-  test("Bots: the same — temp closes outside only, its door never closes nor pins it, the pin icon pins", async () => {
+  test("Bots: the same — temp closes outside only, its door closes a temp card, never pins it, the pin icon pins", async () => {
     const off = registerBotsCard();
     const r = await mount({ unified: true });
     const door = () => byLabel(r, "Bots")[0]!;
@@ -788,6 +796,8 @@ describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
     expect(botsCardState().up).toBe(false);
     await press(door(), 1);
     await press(door(), 2);
+    expect(botsCardState().up).toBe(false);
+    await press(door(), 1);
     expect(botsCardState()).toMatchObject({ up: true, held: false });
     await act(async () => botsCardStore.setHeld(true));
     expect(botsCardState()).toMatchObject({ up: true, held: true });
@@ -917,7 +927,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     off();
   });
 
-  test("the +: the pin icon holds (outside presses, the frame and its own door ignored); unpinned, its door still never closes it", async () => {
+  test("the +: the pin icon holds (outside presses, the frame and its own door ignored); unpinned, its door closes it", async () => {
     answer();
     const off = registerPlusHost();
     const r = await mount({ unified: true });
@@ -931,16 +941,10 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     await pressPlus(r, 2);
     expect(signal()).toBe(before);
     expect(card()).toMatchObject({ pop: true, held: true });
-    // Unpinned (temp again): a double-click on its own door is two clicks
-    // on an open card — nothing; only an outside press closes it.
+    // Unpinned (temp again): its own door closes it (owner, 2026-11-19).
     await popPinIcon();
     expect(card()!.held).toBe(false);
     await pressPlus(r, 1);
-    await pressPlus(r, 2);
-    expect(signal()).toBe(before);
-    expect(card()).toMatchObject({ pop: true, pinned: true });
-    expect(card()!.held).toBe(false);
-    await pressAt(NOWHERE);
     expect(signal()).toBe(before + 1);
     off();
   });
@@ -1001,7 +1005,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     off();
   });
 
-  test("a draft's ring: a click opens its popover temp; its ring is its own door and never closes nor pins it; the pin icon pins", async () => {
+  test("a draft's ring: a click opens its popover temp; its ring is its own door: it closes a temp card, never pins it; the pin icon pins", async () => {
     answer();
     const off = registerPlusHost();
     const draft = chat("d", { kind: "draft", draft_kind: "chat", session_id: "" } as Partial<Task>);
@@ -1016,13 +1020,10 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     await pressAt(onRail(ringSelector(".claude-rail-chats", "d")));
     expect(signal()).toBe(before);
     await press(listRing(r, "d"), 1);
-    await press(listRing(r, "d"), 2);
     await act(async () => {
       await tick(20);
     });
-    expect(signal()).toBe(before);
-    expect(card()).toMatchObject({ pop: true, pinned: true, door: "d" });
-    expect(card()!.held).toBeFalsy();
+    expect(signal()).toBe(before + 1);
     await popPinIcon();
     expect(card()).toMatchObject({ door: "d", held: true });
     off();
@@ -1464,7 +1465,6 @@ describe("floating windows (round 3 B; owner, 2026-11-17)", () => {
       publishBots([BOT] as never);
     });
     await press(botRing(r), 1);
-    await press(botRing(r), 2);
     await settle();
   }
 
