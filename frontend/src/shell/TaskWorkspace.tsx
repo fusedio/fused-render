@@ -67,7 +67,9 @@ import {
   workspaceTasks,
   type WorkspaceFacts,
   type WorkspaceGroupKey,
+  CHECKING_REASON,
   DIRTY_REASON,
+  PR_UNKNOWN_REASON,
   dirtyBadge,
   dirtyTitle,
 } from "@shell/workspace-lib";
@@ -215,7 +217,7 @@ function PrChips({ task, states }: { task: Task; states: ReturnType<typeof usePr
       {shown.map((r) => {
         const state = states[prKey(r)];
         return (
-          <span key={prKey(r)} className="ws-pr" title={state ?? undefined}>
+          <span key={prKey(r)} className="ws-pr" title={state === null ? "status unknown" : state}>
             <PrNumChip prRef={r} status={state ?? ""} />
           </span>
         );
@@ -300,12 +302,18 @@ function WorkspaceCard({
   const ab = useTaskHeadUnified();
   const bg = bgJobBadge(task);
   // The worktree counts collapse to one word badge (dirtyBadge); the exact counts
-  // ride in its tooltip. "unknown", "checking" and the rest stay as text.
+  // ride in its tooltip. "unknown" and the rest stay as text.
   const reasonList = visibleReasons(reasons, group);
   const dirty = dirtyBadge(reasonList);
-  // "checking" renders as a shimmer pill in the badge slot, never as text.
-  const checking = reasonList.includes("checking");
-  const text = reasonList.filter((r) => !DIRTY_REASON.test(r) && r !== "checking").join(" · ");
+  // A worktree or PR status still being asked renders as a shimmer pill in the
+  // badge slot, never as text.
+  const checking = reasonList.some((r) => CHECKING_REASON.test(r));
+  // PRs GitHub gave no status for collapse to one short static badge; which
+  // ones ride in its tooltip.
+  const prUnknown = reasonList.filter((r) => PR_UNKNOWN_REASON.test(r));
+  const text = reasonList
+    .filter((r) => !DIRTY_REASON.test(r) && !CHECKING_REASON.test(r) && !PR_UNKNOWN_REASON.test(r))
+    .join(" · ");
   const clear = group === "clear";
   const hasPrs = prRefsOf(task).some((r) => r.repo);
   const hasBg = bg !== null;
@@ -323,7 +331,7 @@ function WorkspaceCard({
   );
   // Line 2 exists for a preview/project chip or for real facts. "clear" alone
   // never opens it: it rides line 1's right edge instead.
-  const realFacts = hasPrs || hasBg || ports.length > 0 || dirty !== null || text !== "" || checking || branch !== null;
+  const realFacts = hasPrs || hasBg || ports.length > 0 || dirty !== null || text !== "" || prUnknown.length > 0 || checking || branch !== null;
   const hasLine2 = hasContext || realFacts;
   const clearTag = clear ? <span className="ws-badge ws-clear" title="Nothing holds this task open, so it is safe to archive">safe to archive</span> : null;
   return (
@@ -461,6 +469,11 @@ function WorkspaceCard({
               {dirty}
             </span>
           )}
+          {prUnknown.length > 0 && (
+            <span className="ws-badge ws-marker" data-unknown="1" title={`No GitHub status for ${prUnknown.map((r) => r.split(" ")[1]).join(", ")}`}>
+              PR status ?
+            </span>
+          )}
           {text && (
             <span className="ws-badge ws-marker" data-unknown={reasons.includes("unknown") ? "1" : undefined}>
               {text}
@@ -469,7 +482,7 @@ function WorkspaceCard({
           {checking && (
             <>
               <span className="skel-bar ws-skel" aria-hidden="true" />
-              <span className="sr-only">Checking worktree</span>
+              <span className="sr-only">Checking status</span>
             </>
           )}
           {clearTag}
@@ -594,7 +607,8 @@ export function TaskWorkspace({
   const prStatesRaw = usePrStatuses(prKeys);
   // A new object every call: keep the identity until a status itself changes, so
   // factsFor and the grouping do not recompute on every render.
-  const prSig = prKeys.map((k) => `${k}=${prStatesRaw[k] ?? ""}`).join("\n");
+  // String() keeps "not asked yet" (undefined) apart from "no answer" (null).
+  const prSig = prKeys.map((k) => `${k}=${String(prStatesRaw[k])}`).join("\n");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const prStates = useMemo(() => prStatesRaw, [prSig]);
   const factsFor = useCallback(
