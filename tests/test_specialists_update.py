@@ -78,7 +78,8 @@ def test_start_resumes_the_main_chat_unattended(world):
     notes.add(s, "task1", "A note", "Use parquet.")
     assert update.start(s) is True
     ((target, prompt, mode, kw),) = spawns
-    assert (target, prompt, mode) == (s.home, update.PROMPT, "acceptEdits")
+    assert (target, mode) == (s.home, "acceptEdits")
+    assert prompt == update.PROMPT.format(files=f"- inbox/{notes.list(s)[0]['name']}")
     assert kw == {"session_id": "", "model": "", "effort": "", "isolate_mcp": True, "specialist": f"{s.id}:update"}
     st = chat.load(s.home)
     assert st["main"] == "new-main" and len(st["update_files"]) == 1  # a fresh update becomes the main chat

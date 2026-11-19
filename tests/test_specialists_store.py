@@ -99,18 +99,28 @@ def test_end_idle_hosts_leaves_a_live_turn_and_marks_no_stop(monkeypatch, tmp_pa
     assert not (tmp_path / "idle" / "cancelled").exists()  # the chat would show "Stopped." under its last reply
 
 
-def test_seed_installs_canvas_once_when_the_root_is_first_made(monkeypatch):
+def test_seed_installs_each_shipped_specialist_once_when_canvases_is_on_too(monkeypatch, tmp_path):
+    from fused_render.claude_agent import agent_module
+    from fused_render.shell import prefs
+
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(tmp_path / "canvas"))
+    monkeypatch.setattr(prefs, "canvases_enabled", lambda: False)
     seed.seed()
-    (canvas,) = store.all()
-    assert canvas.name == "Canvas" and canvas.face["shape"] == "hexagon"
+    assert store.all() == []  # Specialists on, Canvases off
+    monkeypatch.setattr(prefs, "canvases_enabled", lambda: True)
+    seed.seed()
+    canvas, data = store.all()
+    assert (canvas.name, canvas.face["shape"], canvas.folder) == ("Canvas", "hexagon", str(tmp_path / "canvas"))
+    assert (data.name, data.folder) == ("Data", "")
+    assert sorted(os.listdir(os.path.join(data.home, ".claude", "skills")))[0] == "dataset-layouts"
     skills = os.listdir(os.path.join(canvas.home, ".claude", "skills"))
     assert "running-udfs" in skills and len(skills) == 6
     text = open(os.path.join(canvas.home, ".claude", "skills", "running-udfs", "SKILL.md")).read()
     assert text.startswith('---\nname: running-udfs\ndescription: "Running UDFs on Fused. Use when the work involves:')
     assert "## Subject\nYou know how Fused canvases" in open(os.path.join(canvas.home, "CLAUDE.md")).read()
-    from fused_render.claude_agent import agent_module
-
+    seed.seed()
+    assert len(store.all()) == 2  # once only
     monkeypatch.setattr(agent_module(), "_hosts_in", lambda folder: [])
     store.delete(canvas.id)
     seed.seed()
-    assert store.all() == []
+    assert [s.name for s in store.all()] == ["Data"]  # a deleted one stays deleted

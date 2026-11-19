@@ -14,10 +14,10 @@ from fused_render import claude_spawn
 from fused_render.specialists import chat, history, notes, store
 
 PROMPT = ("<specialist-update>\n"
-          "Time for your update. The files in inbox/ are notes sent to you and the parts of tasks and breakouts "
-          "that used you since your last update. Fold what is worth keeping into memory.md and your skills; leave "
-          "inbox/ as it is, the app clears it. Then answer in a few plain sentences: what you added, what you "
-          "changed, and what you left out and why.\n"
+          "Time for your update. Read each of these files in inbox/ with the Read tool: notes sent to you and the "
+          "parts of tasks and breakouts that used you since your last update.\n{files}\n"
+          "Fold what is worth keeping into memory.md and your skills; leave inbox/ as it is, the app clears it. "
+          "Then answer in a few plain sentences: what you added, what you changed, and what you left out and why.\n"
           "</specialist-update>")
 DAY_S = 24 * 3600
 #: The tail of one task or breakout kept for the update; older text of a very long one is left out.
@@ -78,7 +78,9 @@ def start(spec: store.Specialist) -> bool:
     main = chat.load(home)["main"]
     # On the model and effort the user picked for the main chat ("" for each: the CLI's default).
     model, effort = claude_spawn.load_agent()._session_settings(main or "")
-    res = claude_spawn.spawn_helper(home, PROMPT, "acceptEdits", session_id=main or "", model=model, effort=effort,
+    # Named, so the turn need not list the folder: its Bash asks, and nobody is there to answer.
+    prompt = PROMPT.format(files="\n".join(f"- inbox/{f}" for f in files))
+    res = claude_spawn.spawn_helper(home, prompt, "acceptEdits", session_id=main or "", model=model, effort=effort,
                                     isolate_mcp=True, specialist=f"{spec.id}:update")
     if res.get("error"):
         raise RuntimeError(res["error"])

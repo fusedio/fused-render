@@ -1493,7 +1493,7 @@ def _forced_by(env_name: str, override) -> str | None:
 
 
 def _specialists_switched(on: bool) -> None:
-    """On: load the modules agent.py reads off `sys.modules`, seed the shipped specialist and start the daily
+    """On: load the modules agent.py reads off `sys.modules`, seed the shipped specialists and start the daily
     update; off: stop it. Best-effort: never fails the preference write."""
     try:
         if on and specialists_enabled():
@@ -2030,6 +2030,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if isinstance(body.get("specialists_enabled"), bool):
         # AFTER the write, like `lan_enabled`.
         _specialists_switched(body["specialists_enabled"])
+    elif body.get("canvases_enabled") is True:
+        _specialists_switched(True)  # the shipped specialists wait for Canvases too (specialists/seed.py)
     if body.get("canvases_embed_proxy") is False:
         # AFTER the write, like `lan_enabled`: stop the listener now rather
         # than at the next status read. Turning it ON is left to status,

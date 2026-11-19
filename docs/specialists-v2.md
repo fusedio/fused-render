@@ -185,8 +185,14 @@ helps in by itself. The model is chosen in the message box like any chat.
   open a breakout (raises the approval card).
 - **A breakout is the plain breakout pointed at the folder.** It has the main
   chat's abilities but does not edit memory itself. There is no close-out
-  note: the update reads the breakout's conversation later. (Proposed; this
-  replaces v1's marked summary-and-note block.)
+  note written by the model.
+- **The inbox is the one place learning waits, and it fills as things
+  happen.** Everything a specialist will learn from is a file in `inbox/`,
+  written by the app at the time: a note when a task sends one; a breakout's
+  conversation as each of its turns ends; a task's conversation, from the
+  point it first used the specialist, as each of its turns ends. "Notes
+  waiting" lists all three. (Decided 2026-11-19 after the owner's first test:
+  a breakout that left nothing in the inbox read as "no learning".)
 - **The update is one scheduled run** (next section). It never sends messages
   to people.
 - **History is git.** The app commits after every chat turn that changed
@@ -199,10 +205,10 @@ helps in by itself. The model is chosen in the message box like any chat.
 ## The update and its history
 
 - Runs once a day while the app is open and idle, or from Update now.
-- With no notes there is no run, no commit and no message.
-- It is one unattended run in the specialist's folder. It reads the waiting
-  notes, the tasks that used the specialist and its breakouts, edits memory and skills, and
-  removes the notes it read, whether used or left out.
+- With an empty inbox there is no run, no commit and no message.
+- It is one unattended turn in the specialist's own chat. It reads the inbox
+  and nothing else, edits memory and skills, and the app then removes the
+  inbox files that were there when it started, whether used or left out.
 - **Record:** one git commit per run in the specialist's folder. The diff is
   the trace: notes leave `inbox/`, lines appear in memory or a skill. The
   commit message is a few plain sentences the update writes: what it added,
