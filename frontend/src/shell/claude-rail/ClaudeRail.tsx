@@ -2832,11 +2832,10 @@ export function ClaudeRail({
         openChat(href);
         return;
       }
-      // WITH THE PIN (rail-pin-lib `ringClick`): the ring of an OPEN card
-      // (temp or pinned) does nothing — a ring opens, it is not a toggle,
-      // and no double-click pins (owner, 2026-11-17); anything else opens
-      // the card temp — or pinned, in a pinned window (the pin is the
-      // window's).
+      // WITH THE PIN (rail-pin-lib `ringClick`): the ring of a TEMP card
+      // closes it (owner, 2026-11-19); the ring of a pinned card does
+      // nothing; anything else opens the card temp — or pinned, in a pinned
+      // window (the pin is the window's). No double-click pins.
       if (pinModelRef.current) {
         const own = pinNow.current.peekKey === t.key;
         const act = ringClick({
@@ -3445,10 +3444,10 @@ export function ClaudeRail({
                       // own ring closes its card; any other opens it (asking
                       // for the card's keyboard then — never for a close, or
                       // the wish would outlive it).
-                      // WITH THE PIN (rail-pin-lib `ringClick`): the open
-                      // favourite's ring does nothing — a ring opens, it
-                      // is not a toggle (owner, 2026-11-17) —, anything
-                      // else opens it temp.
+                      // WITH THE PIN (rail-pin-lib `ringClick`): the ring of
+                      // a TEMP favourite card closes it (owner, 2026-11-19),
+                      // a pinned one does nothing, anything else opens it
+                      // temp.
                       if (pinModelRef.current) {
                         const act = ringClick({
                           mode: favRing ? (favPinned() === t.key ? "pinned" : "temp") : "closed",

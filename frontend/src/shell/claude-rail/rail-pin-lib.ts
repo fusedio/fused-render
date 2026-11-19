@@ -99,9 +99,10 @@ export function cardStep(mode: CardMode, event: CardEvent): CardMode {
  *  card is up (or showing its hover). `windowPinned`: the ring's WINDOW (A or
  *  B) is pinned now, on any card. The click's count is not read: a
  *  double-click is two clicks, and the second lands on an open card.
- *    - "keep": the ring of a card that is already open (temp or pinned) —
- *              nothing. A ring is not a toggle (owner, 2026-11-17: "when you
- *              click on it it opens, after that nothing happens");
+ *    - "keep": the ring of a pinned card — nothing — or, without `toggle`,
+ *              of any open card (doors, bot rings: owner, 2026-11-17, "when
+ *              you click on it it opens, after that nothing happens");
+ *    - "close": `toggle` rings only — the ring of a temp card closes it;
  *    - "pin":  a click that opens or swaps a card in a pinned window: the pin
  *              is the window's;
  *    - "open": anything else — the card opens (or a hover's card stays) as

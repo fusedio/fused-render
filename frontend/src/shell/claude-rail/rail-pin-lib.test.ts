@@ -93,7 +93,7 @@ describe("the transition table (design.md), row by row", () => {
   });
 });
 
-describe("ringClick: a ring opens, it never closes, and no double-click pins (owner, 2026-11-17)", () => {
+describe("ringClick: a door or bot ring opens and never closes; a toggle ring closes a temp card; no double-click pins", () => {
   test("a click on a closed card's ring, or another ring, opens temp (rows 1–3)", () => {
     expect(ringClick({ mode: "closed", own: false })).toBe("open");
     expect(ringClick({ mode: "temp", own: false })).toBe("open");
