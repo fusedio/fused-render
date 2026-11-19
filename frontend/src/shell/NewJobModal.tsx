@@ -19,6 +19,8 @@ import { shortTaskId } from "@platform/lib/task-id";
 import { Dropdown, popStyle } from "./Dropdown";
 import { CommandMenu, acceptText, menuKey, menuQuery } from "@apps/claude/ui/CommandMenu";
 import { AttachButton } from "@apps/claude/ui/AttachButton";
+import { MicButton } from "@apps/claude/ui/MicButton";
+import { insertAt, useCanDictate, useDictation } from "@platform/lib/dictation";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { Lists } from "@apps/claude/ui/Lists";
 import { paneChatUrl, taskPane } from "@apps/claude/ui/list-rows";
@@ -5151,6 +5153,35 @@ export default function NewJobModal({
   // way the chat's landing says its file — the name, then the path under it.
   // A canvas is named as the canvas (and node), like its WHERE pill.
   const landing = !!popover;
+  // THE MIC (the chat composer's, `ui/MicButton`): dictation into the ask box,
+  // on the rail's card only — the one that wears the chat's composer, clip and
+  // all. The words land at the caret for review; nothing creates the task.
+  const canDictate = useCanDictate(landing);
+  const micCaret = useRef<number | null>(null);
+  const mic = useDictation({
+    requester: "shell:new-task-composer",
+    onText: (words) => {
+      const box = askRef.current;
+      const held = box ? box.value : text;
+      const from = box ? (box.selectionStart ?? held.length) : held.length;
+      const next = insertAt(held, from, box ? (box.selectionEnd ?? from) : from, words);
+      micCaret.current = next.caret;
+      setText(next.value);
+    },
+    onMessage: (title, tone) => notify({ title, tone }),
+    onSettled: () => askRef.current?.focus({ preventScroll: true }),
+    doc: () => askRef.current?.ownerDocument,
+  });
+  useLayoutEffect(() => {
+    const at = micCaret.current;
+    if (at === null) return;
+    micCaret.current = null;
+    try {
+      askRef.current?.setSelectionRange?.(at, at);
+    } catch {
+      /* a box that cannot place a caret still has the words */
+    }
+  }, [text]);
   const landingTarget = target.trim();
   const landingName = lockedWhere
     ? (lockedWhere.node ? `${lockedWhere.canvas} › ${lockedWhere.node}` : lockedWhere.canvas)
@@ -6332,7 +6363,14 @@ export default function NewJobModal({
                 the field's `aria-label` already says what it is. */}
             {!text && images.length === 0 && (
               <div className="new-task-ask-hint" aria-hidden="true">
-                <span>{landing ? homePlaceholderFor(landingNoun, agentLabel(agent)) : titlePlaceholderFor(agentLabel(agent))}</span>
+                <span>
+                  {landing && mic.busy
+                    ? // What the transcription is doing, where the words will land.
+                      mic.note || "Transcribing…"
+                    : landing
+                      ? homePlaceholderFor(landingNoun, agentLabel(agent))
+                      : titlePlaceholderFor(agentLabel(agent))}
+                </span>
                 {/* The chat's box says one line; so does the rail's. */}
                 {!landing && <small>{ASK_PLACEHOLDER}</small>}
               </div>
@@ -6695,6 +6733,8 @@ export default function NewJobModal({
           {landing ? (
             <>
               <AttachButton onFiles={attachFiles} className="nt-attach" disabled={busy} />
+              {/* Right of the clip, as in the chat's composer and the Bots'. */}
+              {canDictate ? <MicButton mic={mic} className="nt-attach nt-mic" disabled={busy} /> : null}
               <button type="button" className="nt-send schedule-save"
                       disabled={busy} aria-disabled={!ready} onClick={trySubmit}
                       aria-label={busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}

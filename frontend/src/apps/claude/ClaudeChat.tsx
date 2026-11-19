@@ -1972,6 +1972,10 @@ function ChatBody(props: ChatBodyProps) {
    * (`shots/noteSourcesProbe`).
    */
   const [micShown, setMicShown] = useState(true);
+  // THE COMPOSER'S OWN MIC (dictation, `ui/MicButton`) reads the same probe,
+  // on the Bots composer's stricter rule: the button exists only once the
+  // machine has said it can record — never on a probe that has not answered.
+  const [dictate, setDictate] = useState(false);
   const annArmed = ann.mode !== "off";
   useEffect(() => {
     let live = true;
@@ -1985,6 +1989,7 @@ function ChatBody(props: ChatBodyProps) {
         if (!live) return;
         const audio = sources.audio;
         setMicShown(audio?.available !== false);
+        setDictate(audio?.available === true);
         // AND SAY WHY THE SEAT WENT (T:7801). The reason string is CP-11's, and
         // it names a browser that CAN record — so a reader with no seat and no
         // explanation at least has the console to go on. Swallowing it left
@@ -5364,6 +5369,7 @@ function ChatBody(props: ChatBodyProps) {
       hasQueued,
       onPaste,
       onAttachFiles,
+      dictate,
       // The chip row is ABOVE the control row and changes the composer's height,
       // never the row's width — but T re-measures on exactly this kind of change
       // (its MutationObserver watches the rows' subtree), and the footnote's
@@ -5461,6 +5467,7 @@ function ChatBody(props: ChatBodyProps) {
       attach.capturing,
       onPaste,
       onAttachFiles,
+      dictate,
       pane.paneNoun,
       ann.chips,
       ann.hasSendable,

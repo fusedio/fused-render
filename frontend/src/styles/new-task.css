@@ -1562,6 +1562,57 @@ button.new-task-source:focus-visible {
   cursor: not-allowed;
 }
 
+/* The mic (`ui/MicButton`), in the paperclip's seat beside it. A take wears
+   the chat composer's states: red with its clock while recording, a plain
+   ring while the words are being worked out. */
+.new-task-dialog .nt-composer .nt-mic {
+  gap: 5px;
+  flex: none;
+}
+
+.new-task-dialog .nt-composer .nt-mic .c-mictime {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.new-task-dialog .nt-composer .nt-mic.is-rec,
+.new-task-dialog .nt-composer .nt-mic.is-rec:hover:not(:disabled) {
+  width: auto;
+  padding: 0 9px;
+  background: #d9363e;
+  color: #fff;
+}
+
+.new-task-dialog .nt-composer .nt-mic.is-rec svg {
+  animation: c-mic-pulse 1.2s ease-in-out infinite;
+}
+
+.new-task-dialog .nt-composer .nt-mic.is-busy {
+  cursor: progress;
+}
+
+.new-task-dialog .nt-composer .nt-mic.is-busy svg {
+  display: none;
+}
+
+.new-task-dialog .nt-composer .nt-mic.is-busy::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: c-mic-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-task-dialog .nt-composer .nt-mic.is-rec svg {
+    animation: none;
+  }
+}
+
 /* Send: the chat's round accent arrow (`.c-send`). */
 .new-task-dialog .nt-composer .nt-send {
   display: flex;

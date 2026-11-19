@@ -8,13 +8,15 @@
 // helpers, so `fit.test.ts` can prove the ladder without a browser.
 
 /** The row's four states, in the order the width is spent (T:12203-12228). */
-/** The ladder's rungs, top to bottom. `slim` and `bare` drop low-priority
- *  seats (the context ring and the screenshot group, then the calendar) so the
- *  row stays ONE LINE as long as the pills and Send fit; `stack` — the send
+/** The ladder's rungs, top to bottom. `slim`, `lean` and `bare` drop
+ *  low-priority seats (the context ring and the screenshot group, then the
+ *  mic, then the calendar and the paperclip) so the row stays ONE LINE as long
+ *  as the pills and Send fit. `lean` exists so the mic's arrival never costs
+ *  the paperclip or the calendar a seat they had before it. `stack` — the send
  *  group wrapping under the pills — is the last resort and nothing else
  *  (Akshil, 2026-09-21: "in min width it should be one line, we can hide low
  *  priority icons"). */
-export type RowFit = "full" | "compact" | "tight" | "slim" | "bare" | "stack";
+export type RowFit = "full" | "compact" | "tight" | "slim" | "lean" | "bare" | "stack";
 
 /** One laid-out child of the control row, as the sum needs it (T:12262). */
 export interface Seat {
@@ -61,6 +63,7 @@ export function pickRowFit(box: number, need: (fit: RowFit) => number): RowFit {
   if (need("compact") <= box) return "compact";
   if (need("tight") <= box) return "tight";
   if (need("slim") <= box) return "slim";
+  if (need("lean") <= box) return "lean";
   if (need("bare") <= box) return "bare";
   return "stack";
 }
@@ -71,14 +74,17 @@ export function fitFlags(fit: RowFit): {
   compact: boolean;
   tight: boolean;
   slim: boolean;
+  lean: boolean;
   bare: boolean;
   stack: boolean;
 } {
-  const slim = fit === "slim" || fit === "bare" || fit === "stack";
+  const lean = fit === "lean" || fit === "bare" || fit === "stack";
+  const slim = fit === "slim" || lean;
   return {
     compact: fit !== "full",
     tight: fit !== "full" && fit !== "compact",
     slim,
+    lean,
     bare: fit === "bare" || fit === "stack",
     stack: fit === "stack",
   };

@@ -542,11 +542,22 @@
 /* ONE LINE BEFORE TWO: below `tight` the ladder drops seats instead of
    wrapping. `slim` hides the context ring and the screenshot group — the two
    whose facts live elsewhere too (the ring's number in its popover, the
-   camera in the strip above an app) — and `bare` also hides the calendar.
-   Send never goes. `display: none` and not `visibility`, so `readRow` prices
+   camera in the strip above an app) — `lean` also hides the mic (a take in
+   progress keeps its seat: it is the take's clock and its stop), and `bare`
+   also hides the calendar and the paperclip. Send never goes. `display: none` and not `visibility`, so `readRow` prices
    the seat at nothing, gap included. */
 .c-composer-row.is-slim .c-ctxwrap,
 .c-composer-row.is-slim .c-anncta {
+  display: none;
+}
+.c-composer-row.is-lean > .c-micbtn:not(.is-rec):not(.is-busy) {
+  display: none;
+}
+/* A TAKE NEVER RE-PRICES A ROW THAT IS ALREADY SHORT OF ROOM: from `tight`
+   down the recording seat keeps the idle seat's width — red and pulsing,
+   without its clock — so starting a take moves nothing beside it. The clock
+   is for rows with room to spare. */
+.c-composer-row.is-tight > .c-micbtn .c-mictime {
   display: none;
 }
 .c-composer-row.is-bare > .c-schedbtn,
@@ -702,6 +713,72 @@ select.c-pill {
 .c-attachbtn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+/* THE MIC (MicButton): the paperclip's box and refusal, third of the draft's
+   icon seats. A take wears the Bots composer's own states — red with its
+   clock while recording (the glyph pulsing), a plain ring while the words are
+   being worked out (a spinning microphone reads as "still recording"). */
+.c-micbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 1.65em;
+}
+.c-micbtn svg {
+  display: block;
+}
+.c-micbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.c-mictime {
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.c-micbtn.is-rec,
+.c-mic-idle.is-rec {
+  background-color: #d9363e;
+  color: #fff;
+}
+.c-micbtn.is-rec svg,
+.c-mic-idle.is-rec svg {
+  animation: c-mic-pulse 1.2s ease-in-out infinite;
+}
+.c-micbtn.is-busy,
+.c-mic-idle.is-busy {
+  cursor: progress;
+}
+.c-micbtn.is-busy svg,
+.c-mic-idle.is-busy svg {
+  display: none;
+}
+.c-micbtn.is-busy::before,
+.c-mic-idle.is-busy::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: c-mic-spin 0.8s linear infinite;
+}
+@keyframes c-mic-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@keyframes c-mic-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-micbtn.is-rec svg,
+  .c-mic-idle.is-rec svg {
+    animation: none;
+  }
 }
 /* ---- the context meter (the composer's "how full is the window") --------
    A RING AND NOTHING INSIDE IT. The BUTTON is 24px — the pills' height, so
@@ -1912,6 +1989,48 @@ select.c-pill {
     opacity 0.08s ease-out,
     visibility 0s 0.08s;
 }
+/* THE FOLDED CARD'S MIC (MicButton `c-mic-idle`): the folded paperclip's
+   box, immediately right of it. Its press opens the card, so the take's
+   clock is only ever drawn by the shelf's seat. */
+.c-mic-idle {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-dim);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: opacity 0.14s ease-out 0.1s;
+}
+.c-mic-idle svg {
+  display: block;
+}
+.c-mic-idle .c-mictime {
+  display: none;
+}
+.c-mic-idle:hover,
+.c-mic-idle:focus-visible {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.c-mic-idle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.c-mic-idle.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.08s ease-out,
+    visibility 0s 0.08s;
+}
 /* The folded box gives up the clip's seat too (30px) on top of the label's
    room, so typed text never runs under either. */
 .c-composer.is-idle:has(.c-attach-idle) textarea {
@@ -1919,6 +2038,19 @@ select.c-pill {
 }
 .c-composer.is-idle:has(.c-attach-idle):has(.c-composer-meta:not(.is-hidden)) textarea {
   padding-right: 180px;
+}
+/* …and the mic's (30px more), with or without the clip beside it. */
+.c-composer.is-idle:has(.c-mic-idle) textarea {
+  padding-right: 70px;
+}
+.c-composer.is-idle:has(.c-mic-idle):has(.c-composer-meta:not(.is-hidden)) textarea {
+  padding-right: 180px;
+}
+.c-composer.is-idle:has(.c-attach-idle):has(.c-mic-idle) textarea {
+  padding-right: 100px;
+}
+.c-composer.is-idle:has(.c-attach-idle):has(.c-mic-idle):has(.c-composer-meta:not(.is-hidden)) textarea {
+  padding-right: 210px;
 }
 .c-composer-meta.is-opener {
   margin: 0;

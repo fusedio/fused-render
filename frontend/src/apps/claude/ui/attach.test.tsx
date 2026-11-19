@@ -577,6 +577,59 @@ test("the paperclip: shown only with a picks handler, hands the picks over, off 
   expect(clip()[0]!.props.title).toBe("Waiting on a scheduled message");
 });
 
+test("the mic: shown only where the machine can record, right of the paperclip, off while the box is blocked", () => {
+  let renderer: ReactTestRenderer | undefined;
+  const card = (over: Record<string, unknown>) => (
+    <ComposerCard
+      variant="chat"
+      file="/p/app.py"
+      sessionId=""
+      controls={controls}
+      status="idle"
+      back="/explorer/view/p"
+      onSend={() => {}}
+      onStop={() => {}}
+      onAttachFiles={() => {}}
+      {...over}
+    />
+  );
+  const buttons = (cls: RegExp) =>
+    renderer!.root.findAll((n) => n.type === "button" && cls.test(n.props.className ?? ""));
+  act(() => {
+    renderer = create(card({}));
+  });
+  expect(buttons(/\bc-micbtn\b/).length).toBe(0);
+  expect(buttons(/\bc-mic-idle\b/).length).toBe(0);
+  act(() => {
+    renderer!.update(card({ dictate: true }));
+  });
+  // Two seats, as the paperclip has: the shelf's pill and the folded card's.
+  const shelf = buttons(/\bc-micbtn\b/);
+  expect(shelf.length).toBe(1);
+  expect(shelf[0]!.props.className).toBe("c-pill c-micbtn");
+  expect(shelf[0]!.props["aria-label"]).toBe("Dictate");
+  expect(shelf[0]!.props.disabled).toBe(false);
+  // This card mounts folded (no focus in it): the folded seat shows.
+  expect(buttons(/\bc-mic-idle\b/)[0]!.props.className).toBe("c-mic-idle");
+  // The Bots order in both rows: attach, then mic.
+  const order = (row: string, clip: RegExp, mic: RegExp) => {
+    const names = renderer!.root
+      .findByProps({ className: row })
+      .findAll((n) => n.type === "button")
+      .map((n) => String(n.props.className ?? ""));
+    return [names.findIndex((c) => clip.test(c)), names.findIndex((c) => mic.test(c))];
+  };
+  const [clipAt, micAt] = order("c-composer-row", /\bc-attachbtn\b/, /\bc-micbtn\b/);
+  expect(micAt).toBe(clipAt + 1);
+  const [idleClipAt, idleMicAt] = order("c-composer-idle-end", /\bc-attach-idle\b/, /\bc-mic-idle\b/);
+  expect(idleMicAt).toBe(idleClipAt + 1);
+  act(() => {
+    renderer!.update(card({ dictate: true, blocked: true, blockedReason: "Waiting on a scheduled message" }));
+  });
+  expect(buttons(/\bc-micbtn\b/)[0]!.props.disabled).toBe(true);
+  expect(buttons(/\bc-micbtn\b/)[0]!.props.title).toBe("Waiting on a scheduled message");
+});
+
 test("the tray's own record is what a send and an unmount read — not the last render", async () => {
   // WHAT `live.current` IS FOR, and why a render is too late to write it.
   //
