@@ -64,6 +64,12 @@
 // thing"): a pin, or a non-pin a click opened, in either section, and no ring,
 // face or door previews a card on a hover — a ring shows its row instead.
 //
+// A PIN GOES WITH ITS RING (owner, 2026-11-19: "when we have a task ring item
+// or git that isn't in next view in rail we should close it even if pinned"):
+// a view whose rail has no ring for a pinned list task, or no door for a
+// pinned Tasks / Bots / Git / + card, closes it (ClaudeRail). A favourite's
+// ring and a bot's face stand in every rail, so section B's pins stay.
+//
 // A RING'S HOVER ROW DIMS ONLY THE NON-PIN (owner's answer: "do this only for
 // non pin windows because that is the one going to be replace"): the pin is
 // not what a click replaces any more.

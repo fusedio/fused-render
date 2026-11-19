@@ -373,6 +373,10 @@ const ONE_SLOT: readonly Slot[] = ["x"];
 /** How long a closed pinned list card stays mounted to fade (var(--dur-med)
  *  and a frame or two). */
 const PIN_FADE_MS = 320;
+/** How long "this rail has no ring for the pin" must hold before the pin goes
+ *  (ClaudeRail "A PIN GOES WITH ITS RING"): a page's own rail; the shell's
+ *  fallback rail waits 2.5 times as long. */
+const PIN_RING_SETTLE_MS = 400;
 const pinNoop = () => {};
 const pinNoRing = () => null;
 import { useCardMove } from "./useCardMove";
@@ -1500,8 +1504,9 @@ export function ClaudeRail({
   );
   // FREE PINS — THE LIST CARD'S TWO SLOTS (rail-slots-store): which is the
   // non-pin now, and the pinned task the other one shows — its seat off this
-  // rail's rings, else off the pulse (a pinned window floats and needs no
-  // ring: a view that does not list the chat still shows it). The free slot
+  // rail's rings, else off the pulse (for the moment a rail takes to settle:
+  // a view that does not list the chat lets the pin go, "A PIN GOES WITH ITS
+  // RING" below). The free slot
   // never mounts the pinned chat too (one chat, one composer).
   const aFree = useFreeSlot("a");
   const pinKeyA = freePins ? aPinTask(aWord) : null;
@@ -2389,12 +2394,57 @@ export function ClaudeRail({
       door.store.setHeld(true);
     }
   }, [pinModel, navDoors, shown, rows, baseSeats, intent, tasksCard, botsCard, gitCard]);
-  // FREE PINS — A PINNED TASK NEEDS NO RING (rail-slots-lib): its window
-  // floats (the pinned slot, drawn by the shell), so a view that does not list the
-  // chat leaves it standing — the rule above ("we just close the window if
-  // it is not in the next view") was the docked card's, which had to stand on
-  // a ring. Only its task going (archived, erased) lets the pin go, and the
-  // pinned window says that itself.
+  // FREE PINS — A PIN GOES WITH ITS RING (owner, 2026-11-19: "when we have a
+  // task ring item or git that isn't in next view in rail we should close it
+  // even if pinned" — the rule above, "we just close the window if it is not
+  // in the next view", for the free pin too. A build of 2026-11-18 let a
+  // pinned task float on through views that did not list it; it does not.)
+  // Window A's pin answers to THIS rail: a pinned task whose chat has no ring
+  // here — in the list or among the favourites — and a pinned Tasks / Bots /
+  // Git / + card whose door this rail does not draw, go. Window B's pins are
+  // never asked: a favourite's ring and a bot's face stand in every rail.
+  //
+  // ONCE THIS RAIL HAS SETTLED, not on its first frame: the shell's fallback
+  // rail (FallbackRail — favourites only, no list) stands for a beat on every
+  // load before the page's own rail mounts, and a rail's list and its Git
+  // door land a moment after it does. So the verdict must HOLD for
+  // PIN_RING_SETTLE_MS on the same rail — longer for the fallback, which may
+  // be that passing one — and a rail that goes meanwhile takes its verdict
+  // with it. A reload on the view the pin was made on keeps it.
+  const pinDoorA = freePins && aWord !== null && aPinTask(aWord) === null ? aWord : null;
+  const pinRingGone = pinKeyA !== null && !seats.some((x) => x.pulse.key === pinKeyA);
+  // The Git door is there once the repo answered (`undefined`: not yet).
+  const gitDoorKnown = !navDoors || !gitOn || !git?.path || railGit.repo !== undefined;
+  const pinDoorGone =
+    pinDoorA === "git"
+      ? gitDoorKnown && gitRepo === null
+      : pinDoorA === "bots"
+        ? !(botsOffered && navDoors)
+        : pinDoorA !== null && !navDoors;
+  const pinOrphanA = freePins && shown && (tasksPulseLoaded() || rows.length > 0) && (pinRingGone || pinDoorGone);
+  useEffect(() => {
+    if (!pinOrphanA) return;
+    const key = pinKeyA;
+    const door = pinDoorA;
+    const id = window.setTimeout(
+      () => {
+        if (key) {
+          if (aPinned() === aPinWord({ kind: "task", key })) setAPinned(null);
+          return;
+        }
+        if (!door || aPinned() !== door) return;
+        if (door === "tasks") closeTasksCard();
+        else if (door === "bots") closeBotsCard();
+        else if (door === "git") closeGitCard();
+        else if (door === aPinWord({ kind: "plus" })) setCardCloseSignal((n) => n + 1);
+        // A card that is not mounted on this page has no hold to drop: the
+        // mark goes by hand.
+        if (aPinned() === door) setAPinned(null);
+      },
+      favouritesOnly ? PIN_RING_SETTLE_MS * 2.5 : PIN_RING_SETTLE_MS,
+    );
+    return () => window.clearTimeout(id);
+  }, [pinOrphanA, pinKeyA, pinDoorA, favouritesOnly]);
   // ONE CARD BESIDE THE RAIL (owner, 2026-11-07: "either new task thing
   // should be open or window A — new task thing is like window A but diff
   // UI"): the New task popover and the rail's other cards — window A (the
