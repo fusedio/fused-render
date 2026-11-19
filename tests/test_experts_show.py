@@ -110,6 +110,8 @@ def test_fence_allows_the_two_tools_only_when_asked(expert, base, monkeypatch, t
     assert flags[flags.index("--tools") + 1] == "Read,Glob,Grep,Edit,Write,Bash"  # no new built-in
     # The classifier is told about the canvases the expert made, and only once there are some.
     assert len(json.loads(flags[flags.index("--settings") + 1])["autoMode"]["allow"]) == 2
+    show._note_made(expert, "prod", "Gone", str(base / "prod" / "user" / "Gone"))  # no such folder: not named
+    (base / "prod" / "user" / "Mine").mkdir()
     show._note_made(expert, "prod", "Mine", str(base / "prod" / "user" / "Mine"))
     flags = sessions.fence(expert, write=True, run=True, auto=True, show=True)
     allow = json.loads(flags[flags.index("--settings") + 1])["autoMode"]["allow"]
@@ -269,7 +271,9 @@ def test_the_fence_reads_every_generation_and_kicks_the_fetch(expert, base, monk
     flags = sessions.fence(expert, write=True, run=True, auto=True, show=True)
     assert parent in flags and kicks == [1]
     assert not any("workbench-plugin/g-" in f for f in flags)  # never one generation: a refresh replaces it
-    for cmd in ("canvas validate", "json-ui validate", "json-ui schemas"):
+    # `json-ui validate` uploads the file it is given: never pre-allowed.
+    assert not any("json-ui validate" in x for x in flags)
+    for cmd in ("canvas validate", "json-ui schemas"):
         assert f"Bash(fused workbench --env prod {cmd}:*)" in flags
     assert not kicks[1:] and sessions.fence(expert, write=True, run=True, auto=True)  # no kick without the tools
     assert kicks == [1]
@@ -347,3 +351,103 @@ def test_canvas_create_waits_for_the_references_and_names_them(expert, base, mon
     # A kick that raises fails nothing either.
     monkeypatch.setattr(canvases, "_kick_workbench_skills", lambda: 1 / 0)
     assert show.canvas_create(expert, {"name": "D"})[2]
+
+
+# ---- the record of made canvases: what it may and may not vouch for ----
+def _marker(folder, cid):
+    from fused_render import canvas_marker
+    canvas_marker.write_live(str(folder), name=folder.name, collection_id=cid)
+
+
+def test_the_record_is_kept_outside_the_experts_folder(expert, base, monkeypatch):
+    _fused(monkeypatch, base)
+    assert show.canvas_create(expert, {"name": "Mine"})[2]
+    path = os.path.realpath(show._made_path(expert))
+    assert os.path.isfile(path) and not path.startswith(os.path.realpath(store.expert_dir(expert)) + os.sep)
+    # A file of that name in the expert's own folder (where a shell command of its session could write) is not read.
+    theirs = base / "prod" / "user" / "Theirs"
+    theirs.mkdir()
+    with open(os.path.join(store.state_dir(expert), "canvases.json"), "w") as f:
+        json.dump([{"env": "prod", "name": "Theirs", "dir": str(theirs), "at": 1}], f)
+    assert not store.free_write(expert, str(theirs / "x.py")) and not show.is_mine(expert, "prod", "Theirs")
+
+
+def test_a_row_naming_the_users_canvas_at_its_real_place_is_not_believed(expert, base):
+    theirs = base / "prod" / "user" / "Theirs"
+    theirs.mkdir()
+    _marker(theirs, "col-theirs")
+    for forged in ({"env": "prod", "name": "Theirs", "dir": str(theirs), "at": 1},
+                   {"env": "prod", "name": "Theirs", "dir": str(theirs), "at": 1, "id": "col-other"},
+                   {"env": "prod", "name": "Theirs", "dir": str(theirs), "at": 1, "id": "", "ino": [0, 0]},
+                   {"env": "prod", "name": "Theirs", "dir": str(theirs), "at": 1, "id": 7, "ino": "x"}):
+        with open(show._made_path(expert), "w") as f:
+            json.dump([forged], f)
+        assert not store.free_write(expert, str(theirs / "x.py")), forged
+        assert show.made_dirs(expert) == [] and not show.is_mine(expert, "prod", "Theirs")
+
+
+def test_a_canvas_the_user_made_again_under_the_same_name_is_not_the_experts(expert, base, monkeypatch):
+    """The expert made Demo; the user deleted it and made their own Demo. The old row must not vouch for it: its
+    files ask, `canvas_create` refuses the name, and the classifier is not told the folder is the expert's."""
+    import shutil
+    calls = _fused(monkeypatch, base)
+    assert show.canvas_create(expert, {"name": "Demo"})[2]
+    demo = base / "prod" / "user" / "Demo"
+    _marker(demo, "col-expert")
+    show._note_made(expert, "prod", "Demo", str(demo))  # as recorded right after a real clone wrote its marker
+    assert store.free_write(expert, str(demo / "a.py")) and show.is_mine(expert, "prod", "Demo")
+    shutil.rmtree(demo)
+    assert not show.is_mine(expert, "prod", "Demo") and show.made_dirs(expert) == []
+    demo.mkdir()
+    (demo / "canvas.toml").write_text(TOML.format(name="Demo"))
+    _marker(demo, "col-user")
+    assert not store.free_write(expert, str(demo / "a.py")) and not store.free_write(expert, str(demo / "canvas.toml"))
+    assert not show.is_mine(expert, "prod", "Demo") and show.made_dirs(expert) == []
+    del calls[:]
+    label, text, ok = show.canvas_create(expert, {"name": "Demo"})
+    assert not ok and "already has a canvas named Demo" in text and calls == []
+    # A hard pull keeps the marker's id: the expert's own canvas stays its own across one.
+    assert show.canvas_create(expert, {"name": "Kept"})[2]
+    kept = base / "prod" / "user" / "Kept"
+    _marker(kept, "col-kept")
+    show._note_made(expert, "prod", "Kept", str(kept))
+    shutil.rmtree(kept)
+    kept.mkdir()
+    _marker(kept, "col-kept")
+    assert store.free_write(expert, str(kept / "a.py"))
+
+
+def test_a_name_taken_on_fused_is_an_error_even_for_a_name_the_expert_once_used(expert, base, monkeypatch):
+    import shutil
+    _fused(monkeypatch, base)
+    assert show.canvas_create(expert, {"name": "Demo"})[2]
+    shutil.rmtree(base / "prod" / "user" / "Demo")
+    calls = _fused(monkeypatch, base, fail="create")  # Fused refuses the create (signed out, or the name is taken)
+    label, text, ok = show.canvas_create(expert, {"name": "Demo"})
+    assert not ok and "was not created" in text and [c[0] for c in calls] == ["create"]  # never cloned, never recorded anew
+    assert not (base / "prod" / "user" / "Demo").exists()
+
+
+def test_only_node_suffixes_and_no_hard_links_are_card_free(expert, base, monkeypatch, tmp_path):
+    _fused(monkeypatch, base)
+    assert show.canvas_create(expert, {"name": "Mine"})[2]
+    mine = base / "prod" / "user" / "Mine"
+    for no in ("run.sh", "pyproject.toml", "canvas.toml.bak", "evil.pth", "x.so", "noext", "data.csv"):
+        assert not store.free_write(expert, str(mine / no)), no
+    outside = tmp_path / "outside.md"
+    outside.write_text("the user's own file")
+    os.link(str(outside), str(mine / "linked.md"))
+    assert not store.free_write(expert, str(mine / "linked.md"))  # an edit would land on the other name too
+    os.symlink(str(outside), str(mine / "sym.md"))
+    assert not store.free_write(expert, str(mine / "sym.md"))
+    (mine / "dir.py").mkdir()
+    assert not store.free_write(expert, str(mine / "dir.py"))
+    assert store.free_write(expert, str(mine / "udf.py")) and store.free_write(expert, str(mine / "new.json"))
+
+
+def test_asking_again_for_its_own_canvas_says_nothing_new_was_made(expert, base, monkeypatch):
+    _fused(monkeypatch, base)
+    first = show.canvas_create(expert, {"name": "Mine"})[1]
+    again = show.canvas_create(expert, {"name": "Mine"})[1]
+    assert "is ready" in first and "starter node" in first
+    assert "You already made the canvas Mine" in again and "starter node" not in again

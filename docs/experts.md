@@ -35,7 +35,6 @@ The expert's folder is the bot's own folder (`bot.public_dir`, `bots/paths.bot_f
         sessions/<id>.json        one row per session (§4); the newest 200 are kept
         read.json                 which task sessions used it and how much of each it has read (§9)
         left.json                 memory.md's sha256 as the last writing session left it (§11)
-        canvases.json             the canvases it made with `canvas_create` (§17)
       .fused/udfs/*.py            throwaway UDF files the expert writes to run them (§6 "Running UDFs"); a
                                   cache, not memory: no row, no diff, never pruned
 
@@ -761,7 +760,8 @@ and the card opens an overlay that draws the thing the way the explorer does. Bu
 `agent_engine._expert_show` and `frontend/src/apps/bots/components/ViewCard.tsx`. The one rule (§1) holds: the two
 tools deliver (a folder, a row); the expert writes every file itself and our code reads none of them.
 
-**When** (`show.on`): the attended chat only (`agent_engine.expert_cards`), the Canvases preference on, and at
+**When** (`show.on`, decided once when the turn's CLI is spawned and kept on the turn, `Turn.show_tools`: the
+roster, the handler, the fence and the server entry all follow that one answer): the attended chat only (`agent_engine.expert_cards`), the Canvases preference on, and at
 least one environment the expert may run UDFs in (`store.run_envs`). Decided once per spawn and handed to the
 roster's server entry and the fence. An ask, a task-learn, a dream and a routine's turn have neither tool, are
 not told about them, and get no rule.
@@ -778,9 +778,10 @@ not told about them, and get no rule.
   published (`canvases._FRESH_WINDOW_S`). A sync that does not start (another fused-render owns the clone) does
   not fail the tool; the card's view starts it. The name is the CLI's alphabet; `env` is one of `store.run_envs`
   (left out when there is one). A name the user already has a canvas under is refused, unless the expert made
-  that canvas, in which case its folder comes back and nothing is created. What Fused refuses (not signed in, a
-  taken name) goes back to the expert as the tool's error. The canvas is recorded in
-  `.fused/expert/canvases.json` (`show.made`, the newest 200). The chat shows one `action` row.
+  that canvas and it is still that canvas (`show.is_mine`), in which case its folder comes back, nothing is
+  created and the result says so. What Fused refuses (not signed in, a taken name) goes back to the expert as the
+  tool's error, also for a name the expert used before. The canvas is recorded (`show.made`, the newest 200; "The
+  record" below). The chat shows one `action` row.
   **It asks first** (owner, 2026-11-19: "Create canvas should be inside approval card"): before any of those
   calls, `agent_engine._expert_show` raises the approval card of §6 (`_gate`, no "approve forever", no risk
   score): "About to create the canvas `<name>` on Fused (`<env>`). It makes a new canvas on your Fused account.
@@ -800,16 +801,30 @@ not told about them, and get no rule.
 
 **Writing the files** is Edit / Write, as for everything else. In the chat every edit asks (§6), and
 `store.free_write` now also answers `allow` for a file directly in the folder of a canvas the expert made
-(`show.made_file`): any name that is not a dot file and not `CLAUDE.md`, nothing in a subfolder, judged on real
-paths, only while that folder is a real folder (not a link) at `<clones root>/<name>` for the recorded
-environment and name, and only while `show.on`. So a `canvases.json` edited by hand cannot point the rule at
-another folder. An edit of any other canvas of the user's raises the approval card, as before. The folder
+(`show.made_file`): a node file (`.py`, `.json`, `.html`, `.md`) or `canvas.toml`, not a dot file and not
+`CLAUDE.md`, nothing in a subfolder, judged on real paths, not a file with a second hard link (an edit would land
+on the other name too), and only while `show.on`. An edit of any other canvas of the user's, or of any other
+file name in a made canvas, raises the approval card, as before.
+
+**The record** of made canvases is `<app home>/experts/<bot id>/canvases.json` (`show._made_path`), outside the
+expert's folder on purpose: the expert's folder is its session's working directory, and a file there that
+decides what is written without a card could be rewritten by a shell command of that session (only Claude
+Code's classifier stands between; and the `fused ... run` allow rules of §6 let `--output-file` write anywhere).
+A row is `{env, name, dir, at, id, ino}` and is believed only while it still names the same canvas
+(`show._folder_of`): the folder is a real folder (not a link) at `<clones root>/<name>` for that environment,
+and the Fused canvas id in its marker (`.fused-canvas.json`) is the recorded one; a canvas recorded without an
+id is held to the folder's inode instead. So a canvas the user deleted and made again under the same name is not
+the expert's: its files ask, `canvas_create` refuses the name, and the classifier is not told about it. This
+is not a boundary against a hostile session (the accepted `--output-file` / `--engine local` of §6 can write a
+canvas file directly); it keeps an honest one from writing unasked into a canvas it did not make. The folder
 publishes itself (the canvas sync), so what the expert writes there reaches the user's Fused account without a
 card: that is the feature, and it is limited to canvases the expert created.
 
 **The fence** (`sessions.fence(show=True)`, `show.rules`): allow rules for the two tools by name (never
 `mcp__bot__*`: the prompt is not the model's to call), `Bash(fused workbench --env <env> canvas validate:*)`,
-`json-ui validate:*` and `json-ui schemas:*` per environment (all read-only), and a Read rule for the folder of
+and `json-ui schemas:*` per environment (`canvas validate` parses locally and writes nothing; `json-ui schemas`
+takes component names only; `json-ui validate` gets NO rule: given a path it sends that file's text to Fused, so
+each call is Claude Code's to judge), and a Read rule for the folder of
 staged `workbench` skills, `skill_plugin.workbench_staged_dir()` (`<home>/workbench-plugin/**`, both spellings,
 none when the path has glob characters): the parent of every generation, not one `g-<stamp>`, so the rule holds
 when the skills arrive after the spawn or a refresh stages a new generation. A root outside it (the raw clone,
@@ -856,7 +871,11 @@ from the prompt line and the tool descriptions.
 platform `Modal`): a node is drawn by the `_node` native view (`platform/ui/NativeView`, the canvases app's
 `NodeView`: the same component the explorer mounts for that file, which clones, starts the sync, signs in and
 frames the hosted workbench as needed); a whole canvas is its workspace page in a frame (`/canvases/<env>/<name>
-?embed=1`). The head has "Open canvas" and, for a node, "Open in explorer". Closing unmounts the view. Because
+?embed=1&side=off`: no shell chrome, its own Claude pane shut). Opening a canvas this way is opening the canvas:
+its sync starts, as on the Canvases page. The head has "Open in explorer" for a node (the node view's own strip
+has "Open in canvas") and "Open canvas" for a canvas. Escape closes it, also from inside the canvas frame (same
+origin, so the overlay listens there too). Closing unmounts the view. A row with a `view` is never folded into
+an older turn's "show more" (`lib/thread.ts hideable`). Because
 the view reads the files through the canvas sync, an edit the expert makes while it is open shows there without
 a new card.
 

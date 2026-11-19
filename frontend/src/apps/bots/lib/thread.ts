@@ -138,7 +138,7 @@ const isRetryError = (e: BotEvent): boolean =>
 const hideable = (e: BotEvent, rx: Record<number, string>, quoted: Set<number>, keep: (e: BotEvent) => boolean): boolean =>
   (e.role === "thought" || e.role === "action" || e.role === "note" || isRetryError(e))
   // The Clear marker is a `note` too (source "clear"): the other fold's own boundary, never a step.
-  && e.source !== "clear" && !e.app?.dir && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq) && !keep(e);
+  && e.source !== "clear" && !e.app?.dir && !e.view && !e.build && !isHandoff(e) && !rx[e.seq] && !quoted.has(e.seq) && !keep(e);
 
 export interface FoldOpts {
   reactions?: Record<number, string>;

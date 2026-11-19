@@ -253,6 +253,7 @@ class Turn:
         # Super Bot (docs §5): built-in Claude Code tool calls seen on the stream, and whether the task has read the web.
         self.is_super = tools.is_super(bot)
         self.is_expert = xstore.is_expert(bot)
+        self.show_tools = False  # an expert's attended chat that may show its work (experts/show.py); set at spawn
         self.max_steps = _botmod().step_cap(bot.meta)
         self.web_touched = False
         self.pending_builtin: dict = {}      # tool_use_id -> (tool name, transcript label)
@@ -367,7 +368,9 @@ def roster_for(bot, token) -> list:
     canvas and put a card in the chat: it has no browser and none of the bot tools."""
     _check(bot, token)
     if xstore.is_expert(bot):
-        return [{"name": tools.PERMISSION_TOOL, **tools.PERMISSION_SPEC}] + (xshow.specs() if xshow.on(bot) else [])
+        # `show_tools`: decided once, when the turn's CLI was spawned (its allow rules and server entry follow it).
+        sess = session(bot)
+        return [{"name": tools.PERMISSION_TOOL, **tools.PERMISSION_SPEC}] + (xshow.specs() if getattr(sess, "show_tools", False) else [])
     return tools.roster(bot)
 
 
@@ -1118,6 +1121,7 @@ def run(bot, task: str, label: str | None = None) -> None:
             # The show tools (experts/show.py): only with a user at the card, decided once for the roster's
             # server entry and the fence's allow rules.
             show = bool(expert) and expert_cards(bot) and xshow.on(bot)
+            sess.show_tools = show
             mcp_file = ("" if expert and not expert_cards(bot)
                         else write_mcp_config(os.path.join(cache, "mcp.json"), paths.server_origin(), bot.id, token,
                                               extra=extra, always_load=show))
@@ -1449,7 +1453,7 @@ def _handle_core(bot, sess: Turn, name: str, args: dict) -> dict:
     if bot.stop_flag.is_set():
         return _stopped()
     if sess.is_expert and name != tools.PERMISSION_TOOL:
-        if name in xshow.TOOLS and expert_cards(bot) and xshow.on(bot):
+        if name in xshow.TOOLS and sess.show_tools:
             return _expert_show(bot, sess, name, args)
         return _result(f"error: unknown tool {name!r}", error=True)  # an expert has none of the bot tools
     notes = []
@@ -1793,7 +1797,7 @@ def _canvas_create_preview(bot, args: dict) -> str | None:
             return None
         from fused_render import canvases
         folder = canvases._canvas_dir(env, name)
-        mine = any((r["env"], r["name"]) == (env, name) for r in xshow.made(bot))
+        mine = xshow.is_mine(bot, env, name)
         if os.path.isdir(folder) and (not mine or os.path.isfile(os.path.join(folder, "canvas.toml"))):
             return None
         return f"create the canvas {name} on Fused ({env})"

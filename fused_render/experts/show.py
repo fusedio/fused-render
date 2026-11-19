@@ -80,7 +80,7 @@ def specs() -> list:
 
 def rules(bot) -> list:
     """The fence's allow rules for a chat that has the tools (`sessions.fence(show=True)`, once per spawn): the two
-    tools, the read-only `canvas validate` and `json-ui validate` / `json-ui schemas` per environment, and a Read
+    tools, the read-only `canvas validate` and `json-ui schemas` per environment, and a Read
     rule for the folder of staged `workbench` skills (the canvas.toml, UDF and widget format references). The rule
     names the stable parent (`skill_plugin.workbench_staged_dir`), not one generation: the skills may arrive after
     the spawn (`ensure_skills` starts the fetch here, off-thread) and a refresh stages a new `g-<stamp>` beside the
@@ -89,8 +89,9 @@ def rules(bot) -> list:
     ensure_skills()
     out = [f"mcp__{SERVER}__{name}" for name in TOOLS]
     for env, _ in store.run_envs(bot):
+        # Not `json-ui validate`: given a path it uploads that file's text to Fused, so it is no rule's to allow
+        # (Claude Code judges each call). `canvas validate` parses locally; `json-ui schemas` takes names only.
         out += [f"Bash(fused workbench --env {env} canvas validate:*)",
-                f"Bash(fused workbench --env {env} json-ui validate:*)",
                 f"Bash(fused workbench --env {env} json-ui schemas:*)"]
     folders = []
     try:
@@ -202,12 +203,23 @@ def note(bot) -> str:
 
 
 # ------------------------------------------------------------- made canvases ---
+#: What the expert writes in a canvas it made without a card: node files, and the canvas file itself.
+_NODE_SUFFIXES = frozenset({".py", ".json", ".html", ".md"})
+
+
 def _made_path(bot) -> str:
-    return os.path.join(store.state_dir(bot), "canvases.json")
+    """The record of the canvases this expert made, in the app's own state folder and NOT in the expert's: the
+    record decides what the expert writes without a card, so it must not be a file the expert's session works
+    beside (its folder is the session's working directory, where a shell command could rewrite it)."""
+    from fused_render.shell.storage import home_dir
+    folder = os.path.join(home_dir(), "experts", str(getattr(bot, "id", "") or "unknown"))
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, "canvases.json")
 
 
 def made(bot) -> list:
-    """`[{env, name, dir, at}]`: the canvases this expert made with `canvas_create`, oldest first."""
+    """`[{env, name, dir, at, id, ino}]`: the canvases this expert made with `canvas_create`, oldest first, as
+    recorded. A row is only believed while it still names the same canvas (`_folder_of`)."""
     try:
         with open(_made_path(bot), encoding="utf-8") as f:
             rows = json.load(f)
@@ -217,10 +229,28 @@ def made(bot) -> list:
             and isinstance(r.get("env"), str) and isinstance(r.get("name"), str)] if isinstance(rows, list) else []
 
 
+def _identity(folder: str) -> dict:
+    """What tells this canvas folder from another one of the same name later: the Fused canvas id in its marker
+    (`.fused-canvas.json`, written by the clone; a hard pull keeps it) and the folder's own inode."""
+    out = {"id": "", "ino": []}
+    try:
+        from fused_render import canvas_marker
+        marker = canvas_marker.read(folder)
+        out["id"] = (marker.id or "") if marker is not None else ""
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        st = os.stat(folder)
+        out["ino"] = [st.st_dev, st.st_ino]
+    except OSError:
+        pass
+    return out
+
+
 def _note_made(bot, env: str, name: str, folder: str) -> None:
     with _LOCK:
         rows = [r for r in made(bot) if (r["env"], r["name"]) != (env, name)]
-        rows.append({"env": env, "name": name, "dir": folder, "at": int(time.time())})
+        rows.append({"env": env, "name": name, "dir": folder, "at": int(time.time()), **_identity(folder)})
         path = _made_path(bot)
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -228,30 +258,55 @@ def _note_made(bot, env: str, name: str, folder: str) -> None:
         os.replace(tmp, path)
 
 
+def _folder_of(row: dict) -> str:
+    """The real folder of a recorded canvas while the record still holds, else "". It holds when the folder is a
+    real folder (not a link) at the place a clone of that name lives (`canvases._canvas_dir`: a recorded path
+    cannot point anywhere else) AND it is still the canvas that was made: the Fused canvas id in its marker is
+    the recorded one, or, for a canvas recorded without an id, the folder is the very same folder (inode). A
+    canvas the user deleted and made again under the same name is another canvas: its files ask."""
+    try:
+        from fused_render import canvases
+        if not _NAME_RE.fullmatch(row["name"]) or row["env"] not in store.RUN_ENVS:
+            return ""
+        home = canvases._canvas_dir(row["env"], row["name"])
+        where = os.path.join(os.path.realpath(os.path.dirname(home)), row["name"])
+        if os.path.islink(home) or not os.path.isdir(home) or os.path.realpath(row["dir"]) != where:
+            return ""
+        now = _identity(home)
+        was = row.get("id") if isinstance(row.get("id"), str) else ""
+        if was:
+            return where if now["id"] == was else ""
+        return where if row.get("ino") and now["ino"] == row.get("ino") else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def made_dirs(bot) -> list:
+    """The real folders of the canvases this expert made that are still those canvases."""
+    return [d for d in (_folder_of(r) for r in made(bot)) if d]
+
+
+def is_mine(bot, env: str, name: str) -> bool:
+    """`name` in `env` is a canvas this expert made and its folder is still that canvas."""
+    return any((r["env"], r["name"]) == (env, name) and _folder_of(r) for r in made(bot))
+
+
 def made_file(bot, real: str) -> bool:
-    """`real` (a real path) is a file the expert writes without a card: directly in the folder of a canvas it
-    made, while that folder is still where a clone of that name lives (`canvases._canvas_dir`: a recorded path
-    cannot point anywhere else) and not a symlink elsewhere. Not a dot file (the marker, `.fusedignore`), not
-    CLAUDE.md, nothing in a subfolder: node files and canvas.toml only."""
+    """`real` (a real path) is a file the expert writes without a card: a node file (`.py`, `.json`, `.html`,
+    `.md`) or `canvas.toml` directly in the folder of a canvas it made (`_folder_of`). Not a dot file (the marker,
+    `.fusedignore`), not CLAUDE.md, nothing in a subfolder, and not a file with a second hard link (an edit of it
+    would land on whatever else that link is)."""
     base = os.path.basename(real)
     if not base or base.startswith(".") or base in _NOT_NODES:
         return False
-    folder = os.path.dirname(real)
+    if base != "canvas.toml" and os.path.splitext(base)[1] not in _NODE_SUFFIXES:
+        return False
     try:
-        from fused_render import canvases
-        for row in made(bot):
-            if not _NAME_RE.fullmatch(row["name"]) or row["env"] not in store.RUN_ENVS:
-                continue
-            home = canvases._canvas_dir(row["env"], row["name"])
-            # The canvas folder itself must be a real folder under the clones root: one replaced by a link would
-            # make "its files" whatever the link points at.
-            where = os.path.join(os.path.realpath(os.path.dirname(home)), row["name"])
-            if (where == folder and not os.path.islink(home) and os.path.isdir(home)
-                    and os.path.realpath(row["dir"]) == folder):
-                return True
+        if os.path.dirname(real) not in made_dirs(bot):
+            return False
+        return not os.path.exists(real) or (os.path.isfile(real) and os.stat(real).st_nlink == 1)
     except Exception:  # noqa: BLE001
         return False
-    return False
 
 
 # --------------------------------------------------------------------- tools ---
@@ -283,13 +338,14 @@ def canvas_create(bot, args: dict) -> tuple:
         return label, f"error: give `env`, one of: {', '.join(envs)}.", False
     from fused_render import canvases
     folder = canvases._canvas_dir(env, name)
-    mine = any((r["env"], r["name"]) == (env, name) for r in made(bot))
+    mine = is_mine(bot, env, name)
     if os.path.isdir(folder) and not mine:
         return label, (f"error: the user already has a canvas named {name} in {env} ({folder}). Pick another name; "
                        "to change that canvas, ask the user first."), False
-    if not (mine and os.path.isfile(os.path.join(folder, "canvas.toml"))):
+    again = mine and os.path.isfile(os.path.join(folder, "canvas.toml"))
+    if not again:
         why = _refusal(canvases.api_canvases_create({"name": name, "env": env}, x_fused="1"))
-        if why is not None and not mine:
+        if why is not None:
             return label, f"error: the canvas was not created: {why}", False
         why = _refusal(canvases.api_canvases_clone({"name": name, "env": env}, x_fused="1"))
         if why is not None:
@@ -301,8 +357,10 @@ def canvas_create(bot, args: dict) -> tuple:
     # fetch does not fail the tool, the text says so).
     refs = _refs_text(ensure_skills(wait=SKILLS_WAIT_S))
     return label, (
-        f"The canvas {name} ({env}) is ready. Its folder: {folder}\n"
-        "It may hold one starter node, `udf.py`: keep, change or remove it (file and canvas.toml row together).\n"
+        (f"You already made the canvas {name} ({env}); nothing new was created. Its folder: {folder}\n" if again else
+         f"The canvas {name} ({env}) is ready. Its folder: {folder}\n"
+         "It may hold one starter node, `udf.py`: keep, change or remove it (file and canvas.toml row together).\n")
+        +
         "Write each node as a file at the folder's root with Write / Edit and add its `[[canvas.nodes]]` row to "
         "canvas.toml with a targeted edit (re-read canvas.toml first). These writes need no approval.\n"
         f"Then check it with `fused workbench --env {env} canvas validate {folder}` and call `{SHOW}` with the "

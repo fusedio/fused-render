@@ -97,9 +97,9 @@ def _auto_settings(bot, show: bool = False) -> str:
     if show:
         from fused_render.experts import show as xshow
         made = [f"Canvases this expert made for the user: creating, changing and deleting node files (.py, .json, "
-                f".html, .md) and canvas.toml directly in {', '.join(r['dir'] for r in rows)}, and `fused workbench "
+                f".html, .md) and canvas.toml directly in {', '.join(dirs)}, and `fused workbench "
                 "--env <env> canvas validate <folder>`. Routine: the expert made these folders to show its work."
-                for rows in [xshow.made(bot)[-20:]] if rows]
+                for dirs in [xshow.made_dirs(bot)[-20:]] if dirs]
     return json.dumps({
         "permissions": {"ask": ["Edit(//**)"]},
         "autoMode": {

@@ -1526,7 +1526,7 @@ def test_expert_canvas_create_without_a_card_when_it_makes_nothing(monkeypatch, 
     assert pre(bot, {"name": "Theirs", "env": "prod"}) is None
     mine = tmp_path / "clones" / "prod" / "Mine"
     mine.mkdir(parents=True)
-    monkeypatch.setattr(xshow, "made", lambda b: [{"env": "prod", "name": "Mine", "dir": str(mine), "at": 0}])
+    monkeypatch.setattr(xshow, "is_mine", lambda b, env, name: (env, name) == ("prod", "Mine"))
     assert pre(bot, {"name": "Mine", "env": "prod"}) == "create the canvas Mine on Fused (prod)"  # no canvas.toml: re-made
     (mine / "canvas.toml").write_text("")
     assert pre(bot, {"name": "Mine", "env": "prod"}) is None

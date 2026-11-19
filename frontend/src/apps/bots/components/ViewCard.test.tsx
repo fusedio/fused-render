@@ -24,7 +24,7 @@ describe("the card", () => {
   });
   test("a canvas opens as its own page, chrome-free in the overlay", () => {
     const v = { ...widget, kind: "canvas", canvas: "My_Canvas" };
-    expect(canvasFrameUrl(v)).toBe("/canvases/prod/My_Canvas?embed=1");
+    expect(canvasFrameUrl(v)).toBe("/canvases/prod/My_Canvas?embed=1&side=off");
     expect(canvasPageUrl(v)).toBe("/canvases/prod/My_Canvas");
   });
   test("collapsed, it is one row with an Open button and no frame", () => {
