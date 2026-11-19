@@ -3,6 +3,7 @@
 // (with each one's GitHub status once known). Lives in platform/ because the
 // chat (apps/claude) renders it itself for the explorer's pane; the shell's
 // TaskPrChip is a re-export for the hosts that pass it as `headerExtra`.
+import { GitPullRequest } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 import { usePrStatuses } from "@platform/lib/prStatus";
 import { prKey, prRefsOf, prUrl, type PrRef } from "@platform/lib/task-prs";
@@ -32,36 +33,19 @@ export function PrPopList({ refs }: { refs: PrRef[] }) {
 }
 
 /**
- * `collapsed`: every pull request behind one "+N" (Akshil, 2026-11-17: "in
- * this view where we have buttons we directly do 1 +x, we don't show PR and
- * WT tags more than one") — for a head that already shows a tag (the worktree
- * pill) beside a pane's tools.
+ * THE NEWEST PULL REQUEST IS ALWAYS THE TAG (Akshil, 2026-11-19: "PR should
+ * have higher priority on visibility in all these views") — the branch tag
+ * beside it gives way instead (shown whole or not at all), so the 2026-11-17
+ * `collapsed` form (every pull request behind one "+N" beside a pane's
+ * tools) is gone.
+ *
+ * In the shared task head the tag is a pull-request glyph and the number:
+ * `.task-head-chips` shows the glyph and hides the word. Everywhere else (the
+ * old slim line) it reads "PR #12" as it always did.
  */
-export function TaskPrChip({ task, collapsed = false }: { task: Task; collapsed?: boolean }) {
+export function TaskPrChip({ task }: { task: Task }) {
   const refs = prRefsOf(task).filter((r) => r.repo);
   if (!refs.length) return null;
-  if (collapsed) {
-    return (
-      <span className="task-pr-chips">
-        <Popover>
-          <PopoverTrigger
-            render={
-              <button
-                type="button"
-                className="task-pr-more"
-                aria-label={`${refs.length} pull request${refs.length === 1 ? "" : "s"}`}
-              />
-            }
-          >
-            +{refs.length}
-          </PopoverTrigger>
-          <PopoverContent className="task-pr-pop" align="start">
-            <PrPopList refs={refs} />
-          </PopoverContent>
-        </Popover>
-      </span>
-    );
-  }
   const head = refs[0];
   const rest = refs.slice(1);
   const href = prUrl(head) ?? undefined;
@@ -75,7 +59,10 @@ export function TaskPrChip({ task, collapsed = false }: { task: Task; collapsed?
         title={href}
         aria-label={`Open pull request ${head.number} on GitHub`}
       >
-        PR #{head.number}
+        <GitPullRequest className="task-pr-glyph" size={12} aria-hidden="true" />
+        <span className="task-pr-label">
+          <span className="task-pr-word">PR </span>#{head.number}
+        </span>
       </a>
       {rest.length ? (
         <Popover>

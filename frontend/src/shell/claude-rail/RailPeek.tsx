@@ -161,6 +161,7 @@ import { ForceStartButton } from "@shell/ForceStartButton";
 import { PlaceTags } from "./PlaceTags";
 // THE ONE TASK HEAD (design.md "One task head, everywhere"), behind its flag.
 import { TaskHead } from "@shell/TaskHead";
+import { TaskPrChip } from "@shell/TaskPrChip";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { openInTasksItem } from "@platform/ui/openInTasks";
@@ -1263,6 +1264,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the pulse.
   const favsOn = useTaskFavourites();
   const unified = useTaskHeadUnified();
+  // THE HEAD'S TAG SEATS (Akshil, 2026-11-19: "I would rather have a PR thing
+  // on this tab and also know about the branch"): the shown chat portals its
+  // branch tag into the head's chips (ChatMount `headChipsHost`) and its pause
+  // word beside the identity (`headStatusHost`) — the Tasks card's chat head,
+  // which had them; a task's own card had neither, nor the PR tag.
+  const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  const [statusHost, setStatusHost] = useState<HTMLElement | null>(null);
   // "Open in Tasks" reads the page's path: a card kept across a hop re-reads it.
   useUrlVersion();
   const [starMark, setStarMark] = useState<StarMark | null>(null);
@@ -1845,6 +1853,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   }
                 : {})}
               onRenamed={onReload}
+              // The task's pull request, and the chat's branch tag before it.
+              {...(head.t.session_id && !head.draft
+                ? { chips: <TaskPrChip task={head.merged as Task} />, chipsRef: setChipsHost, statusRef: setStatusHost }
+                : {})}
               stacked="auto"
               // Measured only while the card is up.
               fitEnabled={!!shownKey}
@@ -2132,6 +2144,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // card shows another chat or closes.
                     smallCard
                     smallCardShown={!!shown && t.key === shown.pulse.key}
+                    // Only the chat the head names fills the head's seats.
+                    {...(unified && t.key === viewKey ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}
                   />
                 ) : (
                   // NO SESSION YET — a draft, or a scheduled task that has not

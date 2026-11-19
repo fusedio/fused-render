@@ -29,6 +29,7 @@ import { TaskPeekWho } from "./TaskPeekWho";
 // THE SHARED TASK HEAD on the open chat (design.md, "One task head,
 // everywhere"), behind its flag; off, the chat's head below is unchanged.
 import { TaskHead } from "./TaskHead";
+import { TaskPrChip } from "./TaskPrChip";
 import { useTaskHeadUnified } from "./task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
@@ -6157,6 +6158,8 @@ export default function NewJobModal({
             title={liveChat ? undefined : (name || fields.title || "New task")}
             titleId={titleId}
             open={chatHref ? { href: chatHref, label: "Open this chat", onOpen: (h) => openFromLanding(h) } : null}
+            // The task's pull request, after the chat's branch tag.
+            chips={liveChat ? <TaskPrChip task={liveChat} /> : null}
             chipsRef={setChipsHost}
             statusRef={setStatusHost}
             kebab={chatKebab}
