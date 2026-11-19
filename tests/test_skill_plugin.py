@@ -973,7 +973,8 @@ def test_both_callers_pass_their_target_to_the_gate():
     src = open(os.path.join(REPO_ROOT, "fused_render", "claude_agent",
                             "agent.py"), encoding="utf-8").read()
     assert "_plugin_argv()" not in src
-    assert src.count("_plugin_argv(file)") == 2
+    # One of them also says whether a specialist's chat gets the workbench root (`workbench=`).
+    assert src.count("_plugin_argv(file)") + src.count("_plugin_argv(file, ") == 2
 
 
 def test_appenv_names_the_workbench_var_and_the_canvases_root():
