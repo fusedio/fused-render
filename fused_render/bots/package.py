@@ -9,6 +9,7 @@ kind ever half-opens as the other. Members:
     README.md            when the user wrote one (never generated)
     icon.svg             when the user put one at the folder root (the install page's picture, else the face)
     .fused/memory.md     only when the exporter ticked it (memory is private; default off)
+    .fused/memory-archive.md  an expert's archive, with its memory (docs/experts.md §5)
     apps/<folder>.fused  one nested app file per BUNDLED app the exporter chose
 
 Apps travel four ways (`resolve_source`): a starter, a marketplace app or a
@@ -19,6 +20,10 @@ reference would drop — is bundled. Everything here reads the bot's files from 
 never a live Bot: the export must work whether or not the registry has that
 bot loaded, and a running task's in-memory meta is not what the user sees in
 the folder.
+
+An expert (docs/experts.md §5) travels in the same container: its `instructions.md` (with any legacy extra, as
+the harness reads it) is bot.json's `instructions`, its reference files are `skills/`, and its memory is its own
+`memory.md` (plus `memory-archive.md`), shipped under the same member names a bot's memory uses.
 """
 from __future__ import annotations
 
@@ -42,6 +47,8 @@ log = logging.getLogger(__name__)
 PACKAGE_MAX_BYTES = 1 << 30            # 1 GiB total, declared sizes, before anything is written
 TEXT_MAX_BYTES = 1 << 20               # memory.md + skills/ together: authored notes, not a data store
 EXT = ".fusedbot"
+MEMORY_MEMBER = ".fused/memory.md"
+ARCHIVE_MEMBER = ".fused/memory-archive.md"  # an expert's only
 
 _SNIPPET_MAX = 80
 
@@ -283,6 +290,14 @@ def _public(bid: str) -> tuple[str, bytes, dict, dict]:
         # the public keys here; a row with an id is already exactly that.
         public["routines"] = [{k: v for k, v in r.items() if k in store.ROUTINE_PUBLIC_KEYS} if isinstance(r, dict)
                               else r for r in public["routines"]]
+    if _is_expert(public):
+        # The expert's real instructions are its instructions.md, not the (legacy) bot.json key: ship what the
+        # harness runs with, so the importer's expert behaves as this one does (botfile writes it back to the file).
+        from fused_render.experts import store as xstore
+        public["instructions"] = xstore.folder_instructions(bpaths.bot_folder(bid), meta)
+        if isinstance(public.get("expert"), dict):
+            # `shipped` names an expert this app ships; a file never claims to be one (botfile drops it too).
+            public["expert"] = {k: v for k, v in public["expert"].items() if k != "shipped"}
     return path, store.public_json(public).encode("utf-8"), public, meta
 
 
@@ -349,8 +364,23 @@ def _read_text(path: str, cap: int = TEXT_MAX_BYTES + 1) -> str:
         return ""
 
 
-def _memory_path(bid: str) -> str:
-    return os.path.join(bpaths.bot_private(bid), "memory.md")
+def _is_expert(meta: dict) -> bool:
+    from fused_render.bots.bot import is_expert
+    return is_expert(meta)
+
+
+def _memory_files(bid: str, meta: dict) -> list[tuple[str, str]]:
+    """[(member, abs path)] of the memory that travels when the exporter ticks it, regular files only. A bot's is
+    its private `.fused/memory.md`; an expert's is `memory.md` in its folder and `memory-archive.md` beside it
+    (the archive is memory too: lines a dream moved out, docs/experts.md §10)."""
+    if _is_expert(meta):
+        from fused_render.experts import store as xstore
+        folder = bpaths.bot_folder(bid)
+        files = [(MEMORY_MEMBER, os.path.join(folder, xstore.MEMORY)),
+                 (ARCHIVE_MEMBER, os.path.join(folder, xstore.ARCHIVE))]
+    else:
+        files = [(MEMORY_MEMBER, os.path.join(bpaths.bot_private(bid), "memory.md"))]
+    return [(rel, p) for rel, p in files if _regular(p)]
 
 
 def _regular(path: str) -> bool:
@@ -532,10 +562,10 @@ def plan(bid: str) -> dict:
     readme = os.path.join(folder, "README.md")
     if _regular(readme):
         _scan("readme", _read_text(readme), hits)
-    mpath = _memory_path(bid)
-    memory_bytes = _size(mpath) if _regular(mpath) else 0
-    if memory_bytes:
-        _scan("memory", _read_text(mpath), hits)
+    memory_bytes = 0
+    for rel, mpath in _memory_files(bid, meta):
+        memory_bytes += _size(mpath)
+        _scan("memory archive" if rel == ARCHIVE_MEMBER else "memory", _read_text(mpath), hits)
     # Two answers, because memory is the user's choice in the dialog: `text_problem` is skills alone (they always
     # travel) and blocks Export outright; `memory_text_problem` blocks it only while memory is ticked — so a
     # small-skills bot with a large memory.md can still be exported without its memory.
@@ -575,10 +605,6 @@ def _file_name(file_name: str | None, name: str) -> str:
     return base if base.lower().endswith(EXT) else base + EXT
 
 
-#: An expert's instructions.md, skills and memory.md live in its folder, which a `.fusedbot` does not carry.
-EXPERT_REFUSAL = "An expert cannot be exported yet: its instructions, skills and memory would not travel with it"
-
-
 def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, dest_dir: str) -> str:
     """Write the bot as a `.fusedbot` under `dest_dir` and return its path. `apps` are the folders the user ticked:
     manifest rows and folders added in the dialog alike, each re-resolved; a bundled one is exported as a nested
@@ -586,14 +612,12 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
     source}` with the source's kind/key/slug/url/repo/commit, never a plan row's `fallback`. Caps are checked on declared sizes BEFORE anything is
     exported, so an over-budget package fails in a second instead of after minutes of compression. Built in a
     scratch dir beside the destination and renamed in once complete: the result path is only ever absent or whole."""
-    from fused_render.bots.bot import is_expert, is_super
+    from fused_render.bots.bot import is_super
     from fused_render.server.routers.appfile import _unique_export_path
 
     _path, raw, public, meta = _public(bid)
     if is_super(public):
         raise ValueError("Super Bot cannot be exported: it is this machine's own assistant")
-    if is_expert(public):
-        raise ValueError(EXPERT_REFUSAL)
     name = public.get("name") or bid
     if not isinstance(apps, list) or not all(isinstance(a, str) for a in apps):
         raise ValueError("apps must be a list of app folder names")
@@ -613,12 +637,12 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
             members.append(("icon.svg", icon))
         else:
             log.warning("bot %s: icon.svg is over %d bytes; exported without it", bid, appfile.MAX_ICON_BYTES)
-    mpath = _memory_path(bid)
-    if memory and _regular(mpath):
-        members.append((".fused/memory.md", mpath))
+    mem = _memory_files(bid, meta) if memory else []
+    for rel, mpath in mem:
+        members.append((rel, mpath))
         text_bytes += _size(mpath)
     if text_bytes > TEXT_MAX_BYTES:
-        what = "skills and memory are" if memory and _regular(mpath) else "skills are"
+        what = "skills and memory are" if mem else "skills are"
         raise ValueError(f"{what} too large to export ({text_bytes} bytes > {TEXT_MAX_BYTES})")
 
     manifest = _manifest(meta)

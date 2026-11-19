@@ -508,7 +508,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
           </div>
         </div>
         <DialogFooter className={FOOTER_CLASS}>
-          {isSuper || isExpert ? null : <Button variant="outline" className="sm:mr-auto" onClick={() => { void exportFile(); }}>Export bot</Button>}
+          {isSuper ? null : <Button variant="outline" className="sm:mr-auto" onClick={() => { void exportFile(); }}>{isExpert ? "Export expert" : "Export bot"}</Button>}
           <Button variant="outline" onClick={() => onClose(null)}>Cancel</Button>
           <Button disabled={okDisabled || saving} onClick={() => { void ok(); }}>Save</Button>
         </DialogFooter>

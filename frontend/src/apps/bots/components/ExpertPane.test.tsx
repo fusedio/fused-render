@@ -132,9 +132,11 @@ describe("MdDoc", () => {
 });
 
 describe("the bot menu for an expert", () => {
-  test("no live view, clone or routines; Skills… opens its skills", () => {
+  test("no live view, clone or routines; Skills… opens its skills; it exports", () => {
     const b = { id: "x", name: "X", status: "idle", seq: 0, kind: "expert" } as never;
-    const as = menuItems(b, { live: true }).map((m) => (m === "hr" ? m : m.a));
+    const items = menuItems(b, { live: true });
+    const as = items.map((m) => (m === "hr" ? m : m.a));
+    expect(items).toContainEqual(expect.objectContaining({ a: "exportFile", label: "Export expert…" }));
     expect(as).not.toContain("live");
     expect(as).not.toContain("clone");
     expect(as).toContain("skills");
