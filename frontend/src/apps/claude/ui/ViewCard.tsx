@@ -4,7 +4,7 @@
 // shared overlay (platform/ui/ViewModal), which draws the node or canvas live, and closing unmounts it.
 import { useState } from "react";
 
-import { KIND_ICON, ViewModal, viewSubtitle } from "@platform/ui/ViewModal";
+import { ViewKindIcon, ViewModal, viewSubtitle } from "@platform/ui/ViewModal";
 
 import type { ViewCardRef } from "../specialists/view-card";
 import { topDocumentBody } from "./topContainer";
@@ -14,7 +14,7 @@ export function ViewCard({ view }: { view: ViewCardRef }) {
   return (
     <div className="c-viewcard" data-view={view.path}>
       <span className="c-viewcard-ico" aria-hidden="true">
-        {KIND_ICON[view.kind] || "▢"}
+        <ViewKindIcon kind={view.kind} />
       </span>
       <div className="c-viewcard-txt">
         <b>{view.title}</b>

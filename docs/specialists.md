@@ -532,12 +532,17 @@ nothing is written into a home.
   Such a row is drawn as a card in place of the tool row (`ui/SegmentView.tsx`, `ui/ViewCard.tsx`) and never folds
   behind "more" (`protocol/segments.ts`). A running or failed `show` stays an ordinary tool row;
   `canvas_create` reads "Made the canvas <name>".
-- The card is one row in the shape of the Bots thread's app card: an icon for the kind, the title, the
+- The card is one row in the shape of the Bots thread's app card: the workbench's own icon for the kind
+  (`platform/ui/NodeTypeIcons`: Python for a UDF, sliders for a widget, the HTML file, the text T, the canvas
+  mark), the title, the
   specialist's note and "Widget · in <canvas> · <env>", and Open. Collapsed it mounts nothing of the work.
 - Open raises `platform/ui/ViewModal.tsx`: a node through the `_node`
   native view (the component the explorer mounts for that file: it clones, starts the sync, signs in and frames
   the hosted workbench as needed), a whole canvas as its page in a frame (`/canvases/<env>/<name>?embed=1`). The
-  head has "Open canvas" and, for a node, "Open in explorer". Closing unmounts it.
+  head has the kind's icon, the title and "Widget · in <canvas> · <env>", then "Open in explorer" for a node or
+  "Open canvas" for a canvas. A node's own strip under it keeps only what is live (status, sync, "Open in canvas");
+  the kind, name, canvas and environment it repeats are hidden in the overlay (`view-modal.css`). Closing unmounts
+  it.
 - A change is the same chat: the specialist edits the same files, and the open view follows them through the sync.
 
 **Not verified here.** This was built without a Fused sign-in and without a real `claude`: that the CLI lists the

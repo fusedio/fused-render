@@ -7,13 +7,24 @@ import { NODE_MODE } from "@platform/lib/mode-visibility";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
 import { NativeView, hasNativeView } from "@platform/ui/NativeView";
+import { CanvasIcon, HtmlNodeIcon, PythonNodeIcon, TextNodeIcon, WidgetNodeIcon } from "@platform/ui/NodeTypeIcons";
 import { viewOf, type ViewRef } from "@platform/lib/view-ref";
 import "./view-modal.css";
 
 export { viewOf, type ViewRef };
 
 const KIND_LABEL: Record<string, string> = { canvas: "Canvas", udf: "UDF", widget: "Widget", html: "HTML", note: "Note" };
-export const KIND_ICON: Record<string, string> = { canvas: "▦", udf: "ƒ", widget: "◫", html: "‹›", note: "¶" };
+// The workbench's own marks for its node types (NodeTypeIcons: the ones its add-node bar wears), so a card reads
+// as the same thing the canvas shows.
+const KIND_ICON: Record<string, (p: { size?: number }) => JSX.Element> = {
+  canvas: CanvasIcon, udf: PythonNodeIcon, widget: WidgetNodeIcon, html: HtmlNodeIcon, note: TextNodeIcon,
+};
+
+/** The glyph for a card's kind; a kind this page does not know wears the canvas mark. */
+export function ViewKindIcon({ kind, size = 16 }: { kind: string; size?: number }) {
+  const Icon = Object.prototype.hasOwnProperty.call(KIND_ICON, kind) ? KIND_ICON[kind]! : CanvasIcon;
+  return <Icon size={size} />;
+}
 
 export const viewKindLabel = (kind: string): string => KIND_LABEL[kind] || "File";
 
@@ -32,6 +43,7 @@ export function ViewModal({ view, onClose, getContainer }: { view: ViewRef; onCl
   const go = (url: string) => { onClose(); void navigateUrl(url); };
   return (
     <Modal
+      titleLead={<span className="view-modal-ico"><ViewKindIcon kind={view.kind} /></span>}
       title={<>{view.title} <span className="view-modal-sub">{viewSubtitle(view)}</span></>}
       ariaLabel={`${viewKindLabel(view.kind)} ${view.title}`}
       onClose={onClose}
@@ -40,7 +52,9 @@ export function ViewModal({ view, onClose, getContainer }: { view: ViewRef; onCl
       {...(getContainer ? { getContainer } : {})}
       headActions={
         <>
-          {view.canvas && view.env ? <button type="button" className="view-modal-btn" onClick={() => go(canvasPageUrl(view))}>Open canvas</button> : null}
+          {/* One way to the canvas per overlay: a node's own strip below has "Open in canvas", which also
+              selects the node, so the head offers it only for a whole canvas. */}
+          {isCanvas && view.canvas && view.env ? <button type="button" className="view-modal-btn" onClick={() => go(canvasPageUrl(view))}>Open canvas</button> : null}
           {!isCanvas ? <button type="button" className="view-modal-btn" onClick={() => go(urlForFsPath(view.path))}>Open in explorer</button> : null}
         </>
       }
