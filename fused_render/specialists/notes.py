@@ -1,7 +1,8 @@
-"""Notes waiting for a specialist's next update: one markdown file each in `<home>/inbox/`.
+"""What waits for a specialist's next learning run: one markdown file each in `<home>/inbox/`.
 
-A task's `specialist_note` adds one; each breakout and each task that used the specialist has one the app appends
-its turns to (`update.gather`); the pane lists and deletes them. The file is the whole note: no kinds, no states.
+A file is a `# <title>` line and its text. A task's `specialist_note` writes the note's text; a conversation (a task
+that named the specialist, a breakout, the main chat) gets a pointer to its transcript (`update.point`). The title
+line says which (`parse`); the pane lists and deletes them.
 """
 from __future__ import annotations
 
@@ -27,14 +28,18 @@ def add(spec, sid: str, title: str, text: str) -> str:
     return name
 
 
-def append(spec, name: str, text: str) -> None:
-    """Add `text` at the end of note `name` (a breakout's or a task's file, one turn at a time)."""
-    with open(os.path.join(_dir(spec), name), "a", encoding="utf-8") as fh:
-        fh.write(text.strip() + "\n\n")
+_KINDS = (("Note from task ", "note"), ("Task ", "task"), ("Breakout from ", "breakout"), ("Chat ", "chat"))
+
+
+def parse(text: str) -> dict:
+    """`{kind, title}` from a file's first line: `# Task "…"` is a task, and so on; the title is what is quoted."""
+    line = text.split("\n", 1)[0].removeprefix("# ").strip()
+    kind, rest = next(((k, line[len(p):]) for p, k in _KINDS if line.startswith(p)), ("note", line))
+    return {"kind": kind, "title": rest.strip('"')}
 
 
 def list(spec) -> list[dict]:  # noqa: A001 — the contract's name
-    """`[{name, text, at}]`, oldest first."""
+    """`[{name, text, at, kind, title}]`, oldest first."""
     try:
         names = sorted(n for n in os.listdir(_dir(spec)) if _NAME.match(n))
     except OSError:
@@ -44,7 +49,8 @@ def list(spec) -> list[dict]:  # noqa: A001 — the contract's name
         path = os.path.join(_dir(spec), name)
         try:  # an update may remove it meanwhile
             with open(path, encoding="utf-8", errors="replace") as fh:
-                out.append({"name": name, "text": fh.read(), "at": os.path.getmtime(path)})
+                text = fh.read()
+            out.append({"name": name, "text": text, "at": os.path.getmtime(path), **parse(text)})
         except FileNotFoundError:
             continue
     return out

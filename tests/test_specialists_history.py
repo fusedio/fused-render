@@ -48,19 +48,21 @@ def test_a_chat_turn_commits_with_its_first_words(transcript):
     assert _git(s.home, "rev-list", "--count", "HEAD").strip() == "2"
 
 
-def test_an_update_removes_only_the_files_it_was_given(transcript):
+def test_a_learning_run_removes_only_its_files_and_is_listed_even_when_it_changed_nothing(transcript):
     s = make_specialist()
-    _edit(s.home, "inbox/a.md", "note a")
-    _edit(s.home, "inbox/late.md", "arrived during the update")
-    chat.change(s.home, lambda d: d.update(update_files=["a.md"]))
-    transcript([_row("user", update.PROMPT),
-                _row("assistant", [{"type": "tool_use", "name": "Edit"}]),
-                _row("assistant", [{"type": "text", "text": "Added one line about parquet."}])])
-    _edit(s.home, "memory.md", "We use parquet.\n")
+    _edit(s.home, "inbox/a.md", '# Breakout from "Fix the canvas"\n\nTranscript: /t/b.jsonl\nFrom line: 1\n')
+    _edit(s.home, "inbox/b.md", '# Note from task "Sync"\n\nUse parquet.\n')
+    history.commit(s.home, "Notes waiting", ["inbox"])
+    _edit(s.home, "inbox/late.md", "arrived during the run")
+    chat.change(s.home, lambda d: d.update(update={"session": "sid", "files": ["a.md", "b.md"], "lines": {}}))
+    transcript([_row("user", update.PROMPT), _row("assistant", [{"type": "text", "text": "Nothing new."}])])
     history.after_turn(s.home, "sid")
-    assert sorted(os.listdir(os.path.join(s.home, "inbox"))) == ["late.md"]
-    assert _git(s.home, "log", "-1", "--format=%B").strip() == "Update\n\nAdded one line about parquet."
-    assert chat.load(s.home)["update_files"] == []
+    assert sorted(os.listdir(os.path.join(s.home, "inbox"))) == ["late.md"] and chat.load(s.home)["update"] is None
+    (row,) = history.changes(s.home)  # it changed neither memory nor skills, and is listed
+    assert (row["label"], row["read"], row["changed"]) == ("Update", 2, False)
+    assert history.learned(s.home, row["sha"]) == {"reply": "Nothing new.", "read": [
+        {"kind": "breakout", "title": "Fix the canvas"}, {"kind": "note", "title": "Sync"}]}
+    assert history.diff(s.home, row["sha"]) == ""
 
 
 def test_changes_lists_memory_and_skills_only_and_hand_edits(transcript):
@@ -71,7 +73,8 @@ def test_changes_lists_memory_and_skills_only_and_hand_edits(transcript):
     _edit(s.home, ".claude/skills/x/SKILL.md", "---\nname: x\n---\n")
     history.commit_edits(s.home)
     (row,) = history.changes(s.home)  # neither "Created" nor the inbox-only commit
-    assert row["label"] == "You edited memory" and row["at"] > 0
+    assert row["label"] == "You edited memory" and row["at"] > 0 and row["changed"]
+    assert history.learned(s.home, row["sha"]) == {}
     diff = history.diff(s.home, row["sha"])
     # Hunks only, both files, no file headers: the pane renders every line it gets.
     assert "+By hand." in diff and "+name: x" in diff

@@ -5,7 +5,7 @@
     POST /api/specialists/tools/breakout  {run_id, specialist, reason} the user allowed the breakout card
 
 Each answers `{text}` for the model; an unknown specialist is a 404 whose sentence names the ones there are. Every
-call records that the task used the specialist (`chat.record_task`), so its next update reads that task.
+call puts the task's conversation in the specialist's inbox (`update.point`), so its next learning run reads it.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import os
 from fastapi import APIRouter, Body, Header
 
 from fused_render.server.common import _error, _require_fused
-from fused_render.specialists import chat, notes, store
+from fused_render.specialists import chat, notes, store, update
 from fused_render.specialists import home as hm
 
 router = APIRouter(prefix="/api/specialists/tools")
@@ -67,7 +67,8 @@ def _call(body, x_fused, *fields: tuple[str, int]):
     from fused_render.experts import learn
 
     who = learn.caller(body.get("run_id"))
-    chat.record_task(spec.id, who["session_id"], who["target"])
+    if who["session_id"] and who["target"]:
+        update.point(spec, who["session_id"], who["target"], "task")
     return spec, who, values
 
 
@@ -86,7 +87,7 @@ def note(body=Body(None), x_fused: str | None = Header(None)):
         return spec
     title = chat.task_title(chat.transcript(who["target"], who["session_id"])) if who["target"] else "a task"
     notes.add(spec, who["session_id"], f'Note from task "{title}"', values[0])
-    return {"text": f"Sent to the {spec.name} specialist. It reads its notes at its next update."}
+    return {"text": f"Sent to the {spec.name} specialist. It learns from its notes once a day."}
 
 
 @router.post("/breakout")

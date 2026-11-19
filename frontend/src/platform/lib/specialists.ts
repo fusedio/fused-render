@@ -14,6 +14,10 @@ export interface Specialist {
   home: string;
   working: boolean;
   last: { text: string; at: number } | null;
+  /** A learning run in progress, and when the last one ended (epoch seconds). */
+  updating: boolean;
+  last_update: number | null;
+  /** A learning run ended since its Learning tab was last opened. */
   new: boolean;
 }
 

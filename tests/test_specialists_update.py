@@ -1,4 +1,5 @@
-"""The update: due from the inbox alone; a breakout's or a task's turn end writes its inbox file once; the start."""
+"""Learning: due from the inbox alone; a conversation's inbox entry is a pointer written once; a run is a fresh
+session given exactly its entries; a clean end moves the start lines on; a failed one changes nothing."""
 from _specialists_conftest import *  # noqa: F401,F403
 import json
 import os
@@ -7,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from fused_render import claude_spawn
-from fused_render.specialists import chat, history, notes, store, update
+from fused_render.specialists import chat, history, launch, notes, store, update
 
 WATCH = update._watch  # the world fixture stubs it
 
@@ -29,17 +30,16 @@ def world(tmp_path, monkeypatch):
 
     def spawn(target, prompt, mode, **kw):
         spawns.append((target, prompt, mode, kw))
-        return {"run_id": "run1", "session_id": "new-main"}
+        return {"run_id": "run1", "session_id": "learn1"}
 
     monkeypatch.setattr(chat, "transcript", transcript)
     monkeypatch.setattr(store, "live_runs", lambda home: [])
-    monkeypatch.setattr(store, "end_idle_hosts", lambda home: None)
     monkeypatch.setattr(claude_spawn, "spawn_helper", spawn)
     monkeypatch.setattr(claude_spawn, "record_session_when_ready", lambda agent, run_id: None)
     monkeypatch.setattr(update, "_watch", lambda home, run_id: None)  # tested on its own below
     monkeypatch.setattr(update, "_RUNNING", set())
-    # The main chat's recorded pick: the update runs on it.
-    agent = SimpleNamespace(_session_settings=lambda sid: ("haiku", "low") if sid else ("", ""))
+    # What the chat's pills open on for a session: the run uses it.
+    agent = SimpleNamespace(_defaults=lambda file, sid: {"model": "haiku" if sid else "", "effort": "low" if sid else ""})
     monkeypatch.setattr(claude_spawn, "load_agent", lambda: agent)
     return files, spawns
 
@@ -49,64 +49,69 @@ def test_due_only_with_something_in_the_inbox(world):
     s = make_specialist()
     assert not update.due(s, 10 ** 10)
     assert update.start(s) is False and spawns == []
-    notes.add(s, "t", "A note", "x")
+    notes.add(s, "t", 'Note from task "x"', "x")
     assert update.due(s, 10 ** 10)
     update.start(s)
-    assert not update.due(s, chat.load(s.home)["last_update"] + 60)
+    assert not update.due(s, 10 ** 10)  # running
 
 
-def test_turn_ends_write_breakouts_and_tasks_to_the_inbox_once(world, tmp_path):
+def test_conversations_get_one_pointer_each(world, tmp_path):
     files, _ = world
     s = make_specialist()
-    chat.record_start(s.id, "breakout", "brk1")
-    files["brk1"] = [_row("user", 'From 2 messages of their main chat titled "Fix the \\"big\\" canvas". Why parquet?'),
+    chat.record_start(s.id, "main", "main1")
+    files["main1"] = [_row("user", "<terminal-hint>{}</terminal-hint>\nRemember parquet"), _row("assistant", "Done.")]
+    files["brk1"] = [_row("user", 'From 2 messages of their main chat titled "Fix the canvas". Why parquet?'),
                      _row("assistant", "Columnar.")]
-    assert history.turn_ended(s.home, "brk1") is True  # a turn in the home: committed there
-    (brk,) = notes.list(s)
-    assert brk["text"].startswith('# Breakout from "Fix the "big" canvas"') and "**Claude:** Columnar." in brk["text"]
-    history.turn_ended(s.home, "brk1")
-    assert notes.list(s)[0]["text"] == brk["text"]  # nothing written twice
-    files["brk1"].append(_row("user", "And CSV?"))
-    history.turn_ended(s.home, "brk1")
-    assert notes.list(s)[0]["text"].endswith("**User:** And CSV?\n\n")
+    assert history.turn_ended(s.home, "main1") is True and history.turn_ended(s.home, "brk1") is True
+    history.turn_ended(s.home, "brk1")  # one pointer per conversation
+    by_kind = {n["kind"]: n for n in notes.list(s)}
+    assert set(by_kind) == {"chat", "breakout"}
+    assert by_kind["chat"]["title"] == "Remember parquet"  # the app's own blocks are not the user's words
+    assert by_kind["breakout"]["title"] == "Fix the canvas"
+    assert by_kind["breakout"]["text"].endswith(f"Transcript: {tmp_path / 'brk1.jsonl'}\nFrom line: 1\n")
+    assert "Columnar" not in by_kind["breakout"]["text"]  # a pointer, not a copy
 
-    files["task1"] = [_row("user", "Fix the canvas"), _row("assistant", "Done: used parquet.")]
-    assert history.turn_ended(str(tmp_path), "task1") is False  # no specialist used: nothing
-    assert len(notes.list(s)) == 1
-    chat.record_task(s.id, "task1", str(tmp_path))
+    files["task1"] = [_row("user", "Fix the canvas")]
+    assert history.turn_ended(str(tmp_path), "task1") is False  # not one that used the specialist: nothing
+    update.point(s, "task1", str(tmp_path), "task")  # its first tool call
     assert history.turn_ended(str(tmp_path), "task1") is False  # the agent commits a task's turn itself
-    task = next(n for n in notes.list(s) if n["name"] != brk["name"])
-    assert task["text"] == '# Task "Fix the canvas"\n\n\n**User:** Fix the canvas\n\n**Claude:** Done: used parquet.\n\n'
-    notes.delete(s, task["name"])  # an update read it
-    files["task1"].append(_row("user", "One more thing"))
-    history.turn_ended(str(tmp_path), "task1")
-    new = next(n for n in notes.list(s) if n["name"] != brk["name"])
-    assert "One more thing" in new["text"] and "Done: used parquet" not in new["text"]
+    assert sorted(n["kind"] for n in notes.list(s)) == ["breakout", "chat", "task"]
 
 
-def test_start_resumes_the_main_chat_unattended(world):
-    _, spawns = world
+def test_a_run_is_a_fresh_session_given_exactly_its_entries(world, tmp_path):
+    files, spawns = world
     s = make_specialist()
-    notes.add(s, "task1", "A note", "Use parquet.")
+    chat.record_start(s.id, "main", "main1")
+    files["task1"] = [_row("user", "Fix it"), _row("assistant", "Fixed.")]
+    update.point(s, "task1", str(tmp_path), "task")
     assert update.start(s) is True
     ((target, prompt, mode, kw),) = spawns
-    assert (target, mode) == (s.home, "acceptEdits")
-    assert prompt == update.PROMPT.format(files=f"- inbox/{notes.list(s)[0]['name']}")
-    assert kw == {"session_id": "", "model": "", "effort": "", "isolate_mcp": True, "specialist": f"{s.id}:update"}
-    st = chat.load(s.home)
-    assert st["main"] == "new-main" and len(st["update_files"]) == 1  # a fresh update becomes the main chat
-    chat.record_start(s.id, "main", "new-main")
-    notes.add(s, "task1", "Another", "x")
-    with pytest.raises(update.Busy):  # the first one has not ended
+    (entry,) = notes.list(s)
+    assert (target, mode) == (s.home, "acceptEdits") and f"- inbox/{entry['name']}" in prompt
+    assert kw == {"model": "haiku", "effort": "low", "isolate_mcp": True, "specialist": f"{s.id}:update"}
+    assert chat.load(s.home)["update"] == {"session": "learn1", "files": [entry["name"]], "lines": {"task1": 2}}
+    allow = launch.spec(f"{s.id}:update", s.home)["allow"]
+    assert any(r.startswith("Read(") and r.endswith("task1.jsonl)") for r in allow)
+    assert launch.spec(f"{s.id}:main", s.home)["reason"] == "learning"  # the chat waits for it
+    with pytest.raises(update.Busy):
         update.start(s)
-    update._RUNNING.clear()
-    update.start(s)
-    assert (spawns[-1][3]["session_id"], spawns[-1][3]["model"], spawns[-1][3]["effort"]) == ("new-main", "haiku", "low")
+
+    files["learn1"] = [_row("user", update.PROMPT), _row("assistant", "I added that parquet wins.")]
+    history.turn_ended(s.home, "learn1")  # its clean end
+    st = chat.load(s.home)
+    assert notes.list(s) == [] and st["update"] is None
+    assert st["sources"]["task1"] == {"path": str(tmp_path / "task1.jsonl"), "line": 2, "file": ""}
+    assert "learn1" not in st["sources"] and st["main"] == "main1"  # never a conversation of its own
+
+    files["task1"].append(_row("user", "One more thing"))
+    history.turn_ended(str(tmp_path), "task1")
+    (again,) = notes.list(s)
+    assert again["text"].endswith("From line: 3\n")
 
 
 def test_busy_is_refused(world, monkeypatch, client):
     s = make_specialist()
-    notes.add(s, "t", "A note", "x")
+    notes.add(s, "t", 'Note from task "x"', "x")
     monkeypatch.setattr(store, "live_runs", lambda home: [{"run_id": "r"}])
     with pytest.raises(update.Busy):
         update.start(s)
@@ -117,21 +122,22 @@ def test_busy_is_refused(world, monkeypatch, client):
     assert status == 202 and json.loads(body) == {"started": True}
 
 
-def test_a_failed_update_changes_nothing(world):
+def test_a_failed_run_changes_nothing(world):
     s = make_specialist()
-    note = notes.add(s, "t", "A note", "x")
-    chat.change(s.home, lambda d: d.update(update_files=[note]))
+    note = notes.add(s, "t", 'Note from task "x"', "x")
+    chat.change(s.home, lambda d: d.update(update={"session": "learn1", "files": [note], "lines": {}}))
     with open(os.path.join(s.home, "memory.md"), "w") as f:
         f.write("Half done.\n")
     update._RUNNING.add(s.home)
     WATCH(s.home, "run1")  # the turn ended without its clean commit
     assert open(os.path.join(s.home, "memory.md")).read() == "" and [n["name"] for n in notes.list(s)] == [note]
-    assert chat.load(s.home)["update_files"] == [] and s.home not in update._RUNNING
+    st = chat.load(s.home)
+    assert st["update"] is None and st["last_update"] > 0 and not update.learning(s.home)
 
 
 def test_a_turn_the_watch_gave_up_on_is_stopped_before_the_restore(world, monkeypatch):
     s = make_specialist()
-    chat.change(s.home, lambda d: d.update(update_files=["n.md"]))
+    chat.change(s.home, lambda d: d.update(update={"session": "learn1", "files": ["n.md"], "lines": {}}))
     events = []
     agent = claude_spawn.load_agent()
     monkeypatch.setattr(agent, "_cancel_run", lambda run_id, interrupt_first=True: events.append(("stop", run_id)),

@@ -6,16 +6,12 @@ import { Fragment, useCallback, useEffect, useState, type MutableRefObject } fro
 import type { Specialist } from "@platform/lib/specialists";
 import { ChatMount } from "@apps/claude";
 import { fetchHistory } from "@apps/claude/protocol/history";
-import { isUpdateMark } from "@apps/claude/protocol/wire";
 import { specialistApi, type SpecialistChat as Chat } from "../lib/api";
 import { fmtTime, fmtWhen } from "../lib/format";
 import { actSpecialist, errMsg, showBanner } from "../state/store";
 import { MdDoc } from "./MdDoc";
 
 type Line = { role: string; text: string };
-/** A turn the server started in a specialist's main chat (Update now; `detail` is its id): the chat reloads to
- *  follow it, as a mounted chat only follows runs it started itself. */
-export const SPECIALIST_TURN_EVENT = "fused:specialist-turn";
 
 export function SpecialistChat({ s, clearRef }: { s: Specialist; clearRef: MutableRefObject<(() => void) | null> }) {
   const [chat, setChat] = useState<Chat | null>(null);
@@ -23,13 +19,6 @@ export function SpecialistChat({ s, clearRef }: { s: Specialist; clearRef: Mutab
   const [open, setOpen] = useState(false);
   const [earlier, setEarlier] = useState<Record<string, Line[]> | null>(null);
   useEffect(() => { void specialistApi.chat(s.id).then(setChat, (e) => showBanner(errMsg(e))); }, [s.id]);
-  useEffect(() => {
-    const on = (e: Event) => {
-      if ((e as CustomEvent<string>).detail === s.id) void specialistApi.chat(s.id).then((c) => { setChat(c); setEpoch((n) => n + 1); }, () => {});
-    };
-    window.addEventListener(SPECIALIST_TURN_EVENT, on);
-    return () => window.removeEventListener(SPECIALIST_TURN_EVENT, on);
-  }, [s.id]);
 
   const clear = useCallback(() => {
     void actSpecialist(() => specialistApi.clear(s.id)).then((c) => {
@@ -57,9 +46,7 @@ export function SpecialistChat({ s, clearRef }: { s: Specialist; clearRef: Mutab
           {open ? <div className="cleared"><button aria-expanded onClick={toggle}>Hide earlier conversation</button></div> : null}
           {marks.map((f) => (
             <Fragment key={f.session_id}>
-              {open ? (earlier?.[f.session_id] || []).map((t, j) => isUpdateMark(t.text)
-                ? <div key={j} className="msg note">Update</div>
-                : t.role === "user"
+              {open ? (earlier?.[f.session_id] || []).map((t, j) => t.role === "user"
                 ? <div key={j} className="msg user">{t.text}</div>
                 : <div key={j} className="msg done md"><MdDoc text={t.text} /></div>) : null}
               <div className="cleared" title={fmtWhen(f.at)}>

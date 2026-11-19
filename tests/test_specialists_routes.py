@@ -32,7 +32,8 @@ def test_create_list_patch_delete(client, tmp_path):
     assert st == 200, row
     sid = row["id"]
     assert row == {"id": sid, "name": "Canvas", "about": "Fused canvases", "folder": str(tmp_path), "face": None,
-                   "home": row["home"], "working": False, "last": None, "new": False}
+                   "home": row["home"], "working": False, "last": None, "updating": False, "last_update": None,
+                   "new": False}
     assert os.path.isdir(row["home"])
     assert req(client, "POST", "/api/specialists", {"name": "canvas", "about": "dup"})[0] == 409
     assert req(client, "POST", "/api/specialists", {"about": "no name"})[0] == 400
@@ -55,8 +56,10 @@ def test_chat_clear_seen_and_the_rows_last_message(client, monkeypatch, tmp_path
     assert req(client, "GET", f"/api/specialists/{s.id}/chat") == (200, {"session_id": None, "folded": []})
     chat.record_start(s.id, "main", "m1")
     (row,) = req(client, "GET", "/api/specialists")[1]
-    assert row["last"] == {"text": "Hello.", "at": row["last"]["at"]} and row["last"]["at"] > 0 and row["new"]
-    assert req(client, "POST", f"/api/specialists/{s.id}/seen") == (200, {"ok": True})
+    assert row["last"] == {"text": "Hello.", "at": row["last"]["at"]} and row["last"]["at"] > 0 and not row["new"]
+    chat.change(s.home, lambda d: d.update(last_update=1.0))  # a learning run ended
+    assert req(client, "GET", "/api/specialists")[1][0]["new"] is True
+    assert req(client, "POST", f"/api/specialists/{s.id}/seen") == (200, {"ok": True})  # the Learning tab opened
     assert req(client, "GET", "/api/specialists")[1][0]["new"] is False
     st, out = req(client, "POST", f"/api/specialists/{s.id}/chat/clear")
     assert st == 200 and out["session_id"] is None and [f["session_id"] for f in out["folded"]] == ["m1"]
@@ -74,9 +77,9 @@ def test_memory_skills_and_notes(client):
     _, out = req(client, "GET", f"/api/specialists/{s.id}/skills")
     assert out["skills"] == [{"name": "toml", "description": "Writing canvas.toml",
                               "text": hm.skill_text("toml", "Writing canvas.toml", "Body.")}]
-    name = notes.add(s, "task1", "A note", "Use parquet.")
+    name = notes.add(s, "task1", 'Note from task "Sync"', "Use parquet.")
     _, out = req(client, "GET", f"/api/specialists/{s.id}/notes")
-    assert [(n["name"], n["text"]) for n in out["notes"]] == [(name, "# A note\n\nUse parquet.\n")]
+    assert [(n["name"], n["kind"], n["title"]) for n in out["notes"]] == [(name, "note", "Sync")]
     assert req(client, "DELETE", f"/api/specialists/{s.id}/notes/{name}") == (200, {"ok": True})
     assert req(client, "DELETE", f"/api/specialists/{s.id}/notes/{name}")[0] == 404
 
@@ -89,9 +92,9 @@ def test_changes_and_a_diff(client):
     assert req(client, "GET", f"/api/specialists/{s.id}/changes") == (200, {"changes": []})
     hm.write_text(os.path.join(s.home, "memory.md"), "By hand.\n")
     (row,) = req(client, "GET", f"/api/specialists/{s.id}/changes")[1]["changes"]
-    assert set(row) == {"sha", "at", "label"} and row["label"] == "You edited memory"
+    assert set(row) == {"sha", "at", "label", "read", "changed"} and row["label"] == "You edited memory"
     st, out = req(client, "GET", f"/api/specialists/{s.id}/changes/{row['sha']}")
-    assert st == 200 and "+By hand." in out["diff"]
+    assert st == 200 and "+By hand." in out["diff"] and set(out) == {"diff"}
     assert req(client, "GET", f"/api/specialists/{s.id}/changes/{'0' * 40}")[0] == 404
 
 

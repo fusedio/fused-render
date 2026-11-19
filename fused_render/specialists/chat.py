@@ -3,11 +3,13 @@
 `<home>/.specialist/state.json`:
     main          the main chat's session id (the page mounts it; Clear folds it and the next send starts fresh)
     folded        earlier main chats, `[{session_id, at}]`, oldest first
-    breakouts     `{session_id: {lines_read, file}}`: transcript lines already written to its inbox file
-    tasks         `{session_id: {target, lines_read, file}}`, the tasks that used the specialist, likewise
-    seen          when the user last looked at the chat
-    last_update   when the update last looked for work
-    update_files  the inbox files the update in progress was given
+    sources       `{session_id: {path, line, file}}`: each conversation that reaches the inbox (a task that named the
+                  specialist, a breakout, a main chat): its transcript, the lines already learned from, and the
+                  pointer file waiting in `inbox/` ("" when none)
+    seen          when the user last opened the Learning tab
+    last_update   when the last learning run ended
+    update        the learning run in progress: `{session, files, lines}` (its session, the inbox files it was
+                  given, each listed conversation's line count when it started), else None
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import threading
 import time
 from datetime import datetime
 
+from fused_render.claude_agent import agent_module
 from fused_render.specialists import home as hm
 from fused_render.specialists import paths
 
@@ -29,8 +32,7 @@ def _path(home: str) -> str:
 
 def load(home: str) -> dict:
     d = hm.read_json(_path(home), {})
-    return {"main": None, "folded": [], "breakouts": {}, "tasks": {}, "seen": 0, "last_update": 0,
-            "update_files": [], **d}
+    return {"main": None, "folded": [], "sources": {}, "seen": 0, "last_update": 0, "update": None, **d}
 
 
 def change(home: str, fn) -> dict:
@@ -43,25 +45,18 @@ def change(home: str, fn) -> dict:
 
 
 def record_start(spec_id: str, kind: str, session_id: str) -> None:
-    """A main chat or breakout of `spec_id` answered its start with `session_id`."""
+    """A main chat of `spec_id` answered its start with `session_id` (a breakout needs no record: any session in
+    the home that is neither the main chat nor a learning run is one)."""
     home = paths.home(spec_id)
-    if not session_id or not os.path.isdir(home):
+    if kind != "main" or not session_id or not os.path.isdir(home):
         return
 
     def fn(d):
-        if kind == "breakout":
-            d["breakouts"].setdefault(session_id, {"lines_read": 0, "file": ""})
-        elif d["main"] != session_id:
+        if d["main"] != session_id:
             if d["main"]:
                 d["folded"].append({"session_id": d["main"], "at": time.time()})
             d["main"] = session_id
     change(home, fn)
-
-
-def record_task(spec_id: str, session_id: str, target: str) -> None:
-    home = paths.home(spec_id)
-    if session_id and os.path.isdir(home):
-        change(home, lambda d: d["tasks"].setdefault(session_id, {"target": target, "lines_read": 0, "file": ""}))
 
 
 def view(home: str) -> dict:
@@ -84,8 +79,6 @@ def mark_seen(home: str) -> None:
 
 # -------------------------------------------------------------- transcripts ---
 def transcript(target: str, session_id: str) -> str:
-    from fused_render.claude_agent import agent_module
-
     agent = agent_module()
     return agent._session_transcript_path(agent._workdir(target), session_id)
 
@@ -114,6 +107,8 @@ def messages(path: str, start: int = 0) -> tuple[list[dict], int]:
         if row.get("type") not in ("user", "assistant") or row.get("isMeta") or row.get("isSidechain"):
             continue
         text = _text((row.get("message") or {}).get("content"))
+        if row["type"] == "user":  # the blocks the app puts before what the user typed
+            text = agent_module()._strip_machinery(text)
         if text:
             try:
                 at = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")).timestamp()

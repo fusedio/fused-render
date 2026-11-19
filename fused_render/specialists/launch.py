@@ -1,10 +1,11 @@
-"""The launch spec of a specialist session: its main chat, a breakout, or the update.
+"""The launch spec of a specialist session: its main chat, a breakout, or a learning run (kind `update`).
 
 `agent._start` calls `spec(key, file)` for a start carrying `specialist="<id>:<kind>"` (target: the home), writes
 the answer to the run dir, and `_claude_argv` folds it into the CLI's argv:
 
     kind        main, breakout or update (`_start` records no pill settings for an update)
     deny        Edit rules for the app's own files (`.git`, `.specialist`, the project's Claude Code settings)
+    allow       for a learning run, Read and Grep on exactly the transcripts its inbox entries point to
     ask         `mcp__specialist_sends`: a send to a connected service raises the approval card in every mode
     mcp_servers the session MCP servers (`bots/botmcp.py`) for the connected services' reads and sends
     append      one sentence saying which kind of session this is
@@ -12,7 +13,8 @@ the answer to the run dir, and `_claude_argv` folds it into the CLI's argv:
                 would raise a card, since nobody is there to answer it
 
 The update has no service servers (with `isolate_mcp`, no MCP server at all), so it can never message a person.
-Anything wrong answers `{"error": sentence, "reason": code}` and the start is refused.
+While one runs, a main chat or breakout cannot start in the home. Anything wrong answers
+`{"error": sentence, "reason": code}` and the start is refused.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ import secrets
 import threading
 import time
 
-from fused_render.specialists import flag, history, paths, services, store
+from fused_render.specialists import chat, flag, history, paths, services, store, update
 from fused_render.specialists import home as hm
 
 KINDS = ("main", "breakout", "update")
@@ -29,9 +31,10 @@ TOKEN_TTL_S = 7 * 24 * 3600
 DENY = (".git/**", paths.APP_DIR + "/**", ".claude/settings.json", ".claude/settings.local.json")
 APPEND = {
     "main": "This is your main chat with the user.",
-    "breakout": ("This is a breakout beside one of the user's tasks. Your next update reads this conversation, so do "
-                 "not edit memory.md or your skills here."),
-    "update": "Nobody is watching this run: work only with the files in this folder.",
+    "breakout": ("This is a breakout beside one of the user's tasks. Your next learning run reads this conversation, so "
+                 "do not edit memory.md or your skills here."),
+    "update": ("This is your learning run; nobody is watching it. Work only with the files in this folder and the "
+               "transcripts your inbox entries name."),
 }
 _TOKENS_LOCK = threading.Lock()
 
@@ -77,10 +80,10 @@ def session_servers(spec: store.Specialist) -> dict:
             for server in services.SERVERS}
 
 
-def _edit_rules(home: str) -> list[str]:
-    """Edit rules for `DENY` under both spellings of the home (the CLI matches a rule's text)."""
-    spellings = dict.fromkeys((os.path.abspath(home), os.path.realpath(home)))
-    return [f"Edit(//{os.path.join(h, g).replace(os.sep, '/').lstrip('/')})" for h in spellings for g in DENY]
+def _rules(tool: str, paths_: list[str]) -> list[str]:
+    """`tool(//path)` under both spellings of each path (the CLI matches a rule's text)."""
+    spellings = dict.fromkeys(q for p in paths_ for q in (os.path.abspath(p), os.path.realpath(p)))
+    return [f"{tool}(//{p.replace(os.sep, '/').lstrip('/')})" for p in spellings]
 
 
 def spec(key: str, file: str) -> dict:
@@ -95,11 +98,16 @@ def spec(key: str, file: str) -> dict:
         return {"error": "That specialist no longer exists", "reason": "no_specialist"}
     if not file or os.path.realpath(file) != os.path.realpath(s.home):
         return {"error": "A specialist session starts in the specialist's own folder", "reason": "wrong_folder"}
+    run = kind == "update"
+    if not run and update.learning(s.home):
+        return {"error": update.LEARNING, "reason": "learning"}
     hm.ensure_settings(s.home)
     history.commit_edits(s.home)
-    update = kind == "update"
-    return {"kind": kind, "deny": _edit_rules(s.home),
-            "ask": [] if update else ["mcp__specialist_sends"],
-            "mcp_servers": {} if update else session_servers(s),
+    st = chat.load(s.home)
+    reads = [r["path"] for r in st["sources"].values() if run and st["update"] and r["file"] in st["update"]["files"]]
+    return {"kind": kind, "deny": _rules("Edit", [os.path.join(s.home, g) for g in DENY]),
+            "allow": _rules("Read", reads) + _rules("Grep", reads),
+            "ask": [] if run else ["mcp__specialist_sends"],
+            "mcp_servers": {} if run else session_servers(s),
             "append": APPEND[kind],
-            "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if update else {}}
+            "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if run else {}}

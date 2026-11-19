@@ -9,7 +9,7 @@
 // with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
 import { isLanHost } from "@platform/lib/host";
-import { api, apiHooks, isWorkspaceBusy, markBotSeen, specialistApi, type Bot, type BotEvent, type Face, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
+import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type Face, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
 import { listSpecialists, type Specialist } from "@platform/lib/specialists";
 import { readSpecialistsFlag, specialistsEnabledNow } from "@platform/lib/specialists-flag";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
@@ -315,7 +315,7 @@ function pushSeen(id: string, seq: number): void {
   });
 }
 export function markSeen(id: string | null | undefined, seq: number): void {
-  // A specialist's read mark is its own (sendOpen); the bots backend does not know it.
+  // A specialist's read mark is its own (its Learning tab); the bots backend does not know it.
   if (!id || S.seen[id] >= seq || botById(id)?.specialist) return;
   pushSeen(id, seq);
   commit({ seen: { ...S.seen, [id]: seq } });
@@ -429,9 +429,8 @@ const OPEN_RETRY_MS = 3_000;
  *  OPEN_RETRY_MS so linking Claude later, or a measure landing, still starts it. The server rate-limits the measure
  *  itself (one a minute) and finishes a recent open on its own once it lands, so asking often is cheap and a fallback. */
 function sendOpen(id: string): void {
-  const spec = botById(id)?.specialist;
-  // No poll after it: the next one reads the row again (a poll here would send this again while the row says new).
-  if (spec) { if (spec.new) void specialistApi.seen(id).then(() => { specAt = 0; }, () => {}); return; }
+  // A specialist's dot is its learning, cleared by its Learning tab (SpecialistPane), not by opening the chat.
+  if (botById(id)?.specialist) return;
   if (openedOnce.has(id) || (openRetryAt[id] || 0) > Date.now()) return;
   openedOnce.add(id);
   void act(() => api.open(id), true).then((r) => {

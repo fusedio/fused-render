@@ -6,9 +6,8 @@ import { cloneBot, deleteBot, exportBot, exportBotFile } from "../dialogs/action
 import { askConfirm } from "../dialogs/ask";
 import { api, specialistApi, type Bot } from "../lib/api";
 import { openLive } from "../lib/cdp";
-import { act, actSpecialist, botById, closeMenu, cur, getState, markSeen, openDialog, select, showToast, useBotsSelector } from "../state/store";
+import { act, actSpecialist, botById, closeMenu, cur, getState, markSeen, openDialog, select, useBotsSelector } from "../state/store";
 import { menuItems, type MenuAction } from "./menuIcons";
-import { SPECIALIST_TURN_EVENT } from "./SpecialistChat";
 
 export { exportBot };
 
@@ -16,11 +15,7 @@ export { exportBot };
 export function runMenuAction(a: MenuAction, b: Bot): void {
   const id = b.id;
   if (b.specialist) {
-    if (a === "update") void actSpecialist(() => specialistApi.update(id)).then((r) => {
-      if (r?.started) window.dispatchEvent(new CustomEvent(SPECIALIST_TURN_EVENT, { detail: id }));
-      else if (r) showToast({ text: "Nothing is waiting for an update", ts: Date.now() / 1000 });
-    });
-    else if (a === "delete") void askConfirm(`Delete "${b.name}"?`, "Its memory, skills and chats are removed.").then((ok) => { if (ok) void actSpecialist(() => specialistApi.remove(id)); });
+    if (a === "delete") void askConfirm(`Delete "${b.name}"?`, "Its memory, skills and chats are removed.").then((ok) => { if (ok) void actSpecialist(() => specialistApi.remove(id)); });
     else openDialog({ kind: "settings", id });
     return;
   }

@@ -134,23 +134,6 @@ def live_runs(home: str) -> list[dict]:
     return list(agent_module()._live_runs_in(home))
 
 
-def end_idle_hosts(home: str) -> None:
-    """End the session hosts idling between turns in the home: a live host takes the next message under its own
-    launch spec, so an update must not resume the main chat inside the chat's host, nor the chat inside the
-    update's."""
-    from fused_render.claude_agent import agent_module
-
-    agent = agent_module()
-    for run in agent._live_runs_in(home, idle=True):
-        if not run["turn_open"]:
-            agent._cancel_run(run["run_id"], interrupt_first=False)
-            # Ending a session between turns is no stop: with the marker the chat shows "Stopped." under its reply.
-            try:
-                os.remove(os.path.join(agent.RUNS, run["run_id"], "cancelled"))
-            except OSError:
-                pass
-
-
 def delete(spec_id: str) -> None:
     """End every session in the home, then move it to `<root>/.state/trash/<id>-<ts>/` (recoverable by hand)."""
     s = get(spec_id)

@@ -1,30 +1,31 @@
-// A specialist's preview column (docs/specialists-v2.md), on the Expert pane's markup (ExpertPane.tsx):
+// A specialist's preview column (docs/specialists.md), on the Expert pane's markup (ExpertPane.tsx):
 //   Memory    memory.md rendered, with Edit opening the file in the explorer as the Expert pane's does.
 //   Skills    each skill's name and description; a row opens to its text. Read-only: the user asks the specialist.
-// Under both: "Notes waiting · n" (each note with Delete, the one place a note is removed) and "Changes · n", the
-// specialist's git history over memory and skills, newest first; a row opens to its diff.
-// Data: /api/specialists/<id>/… on mount, when a turn moves the row and every 10 s while the page is visible;
-// Changes (a git log, which first commits a hand edit) only while its box is open, and again when memory changed.
+//   Learning  Waiting: the inbox (a note opens to its text, a conversation to one sentence; Delete is the one way to
+//             remove an entry), with Learn now. Learned: its history, newest first; a learning run opens to what it
+//             read, its reply and its diff, any other change to its diff. Opening the tab clears the row's dot.
+// Data: /api/specialists/<id>/… on mount, when the row moves and every 10 s while the page is visible; the history
+// (a git log, which first commits a hand edit) only while the Learning tab is open.
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { spaLinkProps } from "@platform/lib/router";
 import type { Specialist } from "@platform/lib/specialists";
-import { specialistApi } from "../lib/api";
+import { specialistApi, type SpecialistChange, type SpecialistEntry } from "../lib/api";
 import { agoShort } from "../lib/expert";
 import { fmtWhen, fmtWhenShort } from "../lib/format";
 import { actSpecialist, errMsg } from "../state/store";
 import { DiffView, PaneTabs } from "./ExpertPane";
 import { MdDoc } from "./MdDoc";
 
-type Tab = "memory" | "skills";
-const TABS: [Tab, string][] = [["memory", "Memory"], ["skills", "Skills"]];
+type Tab = "memory" | "skills" | "learning";
 const REFRESH_MS = 10_000;
+const KIND: Record<string, string> = { note: "Note", task: "Task", breakout: "Breakout", chat: "Chat" };
 
 type Data = {
   memory: string;
   skills: { name: string; description: string; text: string }[];
-  notes: { name: string; text: string; at: number }[];
+  notes: SpecialistEntry[];
 };
-type Change = { sha: string; at: number; label: string };
+type Detail = { sha: string; diff: string; reply?: string; read?: { kind: string; title: string }[]; err?: string };
 
 function useSpecialistData(s: Specialist) {
   const [data, setData] = useState<Data | null>(null);
@@ -40,7 +41,7 @@ function useSpecialistData(s: Specialist) {
       .then(([m, sk, n]) => { if (live) { setData({ memory: m.text, skills: sk.skills, notes: n.notes }); setErr(""); } },
         (e) => { if (live) setErr(errMsg(e)); });
     return () => { live = false; };
-  }, [s.id, s.last?.at, s.working, tick]);
+  }, [s.id, s.last?.at, s.working, s.updating, tick]);
   return { data, err, reload: () => setTick((n) => n + 1) };
 }
 
@@ -54,74 +55,89 @@ function Row({ head, open, onOpen, children }: { head: ReactNode; open: boolean;
   );
 }
 
+const when = (at: number) => <span className="xp-when" title={fmtWhen(at)}>{agoShort(at, undefined, fmtWhenShort)}</span>;
+const runLabel = (c: SpecialistChange) => c.label !== "Update" ? c.label
+  : c.changed ? `Learned from ${c.read} ${c.read === 1 ? "entry" : "entries"}` : `Read ${c.read} ${c.read === 1 ? "entry" : "entries"}, changed nothing`;
+
 export function SpecialistPane({ s }: { s: Specialist }) {
   const [tab, setTab] = useState<Tab>("memory");
-  const [open, setOpen] = useState("");  // the open skill, or the open change's sha
-  const [diff, setDiff] = useState<{ sha: string; text: string; err?: string } | null>(null);
+  const [open, setOpen] = useState("");  // the open skill, entry or change
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [changes, setChanges] = useState<SpecialistChange[] | null>(null);
   const { data, err, reload } = useSpecialistData(s);
   const uid = useId();
   const path = `${s.home}/memory.md`;
+  const waiting = data ? [...data.notes].reverse() : [];
   const toggle = (key: string) => setOpen(open === key ? "" : key);
   const openChange = (sha: string) => {
     toggle(sha);
-    if (diff?.sha !== sha) void specialistApi.diff(s.id, sha).then((r) => setDiff({ sha, text: r.diff }), (e) => setDiff({ sha, text: "", err: errMsg(e) }));
+    if (detail?.sha !== sha) void specialistApi.diff(s.id, sha).then((r) => setDetail({ sha, ...r }), (e) => setDetail({ sha, diff: "", err: errMsg(e) }));
   };
   const deleteNote = (name: string) => { void actSpecialist(() => specialistApi.deleteNote(s.id, name)).then(reload); };
-  const [chOpen, setChOpen] = useState(false);
-  const [changes, setChanges] = useState<Change[] | null>(null);
+  const learnNow = () => { void actSpecialist(() => specialistApi.update(s.id)).then(reload); };
   useEffect(() => {
-    if (!chOpen) return;
+    if (tab !== "learning") return;
+    if (s.new) void actSpecialist(() => specialistApi.seen(s.id));
     let live = true;
     void specialistApi.changes(s.id).then((c) => { if (live) setChanges(c.changes); }, () => {});
     return () => { live = false; };
-  }, [chOpen, s.id, s.last?.at, s.working, data?.memory]);
+  }, [tab, s.id, s.new, s.updating, s.last?.at, data?.memory]);
 
+  const tabs: [Tab, string][] = [["memory", "Memory"], ["skills", "Skills"], ["learning", data?.notes.length ? `Learning · ${data.notes.length}` : "Learning"]];
   return (
     <div className="xpane" id="xpane">
-      <PaneTabs label="Specialist" tabs={TABS} tab={tab} onTab={setTab} uid={uid} />
+      <PaneTabs label="Specialist" tabs={tabs} tab={tab} onTab={setTab} uid={uid} />
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
         {err ? <p className="xp-err" role="alert">{err}</p> : null}
-        {!data ? (err ? null : <p className="xp-empty">Loading…</p>) : <>
-          {tab === "memory" ? <>
-            <p className="xp-path" title={path}>{path} <a className="xp-edit" {...spaLinkProps(path)} title="Open memory.md in the explorer to edit it">Edit</a></p>
-            {data.memory.trim() ? <div className="xp-mem xp-md" aria-label="memory.md"><MdDoc text={data.memory} /></div> : <p className="xp-empty">Nothing remembered yet.</p>}
-          </> : data.skills.length ? (
-            <ul className="xp-rows">
-              {data.skills.map((k) => (
-                <Row key={k.name} open={open === k.name} onOpen={() => toggle(k.name)}
-                  head={<><span className="xp-line">{k.name}</span><span className="xp-origin">{k.description}</span></>}>
-                  <div className="xp-mem xp-md"><MdDoc text={k.text} /></div>
-                </Row>
-              ))}
-            </ul>
-          ) : <p className="xp-empty">No skills yet. To add or change one, tell the specialist in its chat.</p>}
-          {data.notes.length ? (
-            <details className="xp-chbox">
-              <summary className="xp-lbl xp-chhead">Notes waiting · {data.notes.length}</summary>
+        {!data ? (err ? null : <p className="xp-empty">Loading…</p>) : tab === "memory" ? <>
+          <p className="xp-path" title={path}>{path} <a className="xp-edit" {...spaLinkProps(path)} title="Open memory.md in the explorer to edit it">Edit</a></p>
+          {data.memory.trim() ? <div className="xp-mem xp-md" aria-label="memory.md"><MdDoc text={data.memory} /></div> : <p className="xp-empty">Nothing remembered yet.</p>}
+        </> : tab === "skills" ? (data.skills.length ? (
+          <ul className="xp-rows">
+            {data.skills.map((k) => (
+              <Row key={k.name} open={open === k.name} onOpen={() => toggle(k.name)}
+                head={<><span className="xp-line">{k.name}</span><span className="xp-origin">{k.description}</span></>}>
+                <div className="xp-mem xp-md"><MdDoc text={k.text} /></div>
+              </Row>
+            ))}
+          </ul>
+        ) : <p className="xp-empty">No skills yet. To add or change one, tell the specialist in its chat.</p>) : <>
+          <p className="xp-none muted">It learns from notes, breakouts, tasks that use it and its own chat. They wait here until it next learns from them, once a day.</p>
+          <div className="xp-chbox">
+            <p className="xp-lbl xp-line">Waiting · {waiting.length}
+              <button type="button" className="xp-edit xp-when" disabled={!waiting.length || s.updating} onClick={learnNow}>Learn now</button></p>
+            {s.updating ? <p className="xp-none muted">Learning now…</p>
+              : s.last_update ? <p className="xp-none muted">Last learned {agoShort(s.last_update, undefined, fmtWhenShort)}.</p> : null}
+            {waiting.length ? (
               <ul className="xp-rows">
-                {data.notes.map((n) => (
-                  <li key={n.name} className="xp-row"><div className="xp-detail">
-                    <span className="xp-line"><span className="xp-when" title={fmtWhen(n.at)}>{agoShort(n.at, undefined, fmtWhenShort)}</span>
-                      <button type="button" className="lnk" onClick={() => deleteNote(n.name)}>Delete</button></span>
-                    <div className="xp-md"><MdDoc text={n.text} /></div>
-                  </div></li>
+                {waiting.map((n) => (
+                  <Row key={n.name} open={open === n.name} onOpen={() => toggle(n.name)}
+                    head={<span className="xp-line">{KIND[n.kind]}<span className="xp-origin">{n.title}</span>{when(n.at)}</span>}>
+                    {n.kind === "note" ? <div className="xp-md"><MdDoc text={n.text.split("\n").slice(1).join("\n")} /></div>
+                      : <p className="xp-none">It will read this conversation from where it last stopped.</p>}
+                    <button type="button" className="lnk" onClick={() => deleteNote(n.name)}>Delete</button>
+                  </Row>
                 ))}
               </ul>
-            </details>
-          ) : null}
-          <details className="xp-chbox" onToggle={(e) => setChOpen(e.currentTarget.open)}>
-            <summary className="xp-lbl xp-chhead">Changes{changes ? ` · ${changes.length}` : ""}</summary>
+            ) : <p className="xp-none">Nothing is waiting.</p>}
+          </div>
+          <div className="xp-chbox">
+            <p className="xp-lbl">Learned</p>
             {!changes ? <p className="xp-none">Loading…</p> : changes.length ? (
               <ul className="xp-rows">
                 {changes.map((c) => (
                   <Row key={c.sha} open={open === c.sha} onOpen={() => openChange(c.sha)}
-                    head={<span className="xp-line"><span className="xp-origin">{c.label}</span><span className="xp-when" title={fmtWhen(c.at)}>{agoShort(c.at, undefined, fmtWhenShort)}</span></span>}>
-                    {diff?.sha !== c.sha ? <p className="xp-none">Loading…</p> : diff.err ? <p className="xp-err" role="alert">{diff.err}</p> : <DiffView diff={diff.text} />}
+                    head={<span className="xp-line"><span className="xp-origin">{runLabel(c)}</span>{when(c.at)}</span>}>
+                    {detail?.sha !== c.sha ? <p className="xp-none">Loading…</p> : detail.err ? <p className="xp-err" role="alert">{detail.err}</p> : <>
+                      {detail.read ? <p className="xp-none">Read: {detail.read.map((r) => `${KIND[r.kind] || "Note"} "${r.title}"`).join(", ")}</p> : null}
+                      {detail.reply ? <div className="xp-md"><MdDoc text={detail.reply} /></div> : null}
+                      {detail.read && !detail.diff.trim() ? <p className="xp-none">It changed nothing.</p> : <DiffView diff={detail.diff} />}
+                    </>}
                   </Row>
                 ))}
               </ul>
-            ) : <p className="xp-none">Nothing has changed memory or skills yet.</p>}
-          </details>
+            ) : <p className="xp-none">Nothing learned yet.</p>}
+          </div>
         </>}
       </div>
     </div>

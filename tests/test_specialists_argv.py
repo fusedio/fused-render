@@ -77,6 +77,7 @@ def test_task_tools_need_an_origin(agent, rd, monkeypatch):
 # ------------------------------------------------------------- launch spec ---
 SPEC = {"kind": "main",
         "deny": ["Edit(//w/specialists/canvas/.git/**)"], "ask": ["mcp__specialist_sends"],
+        "allow": ["Read(//t/x.jsonl)"],
         "mcp_servers": {"specialist_sends": {"command": "py", "args": ["botmcp.py"]},
                         "fused_render": {"command": "evil"}},
         "append": "You are the Canvas specialist's main chat.", "policy_env": {}}
@@ -88,6 +89,7 @@ def test_a_spec_folds_rules_servers_and_prompt(agent, rd):
     argv = _argv(agent, rd, file="/w/specialists/canvas", cli_mode="auto")
     perms = _settings(argv)["permissions"]
     assert perms["deny"] == SPEC["deny"] and perms["ask"] == ["mcp__specialist_sends"]
+    assert "Read(//t/x.jsonl)" in perms["allow"]
     assert "specialist_pull" not in json.dumps(argv)
     assert _after(argv, "--append-system-prompt").endswith(" You are the Canvas specialist's main chat.")
     servers = _mcp(rd)
@@ -212,12 +214,18 @@ def test_main_passes_main_and_breakout_keys_but_never_an_update(agent, monkeypat
     assert seen == ["canvas:main", "canvas:breakout", ""]
 
 
-def test_a_message_never_joins_an_update(agent):
-    run_dir = os.path.join(agent.RUNS, "upd1")
+def test_a_message_waits_while_its_specialist_learns(agent, monkeypatch):
+    import sys
+    import types
+
+    run_dir = os.path.join(agent.RUNS, "main1")
     os.makedirs(run_dir)
-    with open(os.path.join(run_dir, "specialist.json"), "w") as fh:
-        json.dump({"kind": "update"}, fh)
-    assert "updating" in agent._send("upd1", "hello")["error"]
+    for name, data in (("specialist.json", {"kind": "main"}), ("meta.json", {"file": "/w/specialists/canvas"})):
+        with open(os.path.join(run_dir, name), "w") as fh:
+            json.dump(data, fh)
+    learn = types.SimpleNamespace(LEARNING="learning", learning=lambda home: home == "/w/specialists/canvas")
+    monkeypatch.setitem(sys.modules, "fused_render.specialists.update", learn)
+    assert agent._send("main1", "hello") == {"error": "learning"}
 
 
 # ------------------------------------------------------------------ _decide ---

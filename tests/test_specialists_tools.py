@@ -10,15 +10,15 @@ import pytest
 
 @pytest.fixture
 def used(monkeypatch, tmp_path):
-    """Run "run1" is a task in `proj`; returns the `chat.record_task` calls."""
+    """Run "run1" is a task in `proj`; returns the `update.point` calls (the task's inbox pointer)."""
     from fused_render.experts import learn
-    from fused_render.specialists import chat
+    from fused_render.specialists import update
 
     proj = str(tmp_path / "proj")
     monkeypatch.setattr(learn, "caller", lambda run_id: {"run_id": run_id, "session_id": "sess-1",
                                                          "backend": "claude", "target": proj})
     calls = []
-    monkeypatch.setattr(chat, "record_task", lambda *a: calls.append(a))
+    monkeypatch.setattr(update, "point", lambda spec, sid, target, kind: calls.append((spec.id, sid, target, kind)))
     return calls
 
 
@@ -56,7 +56,7 @@ def test_pull_gives_memory_and_skills_and_records_the_task(client, used, canvas)
     assert "Reopen the canvas when a sync stalls." in text
     assert "\n--- end ---\n" not in text.split("--- skills")[0]  # carried text cannot close the frame
     assert "- sync: Fixing a stalled sync (Read " + os.path.join(canvas.home, ".claude", "skills", "sync") in text
-    assert used == [(canvas.id, "sess-1", used[0][2])]
+    assert used == [(canvas.id, "sess-1", used[0][2], "task")]
 
 
 def test_an_unknown_specialist_is_a_404_naming_the_ones_there_are(client, used, canvas):

@@ -18,7 +18,7 @@ import subprocess
 import threading
 from typing import Sequence
 
-from fused_render.specialists import chat
+from fused_render.specialists import chat, notes
 from fused_render.specialists import home as hm
 
 logger = logging.getLogger(__name__)
@@ -139,8 +139,8 @@ def restore(home: str) -> None:
 
 def turn_ended(target: str, session_id: str) -> bool:
     """`agent._poll`'s one call after a clean turn of any session, with the switch on. A turn in a home is committed
-    here (True: the agent commits nothing); a breakout's turn, and a turn of a task that used a specialist, also go to
-    the inbox."""
+    here (True: the agent commits nothing). A conversation that involves a specialist (a task recorded by its tool
+    call, a breakout, the main chat; never a learning run) gets its inbox pointer back if a run removed it."""
     from fused_render.specialists import flag, paths, store, update
 
     if not flag.on():
@@ -148,44 +148,69 @@ def turn_ended(target: str, session_id: str) -> bool:
     spec = store.get(paths.spec_of_path(target) or "")
     if spec is None:
         for s in store.all():
-            if session_id in chat.load(s.home)["tasks"]:
-                update.gather(s, session_id, "tasks")
+            if session_id in chat.load(s.home)["sources"]:
+                update.point(s, session_id, target, "task")
         return False
-    if session_id in chat.load(spec.home)["breakouts"]:
-        update.gather(spec, session_id, "breakouts")
+    st = chat.load(spec.home)
+    if not (st["update"] and st["update"]["session"] == session_id):
+        update.point(spec, session_id, spec.home, "chat" if session_id == st["main"] else "breakout")
     after_turn(spec.home, session_id)
     return True
 
 
 def after_turn(home: str, session_id: str) -> None:
-    """A clean turn of a session in the home ended. An update turn removes the inbox files it was given and
-    commits "Update" with its answer as the body; any other commits "Chat: <first words of the prompt>"."""
+    """A clean turn of a session in the home ended. A learning run's turn removes the inbox files it was given, moves
+    each listed conversation's start line to where the run began, and commits "Update" with its reply as the body;
+    any other commits "Chat: <first words of the prompt>"."""
     msgs, _ = chat.messages(chat.transcript(home, session_id))
-    users = [i for i, m in enumerate(msgs) if m["role"] == "user"]
-    if not users:
-        return
-    prompt = msgs[users[-1]]["text"]
-    if prompt.startswith("<specialist-update>"):  # update.PROMPT
-        answer = "\n\n".join(m["text"] for m in msgs[users[-1] + 1:])
-        for name in chat.load(home)["update_files"]:
+    up = chat.load(home)["update"]
+    if up and up["session"] == session_id:
+        for name in up["files"]:
             try:
                 os.remove(os.path.join(home, "inbox", name))
             except OSError:
                 pass
-        chat.change(home, lambda d: d.update(update_files=[]))
+
+        def fn(d):
+            for sid, rec in d["sources"].items():
+                if rec["file"] in up["files"]:
+                    rec.update(line=up["lines"].get(sid, rec["line"]), file="")
+            d["update"] = None
+        chat.change(home, fn)
+        answer = "\n\n".join(m["text"] for m in msgs if m["role"] == "assistant")
         commit(home, "Update\n\n" + answer if answer else "Update")
         return
-    # inbox/ is left for the update's "Notes waiting" commit.
-    commit(home, "Chat: " + chat.words(prompt), (".", ":(exclude)inbox"))
+    users = [m for m in msgs if m["role"] == "user"]
+    if users:
+        # inbox/ is left for the run's "Notes waiting" commit.
+        commit(home, "Chat: " + chat.words(users[-1]["text"]), (".", ":(exclude)inbox"))
 
 
 def changes(home: str) -> list[dict]:
-    """`[{sha, at, label}]`, newest first: the commits that changed memory or skills, the first one excepted."""
+    """`[{sha, at, label, read, changed}]`, newest first: every learning run ("Update"; `read` counts the inbox
+    entries it removed) and every other commit that changed memory or skills, the first commit excepted."""
     if not available() or not os.path.isdir(os.path.join(home, ".git")):
         return []
-    out = _git(home, "log", "--format=%H%x1f%ct%x1f%P%x1f%s", "--", *KNOWLEDGE).stdout
-    rows = [ln.split("\x1f") for ln in out.splitlines()]
-    return [{"sha": sha, "at": float(at), "label": subject} for sha, at, parents, subject in rows if parents]
+    rows = []
+    for block in _git(home, "log", "--format=%x1e%H%x1f%ct%x1f%P%x1f%s", "--name-status").stdout.split("\x1e")[1:]:
+        head, _, files = block.partition("\n")
+        sha, at, parents, subject = head.split("\x1f")
+        names = [ln.split("\t") for ln in files.splitlines() if "\t" in ln]
+        changed = any(p.startswith(KNOWLEDGE) for _, *ps in names for p in ps)
+        if parents and (changed or subject == "Update"):
+            rows.append({"sha": sha, "at": float(at), "label": subject, "changed": changed,
+                         "read": sum(st == "D" and ps[0].startswith("inbox/") for st, *ps in names)})
+    return rows
+
+
+def learned(home: str, sha: str) -> dict:
+    """For a learning run's commit, `{reply, read: [{kind, title}]}`: its reply (the commit body) and the inbox
+    entries it removed, titled from their first line in the parent commit. `{}` for any other commit."""
+    subject, _, reply = _git(home, "show", "-s", "--format=%s%x1f%b", sha).stdout.partition("\x1f")
+    if subject != "Update":
+        return {}
+    gone = _git(home, "show", "--format=", "--name-only", "--diff-filter=D", sha, "--", "inbox").stdout.split()
+    return {"reply": reply.strip(), "read": [notes.parse(_git(home, "show", f"{sha}^:{n}").stdout) for n in gone]}
 
 
 def diff(home: str, sha: str) -> str | None:

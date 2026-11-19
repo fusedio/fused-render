@@ -80,26 +80,6 @@ def test_delete_ends_its_sessions_and_moves_the_home_to_trash(monkeypatch):
     assert len(trash) == 1 and trash[0].startswith(s.id + "-")
 
 
-def test_end_idle_hosts_leaves_a_live_turn_and_marks_no_stop(monkeypatch, tmp_path):
-    from fused_render.claude_agent import agent_module
-
-    agent = agent_module()
-    ended = []
-
-    def cancel(run_id, interrupt_first=True):
-        ended.append(run_id)
-        (tmp_path / run_id).mkdir()
-        (tmp_path / run_id / "cancelled").write_text("1")
-
-    monkeypatch.setattr(agent, "RUNS", str(tmp_path))
-    monkeypatch.setattr(agent, "_live_runs_in", lambda folder, idle=False: iter(
-        [{"run_id": "live", "turn_open": True}, {"run_id": "idle", "turn_open": False}]))
-    monkeypatch.setattr(agent, "_cancel_run", cancel)
-    store.end_idle_hosts("/any")
-    assert ended == ["idle"]
-    assert not (tmp_path / "idle" / "cancelled").exists()  # the chat would show "Stopped." under its last reply
-
-
 def test_seed_installs_each_shipped_specialist_once_when_canvases_is_on_too(monkeypatch, tmp_path):
     from fused_render.claude_agent import agent_module
     from fused_render.shell import prefs

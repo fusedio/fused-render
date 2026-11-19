@@ -1,6 +1,6 @@
 // SPECIALIST ROWS IN THE BOTS STORE (docs/specialists-v2.md): the page's poll appends the specialists
-// to the bots; off the page it never asks for them. Opening a specialist marks it seen through its own route, never
-// the bots backend's `open` or `seen`, which do not know it. Its menu has only what its routes do.
+// to the bots; off the page it never asks for them. Opening a specialist marks nothing seen: not the bots backend,
+// which does not know it, and not its learning dot, which its Learning tab clears. Its menu has only what its routes do.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
@@ -39,7 +39,7 @@ describe("specialist rows", () => {
     expect(calls.some((c) => c.includes("/api/specialists"))).toBe(false);
   });
 
-  test("on the page: appended after the bots as their own kind; opening one marks it seen on its own route only", async () => {
+  test("on the page: appended after the bots as their own kind; opening one marks nothing seen", async () => {
     publishSpecialistsEnabled(true);
     setState({ bots: [] });
     await pollOnce();
@@ -50,12 +50,12 @@ describe("specialist rows", () => {
     calls.length = 0;
     openBot("canvas");
     await new Promise((r) => setTimeout(r, 0));
-    expect(calls).toContain("POST /api/specialists/canvas/seen");
-    expect(calls.some((c) => c.startsWith("POST /api/bots/canvas"))).toBe(false);
+    // Neither the bots backend's open nor the specialist's seen: its dot is cleared by its Learning tab.
+    expect(calls.some((c) => c.startsWith("POST /api/bots/canvas") || c.endsWith("/seen"))).toBe(false);
   });
 
   test("the menu: Settings…, Update now, Delete…", () => {
     const row = getState().bots.find((b) => b.id === "canvas")!;
-    expect(menuItems(row, { live: true }).map((i) => (i === "hr" ? "hr" : i.a))).toEqual(["settings", "update", "hr", "delete"]);
+    expect(menuItems(row, { live: true }).map((i) => (i === "hr" ? "hr" : i.a))).toEqual(["settings", "hr", "delete"]);
   });
 });

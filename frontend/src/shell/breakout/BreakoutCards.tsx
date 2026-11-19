@@ -205,11 +205,13 @@ export function Card({
         setError("Couldn't write a handoff. Try again");
         return;
       }
-      void sendBackBreakout(card.id, buildHandoffDraft(slice)).then((ok) => {
+      // A specialist breakout can act (a message sent with the user's approval): the task must know who wrote this.
+      const byline = card.specialist ? `From the ${card.specialist.name} specialist's breakout (it can act with your approval):\n\n` : "";
+      void sendBackBreakout(card.id, byline + buildHandoffDraft(slice)).then((ok) => {
         if (!ok) setError("Could not hand the summary back. The card stays open.");
       });
     },
-    [card.id],
+    [card.id, card.specialist],
   );
   const onState = useCallback(
     (s: BreakoutState) => {
@@ -242,7 +244,7 @@ export function Card({
     setError("");
     pend.current = { from: state.current.turns.length, saw: false };
     setWriting(true);
-    state.current.send(HANDOFF_PROMPT);
+    state.current.send(card.specialist ? HANDOFF_PROMPT + " Say plainly what you did here yourself, such as a message you sent." : HANDOFF_PROMPT);
   };
   const cancelWriting = () => {
     pend.current = null;

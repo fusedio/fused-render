@@ -600,6 +600,10 @@ export const expertApi = {
 
 const sid = (id: string) => `/api/specialists/${encodeURIComponent(id)}`;
 export interface SpecialistBody { name: string; about: string; folder: string; face: Face | null }
+/** An inbox file: a note's text, or a conversation's pointer; `kind` and `title` from its first line. */
+export interface SpecialistEntry { name: string; text: string; at: number; kind: "note" | "task" | "breakout" | "chat"; title: string }
+/** A commit of its history: a learning run ("Update"; `read` entries) or a change to memory or skills. */
+export interface SpecialistChange { sha: string; at: number; label: string; read: number; changed: boolean }
 export interface SpecialistChat { session_id: string | null; folded: { session_id: string; at: number }[] }
 /** /api/specialists/<id>/… (fused_render/specialists/routes.py). */
 export const specialistApi = {
@@ -611,12 +615,14 @@ export const specialistApi = {
   seen: (id: string) => post<Ok>(`${sid(id)}/seen`, {}, "specialist seen"),
   memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "specialist memory"),
   skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "specialist skills"),
-  notes: (id: string) => get<{ notes: { name: string; text: string; at: number }[] }>(`${sid(id)}/notes`, "specialist notes"),
+  notes: (id: string) => get<{ notes: SpecialistEntry[] }>(`${sid(id)}/notes`, "specialist notes"),
   deleteNote: (id: string, name: string) => request<Ok>("DELETE", `${sid(id)}/notes/${encodeURIComponent(name)}`, undefined, "delete note"),
-  changes: (id: string) => get<{ changes: { sha: string; at: number; label: string }[] }>(`${sid(id)}/changes`, "specialist changes"),
-  diff: (id: string, sha: string) => get<{ diff: string }>(`${sid(id)}/changes/${encodeURIComponent(sha)}`, "specialist diff"),
-  /** `started` false: nothing was waiting. */
-  update: (id: string) => post<{ started: boolean }>(`${sid(id)}/update`, {}, "specialist update"),
+  changes: (id: string) => get<{ changes: SpecialistChange[] }>(`${sid(id)}/changes`, "specialist changes"),
+  /** `reply` and `read` for a learning run only. */
+  diff: (id: string, sha: string) => get<{ diff: string; reply?: string; read?: { kind: string; title: string }[] }>(
+    `${sid(id)}/changes/${encodeURIComponent(sha)}`, "specialist diff"),
+  /** Learn now. `started` false: nothing was waiting. */
+  update: (id: string) => post<{ started: boolean }>(`${sid(id)}/update`, {}, "learn now"),
 };
 
 /** POST /api/bots/<id>/seen {seq}: the unread mark (Bot.seen_seq). Silent: no banner, no poll after it (store.ts

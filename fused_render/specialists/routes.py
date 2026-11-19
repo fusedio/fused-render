@@ -53,7 +53,10 @@ def _row(s: store.Specialist) -> dict:
     last = chat.last(s.home, st["main"])
     return {**s.manifest(), "home": s.home, "working": bool(store.live_runs(s.home)),
             "last": {"text": last["text"], "at": last["at"]} if last else None,
-            "new": bool(last and last["at"] > st["seen"])}
+            # Learning: a run in progress, when the last one ended, and whether one ended since the user last
+            # opened the Learning tab.
+            "updating": update.learning(s.home), "last_update": st["last_update"] or None,
+            "new": st["last_update"] > st["seen"]}
 
 
 @router.get(P)
@@ -149,8 +152,9 @@ def specialists_changes(spec_id: str):
 @router.get(P + "/{spec_id}/changes/{sha}")
 @_handled
 def specialists_change(spec_id: str, sha: str):
-    text = history.diff(_spec(spec_id).home, sha)
-    return _error("no such change", 404) if text is None else {"diff": text}
+    home = _spec(spec_id).home
+    text = history.diff(home, sha)
+    return _error("no such change", 404) if text is None else {"diff": text, **history.learned(home, sha)}
 
 
 @router.post(P + "/{spec_id}/update")
