@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } from "@shell/task-head-flag";
 import { setAPinned, setFavPinned } from "@platform/lib/last-chat";
+import { botsPulseAnswered, botsRowsNow, publishBots, resetBotsPulseForTests } from "@platform/lib/botsPulse";
 import { resetRailFreePinsFlagForTests, setRailFreePinsForTests, railFreePinsNow } from "./rail-free-pins-flag";
 import {
   commitWindowBox,
@@ -14,11 +15,14 @@ import {
   publishPusher,
   publishWindowBox,
   resetRailMoveForTests,
+  sizeWindowMark,
+  subscribeWindowPos,
   setLiveWindowPos,
   windowBox,
   windowPos,
   windowSize,
 } from "./rail-move-store";
+import { listCardsNow, listOrphanedNow, publishListCards, resetListHostForTests, withdrawListCards } from "./rail-list-host-store";
 import { PEEK_GAP, PEEK_INSET } from "./rail-peek-lib";
 import {
   COLUMN_MIN_HEIGHT,
@@ -51,6 +55,11 @@ import {
 } from "./rail-slots-store";
 
 const box = (left: number, top: number, width: number, height: number) => ({ left, top, width, height });
+
+/** The list host store's two answers, read the way its hooks read them. */
+function renderHookless() {
+  return { cards: listCardsNow, orphaned: listOrphanedNow };
+}
 
 describe("a pin's mark", () => {
   it("keeps the frozen box whole, and reads it back", () => {
@@ -329,6 +338,31 @@ describe("the position store, free pins on", () => {
     publishPusher("b", "fav", null);
     expect(windowPos("b")).toEqual({ left: 1012, top: 440 });
   });
+  it("a pin with a position and no size gets one, once; a sized mark is left alone", () => {
+    commitWindowPos("a", { left: 300, top: 80 });
+    expect(windowSize("a")).toBeNull();
+    sizeWindowMark("a", { width: 420, height: 640 });
+    expect(windowPos("a")).toEqual({ left: 300, top: 80 });
+    expect(windowSize("a")).toEqual({ width: 420, height: 640 });
+    sizeWindowMark("a", { width: 500, height: 500 });
+    expect(windowSize("a")).toEqual({ width: 420, height: 640 });
+    // No pin, nothing to size.
+    sizeWindowMark("b", { width: 380, height: 520 });
+    expect(windowPos("b")).toBeNull();
+  });
+  it("a size-less pin's card box arriving after the non-pin is heard: the pin is pushed then", () => {
+    commitWindowPos("a", { left: 992, top: 80 });
+    publishPusher("a", "list", box(972, 60, 420, 640));
+    let heard = 0;
+    const off = subscribeWindowPos(() => heard++);
+    publishWindowBox("a", "pin", box(992, 80, 400, 500), true);
+    expect(heard).toBe(1);
+    expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
+    // The same publication again says nothing.
+    publishWindowBox("a", "pin", box(992, 80, 400, 500), true);
+    expect(heard).toBe(1);
+    off();
+  });
   it("turning the unified head off is heard too: the store re-reads", () => {
     commitWindowBox("a", box(972, 60, 420, 640));
     publishPusher("a", "list", box(972, 60, 420, 640));
@@ -347,6 +381,51 @@ describe("the position store, free pins on", () => {
     publishWindowBox("a", "list", box(972, 60, 420, 640));
     // The one card a window has, whoever published last.
     expect(magnetBox("a", true)).toEqual(box(1, 1, 400, 500));
+  });
+});
+
+describe("a pin lets go only on an ANSWERED feed", () => {
+  it("the bots' rows are not an answer until one has landed in this document", () => {
+    resetBotsPulseForTests();
+    expect(botsPulseAnswered()).toBe(false);
+    expect(botsRowsNow()).toEqual([]);
+    // An answer with no bots at all: "none left", which an unanswered empty list never says.
+    publishBots([]);
+    expect(botsPulseAnswered()).toBe(true);
+    expect(botsRowsNow()).toEqual([]);
+    resetBotsPulseForTests();
+    expect(botsPulseAnswered()).toBe(false);
+  });
+});
+
+describe("the list card's two slots in the shell's host", () => {
+  beforeEach(() => {
+    resetRailSlotsForTests();
+    resetListHostForTests();
+  });
+  it("a rail going takes its non-pin and leaves the pinned slot; only the last publisher counts", () => {
+    const railA = {};
+    const railB = {};
+    const hear = renderHookless();
+    publishListCards(railA, { x: "free-A", y: "pin" });
+    expect(hear.cards()).toEqual({ x: "free-A", y: "pin" });
+    expect(hear.orphaned()).toBe(false);
+    // The next page's rail publishes before the last one's cleanup runs.
+    publishListCards(railB, { x: "free-B", y: "pin" });
+    withdrawListCards(railA);
+    expect(hear.cards()).toEqual({ x: "free-B", y: "pin" });
+    // …and a page with no rail: the free slot (x) goes, the pinned one (y) stays, orphaned.
+    withdrawListCards(railB);
+    expect(hear.cards()).toEqual({ x: null, y: "pin" });
+    expect(hear.orphaned()).toBe(true);
+  });
+  it("the pinned slot is whichever is not the free one", () => {
+    const rail = {};
+    const hear = renderHookless();
+    setFreeSlot("a", "y");
+    publishListCards(rail, { x: "pin", y: "free" });
+    withdrawListCards(rail);
+    expect(hear.cards()).toEqual({ x: "pin", y: null });
   });
 });
 

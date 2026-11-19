@@ -123,6 +123,17 @@ export function commitWindowPos(win: RailWindow, pos: Pos | null): void {
   notify();
 }
 
+/** A PIN'S MARK WITH A POSITION AND NO SIZE gets one (use-pin-box): a window
+ *  pinned and dragged before the switch came on kept only where it stood, and
+ *  drew at the shared non-pin size — which a non-pin's resize then changed
+ *  under it. The position stays; a mark that has a size is left alone. */
+export function sizeWindowMark(win: RailWindow, size: Size): void {
+  const mark = stored(win);
+  if (!mark || mark.size) return;
+  setWindowPosMark(win, serialisePinBox({ ...mark.pos, ...size }));
+  notify();
+}
+
 /** A FREE PIN'S BOX, WHOLE (rail-slots-lib): frozen at the pin's press
  *  (`freezeFromDock`), and rewritten by the reader's own resize. */
 export function commitWindowBox(win: RailWindow, box: Box): void {
@@ -219,8 +230,19 @@ const boxes: Record<RailWindow, Map<string, { box: Box; pin: boolean }>> = { a: 
  *  two are told apart here. Off, no card says it. */
 export function publishWindowBox(win: RailWindow, owner: string, box: Box | null, pin = false): void {
   const m = boxes[win];
+  const was = m.get(owner);
   m.delete(owner);
   if (box) m.set(owner, { box, pin });
+  // A PIN WITH NO SIZE IN ITS MARK is pushed by this box's size (`pinAt`): a
+  // size that arrives — or changes — after a non-pin already stands over it
+  // changes where the pin is drawn, and its readers must hear of it
+  // (CodeRabbit on #2349: it stayed covered until something else moved).
+  // The same publication again says nothing.
+  if (!railFreePinsNow() || pushers.size === 0) return;
+  const size = (e: { box: Box; pin: boolean } | undefined) => (e && e.pin ? `${e.box.width}x${e.box.height}` : "");
+  if (size(was) === size(box ? { box, pin } : undefined)) return;
+  const mark = stored(win);
+  if (mark && !mark.size) notify();
 }
 
 /** Window `win`'s card up now (the newest publisher, should two overlap for

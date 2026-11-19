@@ -9,6 +9,7 @@
 // asked yet", which renders as off — the flag's own default.
 import { useEffect, useState } from "react";
 import { getPrefs, onPrefsWrittenElsewhere, type Prefs } from "@platform/lib/api";
+import { onPrefsReread } from "@platform/lib/prefs-reread";
 import { subscribeTaskHeadUnified, taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
 
 /** The last answer, remembered across a reload (task-head-flag's reason: a
@@ -91,6 +92,21 @@ onPrefsWrittenElsewhere((p) => {
   if (p.rail_free_pins !== undefined) publishRailFreePins(p.rail_free_pins);
 });
 
+// ANOTHER WINDOW FLIPPED THE SWITCH AND THIS ONE CAME BACK (platform/lib
+// prefs-reread; CodeRabbit on #2349): with no BroadcastChannel the write above
+// never arrives, and a window would keep the answer it loaded with — free pins
+// on in one window, off in the next. The shared re-read on focus brings the
+// answer here, under the same generation guard; a failed read changes nothing.
+// Followed from the first hook on (favourites-flag's way), not at import: a
+// store that only imports this module must not make a document re-read prefs.
+let following = false;
+function onReread(p: Promise<Prefs>): void {
+  const departed = generation;
+  p.then((prefs) => {
+    if (generation === departed) set(fromPrefs(prefs.rail_free_pins));
+  }).catch(() => {});
+}
+
 /** Free pins are on: this switch AND the unified head's (header). */
 export function useRailFreePins(): boolean {
   const unified = useTaskHeadUnified();
@@ -100,7 +116,13 @@ export function useRailFreePins(): boolean {
     setCurrent(answer ?? false);
     // Asked only with the unified head on: off, the answer is never read, and
     // a document that never turns it on pays no prefs GET for this switch.
-    if (unified) void read();
+    if (unified) {
+      if (!following) {
+        following = true;
+        onPrefsReread(onReread);
+      }
+      void read();
+    }
     return () => {
       listeners.delete(setCurrent);
     };

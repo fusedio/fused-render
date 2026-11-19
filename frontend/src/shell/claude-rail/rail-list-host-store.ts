@@ -82,6 +82,22 @@ export function useListCards(): ListCards {
   return useSyncExternalStore(subscribe, current, () => NONE);
 }
 
+const orphaned = () => owner === null;
+/** No rail stands behind the cards held here: what is drawn is the pinned
+ *  slot as the last rail built it (header). Nobody rebuilds it then, so the
+ *  host itself must let it go when its pin does (ListCardHost). */
+export function useListOrphaned(): boolean {
+  return useSyncExternalStore(subscribe, orphaned, () => true);
+}
+
+/** The two answers outside React (tests). */
+export function listCardsNow(): ListCards {
+  return cards;
+}
+export function listOrphanedNow(): boolean {
+  return owner === null;
+}
+
 export function resetListHostForTests(): void {
   cards = NONE;
   owner = null;

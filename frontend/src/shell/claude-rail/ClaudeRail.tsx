@@ -251,6 +251,7 @@ import {
   subscribeListing,
   useTasksPulse,
   useTasksPulseRows,
+  readTasksRows,
   tasksPulseLoaded,
 } from "@shell/tasksPulse";
 import { BOTS_ICON, GIT_ICON, TASKS_ICON } from "@shell/nav-icons";
@@ -1525,12 +1526,16 @@ export function ClaudeRail({
   }, [pinSeatA]);
   const pinViewA = pinSeatA ?? pinLingerA;
   const pinKeptA = useMemo(() => (pinViewA ? [pinViewA] : []), [pinViewA]);
-  // Its task gone (archived, erased), once the pulse's rows are held: the pin
-  // goes with it.
-  const pinGoneA = pinKeyA !== null && rows.length > 0 && !pinSeatA;
+  // Its task gone (archived, erased): the pin goes with it — once the pulse
+  // has ANSWERED, judged off the feed itself (shell/tasksPulse), so an empty
+  // list is "none left" and not "not asked yet" (CodeRabbit on #2349: the
+  // LAST task erased left the mark standing with no window, and the rail
+  // quiet for good).
   useEffect(() => {
-    if (pinGoneA && pinKeyA && aPinned() === aPinWord({ kind: "task", key: pinKeyA })) setAPinned(null);
-  }, [pinGoneA, pinKeyA]);
+    if (!pinKeyA || !tasksPulseLoaded()) return;
+    const live = readTasksRows().find((t) => t.key === pinKeyA);
+    if ((!live || live.status === "archived") && aPinned() === aPinWord({ kind: "task", key: pinKeyA })) setAPinned(null);
+  }, [pinKeyA, rows]);
   const pinPlacedA = usePinHasBox("a", !!pinSeatA, railRef.current);
   const pinPeekRef = useRef<RailPeekHandle | null>(null);
   const pinUpA = !!pinSeatA && pinPlacedA;
@@ -2063,6 +2068,8 @@ export function ClaudeRail({
   const onRingKey = (key: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
     if (e.key === "ArrowLeft") {
       e.preventDefault();
+      // FREE PINS: a pinned task's ring raises its pinned window.
+      if (raisePinOf(key)) return;
       // A deliberate way in, like a press: pinned (with the pin: temp — or
       // pinned still, in a pinned window: the pin is the window's).
       intent.showNow(key, true);
@@ -2871,7 +2878,12 @@ export function ClaudeRail({
     const act = ringClick({
       mode: cardMode({ up: own, pinned: !!c?.pinned, held: !!c?.held }),
       own,
-      windowPinned: windowAPinned(),
+      // FREE PINS: the + card is ONE card — it has no second slot for a
+      // non-pin (rail-slots-store) — so while it is pinned, another draft's
+      // door swaps what the pinned card shows and it STAYS pinned, where it
+      // is (CodeRabbit on #2349: the swap came up temp, and the pin was
+      // silently let go). The one place the window's old rule still holds.
+      windowPinned: windowAPinned() || (freePinsRef.current && !!c?.pop && !!c.held),
     });
     if (act === "keep") return;
     pendingHeld.current = act === "pin" ? door : null;
@@ -3043,6 +3055,12 @@ export function ClaudeRail({
   };
   const pressRing = (t: TaskPulseTask, href: string, detail: number) => {
     const keyboard = detail === 0;
+    // FREE PINS (rail-slots-lib `pinOf`): the ring of a PINNED task raises
+    // its pinned window — in whichever section it was pinned — and opens no
+    // second window on the same chat. Before the card-or-door question
+    // (CodeRabbit on #2349): a pinned window floats and needs no room beside
+    // the rail, so "no room for a card" must not send its ring to the door.
+    if (raisePinOf(t.key)) return;
     const how = ringPress({ paneOpen, favsOn, peekOn, noRoom });
     // BESIDE THE OPEN PANE the press is the same press (owner, 2026-11-08:
     // "if the sidebar is expanded we don't show window A — we will instead
@@ -3050,10 +3068,6 @@ export function ClaudeRail({
     // clicks Open from window A"): the card pins; the pane keeps its chat —
     // the pane's own chat included, mounted again in the card.
     if (how === "card") {
-      // FREE PINS (rail-slots-lib `pinOf`): the ring of a PINNED task raises
-      // its pinned window — in whichever section it was pinned — and opens
-      // no second window on the same chat.
-      if (raisePinOf(t.key)) return;
       // A DRAFT'S RING, with the nav doors (owner, 2026-11-07: "drafts open
       // should open in the new thing we added"): the New task popover on
       // the draft, pinned — not window A. A hover's card coming on this ring
@@ -3615,6 +3629,16 @@ export function ClaudeRail({
                         ...(peeked ? { "aria-controls": foot ? FAV_PEEK_ID : PEEK_ID } : {}),
                         onKeyDown: foot ? onFavRingKey(t, href) : onRingKey(t.key),
                       }
+                    : peekOn && freePins && !foot && wears.hovers
+                      ? {
+                          // FREE PINS: a list ring that previews nothing — a
+                          // window is open (`railQuiet`), or its own task is
+                          // pinned — keeps the keyboard's way in (CodeRabbit
+                          // on #2349): ArrowLeft opens it as a press would,
+                          // or raises its pinned window (`onRingKey`).
+                          "aria-keyshortcuts": "ArrowLeft",
+                          onKeyDown: onRingKey(t.key),
+                        }
                     : peekOn && favRing
                       ? {
                           // The open favourite's ring: its card is the
@@ -4664,7 +4688,14 @@ export function ClaudeRail({
                             onPointerLeave: () => botIntent.leaveRing("pointer"),
                             onBlur: () => botIntent.leaveRing("focus"),
                           }
-                        : {})}
+                        : freePins && pinnedBotId === b.id
+                          ? {
+                              // …and keeps its ArrowLeft with no room for a
+                              // card (`onBotRingKey` raises it).
+                              "aria-keyshortcuts": "ArrowLeft",
+                              onKeyDown: onBotRingKey(b.id),
+                            }
+                          : {})}
                       {...(hovers
                         ? {
                             onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(b.id, e, botIntent),
@@ -4675,7 +4706,11 @@ export function ClaudeRail({
                       onClick={(e) => {
                         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                         e.preventDefault();
-                        if (!card) {
+                        // FREE PINS: the pinned bot's ring raises its pinned
+                        // window whatever room the row leaves (`pressBotRing`
+                        // — CodeRabbit on #2349): it floats, and "no room for
+                        // a card" is the non-pin's question.
+                        if (!card && !(freePins && pinnedBotId === b.id)) {
                           hideHint();
                           void navigateUrl(href);
                           return;

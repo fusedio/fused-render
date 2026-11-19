@@ -90,7 +90,7 @@ import { type Task, type TaskPulseTask } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { opensOnThisPage } from "@shell/useAppPageClaudePane";
-import { readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
+import { readListing, readTasksRows, refreshListing, subscribeListing, tasksPulseLoaded, useTasksPulseRows } from "@shell/tasksPulse";
 import {
   clearFavOpen,
   favOpen,
@@ -267,13 +267,19 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   const openRow = useFavOpenRow(on && isFree, rows);
   const open = isFree ? openRow : null;
   // THE PINNED FAVOURITE (the pin role): its row off the pulse; gone once the
-  // pulse — the rows this render holds — no longer has it starred (unstarred
-  // elsewhere, archived, erased), and the pin goes with it.
+  // pulse no longer counts it a FAVOURITE AS THE RAIL DOES (rail-peek-lib
+  // `favLike`: starred, or blocked — a blocked chat keeps its ring in the
+  // section with no star, and its pinned window with it) — unstarred
+  // elsewhere, archived, erased — and the pin goes with it. Once the pulse has
+  // ANSWERED, judged off the feed itself (shell/tasksPulse), so an empty list
+  // is "none left" and not "not asked yet" (CodeRabbit on #2349).
   const pinRow = useMemo(() => (pinRole && pinnedKey ? (rows.find((t) => t.key === pinnedKey) ?? null) : null), [pinRole, pinnedKey, rows]);
-  const pinGone = pinRole && pinnedKey !== null && rows.length > 0 && (!pinRow || pinRow.status === "archived" || !favLike(pinRow));
+  const pinGone = pinRole && pinnedKey !== null && !!pinRow && (pinRow.status === "archived" || !favLike(pinRow));
   useEffect(() => {
-    if (pinGone && favPinned() === pinnedKey) setFavPinned(null);
-  }, [pinGone, pinnedKey]);
+    if (!pinRole || !pinnedKey || !on || !tasksPulseLoaded()) return;
+    const live = readTasksRows().find((t) => t.key === pinnedKey);
+    if ((!live || live.status === "archived" || !favLike(live)) && favPinned() === pinnedKey) setFavPinned(null);
+  }, [pinRole, pinnedKey, on, rows]);
   // …or, with none open, the one a hover wants (header): a live favourite
   // only — and not while a bot's card holds the window (header).
   const hoverKey = useFavHoverKey();

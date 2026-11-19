@@ -8,7 +8,7 @@
 // this host draws the card and answers its own events.
 import { useEffect, useMemo, useRef } from "react";
 import { useBotsAvailable } from "@platform/lib/bots-available";
-import { useBotsRows } from "@platform/lib/botsPulse";
+import { botsPulseAnswered, botsRowsNow, useBotsRows } from "@platform/lib/botsPulse";
 import { navigateUrl } from "@platform/lib/router";
 import { BotPeek, BOT_PEEK_ID, preloadBotChat, type BotPeekHandle } from "./BotPeek";
 import {
@@ -92,13 +92,18 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
     if (!on && isFree) intent.dismiss();
   }, [on, intent, isFree]);
 
-  // THE PINNED BOT (the pin role): gone once the bots — answered — no longer
+  // THE PINNED BOT (the pin role): gone once the bots — ANSWERED — no longer
   // list it (unpinned from the rail, removed), and the pin goes with it.
+  // Judged off the feed itself, not this render's rows: an empty list is
+  // "none left" only once an answer has landed in this document (CodeRabbit
+  // on #2349: the LAST rail bot removed left the mark standing, with no
+  // window, and the rail quiet for good) — before that it is what the last
+  // session remembered, or nothing.
   const pinBot = useMemo(() => (pinRole && pinnedId ? (bots.find((b) => b.id === pinnedId) ?? null) : null), [pinRole, pinnedId, bots]);
-  const pinGone = pinRole && pinnedId !== null && bots.length > 0 && !pinBot;
   useEffect(() => {
-    if (pinGone && botOpen() === pinnedId) setBotOpen(null);
-  }, [pinGone, pinnedId]);
+    if (!pinRole || !pinnedId || !on || !offered || !botsPulseAnswered()) return;
+    if (!pinnedBots(botsRowsNow()).some((b) => b.id === pinnedId) && botOpen() === pinnedId) setBotOpen(null);
+  }, [pinRole, pinnedId, on, offered, bots]);
   const freeShown = useMemo(
     () => (on && isFree && card.key ? (bots.find((b) => b.id === card.key) ?? null) : null),
     [on, isFree, card.key, bots],
@@ -137,12 +142,19 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
           viewPress.inside = true;
         }}
         onHold={noop}
-        // Its Open door is a hand-off: the bot's page has the chat now.
-        onDismiss={(why) => {
-          if (why === "door" && pinnedId && botOpen() === pinnedId) setBotOpen(null);
-        }}
+        // Its Open door is a hand-off — the bot's page has the chat — ONCE THE
+        // HOP WENT (the favourite's rule, FavouritePeek `openChat`; CodeRabbit
+        // on #2349): a leave prompt the reader declines keeps the page, and
+        // the pinned window with it. The chassis' own word for the door
+        // (`onDismiss("door")`, said at the press) lets nothing go.
+        onDismiss={noop}
         onNoRoom={noop}
-        onOpen={(href) => void navigateUrl(href)}
+        onOpen={(href) => {
+          const id = pinnedId;
+          void navigateUrl(href).then((ok) => {
+            if (ok !== false && id && botOpen() === id) setBotOpen(null);
+          });
+        }}
         held
         onHeld={noop}
         pinned

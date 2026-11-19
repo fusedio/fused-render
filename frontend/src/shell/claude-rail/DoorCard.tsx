@@ -599,15 +599,18 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     const held = store.state().held;
     // FREE PINS: a pinned card's seat is its × — it closes (rail-slots-lib "A
     // PINNED WINDOW CLOSES BY ITS ×").
+    // The card's own close (`close`), not the store's alone: it hands the
+    // keyboard back to the door first (CodeRabbit on #2349 — the × pressed
+    // by keyboard left the focus in a card gone inert).
     if (held && railFreePinsNow()) {
-      store.close();
+      close();
       return;
     }
     // …and the pin's press freezes the window where it stands, before the
     // hold makes it float (rail-move-store `freezeFromDock`).
     if (!held && railFreePinsNow()) freezeFromDock("a");
     store.setHeld(!held);
-  }, [store]);
+  }, [store, close]);
   const api = useMemo<DoorCardApi>(
     () => ({
       visible,

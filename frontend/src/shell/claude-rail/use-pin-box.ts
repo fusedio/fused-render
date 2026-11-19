@@ -7,7 +7,9 @@
 // a pinned card only where its window floats.
 import { useLayoutEffect, useSyncExternalStore } from "react";
 import { viewportOf, type RailWindow } from "./rail-move-lib";
-import { commitWindowBox, subscribeWindowPos, windowPos } from "./rail-move-store";
+import { getUiLayout } from "@platform/lib/ui-layout";
+import { commitWindowBox, sizeWindowMark, subscribeWindowPos, windowPos, windowSize } from "./rail-move-store";
+import { FAV_HEIGHT, FAV_WIDTH, railCardSize } from "./rail-peek-lib";
 import { defaultPinBox } from "./rail-slots-lib";
 
 /** The pinned windows' DOM ids (the non-pins keep the ids they always had). */
@@ -30,5 +32,28 @@ export function usePinHasBox(win: RailWindow, up: boolean, rail: HTMLElement | n
     const r = rail?.getBoundingClientRect();
     commitWindowBox(win, defaultPinBox(win, r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null, viewportOf(window)));
   }, [win, up, placed, rail]);
+  // …AND A SIZE OF ITS OWN (CodeRabbit on #2349): a mark with a position and
+  // no size — a window pinned and dragged before the switch came on — is
+  // given the size it is drawn at now, the shared non-pin size its chassis
+  // falls back to. Once: from then on a non-pin's resize is not the pin's.
+  const sized = useSyncExternalStore(
+    subscribeWindowPos,
+    () => windowPos(win) === null || windowSize(win) !== null,
+    () => true,
+  );
+  useLayoutEffect(() => {
+    if (!up || !placed || sized) return;
+    sizeWindowMark(win, sharedSize(win));
+  }, [win, up, placed, sized]);
   return placed;
+}
+
+/** The size a pinned card with none of its own is drawn at: its window's
+ *  shared non-pin size (ui-layout `canvasRailPeek`, `canvasRailFav`), else
+ *  that card's default. */
+function sharedSize(win: RailWindow): { width: number; height: number } {
+  const layout = getUiLayout();
+  if (win === "a") return railCardSize(layout.canvasRailPeek ?? null);
+  const fav = layout.canvasRailFav;
+  return { width: fav?.width ?? FAV_WIDTH, height: fav?.height ?? FAV_HEIGHT };
 }
