@@ -198,6 +198,8 @@ export interface RemoteTemplateEntry extends TemplateEntry {
   stream: boolean;
 }
 
+/** One row of a folder listing. A folder's `size` and `mtime` are its whole
+ *  subtree's (bytes, newest file); null from a server older than that. */
 export interface RemoteEntry {
   url: string;
   name: string;
