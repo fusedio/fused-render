@@ -1045,6 +1045,50 @@ test("a rail window's facts and acts are two layers of one box; a panel keeps th
   expect(byClass(pane, "task-head-timeslot")).toHaveLength(1);
 });
 
+test("a rail window's shrinking crumb is charged the floor it may be cut to, never what it occupies now (2026-11-19)", async () => {
+  const { crumbGive, TASK_HEAD_CRUMB_TAG } = await import("./row-fit");
+  const FLEX = { ...STYLE, display: "flex", flexShrink: "1" };
+  /** A folder tag: 18px of pill around a 72px word, the word cut to `shown`. */
+  const crumbOf = (shown: number, shrink = "1") => {
+    const word = {
+      className: "schedule-tv-id-name",
+      getBoundingClientRect: () => ({ width: shown }),
+      scrollWidth: 72,
+      clientWidth: shown,
+      children: [],
+      textContent: "fused-render",
+      __style: { ...STYLE, flexShrink: "1" },
+    };
+    const pill = {
+      className: "schedule-tv-id",
+      getBoundingClientRect: () => ({ width: shown + 18 }),
+      scrollWidth: shown + 18,
+      clientWidth: shown + 18,
+      children: [word],
+      __style: { ...FLEX, paddingLeft: "9px", paddingRight: "9px" },
+    };
+    const place = {
+      className: "task-head-place",
+      getBoundingClientRect: () => ({ width: shown + 18 }),
+      children: [pill],
+      querySelectorAll: () => [pill, word],
+      __style: FLEX,
+    };
+    const crumb = { className: "task-head-crumb", children: [place], __style: { ...FLEX, flexShrink: shrink } };
+    return { querySelector: () => crumb } as unknown as HTMLElement;
+  };
+  expect(TASK_HEAD_CRUMB_TAG).toBe(48);
+  // Whole (90px) and free to shrink: charged the 48px floor, so 42 comes off.
+  expect(crumbGive(crumbOf(72))).toBe(42);
+  // Cut to 63px: still charged 48 — the PR chip stays beside a shortened name.
+  expect(crumbGive(crumbOf(45))).toBe(15);
+  // Cut below the floor (38px): the row is 10px short, and says so — it used
+  // to read as fitting exactly, down to a name of no letters at all.
+  expect(crumbGive(crumbOf(20))).toBe(-10);
+  // Held (the branch tag still stands): charged whole, nothing comes off.
+  expect(crumbGive(crumbOf(72, "0"))).toBe(0);
+});
+
 test("a two-line panel folds in its own order: the tools' words, then the tags, the time, the tools (2026-11-17)", async () => {
   const { TASK_HEAD_PANEL_DROPS, TASK_HEAD_PANEL_FIT } = await import("./row-fit");
   expect([...TASK_HEAD_PANEL_DROPS]).toEqual([

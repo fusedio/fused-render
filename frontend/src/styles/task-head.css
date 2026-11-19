@@ -224,7 +224,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  /* Same rule as `.task-head-place`: held at its width (capped below) so the
+  /* Same rule as `.task-head-place`: held at its width so the
      ladder sees the overflow and folds chips → seats → chevrons → stacks the
      identity → the number, rather than the count/when chips being clipped
      out of the seat. */
@@ -243,8 +243,8 @@
    (Akshil, 2026-11-19: "let's show it full only, if width is there"). So it
    holds its width — the row overflows honestly and the ladder takes the tag
    away (rung 1, below) — where it used to shrink and ellipsise
-   ("docs/h3-ag…") while the PR chip beside it had no room at all. The cap is
-   for a name no row could seat. */
+   ("docs/h3-ag…") while the PR chip beside it had no room at all. No cap: a
+   name too long for the row is a tag that is not shown. */
 .task-head-chips .chat-worktree-menu {
   display: flex;
   flex: 0 0 auto;
@@ -253,7 +253,7 @@
 .task-head-chips .chat-worktree-btn {
   flex: 0 0 auto;
   min-width: 0;
-  max-width: 280px;
+  max-width: none;
 }
 .task-head-chips .chat-worktree-hint {
   margin-left: 0;
@@ -584,9 +584,8 @@
    charges a shrinking text seat `min(width, 72)`, so a title that siblings had
    already crushed to 0 counted as 0 and the row "fit" with no title in it
    (QA, 2026-11-10: a worktree pill and a PR chip ate the whole line). With the
-   floor stated in CSS the row overflows instead, the ladder sees it and folds;
-   the chips cap below so a long branch name shares the line rather than
-   taking it. */
+   floor stated in CSS the row overflows instead, the ladder sees it and
+   folds. */
 .task-head .task-side-peek-who .task-side-peek-title {
   /* …but never wider than the title itself: a two-letter title held 72px of
      blank that the ladder then paid for with the time and a pane's seats.
@@ -673,6 +672,9 @@
 .nt-form-head .task-head-chips {
   flex: 0 1 auto;
   overflow: visible;
+  /* The cap every head's chips had until 2026-11-19 (the branch tag is whole
+     or not shown now); the form's Folder and When pills keep it. */
+  max-width: 220px;
 }
 
 /* THE ARMED ✕ (a dirty form's first close): `.deploy-close.is-armed`'s warm

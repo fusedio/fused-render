@@ -888,29 +888,51 @@ const TASK_HEAD_CRUMB_SEP = 19;
  * A RAIL WINDOW'S CRUMB GIVES WIDTH — ONCE THE BRANCH TAG HAS GONE, AND
  * BEFORE THE PR CHIP DOES (Akshil, 2026-11-19: "PR should have higher
  * priority on visibility … when width is smaller"). The stylesheet holds the
- * crumb at its width while the branch tag stands (`data-fit="0"`),
- * so until then it is charged whole and this is nothing. After, it shrinks
- * and ellipsises, and `rowNeed` charges a seat that shrinks what it
- * occupies NOW — so the row always "needed" exactly the head's width, give or
- * take a rounded half pixel, and whether the PR chip stood beside a
- * shortened folder or left with the folder whole was a coin toss (measured
- * at 320px, 2026-11-19: 318.3 against 318). What it is charged instead is
- * the floor it may be cut to — `TASK_HEAD_CRUMB_TAG` a tag — so the chip
- * stays until the crumb is down to that, and only then leaves.
+ * crumb at its width while the branch tag stands (`data-fit="0"`), so until
+ * then it is charged whole and this is nothing. After, it shrinks and
+ * ellipsises, and `rowNeed` charges a seat that shrinks what it occupies NOW
+ * — so the row always "needed" exactly the head's width, give or take a
+ * rounded half pixel, and whether the PR chip stood beside a shortened folder
+ * or left with the folder whole was a coin toss (measured at 320px,
+ * 2026-11-19: 318.3 against 318).
+ *
+ * What the crumb is charged instead is THE FLOOR IT MAY BE CUT TO: each tag
+ * the lesser of its whole width and `TASK_HEAD_CRUMB_TAG`. Returned as the
+ * difference from what `rowNeed` charged — NEGATIVE once a tag has been
+ * squeezed below its floor, which is the row saying it no longer fits, so
+ * the PR chip leaves there and not when the folder's name is down to nothing.
  */
-function crumbGive(row: HTMLElement): number {
+export function crumbGive(row: HTMLElement): number {
+  if (typeof row.querySelector !== "function") return 0;
   const crumb = row.querySelector<HTMLElement>(".task-head-crumb");
   if (!crumb) return 0;
   // Held (`flex: 0 0 auto`): charged its whole width, which is the point.
   if (!((Number.parseFloat(getComputedStyle(crumb).flexShrink) || 0) > 0)) return 0;
   let tags = 0;
+  let floor = 0;
   for (const kid of Array.from(crumb.children) as HTMLElement[]) {
     const cls = typeof kid.className === "string" ? kid.className.split(" ") : [];
-    if (cls.includes("task-head-place") || cls.includes("task-head-where")) tags += 1;
+    if (!cls.includes("task-head-place") && !cls.includes("task-head-where")) continue;
+    tags += 1;
+    floor += Math.min(tagWhole(kid), TASK_HEAD_CRUMB_TAG);
   }
   if (!tags) return 0;
-  const floor = tags * TASK_HEAD_CRUMB_TAG + (tags > 1 ? TASK_HEAD_CRUMB_SEP : 0);
-  return Math.max(0, rowNeed(crumb) - floor);
+  if (tags > 1) floor += TASK_HEAD_CRUMB_SEP;
+  return rowNeed(crumb) - floor;
+}
+
+/** A crumb tag's width with nothing cut: what it occupies now, plus what
+ *  each of its ellipsised words is short by. */
+function tagWhole(tag: HTMLElement): number {
+  let whole = tag.getBoundingClientRect().width;
+  const inner = typeof tag.querySelectorAll === "function" ? Array.from(tag.querySelectorAll<HTMLElement>("*")) : [];
+  for (const el of inner) {
+    // A word: a leaf of the tag. (A box's own `scrollWidth` would count the
+    // same missing letters a second time.)
+    if (el.children.length) continue;
+    whole += Math.max(0, (el.scrollWidth || 0) - (el.clientWidth || 0));
+  }
+  return whole;
 }
 
 /** The b control a folded fact slot shows while the head is pointed at: one glyph. */

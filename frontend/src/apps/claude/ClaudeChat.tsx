@@ -6013,20 +6013,11 @@ function ChatBody(props: ChatBodyProps) {
       </span>
     ) : null;
   // THE PR TAG STANDS WHOLE BESIDE A PANE'S TOOLS TOO (Akshil, 2026-11-19:
-  // "PR should have higher priority on visibility in all these views"). It
-  // was folded behind one "+N" wherever a worktree tag was up (2026-11-17,
-  // "one tag then +x"); the branch tag gives instead now — it is shown whole
-  // or not at all, and leaves before the PR tag does (TaskHead, row-fit
-  // `TASK_HEAD_PANEL_DROPS`).
-  const headChipsExtra =
-    props.prChip && head.task ? (
-      <>
-        <TaskPrChip task={head.task} />
-        {props.headerExtra}
-      </>
-    ) : (
-      props.headerExtra
-    );
+  // "PR should have higher priority on visibility in all these views") —
+  // `headerExtra`, the same chip the slim line draws. It was folded behind
+  // one "+N" wherever a worktree tag was up (2026-11-17, "one tag then +x");
+  // the branch tag gives instead now — it is shown whole or not at all, and
+  // leaves before the PR tag does (TaskHead, row-fit `TASK_HEAD_PANEL_DROPS`).
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
@@ -6067,7 +6058,7 @@ function ChatBody(props: ChatBodyProps) {
           <>
             {shownHint ? null : worktreeMenu}
             <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
-            {headChipsExtra}
+            {headerExtra}
           </>
         ) : null
       }

@@ -170,11 +170,15 @@ test("every rail window names the task's pull request, after the chat's branch t
   expect(card).toContain(
     "? { chips: <TaskPrChip task={head.merged as Task} />, chipsRef: setChipsHost, statusRef: setStatusHost }",
   );
-  // Only the chat the head names fills the head's seats: the card keeps
-  // several chats mounted.
+  // Only the chat the head names fills the head's seats — the card keeps
+  // several chats mounted — and only while the card is up; each seat
+  // remembers the chat whose head it was made in, so a swap never hands the
+  // new chat the old head's seats.
   expect(card).toContain(
-    "{...(unified && t.key === viewKey ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}",
+    "{...(unified && shownKey && t.key === viewKey && chipsSeat.key === t.key && statusSeat.key === t.key",
   );
+  expect(card).toContain("? { headChipsHost: chipsSeat.el, headStatusHost: statusSeat.el }");
+  expect(card).toContain("(el: HTMLElement | null) => setChipsSeat(el ? { key: headKeyRef.current, el } : NO_SEAT),");
   // A pane's PR tag is never folded behind "+N" for the branch tag's sake.
   const chat = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
   expect(chat).toContain("<TaskPrChip task={head.task} />");
