@@ -43,11 +43,11 @@ TOOLS = {
             "to show them (UDFs, widgets). Returns the folder. You then write the node files into that folder "
             "yourself with Write / Edit, and their rows in its canvas.toml. Only when the user asked you to build "
             "or show something; never for a throwaway run. The user is asked to approve each new canvas."),
-        "inputSchema": {"type": "object", "required": ["name"], "properties": {
+        "inputSchema": {"type": "object", "required": ["name", "env"], "properties": {
             "name": {"type": "string", "description": "The canvas name: letters, digits and underscores only."},
-            "env": {"type": "string", "description": "The Fused environment. Leave it out: the canvas is then made "
-                                                       "in the user's default environment. Give it only when the "
-                                                       "user explicitly asked for a certain environment."}}},
+            # Required, so the approval card the user answers names the environment beside the canvas; the
+            # default is written into this description per session (`mcp_tools`).
+            "env": {"type": "string", "description": "The Fused environment the canvas is made in."}}},
     },
     SHOW: {
         "description": (
@@ -194,7 +194,15 @@ def _shown(title: str) -> str:
 
 
 def mcp_tools() -> list[dict]:
-    return [{"name": name, **spec} for name, spec in TOOLS.items()]
+    """The two tools as MCP definitions. `canvas_create`'s `env` says which environment is the user's default
+    right now, so the specialist passes it and the approval card shows it."""
+    allowed, default = envs()
+    out = json.loads(json.dumps([{"name": name, **spec} for name, spec in TOOLS.items()]))
+    out[0]["inputSchema"]["properties"]["env"]["description"] = (
+        f"The Fused environment the canvas is made in. Always give it: `{default}`, the user's default "
+        f"environment, unless the user explicitly asked for another (one of: {', '.join(allowed)}). The user "
+        "sees it on the approval card.")
+    return out
 
 
 def _result(text: str, ok: bool) -> dict:

@@ -119,6 +119,9 @@ def test_the_environment_is_the_user_s_default_unless_named(base, monkeypatch):
     s = make_specialist()
     monkeypatch.setattr(fusedcli, "workbench_env", lambda: "unstable")  # the Preferences choice
     assert show.envs()[1] == "unstable"
+    create = show.mcp_tools()[0]  # the card the user approves shows the environment: the specialist must give it
+    assert create["inputSchema"]["required"] == ["name", "env"]
+    assert "`unstable`, the user's default" in create["inputSchema"]["properties"]["env"]["description"]
     assert not show.call(s, "canvas_create", {"name": "A"})["isError"]
     assert calls[0] == ("create", "unstable", "A")
     assert not show.call(s, "canvas_create", {"name": "B", "env": "prod"})["isError"]  # the user named one

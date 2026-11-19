@@ -493,9 +493,11 @@ inline; the card opens an overlay. Built in `specialists/show.py`. Expert bots h
   included. `launch.spec` carries the tool in `ask`, which `_claude_argv` writes as an ask rule, and the
   permission server never answers it from the chat's "Always approve" (`SPECIALIST_CANVAS_CREATE`). Once allowed
   it makes the Canvases page's three calls (create, clone, start the sync watcher, in that order, so the watcher
-  is up before the first file is written). `env` left out is the user's default Fused environment
-  (`fusedcli.workbench_env`: the Preferences choice, or the process's pin), and the specialist is told to name
-  one only when the user explicitly asked for it (`show.envs`). A name the user already has a canvas under is
+  is up before the first file is written). `env` is required, so the card the user answers shows the
+  environment beside the name: the tool's description, written per session (`show.mcp_tools`), names the user's
+  default Fused environment (`fusedcli.workbench_env`: the Preferences choice, or the process's pin) and tells
+  the specialist to give that one unless the user explicitly asked for another. A call without `env` (an older
+  client) still lands in the default (`show.envs`). A name the user already has a canvas under is
   refused, unless this specialist made that canvas: then its folder comes back. The canvases it made are in
   `.specialist/state.json` (`canvases`, the newest 200).
 - `show` says what the path is: a canvas folder (or its `canvas.toml`) directly under an environment's `user/`, or
