@@ -639,7 +639,8 @@ shown as a pair. Text from memory is rendered as text, never as HTML.
 
 Settings for an expert are General (name, "Ask me about", model, effort; no step cap, no approval setting, no
 "What it should do" box), Instructions, Permissions (only the folders it may read) and Skills (the files under `skills/`: list, edit, add,
-delete; no "learn from last task", since an expert never edits its skills). No Export button.
+delete; no "learn from last task", since an expert never edits its skills). The footer's "Export expert" opens
+the same export dialog as a bot's (§5), without the Approval row.
 
 **Instructions** (`dialogs/InstructionsSection.tsx`) is a section of its own in the dialog's rail: `instructions.md`
 as plain text in one editor that fills the section and scrolls inside itself, with the character count against
@@ -740,6 +741,5 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
 - No separate lessons, research step, ledger or token accounting beyond the harness's reported `cost_usd` per row.
 - Task-learn runs only for tasks that called `expert_context` or `expert_ask`; a task that never did teaches
   nothing.
-- Export of an expert is refused for now (§5).
 - Gemini and OpenCode tasks get no expert tools (§8).
 - Only Claude Code runs an expert (chat and side sessions).
