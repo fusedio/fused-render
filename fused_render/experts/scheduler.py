@@ -5,6 +5,9 @@ One daemon thread: `start()` arms it (idempotent), the first `tick` runs `start_
 every side session's harness process. A tick runs learn.py's pass; a dream (memory compaction) is queued by the
 sessions themselves (sessions.after_write).
 
+THE EXPERTS FLAG (docs/experts.md §17): while it is off a tick does nothing, so `read.json` keeps its cursors and
+the tasks used while it was on are read once it is on again.
+
 ONE PROCESS TICKS: two fused-render servers on one machine must not both read the same transcripts, so a tick
 runs only in the process that owns the bots (`bots.registry.owns()`) and holds the bots workspace claim
 (`registry.workspace_claimed()`, the same door `require_workspace` guards). A process without either skips that
@@ -59,6 +62,10 @@ def tick(stop: threading.Event | None = None) -> dict:
             return out
         if not _workspace():
             out["skipped"] = "another app holds the bots workspace"
+            return out
+        from fused_render import experts
+        if not experts.enabled():
+            out["skipped"] = "the Experts flag is off"  # docs/experts.md §17: read.json waits as it is
             return out
         out["ran"] = True
         from fused_render.experts import learn
