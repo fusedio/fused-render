@@ -109,6 +109,9 @@ describe("ringClick: a ring opens, it never closes, and no double-click pins (ow
     expect(ringClick({ mode: "temp", own: true })).toBe("keep");
     expect(ringClick({ mode: "temp", own: true, windowPinned: true })).toBe("keep");
     expect(ringClick({ mode: "pinned", own: true })).toBe("keep");
+    // task rings toggle a temp card closed; a pinned one stays
+    expect(ringClick({ mode: "temp", own: true, toggle: true })).toBe("close");
+    expect(ringClick({ mode: "pinned", own: true, toggle: true })).toBe("keep");
     expect(ringClick({ mode: "pinned", own: true, windowPinned: true })).toBe("keep");
   });
   test("it never closes and never unpins, whatever the state", () => {

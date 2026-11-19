@@ -433,42 +433,34 @@ describe("the task ring's card (window A), switch on", () => {
     expect(shownKey(r)).toBeNull();
   });
 
-  test("its own ring opens, never closes: a second click (or a detail-2 one) leaves a TEMP card up, temp; a pinned one up, pinned", async () => {
+  test("its own ring toggles a TEMP card closed (owner, 2026-11-19); a pinned one stays up, pinned", async () => {
     const r = await mount({ unified: true });
     await press(listRing(r, "a"));
+    expect(shownKey(r)).toBe("a");
     await press(listRing(r, "a"));
-    expect(shownKey(r)).toBe("a");
-    expect(peek(r)!.props.held).toBe(false);
-    await press(listRing(r, "a"), 2);
-    expect(shownKey(r)).toBe("a");
-    expect(peek(r)!.props.held).toBe(false);
+    expect(shownKey(r)).toBeNull();
     expect(aPinned()).toBeNull();
+    await press(listRing(r, "a"));
     await pinIcon(r);
     await press(listRing(r, "a"));
     await press(listRing(r, "a"), 2);
     expect(shownKey(r)).toBe("a");
     expect(peek(r)!.props.held).toBe(true);
     expect(aPinned()).toBe("task:" + chat("a").key);
-    // Unpinned: temp again, the mark gone; its ring still leaves it up, and
-    // only an outside press closes it.
+    // Unpinned: temp again, the mark gone; its ring now closes it.
     await pinIcon(r);
     expect(peek(r)!.props.held).toBe(false);
     expect(aPinned()).toBeNull();
     await press(listRing(r, "a"));
-    expect(shownKey(r)).toBe("a");
-    await pressAt(NOWHERE);
     expect(shownKey(r)).toBeNull();
   });
 
-  test("a double-click is two clicks (rows 7/8): it opens temp and pins nothing; a lone detail-2 click opens temp", async () => {
+  test("a double-click is two clicks: it opens temp, then closes it; a lone detail-2 click opens temp", async () => {
     const r = await mount({ unified: true });
     await press(listRing(r, "a"), 1);
     await press(listRing(r, "a"), 2);
-    expect(shownKey(r)).toBe("a");
-    expect(peek(r)!.props.held).toBe(false);
-    expect(aPinned()).toBeNull();
-    await pressAt(NOWHERE);
     expect(shownKey(r)).toBeNull();
+    expect(aPinned()).toBeNull();
     await press(listRing(r, "b"), 2);
     expect(shownKey(r)).toBe("b");
     expect(peek(r)!.props.held).toBe(false);
@@ -545,18 +537,19 @@ describe("the switch off: every rule as it was", () => {
 describe("the favourite's card (window B), switch on", () => {
   const starred = () => [chat("a"), chat("f", { starred: true })];
 
-  test("a click is temp; one press outside closes it; its own ring never closes nor pins it; the pin icon pins and outside presses are ignored", async () => {
+  test("a click is temp; one press outside closes it; its own ring toggles it closed; the pin icon pins and outside presses are ignored", async () => {
     const r = await mount({ unified: true, chats: starred() });
     await press(footRing(r, "f"));
     expect(favOpen()).toBe("f");
     expect(favPinned()).toBeNull();
     await pressAt(NOWHERE);
     expect(favOpen()).toBeNull();
-    // A double-click is two clicks: open, then nothing — temp.
+    // A double-click is two clicks: open, then close — temp.
     await press(footRing(r, "f"), 1);
     await press(footRing(r, "f"), 2);
-    expect(favOpen()).toBe("f");
+    expect(favOpen()).toBeNull();
     expect(favPinned()).toBeNull();
+    await press(footRing(r, "f"));
     // The pin icon (FavouritePeek `togglePin`: the window's pin mark).
     await act(async () => setFavPinned("f"));
     await pressAt(NOWHERE);
@@ -568,10 +561,11 @@ describe("the favourite's card (window B), switch on", () => {
     await press(footRing(r, "f"), 2);
     expect(favOpen()).toBe("f");
     expect(favPinned()).toBe("f");
-    // The pin icon again: temp; the ring still leaves it up.
+    // The pin icon again: temp; the ring closes it.
     await act(async () => setFavPinned(null));
     await press(footRing(r, "f"), 1);
-    expect(favOpen()).toBe("f");
+    expect(favOpen()).toBeNull();
+    await press(footRing(r, "f"));
     await pressAt(NOWHERE);
     expect(favOpen()).toBeNull();
     // Escape's one rule: with the focus nowhere it closes a temp card.

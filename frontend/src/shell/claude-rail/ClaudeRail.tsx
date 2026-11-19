@@ -2843,9 +2843,14 @@ export function ClaudeRail({
           mode: cardMode({ up: own, pinned: pinNow.current.pinned, held: heldRef.current }),
           own,
           windowPinned: windowAPinned(),
+          toggle: true,
         });
-        if (act === "keep") {
+        if (act === "keep" || act === "close") {
           hideHint();
+          if (act === "close") {
+            setHeld(false);
+            intent.dismiss();
+          }
           return;
         }
         setHeld(act === "pin");
@@ -3449,7 +3454,12 @@ export function ClaudeRail({
                           mode: favRing ? (favPinned() === t.key ? "pinned" : "temp") : "closed",
                           own: favRing,
                           windowPinned: windowBPinned(),
+                          toggle: true,
                         });
+                        if (act === "close") {
+                          clearFavOpen(t.key);
+                          return;
+                        }
                         if (act === "keep") return;
                         requestFavFocus(t.key);
                         openFavourite(t, href);

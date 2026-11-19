@@ -106,9 +106,13 @@ export function cardStep(mode: CardMode, event: CardEvent): CardMode {
  *              is the window's;
  *    - "open": anything else — the card opens (or a hover's card stays) as
  *              temp. */
-export type RingAct = "open" | "pin" | "keep";
+export type RingAct = "open" | "pin" | "keep" | "close";
 
-export function ringClick(o: { mode: CardMode; own: boolean; windowPinned?: boolean }): RingAct {
+/** `toggle` (task rings only — list and favourites; owner, 2026-11-19): the
+ *  ring of a TEMP card closes it ("close"). A pinned card is the window's, so
+ *  its ring still does nothing. */
+export function ringClick(o: { mode: CardMode; own: boolean; windowPinned?: boolean; toggle?: boolean }): RingAct {
+  if (o.own && o.toggle && o.mode === "temp") return "close";
   if (o.own && (o.mode === "temp" || o.mode === "pinned")) return "keep";
   return o.windowPinned ? "pin" : "open";
 }
