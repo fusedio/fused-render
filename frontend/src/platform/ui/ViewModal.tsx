@@ -1,9 +1,8 @@
-// The overlay a "show" card opens (docs/experts.md §17, docs/specialists.md §15): a canvas, or one node of a canvas
-// (a UDF, a widget, an HTML node, a note), drawn the way the explorer draws it when the same file is opened there:
-// a node through the `_node` native view (platform/ui/NativeView, the canvases app's NodeView: the hosted workbench
-// in a frame, cloned and synced as needed), a whole canvas as its workspace page in a chrome-free frame. Shared by
-// the Bots thread's card (apps/bots/components/ViewCard) and the task chat's (apps/claude/ui/ViewCard). Nothing is
-// mounted until a card opens it, and closing unmounts it (the frame stops).
+// The overlay a specialist's "show" card opens (docs/specialists.md §15): a canvas, or one node of a canvas (a UDF,
+// a widget, an HTML node, a note), drawn the way the explorer draws it when the same file is opened there: a node
+// through the `_node` native view (platform/ui/NativeView, the canvases app's NodeView: the hosted workbench in a
+// frame, cloned and synced as needed), a whole canvas as its workspace page in a chrome-free frame. Nothing is
+// mounted until the card (apps/claude/ui/ViewCard) opens it, and closing unmounts it (the frame stops).
 import { NODE_MODE } from "@platform/lib/mode-visibility";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";

@@ -478,8 +478,7 @@ The two kinds solve nearly the same problem and are kept apart on purpose, to co
 
 A specialist can build something and hand it back: a UDF that pulls a dataset, a widget that charts it, shown in
 its main chat as a card the user opens live, and changed when the user says so. The chat renders none of it
-inline; the card opens an overlay. Built in `specialists/show.py`, on the experts' two tools (`experts/show.py`
-`make_canvas` and `view`, docs/experts.md §17), so both kinds of bot make and classify a canvas the same way.
+inline; the card opens an overlay. Built in `specialists/show.py`. Expert bots have nothing like it.
 
 **When** (`show.on`, decided in `launch.spec`): the main chat only, while the Canvases preference is on and the
 `fused` CLI wrapper exists. A breakout and a learning run get neither the server nor the sentence about it.
@@ -524,7 +523,7 @@ nothing is written into a home.
   `canvas_create` reads "Made the canvas <name>".
 - The card is one row in the shape of the Bots thread's app card: an icon for the kind, the title, the
   specialist's note and "Widget · in <canvas> · <env>", and Open. Collapsed it mounts nothing of the work.
-- Open raises `platform/ui/ViewModal.tsx`, the overlay the experts' card also uses: a node through the `_node`
+- Open raises `platform/ui/ViewModal.tsx`: a node through the `_node`
   native view (the component the explorer mounts for that file: it clones, starts the sync, signs in and frames
   the hosted workbench as needed), a whole canvas as its page in a frame (`/canvases/<env>/<name>?embed=1`). The
   head has "Open canvas" and, for a node, "Open in explorer". Closing unmounts it.

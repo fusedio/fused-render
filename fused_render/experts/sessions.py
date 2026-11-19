@@ -85,7 +85,7 @@ def _spellings(path: str) -> list:
 _GLOB_CHARS = frozenset("*?[]{}")
 
 
-def _auto_settings(bot, show: bool = False) -> str:
+def _auto_settings(bot) -> str:
     """The `--settings` JSON of the attended chat (`fence(auto=True)`). `permissions.ask`: every Edit / Write asks,
     whatever auto mode would have allowed (it approves edits inside the working directory, which is the expert's
     own folder), so the call reaches the chat's permission tool, which lets memory.md and the scratch folder
@@ -93,13 +93,6 @@ def _auto_settings(bot, show: bool = False) -> str:
     Claude Code's own classifier (the only settings scope besides the user's and managed ones it reads this
     from): the `fused` CLI is trusted here, running a UDF is routine, what is irreversible is not."""
     d = store.expert_dir(bot)
-    made = []
-    if show:
-        from fused_render.experts import show as xshow
-        made = [f"Canvases this expert made for the user: creating, changing and deleting node files (.py, .json, "
-                f".html, .md) and canvas.toml directly in {', '.join(r['dir'] for r in rows)}, and `fused workbench "
-                "--env <env> canvas validate <folder>`. Routine: the expert made these folders to show its work."
-                for rows in [xshow.made(bot)[-20:]] if rows]
     return json.dumps({
         "permissions": {"ask": ["Edit(//**)"]},
         "autoMode": {
@@ -111,7 +104,7 @@ def _auto_settings(bot, show: bool = False) -> str:
                       "Running a UDF on Fused: any `fused workbench --env <env> run ...` command (a saved UDF, a "
                       ".py file, or source on standard input in a heredoc, whatever the source holds), and `fused "
                       "workbench` with `udf-schema`, `whoami` or `--help`. Routine: it runs remotely on Fused under "
-                      "the user's account and needs no approval.", *made],
+                      "the user's account and needs no approval."],
             "soft_deny": ["$defaults",
                           f"Expert Folder: creating, changing or deleting anything under {d} other than memory.md "
                           "and .fused/udfs/ (so instructions.md, skills/, bot.json, .fused/expert/) with a shell "
@@ -121,7 +114,7 @@ def _auto_settings(bot, show: bool = False) -> str:
                           "and the like)."]}})
 
 
-def fence(bot, write: bool, run: bool = False, auto: bool = False, s3: bool = False, show: bool = False) -> list:
+def fence(bot, write: bool, run: bool = False, auto: bool = False, s3: bool = False) -> list:
     """The harness flags that fence an expert's session. Reads inside the working directory (the expert's
     folder) are the harness's default; each granted folder gets a Read rule (a folder whose path has glob
     characters gets none); memory.md and memory-archive.md get an Edit rule (which covers Write) when `write`. `run` (a chat or
@@ -144,11 +137,7 @@ def fence(bot, write: bool, run: bool = False, auto: bool = False, s3: bool = Fa
 
     `s3` (a chat or an ask whose spawn also lists the S3 server, `s3_server`; the caller decides once and hands the
     same answer to both): allow rules for the two S3 tools, read-only like the task sessions' (which pre-allow
-    them), and a Read rule for fused-render's remote cache, where `s3_read` puts what it fetched.
-
-    `show` (the attended chat whose bot server lists the two tools of experts/show.py; the caller decides once):
-    allow rules for those tools, for the read-only `canvas validate`, and a Read rule for the workbench skills. The
-    files of a canvas the expert made get no rule here: every edit asks, and the chat answers by path."""
+    them), and a Read rule for fused-render's remote cache, where `s3_read` puts what it fetched."""
     rules = []
     envs = [env for env, _ in store.run_envs(bot)] if run else []
     edits = ([store.memory_path(bot), store.archive_path(bot)] if write else []) + ([store.udfs_dir(bot) + "/**"] if envs else [])
@@ -170,11 +159,8 @@ def fence(bot, write: bool, run: bool = False, auto: bool = False, s3: bool = Fa
     if envs:  # reading the flags is harmless, and an expert that may not will guess them or ask to be approved
         rules += ["Bash(fused workbench --help)", "Bash(fused workbench run --help)",
                   "Bash(fused workbench udf-schema --help)"]
-    if show:
-        from fused_render.experts import show as xshow
-        rules += xshow.rules(bot)
     out = ["--tools", "Read,Glob,Grep" + (",Edit,Write" if edits else "") + (",Bash" if envs else ""),
-           "--permission-mode", "auto" if auto else "default"] + (["--settings", _auto_settings(bot, show)] if auto else [])
+           "--permission-mode", "auto" if auto else "default"] + (["--settings", _auto_settings(bot)] if auto else [])
     return out + (["--allowedTools", *rules] if rules else [])
 
 

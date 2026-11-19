@@ -3,7 +3,6 @@
 // (the store shows it in the banner) and logs anything slower than SLOW_MS. The store installs those hooks
 // (apiHooks) at load, so this module imports nothing from it.
 import type { Specialist } from "@platform/lib/specialists";
-import type { ViewRef } from "@platform/ui/ViewModal";
 
 // ------------------------------------------------------------------ wire types (§2) ----
 /** `note`: a muted harness line in the thread ("Already ran …", "Still waiting for Approve / Deny on …"); not a bubble, not reactable. */
@@ -14,9 +13,6 @@ export type Effort = "low" | "medium" | "high" | "xhigh";
 
 export interface Offer { kind: "use" | "build"; name: string; dir: string; spec: string }
 export interface AppRef { name: string; dir: string; params?: Record<string, string> | string; tools?: unknown }
-/** What an expert's `show` tool put in the chat (docs/experts.md §17): a canvas, or one node file of a canvas. `path`
- *  is the node's file (or the canvas folder), `canvas` / `env` the canvas it belongs to. */
-export type { ViewRef };
 export interface ReplyRef { seq: number; role: Role; text: string }
 /** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it.
  *  `source` is set when a preset pre-approved it rather than a card. */
@@ -63,8 +59,6 @@ export interface BotEvent {
   risk_summary?: string;
   offer?: Offer;
   app?: AppRef;
-  /** An expert's `show`: the card under this line opens the canvas or node in an overlay (ViewCard). */
-  view?: ViewRef;
   reply?: ReplyRef;
   /** Where the message came from / which channel the bot's reply went to (docs §10). Absent = the web page. */
   via?: Via;

@@ -33,9 +33,8 @@ EMPTY_MEMORY = "## Works\n\n## Does not work\n"
 MEMORY_RULES = """## Your memory
 
 `memory.md` in your folder is your memory. Read it before you answer. It is the only file you write (but see the archive below): never
-edit `instructions.md` or anything under `skills/`, and never create other files (two exceptions: throwaway
-UDF files in `.fused/udfs/`, when a session lets you run UDFs, and the files of a canvas you made to show the
-user your work, when your chat gives you the tools for that).
+edit `instructions.md` or anything under `skills/`, and never create other files (the one exception: throwaway
+UDF files in `.fused/udfs/`, when a session lets you run UDFs).
 
 What is worth remembering: what worked, what failed and why, corrections from the user, and facts that are not
 in your skills. Not worth remembering: one-off details of a single task, and anything a skill already says.
@@ -127,8 +126,8 @@ def udfs_dir(bot) -> str:
 
 
 def free_write(bot, path, cwd: str = "") -> bool:
-    """`path` is one the expert's chat writes without an approval card: memory.md, a file inside the scratch
-    folder when the expert may run UDFs, or a file at the root of a canvas it made (`show.made_file`). Judged on real paths (a symlink out of the scratch folder is not in it),
+    """`path` is one the expert's chat writes without an approval card: memory.md, or a file inside the scratch
+    folder when the expert may run UDFs. Judged on real paths (a symlink out of the scratch folder is not in it),
     and the two places must themselves be where they belong: a memory.md or a scratch folder that is a symlink to
     somewhere outside the expert's folder is not written without a card."""
     if not isinstance(path, str) or not path:
@@ -138,30 +137,21 @@ def free_write(bot, path, cwd: str = "") -> bool:
     if real == os.path.join(home, MEMORY):  # not realpath(memory_path): that follows a memory.md linked elsewhere
         return True
     scratch = os.path.join(home, ".fused", "udfs")
-    if bool(run_envs(bot)) and os.path.realpath(udfs_dir(bot)) == scratch and real.startswith(scratch + os.sep):
-        return True
-    # A node file or canvas.toml of a canvas the expert made itself (experts/show.py, docs §17).
-    from fused_render.experts import show
-    return show.on(bot) and show.made_file(bot, real)
+    return bool(run_envs(bot)) and os.path.realpath(udfs_dir(bot)) == scratch and real.startswith(scratch + os.sep)
 
 
-def where(bot, run: bool = False, show: bool = False) -> str:
+def where(bot, run: bool = False) -> str:
     """The absolute paths a session's prompt states, so the harness never guesses where memory.md or a granted
     folder is. `run` (a chat or an ask, the sessions whose fence lets them run UDFs): also which Fused environment
     each folder of canvas copies belongs to and the command that runs a UDF there (`run_envs`), and the S3 tools
-    when it has them (`s3_on`). `show` (the attended chat only): the two tools that make a canvas and put a card
-    in the chat (`show.note`)."""
+    when it has them (`s3_on`)."""
     out = f"Your folder is {expert_dir(bot)}; your memory is {memory_path(bot)}."
     # The granted folders by their real paths: instructions and skills may name a default location (`~/Fused/canvas`)
     # that is somewhere else on a relocated workspace, and a read there is refused.
     folders = read_folders(bot)
     out += " You may also read: " + ", ".join(folders) + "." if folders else ""
     out += (" " + note if run and (note := run_note(bot)) else "")
-    out += " " + S3_NOTE if run and s3_on() else ""
-    if show:
-        from fused_render.experts import show as xshow
-        out += " " + note if (note := xshow.note(bot)) else ""
-    return out
+    return out + (" " + S3_NOTE if run and s3_on() else "")
 
 
 #: The task sessions' MCP server (claude_agent/permission_server.SERVER_NAME); an expert's chat and asks get it with
