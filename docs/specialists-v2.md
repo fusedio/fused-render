@@ -11,50 +11,65 @@ Review pages (private artifacts, owner's account):
 - Overview: the user's journey, then the engine: https://claude.ai/artifact/Cs3g9dyEWS3bh4Dnejwkcr
 - V1 walkthrough (screenshots and videos): https://claude.ai/artifact/VgCPvJnDveSZQcbeYBZJpo
 
-## Direction change, 2026-11-19: merge into Bots
+## Decision, 2026-11-19: a specialist is a kind of bot, with its own engine
 
-The owner leans towards putting specialists on the Bots page rather than a
-separate page, because having both Bots and Specialists in the sidebar is
-confusing. Not yet final; three questions are open (below).
+- Specialists live on the **Bots page** as a separate kind of bot called
+  **Specialist** (badge SPECIALIST), next to Super Bot and Expert bots. There
+  is no Specialists page and no sidebar entry. Reason: having both Bots and
+  Specialists in the sidebar was confusing.
+- The specialist **keeps its own engine**, as planned in this file (folder as
+  a Claude Code project, task chat engine, three task tools, inbox, daily or
+  manual update, one commit per update). It is **not** folded into the Expert
+  kind. Reasons given by the owner: the engine is different and should stay
+  so; Expert and Specialist solve nearly the same problem and the owner wants
+  to compare the two approaches.
+- Expert bots (`docs/experts.md`, `fused_render/experts/`) are left as they
+  are.
 
-Finding that drives this: the Bots page already has **Expert bots**
-(`docs/experts.md`, `fused_render/experts/`, about 1,900 lines). An expert
-already is a chat that remembers one subject: `memory.md`, skills, three task
-tools (`expert_list`, `expert_context`, `expert_ask`), learning from the tasks
-that used it a few minutes after they call it, memory compaction, a Memory
-pane with Edit and a Changes list with a diff per session.
+What this changes in the plan below: only where the specialist appears.
+"Specialists page" now means its row and chat on the Bots page. The Memory
+pane, creation, task side, breakout and update are as written.
 
-Proposed shape of the merge: do not add a third kind. Extend the Expert kind
-with what it lacks, behind the experimental switch:
+Consequences to design for:
 
-1. Breakout "With" an expert, beside a task (the plain breakout card pointed
-   at the expert's folder, instructions and memory).
-2. A note tool, so any task, or the user through a task, can tell an expert
-   something even if the task never consulted it.
-3. Automatic help in a folder the expert is assigned to.
-4. Messaging an owner through connected services, with approval, from the
-   expert's attended chat or breakout. Do this last.
+- **Two chat engines on one page.** A specialist's chat is the task chat
+  (tool rows, approval cards, model pill), not the Bots bubbles. This is the
+  one place the different engine shows; accepted.
+- **The list merges two sources.** Preferred: the Bots list also lists
+  specialists from the specialists API and renders them as rows (face, name,
+  badge, last message, time, new dot), rather than registering specialists in
+  the bots backend. To be confirmed against the Bots code before building.
+  Shared row actions (pin, hide, mark as read, search) must work or be left
+  out for specialist rows on purpose.
+- **Create:** the Bots + flow gains a Specialist choice (name, what it is an
+  expert on, optional folder).
+- **Badge:** neutral fill (`--row-bg-selected`), so no new colour.
+- **Tasks see both tool sets** (`expert_*` and the specialist tools) when
+  both kinds exist. On one project, run one of the two at a time, or a task
+  is handed guidance from both.
+- **Switch off:** no specialist rows, no Specialist choice under +, no
+  tools, no "With" choice.
 
-Consequences for the rest of this file:
+Comparing Expert and Specialist (the owner's stated goal):
 
-- "Specialists page", "Memory pane" and "Creating one" are already built as
-  the Bots page, the expert's pane and its Settings. Nothing to build there.
-- The inbox plus nightly update would not be built. The expert's existing
-  after-task learning stays, and notes and breakout conversations feed it.
-- The update trace is the existing Changes list (one row per session that
-  changed memory, with its diff), not git commits. A chat message per update
-  is probably not wanted when learning happens several times a day.
-- Memory keeps the expert format: one fact per line with a count and a date,
-  under "Works" and "Does not work".
-- Most of the v1 specialists code on this branch is not carried over. Worth
-  porting: launching a breakout session into a specialist folder, the note
-  tool, the folder hook.
-- The earlier instruction "do not touch other systems" no longer holds: this
-  changes Bots and experts code. New abilities stay behind the switch.
+| | Expert | Specialist |
+|---|---|---|
+| On disk | Bot folder: instructions, one memory file, skill files | Claude Code project: description, memory, skills, inbox, git history |
+| Own chat | Bots chat engine, fixed write limits | Task chat engine, usual permission modes |
+| How a task uses it | Reads its memory, or asks one question | Gets guidance (automatic in its folder), or opens a breakout |
+| User in the loop | No | Yes, in the breakout card |
+| Learning from tasks | Reads a task minutes after it consulted | Notes; the update reads notes, tasks, breakouts |
+| Takes effect | Minutes later | Next update (daily, or Update now) |
+| Task that never consulted it | Teaches nothing | Can send a note |
+| Memory format | Fact per line with count and date | Plain sentences |
+| Trace | Changes: row per session with diff | Changes: row per commit with diff, plus a chat message per update |
+| Undo | Edit the memory file | Reply in chat, or edit the file |
+| Messaging people | No | Connected services, with approval |
 
-Open questions put to the owner: the name (Expert or Specialist); whether to
-keep the expert's after-task learning in place of the inbox and nightly
-update; whether an update should still post a chat message.
+What to watch: whether tasks follow the rules more often; how soon a taught
+rule shows up in the next task; how clean memory is after a week; effort to
+fix a wrong entry; model runs spent. A fair test gives both the same subject
+and project (the shipped Canvas expert and a Canvas specialist).
 
 ## What is decided and what is not
 
@@ -70,9 +85,8 @@ Decided by the owner:
 
 Proposed and awaiting the owner's go-ahead: everything else in this file.
 
-Still open: whether Specialists stays a separate page or becomes a kind of bot
-in the Bots list. Working assumption: separate page while experimental, as
-originally instructed; nothing in Bots is touched.
+Settled since: specialists are a kind of bot on the Bots page with their own
+engine (see the decision above). Nothing is open at design level.
 
 ## Rules for the rebuild
 
@@ -89,16 +103,17 @@ originally instructed; nothing in Bots is touched.
 
 ## The three ideas
 
-1. A specialist is a chat that remembers. Its page copies the Bots layout.
+1. A specialist is a chat that remembers. It is a kind of bot on the Bots page.
 2. Tasks use it by themselves. The user sees an ordinary tool row.
 3. Breakout puts it beside the task, through the existing breakout flow.
 
 ## Screens
 
-### Specialists page
+### A specialist on the Bots page
 
-- Layout as Bots: list (face, name, last message, time, a dot when there is
-  something new), chat, and a right pane that is closed until opened.
+- A row in the Bots list: face, name, SPECIALIST badge, last message, time, a
+  dot when there is something new. Selecting it shows its chat and a right
+  pane that is closed until opened.
 - Header: Clear, and the pane toggle. Clear folds the earlier chat into one
   line with Show, as approved earlier.
 - No side panel. No settings dialog with tabs.
