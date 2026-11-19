@@ -72,6 +72,16 @@ the specialist what to remove, or editing memory. Because the run no longer has 
 chat being written to the inbox (above) is what carries those conversations to it. In the UI the run is called
 learning ("Learn now", "Learned"), not an update and not a dream: Expert bots use "dream" for a different job.
 
+## Decision, 2026-11-19: the inbox points at transcripts instead of copying them
+
+The owner does not want conversations copied into the inbox. A note is still a file with its text. A conversation
+(a task that used the specialist, a breakout, the main chat) is a small inbox file holding its title, the path of
+that session's Claude Code transcript and the line to start from. The learning run is given read access to exactly
+those transcripts and searches them itself. This removes the copying code and lets the run see what was done, not
+only what was said. The accepted cost: raw transcripts are large and noisy, so a run may take more model work on a
+long task than a prepared excerpt did; this is to be measured in the comparison with Expert bots, which do use
+prepared excerpts.
+
 ## Cut list
 
 Removed from version 1: the side panel; the Learned tab; the general inbox and "Send to a specialist"; the People
