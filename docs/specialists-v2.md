@@ -82,6 +82,15 @@ only what was said. The accepted cost: raw transcripts are large and noisy, so a
 long task than a prepared excerpt did; this is to be measured in the comparison with Expert bots, which do use
 prepared excerpts.
 
+## Decision, 2026-11-19: archive instead of delete
+
+Nothing the specialist learned from is hard-deleted. After a learning run, the entries it was given are moved from
+`inbox/` to `inbox-archive/` in its folder. When a memory line is removed or replaced, the old line goes into
+`memory-archive.md`. Both are plain files kept for reference: not shown in the UI, not loaded into the
+specialist's context, and not enforced by the app. The memory archive is kept by instruction only (the learning
+run's prompt and the specialist's description say to do it). An entry the user deletes from Waiting is really
+deleted, since it was never learned from.
+
 ## Cut list
 
 Removed from version 1: the side panel; the Learned tab; the general inbox and "Send to a specialist"; the People
