@@ -150,6 +150,11 @@ def test_a_breakout_always_raises_its_card(approve, tmp_path):
     assert approve("mcp__specialist_services__notion_search")["behavior"] == "allow"
 
 
+def test_a_new_canvas_always_raises_its_card(approve):
+    assert approve("mcp__specialist_canvas__canvas_create")["message"] == "parked"
+    assert approve("mcp__specialist_canvas__show")["behavior"] == "allow"
+
+
 def test_an_update_refuses_at_once_and_parks_nothing(approve, monkeypatch, tmp_path):
     monkeypatch.setenv("FUSED_SPECIALIST_UNATTENDED", "1")
     out = approve("Bash")

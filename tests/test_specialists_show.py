@@ -55,12 +55,15 @@ def test_only_the_main_chat_gets_the_canvas_server(base, monkeypatch):
     assert set(main["mcp_servers"]) == {"specialist_services", show.SERVER}
     assert main["mcp_servers"][show.SERVER]["args"][4:] == [f"api/specialists/{s.id}/{show.SERVER}", show.SERVER]
     assert "mcp__specialist_canvas__show" in main["append"] and show.SKILL in main["append"]
+    assert main["ask"] == ["mcp__specialist_canvas__canvas_create"]  # each new canvas is the user's to approve
     for kind in ("breakout", "update"):
         sp = launch.spec(f"{s.id}:{kind}", s.home)
         assert set(sp["mcp_servers"]) == {"specialist_services"} and "canvas" not in sp["append"]
+        assert "ask" not in sp
     monkeypatch.setattr(prefs, "canvases_enabled", lambda: False)
     off = launch.spec(f"{s.id}:main", s.home)
     assert set(off["mcp_servers"]) == {"specialist_services"} and off["append"] == launch.APPEND["main"]
+    assert "ask" not in off
     assert _text(show.call(s, "show", {"path": "/x"})).startswith("error: canvases are not available")
 
 
@@ -102,7 +105,6 @@ def test_what_is_refused(base, tmp_path):
     taken = show.call(s, "canvas_create", {"name": "Theirs"})  # the user's own canvas: never taken over
     assert taken["isError"] and "already has a canvas" in _text(taken) and calls == []
     assert show.call(s, "canvas_create", {"name": "bad name"})["isError"]
-    assert show.call(s, "canvas_create", {"name": "A", "env": "staging"})["isError"]
     loose = tmp_path / "loose.py"
     loose.write_text("x = 1\n")
     for path in (str(loose), str(tmp_path / "missing.py"), str(tmp_path), ""):
@@ -111,15 +113,18 @@ def test_what_is_refused(base, tmp_path):
     assert show.call(s, "nope", {})["isError"]
 
 
-def test_the_environment_left_out(base):
+def test_the_environment_is_the_user_s_default_unless_named(base, monkeypatch):
+    from fused_render import fusedcli
     base, calls = base
-    assert show.envs() == (["prod", "unstable"], "prod")  # the one the user has copies of
-    (base / "unstable").mkdir()
-    assert show.envs()[1] == ""  # two: the specialist must say which
     s = make_specialist()
-    res = show.call(s, "canvas_create", {"name": "A"})
-    assert res["isError"] and "give `env`" in _text(res)
-    assert not show.call(s, "canvas_create", {"name": "A", "env": "unstable"})["isError"]
+    monkeypatch.setattr(fusedcli, "workbench_env", lambda: "unstable")  # the Preferences choice
+    assert show.envs()[1] == "unstable"
+    assert not show.call(s, "canvas_create", {"name": "A"})["isError"]
+    assert calls[0] == ("create", "unstable", "A")
+    assert not show.call(s, "canvas_create", {"name": "B", "env": "prod"})["isError"]  # the user named one
+    assert ("create", "prod", "B") in calls
+    res = show.call(s, "canvas_create", {"name": "C", "env": "staging"})
+    assert res["isError"] and "one of" in _text(res)
 
 
 def test_the_session_door_serves_the_canvas_server(client, base):

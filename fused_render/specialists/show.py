@@ -3,7 +3,8 @@ a widget, an HTML node, a note), as a card the user opens live.
 
 The main chat, and only it, gets one more session MCP server, `specialist_canvas`, with two tools:
 
-    canvas_create   name, env?    a new canvas on the user's Fused account and its folder here; returns the folder
+    canvas_create   name, env?    a new canvas on the user's Fused account and its folder here; returns the folder.
+                                  Gated: the user approves each one.
     show            path, note?   a card in the chat for a canvas or one node of one
 
 Both are the experts' tools (`experts/show.py`: `make_canvas`, `view`), so the two kinds of bot make and classify
@@ -28,6 +29,9 @@ SHOW = "show"
 #: The line a successful `show` ends with: `CARD {"kind", "path", "title", "canvas", "env", "note"}`.
 CARD = "[fused-card] "
 SKILL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "showing-your-work.md")
+#: `canvas_create` asks the user every time, in every permission mode (`launch.spec`'s `ask`; the permission
+#: server never answers it from the chat's "Always approve", `permission_server.SPECIALIST_CANVAS_CREATE`).
+ASK = [f"mcp__{SERVER}__{CREATE}"]
 MADE_MAX = 200
 NOTE_MAX = 200
 
@@ -37,11 +41,12 @@ TOOLS = {
             "Make a new, empty Fused canvas of the user's and its editable folder on this machine, for work you want "
             "to show them (UDFs, widgets). Returns the folder. You then write the node files into that folder "
             "yourself with Write / Edit, and their rows in its canvas.toml. Only when the user asked you to build "
-            "or show something; never for a throwaway run."),
+            "or show something; never for a throwaway run. The user is asked to approve each new canvas."),
         "inputSchema": {"type": "object", "required": ["name"], "properties": {
             "name": {"type": "string", "description": "The canvas name: letters, digits and underscores only."},
-            "env": {"type": "string", "description": "The Fused environment (`prod` or `unstable`). Leave it out "
-                                                       "unless the user named one."}}},
+            "env": {"type": "string", "description": "The Fused environment. Leave it out: the canvas is then made "
+                                                       "in the user's default environment. Give it only when the "
+                                                       "user explicitly asked for a certain environment."}}},
     },
     SHOW: {
         "description": (
@@ -69,16 +74,12 @@ def on() -> bool:
 
 
 def envs() -> tuple[list, str]:
-    """`(the environments a canvas may be made in, the one used when `env` is left out)`. The default is the one
-    environment the user has canvas copies of, else `prod`."""
-    from fused_render import canvases
-    from fused_render.experts import store as xstore
-    try:
-        base = canvases.canvases_base()
-        have = [e for e in xstore.RUN_ENVS if os.path.isdir(os.path.join(base, e))]
-    except Exception:  # noqa: BLE001
-        have = []
-    return list(xstore.RUN_ENVS), (have[0] if len(have) == 1 else "" if have else "prod")
+    """`(the environments a canvas may be made in, the one used when `env` is left out)`: the default is the
+    user's default Fused environment (`fusedcli.workbench_env`: the Preferences choice, or the process's pin),
+    read at call time."""
+    from fused_render import fusedcli
+    default = fusedcli.workbench_env()
+    return sorted({*fusedcli.WORKBENCH_ENV_CHOICES, default}), default
 
 
 def note() -> str:

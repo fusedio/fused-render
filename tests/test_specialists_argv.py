@@ -94,6 +94,14 @@ def test_a_spec_folds_servers_and_prompt(agent, rd):
     assert _after(argv, "--permission-mode") == "auto"  # the user's pill
 
 
+def test_a_spec_s_gated_tools_ask_in_every_mode(agent, rd):
+    gated = "mcp__specialist_canvas__canvas_create"
+    (rd / "specialist.json").write_text(json.dumps(dict(SPEC, ask=[gated])))
+    for mode in ("auto", "acceptEdits", None):
+        argv = _argv(agent, rd, file="/w/specialists/canvas", cli_mode=mode)
+        assert _settings(argv)["permissions"]["ask"] == [gated]
+
+
 def test_an_update_spec_carries_the_unattended_env(agent, rd):
     spec = dict(SPEC, kind="update", append="", policy_env={"FUSED_SPECIALIST_UNATTENDED": "1"})
     (rd / "specialist.json").write_text(json.dumps(spec))

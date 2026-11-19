@@ -5198,6 +5198,11 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     if denies:
         deny = settings.setdefault("permissions", {}).setdefault("deny", [])
         deny += [rule for rule in denies if rule not in deny]
+    if spec and spec.get("ask"):
+        # A specialist's gated tools (canvas_create) show the user's card in
+        # every mode, Auto included.
+        ask = settings.setdefault("permissions", {}).setdefault("ask", [])
+        ask += [rule for rule in spec["ask"] if isinstance(rule, str) and rule not in ask]
     if task:
         # The breakout tool always shows the user's card, in every mode.
         settings.setdefault("permissions", {}).setdefault("ask", []).append(

@@ -105,7 +105,8 @@ the start when it answers an error (`bad_key`, `no_specialist`, `wrong_folder`: 
 A breakout start passes the plain breakout's checks first, then runs as an ordinary session: not research-only, not
 pinned to Ask mode.
 
-Specialist agents run free (the owner's decision): nothing in the spec limits what a session may do. A main chat or
+Specialist agents run free (the owner's decision): nothing in the spec limits what a session may do, except that
+a new canvas asks (§15). A main chat or
 breakout with nothing recorded opens in Auto, the freest mode the pill offers (`ChatMount permission`, a default the
 user can change); the CLI's own classifier then decides, and what it refuses reaches the model as a refusal, never a
 card. A learning run always runs in Auto: the task engine offers no mode without any check (`bypassPermissions` is
@@ -459,7 +460,7 @@ The two kinds solve nearly the same problem and are kept apart on purpose, to co
 ## 14. Deliberately not there
 
 - No undo link, no "Reverted" mark, no tracing a memory line to its note. The Learned list is the git log.
-- No limits on a specialist's sessions, by the owner's decision: no allow or deny rules, no ask rule for sends, no
+- No limits on a specialist's sessions, by the owner's decision: no allow or deny rules, no ask rule for sends (the one ask rule is a new canvas, §15), no
   read-only folders. The main chat and breakouts start in Auto; the learning run always runs in Auto, unattended.
   It acts on what it reads in transcripts, which is other programs' output, and it can use the connected services
   (send a message, create a page) without anyone approving; the only check is the CLI's own Auto classifier.
@@ -489,21 +490,24 @@ inline; the card opens an overlay. Built in `specialists/show.py`, on the expert
     canvas_create   name, env?    a new canvas on the user's Fused account and its live clone here; returns the folder
     show            path, note?   a card in the chat for a canvas or one node of one
 
-- `canvas_create` makes the Canvases page's three calls (create, clone, start the sync watcher, in that order, so
-  the watcher is up before the first file is written). `env` is `prod` or `unstable`; left out, it is the one
-  environment the user has canvas copies of, `prod` when they have none, and an error naming both when they have
-  both (`show.envs`). A name the user already has a canvas under is refused, unless this specialist made that
-  canvas: then its folder comes back. The canvases it made are in `.specialist/state.json` (`canvases`, the newest
-  200).
+- `canvas_create` is gated: the user approves each new canvas on the ordinary card, in every permission mode, Auto
+  included. `launch.spec` carries the tool in `ask`, which `_claude_argv` writes as an ask rule, and the
+  permission server never answers it from the chat's "Always approve" (`SPECIALIST_CANVAS_CREATE`). Once allowed
+  it makes the Canvases page's three calls (create, clone, start the sync watcher, in that order, so the watcher
+  is up before the first file is written). `env` left out is the user's default Fused environment
+  (`fusedcli.workbench_env`: the Preferences choice, or the process's pin), and the specialist is told to name
+  one only when the user explicitly asked for it (`show.envs`). A name the user already has a canvas under is
+  refused, unless this specialist made that canvas: then its folder comes back. The canvases it made are in
+  `.specialist/state.json` (`canvases`, the newest 200).
 - `show` says what the path is: a canvas folder (or its `canvas.toml`) directly under an environment's `user/`, or
   a node file at the root of one with a row in its `canvas.toml` (`canvases.canvas_node_file`). Anything else is
   an error telling the specialist what a node is. On success the answer ends with one line, `[fused-card] {kind,
   path, title, canvas, env, note}` (`show.CARD`), which is how the card reaches the page.
 - The specialist writes every node file itself with Write / Edit. Nothing here reads, lays out or checks them.
 
-**No extra rules.** Both tools, and the writes into the canvas folder, go through the session's permission mode
-like everything else a specialist does (§3): in Auto the CLI's classifier decides, on Ask each raises the
-ordinary card. The canvas folder publishes itself (the canvas sync), so what the specialist writes there reaches
+**One rule.** A new canvas asks, as above. `show`, and the writes into the canvas folder, go through the
+session's permission mode like everything else a specialist does (§3): in Auto the CLI's classifier decides, on
+Ask each raises the ordinary card. The canvas folder publishes itself (the canvas sync), so what the specialist writes there reaches
 the user's Fused account.
 
 **What it is told.** `launch.spec` adds to the main chat's `append` the two tool names and the path of
@@ -527,6 +531,7 @@ nothing is written into a home.
 - A change is the same chat: the specialist edits the same files, and the open view follows them through the sync.
 
 **Not verified here.** This was built without a Fused sign-in and without a real `claude`: that the CLI lists the
-server's two tools in a main chat, that Auto lets them and the canvas writes through without a card, that a fresh
+server's two tools in a main chat, that the ask rule raises the card for `canvas_create` in Auto, that Auto lets
+`show` and the canvas writes through without one, that a fresh
 clone's watcher publishes the specialist's first files, and that an open overlay follows an edit. The tools, the
 launch spec, the session door, the card and its fold are covered by tests with those two ends stubbed.

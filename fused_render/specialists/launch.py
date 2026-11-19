@@ -8,8 +8,11 @@ the answer to the run dir, and `_claude_argv` folds it into the CLI's argv:
     append      one sentence saying which kind of session this is
     policy_env  for the update, FUSED_SPECIALIST_UNATTENDED: the permission server denies at once anything that
                 would raise a card, since nobody is there to answer it
+    ask         a main chat with the canvas tools only: the tools that raise the approval card in every mode
+                (`canvas_create`, show.py)
 
-Nothing in it limits the session: the specialist runs free under its permission mode (the owner's decision). While a
+Apart from `ask`, nothing in it limits the session: the specialist runs free under its permission mode (the
+owner's decision). While a
 learning run goes, a main chat or breakout cannot start in the home. Anything wrong answers
 `{"error": sentence, "reason": code}` and the start is refused.
 """
@@ -97,4 +100,5 @@ def spec(key: str, file: str) -> dict:
     canvas = kind == "main" and show.on()  # the main chat only: a breakout and a learning run show nothing
     return {"kind": kind, "mcp_servers": session_servers(s, canvas),
             "append": APPEND[kind] + (" " + show.note() if canvas else ""),
-            "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if run else {}}
+            "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if run else {},
+            **({"ask": show.ASK} if canvas else {})}
