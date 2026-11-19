@@ -1734,13 +1734,37 @@ EXPERT_CARD_WHY = "It is outside what this expert may do without asking."
 def _expert_show(bot, sess: Turn, name: str, args: dict) -> dict:
     """An expert's two own tools (experts/show.py, docs/experts.md §17). `canvas_create` is one `action` row, as a
     built-in call is; `show` is the row that carries the card (`view`), under the expert's one line. Neither is
-    the model's text: what the tool returns goes back to the model, the row is for the user."""
+    the model's text: what the tool returns goes back to the model, the row is for the user.
+    A `canvas_create` that would make a canvas on Fused first raises the approval card (`_gate`, as
+    `_permission_card` does for an expert: no "approve forever", no risk score); Deny creates nothing and is not
+    asked again until the user speaks. `show` never asks."""
     sess.steps += 1
     bot.set_status("running", step=sess.steps, step_cap=sess.max_steps)
     if name == xshow.CREATE:
+        notes: list = []
+        preview = _canvas_create_preview(bot, args)
+        if preview is not None:  # it would make a canvas on the user's Fused account: theirs to approve
+            # Messages typed before the card are instructions riding on this result, never the card's answer
+            # (as _handle_core does for every other tool before _act's card).
+            for m in bot._drain_inbox():
+                _instruction(sess, notes, m)
+            if preview in sess.denied:
+                bot.emit("note", f"Not asking again: the user already declined to {preview}.")
+                return _result(f"DENIED EARLIER by the user: {preview}. Nothing was created and the user was not asked "
+                               "again. Do not retry it; do something else or finish and say what you could not do.",
+                               notes, error=True)
+            verdict, said = _gate(bot, sess, preview, CANVAS_CREATE_WHY, notes, rule=None, tool=None)
+            if verdict is None:
+                return _stopped(notes)
+            if not verdict:
+                bot.emit("system", "Denied; the expert will try something else.")
+                sess.denied.add(preview)
+                why_not = f' They said: "{said}".' if said and said.lower() not in ("deny", "no", "n") else ""
+                return _result(f"DENIED by the user: {preview}.{why_not} Nothing was created. Do not retry it; do "
+                               "something else or finish and say what you could not do.", notes, error=True)
         label, text, ok = xshow.canvas_create(bot, args)
         bot.emit("action", label, result=tools.ui_summary(name, text), detail=text)
-        return _result(text, error=not ok)
+        return _result(text, notes, error=not ok)
     label, text, view = xshow.show(bot, args)
     if view is None:
         bot.emit("action", label, result=tools.ui_summary(name, text), detail=text)
@@ -1748,6 +1772,33 @@ def _expert_show(bot, sess: Turn, name: str, args: dict) -> dict:
     line = xstore.line(args.get("note"), 200) or f"Here's {view['title']}:"
     bot.emit("thought", line, view=view)
     return _result(text)
+
+
+CANVAS_CREATE_WHY = "It makes a new canvas on your Fused account."
+
+
+def _canvas_create_preview(bot, args: dict) -> str | None:
+    """The approval card's preview for a `canvas_create` that would make a canvas on Fused; None when the call
+    creates nothing there, so it runs without a card: a refusal `xshow.canvas_create` gives before any call to
+    Fused (a bad name, no such environment, a folder of the user's under that name), or the expert's own canvas
+    whose folder is already there (its folder comes back). Mirrors those checks in show.py; anything unexpected
+    here asks (the card), never the other way round."""
+    try:
+        name = str(args.get("name") or "").strip()
+        if not xshow._NAME_RE.fullmatch(name):
+            return None
+        envs = [env for env, _ in xstore.run_envs(bot)]
+        env = str(args.get("env") or "").strip() or (envs[0] if len(envs) == 1 else "")
+        if env not in envs:
+            return None
+        from fused_render import canvases
+        folder = canvases._canvas_dir(env, name)
+        mine = any((r["env"], r["name"]) == (env, name) for r in xshow.made(bot))
+        if os.path.isdir(folder) and (not mine or os.path.isfile(os.path.join(folder, "canvas.toml"))):
+            return None
+        return f"create the canvas {name} on Fused ({env})"
+    except Exception:  # noqa: BLE001
+        return f"create the canvas {str(args.get('name') or '?').strip()} on Fused"
 
 
 def _expert_permission(bot, sess: Turn, args: dict, name: str, inp: dict):

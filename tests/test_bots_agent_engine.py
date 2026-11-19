@@ -1431,14 +1431,17 @@ def test_expert_shows_its_work_as_a_card(server, fake_cli, monkeypatch, tmp_path
     from fused_render.experts import show as xshow
     bot = expert_bot(tmp_path)
     view = {"kind": "widget", "path": "/c/prod/user/Mine/chart.json", "title": "Sales", "canvas": "Mine", "env": "prod"}
-    monkeypatch.setattr(xshow, "on", lambda b: True)
-    monkeypatch.setattr(xshow, "canvas_create", lambda b, args: (f"create canvas {args['name']}", "The canvas Mine (prod) is ready.", True))
+    _canvas_stubs(monkeypatch, tmp_path)
     monkeypatch.setattr(xshow, "show", lambda b, args: (("show chart.json", "The card is in the chat.", view) if args["path"].endswith(".json")
                                                          else ("show x", "error: no such file: x", None)))
-    run_task(bot, [{"tool": "canvas_create", "args": {"name": "Mine"}},
-                   {"tool": "show", "args": {"path": "/c/prod/user/Mine/chart.json", "note": "Sales by month:"}},
-                   {"tool": "show", "args": {"path": "x"}}, {"tool": "goto", "args": {"url": "https://shop.test/"}},
-                   {"result": "ok"}], monkeypatch)
+    t = start(bot, [{"tool": "canvas_create", "args": {"name": "Mine"}},
+                    {"tool": "show", "args": {"path": "/c/prod/user/Mine/chart.json", "note": "Sales by month:"}},
+                    {"tool": "show", "args": {"path": "x"}}, {"tool": "goto", "args": {"url": "https://shop.test/"}},
+                    {"result": "ok"}], monkeypatch)
+    assert bot.wait_event("approval")  # making a canvas on Fused asks first; `show` never does
+    bot.say("yes")
+    finish(t)
+    assert bot.roles().count("approval") == 1
     argv = fake_cli("argv")[0]["argv"]
     assert fake_cli("tools")[0]["tools"] == ["permission", "canvas_create", "show"]
     assert "mcp__bot__canvas_create" in argv and "mcp__bot__show" in argv and "mcp__bot__*" not in argv
@@ -1451,6 +1454,92 @@ def test_expert_shows_its_work_as_a_card(server, fake_cli, monkeypatch, tmp_path
     assert [(e["role"], e["text"], e["view"]) for e in cards] == [("thought", "Sales by month:", view)]
     acts = [(e["text"], e["result"]) for e in bot.events if e["role"] == "action"]
     assert acts == [("create canvas Mine", "The canvas Mine (prod) is ready."), ("show x", "error: no such file: x")]
+
+
+def _canvas_stubs(monkeypatch, tmp_path, envs=("prod",)):
+    """Canvases on for an expert, with `canvas_create`'s calls to Fused stubbed: the list it returns records what
+    was created."""
+    from fused_render import canvases
+    from fused_render.experts import show as xshow
+    from fused_render.experts import store as xstore
+    created = []
+    monkeypatch.setattr(xshow, "on", lambda b: True)
+    monkeypatch.setattr(xstore, "run_envs", lambda b: [(e, str(tmp_path / "clones" / e)) for e in envs])
+    monkeypatch.setattr(canvases, "_canvas_dir", lambda env, name: str(tmp_path / "clones" / env / name))
+
+    def create(b, args):
+        created.append(dict(args))
+        return f"create canvas {args['name']}", f"The canvas {args['name']} (prod) is ready.", True
+    monkeypatch.setattr(xshow, "canvas_create", create)
+    return created
+
+
+def test_expert_canvas_create_asks_first(server, fake_cli, monkeypatch, tmp_path):
+    """Owner, 2026-11-19: "Create canvas should be inside approval card". Approve makes it (one action row); words
+    typed while the card is up ride on the tool's result."""
+    bot = expert_bot(tmp_path)
+    created = _canvas_stubs(monkeypatch, tmp_path)
+    t = start(bot, [{"tool": "canvas_create", "args": {"name": "Parcels_overview"}}, {"result": "ok"}], monkeypatch)
+    card = bot.wait_event("approval")
+    assert card["text"] == "About to create the canvas Parcels_overview on Fused (prod). It makes a new canvas on your Fused account. Approve?"
+    assert card["detail"] == "create the canvas Parcels_overview on Fused (prod)"
+    assert "forever" not in card and "severity" not in card
+    assert created == []  # nothing before the answer
+    bot.say("make it dark themed")
+    assert bot.wait_event("note", pred=lambda ev: ev["text"].startswith("Noted; still waiting"))
+    bot.say("yes")
+    finish(t)
+    assert created == [{"name": "Parcels_overview"}]
+    res = fake_cli("call")[0]["result"]
+    assert "is ready" in res and "USER INSTRUCTION (mid-task, overrides the task): make it dark themed" in res
+    assert [e["text"] for e in bot.events if e["role"] == "action"] == ["create canvas Parcels_overview"]
+
+
+def test_expert_canvas_create_denied_is_not_asked_twice(server, fake_cli, monkeypatch, tmp_path):
+    bot = expert_bot(tmp_path)
+    created = _canvas_stubs(monkeypatch, tmp_path)
+    call = {"tool": "canvas_create", "args": {"name": "Mine"}}
+    t = start(bot, [call, call, {"result": "ok"}], monkeypatch)
+    assert bot.wait_event("approval")
+    bot.say("no, not now")
+    finish(t)
+    assert created == [] and bot.roles().count("approval") == 1 and "action" not in bot.roles()
+    calls = fake_cli("call")
+    assert "DENIED by the user: create the canvas Mine on Fused (prod)" in calls[0]["result"]
+    assert 'They said: "no, not now"' in calls[0]["result"] and "Do not retry it" in calls[0]["result"]
+    assert "DENIED EARLIER by the user" in calls[1]["result"]
+    assert any(e["text"] == "Denied; the expert will try something else." for e in bot.events)
+
+
+def test_expert_canvas_create_without_a_card_when_it_makes_nothing(monkeypatch, tmp_path):
+    """No card for a call that creates nothing on Fused: show.py refuses it before any call (bad name, unknown
+    environment, a folder of the user's under that name), or it is the expert's own canvas, already here."""
+    from fused_render.experts import show as xshow
+    bot = expert_bot(tmp_path)
+    _canvas_stubs(monkeypatch, tmp_path, envs=("prod", "unstable"))
+    pre = agent_engine._canvas_create_preview
+    assert pre(bot, {"name": "bad name"}) is None and pre(bot, {"name": "A"}) is None  # two envs: `env` is needed
+    assert pre(bot, {"name": "A", "env": "staging"}) is None
+    assert pre(bot, {"name": "A", "env": "unstable"}) == "create the canvas A on Fused (unstable)"
+    theirs = tmp_path / "clones" / "prod" / "Theirs"
+    theirs.mkdir(parents=True)
+    assert pre(bot, {"name": "Theirs", "env": "prod"}) is None
+    mine = tmp_path / "clones" / "prod" / "Mine"
+    mine.mkdir(parents=True)
+    monkeypatch.setattr(xshow, "made", lambda b: [{"env": "prod", "name": "Mine", "dir": str(mine), "at": 0}])
+    assert pre(bot, {"name": "Mine", "env": "prod"}) == "create the canvas Mine on Fused (prod)"  # no canvas.toml: re-made
+    (mine / "canvas.toml").write_text("")
+    assert pre(bot, {"name": "Mine", "env": "prod"}) is None
+
+
+def test_expert_canvas_create_stopped_at_the_card(monkeypatch, tmp_path):
+    import types
+    bot = expert_bot(tmp_path)
+    created = _canvas_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr(agent_engine, "_gate", lambda *a, **k: (None, ""))  # Stop while the card was up
+    sess = types.SimpleNamespace(steps=0, max_steps=50, denied=set())
+    out = agent_engine._expert_show(bot, sess, "canvas_create", {"name": "Mine"})
+    assert out["isError"] and out["content"][0]["text"].startswith("Stopped by the user.") and created == []
 
 
 def test_expert_without_canvases_or_a_user_has_no_show_tools(server, fake_cli, monkeypatch, tmp_path):
