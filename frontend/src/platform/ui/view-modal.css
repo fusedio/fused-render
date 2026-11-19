@@ -1,0 +1,10 @@
+/* The "show" card's overlay (platform/ui/ViewModal.tsx). */
+.modal-dialog.view-modal { width: min(1200px, 94vw); height: 88vh; }
+.modal-dialog.view-modal .modal-body { padding: 0; overflow: hidden; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.view-modal .view-modal-body { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.view-modal .view-modal-body > * { flex: 1 1 auto; min-height: 0; }
+.view-modal .view-modal-frame { display: block; width: 100%; height: 100%; border: 0; }
+.view-modal .view-modal-missing { padding: 32px 24px; text-align: center; opacity: .7; }
+.view-modal .view-modal-sub { margin-left: 8px; font-size: 11.5px; font-weight: 400; opacity: .6; }
+.view-modal .view-modal-btn { padding: 3px 10px; border: 1px solid rgba(128, 128, 128, .35); border-radius: 6px; background: transparent; color: inherit; font-size: 12px; cursor: pointer; }
+.view-modal .view-modal-btn:hover { border-color: currentColor; }

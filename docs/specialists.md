@@ -114,7 +114,8 @@ not in `PERMISSION_MODES`).
 `launch.spec` also commits pending hand edits (`history.commit_edits`) and returns the launch spec, which `_start`
 writes into the run dir as `specialist.json` and `_claude_argv` folds into the CLI's argv:
 
-- `mcp_servers`: the services server (§8), the same for all three kinds.
+- `mcp_servers`: the services server (§8), the same for all three kinds; a main chat also gets the canvas server
+  (§15) while Canvases is on.
 - `append`: one sentence after the usual appended prompt: this is the main chat; or this is a breakout beside a
   task, which the next learning run reads; or this is the learning run, nobody is watching.
 - `policy_env`: for the update only, `FUSED_SPECIALIST_UNATTENDED=1` in the permission server's env: anything that
@@ -377,7 +378,8 @@ last reply, or after Clear the last folded chat's, so the row keeps its place; o
     POST   /api/specialists/tools/note {run_id, specialist, note}     {"text"}
     POST   /api/specialists/tools/breakout {run_id, specialist, reason}  {"text"}
 
-A body key outside `name, about, folder, face` is a 400; so is a `{server}` other than the two of §8.
+A body key outside `name, about, folder, face` is a 400; so is a `{server}` other than `specialist_services` (§8)
+and `specialist_canvas` (§15).
 
 ## 11. UI
 
@@ -470,3 +472,61 @@ The two kinds solve nearly the same problem and are kept apart on purpose, to co
   long task costs a reader more (it is told to search, not read whole).
 - No export, clone or import of a specialist; no editing skills from the pane (ask the specialist).
 - Only Claude runs a specialist, and only Claude tasks get its tools; plain breakouts get none.
+
+## 15. Showing work in the chat
+
+A specialist can build something and hand it back: a UDF that pulls a dataset, a widget that charts it, shown in
+its main chat as a card the user opens live, and changed when the user says so. The chat renders none of it
+inline; the card opens an overlay. Built in `specialists/show.py`, on the experts' two tools (`experts/show.py`
+`make_canvas` and `view`, docs/experts.md §17), so both kinds of bot make and classify a canvas the same way.
+
+**When** (`show.on`, decided in `launch.spec`): the main chat only, while the Canvases preference is on and the
+`fused` CLI wrapper exists. A breakout and a learning run get neither the server nor the sentence about it.
+
+**The server.** One more session MCP server, `specialist_canvas`, the same pipe as §8 (`bots/botmcp.py` at
+`api/specialists/<id>/specialist_canvas`, the session token):
+
+    canvas_create   name, env?    a new canvas on the user's Fused account and its live clone here; returns the folder
+    show            path, note?   a card in the chat for a canvas or one node of one
+
+- `canvas_create` makes the Canvases page's three calls (create, clone, start the sync watcher, in that order, so
+  the watcher is up before the first file is written). `env` is `prod` or `unstable`; left out, it is the one
+  environment the user has canvas copies of, `prod` when they have none, and an error naming both when they have
+  both (`show.envs`). A name the user already has a canvas under is refused, unless this specialist made that
+  canvas: then its folder comes back. The canvases it made are in `.specialist/state.json` (`canvases`, the newest
+  200).
+- `show` says what the path is: a canvas folder (or its `canvas.toml`) directly under an environment's `user/`, or
+  a node file at the root of one with a row in its `canvas.toml` (`canvases.canvas_node_file`). Anything else is
+  an error telling the specialist what a node is. On success the answer ends with one line, `[fused-card] {kind,
+  path, title, canvas, env, note}` (`show.CARD`), which is how the card reaches the page.
+- The specialist writes every node file itself with Write / Edit. Nothing here reads, lays out or checks them.
+
+**No extra rules.** Both tools, and the writes into the canvas folder, go through the session's permission mode
+like everything else a specialist does (§3): in Auto the CLI's classifier decides, on Ask each raises the
+ordinary card. The canvas folder publishes itself (the canvas sync), so what the specialist writes there reaches
+the user's Fused account.
+
+**What it is told.** `launch.spec` adds to the main chat's `append` the two tool names and the path of
+`specialists/showing-your-work.md`, which it reads first: the steps (canvas, node files, their rows,
+validate, show), never guessing the widget format, editing the same files when the user asks for a change, and
+what to leave alone. The file is the app's and is read in place, so every specialist follows the current text;
+nothing is written into a home.
+
+**The UI.**
+
+- `apps/claude/specialists/view-card.ts` reads the card line from a settled `mcp__specialist_canvas__show` row.
+  Such a row is drawn as a card in place of the tool row (`ui/SegmentView.tsx`, `ui/ViewCard.tsx`) and never folds
+  behind "more" (`protocol/segments.ts`). A running or failed `show` stays an ordinary tool row;
+  `canvas_create` reads "Made the canvas <name>".
+- The card is one row in the shape of the Bots thread's app card: an icon for the kind, the title, the
+  specialist's note and "Widget · in <canvas> · <env>", and Open. Collapsed it mounts nothing of the work.
+- Open raises `platform/ui/ViewModal.tsx`, the overlay the experts' card also uses: a node through the `_node`
+  native view (the component the explorer mounts for that file: it clones, starts the sync, signs in and frames
+  the hosted workbench as needed), a whole canvas as its page in a frame (`/canvases/<env>/<name>?embed=1`). The
+  head has "Open canvas" and, for a node, "Open in explorer". Closing unmounts it.
+- A change is the same chat: the specialist edits the same files, and the open view follows them through the sync.
+
+**Not verified here.** This was built without a Fused sign-in and without a real `claude`: that the CLI lists the
+server's two tools in a main chat, that Auto lets them and the canvas writes through without a card, that a fresh
+clone's watcher publishes the specialist's first files, and that an open overlay follows an edit. The tools, the
+launch spec, the session door, the card and its fold are covered by tests with those two ends stubbed.

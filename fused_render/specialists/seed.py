@@ -15,7 +15,7 @@ import os
 import re
 
 from fused_render.specialists import home as hm
-from fused_render.specialists import paths, store
+from fused_render.specialists import paths, show, store
 
 SHIPPED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shipped")
 EXPERTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "experts", "shipped")
@@ -47,7 +47,10 @@ def seed() -> None:
             continue
         skills_dir = os.path.join(EXPERTS, man["expert"], "skills")
         skills = {n[:-3]: _skill(hm.read_text(os.path.join(skills_dir, n)), n[:-3])
-                  for n in sorted(os.listdir(skills_dir)) if n.endswith(".md")}
+                  for n in sorted(os.listdir(skills_dir))
+                  # Not the expert's showing-your-work: it names the expert's tools; a specialist reads its own
+                  # (show.SKILL), in place.
+                  if n.endswith(".md") and n != os.path.basename(show.SKILL)}
         folder = canvases.canvases_base() if man.get("folder") == "canvases" else ""
         if folder:
             os.makedirs(folder, exist_ok=True)  # where the canvas copies go; none may be cloned yet

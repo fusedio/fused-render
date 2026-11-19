@@ -20,7 +20,7 @@ import secrets
 import threading
 import time
 
-from fused_render.specialists import flag, history, paths, services, store, update
+from fused_render.specialists import flag, history, paths, services, show, store, update
 from fused_render.specialists import home as hm
 
 KINDS = ("main", "breakout", "update")
@@ -55,9 +55,10 @@ def check_token(spec_id: str, token: str) -> bool:
 
 
 # ------------------------------------------------------------------ servers ---
-def session_servers(spec: store.Specialist) -> dict:
+def session_servers(spec: store.Specialist, canvas: bool = False) -> dict:
     """`{name: mcp entry}`, one per services server: the bots' stdio pipe (`bots/botmcp.py`) pointed at
-    `/api/specialists/<id>/<server>/` (routes.py)."""
+    `/api/specialists/<id>/<server>/` (routes.py). `canvas` adds the main chat's `specialist_canvas` server
+    (show.py)."""
     from fused_render.bots import paths as bpaths
     from fused_render.claude_agent import agent_module
 
@@ -71,7 +72,7 @@ def session_servers(spec: store.Specialist) -> dict:
                      "args": [script, bpaths.server_origin_quiet(), spec.id, token,
                               f"api/specialists/{spec.id}/{server}", server],
                      "env": {"PYTHONUTF8": "1"}, "timeout": timeout, **agent._ALWAYS_LOAD_KEYS["claude"]}
-            for server in services.SERVERS}
+            for server in services.SERVERS + ((show.SERVER,) if canvas else ())}
 
 
 def spec(key: str, file: str) -> dict:
@@ -93,5 +94,7 @@ def spec(key: str, file: str) -> dict:
     if hm.rewrite_charter(s.home, s.name, s.about):  # a home made under an older charter
         history.commit(s.home, "Settings", ["CLAUDE.md"])
     history.commit_edits(s.home)
-    return {"kind": kind, "mcp_servers": session_servers(s), "append": APPEND[kind],
+    canvas = kind == "main" and show.on()  # the main chat only: a breakout and a learning run show nothing
+    return {"kind": kind, "mcp_servers": session_servers(s, canvas),
+            "append": APPEND[kind] + (" " + show.note() if canvas else ""),
             "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if run else {}}

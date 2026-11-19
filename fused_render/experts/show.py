@@ -185,20 +185,28 @@ def canvas_create(bot, args: dict) -> tuple:
     """`(label, result text, ok)`. Create on Fused, clone, start the watcher: the three calls the Canvases page
     makes, in this process. The watcher is started before the expert writes anything on purpose: a watcher that
     first sees a folder of seconds-old files takes them as already published (`canvases._FRESH_WINDOW_S`)."""
+    if not on(bot):
+        return (f"create canvas {str(args.get('name') or '').strip() or '?'}",
+                "error: canvases are not available to you right now (the Canvases feature is off, or you were "
+                "granted no folder of canvas copies).", False)
+    return make_canvas(args, [env for env, _ in store.run_envs(bot)], made(bot),
+                       lambda env, name, folder: _note_made(bot, env, name, folder))
+
+
+def make_canvas(args: dict, envs: list, made_rows: list, record, default_env: str = "") -> tuple:
+    """`canvas_create` for any kind of bot (a specialist's is specialists/show.py): `envs` the environments it
+    may use, `made_rows` the canvases it made before (`[{env, name, ...}]`), `record(env, name, folder)` notes
+    a new one, `default_env` the environment when `env` is left out and `envs` holds more than one."""
     name = str(args.get("name") or "").strip()
     label = f"create canvas {name or '?'}"
-    if not on(bot):
-        return label, "error: canvases are not available to you right now (the Canvases feature is off, or you were " \
-                      "granted no folder of canvas copies).", False
     if not _NAME_RE.fullmatch(name):
         return label, "error: a canvas name is letters, digits and underscores only (at most 128).", False
-    envs = [env for env, _ in store.run_envs(bot)]
-    env = str(args.get("env") or "").strip() or (envs[0] if len(envs) == 1 else "")
+    env = str(args.get("env") or "").strip() or (envs[0] if len(envs) == 1 else default_env)
     if env not in envs:
         return label, f"error: give `env`, one of: {', '.join(envs)}.", False
     from fused_render import canvases
     folder = canvases._canvas_dir(env, name)
-    mine = any((r["env"], r["name"]) == (env, name) for r in made(bot))
+    mine = any((r["env"], r["name"]) == (env, name) for r in made_rows)
     if os.path.isdir(folder) and not mine:
         return label, (f"error: the user already has a canvas named {name} in {env} ({folder}). Pick another name; "
                        "to change that canvas, ask the user first."), False
@@ -209,7 +217,7 @@ def canvas_create(bot, args: dict) -> tuple:
         why = _refusal(canvases.api_canvases_clone({"name": name, "env": env}, x_fused="1"))
         if why is not None:
             return label, f"error: the canvas was created on Fused but its folder could not be made: {why}", False
-    _note_made(bot, env, name, folder)
+    record(env, name, folder)
     # Best effort: another fused-render may own the clone's sync, and the card's view starts it again anyway.
     started = _refusal(canvases._sync_start_response(env, name)) is None
     return label, (
@@ -225,11 +233,16 @@ def canvas_create(bot, args: dict) -> tuple:
 def show(bot, args: dict) -> tuple:
     """`(label, result text, view)`: `view` is the card's payload, None when `path` is nothing to show.
     `{kind: canvas|udf|widget|html|note, path, title, canvas, env}`."""
+    return view(args, store.expert_dir(bot))
+
+
+def view(args: dict, base: str) -> tuple:
+    """`show` for any kind of bot: a relative `path` is taken from `base`."""
     raw = str(args.get("path") or "").strip()
     label = f"show {os.path.basename(raw.rstrip('/')) or '?'}"
     if not raw:
         return label, "error: give `path`.", None
-    path = os.path.normpath(os.path.join(store.expert_dir(bot), os.path.expanduser(raw)))
+    path = os.path.normpath(os.path.join(base, os.path.expanduser(raw)))
     from fused_render import canvases
     if os.path.basename(path) == "canvas.toml":
         path = os.path.dirname(path)

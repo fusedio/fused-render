@@ -744,7 +744,8 @@ a setting: agent.py stamps it into a task's MCP env to switch the tools on (§8)
 Owner, 2026-11-19: an expert should be able to write UDFs and widgets (in a new canvas if need be), show them to
 the user, and improve them when the user says so; rendering inside the chat is too slow, so the chat shows a card
 and the card opens an overlay that draws the thing the way the explorer does. Built in `experts/show.py`,
-`agent_engine._expert_show` and `frontend/src/apps/bots/components/ViewCard.tsx`. The one rule (§1) holds: the two
+`agent_engine._expert_show` and `frontend/src/apps/bots/components/ViewCard.tsx` (the overlay itself is
+`frontend/src/platform/ui/ViewModal.tsx`, shared with a specialist's card, docs/specialists.md §15). The one rule (§1) holds: the two
 tools deliver (a folder, a row); the expert writes every file itself and our code reads none of them.
 
 **When** (`show.on`): the attended chat only (`agent_engine.expert_cards`), the Canvases preference on, and at
