@@ -29,6 +29,7 @@ import {
   type SpecialistFace,
 } from "@platform/lib/specialists-api";
 import {
+  clipTitle,
   closeSpecialistBreakoutCard,
   deliverComposerDraft,
   updateSpecialistBreakout,
@@ -79,15 +80,8 @@ const CASCADE_X = 28;
 /** Where a card opens: beside the task's chat when there is room (to its
  *  left, over the middle pane; else to its right), otherwise at the window's
  *  left edge; each further card steps down and in. Viewport px. */
-/** A task title for the card's header: at most `max` characters, cut at a word, with an ellipsis. */
-export const TITLE_MAX = 40;
-export function clipTitle(title: string, max = TITLE_MAX): string {
-  const t = (title || "").replace(/\s+/g, " ").trim();
-  if (t.length <= max) return t;
-  const cut = t.slice(0, max);
-  const sp = cut.lastIndexOf(" ");
-  return (sp >= max * 0.4 ? cut.slice(0, sp) : cut).replace(/[\s,.;:·(\-]+$/, "") + "…";
-}
+/** A task title for the card's header (and the brief box's heading): `clipTitle` in platform. */
+export { clipTitle, TITLE_MAX } from "@platform/lib/specialist-breakouts";
 
 export function cardBox(
   anchor: CardData["anchor"] | undefined,

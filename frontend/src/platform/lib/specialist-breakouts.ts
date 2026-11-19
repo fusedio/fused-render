@@ -11,6 +11,17 @@ import { listBreakouts, setBreakoutDraft, type BreakoutRecord, type Brief } from
 import { COMPOSER_DRAFT_EVENT, type ComposerDraftDetail } from "./breakouts";
 import { chatDraftKey, fetchChatDraft, saveChatDraft, type ChatDraft, type DraftAttachment } from "./drafts";
 
+/** A task title where a breakout names its task (the card's header, the brief box's heading): at most `max`
+ *  characters, cut at a word, with an ellipsis. The full title goes in the tooltip. */
+export const TITLE_MAX = 40;
+export function clipTitle(title: string, max = TITLE_MAX): string {
+  const t = (title || "").replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const sp = cut.lastIndexOf(" ");
+  return (sp >= max * 0.4 ? cut.slice(0, sp) : cut).replace(/[\s,.;:·(\-]+$/, "") + "…";
+}
+
 export interface SpecialistBreakoutCard {
   id: string;
   breakoutId: string;

@@ -106,10 +106,18 @@ describe("protocol never shows (R1, C3)", () => {
     });
     const r = rendered(protocolTurnView(u(SEED)));
     const t = textOf(r.root);
-    expect(t).toContain("Brief from Publish Q4 canvas");
+    expect(t).toContain("Brief from the task “Publish Q4 canvas”");
     expect(t).toContain("Sync stops at step 3 of 5.");
     expect(t).not.toContain("transcript");
     expect(t).not.toContain("/root/.claude");
+  });
+
+  test("a task title that is a whole prompt is cut near 40 characters in the brief's heading; all of it is the tooltip", () => {
+    const long = "The latitudes from tile_bounds look wrong for 512px tiles. Please hand that problem to the specialist";
+    const r = rendered(protocolTurnView(u(SEED.replace("Publish Q4 canvas", long))));
+    const head = r.root.find((n) => n.type === "div" && n.props.className === "spx-proto-head");
+    expect(textOf(head)).toBe("Brief from the task “The latitudes from tile_bounds look…”");
+    expect(head.props.title).toBe(`Brief from the task “${long}”`);
   });
 
   test("the breakout record's brief wins over the seed's text", () => {

@@ -208,7 +208,9 @@ export function SidePanel({
           <div className="spx-muted spx-small">
             {!panel
               ? "Loading…"
-              : learned?.summary?.startsWith("Nothing new was learned")
+              : panel.updated === false
+                ? "No update has run yet. Updates run once a day while the app is open and idle."
+                : learned?.summary?.startsWith("Nothing new was learned")
                 ? learned.summary
                 : "Nothing changed in the last update."}
           </div>

@@ -10,7 +10,7 @@ import {
   type Note,
   type SpecialistMemory,
 } from "@platform/lib/specialists-api";
-import { clip, secondPerson } from "../lib/api-extra";
+import { clip, noteText, secondPerson } from "../lib/api-extra";
 
 const BASIS: Record<string, string> = {
   verified: "Verified",
@@ -226,7 +226,7 @@ export function MemoryTab({
                     {n.in_effect === true ? "In effect now" : "Waiting"}
                   </span>
                 </div>
-                <span>{secondPerson(n.claim)}</span>
+                <span>{secondPerson(noteText(n.claim, mem?.entries))}</span>
                 <span className="spx-muted spx-small">{noteSource(n)}</span>
               </div>
             ))}

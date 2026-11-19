@@ -279,6 +279,21 @@ def test_app_written_prefixes_are_pinned(client, parent):
         assert "if the user stated it to you in this conversation, the basis is user-said" in text
 
 
+def test_note_writers_are_told_to_keep_entry_ids_out_of_the_claim():
+    """Review fix 2: the claim is plain words; an entry id goes only in its own field (task tool, reviewer,
+    close-out). The fixed prefixes stay."""
+    from fused_render.claude_agent.permission_server import SPECIALIST_SCHEMAS
+    from fused_render.specialists import breakouts, reviewer
+
+    tool = next(t for t in SPECIALIST_SCHEMAS if t["name"] == "specialist_note")
+    assert "Write the claim in plain words; put any entry id only in the entry field." in tool["description"]
+    assert "claim: one sentence in plain words (any entry id goes only on the entries line)" in reviewer.REVIEWER
+    for text in (breakouts.CLOSE_OUT, breakouts.CLOSE_OUT_FOLLOWUP):
+        assert "claim: one sentence in plain words (any entry id goes only on the entry line)" in text
+        assert text.startswith("The user is closing this breakout")
+    assert reviewer.REVIEWER.startswith("Today is {date}. A task pulled your guidance")
+
+
 def test_charter_of_a_new_home_says_no_ids_and_no_git(client):
     """A new home's charter: plain words, no git, the user-said basis rule (new homes only)."""
     spec = make_specialist("Canvas", "Fused canvases")

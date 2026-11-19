@@ -133,7 +133,16 @@ def panel(spec_id: str):
         guided = int(receipts.guided_week(spec_id) or 0)
     except Exception:  # noqa: BLE001
         guided = 0
-    return {"learned": learned, "waiting": drafts.waiting(spec_id), "inbox": {"count": len(inbox.undigested(spec_id))},
+    # `updated`: some update has run (finished, found nothing to do, or failed): before that the panel says when
+    # updates run instead of "Nothing changed in the last update."
+    try:
+        from fused_render.specialists import nightly
+        st = nightly.state(spec_id)
+        updated = bool(runs) or any(st.get(k) for k in ("last_ok", "last_run", "last_error", "last_nothing"))
+    except Exception:  # noqa: BLE001
+        updated = bool(runs)
+    return {"learned": learned, "updated": updated, "waiting": drafts.waiting(spec_id),
+            "inbox": {"count": len(inbox.undigested(spec_id))},
             "tasks": {"helping_now": helping, "guided_week": guided}}
 
 

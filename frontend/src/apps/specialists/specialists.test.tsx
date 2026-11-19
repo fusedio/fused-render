@@ -905,3 +905,70 @@ describe("polish: Learned list and its counts", () => {
     expect(textOf(r.root).toLowerCase()).not.toContain("expert");
   });
 });
+
+import { noteText } from "./lib/api-extra";
+
+describe("review fixes: entry ids in notes, the panel before any update", () => {
+  const ENTRY = { id: "m-0001", text: "Our tile service serves 512-pixel tiles, so tile_size must be passed through." };
+
+  test("noteText: a known entry reads as its first words, an unknown id is dropped", () => {
+    expect(noteText("tile_bounds hardcodes 256; this contradicts m-0001.", [ENTRY])).toBe(
+      "tile_bounds hardcodes 256; this contradicts the entry “Our tile service serves 512-pixel tiles…”.",
+    );
+    expect(noteText("Wrong per [m-0001].", [ENTRY])).toBe("Wrong per the entry “Our tile service serves 512-pixel tiles…”.");
+    expect(noteText("This contradicts m-0001.")).toBe("This contradicts.");
+    expect(noteText("Fonts load late (see [m-ab12]), so wait.")).toBe("Fonts load late, so wait.");
+    expect(noteText("No ids here; atom-abcd stays.")).toBe("No ids here; atom-abcd stays.");
+  });
+
+  test("Settings › Memory inbox and the general inbox never show a bare entry id", async () => {
+    const notes = [
+      { id: "n-1", kind: "case", claim: "Latitudes break at 512px; this contradicts m-0001.", basis: "verified", source: { type: "task" }, at: 0 },
+    ];
+    const r = render(
+      <MemoryTab
+        specialistId="c1"
+        sendToChat={() => true}
+        api={{
+          getMemory: async () => ({
+            entries: [{ ...ENTRY, basis: "user-said", seen: 0, confirmed: "", from: "", retires: "", raw: "" }],
+            raw: "", lines: 1, bytes: 0, limit_lines: 120, limit_bytes: 12000, knowledge: [],
+          }),
+          getInbox: async () => ({ notes }),
+        }}
+      />,
+    );
+    await flush();
+    const row = r.root.find((n) => n.type === "div" && n.props.className === "spx-note");
+    expect(textOf(row)).toContain("this contradicts the entry “Our tile service serves 512-pixel tiles…”.");
+    expect(textOf(row)).not.toContain("m-0001");
+    const g = render(
+      <GeneralInbox
+        notes={notes as never}
+        specialists={[]}
+        onClose={() => {}}
+        onChanged={() => {}}
+        api={{ moveGeneralNote: async () => ({}) as never, deleteNote: async () => ({ ok: true as const }) }}
+      />,
+    );
+    expect(hasText(g, "Latitudes break at 512px; this contradicts.")).toBe(true);
+    expect(textOf(g.root)).not.toContain("m-0001");
+  });
+
+  test("before any update the side panel says when updates run, and nothing else there", async () => {
+    const api = panelApi({
+      getPanel: async () => ({ learned: null, updated: false, waiting: [], inbox: { count: 0 }, tasks: { helping_now: [], guided_week: 0 } }),
+    });
+    const r = render(<SidePanel specialistId="c1" sendToChat={() => true} onOpenSettings={() => {}} api={api} />);
+    await flush();
+    expect(hasText(r, "No update has run yet. Updates run once a day while the app is open and idle.")).toBe(true);
+    expect(hasText(r, "Nothing changed in the last update.")).toBe(false);
+    expect(hasText(r, "See all")).toBe(false);
+    const after = panelApi({
+      getPanel: async () => ({ learned: null, updated: true, waiting: [], inbox: { count: 0 }, tasks: { helping_now: [], guided_week: 0 } }),
+    });
+    const r2 = render(<SidePanel specialistId="c1" sendToChat={() => true} onOpenSettings={() => {}} api={after} />);
+    await flush();
+    expect(hasText(r2, "Nothing changed in the last update.")).toBe(true);
+  });
+});

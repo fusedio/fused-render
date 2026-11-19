@@ -5,7 +5,8 @@
      "items":[{"id":"i1","kind","text","entry","file","from":[...],"undo","commit",
                "before"?, "after"?,    memory entry line before / after the run (None: absent), from the run's diff
                "remove"?,              a file or skill folder the run created (Revert deletes it)
-               "diff"?}]}              the run's diff of `file` (a non-entry change), capped
+               "diff"?,                the run's diff of `file` (a non-entry change), capped
+               "wrote"?}]}             the file the run created or changed (gone later: "Changed since")
     <home>/.specialist/reverts.json   {"<run>/<item>": {"session_id","at","state":"requested"|"done"}}
 
 The change list is applied already when it is written: there is no approval step. It is reconciled with the run's
@@ -44,6 +45,8 @@ ENTRY_LINE_RE = re.compile(r"^- \[(m-[0-9a-f]{4,8})\] ")
 ENTRY_ID_RE = re.compile(r"\[?\bm-[0-9a-f]{4,8}\b\]?")
 MEMORY = "memory.md"
 SKILLS = ".claude/skills/"
+KNOWLEDGE = "knowledge/"
+SKILL_KINDS = ("New skill", "New check")
 
 # The frontend recognises the revert request by this prefix; tests pin it.
 REVERT_PREFIX = "Undo this change from the latest update: "
@@ -169,7 +172,7 @@ def merge(first: dict | None, second: dict | None) -> dict | None:
 
 def fallback_items(files, before: str = "") -> list[dict]:
     """One `Changed` item per changed tracked file (the job left no valid change list, or left files out)."""
-    return [{"kind": FALLBACK_KIND, "text": sentence(f"Changed the file {f}."), "entry": None, "file": f, "from": [],
+    return [{"kind": FALLBACK_KIND, "text": _fallback_text(f, "M"), "entry": None, "file": f, "from": [],
              "undo": f"Put back what this update changed in {f}."} for f in files][:ITEMS_MAX]
 
 
@@ -222,6 +225,12 @@ def bookkeeping_only(before: str | None, after: str | None) -> bool:
     return before is not None and after is not None and before != after and words(before) == words(after)
 
 
+def _names_other_file(it: dict) -> bool:
+    """The item names a file other than memory.md."""
+    f = str(it.get("file") or "").strip()
+    return bool(f) and f.rsplit("/", 1)[-1] != MEMORY
+
+
 def _not_a_change(it: dict) -> bool:
     """An item about a memory entry whose words the run did not change (only its counts, or nothing)."""
     if not it.get("entry") or not ("before" in it or "after" in it):
@@ -245,8 +254,11 @@ def reconcile(items: list, before_text: str, after_text: str) -> list[dict]:
         it = dict(it)
         e = it.get("entry")
         if e and (e in b or e in a):
-            it["before"], it["after"] = b.get(e), a.get(e)
-            it["text"] = _plain(str(it.get("text") or ""), it["before"], it["after"])
+            it["text"] = _plain(str(it.get("text") or ""), b.get(e), a.get(e))
+            # An item about another file (a skill, a topic file) that only cites an entry whose words this run did
+            # not change is about that file: it gets the file's diff in `build`, not the entry's lines.
+            if not (_names_other_file(it) and (b.get(e) == a.get(e) or bookkeeping_only(b.get(e), a.get(e)))):
+                it["before"], it["after"] = b.get(e), a.get(e)
         if _not_a_change(it):
             continue
         out.append(it)
@@ -368,14 +380,19 @@ def build(spec_id: str, items: list, sha: str) -> tuple[list[dict], int]:
     covered = {MEMORY} if covered_mem else set()
     for it in items:
         f = _rel(spec_id, it.get("file"))
+        hits = [p for p in status if p == f or p.startswith(f.rstrip("/") + "/")] if f and f != MEMORY else []
+        covered.update(hits)
+        skill = _skill_dir(f) if f else None
+        if skill and it.get("kind") in SKILL_KINDS:
+            # A new skill or check stands for its whole folder: no file of it gets an item of its own.
+            covered.update(p for p in status if p.startswith(skill))
+        if f in status and status[f] != "D":
+            it["wrote"] = f  # the file is there after the run: gone later reads "Changed since"
         if it.get("entry") and ("before" in it or "after" in it):
             covered.add(MEMORY)
             continue
         if not f or f == MEMORY:
             continue  # a memory item with no entry in the diff: never the whole file's diff
-        hits = [p for p in status if p == f or p.startswith(f.rstrip("/") + "/")]
-        covered.update(hits)
-        skill = _skill_dir(f)
         if skill and skill + "SKILL.md" in added:
             it["remove"] = skill
             covered.update(p for p in status if p.startswith(skill))
@@ -395,17 +412,49 @@ def build(spec_id: str, items: list, sha: str) -> tuple[list[dict], int]:
             continue
         rest.append(p)
     for fb in fallback_items(rest):
-        if fb["file"] in skills:
-            name = fb["file"].rstrip("/").rsplit("/", 1)[-1]
-            fb.update(remove=fb["file"], text=sentence(f"Added the skill {name}."))
+        f = fb["file"]
+        if f in skills:
+            fb.update(remove=f, text=sentence(f"Added the skill {_skill_name(f)}."))
             items.append(fb)
             continue
-        if fb["file"] in added:
-            fb.update(remove=fb["file"], text=sentence(f"Added the file {fb['file']}."))
+        title = _topic_title(f, file_at(spec_id, f"{sha}^" if status.get(f) == "D" else sha, f)) \
+            if f.startswith(KNOWLEDGE) else ""
+        fb["text"] = _fallback_text(f, status.get(f, "M"), title)
+        if f in added:
+            fb["remove"] = f
         else:
-            fb["diff"] = file_diff(spec_id, sha, fb["file"])
+            fb["diff"] = file_diff(spec_id, sha, f)
+            if status.get(f) != "D":
+                fb["wrote"] = f
         items.append(fb)
     return items[:ITEMS_MAX], confirmed
+
+
+def _skill_name(p: str) -> str:
+    return p[len(SKILLS):].split("/", 1)[0] if p.startswith(SKILLS) else p.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _topic_title(p: str, text: str) -> str:
+    """A topic file's title: its first heading, else its file name without `.md`."""
+    for ln in str(text or "").splitlines()[:20]:
+        if ln.startswith("#") and ln.lstrip("#").strip():
+            return ln.lstrip("#").strip()
+    return os.path.splitext(p.rsplit("/", 1)[-1])[0]
+
+
+# The fallback item's words for a changed file no item covers: plain words, never a path.
+_FILE_WORDS = {MEMORY: "the memory file", "people.md": "People", "triggers.json": "the triggers",
+               "CLAUDE.md": "the specialist's instructions"}
+
+
+def _fallback_text(p: str, st: str, title: str = "") -> str:
+    verb = {"A": "Added", "D": "Removed"}.get(st, "Changed")
+    if p.startswith(SKILLS):
+        return sentence(f"Changed the skill {_skill_name(p)}.")
+    if p.startswith(KNOWLEDGE):
+        return sentence(f"{verb} the topic file {title or _topic_title(p, '')}.")
+    what = _FILE_WORDS.get(p) or f"the file {p.rsplit('/', 1)[-1]}"
+    return sentence(f"{verb} {what}.")
 
 
 # ---------------------------------------------------------------------- records ---
@@ -453,7 +502,7 @@ def _home_now(spec_id: str) -> tuple[str, dict[str, str]]:
 
 def item_state(it: dict, revert: dict | None, home: str, now: dict[str, str]) -> str:
     """`reverting` / `reverted` (a Revert was asked / its turn ended), `changed` (the home no longer holds what
-    the run wrote: the entry line differs, or a file it created is gone), else `active`."""
+    the run wrote: the entry line differs, or a file or skill it created or changed is gone), else `active`."""
     if isinstance(revert, dict):
         return "reverted" if revert.get("state") == "done" else "reverting"
     if it.get("entry") and ("before" in it or "after" in it):
@@ -461,7 +510,10 @@ def item_state(it: dict, revert: dict | None, home: str, now: dict[str, str]) ->
         # A later update that only raised the entry's counts did not change what this one wrote.
         if cur != after and not bookkeeping_only(after, cur):
             return "changed"
-    elif it.get("remove") and not os.path.exists(os.path.join(home, str(it["remove"]))):
+    gone = it.get("remove") or it.get("wrote") or (
+        # a record written before `wrote`: a new skill or check is gone with its file
+        it.get("file") if it.get("kind") in SKILL_KINDS and str(it.get("file") or "").startswith(SKILLS) else None)
+    if gone and not os.path.exists(os.path.join(home, str(gone))):
         return "changed"
     return "active"
 
@@ -543,7 +595,8 @@ def _current(spec_id: str) -> str:
 def _instruction(item: dict) -> str:
     """What exactly to undo, from the run's diff."""
     before, after = item.get("before"), item.get("after")
-    if item.get("entry") and ("before" in item or "after" in item) and (before or after):
+    if item.get("entry") and ("before" in item or "after" in item) and (before or after) and not (
+            _names_other_file(item) and bookkeeping_only(before, after)):
         if before and after:
             return f"In memory.md, replace this exact line:\n{after}\nwith this exact line:\n{before}"
         if after:

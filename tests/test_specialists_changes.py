@@ -203,6 +203,23 @@ def test_panel_and_memory_routes(api, monkeypatch):
     assert m["knowledge"] == [{"title": "Sync troubles", "path": s.home + "/knowledge/sync.md"}]
 
 
+def test_panel_says_whether_any_update_has_run(api):
+    """Review fix 3: before any update the panel's `updated` is false (the side panel then says when updates run,
+    not "Nothing changed in the last update."); an update that found nothing to do counts as one."""
+    from fused_render.specialists import nightly
+    s = make_specialist()
+    p = api.get(f"/api/specialists/{s.id}/panel")[2]
+    assert p["learned"] is None and p["updated"] is False
+    st = nightly.state(s.id)
+    st["last_nothing"] = st["last_ok"] = 1.0
+    nightly._save_state(s.id, st)
+    p = api.get(f"/api/specialists/{s.id}/panel")[2]
+    assert p["learned"] is None and p["updated"] is True
+    t = make_specialist("Other", "Other things")
+    _seed_changes(t)
+    assert api.get(f"/api/specialists/{t.id}/panel")[2]["updated"] is True
+
+
 # ------------------------------------------------------- app-written prefixes ---
 def test_app_message_prefixes_are_pinned(monkeypatch):
     """The frontend recognises these app-written messages by their first characters."""
@@ -351,7 +368,7 @@ def test_revert_names_one_change_and_marks_the_rest(monkeypatch, api):
     run = rec["run"]
     by = {it["text"]: it for it in rec["items"]}
     assert set(by) == {"Sync stalls: reopen, do not retry.", "Publish to staging first.",
-                       "A check for stalled syncs.", "Added the file knowledge/fonts.md."}
+                       "A check for stalled syncs.", "Added the topic file Fonts."}
     assert rec["confirmed"] == 1  # m-a002's seen= rose: counted, not an item
     first = rec["items"][0]
     monkeypatch.setattr(chat, "state", lambda sid: {"current": "main-1", "folded": []})
@@ -448,3 +465,84 @@ def test_later_count_bump_keeps_item_revertable(monkeypatch, api):
     home, cur = changes._home_now(s.id)
     cur = {"m-a1b2": "- [m-a1b2] Publish to prod. {basis=user-said; seen=4}"}
     assert changes.item_state(it, None, home, cur) == "changed"
+
+
+@needs_git
+def test_skill_item_citing_an_entry_gets_no_duplicate_and_reads_changed_once_gone(monkeypatch, api):
+    """Review fix 1: a "New check" item that names its skill file AND cites an entry whose counts only rose is the
+    skill change: no second "Changed" item for the same file (and none with a path in it), it carries the file's
+    diff, and once the skill is deleted it reads "Changed since"."""
+    import os
+    import shutil
+
+    from _specialists_conftest import stub_side
+
+    from fused_render.specialists import history, inbox, nightly
+    s = make_specialist()
+    skill = os.path.join(s.home, ".claude/skills/check-bounds")
+    os.makedirs(skill, exist_ok=True)
+    with open(os.path.join(skill, "SKILL.md"), "w") as fh:
+        fh.write("---\nname: check-bounds\ndescription: x\n---\n1. Compare two values.\n")
+    with open(os.path.join(s.home, "memory.md"), "w") as fh:
+        fh.write(MEM0)
+    os.makedirs(os.path.join(s.home, "knowledge"), exist_ok=True)
+    with open(os.path.join(s.home, "knowledge/tiles.md"), "w") as fh:
+        fh.write("# Tile sizes\n")
+    history.commit(s.id, "seed")
+    n1 = inbox.add(s.id, kind="gap", claim="Check 512 too.", basis="verified", source={"type": "task", "session_id": "t"})
+
+    def fn(call):
+        home = call["cwd"]
+        with open(os.path.join(home, "memory.md"), "w") as fh:
+            fh.write(MEM0.replace("seen=3", "seen=5"))
+        with open(os.path.join(home, ".claude/skills/check-bounds/SKILL.md"), "w") as fh:
+            fh.write("---\nname: check-bounds\ndescription: x\n---\n1. Compare at 256 and 512.\n")
+        with open(os.path.join(home, ".claude/skills/check-bounds/notes.txt"), "w") as fh:
+            fh.write("extra\n")
+        with open(os.path.join(home, "knowledge/tiles.md"), "a") as fh:
+            fh.write("512 pixels.\n")
+        out = re.search(r"write (\S+)/changes\.json", call["prompt"]).group(1)
+        with open(os.path.join(out, "changes.json"), "w") as fh:
+            json.dump({"summary": "s", "items": [
+                {"kind": "New check", "text": "The bounds check now tests 256 and 512 pixel tiles.",
+                 "entry": "m-a002", "file": ".claude/skills/check-bounds/SKILL.md", "from": [n1["id"]]}]}, fh)
+        return "ok"
+    stub_side(monkeypatch, fn=fn)
+    res = nightly.run_job(s.id)
+    assert res["status"] == "done", res
+    rec = changes.get(s.id, res["run"])
+    texts = [it["text"] for it in rec["items"]]
+    assert texts == ["The bounds check now tests 256 and 512 pixel tiles.", "Changed the topic file Tile sizes."]
+    assert not any("/" in t for t in texts)
+    check = rec["items"][0]
+    assert "before" not in check and "+1. Compare at 256 and 512." in check["diff"]
+    assert "Compare at 256 and 512" in changes.message(rec, check)
+    states = {it["id"]: it["state"] for it in changes.runs(s.id)[0]["items"]}
+    assert set(states.values()) == {"active"}
+    shutil.rmtree(skill)
+    states = {it["id"]: it["state"] for it in changes.runs(s.id)[0]["items"]}
+    assert states == {check["id"]: "changed", rec["items"][1]["id"]: "active"}
+    code, _h, body = api.post(f"/api/specialists/{s.id}/changes/{res['run']}/{check['id']}/revert", {})
+    assert code == 409
+
+
+def test_old_skill_item_reads_changed_once_its_skill_is_gone():
+    """A record saved before `wrote`: a "New check" item with entry lines and its skill file still reads
+    "Changed since" when the skill folder is gone."""
+    import os
+    s = make_specialist()
+    line = "- [m-a002] Fonts load from /assets. {basis=verified; seen=3}"
+    it = {"kind": "New check", "text": "t", "entry": "m-a002", "file": ".claude/skills/check-x/SKILL.md",
+          "before": line, "after": line.replace("seen=3", "seen=4")}
+    assert changes.item_state(it, None, s.home, {"m-a002": it["after"]}) == "changed"
+    os.makedirs(os.path.join(s.home, ".claude/skills/check-x"))
+    open(os.path.join(s.home, ".claude/skills/check-x/SKILL.md"), "w").close()
+    assert changes.item_state(it, None, s.home, {"m-a002": it["after"]}) == "active"
+
+
+def test_fallback_text_has_no_path():
+    assert changes._fallback_text(".claude/skills/check-tile-bounds/SKILL.md", "M") == \
+        "Changed the skill check-tile-bounds."
+    assert changes._fallback_text("knowledge/a/tiles.md", "M", "Tile sizes") == "Changed the topic file Tile sizes."
+    assert changes._fallback_text("knowledge/tiles.md", "D") == "Removed the topic file tiles."
+    assert changes._fallback_text("people.md", "M") == "Changed People."

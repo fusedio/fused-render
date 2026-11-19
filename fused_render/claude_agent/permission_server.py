@@ -2467,7 +2467,8 @@ SPECIALIST_SCHEMAS = [
      "description": ("Send a note to a specialist's inbox: something it got wrong, "
                      "missed, or a convention the user stated. Omit specialist when "
                      "none fits. For a correction, give the entry id ([m-xxxx]) from "
-                     "the guidance when it had one."),
+                     "the guidance when it had one. Write the claim in plain words; put "
+                     "any entry id only in the entry field."),
      "inputSchema": {"type": "object", "properties": {
          "specialist": _SP_ARG, "kind": {"type": "string", "enum": _NOTE_KINDS},
          "claim": _SP_TEXT(300, "One sentence."),

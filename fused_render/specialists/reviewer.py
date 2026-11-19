@@ -44,7 +44,7 @@ outcome: confirmed | correction | gap | convention | unused | unrelated
 entries: m-xxxx, … (the entries it concerns, or none)
 kind: gap | correction | convention | suspected-bug | behaviour | case
 basis: verified | guess | user-said
-claim: one sentence
+claim: one sentence in plain words (any entry id goes only on the entries line)
 (then the evidence, quoting the lines that show it)
 REVIEW>>>
 confirmed = the task followed your guidance and it worked.

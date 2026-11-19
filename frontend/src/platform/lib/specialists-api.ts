@@ -133,6 +133,8 @@ export interface HelpingTask {
 export interface SpecialistPanel {
   /** `new`: items of the updates newer than the last one opened in the Learned tab ("Learned · N new"). */
   learned: { run: string; at: number; summary: string; items: ChangeItem[]; total: number; new?: number } | null;
+  /** Some update has run (finished, found nothing to do, or failed). Absent from an older server. */
+  updated?: boolean;
   waiting: Draft[];
   inbox: { count: number };
   tasks: { helping_now: HelpingTask[]; guided_week: number };

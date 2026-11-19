@@ -12,7 +12,7 @@ import {
 } from "@platform/lib/specialists-api";
 import { NOTE_KIND, noteSource } from "./MemoryTab";
 import { dayLabel } from "../components/FoldedSession";
-import { secondPerson } from "../lib/api-extra";
+import { noteText, secondPerson } from "../lib/api-extra";
 
 export function GeneralInbox({
   notes,
@@ -73,7 +73,8 @@ export function GeneralInbox({
                 <span className="spx-warn">{NOTE_KIND[n.kind] || n.kind}</span>
                 <span className="spx-muted">{dayLabel(n.at)}</span>
               </div>
-              <span>{secondPerson(n.claim)}</span>
+              {/* The general inbox has no memory: an entry id in a claim is dropped. */}
+              <span>{secondPerson(noteText(n.claim))}</span>
               <span className="spx-muted spx-small">{noteSource(n)}</span>
               <div className="spx-row-gap">
                 <label className="spx-small spx-muted" htmlFor={`spx-give-${n.id}`}>

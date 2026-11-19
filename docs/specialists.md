@@ -616,7 +616,7 @@ plain words ("Getting guidance from the Canvas specialist…", "Asking the Canva
       Files changed: paths, or None
       SUMMARY>>>
       <<<NOTE
-      kind: …  basis: …  claim: one sentence  entry: m-xxxx or none
+      kind: …  basis: …  claim: one sentence in plain words  entry: m-xxxx or none
       (then the full evidence)
       NOTE>>>
 
@@ -665,7 +665,7 @@ tests:
 
 | Message | Starts with | Shown as |
 |---|---|---|
-| breakout seed (user turn) | `Brief from the task "` (`breakouts.BREAKOUT_SEED`) | a brief box: Problem / Tried / Look at |
+| breakout seed (user turn) | `Brief from the task "` (`breakouts.BREAKOUT_SEED`) | a brief box headed "Brief from the task “<title>”" (the title cut at a word to 40 characters, the whole of it as the hint): Problem / Tried / Look at |
 | close-out request (user turn) | `The user is closing this breakout` | nothing; the card head says "Writing the summary…" |
 | close-out reply (assistant turn containing `<<<SUMMARY`) | — | a tidy summary (Outcome, Found, Do next, Files changed); the NOTE block is not shown |
 | Revert request (user turn) | `Undo this change from the latest update: ` (`changes.REVERT_PREFIX`) | "Asked to undo: <text>" |
@@ -723,7 +723,7 @@ the pull. `reviewer.facts` looks only at what follows:
       <<<REVIEW
       outcome: confirmed | correction | gap | convention | unused | unrelated
       entries: m-xxxx, … | none
-      kind: …   basis: verified | guess | user-said   claim: one sentence
+      kind: …   basis: verified | guess | user-said   claim: one sentence in plain words
       (evidence, quoting the lines)
       REVIEW>>>
 
@@ -818,9 +818,10 @@ from that commit (`changes.build`):
   listed it: it is counted as `confirmed` and the summary says "N entries were confirmed again" ("Nothing new was
   learned; …" when there are no items);
 - an item naming a file or skill the run created gets `remove` (the path, or the skill folder); an item naming
-  another changed file gets that file's `diff` (3000 characters); each changed file no item covers gets a `Changed`
-  item of its own (a new skill: "Added the skill <name>."). `memory.md` counts as covered when only its entry lines
-  changed. A record written before this rule is read the same way (`changes._with_state`).
+  another changed file gets that file's `diff` (3000 characters), even when it also cites an entry whose words did
+  not change; a "New skill" or "New check" item covers its whole skill folder; each changed file no item covers gets
+  a `Changed` item of its own, in plain words with no path ("Added the skill <name>.", "Changed the skill <name>.",
+  "Changed the topic file <title>."). `memory.md` counts as covered when only its entry lines changed. A record written before this rule is read the same way (`changes._with_state`).
 
 The list is saved as `changes/<run>.json` with the commit's short sha; `repeat_breakouts` is counted; `last_ok` (or
 `last_error`), `last_run` and `last_row` are set. A run that stopped early and left nothing to list records
@@ -868,7 +869,7 @@ change"; otherwise the job's `undo` sentence.
 Item states (computed whenever the list is read, `changes.item_state`): `reverting` (asked), `reverted` (the
 main-chat turn that carried the request ended with an answer: `changes.after_turn` finds the request's first line
 in a user turn followed by an assistant turn), `changed` ("Changed since": the entry's line in `memory.md` no longer
-reads what the run wrote, or a file it created is gone), else `active`. Revert is refused with `409 {"reason":
+reads what the run wrote, or a file or skill it created or changed is gone), else `active`. Revert is refused with `409 {"reason":
 "gone"}` on `reverted` and `changed` items. The notes the change came from stay digested, so it is not learned again
 tomorrow; the next run reads the main chat where it was reverted.
 
@@ -1018,7 +1019,7 @@ Unknown specialist, breakout or receipt: 404; a bad body: 400.
 | GET `/api/specialists/general/inbox` | | `{"notes":[note]}` |
 | POST `/api/specialists/general/notes/{nid}/move` | `{"specialist"}` (id or name) | the note |
 | DELETE `/api/specialists/general/notes/{nid}` | | `{"ok": true}` |
-| GET `…/{id}/panel` | | `{"learned": {"run","at","summary","items" (≤ 3),"total","new"} \| null, "waiting":[draft], "inbox":{"count"}, "tasks":{"helping_now":[{"session_id","title","file","breakout_id"}],"guided_week"}}` |
+| GET `…/{id}/panel` | | `{"learned": {"run","at","summary","items" (≤ 3),"total","new"} \| null, "updated": bool, "waiting":[draft], "inbox":{"count"}, "tasks":{"helping_now":[{"session_id","title","file","breakout_id"}],"guided_week"}}` |
 | GET `…/{id}/learned?limit=` | 1–50 (5) | `{"runs":[{"run","at","summary","status","commit","items":[item + "state"],"confirmed"}]}` |
 | POST `…/{id}/learned/seen` | `{"run"}` | `{"seen","new"}` |
 | POST `…/{id}/changes/{run}/{item}/revert` | | `{"message","session_id"}`; 409 `{"error","reason":"gone"}` |
@@ -1035,7 +1036,7 @@ Unknown specialist, breakout or receipt: 404; a bad body: 400.
 | GET `…/{id}/counts` | | the counts |
 
 `guided_week` is the number of distinct task sessions that pulled in the last 7 days; `helping_now` the parents of
-open breakouts.
+open breakouts; `updated` is whether any update has run (finished, found nothing to do, or failed).
 
 ### Elsewhere
 
@@ -1059,7 +1060,8 @@ specialist). A sidebar row after Bots, flag on only. Three columns, like the Bot
   **Latest update** (when, "Already in effect. Revert anything that looks wrong.", up to 3 items each with its kind
   and Revert, or "Reverted", "Changed since", "Revert asked in the chat"; "See all", with the number of unseen
   items when there are any; "Nothing new was learned; N entries were confirmed again" when that is all the update
-  did), **Waiting for you** (drafts:
+  did; "No update has run yet. Updates run once a day while the app is open and idle." and nothing else before the
+  first update), **Waiting for you** (drafts:
   "Draft, not sent", **Review and send**, **Discard**), **Inbox** (count, View), and a quiet **In your tasks**
   ("Helping in N tasks now" with links to the tasks, "Gave guidance to N tasks this week"). Breakouts are not listed
   or openable here.

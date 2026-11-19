@@ -19,6 +19,7 @@ import {
   SEND_DRAFT_PREFIX,
   type Brief,
 } from "@platform/lib/specialists-api";
+import { clipTitle } from "@platform/lib/specialist-breakouts";
 import type { Turn } from "../protocol/controller-api";
 
 /** An older server's revert wording, still in older transcripts. */
@@ -144,7 +145,10 @@ export function BriefBox({ brief, title }: { brief: Brief; title?: string }) {
   );
   return (
     <section className="spx-proto spx-proto-brief" aria-label="Brief from the task">
-      <div className="spx-proto-head">{title ? `Brief from ${title}` : "Brief from the task"}</div>
+      {/* The task's title can be a whole prompt: ~40 characters of it, cut at a word; all of it in the tooltip. */}
+      <div className="spx-proto-head" {...(title ? { title: `Brief from the task “${title}”` } : {})}>
+        {title ? `Brief from the task “${clipTitle(title)}”` : "Brief from the task"}
+      </div>
       <div className="spx-offer-brief">
         {row("Problem", brief.problem)}
         {row("Tried", brief.tried)}

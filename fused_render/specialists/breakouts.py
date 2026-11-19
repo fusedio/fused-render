@@ -47,7 +47,7 @@ SUMMARY>>>
 <<<NOTE
 kind: gap | correction | convention | suspected-bug | behaviour | case
 basis: user-said | verified | guess (if the user stated it to you in this conversation, the basis is user-said)
-claim: one sentence
+claim: one sentence in plain words (any entry id goes only on the entry line)
 entry: m-xxxx or none
 (then the full evidence: what was tried, what happened, what worked)
 NOTE>>>"""

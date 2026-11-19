@@ -59,6 +59,38 @@ export function secondPerson(text: string): string {
     .replace(/\b(for|to|with|by|asks|told|tell|ask) (this|the) user\b(?!')/gi, (_m, p: string) => `${p} you`);
 }
 
+/**
+ * A note's claim or evidence as the user reads it. Notes are written by models
+ * and may cite an entry by id ("this contradicts [m-0001]"): a known entry
+ * reads as its first words ("the entry “Our tile service serves…”"), an
+ * unknown id is dropped. The stored text is not changed.
+ */
+export function noteText(text: string, entries: readonly { id: string; text: string }[] = []): string {
+  if (!text) return text;
+  const known = new Map(entries.map((e) => [e.id, e.text]));
+  // "(see [m-0001])" with an unknown id says nothing once the id is gone: drop the brackets too.
+  const bare = text.replace(/\s*\(\s*(?:see|per|cf\.?)?\s*\[?\b(m-[0-9a-f]{4,8})\b\]?\s*\)/gi, (m, id: string) =>
+    known.has(id) ? m : "",
+  );
+  const out = bare.replace(/\[?\b(m-[0-9a-f]{4,8})\b\]?/g, (_m, id: string) => {
+    const words = known.get(id);
+    return words ? `the entry “${firstWords(words)}”` : "";
+  });
+  return out
+    .replace(/\(\s*\)/g, "")
+    .replace(/\s+([.,;:!?)])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/,(?=[.;:!?])/g, "")
+    .trim();
+}
+
+/** The first few words of an entry, cut at a word, with an ellipsis when cut. */
+function firstWords(text: string, n = 6): string {
+  const words = (text || "").replace(/\s+/g, " ").trim().split(" ");
+  const head = words.slice(0, n).join(" ").replace(/[\s,.;:·-]+$/, "");
+  return words.length > n ? `${head}…` : head;
+}
+
 /** "Q4 canvas sync stalls after…" — one line, cut at a word. */
 export function clip(text: string, max = 60): string {
   const t = (text || "").replace(/\s+/g, " ").trim();
