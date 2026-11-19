@@ -816,13 +816,17 @@
    grab row sets its content 2px lower (4px of top padding inside the same
    40px box: the row does not grow) and the dots stand 3px from the edge,
    3px clear of a tag below. A one-row head already has that padding.
+   The padding is ALWAYS ON, pinned or not (owner, 2026-11-19): keyed off
+   the pin it dropped the pin, tags, star, Open and ⋮ 2px on pin and lifted
+   them back on unpin. `.task-head` holds the rule level with the pinned
+   row's `padding: 0 10px` (task-head.css), which it must still beat.
    Nothing here takes a press of its own: the bar is the row's, and the row
    is the grab. */
 :is(.claude-rail-peek, .modal-popover).is-movable
   :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
   position: relative;
 }
-:is(.claude-rail-peek, .modal-popover).is-movable .task-head-row:not(.claude-rail-peek-body *, .modal-body *) {
+:is(.claude-rail-peek, .modal-popover) .task-head .task-head-row:not(.claude-rail-peek-body *, .modal-body *) {
   padding-top: 4px;
 }
 :is(.claude-rail-peek, .modal-popover).is-movable
