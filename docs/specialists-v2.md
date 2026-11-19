@@ -109,6 +109,16 @@ The learning prompt's shape (owner's design): the learning run, usually on Sonne
 conversation entry in parallel; each reads its transcript and reports what is useful for the specialist's subject;
 the learning run then decides across all reports and the notes.
 
+## Decision, 2026-11-19: memory lines carry a count and a date, as Expert bots' do
+
+Each memory line starts with how many times it was shown true in practice and when that last happened
+(`- [4 · 2026-11-17] …`). Used is not the measure, since every request for guidance hands over the whole memory;
+confirmed in practice is: it ran and worked, it failed as the line says, or the user stated it. The learning run
+keeps these up to date from what its readers report (lines a conversation confirmed or contradicted, with the
+evidence). With it comes a soft size rule: keep memory under about 200 lines by merging duplicates and retiring the
+oldest, lowest-count lines to the memory archive. All of it is by instruction only; the app reads and enforces
+nothing. Accepted costs: lines are no longer plain sentences, and the Learned diffs show count changes.
+
 ## Cut list
 
 Removed from version 1: the side panel; the Learned tab; the general inbox and "Send to a specialist"; the People
