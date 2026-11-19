@@ -28,7 +28,7 @@ import { useCanvasRailPeek } from "./rail-peek-flag";
 import { viewPress } from "./rail-pin-lib";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
-import { botOpen, setBotOpen, setFavOpen, setFavPinned, useBotOpen } from "@platform/lib/last-chat";
+import { botOpen, setBotOpen, setFavPinned, useBotOpen } from "@platform/lib/last-chat";
 import { useRailFreePins } from "./rail-free-pins-flag";
 import { freezeFromDock } from "./rail-move-store";
 import { otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
@@ -119,10 +119,8 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
     return () => setPinTitle("b", "bot-" + slot, null);
   }, [pinRole, slot, pinName]);
   if (!on || bots.length === 0) return null;
-  // THE PINNED WINDOW: the same card, frozen where its pin left it. Its unpin
-  // makes this slot the free one again, open on the same bot — it docks
-  // itself, and a favourite's non-pin standing there gives way (one window
-  // B, as a ring's press).
+  // THE PINNED WINDOW: the same card, frozen where its pin left it, until its
+  // × closes it.
   if (pinRole) {
     return (
       <BotPeek
@@ -150,12 +148,9 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
         pinned
         pinCtl={{
           pinned: true,
+          // Its × (rail-slots-lib "A PINNED WINDOW CLOSES BY ITS ×").
           onToggle: () => {
-            if (!pinnedId) return;
-            setFreeSlot("bot", slot);
-            setBotOpen(null);
-            setFavOpen(null);
-            intent.press(pinnedId);
+            if (pinnedId && botOpen() === pinnedId) setBotOpen(null);
           },
         }}
       />

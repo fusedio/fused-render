@@ -507,14 +507,10 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // open one pins or goes back to temp. Read off the window's marks at the
   // press — the press inside has just turned a hover into the open key.
   const togglePin = useCallback(() => {
-    // THE UNPIN (free pins; rail-slots-lib "UNPINNING PUTS THE WINDOW BACK BY
-    // THE RAIL"): this card becomes the free slot again, open on the same
-    // chat — it docks itself, and the non-pin that stood there gives way.
+    // ITS × (free pins; rail-slots-lib "A PINNED WINDOW CLOSES BY ITS ×"): the
+    // pin goes and the window with it.
     if (pinRole) {
-      if (!pinnedKey) return;
-      setFreeSlot("fav", slot);
-      setFavOpen(pinnedKey);
-      setFavPinned(null);
+      if (pinnedKey && favPinned() === pinnedKey) setFavPinned(null);
       return;
     }
     const key = favOpen() ?? hoverRow?.key ?? null;

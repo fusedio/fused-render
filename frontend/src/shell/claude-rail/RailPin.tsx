@@ -57,6 +57,16 @@ export function PinAngle({ size = 14, filled = false }: { size?: number; filled?
   );
 }
 
+/** The × a pinned window's seat draws with free pins (rail-slots-lib "A
+ *  PINNED WINDOW CLOSES BY ITS ×"): the head buttons' 14px, a 1.5 stroke. */
+function CloseX({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
+  );
+}
+
 export function RailPinButton({
   pinned,
   onToggle,
@@ -96,6 +106,7 @@ export function RailPinButton({
     raisedIt.current = false;
     if (win !== null && doomedWindow() === win) setDoomedWindow(null);
   };
+  const closes = freePins && pinned;
   const mark = (on: boolean) => {
     if (!freePins || win === null) return;
     const which = on ? doomedBy({ win, cardPinned: pinned, sectionPinned: replaces }) : null;
@@ -127,15 +138,24 @@ export function RailPinButton({
       onPointerLeave={() => mark(false)}
       onFocus={() => mark(true)}
       onBlur={() => mark(false)}
-      className={(variant === "head" ? "task-head-btn" : "claude-rail-peek-btn") + " rail-pin-btn" + (pinned ? " is-pinned" : "")}
-      aria-pressed={pinned}
-      aria-label="Pin"
+      className={
+        (variant === "head" ? "task-head-btn" : "claude-rail-peek-btn") +
+        " rail-pin-btn" +
+        (pinned ? " is-pinned" : "") +
+        (closes ? " is-close" : "")
+      }
+      // A PINNED WINDOW'S SEAT IS ITS × (free pins; owner, 2026-11-19: "unpin
+      // should close it as well, so instead of unpin filled pin icon it should
+      // be a 'x' button"): the same seat, the same press — its host closes
+      // the window. A button that closes is not a toggle: no `aria-pressed`.
+      {...(closes ? {} : { "aria-pressed": pinned })}
+      aria-label={closes ? "Close" : "Pin"}
       // The app's instant caption on either head (platform/lib/hints; owner,
       // 2026-11-18: the rail's tooltips "consistent and shown instantly").
       data-hint={words}
       onClick={onToggle}
     >
-      <PinAngle size={14} filled={pinned} />
+      {closes ? <CloseX size={14} /> : <PinAngle size={14} filled={pinned} />}
     </button>
   );
 }

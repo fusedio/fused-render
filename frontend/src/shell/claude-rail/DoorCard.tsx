@@ -597,8 +597,14 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const held = card.held;
   const togglePin = useCallback(() => {
     const held = store.state().held;
-    // FREE PINS: the pin's press freezes the window where it stands, before
-    // the hold makes it float (rail-move-store `freezeFromDock`).
+    // FREE PINS: a pinned card's seat is its × — it closes (rail-slots-lib "A
+    // PINNED WINDOW CLOSES BY ITS ×").
+    if (held && railFreePinsNow()) {
+      store.close();
+      return;
+    }
+    // …and the pin's press freezes the window where it stands, before the
+    // hold makes it float (rail-move-store `freezeFromDock`).
     if (!held && railFreePinsNow()) freezeFromDock("a");
     store.setHeld(!held);
   }, [store]);

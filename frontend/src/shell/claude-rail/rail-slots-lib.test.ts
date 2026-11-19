@@ -174,7 +174,7 @@ describe("the pin is the task's", () => {
 
 describe("pinning a non-pin replaces its section's pin", () => {
   it("the pin icon says what goes, by name when it has one", () => {
-    expect(pinHint({ pinned: true, replaces: "x" })).toBe("Unpin");
+    expect(pinHint({ pinned: true, replaces: "x" })).toBe("Close");
     expect(pinHint({ pinned: false, replaces: false })).toBe("Pin");
     expect(pinHint({ pinned: false, replaces: "Fix the build" })).toBe("Pin — replaces “Fix the build”");
     expect(pinHint({ pinned: false, replaces: null })).toBe("Pin — replaces the pinned window");

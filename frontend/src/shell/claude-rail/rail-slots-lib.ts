@@ -53,9 +53,16 @@
 // border, and the icon's caption names what goes (`pinHint`; a colour alone
 // says nothing to a reader who cannot see it).
 //
-// UNPINNING PUTS THE WINDOW BACK BY THE RAIL (owner's answer, 2026-11-18): it
-// becomes its section's non-pin, replacing one that is open — the mirror of
-// the rule above.
+// A PINNED WINDOW CLOSES BY ITS × (owner, 2026-11-19: "unpin should close it as
+// well, so instead of unpin filled pin icon it should be a 'x' button"): the
+// pin icon's seat, on a pinned window, is a × — the pin goes and the window
+// with it. (Until then the unpin put it back beside the rail as the non-pin.)
+//
+// WITH ANY WINDOW OPEN, A HOVER SAYS THE TITLE ONLY (owner, 2026-11-19: "when
+// we have a window already open pinned/non-pinned let's not show the full
+// overlay hover effect. rather … darker scrim and showing title tooltip
+// thing"): a pin, or a non-pin a click opened, in either section, and no ring,
+// face or door previews a card on a hover — a ring shows its row instead.
 //
 // A RING'S HOVER ROW DIMS ONLY THE NON-PIN (owner's answer: "do this only for
 // non pin windows because that is the one going to be replace"): the pin is
@@ -69,8 +76,8 @@
 // are, and the list's pair is drawn by the shell (rail-list-host-store) so a
 // page hop does not remount it. So: a pin's press leaves every pixel of its
 // card where it was; the pin it replaces fades out where it stood
-// (rail-move-store `pinEpoch`); an unpin glides the card to the rail, or
-// leaves it be if it never left; a push glides, and glides back.
+// (rail-move-store `pinEpoch`); its × fades it out where it is; a push
+// glides, and glides back.
 //
 // Everything here needs no DOM, so each rule is proved on its own
 // (rail-slots-lib.test.ts).
@@ -257,10 +264,10 @@ export function slotClick(o: { pinned: boolean; ownOpen: boolean }): SlotAct {
 }
 
 /** THE PIN ICON'S CAPTION (header "PINNING A NON-PIN REPLACES"): on a pinned
- *  window, "Unpin"; on a non-pin whose section has no pin, "Pin"; on one
+ *  window — its seat is the × there — "Close"; on a non-pin whose section has no pin, "Pin"; on one
  *  whose section has, what the press closes — by name when it has one. */
 export function pinHint(o: { pinned: boolean; replaces: string | null | false }): string {
-  if (o.pinned) return "Unpin";
+  if (o.pinned) return "Close";
   if (o.replaces === false) return "Pin";
   const name = (o.replaces ?? "").trim();
   return name ? `Pin — replaces “${name}”` : "Pin — replaces the pinned window";
