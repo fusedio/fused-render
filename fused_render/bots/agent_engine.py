@@ -690,10 +690,25 @@ def write_mcp_config(path: str, origin: str, bot_id: str, token: str, extra: dic
     return path
 
 
+#: Interpreter variables the packaged app's py2app launcher sets for ITS bundled Python. Inherited by the CLI's
+#: Bash commands they kill every other Python ("Failed to import encodings module": system or Homebrew python3, a
+#: user's own `fused`), so a bot's or an expert's `fused workbench run` failed. Same list task sessions strip
+#: (claude_agent/agent.py `_STRIPPED_PYTHON_ENV`); the shipped `fused` wrapper runs without them.
+_STRIPPED_PYTHON_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONINSPECT")
+
+
+def child_env() -> dict:
+    """The environment for a bot's or an expert's CLI process: this server's, minus `_STRIPPED_PYTHON_ENV`."""
+    env = dict(os.environ)
+    for name in _STRIPPED_PYTHON_ENV:
+        env.pop(name, None)
+    return env
+
+
 def _spawn(cmd: list, cwd: str):
     return subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        env=dict(os.environ), cwd=cwd,
+        env=child_env(), cwd=cwd,
         # posix_spawn, not fork(): see fused_render/executor.py `_run_python` (PROJ's atfork handler).
         close_fds=False,
         # Its own process group, so Stop takes botmcp.py down with the CLI.

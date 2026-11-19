@@ -267,7 +267,7 @@ def harness(bot, prompt: str, write: bool) -> dict:
                 out["error"] = CLOSED
                 return out
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    cwd=store.expert_dir(bot), env=dict(os.environ), close_fds=False,
+                                    cwd=store.expert_dir(bot), env=agent_engine.child_env(), close_fds=False,
                                     start_new_session=True)
             _PROCS.add(proc)
         try:
