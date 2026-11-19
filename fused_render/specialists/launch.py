@@ -8,8 +8,13 @@ the answer to the run dir, and `_claude_argv` folds it into the CLI's argv:
     append      one sentence saying which kind of session this is
     policy_env  for the update, FUSED_SPECIALIST_UNATTENDED: the permission server denies at once anything that
                 would raise a card, since nobody is there to answer it
+    workbench_skills  a main chat with the canvas tools only: hand the session the `workbench` plugin's format
+                skills (canvas.toml, UDFs, JSON-UI widgets), as a canvas task gets them
+    ask         a main chat with the canvas tools only: the tools that raise the approval card in every mode
+                (`canvas_create`, show.py)
 
-Nothing in it limits the session: the specialist runs free under its permission mode (the owner's decision). While a
+Apart from `ask`, nothing in it limits the session: the specialist runs free under its permission mode (the
+owner's decision). While a
 learning run goes, a main chat or breakout cannot start in the home. Anything wrong answers
 `{"error": sentence, "reason": code}` and the start is refused.
 """
@@ -20,7 +25,7 @@ import secrets
 import threading
 import time
 
-from fused_render.specialists import flag, history, paths, services, store, update
+from fused_render.specialists import flag, history, paths, services, show, store, update
 from fused_render.specialists import home as hm
 
 KINDS = ("main", "breakout", "update")
@@ -55,9 +60,10 @@ def check_token(spec_id: str, token: str) -> bool:
 
 
 # ------------------------------------------------------------------ servers ---
-def session_servers(spec: store.Specialist) -> dict:
+def session_servers(spec: store.Specialist, canvas: bool = False) -> dict:
     """`{name: mcp entry}`, one per services server: the bots' stdio pipe (`bots/botmcp.py`) pointed at
-    `/api/specialists/<id>/<server>/` (routes.py)."""
+    `/api/specialists/<id>/<server>/` (routes.py). `canvas` adds the main chat's `specialist_canvas` server
+    (show.py)."""
     from fused_render.bots import paths as bpaths
     from fused_render.claude_agent import agent_module
 
@@ -71,7 +77,7 @@ def session_servers(spec: store.Specialist) -> dict:
                      "args": [script, bpaths.server_origin_quiet(), spec.id, token,
                               f"api/specialists/{spec.id}/{server}", server],
                      "env": {"PYTHONUTF8": "1"}, "timeout": timeout, **agent._ALWAYS_LOAD_KEYS["claude"]}
-            for server in services.SERVERS}
+            for server in services.SERVERS + ((show.SERVER,) if canvas else ())}
 
 
 def spec(key: str, file: str) -> dict:
@@ -93,5 +99,9 @@ def spec(key: str, file: str) -> dict:
     if hm.rewrite_charter(s.home, s.name, s.about):  # a home made under an older charter
         history.commit(s.home, "Settings", ["CLAUDE.md"])
     history.commit_edits(s.home)
-    return {"kind": kind, "mcp_servers": session_servers(s), "append": APPEND[kind],
-            "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if run else {}}
+    canvas = kind == "main" and show.on()  # the main chat only: a breakout and a learning run show nothing
+    skills = canvas and show.skills()
+    return {"kind": kind, "mcp_servers": session_servers(s, canvas),
+            "append": APPEND[kind] + (" " + show.note(skills) if canvas else ""),
+            "policy_env": {"FUSED_SPECIALIST_UNATTENDED": "1"} if run else {},
+            **({"ask": show.ASK} if canvas else {}), **({"workbench_skills": True} if skills else {})}

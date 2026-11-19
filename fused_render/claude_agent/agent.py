@@ -1418,7 +1418,7 @@ def _canvas_of(target: str) -> dict | None:
     return {"env": parts[0], "name": parts[2], "clone": clone, "node": node}
 
 
-def _plugin_argv(target: str | None = None) -> list:
+def _plugin_argv(target: str | None = None, workbench: bool = False) -> list:
     """One `--plugin-dir <root>` per plugin root fused-render has to hand this
     session for THIS target, or `[]`.
 
@@ -1449,8 +1449,13 @@ def _plugin_argv(target: str | None = None) -> list:
 
     The flag is repeatable, so the roots compose rather than needing a merged
     tree; either can be absent independently, and `target=None` (no target
-    resolved yet) gets the ungated root only."""
-    return [arg for root in _skill_plugin_roots(target)
+    resolved yet) gets the ungated root only.
+
+    `workbench` hands the workbench root to a session OUTSIDE the gate roots
+    that authors canvas nodes all the same: a specialist's main chat with the
+    canvas tools (its launch spec's `workbench_skills`, specialists/show.py),
+    whose target is the specialist's home."""
+    return [arg for root in _skill_plugin_roots(target, workbench)
             for arg in ("--plugin-dir", root)]
 
 
@@ -5106,7 +5111,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                        + ["Read(//%s/*/%s)" % (_wire_path(d).lstrip("/"), tail)
                           for d in _both_spellings([task["root"]])
                           for tail in ("memory.md", ".claude/skills/**")] if task else []))]
-    cmd += _plugin_argv(file)
+    cmd += _plugin_argv(file, workbench=bool(spec and spec.get("workbench_skills")))
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
     # APP FOLDER still does NOT get a scoping prompt — the session should be plain
@@ -5211,6 +5216,11 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     if denies:
         deny = settings.setdefault("permissions", {}).setdefault("deny", [])
         deny += [rule for rule in denies if rule not in deny]
+    if spec and spec.get("ask"):
+        # A specialist's gated tools (canvas_create) show the user's card in
+        # every mode, Auto included.
+        ask = settings.setdefault("permissions", {}).setdefault("ask", [])
+        ask += [rule for rule in spec["ask"] if isinstance(rule, str) and rule not in ask]
     if task:
         # The breakout tool always shows the user's card, in every mode.
         settings.setdefault("permissions", {}).setdefault("ask", []).append(
@@ -5526,14 +5536,14 @@ _COPILOT_PLUGIN_MANIFEST = {"name": "fused", "version": "0.0.1",
                             "description": "fused-render chat context"}
 
 
-def _skill_plugin_roots(target: str | None = None) -> list:
+def _skill_plugin_roots(target: str | None = None, workbench: bool = False) -> list:
     """The plugin roots `_plugin_argv` would pass, as paths: fused-render's
     own skills always, the workbench plugin's only for a target inside one of
     the gate roots (`_in_workbench_root`: the canvas-clones root, or Fused
     Web's `~/Fused/canvas`). Split out so the Copilot plugin builder shares
     the gate without the flags."""
     roots = [_skill_plugin_dir()]
-    if target and _in_workbench_root(target):
+    if workbench or (target and _in_workbench_root(target)):
         roots.append(_workbench_plugin_dir())
     return [r for r in roots if r]
 
