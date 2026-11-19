@@ -47,6 +47,12 @@ sends one, a breakout's conversation as each of its turns ends, and the conversa
 specialist as each of its turns ends. "Notes waiting" lists all three. Decided after the owner's first test: a
 breakout that left nothing in the inbox read as "no learning".
 
+Extended the same day at the owner's request (not built yet when written): the specialist's own main chat is
+written to the inbox too, as each of its turns ends, in the same way as a breakout. When the user explicitly asks
+it to remember something it still writes memory at once; the inbox copy is the fallback, so anything said in the
+main chat that it did not write down is still read by the next update. The update's own turns are never written
+to the inbox.
+
 ## Cut list
 
 Removed from version 1: the side panel; the Learned tab; the general inbox and "Send to a specialist"; the People
