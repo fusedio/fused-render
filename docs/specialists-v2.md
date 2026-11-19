@@ -92,6 +92,15 @@ specialist's context, and not enforced by the app. The memory archive is kept by
 run's prompt and the specialist's description say to do it). An entry the user deletes from Waiting is really
 deleted, since it was never learned from.
 
+## Decision, 2026-11-19: the learning run is not fenced
+
+The owner asked why the learning run's tools were constrained and chose to open them up. It runs with the same
+tools as the specialist's own chat, in Claude Code's Auto mode, where the harness's own classifier decides what is
+safe. Two limits remain because nobody is watching, not because the run is distrusted: anything that would wait for
+a person is refused at once, and a send to a connected service still needs approval, so an unattended run cannot
+send. Accepted risk: transcripts contain other programs' output, and the run acts on what it reads without a
+person in the loop.
+
 ## Cut list
 
 Removed from version 1: the side panel; the Learned tab; the general inbox and "Send to a specialist"; the People
