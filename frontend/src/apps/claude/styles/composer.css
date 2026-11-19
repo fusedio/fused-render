@@ -741,8 +741,8 @@ select.c-pill {
 /* …and under the pointer too: the pill's own hover would repaint it neutral. */
 .c-pill.c-micbtn.is-rec:hover:not(:disabled),
 .c-mic-idle.is-rec:hover {
-  background-color: #d9363e;
-  color: #fff;
+  background-color: var(--rec-bg);
+  color: var(--rec-fg);
 }
 .c-pill.c-micbtn.is-rec:hover:not(:disabled) {
   filter: brightness(1.1);

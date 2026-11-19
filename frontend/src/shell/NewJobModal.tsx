@@ -5170,13 +5170,14 @@ export default function NewJobModal({
     },
     onMessage: (title, tone) => notify({ title, tone }),
     // The box takes the caret back, unless the reader has gone to type
-    // somewhere outside this card meanwhile (the chat composer's rule).
+    // somewhere else meanwhile (the chat composer's rule).
     onSettled: () => {
       const box = askRef.current;
       if (!box) return;
+      // Any other field, this card's own included: pulling the caret out of
+      // a half-typed time would commit it on blur.
       const at = box.ownerDocument.activeElement;
-      const card = box.closest('[role="dialog"]');
-      if (at && at !== box.ownerDocument.body && !card?.contains(at)) return;
+      if (at && at !== box.ownerDocument.body && at !== box) return;
       box.focus({ preventScroll: true });
     },
     doc: () => askRef.current?.ownerDocument,
@@ -5285,6 +5286,14 @@ export default function NewJobModal({
     };
   }, [pendingEntry, pendingSession, pendingKick]);
   const chatOpen = !!landingChat || !!pendingEntry;
+  // THE LANDING GOES BEHIND A CHAT (`chatOpen` hides the composer below): the
+  // mic's hook is still mounted, so a take would go on recording with no
+  // button to stop it, and its Esc would be taken from the chat. The take goes
+  // with the composer; the draft text stays.
+  const micCancel = mic.cancel;
+  useLayoutEffect(() => {
+    if (chatOpen) micCancel();
+  }, [chatOpen, micCancel]);
   const leaveChat = () => {
     setLandingChat(null);
     setPendingEntry(null);
@@ -6356,6 +6365,11 @@ export default function NewJobModal({
               // pin hands it over (`popPinned` below).
               autoFocus={popover?.pinned !== false}
             />
+            {canDictate && (
+              <span className="sr-only" role="status">
+                {mic.busy ? mic.note || "Transcribing…" : ""}
+              </span>
+            )}
             {menuOpen && (
               <CommandMenu
                 id={menuId}

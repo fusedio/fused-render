@@ -1580,8 +1580,8 @@ button.new-task-source:focus-visible {
 .new-task-dialog .nt-composer .nt-mic.is-rec:hover:not(:disabled) {
   width: auto;
   padding: 0 9px;
-  background: #d9363e;
-  color: #fff;
+  background: var(--rec-bg);
+  color: var(--rec-fg);
 }
 
 .new-task-dialog .nt-composer .nt-mic.is-rec svg {

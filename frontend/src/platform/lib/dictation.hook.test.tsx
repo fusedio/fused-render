@@ -134,6 +134,32 @@ test("cancel() while transcribing: the words that come back land nowhere, and no
   m.unmount();
 });
 
+test("cancel() while the microphone is still opening: the take that arrives is not kept", async () => {
+  // CodeRabbit, PR #2372: with no handle yet, `cancel()` had nothing to stop,
+  // and the capture that resolved afterwards recorded into the next chat.
+  const w = world("for the other chat");
+  const capture = w.deps.capture!;
+  let open!: () => void;
+  const opening = new Promise<void>((r) => (open = r));
+  w.deps.capture = async (...args) => {
+    await opening;
+    return capture(...args);
+  };
+  const m = mount(w);
+  await act(async () => m.mic().toggle());
+  await act(async () => m.mic().cancel());
+  open();
+  await tick();
+  expect(w.cancelled).toBe(1);
+  expect(m.mic().rec).toBe(false);
+  // …and the button is free for the next take.
+  w.deps.capture = capture;
+  await act(async () => m.mic().toggle());
+  await tick();
+  expect(m.mic().rec).toBe(true);
+  m.unmount();
+});
+
 test("unmounting mid-recording cancels the take nobody could stop any more", async () => {
   const w = world("never");
   const m = mount(w);

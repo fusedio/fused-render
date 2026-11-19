@@ -386,6 +386,10 @@ export function useDictation(opts: DictationOptions): Dictation {
   const start = async (): Promise<void> => {
     if (busy.current || take.current || starting.current) return;
     starting.current = true;
+    // `cancel()` while the microphone is still opening has no handle to stop,
+    // so the start itself checks whether it is still wanted when it lands.
+    const mine = gen.current;
+    const wanted = () => live.current && gen.current === mine;
     let rec: AudioRecording;
     try {
       rec = await (o.current.deps?.capture || captureAudio)({
@@ -395,16 +399,16 @@ export function useDictation(opts: DictationOptions): Dictation {
       });
     } catch (e) {
       const refused = (e as { type?: string } | null)?.type === "unavailable";
-      if (live.current) {
+      if (wanted()) {
         o.current.onMessage(refused ? errText(e) : `Could not start the microphone: ${errText(e)}`, "error");
       }
       return;
     } finally {
       starting.current = false;
     }
-    // The composer left while the microphone was opening: nobody is there to
-    // stop this take, so it is not kept.
-    if (!live.current) {
+    // The composer left — or its box became another conversation's — while
+    // the microphone was opening: this take is nobody's, so it is not kept.
+    if (!wanted()) {
       void rec.cancel().catch(() => undefined);
       return;
     }

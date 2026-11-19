@@ -1790,7 +1790,7 @@ export function ComposerCard({
       if (!box || box.disabled) return;
       const doc = box.ownerDocument;
       const at = doc.activeElement;
-      if (at && at !== doc.body && !formRef.current?.contains(at)) return;
+      if (at && at !== doc.body && at !== box) return;
       box.focus({ preventScroll: true });
     },
     doc: () => boxRef.current?.ownerDocument,
@@ -1802,8 +1802,10 @@ export function ComposerCard({
   // being given its session id ("" → id) is the same conversation, not a
   // switch.
   const micCancel = mic.cancel;
+  // A LAYOUT effect: it runs inside the commit that re-points the card, so no
+  // transcript can be delivered between that commit and the cancel.
   const micChat = useRef({ sessionId, file });
-  useEffect(() => {
+  useLayoutEffect(() => {
     const was = micChat.current;
     micChat.current = { sessionId, file };
     if (was.file !== file || (!!was.sessionId && was.sessionId !== sessionId)) micCancel();
@@ -2621,6 +2623,14 @@ export function ComposerCard({
           }}
           {...(onPaste ? { onPaste } : {})}
         />
+        {/* WHAT THE TRANSCRIPTION IS DOING, SAID ALOUD: the placeholder only
+            shows in an empty box, and the mic's tooltip needs a pointer. A
+            polite live region, outside the measured row. */}
+        {dictate ? (
+          <span className="sr-only" role="status">
+            {mic.busy ? mic.note || "Transcribing…" : ""}
+          </span>
+        ) : null}
         {/* THE AGENT IS OFF (D17): the placeholder says so; this is the link. */}
         {blockedNote ? <div className="c-queued c-blocked-note">{blockedNote}</div> : null}
         {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding,
