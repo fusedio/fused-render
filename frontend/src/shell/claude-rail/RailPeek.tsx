@@ -216,7 +216,7 @@ import {
   type RailWindow,
 } from "./rail-move-lib";
 import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
-import { useCardMove } from "./useCardMove";
+import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
 import { useRailFreePins } from "./rail-free-pins-flag";
 import { placeColumn } from "./rail-slots-lib";
 
@@ -692,6 +692,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const [resizing, setResizing] = useState<MoveEdge | null>(null);
   const resizingRef = useRef<MoveEdge | null>(null);
   resizingRef.current = resizing;
+  useRailResizing(resizing !== null);
   const dragStart = useRef<{
     x: number;
     y: number;
@@ -1774,6 +1775,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     );
   };
 
+  // A FREE PIN IS DRAWN WHERE ITS WINDOW STANDS THIS RENDER (owner, 2026-11-19:
+  // a pushed pin trailed the edge of the window being resized): `box` follows
+  // the window's position through a placement effect, a render or two behind;
+  // the position itself (`move.pos`, pushed and all) is in hand now. The size
+  // is the box's. Not while this card's own grip is held: the grip moves it.
+  const drawn = freePins && move.floating && !resizing ? drawnBox(box, move.pos) : box;
   return createPortal(
     <>
     {bridge && (
@@ -1804,10 +1811,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       data-shot-own=""
       aria-label={head ? `${head.label} — preview` : "Chat preview"}
       style={
-        box
+        drawn
           ? view?.pulse.session_id
-            ? { left: box.left, top: box.top, width: box.width, height: box.height }
-            : { left: box.left, top: box.top, width: box.width }
+            ? { left: drawn.left, top: drawn.top, width: drawn.width, height: drawn.height }
+            : { left: drawn.left, top: drawn.top, width: drawn.width }
           : undefined
       }
       onPointerEnter={onPointerEnter}

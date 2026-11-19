@@ -91,7 +91,7 @@ import {
 } from "./rail-move-lib";
 import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
 import { useRailFreePins } from "./rail-free-pins-flag";
-import { useCardMove } from "./useCardMove";
+import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
 import {
   FAV_HEIGHT,
   FAV_WIDTH,
@@ -286,6 +286,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const [resizing, setResizing] = useState<MoveEdge | null>(null);
   const resizingRef = useRef<MoveEdge | null>(null);
   resizingRef.current = resizing;
+  useRailResizing(resizing !== null);
   const dragStart = useRef<{
     x: number;
     y: number;
@@ -637,6 +638,12 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
       ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
       : null;
 
+  // A FREE PIN IS DRAWN WHERE ITS WINDOW STANDS THIS RENDER (owner, 2026-11-19:
+  // a pushed pin trailed the edge of the window being resized): `box` follows
+  // the window's position through a placement effect, a render or two behind;
+  // the position itself (`move.pos`, pushed and all) is in hand now. The size
+  // is the box's. Not while this card's own grip is held: the grip moves it.
+  const drawn = freePins && move.floating && !resizing ? drawnBox(box, move.pos) : box;
   return createPortal(
     <>
       {bridge && (
@@ -654,7 +661,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
         className={"claude-rail-peek claude-rail-bot-peek favs-on" + (visible ? " is-on" : "") + (resizing ? " is-resizing" : "") + move.className}
         role="dialog"
         aria-label={view ? `${name} — chat` : "Bot chat"}
-        style={box ? { left: box.left, top: box.top, width: box.width, height: box.height } : undefined}
+        style={drawn ? { left: drawn.left, top: drawn.top, width: drawn.width, height: drawn.height } : undefined}
         onPointerEnter={onPointerEnter}
         onPointerLeave={onPointerLeave}
         onPointerDownCapture={onPressInsideCapture}

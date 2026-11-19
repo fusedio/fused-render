@@ -68,7 +68,7 @@ import {
   type MoveEdge,
 } from "./rail-move-lib";
 import { commitWindowBox, freezeFromDock, magnetBox, usePusher, useWindowBox } from "./rail-move-store";
-import { useCardMove } from "./useCardMove";
+import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
 import { railFreePinsNow, useRailFreePins } from "./rail-free-pins-flag";
 import { placeColumn } from "./rail-slots-lib";
 import {
@@ -266,6 +266,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const [resizing, setResizing] = useState<MoveEdge | null>(null);
   const resizingRef = useRef<MoveEdge | null>(null);
   resizingRef.current = resizing;
+  useRailResizing(resizing !== null);
   const dragStart = useRef<{
     x: number;
     y: number;
@@ -632,6 +633,12 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
       ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
       : null;
 
+  // A FREE PIN IS DRAWN WHERE ITS WINDOW STANDS THIS RENDER (owner, 2026-11-19:
+  // a pushed pin trailed the edge of the window being resized): `box` follows
+  // the window's position through a placement effect, a render or two behind;
+  // the position itself (`move.pos`, pushed and all) is in hand now. The size
+  // is the box's. Not while this card's own grip is held: the grip moves it.
+  const drawn = freePins && move.floating && !resizing ? drawnBox(box, move.pos) : box;
   return createPortal(
     <>
       {bridge && (
@@ -651,7 +658,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
         }
         role="dialog"
         aria-label={ariaLabel}
-        style={box ? { left: box.left, top: box.top, width: box.width, height: box.height } : undefined}
+        style={drawn ? { left: drawn.left, top: drawn.top, width: drawn.width, height: drawn.height } : undefined}
         onPointerEnter={() => intent.enterCard()}
         onPointerLeave={() => intent.leaveCard()}
         onPointerDownCapture={() => {

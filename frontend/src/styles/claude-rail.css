@@ -905,6 +905,17 @@ html.rail-card-moving iframe {
 .modal-popover.is-free-pin.is-front {
   z-index: 43;
 }
+/* A PIN PUSHED BY A WINDOW THAT IS BEING RESIZED FOLLOWS ITS EDGE, NO GLIDE
+   (`html.rail-card-resizing`, useCardMove `setRailResizing`; Akshil,
+   2026-11-19: "when we resize the non-pin window the movement of pinned
+   windows based on that is a bit sluggish and not responsive"): the glide is
+   for a push that lands all at once — a window opening or closing — and under
+   a grip it trailed the dragged edge by its own length. */
+html.rail-card-resizing .claude-rail-peek.is-free-pin,
+html.rail-card-resizing .claude-rail-peek.is-free-pin .claude-rail-peek-card,
+html.rail-card-resizing .modal-popover.is-free-pin .modal-dialog {
+  transition: none;
+}
 /* THE PIN A NON-PIN'S PIN ICON IS ABOUT TO REPLACE (`.is-doomed`,
    rail-slots-store; Akshil, 2026-11-18: "we show the pin task window border
    subtle red so we know this task is going to be killed"): a hairline in the
