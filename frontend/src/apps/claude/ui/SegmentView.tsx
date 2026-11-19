@@ -18,6 +18,7 @@ import { cn } from "@platform/lib/utils";
 import { groupCollapsibles, isRun, leadSplit, seatTriggers, type CollapsibleRun } from "../protocol/segments";
 import { segText } from "../protocol/summaries";
 import type { Segment } from "../protocol/types";
+import { viewCardOf } from "../specialists/view-card";
 import { Caret } from "./Caret";
 import { cardKey, runKey, useCardOpens } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
@@ -27,6 +28,7 @@ import { runWhenWords } from "./run-when";
 import { ThinkingView } from "./ThinkingView";
 import { ToolChip } from "./ToolChip";
 import { useMinuteTick } from "./useMinuteTick";
+import { ViewCard } from "./ViewCard";
 
 /** Numbers segment containers, for the position keys a thinking block is kept
  *  folded by (T:15196 `cardSeq`). */
@@ -207,7 +209,16 @@ export const SegmentView = memo(function SegmentView({
         node
       );
     if (seg.kind === "tool") {
-      nodes.push(withFiled(<ToolChip key={key} seg={seg} cardKey={key} cwd={cwd} nested={nested} />));
+      const view = viewCardOf(seg);
+      nodes.push(
+        withFiled(
+          view ? (
+            <ViewCard key={key} view={view} />
+          ) : (
+            <ToolChip key={key} seg={seg} cardKey={key} cwd={cwd} nested={nested} />
+          ),
+        ),
+      );
       return;
     }
     if (seg.kind === "thinking") {

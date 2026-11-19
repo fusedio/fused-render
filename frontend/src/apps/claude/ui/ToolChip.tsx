@@ -17,6 +17,7 @@ import { cn } from "@platform/lib/utils";
 import { chipHint, chipWhen } from "./run-when";
 import { useMinuteTick } from "./useMinuteTick";
 import { specialistToolLabel } from "../specialists/tool-labels";
+import { canvasToolLabel } from "../specialists/view-card";
 
 import {
   SIDECAR_KEYS,
@@ -490,7 +491,9 @@ function ChipHeaderView({
 }: ChipHeaderProps & { model: SubagentChipModel }) {
   const pretty = seg.orphan
     ? model.title
-    : (specialistToolLabel(raw, seg.input?.specialist, seg.status !== "running") ?? prettyToolName(raw));
+    : (specialistToolLabel(raw, seg.input?.specialist, seg.status !== "running") ??
+      canvasToolLabel(raw, seg.input, seg.status !== "running") ??
+      prettyToolName(raw));
   // A COPILOT TOOL WE HAVE NO NAME FOR arrives under its free-text ACP title
   // (D14) and draws as a plain chip; its ACP `kind` ("execute", "edit",
   // "fetch", …) is the one classifier it has, so it rides as the chip's hint

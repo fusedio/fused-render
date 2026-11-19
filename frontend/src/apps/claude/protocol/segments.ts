@@ -21,6 +21,7 @@
 //     the payload before handing a span to `pollBody`. Nothing here guesses a
 //     boundary; the old frozen `segBase`/`textBase` pair did, and got it wrong
 //     by however much of the first reply streamed after the send (feedback #9).
+import { viewCardOf } from "../specialists/view-card";
 import type { Segment, ToolSegment, ToolStatus } from "./types";
 
 /** T:15637 — a segment's text, or "" for one that has none. */
@@ -123,7 +124,9 @@ export function isRun(row: GroupedRow | null | undefined): row is CollapsibleRun
 /** The kinds that collapse: everything that is not prose. `viewKind` maps a
  *  hole and anything a newer agent.py invents to "text", so both break a run. */
 function isCollapsible(seg: Segment | null | undefined): seg is Segment {
-  return !!seg && viewKind(seg) !== "text";
+  // A specialist's `show` row is a card the user opens (ui/ViewCard), so it
+  // never folds behind "more".
+  return !!seg && viewKind(seg) !== "text" && !viewCardOf(seg);
 }
 
 /** The `ToolStatus` members (protocol/types.ts) that mean the call is OVER.

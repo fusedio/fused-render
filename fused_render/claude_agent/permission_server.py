@@ -932,7 +932,9 @@ def _handle_approve(args: dict) -> dict:
                       "message": "Nobody is here to approve this; it is refused."})
     # A specialist breakout asks every time: it is how the user opens one, so
     # the chat's "Always approve" never answers for it.
-    if tool_name != SPECIALIST_BREAKOUT and _chat_allows(tool_name, tool_input):
+    # Nor for a specialist's new canvas: each one is the user's to approve.
+    if (tool_name not in (SPECIALIST_BREAKOUT, SPECIALIST_CANVAS_CREATE)
+            and _chat_allows(tool_name, tool_input)):
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
 
@@ -2278,6 +2280,9 @@ EXPERT_SCHEMAS = [
 
 SPECIALIST_TOOLS = ("specialist_pull", "specialist_note", "specialist_breakout")
 SPECIALIST_BREAKOUT = "mcp__fused_render__specialist_breakout"
+# A specialist's own `canvas_create` (specialists/show.py), on its session's
+# `specialist_canvas` server: it makes a canvas on the user's Fused account.
+SPECIALIST_CANVAS_CREATE = "mcp__specialist_canvas__canvas_create"
 
 
 def _specialist_origin() -> str:
