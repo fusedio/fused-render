@@ -79,7 +79,8 @@ export function holdReasons(task: Task, facts: WorkspaceFacts): string[] {
     if (!ref.repo) continue; // no repo, no status lookup: never resolvable
     const state = facts.prStates[prKey(ref)];
     if (state === "open" || state === "draft") out.push(`PR #${ref.number} ${state}`);
-    else if (state !== "merged" && state !== "closed") out.push(`PR #${ref.number} unknown`);
+    else if (state === undefined) out.push(`PR #${ref.number} checking`);
+    else if (state === null) out.push(`PR #${ref.number} unknown`);
   }
   const bg = task.background_jobs?.count ?? 0;
   if (bg > 0) out.push(count(bg, "bg job", "bg jobs"));
@@ -127,6 +128,14 @@ export function visibleReasons(reasons: readonly string[], group?: WorkspaceGrou
     return true;
   });
 }
+
+/** A hold reason still waiting on an answer: the worktree poll ("checking") or
+ *  a PR's GitHub status ("PR #7 checking"). The card draws these as a shimmer. */
+export const CHECKING_REASON = /^(PR #\d+ )?checking$/;
+
+/** A PR whose status lookup came back without an answer (GitHub did not say,
+ *  or the ask failed). Unlike "PR #7 checking" it is settled: a static label. */
+export const PR_UNKNOWN_REASON = /^PR #\d+ unknown$/;
 
 /** The hold reasons the worktree counts produce ("3 uncommitted", "2 unpushed"). */
 export const DIRTY_REASON = /^\d+ (uncommitted|unpushed)$/;

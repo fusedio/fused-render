@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { createElement } from "react";
 import { act, create } from "react-test-renderer";
 import { dropSharedPrefsRead, type Task } from "@platform/lib/api";
+import { resetPrStatusForTests } from "@platform/lib/prStatus";
 
 const { TaskWorkspace } = await import("./TaskWorkspace");
 
@@ -609,7 +610,7 @@ test("holds not loaded yet: the card shows a shimmer pill in the badge slot, not
   expect(card.findByProps({ className: "skel-bar ws-skel" }).props["aria-hidden"]).toBe("true");
   expect(card.findByProps({ className: "ws-card-facts" }).props["aria-busy"]).toBe("true");
   expect(card.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
-  expect(text(card).toLowerCase().replace("checking worktree", "")).not.toContain("checking");
+  expect(text(card).toLowerCase().replace("checking status", "")).not.toContain("checking");
 });
 
 test("a failed holds load still shows 'unknown' as text, with no shimmer", async () => {
@@ -621,6 +622,37 @@ test("a failed holds load still shows 'unknown' as text, with no shimmer", async
   const card = r.root.findByProps({ "data-key": "a" });
   expect(text(card.findByProps({ className: "ws-badge ws-marker" }))).toBe("unknown");
   expect(card.findAllByProps({ className: "skel-bar ws-skel" })).toHaveLength(0);
+});
+
+test("a PR status still being asked shimmers, never prints 'PR #N unknown'", async () => {
+  resetPrStatusForTests();
+  globalThis.fetch = mock(async (url: string) => {
+    if (url === "/api/tasks/pr-status") return new Promise<Response>(() => {});
+    return new Response(JSON.stringify(url === "/api/tasks/ports" ? { ports: {} } : {}), { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await render([task({ key: "a", prs: [{ repo: "o/r", number: 5 }] } as Partial<Task>)]);
+  const card = r.root.findByProps({ "data-key": "a" });
+  expect(card.findAllByProps({ className: "skel-bar ws-skel" })).toHaveLength(1);
+  expect(card.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
+  expect(text(card)).not.toContain("unknown");
+  resetPrStatusForTests();
+});
+
+test("a PR status GitHub did not give is one short static badge, no shimmer", async () => {
+  resetPrStatusForTests();
+  serve();
+  const r = await render([
+    task({ key: "a", prs: [{ repo: "o/r", number: 5 }, { repo: "o/r", number: 6 }] } as Partial<Task>),
+  ]);
+  await act(async () => {
+    await new Promise((res) => setTimeout(res, 0));
+  });
+  const card = r.root.findByProps({ "data-key": "a" });
+  const badge = card.findByProps({ className: "ws-badge ws-marker" });
+  expect(text(badge)).toBe("PR status ?");
+  expect(badge.props.title).toBe("No GitHub status for #6, #5");
+  expect(card.findAllByProps({ className: "skel-bar ws-skel" })).toHaveLength(0);
+  resetPrStatusForTests();
 });
 
 // ---- Pins -------------------------------------------------------------------
