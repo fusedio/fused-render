@@ -305,22 +305,28 @@
     running = true;
     queued = false;
     const handle = udf.run(undefined, { confirm: opts.onOpen ? false : undefined });
+    // Set the moment this run's own outcome (an answer or an error) is in:
+    // from then on the saved copy is never drawn, however late its bytes
+    // arrive. `shownFrom` cannot say this — an error resets it to null.
+    let settled = false;
     if (opts.onOpen) {
       handle.saved.then((saved) => {
-        // The fresh answer may already be on screen; a saved one never
-        // replaces it (showAnswer checks again once the bytes are in).
-        if (saved && running && shownFrom === null) void showAnswer(saved, () => shownFrom === null);
+        if (saved && !settled) void showAnswer(saved, () => !settled);
       });
     }
     setRunning(true);
     try {
-      await showAnswer(await handle);
+      const fresh = await handle;
+      settled = true;
+      await showAnswer(fresh);
     } catch (error) {
+      settled = true;
       if (error.code === "udf_error") {
         showError(error);
-      } else if (error.code === "declined") {
-        // Decided on whether a saved copy EXISTS, not on whether it has
-        // finished drawing: the worker's answer can beat its bytes.
+      } else if (error.code === "declined" && error.execution_type) {
+        // A batch job / batch work / map not run. Decided on whether a saved
+        // copy EXISTS, not on whether it has finished drawing: the worker's
+        // answer can beat its bytes.
         if (opts.onOpen && !(await handle.saved)) {
           // Nothing saved to show: ask now, as a save or Run would.
           queued = true;
@@ -328,6 +334,10 @@
           setStatus(error.reason || "Not run");
           idle((error.reason || "This UDF was not run") + ". Press Run to run it.");
         }
+      } else if (error.code === "declined") {
+        // "Don't load" on a large result: nothing runs again for it.
+        setStatus("Not loaded");
+        idle(error.message.charAt(0).toUpperCase() + error.message.slice(1) + ".");
       } else {
         // The run never happened or never arrived (signed out, a timeout):
         // nothing of the last result is thrown away for it.
