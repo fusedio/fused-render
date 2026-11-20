@@ -553,6 +553,20 @@ def _non_claude(backend: str) -> bool:
 # Claude evaluate the request, not having nobody evaluate it.
 SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
 
+#: The modes a card's "Allow, and accept edits" / "Allow, and stop asking"
+#: really moves a LIVE session into, per backend: Claude (permission_server's
+#: `setMode`), Gemini and Cursor (the host's own mode) move for both; Codex
+#: and Copilot move only for `auto` (their "accept edits" narrows to the
+#: card's own tool); OpenCode never moves (a respawn). `_decide` records a
+#: moved mode in host.json, so a later picker change is compared against the
+#: mode the session is really in — without it, picking Ask after "…stop
+#: asking" read as "no change" and the session kept auto-approving.
+_CARD_MODE_MOVES = {
+    "claude": SWITCHABLE_MODES, "gemini": SWITCHABLE_MODES,
+    "cursor": SWITCHABLE_MODES,
+    "codex": frozenset({"auto"}), "copilot": frozenset({"auto"}),
+}
+
 # The one tool whose card is not an approval: `AskUserQuestion` is the model
 # asking the USER something, so what goes back is an answer. `decide` carries it
 # as `answers` (a record keyed by the exact question text, value = the chosen
@@ -4140,6 +4154,10 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
     res = _read_decision(perm_dir, request_id, wait=DECISION_WRITE_WINDOW)
     if not res.get("decision"):
         return {"error": "could not record that decision"}
+    moved = res.get("mode") if res.get("decision") == "allow" else None
+    if moved in _CARD_MODE_MOVES.get(_run_backend(run_dir), ()):
+        _record_host_mode(run_dir, _backend_mode(_run_backend(run_dir),
+                                                 PERMISSION_MODES[moved]))
     landed = res.get("answers")
     return {"decided": request_id,
             "decision": str(res["decision"]),
@@ -8513,23 +8531,43 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
             _cancel(run_id, interrupt_first=False)
             return {"respawn": True}
         _write_control_request(run_dir, "set_permission_mode", mode=cli_mode)
-        # TWO WRITERS (the Claude host writes host.json at spawn, the Copilot
-        # and Codex hosts rewrite it after their handshake to add their
-        # session id): re-read
-        # just before writing, change only "mode", replace atomically. Gone by
-        # now (the host reaped) -> nothing to record into.
-        try:
-            with open(path, encoding="utf-8") as fh:
-                fresh = json.load(fh)
-            if isinstance(fresh, dict):
-                fresh["mode"] = cli_mode
-                tmp = f"{path}.{os.urandom(4).hex()}.tmp"
-                with _private_open(tmp) as f:
-                    json.dump(fresh, f)
-                os.replace(tmp, path)
-        except (OSError, ValueError):
-            pass
+        _record_host_mode(run_dir, cli_mode)
     return {"ok": True, "mode": page_mode}
+
+
+def _record_host_mode(run_dir: str, cli_mode) -> None:
+    """host.json's "mode": the CLI-wire mode the live session is in, which
+    `_set_mode` compares a picker change against. TWO WRITERS (the Claude
+    host writes host.json at spawn, the Copilot and Codex hosts rewrite it
+    after their handshake to add their session id): re-read just before
+    writing, change only "mode", replace atomically. Gone by now (the host
+    reaped) -> nothing to record into."""
+    path = os.path.join(run_dir, "host.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            fresh = json.load(fh)
+        if isinstance(fresh, dict):
+            fresh["mode"] = cli_mode
+            tmp = f"{path}.{os.urandom(4).hex()}.tmp"
+            with _private_open(tmp) as f:
+                json.dump(fresh, f)
+            os.replace(tmp, path)
+    except (OSError, ValueError):
+        pass
+
+
+def _run_backend(run_dir: str) -> str:
+    """The backend a run belongs to, as `_set_mode` reads it: host.json's
+    when it names one, else meta.json's."""
+    def _read(name):
+        try:
+            with open(os.path.join(run_dir, name), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+    host = _read("host.json")
+    return _meta_backend(host if host.get("backend") in BACKENDS else _read("meta.json"))
 
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
