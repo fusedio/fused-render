@@ -168,17 +168,20 @@ describe("Bots are hidden where the server runs none (Windows)", () => {
     expect(botsAvailable(null)).toBe(true);
   });
 
-  it("the sidebar drops the row, the rail item and the poll", () => {
+  it("the sidebar drops the poll always, and the row and rail item unless Specialists are on", () => {
     expect(SIDEBAR).toContain("useBotsPulse(botsOn)");
-    // `botsRow` = botsOn and not moved to the Claude rail (rail flag).
-    expect(SIDEBAR).toContain("const botsRow = botsOn && !railNav;");
+    // `botsRow` = Bots or Specialists here, and not moved to the Claude rail (rail flag). With Specialists on and no
+    // bots (Windows) the row stays: the page lists the specialists alone.
+    expect(SIDEBAR).toContain("const botsRow = (botsOn || specialistsOn) && !railNav;");
     expect(SIDEBAR).toContain("{botsRow && (");
     expect(SIDEBAR).toMatch(/\.\.\.\(botsRow\s*\?\s*\[\s*\{\s*key: "bots"/);
   });
 
-  it("the route redirects Home and the page never mounts", () => {
-    expect(APP).toContain("isBotsPath(pathname) && botsOn");
-    expect(APP).toMatch(/!botsOn && isBotsPath\(location\.pathname\)/);
+  it("the route redirects Home and the page never mounts — once Specialists are KNOWN off", () => {
+    // Not on the first render: the specialists flag is "not read yet" there, and a bookmarked /bots must survive it.
+    expect(APP).toContain("const botsPageOn = botsOn || specialistsKnown !== false;");
+    expect(APP).toContain("isBotsPath(pathname) && botsPageOn");
+    expect(APP).toMatch(/!botsPageOn && isBotsPath\(location\.pathname\)/);
   });
 
   it("onboarding hides the Chrome group on n/a", () => {
