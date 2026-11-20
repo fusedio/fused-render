@@ -201,8 +201,11 @@ async def main() -> None:
         task = asyncio.create_task(handler(req))
         tasks.add(task)
         task.add_done_callback(tasks.discard)
-    # stdin closed: the server is gone or stopping us. In-flight runs are
-    # abandoned; nobody is left to read their answers.
+    # stdin closed: the server is gone or stopping us. Runs already started
+    # finish and answer (a reader that is still there gets them); the
+    # runner's stop() kills the process if that takes longer than it waits.
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":

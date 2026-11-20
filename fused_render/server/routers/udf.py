@@ -11,7 +11,8 @@ Socket protocol (text frames, JSON):
           {op: "schema", id, ref}
           {op: "cancel", id}
   server -> the frames service.run / service.schema send, each with the
-          request's `id`.
+          request's `id`. A page that leaves does not cancel its runs: they
+          finish and are saved for the next open.
 
 Guarded like `/api/run/ws`: the Origin must be this server (`ws_origin_ok`),
 since a socket has no CORS preflight. The LAN listener refuses sockets, so a
@@ -109,11 +110,10 @@ async def api_udf_ws(ws: WebSocket):
         pass
     finally:
         state["open"] = False
-        # The page left: its runs are cancelled (a run joined by another page
-        # goes on for that page — service.run only stops the worker for the
-        # last one waiting).
-        for event in cancels.values():
-            event.set()
+        # The page left: its runs are NOT cancelled. A run that finishes is
+        # saved, so the next open of the same UDF shows it at once (clicking
+        # through nodes must not throw away runs nearly done). Only an
+        # explicit {op: "cancel"} stops one.
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

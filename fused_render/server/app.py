@@ -759,7 +759,6 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _shutdown_udf_workers():
         from fused_render.udf import runner as udf_runner
 
-        udf_runner.refuse_new()
         await asyncio.to_thread(udf_runner.shutdown)
 
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once

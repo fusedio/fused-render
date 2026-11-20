@@ -276,7 +276,7 @@ def test_a_run_answers_and_is_saved_for_next_time(clone, signed_in, fake_runner)
     frames = run_frames({"ref": ref})
     assert [f["type"] for f in frames] == ["saved", "started", "done"]
     assert frames[0]["result"]["source"] == "saved"
-    assert frames[0]["result"]["url"] == f"/api/udf/results/{frames[0]['result']['token']}"
+    assert frames[0]["result"]["url"].startswith(f"/api/udf/results/{frames[0]['result']['token']}?v=")
 
 
 def test_prefer_saved_ends_at_the_saved_copy(clone, signed_in, fake_runner):

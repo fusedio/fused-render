@@ -149,7 +149,9 @@ def _page_result(meta: dict, source: str | None = None) -> dict:
     token = meta["token"]
     return {
         "token": token,
-        "url": f"/api/udf/results/{token}",
+        # Versioned: a key's token is reused when a fresh answer replaces
+        # the saved one, and an <img> must not keep the old bytes.
+        "url": f"/api/udf/results/{token}?v={int((meta.get('saved_at') or 0) * 1000)}",
         "content_type": meta.get("content_type") or "",
         "size": meta.get("size") or 0,
         "saved_at": meta.get("saved_at"),

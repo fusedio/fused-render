@@ -12898,7 +12898,8 @@ milliseconds.
   `ws_origin_ok`; the LAN listener refuses sockets): `{op: "run" |
   "schema" | "cancel", id, …}` in, `saved` / `started` / `done` / `error`
   / `schema` frames out. A long run never holds one of WebKit's six HTTP
-  connections. The page leaving cancels its runs.
+  connections. A page that leaves does not cancel its runs: they finish
+  and are saved for the next open; only `{op: "cancel"}` stops one.
 - **SV-2 Bytes.** `GET /api/udf/results/<token>` serves a result with its
   content type and `Content-Security-Policy: sandbox allow-scripts
   allow-popups allow-popups-to-escape-sandbox allow-downloads`, so UDF HTML

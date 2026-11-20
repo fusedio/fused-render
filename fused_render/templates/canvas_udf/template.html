@@ -224,7 +224,7 @@
 
   // One result (fused.workbench.udf's Result) onto the stage. Its bytes are
   // at `answer.url`; HTML there is sandboxed by the server too.
-  async function showAnswer(answer) {
+  async function showAnswer(answer, stillWanted) {
     const type = (answer.contentType || "").split(";")[0].trim().toLowerCase();
     const nodes = [];
     if (answer.size === 0) {
@@ -252,6 +252,7 @@
       nodes.push(el("pre", "This result (" + (type || "unknown type") + ", " + humanBytes(answer.size) +
         ") has no preview here. Open the node in its canvas to see it."));
     }
+    if (stillWanted && !stillWanted()) return;
     result.replaceChildren(...nodes);
     message.hidden = true;
     setLog(answer.stdout, answer.stderr);
@@ -307,8 +308,8 @@
     if (opts.onOpen) {
       handle.saved.then((saved) => {
         // The fresh answer may already be on screen; a saved one never
-        // replaces it.
-        if (saved && running && shownFrom === null) void showAnswer(saved);
+        // replaces it (showAnswer checks again once the bytes are in).
+        if (saved && running && shownFrom === null) void showAnswer(saved, () => shownFrom === null);
       });
     }
     setRunning(true);
@@ -318,7 +319,9 @@
       if (error.code === "udf_error") {
         showError(error);
       } else if (error.code === "declined") {
-        if (opts.onOpen && !result.hasChildNodes()) {
+        // Decided on whether a saved copy EXISTS, not on whether it has
+        // finished drawing: the worker's answer can beat its bytes.
+        if (opts.onOpen && !(await handle.saved)) {
           // Nothing saved to show: ask now, as a save or Run would.
           queued = true;
         } else {
