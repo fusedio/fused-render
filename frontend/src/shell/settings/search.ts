@@ -1,9 +1,11 @@
 // The Preferences search box. Every word typed must appear somewhere in a
 // setting's label, description, keywords, section, group name or the nav
 // heading over the group (so "claude code" finds every Claude Code row, as it
-// did while they were one group of that name); results keep page order. The row (SettingRow) highlights the word in its label, and a
-// result that only matched through a synonym says which word did — otherwise
-// "tts" turning up Reader reads as a wrong answer.
+// did while they were one group of that name); results keep page order. The
+// row (SettingRow) highlights the word in its label, and a result that
+// matched through words the reader cannot see — a synonym, or its
+// description, which sits behind the ⓘ — says which word did; otherwise "tts"
+// turning up Reader reads as a wrong answer.
 import { groupOf, navSectionOf, type SettingEntry } from "./registry";
 
 export interface LabelParts {
@@ -31,15 +33,17 @@ export function splitLabel(label: string, tokens: readonly string[]): LabelParts
   return { pre: label.slice(0, at), hit: label.slice(at, at + tok.length), post: label.slice(at + tok.length) };
 }
 
-/** The keywords a result matched through, when what the reader can see —
- *  label and description — holds none of the query's words. */
+/** The words a result matched through, when what the reader can see — the
+ *  label (and an inline description) — holds none of the query's words:
+ *  keywords first, then the description behind the ⓘ. */
 export function matchedVia(entry: SettingEntry, tokens: readonly string[]): string[] {
-  const plain = (entry.label + " " + entry.description).toLowerCase();
+  const plain = (entry.label + " " + (entry.inlineDescription ? entry.description : "")).toLowerCase();
   if (tokens.some((t) => plain.includes(t))) return [];
-  return entry.keywords
+  const words = (entry.keywords + " " + entry.description)
     .split(/\s+/)
-    .filter((w) => tokens.some((t) => w.toLowerCase().includes(t)))
-    .slice(0, 3);
+    .map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter((w) => tokens.some((t) => w.toLowerCase().includes(t)));
+  return [...new Set(words.map((w) => w.toLowerCase()))].slice(0, 3);
 }
 
 /** The settings every word of `tokens` appears in, in page order. */

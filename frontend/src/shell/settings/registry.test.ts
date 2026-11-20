@@ -199,8 +199,10 @@ describe("search", () => {
     const [hit] = searchSettings(all, "tts");
     expect(hit.id).toBe("reader");
     expect(matchedVia(hit, ["tts"])).toEqual(["tts"]);
-    // A word the reader can see in the row is not reported as a synonym.
-    expect(matchedVia(hit, ["aloud"])).toEqual([]);
+    // A word the reader can see in the row is not reported as a synonym…
+    expect(matchedVia(hit, ["read"])).toEqual([]);
+    // …but one from the description is: it sits behind the ⓘ.
+    expect(matchedVia(hit, ["aloud"])).toEqual(["aloud"]);
     expect(searchSettings(all, "token").map((h) => h.id)).toEqual(["huggingface"]);
 
     const dark = searchSettings(all, "dark").map((h) => h.id);

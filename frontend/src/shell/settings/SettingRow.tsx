@@ -1,11 +1,12 @@
-// One setting, one row: label and a line of help on the left, the control on
-// the right, anything bigger (a health check, a pairing code, an editor) full
-// width underneath. Every control in settings/ renders through this, so a row
+// One setting, one row: the label (its help behind an ⓘ beside it) on the
+// left, the control on the right, anything bigger (a health check, a pairing
+// code, an editor) full width underneath. Every control in settings/ renders through this, so a row
 // looks the same in its group and in search results — where it also carries
 // the path back to its group and, for a synonym match, the word that matched.
 import { Children, createContext, useContext, useState, type ReactNode } from "react";
-import { Ban, ChevronRight } from "lucide-react";
+import { Ban, ChevronRight, Info } from "lucide-react";
 import { Badge } from "@platform/shadcn/ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { Dropdown } from "@shell/Dropdown";
 import { cn } from "@platform/lib/utils";
@@ -89,6 +90,7 @@ export function SettingRow({
             {label.hit && <mark>{label.hit}</mark>}
             {label.post}
           </span>
+          {entry.description && !entry.inlineDescription && <SettingHelp label={entry.label} text={entry.description} />}
           {"badge" in entry && entry.badge && (
             <Badge variant="outline" className="settings-badge-beta">
               {entry.badge}
@@ -96,7 +98,7 @@ export function SettingRow({
           )}
           {"macOnly" in entry && entry.macOnly && <Badge variant="secondary">macOS</Badge>}
         </div>
-        <p className="settings-row-desc">{entry.description}</p>
+        {entry.description && entry.inlineDescription && <p className="settings-row-desc">{entry.description}</p>}
         {unavailable ? (
           <div className="settings-row-status" data-unavailable-reason>
             <Ban aria-hidden="true" className="mr-1 inline size-3.5 align-[-2px]" />
@@ -118,6 +120,31 @@ export function SettingRow({
         </div>
       )}
     </div>
+  );
+}
+
+/** A row's description, behind an ⓘ beside its label: the page shows what
+ *  each setting is called and where it stands, and says what it does only to
+ *  the reader who asks (2026-11-20: a line of help under every row was too
+ *  much at once). Opens on hover AND on click, tap or Enter — a hover-only
+ *  ⓘ "looked disabled and said nothing" (Akshil, 2026-10-20) — and the icon
+ *  brightens under the pointer so it reads as something to press. */
+export function SettingHelp({ label, text }: { label: string; text: string }) {
+  return (
+    <Popover>
+      <PopoverTrigger
+        openOnHover
+        delay={250}
+        closeDelay={100}
+        className="settings-help"
+        aria-label={`About ${label}`}
+      >
+        <Info aria-hidden="true" />
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" className="settings-help-pop">
+        {text}
+      </PopoverContent>
+    </Popover>
   );
 }
 

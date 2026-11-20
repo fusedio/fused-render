@@ -260,7 +260,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     : groupOf(current).label;
   const blurb = searching
     ? hits.length
-      ? "Change them right here, or follow the path above one to see it in its group."
+      ? null
       : "Try another word — dark, hotkey, token, wifi, queue, model."
     : groupOf(current).blurb;
 
@@ -350,7 +350,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                   )}
                 </h2>
               </div>
-              <p>{blurb}</p>
+              {blurb && <p>{blurb}</p>}
             </div>
             <SettingsViewContext.Provider value={view}>
               <IndexStateProvider>
