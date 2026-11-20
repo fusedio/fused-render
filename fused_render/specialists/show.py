@@ -8,7 +8,8 @@ The main chat, and only it, gets one more session MCP server, `specialist_canvas
     show            path, note?   a card in the chat for a canvas or one node of one
 
 The specialist writes every node file itself, with its own Write / Edit; nothing here reads or lays out what it
-wrote. The canvases it made are listed in `.specialist/state.json` (`canvases`), so a
+wrote. A `show` also makes sure the canvas it shows is being synced (`_publish`), which is what repairs a canvas
+the specialist made with the `fused` CLI instead of `canvas_create`. The canvases it made are listed in `.specialist/state.json` (`canvases`), so a
 second `canvas_create` under the same name returns the folder instead of refusing the taken name.
 
 A `show` that worked ends its answer with one `CARD` line carrying the card's payload; the chat reads it from the
@@ -17,11 +18,15 @@ tool row (frontend `apps/claude/specialists/view-card.ts`) and draws the card af
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import threading
 import time
 
 from fused_render.specialists import chat
+
+logger = logging.getLogger(__name__)
 
 SERVER = "specialist_canvas"
 CREATE = "canvas_create"
@@ -210,6 +215,26 @@ def view(args: dict, base: str) -> tuple:
                                           "canvas": node["name"], "env": node["env"]}
 
 
+def _publish(env: str, name: str) -> None:
+    """Make sure the app syncs a canvas the specialist shows. One made with `canvas_create` already is. One it made
+    itself with the `fused` CLI, against its instructions, has no watcher until a page opens it: start one, and
+    push now, because a watcher that starts on a folder of seconds-old files takes them as already published
+    (`canvases._FRESH_WINDOW_S`). The push runs off the tool call (it takes seconds). Best effort."""
+    from fused_render import canvases
+    if canvases._sync_manager(env, name, create=False) is not None:
+        return
+    if _refusal(canvases._sync_start_response(env, name)) is not None:
+        return  # a reference copy, or another fused-render syncs it
+
+    def push():
+        try:
+            canvases.api_canvases_sync_push({"name": name, "env": env}, x_fused="1")
+        except Exception:  # noqa: BLE001
+            logger.warning("specialists: first push of canvas %s/%s failed", env, name, exc_info=True)
+
+    threading.Thread(target=push, daemon=True, name=f"specialist-canvas-push-{name}").start()
+
+
 def _shown(title: str) -> str:
     return (f"The card for {title} is in the chat; the user opens it to see it live. Say in one line what it shows; "
             "do not describe how to open it.")
@@ -248,6 +273,7 @@ def call(spec, name: str, args) -> dict:
             _, text, card = view(args, spec.home)
             if card is None:
                 return _result(text, False)
+            _publish(card["env"], card["canvas"])
             said = " ".join(str(args.get("note") or "").split())[:NOTE_MAX]
             return _result(text + "\n" + CARD + json.dumps({**card, "note": said}), True)
     except Exception as e:  # noqa: BLE001

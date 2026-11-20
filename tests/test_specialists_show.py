@@ -2,6 +2,7 @@
 and the card line a `show` answers with."""
 from _specialists_conftest import *  # noqa: F401,F403
 import json
+import threading
 
 import pytest
 
@@ -39,8 +40,10 @@ def base(tmp_path, monkeypatch):
     monkeypatch.setattr(canvases, "api_canvases_create",
                         lambda body, x_fused=None: calls.append(("create", body["env"], body["name"])) or {"ok": True})
     monkeypatch.setattr(canvases, "api_canvases_clone", clone)
+    watched = set()  # the canvases a watcher runs on
+    monkeypatch.setattr(canvases, "_sync_manager", lambda env, name, create: (env, name) in watched or None)
     monkeypatch.setattr(canvases, "_sync_start_response",
-                        lambda env, name: calls.append(("start", env, name)) or {"ok": True})
+                        lambda env, name: (calls.append(("start", env, name)), watched.add((env, name))) and {"ok": 1})
     return root, calls
 
 
@@ -112,6 +115,23 @@ def test_create_then_show_a_node_and_the_canvas(base):
     whole = show.call(s, "show", {"path": str(folder / "canvas.toml")})
     card = json.loads(_text(whole).splitlines()[-1][len(show.CARD):])
     assert card["kind"] == "canvas" and card["path"] == str(folder) and card["note"] == ""
+
+
+def test_showing_a_canvas_made_without_the_tool_starts_its_sync_and_pushes(base, monkeypatch):
+    from fused_render import canvases
+    base, calls = base
+    pushed = threading.Event()
+    monkeypatch.setattr(canvases, "api_canvases_sync_push",
+                        lambda body, x_fused=None: (calls.append(("push", body["env"], body["name"])), pushed.set()))
+    folder = base / "prod" / "user" / "By_hand"  # as the `fused` CLI and its own writes leave it: no watcher
+    folder.mkdir()
+    (folder / "canvas.toml").write_text(TOML.format(name="By_hand"))
+    (folder / "udf.py").write_text("@fused.udf\ndef udf():\n    return 1\n")
+    s = make_specialist()
+    assert not show.call(s, "show", {"path": str(folder / "udf.py")})["isError"]
+    assert pushed.wait(10) and calls == [("start", "prod", "By_hand"), ("push", "prod", "By_hand")]
+    assert not show.call(s, "show", {"path": str(folder)})["isError"]  # now watched: nothing more
+    assert len(calls) == 2
 
 
 def test_what_is_refused(base, tmp_path):

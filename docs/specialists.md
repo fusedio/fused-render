@@ -537,6 +537,15 @@ hand under `user/`, and when the tool is refused or fails it tells the user and 
 reason: a specialist that built canvases itself left folders the app was not syncing (no watcher until the user
 opened them) and that the user had never approved, and one opened with "not cloned yet".
 
+**A canvas made without the tool is repaired when it is shown** (`show._publish`). Every successful `show` checks
+whether a watcher runs on that canvas. When none does, it starts one (the same `_sync_start_response` a page's
+open calls) and then pushes at once through the watcher's own push (`api_canvases_sync_push`), on a thread of its
+own. The explicit push is needed because a watcher that starts on a folder whose files are all seconds old takes
+them as already published (`canvases._FRESH_WINDOW_S`). Only a folder in the right place can be repaired: directly
+under an environment's `user/`, holding a `canvas.toml`, which is what `show` requires anyway. A reference copy
+gets no watcher, and nothing is created on Fused: a canvas that does not exist there fails its push, which the
+canvas's sync log records.
+
 **The UI.**
 
 - `apps/claude/specialists/view-card.ts` reads the card line from a settled `mcp__specialist_canvas__show` row.
