@@ -1,11 +1,12 @@
-"""The node view's server half (SPEC §53.3 NV-1, NV-2): the `_node`
-sentinel — registry, resolution, its in-process gate
-(`server.templates.SENTINEL_CONDITIONS`) — and GET /api/canvases/node, which
-shares the gate's one rule (`canvases.canvas_node_file`).
+"""The canvas node templates' server half (SPEC §53.2 NT-1..NT-3): the three
+gated template folders — `canvas_widget`, `canvas_note`, `canvas_udf` — their
+registry bindings, their gates, stat's `node` / `prefer` marks, and
+GET /api/canvases/node, which shares the gates' one rule
+(`canvases.canvas_node_file`).
 
 The canvases root is a tmp folder (FUSED_RENDER_CANVASES_DIR), the
 `canvases_enabled` preference is the real prefs.json under a per-test
-FUSED_RENDER_HOME, and the gate runs exactly as /api/fs/conditions runs it
+FUSED_RENDER_HOME, and the gates run exactly as /api/fs/conditions runs them
 (`_conditions_payload`)."""
 import json
 import os
@@ -117,12 +118,23 @@ def clone(base):
     return _canvas(base / ENV / "user" / "demo")
 
 
+# Which node template each node suffix is bound to.
+TEMPLATE_OF = {".py": "canvas_udf", ".json": "canvas_widget",
+               ".html": "canvas_widget", ".md": "canvas_note"}
+NODE_TEMPLATES = ("canvas_widget", "canvas_note", "canvas_udf")
+
+
+def template_of(path) -> str:
+    return TEMPLATE_OF[os.path.splitext(str(path))[1]]
+
+
 def gate(path) -> bool:
-    """The verdict exactly as /api/fs/conditions computes it."""
+    """The verdict exactly as /api/fs/conditions computes it, for the node
+    template the file's suffix is bound to."""
     payload = server_templates._conditions_payload(str(path))
     assert isinstance(payload, dict), payload
     assert payload.get("error") is None, payload
-    return payload["conditions"]["_node"]
+    return payload["conditions"][template_of(path)]
 
 
 def modes(path):
@@ -131,65 +143,89 @@ def modes(path):
     return [e["mode"] for e in entries]
 
 
-# ----------------------------------------------------------- registry (NV-1)
+# ----------------------------------------------------------- registry (NT-1)
 
-def test_udf_is_registered_after_the_default_of_the_four_node_kinds():
+def test_each_node_kind_is_bound_after_its_keys_default():
     with open(server_templates.BUILTIN_REGISTRY, encoding="utf-8") as fh:
         registry = json.load(fh)
-    for key in (".py", ".json", ".html", ".md"):
-        assert registry[key][1] == "_node", key
-        assert registry[key].count("_node") == 1, key
+    for key, name in TEMPLATE_OF.items():
+        assert registry[key][1] == name, key
+        assert sum(registry[key].count(n) for n in NODE_TEMPLATES) == 1, key
     # Nowhere else — not `.*.json` either: a compound stem is never a node
     # name, so every such file would pay a gate evaluation for nothing.
-    others = [k for k, v in registry.items() if "_node" in v
-              and k not in (".py", ".json", ".html", ".md")]
+    others = [k for k, v in registry.items()
+              if any(n in v for n in NODE_TEMPLATES) and k not in TEMPLATE_OF]
     assert others == []
+    # The retired sentinel is in no list.
+    assert not [k for k, v in registry.items() if "_node" in v]
 
 
-def test_udf_is_conditional_so_no_default_moves(tmp_path):
-    assert "_node" not in [e["mode"] for e in server_templates._templates_for(
-        str(tmp_path / "a.b.json"), False)[0]]
+def test_node_templates_are_conditional_so_no_default_moves(tmp_path):
+    assert not [e for e in server_templates._templates_for(
+        str(tmp_path / "a.b.json"), False)[0] if e["mode"] in NODE_TEMPLATES]
     for name, default in (("a.py", "code"), ("a.json", "tree"),
                           ("a.html", "_render"), ("a.md", "markdown")):
         entries, error = server_templates._templates_for(str(tmp_path / name), False)
         assert error is None
         assert entries[0]["mode"] == default, name
-        udf = next(e for e in entries if e["mode"] == "_node")
-        assert udf == {"mode": "_node", "path": None, "icon": None,
-                       "conditional": True}, name
+        mode = template_of(name)
+        entry = next(e for e in entries if e["mode"] == mode)
+        folder = os.path.join(server_templates.TEMPLATES_DIR, mode)
+        assert entry == {"mode": mode, "path": os.path.join(folder, "template.html"),
+                         "icon": os.path.join(folder, "icon.svg"),
+                         "conditional": True, "node": True}, name
 
 
-def test_udf_is_a_gated_sentinel_with_no_folder():
-    assert "_node" in server_templates.KNOWN_SENTINELS
-    assert server_templates.SENTINEL_CONDITIONS["_node"] is server_templates._node_view_gate
-    # No template folder backs it, and the retired `udf` folder is gone.
+def test_node_templates_are_folders_with_a_page_a_gate_and_an_icon():
+    for name in NODE_TEMPLATES:
+        folder = os.path.join(server_templates.TEMPLATES_DIR, name)
+        for part in ("template.html", "condition.py", "icon.svg"):
+            assert os.path.isfile(os.path.join(folder, part)), (name, part)
+        assert not os.path.exists(os.path.join(folder, "native")), name
+    # The node view they replace is gone: no sentinel, no gate table, no folder.
+    assert "_node" not in server_templates.KNOWN_SENTINELS
+    assert not hasattr(server_templates, "SENTINEL_CONDITIONS")
     assert not os.path.exists(os.path.join(server_templates.TEMPLATES_DIR, "udf"))
     path, err = server_templates._resolve_name("_node")
-    assert path is None and "sentinel" in err
+    assert path is None and err
 
 
-def test_a_user_registry_may_reference_the_sentinel(tmp_path, monkeypatch, clone):
-    """A known sentinel is referenceable from the user registry (D73), and
-    keeps its gate there: the entry is conditional wherever it is listed."""
+def test_each_gate_answers_for_its_own_kinds_only(clone):
+    """Rebound by a user registry onto every node suffix, a node template
+    still says yes only to the kinds it draws."""
+    want = {"canvas_udf": {"udf_1.py"}, "canvas_widget": {"chart.json", "page.html"},
+            "canvas_note": {"notes.md"}}
+    for name, yes in want.items():
+        gate_file = os.path.join(server_templates.TEMPLATES_DIR, name, "condition.py")
+        for node in ("udf_1.py", "chart.json", "page.html", "notes.md"):
+            allowed, err = server_templates._run_condition(gate_file, str(clone / node))
+            assert err is None
+            assert allowed is (node in yes), (name, node)
+
+
+def test_a_user_registry_may_rebind_a_node_template(tmp_path, monkeypatch, clone):
+    """Listed first by a user registry, the built-in folder keeps its gate
+    and its marks."""
     udir = tmp_path / "utemplates"
     udir.mkdir()
-    (udir / "registry.json").write_text(json.dumps({".py": ["_node", "code"]}),
+    (udir / "registry.json").write_text(json.dumps({".py": ["canvas_udf", "code"]}),
                                         encoding="utf-8")
     monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(udir))
     monkeypatch.setattr(server_templates, "USER_REGISTRY", str(udir / "registry.json"))
     entries, err = server_templates._templates_for(str(clone / "udf_1.py"), False)
     assert err is None
-    assert [e["mode"] for e in entries] == ["_node", "code"]
+    assert [e["mode"] for e in entries] == ["canvas_udf", "code"]
     assert entries[0]["conditional"] is True and entries[0]["prefer"] is True
+    assert entries[0]["node"] is True
     assert gate(clone / "udf_1.py") is True
 
 
-# --------------------------------------------------------------- gate (NV-2)
+# --------------------------------------------------------------- gate (NT-2)
 
 def test_gate_allows_every_node_kind_of_a_user_clone(clone):
     for name in ("udf_1.py", "chart.json", "page.html", "notes.md"):
         assert gate(clone / name) is True, name
-    assert modes(clone / "udf_1.py")[:2] == ["code", "_node"]
+    assert modes(clone / "udf_1.py")[:2] == ["code", "canvas_udf"]
 
 
 def test_gate_is_off_with_the_preference(clone):
@@ -280,25 +316,17 @@ def test_gate_never_raises(monkeypatch):
 
     monkeypatch.setattr(prefs_mod, "canvases_enabled", lambda: True)
     monkeypatch.setattr(canvases_mod, "canvas_node_file", boom)
-    allowed, err = server_templates._run_sentinel_condition("_node", "/x/y.py")
-    assert allowed is False and err is None
-
-
-def test_a_sentinel_gate_that_raises_denies_with_the_reason(clone, monkeypatch):
-    """The runner's own catch-all: a gate that escapes its try still fails
-    closed, and the reason surfaces as the payload's `error`, the same
-    posture as a broken condition.py."""
-    def boom(path):
-        raise RuntimeError("boom")
-
-    monkeypatch.setitem(server_templates.SENTINEL_CONDITIONS, "_node", boom)
-    payload = server_templates._conditions_payload(str(clone / "udf_1.py"))
-    assert payload["conditions"]["_node"] is False
-    assert "boom" in payload["error"]
+    assert canvases_mod.node_template_gate("/x/y.py", ("udf",)) is False
+    for name in NODE_TEMPLATES:
+        gate_file = os.path.join(server_templates.TEMPLATES_DIR, name, "condition.py")
+        allowed, err = server_templates._run_condition(gate_file, "/x/y.py")
+        assert allowed is False and err is None, name
 
 
 def test_canvas_node_file_shape(clone):
     info = canvases_mod.canvas_node_file(str(clone / "udf_1.py"))
+    row = info.pop("row")
+    assert row["udfName"] == "udf_1" and row["title"] == "Load data"
     assert info == {"env": ENV, "name": "demo", "node": "udf_1", "kind": "udf",
                     "file": "udf_1.py", "title": "Load data",
                     "clone_dir": canvases_mod._canvas_dir(ENV, "demo")}
@@ -342,9 +370,24 @@ def test_node_route_for_a_live_clone_signed_out(client, clone):
     assert res.status_code == 200
     assert res.json() == {
         "enabled": True, "env": ENV, "name": "demo", "node": "udf_1", "kind": "udf",
-        "file": "udf_1.py", "title": "Load data", "live": True, "reference": False,
-        "signed_in": False,
+        "file": "udf_1.py", "title": "Load data", "style": {}, "live": True,
+        "reference": False, "signed_in": False,
     }
+
+
+def test_node_route_carries_the_rows_style_keys_only(client, clone):
+    """A note's card is drawn from its row: the colour, sheen, scale and
+    alignment keys, and nothing else of the row (position, size)."""
+    toml = clone / "canvas.toml"
+    toml.write_text(CANVAS_TOML.replace(
+        'udfName = "notes"\n',
+        'udfName = "notes"\ntextBoxColor = "#A5DD6B"\ntextBoxGradient = false\n'
+        'textBoxScaleFactor = 1.5\ntextBoxAlignment = "center"\nwidth = 350\n'
+        'textBoxExtra = ["not", "plain"]\n'), encoding="utf-8")
+    body = client.get("/api/canvases/node", params={"path": str(clone / "notes.md")}).json()
+    assert body["kind"] == "note"
+    assert body["style"] == {"textBoxColor": "#A5DD6B", "textBoxGradient": False,
+                             "textBoxScaleFactor": 1.5, "textBoxAlignment": "center"}
 
 
 def test_node_route_for_a_reference_copy_signed_in_with_a_cached_handle(
@@ -380,55 +423,51 @@ def test_node_route_and_gate_agree(client, clone, base):
         assert (node.get("node") is not None) == gate(p), p
 
 
-def test_a_user_template_named_udf_is_an_ordinary_template(tmp_path, monkeypatch, base):
-    """The node view is the `_node` sentinel, which no folder can shadow: a
-    user folder `udf/` is a template like any other — its own page, its own
-    gate, never the node view, never preferred."""
+def test_a_user_folder_of_the_same_name_is_an_ordinary_template(tmp_path, monkeypatch, clone):
+    """A user folder named like a node template shadows it (CT-3) and is a
+    template like any other: its own page, its own gate, never marked `node`
+    and never preferred, even on a node file."""
     udir = tmp_path / "user-templates"
-    (udir / "udf").mkdir(parents=True)
-    (udir / "udf" / "template.html").write_text("<html>mine</html>", encoding="utf-8")
-    (udir / "udf" / "condition.py").write_text("def main(path):\n    return True\n", encoding="utf-8")
-    (udir / "registry.json").write_text(json.dumps({".py": ["udf", "_node", "code"]}),
-                                        encoding="utf-8")
+    (udir / "canvas_udf").mkdir(parents=True)
+    (udir / "canvas_udf" / "template.html").write_text("<html>mine</html>", encoding="utf-8")
+    (udir / "canvas_udf" / "condition.py").write_text("def main(path):\n    return True\n",
+                                                      encoding="utf-8")
     monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(udir))
     monkeypatch.setattr(server_templates, "USER_REGISTRY", str(udir / "registry.json"))
-    path, err = server_templates._resolve_name("udf")
-    assert err is None and path == str(udir / "udf" / "template.html")
-    plain = tmp_path / "plain.py"
-    plain.write_text("x = 1\n", encoding="utf-8")
-    entries, _ = server_templates._templates_for(str(plain), False)
-    by_mode = {e["mode"]: e for e in entries}
-    assert by_mode["udf"]["path"] == path and "native" not in by_mode["udf"]
-    assert by_mode["_node"]["path"] is None
-    payload = server_templates._conditions_payload(str(plain))
-    assert payload["conditions"] == {"udf": True, "_node": False}
-    assert not server_templates.is_native_template_path(str(udir / "udf" / "template.html"))
+    path, err = server_templates._resolve_name("canvas_udf")
+    assert err is None and path == str(udir / "canvas_udf" / "template.html")
+    entries, _ = server_templates._templates_for(str(clone / "udf_1.py"), False)
+    mine = next(e for e in entries if e["mode"] == "canvas_udf")
+    assert mine["path"] == path and mine["conditional"] is True
+    assert "node" not in mine and "prefer" not in mine
 
 
-# ------------------------------------- stat's default candidate (PT-8, NV-3)
+# ------------------------------------- stat's default candidate (PT-8, NT-3)
 
-def _udf_entry(path):
+def _node_entry(path):
     entries, _ = server_templates._templates_for(str(path), False)
-    return next((e for e in entries if e["mode"] == "_node"), None)
+    return next((e for e in entries if e["mode"] in NODE_TEMPLATES), None)
 
 
 def _prefer(path):
-    entry = _udf_entry(path)
+    entry = _node_entry(path)
     return None if entry is None else entry.get("prefer")
 
 
-def test_stat_marks_the_node_view_preferred_on_a_node_shaped_path(clone):
+def test_stat_marks_the_node_template_preferred_on_a_node_shaped_path(clone):
     for name in ("udf_1.py", "chart.json", "page.html", "notes.md"):
-        entry = _udf_entry(clone / name)
+        entry = _node_entry(clone / name)
+        assert entry["mode"] == template_of(name), name
         assert entry["prefer"] is True, name
-        assert entry["path"] is None and entry["conditional"] is True
+        assert entry["node"] is True and entry["conditional"] is True
     # Shape only: a .py with no canvas.toml row is still a candidate — the
     # gate, not stat, says no (`orphan.py`); so is a file that is not there.
     assert _prefer(clone / "orphan.py") is True
     assert _prefer(clone / "not_yet.py") is True
     # No other entry ever carries the flag.
     entries, _ = server_templates._templates_for(str(clone / "udf_1.py"), False)
-    assert [e["mode"] for e in entries if "prefer" in e] == ["_node"]
+    assert [e["mode"] for e in entries if "prefer" in e] == ["canvas_udf"]
+    assert [e["mode"] for e in entries if "node" in e] == ["canvas_udf"]
 
 
 def test_stat_does_not_prefer_with_the_preference_off(clone):
@@ -450,14 +489,16 @@ def test_stat_does_not_prefer_off_the_node_shape(base, clone, tmp_path):
 
 
 def test_stat_of_an_ordinary_file_is_unchanged(tmp_path, base):
-    """No `prefer` key at all — the payload is what it was before."""
+    """No `prefer` key at all, and `node` only on the node template's own
+    entry — which the shell then lists on its gate's explicit yes alone."""
     plain = tmp_path / "plain.py"
     plain.write_text("x = 1\n", encoding="utf-8")
     entries, _ = server_templates._templates_for(str(plain), False)
     assert all("prefer" not in e for e in entries)
+    assert [e["mode"] for e in entries if e.get("node")] == ["canvas_udf"]
 
 
-def test_stat_does_not_prefer_where_a_user_registry_drops_udf(tmp_path, monkeypatch, clone):
+def test_stat_does_not_prefer_where_a_user_registry_drops_the_node_template(tmp_path, monkeypatch, clone):
     udir = tmp_path / "user-templates"
     udir.mkdir()
     (udir / "registry.json").write_text(json.dumps({".py": ["code"]}), encoding="utf-8")
@@ -468,30 +509,29 @@ def test_stat_does_not_prefer_where_a_user_registry_drops_udf(tmp_path, monkeypa
     assert all("prefer" not in e for e in entries)
 
 
-def test_stat_prefers_only_the_udf_sentinel(tmp_path, monkeypatch, clone):
-    """A user template of its own, gated and bound on `.py`, is never marked
-    — not even one named `udf`: only the `_node` sentinel carries the flag."""
+def test_stat_prefers_only_a_built_in_node_template(tmp_path, monkeypatch, clone):
+    """A user template of its own, gated and bound on `.py`, is never marked:
+    only the built-in node template carries the flags."""
     udir = tmp_path / "user-templates"
-    for name in ("mynode", "udf"):
-        (udir / name).mkdir(parents=True)
-        (udir / name / "template.html").write_text("<html>mine</html>", encoding="utf-8")
-        (udir / name / "condition.py").write_text("def main(path):\n    return True\n",
+    (udir / "mynode").mkdir(parents=True)
+    (udir / "mynode" / "template.html").write_text("<html>mine</html>", encoding="utf-8")
+    (udir / "mynode" / "condition.py").write_text("def main(path):\n    return True\n",
                                                   encoding="utf-8")
-    (udir / "registry.json").write_text(json.dumps({".py": ["mynode", "udf", "_node", "code"]}),
+    (udir / "registry.json").write_text(json.dumps({".py": ["mynode", "canvas_udf", "code"]}),
                                         encoding="utf-8")
     monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(udir))
     monkeypatch.setattr(server_templates, "USER_REGISTRY", str(udir / "registry.json"))
     entries, _ = server_templates._templates_for(str(clone / "udf_1.py"), False)
     by_mode = {e["mode"]: e for e in entries}
-    for name in ("mynode", "udf"):
-        assert by_mode[name].get("conditional") is True and "prefer" not in by_mode[name]
-    assert by_mode["_node"]["path"] is None and by_mode["_node"]["prefer"] is True
+    assert by_mode["mynode"].get("conditional") is True
+    assert "prefer" not in by_mode["mynode"] and "node" not in by_mode["mynode"]
+    assert by_mode["canvas_udf"]["prefer"] is True and by_mode["canvas_udf"]["node"] is True
 
 
 def test_stat_route_carries_prefer(client, clone):
     body = client.get("/api/fs/stat", params={"path": str(clone / "udf_1.py")}).json()
-    udf = next(e for e in body["templates"] if e["mode"] == "_node")
-    assert udf["prefer"] is True
+    udf = next(e for e in body["templates"] if e["mode"] == "canvas_udf")
+    assert udf["prefer"] is True and udf["node"] is True
 
 
 def test_conditions_cache_follows_the_canvas_toml_of_a_node_shaped_path(client, clone):
@@ -500,13 +540,13 @@ def test_conditions_cache_follows_the_canvas_toml_of_a_node_shaped_path(client, 
     canvas.toml mtime too."""
     orphan = str(clone / "orphan.py")
     ask = lambda: client.get("/api/fs/conditions", params={"path": orphan}).json()  # noqa: E731
-    assert ask()["conditions"]["_node"] is False
+    assert ask()["conditions"]["canvas_udf"] is False
     toml = clone / "canvas.toml"
     toml.write_text(CANVAS_TOML + '\n[[canvas.nodes]]\nudfName = "orphan"\nx = 0.0\ny = 1200.0\n',
                     encoding="utf-8")
     st = os.stat(toml)
     os.utime(toml, (st.st_atime, st.st_mtime + 5))
-    assert ask()["conditions"]["_node"] is True
+    assert ask()["conditions"]["canvas_udf"] is True
 
 
 def _syscalls_of(monkeypatch, fn):
@@ -544,3 +584,178 @@ def test_a_conditions_cache_hit_for_a_node_file_stats_its_canvas_toml_only(clone
     hit = _syscalls_of(monkeypatch, lambda: fs_read.api_fs_conditions(node))
     assert len(hit) == 2, hit
     assert hit[1] == str(clone / "canvas.toml"), hit
+
+
+# ----------------------------------------- POST /api/canvases/node/run (§53.5)
+
+GUARD = {"X-Fused": "1"}
+
+
+class _Proc:
+    def __init__(self, stdout="", stderr="", returncode=0):
+        self.stdout, self.stderr, self.returncode = stdout, stderr, returncode
+
+
+@pytest.fixture
+def signed_in(tmp_path):
+    (tmp_path / "creds.json").write_text('{"access_token": "t"}', encoding="utf-8")
+
+
+@pytest.fixture
+def shim(monkeypatch):
+    """Stands in for the node-run child: records what it was asked and
+    answers with `shim.answer` (a _Proc, or an exception to raise)."""
+    calls = []
+
+    class Shim:
+        answer = _Proc(json.dumps({"ok": True, "content_type": "text/html",
+                                   "body_b64": "PHA+aGk8L3A+", "stdout": "", "stderr": "",
+                                   "cached": False, "seconds": 0.5}))
+
+    def fake_run(cmd, **kwargs):
+        calls.append({"cmd": cmd, "input": json.loads(kwargs["input"]), "env": kwargs["env"],
+                      "timeout": kwargs["timeout"]})
+        if isinstance(Shim.answer, BaseException):
+            raise Shim.answer
+        return Shim.answer
+
+    monkeypatch.setattr(canvases_mod.subprocess, "run", fake_run)
+    Shim.calls = calls
+    return Shim
+
+
+def _run(client, path, headers=GUARD):
+    return client.post("/api/canvases/node/run", json={"path": str(path)}, headers=headers)
+
+
+def test_node_run_needs_the_guard_header(client, clone, signed_in, shim):
+    res = _run(client, clone / "udf_1.py", headers={})
+    assert res.status_code >= 400
+    assert shim.calls == []
+
+
+def test_node_run_runs_a_udf_nodes_file_in_its_canvases_environment(client, clone, signed_in, shim):
+    res = _run(client, clone / "udf_1.py")
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is True and res.json()["content_type"] == "text/html"
+    (call,) = shim.calls
+    assert os.path.basename(call["cmd"][-1]) == "_fused_node_run.py"
+    assert call["input"] == {"path": str(clone / "udf_1.py"),
+                             "max_bytes": canvases_mod.NODE_RUN_MAX_BYTES}
+    assert call["timeout"] == canvases_mod.NODE_RUN_TIMEOUT
+    # The canvas's own Fused, exactly as its CLI calls are pointed at it.
+    cli = canvases_mod.fused_cli()
+    assert call["env"].get("FUSED_ENV") == canvases_mod._cli_env(cli, ENV).get("FUSED_ENV")
+
+
+def test_node_run_passes_a_runs_own_error_through(client, clone, signed_in, shim):
+    shim.answer = _Proc(json.dumps({"ok": False, "error": "boom", "line": 3,
+                                    "stdout": "", "stderr": "Traceback…"}))
+    res = _run(client, clone / "udf_1.py")
+    assert res.status_code == 200
+    assert res.json() == {"ok": False, "error": "boom", "line": 3,
+                          "stdout": "", "stderr": "Traceback…"}
+
+
+def test_node_run_refuses_anything_that_is_not_a_udf_node(client, clone, base, tmp_path, signed_in, shim):
+    team = _canvas(base / ENV / "team" / "demo")
+    plain = tmp_path / "x.py"
+    plain.write_text("x = 1\n", encoding="utf-8")
+    for p in (clone / "chart.json", clone / "notes.md", clone / "page.html",
+              clone / "_helper.py", clone / "orphan.py", team / "udf_1.py", plain):
+        res = _run(client, p)
+        assert res.status_code == 400, p
+    assert client.post("/api/canvases/node/run", json={"path": "a/b.py"},
+                       headers=GUARD).status_code == 400
+    assert shim.calls == []
+
+
+def test_node_run_needs_canvases_on_and_a_sign_in(client, clone, shim):
+    assert _run(client, clone / "udf_1.py").status_code == 409      # signed out
+    _set_pref(False)
+    assert _run(client, clone / "udf_1.py").status_code == 403
+    assert shim.calls == []
+
+
+def test_node_run_reports_a_helper_that_could_not_run(client, clone, signed_in, shim):
+    shim.answer = _Proc(stderr="please re-authenticate", returncode=1)
+    assert _run(client, clone / "udf_1.py").status_code == 401
+    shim.answer = _Proc(stderr="no such host", returncode=1)
+    assert _run(client, clone / "udf_1.py").status_code == 502
+    shim.answer = _Proc(stdout="not json")
+    assert _run(client, clone / "udf_1.py").status_code == 502
+    shim.answer = _Proc(stdout=json.dumps({"content_type": "text/html"}))   # no `ok`
+    assert _run(client, clone / "udf_1.py").status_code == 502
+    shim.answer = canvases_mod.subprocess.TimeoutExpired(cmd="x", timeout=1)
+    assert _run(client, clone / "udf_1.py").status_code == 504
+
+
+def test_node_run_needs_a_cli_this_process_can_drive(client, clone, signed_in, shim, monkeypatch):
+    from fused_render.fusedcli import FusedCli
+
+    monkeypatch.setattr(canvases_mod, "fused_cli",
+                        lambda: FusedCli(command=["/usr/bin/fused"], external=True))
+    assert _run(client, clone / "udf_1.py").status_code == 501
+    assert shim.calls == []
+
+
+# ------------------------------------------- the shim's answer (_fused_node_run)
+
+class _Result:
+    """The attributes of the SDK's run result the shim reads."""
+
+    def __init__(self, **kw):
+        self.stdout = kw.get("stdout")
+        self.stderr = kw.get("stderr")
+        self.error_message = kw.get("error_message")
+        self.has_exception = kw.get("has_exception", False)
+        self.error_lineno = kw.get("error_lineno")
+        self.original_content = kw.get("original_content")
+        self.original_headers = kw.get("original_headers")
+        self.is_cached = kw.get("is_cached", False)
+        self.time_taken_seconds = kw.get("time_taken_seconds")
+
+
+@pytest.fixture(scope="module")
+def node_run():
+    pytest.importorskip("fused")
+    from fused_render import _fused_node_run
+
+    return _fused_node_run
+
+
+def test_shim_hands_the_result_bytes_on_untouched(node_run):
+    out = node_run.result_payload(_Result(
+        original_content=b"<p>hi</p>", original_headers={"content-type": "text/html; charset=utf-8"},
+        stdout="printed\n", is_cached=True, time_taken_seconds=1.25), 1024)
+    assert out == {"ok": True, "content_type": "text/html; charset=utf-8",
+                   "body_b64": "PHA+aGk8L3A+", "stdout": "printed\n", "stderr": "",
+                   "cached": True, "seconds": 1.25}
+
+
+def test_shim_reports_a_udf_that_returned_nothing_as_an_empty_body(node_run):
+    out = node_run.result_payload(_Result(original_content=None, original_headers=None), 1024)
+    assert out["ok"] is True and out["body_b64"] == "" and out["content_type"] == ""
+    assert out["seconds"] is None
+
+
+def test_shim_reports_a_run_that_raised_with_its_line(node_run):
+    out = node_run.result_payload(_Result(
+        error_message="NameError: x", has_exception=True, error_lineno=7,
+        stderr="Traceback…", original_content=b"ignored"), 1024)
+    assert out == {"ok": False, "error": "NameError: x", "line": 7,
+                   "stdout": "", "stderr": "Traceback…"}
+    # An exception with no message still reads as a failure, never as a result.
+    out = node_run.result_payload(_Result(has_exception=True, error_lineno=True), 1024)
+    assert out["ok"] is False and out["error"] and out["line"] is None
+
+
+def test_shim_refuses_a_result_past_the_limit(node_run):
+    out = node_run.result_payload(_Result(
+        original_content=b"x" * 11, original_headers={"content-type": "image/png"}), 10)
+    assert out["ok"] is False and "too large" in out["error"]
+    assert "body_b64" not in out
+
+
+def test_shim_asks_for_the_shared_links_formats(node_run):
+    assert node_run.RESULT_FORMAT == "png,html"

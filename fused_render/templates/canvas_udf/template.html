@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<!-- The canvas UDF template (SPEC §53.5): one UDF (`<node>.py`) of a cloned
+     canvas, run in Fused and shown here.
+
+     A shared UDF's link (`…/<token>.html`, `.png`) is one request: Fused
+     runs the UDF and serialises what it returned — a table as a
+     self-contained page, an HTML string as itself, a raster as a PNG. This
+     page asks for exactly that, with the user's own sign-in and the file as
+     it stands on disk (POST /api/canvases/node/run), so the canvas need not
+     be shared and an edit shows before it is pushed. No workbench is
+     framed and no canvas is hydrated.
+
+     What this page does:
+       - asks the server what the file is (shared/canvas-node.js);
+       - runs it, and shows the answer: a page in a frame, an image, text,
+         or the error with its line and the run's output;
+       - runs it again when the file changes on disk (unless "Run on save"
+         is off), or on Run.
+
+     What the UDF loads from OTHER nodes is the canvas as Fused has it saved.
+     This page must not import fused_render (SPEC PY-15). -->
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Canvas UDF</title>
+<script src="/template-shared/canvas-node.js"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #131417; --panel: #1a1c20; --fg: #e8eaed; --fg-muted: #9aa0a6;
+    --line: #2a2d33; --accent: #f5a623; --on-accent: #1a1300; --error: #ff6b6b;
+    --hover: #24272d; --code: #0e0f12; --result-bg: #ffffff;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff; --panel: #f6f7f9; --fg: #1f2023; --fg-muted: #61656c;
+    --line: #dfe2e7; --accent: #b86e00; --on-accent: #ffffff; --error: #c62828;
+    --hover: #eceef1; --code: #f1f3f5; --result-bg: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg); background: var(--bg); overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .strip {
+    flex: none; display: flex; align-items: center; gap: 10px;
+    min-height: 36px; padding: 0 12px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .strip .kind, .strip .canvas, .strip .status { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
+  .strip .status.error { color: var(--error); }
+  .strip .spacer { flex: 1; }
+  .strip label { display: flex; align-items: center; gap: 5px; color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
+  button {
+    font: inherit; color: var(--fg); background: transparent;
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
+  }
+  button:hover { background: var(--hover); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .result { position: relative; flex: 1; min-height: 0; overflow: auto; }
+  /* A served page (a table, a UDF's own HTML) is authored for a white
+     document; it gets one in both themes. */
+  .result iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--result-bg); }
+  .result img { display: block; max-width: 100%; margin: 16px auto; image-rendering: auto; }
+  .result pre, .log pre {
+    margin: 0; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .result .error-head { padding: 12px 14px 0; color: var(--error); font-weight: 600; }
+  .result pre.error { color: var(--error); }
+  .message {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px;
+    padding: 24px; text-align: center; color: var(--fg-muted); background: var(--bg);
+  }
+  .message .error { color: var(--error); white-space: pre-wrap; max-width: 640px; }
+  .log { flex: none; max-height: 35%; overflow: auto; border-top: 1px solid var(--line); background: var(--code); }
+  .log summary { padding: 4px 12px; cursor: pointer; color: var(--fg-muted); font-size: 12px; }
+  .busy { opacity: 0.45; transition: opacity 120ms; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="strip" id="strip" hidden>
+  <span class="title" id="title"></span>
+  <span class="kind">UDF</span>
+  <span class="canvas" id="canvas"></span>
+  <span class="spacer"></span>
+  <span class="status" id="status"></span>
+  <label title="Run again whenever the file is saved">
+    <input type="checkbox" id="autorun" checked /> Run on save
+  </label>
+  <button type="button" class="primary" id="run">Run</button>
+  <button type="button" id="open">Open in canvas</button>
+</div>
+<div class="stage">
+  <div class="result" id="result"></div>
+  <details class="log" id="log" hidden>
+    <summary id="log-summary">Output</summary>
+    <pre id="log-text"></pre>
+  </details>
+  <div class="message" id="message">Loading…</div>
+</div>
+<script>
+  // The page re-runs the file itself; a reload would drop the last result.
+  fused.autoReload(false);
+
+  const FILE = fused.params.get("_file");
+  // Several saves in a row (an agent writing, an editor's autosave) are one run.
+  const RERUN_DEBOUNCE_MS = 600;
+  const AUTORUN_KEY = "autorun";
+
+  const $ = (id) => document.getElementById(id);
+  const result = $("result");
+  const message = $("message");
+  let node = null;
+  let running = false;
+  let queued = false;       // a change landed during a run: run once more after
+  let rerunTimer = null;
+  let objectUrl = null;
+
+  function el(tag, value, cls) {
+    const out = document.createElement(tag);
+    if (value !== undefined) out.textContent = value;
+    if (cls) out.className = cls;
+    return out;
+  }
+  function showMessage(build) {
+    message.replaceChildren();
+    build(message);
+    message.hidden = false;
+  }
+  function setStatus(value, isError) {
+    const status = $("status");
+    status.textContent = value || "";
+    status.className = "status" + (isError ? " error" : "");
+  }
+  function setLog(stdout, stderr) {
+    const parts = [];
+    if (stdout) parts.push(stdout.replace(/\n+$/, ""));
+    if (stderr) parts.push(stderr.replace(/\n+$/, ""));
+    $("log-text").textContent = parts.join("\n");
+    $("log").hidden = parts.length === 0;
+  }
+  function clearResult() {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = null;
+    result.replaceChildren();
+  }
+  function bytesOf(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function humanBytes(n) {
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+  }
+
+  function showAnswer(answer) {
+    clearResult();
+    setLog(answer.stdout, answer.stderr);
+    if (!answer.ok) {
+      const head = typeof answer.line === "number" ? "Error on line " + answer.line : "Error";
+      result.append(el("div", head, "error-head"), el("pre", answer.error || "the run failed", "error"));
+      // An error's output is why one is reading it.
+      $("log").open = true;
+      setStatus("Failed", true);
+      return;
+    }
+    const bytes = bytesOf(answer.body_b64 || "");
+    const type = (answer.content_type || "").split(";")[0].trim().toLowerCase();
+    if (bytes.length === 0) {
+      result.append(el("pre", "This UDF returned nothing."));
+    } else if (type === "text/html") {
+      // Fused's own page for the result (a table viewer, or the UDF's HTML).
+      // Its scripts run, in a frame with no access to this origin.
+      const frame = document.createElement("iframe");
+      frame.title = "Result of " + node.title;
+      frame.setAttribute("sandbox", "allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads");
+      frame.srcdoc = new TextDecoder().decode(bytes);
+      result.append(frame);
+    } else if (type.startsWith("image/")) {
+      objectUrl = URL.createObjectURL(new Blob([bytes], { type }));
+      const img = document.createElement("img");
+      img.alt = "Result of " + node.title;
+      img.src = objectUrl;
+      result.append(img);
+    } else if (type === "application/json" || type.startsWith("text/")) {
+      let shown = new TextDecoder().decode(bytes);
+      if (type === "application/json") {
+        try { shown = JSON.stringify(JSON.parse(shown), null, 2); } catch (_) { /* as sent */ }
+      }
+      result.append(el("pre", shown));
+    } else {
+      result.append(el("pre", "This result (" + (type || "unknown type") + ", " + humanBytes(bytes.length) +
+        ") has no preview here. Open the node in its canvas to see it."));
+    }
+    const took = typeof answer.seconds === "number" ? answer.seconds.toFixed(1) + " s" : "";
+    setStatus([answer.cached ? "Cached" : "", took].filter(Boolean).join(" · "));
+  }
+
+  async function run() {
+    if (!node) return;
+    if (running) {
+      queued = true;
+      return;
+    }
+    running = true;
+    queued = false;
+    $("run").disabled = true;
+    setStatus("Running…");
+    result.classList.add("busy");
+    try {
+      const answer = await CanvasNode.run(FILE);
+      message.hidden = true;
+      showAnswer(answer);
+    } catch (error) {
+      // The run never happened (not signed in, no CLI, a timeout): nothing
+      // of the last result is thrown away for it.
+      setStatus(error.message, true);
+      if (!result.hasChildNodes()) {
+        showMessage((host) => {
+          host.append(el("div", "Could not run " + node.title + ": " + error.message, "error"));
+        });
+      }
+    } finally {
+      running = false;
+      $("run").disabled = false;
+      result.classList.remove("busy");
+      if (queued) void run();
+    }
+  }
+
+  async function boot() {
+    if (!FILE) {
+      showMessage((host) => host.append(el("div", "No file to show.")));
+      return;
+    }
+    try {
+      node = await CanvasNode.info(FILE);
+    } catch (error) {
+      showMessage((host) => host.append(el("div", "Could not read this node: " + error.message, "error")));
+      return;
+    }
+    if (!node || !node.enabled || !node.node) {
+      node = null;
+      showMessage((host) => host.append(el("div", "This file is not a node of a canvas you work on.")));
+      return;
+    }
+    $("title").textContent = node.title;
+    $("canvas").textContent = node.name;
+    $("open").addEventListener("click", () => CanvasNode.openCanvas(node));
+    $("run").addEventListener("click", () => void run());
+    const autorun = $("autorun");
+    autorun.checked = fused.params.get(AUTORUN_KEY) !== "0";
+    autorun.addEventListener("change", () => fused.params.set(AUTORUN_KEY, autorun.checked ? null : "0"));
+    $("strip").hidden = false;
+    if (!node.signed_in) {
+      showMessage((host) => {
+        host.append(el("div", "Sign in to Fused to run " + node.title + "."));
+        const go = el("button", "Open Canvases to sign in", "primary");
+        go.type = "button";
+        go.addEventListener("click", () => CanvasNode.openCanvases());
+        host.append(go);
+      });
+      return;
+    }
+    showMessage((host) => host.append(el("div", "Running " + node.title + "…")));
+    fused.onFileChanged(() => {
+      if (!autorun.checked) {
+        setStatus("File changed — Run to update");
+        return;
+      }
+      clearTimeout(rerunTimer);
+      rerunTimer = setTimeout(() => void run(), RERUN_DEBOUNCE_MS);
+    });
+    await run();
+  }
+
+  void boot();
+</script>
+</body>
+</html>

@@ -377,7 +377,7 @@ def test_a_streaming_gate_runs_on_the_signed_url(tmp_path, monkeypatch):
     monkeypatch.setattr(server_templates, "USER_TEMPLATES_DIR", str(tmp_path))
     monkeypatch.setattr(server_templates, "USER_REGISTRY", str(tmp_path / "registry.json"))
     monkeypatch.setattr(server_templates, "_CONDITIONS_CACHE", {})
-    (tmp_path / "registry.json").write_text(json.dumps({".parquet": ["streams", "local_only", "_node"]}))
+    (tmp_path / "registry.json").write_text(json.dumps({".parquet": ["streams", "local_only", "canvas_udf"]}))
     for name in ("streams", "local_only"):
         (tmp_path / name).mkdir()
         (tmp_path / name / "template.html").write_text("<html></html>")

@@ -52,7 +52,7 @@ const LEVEL_STYLE: Record<SyncLevel, { border: string; bg: string; dot: string }
   error: { border: "rgba(220,60,60,0.35)", bg: "rgba(220,60,60,0.08)", dot: "rgb(220,60,60)" },
 };
 
-/** The strip's level dot — also the node view's sync chip (NodeView.tsx). */
+/** The strip's level dot. */
 export function Dot({ level, size = 8 }: { level: SyncLevel; size?: number }) {
   return (
     <span

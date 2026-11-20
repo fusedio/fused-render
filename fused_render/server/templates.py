@@ -1,5 +1,4 @@
 import codecs
-import functools
 import json
 import os
 import stat as stat_mod
@@ -31,46 +30,8 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 # folder behind them. The only `_`-prefixed names a registry mode list may
 # reference (D73); any other `_` name is invalid (CT-6). `_listing` is the
 # shell's built-in directory listing — the default of the universal `/`
-# directory key (D81). `_node` is the canvas node view (§53.3), drawn by the
-# shell's apps/canvases.
-KNOWN_SENTINELS = {"_render", "_listing", "_node"}
-
-
-def _node_view_gate(path) -> bool:
-    """The `_node` sentinel's gate — the node view (SPEC §53.3 NV-1, NV-2).
-
-    True only when, cheapest first:
-
-      * the `canvases_enabled` preference is on (a read of prefs.json — every
-        `.py`/`.json`/`.html`/`.md` pays only this while Canvases is off);
-      * the path is a node's source file at the root of a `user/<canvas>`
-        folder of the canvases root, with a node row of that name in the
-        folder's canvas.toml whose file is this one —
-        `canvases.canvas_node_file`, the one rule this gate and
-        GET /api/canvases/node share. `team/` and `public/` copies never pass;
-        a reference copy under `user/` does (the view clones it in place).
-
-    `fused_render.canvases` is imported only after the preference said yes.
-    Never raises: a gate that cannot decide denies (fail closed)."""
-    try:
-        from fused_render.shell import prefs
-
-        if not prefs.canvases_enabled():
-            return False
-        from fused_render import canvases
-
-        return canvases.canvas_node_file(path) is not None
-    except Exception:  # noqa: BLE001 — a broken gate must hide, never raise
-        return False
-
-
-# Conditional sentinels (SPEC PT-12, CT-12): a sentinel has no folder to ship
-# a `condition.py` in, so its gate is a function here, keyed by the sentinel's
-# name. It runs in the server process exactly where a folder's condition.py
-# would (/api/fs/conditions), with the same `main(path) -> bool` contract and
-# the same fail-closed posture; stat marks the entry `conditional` the same
-# way. A sentinel not listed here is unconditional, as every sentinel was.
-SENTINEL_CONDITIONS = {"_node": _node_view_gate}
+# directory key (D81).
+KNOWN_SENTINELS = {"_render", "_listing"}
 
 
 # /api/fs/conditions evaluates template condition.py gates, which can do real
@@ -83,8 +44,9 @@ _CONDITIONS_TTL_S = 60.0
 # path -> (inserted_monotonic, prefs_mtime, toml_stamp, payload). Gates may
 # read the preference store (the reader template's condition.py does), so a
 # cached verdict is only valid while prefs.json is unchanged — otherwise
-# flipping a Preferences toggle looks dead for a full TTL. The `_node` gate also
-# reads a node file's canvas.toml (a row added there makes the file a node),
+# flipping a Preferences toggle looks dead for a full TTL. The canvas node
+# templates' gates (canvas_widget, canvas_note, canvas_udf) also read a node
+# file's canvas.toml (a row added there makes the file a node),
 # so for a path SHAPED like a node file `toml_stamp` is `(canvas.toml path,
 # its mtime)` and a hit re-stats that one file; for every other path it is
 # None and a hit costs what it always did (the prefs stat). The shape is
@@ -317,21 +279,10 @@ def _run_condition(condition_file: str, target_path: str):
         return False, f"{condition_file}: {e}"
 
 
-def _run_sentinel_condition(mode: str, target_path: str):
-    """Call a sentinel's in-process gate (`SENTINEL_CONDITIONS`). Returns
-    (allowed: bool, error: str|None) — `_run_condition`'s shape, and its
-    posture: anything raised denies with the reason."""
-    try:
-        return bool(SENTINEL_CONDITIONS[mode](target_path)), None
-    except BaseException as e:  # never let a bad gate tear down the call
-        return False, f"{mode}: {e}"
-
-
 def _mark_conditions(entries: list):
     """Flag resolved template entries whose folder carries a `condition.py`
-    gate — or, for a sentinel (`path is None`, D73), whose name has a gate in
-    `SENTINEL_CONDITIONS` — with `"conditional": True` (SPEC PT-8/CT-12).
-    Every other sentinel and folders with no gate are left untouched.
+    gate with `"conditional": True` (SPEC PT-8/CT-12). Sentinels (`path is
+    None`, D73) and folders with no gate are left untouched.
 
     Stat no longer *evaluates* gates — a gate may do real I/O (the H3 gate
     reads a parquet footer), and that stalled every stat
@@ -342,45 +293,63 @@ def _mark_conditions(entries: list):
     """
     for entry in entries:
         path = entry.get("path")
-        if path is None:
-            if entry.get("mode") in SENTINEL_CONDITIONS:
-                entry["conditional"] = True
-        elif _condition_file(path) is not None:
+        if path is not None and _condition_file(path) is not None:
             entry["conditional"] = True
 
 
-# The one mode stat may mark as its file's DEFAULT CANDIDATE (SPEC PT-8's
-# `prefer` exception): the canvas node view, the `_node` sentinel.
-_PREFERRED_SENTINEL = "_node"
+# The canvas node templates (SPEC §53.2): each a gated template folder that
+# draws one kind of node file of a cloned canvas. Stat marks their entries
+# `"node": True`, which the shell reads as: offered only on the gate's
+# explicit yes, and never under a git snapshot (they draw the node as it
+# stands now). One of them may also be its file's DEFAULT CANDIDATE (SPEC
+# PT-8's `prefer` exception).
+NODE_TEMPLATES = frozenset({"canvas_widget", "canvas_note", "canvas_udf"})
 
 
-def _mark_preferred(entries: list, path: str) -> None:
-    """Flag the `_node` sentinel entry `"prefer": True` when `path` is shaped
-    like a canvas node file and the `canvases_enabled` preference is on (SPEC
-    PT-8, §53.3 NV-3). The client then holds the content pane on the "checking"
-    placeholder until the gate answers, and opens the node view on a yes —
-    rather than painting the code editor first. A cheap precheck only: the
-    path's shape decides with no syscall on it (`canvases.node_file_shape`),
-    then one prefs read; canvas.toml is the gate's business, not stat's. No
-    other entry is ever marked, so every other file's stat is unchanged."""
-    entry = next((e for e in entries if e.get("mode") == _PREFERRED_SENTINEL), None)
-    if entry is None or entry.get("path") is not None or not entry.get("conditional"):
+def _mark_node_templates(entries: list, path: str) -> None:
+    """Flag the canvas node templates' entries `"node": True`, and the first
+    of them `"prefer": True` when `path` is shaped like a canvas node file
+    and the `canvases_enabled` preference is on (SPEC PT-8, §53.2 NT-3). The
+    client then holds the content pane on the "checking" placeholder until
+    the gate answers, and opens the node's template on a yes — rather than
+    painting the code editor first. A cheap precheck only: the path's shape
+    decides with no syscall on it (`canvases.node_file_shape`), then one
+    prefs read; canvas.toml is the gate's business, not stat's. Only a
+    BUILT-IN folder is marked (a user folder of the same name is an ordinary
+    gated template), so every other file's stat is unchanged."""
+    nodes = [e for e in entries
+             if e.get("mode") in NODE_TEMPLATES and e.get("conditional")
+             and _is_core_template_path(e.get("path"))]
+    if not nodes:
         return
+    for entry in nodes:
+        entry["node"] = True
     try:
         from fused_render import canvases
         from fused_render.shell import prefs
 
         if canvases.node_file_shape(path) is not None and prefs.canvases_enabled():
-            entry["prefer"] = True
+            nodes[0]["prefer"] = True
     except Exception:  # noqa: BLE001 — no mark is the ordinary default, never an error
         return
 
 
+def _is_core_template_path(template_path) -> bool:
+    """True when `template_path` (an entry's resolved `template.html`) lies in
+    the built-in templates dir."""
+    if not isinstance(template_path, str) or not template_path:
+        return False
+    try:
+        return os.path.commonpath(
+            [os.path.realpath(template_path), os.path.realpath(TEMPLATES_DIR)]
+        ) == os.path.realpath(TEMPLATES_DIR)
+    except ValueError:
+        return False
+
+
 def _evaluate_conditions(gated: list, target_path: str):
-    """Evaluate gates: `gated` is [(key, gate)], where a gate is a
-    `condition.py` path (a template folder's) or a callable taking the target
-    path and returning (allowed, error) (a sentinel's, `_run_sentinel_condition`
-    bound to its name); returns {key: (allowed: bool, error: str|None)}.
+    """Evaluate gates: `gated` is [(key, condition.py path)]; returns
+    {key: (allowed: bool, error: str|None)}.
 
     Gates are independent and may be slow (user code — filesystem reads,
     remote I/O), so they are evaluated **concurrently**: the cost is the
@@ -390,8 +359,6 @@ def _evaluate_conditions(gated: list, target_path: str):
     results = {}  # key -> (allowed, error)
 
     def _run(gate):
-        if callable(gate):
-            return gate(target_path)
         return _run_condition(gate, target_path)
 
     def _serial():
@@ -457,8 +424,6 @@ def _conditions_payload(path: str):
             continue
         mode = entry["mode"]
         if entry.get("path") is None:
-            if mode in SENTINEL_CONDITIONS:
-                gated.append((mode, functools.partial(_run_sentinel_condition, mode)))
             continue
         cf = _condition_file(entry["path"])
         if cf is not None:
@@ -770,5 +735,5 @@ def _templates_for(path: str, is_dir: bool, *, sniff_text: bool = True):
     # deferred to /api/fs/conditions so a slow gate never stalls the stat.
     _mark_conditions(entries)
     if not is_dir:
-        _mark_preferred(entries, path)
+        _mark_node_templates(entries, path)
     return entries, error

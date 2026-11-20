@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<!-- The canvas NOTE template (SPEC §53.4): one note (`<node>.md`) of a cloned
+     canvas, drawn here, locally. A note is markdown on a coloured card, and
+     both halves are on disk: the text is the file, the card's colour, size
+     and alignment are the node's row in the folder's canvas.toml. So nothing
+     is asked of Fused: no sign-in, no workbench frame, no network.
+
+     What this page does:
+       - asks the server what the file is and how its row styles it
+         (shared/canvas-node.js, GET /api/canvases/node);
+       - renders the file's text (minus the workbench's `fused:` header
+         lines) with the vendored `marked`, into a frame that runs no script;
+       - draws it again whenever the file changes on disk.
+
+     This page must not import fused_render (SPEC PY-15). -->
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Canvas note</title>
+<script src="/template-assets/marked.min.js"></script>
+<script src="/template-shared/canvas-node.js"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #131417; --panel: #1a1c20; --fg: #e8eaed; --fg-muted: #9aa0a6;
+    --line: #2a2d33; --error: #ff6b6b; --hover: #24272d;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff; --panel: #f6f7f9; --fg: #1f2023; --fg-muted: #61656c;
+    --line: #dfe2e7; --error: #c62828; --hover: #eceef1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg); background: var(--bg); overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .strip {
+    flex: none; display: flex; align-items: center; gap: 10px;
+    min-height: 36px; padding: 0 12px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .strip .kind, .strip .canvas { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
+  .strip .spacer { flex: 1; }
+  button {
+    font: inherit; color: var(--fg); background: transparent;
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
+  }
+  button:hover { background: var(--hover); }
+  .stage { position: relative; flex: 1; min-height: 0; padding: 16px; overflow: hidden; }
+  iframe {
+    width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg);
+  }
+  .message {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 24px; text-align: center; color: var(--fg-muted); background: var(--bg);
+  }
+  .message.error { color: var(--error); white-space: pre-wrap; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="strip" id="strip" hidden>
+  <span class="title" id="title"></span>
+  <span class="kind">Note</span>
+  <span class="canvas" id="canvas"></span>
+  <span class="spacer"></span>
+  <button type="button" id="open">Open in canvas</button>
+</div>
+<div class="stage">
+  <!-- No `allow-scripts`: whatever the note's markdown carries, nothing in
+       it runs. `allow-same-origin` only lets THIS page write the frame's
+       document; links open outside it. -->
+  <iframe id="card" title="Note" hidden
+          sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>
+  <div class="message" id="message">Loading…</div>
+</div>
+<script>
+  // The page redraws the card itself; a reload would flash on every save.
+  fused.autoReload(false);
+
+  const FILE = fused.params.get("_file");
+  // The workbench's own defaults for a note (its sticky-note yellow, the
+  // soft top-to-bottom sheen, left-aligned 14px text).
+  const DEFAULT_COLOR = "#FFF9C4";
+  const BASE_FONT_PX = 14;
+  const ALIGNMENTS = ["left", "center", "right", "justify"];
+
+  const $ = (id) => document.getElementById(id);
+  const card = $("card");
+  const message = $("message");
+  let node = null;
+
+  function say(value, isError) {
+    message.textContent = value;
+    message.className = "message" + (isError ? " error" : "");
+    message.hidden = false;
+    card.hidden = true;
+  }
+
+  // A colour as the row carries it, or null when it is not one this page
+  // will put into a stylesheet (the value is data from a file).
+  function safeColor(value) {
+    if (typeof value !== "string") return null;
+    const v = value.trim();
+    if (v === "transparent") return v;
+    return /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v) ? v : null;
+  }
+
+  // Dark text on a light card and the reverse (relative luminance, sRGB).
+  function isDark(hex) {
+    let h = hex.slice(1);
+    if (h.length <= 4) h = h.split("").map((c) => c + c).join("");
+    const [r, g, b] = [0, 2, 4].map((i) => {
+      const c = parseInt(h.slice(i, i + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.4;
+  }
+
+  function cardCss(style) {
+    const page = getComputedStyle(document.documentElement);
+    const color = safeColor(style.textBoxColor) || DEFAULT_COLOR;
+    const transparent = color === "transparent";
+    const gradient = style.textBoxGradient !== false;
+    const scale = typeof style.textBoxScaleFactor === "number" && style.textBoxScaleFactor > 0
+      ? Math.min(style.textBoxScaleFactor, 8) : 1;
+    const align = ALIGNMENTS.includes(style.textBoxAlignment) ? style.textBoxAlignment : "left";
+    // A transparent note takes the page's own colours; a coloured one picks
+    // the text that reads on it.
+    const fg = transparent ? page.getPropertyValue("--fg").trim()
+      : isDark(color) ? "#f3f4f6" : "#1f2023";
+    const background = transparent ? page.getPropertyValue("--bg").trim()
+      : gradient
+        ? "linear-gradient(to bottom, rgba(255,255,255,0.4) 0%, rgba(0,0,0,0.02) 100%), " + color
+        : color;
+    return [
+      "html, body { margin: 0; min-height: 100%; }",
+      "body { padding: 20px 24px; background: " + background + "; color: " + fg + ";",
+      "  font: " + (scale * BASE_FONT_PX) + "px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;",
+      "  text-align: " + align + "; overflow-wrap: anywhere; }",
+      "h1 { font-size: 2em; margin: 0.2em 0 0.1em; }",
+      "h2 { font-size: 1.5em; margin: 0.2em 0 0.1em; }",
+      "h3 { font-size: 1.25em; margin: 0.15em 0 0.1em; }",
+      "p { margin: 0.4em 0; }",
+      "a { color: inherit; text-decoration: underline; }",
+      "img { max-width: 100%; }",
+      "code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em;",
+      "  background: rgba(127,127,127,0.18); border-radius: 4px; padding: 0.1em 0.3em; }",
+      "pre { background: rgba(127,127,127,0.18); border-radius: 6px; padding: 10px 12px; overflow: auto; text-align: left; }",
+      "pre code { background: none; padding: 0; }",
+      "blockquote { margin: 0.6em 0; padding-left: 12px; border-left: 3px solid rgba(127,127,127,0.5); }",
+      "table { border-collapse: collapse; }",
+      "th, td { border: 1px solid rgba(127,127,127,0.4); padding: 4px 8px; }",
+      "ul, ol { padding-left: 1.4em; text-align: left; }",
+      ".empty { opacity: 0.6; }",
+    ].join("\n");
+  }
+
+  function draw(source, style) {
+    const doc = card.contentDocument;
+    if (!doc) return;
+    const body = CanvasNode.noteText(source);
+    doc.head.replaceChildren();
+    const base = doc.createElement("base");
+    base.target = "_blank";
+    const sheet = doc.createElement("style");
+    sheet.textContent = cardCss(style || {});
+    doc.head.append(base, sheet);
+    if (body.trim()) {
+      doc.body.innerHTML = marked.parse(body);
+    } else {
+      const empty = doc.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "This note is empty.";
+      doc.body.replaceChildren(empty);
+    }
+    message.hidden = true;
+    card.hidden = false;
+  }
+
+  async function refresh() {
+    let source;
+    try {
+      // The row is read again with the text: a colour change is a canvas.toml
+      // edit, and it lands with the next draw.
+      const [info, text] = await Promise.all([CanvasNode.info(FILE), fused.readFile(FILE)]);
+      if (info && info.enabled && info.node) node = info;
+      source = text;
+    } catch (error) {
+      say("Could not read this note: " + error.message, true);
+      return;
+    }
+    draw(source, node ? node.style : {});
+  }
+
+  async function boot() {
+    if (!FILE) {
+      say("No file to show.");
+      return;
+    }
+    try {
+      node = await CanvasNode.info(FILE);
+    } catch (error) {
+      say("Could not read this note: " + error.message, true);
+      return;
+    }
+    if (!node || !node.enabled || !node.node) {
+      node = null;
+      say("This file is not a node of a canvas you work on.");
+      return;
+    }
+    $("title").textContent = node.title;
+    $("canvas").textContent = node.name;
+    $("open").addEventListener("click", () => CanvasNode.openCanvas(node));
+    $("strip").hidden = false;
+    await refresh();
+    fused.onFileChanged(() => void refresh());
+    // The shell's theme flipped: a transparent note follows it.
+    new MutationObserver(() => void refresh())
+      .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  }
+
+  // The frame's own (empty) document must exist before the first draw.
+  if (card.contentDocument && card.contentDocument.readyState === "complete") void boot();
+  else card.addEventListener("load", () => void boot(), { once: true });
+</script>
+</body>
+</html>
