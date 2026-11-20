@@ -1,12 +1,9 @@
 // The overlay a specialist's "show" card opens (docs/specialists.md §15): a canvas, or one node of a canvas (a UDF,
 // a widget, an HTML node, a note), drawn the way the explorer draws it when the same file is opened there: a node
-// through the `_node` native view (platform/ui/NativeView, the canvases app's NodeView: the hosted workbench in a
-// frame, cloned and synced as needed), a whole canvas as its workspace page in a chrome-free frame. Nothing is
+// through its file view in a chrome-free frame (the node's own template, D1495), a whole canvas as its workspace page in a chrome-free frame. Nothing is
 // mounted until the card (apps/claude/ui/ViewCard) opens it, and closing unmounts it (the frame stops).
-import { NODE_MODE } from "@platform/lib/mode-visibility";
-import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { embedUrlForFsPath, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
-import { NativeView, hasNativeView } from "@platform/ui/NativeView";
 import { CanvasIcon, HtmlNodeIcon, PythonNodeIcon, TextNodeIcon, WidgetNodeIcon } from "@platform/ui/NodeTypeIcons";
 import { viewOf, type ViewRef } from "@platform/lib/view-ref";
 import "./view-modal.css";
@@ -64,10 +61,10 @@ export function ViewModal({ view, onClose, getContainer }: { view: ViewRef; onCl
           view.canvas && view.env
             ? <iframe className="view-modal-frame" src={canvasFrameUrl(view)} title={`Canvas ${view.title}`} />
             : <p className="view-modal-missing">This canvas can&rsquo;t be opened from here.</p>
-        ) : hasNativeView(NODE_MODE) ? (
-          <NativeView mode={NODE_MODE} path={view.path} placement="content" />
+        ) : view.path ? (
+          <iframe className="view-modal-frame" src={embedUrlForFsPath(view.path)} title={`${viewKindLabel(view.kind)} ${view.title}`} />
         ) : (
-          <p className="view-modal-missing">This view isn&rsquo;t available in this window. Use &ldquo;Open in explorer&rdquo;.</p>
+          <p className="view-modal-missing">This view can&rsquo;t be opened from here. Use &ldquo;Open in explorer&rdquo;.</p>
         )}
       </div>
     </Modal>
