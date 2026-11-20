@@ -187,11 +187,15 @@ def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     from fused_render.agent_backends import opencode as backend_opencode
     assert agent._ACCOUNT_ERROR_MARKERS["opencode"] == backend_opencode.OPENCODE.account_error_markers
     assert agent._LIMIT_ERROR_MARKERS["opencode"] == backend_opencode.OPENCODE.limit_error_markers
+    from fused_render.agent_backends import cursor as backend_cursor
+    assert agent._ACCOUNT_ERROR_MARKERS["cursor"] == backend_cursor.CURSOR.account_error_markers
+    assert agent._LIMIT_ERROR_MARKERS["cursor"] == backend_cursor.CURSOR.limit_error_markers
     assert agent._BACKEND_LABELS == {"claude": backend_claude.CLAUDE.label,
                                      "copilot": backend_copilot.COPILOT.label,
                                      "codex": backend_codex.CODEX.label,
                                      "gemini": backend_gemini.GEMINI.label,
-                                     "opencode": backend_opencode.OPENCODE.label}
+                                     "opencode": backend_opencode.OPENCODE.label,
+                                     "cursor": backend_cursor.CURSOR.label}
     assert set(agent.BACKENDS) == set(agent._BACKEND_LABELS)
     assert set(agent._ACCOUNT_ERROR_MARKERS) == set(agent.BACKENDS)
     assert set(agent._LIMIT_ERROR_MARKERS) == set(agent.BACKENDS)
@@ -199,7 +203,8 @@ def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     assert agent._NEW_CHAT_MODELS == {"copilot": backend_copilot.COPILOT.default_model,
                                       "codex": backend_codex.CODEX.default_model,
                                       "gemini": backend_gemini.GEMINI.default_model,
-                                      "opencode": backend_opencode.OPENCODE.default_model}
+                                      "opencode": backend_opencode.OPENCODE.default_model,
+                                      "cursor": backend_cursor.CURSOR.default_model}
     # Every backend with no fused-minted id is a non-Claude one, and every
     # non-Claude one here mints its own.
     assert set(agent._SELF_MINTED_ID_BACKENDS) == set(agent.BACKENDS) - {"claude"}
@@ -1384,7 +1389,7 @@ def test_registry_running_reads_every_root(agent, target):
             json.dump({"pid": os.getpid(), "sessionId": "s-" + backend,
                        "cwd": workdir, "status": "busy"}, fh)
     assert agent._registry_running(workdir) == {"s-claude", "s-copilot", "s-codex", "s-gemini",
-                                                "s-opencode"}
+                                                "s-opencode", "s-cursor"}
 
 
 def test_defaults_carry_the_backend(agent, target, home):
@@ -2425,7 +2430,7 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
         assert body.endswith(agent._blocked_note("gemini"))
     assert agent._blocked_note("gemini") == agent._blocked_note("copilot")
     assert agent._fused_cli_note("gemini") == agent._fused_cli_note("codex")
-    assert agent._NO_PREAPPROVE_BACKENDS == ("codex", "gemini", "opencode")
+    assert agent._NO_PREAPPROVE_BACKENDS == ("codex", "gemini", "opencode", "cursor")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     ctx = agent._gemini_context_dir(str(run_dir), str(page), True)

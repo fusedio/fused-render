@@ -212,11 +212,43 @@ export const OPENCODE_FALLBACK: AgentBackendRow = {
   health: null,
 };
 
+/** The Cursor row (docs/CURSOR_BACKEND.md §8), the fifth twin: a Cursor chat
+ *  answers with Cursor's caps from the first frame. Off until the server
+ *  says otherwise (D17). The model is a live ACP request (`session/set_model`,
+ *  D7) and the approval mode is the host's own card policy (D5), so both
+ *  live switches are on. One seeded model, `auto`: the account's list comes
+ *  from the CLI (`cursor/list_available_models`, D11a). NO EFFORT CONTROL
+ *  (D7): an empty `efforts` and every model `reasoning: false`.
+ *  KEEP IN SYNC BY HAND with fused_render/agent_backends/cursor.py — pinned
+ *  field for field by tests/test_agent_backend_pins.py. */
+export const CURSOR_FALLBACK: AgentBackendRow = {
+  id: "cursor",
+  label: "Cursor",
+  enabled: false,
+  models: [{ id: "auto", label: "Auto (Cursor picks)", reasoning: false }],
+  default_model: "auto",
+  efforts: [],
+  modes: ["prompt", "acceptEdits", "auto"],
+  caps: {
+    plan_mode: false,
+    live_model_switch: true,
+    live_mode_switch: true,
+    snapshots: false,
+    artifacts: false,
+    worktrees: false,
+    bg_tasks: false,
+    ask_user: false,
+    terminal_mirror: false,
+    mid_turn_messages: false,
+  },
+  health: null,
+};
+
 const FALLBACK: AgentCatalog = {
   // ENABLED: Claude alone, the defaults of every switch (D17).
   backends: [CLAUDE_FALLBACK],
   default: "claude",
-  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK, OPENCODE_FALLBACK],
+  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK, OPENCODE_FALLBACK, CURSOR_FALLBACK],
 };
 
 export interface AgentCatalogState extends AgentCatalog {
@@ -389,7 +421,7 @@ export function backendOf(id: string | null | undefined): AgentBackendRow {
   return current.all.find((b) => b.id === want) ?? current.backends.find((b) => b.id === want) ?? CLAUDE_FALLBACK;
 }
 
-/** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" — the word every surface names the agent by. */
+/** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" / "Cursor" — the word every surface names the agent by. */
 export function agentLabel(id: string | null | undefined): string {
   return backendOf(id).label;
 }

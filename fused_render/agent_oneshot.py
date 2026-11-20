@@ -1,5 +1,5 @@
 """One tool-less, session-free text completion from an agent CLI — GitHub
-Copilot, OpenAI Codex, Google Gemini or OpenCode — the way the session recaps have
+Copilot, OpenAI Codex, Google Gemini, OpenCode or Cursor — the way the session recaps have
 always run them, lifted here so `/api/ai` can run the same thing (D1433).
 
 Two callers, one argv per backend:
@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 #: The backends this module runs. Claude is NOT one: `/api/ai` keeps its
 #: persistent `_AiSession` (D168/D169) and the recap keeps its own
 #: `claude -p` argv, both of which stream.
-BACKENDS = ("copilot", "codex", "gemini", "opencode")
+BACKENDS = ("copilot", "codex", "gemini", "opencode", "cursor")
 
 #: `claude_health.SUBPROCESS_KWARGS` minus the text-mode keys: asyncio's
 #: `create_subprocess_exec` refuses `text` / `encoding` / `errors` with a
@@ -127,6 +127,10 @@ GEMINI_POLICY_NAME = "gemini-recap-policy.toml"
 #: appends the positional message after the piped input (ASSUMED,
 #: docs/OPENCODE_BACKEND.md D12; the design's own pointer rule).
 OPENCODE_POINTER = GEMINI_POINTER
+#: What `cursor-agent -p` is told when the whole prompt rides stdin (the CLI
+#: reads a piped stdin beside the positional prompt; docs/CURSOR_BACKEND.md
+#: D12). Worded to read right whichever side of the stdin text it lands on.
+CURSOR_POINTER = "Answer as the instructions in this message say."
 
 #: The levels the Copilot CLI's `--reasoning-effort` takes (1.0.102 `--help`).
 COPILOT_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -216,7 +220,8 @@ def _bin(agent, backend: str) -> str:
     try:
         return {"copilot": agent._copilot_bin, "codex": agent._codex_bin,
                 "gemini": agent._gemini_bin,
-                "opencode": agent._opencode_bin}[backend]()
+                "opencode": agent._opencode_bin,
+                "cursor": agent._cursor_bin}[backend]()
     except OneShotError:
         raise
     except Exception as exc:  # noqa: BLE001 - the resolver's own "not found" text
@@ -300,6 +305,8 @@ def prepare(backend: str, model: str, system: str, prompt: str,
         return _prepare_codex(agent, model, effort, common, tools_mcp)
     if backend == "opencode":
         return _prepare_opencode(agent, model, effort, common, tools_mcp)
+    if backend == "cursor":
+        return _prepare_cursor(agent, model, effort, common, tools_mcp)
     return _prepare_gemini(agent, model, effort, common, tools_mcp)
 
 
@@ -622,6 +629,66 @@ def _prepare_opencode(agent, model: str, effort: Optional[str], common: dict,
     spec = OneShot(argv=argv, env=env,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                    parse=parse, effort_dropped=dropped, **common)
+    return spec
+
+
+def _cursor_reply(stdout: str) -> dict:
+    """The `{type: "result", ...}` object `cursor-agent -p --output-format
+    json` prints as its last line, or {}."""
+    for line in reversed((stdout or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            body = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(body, dict) and body.get("type") == "result":
+            return body
+    return {}
+
+
+def _prepare_cursor(agent, model: str, effort: Optional[str], common: dict,
+                    tools_mcp: Optional[dict] = None) -> OneShot:
+    """`cursor-agent -p --output-format json --mode ask`, Cursor's headless
+    one-shot, never the ACP server the sessions use (docs/CURSOR_BACKEND.md
+    D12/D16). `ask` is Cursor's read-only Q&A mode (no edits, no commands),
+    and `--workspace` an EMPTY mkdtemp, so there is nothing to read either;
+    `--trust` because a headless run cannot answer the workspace-trust
+    question. The reply is one `{type: "result", subtype, is_error, result,
+    session_id}` line. Cursor files the run's chat under that temp
+    workspace in its own store; fused never touches `~/.cursor` (D15).
+    No tools run: Cursor has no flag that limits its MCP roster to one
+    server, so a tools request is refused rather than run with the user's
+    whole MCP config."""
+    if tools_mcp is not None:
+        raise OneShotError("ai_unavailable",
+                           "the Cursor CLI cannot run a tools turn in one-shot mode")
+    workspace = tempfile.mkdtemp(prefix="fused-cursor-oneshot-")
+    env = agent._spawn_env(backend="cursor")
+    argv = [_bin(agent, "cursor"), "-p", "--output-format", "json",
+            "--mode", "ask", "--trust", "--workspace", workspace]
+    if model and model != "auto":
+        argv += ["--model", model]
+    argv.append(CURSOR_POINTER)
+    dropped = "the Cursor CLI has no reasoning effort control" if effort else ""
+
+    def parse(stdout: str, stderr: str, rc: int) -> str:
+        body = _cursor_reply(stdout)
+        if rc != 0 or body.get("is_error"):
+            said = str(body.get("result") or "") if body else ""
+            raise OneShotError(*_failure_type(said or stderr or stdout, spec))
+        reply = body.get("result")
+        if not isinstance(reply, str) or not reply.strip():
+            raise OneShotError("ai_error", "the Cursor CLI answered nothing")
+        return reply
+
+    def cleanup() -> None:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    spec = OneShot(argv=argv, env=env,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   parse=parse, cleanup=cleanup, effort_dropped=dropped, **common)
     return spec
 
 

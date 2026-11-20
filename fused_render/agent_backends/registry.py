@@ -1,7 +1,7 @@
 """The one answer to "which agents exist, which are on, which is the default".
 
 Read by: `GET /api/agent-backends` (the catalog every picker renders),
-`prefs` (validation of the five switches and `default_backend`),
+`prefs` (validation of the six switches and `default_backend`),
 `routers/tasks` + `schedule` (the 400 gate on a disabled backend),
 `routers/claude_agent` (the same gate in front of `agent.main`), and the
 Claude-only surfaces that follow `claude_enabled` (recap, health warm-up).
@@ -19,14 +19,15 @@ from fused_render.agent_backends.base import Backend
 from fused_render.agent_backends.claude import CLAUDE
 from fused_render.agent_backends.codex import CODEX
 from fused_render.agent_backends.copilot import COPILOT
+from fused_render.agent_backends.cursor import CURSOR
 from fused_render.agent_backends.gemini import GEMINI
 from fused_render.agent_backends.opencode import OPENCODE
 
 BACKENDS: dict[str, Backend] = {CLAUDE.id: CLAUDE, COPILOT.id: COPILOT, CODEX.id: CODEX,
-                                GEMINI.id: GEMINI, OPENCODE.id: OPENCODE}
+                                GEMINI.id: GEMINI, OPENCODE.id: OPENCODE, CURSOR.id: CURSOR}
 #: The order every picker, the catalog and the prefs default re-point walk —
 #: also `agent_roots.BACKENDS` and `prefs.VALID_DEFAULT_BACKENDS`.
-ORDER = (CLAUDE.id, COPILOT.id, CODEX.id, GEMINI.id, OPENCODE.id)
+ORDER = (CLAUDE.id, COPILOT.id, CODEX.id, GEMINI.id, OPENCODE.id, CURSOR.id)
 DEFAULT = CLAUDE.id
 
 

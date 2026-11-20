@@ -251,6 +251,14 @@ const ENTRIES = [
     keywords: "opencode open code agent backend cli sign in login api key local model provider",
   },
   {
+    id: "agent-cursor",
+    group: "ai",
+    section: "Agents",
+    label: "Cursor CLI",
+    description: "Runs chats and tasks with your Cursor account or a Cursor API key. Bots keep using Claude.",
+    keywords: "cursor cursor-agent anysphere agent backend cli sign in login api key",
+  },
+  {
     id: "agent-default",
     group: "ai",
     section: "Agents",
@@ -258,10 +266,11 @@ const ENTRIES = [
     description: "With more than one agent on, new chats and tasks start here. A conversation keeps the agent it started with.",
     keywords: "default agent backend",
     child: true,
-    // Two or more of the five on: a default only means something when there
+    // Two or more of the six on: a default only means something when there
     // is a choice to make.
     available: ({ prefs }) =>
-      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex, prefs.agents?.gemini, prefs.agents?.opencode]
+      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex, prefs.agents?.gemini, prefs.agents?.opencode,
+        prefs.agents?.cursor]
         .filter(Boolean).length >= 2,
   },
   {
@@ -650,9 +659,9 @@ const ENTRIES = [
     id: "agent-signin",
     group: "integrations",
     section: ELSEWHERE,
-    label: "Claude Code, Copilot, Codex, Gemini and OpenCode sign-in",
+    label: "Claude Code, Copilot, Codex, Gemini, OpenCode and Cursor sign-in",
     description: "Shown with each agent's health under Coding agents.",
-    keywords: "claude login anthropic copilot github codex openai chatgpt gemini google opencode sign in",
+    keywords: "claude login anthropic copilot github codex openai chatgpt gemini google opencode cursor sign in",
     elsewhere: true,
   },
 

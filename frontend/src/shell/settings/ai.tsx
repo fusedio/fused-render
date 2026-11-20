@@ -14,11 +14,11 @@ import { signedInHint } from "../onboarding/ToolsStep";
 import type { SettingId } from "./registry";
 import { RowSwitch, SettingRow, SettingSelect, SettingsViewContext, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
-type AgentId = "claude" | "copilot" | "codex" | "gemini" | "opencode";
+type AgentId = "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor";
 
 /** Every switch, in the registry's ORDER (docs/CODEX_BACKEND.md §1,
- *  docs/GEMINI_BACKEND.md §1, docs/OPENCODE_BACKEND.md §1). */
-const AGENT_IDS: readonly AgentId[] = ["claude", "copilot", "codex", "gemini", "opencode"];
+ *  docs/GEMINI_BACKEND.md §1, docs/OPENCODE_BACKEND.md §1, docs/CURSOR_BACKEND.md §1). */
+const AGENT_IDS: readonly AgentId[] = ["claude", "copilot", "codex", "gemini", "opencode", "cursor"];
 
 /** The name the health line uses — the product's, where the label is the
  *  short word the pills use. */
@@ -26,6 +26,7 @@ const HEALTH_NAME: Record<AgentId, string> = {
   claude: "Claude Code", copilot: "Copilot", codex: "Codex", gemini: "Gemini CLI",
   // "OpenCode" is both the short word and the long form (docs/OPENCODE_BACKEND.md D18).
   opencode: "OpenCode",
+  cursor: "Cursor CLI",
 };
 
 // ONE busy flag for every agent write on the page. The three switches and the
@@ -66,11 +67,13 @@ function useAgentWrite(onChange: PrefControlProps["onChange"]) {
 /** Absent (an older server) reads as the only answer it could give: Claude. */
 function agentsOf(prefs: Prefs) {
   const a = prefs.agents;
-  // A server from before Codex, Gemini or OpenCode answers without their
-  // keys: off, their default (D17).
+  // A server from before Codex, Gemini, OpenCode or Cursor answers without
+  // their keys: off, their default (D17).
   return a
-    ? { ...a, codex: a.codex ?? false, gemini: a.gemini ?? false, opencode: a.opencode ?? false }
-    : { claude: true, copilot: false, codex: false, gemini: false, opencode: false, default: "claude" };
+    ? { ...a, codex: a.codex ?? false, gemini: a.gemini ?? false, opencode: a.opencode ?? false,
+        cursor: a.cursor ?? false }
+    : { claude: true, copilot: false, codex: false, gemini: false, opencode: false, cursor: false,
+        default: "claude" };
 }
 
 /** One switched-on agent's health: a line when all is well, the strip's own
@@ -161,6 +164,10 @@ export const GeminiAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} i
  *  and the account line names "Local models (no account needed)" or
  *  "OpenCode providers" (`agentAccountLine`). */
 export const OpencodeAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-opencode" backend="opencode" />;
+/** Cursor CLI's switch (docs/CURSOR_BACKEND.md D17). Its Sign in runs
+ *  `cursor-agent login`, which opens the browser and finishes on its own
+ *  (D10); the account line names the email and team, or the API key. */
+export const CursorAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-cursor" backend="cursor" />;
 
 export function DefaultAgentControl({ prefs, onChange }: PrefControlProps) {
   useAgentBackends();

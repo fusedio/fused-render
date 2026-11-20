@@ -8,6 +8,8 @@
 // D18): a glyph of our own — a four-point star — and never Google's Gemini
 // mark, which is Google's to draw. OpenCode likewise (docs/OPENCODE_BACKEND.md
 // D18): an angle-bracket pair `<>` of our own strokes, never the project's logo.
+// Cursor likewise (docs/CURSOR_BACKEND.md D18): a pointer arrow of our own
+// strokes, never Cursor's mark, which is Anysphere's to draw.
 //
 // Same contract as `ClaudeMark`: `currentColor`, `em`-sized off the caller's
 // type so it drops into every seat the ✻ once had, `aria-hidden` because the
@@ -16,7 +18,7 @@ import { ClaudeMark } from "./ClaudeMark";
 import { agentLabel } from "@platform/lib/agent-backends";
 
 export interface AgentMarkProps {
-  /** "claude" | "copilot" | "codex" | "gemini" | "opencode" — anything else, or nothing, is Claude. */
+  /** "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor" — anything else, or nothing, is Claude. */
   backend?: string | null;
   className?: string;
   /** Multiple of the caller's font-size (see `ClaudeMark`). */
@@ -109,6 +111,29 @@ function OpencodeGlyph({ className, size = 1 }: { className?: string; size?: num
   );
 }
 
+/** The Cursor glyph: our own pointer arrow, outlined in a 24-unit box — a
+ *  plain signifier for "the Cursor agent", never Cursor's logo
+ *  (docs/CURSOR_BACKEND.md D18). */
+function CursorGlyph({ className, size = 1 }: { className?: string; size?: number }) {
+  return (
+    <svg
+      className={className ? `c-claudemark c-agentmark-cursor ${className}` : "c-claudemark c-agentmark-cursor"}
+      viewBox="0 0 24 24"
+      width={`${size}em`}
+      height={`${size}em`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M5 3l14 8.5-6.2 1.6 3.6 6.6-2.6 1.4-3.6-6.6L5 19z" />
+    </svg>
+  );
+}
+
 export function AgentMark({ backend, className, size = 1, word = false }: AgentMarkProps) {
   const id = backend || "claude";
   const glyph = id === "copilot"
@@ -119,7 +144,9 @@ export function AgentMark({ backend, className, size = 1, word = false }: AgentM
         ? <GeminiGlyph className={className} size={size} />
         : id === "opencode"
           ? <OpencodeGlyph className={className} size={size} />
-          : <ClaudeMark className={className} size={size} />;
+          : id === "cursor"
+            ? <CursorGlyph className={className} size={size} />
+            : <ClaudeMark className={className} size={size} />;
   if (!word) return glyph;
   return (
     <span className="c-agentmark-word">
