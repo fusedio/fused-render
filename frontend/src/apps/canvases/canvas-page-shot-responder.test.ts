@@ -22,6 +22,7 @@ const {
 } = await import("./canvas-page-shot-responder");
 const { canvasPagePath } = await import("./api");
 const { openCanvasPath } = await import("@apps/claude/ui/OpenCanvasCard");
+const { resetShotsDirForTests } = await import("@apps/claude/shots/dir");
 
 const NOW = 1_000_000_000_000;
 const row = (id: string, ageMs = 10_000, claimed = false): CanvasShotInboxRow => ({
@@ -199,6 +200,10 @@ test("takeCanvasShot: the picture's framing rides the answer (the tool's note sa
     const body = String(url).includes("/api/claude/agent") ? { dir: "/tmp/shots" } : { ok: true };
     return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
   }) as typeof fetch;
+  // `shotsDir` is a page-lifetime memo, and bun runs every test file in ONE
+  // process: whatever dir an earlier file learned (or left in flight) would be
+  // the answer here, not the one this stub serves. Forget it first.
+  resetShotsDirForTests();
   try {
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
     const shot: CanvasShot = { targets: ["canvas"], capture: async () => ({ ok: true, blob, framing: "whole-frame" }) };
@@ -207,6 +212,7 @@ test("takeCanvasShot: the picture's framing rides the answer (the tool's note sa
     expect(out).toMatchObject({ mime: "image/png", udf: "udf_2", framing: "whole-frame" });
   } finally {
     globalThis.fetch = real;
+    resetShotsDirForTests();
   }
 });
 

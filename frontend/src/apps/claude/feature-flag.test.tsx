@@ -35,7 +35,12 @@ beforeEach(() => {
   // write at all.
   resetFlagsForTests();
   calls = 0;
-  (globalThis as { fetch: unknown }).fetch = async () => {
+  // `calls` counts PREFS reads, not every fetch in the process: bun runs all
+  // files in one process, and a poller another file leaked also lands on this
+  // stub. Counted, it read as a second prefs request ("asked again") and failed
+  // whichever case it hit. Anything else is refused and not counted.
+  (globalThis as { fetch: unknown }).fetch = async (url: unknown) => {
+    if (!String(url).startsWith("/api/prefs")) throw new Error("not a prefs read: " + String(url));
     calls += 1;
     const body = await answer();
     return { ok: true, json: async () => body } as unknown as Response;
@@ -173,11 +178,22 @@ test("A HUNG READ COSTS ONE BUDGET AND IS NOT ASKED AGAIN INSIDE IT", async () =
 });
 
 test("a read that is merely SLOW is not abandoned in favour of asking again", async () => {
-  setPrefsDeadlineForTests(60);
-  answer = () =>
-    new Promise((done) => setTimeout(() => done({ queue: { enabled: true } }), 25));
-  const seen = await probe(120);
-  // The answer arrived inside the budget and is the answer.
+  // The answer is held on a gate the test opens, not a 25 ms timer raced
+  // against a 60 ms budget: on a loaded runner the budget could fire first and
+  // the case asserted a different outcome than it set up. The budget here is a
+  // liveness bound only.
+  setPrefsDeadlineForTests(10_000);
+  let release!: (v: unknown) => void;
+  answer = () => new Promise((done) => (release = done));
+  const seen = await probe(30);
+  // Still out: nothing has answered, and nothing has asked again.
+  expect(seen[seen.length - 1]).toBe(false);
+  expect(calls).toBe(1);
+  await act(async () => {
+    release({ queue: { enabled: true } });
+    await queueFlagReady();
+  });
+  // The slow answer, when it lands, is the answer — from the one request.
   expect(seen[seen.length - 1]).toBe(true);
   expect(calls).toBe(1);
 });

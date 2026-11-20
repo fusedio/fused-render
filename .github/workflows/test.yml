@@ -110,27 +110,48 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      # The shell's unit tests (`bun test`, frontend/src/**/*.test.ts) run on
-      # Bun's own runner, so this job needs Bun even though the build itself is
-      # npm + vite. Without this step the suite existed and CI never ran it —
-      # the clipboard race tests, which exist precisely because those races are
-      # invisible to review, had no guard against regression.
-      #
-      # After `npm install`, so it reuses that node_modules rather than
-      # resolving the tree a second time.
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Run shell unit tests (bun test)
-        working-directory: frontend
-        run: bun test
-
       - uses: actions/upload-artifact@v4
         with:
           name: shell-dist
           path: fused_render/static/shell-dist/
           retention-days: 1
+
+  # The shell's unit tests (`bun test`, frontend/src/**/*.test.ts) run on Bun's
+  # own runner. Without this job the suite existed and CI never ran it — the
+  # clipboard race tests, which exist precisely because those races are
+  # invisible to review, had no guard against regression.
+  #
+  # ITS OWN JOB, not a step of `frontend`: every Python and desktop job waits on
+  # `frontend` for the shell build, and the suite takes ~3.5 min. As a step it
+  # put those minutes on the critical path of every run, and one failing shell
+  # test SKIPPED the whole Python suite — the run reported one failure and hid
+  # whatever else was broken until a second full run. Test Status still
+  # requires it.
+  frontend-unit:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.app == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+
+      # Pinned, not `latest`: a Bun release changing module, timer or test-runner
+      # behaviour would otherwise turn main red with no commit to blame.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: Run shell unit tests (bun test)
+        working-directory: frontend
+        run: bun test
 
   test-python:
     needs: [detect-changes, frontend]
@@ -837,7 +858,7 @@ jobs:
     name: Test Status
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [detect-changes, frontend, test-python, fused-engine, minimal-install, wheel, bundle-contents, linux-desktop, macos-desktop, macos-intel-dmg]
+    needs: [detect-changes, frontend, frontend-unit, test-python, fused-engine, minimal-install, wheel, bundle-contents, linux-desktop, macos-desktop, macos-intel-dmg]
     if: always()
     steps:
       - name: Check test status
@@ -857,9 +878,9 @@ jobs:
             echo "No relevant changes; skipped."
             exit 0
           fi
-          # app fired ⇒ these seven always run (they gate on app only), so
+          # app fired ⇒ these eight always run (they gate on app only), so
           # anything other than success is a failure.
-          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.fused-engine.result }}" "${{ needs.minimal-install.result }}" "${{ needs.wheel.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
+          for result in "${{ needs.frontend.result }}" "${{ needs.frontend-unit.result }}" "${{ needs.test-python.result }}" "${{ needs.fused-engine.result }}" "${{ needs.minimal-install.result }}" "${{ needs.wheel.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
             if [[ "$result" != "success" ]]; then
               echo "Job did not succeed: $result"
               exit 1

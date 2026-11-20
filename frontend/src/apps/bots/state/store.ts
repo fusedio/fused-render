@@ -564,7 +564,15 @@ export function actSpecialist<T>(call: () => Promise<T>): Promise<T | undefined>
 let pollBusy: Promise<void> | null = null;
 export function poll(): Promise<void> {
   if (pollBusy) return pollBusy.then(poll);
-  return (pollBusy = pollOnce().finally(() => { pollBusy = null; }));
+  const p: Promise<void> = pollOnce().finally(() => { if (pollBusy === p) pollBusy = null; });
+  return (pollBusy = p);
+}
+
+/** Test-only: forget the poll in flight. bun runs every file in one process, and a poll another file started against
+ *  a `fetch` stub that never answers (the rail's bot card feeds this store) would otherwise be what every later act()
+ *  waits on. The forgotten poll's `finally` cannot clear a newer one: it nulls only its own slot. */
+export function resetPollForTests(): void {
+  pollBusy = null;
 }
 
 export async function pollOnce(): Promise<void> {
