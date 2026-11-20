@@ -179,6 +179,17 @@
     return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
   }
 
+  // Fused's page for a table is an ag-Grid in a `<div id="myGrid">` that is
+  // given no height, and a grid sizes itself to its container: on its own it
+  // draws as a 2px line with every row inside it. That page, and only that
+  // page, is given the frame's height; a UDF's own HTML is left as returned.
+  function sizedTablePage(html) {
+    const isTablePage = html.includes('<div id="myGrid"></div>') && html.includes("ag-grid-community");
+    if (!isTablePage) return html;
+    const sizing = "#myGrid{height:calc(100vh - 16px);width:100%}";
+    return "<" + "style>" + sizing + "</" + "style>" + html;
+  }
+
   function showAnswer(answer) {
     clearResult();
     setLog(answer.stdout, answer.stderr);
@@ -200,7 +211,7 @@
       const frame = document.createElement("iframe");
       frame.title = "Result of " + node.title;
       frame.setAttribute("sandbox", "allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads");
-      frame.srcdoc = new TextDecoder().decode(bytes);
+      frame.srcdoc = sizedTablePage(new TextDecoder().decode(bytes));
       result.append(frame);
     } else if (type.startsWith("image/")) {
       objectUrl = URL.createObjectURL(new Blob([bytes], { type }));

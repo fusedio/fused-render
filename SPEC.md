@@ -12718,6 +12718,10 @@ is never sent it, and every alternation of their generations resets the view
   and size with a pointer to the canvas. An error shows its line and
   message, with the run's output opened under it. The strip says "Cached"
   and the seconds.
+  Fused's page for a table is an ag-Grid in a container with no height,
+  which draws as a 2 px line; that page (recognised by its `myGrid`
+  container and its ag-Grid import) is given the frame's height. A UDF's
+  own HTML is shown as returned.
 - **NU-3 When it runs.** On open; on Run; and, while "Run on save" is on
   (the default; `autorun=0` on the page's URL keeps it off), 600 ms after
   the file last changed (NT-8's one look after opening compares the file's
