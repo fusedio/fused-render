@@ -387,12 +387,14 @@ export function UdfSavedControl() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cleared, setCleared] = useState<UdfSavedStats | null>(null);
+  const [unmeasured, setUnmeasured] = useState(false);
 
   useEffect(() => {
     let alive = true;
     fetchUdfSavedStats()
       .then((s) => alive && setStats(s))
-      .catch(() => {});
+      // Size unknown: say so, and leave Clear usable.
+      .catch(() => alive && setUnmeasured(true));
     return () => {
       alive = false;
     };
@@ -412,6 +414,9 @@ export function UdfSavedControl() {
   };
 
   const empty = stats !== null && stats.entries === 0;
+  // Clear waits for the measurement, so a late read cannot bring back the
+  // count it just cleared.
+  const measuring = stats === null && !unmeasured;
   return (
     <SettingRow
       id="udf-saved"
@@ -420,10 +425,12 @@ export function UdfSavedControl() {
           ? "Clearing…"
           : stats
             ? `${stats.entries} ${stats.entries === 1 ? "result" : "results"} · ${formatBytes(stats.bytes)}`
-            : "Measuring…"
+            : unmeasured
+              ? "Size unknown"
+              : "Measuring…"
       }
       control={
-        <Button variant="outline" size="sm" disabled={busy || empty} onClick={clear}>
+        <Button variant="outline" size="sm" disabled={busy || empty || measuring} onClick={clear}>
           {busy ? "Clearing…" : "Clear"}
         </Button>
       }

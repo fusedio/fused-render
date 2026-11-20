@@ -12852,8 +12852,9 @@ milliseconds.
   `handle.schema()` resolves to the UDF's parameters (an OpenAPI operation,
   the CLI's `udf-schema`).
 - **SS-2 Run.** `handle.run(params?, {format, cache, confirm, signal})`
-  returns a run: `run.saved` (a Result or null, at once), `run.result` (the
-  fresh Result; awaiting the run is the same), `run.onLog(fn)` (`{stdout,
+  returns a run: `run.saved` (a Promise of a Result or null, resolving at
+  once: `await run.saved`), `run.result` (a Promise of the fresh Result;
+  awaiting the run is the same), `run.onLog(fn)` (`{stdout,
   stderr}` when the output arrives), `run.cancel()`. `format`: `auto`
   (default), `view` (the value as a page draws it, no page of Fused's
   around it: a table as `application/vnd.fused-render.table+json`

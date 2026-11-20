@@ -294,6 +294,8 @@
   }
 
   function showError(err) {
+    // The opening "Running…" message covers the stage: the error must show.
+    message.hidden = true;
     result.replaceChildren();
     if (gridApi && !gridApi.isDestroyed()) gridApi.destroy();
     gridApi = null;

@@ -147,8 +147,9 @@ async def run(req: dict) -> None:
         try:
             done = answer(rid, result, fmt, req["out"], code_sha)
         except NeedsPng:
-            # A raster's `view`: Fused's own PNG of it (cached by Fused, so a
-            # second request, not a second run).
+            # A raster's `view`: Fused's own PNG of it, a second request. Fused
+            # may answer it from its cache; under cache=False ("fresh") it
+            # evaluates the UDF again.
             png = await fused.run_async(udf, engine="remote", _return_response=True,
                                         cache=cache, parameters=params, _format="png")
             done = answer(rid, png, "png", req["out"], code_sha)

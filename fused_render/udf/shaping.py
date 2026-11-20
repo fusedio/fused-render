@@ -171,8 +171,8 @@ def _plain(value):
             value = item()
         except Exception:  # noqa: BLE001
             pass
-    if isinstance(value, float) and value != value:
-        return None
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return None  # NaN and ±inf: JSON has neither
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     iso = getattr(value, "isoformat", None)
