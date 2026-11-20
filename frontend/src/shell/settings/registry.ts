@@ -555,11 +555,12 @@ const ENTRIES = [
   },
   // SPECIALISTS (docs/specialists.md): a kind of bot on the Bots page, and
   // the task tools and the breakout's "With". Off by default; off, nothing of
-  // it exists. Beside Expert bots: the two solve the same problem two ways.
+  // it exists. Beside Expert bots, under Other: the two solve the same
+  // problem two ways.
   {
     id: "specialists",
     group: "features",
-    section: "Bots",
+    section: "Other",
     label: "Specialists",
     description: "A kind of bot on the Bots page that knows one subject and keeps its own memory and skills. Tasks get its guidance, send it notes, and can open a breakout with it. Once a day it updates its memory from what they did.",
     keywords: "specialist bot memory skills breakout notes update learn",
