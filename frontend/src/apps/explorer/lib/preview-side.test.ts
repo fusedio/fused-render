@@ -1105,9 +1105,10 @@ describe("a canvas node file in the file view (TemplatePreview's chain)", () => 
 
   it("opens on the node template, with no code editor painted first, and a silent URL", () => {
     const { first, settled } = open(NODE, "", YES);
-    // First paint: the "checking" placeholder, not Code.
+    // First paint: the node template itself — the path check is enough, no
+    // "checking" placeholder waits for the gate.
     expect(first.shown).toBe("canvas_udf");
-    expect(first.checking).toBe(true);
+    expect(first.checking).toBe(false);
     // The verdict lands: the node template, in the content pane.
     expect(settled.shown).toBe("canvas_udf");
     expect(settled.checking).toBe(false);
@@ -1136,13 +1137,13 @@ describe("a canvas node file in the file view (TemplatePreview's chain)", () => 
     expect(pick(url, "canvas_udf", reload.settled.defaultMode)).toBe("");
   });
 
-  it("a no, or a failed conditions call ({}), falls back to Code with the node template nowhere", () => {
+  it("a no, or a failed conditions call ({}), changes nothing: the path check decided", () => {
     for (const settledV of [{ canvas_udf: false, claude: true }, {}] as ConditionVerdicts[]) {
       const { first, settled } = open(NODE, "", settledV);
-      expect(first.checking).toBe(true);
-      expect(settled.shown).toBe("code");
+      expect(first.checking).toBe(false);
+      expect(settled.shown).toBe("canvas_udf");
       expect(settled.checking).toBe(false);
-      expect(settled.menu).not.toContain("canvas_udf");
+      expect(settled.menu).toContain("canvas_udf");
       expect(settled.sideMenu).not.toContain("canvas_udf");
       expect(settled.url).toBe("");
     }

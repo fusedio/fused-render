@@ -182,6 +182,8 @@ EXPECTED_STARTUP = [
 EXPECTED_SHUTDOWN = [
     "_shutdown_background_apps_resurrection",
     "_startup_shutdown_ai",
+    # The warm UDF workers (`fused.workbench.udf()`, udf/runner.py, SPEC §54).
+    "_shutdown_udf_workers",
     "_shutdown_server_json",
     "_shutdown_loop_lag",
     "_shutdown_resource_trail",
@@ -250,6 +252,7 @@ EXPECTED_STARTUP_LEAN = [
 #: `@on_startup` PREWARM is lean-skipped, not the session object itself.
 EXPECTED_SHUTDOWN_LEAN = [
     "_startup_shutdown_ai",
+    "_shutdown_udf_workers",
     "_shutdown_captures",
     "_shutdown_ai_workers",
     # Every canvas sync manager stopped and its clone's writer lock released —

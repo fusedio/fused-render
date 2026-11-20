@@ -753,6 +753,15 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _startup_shutdown_ai():
         await shutdown_ai_session(app)
 
+    # The warm UDF workers (fused_render/udf/runner.py): started by the first
+    # `fused.workbench.udf()` run in an environment, lean or not, so stopped
+    # regardless too. A no-op when none was started.
+    @on_shutdown_always
+    async def _shutdown_udf_workers():
+        from fused_render.udf import runner as udf_runner
+
+        await asyncio.to_thread(udf_runner.shutdown)
+
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
     # nothing has used it for the configured window (default 5 min, 0 = off).
     # No startup hook for it — `supervisor._start_resident` calls
@@ -1272,6 +1281,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
     app.include_router(canvases_router)
+    # Fused UDF runs for pages (`fused.workbench.udf()`, SPEC §54): the
+    # /api/udf/ws run socket and the result bytes, over the warm per-env SDK
+    # workers of fused_render/udf/.
+    from fused_render.server.routers.udf import router as udf_router
+
+    app.include_router(udf_router)
     # Remote (S3) locations: an `s3://bucket/key` address is an explorer
     # location. `routers/remote.py` stats, lists and downloads an object into
     # the local cache (remote_access.py is the one seam that knows how a

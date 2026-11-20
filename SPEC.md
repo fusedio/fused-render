@@ -12698,27 +12698,28 @@ is never sent it, and every alternation of their generations resets the view
 
 ### 53.5 `canvas_udf`: a UDF
 
-- **NU-1 One run, Fused's own rendering.** `POST /api/canvases/node/run
-  {path}` (guarded; Canvases on; the path a UDF node file, NT-2; the
-  environment signed in) runs the file as it stands on disk in the canvas's
-  Fused, through the SDK in a child process (`_fused_node_run.py`, the
-  in-interpreter spawn the other canvas helpers use, `FUSED_ENV` set as the
-  CLI's is): `fused.load(path)`, then `fused.run(udf, engine="remote",
-  _format="png,html", _return_response=True)`. Those are the formats a
-  shared UDF's link serves (`.png` for a raster, `.html` for the rest: a
-  table comes back as a self-contained page, an HTML string as itself), so
-  the answer is the response's bytes untouched: `{ok: true, content_type,
-  body_b64, stdout, stderr, cached, seconds}`. A run that raised is an
-  answer too: `{ok: false, error, line?, stdout, stderr}`. The child has
-  330 s. What the SDK prints while it runs joins the run's output. Two
-  answers stand in for a run not made or not delivered (NU-6, NU-7).
-- **NU-2 What shows.** `text/html` in a frame (`sandbox="allow-scripts
+- **NU-1 One run, the value.** The page runs its file through the page
+  runtime's `fused.workbench.udf({file})` (§54): the file as it stands on
+  disk, in its canvas's environment and canvas, `format: "view"` — the
+  value, not Fused's page of it, so a table needs no frame and nothing is
+  fetched from a CDN to draw it.
+- **NU-2 What shows.** A table (`application/vnd.fused-render.table+json`)
+  in ag-Grid 34.1.1, configured as the hosted workbench does its UDF tables:
+  `themeQuartz` (with `colorSchemeDark` in a dark theme) given the page's
+  colours, every community module, a filter on each column, numbers as
+  `numericColumn`, `minWidth` 135. The library is vendored
+  (`templates/vendor/ag-grid-community.esm.min.mjs`) and imported only when
+  a table is drawn; the grid follows the app's theme while open. Past the
+  rows kept, a line says how many there were. An answer whose `hash`
+  equals the one on screen is not drawn again (only the strip changes).
+  `text/html` (a UDF's own HTML) in a frame (`sandbox="allow-scripts
   allow-popups allow-popups-to-escape-sandbox allow-downloads"`, no
   same-origin: the page's scripts run with no reach into the app);
-  `image/*` as an image; JSON and text as text; anything else as its type
-  and size with a pointer to the canvas. An error shows its line and
-  message, with the run's output opened under it. The strip says "Cached"
-  and the seconds.
+  `image/*` as an image from the result's URL; JSON and text as text;
+  anything else as its type and size with a pointer to the canvas. An error
+  shows its line and message, with the run's output opened under it. The
+  strip says "Cached" (Fused answered from its cache) and the seconds, or
+  "Saved · <age>" while fused-render's saved copy (§54.3) is on screen.
   Fused's page for a table is an ag-Grid in a container with no height,
   which draws as a 2 px line; that page (recognised by its `myGrid`
   container and its ag-Grid import) is given the frame's height. A UDF's
@@ -12726,48 +12727,27 @@ is never sent it, and every alternation of their generations resets the view
 - **NU-3 When it runs.** With "Auto-run" on (the default; `autorun=0` on the
   page's URL keeps it off): on open, and 600 ms after the file last changed
   (NT-8's one look after opening compares the file's time with the one the
-  first run started from). With it off nothing runs until Run, on open as
-  on a save. A change during a run queues exactly one more. A failure to
-  run at all (signed out, no CLI, a timeout) is shown in the strip and
-  leaves the last result in place.
-- **NU-4 The external CLI.** With a `FUSED_RENDER_FUSED_BIN` override there
-  is no interpreter to run the helper in: the route answers 501.
+  first run started from). On open the saved copy for the file's current
+  contents is shown at once, then replaced by the fresh answer. With
+  Auto-run off nothing runs until Run, on open as on a save. A change
+  during a run queues exactly one more. A failure to run at all (signed
+  out, no SDK, a timeout) is shown in the strip and leaves the result on
+  screen in place.
+- **NU-4 No SDK.** With a `FUSED_RENDER_FUSED_BIN` override there is no
+  interpreter to run the worker in: the run fails `unavailable` (§54.4).
 - **NU-5 A run in flight.** A bar moves under the strip, Run reads
   "Running…" and is disabled, and the strip counts the seconds. A result
-  already on screen stays as it is, not dimmed, and the strip says "previous
-  result shown" until the new one replaces it.
+  already on screen stays as it is, not dimmed, and the strip says
+  "previous result shown" (or "saved result shown") until the new one
+  replaces it.
 - **NU-6 Runs that are asked about first (the workbench's rules).** A UDF
   that is a batch job, starts batch work or maps is never run without the
-  user's yes. `canvas_node_exec.execution_type(code)` is the hosted
-  workbench's classifier, rule for rule, in its order: (1) by text, the
-  first `@fused.udf(…)` whose arguments carry `engine=` or `instance_type=`
-  is `decorator-batch` whatever the value; (2) by syntax tree, a decorator
-  kwarg with a batch value (`instance_type` other than `realtime`, `engine`
-  other than `realtime`/`local`) is `decorator-batch`; `.map(…)` on a name
-  that is a `@fused.udf` function or a `fused.load(…)` result is `map`; a
-  direct call of such a name, or `fused.run`/`fused.submit`, with a batch
-  value is `inner-batch`. Code that does not parse is `none`. **The gate is
-  the route's**: for any kind but `none`, `POST /api/canvases/node/run`
-  without `confirmed: true` runs nothing and answers `{ok: false,
-  needs_confirmation: true, execution_type, title, reason}`. The page then
-  asks, in the workbench's words: "Confirm batch job run" / "Confirm batch
-  operation" / "Confirm map operation", `Do you want to run "<name>"?`,
-  Cancel / Run. It asks on open (Auto-run on), on a save and on Run alike,
-  and every time: nothing is remembered. Cancel leaves the UDF paused with
-  the reason ("Auto-execution is disabled for batch job UDFs" / "…for UDFs
-  with inner batch jobs" / "…for map operations"). One question at a time:
-  a save while one is up asks nothing more. A confirmed batch job is waited
-  for by the SDK (the child has 3600 s for it); it comes back as a value
-  rather than response bytes, which the helper writes out as a plain table
-  (the first 1000 rows) or text.
-- **NU-7 A large result is asked about first.** A result over 50 MB (the
-  workbench's auto-load default) is not delivered: the route answers `{ok:
-  false, too_large: true, size, limit}` and the page asks "Large data
-  warning" — "Loading data for UDF '<name>' (<size>) might be slow or
-  unstable. Would you like to continue loading this data?", Don't load /
-  Continue anyway. Continue anyway holds while the page is open and runs
-  again with `allow_large: true` (a run NU-6 covers is asked about again,
-  as on the workbench). Past 128 MB a result is refused with its size.
+  user's yes; the rule and the question are §54's (SS-5). The page adds one
+  thing: on open, with a saved answer on screen, it runs with `confirm:
+  false`, so such a UDF waits for Run instead of asking the moment the file
+  opens. With nothing saved, opening asks, as a save and Run do.
+- **NU-7 A large result is asked about first.** §54's rule (SS-6): over 50
+  MB the runtime asks; past 128 MB the run is refused with its size.
 
 ### 53.6 The node page (hosted workbench)
 
@@ -12797,7 +12777,8 @@ shared.
 a node's page, and pulling when Fused has newer changes: the canvas page
 does both. Running a UDF again when a node it loads was pushed. A map for a UDF that
 returns geometry (NU-1 shows the table Fused's `.html` rendering gives it).
-Parameters for a UDF's run (it runs with its defaults). Upstream and
+A form for a UDF's parameters on the node page (it runs with its defaults;
+`fused.workbench.udf` takes params, §54). Upstream and
 downstream navigation. A node chat in the page (the `claude` companion in the
 `_side` column is the chat). Moving the code editor to an error's line.
 
@@ -12844,4 +12825,113 @@ screen.
   prompt say one node's output is also taken from that node's file open in
   the file view, and that a node's own chat should ask for `what: "udf"`.
 
+## 54. UDF Runs — `fused.workbench.udf()` For Any Page
 
+Running a Fused UDF is a service of fused-render, not of one template: any
+page — a built-in template, a user's app — gets a handle on a UDF and runs
+it in Fused with the user's `fused login`. The canvas UDF node page (§53.5)
+is its first user.
+
+### 54.1 Why
+
+Each run used to be a new Python process: the SDK import (~0.8 s), its
+per-process setup (the realtime instance lookup, ~0.85 s) and a new TLS
+connection per request (the sync `fused.run` opens a fresh session per call)
+— ~4.5 s for a result Fused already had cached. A worker that stays up and
+runs through `fused.run_async` (one shared HTTP session) answers the same
+run in ~0.65 s, and a saved copy of the last answer is shown in
+milliseconds.
+
+### 54.2 The page API (`static/runtime.js`, `fused-workbench:start…end`)
+
+- **SS-1 Handle.** `fused.workbench.udf(ref, opts?)`: `ref` is `{file}` (a
+  UDF's `.py`; a canvas node file runs in its canvas and environment, any
+  other needs `env`), `{canvas, name, env?}` (as saved on Fused; `env`
+  defaults to the workbench environment), or `"<canvas>/<udf name>"`.
+  `opts.env` fills a missing `env`. A malformed `ref` throws `TypeError`.
+  `handle.schema()` resolves to the UDF's parameters (an OpenAPI operation,
+  the CLI's `udf-schema`).
+- **SS-2 Run.** `handle.run(params?, {format, cache, confirm, signal})`
+  returns a run: `run.saved` (a Promise of a Result or null, resolving at
+  once: `await run.saved`), `run.result` (a Promise of the fresh Result;
+  awaiting the run is the same), `run.onLog(fn)` (`{stdout,
+  stderr}` when the output arrives), `run.cancel()`. `format`: `auto`
+  (default), `view` (the value as a page draws it, no page of Fused's
+  around it: a table as `application/vnd.fused-render.table+json`
+  `{columns, rows, total}` with at most 20,000 rows, an HTML string as
+  HTML, text as text, a raster as Fused's PNG, anything else as JSON),
+  `html`, `png`, `json` (the value: a table as row objects, WKB geometry as
+  WKT), `parquet` (a table's Parquet bytes). `cache`:
+  `auto` (saved copy, then a fresh run), `prefer-saved` (a saved copy ends
+  the run), `fresh` (no saved copy; Fused is asked not to answer from its
+  cache).
+- **SS-3 Result.** `{url, contentType, size, hash (the bytes' sha256), source: "saved" |
+  "fused-cache" | "fresh", savedAt, seconds, fusedCached, stdout, stderr,
+  arrayBuffer(), blob(), text(), json()}`. `url` is
+  `/api/udf/results/<token>`.
+- **SS-4 Errors.** A rejection is an `Error` with `.code`: `bad_ref`,
+  `bad_env`, `env_locked`, `signed_out`, `unavailable`, `udf_error` (with
+  `.line`, `.stdout`, `.stderr`), `declined`, `too_large`, `timeout`,
+  `cancelled`, `preview`, `failed`.
+- **SS-5 Batch and map ask first.** The worker reads the loaded UDF's code
+  with `canvas_node_exec` (the hosted workbench's classifier); a batch job,
+  batch work or a map answers `needs_confirmation` unless the request is
+  `confirmed`, and nothing runs. The runtime then asks in its own dialog (a
+  closed shadow root over the page): the workbench's title, "Do you want to
+  run this UDF?" and the paused reason, Cancel / Run. Run sends the request
+  again `confirmed`; Cancel rejects `declined` with `.reason`. `confirm:
+  false` declines without asking. Nothing is remembered.
+- **SS-6 Large results ask first.** A fresh result over 50 MB is asked
+  about ("Large data warning", Don't load / Continue anyway) before the
+  promise resolves; Don't load rejects `declined`. Past 128 MB the server
+  refuses `too_large`.
+- **SS-7 Local only, never from a thumbnail.** The login stays in the
+  server. A page rendering as a preview thumbnail is refused `preview`. The
+  hosted runtime rejects `unavailable` (docs/EXPORT.md).
+
+### 54.3 Saved results (`udf/store.py`)
+
+- **SR-1 Key.** sha256 of the environment, the account (the access token's
+  `sub`, hashed), the source (a file's path and content hash, or canvas and
+  name), the params and the format. An edit, another account or other
+  params is another key.
+- **SR-2 What is kept.** Only successful runs; never errors or
+  confirmation answers. A run whose loaded code does not hash to the file
+  the key was built from is not filed under the key (it is served once from
+  `tmp/`).
+- **SR-3 Bounds.** No size limits: any size is kept and nothing is
+  evicted for space. An entry older than 7 days is a miss and is removed; a
+  run of the same key replaces its entry. `<home>/cache/udf/`, never in a
+  canvas folder. Clearing everything is the user's (SR-5).
+- **SR-4 Shown as saved.** The key cannot see sibling UDFs read through
+  `fused.load`, outside data or the clock, so a saved copy is always
+  labelled saved and, under `cache: "auto"`, always followed by a run.
+- **SR-5 Clearing.** Preferences → Advanced → Debugging → "Saved UDF
+  cache" shows the results' count and size (`GET /api/udf/saved`) and Clear
+  deletes them all (`DELETE /api/udf/saved`, guarded); the next open of
+  each UDF runs it fresh. A temporary result younger than a minute is left
+  for the hourly sweep (it may be a run's body about to be filed).
+
+### 54.4 Server (`udf/service.py`, `udf/runner.py`, `udf/_worker.py`, `server/routers/udf.py`)
+
+- **SV-1 Socket.** Runs ride `/api/udf/ws` (Origin must be this server,
+  `ws_origin_ok`; the LAN listener refuses sockets): `{op: "run" |
+  "schema" | "cancel", id, …}` in, `saved` / `started` / `done` / `error`
+  / `schema` frames out. A long run never holds one of WebKit's six HTTP
+  connections. A page that leaves does not cancel its runs: they finish
+  and are saved for the next open; only `{op: "cancel"}` stops one.
+- **SV-2 Bytes.** `GET /api/udf/results/<token>` serves a result with its
+  content type and `Content-Security-Policy: sandbox allow-scripts
+  allow-popups allow-popups-to-escape-sandbox allow-downloads`, so UDF HTML
+  opened there never runs as the app. Tokens are a run key or a random one.
+- **SV-3 One worker per environment.** `[sys.executable, -m,
+  fused_render.udf._worker]` with the CLI's env (`_cli_env`); JSON lines;
+  `fused.run_async` for a realtime run, the sync call on a thread for a
+  confirmed batch run. Replaced when the signed-in account changes,
+  stopped after 20 min idle, stopped on quit (a `_stop_children` rung and
+  the server's shutdown). The SDK is never imported in the server process.
+- **SV-4 Joined runs.** Two requests with the same key, `confirmed` and
+  cache flag in flight at once share one worker run; cancelling stops the
+  worker run only for the last page waiting.
+- **SV-5 Timeouts.** 330 s for a realtime run, 3600 s once the worker
+  reports a batch kind; 120 s for a schema.

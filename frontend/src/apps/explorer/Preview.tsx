@@ -801,9 +801,9 @@ function usePreviewFileMenu(
 // or unknown/stale value falls back to the default silently. The default is
 // the first UNCONDITIONAL entry (CT-12: a gated template is never the default
 // while a normal one exists), with one exception: a node file's preferred
-// canvas node template (PT-8 `prefer`), which is the default and holds the
-// pane on the checking placeholder until its verdict. An all-conditional list falls back
-// to its first (by then verdict-allowed) entry.
+// canvas node template (PT-8 `prefer`: the path is shaped like a canvas node
+// file), which is the default at once — no verdict is waited for. An
+// all-conditional list falls back to its first (by then verdict-allowed) entry.
 // Both rules live in lib/mode-visibility so every mode surface resolves the
 // same way; `templates` here is already the visible list, so a gate-denied
 // `_mode` lands on the default exactly like an unknown one.
@@ -949,9 +949,9 @@ function TemplatePreview({
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
-  // switcher as a disabled spinner, not selectable, never the default except
-  // a preferred canvas node template (PT-8), which holds the pane on the
-  // checking placeholder.
+  // switcher as a disabled spinner, not selectable, never the default. A
+  // preferred canvas node template (PT-8) is never pending: the path check
+  // opens it at once.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
 
   // The shell's git snapshot (`_snapshot`): see "the shell's git snapshot"

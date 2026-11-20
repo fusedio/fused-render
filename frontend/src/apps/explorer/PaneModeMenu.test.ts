@@ -18,9 +18,9 @@ const udf: TemplateEntry = {
 };
 
 describe("paneModeChoice", () => {
-  test("while the preferred udf is pending: labelled Code, but udf is what is selected", () => {
+  test("before any verdict, the preferred udf is labelled and selected (the path check decides)", () => {
     const c = paneModeChoice([udf, code], null, null);
-    expect(c.active.mode).toBe("code");
+    expect(c.active.mode).toBe("canvas_udf");
     // So picking Code is a change, and writes ?_mode=code.
     expect(c.selected.mode).toBe("canvas_udf");
     expect(c.defaultEntry.mode).toBe("canvas_udf");
@@ -82,11 +82,11 @@ describe("PaneModeMenu (bar)", () => {
     globalThis.fetch = realFetch;
   });
 
-  test("Code picked while the preferred udf is pending pins ?_mode=code", async () => {
+  test("Code picked before the verdict pins ?_mode=code", async () => {
     const nav: string[] = [];
     const r = await mountBar("/x/canvas/prod/user/demo/udf_1.py", "", nav);
     const menu = r.root.findByType(ModeMenu);
-    expect(menu.props.active).toBe("code");
+    expect(menu.props.active).toBe("canvas_udf");
     await act(async () => {
       menu.props.onSelect("code");
     });

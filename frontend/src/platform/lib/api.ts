@@ -349,6 +349,21 @@ export function fetchDiagnosticsPlan(sinceS?: number): Promise<DiagnosticsPlan> 
   return getJson<DiagnosticsPlan>(`/api/diagnostics/plan${q}`);
 }
 
+/** fused-render's saved UDF results on disk (SPEC §54.3). */
+export interface UdfSavedStats {
+  entries: number;
+  bytes: number;
+}
+
+export function fetchUdfSavedStats(): Promise<UdfSavedStats> {
+  return getJson<UdfSavedStats>("/api/udf/saved");
+}
+
+/** Deletes every saved UDF result; the next open of each UDF runs it fresh. */
+export function clearUdfSaved(): Promise<{ cleared: UdfSavedStats }> {
+  return mutateJson<{ cleared: UdfSavedStats }>("DELETE", "/api/udf/saved");
+}
+
 export interface DiagnosticsOptions {
   /** Absolute epoch seconds; omitted = server default window. */
   since_s?: number;
