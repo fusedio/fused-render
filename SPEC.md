@@ -12801,3 +12801,47 @@ Parameters for a UDF's run (it runs with its defaults). Upstream and
 downstream navigation. A node chat in the page (the `claude` companion in the
 `_side` column is the chat). Moving the code editor to an error's line.
 
+### 53.8 The agent's screenshot of a node, from the file view
+
+The agent's `canvas_screenshot` tool (D1471) was answered by the canvas page
+alone. A chat working on a node while the user watched that node's own file
+was therefore asked to open the canvas for a look at something already on
+screen.
+
+- **NS-1 The file view is a page that can picture its node.** While the
+  content pane of the single-file view shows a canvas node through its node
+  template (a `node` entry, NT-3; never under a snapshot), the explorer
+  mounts the canvas page's own responder
+  (`apps/claude/shots/canvas-page-shot-responder`, moved there from
+  apps/canvases so the explorer may import it) with `node` set to the file's
+  node (`GET /api/canvases/node`). Its poll is its heartbeat, which now
+  carries `node`.
+- **NS-2 It is handed its node's requests only.** `canvas_shot_inbox` lists
+  a node page the requests with `what: "udf"` and `udf` its node, and no
+  others. The permission server counts a node page as an open page for those
+  requests alone (`_page_can_answer`): the graph, or another node, still goes
+  to the canvas page, or to the open-canvas ask when none is open, and a
+  node page turning up does not end that ask. Claims and their order
+  (focused, visible, hidden) are the canvas page's, unchanged: with both
+  open, whichever is in front answers.
+- **NS-3 The picture.** The content pane's frame as it stands, taken the way
+  the chat's Screenshot seat takes the pane (`capturePane`: the native
+  capture, else a redraw of the frame's document). Its note says it is the
+  node "as its own file shows it in the file view". A node's result sits in
+  a frame of its own (a UDF's sandboxed result page, a widget's workbench
+  frame) which only the native capture sees into: a redraw says so in the
+  note ("the node's result area … is BLANK in this picture: do not read it
+  as an empty result").
+- **NS-4 What a node's own chat means by a bare call.** With no `what`, the
+  tool means the chat's node on a node's own chat (a named `udf` means that
+  node; the canvas chat still means the graph).
+- **NS-5 The graph asked for, only the node on screen.** On a node's own
+  chat, `what: "canvas"` with no canvas page open but that node's page open
+  is answered with the node's picture, and the note says the canvas is not
+  open and the node was pictured instead. Nobody is asked to open anything.
+  With the canvas open, the graph is the graph.
+- **NS-6 The agent is told.** The tool's description and the session's
+  prompt say one node's output is also taken from that node's file open in
+  the file view, and that a node's own chat should ask for `what: "udf"`.
+
+

@@ -53,8 +53,11 @@ import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
+import { nodeOfFile, nodePageShot, type NodeOfFile } from "@apps/explorer/lib/node-shot";
+import { useCanvasPageShotResponder } from "@apps/claude/shots/canvas-page-shot-responder";
 import {
   isModePending,
+  isNodeEntry,
   isSidebarMode,
   modesUnderSnapshot,
   partitionModes,
@@ -1988,6 +1991,42 @@ function TemplatePreview({
   // after asking for A. Entries are dropped when their frame is retired: a later
   // mount of the same mode is a NEW document that has to load again.
   const loadedFrames = useRef<Set<string>>(new Set());
+
+  // THE AGENT'S `canvas_screenshot`, ANSWERED FROM THIS PANE (SPEC §53.8).
+  // While the pane shows a canvas node through its node template, a chat
+  // working on that node can be shown its output from here: this page says
+  // it shows the node (the responder's heartbeat), and pictures its own
+  // content frame when asked. Only the surface with the frame the sidebar
+  // points at (`splitCapable`, the mark `annotateTargetFrame` reads), and
+  // never under a snapshot (no node template is offered there).
+  const shownIsNode =
+    splitCapable && !isListing && contentModes.some((t) => t.mode === shown && isNodeEntry(t));
+  const [nodeShown, setNodeShown] = useState<NodeOfFile | null>(null);
+  useEffect(() => {
+    if (!shownIsNode) {
+      setNodeShown(null);
+      return;
+    }
+    let cancelled = false;
+    void nodeOfFile(fsPath).then((n) => {
+      if (!cancelled) setNodeShown(n);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [shownIsNode, fsPath]);
+  const nodeShot = useMemo(
+    () => nodePageShot(annotateTargetFrame, nodeShown?.node ?? ""),
+    [nodeShown?.node],
+  );
+  useCanvasPageShotResponder({
+    env: nodeShown?.env ?? null,
+    name: nodeShown?.name ?? "",
+    node: nodeShown?.node,
+    shot: nodeShot,
+    frameUp: () => !!annotateTargetFrame() && loadedFrames.current.has(shown),
+    error: null,
+  });
   // `snapshotPending` in the mix too (code review finding [6], round 2):
   // without it, `srcFor` returns `null` for a pending resolve but this stayed
   // `false` — the frame still mounted with `src={null}`, React omits the
