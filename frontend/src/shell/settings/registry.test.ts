@@ -5,6 +5,8 @@ import {
   NAV_SECTIONS,
   SETTINGS,
   navSections,
+  parentOff,
+  searchableSettings,
   resolveGroup,
   sectionsOf,
   unavailableReason,
@@ -67,6 +69,16 @@ describe("the registry", () => {
     }
   });
 
+  test("a group split into sections draws none of one row", () => {
+    // Everything a Mac with ~/.claude can show, every parent switch off.
+    const rows = visibleSettings(ctx({ claudeConfig: true }, { chromium_windows: { available: true } } as Partial<Prefs>));
+    for (const g of GROUPS) {
+      const sections = sectionsOf(rows, g.id);
+      if (sections.length < 2) continue;
+      for (const sec of sections) expect([g.id, sec.section, sec.entries.length >= 2]).toEqual([g.id, sec.section, true]);
+    }
+  });
+
   test("a child row always follows a row of its own section", () => {
     SETTINGS.forEach((s, i) => {
       if (!("child" in s)) return;
@@ -77,16 +89,37 @@ describe("the registry", () => {
 });
 
 describe("visibility", () => {
+  test("child rows are hidden until their parent is on", () => {
+    const ids = (prefs: Partial<Prefs>) => visibleSettings(ctx({}, prefs)).map((e) => e.id as string);
+    const children = ["tasks-favourites", "tasks-icons", "rail-free-pins", "call-params", "call-retention"];
+    for (const c of children) expect(ids({})).not.toContain(c);
+    const on = ids({
+      canvas_rail_peek: { enabled: true },
+      task_favourites: { enabled: true },
+      task_head_unified: { enabled: true },
+      calls: { effective_enabled: true },
+    } as unknown as Partial<Prefs>);
+    for (const c of children) expect(on).toContain(c);
+    // …but search still finds them, and says which switch they wait on.
+    const pool = searchableSettings(ctx());
+    expect(searchSettings(pool, "favourite chats").map((e) => e.id)).toContain("tasks-favourites");
+    expect(searchSettings(pool, "retention").map((e) => e.id)).toEqual(["call-retention"]);
+    const fav = pool.find((e) => e.id === "tasks-favourites")!;
+    expect(parentOff(fav, ctx().prefs)).toBe("Preview chats from the collapsed Claude rail");
+    expect(parentOff(fav, ctx({}, { canvas_rail_peek: { enabled: true } } as unknown as Partial<Prefs>).prefs)).toBeNull();
+    // Task icons need favourites too, not just the rail preview.
+    expect(ids({ canvas_rail_peek: { enabled: true } } as unknown as Partial<Prefs>)).not.toContain("tasks-icons");
+  });
+
   test("the nav has no Claude Code section; it is the Claude Code page", () => {
     const nav = navSections(visibleGroups(visibleSettings(ctx({ claudeConfig: true })))).map((s) => s.section.id);
     expect(nav).toEqual(["app", "agents", "apps", "developer"]);
   });
 
-  test("Community is the Remix row alone under Apps & sharing (the store and the loop are always on)", () => {
-    const ids = sectionsOf(visibleSettings(ctx()), "apps")
-      .find((s) => s.section === "Community")
-      ?.entries.map((e) => e.id);
-    expect(ids).toEqual(["contrib-remix"]);
+  test("Sharing & sync is one card, Remix its only Community row (the store and the loop are always on)", () => {
+    const secs = sectionsOf(visibleSettings(ctx()), "apps");
+    expect(secs.map((s) => s.section)).toEqual(["Sharing & sync"]);
+    expect(secs[0].entries.map((e) => e.id)).toContain("contrib-remix");
     expect(visibleSettings(ctx()).map((s) => s.id as string)).not.toContain("marketplace");
     expect(visibleSettings(ctx()).map((s) => s.id as string)).not.toContain("contrib");
   });
@@ -144,7 +177,7 @@ describe("visibility", () => {
 
   test("sections come out in first-appearance order", () => {
     const secs = sectionsOf(visibleSettings(ctx()), "general").map((s) => s.section);
-    expect(secs).toEqual(["Appearance", "Windows", "Keyboard", "Updates", "Status bar", "Accessibility"]);
+    expect(secs).toEqual(["Appearance", "Windows & updates", "Keyboard", "Tools"]);
   });
 
   test("the Chromium engine row is drawn only where the server says it is available", () => {
@@ -155,12 +188,13 @@ describe("visibility", () => {
     expect(visibleSettings(on).map((s) => s.id)).toContain("chromium-windows");
   });
 
-  test("Experimental flags keeps its sections in order, Windows last", () => {
+  test("Experimental flags: the chat and rail flags, then everything else", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
-    const secs = sectionsOf(visibleSettings(on), "features").map((s) => s.section);
-    expect(secs).toEqual(["Sidebar", "Bots", "Windows"]);
-    // Without the capability the group is what it was.
-    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Sidebar", "Bots"]);
+    const secs = sectionsOf(visibleSettings(on), "features");
+    expect(secs.map((s) => s.section)).toEqual(["Chats & rail", "Other"]);
+    expect(secs[1].entries.map((e) => e.id)).toEqual(["canvases", "experts", "specialists", "chromium-windows"]);
+    // Without the capability the Chromium row is simply missing.
+    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Chats & rail", "Other"]);
   });
 });
 
@@ -199,8 +233,10 @@ describe("search", () => {
     const [hit] = searchSettings(all, "tts");
     expect(hit.id).toBe("reader");
     expect(matchedVia(hit, ["tts"])).toEqual(["tts"]);
-    // A word the reader can see in the row is not reported as a synonym.
-    expect(matchedVia(hit, ["aloud"])).toEqual([]);
+    // A word the reader can see in the row is not reported as a synonym…
+    expect(matchedVia(hit, ["read"])).toEqual([]);
+    // …but one from the description is: it sits behind the ⓘ.
+    expect(matchedVia(hit, ["aloud"])).toEqual(["aloud"]);
     expect(searchSettings(all, "token").map((h) => h.id)).toEqual(["huggingface"]);
 
     const dark = searchSettings(all, "dark").map((h) => h.id);
@@ -213,11 +249,10 @@ describe("search", () => {
     expect(searchSettings(all, "git nonsenseword")).toEqual([]);
   });
 
-  test("pointers to other pages are findable", () => {
-    // The model pointer leads into the Claude Code group, so it needs ~/.claude.
-    const rows = visibleSettings(ctx({ claudeConfig: true }));
-    expect(searchSettings(rows, "opus").map((h) => h.id)).toEqual(["claude-model"]);
-    expect(searchSettings(all, "opus")).toEqual([]);
+  test("the Set elsewhere pointer rows are gone", () => {
+    const ids = SETTINGS.map((s) => s.id as string);
+    for (const gone of ["claude-model", "engines", "agent-signin"]) expect(ids).not.toContain(gone);
+    expect(SETTINGS.some((s) => s.section === "Set elsewhere")).toBe(false);
   });
 
   test("the Claude Code group shows only its not-installed row without ~/.claude", () => {
@@ -233,21 +268,21 @@ describe("search", () => {
     for (const q of ["gemini", "google"]) {
       expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-gemini");
     }
-    expect(searchSettings(all, "gemini sign").map((h) => h.id)).toEqual(["agent-gemini", "agent-signin"]);
+    expect(searchSettings(all, "gemini sign").map((h) => h.id)).toEqual(["agent-gemini"]);
   });
 
   test("OpenCode is findable by its own words and by 'local model'", () => {
     for (const q of ["opencode", "local model"]) {
       expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-opencode");
     }
-    expect(searchSettings(all, "opencode sign").map((h) => h.id)).toEqual(["agent-opencode", "agent-signin"]);
+    expect(searchSettings(all, "opencode sign").map((h) => h.id)).toEqual(["agent-opencode"]);
   });
 
   test("Codex is findable by its own words and its account's", () => {
     for (const q of ["codex", "openai", "chatgpt"]) {
       expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-codex");
     }
-    expect(searchSettings(all, "codex sign").map((h) => h.id)).toEqual(["agent-codex", "agent-signin"]);
+    expect(searchSettings(all, "codex sign").map((h) => h.id)).toEqual(["agent-codex"]);
   });
 
   test("results keep page order", () => {

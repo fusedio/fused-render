@@ -91,10 +91,17 @@ const realOpen = w.open;
 const d = document as unknown as { documentElement?: unknown };
 const hadStyle = "getComputedStyle" in w;
 const realStyle = w.getComputedStyle;
+// The popover reads the BARE global (window is not globalThis here), so the
+// same stub goes there too, and comes off the same way.
+const g = globalThis as unknown as { getComputedStyle?: unknown };
+const hadGlobalStyle = "getComputedStyle" in g;
+const realGlobalStyle = g.getComputedStyle;
 const hadHtml = "documentElement" in d;
 const realHtml = d.documentElement;
+// `getPropertyValue`: each card's ⓘ is a base-ui Popover, whose positioner
+// reads the Claude rail's width off the root (platform/lib/rail-gutter).
 const pageStyle = () =>
-  new Proxy({ overflow: "auto", display: "block" } as Record<string, unknown>, {
+  new Proxy({ overflow: "auto", display: "block", getPropertyValue: () => "" } as Record<string, unknown>, {
     get: (t, k) => (k in t ? t[k as string] : ""),
   });
 
@@ -125,6 +132,7 @@ beforeEach(() => {
     return null;
   };
   w.getComputedStyle = pageStyle;
+  g.getComputedStyle = pageStyle;
   d.documentElement = { style: {}, clientWidth: 0 };
 });
 // Every mounted page is unmounted after its test: a mounted Connections keeps
@@ -143,6 +151,8 @@ afterEach(async () => {
   // the same as no key, and it broke the ClaudeChat suites that ran later.
   if (hadStyle) w.getComputedStyle = realStyle;
   else delete w.getComputedStyle;
+  if (hadGlobalStyle) g.getComputedStyle = realGlobalStyle;
+  else delete g.getComputedStyle;
   if (hadHtml) d.documentElement = realHtml;
   else delete d.documentElement;
 });
@@ -195,8 +205,14 @@ describe("the cards", () => {
     const t = textOf(n);
     expect(t).toContain("Connected as Ada's workspace");
     expect(t).toContain("23 tools");
-    expect(t).toContain("Notion's MCP server sees what its tools touch.");
-    expect(t).toContain("Stored in a private file in your Fused folder (no keychain on this OS)");
+    // Privacy and storage notes sit behind the card's ⓘ, not on the card.
+    expect(t).not.toContain("Notion's MCP server sees what its tools touch.");
+    const help = n.findAll((x) => x.props?.["aria-label"] === "About Notion" && typeof x.type !== "string");
+    expect(help.length).toBeGreaterThan(0);
+    const helpText = n.findAll((x) => typeof x.type !== "string" && x.props?.text !== undefined && x.props?.label === "Notion")[0]
+      .props.text as string;
+    expect(helpText).toContain("Notion's MCP server sees what its tools touch.");
+    expect(helpText).toContain("Stored in a private file in your Fused folder (no keychain on this OS).");
     expect(buttons(n, "Disconnect")).toHaveLength(1);
     // The mark is a CSS mask over the text colour (platform/ui/ConnectIcon), never an <img>: the packs' SVGs draw
     // with currentColor, which an <img> would render black in the dark theme.

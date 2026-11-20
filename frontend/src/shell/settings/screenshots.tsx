@@ -77,7 +77,6 @@ export function CanvasScreenshotsFallbackControl({ prefs, onChange }: PrefContro
       id="canvas-screenshots-fallback"
       checked={on}
       put={putCanvasShotSlowFallbackEnabled}
-      status={on ? "On — a failed native screenshot is redrawn by the workbench, slowly." : "Off — a failed native screenshot says why instead."}
       onChange={onChange}
     />
   );
