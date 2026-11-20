@@ -14,7 +14,7 @@
 // failure card send the user to the same place.
 import type { ClaudeHealth } from "./api";
 import { isWindows } from "./platform";
-import { CLAUDE_INSTALL_COMMAND, CLAUDE_INSTALL_COMMAND_WINDOWS, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND, OPENCODE_INSTALL_COMMAND, troubleHelpUrl, type TroubleKind } from "./trouble";
+import { CLAUDE_INSTALL_COMMAND, CLAUDE_INSTALL_COMMAND_WINDOWS, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND, OPENCODE_INSTALL_COMMAND, CURSOR_INSTALL_COMMAND, troubleHelpUrl, type TroubleKind } from "./trouble";
 
 /** One thing worth telling the user, already in their terms. */
 export interface ClaudeIssue {
@@ -68,6 +68,10 @@ export const CODEX_BIN_ENV = "FUSED_RENDER_CODEX_BIN";
 export const GEMINI_BIN_ENV = "FUSED_RENDER_GEMINI_BIN";
 /** OpenCode's twin (fused_render/opencode_health.py, docs/OPENCODE_BACKEND.md D10). */
 export const OPENCODE_BIN_ENV = "FUSED_RENDER_OPENCODE_BIN";
+/** Cursor's twin (fused_render/cursor_health.py, docs/CURSOR_BACKEND.md D10). */
+export const CURSOR_BIN_ENV = "FUSED_RENDER_CURSOR_BIN";
+/** Cursor's own updater (docs/CURSOR_BACKEND.md D10). */
+export const CURSOR_UPDATE_COMMAND = "cursor-agent update";
 
 /** What differs between the agents' setup copy. Everything else — the rules,
  *  the order, the ids — is the same for every agent. */
@@ -86,7 +90,8 @@ interface AgentSetupWords {
   /** Offer the `link-path` repair. Never for Copilot (the UI has offered it
    *  for Claude alone since the second agent); Codex's and Gemini's contracts
    *  list the route (docs/CODEX_BACKEND.md D10, docs/GEMINI_BACKEND.md D10),
-   *  as does OpenCode's (docs/OPENCODE_BACKEND.md D10). */
+   *  as do OpenCode's and Cursor's (docs/OPENCODE_BACKEND.md D10,
+   *  docs/CURSOR_BACKEND.md D10). */
   linkPath: boolean;
   /** The signed-out row's sentence: what pressing "Sign in" does. */
   signIn: string;
@@ -156,6 +161,18 @@ const SETUP_WORDS: Record<string, AgentSetupWords> = {
       + "provider and paste its key. A loaded local model counts too: no "
       + "account needed.",
   },
+  cursor: {
+    name: "Cursor CLI",
+    cli: "cursor-agent",
+    binEnv: CURSOR_BIN_ENV,
+    install: CURSOR_INSTALL_COMMAND,
+    update: CURSOR_UPDATE_COMMAND,
+    doctor: false,
+    linkPath: true,
+    signIn: "Sign in with your Cursor account — the CLI opens the page and "
+      + "finishes on its own. A `CURSOR_API_KEY` in the environment, or a "
+      + "`cursor-agent login` in a terminal, counts too.",
+  },
 };
 
 function setupWords(backend: string): AgentSetupWords {
@@ -175,7 +192,7 @@ function setupWords(backend: string): AgentSetupWords {
  * reason the strip renders nothing at all most of the time.
  */
 /** The "Signed in" line for ANY agent, or null when it is not signed in.
- *  Copilot's three methods, Codex's two, Gemini's four and OpenCode's two are their own words (D10); Claude's
+ *  Copilot's three methods, Codex's two, Gemini's four, OpenCode's two and Cursor's two are their own words (D10); Claude's
  *  are the setup wizard's (shell/onboarding/ToolsStep `signedInHint`), which
  *  the caller passes in so there stays one copy of them. */
 export function agentAccountLine(
@@ -213,6 +230,14 @@ export function agentAccountLine(
     if (method === "providers") return "OpenCode providers";
     return "Signed in";
   }
+  if (backend === "cursor") {
+    // `cursor` is a stored `cursor-agent login`, `api_key` a CURSOR_API_KEY
+    // (docs/CURSOR_BACKEND.md D10); `org` is the team the login acts for.
+    if (method === "api_key") return "Signed in with a Cursor API key";
+    const who = health.account?.email ? ` as ${health.account.email}` : "";
+    const team = health.account?.org ? ` (${health.account.org})` : "";
+    return `Signed in${who}${team}`;
+  }
   if (backend !== "copilot") return claudeLine(health);
   // The user, when the CLI named one (`account.login`), and the plan.
   const who = health.account?.login ? ` as ${health.account.login}` : "";
@@ -229,7 +254,8 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
 
 /**
  * The same classifier for EVERY agent (docs/COPILOT_BACKEND.md D10,
- * docs/CODEX_BACKEND.md D10, docs/GEMINI_BACKEND.md D10, docs/OPENCODE_BACKEND.md D10): each health snapshot carries the same keys, so
+ * docs/CODEX_BACKEND.md D10, docs/GEMINI_BACKEND.md D10, docs/OPENCODE_BACKEND.md D10,
+ * docs/CURSOR_BACKEND.md D10): each health snapshot carries the same keys, so
  * the rules are the rules — only the words change (`SETUP_WORDS`), and the
  * repairs an agent has no endpoint for (`doctor` but for Claude, `link-path`
  * for Copilot) are not offered. The Claude output is byte-identical to what

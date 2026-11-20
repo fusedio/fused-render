@@ -35,6 +35,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import stat
 import sys
 import textwrap
@@ -187,11 +188,15 @@ def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     from fused_render.agent_backends import opencode as backend_opencode
     assert agent._ACCOUNT_ERROR_MARKERS["opencode"] == backend_opencode.OPENCODE.account_error_markers
     assert agent._LIMIT_ERROR_MARKERS["opencode"] == backend_opencode.OPENCODE.limit_error_markers
+    from fused_render.agent_backends import cursor as backend_cursor
+    assert agent._ACCOUNT_ERROR_MARKERS["cursor"] == backend_cursor.CURSOR.account_error_markers
+    assert agent._LIMIT_ERROR_MARKERS["cursor"] == backend_cursor.CURSOR.limit_error_markers
     assert agent._BACKEND_LABELS == {"claude": backend_claude.CLAUDE.label,
                                      "copilot": backend_copilot.COPILOT.label,
                                      "codex": backend_codex.CODEX.label,
                                      "gemini": backend_gemini.GEMINI.label,
-                                     "opencode": backend_opencode.OPENCODE.label}
+                                     "opencode": backend_opencode.OPENCODE.label,
+                                     "cursor": backend_cursor.CURSOR.label}
     assert set(agent.BACKENDS) == set(agent._BACKEND_LABELS)
     assert set(agent._ACCOUNT_ERROR_MARKERS) == set(agent.BACKENDS)
     assert set(agent._LIMIT_ERROR_MARKERS) == set(agent.BACKENDS)
@@ -199,7 +204,8 @@ def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     assert agent._NEW_CHAT_MODELS == {"copilot": backend_copilot.COPILOT.default_model,
                                       "codex": backend_codex.CODEX.default_model,
                                       "gemini": backend_gemini.GEMINI.default_model,
-                                      "opencode": backend_opencode.OPENCODE.default_model}
+                                      "opencode": backend_opencode.OPENCODE.default_model,
+                                      "cursor": backend_cursor.CURSOR.default_model}
     # Every backend with no fused-minted id is a non-Claude one, and every
     # non-Claude one here mints its own.
     assert set(agent._SELF_MINTED_ID_BACKENDS) == set(agent.BACKENDS) - {"claude"}
@@ -1384,7 +1390,7 @@ def test_registry_running_reads_every_root(agent, target):
             json.dump({"pid": os.getpid(), "sessionId": "s-" + backend,
                        "cwd": workdir, "status": "busy"}, fh)
     assert agent._registry_running(workdir) == {"s-claude", "s-copilot", "s-codex", "s-gemini",
-                                                "s-opencode"}
+                                                "s-opencode", "s-cursor"}
 
 
 def test_defaults_carry_the_backend(agent, target, home):
@@ -1727,6 +1733,46 @@ def test_set_mode_action_records_the_permission(agent, tmp_path, send_env, home)
     assert out == {"ok": True, "mode": "auto"}
     with open(os.path.join(home["unnested"], *agent.SESSION_SETTINGS)) as fh:
         assert json.load(fh)[SID_COPILOT]["permission"] == "auto"
+
+
+def _parked_card(agent, run_dir, monkeypatch, req_id="req-1"):
+    # Live without a pid file: never write this worker's own pid where code
+    # may later signal it (writing-tests-that-dont-flake rule 9).
+    monkeypatch.setattr(agent, "_alive", lambda _run_dir: True)
+    perm = agent._perm_dir(run_dir)
+    os.makedirs(perm, exist_ok=True)
+    with open(os.path.join(perm, req_id + ".req.json"), "w") as fh:
+        json.dump({"id": req_id, "tool": "Bash", "input": {"command": "ls"}}, fh)
+    return req_id
+
+
+@pytest.mark.parametrize("backend", ["claude", "gemini", "cursor"])
+def test_a_card_that_moves_the_mode_lets_the_picker_move_it_back(agent, tmp_path, send_env,
+                                                                  monkeypatch, backend):
+    """PR #2383 review: "Allow, and stop asking" moves the LIVE session's
+    mode, but host.json kept the spawn mode, so picking Ask afterwards read
+    as no change and sent nothing; the session kept auto-approving."""
+    run_dir = _live_run(agent, tmp_path, backend=backend, mode="default")
+    req = _parked_card(agent, run_dir, monkeypatch)
+    assert agent._decide("run-1", req, "allow", "once", mode="auto")["mode"] == "auto"
+    with open(os.path.join(run_dir, "host.json")) as fh:
+        assert json.load(fh)["mode"] == "auto"
+    assert agent._set_mode("run-1", "prompt") == {"ok": True, "mode": "prompt"}
+    assert [r["request"] for r in _inbox_rows(run_dir)] == [
+        {"subtype": "set_permission_mode", "mode": "default"}]
+
+
+def test_a_card_records_only_a_mode_the_host_really_moves(agent, tmp_path, send_env,
+                                                          monkeypatch):
+    """OpenCode never moves its mode on a card (a respawn), and Copilot's
+    "accept edits" narrows to the card's own tool: host.json keeps its mode."""
+    for backend, mode in (("opencode", "auto"), ("copilot", "acceptEdits")):
+        shutil.rmtree(os.path.join(agent.RUNS, "run-1"), ignore_errors=True)
+        run_dir = _live_run(agent, tmp_path, backend=backend, mode="default")
+        req = _parked_card(agent, run_dir, monkeypatch)
+        agent._decide("run-1", req, "allow", "once", mode=mode)
+        with open(os.path.join(run_dir, "host.json")) as fh:
+            assert json.load(fh)["mode"] == "default", backend
 
 
 # ================================================== Codex (CODEX_BACKEND.md)
@@ -2425,7 +2471,7 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
         assert body.endswith(agent._blocked_note("gemini"))
     assert agent._blocked_note("gemini") == agent._blocked_note("copilot")
     assert agent._fused_cli_note("gemini") == agent._fused_cli_note("codex")
-    assert agent._NO_PREAPPROVE_BACKENDS == ("codex", "gemini", "opencode")
+    assert agent._NO_PREAPPROVE_BACKENDS == ("codex", "gemini", "opencode", "cursor")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     ctx = agent._gemini_context_dir(str(run_dir), str(page), True)

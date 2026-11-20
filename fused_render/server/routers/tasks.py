@@ -7394,7 +7394,8 @@ def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
     """The turns as Markdown, in the Bots export's vocabulary. Lossy by
     design (tool results are not inlined); `format=json` is the full record."""
     who = {"copilot": "Copilot", "codex": "Codex",
-           "gemini": "Gemini", "opencode": "OpenCode"}.get(str(backend or ""), "Claude")
+           "gemini": "Gemini", "opencode": "OpenCode",
+           "cursor": "Cursor"}.get(str(backend or ""), "Claude")
     title = " ".join(str(task.get("title") or "Task").split())
     out = [f"# {title} — transcript", ""]
     if task.get("target"):
@@ -9005,6 +9006,8 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     A transcript from under the OPENCODE root takes NOTHING else with it
     (docs/OPENCODE_BACKEND.md D15): OpenCode's own record is one SQLite
     store shared by every session, and deleting rows from it is not ours.
+    Nor does one from under the CURSOR root (docs/CURSOR_BACKEND.md D15):
+    Cursor's chat stores under `~/.cursor/chats` are its own.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)

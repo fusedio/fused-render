@@ -955,8 +955,9 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
 
     A COPILOT session is recapped by Copilot (`_recap_copilot`), a CODEX
     session by Codex (`_recap_codex`), a GEMINI session by Gemini
-    (`_recap_gemini`) and an OPENCODE session by OpenCode
-    (`_recap_opencode`), each from the same tail; everything below is the
+    (`_recap_gemini`), an OPENCODE session by OpenCode (`_recap_opencode`)
+    and a CURSOR session by Cursor (`_recap_cursor`), each from the same
+    tail; everything below is the
     Claude run.
 
     `--no-session-persistence` is the load-bearing flag: this run mints a
@@ -1016,6 +1017,8 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         return _recap_gemini(agent, tail, prompts, raw)
     if backend == "opencode":
         return _recap_opencode(agent, tail, prompts, raw)
+    if backend == "cursor":
+        return _recap_cursor(agent, tail, prompts, raw)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": prompts[1] % tail}]}})
@@ -1115,6 +1118,15 @@ def _recap_opencode(agent, tail: str,
     stdin and every tool denied through an injected `permission` block
     (docs/OPENCODE_BACKEND.md D12/D16) — `agent_oneshot._prepare_opencode`."""
     return _recap_oneshot(agent, "opencode", tail, prompts, raw)
+
+
+def _recap_cursor(agent, tail: str,
+                  prompts: tuple[str, str] | None = None,
+                  raw: bool = False) -> str:
+    """`cursor-agent -p --output-format json --mode ask` in an empty
+    workspace, the prompt on stdin (docs/CURSOR_BACKEND.md D12/D16) —
+    `agent_oneshot._prepare_cursor`."""
+    return _recap_oneshot(agent, "cursor", tail, prompts, raw)
 
 
 # Kept as names for readers that import them; the facts live in agent_oneshot.

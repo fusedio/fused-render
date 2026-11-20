@@ -57,6 +57,7 @@ from fused_render.server.routers.copilot_health import router as copilot_health_
 from fused_render.server.routers.codex_health import router as codex_health_router
 from fused_render.server.routers.gemini_health import router as gemini_health_router
 from fused_render.server.routers.opencode_health import router as opencode_health_router
+from fused_render.server.routers.cursor_health import router as cursor_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.marketplace import router as marketplace_router
 from fused_render.server.routers.github import router as github_router
@@ -1187,6 +1188,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # ...and OpenCode's (routers/opencode_health.py): /api/opencode/{health,
     # health/refresh, install, login, login/cancel, link-path}, same rules.
     app.include_router(opencode_health_router)
+    # ...and Cursor's (routers/cursor_health.py): /api/cursor/{health,
+    # health/refresh, install, login, login/cancel, link-path}, same rules.
+    app.include_router(cursor_health_router)
     # The agent catalog (routers/agent_backends.py): which agents exist, which
     # are on, and each one's models/efforts/modes/caps — the one list every
     # picker reads (docs/COPILOT_BACKEND.md D11). Read-only, no auth guard.

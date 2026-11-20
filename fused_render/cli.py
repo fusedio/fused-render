@@ -259,6 +259,9 @@ def _run_serve(args: argparse.Namespace) -> None:
     if _agent_registry.is_enabled("opencode"):
         from fused_render import opencode_health
         opencode_health.warm_in_background()
+    if _agent_registry.is_enabled("cursor"):
+        from fused_render import cursor_health
+        cursor_health.warm_in_background()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     # CLI install: no packaged updater applies, so tell the user about a newer
     # PyPI release (check-only; update/pypi.py).

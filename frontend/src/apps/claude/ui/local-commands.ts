@@ -26,7 +26,8 @@ export function localModelArg(arg: string, backend = "claude"): string {
  *  ("gpt-5.4", "gpt-6-luna", "gemini-2.5-pro", "anthropic/claude-sonnet-5-5")
  *  — not Claude's `claude-…` ones. */
 function rawModelIds(backend: string | undefined): boolean {
-  return backend === "copilot" || backend === "codex" || backend === "gemini" || backend === "opencode";
+  return backend === "copilot" || backend === "codex" || backend === "gemini" || backend === "opencode"
+    || backend === "cursor";
 }
 
 /** `/effort <level>`'s argument as a pill value, or "" — one of the levels

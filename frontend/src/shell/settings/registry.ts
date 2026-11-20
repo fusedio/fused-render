@@ -246,6 +246,14 @@ const ENTRIES = [
     keywords: "opencode open code agent backend cli sign in login api key local model provider",
   },
   {
+    id: "agent-cursor",
+    group: "ai",
+    section: "Agents",
+    label: "Cursor CLI",
+    description: "",
+    keywords: "cursor cursor-agent anysphere agent backend cli sign in login api key",
+  },
+  {
     id: "agent-default",
     group: "ai",
     section: "Agents",
@@ -253,10 +261,11 @@ const ENTRIES = [
     description: "",
     keywords: "default agent backend",
     child: true,
-    // Two or more of the five on: a default only means something when there
+    // Two or more of the six on: a default only means something when there
     // is a choice to make.
     available: ({ prefs }) =>
-      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex, prefs.agents?.gemini, prefs.agents?.opencode]
+      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex, prefs.agents?.gemini, prefs.agents?.opencode,
+        prefs.agents?.cursor]
         .filter(Boolean).length >= 2,
   },
 

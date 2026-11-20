@@ -138,6 +138,7 @@ const AGENT_WORDS: Record<string, { cli: string; agent: string }> = {
   codex: { cli: "Codex CLI", agent: "Codex" },
   gemini: { cli: "Gemini CLI", agent: "Gemini" },
   opencode: { cli: "OpenCode", agent: "OpenCode" },
+  cursor: { cli: "Cursor CLI", agent: "Cursor" },
 };
 
 /** The one command that signs each agent's CLI back in — what the `login`
@@ -151,6 +152,7 @@ export const SIGN_IN_COMMAND: Record<string, string> = {
   copilot: "copilot login",
   codex: "codex login",
   opencode: "opencode auth login",
+  cursor: "cursor-agent login",
 };
 
 function saidFor(kind: TroubleKind, backend: string): { title: string; explain: string } | undefined {
