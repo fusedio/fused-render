@@ -13021,8 +13021,14 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # Specialists: a turn in a home commits there (labelled Chat /
                 # Update); a breakout's or a specialist-using task's turn also
                 # goes to the specialist's inbox.
+                # A failure in there never costs the turn its own commit.
                 history = sys.modules.get("fused_render.specialists.history")
-                if history is None or not history.turn_ended(meta["file"], _run_chat_id(run_dir)):
+                try:
+                    theirs = history is not None and history.turn_ended(
+                        meta["file"], _run_chat_id(run_dir))
+                except Exception:  # noqa: BLE001
+                    theirs = False
+                if not theirs:
                     _commit_turn(meta["file"], meta.get("message", ""), backend)
             except OSError:
                 pass  # another poll claimed it, or the run dir is going away

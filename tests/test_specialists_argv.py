@@ -256,3 +256,26 @@ def test_status_line_names_the_specialist(agent):
     assert agent._tool_detail("mcp__fused_render__specialist_note", {"specialist": "Canvas"}) == "Canvas"
     assert agent._tool_detail("mcp__fused_render__specialist_pull", {}) == ""
     assert agent._tool_detail("mcp__other__x", {"specialist": "Canvas"}) == ""
+
+
+@pytest.mark.parametrize("theirs, commits", [(True, 0), (False, 1), (ValueError("git"), 1)])
+def test_a_turn_end_commits_the_task_unless_the_specialists_took_it(agent, monkeypatch, theirs, commits):
+    """A failure in the specialists' turn-end work never costs a turn its own commit."""
+    run_dir = os.path.join(agent.RUNS, "run-1")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": "/f", "message": "m", "backend": "claude"}, fh)
+    with open(os.path.join(run_dir, "out.jsonl"), "w") as fh:
+        fh.write(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok"}) + "\n")
+    history = types.ModuleType("history")
+
+    def turn_ended(target, session_id):
+        if isinstance(theirs, Exception):
+            raise theirs
+        return theirs
+
+    history.turn_ended = turn_ended
+    monkeypatch.setitem(sys.modules, "fused_render.specialists.history", history)
+    calls = []
+    monkeypatch.setattr(agent, "_commit_turn", lambda *a: calls.append(a))
+    assert agent._poll("run-1")["done"] and len(calls) == commits

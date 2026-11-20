@@ -1518,16 +1518,16 @@ def _forced_by(env_name: str, override) -> str | None:
     return os.environ.get(env_name) if override is not None else None
 
 
-def _specialists_switched(on: bool) -> None:
-    """On: seed the shipped specialists and start the daily update; off: stop it. Best-effort: never fails the
-    preference write."""
+def _specialists_switched() -> None:
+    """On (the env can hold it on whatever was stored): seed the shipped specialists and start the daily update;
+    off: stop it. Best-effort: never fails the preference write."""
     try:
-        if on and specialists_enabled():
+        if specialists_enabled():
             from fused_render.specialists import scheduler, seed
 
             seed.seed()
             scheduler.start()
-        elif not on and "fused_render.specialists.scheduler" in sys.modules:
+        elif "fused_render.specialists.scheduler" in sys.modules:
             sys.modules["fused_render.specialists.scheduler"].stop()
     except Exception:  # noqa: BLE001
         logger.exception("specialists: switching on/off failed")
@@ -2067,9 +2067,9 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         _store(prefs)
     if isinstance(body.get("specialists_enabled"), bool):
         # AFTER the write, like `lan_enabled`.
-        _specialists_switched(body["specialists_enabled"])
+        _specialists_switched()
     elif body.get("canvases_enabled") is True:
-        _specialists_switched(True)  # the shipped specialists wait for Canvases too (specialists/seed.py)
+        _specialists_switched()  # the shipped specialists wait for Canvases too (specialists/seed.py)
     if body.get("canvases_embed_proxy") is False:
         # AFTER the write, like `lan_enabled`: stop the listener now rather
         # than at the next status read. Turning it ON is left to status,
