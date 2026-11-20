@@ -688,7 +688,7 @@ const ENTRIES = [
     id: "udf-saved",
     group: "advanced",
     section: "Debugging",
-    label: "Saved UDF results",
+    label: "Saved UDF cache",
     description: "The last good answer of each UDF you ran, kept so a UDF opens at once. Clearing them makes the next open of each UDF run it fresh.",
     keywords: "udf cache saved results clear disk fused workbench",
   },

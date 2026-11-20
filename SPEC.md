@@ -12892,7 +12892,7 @@ milliseconds.
   `fused.load`, outside data or the clock, so a saved copy is always
   labelled saved and, under `cache: "auto"`, always followed by a run.
 - **SR-5 Clearing.** Preferences → Advanced → Debugging → "Saved UDF
-  results" shows their count and size (`GET /api/udf/saved`) and Clear
+  cache" shows the results' count and size (`GET /api/udf/saved`) and Clear
   deletes them all (`DELETE /api/udf/saved`, guarded); the next open of
   each UDF runs it fresh. A temporary result younger than a minute is left
   for the hourly sweep (it may be a run's body about to be filed).
