@@ -1735,9 +1735,10 @@ def test_set_mode_action_records_the_permission(agent, tmp_path, send_env, home)
         assert json.load(fh)[SID_COPILOT]["permission"] == "auto"
 
 
-def _parked_card(agent, run_dir, req_id="req-1"):
-    with open(os.path.join(run_dir, "pid"), "w") as fh:
-        fh.write(str(os.getpid()))
+def _parked_card(agent, run_dir, monkeypatch, req_id="req-1"):
+    # Live without a pid file: never write this worker's own pid where code
+    # may later signal it (writing-tests-that-dont-flake rule 9).
+    monkeypatch.setattr(agent, "_alive", lambda _run_dir: True)
     perm = agent._perm_dir(run_dir)
     os.makedirs(perm, exist_ok=True)
     with open(os.path.join(perm, req_id + ".req.json"), "w") as fh:
@@ -1747,12 +1748,12 @@ def _parked_card(agent, run_dir, req_id="req-1"):
 
 @pytest.mark.parametrize("backend", ["claude", "gemini", "cursor"])
 def test_a_card_that_moves_the_mode_lets_the_picker_move_it_back(agent, tmp_path, send_env,
-                                                                  backend):
+                                                                  monkeypatch, backend):
     """PR #2383 review: "Allow, and stop asking" moves the LIVE session's
     mode, but host.json kept the spawn mode, so picking Ask afterwards read
     as no change and sent nothing; the session kept auto-approving."""
     run_dir = _live_run(agent, tmp_path, backend=backend, mode="default")
-    req = _parked_card(agent, run_dir)
+    req = _parked_card(agent, run_dir, monkeypatch)
     assert agent._decide("run-1", req, "allow", "once", mode="auto")["mode"] == "auto"
     with open(os.path.join(run_dir, "host.json")) as fh:
         assert json.load(fh)["mode"] == "auto"
@@ -1761,13 +1762,14 @@ def test_a_card_that_moves_the_mode_lets_the_picker_move_it_back(agent, tmp_path
         {"subtype": "set_permission_mode", "mode": "default"}]
 
 
-def test_a_card_records_only_a_mode_the_host_really_moves(agent, tmp_path, send_env):
+def test_a_card_records_only_a_mode_the_host_really_moves(agent, tmp_path, send_env,
+                                                          monkeypatch):
     """OpenCode never moves its mode on a card (a respawn), and Copilot's
     "accept edits" narrows to the card's own tool: host.json keeps its mode."""
     for backend, mode in (("opencode", "auto"), ("copilot", "acceptEdits")):
         shutil.rmtree(os.path.join(agent.RUNS, "run-1"), ignore_errors=True)
         run_dir = _live_run(agent, tmp_path, backend=backend, mode="default")
-        req = _parked_card(agent, run_dir)
+        req = _parked_card(agent, run_dir, monkeypatch)
         agent._decide("run-1", req, "allow", "once", mode=mode)
         with open(os.path.join(run_dir, "host.json")) as fh:
             assert json.load(fh)["mode"] == "default", backend
