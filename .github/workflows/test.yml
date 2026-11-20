@@ -127,6 +127,17 @@ jobs:
   # test SKIPPED the whole Python suite — the run reported one failure and hid
   # whatever else was broken until a second full run. Test Status still
   # requires it.
+  #
+  # `--parallel` runs files across worker processes AND implies `--isolate`:
+  # each file gets a fresh global object and module registry. Plain `bun test`
+  # runs all ~580 files in ONE process, where a module memo, a `mock.module`, a
+  # stubbed `fetch` or a poller one file leaves behind is what the next file
+  # runs against — main went red on a different test each run that way, and
+  # the culprit was never the file that failed. Isolated, a test that only
+  # passes because of another file's leftovers fails in its own file, every
+  # time. (~200 s → ~90 s on 4 vCPU; the floor is ClaudeChat.ann.test.tsx,
+  # whose real-time waits alone take ~85 s, so splitting into more CI jobs
+  # buys nothing until that file is faster.)
   frontend-unit:
     needs: detect-changes
     if: needs.detect-changes.outputs.app == 'true'
@@ -149,9 +160,9 @@ jobs:
         with:
           bun-version: "1.4.4"
 
-      - name: Run shell unit tests (bun test)
+      - name: Run shell unit tests (bun test, isolated + parallel)
         working-directory: frontend
-        run: bun test
+        run: bun test --parallel
 
   test-python:
     needs: [detect-changes, frontend]

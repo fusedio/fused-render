@@ -20,7 +20,12 @@ let answer: () => Promise<unknown> = async () => ({
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   calls = 0;
-  (globalThis as { fetch: unknown }).fetch = async () => {
+  // `calls` counts TASK reads. Kebab also asks `/api/agent-backends` once per
+  // process (a memo), so counting every fetch made the first number depend on
+  // whether an earlier file had already filled that memo. Anything else is
+  // refused and not counted.
+  (globalThis as { fetch: unknown }).fetch = async (u: unknown) => {
+    if (!String(u).startsWith("/api/tasks")) throw new Error("not a task read: " + String(u));
     calls += 1;
     const body = await answer();
     return { ok: true, json: async () => body } as unknown as Response;
