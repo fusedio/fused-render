@@ -323,29 +323,27 @@ describe("defaultMode with a preferred entry", () => {
   const list = [code, preferred, claudeGated];
   const dflt = (v: Record<string, boolean> | null) => defaultMode(visibleModes(list, v));
 
-  it("pending: it is the default candidate, listed and pending", () => {
+  it("the path check is enough: the default at once, never pending", () => {
     expect(names(visibleModes(list, null))).toEqual(["code", "canvas_udf", "claude"]);
-    expect(isModePending(preferred, null)).toBe(true);
+    expect(isModePending(preferred, null)).toBe(false);
     expect(dflt(null)?.mode).toBe("canvas_udf");
   });
 
-  it("the gate says yes: the default, settled", () => {
-    expect(isModePending(preferred, { canvas_udf: true })).toBe(false);
-    expect(dflt({ canvas_udf: true, claude: true })?.mode).toBe("canvas_udf");
-  });
-
-  it("a no, a missing verdict or a failed call ({}): the ordinary default, no node template", () => {
-    const cases: Record<string, boolean>[] = [{ canvas_udf: false, claude: true }, { claude: true }, {}];
+  it("the gate's verdict changes nothing: a yes, a no, a missing verdict or a failed call", () => {
+    const cases: Record<string, boolean>[] = [
+      { canvas_udf: true, claude: true }, { canvas_udf: false, claude: true }, { claude: true }, {},
+    ];
     for (const v of cases) {
-      expect(dflt(v)?.mode).toBe("code");
-      expect(names(visibleModes(list, v))).not.toContain("canvas_udf");
+      expect(isModePending(preferred, v)).toBe(false);
+      expect(dflt(v)?.mode).toBe("canvas_udf");
+      expect(names(visibleModes(list, v))).toContain("canvas_udf");
     }
   });
 
   it("an explicit `_mode` still wins; an unknown one lands on the candidate", () => {
     expect(effectiveActive(visibleModes(list, null), "code")?.mode).toBe("code");
     expect(effectiveActive(visibleModes(list, { canvas_udf: true }), "nope")?.mode).toBe("canvas_udf");
-    expect(effectiveActive(visibleModes(list, {}), "canvas_udf")?.mode).toBe("code");
+    expect(effectiveActive(visibleModes(list, {}), "canvas_udf")?.mode).toBe("canvas_udf");
   });
 
   it("is a content mode, never a companion", () => {

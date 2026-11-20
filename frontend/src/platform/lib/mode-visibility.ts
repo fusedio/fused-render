@@ -42,10 +42,10 @@ import type { TemplateEntry } from "@platform/lib/api";
 export type ConditionVerdicts = Record<string, boolean> | null;
 
 // Gated and no verdict yet — the entry shows, but is not selectable.
-// A canvas node template (below) is pending only where it is the default
-// candidate.
+// A canvas node template is never pending: a preferred one goes ahead on the
+// path check alone (below), any other is not listed until its yes.
 export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
-  if (isNodeEntry(entry)) return isPreferred(entry) && verdicts === null;
+  if (isNodeEntry(entry)) return false;
   return !!entry.conditional && verdicts === null;
 }
 
@@ -54,12 +54,15 @@ export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts)
 // behind an opt-in feature and no for every other `.py`/`.json`/`.html`/`.md`,
 // so reading a failed conditions call as "visible" would offer — and, where it
 // is the default candidate, open — a node's page on files that are not nodes.
-// Such an entry needs an explicit YES. While the call is out it shows only where stat marked
-// it the default candidate (`prefer`), as the pending entry the content pane
-// waits on; anywhere else it is simply not listed until the yes.
+// Such an entry needs an explicit YES — except where stat marked it the
+// default candidate (`prefer`): the path is shaped like a canvas node file and
+// Canvases is on. That path check is enough. The entry is listed and opened at
+// once, without waiting for the gate (which reads canvas.toml), and a later no
+// does not take it away: the node page itself says when the file is not a node
+// of a canvas. Anywhere else it is not listed until the yes.
 export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
   if (isNodeEntry(entry)) {
-    return verdicts === null ? isPreferred(entry) : verdicts[entry.mode] === true;
+    return isPreferred(entry) || (verdicts !== null && verdicts[entry.mode] === true);
   }
   if (!entry.conditional) return true;
   if (verdicts === null) return true; // in flight — pending, not denied
@@ -227,10 +230,8 @@ export function visibleModes(
 //
 // Except a PREFERRED entry (a node template on a node-shaped path, `prefer`;
 // SPEC PT-8): it is the default whenever it is in the visible list, which by
-// `isModeVisible` is exactly "its verdict is pending, or yes". Pending, the
-// caller holds the pane on its "checking" placeholder (`isModePending`) rather
-// than painting another mode first; on a no, a missing verdict or a failed
-// call it has left the list, and the ordinary default stands.
+// `isModeVisible` is always — the path check decides, no verdict is waited
+// for and none removes it.
 export function defaultMode(visible: TemplateEntry[]): TemplateEntry | null {
   return visible.find(isPreferred) ?? visible.find((e) => !e.conditional) ?? visible[0] ?? null;
 }
