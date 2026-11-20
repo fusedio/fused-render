@@ -8,9 +8,10 @@ for the page that asked for it: it lands in `tmp/<token>.body` with its
 
 Rules:
   - only successful runs are put here (the service's rule, not checked here)
-  - no limits: any size is kept, nothing is evicted and nothing expires.
-    A run of the same key replaces its entry; Preferences → Debugging →
-    "Saved UDF cache" (`clear`) is how the folder is emptied.
+  - no size limits: any size is kept and nothing is evicted for space
+  - an entry older than MAX_AGE_S (7 days) is dropped on read
+  - a run of the same key replaces its entry; Preferences → Debugging →
+    "Saved UDF cache" (`clear`) empties the folder
 
 Lives under `<FUSED_RENDER_HOME or ~/.fused-render>/cache/udf/`, never inside
 a canvas folder (a clone publishes itself). All writes go through a temp file
@@ -25,6 +26,7 @@ import secrets
 import threading
 import time
 
+MAX_AGE_S = 7 * 24 * 3600.0
 TMP_MAX_AGE_S = 3600.0
 
 _TOKEN_RE = re.compile(r"^(?:[0-9a-f]{64}|t[0-9a-f]{32})$")
@@ -68,11 +70,20 @@ def _read_json(path: str) -> dict | None:
 
 
 def get(key: str) -> dict | None:
-    """The saved entry's meta for `key` (with `token` = key), or None."""
+    """The saved entry's meta for `key` (with `token` = key), or None. An
+    entry older than MAX_AGE_S is removed and is a miss."""
     if not _TOKEN_RE.match(key or "") or key.startswith("t"):
         return None
     meta = _read_json(os.path.join(_results_dir(), key + ".json"))
     if meta is None or not os.path.exists(os.path.join(_results_dir(), key + ".body")):
+        return None
+    saved_at = meta.get("saved_at")
+    if not isinstance(saved_at, (int, float)) or time.time() - saved_at > MAX_AGE_S:
+        for ext in (".body", ".json"):
+            try:
+                os.remove(os.path.join(_results_dir(), key + ext))
+            except OSError:
+                pass
         return None
     return dict(meta, token=key)
 

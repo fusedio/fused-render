@@ -550,13 +550,16 @@ def test_a_retry_after_a_cancel_starts_a_new_run(clone, signed_in, fake_runner):
     assert by_id["a"]["code"] == "cancelled" and by_id["b"]["type"] == "done"
 
 
-def test_store_keeps_any_size_and_never_expires(base, monkeypatch):
+def test_store_keeps_any_size_for_seven_days(base, monkeypatch):
     big = b"x" * (25 * 1024 * 1024)
     token, path = store.new_body_path()
     with open(path, "wb") as fh:
         fh.write(big)
     assert store.keep(path, {"size": len(big)}, "e" * 64)["token"] == "e" * 64
-    later = time.time() + 365 * 24 * 3600
-    monkeypatch.setattr(store.time, "time", lambda: later)
+    now = time.time()
+    monkeypatch.setattr(store.time, "time", lambda: now + store.MAX_AGE_S - 60)
     assert store.get("e" * 64) is not None
+    monkeypatch.setattr(store.time, "time", lambda: now + store.MAX_AGE_S + 60)
+    assert store.get("e" * 64) is None
+    assert store.open_result("e" * 64) is None
 

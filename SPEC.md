@@ -12899,9 +12899,10 @@ milliseconds.
   confirmation answers. A run whose loaded code does not hash to the file
   the key was built from is not filed under the key (it is served once from
   `tmp/`).
-- **SR-3 No limits.** Any size is kept, nothing is evicted and nothing
-  expires; a run of the same key replaces its entry. `<home>/cache/udf/`,
-  never in a canvas folder. Clearing is the user's (SR-5).
+- **SR-3 Bounds.** No size limits: any size is kept and nothing is
+  evicted for space. An entry older than 7 days is a miss and is removed; a
+  run of the same key replaces its entry. `<home>/cache/udf/`, never in a
+  canvas folder. Clearing everything is the user's (SR-5).
 - **SR-4 Shown as saved.** The key cannot see sibling UDFs read through
   `fused.load`, outside data or the clock, so a saved copy is always
   labelled saved and, under `cache: "auto"`, always followed by a run.
