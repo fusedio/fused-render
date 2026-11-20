@@ -400,8 +400,13 @@ def _on_sigterm(*_):
 def main():
     signal.signal(signal.SIGTERM, _on_sigterm)
     if DUMP_ENV:
-        with open(DUMP_ENV, "w", encoding="utf-8") as fh:
+        # Atomically: the test waits for the file to EXIST and then parses
+        # it, so a plain open("w") let it read the empty file in the gap
+        # before json.dump wrote (a CI flake, PR #2383).
+        tmp = DUMP_ENV + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(dict(os.environ), fh)
+        os.replace(tmp, DUMP_ENV)
     threading.Thread(target=_reader, daemon=True).start()
     while True:
         item = _prompts.get()
