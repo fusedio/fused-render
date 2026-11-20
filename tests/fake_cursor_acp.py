@@ -9,8 +9,9 @@ method), `session/new` (a uuid4 `sessionId` plus `modes` — agent/plan/ask —
 `models` and `configOptions`), `session/load` (replaying one user + one
 agent chunk per `--replay N` BEFORE it replies, as Cursor awaits its replay;
 `-32602` under `--unknown-session`), `session/set_model` (`{}`; an unknown
-id is `-32602 Invalid model value`), `session/set_mode` (`{}`), and the
-`cursor/list_available_models` extension method. `--signed-out` makes
+id is `-32602 Invalid model value` — `auto` included: Cursor's Auto is the
+listed `auto-smart` row, named "Auto", as on the real CLI), `session/set_mode`
+(`{}`), and the `cursor/list_available_models` extension method. `--signed-out` makes
 `session/new` fail as Cursor does without a login.
 
 On `session/prompt`: (no echo — Cursor sends none) two
@@ -18,9 +19,15 @@ On `session/prompt`: (no echo — Cursor sends none) two
 PARTIAL (a truncated command, as `partialToolCall` streams it), a refresh
 `tool_call_update` with the whole input, then `in_progress` and
 `completed`; `--perms N` `session/request_permission`s (Cursor's card:
-title `` `cmd` ``, kind `execute`, no `rawInput`, options `allow-once` /
-`allow-always` / `reject-once`), `--perm-edit PATH` an edit card with a
-diff, `--question` a question card (`__ask_question_skip__`), `--ext` an
+title `` `cmd` ``, kind `execute`, no `rawInput`, the reason as `content`,
+options `allow-once` / `allow-always` / `reject-once`, raised AFTER the call's
+`in_progress`; then `completed` with output when allowed and a BARE
+`completed` — no content, not `failed` — when rejected, as observed),
+`--perm-edit PATH` an edit card with a diff, `--edit-new PATH` Cursor's
+uncarded edit of a NEW file (announced `Edit File` with an empty
+`rawInput`, the path in a refresh, and the diff only on `completed`, in the
+mangled new-file shape the real CLI sends: `oldText: "-- /dev/null"`,
+`newText: "++ b/<path>\n<content>"`), `--question` a question card (`__ask_question_skip__`), `--ext` an
 agent→client `cursor/update_todos` request; then replies `{stopReason:
 "end_turn"}` (`cancelled` after a `session/cancel`, a JSON-RPC error with
 `--error`). `--block-until PATH` holds the prompt open; `--die` exits
@@ -67,8 +74,12 @@ SIGNED_OUT = "--signed-out" in ARGS
 CHECK_ECHO = _flag("--check-echo")
 DUMP_ENV = _flag("--dump-env")
 EXIT_ON_EOF = "--exit-on-eof" in ARGS
-MODEL = _flag("--current-model", "auto")
-MODELS = ["auto", "composer-2", "gpt-5.5", "claude-4.6-sonnet"]
+EDIT_NEW = _flag("--edit-new")
+MODEL = _flag("--current-model", "auto-smart")
+#: Shaped like the real list (2026.11.19-f005e9d): Auto is `auto-smart`.
+MODELS = ["auto-smart", "composer-2.5", "gpt-5.5", "claude-sonnet-5-5"]
+NAMES = {"auto-smart": "Auto", "composer-2.5": "Composer 2.5", "gpt-5.5": "GPT-5.5",
+         "claude-sonnet-5-5": "Claude Sonnet 5.5"}
 COMMANDS = [{"name": "copy-request-id", "description": "Copy the last request ID"}]
 
 _prompts = queue.Queue()
@@ -124,12 +135,12 @@ def _state():
         {"id": "agent", "name": "Agent"}, {"id": "plan", "name": "Plan"},
         {"id": "ask", "name": "Ask"}]}
     models = {"currentModelId": _model[0],
-              "availableModels": [{"modelId": m, "name": m} for m in MODELS]}
+              "availableModels": [{"modelId": m, "name": NAMES[m]} for m in MODELS]}
     options = [{"id": "mode", "name": "Mode", "type": "select",
                 "currentValue": _mode[0], "options": []},
                {"id": "model", "name": "Model", "type": "select",
                 "currentValue": _model[0],
-                "options": [{"value": m, "name": m} for m in MODELS]}]
+                "options": [{"value": m, "name": NAMES[m]} for m in MODELS]}]
     return {"modes": modes, "models": models, "configOptions": options}
 
 
@@ -207,7 +218,7 @@ def _serve(msg):
         _model[0] = mid
         _reply(rid, {})
     elif method == "cursor/list_available_models":
-        _reply(rid, {"models": [{"value": m, "name": m.upper(), "configOptions": []}
+        _reply(rid, {"models": [{"value": m, "name": NAMES[m], "configOptions": []}
                                 for m in MODELS]})
     elif rid is not None:
         _error(rid, -32601, "Method not found: " + str(method))
@@ -259,8 +270,24 @@ _OPTIONS = [{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once
             {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}]
 
 
+def _edit_new(path):
+    """Cursor's uncarded edit of a new file, row for row as observed."""
+    tid = "call-edit-1"
+    _update("tool_call", toolCallId=tid, title="Edit File", kind="edit",
+            status="pending", rawInput={})
+    _update("tool_call_update", toolCallId=tid, title="Edit `%s`" % path,
+            rawInput={"path": path}, locations=[{"path": path}])
+    _update("tool_call_update", toolCallId=tid, status="in_progress")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("hello")
+    _update("tool_call_update", toolCallId=tid, status="completed",
+            content=[{"type": "diff", "path": path, "oldText": "-- /dev/null",
+                      "newText": "++ b/%s\nhello" % path}])
+
+
 def _ask(n):
     ids = []
+    tids = []
     for i in range(n):
         pid = next(_ids)
         ids.append(pid)
@@ -273,14 +300,29 @@ def _ask(n):
             _update("tool_call", toolCallId=tid, title="Edit", kind="edit",
                     status="pending", rawInput={"path": PERM_EDIT})
         else:
-            _update("tool_call", toolCallId=tid, title="rm", kind="execute",
+            _update("tool_call", toolCallId=tid, title="`rm -rf build`", kind="execute",
                     status="pending", rawInput={"command": "rm -rf build"})
+            # The real CLI starts the call, THEN asks (observed).
+            _update("tool_call_update", toolCallId=tid, status="in_progress")
             call = {"toolCallId": tid, "title": "`rm -rf build`", "kind": "execute",
-                    "status": "pending"}
+                    "status": "pending",
+                    "content": [{"type": "content", "content": {
+                        "type": "text", "text": "Not in allowlist: rm"}}]}
+        tids.append(tid)
         _send({"jsonrpc": "2.0", "id": pid, "method": "session/request_permission",
                "params": {"sessionId": SESSION_ID, "toolCall": call,
                           "options": _OPTIONS}})
     _await(ids)
+    for pid, tid in zip(ids, tids):
+        answer = (_answers.get(pid) or {}).get("result") or {}
+        picked = (answer.get("outcome") or {}).get("optionId")
+        if picked == "allow-once":
+            _update("tool_call_update", toolCallId=tid, status="completed",
+                    content=[{"type": "content", "content": {"type": "text", "text": "ok"}}],
+                    rawOutput={"exitCode": 0, "stdout": "ok"})
+        else:
+            # A rejected call ends BARE: no content, and `completed`.
+            _update("tool_call_update", toolCallId=tid, status="completed")
 
 
 def _question():
@@ -324,6 +366,8 @@ def _prompt(rid, params):
             _await([pid])
         if WITH_TOOL:
             _tool()
+        if EDIT_NEW:
+            _edit_new(EDIT_NEW)
         if QUESTION:
             _question()
         if PERMS:

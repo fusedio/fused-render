@@ -125,6 +125,10 @@ _UNSUPPORTED = "unsupported by cursor"
 # prompt so `_absorb` says "Interrupted by you" and `transcript_turn_open`
 # reads the turn as closed.
 _INTERRUPT_MARK = "[Request interrupted by user]"
+#: A refused call's tool result. Cursor ends a rejected call with a bare
+#: `tool_call_update {status: "completed"}` — no content, not `failed`
+#: (observed) — so the host says what happened, in permission_server's words.
+_DENIED_TEXT = "The user denied this request."
 # ACP tool kinds → the Claude tool names the page already renders (D14).
 _KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
                  "search": "Grep"}
@@ -460,6 +464,27 @@ def _first_path(raw: dict, locations) -> str:
     return ""
 
 
+def _normalize_diff(d: dict) -> dict:
+    """One ACP `diff` entry with Cursor's NEW-FILE shape repaired. For a file
+    the call created, 2026.11.19-f005e9d sends the unified diff's own header
+    lines, each missing its first character, as the texts:
+    `oldText: "-- /dev/null"`, `newText: "++ b/<path>\n<content>"`
+    (observed live). That is an empty old text and the content after the
+    header line; any other entry is returned as it came."""
+    old = str(d.get("oldText") or "")
+    new = str(d.get("newText") or "")
+    if old.strip() == "-- /dev/null" and new.startswith("++ "):
+        _, _, body = new.partition("\n")
+        return dict(d, oldText="", newText=body)
+    return d
+
+
+def _diffs_of(content) -> list:
+    """The call's ACP `diff` content entries, normalized."""
+    return [_normalize_diff(c) for c in (content if isinstance(content, list) else [])
+            if isinstance(c, dict) and c.get("type") == "diff"]
+
+
 def _unified_diff(diffs: list) -> str:
     """ACP `diff` content entries as one unified diff, HEADER-FREE (no
     `---`/`+++` lines — the chat's diff view draws hunks, and the path is
@@ -526,12 +551,16 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
         command = str(raw.get("command") or raw.get("cmd") or _unquote_title(title))
         inp = {"command": command, "description": str(raw.get("description") or command)}
     elif kind == "edit":
-        diffs = [c for c in (content if isinstance(content, list) else [])
-                 if isinstance(c, dict) and c.get("type") == "diff"]
+        diffs = _diffs_of(content)
         path = _first_path(raw, locations) or next(
             (str(d["path"]) for d in diffs if isinstance(d.get("path"), str) and d["path"]), "")
         full = path if os.path.isabs(path) else os.path.join(cwd or "", path)
-        if path and not os.path.exists(full):
+        # The diff decides when there is one: Cursor's edit carries no
+        # content until it has RUN (observed), when the file exists either
+        # way, so an empty old text is what says "created".
+        created = (all(not d.get("oldText") for d in diffs) if diffs
+                   else bool(path) and not os.path.exists(full))
+        if created:
             name = "Write"
             inp = {"file_path": path,
                    "content": str(raw.get("content") or raw.get("newText")
@@ -579,6 +608,17 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
     return name, inp
 
 
+def _raise_at(call: dict, status) -> bool:
+    """Whether a held call's row goes up at this status (D14): when it
+    starts, or ends. An EDIT waits for its end: Cursor announces it with an
+    empty `rawInput`, names the path later and sends the diff only with
+    `completed` (observed), so a row raised at `in_progress` would show an
+    empty Write. A card raises any call at once (`_park_permission`)."""
+    if status in ("completed", "failed"):
+        return True
+    return status == "in_progress" and call.get("kind") != "edit"
+
+
 def _tool_output_text(update: dict) -> str:
     """One string out of a `tool_call_update`'s `content[]` / `rawOutput`."""
     parts = []
@@ -593,9 +633,7 @@ def _tool_output_text(update: dict) -> str:
         elif t == "text" and isinstance(item.get("text"), str):
             parts.append(item["text"])
         elif t == "diff":
-            parts.append("--- %s\n-%s\n+%s" % (item.get("path", ""),
-                                               item.get("oldText", ""),
-                                               item.get("newText", "")))
+            parts.append(_unified_diff([_normalize_diff(item)]).rstrip("\n"))
     if not parts:
         raw = update.get("rawOutput")
         if isinstance(raw, str):
@@ -637,6 +675,21 @@ def _permission_outcome(options, decision: dict) -> dict:
     return {"outcome": {"outcome": "selected", "optionId": oid}}
 
 
+def _is_rejection(options, outcome: dict) -> bool:
+    """Whether an answer to a card refuses the call: `cancelled`, or the
+    option picked is a `reject_*` one."""
+    out = outcome.get("outcome") if isinstance(outcome, dict) else None
+    if not isinstance(out, dict):
+        return False
+    if out.get("outcome") == "cancelled":
+        return True
+    picked = out.get("optionId")
+    for opt in options if isinstance(options, list) else []:
+        if isinstance(opt, dict) and opt.get("optionId") == picked:
+            return str(opt.get("kind") or "").startswith("reject")
+    return False
+
+
 def _is_question(options) -> bool:
     """Whether a permission request is Cursor's question card (`askQuestion`:
     one `allow_once` option per answer plus `__ask_question_skip__`)."""
@@ -666,6 +719,10 @@ class _Host:
         self.run_dir = req["run_dir"]
         self.cwd = req["cwd"]
         self.model = str(req.get("model") or "")
+        # The session's `models.availableModels` ({modelId, name}), from the
+        # `session/new` / `session/load` reply: what `_wire_model` resolves
+        # the catalog's `auto` against.
+        self.available = []
         # THE SESSION — the key of every file this host writes. A resume
         # names it; a fresh chat has none until `session/new` answers, because
         # Cursor MINTS it (a uuid4 in `session/new`, `crypto.randomUUID()`),
@@ -727,6 +784,9 @@ class _Host:
         # D4: the calls a session-scoped allow covers (`_allow_key`), for the
         # life of this process — answered `allow_once` without a card.
         self.session_allows = set()
+        # The toolCallIds whose card was answered with a reject (any road:
+        # Deny, a timeout, a cancel), so their bare `completed` reads denied.
+        self.rejected = set()
         # The CLI-wire mode this session runs in (`cli_mode`): the host's own
         # card-answering policy (D5); `set_permission_mode` moves it.
         self.mode = str(req.get("cli_mode") or "default")
@@ -1006,7 +1066,7 @@ class _Host:
         call = self._merge_call(update)
         if tid in self.tools:
             return
-        if update.get("status") in ("in_progress", "completed", "failed"):
+        if _raise_at(call, update.get("status")):
             self._raise_tool(tid, call)
         else:
             self.held.add(tid)
@@ -1017,15 +1077,20 @@ class _Host:
         tid = str(update.get("toolCallId") or "")
         status = update.get("status")
         call = self._merge_call(update)
-        if tid not in self.tools and status in ("in_progress", "completed", "failed"):
+        if tid not in self.tools and _raise_at(call, status):
             self._raise_tool(tid, call)
         if status not in ("completed", "failed"):
             return
         if tid not in self.tools:
             return
+        text = _tool_output_text(update)
+        failed = status == "failed"
+        if tid in self.rejected:
+            self.rejected.discard(tid)
+            if not text.strip():
+                text, failed = _DENIED_TEXT, True
         block = {"type": "tool_result", "tool_use_id": tid,
-                 "content": _tool_output_text(update),
-                 "is_error": status == "failed"}
+                 "content": text, "is_error": failed}
         message = {"role": "user", "content": [block]}
         self._emit_out({"type": "user", "message": message})
         self._emit_tx({"type": "user", "message": message,
@@ -1066,6 +1131,7 @@ class _Host:
                 self.tools = {}
                 self.calls = {}
                 self.held = set()
+                self.rejected = set()
                 self.cancelling = False
                 self.cancel_deadline = None
                 self._write_registry("idle")
@@ -1367,6 +1433,8 @@ class _Host:
             if entry is None:
                 return False
             entry["done"].set()
+            if entry.get("tid") and _is_rejection(entry.get("options"), outcome):
+                self.rejected.add(entry["tid"])
         self.peer.respond(rid, outcome)
         return True
 
@@ -1402,6 +1470,7 @@ class _Host:
             call = call if isinstance(call, dict) else {}
             with self.lock:
                 merged = self._merge_call(call) if call.get("toolCallId") else call
+                entry["tid"] = str(call.get("toolCallId") or "")
                 key = _allow_key(merged)
                 kind = str(merged.get("kind") or "")
                 auto = (self.mode == "auto"
@@ -1662,6 +1731,9 @@ class _Host:
                     self._control_response(request_id, error="no model named")
                 return
 
+            with self.lock:
+                model = self._wire_model(model)
+
             def took(rpc, request_id=request_id, model=model):
                 with self.lock:
                     if rpc.error is None:
@@ -1794,6 +1866,12 @@ class _Host:
         models = result.get("models") if isinstance(result, dict) else None
         cur = models.get("currentModelId") if isinstance(models, dict) else None
         cur = cur if isinstance(cur, str) else ""
+        avail = models.get("availableModels") if isinstance(models, dict) else None
+        with self.lock:
+            self.available = [m for m in (avail if isinstance(avail, list) else [])
+                              if isinstance(m, dict) and isinstance(m.get("modelId"), str)]
+            if self.model:
+                self.model = self._wire_model(self.model)
         if self.model and self.model != cur and self.sid:
             rpc = self.peer.request("session/set_model", {
                 "sessionId": self.sid, "modelId": self.model})
@@ -1808,6 +1886,24 @@ class _Host:
         if not self.model and cur:
             with self.lock:
                 self.model = cur
+
+    def _wire_model(self, model: str) -> str:
+        """The id `session/set_model` takes for `model`. The catalog's seed
+        `auto` is NOT one (the CLI answers `-32602 Invalid model value:
+        auto`, observed): Cursor's Auto is a listed row (`auto-smart`, named
+        "Auto", on 2026.11.19-f005e9d), so `auto` resolves to the first row
+        whose id is or starts with `auto`, or whose name is "Auto". Every
+        other id, and `auto` on a list with no such row, goes as it is.
+        Without this a refused `auto` adopted `currentModelId` — which is
+        whatever model was last picked anywhere, because `set_model` is
+        persisted to the CLI's config."""
+        if model != "auto" or any(m["modelId"] == model for m in self.available):
+            return model
+        for m in self.available:
+            mid = m["modelId"]
+            if mid.startswith("auto") or str(m.get("name") or "").strip().lower() == "auto":
+                return mid
+        return model
 
     def _await_replay_quiet(self) -> None:
         """D3: Cursor streams the whole replay BEFORE it answers

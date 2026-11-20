@@ -127,10 +127,6 @@ GEMINI_POLICY_NAME = "gemini-recap-policy.toml"
 #: appends the positional message after the piped input (ASSUMED,
 #: docs/OPENCODE_BACKEND.md D12; the design's own pointer rule).
 OPENCODE_POINTER = GEMINI_POINTER
-#: What `cursor-agent -p` is told when the whole prompt rides stdin (the CLI
-#: reads a piped stdin beside the positional prompt; docs/CURSOR_BACKEND.md
-#: D12). Worded to read right whichever side of the stdin text it lands on.
-CURSOR_POINTER = "Answer as the instructions in this message say."
 
 #: The levels the Copilot CLI's `--reasoning-effort` takes (1.0.102 `--help`).
 COPILOT_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -655,7 +651,12 @@ def _prepare_cursor(agent, model: str, effort: Optional[str], common: dict,
     D12/D16). `ask` is Cursor's read-only Q&A mode (no edits, no commands),
     and `--workspace` an EMPTY mkdtemp, so there is nothing to read either;
     `--trust` because a headless run cannot answer the workspace-trust
-    question. The reply is one `{type: "result", subtype, is_error, result,
+    question. The prompt goes on stdin with NO positional prompt: given
+    one, the CLI ignores a piped stdin (observed on 2026.11.19-f005e9d — the
+    model answered "I didn't find any instructions on stdin"). `--model`
+    always, `auto` included (`-p` takes `auto` as an alias, unlike ACP):
+    left out, the run would take whatever model was last picked, which the
+    CLI persists. The reply is one `{type: "result", subtype, is_error, result,
     session_id}` line. Cursor files the run's chat under that temp
     workspace in its own store; fused never touches `~/.cursor` (D15).
     No tools run: Cursor has no flag that limits its MCP roster to one
@@ -668,9 +669,8 @@ def _prepare_cursor(agent, model: str, effort: Optional[str], common: dict,
     env = agent._spawn_env(backend="cursor")
     argv = [_bin(agent, "cursor"), "-p", "--output-format", "json",
             "--mode", "ask", "--trust", "--workspace", workspace]
-    if model and model != "auto":
+    if model:
         argv += ["--model", model]
-    argv.append(CURSOR_POINTER)
     dropped = "the Cursor CLI has no reasoning effort control" if effort else ""
 
     def parse(stdout: str, stderr: str, rc: int) -> str:

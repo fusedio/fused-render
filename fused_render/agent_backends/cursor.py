@@ -27,6 +27,12 @@ The model list is a seed, not a probe: `cursor_health` asks the CLI for the
 account's models (`cursor/list_available_models`, an ACP extension method)
 and stores them in its snapshot, which `discovered_models` serves in place
 of the one-row seed below. `auto` first because it is Cursor's own default.
+
+`auto` is fused's name, not a wire id: the CLI's Auto is a listed row
+(`auto-smart`, named "Auto", observed on 2026.11.19-f005e9d) and
+`session/set_model auto` is refused, so the host resolves `auto` to that row
+(`cursor_host._Host._wire_model`). A discovered list that carries Cursor's own
+Auto row serves it first, in place of the seed, and defaults to it.
 """
 from __future__ import annotations
 
@@ -73,8 +79,14 @@ def discovered_models(snapshot=None):
         rows = cursor_health.cached_models()
     if not rows:
         return None
-    out = [AUTO]
-    seen = {AUTO.id}
+    # Cursor's own Auto row, when the account lists one, stands in for the
+    # seed (one "Auto", not two) and goes first.
+    own = next((r for r in rows if isinstance(r, dict) and _is_auto(r)), None)
+    if own is not None:
+        rows = [own] + [r for r in rows if r is not own]
+        out, seen = [], set()
+    else:
+        out, seen = [AUTO], {AUTO.id}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -84,7 +96,14 @@ def discovered_models(snapshot=None):
         seen.add(mid)
         out.append(Model(mid, str(row.get("label") or mid), reasoning=False,
                          efforts=()))
-    return tuple(out) if len(out) > 1 else None
+    return tuple(out) if len(out) > 1 or own is not None else None
+
+
+def _is_auto(row: dict) -> bool:
+    """Cursor's own Auto row: an id that is or starts with `auto`, or the
+    label "Auto" (the host's `_wire_model` rule)."""
+    mid = str(row.get("id") or "").strip()
+    return mid.startswith("auto") or str(row.get("label") or "").strip().lower() == "auto"
 
 
 CURSOR = Backend(
@@ -128,4 +147,7 @@ CURSOR = Backend(
     routes_prefix="/api/cursor",
     pref_key="cursor_enabled",
     discovered_models=discovered_models,
+    # The discovered list starts with an Auto row (Cursor's own, or the
+    # seed when the account lists none): the default is that row.
+    default_from_discovered=True,
 )

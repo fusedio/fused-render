@@ -30,7 +30,7 @@ AGENT_DIR = os.path.abspath(os.path.join("fused_render", "claude_agent"))
 HOST = os.path.join(AGENT_DIR, "cursor_host.py")
 AGENT = os.path.join(AGENT_DIR, "agent.py")
 FAKE = os.path.abspath(os.path.join("tests", "fake_cursor_acp.py"))
-NOTICE = "Handled by Cursor · model auto"
+NOTICE = "Handled by Cursor · model auto-smart"
 WIRE = {"initialize", "session/new", "session/load", "session/prompt",
         "session/set_model", "session/set_mode", "session/cancel"}
 
@@ -233,7 +233,8 @@ def test_the_handshake_mints_the_id_pins_agent_and_asks_for_base_model_ids(start
     assert _wait_for(lambda: os.path.exists(s.transcript) and s.tx())
     init = s.out()[0]
     assert init["type"] == "system" and init["subtype"] == "init"
-    assert init["backend"] == "cursor" and init["model"] == "auto"
+    # The catalog's `auto` is resolved to Cursor's own Auto row.
+    assert init["backend"] == "cursor" and init["model"] == "auto-smart"
     assert init["slash_commands"] in ([], ["copy-request-id"])
     assert s.tx()[0]["summary"] == NOTICE
     assert s.transcript.startswith(os.path.join(os.environ["FUSED_RENDER_HOME"], "cursor"))
@@ -259,9 +260,9 @@ def test_a_named_model_is_set_before_the_first_prompt(start):
 
 
 def test_a_refused_model_falls_back_to_the_sessions_own(start):
-    s = start(model="nope-1", fake_args=["--current-model", "composer-2"])
+    s = start(model="nope-1", fake_args=["--current-model", "composer-2.5"])
     assert _wait_for(lambda: any(r.get("subtype") == "init" for r in s.out()))
-    assert s.out()[0]["model"] == "composer-2"
+    assert s.out()[0]["model"] == "composer-2.5"
     assert "session/set_model nope-1 refused" in s.host_err()
 
 
@@ -543,3 +544,83 @@ def test_the_idle_reap_terminates_a_cli_that_ignores_eof(start):
 def test_the_hosts_mode_table_is_agent_pys(host_mod, agent):
     assert set(host_mod._CURSOR_MODES) == set(agent._CURSOR_MODES)
     assert host_mod._INSTRUCTIONS_FILE == agent._CURSOR_INSTRUCTIONS
+
+
+# ------------------------------------------ fixes from the live run (2026-11-20)
+
+def test_auto_resolves_to_cursors_own_auto_row_not_the_last_picked_model(start):
+    """`session/set_model auto` is refused by the real CLI (`Invalid model
+    value: auto`), and `set_model` is persisted to its config — so a spawn
+    asking for `auto` used to adopt whatever model was picked last,
+    anywhere. It resolves to the listed Auto row (`auto-smart`) instead."""
+    s = start(model="auto", fake_args=["--current-model", "gpt-5.5"])
+    s.say("go")
+    s.wait_results(1)
+    assert [m["params"]["modelId"] for m in s.sent("session/set_model")] == ["auto-smart"]
+    assert s.out()[0]["model"] == "auto-smart"
+    assert "refused" not in s.host_err()
+
+
+def test_a_live_switch_to_auto_sends_cursors_own_id(start):
+    s = start(model="gpt-5.5")
+    assert _wait_for(lambda: any(r.get("subtype") == "init" for r in s.out()))
+    rid = s.control("set_model", model="auto")
+    assert _wait_for(lambda: any(r.get("request_id") == rid for r in s.control_responses()))
+    resp = next(r for r in s.control_responses() if r.get("request_id") == rid)
+    assert resp["subtype"] == "success"
+    assert [m["params"]["modelId"] for m in s.sent("session/set_model")][-1] == "auto-smart"
+
+
+def _tool_results(s):
+    return [b for r in s.out() if r.get("type") == "user"
+            for b in r["message"].get("content", []) if b.get("type") == "tool_result"]
+
+
+def test_a_denied_call_reads_denied_not_an_empty_success(start):
+    """Cursor ends a rejected call with a BARE `completed` (observed): the
+    tool result says the user denied it, as an error."""
+    s = start(fake_args=["--perm"])
+    s.say("clean")
+    s.decide(_card(s)["id"], decision="deny")
+    s.wait_results(1)
+    assert _tool_results(s) == [{"type": "tool_result", "tool_use_id": "call-perm-0",
+                                 "content": "The user denied this request.",
+                                 "is_error": True}]
+
+
+def test_an_allowed_call_keeps_its_output(start):
+    s = start(fake_args=["--perm"])
+    s.say("clean")
+    s.decide(_card(s)["id"], decision="allow")
+    s.wait_results(1)
+    assert _tool_results(s) == [{"type": "tool_result", "tool_use_id": "call-perm-0",
+                                 "content": "ok", "is_error": False}]
+
+
+def test_an_uncarded_new_file_edit_shows_its_content(start, tmp_path):
+    """Cursor announces an edit with an empty `rawInput` and sends its diff
+    only on `completed`, in a mangled new-file shape (`-- /dev/null` /
+    `++ b/<path>\\n<content>`, observed). The row waits for the content and
+    reads as a Write of it; the result is a clean header-free diff."""
+    path = str(tmp_path / "proj" / "note.txt")
+    s = start(fake_args=["--edit-new", path])
+    s.say("write")
+    s.wait_results(1)
+    uses = [b for r in s.out() if r.get("type") == "assistant"
+            for b in r["message"]["content"] if b.get("type") == "tool_use"]
+    assert len(uses) == 1
+    assert uses[0]["name"] == "Write"
+    assert uses[0]["input"]["file_path"] == path
+    assert uses[0]["input"]["content"] == "hello"
+    [res] = _tool_results(s)
+    assert res["is_error"] is False
+    assert "/dev/null" not in res["content"] and "+hello" in res["content"]
+
+
+def test_normalize_diff_repairs_cursors_new_file_shape(host_mod):
+    fixed = host_mod._normalize_diff({"type": "diff", "path": "/p/a.txt",
+                                      "oldText": "-- /dev/null",
+                                      "newText": "++ b//p/a.txt\nline1\nline2"})
+    assert fixed["oldText"] == "" and fixed["newText"] == "line1\nline2"
+    plain = {"type": "diff", "path": "a", "oldText": "hello", "newText": "bye"}
+    assert host_mod._normalize_diff(plain) is plain

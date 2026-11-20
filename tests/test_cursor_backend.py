@@ -236,16 +236,17 @@ def test_a_signed_in_measure_carries_the_account_and_the_models(tmp_path, monkey
     assert snap["version"] == "2026.11.19"
     assert snap["signed_in"] is True
     assert snap["account"]["email"] == "dev@example.com"
-    assert [m["id"] for m in snap["models"]] == ["auto", "composer-2", "gpt-5.5",
-                                                 "claude-4.6-sonnet"]
+    assert [m["id"] for m in snap["models"]] == ["auto-smart", "composer-2.5", "gpt-5.5",
+                                                 "claude-sonnet-5-5"]
     assert snap["install_command"] == "curl https://cursor.com/install -fsS | bash"
     # Every probe child runs with the browser held shut.
     rows = [json.loads(ln) for ln in log.read_text().splitlines()]
     assert all(r["no_open_browser"] == "1" for r in rows)
-    # The catalog serves the account's list (auto first).
+    # The catalog serves the account's list, Cursor's own Auto row first
+    # and in place of the `auto` seed (one "Auto", not two).
     from fused_render.agent_backends import cursor
     ids = [m.id for m in cursor.discovered_models(snap)]
-    assert ids == ["auto", "composer-2", "gpt-5.5", "claude-4.6-sonnet"]
+    assert ids == ["auto-smart", "composer-2.5", "gpt-5.5", "claude-sonnet-5-5"]
     assert "gpt-5.5" in cursor.CURSOR.model_ids(discovered=True)
 
 
@@ -351,8 +352,12 @@ def test_the_recap_one_shot(tmp_path, monkeypatch, agent):
     workspace = spec.argv[spec.argv.index("--workspace") + 1]
     assert spec.argv[1:8] == ["-p", "--output-format", "json", "--mode", "ask", "--trust",
                               "--workspace"]
-    # `auto` is Cursor's own default: no --model for it.
-    assert "--model" not in spec.argv
+    # `--model` even for `auto` (`-p` takes the alias): left out, the run
+    # would take the model last picked anywhere, which the CLI persists.
+    assert spec.argv[spec.argv.index("--model") + 1] == "auto"
+    # No positional prompt: the real CLI ignores a piped stdin beside one,
+    # and the fake does too, so the reply proves the prompt rode stdin.
+    assert spec.argv[-2:] == ["--model", "auto"]
     assert os.path.isdir(workspace)
     reply = agent_oneshot.run_sync(spec, 20)
     assert reply == "Recap: %d" % len("Be brief.\n\nSummarise")
@@ -432,3 +437,38 @@ def test_off_by_default_and_nothing_spawns(monkeypatch):
             continue
         r = c.post(route, headers={"X-Fused": "1"})
         assert r.status_code == 400 and r.json() == registry.disabled_error("cursor")
+
+
+# ------------------------------------------ fixes from the live run (2026-11-20)
+
+def test_an_api_key_is_api_key_even_once_status_says_authenticated(monkeypatch):
+    """The CLI's first key-signed run stores the exchanged token, and
+    `status` answers `authenticated` with the key owner's details from then
+    on (observed). With the key set, the method stays `api_key`."""
+    monkeypatch.setenv("CURSOR_API_KEY", "k")
+    body = {"status": "authenticated", "userInfo": {"email": "dev@example.com",
+                                                    "teamName": "Acme"}}
+    assert cursor_health.account(True, body) == {
+        "method": "api_key", "email": "dev@example.com", "org": "Acme", "plan": None}
+    monkeypatch.delenv("CURSOR_API_KEY")
+    assert cursor_health.account(True, body)["method"] == "cursor"
+
+
+def test_discovered_models_keep_the_seed_only_without_cursors_own_auto():
+    from fused_render.agent_backends import cursor
+    no_auto = {"models": [{"id": "gpt-5.5", "label": "GPT-5.5"}]}
+    assert [m.id for m in cursor.discovered_models(no_auto)] == ["auto", "gpt-5.5"]
+    late_auto = {"models": [{"id": "gpt-5.5", "label": "GPT-5.5"},
+                            {"id": "auto-smart", "label": "Auto"}]}
+    assert [m.id for m in cursor.discovered_models(late_auto)] == ["auto-smart", "gpt-5.5"]
+
+
+def test_the_catalog_defaults_to_the_first_discovered_row(monkeypatch):
+    from fused_render.agent_backends import cursor
+    snap = {"models": [{"id": "auto-smart", "label": "Auto"},
+                       {"id": "gpt-5.5", "label": "GPT-5.5"}]}
+    monkeypatch.setattr(cursor_health, "cached_models", lambda: snap["models"])
+    row = cursor.CURSOR.to_catalog(True, snap, models=cursor.discovered_models(snap),
+                                   default_model=None)
+    assert row["models"][0]["id"] == "auto-smart"
+    assert cursor.CURSOR.default_from_discovered is True

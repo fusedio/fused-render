@@ -5,7 +5,10 @@ CLI's own `status` command builds (picked by FAKE_CURSOR_STATUS: `in`,
 `out`, `partial`, `error`, `garbage`), `acp` hands over to
 tests/fake_cursor_acp.py, `login` prints the CLI's success line and exits
 0 (or 1 under FAKE_CURSOR_LOGIN=fail), and `-p` answers a one-shot
-`{type: "result"}` line (FAKE_CURSOR_ONESHOT=error makes it `is_error`).
+`{type: "result"}` line (FAKE_CURSOR_ONESHOT=error makes it `is_error`) —
+reading the prompt off stdin ONLY when no positional prompt is given, as the
+real CLI does (observed on 2026.11.19-f005e9d: with a positional prompt a
+piped stdin is ignored).
 Every argv is appended to FAKE_CURSOR_LOG when set."""
 import json
 import os
@@ -48,7 +51,18 @@ elif args[:1] == ["login"]:
         sys.exit(1)
     print("Login successful!")
 elif "-p" in args:
-    prompt = sys.stdin.read()
+    # The flags `-p` runs take a value for; anything else not a flag is the
+    # positional prompt.
+    valued = {"--output-format", "--mode", "--workspace", "--model", "--resume"}
+    positional, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in valued:
+            skip = True
+        elif not a.startswith("-"):
+            positional.append(a)
+    prompt = " ".join(positional) if positional else sys.stdin.read()
     if os.environ.get("FAKE_CURSOR_ONESHOT") == "error":
         print(json.dumps({"type": "result", "subtype": "error", "is_error": True,
                           "result": "Authentication required. Please run 'cursor-agent login'"}))

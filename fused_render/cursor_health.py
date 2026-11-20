@@ -314,12 +314,19 @@ def account(signed: Optional[bool], body: Optional[dict] = None) -> Optional[dic
     """WHO is signed in, in the shape the wizard's "Signed in" row reads:
     `{method, email, org, plan}`. `method` is `cursor` (a stored login) or
     `api_key` (`CURSOR_API_KEY`); `org` the team the login is acting for.
-    None unless `signed` is True."""
+    None unless `signed` is True.
+
+    A set `CURSOR_API_KEY` is `api_key` WHATEVER `status` says: the CLI
+    reaches for the key before a stored login (auth token, then key, then
+    login), and its first key-signed run stores the exchanged token, after
+    which `status` answers `authenticated` with the key owner's `userInfo`
+    (observed on 2026.11.19-f005e9d) — not a login the user made."""
     if signed is not True:
         return None
     info = body.get("userInfo") if isinstance(body, dict) else None
     info = info if isinstance(info, dict) else {}
-    stored = isinstance(body, dict) and body.get("status") == "authenticated"
+    stored = (isinstance(body, dict) and body.get("status") == "authenticated"
+              and not os.environ.get(API_KEY_ENV))
     email = info.get("email")
     org = info.get("teamName")
     return {"method": "cursor" if stored else "api_key",

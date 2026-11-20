@@ -16,9 +16,10 @@ the release `curl https://cursor.com/install | bash` installed that day):
 the ACP agent (`src/acp/cursor-acp-agent.ts`, `agent-session.ts`,
 `session-resources.ts`, `session-update-presenter.ts`,
 `tool-call-presentation.ts`, `types.ts`), the commander option table and the
-`status` command. **No live turn was run** — the binary was not executed on
-the build machine — so §10 separates what the source says from what is
-assumed.
+`status` command. The design was built from the source alone; the binary
+was then run, signed out (2026-11-20, commit `80bae23`) and signed in by
+`CURSOR_API_KEY` with real model turns (2026-11-20, `tests/test_cursor_live.py`).
+§10 separates what was verified live from what is still read or assumed.
 
 ## 0. Verdict and seam
 
@@ -123,9 +124,15 @@ agent.py:      _HOST_FILES["cursor"] = cursor_host.py; _SELF_MINTED_ID_BACKENDS 
   (`pendingPromptCancel`), reply `{stopReason: "cancelled"}`.
 - **D7** Model: `initialize` declares `clientCapabilities._meta.
   parameterizedModelPicker: true`, so `session/new`'s `models.availableModels`
-  and `session/set_model` speak BASE model names (`e.name`, `auto`, …) rather
-  than the exploded variant strings (`variantStringRepresentation`) a client
-  without the flag gets. After `session/new`/`load` the host sends
+  and `session/set_model` speak BASE model names (`auto-smart`, `gpt-5.5`, …)
+  rather than the exploded variant strings (`variantStringRepresentation`) a
+  client without the flag gets. **`auto` is not a wire id** (observed:
+  `-32602 Invalid model value: auto`); Cursor's Auto is the listed
+  `auto-smart` row, named "Auto". The host resolves fused's `auto` to the
+  first row whose id is or starts with `auto` (or whose name is "Auto"), at
+  spawn and on a live switch (`_wire_model`). Without that, a refused `auto`
+  adopted `currentModelId` — the model last picked ANYWHERE, since
+  `set_model` (and `-p --model`) persist to the CLI's config. After `session/new`/`load` the host sends
   `session/set_model {modelId}` when the request named a model the session is
   not on, waits (bounded), and on a refusal (`-32602 Invalid model value`)
   adopts `models.currentModelId`. A spawn naming none adopts it too. Live
@@ -156,7 +163,12 @@ agent.py:      _HOST_FILES["cursor"] = cursor_host.py; _SELF_MINTED_ID_BACKENDS 
   `{status: "error"}` on a failure → unknown). `CURSOR_API_KEY` signs the CLI
   in without a stored login (`run.ts`: `isAuthenticated = token || apiKey ||
   login`), so it reads as signed in, `method: "api_key"`; a stored login is
-  `method: "cursor"`, `org` = the team. Models: `cursor-agent acp` →
+  `method: "cursor"`, `org` = the team. Observed: `status` ignores the key
+  (`unauthenticated` until the first key-signed run), and that first run
+  stores the exchanged token under `~/.config/cursor/auth.json`, after which
+  `status` says `authenticated` with the key owner's `userInfo`. The CLI
+  reaches for the key before a stored login, so with the key set the method
+  stays `api_key` whatever `status` says. Models: `cursor-agent acp` →
   `initialize` (parameterized picker) → `cursor/list_available_models` →
   `{models: [{value, name, configOptions}]}`; no session. Binary:
   `FUSED_RENDER_CURSOR_BIN`, then `cursor-agent` on PATH, then
@@ -171,15 +183,20 @@ agent.py:      _HOST_FILES["cursor"] = cursor_host.py; _SELF_MINTED_ID_BACKENDS 
   login URL (it carries a one-time challenge) never reaches a record.
 - **D11** `GET /api/agent-backends` unchanged in shape; a sixth row.
 - **D11a** discovered models: the snapshot's `models` (D10) replace the
-  one-row static seed (`auto`) in the catalog, `auto` kept first.
+  one-row static seed (`auto`) in the catalog. When the account lists its
+  own Auto row (`auto-smart`) that row goes first IN PLACE of the seed (one
+  "Auto", not two), and `default_from_discovered` makes it the default; a
+  list with no Auto row keeps the seed first.
 - **D12** no-equivalent table: AskUserQuestion → Cursor's question card
   (options + `__ask_question_skip__`) is answered `skip` by the host; plan
   card (`cursor/create_plan`) → not offered; bg tasks / snapshots /
   artifacts / worktrees → hidden; subagents → not negotiated (no
   `subagents` client capability), so they stay inside the CLI; recap →
   `cursor-agent -p --output-format json --mode ask --trust --workspace
-  <empty mkdtemp> [--model <m>] <pointer>` with the prompt on stdin (the CLI
-  reads a piped stdin beside the positional prompt), reply = the last
+  <empty mkdtemp> --model <m>` with the prompt on stdin and NO positional
+  prompt (observed: given a positional prompt the CLI IGNORES a piped stdin;
+  `--model auto` is accepted by `-p`, and left out the run would take the
+  persisted last-picked model), reply = the last
   `{type: "result", result, is_error}` line; a tools one-shot is refused
   (no flag limits the MCP roster). `/api/ai` does NOT offer Cursor (OpenCode
   is not offered there either). Terminal continue → `cursor-agent --resume
@@ -201,7 +218,16 @@ agent.py:      _HOST_FILES["cursor"] = cursor_host.py; _SELF_MINTED_ID_BACKENDS 
   `tool_call_update {title, rawInput}`, then `in_progress` at
   `toolCallStarted` and `completed` with `content`/`rawOutput`. The host
   merges by `toolCallId` and raises the tool row only at `in_progress`,
-  `completed`/`failed`, or when a card for it arrives.
+  `completed`/`failed`, or when a card for it arrives. Observed live: a
+  shell call's card arrives AFTER its `in_progress`; a REJECTED call ends
+  with a bare `tool_call_update {status: "completed"}` (no content, not
+  `failed`), which the host writes as an error result "The user denied this
+  request."; an EDIT is announced `Edit File` with an empty `rawInput`, the
+  path comes in a refresh, and the diff only with `completed` — so an edit
+  row waits for `completed` (or its card). For a NEW file the diff is
+  mangled (`oldText: "-- /dev/null"`, `newText: "++ b/<path>\n<content>"`);
+  the host repairs it to an empty old text (`_normalize_diff`), and an empty
+  old text is what makes the row a Write.
 - **D15** erase removes the fused transcript only; Cursor's chat stores are
   its own.
 - **D16** ACP only for sessions; `-p` only for the recap.
@@ -250,23 +276,49 @@ terminal_resume: cd <cwd> && cursor-agent --resume <sid>
 routes_prefix "/api/cursor"; pref_key "cursor_enabled"
 ```
 
-## 10. Read vs assumed
+## 10. Verified live vs read vs assumed
 
-Read in the 2026.11.19-f005e9d bundle: everything in §3; the card shapes and
-option ids (D4); `persistAllowlistEntry` on `allow-always`; the mode ids and
-their mapping (`agent`/`code` → default, `plan`/`architect` → plan,
-`ask`/`chat` → search); the parameterized picker capability and the
-`cursor/list_available_models` ext method; `loadSession` awaiting the replay;
-`authRequired` on an unauthenticated `session/new`; `CURSOR_API_KEY` counting
-as authenticated; the `status --format json` shape; `NO_OPEN_BROWSER`; the
-installer's paths; the `-p` result line `{type: "result", subtype:
-"success", is_error, result, session_id}`; `--mode ask|plan`, `--trust`,
-`--workspace`, `--resume`.
+**Verified against the real CLI**, release `2026.11.19-f005e9d`, Linux x64,
+signed out (2026-11-20) and signed in by `CURSOR_API_KEY` with real model
+turns (2026-11-20; `tests/test_cursor_live.py`, run with `pytest -m
+integration -n0`, plus the app driven end to end in a browser):
 
-Assumed (design absorbs each): that commander resolves `cursor-agent acp`'s
-global options with none given (the host passes none); that a multi-block
-`session/prompt` reaches the model as the blocks' text in order (D8); that
-`-p` reads a piped stdin beside the positional prompt (D12, read from the
-call site, not its body); the exact `--version` output (a bare release
-string, as the installer's own `--version` call implies); the update command
-being enough for every installer layout; the floor version.
+* `--version` prints the bare release string; `status --format json` has the
+  shape in D10; `cursor-agent acp` starts with no global options;
+* the `initialize` reply; `cursor/list_available_models` answers without a
+  session, BASE ids under the parameterized picker (`auto-smart`, `gpt-5.5`,
+  …; no variant strings); signed out, `session/new` fails `-32000` with the
+  sentence under `data.message`; the ACP server ignores stdin EOF and exits
+  on SIGTERM;
+* health signed in with `method: "api_key"` and the account's model list;
+  `status` ignoring the key until the first key-signed run (D10);
+* a plain turn: init row, the D18 notice, streamed `agent_message_chunk`s,
+  one `success` result; a multi-block `session/prompt` reaches the model in
+  order (a rule placed only in the D8 context block was followed);
+* `session/set_mode agent`, `session/set_model` live (the next turn's rows
+  name the new model), and `auto` refused as a wire id (D7);
+* Ask mode: a shell command raises a card (`` `cmd` `` title, the reason —
+  "Not in allowlist: echo" — as content, the option ids in D4); allow runs
+  it, deny does not; an edit inside the workspace raises NO card, in any
+  mode (Cursor's own policy); `acceptEdits` and `auto` behave as D5 says;
+  the tool row carries the whole command, never a half-streamed one (D14);
+* `session/cancel` ends the turn `{stopReason: "cancelled"}` within
+  milliseconds;
+* `session/load` replays the history before replying: no duplicate turns in
+  the transcript, the context block stripped, and the model remembers the
+  earlier turn;
+* the recap one-shot: `-p` reads a piped stdin only WITHOUT a positional
+  prompt; `--model auto` accepted; the `{type: "result"}` line as in D12;
+* `session/set_model` and `-p --model` both persist the pick to
+  `~/.cursor/cli-config.json` (`selectedModel`).
+
+**Read in the bundle, not exercised live**: `persistAllowlistEntry` on
+`allow-always` (the host never picks it); the mode-id aliases
+(`code`/`architect`/`chat`); the question card and `cursor/create_plan`;
+the edit/MCP card shapes (no edit card was raised live); `NO_OPEN_BROWSER`
+and the interactive `login`; the installer's paths; `--resume` in a
+terminal.
+
+**Assumed** (design absorbs each): the update command being enough for
+every installer layout; the floor version; that a team admin's allowlist or
+"Run Everything" restriction only changes WHICH calls raise a card.
