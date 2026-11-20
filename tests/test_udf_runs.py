@@ -522,3 +522,40 @@ def test_data_page_shapes():
     body, kind = shaping.data_page(pd.DataFrame({"a": range(rows)}))
     assert kind.startswith("text/html")
     assert f"Showing the first {shaping.DATA_PAGE_MAX_ROWS} of {rows} rows." in body.decode()
+
+
+# ------------------------------------------- clearing (Preferences → Debugging)
+
+
+def _keep(key: str, body: bytes = b"12345") -> None:
+    _token, path = store.new_body_path()
+    with open(path, "wb") as fh:
+        fh.write(body)
+    store.keep(path, {"size": len(body)}, key)
+
+
+def test_stats_and_clear_empty_the_saved_results(base):
+    _keep("a" * 64)
+    _keep("b" * 64)
+    stats = store.stats()
+    assert stats["entries"] == 2 and stats["bytes"] > 10
+    assert store.clear() == stats
+    assert store.stats() == {"entries": 0, "bytes": 0}
+    assert store.get("a" * 64) is None
+
+
+def test_clear_keeps_a_temporary_result_younger_than_a_minute(base):
+    token, path = store.new_body_path()
+    open(path, "wb").close()
+    store.keep(path, {}, None)
+    store.clear()
+    assert store.open_result(token) is not None
+
+
+def test_the_saved_routes_size_and_clear_with_the_guard(client, base):
+    _keep("c" * 64)
+    assert client.get("/api/udf/saved").json()["entries"] == 1
+    assert client.delete("/api/udf/saved").status_code == 403
+    res = client.delete("/api/udf/saved", headers={"X-Fused": "1"})
+    assert res.status_code == 200 and res.json()["cleared"]["entries"] == 1
+    assert client.get("/api/udf/saved").json() == {"entries": 0, "bytes": 0}

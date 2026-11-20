@@ -61,6 +61,7 @@ import {
   CallRetentionControl,
   ClaudeMaxSessionsControl,
   DiagnosticsControl,
+  UdfSavedControl,
   IndexQueryControl,
 } from "./advanced";
 import { CanvasScreenshotsControl, CanvasScreenshotsFallbackControl } from "./screenshots";
@@ -119,5 +120,6 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "call-params": CallParamsControl,
   "call-retention": CallRetentionControl,
   "index-query": IndexQueryControl,
+  "udf-saved": UdfSavedControl,
   diagnostics: DiagnosticsControl,
 };

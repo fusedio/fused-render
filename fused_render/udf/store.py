@@ -136,6 +136,58 @@ def open_result(token: str) -> tuple[str, dict] | None:
     return body, meta
 
 
+def stats() -> dict:
+    """`{entries, bytes}` of the saved results (`results/`)."""
+    entries = 0
+    total = 0
+    try:
+        names = os.listdir(_results_dir())
+    except OSError:
+        return {"entries": 0, "bytes": 0}
+    for name in names:
+        if not name.endswith((".body", ".json")):
+            continue
+        try:
+            total += os.path.getsize(os.path.join(_results_dir(), name))
+        except OSError:
+            continue
+        if name.endswith(".body"):
+            entries += 1
+    return {"entries": entries, "bytes": total}
+
+
+def clear() -> dict:
+    """Delete every saved result (Preferences → Debugging). Returns what
+    was cleared, `{entries, bytes}`. Temporary results older than a minute
+    go too; a younger one may be a run's body about to be filed or a page's
+    result on screen, so it is left to the hourly sweep."""
+    with _LOCK:
+        cleared = stats()
+        folder = _results_dir()
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            names = []
+        for name in names:
+            try:
+                os.remove(os.path.join(folder, name))
+            except OSError:
+                pass
+    cutoff = time.time() - 60.0
+    try:
+        tmp_names = os.listdir(_tmp_dir())
+    except OSError:
+        tmp_names = []
+    for name in tmp_names:
+        path = os.path.join(_tmp_dir(), name)
+        try:
+            if os.stat(path).st_mtime < cutoff:
+                os.remove(path)
+        except OSError:
+            pass
+    return cleared
+
+
 def _remove(key: str) -> None:
     for ext in (".body", ".json"):
         try:

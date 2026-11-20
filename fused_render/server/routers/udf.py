@@ -18,6 +18,9 @@ Guarded like `/api/run/ws`: the Origin must be this server (`ws_origin_ok`),
 since a socket has no CORS preflight. The LAN listener refuses sockets, so a
 LAN peer never reaches it.
 
+`GET /api/udf/saved` sizes the saved results; `DELETE /api/udf/saved`
+(guarded) clears them all — the Preferences → Debugging row.
+
 The results route is a plain GET so an `<img>` or `fetch` can use the URL.
 Its token is unguessable (a run key or a random token). A result is served
 with a sandboxing CSP, so UDF-made HTML opened at that URL directly, or framed
@@ -29,10 +32,10 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
-from fused_render.server.common import ws_origin_ok
+from fused_render.server.common import _require_fused, ws_origin_ok
 from fused_render.udf import service, store
 
 logger = logging.getLogger(__name__)
@@ -126,3 +129,21 @@ def api_udf_result(token: str):
     path, meta = found
     media = meta.get("content_type") or "application/octet-stream"
     return FileResponse(path, media_type=media, headers=_RESULT_HEADERS)
+
+
+@router.get("/api/udf/saved")
+def api_udf_saved_stats():
+    """How much the saved UDF results take: `{entries, bytes}` (SPEC §54.3,
+    the Preferences → Debugging row)."""
+    return store.stats()
+
+
+@router.delete("/api/udf/saved")
+def api_udf_saved_clear(x_fused: str | None = Header(default=None)):
+    """Delete every saved UDF result: `{cleared: {entries, bytes}}`. The next
+    open of any UDF runs it fresh. Guarded (D3): it deletes files."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    return {"cleared": store.clear()}
+
