@@ -12704,8 +12704,13 @@ is never sent it, and every alternation of their generations resets the view
   value, not Fused's page of it, so a table needs no frame and nothing is
   fetched from a CDN to draw it.
 - **NU-2 What shows.** A table (`application/vnd.fused-render.table+json`)
-  as a table drawn by the page: sticky header, 500 rows at a time with
-  "Show more", the row count and how many were kept. An answer whose `hash`
+  in ag-Grid 34.1.1, configured as the hosted workbench does its UDF tables:
+  `themeQuartz` (with `colorSchemeDark` in a dark theme) given the page's
+  colours, every community module, a filter on each column, numbers as
+  `numericColumn`, `minWidth` 135. The library is vendored
+  (`templates/vendor/ag-grid-community.esm.min.mjs`) and imported only when
+  a table is drawn; the grid follows the app's theme while open. Past the
+  rows kept, a line says how many there were. An answer whose `hash`
   equals the one on screen is not drawn again (only the strip changes).
   `text/html` (a UDF's own HTML) in a frame (`sandbox="allow-scripts
   allow-popups allow-popups-to-escape-sandbox allow-downloads"`, no

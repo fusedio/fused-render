@@ -14,7 +14,7 @@
        - asks the server what the file is (shared/canvas-node.js);
        - shows the last answer fused-render saved for this file at once,
          then runs it and shows the fresh answer (format "view": the value,
-         not Fused's page of it): a table drawn here, an image, text, a
+         not Fused's page of it): a table in ag-Grid, an image, text, a
          UDF's own HTML in a sandboxed frame, or the error with its line and
          the run's output; the same bytes again are not redrawn;
        - runs it again when the file changes on disk (unless "Auto-run" is
@@ -87,15 +87,11 @@
     margin: 0; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere;
     font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   }
-  /* A table result, drawn here (no frame, nothing fetched): sticky header,
-     tabular numbers, rows added a page at a time. */
-  .grid { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 100%; }
-  .grid th, .grid td { padding: 4px 10px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
-  .grid th { position: sticky; top: 0; background: var(--panel); color: var(--fg-muted); font-weight: 600; z-index: 1; }
-  .grid td.num { text-align: right; }
-  .grid td.null { color: var(--fg-muted); font-style: italic; }
-  .grid tbody tr:hover td { background: var(--hover); }
-  .grid-foot { display: flex; align-items: center; gap: 10px; padding: 8px 10px; color: var(--fg-muted); font-size: 12px; }
+  /* A table result: ag-Grid (vendored, the build Fused's own UDF tables
+     use), themed from this page's tokens. The grid fills the stage. */
+  .grid-wrap { display: flex; flex-direction: column; height: 100%; }
+  .grid-wrap .grid { flex: 1; min-height: 0; }
+  .grid-foot { flex: none; padding: 4px 10px; color: var(--fg-muted); font-size: 12px; border-top: 1px solid var(--line); }
   .result .error-head { padding: 12px 14px 0; color: var(--error); font-weight: 600; }
   .result pre.error { color: var(--error); }
   .message {
@@ -224,60 +220,83 @@
     return "<" + "style>" + sizing + "</" + "style>" + html;
   }
 
-  // A `view` table ({columns, rows, total}) as an HTML table, TABLE_PAGE rows
-  // at a time. Cells are text (textContent), never HTML.
+  // A `view` table ({columns, rows, total}) in ag-Grid, configured as the
+  // hosted workbench does its UDF tables: themeQuartz (colorSchemeDark in a
+  // dark theme) with the page's own colours, every community module, a
+  // filter on each column, numbers right-aligned. The library is vendored
+  // (/template-assets) and loaded only when a table is drawn.
   const TABLE_TYPE = "application/vnd.fused-render.table+json";
-  const TABLE_PAGE = 500;
-  function tableNode(data) {
+  let agGrid = null;
+  function loadAgGrid() {
+    if (!agGrid) {
+      agGrid = import("/template-assets/ag-grid-community.esm.min.mjs").then((ag) => {
+        ag.ModuleRegistry.registerModules([ag.AllCommunityModule]);
+        return ag;
+      });
+    }
+    return agGrid;
+  }
+  function gridTheme(ag) {
+    const css = getComputedStyle(document.documentElement);
+    const v = (name) => css.getPropertyValue(name).trim();
+    const dark = document.documentElement.getAttribute("data-theme") !== "light";
+    return (dark ? ag.themeQuartz.withPart(ag.colorSchemeDark) : ag.themeQuartz).withParams({
+      backgroundColor: v("--bg"),
+      foregroundColor: v("--fg"),
+      headerBackgroundColor: v("--panel"),
+      borderColor: v("--line"),
+      accentColor: v("--accent"),
+      fontFamily: getComputedStyle(document.body).fontFamily,
+      fontSize: 12,
+    });
+  }
+  let gridApi = null;
+  let themeWatch = null;
+  async function tableNode(data) {
+    const ag = await loadAgGrid();
     const columns = Array.isArray(data.columns) ? data.columns : [];
     const rows = Array.isArray(data.rows) ? data.rows : [];
     const total = typeof data.total === "number" ? data.total : rows.length;
-    const wrap = document.createElement("div");
-    const table = el("table", undefined, "grid");
-    const head = document.createElement("tr");
-    for (const c of columns) head.append(el("th", String(c)));
-    table.append(document.createElement("thead"));
-    table.tHead.append(head);
-    const body = document.createElement("tbody");
-    table.append(body);
-    const foot = el("div", undefined, "grid-foot");
-    let shown = 0;
-    const more = el("button", "Show more");
-    more.type = "button";
-    const addPage = () => {
-      const end = Math.min(rows.length, shown + TABLE_PAGE);
-      const frag = document.createDocumentFragment();
-      for (let i = shown; i < end; i++) {
-        const tr = document.createElement("tr");
-        for (const v of rows[i]) {
-          const td = document.createElement("td");
-          if (v === null || v === undefined) {
-            td.textContent = "null";
-            td.className = "null";
-          } else if (typeof v === "number") {
-            td.textContent = String(v);
-            td.className = "num";
-          } else {
-            td.textContent = typeof v === "object" ? JSON.stringify(v) : String(v);
-          }
-          tr.append(td);
-        }
-        frag.append(tr);
-      }
-      body.append(frag);
-      shown = end;
-      const of = total > rows.length ? " (first " + rows.length.toLocaleString() + " of " + total.toLocaleString() + " kept)" : "";
-      foot.replaceChildren(el("span", shown.toLocaleString() + " of " + total.toLocaleString() + " rows" + of));
-      if (shown < rows.length) foot.append(more);
-    };
-    more.addEventListener("click", addPage);
-    addPage();
-    wrap.append(table, foot);
+    const rowData = rows.map((row) => {
+      const out = {};
+      columns.forEach((c, i) => { out[c] = row[i]; });
+      return out;
+    });
+    const numeric = (c) => rows.length > 0 && rows.every((r) => r[columns.indexOf(c)] === null || typeof r[columns.indexOf(c)] === "number");
+    const columnDefs = columns.map((c) => Object.assign(
+      { field: String(c), headerName: String(c), filter: true, minWidth: 135 },
+      numeric(c) ? { type: "numericColumn" } : {}
+    ));
+    const wrap = el("div", undefined, "grid-wrap");
+    const host = el("div", undefined, "grid");
+    wrap.append(host);
+    if (total > rows.length) {
+      wrap.append(el("div", "Showing the first " + rows.length.toLocaleString() + " of " +
+        total.toLocaleString() + " rows.", "grid-foot"));
+    }
+    wrap._grid = ag.createGrid(host, {
+      columnDefs,
+      rowData,
+      theme: gridTheme(ag),
+      suppressFieldDotNotation: true,
+      enableCellTextSelection: true,
+      ensureDomOrder: true,
+    });
+    // The app's theme can flip while the page is open: the grid on screen
+    // (`gridApi`, set when the table is put on the stage) follows.
+    if (!themeWatch) {
+      themeWatch = new MutationObserver(() => {
+        if (gridApi && !gridApi.isDestroyed()) gridApi.setGridOption("theme", gridTheme(ag));
+      });
+      themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style"] });
+    }
     return wrap;
   }
 
   function showError(err) {
     result.replaceChildren();
+    if (gridApi && !gridApi.isDestroyed()) gridApi.destroy();
+    gridApi = null;
     setLog(err.stdout, err.stderr);
     const head = typeof err.line === "number" ? "Error on line " + err.line : "Error";
     result.append(el("div", head, "error-head"), el("pre", err.message || "the run failed", "error"));
@@ -309,7 +328,7 @@
       frame.srcdoc = sizedTablePage(await answer.text());
       nodes.push(frame);
     } else if (type === TABLE_TYPE) {
-      nodes.push(tableNode(await answer.json()));
+      nodes.push(await tableNode(await answer.json()));
     } else if (type.startsWith("image/")) {
       const img = document.createElement("img");
       img.alt = "Result of " + node.title;
@@ -325,8 +344,17 @@
       nodes.push(el("pre", "This result (" + (type || "unknown type") + ", " + humanBytes(answer.size) +
         ") has no preview here. Open the node in its canvas to see it."));
     }
-    if (stillWanted && !stillWanted()) return;
-    if (!same) result.replaceChildren(...nodes);
+    const grid = nodes.length && nodes[0]._grid ? nodes[0]._grid : null;
+    if (stillWanted && !stillWanted()) {
+      if (grid) grid.destroy();
+      return;
+    }
+    if (!same) {
+      result.replaceChildren(...nodes);
+      // The grid that was on screen is gone with its node: release it.
+      if (gridApi && gridApi !== grid && !gridApi.isDestroyed()) gridApi.destroy();
+      gridApi = grid;
+    }
     shownHash = answer.hash || null;
     message.hidden = true;
     setLog(answer.stdout, answer.stderr);
