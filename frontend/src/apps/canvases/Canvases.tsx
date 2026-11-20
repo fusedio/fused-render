@@ -20,11 +20,8 @@ import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
 import { Loader2, RefreshCw } from "lucide-react";
-import {
-  generateCanvasName,
-  sanitizeCanvasName,
-  validateCanvasName,
-} from "./canvas-name";
+import { contractHome, useHome } from "@platform/lib/home-path";
+import { NewCanvasDialog } from "./NewCanvasDialog";
 import {
   CanvasOwnedError,
   ENV_NAMES,
@@ -97,22 +94,8 @@ export default function Canvases() {
   const [busy, setBusy] = useState<string | null>(null); // canvas being opened
   const [loggingIn, setLoggingIn] = useState(false);
   const [query, setQuery] = useState("");
-  const [creating, setCreating] = useState(false); // form visible
-  const [newName, setNewName] = useState("");
-  // The line under the name box. Two sources, kept apart because only one
-  // gates Create: a rule the typed name breaks (`nameError`, per keystroke,
-  // disables Create) and the create call's failure (`submitError`, leaves
-  // Create on so the same name can be retried). Separate from `error` (the
-  // page banner) so a typo never paints a banner over the listing.
-  const [nameError, setNameError] = useState<string | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [createBusy, setCreateBusy] = useState(false);
-  const newNameRef = useRef<HTMLInputElement | null>(null);
-  // The form mounts with the suggestion selected: Enter keeps it, typing
-  // replaces it (as the workbench's modal). Once per open, not per keystroke.
-  useEffect(() => {
-    if (creating) newNameRef.current?.select();
-  }, [creating]);
+  // The New canvas dialog is open (NewCanvasDialog owns its draft and errors).
+  const [creating, setCreating] = useState(false);
   // The account's favourite collection ids (the hosted home's star, same
   // control-plane list). Null until read — or when the read failed — and the
   // cards hide their star rather than show every canvas as unstarred.
@@ -353,9 +336,9 @@ export default function Canvases() {
     previewsAskedRef.current = new Set();
     setFavourites(null);
     setError(null);
-    // So does the new-canvas form: its suggestion and its duplicate verdict
+    // So does the New canvas dialog: its suggestion and its duplicate verdict
     // were judged against the old env's listing.
-    closeCreate();
+    setCreating(false);
     // Stop watching the old env's browser sign-in: its stamp is the old
     // env's store (custom's is its own, D1412), so judging the new env by it
     // would call the sign-in done or failed wrongly. The sign-in itself
@@ -638,71 +621,21 @@ export default function Canvases() {
     [canvases],
   );
 
-  // The listing moves under an open form (poll, env switch, a canvas created
-  // elsewhere): re-judge the typed name against the names as they are now.
-  useEffect(() => {
-    if (!creating) return;
-    setNameError(
-      existingNames === null
-        ? "Loading canvases…"
-        : validateCanvasName(newName, existingNames),
-    );
-    // newName is judged on every keystroke already (onNewNameChange).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [creating, existingNames]);
-
-  const openCreate = () => {
-    if (existingNames === null) return;
-    // The workbench prefills `canvas_<n>` and selects it, so Enter alone
-    // creates and typing replaces.
-    const suggested = generateCanvasName(existingNames);
-    setNewName(suggested);
-    setNameError(validateCanvasName(suggested, existingNames));
-    setSubmitError(null);
-    setCreating(true);
-  };
-
-  const closeCreate = () => {
-    setCreating(false);
-    setNewName("");
-    setNameError(null);
-    setSubmitError(null);
-  };
-
-  const onNewNameChange = (raw: string) => {
-    const name = sanitizeCanvasName(raw);
-    setNewName(name);
-    setNameError(
-      existingNames === null
-        ? "Loading canvases…"
-        : validateCanvasName(name, existingNames),
-    );
-    setSubmitError(null);
-  };
-
-  const onCreate = async () => {
-    const name = newName.trim();
-    if (!env || existingNames === null) return;
-    const invalid = validateCanvasName(name, existingNames);
-    if (invalid) {
-      setNameError(invalid);
-      return;
-    }
-    setCreateBusy(true);
-    setSubmitError(null);
+  // The dialog's Create: the name has passed its rules against the live
+  // listing. A throw lands under the dialog's field, not in the page banner,
+  // and leaves the dialog open for a retry.
+  const onCreate = async (name: string) => {
+    if (!env) throw new Error("No environment selected");
     setError(null);
-    try {
-      await createCanvas(env, name);
-      await cloneCanvas(env, name);
-      await startSyncForOpen(env, name);
-      navigateUrl(canvasWorkspacePath(env, name));
-    } catch (e) {
-      setSubmitError((e as Error).message);
-      setCreateBusy(false);
-    }
+    await createCanvas(env, name);
+    await cloneCanvas(env, name);
+    await startSyncForOpen(env, name);
+    navigateUrl(canvasWorkspacePath(env, name));
   };
 
-  const createError = nameError ?? submitError;
+  // Where this env's clones land, as the dialog prints it (`~/…`).
+  const home = useHome();
+  const canvasesDir = env ? status?.envs?.[env]?.canvases_dir ?? null : null;
 
   const filtered = useMemo(() => {
     if (canvases === null) return null;
@@ -730,7 +663,7 @@ export default function Canvases() {
   return (
     <div className="canvases-page">
       <div className="canvases-inner">
-        <div className={"canvases-head" + (creating ? " is-creating" : "")}>
+        <div className="canvases-head">
           <h1 className="canvases-title">Workbench Canvases</h1>
           {/* The disk baseline is on screen while the fresh listing is in
               flight (stale-while-revalidate): a small non-blocking spinner,
@@ -775,7 +708,7 @@ export default function Canvases() {
                   id="canvases-env"
                   className="field-control"
                   value={env}
-                  disabled={status.locked || busy !== null || createBusy}
+                  disabled={status.locked || busy !== null}
                   onChange={(e) => {
                     const v = e.target.value;
                     if (isWorkbenchEnv(v)) onPickEnv(v);
@@ -799,67 +732,15 @@ export default function Canvases() {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                   />
-                  {creating ? (
-                    <form
-                      className="canvases-new-form"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        void onCreate();
-                      }}
-                    >
-                      <div className="canvases-new-row">
-                        <input
-                          ref={newNameRef}
-                          className="field-control canvases-new-name"
-                          autoFocus
-                          placeholder="new_canvas_name"
-                          value={newName}
-                          onChange={(e) => onNewNameChange(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Escape" && !createBusy) {
-                              e.preventDefault();
-                              closeCreate();
-                            }
-                          }}
-                          disabled={createBusy}
-                          aria-invalid={createError ? "true" : undefined}
-                          aria-describedby={createError ? "canvases-new-error" : undefined}
-                        />
-                        <button
-                          className="btn btn-primary"
-                          type="submit"
-                          disabled={createBusy || !!nameError}
-                        >
-                          {createBusy ? "Creating…" : "Create"}
-                        </button>
-                        <button
-                          className="btn"
-                          type="button"
-                          onClick={closeCreate}
-                          disabled={createBusy}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                      {createError && (
-                        <div
-                          id="canvases-new-error"
-                          className="canvases-new-error"
-                          title={createError}
-                        >
-                          {createError}
-                        </div>
-                      )}
-                    </form>
-                  ) : (
-                    <button
-                      className="btn btn-primary"
-                      onClick={openCreate}
-                      disabled={existingNames === null}
-                    >
-                      + New canvas
-                    </button>
-                  )}
+                  {/* Disabled until the listing loads: the dialog's
+                      suggestion and duplicate rule need the names. */}
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => setCreating(true)}
+                    disabled={existingNames === null}
+                  >
+                    + New canvas
+                  </button>
                   <span className="canvases-account">
                     <button className="btn" onClick={() => void onLogout()}>
                       Sign out
@@ -980,7 +861,7 @@ export default function Canvases() {
                   canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null
                 }
                 loading={busy === canvas.name}
-                disabled={(busy !== null && busy !== canvas.name) || createBusy}
+                disabled={busy !== null && busy !== canvas.name}
                 isFavourite={
                   canvas.id && favourites !== null ? favourites.has(canvas.id) : undefined
                 }
@@ -1042,6 +923,15 @@ export default function Canvases() {
             </p>
           )}
         </Modal>
+      )}
+      {creating && env && (
+        <NewCanvasDialog
+          envLabel={ENV_NAMES[env].tag}
+          canvasesDir={canvasesDir ? contractHome(canvasesDir, home) : null}
+          existingNames={existingNames}
+          onCreate={onCreate}
+          onClose={() => setCreating(false)}
+        />
       )}
       {settingsOpen && (
         <FusedSettingsModal
