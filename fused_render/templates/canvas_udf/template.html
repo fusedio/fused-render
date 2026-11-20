@@ -15,7 +15,9 @@
        - runs it, and shows the answer: a page in a frame, an image, text,
          or the error with its line and the run's output;
        - runs it again when the file changes on disk (unless "Run on save"
-         is off), or on Run.
+         is off), or on Run;
+       - keeps the canvas's sync engine running, so edits to the folder are
+         pushed as they are made.
 
      What the UDF loads from OTHER nodes is the canvas as Fused has it saved.
      This page must not import fused_render (SPEC PY-15). -->
@@ -51,8 +53,9 @@
     border-bottom: 1px solid var(--line); background: var(--panel);
   }
   .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .strip .kind, .strip .canvas, .strip .status { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
-  .strip .status.error { color: var(--error); }
+  .strip .kind, .strip .canvas, .strip .status, .strip .sync { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
+  .strip .sync { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .strip .status.error, .strip .sync.error { color: var(--error); }
   .strip .spacer { flex: 1; }
   .strip label { display: flex; align-items: center; gap: 5px; color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
   button {
@@ -93,6 +96,7 @@
   <span class="canvas" id="canvas"></span>
   <span class="spacer"></span>
   <span class="status" id="status"></span>
+  <span class="sync" id="sync"></span>
   <label title="Run again whenever the file is saved">
     <input type="checkbox" id="autorun" checked /> Run on save
   </label>
@@ -114,6 +118,7 @@
   const FILE = fused.params.get("_file");
   // Several saves in a row (an agent writing, an editor's autosave) are one run.
   const RERUN_DEBOUNCE_MS = 600;
+  const RECHECK_MS = 1500;
   const AUTORUN_KEY = "autorun";
 
   const $ = (id) => document.getElementById(id);
@@ -141,6 +146,14 @@
     status.textContent = value || "";
     status.className = "status" + (isError ? " error" : "");
   }
+  // The canvas's sync engine runs while this page is open (shared/
+  // canvas-node.js, NT-7), so edits to the folder are pushed as they are made.
+  function setSync(value, tone) {
+    const el = $("sync");
+    el.textContent = value || "";
+    el.className = "sync" + (tone ? " " + tone : "");
+  }
+
   function setLog(stdout, stderr) {
     const parts = [];
     if (stdout) parts.push(stdout.replace(/\n+$/, ""));
@@ -276,14 +289,25 @@
       return;
     }
     showMessage((host) => host.append(el("div", "Running " + node.title + "…")));
-    fused.onFileChanged(() => {
+    const onChanged = () => {
       if (!autorun.checked) {
         setStatus("File changed — Run to update");
         return;
       }
       clearTimeout(rerunTimer);
       rerunTimer = setTimeout(() => void run(), RERUN_DEBOUNCE_MS);
-    });
+    };
+    fused.onFileChanged(onChanged);
+    CanvasNode.sync(node, { status: setSync });
+    // A save that landed while the file watch was still coming up made no
+    // event: compare the file's time once, against the one this run started
+    // from.
+    const mtimeOf = () => fused.stat(FILE).then((st) => st.mtime, () => null);
+    const startedFrom = await mtimeOf();
+    setTimeout(async () => {
+      const now = await mtimeOf();
+      if (now !== null && now !== startedFrom) onChanged();
+    }, RECHECK_MS);
     await run();
   }
 

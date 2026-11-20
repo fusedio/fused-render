@@ -14,8 +14,11 @@
        - asks the server what the file is (shared/canvas-node.js);
        - frames the node page and answers its token requests;
        - sends the file's text as it stands on disk, and again on every
-         change, so an edit shows before it is pushed. What the node reads
-         from OTHER nodes is the canvas as Fused has it saved.
+         change, so an edit shows before it is pushed;
+       - keeps the canvas's sync engine running, so edits to the folder are
+         pushed as they are made, and tells the frame after each push: what
+         the node reads from OTHER nodes is the canvas as Fused has it
+         saved, and the frame then loads that again.
 
      The frame writes nothing back. This page must not import fused_render
      (SPEC PY-15). -->
@@ -51,8 +54,9 @@
     border-bottom: 1px solid var(--line); background: var(--panel);
   }
   .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .strip .kind, .strip .canvas, .strip .status { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
-  .strip .status.error { color: var(--error); }
+  .strip .kind, .strip .canvas, .strip .status, .strip .sync { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
+  .strip .sync { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .strip .status.error, .strip .sync.error { color: var(--error); }
   .strip .status.ok { color: var(--ok); }
   .strip .spacer { flex: 1; }
   button {
@@ -80,6 +84,7 @@
   <span class="canvas" id="canvas"></span>
   <span class="spacer"></span>
   <span class="status" id="status"></span>
+  <span class="sync" id="sync"></span>
   <button type="button" id="reload" title="Load the saved canvas again">Reload</button>
   <button type="button" id="open">Open in canvas</button>
 </div>
@@ -148,6 +153,14 @@
     const el = $("status");
     el.textContent = value || "";
     el.className = "status" + (tone ? " " + tone : "");
+  }
+
+  // The canvas's sync engine runs while this page is open (shared/
+  // canvas-node.js, NT-7), so edits to the folder are pushed as they are made.
+  function setSync(value, tone) {
+    const el = $("sync");
+    el.textContent = value || "";
+    el.className = "sync" + (tone ? " " + tone : "");
   }
 
   function post(payload) {
@@ -264,6 +277,12 @@
       return;
     }
     loadFrame();
+    CanvasNode.sync(node, {
+      status: setSync,
+      // The saved canvas moved (this node, or one it reads): the frame loads
+      // it again, in place.
+      pushed: (seq) => { if (pageReady) post({ type: "fused-embed-pushed", push_seq: seq }); },
+    });
     // Another writer's save (the Code mode, an agent): the frame gets the new
     // text, with no reload of either page.
     // (This page watches its own file only.)

@@ -12444,12 +12444,14 @@ kind can be drawn (D1495):
 | `canvas_note` (53.4) | a note (`.md`) | here, locally: the file's markdown on the card its canvas.toml row describes |
 | `canvas_udf` (53.5) | a UDF (`.py`) | one run in Fused of the file on disk, shown as a shared UDF's link would show it |
 
-None of them frames the workbench, hydrates the canvas or starts the sync
-engine. *Until D1495 one "node view" (the `_node` sentinel, a React view in
+None of them frames the workbench or hydrates the canvas, and none draws
+from the sync engine; each only keeps the engine running in the background
+while it is open, so edits are pushed (NT-7). *Until D1495 one "node view" (the `_node` sentinel, a React view in
 apps/canvases) drew all four by framing the whole hosted workbench in a "node
 mode": the canvas hydrated and every UDF ran, hidden, behind the one node, and
-the sync engine was started for it. That view, the workbench's node mode and
-the per-node frame scope it needed in the sync engine are removed.*
+the view was one more frame on the sync engine, fed by its deltas. That view,
+the workbench's node mode and the per-node frame scope it needed in the sync
+engine are removed.*
 
 Two parts: per-frame pictures in the sync engine (53.1, which the canvas
 workspace still uses), and the node templates (53.2 to 53.6).
@@ -12605,18 +12607,38 @@ is never sent it, and every alternation of their generations resets the view
 - **NT-6 Header strip.** Each page opens with one strip: the node's title,
   its kind, the canvas name, and "Open in canvas", which goes to
   `/canvases/<env>/<name>?node=<udfName>&node_file=<file>` (the whole
-  window). `canvas_widget` adds the frame's status and Reload; `canvas_udf`
-  the run's status, "Run on save" and Run.
-- **NT-7 No sync engine, no clone.** Opening a node file starts nothing in
-  `canvases._SyncManager` and clones nothing. A page that needs Fused
-  (`canvas_widget`, `canvas_udf`) and finds the environment signed out shows
-  that and a way to the Canvases page; `canvas_note` needs no sign-in.
+  window), and the sync line (NT-7). `canvas_widget` adds the frame's status
+  and Reload; `canvas_udf` the run's status, "Run on save" and Run.
+- **NT-7 The sync engine runs in the background.** While a node's page is
+  open on a live clone with the environment signed in, the canvas's sync
+  engine runs (`CanvasNode.sync`, shared/canvas-node.js), so an edit to any
+  file of the folder — this one, an upstream node, canvas.toml — is pushed
+  to Fused as it is made, exactly as while the canvas page is open. The page
+  does three things and no more: `POST /api/canvases/sync/start` (again, at
+  most every 5 s, while the feed says no watcher runs or the start was
+  refused); it holds the events socket (`WS /api/canvases/sync/events`, no
+  `frame`), which is the presence that keeps the engine from its idle stop
+  (it stops `IDLE_STOP_S` after the last page of the canvas closes); and it
+  reads three facts off the feed: the strip's sync line ("Saving to Fused…",
+  "Saved to Fused", "Not saved to Fused: …", "Fused has newer changes — open
+  the canvas to pull"), a finished push (`push_seq` moved) and a change on
+  disk (`disk_rev` moved). **No page draws from the engine**: none holds a
+  frame record, asks for a delta or acks one, so the engine's embed legs are
+  idle for it. Another fused-render process owning the clone is said in the
+  line ("Synced by another Fused Render window"); that process pushes. A
+  reference copy is not cloned or adopted from here ("Reference copy — not
+  syncing"), and a signed-out environment starts nothing: a page that needs
+  Fused (`canvas_widget`, `canvas_udf`) then shows that and a way to the
+  Canvases page; `canvas_note` draws regardless.
 - **NT-8 Edit loop.** Each page turns the runtime's reload off
   (`fused.autoReload(false)`) and follows its own file with
   `fused.onFileChanged`: a save from the Code mode, another pane or an agent
-  shows without a reload. What a node reads from OTHER nodes is the canvas
-  as Fused has it saved, so an edit to an upstream node shows after it is
-  pushed (from the canvas page, whose engine pushes).
+  shows without a reload, before any push. A save that lands while that
+  watch is still coming up makes no event, so each page looks once more
+  1.5 s after it opens. What a node reads from OTHER nodes is the canvas as
+  Fused has it saved, so an edit to an upstream node shows once the engine
+  has pushed it (NT-7): at once in `canvas_widget` (NW-6), on the next Run
+  in `canvas_udf`.
 
 ### 53.3 `canvas_widget`: a widget or an HTML node
 
@@ -12644,12 +12666,16 @@ is never sent it, and every alternation of their generations resets the view
   10 s of the frame's load: the page says "This environment's workbench
   cannot show a single node here yet" and offers "Open in canvas" (an older
   deployment answers 404, which a cross-origin frame cannot be asked about).
+- **NW-6 After a push.** When the feed shows a finished push (NT-7) the page
+  posts `fused-embed-pushed {push_seq}` to the frame, which loads the saved
+  canvas again in place (NP-3): an edit to a node this one reads shows
+  without Reload.
 
 ### 53.4 `canvas_note`: a note
 
 - **NN-1 Local.** The page reads the file (`fused.readFile`) and the row's
-  `style` (NT-5) and draws the note itself. No sign-in, no frame of Fused,
-  no network.
+  `style` (NT-5) and draws the note itself. Drawing needs no sign-in, no
+  frame of Fused and no network (the background sync, NT-7, is beside it).
 - **NN-2 The text.** The file minus the workbench's leading header lines
   (`<!--fused:pin=…-->` to its newline, any other `<!--fused:…-->` to the
   first blank line), rendered with the vendored `marked`
@@ -12663,7 +12689,11 @@ is never sent it, and every alternation of their generations resets the view
 - **NN-4 Nothing in a note runs.** The rendered markdown goes into a frame
   sandboxed without `allow-scripts`; links open in a new window.
 - **NN-5 Redraw.** On every change of the file the text and the row are read
-  again and the card redrawn; so is a transparent card when the theme flips.
+  again and the card redrawn when either moved; so is a transparent card
+  when the theme flips. The row lives in canvas.toml, which the page's own
+  file watch does not cover: a change anywhere in the folder reaches it on
+  the engine's feed (`disk_rev`, NT-7), and without the engine (signed out)
+  the page reads again when it is focused or shown.
 
 ### 53.5 `canvas_udf`: a UDF
 
@@ -12689,7 +12719,9 @@ is never sent it, and every alternation of their generations resets the view
   and the seconds.
 - **NU-3 When it runs.** On open; on Run; and, while "Run on save" is on
   (the default; `autorun=0` on the page's URL keeps it off), 600 ms after
-  the file last changed. A change during a run queues exactly one more. A
+  the file last changed (NT-8's one look after opening compares the file's
+  time with the one the first run started from). A change during a run
+  queues exactly one more. A
   failure to run at all (signed out, no CLI, a timeout) is shown in the
   strip and leaves the last result in place.
 - **NU-4 The external CLI.** With a `FUSED_RENDER_FUSED_BIN` override there
@@ -12719,8 +12751,9 @@ shared.
 ### 53.7 Out of scope
 
 `team/` and `public/` canvases, in any form. Writes from a node's page
-(params, widget state, a rename). Starting the sync engine or a push from a
-node's page (NT-7, NT-8): the canvas page does both. A map for a UDF that
+(params, widget state, a rename). Cloning or adopting a reference copy from
+a node's page, and pulling when Fused has newer changes: the canvas page
+does both. Running a UDF again when a node it loads was pushed. A map for a UDF that
 returns geometry (NU-1 shows the table Fused's `.html` rendering gives it).
 Parameters for a UDF's run (it runs with its defaults). Upstream and
 downstream navigation. A node chat in the page (the `claude` companion in the

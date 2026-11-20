@@ -3,14 +3,16 @@
      canvas, drawn here, locally. A note is markdown on a coloured card, and
      both halves are on disk: the text is the file, the card's colour, size
      and alignment are the node's row in the folder's canvas.toml. So nothing
-     is asked of Fused: no sign-in, no workbench frame, no network.
+     is asked of Fused to DRAW it: no sign-in, no workbench frame.
 
      What this page does:
        - asks the server what the file is and how its row styles it
          (shared/canvas-node.js, GET /api/canvases/node);
        - renders the file's text (minus the workbench's `fused:` header
          lines) with the vendored `marked`, into a frame that runs no script;
-       - draws it again whenever the file changes on disk.
+       - draws it again whenever the file, or its row, changes on disk;
+       - when signed in, keeps the canvas's sync engine running, so edits to
+         the folder are pushed as they are made.
 
      This page must not import fused_render (SPEC PY-15). -->
 <html data-fused-theme="shell">
@@ -44,7 +46,9 @@
     border-bottom: 1px solid var(--line); background: var(--panel);
   }
   .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .strip .kind, .strip .canvas { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
+  .strip .kind, .strip .canvas, .strip .sync { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
+  .strip .sync { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .strip .sync.error { color: var(--error); }
   .strip .spacer { flex: 1; }
   button {
     font: inherit; color: var(--fg); background: transparent;
@@ -70,6 +74,7 @@
   <span class="kind">Note</span>
   <span class="canvas" id="canvas"></span>
   <span class="spacer"></span>
+  <span class="sync" id="sync"></span>
   <button type="button" id="open">Open in canvas</button>
 </div>
 <div class="stage">
@@ -89,12 +94,22 @@
   // soft top-to-bottom sheen, left-aligned 14px text).
   const DEFAULT_COLOR = "#FFF9C4";
   const BASE_FONT_PX = 14;
+  const RECHECK_MS = 1500;
   const ALIGNMENTS = ["left", "center", "right", "justify"];
 
   const $ = (id) => document.getElementById(id);
   const card = $("card");
   const message = $("message");
   let node = null;
+  let drawnKey = null;
+
+  // The canvas's sync engine runs while this page is open (shared/
+  // canvas-node.js, NT-7), so edits to the folder are pushed as they are made.
+  function setSync(value, tone) {
+    const el = $("sync");
+    el.textContent = value || "";
+    el.className = "sync" + (tone ? " " + tone : "");
+  }
 
   function say(value, isError) {
     message.textContent = value;
@@ -196,7 +211,12 @@
       say("Could not read this note: " + error.message, true);
       return;
     }
-    draw(source, node ? node.style : {});
+    // Called often (a focus, any change in the folder): draw only what moved.
+    const style = node ? node.style : {};
+    const key = JSON.stringify([source, style, document.documentElement.getAttribute("data-theme")]);
+    if (key === drawnKey && !card.hidden) return;
+    drawnKey = key;
+    draw(source, style);
   }
 
   async function boot() {
@@ -221,6 +241,17 @@
     $("strip").hidden = false;
     await refresh();
     fused.onFileChanged(() => void refresh());
+    // A save that landed while the file watch was still coming up made no
+    // event: look once more.
+    setTimeout(() => void refresh(), RECHECK_MS);
+    // The row is in canvas.toml, which this page's own watch does not
+    // cover. With the engine running, any change in the folder is on its
+    // feed; without it (signed out), coming back to the page reads again.
+    CanvasNode.sync(node, { status: setSync, changed: () => void refresh() });
+    window.addEventListener("focus", () => void refresh());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") void refresh();
+    });
     // The shell's theme flipped: a transparent note follows it.
     new MutationObserver(() => void refresh())
       .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
