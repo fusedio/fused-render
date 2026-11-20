@@ -878,7 +878,6 @@ html.rail-card-moving iframe {
 #claude-rail-tasks-peek.is-front,
 #claude-rail-bots-peek.is-front,
 #claude-rail-git-peek.is-front,
-#claude-rail-mode-peek.is-front,
 #claude-rail-fav-peek.is-front,
 #claude-rail-bot-peek.is-front,
 .modal-popover.is-front {
@@ -896,7 +895,6 @@ html.rail-card-moving iframe {
 #claude-rail-tasks-peek.is-free-pin,
 #claude-rail-bots-peek.is-free-pin,
 #claude-rail-git-peek.is-free-pin,
-#claude-rail-mode-peek.is-free-pin,
 .modal-popover.is-free-pin {
   z-index: 42;
 }
@@ -904,7 +902,6 @@ html.rail-card-moving iframe {
 #claude-rail-tasks-peek.is-free-pin.is-front,
 #claude-rail-bots-peek.is-free-pin.is-front,
 #claude-rail-git-peek.is-free-pin.is-front,
-#claude-rail-mode-peek.is-free-pin.is-front,
 .modal-popover.is-free-pin.is-front {
   z-index: 43;
 }
@@ -2025,8 +2022,11 @@ a.claude-rail-peek-scope:focus-visible {
 }
 /* THE MODE CARD (shell/claude-rail ModePeek): the file in that mode — an
    embed frame filling the card under its head — in window A's chassis off a
-   mode door, the Git card's twin (DoorCard). */
-#claude-rail-mode-peek {
+   mode door, the Git card's twin (DoorCard), one per mode. A class, not an
+   id (there are several): one step above the rail's own card where it is a
+   non-pin, and under the two-class rules above (`.is-front`, `.is-free-pin`)
+   which outrank it as they should. */
+.claude-rail-mode-peek {
   z-index: 46;
 }
 .claude-rail-mode-title {

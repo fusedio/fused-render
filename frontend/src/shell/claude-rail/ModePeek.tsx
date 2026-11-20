@@ -1,9 +1,10 @@
-// THE MODE CARD OFF THE RAIL'S MODE DOORS (owner, 2026-11-20; mode-peek-store
+// THE MODE CARDS OFF THE RAIL'S MODE DOORS (owner, 2026-11-20; mode-peek-store
 // has the story): a file page's other modes — every entry of its top-right
-// mode menu but the active one — are doors on the rail above Git, and this is
-// their one window A card. The Git card's twin (GitPeek): mounted once in the
-// shell, window A's chassis (DoorCard), the rules between the cards in
-// ClaudeRail.
+// mode menu but the active one — are doors on the rail above Git, and each
+// has its own window A card here, exactly as the Git door has (GitPeek):
+// mounted in the shell, window A's chassis (DoorCard), the rules between the
+// cards in ClaudeRail. `ModePeek` draws one `ModeCard` per mode that has a
+// store (mode-peek-store makes one the moment a rail draws that door).
 //
 // WHAT IT IS: the file drawn in the mode whose door opened it — the embed
 // frame a panel pane shows (`RailModes.src`). The frame is mounted while the
@@ -33,15 +34,7 @@ import { DoorCard } from "./DoorCard";
 import { RailPinButton } from "./RailPin";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useFavPeekState } from "./fav-peek-store";
-import {
-  MODE_PEEK_ID,
-  modeCardStore,
-  useModeCard,
-  useModeCardRail,
-  useModeShown,
-  useRailModes,
-  useRailModesAnyRail,
-} from "./mode-peek-store";
+import { modeCardStore, useModeCardRail, useModeCards, useRailModes, useRailWithMode } from "./mode-peek-store";
 
 /** How long a PINNED card waits, its mode's door gone, for the next rail's
  *  (a hop: the next file's page mounts its rail after a stat). No door by
@@ -114,39 +107,48 @@ function ModeFrame({
 }
 
 export function ModePeek() {
-  // BESIDE THE RAIL THAT OPENED IT, else the top rail where it has mode
-  // doors, else the latest rail that has (GitPeek's rule).
-  const top = useFavPeekState().rail;
-  const opener = useModeCardRail();
-  const topFacts = useRailModes(top);
-  const anyRail = useRailModesAnyRail();
-  const rail = opener ?? (topFacts ? top : (anyRail ?? top));
-  const facts = useRailModes(rail);
-  const shown = useModeShown();
-  const door = (shown !== null && facts?.doors.find((d) => d.mode === shown)) || null;
-  const present = door !== null;
+  const { modes } = useModeCards();
+  return (
+    <>
+      {modes.map((mode) => (
+        <ModeCard key={mode} mode={mode} />
+      ))}
+    </>
+  );
+}
 
-  // A PINNED CARD FOLLOWS A HOP: the moment its door is gone it is held, not
-  // closed, for `MODE_FOLLOW_MS` — set during the render (GitPeek). A door
-  // still gone then (the page switched to that mode, the next page has none)
-  // closes it. A preview is not held.
+function ModeCard({ mode }: { mode: string }) {
+  const store = modeCardStore(mode);
+  // BESIDE THE RAIL THAT OPENED IT, else the top rail where it has this
+  // mode's door, else the latest rail that has (GitPeek's rule).
+  const top = useFavPeekState().rail;
+  const opener = useModeCardRail(mode);
+  const topFacts = useRailModes(top);
+  const anyRail = useRailWithMode(mode);
+  const topHas = !!topFacts?.doors.some((d) => d.mode === mode);
+  const rail = opener ?? (topHas ? top : (anyRail ?? top));
+  const facts = useRailModes(rail);
+  const door = facts?.doors.find((d) => d.mode === mode) ?? null;
+  // REGISTERED WHILE ANY RAIL HAS THIS DOOR (GitPeek `maybe`).
+  const maybe = anyRail !== null;
+
+  // A PINNED CARD FOLLOWS A HOP: the moment no rail has its door it is held,
+  // not closed, for `MODE_FOLLOW_MS` — set during the render (GitPeek). A
+  // preview is not held.
   const pinModel = useTaskHeadUnified();
-  const card = useModeCard();
+  const card = store.useCard();
   const { pinned, held, up } = card;
-  const [was, setWas] = useState(present);
+  const [was, setWas] = useState(maybe);
   const [holding, setHolding] = useState(false);
-  if (was !== present) {
-    setWas(present);
-    setHolding(!present && up && (pinModel ? held : pinned));
+  if (was !== maybe) {
+    setWas(maybe);
+    setHolding(!maybe && (pinModel ? held : pinned));
   }
   useEffect(() => {
     if (!holding) return;
     const t = window.setTimeout(() => setHolding(false), MODE_FOLLOW_MS);
     return () => window.clearTimeout(t);
   }, [holding]);
-  useEffect(() => {
-    if (up && !present && !holding) modeCardStore.close();
-  }, [up, present, holding]);
 
   // THE FRAME (header): up, and a beat after.
   const [live, setLive] = useState(false);
@@ -159,7 +161,7 @@ export function ModePeek() {
     return () => window.clearTimeout(t);
   }, [up]);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const src = door && facts ? facts.src(door.mode) : null;
+  const src = door && facts ? facts.src(mode) : null;
   const [loaded, setLoaded] = useState<string | null>(null);
 
   // A PRESS INSIDE THE FRAME PINS A PREVIEW (header).
@@ -170,8 +172,8 @@ export function ModePeek() {
       window.clearTimeout(tick);
       tick = window.setTimeout(() => {
         const f = frameRef.current;
-        if (!f || document.activeElement !== f || modeCardStore.state().pinned) return;
-        const intent = modeCardStore.intent();
+        if (!f || document.activeElement !== f || store.state().pinned) return;
+        const intent = store.intent();
         intent.pressStart();
         intent.pressEnd();
       }, 0);
@@ -181,7 +183,7 @@ export function ModePeek() {
       window.clearTimeout(tick);
       window.removeEventListener("blur", onBlur);
     };
-  }, [up]);
+  }, [up, store]);
   // …AND A TEMP CARD GOES WHEN THE FOCUS MOVES INTO ANOTHER FRAME (header).
   const temp = up && pinned && !(pinModel && held);
   useEffect(() => {
@@ -193,63 +195,59 @@ export function ModePeek() {
         inOurs = true;
         return;
       }
-      if (inOurs && a instanceof HTMLIFrameElement && !document.getElementById(MODE_PEEK_ID)?.contains(a)) {
-        modeCardStore.close();
+      if (inOurs && a instanceof HTMLIFrameElement && !document.getElementById(store.id)?.contains(a)) {
+        store.close();
         return;
       }
       if (!(a instanceof HTMLIFrameElement)) inOurs = false;
     }, 200);
     return () => window.clearInterval(t);
-  }, [temp, pinModel]);
+  }, [temp, pinModel, store]);
 
   const onOpen = facts?.onOpen;
-  const mode = door?.mode ?? null;
-  const noRoom = useCallback(() => {
-    if (mode !== null) onOpen?.(mode);
-  }, [onOpen, mode]);
+  const noRoom = useCallback(() => onOpen?.(mode), [onOpen, mode]);
   const title = door?.title ?? "Mode";
   return (
     <DoorCard
-      store={modeCardStore}
+      store={store}
       onNoRoomPress={noRoom}
       rail={rail}
       className="claude-rail-mode-peek"
       ariaLabel={title}
-      enabled={anyRail !== null || holding}
+      enabled={maybe || holding}
       subOpen={false}
     >
       {(api) => {
-        const take =
-          onOpen && mode !== null
-            ? () => {
-                // The frame's editor may hold words newer than its last
-                // autosave: ask it to write them before the page redraws the
-                // file in this mode (the code template's own flush).
-                const flush = frameFlush(frameRef.current);
-                const go = () => {
-                  api.close();
-                  onOpen(mode);
-                };
-                if (!flush) {
-                  go();
-                  return;
-                }
-                let done = false;
-                const once = () => {
-                  if (done) return;
-                  done = true;
-                  go();
-                };
-                const t = window.setTimeout(once, 2000);
-                void Promise.resolve()
-                  .then(() => flush())
-                  .catch(() => undefined)
-                  .then(() => {
-                    window.clearTimeout(t);
-                    once();
-                  });
+        const take = onOpen
+          ? () => {
+              // The frame's editor may hold words newer than its last
+              // autosave: ask it to write them before the page redraws the
+              // file in this mode (the code template's own flush).
+              const flush = frameFlush(frameRef.current);
+              const go = () => {
+                api.close();
+                onOpen(mode);
+              };
+              if (!flush) {
+                go();
+                return;
               }
-            : undefined;
+              let done = false;
+              const once = () => {
+                if (done) return;
+                done = true;
+                go();
+              };
+              const t = window.setTimeout(once, 2000);
+              void Promise.resolve()
+                .then(() => flush())
+                .catch(() => undefined)
+                .then(() => {
+                  window.clearTimeout(t);
+                  once();
+                });
+            }
+          : undefined;
         return (
           <>
             <div className="claude-rail-peek-head">
@@ -285,9 +283,7 @@ export function ModePeek() {
               </div>
             </div>
             <div className={"claude-rail-peek-body claude-rail-mode-body" + (src !== null && loaded === src ? " is-loaded" : "")}>
-              {live && src !== null && (
-                <ModeFrame key={src} src={src} title={title} frameRef={frameRef} onLoad={() => setLoaded(src)} />
-              )}
+              {live && src !== null && <ModeFrame key={src} src={src} title={title} frameRef={frameRef} onLoad={() => setLoaded(src)} />}
             </div>
           </>
         );

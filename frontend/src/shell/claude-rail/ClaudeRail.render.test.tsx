@@ -32,7 +32,7 @@ const { railGitCount, railGitOf, resetRailGitStoreForTests } = await import("./r
 const { gitCardRail, gitCardState, registerGitCard, resetGitCardForTests } = await import("./git-peek-store");
 const { resetRailGitCacheForTests } = await import("./rail-git");
 const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
-const { modeCardState, modeCardStore, modeShown, railModesOf, resetModeCardForTests } = await import("./mode-peek-store");
+const { modeCardStore, railModesOf, resetModeCardsForTests } = await import("./mode-peek-store");
 const { publishRailModeDoors, resetRailModeDoorsFlagForTests } = await import("./rail-mode-doors-flag");
 const { DoorCard } = await import("./DoorCard");
 const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
@@ -753,8 +753,8 @@ describe("ClaudeRail's Bots door and its card (BotsPeek; owner, 2026-11-09)", ()
 });
 
 // THE FILE'S OTHER MODES AS DOORS (owner, 2026-11-20, the rail flag): above
-// the Git door and in its group, one door per mode the page hands, all on
-// one window A card (mode-peek-store, ModePeek).
+// the Git door and in its group, one door per mode the page hands, each with
+// its own window A card (mode-peek-store, ModePeek) — the Git door's rules.
 describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
   const FILE = DIR + "/index.html";
   const REPO = {
@@ -769,7 +769,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
   };
   let repo: unknown = null;
   const reset = () => {
-    resetModeCardForTests();
+    resetModeCardsForTests();
     resetRailModeDoorsFlagForTests();
     resetRailGitCacheForTests();
     resetRailGitStoreForTests();
@@ -869,29 +869,38 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
     await settle();
     press(r, "reader");
     expect(opened).toEqual(["reader"]);
-    expect(modeCardState().up).toBe(false);
+    expect(modeCardStore("reader").state().up).toBe(false);
   });
 
-  test("a card behind them: a press shows that mode, the same door's next press closes, another door's swaps", async () => {
-    const off = modeCardStore.registerCard();
+  const up = (mode: string) => modeCardStore(mode).state().up;
+
+  test("a card behind each: a press pins that mode's, the same door's next press closes it", async () => {
+    const offs = [modeCardStore("code").registerCard(), modeCardStore("reader").registerCard()];
     const r = await mountRail({ paneOpen: false, favourites: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
     await settle();
     press(r, "code");
-    expect(modeCardState()).toMatchObject({ up: true, pinned: true });
-    expect(modeShown()).toBe("code");
+    expect(modeCardStore("code").state()).toMatchObject({ up: true, pinned: true });
+    expect(doors(r).map((d) => String(d.props.className).includes("is-open"))).toEqual([true, false]);
+    expect(doors(r).map((d) => d.props["aria-controls"])).toEqual(["claude-rail-mode-peek-code", "claude-rail-mode-peek-reader"]);
+    press(r, "code");
+    expect(up("code")).toBe(false);
+    for (const off of offs) off();
+  });
+
+  test("another mode's door opens ITS card and puts the first one down (one non-pinned window A card)", async () => {
+    const offs = [modeCardStore("code").registerCard(), modeCardStore("reader").registerCard()];
+    const r = await mountRail({ paneOpen: false, favourites: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
+    await settle();
+    press(r, "code");
     press(r, "reader");
-    expect(modeCardState()).toMatchObject({ up: true, pinned: true });
-    expect(modeShown()).toBe("reader");
-    const open = doors(r).map((d) => String(d.props.className).includes("is-open"));
-    expect(open).toEqual([false, true]);
-    press(r, "reader");
-    expect(modeCardState().up).toBe(false);
-    off();
+    expect([up("code"), up("reader")]).toEqual([false, true]);
+    expect(doors(r).map((d) => String(d.props.className).includes("is-open"))).toEqual([false, true]);
+    for (const off of offs) off();
   });
 
   test("another window A card coming puts it down, and it puts that one down", async () => {
     repo = REPO;
-    const offMode = modeCardStore.registerCard();
+    const offMode = modeCardStore("code").registerCard();
     const offGit = registerGitCard();
     const r = await mountRail({
       paneOpen: false,
@@ -901,15 +910,15 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
     });
     await settle();
     press(r, "code");
-    expect(modeCardState().up).toBe(true);
+    expect(up("code")).toBe(true);
     const git = r.root.find((n) => n.type === "button" && n.props["data-rail-door"] === "git");
     act(() => {
       git.props.onClick({ preventDefault() {}, button: 0, detail: 1 });
     });
     expect(gitCardState().up).toBe(true);
-    expect(modeCardState().up).toBe(false);
+    expect(up("code")).toBe(false);
     press(r, "code");
-    expect(modeCardState().up).toBe(true);
+    expect(up("code")).toBe(true);
     expect(gitCardState().up).toBe(false);
     offMode();
     offGit();

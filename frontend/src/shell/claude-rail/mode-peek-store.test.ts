@@ -1,28 +1,29 @@
-// The mode card off the rail's mode doors (owner, 2026-11-20): the Git card's
-// store with SEVERAL DOORS ON ONE CARD — one intent key per mode, the card
-// standing level with the door of the mode it shows — and the rail's facts
-// by rail.
+// The mode cards off the rail's mode doors (owner, 2026-11-20): one Git-card
+// store PER MODE — its own card, pin and mark — read together for the rail's
+// rules, and the rail's facts by rail.
 import { beforeEach, describe, expect, it } from "bun:test";
-import { PEEK_CLOSE_MS, PEEK_OPEN_MS, PEEK_SWAP_MS, type Timers } from "./rail-peek-lib";
+import { aPinned, setAPinned } from "@platform/lib/last-chat";
+import { PEEK_CLOSE_MS, PEEK_OPEN_MS, type Timers } from "./rail-peek-lib";
 import {
   closeModeCard,
+  closeModeCards,
   forgetModeCardRail,
-  modeCardIntent,
   modeCardRail,
-  modeCardState,
   modeCardStore,
+  modeCards,
   modeDoorAction,
+  modeDoorSelector,
   modeKey,
   modeOfKey,
-  modeShown,
+  modePeekId,
   publishRailModes,
-  railModesAnyRail,
   railModesOf,
-  registerModeDoor,
-  resetModeCardForTests,
+  railWithMode,
+  resetModeCardsForTests,
   setModeCardRail,
   type RailModes,
 } from "./mode-peek-store";
+import { aPinWord, readAPin } from "./rail-pin-lib";
 import { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } from "@shell/task-head-flag";
 
 class Clock implements Timers {
@@ -61,7 +62,8 @@ const facts = (path: string, modes: string[]): RailModes => ({
 let clock: Clock;
 beforeEach(() => {
   clock = new Clock();
-  resetModeCardForTests(clock);
+  resetModeCardsForTests(clock);
+  setAPinned(null);
   resetTaskHeadUnifiedFlagForTests();
 });
 
@@ -73,120 +75,142 @@ describe("modeKey", () => {
     expect(modeOfKey("mode:")).toBeNull();
     expect(modeOfKey(null)).toBeNull();
   });
+  it("is window A's mark for that mode's pin (rail-pin-lib)", () => {
+    expect(aPinWord({ kind: "mode", mode: "code" })).toBe(modeKey("code"));
+    expect(readAPin("mode:reader")).toEqual({ kind: "mode", mode: "reader" });
+    expect(readAPin("mode:")).toBeNull();
+    expect(readAPin("git")).toEqual({ kind: "git" });
+  });
+  it("a card id and a door selector per mode", () => {
+    expect(modePeekId("code")).toBe("claude-rail-mode-peek-code");
+    expect(modePeekId("_render")).toBe("claude-rail-mode-peek-_render");
+    expect(modePeekId("a b")).toBe("claude-rail-mode-peek-a_b");
+    expect(modeDoorSelector("code")).toBe('[data-rail-door="mode"][data-rail-mode="code"]');
+  });
 });
 
 describe("modeDoorAction", () => {
-  it("no card: the page's own switch", () => {
-    expect(modeDoorAction({ ready: false, own: false, pinned: false })).toBe("open");
-    expect(modeDoorAction({ ready: false, own: true, pinned: true })).toBe("open");
-  });
-  it("its own card up by a click: a toggle; anything else shows this mode by a click", () => {
-    expect(modeDoorAction({ ready: true, own: true, pinned: true })).toBe("close");
-    expect(modeDoorAction({ ready: true, own: true, pinned: false })).toBe("pin");
-    expect(modeDoorAction({ ready: true, own: false, pinned: true })).toBe("pin");
-    expect(modeDoorAction({ ready: true, own: false, pinned: false })).toBe("pin");
+  it("no card: the page's own switch; else a toggle (the Git door's)", () => {
+    expect(modeDoorAction({ ready: false, pinned: false })).toBe("open");
+    expect(modeDoorAction({ ready: true, pinned: false })).toBe("pin");
+    expect(modeDoorAction({ ready: true, pinned: true })).toBe("close");
   });
 });
 
-describe("the mode card's intent", () => {
-  it("a hover previews its mode; a hover on the next door swaps it, the opening counted once", () => {
-    const i = modeCardIntent();
-    i.enterRing(modeKey("code"));
+describe("a card per mode", () => {
+  it("each mode has its own store, id and intent; one's hover and pin move no other", () => {
+    const code = modeCardStore("code");
+    const reader = modeCardStore("reader");
+    expect(modeCardStore("code")).toBe(code);
+    expect(code).not.toBe(reader);
+    expect([code.id, reader.id]).toEqual(["claude-rail-mode-peek-code", "claude-rail-mode-peek-reader"]);
+    code.intent().press(code.key);
+    expect(code.state()).toMatchObject({ up: true, pinned: true, seq: 1 });
+    expect(reader.state().up).toBe(false);
+    // A pinned Code card: the Reader door still previews its own card.
+    reader.intent().enterRing(reader.key);
     clock.tick(PEEK_OPEN_MS);
-    expect(modeCardState()).toMatchObject({ up: true, pinned: false, seq: 1 });
-    expect(modeShown()).toBe("code");
-    i.leaveRing();
-    i.enterRing(modeKey("reader"));
-    clock.tick(PEEK_SWAP_MS);
-    expect(modeShown()).toBe("reader");
-    // A swap between its doors is not an opening (ClaudeRail's one-card rule
-    // and the chassis key on `seq`).
-    expect(modeCardState()).toMatchObject({ up: true, pinned: false, seq: 1 });
-    i.leaveRing();
+    expect(reader.state()).toMatchObject({ up: true, pinned: false });
+    expect(code.state()).toMatchObject({ up: true, pinned: true });
+    reader.intent().leaveRing();
     clock.tick(PEEK_CLOSE_MS);
-    expect(modeCardState().up).toBe(false);
-    // Kept through the close: the card fades out on it.
-    expect(modeShown()).toBe("reader");
+    expect(reader.state().up).toBe(false);
+    expect(code.state().up).toBe(true);
   });
 
-  it("a press pins; a pinned card moves for no hover, only for another door's press", () => {
-    const i = modeCardIntent();
-    i.press(modeKey("code"));
-    expect(modeCardState()).toMatchObject({ up: true, pinned: true, seq: 1 });
-    i.enterRing(modeKey("reader"));
-    clock.tick(PEEK_OPEN_MS + PEEK_SWAP_MS);
-    expect(modeShown()).toBe("code");
-    i.press(modeKey("reader"));
-    expect(modeShown()).toBe("reader");
-    expect(modeCardState()).toMatchObject({ up: true, pinned: true, seq: 1 });
-    closeModeCard();
-    expect(modeCardState()).toMatchObject({ up: false, pinned: false, held: false });
+  it("read together, and told of any one's change", () => {
+    const code = modeCardStore("code");
+    modeCardStore("reader");
+    const before = modeCards();
+    expect(before.modes).toEqual(["code", "reader"]);
+    expect(before.of("code").up).toBe(false);
+    expect(before.of("nope")).toMatchObject({ up: false, ready: false });
+    code.intent().press(code.key);
+    const after = modeCards();
+    expect(after).not.toBe(before);
+    expect(after.of("code")).toMatchObject({ up: true, pinned: true });
+    expect(modeCards()).toBe(after);
+  });
+
+  it("a pin's mark is that mode's, and goes with its card", () => {
+    const code = modeCardStore("code");
+    const reader = modeCardStore("reader");
+    code.intent().press(code.key);
+    code.setHeld(true);
+    expect(aPinned()).toBe("mode:code");
+    // Another mode's card pinned takes the mark; the first one going leaves it.
+    reader.intent().press(reader.key);
+    reader.setHeld(true);
+    expect(aPinned()).toBe("mode:reader");
+    closeModeCard("code");
+    expect(aPinned()).toBe("mode:reader");
+    closeModeCard("reader");
+    expect(aPinned()).toBeNull();
+  });
+
+  it("closeModeCards closes every card up that is not asked to stand", () => {
+    const code = modeCardStore("code");
+    const reader = modeCardStore("reader");
+    code.intent().press(code.key);
+    reader.intent().press(reader.key);
+    closeModeCards((m) => m === "reader");
+    expect([code.state().up, reader.state().up]).toEqual([false, true]);
+    closeModeCards();
+    expect(reader.state().up).toBe(false);
   });
 });
 
-describe("the card's door", () => {
-  it("is the door of the mode it shows, on that rail; none once that door is gone", () => {
+describe("the rail that opened a card", () => {
+  it("its rail gone: a preview closes, the opener is forgotten; another mode's is untouched", () => {
     const rail = el();
-    const code = el();
-    const reader = el();
-    const offCode = registerModeDoor(rail, "code", code);
-    registerModeDoor(rail, "reader", reader);
-    expect(modeCardStore.doorOf(rail)).toBeNull();
-    modeCardIntent().press(modeKey("code"));
-    expect(modeCardStore.doorOf(rail)).toBe(code);
-    modeCardIntent().press(modeKey("reader"));
-    expect(modeCardStore.doorOf(rail)).toBe(reader);
-    modeCardIntent().press(modeKey("code"));
-    offCode();
-    expect(modeCardStore.doorOf(rail)).toBeNull();
-    expect(modeCardStore.doorOf(el())).toBeNull();
-    expect(modeCardStore.doorOf(null)).toBeNull();
-  });
-});
-
-describe("the rail that opened it", () => {
-  it("its rail gone: a preview closes, the opener is forgotten", () => {
-    const rail = el();
-    setModeCardRail(rail);
-    modeCardIntent().enterRing(modeKey("code"));
+    const other = el();
+    const code = modeCardStore("code");
+    const reader = modeCardStore("reader");
+    setModeCardRail("code", rail);
+    setModeCardRail("reader", other);
+    code.intent().enterRing(code.key);
+    reader.intent().enterRing(reader.key);
     clock.tick(PEEK_OPEN_MS);
-    forgetModeCardRail(el());
-    expect(modeCardState().up).toBe(true);
     forgetModeCardRail(rail);
-    expect(modeCardState().up).toBe(false);
-    expect(modeCardRail()).toBeNull();
+    expect(code.state().up).toBe(false);
+    expect(modeCardRail("code")).toBeNull();
+    expect(reader.state().up).toBe(true);
+    expect(modeCardRail("reader")).toBe(other);
   });
 
   it("with the pin, only a held card outlives its rail", () => {
     publishTaskHeadUnified({ enabled: true });
     const rail = el();
-    setModeCardRail(rail);
-    modeCardIntent().press(modeKey("code"));
+    const code = modeCardStore("code");
+    setModeCardRail("code", rail);
+    code.intent().press(code.key);
     forgetModeCardRail(rail);
-    expect(modeCardState().up).toBe(false);
-    setModeCardRail(rail);
-    modeCardIntent().press(modeKey("code"));
-    modeCardStore.setHeld(true);
+    expect(code.state().up).toBe(false);
+    setModeCardRail("code", rail);
+    code.intent().press(code.key);
+    code.setHeld(true);
     forgetModeCardRail(rail);
-    expect(modeCardState()).toMatchObject({ up: true, held: true });
+    expect(code.state()).toMatchObject({ up: true, held: true });
   });
 });
 
 describe("the rails' facts", () => {
-  it("by rail; the latest rail with doors; gone when taken off", () => {
+  it("by rail; a store stands behind every door; the latest rail with a mode's door", () => {
     const a = el();
     const b = el();
-    expect(railModesAnyRail()).toBeNull();
+    expect(railWithMode("code")).toBeNull();
     publishRailModes(a, facts("/x/a.html", ["code"]));
     publishRailModes(b, facts("/x/b.md", ["code", "reader"]));
+    expect(modeCards().modes).toEqual(expect.arrayContaining(["code", "reader"]));
     expect(railModesOf(a)?.path).toBe("/x/a.html");
     expect(railModesOf(b)?.doors.map((d) => d.mode)).toEqual(["code", "reader"]);
     expect(railModesOf(b)?.src("reader")).toBe("/explorer/embed/x/b.md?_mode=reader");
-    expect(railModesAnyRail()).toBe(b);
+    expect(railWithMode("code")).toBe(b);
+    expect(railWithMode("reader")).toBe(b);
     publishRailModes(b, null);
-    expect(railModesAnyRail()).toBe(a);
+    expect(railWithMode("code")).toBe(a);
+    expect(railWithMode("reader")).toBeNull();
     publishRailModes(a, null);
     expect(railModesOf(a)).toBeNull();
-    expect(railModesAnyRail()).toBeNull();
   });
 });

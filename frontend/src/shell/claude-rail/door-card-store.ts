@@ -68,6 +68,9 @@ export interface DoorCardStore {
   state(): DoorCardState;
   /** The card as it stands, re-rendering on every change. */
   useCard(): DoorCardState;
+  /** Hear every change of the card's state, outside React (mode-peek-store:
+   *  one card per mode door, read together by the rail). */
+  subscribe(fn: () => void): () => void;
   /** A card mounted (while the rail flag is on): counted until the answer
    *  runs, once. */
   registerCard(): () => void;
@@ -95,11 +98,8 @@ export interface DoorCardStore {
 
 /** `pinWord`: what window A's mark says while this card is pinned (`aPinned`,
  *  rail-pin-lib `aPinWord`) — written here, where the hold is, so a close
- *  from anywhere (the card's own Open, a rail that is gone) lets the mark go.
- *  `onShow`: a card with SEVERAL DOORS (the mode card, mode-peek-store — one
- *  key per door) hears which key the machine shows, before the state says
- *  so. `seq` counts openings, never a swap between its doors. */
-export function createDoorCardStore(key: string, id: string, pinWord?: string, onShow?: (key: string | null) => void): DoorCardStore {
+ *  from anywhere (the card's own Open, a rail that is gone) lets the mark go. */
+export function createDoorCardStore(key: string, id: string, pinWord?: string): DoorCardStore {
   let state: DoorCardState = { up: false, pinned: false, held: false, seq: 0, ready: false };
   const press = { inside: false };
   const subs = new Set<() => void>();
@@ -145,16 +145,14 @@ export function createDoorCardStore(key: string, id: string, pinWord?: string, o
       if (!intent) {
         intent = new PeekIntent(
           {
-            show: (k) => {
-              onShow?.(k);
+            show: (k) =>
               write({
                 ...state,
                 up: k !== null,
-                seq: k !== null && !state.up ? state.seq + 1 : state.seq,
+                seq: k !== null ? state.seq + 1 : state.seq,
                 pinned: k === null ? false : state.pinned,
                 held: k === null ? false : state.held,
-              });
-            },
+              }),
             pin: (on) => write({ ...state, pinned: on, held: on ? state.held : false }),
             warm: () => {},
           },
@@ -167,6 +165,7 @@ export function createDoorCardStore(key: string, id: string, pinWord?: string, o
       intent?.dismiss(returningFocus);
     },
     state: getState,
+    subscribe,
     useCard() {
       return useSyncExternalStore(subscribe, getState, getState);
     },
