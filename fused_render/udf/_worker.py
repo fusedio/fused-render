@@ -12,7 +12,7 @@ Protocol: JSON lines. stdin carries requests, stdout answers; nothing else
 may reach stdout, so whatever the SDK prints is sent to stderr.
 
   {"op": "run", "id", "source", "collection", "params",
-   "format": "auto" | "html" | "png" | "json" | "parquet",
+   "format": "auto" | "view" | "html" | "png" | "json" | "parquet",
    "cache": bool, "confirmed": bool, "out": "<path>"}
       -> {"id", "event": "started", "kind", "code_sha256"}
       -> {"id", "event": "done", "ok": true, "content_type", "size",
@@ -53,7 +53,7 @@ sys.stdout = sys.stderr
 import fused  # noqa: E402 — after stdout is taken
 
 from fused_render import canvas_node_exec  # noqa: E402
-from fused_render.udf.shaping import SDK_FORMATS, body_of, text_of  # noqa: E402
+from fused_render.udf.shaping import SDK_FORMATS, NeedsPng, body_of, text_of  # noqa: E402
 
 _env_name = os.environ.get("FUSED_ENV")
 if _env_name:
@@ -86,7 +86,8 @@ def answer(rid: str, result, fmt: str, out: str, code_sha: str) -> dict:
         fh.write(content)
     seconds = getattr(result, "time_taken_seconds", None)
     return {"id": rid, "event": "done", "ok": True, "content_type": content_type,
-            "size": len(content), "stdout": stdout, "stderr": stderr,
+            "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+            "stdout": stdout, "stderr": stderr,
             "fused_cached": bool(getattr(result, "is_cached", False)),
             "seconds": float(seconds) if isinstance(seconds, (int, float)) else None,
             "code_sha256": code_sha}
@@ -143,7 +144,15 @@ async def run(req: dict) -> None:
     finally:
         _cancelled.discard(rid)
     try:
-        send(answer(rid, result, fmt, req["out"], code_sha))
+        try:
+            done = answer(rid, result, fmt, req["out"], code_sha)
+        except NeedsPng:
+            # A raster's `view`: Fused's own PNG of it (cached by Fused, so a
+            # second request, not a second run).
+            png = await fused.run_async(udf, engine="remote", _return_response=True,
+                                        cache=cache, parameters=params, _format="png")
+            done = answer(rid, png, "png", req["out"], code_sha)
+        send(done)
     except Exception as exc:  # noqa: BLE001 — writing the body failed
         send({"id": rid, "event": "done", "ok": False,
               "error": f"could not keep the result: {exc}", "line": None,

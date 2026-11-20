@@ -12698,12 +12698,16 @@ is never sent it, and every alternation of their generations resets the view
 
 ### 53.5 `canvas_udf`: a UDF
 
-- **NU-1 One run, Fused's own rendering.** The page runs its file through
-  the page runtime's `fused.workbench.udf({file})` (§54): the file as it
-  stands on disk, in its canvas's environment and canvas, `format: "auto"`
-  (Fused's PNG for a raster, its HTML page for the rest — the formats a
-  shared UDF's link serves). The answer's bytes are shown untouched.
-- **NU-2 What shows.** `text/html` in a frame (`sandbox="allow-scripts
+- **NU-1 One run, the value.** The page runs its file through the page
+  runtime's `fused.workbench.udf({file})` (§54): the file as it stands on
+  disk, in its canvas's environment and canvas, `format: "view"` — the
+  value, not Fused's page of it, so a table needs no frame and nothing is
+  fetched from a CDN to draw it.
+- **NU-2 What shows.** A table (`application/vnd.fused-render.table+json`)
+  as a table drawn by the page: sticky header, 500 rows at a time with
+  "Show more", the row count and how many were kept. An answer whose `hash`
+  equals the one on screen is not drawn again (only the strip changes).
+  `text/html` (a UDF's own HTML) in a frame (`sandbox="allow-scripts
   allow-popups allow-popups-to-escape-sandbox allow-downloads"`, no
   same-origin: the page's scripts run with no reach into the app);
   `image/*` as an image from the result's URL; JSON and text as text;
@@ -12851,7 +12855,7 @@ milliseconds.
   `auto` (saved copy, then a fresh run), `prefer-saved` (a saved copy ends
   the run), `fresh` (no saved copy; Fused is asked not to answer from its
   cache).
-- **SS-3 Result.** `{url, contentType, size, source: "saved" |
+- **SS-3 Result.** `{url, contentType, size, hash (the bytes' sha256), source: "saved" |
   "fused-cache" | "fresh", savedAt, seconds, fusedCached, stdout, stderr,
   arrayBuffer(), blob(), text(), json()}`. `url` is
   `/api/udf/results/<token>`.

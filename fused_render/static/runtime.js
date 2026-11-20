@@ -542,7 +542,10 @@
  *       or "<canvas>/<udf name>". opts.env: "prod" | "unstable" | "custom".
  *     handle.run(params?, {format, cache, confirm, signal}) -> run
  *       format: "auto" (Fused's png for a raster, html for the rest; the
- *         default) | "html" | "png" | "json" (the value: a table as row
+ *         default) | "view" (the value as a page draws it: a table as
+ *         application/vnd.fused-render.table+json {columns, rows, total},
+ *         an HTML string as html, text as text, a raster as png, the rest
+ *         as json) | "html" | "png" | "json" (the value: a table as row
  *         objects, geometry as WKT) | "parquet" (a table's Parquet bytes).
  *       cache: "auto" (default: the saved copy at once, then a fresh run) |
  *         "prefer-saved" (a saved copy ends the run) | "fresh" (no saved
@@ -553,8 +556,9 @@
  *       run.result -> Promise<Result>: the fresh answer. `await run` is the same.
  *       run.onLog(fn) — fn({stdout, stderr}) when the run's output arrives.
  *       run.cancel()
- *     Result: {url, contentType, size, source ("saved" | "fused-cache" |
- *       "fresh"), savedAt, seconds, fusedCached, stdout, stderr,
+ *     Result: {url, contentType, size, hash (the bytes' sha256), source
+ *       ("saved" | "fused-cache" | "fresh"), savedAt, seconds, fusedCached,
+ *       stdout, stderr,
  *       arrayBuffer(), blob(), text(), json()}. `url` serves the bytes (an
  *       <img src>, a fetch); HTML there runs sandboxed, never as this app.
  *     handle.schema() -> Promise<the UDF's parameters (an OpenAPI operation)>
@@ -7840,6 +7844,7 @@
       savedAt: typeof r.saved_at === "number" ? new Date(r.saved_at * 1000) : null,
       seconds: typeof r.seconds === "number" ? r.seconds : null,
       fusedCached: !!r.fused_cached,
+      hash: r.hash || null,
       stdout: r.stdout || "",
       stderr: r.stderr || "",
       arrayBuffer: () => fetchBody().then((res) => res.arrayBuffer()),

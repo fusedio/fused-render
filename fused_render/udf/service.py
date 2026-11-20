@@ -41,7 +41,7 @@ from fused_render.udf import runner, store
 logger = logging.getLogger(__name__)
 
 KEY_VERSION = 1
-FORMATS = ("auto", "html", "png", "json", "parquet")
+FORMATS = ("auto", "view", "html", "png", "json", "parquet")
 CACHE_MODES = ("auto", "prefer-saved", "fresh")
 # A realtime run is cut off by Fused well inside this.
 RUN_TIMEOUT_S = 330.0
@@ -159,6 +159,9 @@ def _page_result(meta: dict, source: str | None = None) -> dict:
         "stdout": meta.get("stdout") or "",
         "stderr": meta.get("stderr") or "",
         "fused_cached": bool(meta.get("fused_cached")),
+        # The body's sha256: a page that already shows these bytes need not
+        # draw them again.
+        "hash": meta.get("sha256") or None,
         "source": source or ("fused-cache" if meta.get("fused_cached") else "fresh"),
     }
 
@@ -247,6 +250,7 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
     meta = {"content_type": final.get("content_type") or "", "size": size,
             "seconds": final.get("seconds"), "stdout": final.get("stdout") or "",
             "stderr": final.get("stderr") or "", "fused_cached": bool(final.get("fused_cached")),
+            "sha256": final.get("sha256"),
             "env": target.env}
     return {"result": await asyncio.to_thread(store.keep, body_path, meta, keep_key)}
 

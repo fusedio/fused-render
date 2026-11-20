@@ -54,7 +54,15 @@ def data_page(data) -> tuple[bytes, str]:
 # table, JSON for anything else): the SDK cannot hand back a table as JSON or
 # CSV with `_return_response` (it parses every table answer as Parquet), so
 # `json` is made here from the value.
-SDK_FORMATS = {"auto": AUTO_FORMAT, "html": "html", "png": "png", "parquet": None, "json": None}
+SDK_FORMATS = {"auto": AUTO_FORMAT, "html": "html", "png": "png", "parquet": None, "json": None,
+               "view": None}
+# `view`: the value in the shape a page draws it in, with no page of Fused's
+# around it (SPEC §54.2): a table as TABLE_TYPE JSON, an HTML string as HTML,
+# other text as text, a raster as PNG (asked of Fused separately: NEEDS_PNG),
+# anything else as JSON.
+TABLE_TYPE = "application/vnd.fused-render.table+json"
+# Rows of a table a `view` carries; `total` says how many there were.
+VIEW_MAX_ROWS = 20_000
 PARQUET_TYPE = "application/vnd.apache.parquet"
 
 
@@ -193,8 +201,55 @@ def json_body(data) -> bytes:
     return json.dumps(_plain(data), allow_nan=False).encode("utf-8")
 
 
+class NeedsPng(Exception):
+    """A `view` of a raster: the worker asks Fused for its PNG rendering."""
+
+
+def table_body(frame) -> bytes:
+    """A table as `{columns, rows, total}` (rows as lists, at most
+    VIEW_MAX_ROWS of them; geometry as WKT, as `json_body` writes cells)."""
+    total = len(frame)
+    to_wkt = getattr(frame, "to_wkt", None)
+    if callable(to_wkt):
+        frame = to_wkt()
+    split = frame.head(VIEW_MAX_ROWS).to_dict(orient="split")
+    columns = [str(c) for c in split.get("columns", [])]
+    rows = [[_plain(v) for v in row] for row in split.get("data", [])]
+    return json.dumps({"columns": columns, "rows": rows, "total": total},
+                      allow_nan=False).encode("utf-8")
+
+
+def _looks_like_html(text: str) -> bool:
+    head = text.lstrip()[:200].lower()
+    return head.startswith("<") and any(t in head for t in (
+        "<html", "<!doctype", "<div", "<body", "<head", "<svg", "<table", "<style", "<script",
+        "<p", "<h1", "<h2", "<iframe", "<canvas"))
+
+
+def view_body(result) -> tuple[bytes, str]:
+    """The `view` shape of a successful result (see TABLE_TYPE). Raises
+    NeedsPng for a raster (an array, an image)."""
+    content = getattr(result, "original_content", None) or b""
+    data = getattr(result, "data", None)
+    if data is None:
+        return content, _header_type(result) or ("application/json" if content else "")
+    if hasattr(data, "columns") and callable(getattr(data, "to_dict", None)):
+        return table_body(data), TABLE_TYPE
+    if isinstance(data, str):
+        if _looks_like_html(data):
+            return data.encode("utf-8"), "text/html; charset=utf-8"
+        return data.encode("utf-8"), "text/plain; charset=utf-8"
+    if isinstance(data, (bytes, bytearray)):
+        return bytes(data), "application/octet-stream"
+    if hasattr(data, "shape") or (hasattr(data, "save") and hasattr(data, "mode")):
+        raise NeedsPng()
+    return json_body(data), "application/json"
+
+
 def body_of(result, fmt: str) -> tuple[bytes, str]:
     """(body, content type) of a successful result in the page's format."""
+    if fmt == "view":
+        return view_body(result)
     content = getattr(result, "original_content", None) or b""
     data = getattr(result, "data", None)
     if fmt == "json":
