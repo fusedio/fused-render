@@ -98,10 +98,12 @@
   fused.autoReload(false);
 
   const FILE = fused.params.get("_file");
-  // How long the frame may take to say it is the node page before this page
-  // concludes the deployment has none (an older workbench answers 404, which
+  // How long the frame may take, once loaded, to say it is the node page
+  // before this page concludes the deployment has none (an older workbench answers 404, which
   // a cross-origin frame cannot be asked about).
   const NODE_READY_WAIT_MS = 10000;
+  // …and how long the frame's document may take to load before that.
+  const FRAME_LOAD_WAIT_MS = 30000;
   const SOURCE_RECHECK_MS = 1500;
   const KIND_LABEL = { widget: "Widget", html: "HTML" };
   const STATUS_TEXT = { loading: "Loading…", ready: "", missing: "Not in the saved canvas", error: "Could not load" };
@@ -207,6 +209,8 @@
     } else if (data.type === "fused-embed-node-ready" && data.node === node.node) {
       pageReady = true;
       clearTimeout(readyTimer);
+      // Also for a page that answered after the wait gave up on it.
+      frame.hidden = false;
       message.hidden = true;
       // A fresh document holds no text yet, whatever was sent to the last one.
       void sendSource(true);
@@ -225,6 +229,17 @@
     lastSent = null;
     setStatus(STATUS_TEXT.loading);
     showMessage((el) => el.append(text("div", "Loading " + node.title + "…")));
+    // The wait for the page to say it is there runs from the frame's LOAD (a
+    // slow network is not a missing page), with a longer one from here in
+    // case the frame never loads at all.
+    armReadyWait(FRAME_LOAD_WAIT_MS);
+    frame.hidden = false;
+    frame.title = "Workbench: " + node.title;
+    frame.src = wb.base + "/embed/node/" + encodeURIComponent(node.name) + "/" +
+      encodeURIComponent(node.node) + "?fused_embed_auth=1&fused_embed_v=3";
+  }
+
+  function armReadyWait(ms) {
     clearTimeout(readyTimer);
     readyTimer = setTimeout(() => {
       if (pageReady) return;
@@ -234,12 +249,11 @@
         el.append(text("div", "This environment's workbench cannot show a single node here yet."));
         el.append(actions(button("Open in canvas", () => CanvasNode.openCanvas(node), true)));
       });
-    }, NODE_READY_WAIT_MS);
-    frame.hidden = false;
-    frame.title = "Workbench: " + node.title;
-    frame.src = wb.base + "/embed/node/" + encodeURIComponent(node.name) + "/" +
-      encodeURIComponent(node.node) + "?fused_embed_auth=1&fused_embed_v=3";
+    }, ms);
   }
+  frame.addEventListener("load", () => {
+    if (wb && !pageReady && !frame.hidden) armReadyWait(NODE_READY_WAIT_MS);
+  });
 
   async function boot() {
     if (!FILE) {

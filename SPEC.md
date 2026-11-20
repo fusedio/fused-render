@@ -12663,7 +12663,8 @@ is never sent it, and every alternation of their generations resets the view
   the saved canvas"), `error` (with its message). Reload loads the frame
   again (the saved canvas moved).
 - **NW-5 A workbench without the page.** No `fused-embed-node-ready` within
-  10 s of the frame's load: the page says "This environment's workbench
+  10 s of the frame's load (or 30 s of setting its address, for a frame that
+  never loads; a ready that arrives later still shows the frame): the page says "This environment's workbench
   cannot show a single node here yet" and offers "Open in canvas" (an older
   deployment answers 404, which a cross-origin frame cannot be asked about).
 - **NW-6 After a push.** When the feed shows a finished push (NT-7) the page
