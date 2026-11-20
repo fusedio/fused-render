@@ -8,7 +8,7 @@ import { act, create } from "react-test-renderer";
 const { BreakoutSelectionBar } = await import("./BreakoutSelectionBar");
 
 const noop = () => {};
-const html = (count: number) => renderToStaticMarkup(createElement(BreakoutSelectionBar, { count, onStart: noop, onCancel: noop }));
+const html = (count: number) => renderToStaticMarkup(createElement(BreakoutSelectionBar, { count, onSpecialist: noop, onStart: noop, onCancel: noop }));
 
 describe("BreakoutSelectionBar", () => {
   test("singular and plural, with the number bold", () => {
@@ -26,7 +26,7 @@ describe("BreakoutSelectionBar", () => {
     const calls: string[] = [];
     let r!: ReturnType<typeof create>;
     act(() => {
-      r = create(createElement(BreakoutSelectionBar, { count: 2, onStart: () => calls.push("start"), onCancel: () => calls.push("cancel") }));
+      r = create(createElement(BreakoutSelectionBar, { count: 2, onSpecialist: () => {}, onStart: () => calls.push("start"), onCancel: () => calls.push("cancel") }));
     });
     const find = (cls: string) => r.root.findByProps({ className: cls });
     act(() => find("breakout-sel-start").props.onClick());

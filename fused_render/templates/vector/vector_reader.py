@@ -12,7 +12,10 @@ import io
 import os
 import urllib.request
 
+import truststore
+
 os.environ["GDAL_SKIP"] = "OGR_VRT"
+truststore.inject_into_ssl()
 MAX_VERTICES = 300_000
 H3_NAMES = ("h3", "hex", "h3_index", "h3index", "h3_cell", "cell_id", "hex_id", "h3_id")
 GDAL_HTTP = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",

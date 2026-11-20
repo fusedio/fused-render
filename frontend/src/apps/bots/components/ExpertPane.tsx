@@ -26,6 +26,28 @@ const REFRESH_MS = 10_000;
 
 // ------------------------------------------------------------------ pieces ----
 
+/** The pane's tab strip in the Browser | Terminal strip's style (`id`s `<uid>-<tab>`, the panel `<uid>-panel`); the
+ *  arrow keys step through the tabs. Shared with the specialist's pane (SpecialistPane.tsx). */
+export function PaneTabs<T extends string>({ label, tabs, tab, onTab, uid }: {
+  label: string; tabs: [T, string][]; tab: T; onTab: (t: T) => void; uid: string;
+}) {
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const i = tabs.findIndex(([t]) => t === tab), next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length][0];
+    onTab(next);
+    document.getElementById(`${uid}-${next}`)?.focus();
+  };
+  return (
+    <div className="viewsw" role="tablist" aria-label={label} onKeyDown={onKey}>
+      {tabs.map(([t, l]) => (
+        <button key={t} type="button" id={`${uid}-${t}`} role="tab" className={`satab${tab === t ? " on" : ""}`} aria-selected={tab === t}
+          aria-controls={`${uid}-panel`} tabIndex={tab === t ? 0 : -1} onClick={() => onTab(t)}>{l}</button>
+      ))}
+    </div>
+  );
+}
+
 /** One diff line's markdown on its background, with a + / − gutter mark. */
 function DiffLine({ tone, text }: { tone: "add" | "del" | "ctx"; text: string }) {
   const mark = tone === "add" ? "+" : tone === "del" ? "−" : "";
@@ -255,22 +277,10 @@ export function ExpertPane({ b }: { b: Bot }) {
     const t = window.setTimeout(() => revealWithin(paneRef.current, document.getElementById(`xps-${open}`)), 0);
     return () => window.clearTimeout(t);
   }, [tab, open, listed]);
-  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    e.preventDefault();
-    const next: ExpertTab = tab === "memory" ? "sessions" : "memory";
-    setTab(next);
-    document.getElementById(`${uid}-${next}`)?.focus();
-  };
 
   return (
     <div className="xpane" id="xpane" ref={paneRef}>
-      <div className="viewsw" role="tablist" aria-label="Expert" onKeyDown={onKey}>
-        {TABS.map(([t, l]) => (
-          <button key={t} type="button" id={`${uid}-${t}`} role="tab" className={`satab${tab === t ? " on" : ""}`} aria-selected={tab === t}
-            aria-controls={`${uid}-panel`} tabIndex={tab === t ? 0 : -1} onClick={() => setTab(t)}>{l}</button>
-        ))}
-      </div>
+      <PaneTabs label="Expert" tabs={TABS} tab={tab} onTab={setTab} uid={uid} />
       <div className="xp-panel" id={`${uid}-panel`} role="tabpanel" aria-labelledby={`${uid}-${tab}`} data-tab={tab}>
         {tab === "memory" ? <MemoryPanel memory={memory} err={memErr} onChange={openChange} />
           : <SessionsPanel rows={rows} err={rowsErr} open={open} onOpen={setOpen} full={full} fullErr={fullErr} />}

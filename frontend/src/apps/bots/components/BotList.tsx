@@ -4,7 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isLanHost } from "@platform/lib/host";
 import type { Bot, BotEvent } from "../lib/api";
-import { activeHandoff, lastBotMsg, lastTs, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
+import { activeHandoff, lastBotMsg, lastTs, previewLine, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
 import { botOrder } from "../lib/order";
@@ -44,8 +44,9 @@ export interface RowProps {
 }
 
 export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
-  const evs = S.events[b.id] || EMPTY, n = unreadCount(b), sel = selProp ?? b.id === S.sel;
-  const msg = lastBotMsg(evs), ts = lastTs(evs), glyph = routineGlyph(b), note = b.status === "idle" ? routineNote(b) : null;
+  const evs = S.events[b.id] || EMPTY, spec = b.specialist, sel = selProp ?? b.id === S.sel;
+  const n = spec ? Number(spec.new) : unreadCount(b);
+  const msg = spec ? previewLine(spec.last?.text || spec.about) : lastBotMsg(evs), ts = spec ? spec.last?.at || 0 : lastTs(evs), glyph = routineGlyph(b), note = b.status === "idle" ? routineNote(b) : null;
   // Super Bot with a hand-off in flight (docs §11): that outranks its last message, which is "I asked <Bot>…" anyway.
   const ho = b.kind === "super" ? activeHandoff(b) : null;
   // The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. Only on the
@@ -66,10 +67,11 @@ export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
         {b.pinned ? <span className="pin">📌</span> : null}<span className="nm">{b.name}</span>
         {b.kind === "super" ? <span className="super" title="Super Bot: Claude Code's own tools on this Mac">SUPER</span> : null}
         {b.kind === "expert" ? <span className="expert" title={b.expert?.ask_me_about ? `Expert: ${b.expert.ask_me_about}` : "Expert: keeps a memory, answers tasks"}>EXPERT</span> : null}
+        {spec ? <span className="specialist" title={`Specialist: ${spec.about}`}>SPECIALIST</span> : null}
         {glyph ? <span className={`rt ${glyph.warn ? "warn" : ""}`} title={glyph.title}>{MI.routines}</span> : null}
       </div>
       <div className="meta">
-        {n ? <span className={`badge ${b.status === "waiting" ? "q" : ""}`} title={`${n} new message${n > 1 ? "s" : ""}`} /> : null}
+        {n ? <span className={`badge ${b.status === "waiting" ? "q" : ""}`} title={spec ? "Something new" : `${n} new message${n > 1 ? "s" : ""}`} /> : null}
         <span className="time" title={fmtWhen(ts)}>{fmtAgo(ts)}</span>
       </div>
       <div className="sub">

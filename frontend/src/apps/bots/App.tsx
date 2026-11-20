@@ -28,6 +28,7 @@ import { navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { UPLOAD_MAX_BYTES, upload } from "./file/botfile";
 import { useLayout } from "./hooks/useLayout";
 import { handBack, openFull } from "./lib/cdp";
+import { noBrowser } from "./lib/derive";
 import { onDragEnd, onStageOpen, onStageShut, setStage } from "./lib/layout";
 import { fitViewport } from "./lib/live-page";
 import { installNotify } from "./lib/notify";
@@ -59,7 +60,7 @@ function installStage(): () => void {
   // The right gutter crosses the live page's half-width floor: the preview dragged up to it opens the live view (watch mode, the
   // keyboard stays where it is), the rail dragged back under it is the same exit as the Back button.
   // An expert has no live page: the drag just caps the preview (openFull refuses it too).
-  onStageOpen(() => { if (getState().bots.find((b) => b.id === getState().sel)?.kind !== "expert") openFull({ focus: false }); });
+  onStageOpen(() => { if (!noBrowser(getState().bots.find((b) => b.id === getState().sel))) openFull({ focus: false }); });
   onStageShut(() => { void handBack(true); });
   // The live page's Chrome window takes the stage's size once, when the gutter is let go (fitViewport holds while root.dragging).
   onDragEnd(fitViewport);

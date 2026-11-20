@@ -23,6 +23,7 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putChatRecapEnabled,
   putBreakoutEnabled,
+  putSpecialistsEnabled,
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
@@ -38,6 +39,7 @@ import { publishTaskIcons } from "@platform/lib/task-icons-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
+import { publishSpecialistsEnabled } from "@platform/lib/specialists-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
@@ -80,6 +82,20 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.breakout?.enabled === true}
       put={putBreakoutEnabled}
       after={(next) => publishBreakoutEnabled(next.breakout?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// Specialists (docs/specialists.md): their Bots rows, the task tools and the
+// breakout's "With". Published so an open page shows or drops them at once.
+export function SpecialistsControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="specialists"
+      checked={prefs.specialists?.enabled === true}
+      put={putSpecialistsEnabled}
+      after={(next) => publishSpecialistsEnabled(next.specialists?.enabled === true)}
       onChange={onChange}
     />
   );

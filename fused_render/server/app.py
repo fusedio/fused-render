@@ -1393,6 +1393,35 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001 — never worth failing startup
             logger.warning("could not start the experts scheduler", exc_info=True)
 
+    # Specialists (fused_render/specialists/, docs/specialists.md): `/api/specialists*`, every route the
+    # unknown-path 404 while the flag is off. The tools router goes first: its literal `/tools/*` paths must win
+    # over the `/{id}` routes.
+    from fused_render.specialists import flag as sp_flag
+    from fused_render.specialists import routes as sp_routes
+    from fused_render.specialists import tools as sp_tools
+
+    app.include_router(sp_tools.router)
+    app.include_router(sp_routes.router)
+    app.middleware("http")(sp_flag.off_middleware)
+
+    @on_startup
+    async def _startup_specialists():
+        if not sp_flag.on():
+            return
+        from fused_render.specialists import scheduler, seed
+
+        try:
+            await asyncio.to_thread(seed.seed)
+        except Exception:  # noqa: BLE001 — the shipped specialists are a convenience; the server still starts
+            logger.exception("could not create the shipped specialists")
+        scheduler.start()
+
+    @on_shutdown_always
+    async def _shutdown_specialists():
+        from fused_render.specialists import scheduler
+
+        scheduler.stop()
+
     # Share an app as a public link (share_app.py): the .fused export handed
     # to the user's Fused account as a one-node canvas, through the same
     # `fused login` provider canvases.py owns (credentials-file presence,

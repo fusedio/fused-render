@@ -53,10 +53,11 @@ import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
+import { nodeOfFile, nodePageShot, type NodeOfFile } from "@apps/explorer/lib/node-shot";
+import { useCanvasPageShotResponder } from "@apps/claude/shots/canvas-page-shot-responder";
 import {
-  NODE_MODE,
-  isNodeViewEntry,
   isModePending,
+  isNodeEntry,
   isSidebarMode,
   modesUnderSnapshot,
   partitionModes,
@@ -66,7 +67,6 @@ import {
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
-import { retainedFrames } from "@apps/explorer/lib/held-frames";
 import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
 import {
   pendingClaudeAskVersion,
@@ -85,7 +85,6 @@ import {
   sideReopenedByUrl,
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
-import { NativeView } from "@platform/ui/NativeView";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { getSideTab, setSideTab } from "@apps/explorer/lib/side-tab-store";
 import {
@@ -802,8 +801,8 @@ function usePreviewFileMenu(
 // or unknown/stale value falls back to the default silently. The default is
 // the first UNCONDITIONAL entry (CT-12: a gated template is never the default
 // while a normal one exists), with one exception: a node file's preferred
-// `_node` (PT-8 `prefer`), which is the default and holds the pane on the
-// checking placeholder until its verdict. An all-conditional list falls back
+// canvas node template (PT-8 `prefer`), which is the default and holds the
+// pane on the checking placeholder until its verdict. An all-conditional list falls back
 // to its first (by then verdict-allowed) entry.
 // Both rules live in lib/mode-visibility so every mode surface resolves the
 // same way; `templates` here is already the visible list, so a gate-denied
@@ -875,15 +874,9 @@ const FRAME_SWAP_TIMEOUT_MS = 4000;
 const annotateTargetFrame = (): HTMLIFrameElement | null =>
   document.querySelector<HTMLIFrameElement>("iframe[data-fused-annotate-target]");
 
-// A NATIVE content mode's box in the held-frame swap: what a frame's `load`
-// is to an iframe, its mount is to this — the view draws its own loading
-// state, so there is nothing to wait for before showing it.
-//
-// A pane without `is-shown` — the node view kept mounted behind another mode
-// (NV-12) — is taken out of pointer, focus and assistive-tech reach by CSS
-// (`.preview-native.preview-frame:not(.is-shown)`, preview.css), on the very
-// paint the class changes: an effect would leave a frame in which the hidden
-// pane still caught clicks over the mode in front of it.
+// A box the shell draws into, in the held-frame swap (an uncached bucket
+// object's download card): what a frame's `load` is to an iframe, its mount
+// is to this, so there is nothing to wait for before showing it.
 function NativePane({
   className,
   onReady,
@@ -957,7 +950,8 @@ function TemplatePreview({
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
   // switcher as a disabled spinner, not selectable, never the default except
-  // a preferred `_node` (PT-8), which holds the pane on the checking placeholder.
+  // a preferred canvas node template (PT-8), which holds the pane on the
+  // checking placeholder.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
 
   // The shell's git snapshot (`_snapshot`): see "the shell's git snapshot"
@@ -972,8 +966,8 @@ function TemplatePreview({
     backToLive,
     applySelected: applySelectedSnapshot,
   } = usePreviewSnapshot(fsPath, urlVersion);
-  // THE NODE VIEW IS LIVE BY NATURE (SPEC §53.3): it draws the canvas as the
-  // workbench holds it now, never as of a commit. Under a snapshot it is not
+  // A CANVAS NODE TEMPLATE IS LIVE BY NATURE (SPEC §53.2): it draws the node
+  // as it stands now, never as of a commit. Under a snapshot it is not
   // offered at all, so the pane falls back to a mode that honours the commit
   // (Code) instead of drawing the live node under "Showing this file as of
   // commit …"; Back to live brings it back.
@@ -1236,8 +1230,8 @@ function TemplatePreview({
   // AND the git sidebar hop — round 3 findings 2 and 7), and `snapshotError`
   // is the round 3 finding 8 fix: a non-404 resolve failure used to leave
   // this pane pending forever with no way out.
-  // (The hook itself is called at the top of this component: the node view's
-  // snapshot rule, below `isPending`, needs `snapshotSha` before the mode
+  // (The hook itself is called at the top of this component: the canvas node
+  // templates' snapshot rule, below `isPending`, needs `snapshotSha` before the mode
   // lists are built.)
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
@@ -1811,8 +1805,7 @@ function TemplatePreview({
   // "_render" sentinel (PT-12): render the target file itself, no _file param.
   // Ordinary entries: target file rides on the iframe's own URL as _file —
   // the shell URL's pathname already names the file, so no duplication there.
-  // `_listing` and `_node` build no src — each renders a shell component, not
-  // an iframe.
+  // `_listing` builds no src — it renders a shell component, not an iframe.
   //
   // `_snapshot` rides here and on the shell's OWN url, unlike the deleted
   // `_rev` design (lib/preview-rev.ts, deleted): a snapshot is a
@@ -1873,7 +1866,7 @@ function TemplatePreview({
   // stamps the nested render too.
   const thumbFlags = IS_PREVIEW ? "&_preview=1&_nofocus=1" : "";
   const srcFor = (m: string): string | null => {
-    if (m === "_listing" || m === NODE_MODE) return null;
+    if (m === "_listing") return null;
     // Both branches below route through the shared `snapshotFrameSrc`
     // (platform/lib/snapshot-param.ts) rather than composing the src by
     // hand — the app page's own copy of this logic (AppPage.tsx, AppFiles.tsx)
@@ -1998,6 +1991,42 @@ function TemplatePreview({
   // after asking for A. Entries are dropped when their frame is retired: a later
   // mount of the same mode is a NEW document that has to load again.
   const loadedFrames = useRef<Set<string>>(new Set());
+
+  // THE AGENT'S `canvas_screenshot`, ANSWERED FROM THIS PANE (SPEC §53.8).
+  // While the pane shows a canvas node through its node template, a chat
+  // working on that node can be shown its output from here: this page says
+  // it shows the node (the responder's heartbeat), and pictures its own
+  // content frame when asked. Only the surface with the frame the sidebar
+  // points at (`splitCapable`, the mark `annotateTargetFrame` reads), and
+  // never under a snapshot (no node template is offered there).
+  const shownIsNode =
+    splitCapable && !isListing && contentModes.some((t) => t.mode === shown && isNodeEntry(t));
+  const [nodeShown, setNodeShown] = useState<NodeOfFile | null>(null);
+  useEffect(() => {
+    if (!shownIsNode) {
+      setNodeShown(null);
+      return;
+    }
+    let cancelled = false;
+    void nodeOfFile(fsPath).then((n) => {
+      if (!cancelled) setNodeShown(n);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [shownIsNode, fsPath]);
+  const nodeShot = useMemo(
+    () => nodePageShot(annotateTargetFrame, nodeShown?.node ?? ""),
+    [nodeShown?.node],
+  );
+  useCanvasPageShotResponder({
+    env: nodeShown?.env ?? null,
+    name: nodeShown?.name ?? "",
+    node: nodeShown?.node,
+    shot: nodeShot,
+    frameUp: () => !!annotateTargetFrame() && loadedFrames.current.has(shown),
+    error: null,
+  });
   // `snapshotPending` in the mix too (code review finding [6], round 2):
   // without it, `srcFor` returns `null` for a pending resolve but this stayed
   // `false` — the frame still mounted with `src={null}`, React omits the
@@ -2043,28 +2072,15 @@ function TemplatePreview({
     return () => window.clearTimeout(id);
   }, [shown, activeMode, framePending]);
   // Retire the frames the swap left behind, once the incoming one has faded in.
-  //
-  // EXCEPT THE NODE VIEW (SPEC §53.3 NV-12), which stays mounted, hidden,
-  // while its file stays open and the mode is on offer. Its open is the
-  // heaviest in the shell — sync/start, a token, a cross-origin workbench that
-  // boots, syncs and runs the node — so Node → Code → Node used to pay all of
-  // it again for a view that had not changed. Kept, it also stays live: its
-  // relay keeps the frame in step with the disk while Code edits the file, so
-  // switching back shows the edit already applied. `filter` keeps the list's
-  // order, so the kept pane is never moved (a moved frame reloads).
-  const nodeOffered = contentModes.some((t) => t.mode === NODE_MODE && isNodeViewEntry(t));
   useEffect(() => {
-    if (shown !== activeMode) return;
-    const keep = retainedFrames(frames, activeMode, NODE_MODE, nodeOffered);
-    if (keep.length === frames.length) return;
+    if (frames.length <= 1 || shown !== activeMode) return;
     const id = window.setTimeout(() => {
-      setFrames((f) => retainedFrames(f, activeMode, NODE_MODE, nodeOffered));
+      setFrames([activeMode]);
       // Their documents are gone with them, so they are no longer "loaded".
-      const kept = new Set(keep);
-      for (const m of [...loadedFrames.current]) if (!kept.has(m)) loadedFrames.current.delete(m);
+      for (const m of [...loadedFrames.current]) if (m !== activeMode) loadedFrames.current.delete(m);
     }, FRAME_FADE_MS);
     return () => window.clearTimeout(id);
-  }, [frames, shown, activeMode, nodeOffered]);
+  }, [frames, shown, activeMode]);
 
   // Embed hides the whole preview-header, hence the switcher (shell.css). A
   // directory whose mode list carries `_listing` alongside another mode (a
@@ -2413,27 +2429,6 @@ function TemplatePreview({
              re-created by a switch away and back within the swap window. */}
             <div className="preview-frames">
             {frames.map((m) => {
-              // THE NODE VIEW (SPEC §53.3 NV-3): a canvas node file's default
-              // content mode, and the layout pane's — an embed document is
-              // this same content pane. The `_node` sentinel (PT-12): drawn by
-              // apps/canvases through the shell's registry, never a frame. It paints its
-              // own loading state, so it takes over from a held frame at once.
-              // A kept node pane whose mode left the list (a git snapshot,
-              // NV-12) draws nothing until the retirement above drops it —
-              // never an iframe of a mode with no page.
-              if (m === NODE_MODE && m !== activeMode && !contentModes.some((t) => t.mode === m)) return null;
-              if (m === NODE_MODE && nodeOffered) return (
-                <NativePane
-                  key={m}
-                  className={"preview-frame" + (m === shown ? " is-shown" : "")}
-                  onReady={() => {
-                    loadedFrames.current.add(m);
-                    if (m === activeMode) setShown(m);
-                  }}
-                >
-                  <NativeView mode={NODE_MODE} path={fsPath} placement="content" />
-                </NativePane>
-              );
               // THE CONTENT PANE'S CHAT (`_mode=claude` as the main body): the
               // FULL split variant, `chatOnly` false, because the chat's own
               // left pane IS this target's preview and that is the whole point
@@ -3028,7 +3023,7 @@ export default function Preview({
   const ownsBar = !!actionsInTopbar && !stat.is_dir;
   const fileSearchField = <FileSearchField active={ownsBar && !remoteUrl} fsPath={fsPath} />;
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
-  // a recognized sentinel (`_render`, `_listing`, `_node`) is dropped. Filtering here
+  // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
   // A remote location's cache copy (`remoteUrl`) is untrusted bucket content:

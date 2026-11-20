@@ -3,9 +3,10 @@
 // once laid out; closes on an outside click, Escape and window blur.
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { cloneBot, deleteBot, exportBot, exportBotFile } from "../dialogs/actions";
-import { api, type Bot } from "../lib/api";
+import { askConfirm } from "../dialogs/ask";
+import { api, specialistApi, type Bot } from "../lib/api";
 import { openLive } from "../lib/cdp";
-import { act, botById, closeMenu, cur, getState, markSeen, openDialog, select, useBotsSelector } from "../state/store";
+import { act, actSpecialist, botById, closeMenu, cur, getState, markSeen, openDialog, select, useBotsSelector } from "../state/store";
 import { menuItems, type MenuAction } from "./menuIcons";
 
 export { exportBot };
@@ -13,6 +14,12 @@ export { exportBot };
 
 export function runMenuAction(a: MenuAction, b: Bot): void {
   const id = b.id;
+  if (b.specialist) {
+    if (a === "export") void exportBot(b);
+    else if (a === "delete") void askConfirm(`Delete "${b.name}"?`, "It leaves the Bots list, and its folder moves to the specialists' trash folder.").then((ok) => { if (ok) void actSpecialist(() => specialistApi.remove(id)); });
+    else openDialog({ kind: "settings", id });
+    return;
+  }
   if (a === "pin") { void act(() => api.flag(id, { pinned: !b.pinned })); return; }
   if (a === "hide") { void act(() => api.flag(id, { hidden: !b.hidden })); return; }
   if (a === "read") { markSeen(id, b.seq); return; }

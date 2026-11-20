@@ -147,10 +147,13 @@ export interface TemplateEntry {
   /** A native template (PT-6 amendment): the shell draws it, there is no
    *  page to frame. Set by the server on the stat entry. */
   native?: boolean;
+  /** A canvas node template's entry (SPEC §53.2): offered only on its gate's
+   *  explicit yes, and never under a git snapshot (lib/mode-visibility). */
+  node?: boolean;
   /** The file's DEFAULT CANDIDATE although it is conditional (SPEC PT-8's one
-   *  exception): set by the server on the `_node` sentinel entry of a path
-   *  shaped like a canvas node file, with Canvases on. The default only on
-   *  the gate's explicit yes (lib/mode-visibility `defaultMode`). */
+   *  exception): set by the server on a `node` entry of a path shaped like a
+   *  canvas node file, with Canvases on. The default only on the gate's
+   *  explicit yes (lib/mode-visibility `defaultMode`). */
   prefer?: boolean;
 }
 
@@ -1586,6 +1589,9 @@ export interface Prefs {
   // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
   // default). Optional like `queue`: absent reads as off.
   breakout?: { enabled: boolean };
+  // Specialists (`specialists_enabled`, shell/prefs.py; docs/specialists.md).
+  // Experimental, off by default. Optional like `breakout`: absent reads as off.
+  specialists?: { enabled: boolean };
   // The slow in-canvas screenshot fallback on a Mac
   // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
   // Optional: absent (older server) reads as off.
@@ -2182,6 +2188,10 @@ export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putBreakoutEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { breakout_enabled: enabled });
+}
+
+export function putSpecialistsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { specialists_enabled: enabled });
 }
 
 export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Prefs> {

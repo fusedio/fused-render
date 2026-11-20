@@ -42,22 +42,23 @@ import type { TemplateEntry } from "@platform/lib/api";
 export type ConditionVerdicts = Record<string, boolean> | null;
 
 // Gated and no verdict yet — the entry shows, but is not selectable.
-// The node view (below) is pending only where it is the default candidate.
+// A canvas node template (below) is pending only where it is the default
+// candidate.
 export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
-  if (isNodeViewEntry(entry)) return isPreferred(entry) && verdicts === null;
+  if (isNodeEntry(entry)) return isPreferred(entry) && verdicts === null;
   return !!entry.conditional && verdicts === null;
 }
 
-// THE ONE EXCEPTION TO "a missing verdict shows": the canvas node view
-// (`_node`, SPEC §53.3). Its gate answers yes for a handful of files behind an
-// opt-in feature and no for every other `.py`/`.json`/`.html`/`.md`, so
-// reading a failed conditions call as "visible" would offer — and, where it is
-// the default candidate, open — a node view on files that are not nodes. It
-// needs an explicit YES. While the call is out it shows only where stat marked
+// THE ONE EXCEPTION TO "a missing verdict shows": the canvas node templates
+// (`node` entries, SPEC §53.2). Their gates answer yes for a handful of files
+// behind an opt-in feature and no for every other `.py`/`.json`/`.html`/`.md`,
+// so reading a failed conditions call as "visible" would offer — and, where it
+// is the default candidate, open — a node's page on files that are not nodes.
+// Such an entry needs an explicit YES. While the call is out it shows only where stat marked
 // it the default candidate (`prefer`), as the pending entry the content pane
 // waits on; anywhere else it is simply not listed until the yes.
 export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
-  if (isNodeViewEntry(entry)) {
+  if (isNodeEntry(entry)) {
     return verdicts === null ? isPreferred(entry) : verdicts[entry.mode] === true;
   }
   if (!entry.conditional) return true;
@@ -136,35 +137,33 @@ export function unavailableReason(mode: string): string {
   return UNAVAILABLE_REASONS[mode] ?? "Not available here";
 }
 
-// The canvas node view's mode: the `_node` shell sentinel (SPEC PT-12,
-// §53.3) — no template folder, drawn by apps/canvases through the shell's
-// native-view registry, gated server-side (`SENTINEL_CONDITIONS`).
-export const NODE_MODE = "_node";
-
-// The node view's entry: the `_node` sentinel (`path: null`). The sentinel
-// namespace is shell-owned, so no folder can claim the name; a folder called
-// `udf` is an ordinary template, framed like any other.
-export function isNodeViewEntry(entry: Pick<TemplateEntry, "mode" | "path">): boolean {
-  return entry.mode === NODE_MODE && entry.path === null;
+// A canvas node template's entry (SPEC §53.2): one of the built-in gated
+// folders that draw a node file of a cloned canvas (`canvas_widget`,
+// `canvas_note`, `canvas_udf`). The server says which entries those are
+// (`node`), so a user folder of the same name is an ordinary template.
+export function isNodeEntry(entry: Pick<TemplateEntry, "node">): boolean {
+  return entry.node === true;
 }
 
 // The modes a pane may offer while it previews a git snapshot (`_snapshot`):
-// every one but the node view, which is live by nature — it draws the canvas
-// as the workbench holds it now, never as of a commit, so under "Showing this
-// file as of commit …" it would show the wrong era. Without a snapshot the
-// list is returned as is.
-export function modesUnderSnapshot<T extends Pick<TemplateEntry, "mode" | "path">>(
+// every one but the canvas node templates, which are live by nature — they
+// draw the node as it stands now (the saved canvas, a run of the file on
+// disk), never as of a commit, so under "Showing this file as of commit …"
+// they would show the wrong era. Without a snapshot the list is returned as
+// is.
+export function modesUnderSnapshot<T extends Pick<TemplateEntry, "node">>(
   entries: T[],
   snapshotSha: string | null | undefined
 ): T[] {
-  return snapshotSha ? entries.filter((e) => !isNodeViewEntry(e)) : entries;
+  return snapshotSha ? entries.filter((e) => !isNodeEntry(e)) : entries;
 }
 
-// The default CANDIDATE although gated (SPEC PT-8's one exception): the node
-// view's entry where stat marked it `prefer` — a path shaped like a canvas
-// node file, Canvases on. Never any other entry, whatever the server sends.
+// The default CANDIDATE although gated (SPEC PT-8's one exception): a canvas
+// node template's entry where stat marked it `prefer` — a path shaped like a
+// canvas node file, Canvases on. Never any other entry, whatever the server
+// sends.
 function isPreferred(entry: TemplateEntry): boolean {
-  return isNodeViewEntry(entry) && !!entry.conditional && entry.prefer === true;
+  return isNodeEntry(entry) && !!entry.conditional && entry.prefer === true;
 }
 
 export function isSidebarMode(mode: string): boolean {
@@ -226,7 +225,7 @@ export function visibleModes(
 // (CT-12 — a gated template is never the default while a normal one exists);
 // only an all-conditional list falls back to its first entry.
 //
-// Except a PREFERRED entry (the node view on a node-shaped path, `prefer`;
+// Except a PREFERRED entry (a node template on a node-shaped path, `prefer`;
 // SPEC PT-8): it is the default whenever it is in the visible list, which by
 // `isModeVisible` is exactly "its verdict is pending, or yes". Pending, the
 // caller holds the pane on its "checking" placeholder (`isModePending`) rather
