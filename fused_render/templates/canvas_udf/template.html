@@ -430,7 +430,14 @@
     $("run").addEventListener("click", () => void run());
     const autorun = $("autorun");
     autorun.checked = fused.params.get(AUTORUN_KEY) !== "0";
-    autorun.addEventListener("change", () => fused.params.set(AUTORUN_KEY, autorun.checked ? null : "0"));
+    autorun.addEventListener("change", () => {
+      fused.params.set(AUTORUN_KEY, autorun.checked ? null : "0");
+      // Off means off: a save's run still waiting to start does not start.
+      if (!autorun.checked) {
+        clearTimeout(rerunTimer);
+        queued = false;
+      }
+    });
     $("strip").hidden = false;
     if (!node.signed_in) {
       showMessage((host) => {

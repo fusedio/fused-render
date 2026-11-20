@@ -1628,7 +1628,10 @@ def api_canvases_node_run(body: dict = Body(...), x_fused: str | None = Header(d
     info = canvas_node_file(path)
     if info is None or info["kind"] != "udf":
         return _error("'path' is not a UDF node of a canvas you work on")
-    env = info["env"]
+    # A pinned process runs nothing in another env, as every canvases call.
+    env, bad = _require_env(info["env"])
+    if bad is not None:
+        return bad
     if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     path = os.path.normpath(path)
@@ -1656,6 +1659,7 @@ def api_canvases_node_run(body: dict = Body(...), x_fused: str | None = Header(d
         proc = subprocess.run(
             shim_cmd,
             input=json.dumps({"path": path,
+                              "collection": info["name"],
                               "ask_bytes": None if large else NODE_RUN_LARGE_BYTES,
                               "max_bytes": NODE_RUN_MAX_BYTES}),
             capture_output=True,

@@ -122,6 +122,8 @@
   let pageReady = false;    // the frame said it is the node page
   let readyTimer = null;
   let lastSent = null;      // the text last posted, so a no-op save posts nothing
+  let sourceSeq = 0;        // the newest read (or frame): an older read posts nothing
+  let pendingPush = null;   // a push that landed before the frame was ready
 
   function showMessage(build) {
     message.replaceChildren();
@@ -191,16 +193,20 @@
 
   async function sendSource(force) {
     if (!pageReady) return;
+    // Reads can finish out of order (a burst of saves, a Reload between):
+    // only the newest one's text is posted.
+    const seq = ++sourceSeq;
     let source;
     try {
       source = await fused.readFile(FILE);
     } catch (_) {
+      if (seq !== sourceSeq) return;
       // Deleted or unreadable: the node goes back to the saved canvas.
       lastSent = null;
       post({ type: "fused-embed-node-source", node: node.node, kind: node.kind, text: null });
       return;
     }
-    if (!force && source === lastSent) return;
+    if (seq !== sourceSeq || (!force && source === lastSent)) return;
     lastSent = source;
     post({ type: "fused-embed-node-source", node: node.node, kind: node.kind, text: source });
   }
@@ -219,6 +225,12 @@
       message.hidden = true;
       // A fresh document holds no text yet, whatever was sent to the last one.
       void sendSource(true);
+      // The canvas was pushed while this page was loading (the engine's
+      // first push lands then): it may have read the canvas before it.
+      if (pendingPush !== null) {
+        post({ type: "fused-embed-pushed", push_seq: pendingPush });
+        pendingPush = null;
+      }
       // A save that landed while the file watch was still coming up made no
       // event: look once more (nothing is posted when the text is the same).
       setTimeout(() => void sendSource(false), SOURCE_RECHECK_MS);
@@ -232,6 +244,8 @@
   function loadFrame() {
     pageReady = false;
     lastSent = null;
+    sourceSeq++;
+    pendingPush = null;
     setStatus(STATUS_TEXT.loading);
     showMessage((el) => el.append(text("div", "Loading " + node.title + "…")));
     // The wait for the page to say it is there runs from the frame's LOAD (a
@@ -300,7 +314,10 @@
       status: setSync,
       // The saved canvas moved (this node, or one it reads): the frame loads
       // it again, in place.
-      pushed: (seq) => { if (pageReady) post({ type: "fused-embed-pushed", push_seq: seq }); },
+      pushed: (seq) => {
+        if (pageReady) post({ type: "fused-embed-pushed", push_seq: seq });
+        else pendingPush = seq;
+      },
     });
     // Another writer's save (the Code mode, an agent): the frame gets the new
     // text, with no reload of either page.

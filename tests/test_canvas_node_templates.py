@@ -640,13 +640,25 @@ def test_node_run_runs_a_udf_nodes_file_in_its_canvases_environment(client, clon
     assert res.json()["ok"] is True and res.json()["content_type"] == "text/html"
     (call,) = shim.calls
     assert os.path.basename(call["cmd"][-1]) == "_fused_node_run.py"
+    # The canvas goes with it: a run's own `fused.load("sibling")` reads
+    # this canvas, not the SDK's "default" collection.
     assert call["input"] == {"path": str(clone / "udf_1.py"),
+                             "collection": clone.name,
                              "ask_bytes": canvases_mod.NODE_RUN_LARGE_BYTES,
                              "max_bytes": canvases_mod.NODE_RUN_MAX_BYTES}
     assert call["timeout"] == canvases_mod.NODE_RUN_TIMEOUT
     # The canvas's own Fused, exactly as its CLI calls are pointed at it.
     cli = canvases_mod.fused_cli()
     assert call["env"].get("FUSED_ENV") == canvases_mod._cli_env(cli, ENV).get("FUSED_ENV")
+
+
+def test_node_run_honours_the_environment_pin(client, clone, signed_in, shim, monkeypatch):
+    # Pinned to another env: the node's canvas is not run there, nor here.
+    monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", "prod")
+    res = _run(client, clone / "udf_1.py")
+    assert res.status_code == 423
+    assert res.json()["code"] == "env_locked"
+    assert shim.calls == []
 
 
 def test_node_run_passes_a_runs_own_error_through(client, clone, signed_in, shim):

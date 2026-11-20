@@ -5,7 +5,8 @@ in-interpreter spawn pattern as _fused_canvas_favourites.py: the real fused
 SDK is importable here and never in the server process), with the request as
 a JSON object on STDIN:
 
-  {"path": "<abs path of a node's .py>", "ask_bytes": N | null, "max_bytes": N}
+  {"path": "<abs path of a node's .py>", "collection": "<canvas name>",
+   "ask_bytes": N | null, "max_bytes": N}
 
 What comes back is Fused's own rendering of the result, not ours. The run asks
 for the formats a shared UDF's link serves — ``png`` for a raster, ``html``
@@ -33,7 +34,9 @@ unreadable file, a helper bug) exits non-zero with the reason on stderr.
 
 The code is the file as it stands on disk, so an edit shows before it is
 pushed. What the UDF loads from OTHER nodes (`fused.load`) is the canvas as
-Fused has it saved.
+Fused has it saved: the run carries the canvas as its collection, which is
+where the SDK looks a bare name up (without it, a file's UDF runs as part of
+the "default" collection and its siblings are not found).
 
 FUSED_ENV is honored the same way the CLI does it (fused._env), so the run
 goes to the environment the canvas was cloned from.
@@ -176,6 +179,10 @@ def main() -> None:
                                   or ask_bytes <= 0):
         _fail("node run helper: 'ask_bytes' must be a positive integer or null")
         return
+    collection = req.get("collection")
+    if collection is not None and (not isinstance(collection, str) or not collection):
+        _fail("node run helper: 'collection' must be a canvas name or null")
+        return
     # stdout is this helper's answer: nothing the SDK prints may reach it.
     printed = io.StringIO()
     try:
@@ -185,6 +192,8 @@ def main() -> None:
         json.dump({"ok": False, "error": f"could not load this file as a UDF: {exc}",
                    "line": None, "stdout": printed.getvalue(), "stderr": ""}, sys.stdout)
         return
+    if collection:
+        udf.collection_name = collection
     try:
         with contextlib.redirect_stdout(printed):
             result = fused.run(udf, engine="remote", _format=RESULT_FORMAT,

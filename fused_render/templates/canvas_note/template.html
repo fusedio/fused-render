@@ -106,6 +106,7 @@
   const message = $("message");
   let node = null;
   let drawnKey = null;
+  let refreshSeq = 0;
 
   // The canvas's sync engine runs while this page is open (shared/
   // canvas-node.js, NT-7), so edits to the folder are pushed as they are made.
@@ -204,14 +205,19 @@
   }
 
   async function refresh() {
+    // Reads can finish out of order (a burst of saves): only the newest
+    // one's answer is drawn.
+    const seq = ++refreshSeq;
     let source;
     try {
       // The row is read again with the text: a colour change is a canvas.toml
       // edit, and it lands with the next draw.
       const [info, text] = await Promise.all([CanvasNode.info(FILE), fused.readFile(FILE)]);
+      if (seq !== refreshSeq) return;
       if (info && info.enabled && info.node) node = info;
       source = text;
     } catch (error) {
+      if (seq !== refreshSeq) return;
       say("Could not read this note: " + error.message, true);
       return;
     }
