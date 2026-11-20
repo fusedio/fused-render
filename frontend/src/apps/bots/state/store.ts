@@ -9,7 +9,8 @@
 // with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
 import { isLanHost } from "@platform/lib/host";
-import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type Face, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
+import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type Face, type ImessageState, type SlowCall, type StatusReply, type UsageSummary, ApiError } from "../lib/api";
+import { readBotsMissing } from "@platform/lib/bots-available";
 import { listSpecialists, type Specialist } from "@platform/lib/specialists";
 import { readSpecialistsFlag, specialistsEnabledNow } from "@platform/lib/specialists-flag";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
@@ -560,6 +561,9 @@ export function actSpecialist<T>(call: () => Promise<T>): Promise<T | undefined>
 }
 
 // ------------------------------------------------------------------ poll ----
+/** The status a server without bots would give (Windows; `readBotsMissing`): no rows, nothing else. */
+const NO_BOTS: StatusReply = { bots: [], ts: 0, usage: null, imessage: null };
+
 // One poll in flight at a time; one requested meanwhile runs after it settles, so callers never see pre-action state.
 let pollBusy: Promise<void> | null = null;
 export function poll(): Promise<void> {
@@ -576,10 +580,17 @@ export async function pollOnce(): Promise<void> {
   // ran mounted.
   const page = botsMounted();
   try {
+    // No bots on this server (Windows): the page lists the specialists alone, and `/api/bots` (a 503 there) is
+    // never asked — its failure would also take the specialists' rows down with it. Off the page this poll is the
+    // rail's bot card's, which only stands where the server has bots (useBotsAvailable), so nothing is read there.
+    const botsOff = page && await readBotsMissing();
     const [r, spec] = await Promise.all([
-      api.status({ cursors: S.cursors, shot_for: page ? S.sel || "" : "", fast: page && S.fast }),
+      botsOff ? NO_BOTS : api.status({ cursors: S.cursors, shot_for: page ? S.sel || "" : "", fast: page && S.fast }),
       page ? specialistBots() : [],
     ]);
+    // What landing picks from: the bots, or with none on this server the specialists (on a Mac a specialist is never
+    // landed on by itself, as before).
+    const landRows = botsOff ? spec : r.bots;
     batch(() => {
       hideBanner();
       const first = !S.bots.length;
@@ -665,8 +676,8 @@ export async function pollOnce(): Promise<void> {
       }
       // Nothing selected yet: a bot waiting on you, else one with news, else Super Bot (seeded on first run,
       // registry.seed_super) — the chat a new user should land in (lib/landing.ts).
-      if (!S.sel && r.bots.length && !document.hidden) landOnBare();
-      if (S.sel && !S.bots.some((b) => b.id === S.sel)) select(r.bots[0]?.id || null, { replace: true });
+      if (!S.sel && landRows.length && !document.hidden) landOnBare();
+      if (S.sel && !S.bots.some((b) => b.id === S.sel)) select(landRows[0]?.id || null, { replace: true });
       // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
       // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
       // Not from the phone's list page: the chat on screen there is none (D1468).

@@ -9,6 +9,7 @@
 // notifications and the face animator. The theme is the shell's (`data-theme` on <html>); the page only maps it
 // onto its own tokens.
 import { useEffect, useState, type DragEvent } from "react";
+import { readBotsMissing } from "@platform/lib/bots-available";
 import { useBotsFeeder } from "@platform/lib/botsPulse";
 import "./styles/bots.css";
 import { AppsPanel } from "./apps/AppsPanel";
@@ -115,7 +116,12 @@ export function Bots() {
   useEffect(() => startStore(), []);
   // While this page polls /api/bots, the sidebar's Bots entry takes its rows instead of polling /api/bots/pulse itself.
   useBotsFeeder();
-  useEffect(() => startBuilds(), []);
+  // The builds feed reads /api/bots/builds: not where the server runs no bots (Windows, the specialists-only page).
+  useEffect(() => {
+    let live = true, stop = () => {};
+    void readBotsMissing().then((off) => { if (live && !off) stop = startBuilds(); });
+    return () => { live = false; stop(); };
+  }, []);
   useEffect(() => installStage(), []);
   // `/bots?new=1` opens the "+ New bot" chooser (FusedBot's setup wizard handed
   // over this way). Read once, then dropped from the URL so a refresh does not

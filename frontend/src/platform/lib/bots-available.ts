@@ -12,6 +12,7 @@
 import { useEffect, useState } from "react";
 import { botsAvailable, getConfig, launcherAvailable, type Config } from "./api";
 import { forgetPinnedBots } from "./botsPulse";
+import { isLanHost } from "./host";
 
 const READ_MS = 10_000;
 const RETRY_MS = 15_000;
@@ -110,6 +111,32 @@ export function useBotsAvailable(enabled = true): boolean {
   return useConfigFlag(botsAvailable, enabled);
 }
 
+/** THE SERVER SAID IT RUNS NO BOTS (Windows): the Bots page still opens there,
+ *  for the specialists alone (they are task sessions, not bots — docs/
+ *  specialists.md), and leaves out everything that reads `/api/bots*`. The
+ *  inverse of `useBotsAvailable` but NOT its negation: until the read answers
+ *  this is false too, so a server with Bots never hides a door for a frame. */
+const botsMissing = (c: Config): boolean => !botsAvailable(c);
+export function useBotsMissing(enabled = true): boolean {
+  return useConfigFlag(botsMissing, enabled);
+}
+
+/** `useBotsMissing` for code outside React (the Bots page's poll, its builds
+ *  feed): one config read, then the answer. A read that failed or stalled
+ *  (READ_MS) is "bots are there", what the page assumed before this existed —
+ *  never a wait for the retry. Never true on the phone, which always talks to
+ *  a Mac's bots, so nothing is read there. */
+export async function readBotsMissing(): Promise<boolean> {
+  if (isLanHost()) return false;
+  if (known === null) {
+    read();
+    // `read` registered its own settle on this promise first, so `known` is
+    // in place by the time this await resumes.
+    await reading;
+  }
+  return known !== null && botsMissing(known);
+}
+
 /** Does this process have the launcher panel to show (`/api/config`
  *  `launcher_available`; the rail's Search door)? */
 export function useLauncherAvailable(enabled = true): boolean {
@@ -144,6 +171,14 @@ function pinForTests(key: "bots_available" | "launcher_available", v: boolean | 
     }
   }
   forget();
+}
+
+/** Tests: forget the server's answer as well as every pin, so a suite that
+ *  let a real read land (a stubbed fetch) leaves the next one unread. */
+export function resetConfigReadForTests(): void {
+  server = null;
+  pins = {};
+  pinForTests("bots_available", null);
 }
 
 export function setBotsAvailableForTests(v: boolean | null): void {

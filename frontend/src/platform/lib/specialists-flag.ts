@@ -14,14 +14,25 @@ import { useEffect, useState } from "react";
 import { getPrefsShared, onPrefsWrittenElsewhere } from "@platform/lib/api";
 
 let enabled = false;
+/** An answer has landed (a read or a publish): until then `enabled` false means "not known yet", not "off". */
+let settled = false;
 let reading: Promise<void> | null = null;
 let generation = 0;
 const listeners = new Set<(v: boolean) => void>();
+
+const knownListeners = new Set<(v: boolean | null) => void>();
 
 function set(next: boolean) {
   if (enabled === next) return;
   enabled = next;
   for (const listener of [...listeners]) listener(next);
+}
+
+/** `set` for an answer (a read or a publish): also tells the readers that need "known off" apart from "not read". */
+function answer(next: boolean) {
+  set(next);
+  settled = true;
+  for (const listener of [...knownListeners]) listener(enabled);
 }
 
 let following = false;
@@ -36,7 +47,7 @@ export function readSpecialistsFlag(): Promise<void> {
   const departed = generation;
   reading = getPrefsShared()
     .then((p) => {
-      if (generation === departed) set(p?.specialists?.enabled === true);
+      if (generation === departed) answer(p?.specialists?.enabled === true);
     })
     .catch(() => {
       // A failed read is not an answer: stay where we are and let the next mount retry.
@@ -50,7 +61,7 @@ export function readSpecialistsFlag(): Promise<void> {
 export function publishSpecialistsEnabled(on: boolean): void {
   generation += 1;
   reading = Promise.resolve();
-  set(on === true);
+  answer(on === true);
 }
 
 /** The flag right now — a plain read for code outside React. */
@@ -72,9 +83,26 @@ export function useSpecialistsEnabled(): boolean {
   return current;
 }
 
+/** Subscribe, telling "off" from "not read yet": `null` until the first answer lands. For a reader that would
+ *  otherwise act on an off it has not heard yet (the shell's redirect away from a `/bots` URL, Windows). */
+export function useSpecialistsFlagKnown(): boolean | null {
+  const [current, setCurrent] = useState<boolean | null>(() => (settled ? enabled : null));
+  useEffect(() => {
+    knownListeners.add(setCurrent);
+    setCurrent(settled ? enabled : null);
+    void readSpecialistsFlag();
+    return () => {
+      knownListeners.delete(setCurrent);
+    };
+  }, []);
+  return current;
+}
+
 /** Test seam: back to "not read yet, off". Notifies mounted readers. */
 export function resetSpecialistsFlagForTests(): void {
   generation += 1;
   reading = null;
   set(false);
+  settled = false;
+  for (const listener of [...knownListeners]) listener(null);
 }

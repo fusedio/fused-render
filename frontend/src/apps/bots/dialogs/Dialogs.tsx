@@ -8,6 +8,7 @@
 // and the seeded greeting, "skills" / "routines" from the bot menu and the preview pane (their dialogs were folded
 // into Settings, 2026-10-09).
 import { useEffect, useRef } from "react";
+import { useBotsMissing } from "@platform/lib/bots-available";
 import { closeDialog, getState, openDialog, poll, select, useBotsSelector, type DialogReq } from "../state/store";
 import { createBot, saveSettings } from "./actions";
 import { BotSettings } from "./BotSettings";
@@ -35,6 +36,9 @@ export function Dialogs() {
   const id = useBotsSelector((s) => s.ui.dialog?.id ?? s.sel);
   const b = useBotsSelector((s) => (id ? s.bots.find((x) => x.id === id) : undefined));
   const key = useReqKey(req);
+  // No bots on this server (Windows): "+ New" is a specialist, straight to its form — no preset chooser to step
+  // back to, since every other card in it makes a bot.
+  const botsOff = useBotsMissing();
   // Settings reads the bot's detail (memory, skills), which only the selected bot carries: select it if needed and
   // hold the dialog for the next poll, so a Save can never write back an unloaded (empty) memory.
   const needDetail = !!b && !b.specialist && req?.kind === "settings" && (b.memory == null || b.skills == null);
@@ -48,7 +52,8 @@ export function Dialogs() {
   // "+ New bot": the preset chooser first; a pick reopens the slot as the create form filled in from it. In the form,
   // Cancel steps BACK to the chooser (the pick was one click; the chooser is where a second thought goes), while
   // Escape and a press outside leave the whole flow. The chooser's X / outside press close.
-  if (req?.kind === "newBot" && !req.pick) dialog = <PresetPicker key={key} onDone={(p) => { if (p) openDialog({ kind: "newBot", pick: p }); else closeDialog(); }} />;
+  if (botsOff && (req?.kind === "newBot" || req?.kind === "specialist")) dialog = <SpecialistDialog key={key} onClose={closeDialog} />;
+  else if (req?.kind === "newBot" && !req.pick) dialog = <PresetPicker key={key} onDone={(p) => { if (p) openDialog({ kind: "newBot", pick: p }); else closeDialog(); }} />;
   else if (req?.kind === "newBot" && req.pick) {
     dialog = <CreateBot key={key} pick={req.pick} onBack={() => openDialog({ kind: "newBot" })}
       onClose={(v) => { closeDialog(); if (v) void createBot(v); }} />;
