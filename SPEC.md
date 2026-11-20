@@ -12731,6 +12731,10 @@ is never sent it, and every alternation of their generations resets the view
   strip and leaves the last result in place.
 - **NU-4 The external CLI.** With a `FUSED_RENDER_FUSED_BIN` override there
   is no interpreter to run the helper in: the route answers 501.
+- **NU-5 A run in flight.** A bar moves under the strip, Run reads
+  "Running…" and is disabled, and the strip counts the seconds. A result
+  already on screen stays as it is, not dimmed, and the strip says "previous
+  result shown" until the new one replaces it.
 
 ### 53.6 The node page (hosted workbench)
 

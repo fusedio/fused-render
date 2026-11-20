@@ -53,7 +53,12 @@
     min-height: 36px; padding: 0 12px;
     border-bottom: 1px solid var(--line); background: var(--panel);
   }
-  .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Narrow panes: the buttons keep their words on one line, the title keeps
+     a readable minimum, and the status lines are what gives way. */
+  .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 72px; }
+  .strip button, .strip label { flex: none; white-space: nowrap; }
+  .strip .kind, .strip .canvas { flex: none; }
+  .strip .status { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .strip .kind, .strip .canvas, .strip .status, .strip .sync { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
   .strip .sync { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .strip .status.error, .strip .sync.error { color: var(--error); }

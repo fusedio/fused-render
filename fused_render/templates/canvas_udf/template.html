@@ -52,7 +52,12 @@
     min-height: 36px; padding: 0 12px;
     border-bottom: 1px solid var(--line); background: var(--panel);
   }
-  .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Narrow panes: the buttons keep their words on one line, the title keeps
+     a readable minimum, and the status lines are what gives way. */
+  .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 72px; }
+  .strip button, .strip label { flex: none; white-space: nowrap; }
+  .strip .kind, .strip .canvas { flex: none; }
+  .strip .status { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .strip .kind, .strip .canvas, .strip .status, .strip .sync { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
   .strip .sync { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .strip .status.error, .strip .sync.error { color: var(--error); }
@@ -85,7 +90,18 @@
   .message .error { color: var(--error); white-space: pre-wrap; max-width: 640px; }
   .log { flex: none; max-height: 35%; overflow: auto; border-top: 1px solid var(--line); background: var(--code); }
   .log summary { padding: 4px 12px; cursor: pointer; color: var(--fg-muted); font-size: 12px; }
-  .busy { opacity: 0.45; transition: opacity 120ms; }
+  /* A run in flight: a moving bar under the strip. The last result stays as
+     it is underneath (not dimmed: a greyed table reads as disabled, not as
+     "being replaced"), and the strip says it is the previous one. */
+  .progress { position: absolute; top: 0; left: 0; right: 0; height: 3px; overflow: hidden; z-index: 2; }
+  .progress::before {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 35%;
+    background: var(--accent); animation: slide 1.1s ease-in-out infinite;
+  }
+  @keyframes slide { from { left: -35%; } to { left: 100%; } }
+  @media (prefers-reduced-motion: reduce) {
+    .progress::before { animation: none; left: 0; width: 100%; opacity: 0.6; }
+  }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -104,6 +120,7 @@
   <button type="button" id="open">Open in canvas</button>
 </div>
 <div class="stage">
+  <div class="progress" id="progress" hidden></div>
   <div class="result" id="result"></div>
   <details class="log" id="log" hidden>
     <summary id="log-summary">Output</summary>
@@ -128,6 +145,7 @@
   let running = false;
   let queued = false;       // a change landed during a run: run once more after
   let rerunTimer = null;
+  let runTicker = null;
   let objectUrl = null;
 
   function el(tag, value, cls) {
@@ -233,6 +251,25 @@
     setStatus([answer.cached ? "Cached" : "", took].filter(Boolean).join(" · "));
   }
 
+  // What a run in flight looks like: the bar, the button saying so, and the
+  // strip counting the seconds — and, over a result already on screen, that
+  // it is the previous one until the new one replaces it.
+  function setRunning(on) {
+    clearInterval(runTicker);
+    $("progress").hidden = !on;
+    $("run").disabled = on;
+    $("run").textContent = on ? "Running…" : "Run";
+    if (!on) return;
+    const startedAt = Date.now();
+    const stale = result.hasChildNodes();
+    const tick = () => {
+      const secs = Math.floor((Date.now() - startedAt) / 1000);
+      setStatus("Running… " + secs + " s" + (stale ? " · previous result shown" : ""));
+    };
+    tick();
+    runTicker = setInterval(tick, 1000);
+  }
+
   async function run() {
     if (!node) return;
     if (running) {
@@ -241,9 +278,7 @@
     }
     running = true;
     queued = false;
-    $("run").disabled = true;
-    setStatus("Running…");
-    result.classList.add("busy");
+    setRunning(true);
     try {
       const answer = await CanvasNode.run(FILE);
       message.hidden = true;
@@ -259,8 +294,7 @@
       }
     } finally {
       running = false;
-      $("run").disabled = false;
-      result.classList.remove("busy");
+      setRunning(false);
       if (queued) void run();
     }
   }
