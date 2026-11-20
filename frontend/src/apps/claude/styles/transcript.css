@@ -2924,3 +2924,63 @@
 .chat-root.chat-peek .turn.user .bubble {
   max-width: max(40%, min(82%, calc(100% - 108px)));
 }
+
+/* A specialist's `show` card (ui/ViewCard.tsx): one row in the shape of the
+   Bots thread's app card. Collapsed it holds no frame; Open raises the overlay. */
+.chat-root .c-viewcard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(42rem, 100%);
+  margin: 8px 0;
+  padding: 9px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  background: var(--c-surface);
+  font-size: calc(13px * var(--c-zoom, 1));
+}
+.chat-root .c-viewcard-ico {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  color: var(--c-dim);
+}
+.chat-root .c-viewcard-txt {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+.chat-root .c-viewcard-txt b,
+.chat-root .c-viewcard-txt small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-root .c-viewcard-txt b {
+  font-weight: 500;
+}
+.chat-root .c-viewcard-txt small {
+  color: var(--c-dim);
+  font-size: calc(11px * var(--c-zoom, 1));
+}
+.chat-root .c-viewcard-open {
+  flex: none;
+  padding: 4px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: calc(12px * var(--c-zoom, 1));
+  cursor: pointer;
+}
+.chat-root .c-viewcard-open:hover {
+  border-color: var(--c-accent);
+  color: var(--c-accent);
+}

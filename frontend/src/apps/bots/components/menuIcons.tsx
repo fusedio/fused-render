@@ -32,6 +32,9 @@ export type MenuItem = { a: MenuAction; label: string; icon: ReactNode; danger?:
 /** openMenu's rows, in order, the same wherever the menu opens (a row's right-click or the preview header's ☰, which
  *  alone leads with "Open live view"). Skills… and Routines… open Settings on that section. */
 export function menuItems(b: Bot, opts: { live?: boolean } = {}): MenuItem[] {
+  // A specialist is not a bot of the bots backend: only what its own routes do.
+  if (b.specialist) return [{ a: "settings", label: "Settings…", icon: MI.settings }, { a: "export", label: "Export transcript", icon: MI.export },
+    "hr", { a: "delete", label: "Delete…", icon: MI.delete, danger: true }];
   const { live } = opts, out: MenuItem[] = [], ea = b.kind === "super", expert = b.kind === "expert";
   // An expert has no browser: no live view, and no clone (the backend refuses one).
   if (live && !expert) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");

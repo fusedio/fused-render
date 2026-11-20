@@ -1586,6 +1586,9 @@ export interface Prefs {
   // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
   // default). Optional like `queue`: absent reads as off.
   breakout?: { enabled: boolean };
+  // Specialists (`specialists_enabled`, shell/prefs.py; docs/specialists.md).
+  // Experimental, off by default. Optional like `breakout`: absent reads as off.
+  specialists?: { enabled: boolean };
   // The slow in-canvas screenshot fallback on a Mac
   // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
   // Optional: absent (older server) reads as off.
@@ -2182,6 +2185,10 @@ export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putBreakoutEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { breakout_enabled: enabled });
+}
+
+export function putSpecialistsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { specialists_enabled: enabled });
 }
 
 export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Prefs> {

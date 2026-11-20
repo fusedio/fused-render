@@ -52,6 +52,7 @@ import time
 from fused_render import current_apps, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.index.ignore import MountGuard
+from fused_render.specialists import paths as sp_paths
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,9 @@ def queue_key(project: str) -> str:
     repo must reset.
     """
     if not isinstance(project, str) or not project or not os.path.isabs(project):
+        return ""
+    # A specialist's home has no queue: its main chat and breakouts run side by side (docs/specialists.md).
+    if sp_paths.flag_on_and_inside(project):
         return ""
     cached = _KEY_CACHE.get(project)
     if cached is not None:

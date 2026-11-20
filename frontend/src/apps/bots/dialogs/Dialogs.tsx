@@ -17,6 +17,7 @@ import { CreateBot } from "./CreateBot";
 import { ExportBotDialog } from "./ExportBot";
 import { FailuresDialog } from "./Failures";
 import { PresetPicker } from "./PresetPicker";
+import { SpecialistDialog } from "./SpecialistDialog";
 import { UsageDialog } from "./Usage";
 
 export { cloneBot, createBot, deleteBot, exportBot, exportBotFile, saveSettings } from "./actions";
@@ -36,7 +37,7 @@ export function Dialogs() {
   const key = useReqKey(req);
   // Settings reads the bot's detail (memory, skills), which only the selected bot carries: select it if needed and
   // hold the dialog for the next poll, so a Save can never write back an unloaded (empty) memory.
-  const needDetail = !!b && req?.kind === "settings" && (b.memory == null || b.skills == null);
+  const needDetail = !!b && !b.specialist && req?.kind === "settings" && (b.memory == null || b.skills == null);
   useEffect(() => {
     if (!needDetail || !b) return;
     if (getState().sel !== b.id) select(b.id, { replace: true });  // incidental to the dialog, not a hop worth a history entry
@@ -52,6 +53,9 @@ export function Dialogs() {
     dialog = <CreateBot key={key} pick={req.pick} onBack={() => openDialog({ kind: "newBot" })}
       onClose={(v) => { closeDialog(); if (v) void createBot(v); }} />;
   }
+  // A specialist (PresetPicker's card, or Settings… on one): its own form.
+  else if (req?.kind === "specialist") dialog = <SpecialistDialog key={key} onClose={closeDialog} onBack={() => openDialog({ kind: "newBot" })} />;
+  else if (b?.specialist && req?.kind === "settings") dialog = <SpecialistDialog key={key} s={b.specialist} onClose={closeDialog} />;
   else if (b && !needDetail && req?.kind === "settings") {
     const bid = b.id, tab = typeof req.tab === "string" ? req.tab : undefined;
     dialog = <BotSettings key={key} bot={b} tab={tab} onClose={(v) => { closeDialog(); if (v) void saveSettings(bid, v); }} />;

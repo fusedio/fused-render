@@ -8286,7 +8286,13 @@ def _sync_start_response(env: str, name: str):
     # A reference copy at `user/<name>` (marker `mirror`) is not a clone: no
     # manager, no watcher, no push of its content over the user's canvas.
     if not _is_live_clone(env, name):
-        return _error(f"canvas {name!r} is not cloned yet (no canvas.toml)", 409)
+        # Say which: "no canvas.toml" for a folder that holds one sent people
+        # looking in the wrong place.
+        why = {canvas_marker.STATE_MISSING: "no folder",
+               canvas_marker.STATE_MIRROR: "its folder is a reference copy",
+               canvas_marker.STATE_ADOPTING: "its folder is a reference copy whose pull has not landed",
+               }.get(canvas_marker.folder_state(_canvas_dir(env, name)), "no canvas.toml")
+        return _error(f"canvas {name!r} is not cloned yet ({why})", 409)
     # The writer lock FIRST: a refused start must not touch a folder another
     # process owns (the seeding below writes into it).
     try:
