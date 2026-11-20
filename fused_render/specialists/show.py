@@ -42,7 +42,9 @@ TOOLS = {
             "Make a new, empty Fused canvas of the user's and its editable folder on this machine, for work you want "
             "to show them (UDFs, widgets). Returns the folder. You then write the node files into that folder "
             "yourself with Write / Edit, and their rows in its canvas.toml. Only when the user asked you to build "
-            "or show something; never for a throwaway run. The user is asked to approve each new canvas."),
+            "or show something; never for a throwaway run. The user is asked to approve each new canvas. This is "
+            "the only way to make a canvas: never use the `fused` CLI's create, clone, pull or push for one, and "
+            "never make the folder yourself."),
         "inputSchema": {"type": "object", "required": ["name", "env"], "properties": {
             "name": {"type": "string", "description": "The canvas name: letters, digits and underscores only."},
             # Required, so the approval card the user answers names the environment beside the canvas; the
@@ -101,7 +103,11 @@ def note(skills: bool = False) -> str:
             "theirs and returns its folder, you write its node files (`<name>.py` UDFs, `<name>.json` widgets) and "
             f"their canvas.toml rows there, and `mcp__{SERVER}__{SHOW}` puts a card in the chat that opens a node or "
             "the canvas live. Do this when the user asks to see, build or change something; they keep improving it "
-            "by telling you, and you edit the same files."
+            f"by telling you, and you edit the same files. `{CREATE}` is the ONLY way you make a canvas: never with "
+            "the `fused` CLI's own `canvas create`, `clone`, `pull` or `push`, and never by making a folder under a "
+            "canvas `user/` folder yourself. Only the tool asks the user, registers the canvas with the app and "
+            "starts its sync; a canvas made any other way is not synced and can open with an error. If the tool is "
+            "refused or fails, tell the user what it said and stop; do not work around it."
             + (" You have the `workbench` skills for the formats, and must invoke the one for a file before you "
                "write or change it, however small the change: `workbench:json-ui-schemas` for any `.json` widget, "
                "`workbench:fused-udfs` for any `.py` UDF, `workbench:canvas-toml` before the first canvas.toml "

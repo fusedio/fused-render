@@ -531,6 +531,12 @@ validate, show), never guessing the widget format, editing the same files when t
 what to leave alone. The file is the app's and is read in place, so every specialist follows the current text;
 nothing is written into a home.
 
+**`canvas_create` is the only way it makes a canvas**, by instruction only (the `append`, the tool's description
+and the file all say so): never the `fused` CLI's `canvas create`, `clone`, `pull` or `push`, never a folder made by
+hand under `user/`, and when the tool is refused or fails it tells the user and stops. Nothing enforces it. The
+reason: a specialist that built canvases itself left folders the app was not syncing (no watcher until the user
+opened them) and that the user had never approved, and one opened with "not cloned yet".
+
 **The UI.**
 
 - `apps/claude/specialists/view-card.ts` reads the card line from a settled `mcp__specialist_canvas__show` row.
