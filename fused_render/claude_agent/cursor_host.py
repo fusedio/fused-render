@@ -113,7 +113,9 @@ _CONTEXT_CLOSE = "</fused_render_context>"
 _CONTEXT_RE = re.compile(r"^\s*" + re.escape(_CONTEXT_OPEN) + r".*?"
                          + re.escape(_CONTEXT_CLOSE) + r"\s*", re.S)
 # Where `agent._cursor_argv` writes the appended prompt, under the run dir.
-_INSTRUCTIONS_FILE = os.path.join("cursor", "instructions.md")
+#: `agent._CURSOR_INSTRUCTIONS` — not under `cursor/`, which is the run
+#: dir's poll-offset file.
+_INSTRUCTIONS_FILE = os.path.join("cursor_agent", "instructions.md")
 # The permission wait mirrors permission_server.py: same env knob, same poll,
 # same write window — the card on the other side is the same card.
 _PERM_WAIT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
@@ -939,7 +941,7 @@ class _Host:
             on_done=self._on_prompt_reply)
 
     def _read_instructions(self) -> str:
-        """`<run_dir>/cursor/instructions.md`, written by `agent._cursor_argv`
+        """`<run_dir>/cursor_agent/instructions.md`, written by `agent._cursor_argv`
         (D8), or "" when the spawn wrote none."""
         try:
             with open(os.path.join(self.run_dir, _INSTRUCTIONS_FILE),

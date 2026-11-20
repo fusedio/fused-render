@@ -139,7 +139,7 @@ agent.py:      _HOST_FILES["cursor"] = cursor_host.py; _SELF_MINTED_ID_BACKENDS 
   switches are the same request. `caps.live_model_switch = True`. No effort:
   the thinking level is a per-model PARAMETER (`configOptions` category
   `thought_level`) that Cursor defaults; `efforts = ()`.
-- **D8** System prompt: `_cursor_argv` writes `<run_dir>/cursor/instructions.md`
+- **D8** System prompt: `_cursor_argv` writes `<run_dir>/cursor_agent/instructions.md` (not `cursor/`: that is the poll's byte-offset file)
   = `_appended_prompt(file, pane, "cursor")` with `mcp__fused_render__<tool>`
   spelled `<tool>`, plus the readable directories (D9). The host sends it as a
   leading text block, wrapped in `<fused_render_context>…</fused_render_context>`,

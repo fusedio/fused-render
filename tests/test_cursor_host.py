@@ -97,8 +97,8 @@ class Session:
             json.dump({"resumed_from": self._sid, "file": self.cwd,
                        "backend": "cursor"}, fh)
         if instructions is not None:
-            os.makedirs(os.path.join(self.run_dir, "cursor"))
-            with open(os.path.join(self.run_dir, "cursor", "instructions.md"), "w") as fh:
+            os.makedirs(os.path.join(self.run_dir, "cursor_agent"))
+            with open(os.path.join(self.run_dir, "cursor_agent", "instructions.md"), "w") as fh:
                 fh.write(instructions + "\n")
         self.bucket = os.path.join(agent_roots.cursor_dir(), "projects",
                                    agent_roots.munge(self.cwd))

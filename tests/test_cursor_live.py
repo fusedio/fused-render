@@ -119,8 +119,8 @@ class Live:
             json.dump({"resumed_from": resume_sid, "file": self.cwd,
                        "backend": "cursor"}, fh)
         if instructions is not None:
-            os.makedirs(os.path.join(self.run_dir, "cursor"))
-            with open(os.path.join(self.run_dir, "cursor", "instructions.md"), "w") as fh:
+            os.makedirs(os.path.join(self.run_dir, "cursor_agent"))
+            with open(os.path.join(self.run_dir, "cursor_agent", "instructions.md"), "w") as fh:
                 fh.write(instructions + "\n")
         req = {"agent": AGENT, "run_dir": self.run_dir, "file": self.cwd,
                "cwd": self.cwd, "pane": False, "cli_mode": cli_mode,

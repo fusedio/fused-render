@@ -124,13 +124,28 @@ def test_the_argv_is_bare_and_the_prompt_lands_in_the_run_dir(agent, tmp_path, m
     # Nothing but the subcommand: no --force, no --model (the host sets it
     # live), no effort.
     assert argv == ["/x/cursor-agent", "acp"]
-    body = (run_dir / "cursor" / "instructions.md").read_text()
+    body = (run_dir / "cursor_agent" / "instructions.md").read_text()
     # The pane tool is named the way Cursor shows it to the model: bare.
     assert "mcp__fused_render__" not in body
     assert "`app_state`" in body or "app_state" in body
     assert str(extra) in body
     # A pane exists, so the MCP config the host hands `session/new` is there.
     assert (run_dir / "mcp.json").exists()
+    # The poll's byte offset lives in the FILE `<run_dir>/cursor`: the
+    # instructions directory must not take that name (PR #2383 review), or
+    # every poll re-parses out.jsonl from 0 and the offset never saves.
+    agent._write_poll_cursor(str(run_dir), 7)
+    assert agent._read_poll_cursor(str(run_dir), 100) == 7
+
+
+def test_the_host_reads_the_instructions_where_agent_writes_them(agent):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "cursor_host_paths", os.path.join("fused_render", "claude_agent", "cursor_host.py"))
+    host = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(host)
+    assert host._INSTRUCTIONS_FILE == agent._CURSOR_INSTRUCTIONS
+    assert not agent._CURSOR_INSTRUCTIONS.startswith("cursor" + os.sep)
 
 
 def test_the_spawn_env(agent, tmp_path, monkeypatch):

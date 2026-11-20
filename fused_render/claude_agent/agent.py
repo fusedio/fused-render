@@ -6147,7 +6147,11 @@ def _opencode_release_key(run_dir: str) -> None:
 _CURSOR_MODES = {"default": "default", "acceptEdits": "acceptEdits", "auto": "auto"}
 #: Where `_cursor_argv` writes the appended prompt the host sends with its
 #: first `session/prompt` (CURSOR D8) — `cursor_host._INSTRUCTIONS_FILE`.
-_CURSOR_INSTRUCTIONS = os.path.join("cursor", "instructions.md")
+#: Under `cursor_agent/`, NOT `cursor/`: `<run_dir>/cursor` is the poll's
+#: byte-offset FILE (`_read_poll_cursor`), and a directory of that name made
+#: every poll re-parse `out.jsonl` from 0 (PR #2383 review).
+_CURSOR_CTX_DIR = "cursor_agent"
+_CURSOR_INSTRUCTIONS = os.path.join(_CURSOR_CTX_DIR, "instructions.md")
 
 
 def _cursor_argv(run_dir: str, pane: bool, cli_mode: str | None,
@@ -6161,7 +6165,7 @@ def _cursor_argv(run_dir: str, pane: bool, cli_mode: str | None,
     fresh chat's id is Cursor's own (D2).
 
     The argv is BARE:
-      * the system prompt → `<run_dir>/cursor/instructions.md`, which the
+      * the system prompt → `<run_dir>/cursor_agent/instructions.md`, which the
         host sends ahead of the user's words on its first prompt (D8):
         ACP's `session/new` takes no instructions, and the only prompt files
         Cursor reads (`AGENTS.md`, `.cursor/rules`) live in the user's own
@@ -6180,7 +6184,7 @@ def _cursor_argv(run_dir: str, pane: bool, cli_mode: str | None,
         HOST hands it to `session/new` as the request's `mcpServers`."""
     cmd = [_cursor_bin(), "acp"]
     s3 = _s3_tools_supported()
-    ctx = os.path.join(run_dir, "cursor")
+    ctx = os.path.join(run_dir, _CURSOR_CTX_DIR)
     os.makedirs(ctx, exist_ok=True)
     # Cursor names an MCP tool to the model by its bare name, under the
     # server it came from: `mcp__fused_render__app_state` → `app_state`.
