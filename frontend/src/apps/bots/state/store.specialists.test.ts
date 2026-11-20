@@ -3,9 +3,9 @@
 // which does not know it, and not its learning dot, which its Learning tab clears. Its menu has only what its routes do.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
-const { pollOnce, getState, openBot, setState } = await import("./store");
+const { pollOnce, getState, openBot, setState, dropPollForTests } = await import("./store");
 const { setBotsRoot } = await import("../lib/root");
 const { menuItems } = await import("../components/menuIcons");
 const { publishSpecialistsEnabled, resetSpecialistsFlagForTests } = await import("@platform/lib/specialists-flag");
@@ -23,6 +23,9 @@ const bots = { ts: 1, usage: null, imessage: null, bots: [{ id: "b1", name: "Hel
   return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
 };
 beforeEach(() => { calls.length = 0; });
+// The store is one module for the whole run: a poll an earlier suite left pending under a never-settling fetch (the
+// Claude rail's renders) would hold every `poll()` here — `actSpecialist`'s — behind it until the timeout.
+beforeAll(() => { dropPollForTests(); });
 // The store is one module for every suite in the run: leave it as found.
 afterAll(() => { setBotsRoot(null); resetSpecialistsFlagForTests(); setState({ bots: [], sel: null, events: {}, cursors: {}, seen: {} }); (globalThis as { fetch: unknown }).fetch = realFetch; });
 

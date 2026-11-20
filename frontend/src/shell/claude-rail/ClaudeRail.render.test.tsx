@@ -28,6 +28,7 @@ const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 const { BotCardHost } = await import("./BotCardHost");
 const { resetBotCardForTests } = await import("./bot-card-store");
+const { dropPollForTests } = await import("@apps/bots/state/store");
 const { railGitCount, railGitOf, resetRailGitStoreForTests } = await import("./rail-git-store");
 const { gitCardRail, gitCardState, registerGitCard, resetGitCardForTests } = await import("./git-peek-store");
 const { resetRailGitCacheForTests } = await import("./rail-git");
@@ -170,6 +171,9 @@ afterEach(() => {
   // …and the unified-head flag keeps a read of its OWN (task-head-flag `read`):
   // a card mounted here leaves it pending under the same stub.
   resetTaskHeadUnifiedFlagForTests();
+  // …and so does the Bots store's poll: a bot card mounted here starts one that
+  // never settles, and every later suite's `poll()` would queue behind it.
+  dropPollForTests();
   for (const [name, was] of saved) {
     if (was === MISSING) delete g[name];
     else g[name] = was;

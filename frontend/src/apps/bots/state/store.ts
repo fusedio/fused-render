@@ -570,6 +570,9 @@ export function poll(): Promise<void> {
   if (pollBusy) return pollBusy.then(poll);
   return (pollBusy = pollOnce().finally(() => { pollBusy = null; }));
 }
+/** Tests: forget a poll still in flight. A suite whose fetch never settles (the Claude rail's renders) leaves one
+ *  pending, and every later `poll()` in the process — `act`, `actSpecialist` — would queue behind it for ever. */
+export function dropPollForTests(): void { pollBusy = null; }
 
 export async function pollOnce(): Promise<void> {
   // OFF THE BOTS PAGE the poll is the rail's bot card's (shell/claude-rail BotPeek; `feedBotQuietly` below, and the
