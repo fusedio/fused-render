@@ -5,7 +5,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 
-const { pollOnce, getState, openBot, setState } = await import("./store");
+const { pollOnce, getState, openBot, setState, resetPollForTests } = await import("./store");
 const { setBotsRoot } = await import("../lib/root");
 const { menuItems } = await import("../components/menuIcons");
 const { publishSpecialistsEnabled, resetSpecialistsFlagForTests } = await import("@platform/lib/specialists-flag");
@@ -22,6 +22,9 @@ const bots = { ts: 1, usage: null, imessage: null, bots: [{ id: "b1", name: "Hel
   const body = u.startsWith("/api/specialists") && !init?.method ? [spec] : u.startsWith("/api/bots?") ? bots : { ok: true };
   return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
 };
+// The store is shared with every file in the run: a poll another file left in flight against its own stub (the rail's
+// bot card feeds this store) would be what actSpecialist's poll waits on, until the 5 s test timeout.
+resetPollForTests();
 beforeEach(() => { calls.length = 0; });
 // The store is one module for every suite in the run: leave it as found.
 afterAll(() => { setBotsRoot(null); resetSpecialistsFlagForTests(); setState({ bots: [], sel: null, events: {}, cursors: {}, seen: {} }); (globalThis as { fetch: unknown }).fetch = realFetch; });
