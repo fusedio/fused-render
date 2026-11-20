@@ -153,6 +153,7 @@
   let rerunTimer = null;
   let runTicker = null;
   let shownFrom = null;     // what the result on screen is: "saved" | "fresh" | null
+  let runGen = 0;           // bumped by every run: a saved copy is drawn only for the latest
 
   function el(tag, value, cls) {
     const out = document.createElement(tag);
@@ -305,13 +306,17 @@
     running = true;
     queued = false;
     const handle = udf.run(undefined, { confirm: opts.onOpen ? false : undefined });
-    // Set the moment this run's own outcome (an answer or an error) is in:
-    // from then on the saved copy is never drawn, however late its bytes
-    // arrive. `shownFrom` cannot say this — an error resets it to null.
+    // The saved copy is drawn only until something newer owns the stage:
+    // this run's fresh answer or its UDF error (`settled`), or a later run
+    // (`gen`). A decline or a failure to run leaves it eligible — on open, a
+    // batch/map UDF with a saved answer is meant to show that answer.
+    // `shownFrom` cannot say this — an error resets it to null.
+    const gen = ++runGen;
     let settled = false;
+    const savedWanted = () => !settled && gen === runGen;
     if (opts.onOpen) {
       handle.saved.then((saved) => {
-        if (saved && !settled) void showAnswer(saved, () => !settled);
+        if (saved && savedWanted()) void showAnswer(saved, savedWanted);
       });
     }
     setRunning(true);
@@ -320,8 +325,8 @@
       settled = true;
       await showAnswer(fresh);
     } catch (error) {
-      settled = true;
       if (error.code === "udf_error") {
+        settled = true;
         showError(error);
       } else if (error.code === "declined" && error.execution_type) {
         // A batch job / batch work / map not run. Decided on whether a saved

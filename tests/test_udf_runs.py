@@ -107,6 +107,10 @@ class FakeRunner:
         if self.on_run is not None:
             self.on_run(request)
         final = self.final(request) if callable(self.final) else self.final
+        source = request.get("source") or ""
+        if final.get("ok") and source.endswith(".py") and os.path.exists(source):
+            # Like the worker: the hash of the code it loaded and ran.
+            final = dict(final, code_sha256=service._sha_of_file(source))
         if final.get("ok"):
             with open(request["out"], "wb") as fh:
                 fh.write(self.body)
@@ -559,3 +563,29 @@ def test_the_saved_routes_size_and_clear_with_the_guard(client, base):
     res = client.delete("/api/udf/saved", headers={"X-Fused": "1"})
     assert res.status_code == 200 and res.json()["cleared"]["entries"] == 1
     assert client.get("/api/udf/saved").json() == {"entries": 0, "bytes": 0}
+
+
+def test_a_retry_after_a_cancel_starts_a_new_run(clone, signed_in, fake_runner):
+    fake_runner.gate = asyncio.Event()
+    ref = {"file": str(clone / "udf_1.py")}
+    frames = []
+
+    async def go():
+        async def send(f):
+            frames.append(f)
+
+        stop = asyncio.Event()
+        first = asyncio.ensure_future(service.run({"id": "a", "ref": ref}, send, stop))
+        await asyncio.sleep(0.05)
+        stop.set()
+        await first
+        retry = asyncio.ensure_future(service.run({"id": "b", "ref": ref}, send))
+        await asyncio.sleep(0.05)
+        fake_runner.gate.set()
+        await retry
+
+    asyncio.run(go())
+    assert len(fake_runner.requests) == 2
+    by_id = {f["id"]: f for f in frames if f["type"] in ("done", "error")}
+    assert by_id["a"]["code"] == "cancelled" and by_id["b"]["type"] == "done"
+

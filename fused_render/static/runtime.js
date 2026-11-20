@@ -7738,8 +7738,15 @@
     s.handlers.set(id, (frame) => {
       if (onFrame(frame)) s.handlers.delete(id);
     });
+    // Cancelled before the socket opened: the request is never sent.
+    let sent = false;
+    let dropped = false;
     s.ready.then(
-      () => s.ws.send(JSON.stringify(Object.assign({}, msg, { id }))),
+      () => {
+        if (dropped) return;
+        s.ws.send(JSON.stringify(Object.assign({}, msg, { id })));
+        sent = true;
+      },
       (err) => {
         const h = s.handlers.get(id);
         if (h) h({ type: "error", code: err.code || "unavailable", error: err.message });
@@ -7749,6 +7756,11 @@
       id,
       cancel() {
         if (!s.handlers.has(id)) return;
+        if (!sent) {
+          dropped = true;
+          s.handlers.delete(id);
+          return;
+        }
         try {
           if (s.ws.readyState === 1) s.ws.send(JSON.stringify({ op: "cancel", id }));
         } catch (e) {
@@ -7901,6 +7913,9 @@
               confirmed: confirmed === true,
             },
             (frame) => {
+              // A cancelled run has already rejected: nothing after it is
+              // shown or asked about.
+              if (cancelled) return true;
               if (frame.type === "saved") {
                 settleSaved(udfResult(frame.result));
                 return false;

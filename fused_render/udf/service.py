@@ -238,14 +238,12 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
                                     f"(the limit is {MAX_BYTES / 1e6:.0f} MB)",
                        size=size, limit=MAX_BYTES)
     keep_key = key
-    if target.file_sha is not None:
-        # The file changed while it ran: the answer is for code that is no
-        # longer on disk, so it is not filed under the new file's key.
-        try:
-            if _sha_of_file(target.load_as) != target.file_sha:
-                keep_key = None
-        except OSError:
-            keep_key = None
+    if target.file_sha is not None and final.get("code_sha256") != target.file_sha:
+        # The worker loaded other code than the file the key was made from
+        # (it changed in between): the answer is not filed under the key.
+        # `code_sha256` is the hash of the code that ran (`udf.code`, the
+        # file's text as fused.load read it).
+        keep_key = None
     meta = {"content_type": final.get("content_type") or "", "size": size,
             "seconds": final.get("seconds"), "stdout": final.get("stdout") or "",
             "stderr": final.get("stderr") or "", "fused_cached": bool(final.get("fused_cached")),
@@ -305,7 +303,8 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
             except RunError as err:
                 return {"error": err}
             finally:
-                _FLIGHTS.pop(flight_key, None)
+                if _FLIGHTS.get(flight_key) is flight:
+                    _FLIGHTS.pop(flight_key, None)
 
         flight.task = asyncio.ensure_future(go())
 
@@ -326,6 +325,10 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
         done, _ = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
         if stop is not None and stop in done and not flight.task.done():
             if flight.waiting == 1 and flight.rid:
+                # Unlisted first: a retry right after starts a new run instead
+                # of joining this one and getting its "cancelled".
+                if _FLIGHTS.get(flight_key) is flight:
+                    _FLIGHTS.pop(flight_key, None)
                 runner.cancel(flight.env, flight.rid)
             raise RunError("cancelled", "the run was cancelled")
         if stop is not None:

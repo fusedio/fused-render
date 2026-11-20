@@ -197,3 +197,35 @@ out({ schema, bad });
 """)
     assert got["schema"] == {"parameters": ["n"]}
     assert got["bad"] == ["TypeError"] * 5
+
+
+def test_a_run_cancelled_before_the_socket_opens_is_never_sent():
+    got = run_js("""
+globalThis.__server = () => [{ type: "done", result: R() }];
+const run = workbench.udf({ file: "/a.py" }).run();
+run.cancel();
+let code;
+try { await run; } catch (e) { code = e.code; }
+await new Promise((r) => setTimeout(r, 10));
+out({ code, sent: globalThis.__sent.length });
+""")
+    assert got == {"code": "cancelled", "sent": 0}
+
+
+def test_nothing_is_asked_about_after_a_cancel():
+    got = run_js("""
+globalThis.__server = (m) => m.op === "run" ? [{ type: "started" }] : [];
+const run = workbench.udf({ file: "/a.py" }).run();
+await new Promise((r) => setTimeout(r, 5));
+run.cancel();
+// The server's answer lands after the cancel: a large result.
+const sock = udfSock;
+const id = globalThis.__sent[0].id;
+sock.ws.onmessage({ data: JSON.stringify({ id, type: "done", result: R({ size: 60 * 1024 * 1024 }) }) });
+await new Promise((r) => setTimeout(r, 5));
+let code;
+try { await run; } catch (e) { code = e.code; }
+out({ code, asked: globalThis.__asked.length });
+""")
+    assert got == {"code": "cancelled", "asked": 0}
+
