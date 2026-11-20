@@ -119,9 +119,12 @@ export interface SettingEntry {
   macOnly?: true;
   badge?: "Beta";
   /** Drawn indented under the row above it — a setting that only means
-   *  something while its parent is on. Pair it with an `available` that
-   *  hides the row while the parent is off. */
+   *  something while its parent is on. */
   child?: true;
+  /** The setting this one needs on. While it is off the row is left out of
+   *  its group, but search still finds it — drawn inert, saying which
+   *  setting to turn on (see `parentOff`). */
+  parent?: { id: string; on: (prefs: Prefs) => boolean };
   /** Whether the running app can honour this at all (a server-reported
    *  capability). Absent = always. */
   available?: (ctx: SettingsContext) => boolean;
@@ -159,7 +162,7 @@ const ENTRIES = [
     group: "general",
     section: "Appearance",
     label: "Colour theme",
-    description: "Each theme has a light and a dark variant. Pages you open follow only light or dark.",
+    description: "",
     keywords: "theme palette contrast high-contrast midnight color accessibility",
   },
   {
@@ -168,7 +171,7 @@ const ENTRIES = [
     group: "general",
     section: "Windows & updates",
     label: "Open in native windows",
-    description: "Instead of browser tabs. Turning this off closes them and opens everything in your default browser.",
+    description: "Open apps and pages in their own app windows. Off, they open as tabs in your default browser, and any app windows already open close.",
     keywords: "browser tabs window desktop safari chrome",
   },
   {
@@ -207,7 +210,7 @@ const ENTRIES = [
     group: "ai",
     section: "Agents",
     label: "Claude Code",
-    description: "Runs chats, tasks and bots.",
+    description: "",
     keywords: "claude anthropic agent backend cli sign in login",
   },
   {
@@ -215,7 +218,7 @@ const ENTRIES = [
     group: "ai",
     section: "Agents",
     label: "GitHub Copilot CLI",
-    description: "Runs chats and tasks. Bots keep using Claude.",
+    description: "",
     keywords: "github copilot agent backend cli sign in login",
   },
   {
@@ -223,7 +226,7 @@ const ENTRIES = [
     group: "ai",
     section: "Agents",
     label: "OpenAI Codex CLI",
-    description: "Signs in with your ChatGPT or OpenAI account. Runs chats and tasks; bots keep using Claude.",
+    description: "",
     keywords: "openai codex chatgpt gpt agent backend cli sign in login",
   },
   {
@@ -231,7 +234,7 @@ const ENTRIES = [
     group: "ai",
     section: "Agents",
     label: "Google Gemini CLI",
-    description: "Signs in with your Google account or a Gemini API key. Runs chats and tasks; bots keep using Claude.",
+    description: "",
     keywords: "google gemini agent backend cli sign in login api key",
   },
   {
@@ -239,7 +242,7 @@ const ENTRIES = [
     group: "ai",
     section: "Agents",
     label: "OpenCode",
-    description: "Works with any provider OpenCode supports, or a local model with no account. Runs chats and tasks; bots keep using Claude.",
+    description: "",
     keywords: "opencode open code agent backend cli sign in login api key local model provider",
   },
   {
@@ -247,7 +250,7 @@ const ENTRIES = [
     group: "ai",
     section: "Agents",
     label: "Default for new chats and tasks",
-    description: "Used when more than one agent is on. A conversation keeps the agent it started with.",
+    description: "",
     keywords: "default agent backend",
     child: true,
     // Two or more of the five on: a default only means something when there
@@ -475,7 +478,7 @@ const ENTRIES = [
     description: "Star a chat to keep it in a Favourites section at the foot of the rail, with its own small card at the bottom right. With favourites on, the rail stays on every app page, explorer view and canvas, even with the Claude panel hidden.",
     keywords: "favourite favorite star pin keep chat rail card bottom always panel",
     child: true,
-    available: ({ prefs }) => prefs.canvas_rail_peek?.enabled === true,
+    parent: { id: "canvases-rail-peek", on: (prefs) => prefs.canvas_rail_peek?.enabled === true },
   },
   // TASK ICONS (owner, 2026-11-10): a face per FAVOURITE, in place of the
   // ring (2026-11-11: only a starred task wears one).
@@ -489,7 +492,10 @@ const ENTRIES = [
     child: true,
     // Only a starred chat wears one, so it needs Favourite chats (and that,
     // the rail preview) on.
-    available: ({ prefs }) => prefs.canvas_rail_peek?.enabled === true && prefs.task_favourites?.enabled === true,
+    parent: {
+      id: "tasks-favourites",
+      on: (prefs) => prefs.canvas_rail_peek?.enabled === true && prefs.task_favourites?.enabled === true,
+    },
   },
   // ONE HEADER FOR EVERY TASK VIEW (shell/TaskHead, task-head-flag). After the
   // rail preview's two children, not between them: a row set there read as
@@ -513,7 +519,7 @@ const ENTRIES = [
     description: "A pinned rail window keeps its exact place and size. Other chats open in a second window beside the rail, so up to four can stand at once: pinned and unpinned, for the list and for favourites.",
     keywords: "pin pinned window rail float overlap move resize four windows push task favourite bot",
     child: true,
-    available: ({ prefs }) => prefs.task_head_unified?.enabled === true,
+    parent: { id: "tasks-unified-head", on: (prefs) => prefs.task_head_unified?.enabled === true },
   },
   {
     id: "canvases",
@@ -645,7 +651,7 @@ const ENTRIES = [
     description: "A run's parameters are usually the whole repro. Choose names only if a page passes a secret as a parameter.",
     keywords: "secret redact privacy params",
     child: true,
-    available: ({ prefs }) => prefs.calls?.effective_enabled === true,
+    parent: { id: "call-log", on: (prefs) => prefs.calls?.effective_enabled === true },
   },
   {
     id: "call-retention",
@@ -655,7 +661,7 @@ const ENTRIES = [
     description: "Older calls are deleted automatically.",
     keywords: "retention days delete cleanup",
     child: true,
-    available: ({ prefs }) => prefs.calls?.effective_enabled === true,
+    parent: { id: "call-log", on: (prefs) => prefs.calls?.effective_enabled === true },
   },
   {
     id: "index-query",
@@ -706,9 +712,23 @@ export function unavailableReason(
   return ctx?.prefs?.unavailable?.[entry.needs] ?? null;
 }
 
-/** The rows this machine draws. */
-export function visibleSettings(ctx: SettingsContext): (SettingEntry & { id: SettingId })[] {
+/** The label of the setting this row needs on, while that one is off; null
+ *  when the row has no parent or its parent is on. */
+export function parentOff(entry: Pick<SettingEntry, "parent">, prefs: Prefs | null | undefined): string | null {
+  if (!entry.parent || !prefs || entry.parent.on(prefs)) return null;
+  return settingById(entry.parent.id)?.label ?? null;
+}
+
+/** Everything search can find on this machine: child rows included even
+ *  while their parent is off (2026-11-20). */
+export function searchableSettings(ctx: SettingsContext): (SettingEntry & { id: SettingId })[] {
   return SETTINGS.filter((e) => isVisible(e, ctx));
+}
+
+/** The rows a group draws: what search can find, less the child rows whose
+ *  parent is off. */
+export function visibleSettings(ctx: SettingsContext): (SettingEntry & { id: SettingId })[] {
+  return searchableSettings(ctx).filter((e) => !parentOff(e, ctx.prefs));
 }
 
 /** Groups that have at least one visible row, in page order. */

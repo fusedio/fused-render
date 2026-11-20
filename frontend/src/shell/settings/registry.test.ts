@@ -5,6 +5,8 @@ import {
   NAV_SECTIONS,
   SETTINGS,
   navSections,
+  parentOff,
+  searchableSettings,
   resolveGroup,
   sectionsOf,
   unavailableReason,
@@ -98,6 +100,13 @@ describe("visibility", () => {
       calls: { effective_enabled: true },
     } as unknown as Partial<Prefs>);
     for (const c of children) expect(on).toContain(c);
+    // …but search still finds them, and says which switch they wait on.
+    const pool = searchableSettings(ctx());
+    expect(searchSettings(pool, "favourite chats").map((e) => e.id)).toContain("tasks-favourites");
+    expect(searchSettings(pool, "retention").map((e) => e.id)).toEqual(["call-retention"]);
+    const fav = pool.find((e) => e.id === "tasks-favourites")!;
+    expect(parentOff(fav, ctx().prefs)).toBe("Preview chats from the collapsed Claude rail");
+    expect(parentOff(fav, ctx({}, { canvas_rail_peek: { enabled: true } } as unknown as Partial<Prefs>).prefs)).toBeNull();
     // Task icons need favourites too, not just the rail preview.
     expect(ids({ canvas_rail_peek: { enabled: true } } as unknown as Partial<Prefs>)).not.toContain("tasks-icons");
   });

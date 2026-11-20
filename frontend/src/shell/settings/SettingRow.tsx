@@ -12,7 +12,7 @@ import { Dropdown } from "@shell/Dropdown";
 import { cn } from "@platform/lib/utils";
 import type { Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { groupOf, settingById, unavailableReason, type SettingEntry, type SettingId } from "./registry";
+import { groupOf, parentOff, settingById, unavailableReason, type SettingEntry, type SettingId } from "./registry";
 import { matchedVia, splitLabel } from "./search";
 
 export interface SettingsView {
@@ -62,10 +62,14 @@ export function SettingRow({
   const label = tokens ? splitLabel(entry.label, tokens) : { pre: entry.label, hit: "", post: "" };
   const via = tokens ? matchedVia(entry, tokens) : [];
   const unavailable = unavailableReason(entry, view.prefs ? { prefs: view.prefs } : null);
+  // A child row search found while its parent is off: shown, but inert, and
+  // saying which switch it waits on.
+  const parentLabel = unavailable ? null : parentOff(entry, view.prefs);
+  const blocked = !!unavailable || !!parentLabel;
   // `inert` takes every control inside out of focus and clicks at once, so no
   // control needs a `disabled` of its own. React 18 only passes it through as
   // a string attribute.
-  const inertProps = unavailable ? { inert: "" } : {};
+  const inertProps = blocked ? { inert: "" } : {};
   return (
     <div
       id={rowId(id)}
@@ -104,18 +108,22 @@ export function SettingRow({
             <Ban aria-hidden="true" className="mr-1 inline size-3.5 align-[-2px]" />
             {unavailable}
           </div>
+        ) : parentLabel ? (
+          <div className="settings-row-status" data-needs-parent>
+            Turn on {parentLabel} to use this.
+          </div>
         ) : (
           status && <div className="settings-row-status">{status}</div>
         )}
         {via.length > 0 && <div className="settings-row-via">Matched: {via.join(", ")}</div>}
       </div>
       {control && (
-        <div className={cn("settings-row-control", unavailable && "opacity-55")} {...inertProps}>
+        <div className={cn("settings-row-control", blocked && "opacity-55")} {...inertProps}>
           {control}
         </div>
       )}
       {Children.toArray(children).length > 0 && (
-        <div className={cn("settings-row-extra", unavailable && "opacity-55")} {...inertProps}>
+        <div className={cn("settings-row-extra", blocked && "opacity-55")} {...inertProps}>
           {children}
         </div>
       )}
@@ -129,7 +137,7 @@ export function SettingRow({
  *  much at once). Opens on hover AND on click, tap or Enter — a hover-only
  *  ⓘ "looked disabled and said nothing" (Akshil, 2026-10-20) — and the icon
  *  brightens under the pointer so it reads as something to press. */
-export function SettingHelp({ label, text }: { label: string; text: string }) {
+export function SettingHelp({ label, text }: { label: string; text: ReactNode }) {
   return (
     <Popover>
       <PopoverTrigger

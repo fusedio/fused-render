@@ -54,7 +54,9 @@ import { Input } from "@platform/shadcn/ui/input";
 import {
   groupOf,
   navSections,
+  parentOff,
   resolveGroup,
+  searchableSettings,
   sectionsOf,
   visibleGroups,
   visibleSettings,
@@ -194,9 +196,16 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     const base: SettingEntry[] = visibleSettings({ prefs, mac: isMac, claudeConfig });
     return [...base, ...claudeRows];
   }, [prefs, claudeConfig, claudeRows]);
+  // What search looks through: every row, plus the child rows a group leaves
+  // out while their parent is off.
+  const searchable = useMemo(() => {
+    if (!prefs || claudeConfig === null) return [];
+    const base: SettingEntry[] = searchableSettings({ prefs, mac: isMac, claudeConfig });
+    return [...base, ...claudeRows];
+  }, [prefs, claudeConfig, claudeRows]);
   const groups = useMemo(() => visibleGroups(entries), [entries]);
   const sections = useMemo(() => navSections(groups), [groups]);
-  const byId = (id: string) => entries.find((e) => e.id === id);
+  const byId = (id: string) => searchable.find((e) => e.id === id);
 
   // Scroll a jumped-to row into view, light it briefly, then let it go.
   useEffect(() => {
@@ -238,14 +247,18 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const deep = byId(target ?? "");
   const current: GroupId = deep ? deep.group : resolveGroup(tab, groups);
 
-  const hits = useMemo(() => searchSettings(entries, tokens), [entries, tokens]);
+  const hits = useMemo(() => searchSettings(searchable, tokens), [searchable, tokens]);
   const view: SettingsView = {
     tokens: searching ? tokens : null,
     flashId: flash,
     prefs: prefs ?? undefined,
     jump: (id) => {
-      const group = byId(id)?.group;
-      if (group) showGroup(group, id);
+      const row = byId(id);
+      if (!row) return;
+      // A child its group does not draw yet: light its parent instead, the
+      // switch that brings it back.
+      const target = parentOff(row, prefs) && row.parent ? row.parent.id : id;
+      showGroup(row.group, target);
     },
   };
 
@@ -285,7 +298,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                   setQuery("");
                 }
               }}
-              placeholder={`Search ${entries.length} settings`}
+              placeholder={`Search ${searchable.length} settings`}
               aria-label="Search settings"
               className="settings-search-input"
               autoComplete="off"
