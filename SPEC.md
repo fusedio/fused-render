@@ -12608,7 +12608,7 @@ is never sent it, and every alternation of their generations resets the view
   its kind, the canvas name, and "Open in canvas", which goes to
   `/canvases/<env>/<name>?node=<udfName>&node_file=<file>` (the whole
   window), and the sync line (NT-7). `canvas_widget` adds the frame's status
-  and Reload; `canvas_udf` the run's status, "Run on save" and Run.
+  and Reload; `canvas_udf` the run's status, "Auto-run" and Run.
 - **NT-7 The sync engine runs in the background.** While a node's page is
   open on a live clone with the environment signed in, the canvas's sync
   engine runs (`CanvasNode.sync`, shared/canvas-node.js), so an edit to any
@@ -12709,8 +12709,9 @@ is never sent it, and every alternation of their generations resets the view
   table comes back as a self-contained page, an HTML string as itself), so
   the answer is the response's bytes untouched: `{ok: true, content_type,
   body_b64, stdout, stderr, cached, seconds}`. A run that raised is an
-  answer too: `{ok: false, error, line?, stdout, stderr}`. A result over
-  32 MB is refused with its size. The child has 330 s.
+  answer too: `{ok: false, error, line?, stdout, stderr}`. The child has
+  330 s. What the SDK prints while it runs joins the run's output. Two
+  answers stand in for a run not made or not delivered (NU-6, NU-7).
 - **NU-2 What shows.** `text/html` in a frame (`sandbox="allow-scripts
   allow-popups allow-popups-to-escape-sandbox allow-downloads"`, no
   same-origin: the page's scripts run with no reach into the app);
@@ -12722,19 +12723,51 @@ is never sent it, and every alternation of their generations resets the view
   which draws as a 2 px line; that page (recognised by its `myGrid`
   container and its ag-Grid import) is given the frame's height. A UDF's
   own HTML is shown as returned.
-- **NU-3 When it runs.** On open; on Run; and, while "Run on save" is on
-  (the default; `autorun=0` on the page's URL keeps it off), 600 ms after
-  the file last changed (NT-8's one look after opening compares the file's
-  time with the one the first run started from). A change during a run
-  queues exactly one more. A
-  failure to run at all (signed out, no CLI, a timeout) is shown in the
-  strip and leaves the last result in place.
+- **NU-3 When it runs.** With "Auto-run" on (the default; `autorun=0` on the
+  page's URL keeps it off): on open, and 600 ms after the file last changed
+  (NT-8's one look after opening compares the file's time with the one the
+  first run started from). With it off nothing runs until Run, on open as
+  on a save. A change during a run queues exactly one more. A failure to
+  run at all (signed out, no CLI, a timeout) is shown in the strip and
+  leaves the last result in place.
 - **NU-4 The external CLI.** With a `FUSED_RENDER_FUSED_BIN` override there
   is no interpreter to run the helper in: the route answers 501.
 - **NU-5 A run in flight.** A bar moves under the strip, Run reads
   "Running…" and is disabled, and the strip counts the seconds. A result
   already on screen stays as it is, not dimmed, and the strip says "previous
   result shown" until the new one replaces it.
+- **NU-6 Runs that are asked about first (the workbench's rules).** A UDF
+  that is a batch job, starts batch work or maps is never run without the
+  user's yes. `canvas_node_exec.execution_type(code)` is the hosted
+  workbench's classifier, rule for rule, in its order: (1) by text, the
+  first `@fused.udf(…)` whose arguments carry `engine=` or `instance_type=`
+  is `decorator-batch` whatever the value; (2) by syntax tree, a decorator
+  kwarg with a batch value (`instance_type` other than `realtime`, `engine`
+  other than `realtime`/`local`) is `decorator-batch`; `.map(…)` on a name
+  that is a `@fused.udf` function or a `fused.load(…)` result is `map`; a
+  direct call of such a name, or `fused.run`/`fused.submit`, with a batch
+  value is `inner-batch`. Code that does not parse is `none`. **The gate is
+  the route's**: for any kind but `none`, `POST /api/canvases/node/run`
+  without `confirmed: true` runs nothing and answers `{ok: false,
+  needs_confirmation: true, execution_type, title, reason}`. The page then
+  asks, in the workbench's words: "Confirm batch job run" / "Confirm batch
+  operation" / "Confirm map operation", `Do you want to run "<name>"?`,
+  Cancel / Run. It asks on open (Auto-run on), on a save and on Run alike,
+  and every time: nothing is remembered. Cancel leaves the UDF paused with
+  the reason ("Auto-execution is disabled for batch job UDFs" / "…for UDFs
+  with inner batch jobs" / "…for map operations"). One question at a time:
+  a save while one is up asks nothing more. A confirmed batch job is waited
+  for by the SDK (the child has 3600 s for it); it comes back as a value
+  rather than response bytes, which the helper writes out as a plain table
+  (the first 1000 rows) or text.
+- **NU-7 A large result is asked about first.** A result over 50 MB (the
+  workbench's auto-load default) is not delivered: the route answers `{ok:
+  false, too_large: true, size, limit}` and the page asks "Large data
+  warning" — "Loading data for UDF '<name>' (<size>) might be slow or
+  unstable. Would you like to continue loading this data?", Don't load /
+  Continue anyway. Continue anyway holds while the page is open and runs
+  again with `allow_large: true` (a run NU-6 covers is asked about again,
+  as on the workbench). Past 128 MB a result is refused with its size.
 
 ### 53.6 The node page (hosted workbench)
 

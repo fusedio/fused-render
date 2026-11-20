@@ -641,6 +641,7 @@ def test_node_run_runs_a_udf_nodes_file_in_its_canvases_environment(client, clon
     (call,) = shim.calls
     assert os.path.basename(call["cmd"][-1]) == "_fused_node_run.py"
     assert call["input"] == {"path": str(clone / "udf_1.py"),
+                             "ask_bytes": canvases_mod.NODE_RUN_LARGE_BYTES,
                              "max_bytes": canvases_mod.NODE_RUN_MAX_BYTES}
     assert call["timeout"] == canvases_mod.NODE_RUN_TIMEOUT
     # The canvas's own Fused, exactly as its CLI calls are pointed at it.
@@ -699,6 +700,89 @@ def test_node_run_needs_a_cli_this_process_can_drive(client, clone, signed_in, s
     assert shim.calls == []
 
 
+# ----------------------------------- the gates before a run (NU-6, NU-7)
+
+BATCH_UDF = '@fused.udf(engine="small")\ndef udf():\n    return 1\n'
+MAP_UDF = ('@fused.udf\ndef inner(x):\n    return x\n\n@fused.udf\ndef udf():\n'
+           '    return inner.map([1, 2])\n')
+INNER_UDF = '@fused.udf\ndef udf():\n    return fused.run("x", engine="small")\n'
+
+
+@pytest.mark.parametrize("code,kind,title,reason", [
+    (BATCH_UDF, "decorator-batch", "Confirm batch job run",
+     "Auto-execution is disabled for batch job UDFs"),
+    (INNER_UDF, "inner-batch", "Confirm batch operation",
+     "Auto-execution is disabled for UDFs with inner batch jobs"),
+    (MAP_UDF, "map", "Confirm map operation",
+     "Auto-execution is disabled for map operations"),
+])
+def test_node_run_asks_before_a_batch_or_map_run(client, clone, signed_in, shim,
+                                                 code, kind, title, reason):
+    (clone / "udf_1.py").write_text(code, encoding="utf-8")
+    res = _run(client, clone / "udf_1.py")
+    assert res.status_code == 200
+    assert res.json() == {"ok": False, "needs_confirmation": True,
+                          "execution_type": kind, "title": title, "reason": reason}
+    # Nothing ran: the gate is the server's, whatever the page does.
+    assert shim.calls == []
+    # Anything short of `true` is not a confirmation.
+    for value in (False, "true", 1, None):
+        res = client.post("/api/canvases/node/run", headers=GUARD,
+                          json={"path": str(clone / "udf_1.py"), "confirmed": value})
+        assert res.json().get("needs_confirmation") is True, value
+    assert shim.calls == []
+
+
+def test_node_run_runs_a_confirmed_one_and_asks_again_next_time(client, clone, signed_in, shim):
+    (clone / "udf_1.py").write_text(MAP_UDF, encoding="utf-8")
+    body = {"path": str(clone / "udf_1.py"), "confirmed": True}
+    res = client.post("/api/canvases/node/run", headers=GUARD, json=body)
+    assert res.status_code == 200 and res.json()["ok"] is True
+    assert len(shim.calls) == 1
+    assert shim.calls[0]["timeout"] == canvases_mod.NODE_RUN_TIMEOUT
+    # Nothing is remembered: the next unconfirmed run asks again.
+    assert _run(client, clone / "udf_1.py").json()["needs_confirmation"] is True
+    assert len(shim.calls) == 1
+
+
+def test_node_run_waits_longer_for_a_batch_job(client, clone, signed_in, shim):
+    (clone / "udf_1.py").write_text(BATCH_UDF, encoding="utf-8")
+    res = client.post("/api/canvases/node/run", headers=GUARD,
+                      json={"path": str(clone / "udf_1.py"), "confirmed": True})
+    assert res.status_code == 200
+    assert shim.calls[0]["timeout"] == canvases_mod.NODE_BATCH_RUN_TIMEOUT
+    assert canvases_mod.NODE_BATCH_RUN_TIMEOUT > canvases_mod.NODE_RUN_TIMEOUT
+
+
+def test_node_run_a_plain_udf_needs_no_confirmation_and_ignores_one(client, clone, signed_in, shim):
+    assert _run(client, clone / "udf_1.py").json()["ok"] is True
+    res = client.post("/api/canvases/node/run", headers=GUARD,
+                      json={"path": str(clone / "udf_1.py"), "confirmed": True})
+    assert res.json()["ok"] is True
+    assert len(shim.calls) == 2
+
+
+def test_node_run_passes_the_large_result_ask_through_and_lifts_it_on_request(
+        client, clone, signed_in, shim):
+    shim.answer = _Proc(json.dumps({"ok": False, "too_large": True, "size": 60_000_000,
+                                    "limit": canvases_mod.NODE_RUN_LARGE_BYTES,
+                                    "stdout": "", "stderr": ""}))
+    res = _run(client, clone / "udf_1.py")
+    assert res.status_code == 200 and res.json()["too_large"] is True
+    assert shim.calls[0]["input"]["ask_bytes"] == canvases_mod.NODE_RUN_LARGE_BYTES
+    client.post("/api/canvases/node/run", headers=GUARD,
+                json={"path": str(clone / "udf_1.py"), "allow_large": True})
+    assert shim.calls[1]["input"]["ask_bytes"] is None
+    assert shim.calls[1]["input"]["max_bytes"] == canvases_mod.NODE_RUN_MAX_BYTES
+    assert canvases_mod.NODE_RUN_LARGE_BYTES == 50 * 1024 * 1024 < canvases_mod.NODE_RUN_MAX_BYTES
+
+
+def test_node_run_refuses_a_source_too_large_to_classify(client, clone, signed_in, shim, monkeypatch):
+    monkeypatch.setattr(canvases_mod, "NODE_SOURCE_MAX_BYTES", 8)
+    assert _run(client, clone / "udf_1.py").status_code == 400
+    assert shim.calls == []
+
+
 # ------------------------------------------- the shim's answer (_fused_node_run)
 
 class _Result:
@@ -714,6 +798,7 @@ class _Result:
         self.original_headers = kw.get("original_headers")
         self.is_cached = kw.get("is_cached", False)
         self.time_taken_seconds = kw.get("time_taken_seconds")
+        self.data = kw.get("data")
 
 
 @pytest.fixture(scope="module")
@@ -759,3 +844,55 @@ def test_shim_refuses_a_result_past_the_limit(node_run):
 
 def test_shim_asks_for_the_shared_links_formats(node_run):
     assert node_run.RESULT_FORMAT == "png,html"
+
+
+def test_shim_asks_about_a_result_between_the_two_limits(node_run):
+    big = _Result(original_content=b"x" * 11, original_headers={"content-type": "text/html"},
+                  stdout="out")
+    out = node_run.result_payload(big, 100, 10)
+    assert out == {"ok": False, "too_large": True, "size": 11, "limit": 10,
+                   "stdout": "out", "stderr": ""}
+    # Lifted (`ask_bytes` null): delivered. At the ask limit exactly: delivered.
+    assert node_run.result_payload(big, 100, None)["ok"] is True
+    assert node_run.result_payload(big, 100, 11)["ok"] is True
+    # Past the hard limit the ask is not offered: it could not be honoured.
+    out = node_run.result_payload(big, 10, 5)
+    assert out["ok"] is False and "too_large" not in out and "too large" in out["error"]
+
+
+def test_shim_keeps_what_the_sdk_printed_with_the_runs_output(node_run):
+    out = node_run.result_payload(
+        _Result(original_content=b"x", original_headers={}, stdout="from the udf\n"),
+        100, None, "Batch job started: job://abc\n")
+    assert out["stdout"] == "Batch job started: job://abc\nfrom the udf\n"
+    out = node_run.result_payload(_Result(original_content=b"x", original_headers={}),
+                                  100, None, "printed")
+    assert out["stdout"] == "printed"
+
+
+def test_shim_writes_out_a_batch_jobs_value(node_run):
+    """A batch job comes back as the value, with no response bytes."""
+    pd = pytest.importorskip("pandas")
+    out = node_run.result_payload(_Result(data=pd.DataFrame({"a": [1, 2]})), 10_000)
+    assert out["ok"] is True and out["content_type"].startswith("text/html")
+    import base64
+
+    page = base64.b64decode(out["body_b64"]).decode()
+    assert "<table" in page and "<th>a</th>" in page
+    # Response bytes win when there are any.
+    out = node_run.result_payload(
+        _Result(data="ignored", original_content=b"real", original_headers={}), 100)
+    assert base64.b64decode(out["body_b64"]) == b"real"
+
+
+def test_shim_data_page_shapes(node_run):
+    pd = pytest.importorskip("pandas")
+    assert node_run.data_page(None) == (b"", "")
+    assert node_run.data_page("hi") == (b"hi", "text/plain; charset=utf-8")
+    assert node_run.data_page({"a": 1}) == (b'{"a": 1}', "application/json")
+    assert node_run.data_page(b"\x00") == (b"\x00", "application/octet-stream")
+    body, kind = node_run.data_page(object())
+    assert kind.startswith("text/plain") and body
+    rows = node_run.DATA_PAGE_MAX_ROWS + 5
+    body, kind = node_run.data_page(pd.DataFrame({"a": range(rows)}))
+    assert f"Showing the first {node_run.DATA_PAGE_MAX_ROWS} of {rows} rows." in body.decode()

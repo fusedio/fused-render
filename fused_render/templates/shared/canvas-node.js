@@ -8,7 +8,7 @@
 //   CanvasNode.workbench(env)   where that environment's workbench is framed
 //                               from, and its real origin
 //   CanvasNode.token(env)       the environment's `fused login` bearer
-//   CanvasNode.run(file)        one run of a UDF node's file
+//   CanvasNode.run(file, opts)  one run of a UDF node's file
 //   CanvasNode.sync(node, on)   keep the canvas's sync engine running while
 //                               this page is open, and hear how it stands
 //   CanvasNode.openCanvas(info) the canvas page on this node
@@ -67,11 +67,20 @@
     return data.access_token;
   }
 
-  function run(file) {
+  // `opts.confirmed`: the user said yes to a run the server asks about first
+  // (a batch job, batch work inside, a map). `opts.allow_large`: they said
+  // yes to a result past the size the server asks about. Without them the
+  // answer may be `{needs_confirmation}` or `{too_large}` instead of a run.
+  function run(file, opts) {
+    opts = opts || {};
     return getJson("/api/canvases/node/run", {
       method: "POST",
       headers: Object.assign({ "Content-Type": "application/json" }, GUARD),
-      body: JSON.stringify({ path: file }),
+      body: JSON.stringify({
+        path: file,
+        confirmed: opts.confirmed === true,
+        allow_large: opts.allow_large === true,
+      }),
     });
   }
 

@@ -167,7 +167,7 @@ from collections.abc import Callable, Iterable
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from fused_render import canvas_marker, canvas_snapshot, canvas_sync_state
+from fused_render import canvas_marker, canvas_node_exec, canvas_snapshot, canvas_sync_state
 from fused_render._platform import is_within
 from fused_render.fusedcli import (
     CUSTOM_WORKBENCH_ENV,
@@ -1569,8 +1569,16 @@ def api_canvases_node(path: str = ""):
 # One run of a UDF node's file (SPEC §53.5): the fused import, the request
 # and the run itself. A realtime run is cut off by Fused well inside this.
 NODE_RUN_TIMEOUT = 330.0
-# The page takes the result inline; past this it says so instead.
-NODE_RUN_MAX_BYTES = 32 * 1024 * 1024
+# A batch job (a decorator that names an engine, NU-6) starts a machine and
+# is waited for: its start alone is tens of seconds, its work is the user's.
+NODE_BATCH_RUN_TIMEOUT = 3600.0
+# A result past this is asked about before the page takes it (the workbench's
+# "max UDF size to auto-load" default, NU-7)…
+NODE_RUN_LARGE_BYTES = 50 * 1024 * 1024
+# …and past this the page is never handed it: it travels inline.
+NODE_RUN_MAX_BYTES = 128 * 1024 * 1024
+# A node's source is code someone wrote; past this it is not one.
+NODE_SOURCE_MAX_BYTES = 2 * 1024 * 1024
 
 
 def _shim_node_run_command(cli) -> list[str] | None:
@@ -1592,6 +1600,18 @@ def api_canvases_node_run(body: dict = Body(...), x_fused: str | None = Header(d
     serves for a table or an HTML string, a PNG for a raster — so nothing is
     interpreted here.
 
+    Two answers stand in for a run that was NOT made or not delivered, each
+    for the page to ask the user about (NU-6, NU-7):
+
+      {ok: false, needs_confirmation: true, execution_type, title, reason}
+          the file is a batch job, starts batch work or maps (the
+          workbench's rules, `canvas_node_exec`) and the body did not say
+          `confirmed: true`. THE GATE IS HERE, not in the page: no caller
+          starts such a run without saying it was confirmed.
+      {ok: false, too_large: true, size, limit, stdout, stderr}
+          the result is past NODE_RUN_LARGE_BYTES and the body did not say
+          `allow_large: true`.
+
     EXECUTES user code remotely with the user's login, so guarded (D36). The
     path must be a UDF node file (`canvas_node_file`); nothing else runs."""
     guard = _require_fused(x_fused)
@@ -1611,26 +1631,42 @@ def api_canvases_node_run(body: dict = Body(...), x_fused: str | None = Header(d
     env = info["env"]
     if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
+    path = os.path.normpath(path)
+    try:
+        if os.path.getsize(path) > NODE_SOURCE_MAX_BYTES:
+            return _error("this file is too large to be a UDF's source")
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            kind = canvas_node_exec.execution_type(fh.read())
+    except OSError as e:
+        return _error(f"could not read the file: {e}", 404)
+    if kind != canvas_node_exec.NONE and body.get("confirmed") is not True:
+        return {"ok": False, "needs_confirmation": True, "execution_type": kind,
+                "title": canvas_node_exec.confirm_title(kind),
+                "reason": canvas_node_exec.paused_reason(kind)}
     cli = fused_cli()
     if cli is None:
         return _no_cli_error()
     shim_cmd = _shim_node_run_command(cli)
     if shim_cmd is None:
         return _error("running a node needs the bundled fused CLI", 501)
+    timeout = (NODE_BATCH_RUN_TIMEOUT if kind == canvas_node_exec.DECORATOR_BATCH
+               else NODE_RUN_TIMEOUT)
+    large = body.get("allow_large") is True
     try:
         proc = subprocess.run(
             shim_cmd,
-            input=json.dumps({"path": os.path.normpath(path),
+            input=json.dumps({"path": path,
+                              "ask_bytes": None if large else NODE_RUN_LARGE_BYTES,
                               "max_bytes": NODE_RUN_MAX_BYTES}),
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=NODE_RUN_TIMEOUT,
+            timeout=timeout,
             env=_cli_env(cli, env),
         )
     except subprocess.TimeoutExpired:
-        return _error(f"the run timed out after {int(NODE_RUN_TIMEOUT)}s", 504)
+        return _error(f"the run timed out after {int(timeout)}s", 504)
     except OSError as e:
         return _error(f"could not run the node helper: {e}")
     if proc.returncode != 0:

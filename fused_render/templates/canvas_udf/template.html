@@ -14,8 +14,11 @@
        - asks the server what the file is (shared/canvas-node.js);
        - runs it, and shows the answer: a page in a frame, an image, text,
          or the error with its line and the run's output;
-       - runs it again when the file changes on disk (unless "Run on save"
-         is off), or on Run;
+       - runs it again when the file changes on disk (unless "Auto-run" is
+         off), or on Run;
+       - asks first, by the workbench's own rules, before a run that is a
+         batch job, starts batch work or maps, and before taking a very
+         large result (the server decides which runs those are);
        - keeps the canvas's sync engine running, so edits to the folder are
          pushed as they are made.
 
@@ -32,13 +35,13 @@
     color-scheme: dark;
     --bg: #131417; --panel: #1a1c20; --fg: #e8eaed; --fg-muted: #9aa0a6;
     --line: #2a2d33; --accent: #f5a623; --on-accent: #1a1300; --error: #ff6b6b;
-    --hover: #24272d; --code: #0e0f12; --result-bg: #ffffff;
+    --hover: #24272d; --code: #0e0f12; --result-bg: #ffffff; --scrim: rgba(0, 0, 0, 0.5);
   }
   :root[data-theme="light"] {
     color-scheme: light;
     --bg: #ffffff; --panel: #f6f7f9; --fg: #1f2023; --fg-muted: #61656c;
     --line: #dfe2e7; --accent: #b86e00; --on-accent: #ffffff; --error: #c62828;
-    --hover: #eceef1; --code: #f1f3f5; --result-bg: #ffffff;
+    --hover: #eceef1; --code: #f1f3f5; --result-bg: #ffffff; --scrim: rgba(20, 24, 31, 0.35);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -88,6 +91,19 @@
     padding: 24px; text-align: center; color: var(--fg-muted); background: var(--bg);
   }
   .message .error { color: var(--error); white-space: pre-wrap; max-width: 640px; }
+  /* A question before a run (a batch job, a large result): over the stage,
+     the last result still readable behind it. */
+  .ask {
+    position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: var(--scrim);
+  }
+  .ask-card {
+    width: 100%; max-width: 420px; padding: 18px 20px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  .ask-title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+  .ask-body { color: var(--fg-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
   .log { flex: none; max-height: 35%; overflow: auto; border-top: 1px solid var(--line); background: var(--code); }
   .log summary { padding: 4px 12px; cursor: pointer; color: var(--fg-muted); font-size: 12px; }
   /* A run in flight: a moving bar under the strip. The last result stays as
@@ -113,8 +129,8 @@
   <span class="spacer"></span>
   <span class="status" id="status"></span>
   <span class="sync" id="sync"></span>
-  <label title="Run again whenever the file is saved">
-    <input type="checkbox" id="autorun" checked /> Run on save
+  <label title="Run when the file opens and whenever it is saved">
+    <input type="checkbox" id="autorun" checked /> Auto-run
   </label>
   <button type="button" class="primary" id="run">Run</button>
   <button type="button" id="open">Open in canvas</button>
@@ -127,6 +143,16 @@
     <pre id="log-text"></pre>
   </details>
   <div class="message" id="message">Loading…</div>
+  <div class="ask" id="ask" hidden role="dialog" aria-modal="true" aria-labelledby="ask-title">
+    <div class="ask-card">
+      <div class="ask-title" id="ask-title"></div>
+      <div class="ask-body" id="ask-body"></div>
+      <div class="ask-actions">
+        <button type="button" id="ask-no"></button>
+        <button type="button" class="primary" id="ask-yes"></button>
+      </div>
+    </div>
+  </div>
 </div>
 <script>
   // The page re-runs the file itself; a reload would drop the last result.
@@ -144,6 +170,8 @@
   let node = null;
   let running = false;
   let queued = false;       // a change landed during a run: run once more after
+  let asking = false;       // a question is up: its answer decides what runs
+  let largeOk = false;      // "Continue anyway" was said once: kept while the page is open
   let rerunTimer = null;
   let runTicker = null;
   let objectUrl = null;
@@ -270,8 +298,52 @@
     runTicker = setInterval(tick, 1000);
   }
 
-  async function run() {
-    if (!node) return;
+  // A question over the stage. Resolves true for the right-hand button,
+  // false for the left one or Escape. One at a time.
+  function ask(title, body, no, yes) {
+    asking = true;
+    $("ask-title").textContent = title;
+    $("ask-body").textContent = body;
+    $("ask-no").textContent = no;
+    $("ask-yes").textContent = yes;
+    $("ask").hidden = false;
+    $("ask-yes").focus();
+    return new Promise((resolve) => {
+      const done = (value) => {
+        $("ask").hidden = true;
+        $("ask-no").onclick = $("ask-yes").onclick = null;
+        document.removeEventListener("keydown", onKey, true);
+        asking = false;
+        resolve(value);
+      };
+      const onKey = (event) => { if (event.key === "Escape") done(false); };
+      $("ask-no").onclick = () => done(false);
+      $("ask-yes").onclick = () => done(true);
+      document.addEventListener("keydown", onKey, true);
+    });
+  }
+  // A long name is cut in its middle, so both ends still read.
+  function shortName(name, max) {
+    if (name.length <= max) return name;
+    const keep = max - 1;
+    return name.slice(0, Math.ceil(keep / 2)) + "…" + name.slice(name.length - Math.floor(keep / 2));
+  }
+  // What the stage says when there is no result to leave on it.
+  function idle(text) {
+    if (!result.hasChildNodes()) showMessage((host) => host.append(el("div", text)));
+  }
+
+  // THE GATES (SPEC §53.5 NU-6, NU-7), the hosted workbench's own. The
+  // server decides which runs are asked about; this page only asks.
+  //   - A batch job, batch work started inside, a map: never run without a
+  //     yes. Asked on open, on a save and on Run alike, every time: nothing
+  //     is remembered. A no leaves the UDF paused with the reason.
+  //   - A result past the auto-load size: asked once; "Continue anyway"
+  //     holds while the page is open. The run it starts is asked about
+  //     again when it is one of the first kind.
+  async function run(opts) {
+    opts = opts || {};
+    if (!node || asking) return;
     if (running) {
       queued = true;
       return;
@@ -279,10 +351,39 @@
     running = true;
     queued = false;
     setRunning(true);
+    let next = null;
     try {
-      const answer = await CanvasNode.run(FILE);
-      message.hidden = true;
-      showAnswer(answer);
+      const answer = await CanvasNode.run(FILE, {
+        confirmed: opts.confirmed === true,
+        allow_large: largeOk,
+      });
+      if (answer.needs_confirmation) {
+        next = async () => {
+          setStatus(answer.reason || "Waiting for confirmation");
+          const yes = await ask(answer.title || "Confirm execution",
+            'Do you want to run "' + shortName(node.title, 35) + '"?', "Cancel", "Run");
+          if (yes) return run({ confirmed: true });
+          idle((answer.reason || "This UDF is not run automatically") + ". Press Run to run it.");
+        };
+      } else if (answer.too_large) {
+        setLog(answer.stdout, answer.stderr);
+        next = async () => {
+          setStatus("Large result");
+          const yes = await ask("Large data warning",
+            "Loading data for UDF '" + node.title + "' (" + humanBytes(answer.size) +
+            ") might be slow or unstable. Would you like to continue loading this data?",
+            "Don't load", "Continue anyway");
+          if (yes) {
+            largeOk = true;
+            return run();
+          }
+          setStatus("Not loaded");
+          idle("The result (" + humanBytes(answer.size) + ") was not loaded.");
+        };
+      } else {
+        message.hidden = true;
+        showAnswer(answer);
+      }
     } catch (error) {
       // The run never happened (not signed in, no CLI, a timeout): nothing
       // of the last result is thrown away for it.
@@ -295,7 +396,15 @@
     } finally {
       running = false;
       setRunning(false);
-      if (queued) void run();
+    }
+    if (next) {
+      // A save during the request asked for one more run; the question's
+      // answer is that run.
+      queued = false;
+      message.hidden = result.hasChildNodes();
+      await next();
+    } else if (queued) {
+      void run();
     }
   }
 
@@ -333,7 +442,6 @@
       });
       return;
     }
-    showMessage((host) => host.append(el("div", "Running " + node.title + "…")));
     const onChanged = () => {
       if (!autorun.checked) {
         setStatus("File changed — Run to update");
@@ -353,6 +461,13 @@
       const now = await mtimeOf();
       if (now !== null && now !== startedFrom) onChanged();
     }, RECHECK_MS);
+    // Auto-run off: nothing runs until Run, on open as on a save.
+    if (!autorun.checked) {
+      setStatus("Auto-run is off");
+      idle("Auto-run is off. Press Run to run " + node.title + ".");
+      return;
+    }
+    showMessage((host) => host.append(el("div", "Running " + node.title + "…")));
     await run();
   }
 
