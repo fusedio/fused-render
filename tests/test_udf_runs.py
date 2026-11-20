@@ -158,50 +158,10 @@ def test_store_keeps_a_body_under_its_key_and_reads_it_back(base, tmp_path):
     assert open(body, "rb").read() == b"abc" and meta["size"] == 3
 
 
-def test_store_leaves_an_oversize_body_temporary(base, monkeypatch):
-    monkeypatch.setattr(store, "MAX_ENTRY_BYTES", 2)
-    token, path = store.new_body_path()
-    with open(path, "wb") as fh:
-        fh.write(b"abc")
-    kept = store.keep(path, {"size": 3}, "b" * 64)
-    assert kept["token"] == token and token.startswith("t")
-    assert store.get("b" * 64) is None
-    assert store.open_result(token) is not None
-
-
 def test_store_without_a_key_is_temporary(base):
     token, path = store.new_body_path()
     open(path, "wb").close()
     assert store.keep(path, {}, None)["token"] == token
-
-
-def test_store_drops_an_entry_past_its_age(base, monkeypatch):
-    token, path = store.new_body_path()
-    open(path, "wb").close()
-    key = "c" * 64
-    store.keep(path, {}, key)
-    later = time.time() + store.MAX_AGE_S + 10
-    monkeypatch.setattr(store.time, "time", lambda: later)
-    assert store.get(key) is None
-    assert store.open_result(key) is None
-
-
-def test_store_evicts_the_least_recently_read(base, monkeypatch):
-    monkeypatch.setattr(store, "MAX_TOTAL_BYTES", 10)
-    keys = ["d" * 64, "e" * 64, "f" * 64]
-    for i, key in enumerate(keys):
-        token, path = store.new_body_path()
-        with open(path, "wb") as fh:
-            fh.write(b"12345")
-        store.keep(path, {}, key)
-        body = os.path.join(store._results_dir(), key + ".body")
-        os.utime(body, (1000 + i, 1000 + i))
-        if i == 1:
-            # Read the first so it is the most recently used.
-            os.utime(os.path.join(store._results_dir(), keys[0] + ".body"), (5000, 5000))
-    assert store.get(keys[0]) is not None
-    assert store.get(keys[1]) is None
-    assert store.get(keys[2]) is not None
 
 
 def test_store_refuses_tokens_that_are_not_its_own(base):
@@ -588,4 +548,15 @@ def test_a_retry_after_a_cancel_starts_a_new_run(clone, signed_in, fake_runner):
     assert len(fake_runner.requests) == 2
     by_id = {f["id"]: f for f in frames if f["type"] in ("done", "error")}
     assert by_id["a"]["code"] == "cancelled" and by_id["b"]["type"] == "done"
+
+
+def test_store_keeps_any_size_and_never_expires(base, monkeypatch):
+    big = b"x" * (25 * 1024 * 1024)
+    token, path = store.new_body_path()
+    with open(path, "wb") as fh:
+        fh.write(big)
+    assert store.keep(path, {"size": len(big)}, "e" * 64)["token"] == "e" * 64
+    later = time.time() + 365 * 24 * 3600
+    monkeypatch.setattr(store.time, "time", lambda: later)
+    assert store.get("e" * 64) is not None
 

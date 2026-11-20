@@ -12896,12 +12896,12 @@ milliseconds.
   name), the params and the format. An edit, another account or other
   params is another key.
 - **SR-2 What is kept.** Only successful runs; never errors or
-  confirmation answers. A run whose file changed while it ran is not filed
-  under the key. A body over 20 MB is not kept (it is served once from
+  confirmation answers. A run whose loaded code does not hash to the file
+  the key was built from is not filed under the key (it is served once from
   `tmp/`).
-- **SR-3 Bounds.** 500 MB in all, least recently read evicted; an entry
-  older than 7 days is a miss. `<home>/cache/udf/`, never in a canvas
-  folder.
+- **SR-3 No limits.** Any size is kept, nothing is evicted and nothing
+  expires; a run of the same key replaces its entry. `<home>/cache/udf/`,
+  never in a canvas folder. Clearing is the user's (SR-5).
 - **SR-4 Shown as saved.** The key cannot see sibling UDFs read through
   `fused.load`, outside data or the clock, so a saved copy is always
   labelled saved and, under `cache: "auto"`, always followed by a run.
