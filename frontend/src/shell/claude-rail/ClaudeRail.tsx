@@ -484,7 +484,7 @@ import {
   useModeCards,
   type RailModeDoor,
 } from "./mode-peek-store";
-import { useRailModeDoors } from "./rail-mode-doors-flag";
+import { useRailModeDoorsAnswer } from "./rail-mode-doors-flag";
 import type { DoorCardState } from "./door-card-store";
 
 /** No mode doors (a stable empty list). */
@@ -789,7 +789,15 @@ export function ClaudeRail({
    *  entry; `src` the frame for a mode; `onOpen` the menu's own switch.
    *  Only with the rail flag and the doors' own switch
    *  (`rail_mode_doors_enabled`), and only a file page hands it. */
-  fileModes?: { path: string; doors: RailModeDoor[]; src: (mode: string) => string; onOpen: (mode: string) => void };
+  fileModes?: {
+    path: string;
+    doors: RailModeDoor[];
+    src: (mode: string) => string;
+    onOpen: (mode: string) => void;
+    /** Whatever else `src` reads (the page's git snapshot): a change of it
+     *  is said again, so a card that is up redraws its frame's address. */
+    rev?: string;
+  };
   /** The session the page's URL names, drawn as the current row. */
   activeSessionId: string | null;
   /** Open the pane as it is. */
@@ -1407,9 +1415,11 @@ export function ClaudeRail({
   fileModesRef.current = fileModes;
   // Behind their own switch (`rail_mode_doors_enabled`, rail-mode-doors-flag):
   // off, no door is drawn and nothing is published, so no card stands.
-  const modeDoorsOn = useRailModeDoors();
+  const modeDoorsAnswer = useRailModeDoorsAnswer();
+  const modeDoorsOn = modeDoorsAnswer === true;
   const modeDoors = navDoors && modeDoorsOn && fileModes ? fileModes.doors : NO_MODE_DOORS;
-  const modeSig = modeDoors.length > 0 ? fileModes?.path + "\n" + modeDoors.map((d) => d.mode).join("\n") : "";
+  const modeSig =
+    modeDoors.length > 0 ? [fileModes?.path, fileModes?.rev ?? "", ...modeDoors.map((d) => d.mode)].join("\n") : "";
   useLayoutEffect(() => {
     const el = railRef.current;
     if (!el) return;
@@ -2515,8 +2525,11 @@ export function ClaudeRail({
     pinDoorA === "git"
       ? gitDoorKnown && gitRepo === null
       : pinModeA !== null
-        ? // A mode's card: its door is that mode's, on a file page that has it.
-          !modeDoors.some((d) => d.mode === pinModeA)
+        ? // A mode's card: its door is that mode's, on a file page that has
+          // it — judged once the doors' own switch has answered (a first
+          // load reads it as off until then, and a saved pin must not go
+          // for that; CodeRabbit on #2396).
+          (!navDoors || modeDoorsAnswer !== null) && !modeDoors.some((d) => d.mode === pinModeA)
         : pinDoorA === "bots"
         ? !(botsOffered && navDoors)
         : pinDoorA !== null && !navDoors;

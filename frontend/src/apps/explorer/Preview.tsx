@@ -2746,6 +2746,7 @@ function TemplatePreview({
               : {
                   fileModes: {
                     path: fsPath,
+                    rev: snapshotSha ?? "",
                     doors: contentModes
                       .filter((t) => t.mode !== entry.mode && !isPending(t))
                       .map((t) => ({ mode: t.mode, title: modeTitle(t.mode), icon: templateModeIcon(t) })),

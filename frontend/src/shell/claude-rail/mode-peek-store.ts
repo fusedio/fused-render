@@ -206,6 +206,50 @@ export function modeDoorAction(o: { ready: boolean; pinned: boolean }): "open" |
   return o.pinned ? "close" : "pin";
 }
 
+/** How long Open waits for the frame's editor to write its edits (the page's
+ *  own switch waits as long, Preview `doSetMode`). */
+export const OPEN_FLUSH_MS = 10_000;
+
+/** OPEN, ONCE THE CARD'S FRAME HAS WRITTEN ITS EDITS (the page's own rule,
+ *  Preview `doSetMode`; CodeRabbit on #2396). Open closes the card, and the
+ *  card's frame may hold an editor with words newer than its last autosave:
+ *  `flush` (the code template's `__fusedFlushEdits`) writes them first.
+ *    - no flush to ask: open at once;
+ *    - the flush says `{ ok: false }`, throws, or has not answered in
+ *      `timeoutMs`: NO open — the card stays, its frame's own banner says
+ *      why, and nothing is lost;
+ *    - the preview changed or closed meanwhile (`still` false): no open —
+ *      the press was for a card that is no longer there.
+ *  Resolves true when `go` ran. */
+export function flushThenOpen(o: {
+  flush?: (() => Promise<{ ok: boolean } | undefined>) | undefined;
+  still: () => boolean;
+  go: () => void;
+  timeoutMs?: number;
+}): Promise<boolean> {
+  const flush = o.flush;
+  if (!flush) {
+    o.go();
+    return Promise.resolve(true);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const written = Promise.resolve()
+    .then(() => flush())
+    .then(
+      (res) => !(res && res.ok === false),
+      () => false,
+    );
+  const late = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), o.timeoutMs ?? OPEN_FLUSH_MS);
+  });
+  return Promise.race([written, late]).then((ok) => {
+    if (timer !== undefined) clearTimeout(timer);
+    if (!ok || !o.still()) return false;
+    o.go();
+    return true;
+  });
+}
+
 export function resetModeCardsForTests(timers?: Timers): void {
   testTimers = timers;
   openers.clear();

@@ -12,7 +12,8 @@
 //
 // THE HEAD: the pin (or the × without the pin model), the mode's icon and
 // name, and Open — the page's own switch to that mode (the menu's); Open
-// closes the card. No room beside the rail: the door's press is that switch
+// closes the card, once the frame's editor has written its edits and only
+// then (mode-peek-store `flushThenOpen`). No room beside the rail: the door's press is that switch
 // (DoorCard `onNoRoomPress`).
 //
 // THE FRAME STANDS BEHIND A PARAM BOUNDARY (`ModeFrame`): a page's
@@ -34,7 +35,7 @@ import { DoorCard } from "./DoorCard";
 import { RailPinButton } from "./RailPin";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useFavPeekState } from "./fav-peek-store";
-import { modeCardStore, useModeCardRail, useModeCards, useRailModes, useRailWithMode } from "./mode-peek-store";
+import { flushThenOpen, modeCardStore, useModeCardRail, useModeCards, useRailModes, useRailWithMode } from "./mode-peek-store";
 
 /** How long a PINNED card waits, its mode's door gone, for the next rail's
  *  (a hop: the next file's page mounts its rail after a stat). No door by
@@ -163,6 +164,11 @@ function ModeCard({ mode }: { mode: string }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const src = door && facts ? facts.src(mode) : null;
   const [loaded, setLoaded] = useState<string | null>(null);
+  // Open's guards (mode-peek-store `flushThenOpen`): the address as it stands
+  // when a flush answers, and one Open at a time.
+  const srcRef = useRef(src);
+  srcRef.current = src;
+  const opening = useRef(false);
 
   // A PRESS INSIDE THE FRAME PINS A PREVIEW (header).
   useEffect(() => {
@@ -220,32 +226,23 @@ function ModeCard({ mode }: { mode: string }) {
       {(api) => {
         const take = onOpen
           ? () => {
-              // The frame's editor may hold words newer than its last
-              // autosave: ask it to write them before the page redraws the
-              // file in this mode (the code template's own flush).
-              const flush = frameFlush(frameRef.current);
-              const go = () => {
-                api.close();
-                onOpen(mode);
-              };
-              if (!flush) {
-                go();
-                return;
-              }
-              let done = false;
-              const once = () => {
-                if (done) return;
-                done = true;
-                go();
-              };
-              const t = window.setTimeout(once, 2000);
-              void Promise.resolve()
-                .then(() => flush())
-                .catch(() => undefined)
-                .then(() => {
-                  window.clearTimeout(t);
-                  once();
-                });
+              // One Open at a time: a second press while the first one's
+              // flush is out is that same Open.
+              if (opening.current) return;
+              // The press is for THIS preview — this opening, this address.
+              const seq = store.state().seq;
+              const at = src;
+              opening.current = true;
+              void flushThenOpen({
+                flush: frameFlush(frameRef.current),
+                still: () => store.state().up && store.state().seq === seq && srcRef.current === at,
+                go: () => {
+                  api.close();
+                  onOpen(mode);
+                },
+              }).finally(() => {
+                opening.current = false;
+              });
             }
           : undefined;
         return (

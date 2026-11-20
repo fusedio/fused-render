@@ -11,6 +11,7 @@
 // rail.
 import { useEffect, useState } from "react";
 import { dropSharedPrefsRead, getPrefsShared, onPrefsWrittenElsewhere, type Prefs } from "@platform/lib/api";
+import { onPrefsReread } from "@platform/lib/prefs-reread";
 
 const MEMO_KEY = "fused-render:rail-mode-doors";
 function memoRead(): boolean | null {
@@ -35,7 +36,7 @@ let reading: Promise<void> | null = null;
 const RETRY_MS = 15_000;
 let retry: ReturnType<typeof setTimeout> | null = null;
 let generation = 0;
-const listeners = new Set<(v: boolean) => void>();
+const listeners = new Set<(v: boolean | null) => void>();
 
 /** The prefs payload's sub-object, read the server's way: only `true` is on. */
 function fromPrefs(p: Prefs["rail_mode_doors"]): boolean {
@@ -81,18 +82,44 @@ onPrefsWrittenElsewhere((p) => {
   if (p.rail_mode_doors !== undefined) publishRailModeDoors(p.rail_mode_doors);
 });
 
-/** Subscribe. The first reader triggers the one read; later ones reuse it. */
-export function useRailModeDoors(): boolean {
-  const [current, setCurrent] = useState<boolean>(answer ?? false);
+// ANOTHER WINDOW FLIPPED THE SWITCH AND THIS ONE CAME BACK (platform/lib
+// prefs-reread; CodeRabbit on #2396): with no BroadcastChannel the write above
+// never arrives, and a window would keep the doors it loaded with. The shared
+// re-read on focus brings the answer here, under the same generation guard; a
+// failed read changes nothing. Followed from the first hook on
+// (rail-free-pins-flag's way), not at import.
+let following = false;
+function onReread(p: Promise<Prefs>): void {
+  const departed = generation;
+  p.then((prefs) => {
+    if (generation === departed) set(fromPrefs(prefs.rail_mode_doors));
+  }).catch(() => {});
+}
+
+/** The switch as it is KNOWN: on, off, or `null` — not answered yet (no
+ *  remembered answer and the read still out). The first reader triggers the
+ *  one read; later ones reuse it. ClaudeRail reads `null` as "do not judge a
+ *  saved mode pin yet". */
+export function useRailModeDoorsAnswer(): boolean | null {
+  const [current, setCurrent] = useState<boolean | null>(answer);
   useEffect(() => {
     listeners.add(setCurrent);
-    setCurrent(answer ?? false);
+    setCurrent(answer);
+    if (!following) {
+      following = true;
+      onPrefsReread(onReread);
+    }
     void read();
     return () => {
       listeners.delete(setCurrent);
     };
   }, []);
   return current;
+}
+
+/** The switch is on (not answered yet reads as off, the flag's default). */
+export function useRailModeDoors(): boolean {
+  return useRailModeDoorsAnswer() === true;
 }
 
 /** Test-only: forget the cached answer so a suite starts from "not asked". */
@@ -108,5 +135,5 @@ export function resetRailModeDoorsFlagForTests() {
   } catch {
     /* no storage */
   }
-  for (const listener of [...listeners]) listener(false);
+  for (const listener of [...listeners]) listener(null);
 }

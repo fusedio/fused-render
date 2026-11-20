@@ -7,6 +7,7 @@ import { PEEK_CLOSE_MS, PEEK_OPEN_MS, type Timers } from "./rail-peek-lib";
 import {
   closeModeCard,
   closeModeCards,
+  flushThenOpen,
   forgetModeCardRail,
   modeCardRail,
   modeCardStore,
@@ -212,5 +213,38 @@ describe("the rails' facts", () => {
     expect(railWithMode("reader")).toBeNull();
     publishRailModes(a, null);
     expect(railModesOf(a)).toBeNull();
+  });
+});
+
+describe("flushThenOpen", () => {
+  const run = async (o: { flush?: () => Promise<{ ok: boolean } | undefined>; still?: boolean; timeoutMs?: number }) => {
+    let went = 0;
+    const ok = await flushThenOpen({
+      ...(o.flush ? { flush: o.flush } : {}),
+      still: () => o.still ?? true,
+      go: () => went++,
+      ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
+    });
+    return { ok, went };
+  };
+  it("no flush to ask, or one that wrote: opens", async () => {
+    expect(await run({})).toEqual({ ok: true, went: 1 });
+    expect(await run({ flush: async () => ({ ok: true }) })).toEqual({ ok: true, went: 1 });
+    // The page's own reading (Preview `doSetMode`): only an explicit no refuses.
+    expect(await run({ flush: async () => undefined })).toEqual({ ok: true, went: 1 });
+  });
+  it("a flush that failed, threw or did not answer in time: no open, the card stays", async () => {
+    expect(await run({ flush: async () => ({ ok: false }) })).toEqual({ ok: false, went: 0 });
+    expect(
+      await run({
+        flush: async () => {
+          throw new Error("write failed");
+        },
+      }),
+    ).toEqual({ ok: false, went: 0 });
+    expect(await run({ flush: () => new Promise(() => {}), timeoutMs: 5 })).toEqual({ ok: false, went: 0 });
+  });
+  it("the preview changed or closed while the flush was out: no open", async () => {
+    expect(await run({ flush: async () => ({ ok: true }), still: false })).toEqual({ ok: false, went: 0 });
   });
 });
