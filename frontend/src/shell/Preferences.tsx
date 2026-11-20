@@ -102,7 +102,8 @@ function Section({
   prefs,
   onChange,
 }: {
-  title: string;
+  /** null: the group's only section, whose heading would repeat the group's title. */
+  title: string | null;
   entries: readonly SettingEntry[];
   prefs: Prefs;
   onChange: (p: Prefs) => void;
@@ -117,8 +118,8 @@ function Section({
     </div>
   );
   return (
-    <section className="settings-section" aria-label={title}>
-      <h3 className="settings-section-title">{title}</h3>
+    <section className="settings-section" aria-label={title ?? undefined}>
+      {title && <h3 className="settings-section-title">{title}</h3>}
       {card}
     </section>
   );
@@ -370,8 +371,14 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                     // the server lists, not rows the registry knows.
                     current === "connections"
                     ? <Connections />
-                    : sectionsOf(entries, current).map((s) => (
-                        <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
+                    : sectionsOf(entries, current).map((s, _i, all) => (
+                        <Section
+                          key={s.section}
+                          title={all.length > 1 ? s.section : null}
+                          entries={s.entries}
+                          prefs={prefs}
+                          onChange={setPrefs}
+                        />
                       ))}
               </IndexStateProvider>
             </SettingsViewContext.Provider>

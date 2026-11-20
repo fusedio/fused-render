@@ -90,7 +90,6 @@ export function CallParamsControl({ prefs, onChange }: PrefControlProps) {
   return (
     <SettingRow
       id="call-params"
-      off={!calls.effective_enabled}
       control={
         <SettingSelect
           id="call-params"
@@ -100,7 +99,7 @@ export function CallParamsControl({ prefs, onChange }: PrefControlProps) {
             { key: "keys", label: "Names only" },
             { key: "off", label: "Record nothing" },
           ]}
-          disabled={busy || !calls.effective_enabled}
+          disabled={busy}
           onChange={(v) => void run(() => putCallsParamsMode(v as CallsParamsMode))}
         />
       }
@@ -152,7 +151,6 @@ export function CallRetentionControl({ prefs, onChange }: PrefControlProps) {
   return (
     <SettingRow
       id="call-retention"
-      off={!calls.effective_enabled}
       status={
         locked ? (
           <>
@@ -172,7 +170,7 @@ export function CallRetentionControl({ prefs, onChange }: PrefControlProps) {
             { key: "90", label: "90 days" },
             { key: "0", label: "Until the size cap" },
           ]}
-          disabled={busy || !calls.effective_enabled || locked}
+          disabled={busy || locked}
           onChange={(v) => void run(() => putCallsRetentionDays(Number(v)))}
         />
       }

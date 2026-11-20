@@ -301,20 +301,12 @@ export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
 // still shown so the stored answer stays visible.
 export function TaskFavouritesControl({ prefs, onChange }: PrefControlProps) {
   const on = prefs.task_favourites?.enabled === true;
-  const parentOn = prefs.canvas_rail_peek?.enabled === true;
   return (
     <PrefToggleRow
       id="tasks-favourites"
       checked={on}
       put={putTaskFavouritesEnabled}
       after={(next) => publishTaskFavourites(next.task_favourites)}
-      disabled={!parentOn}
-      off={!parentOn}
-      status={
-        !parentOn
-          ? "Needs Preview chats from the collapsed Claude rail."
-          : undefined
-      }
       onChange={onChange}
     />
   );
@@ -338,20 +330,12 @@ export function TaskHeadUnifiedControl({ prefs, onChange }: PrefControlProps) {
 // (the favourites row's idiom above), the stored answer still shown.
 export function RailFreePinsControl({ prefs, onChange }: PrefControlProps) {
   const on = prefs.rail_free_pins?.enabled === true;
-  const parentOn = prefs.task_head_unified?.enabled === true;
   return (
     <PrefToggleRow
       id="rail-free-pins"
       checked={on}
       put={putRailFreePinsEnabled}
       after={(next) => publishRailFreePins(next.rail_free_pins)}
-      disabled={!parentOn}
-      off={!parentOn}
-      status={
-        !parentOn
-          ? "Needs Unified task header."
-          : undefined
-      }
       onChange={onChange}
     />
   );

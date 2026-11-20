@@ -1,6 +1,6 @@
 // Coding agents: which coding agents may run chats and tasks, and the pointers
 // to the model and engine settings that live on their own pages.
-import { useContext, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { putAgentEnabled, putDefaultBackend, type Prefs } from "@platform/lib/api";
 import { agentLabel, publishAgentBackendsChanged, useAgentBackends } from "@platform/lib/agent-backends";
@@ -12,7 +12,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
 import { signedInHint } from "../onboarding/ToolsStep";
 import type { SettingId } from "./registry";
-import { RowSwitch, SettingRow, SettingSelect, SettingsViewContext, usePrefWrite, type PrefControlProps } from "./SettingRow";
+import { RowSwitch, SettingRow, SettingSelect, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
 type AgentId = "claude" | "copilot" | "codex" | "gemini" | "opencode";
 
@@ -124,13 +124,20 @@ function AgentHealth({ backend }: { backend: AgentId }) {
 }
 
 // The server refuses a write that would leave no agent on (400 "turn on
-// another agent first"), so the last switch on is drawn disabled saying so.
+// another agent first"). The last switch on stays pressable, and says why
+// only when it is pressed (2026-11-20: a standing warning beside the one
+// agent most people run was noise); nothing is sent.
 function AgentSwitch({ id, backend, prefs, onChange }: PrefControlProps & { id: SettingId; backend: AgentId }) {
   useAgentBackends();
   const { busy, error, write } = useAgentWrite(onChange);
   const agents = agentsOf(prefs);
   const on = agents[backend];
   const last = on && AGENT_IDS.filter((a) => agents[a]).length === 1;
+  const [refused, setRefused] = useState(false);
+  // Another agent turned on answers it; a later "last" starts quiet again.
+  useEffect(() => {
+    if (!last) setRefused(false);
+  }, [last]);
   return (
     <SettingRow
       id={id}
@@ -139,13 +146,19 @@ function AgentSwitch({ id, backend, prefs, onChange }: PrefControlProps & { id: 
         <RowSwitch
           id={id}
           checked={on}
-          disabled={busy || last}
-          title={last ? "Turn on another agent first" : undefined}
-          onChange={(v) => void write(() => putAgentEnabled(backend, v))}
+          disabled={busy}
+          onChange={(v) => {
+            if (!v && last) {
+              setRefused(true);
+              return;
+            }
+            setRefused(false);
+            void write(() => putAgentEnabled(backend, v));
+          }}
         />
       }
     >
-      {last && <p className="settings-row-desc">Turn on another agent before turning this one off.</p>}
+      {refused && last && <p className="settings-row-desc">Turn on another agent before turning this one off.</p>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </SettingRow>
   );
@@ -185,7 +198,7 @@ export function DefaultAgentControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-/** A "Set elsewhere" row: the setting's name and a door to the page that owns it. */
+/** A row that is a door: the setting's name and a button to the page that owns it (the Connections search row). */
 export function PointerRow({ id, to, label }: { id: SettingId; to: string | (() => void); label: string }) {
   return (
     <SettingRow
@@ -202,14 +215,4 @@ export function PointerRow({ id, to, label }: { id: SettingId; to: string | (() 
       }
     />
   );
-}
-
-export const ClaudeModelPointer = () => (
-  <PointerRow id="claude-model" to="/preferences?tab=claude-cli&s=claude-pref:model" label="Claude Code" />
-);
-export const EnginesPointer = () => <PointerRow id="engines" to="/ai-models/engines" label="AI Models › Engines" />;
-
-export function AgentSigninPointer() {
-  const view = useContext(SettingsViewContext);
-  return <PointerRow id="agent-signin" to={() => view.jump("agent-claude")} label="Coding agents" />;
 }

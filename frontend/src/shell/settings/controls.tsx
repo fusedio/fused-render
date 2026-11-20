@@ -13,13 +13,10 @@ import {
   ThemeControl,
 } from "./general";
 import {
-  AgentSigninPointer,
   ClaudeAgentControl,
-  ClaudeModelPointer,
   CodexAgentControl,
   CopilotAgentControl,
   DefaultAgentControl,
-  EnginesPointer,
   GeminiAgentControl,
   OpencodeAgentControl,
 } from "./ai";
@@ -80,9 +77,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "agent-gemini": GeminiAgentControl,
   "agent-opencode": OpencodeAgentControl,
   "agent-default": DefaultAgentControl,
-  "claude-model": ClaudeModelPointer,
   "claude-cli-missing": ClaudeCliMissing,
-  engines: EnginesPointer,
   "project-queue": ProjectQueueControl,
   "chat-recap": ChatRecapControl,
   breakout: BreakoutControl,
@@ -118,7 +113,6 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "fused-account": FusedAccountControl,
   "workbench-env": WorkbenchEnvControl,
   huggingface: HuggingFaceControl,
-  "agent-signin": AgentSigninPointer,
   "call-log": CallLogControl,
   "call-params": CallParamsControl,
   "call-retention": CallRetentionControl,
