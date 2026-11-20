@@ -6,6 +6,8 @@ import {
   holdReasons,
   holdMarker,
   visibleReasons,
+  CHECKING_REASON,
+  PR_UNKNOWN_REASON,
   dirtyBadge,
   dirtyTitle,
   moveSelection,
@@ -114,7 +116,7 @@ describe("holdReasons / holdMarker", () => {
   });
   test("a PR whose state is not known yet is not called clear", () => {
     const t = task({ prs: [{ repo: "a/b", number: 7, url: "u" }] });
-    expect(holdReasons(t, facts())).toEqual(["PR #7 unknown"]);
+    expect(holdReasons(t, facts())).toEqual(["PR #7 checking"]);
     expect(holdReasons(t, facts({ prStates: { "a/b#7": null } }))).toEqual(["PR #7 unknown"]);
   });
   test("worktree git state: uncommitted, unpushed, unknown", () => {
@@ -278,6 +280,14 @@ describe("visibleReasons", () => {
       "queued",
       "run pending",
     ]);
+  });
+  test("keeps a PR still being checked (the card draws it as a shimmer)", () => {
+    expect(visibleReasons(["PR #7 checking"])).toEqual(["PR #7 checking"]);
+    expect(CHECKING_REASON.test("PR #7 checking")).toBe(true);
+    expect(CHECKING_REASON.test("checking")).toBe(true);
+    expect(CHECKING_REASON.test("PR #7 unknown")).toBe(false);
+    expect(PR_UNKNOWN_REASON.test("PR #7 unknown")).toBe(true);
+    expect(PR_UNKNOWN_REASON.test("PR #7 checking")).toBe(false);
   });
   test("always drops running / needs you (the ring shows them)", () => {
     expect(visibleReasons(["running"])).toEqual([]);
