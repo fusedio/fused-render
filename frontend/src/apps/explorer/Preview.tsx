@@ -53,6 +53,7 @@ import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
+import { embedSrc } from "@platform/lib/layout-codec";
 import { nodeOfFile, nodePageShot, type NodeOfFile } from "@apps/explorer/lib/node-shot";
 import { useCanvasPageShotResponder } from "@apps/claude/shots/canvas-page-shot-responder";
 import {
@@ -2735,6 +2736,28 @@ function TemplatePreview({
             place={railPlace}
             newTask={{ target: fsPath, waiting: null, on: null }}
             git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}
+            // The file's other modes as doors above Git (owner, 2026-11-20):
+            // the mode menu's own list and order, the active entry and any
+            // whose gate has not answered left out; a door's card draws the
+            // file in that mode (an embed frame), its Open is the menu's
+            // switch.
+            {...(stat.is_dir
+              ? {}
+              : {
+                  fileModes: {
+                    path: fsPath,
+                    doors: contentModes
+                      .filter((t) => t.mode !== entry.mode && !isPending(t))
+                      .map((t) => ({ mode: t.mode, title: modeTitle(t.mode), icon: templateModeIcon(t) })),
+                    src: (m: string) =>
+                      embedSrc(
+                        fsPath,
+                        "?" +
+                          new URLSearchParams({ _mode: m, ...(snapshotSha ? { _snapshot: snapshotSha } : {}) }).toString(),
+                      ),
+                    onOpen: (m: string) => void setMode(m),
+                  },
+                })}
             activeSessionId={new URLSearchParams(location.search).get("session_id")}
             onOpen={openClaudeSide}
             // A ring's door is its chat's own page with the session

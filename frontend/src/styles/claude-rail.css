@@ -878,6 +878,7 @@ html.rail-card-moving iframe {
 #claude-rail-tasks-peek.is-front,
 #claude-rail-bots-peek.is-front,
 #claude-rail-git-peek.is-front,
+#claude-rail-mode-peek.is-front,
 #claude-rail-fav-peek.is-front,
 #claude-rail-bot-peek.is-front,
 .modal-popover.is-front {
@@ -895,6 +896,7 @@ html.rail-card-moving iframe {
 #claude-rail-tasks-peek.is-free-pin,
 #claude-rail-bots-peek.is-free-pin,
 #claude-rail-git-peek.is-free-pin,
+#claude-rail-mode-peek.is-free-pin,
 .modal-popover.is-free-pin {
   z-index: 42;
 }
@@ -902,6 +904,7 @@ html.rail-card-moving iframe {
 #claude-rail-tasks-peek.is-free-pin.is-front,
 #claude-rail-bots-peek.is-free-pin.is-front,
 #claude-rail-git-peek.is-free-pin.is-front,
+#claude-rail-mode-peek.is-free-pin.is-front,
 .modal-popover.is-free-pin.is-front {
   z-index: 43;
 }
@@ -1999,6 +2002,70 @@ a.claude-rail-peek-scope:focus-visible {
    #2213 rule: 8px each side). */
 .claude-rail.has-nav .sidebar-rail-items > .sidebar-rail-sep.is-tight:first-child {
   margin-top: 2px;
+}
+
+/* THE MODE DOORS (ClaudeRail; owner, 2026-11-20): the file's other modes,
+   one nav-door seat each, above the Git door and in its group. The glyph is
+   the mode menu's own (`.mode-icon-mask`), at the nav doors' size. */
+.claude-rail-mode-doors {
+  width: 100%;
+}
+.claude-rail-mode-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.claude-rail-mode-glyph > *,
+.claude-rail-mode-icon > * {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+/* THE MODE CARD (shell/claude-rail ModePeek): the file in that mode — an
+   embed frame filling the card under its head — in window A's chassis off a
+   mode door, the Git card's twin (DoorCard). */
+#claude-rail-mode-peek {
+  z-index: 46;
+}
+.claude-rail-mode-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.claude-rail-mode-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-muted);
+}
+.claude-rail-mode-icon > * {
+  width: 14px;
+  height: 14px;
+}
+.claude-rail-mode-body {
+  position: relative;
+  overflow: hidden;
+}
+.claude-rail-mode-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.claude-rail-mode-body.is-loaded .claude-rail-mode-frame {
+  opacity: 1;
+}
+/* A grip's drag crosses the frame: it must not take the pointer. */
+.claude-rail-mode-peek.is-resizing .claude-rail-mode-frame {
+  pointer-events: none;
 }
 
 /* THE GIT CARD (shell/claude-rail GitPeek; owner, 2026-11-10): the status

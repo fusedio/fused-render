@@ -1634,6 +1634,11 @@ export interface Prefs {
   // leaves the rail's column to a second, non-pinned window. Read only with
   // the unified head on. Optional: absent (older server) reads as off.
   rail_free_pins?: { enabled: boolean };
+  // A file's other modes as doors on the Claude rail (`rail_mode_doors_enabled`,
+  // shell/prefs.py; off by default): the mode menu's entries, the active one
+  // left out, above Git, each previewing the file that way in a rail card.
+  // Read only with the rail flag on. Optional: absent (older server) reads as off.
+  rail_mode_doors?: { enabled: boolean };
   // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
   // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
   // its status ring. Optional: absent (older server) reads as off.
@@ -2232,6 +2237,10 @@ export function putTaskHeadUnifiedEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putRailFreePinsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { rail_free_pins_enabled: enabled });
+}
+
+export function putRailModeDoorsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { rail_mode_doors_enabled: enabled });
 }
 
 export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {

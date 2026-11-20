@@ -32,6 +32,8 @@ const { railGitCount, railGitOf, resetRailGitStoreForTests } = await import("./r
 const { gitCardRail, gitCardState, registerGitCard, resetGitCardForTests } = await import("./git-peek-store");
 const { resetRailGitCacheForTests } = await import("./rail-git");
 const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
+const { modeCardState, modeCardStore, modeShown, railModesOf, resetModeCardForTests } = await import("./mode-peek-store");
+const { publishRailModeDoors, resetRailModeDoorsFlagForTests } = await import("./rail-mode-doors-flag");
 const { DoorCard } = await import("./DoorCard");
 const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
@@ -189,6 +191,10 @@ async function mountRail(o: {
   peek?: boolean;
   /** The page's git (ClaudeRail `git`). */
   git?: { path: string; onOpenGit?: () => void };
+  /** The file's other modes (ClaudeRail `fileModes`). */
+  fileModes?: { path: string; modes: string[]; onOpen?: (mode: string) => void };
+  /** The mode doors' own switch (`rail_mode_doors_enabled`); on unless said. */
+  modeDoors?: boolean;
   /** Mount the shell's bot card (BotCardHost) beside the rail, as App does. */
   botHost?: boolean;
   /** The rail's place; the demo folder unless said. */
@@ -197,6 +203,7 @@ async function mountRail(o: {
 }) {
   // The card's flag and the favourites' pair, as Settings would publish them.
   publishCanvasRailPeek({ enabled: o.peek ?? true });
+  publishRailModeDoors({ enabled: o.modeDoors ?? true });
   publishFavouritesParent({ enabled: true });
   publishTaskFavourites({ enabled: o.favourites });
   const rows = o.chats ?? [];
@@ -216,6 +223,16 @@ async function mountRail(o: {
           onOpenChat={o.onOpenChat ?? (() => {})}
           onPullStart={() => {}}
           {...(o.git ? { git: o.git } : {})}
+          {...(o.fileModes
+            ? {
+                fileModes: {
+                  path: o.fileModes.path,
+                  doors: o.fileModes.modes.map((mode) => ({ mode, title: mode[0]!.toUpperCase() + mode.slice(1), icon: null })),
+                  src: (mode: string) => "/explorer/embed" + o.fileModes!.path + "?_mode=" + mode,
+                  onOpen: o.fileModes.onOpen ?? (() => {}),
+                },
+              }
+            : {})}
         />
         {o.botHost !== false && <BotCardHost />}
       </>,
@@ -732,6 +749,170 @@ describe("ClaudeRail's Bots door and its card (BotsPeek; owner, 2026-11-09)", ()
     expect(tasksCardState().up).toBe(false);
     offB();
     offT();
+  });
+});
+
+// THE FILE'S OTHER MODES AS DOORS (owner, 2026-11-20, the rail flag): above
+// the Git door and in its group, one door per mode the page hands, all on
+// one window A card (mode-peek-store, ModePeek).
+describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
+  const FILE = DIR + "/index.html";
+  const REPO = {
+    root: DIR,
+    branch: "main",
+    has_remote: false,
+    default_branch: "main",
+    ahead: 0,
+    behind: 0,
+    upstream: null,
+    commits: [],
+  };
+  let repo: unknown = null;
+  const reset = () => {
+    resetModeCardForTests();
+    resetRailModeDoorsFlagForTests();
+    resetRailGitCacheForTests();
+    resetRailGitStoreForTests();
+    resetGitCardForTests();
+    resetBotsCardForTests();
+    resetTasksCardForTests();
+  };
+  beforeEach(() => {
+    repo = null;
+    reset();
+    (globalThis as { fetch: unknown }).fetch = (url: string) =>
+      String(url).includes("/api/git/rail")
+        ? Promise.resolve(new Response(JSON.stringify({ ok: true, repo }), { status: 200 }))
+        : new Promise<Response>(() => {});
+  });
+  afterEach(reset);
+  const settle = () =>
+    act(async () => {
+      await new Promise((res) => setTimeout(res, 0));
+    });
+  const doors = (r: ReactTestRenderer) => r.root.findAll((n) => n.type === "button" && n.props["data-rail-door"] === "mode");
+  const items = (r: ReactTestRenderer): string[] =>
+    r.root
+      .find((n) => n.props?.className === "sidebar-rail-items")
+      .children.filter((c): c is ReactTestInstance => typeof c !== "string")
+      .map((c) => String(c.props.className ?? ""));
+  const press = (r: ReactTestRenderer, mode: string) =>
+    act(() => {
+      doors(r)
+        .find((d) => d.props["data-rail-mode"] === mode)!
+        .props.onClick({ preventDefault() {}, button: 0, detail: 1 });
+    });
+
+  test("one door per mode, in the page's order, past one hairline; the facts by rail", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
+    await settle();
+    expect(doors(r).map((d) => [d.props["data-rail-mode"], d.props["aria-label"], d.props["data-hint"]])).toEqual([
+      ["code", "Code", "Code"],
+      ["reader", "Reader", "Reader"],
+    ]);
+    expect(items(r).slice(0, 2)).toEqual(["sidebar-rail-sep is-tight", "claude-rail-nav claude-rail-mode-doors"]);
+    const facts = railModesOf(favPeekState().rail);
+    expect(facts?.path).toBe(FILE);
+    expect(facts?.src("code")).toBe("/explorer/embed" + FILE + "?_mode=code");
+    act(() => r.unmount());
+    mounted.splice(mounted.indexOf(r), 1);
+    expect(railModesOf(favPeekState().rail)).toBeNull();
+  });
+
+  test("with Git: the mode doors, then the Git door, one hairline for the group", async () => {
+    repo = REPO;
+    const r = await mountRail({
+      paneOpen: false,
+      favourites: false,
+      git: { path: FILE },
+      fileModes: { path: FILE, modes: ["code"] },
+    });
+    await settle();
+    expect(items(r).slice(0, 3)).toEqual([
+      "sidebar-rail-sep is-tight",
+      "claude-rail-nav claude-rail-mode-doors",
+      "claude-rail-nav claude-rail-git-door",
+    ]);
+  });
+
+  test("their own switch off: no door, no hairline, nothing published", async () => {
+    const r = await mountRail({
+      paneOpen: false,
+      favourites: false,
+      modeDoors: false,
+      fileModes: { path: FILE, modes: ["code", "reader"] },
+    });
+    await settle();
+    expect(doors(r)).toHaveLength(0);
+    expect(items(r)).not.toContain("sidebar-rail-sep is-tight");
+    expect(railModesOf(favPeekState().rail)).toBeNull();
+  });
+
+  test("no modes, or the rail flag off: no door, no hairline, nothing published", async () => {
+    const none = await mountRail({ paneOpen: false, favourites: false, fileModes: { path: FILE, modes: [] } });
+    await settle();
+    expect(doors(none)).toHaveLength(0);
+    expect(items(none)).not.toContain("sidebar-rail-sep is-tight");
+    expect(railModesOf(favPeekState().rail)).toBeNull();
+    const off = await mountRail({ paneOpen: false, favourites: false, peek: false, fileModes: { path: FILE, modes: ["code"] } });
+    await settle();
+    expect(doors(off)).toHaveLength(0);
+  });
+
+  test("no card behind the doors: a press is the page's own switch", async () => {
+    const opened: string[] = [];
+    const r = await mountRail({
+      paneOpen: false,
+      favourites: false,
+      fileModes: { path: FILE, modes: ["code", "reader"], onOpen: (m) => opened.push(m) },
+    });
+    await settle();
+    press(r, "reader");
+    expect(opened).toEqual(["reader"]);
+    expect(modeCardState().up).toBe(false);
+  });
+
+  test("a card behind them: a press shows that mode, the same door's next press closes, another door's swaps", async () => {
+    const off = modeCardStore.registerCard();
+    const r = await mountRail({ paneOpen: false, favourites: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
+    await settle();
+    press(r, "code");
+    expect(modeCardState()).toMatchObject({ up: true, pinned: true });
+    expect(modeShown()).toBe("code");
+    press(r, "reader");
+    expect(modeCardState()).toMatchObject({ up: true, pinned: true });
+    expect(modeShown()).toBe("reader");
+    const open = doors(r).map((d) => String(d.props.className).includes("is-open"));
+    expect(open).toEqual([false, true]);
+    press(r, "reader");
+    expect(modeCardState().up).toBe(false);
+    off();
+  });
+
+  test("another window A card coming puts it down, and it puts that one down", async () => {
+    repo = REPO;
+    const offMode = modeCardStore.registerCard();
+    const offGit = registerGitCard();
+    const r = await mountRail({
+      paneOpen: false,
+      favourites: false,
+      git: { path: FILE },
+      fileModes: { path: FILE, modes: ["code"] },
+    });
+    await settle();
+    press(r, "code");
+    expect(modeCardState().up).toBe(true);
+    const git = r.root.find((n) => n.type === "button" && n.props["data-rail-door"] === "git");
+    act(() => {
+      git.props.onClick({ preventDefault() {}, button: 0, detail: 1 });
+    });
+    expect(gitCardState().up).toBe(true);
+    expect(modeCardState().up).toBe(false);
+    press(r, "code");
+    expect(modeCardState().up).toBe(true);
+    expect(gitCardState().up).toBe(false);
+    offMode();
+    offGit();
   });
 });
 
