@@ -269,6 +269,8 @@ def test_signed_out_fails_the_handshake_with_the_clis_words(start, agent):
     s = start(fake_args=["--signed-out"])
     res = s.wait_results(1)[0]
     assert res["is_error"] and "Authentication required" in res["result"]
+    # The CLI's actionable sentence rides along (it is under `data`).
+    assert "Please run 'agent login' first" in res["result"]
     worded = agent._account_error(res["result"], "cursor")
     assert worded.startswith("Cursor CLI isn't signed in.")
     assert "cursor-agent login" in worded
@@ -521,6 +523,21 @@ def test_the_cli_gets_cursors_env(start):
     env = json.load(open(s.env_dump))
     assert env.get("NO_OPEN_BROWSER") == "1"
     assert not any(k.startswith("CLAUDE_CODE_") for k in env)
+
+
+def test_the_idle_reap_terminates_a_cli_that_ignores_eof(start):
+    """Cursor's ACP server ignores stdin EOF (observed); the host's reap
+    SIGTERMs it at once instead of waiting out the grace and SIGKILLing."""
+    s = start()
+    assert _wait_for(lambda: any(r.get("subtype") == "init" for r in s.out()))
+    cli = int(open(os.path.join(s.run_dir, "pid")).read())
+    t0 = time.monotonic()
+    s.proc.wait(timeout=30)   # the idle reap (5 s here) closes the session
+    gone = _wait_for(lambda: not os.path.exists("/proc/%d" % cli)
+                     or open("/proc/%d/stat" % cli).read().split()[2] == "Z", timeout=5)
+    assert gone, "the CLI outlived its host"
+    assert time.monotonic() - t0 < 12
+    assert any(e.get("sigterm") for e in s.fake()), "stopped by SIGKILL, not SIGTERM"
 
 
 def test_the_hosts_mode_table_is_agent_pys(host_mod, agent):

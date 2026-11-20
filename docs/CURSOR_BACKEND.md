@@ -32,8 +32,9 @@ same run-dir files and the same stream-json rows.
 Where Cursor is SIMPLER than Gemini:
 
 * no OAuth prompt on stdout: signed out, `session/new` fails at once with
-  `authRequired` ("Authentication required. Please run 'cursor-agent login'
-  first, then call authenticate() with methodId 'cursor_login'.");
+  `-32000 "Authentication required"`, `data.message` "Authentication
+  required. Please run 'agent login' first, then call authenticate() with
+  methodId 'cursor_login'." (observed; the CLI names its `agent` alias);
 * `session/load` awaits its replay BEFORE replying, so the backfill never
   races the reply (the quiet wait is kept, short, for a trailing update);
 * the model list is one extension request (`cursor/list_available_models`)

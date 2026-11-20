@@ -332,15 +332,14 @@ def account(signed: Optional[bool], body: Optional[dict] = None) -> Optional[dic
 
 
 def _reap(proc: subprocess.Popen) -> None:
-    """Close stdin, wait, then SIGTERM, wait, then SIGKILL — in that order.
-    The ACP server exits on stdin EOF, so the first step is normally the
-    last."""
+    """Close stdin, then SIGTERM, wait, then SIGKILL. Cursor's ACP server
+    does NOT exit on stdin EOF (observed on 2026.11.19-f005e9d) but exits
+    at once on SIGTERM, so there is no grace period for the EOF alone."""
     try:
         proc.stdin.close()
     except (OSError, ValueError):
         pass
-    for step, grace in ((None, _REAP_GRACE_S), (proc.terminate, _REAP_GRACE_S),
-                        (proc.kill, 5)):
+    for step, grace in ((proc.terminate, _REAP_GRACE_S), (proc.kill, 5)):
         try:
             if step is not None:
                 step()

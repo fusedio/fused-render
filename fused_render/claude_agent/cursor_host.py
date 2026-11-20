@@ -1852,6 +1852,12 @@ class _Host:
     def _handshake_failed(self, step: str, rpc: _Rpc) -> bool:
         err = rpc.error or {"message": "no answer within %ds" % _HANDSHAKE_SECONDS}
         text = "cursor %s failed: %s" % (step, err.get("message") or err)
+        data = err.get("data")
+        detail = data.get("message") if isinstance(data, dict) else data
+        if isinstance(detail, str) and detail and detail != err.get("message"):
+            # Cursor puts the actionable sentence here ("…Please run 'agent
+            # login' first…"), the bare category in `message` (observed).
+            text += " — " + detail
         if err.get("message") in ("cursor exited", "cursor is not running"):
             # The CLI refused to start (a bad flag, a broken install): its
             # exit code and its own stderr are the whole story.
@@ -1999,8 +2005,15 @@ class _Host:
             os.remove(self.registry_path)
         except OSError:
             pass
-        # Reap: stdin is closed above, and the ACP server exits on that EOF
-        # (taking its MCP children with it). Wait, then kill one that hangs.
+        # Reap. Cursor's ACP server does NOT exit on stdin EOF (observed on
+        # 2026.11.19-f005e9d: still running 30 s after it), but exits at once
+        # on SIGTERM — so SIGTERM now rather than wait out the grace period
+        # and SIGKILL, which would leave Node no chance to end its MCP
+        # children. The launcher `exec`s Node, so this pid IS the server.
+        try:
+            self.cli.terminate()
+        except OSError:
+            pass
         try:
             self.cli.wait(timeout=_EXIT_WAIT_SECONDS)
         except subprocess.TimeoutExpired:

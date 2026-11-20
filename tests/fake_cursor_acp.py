@@ -24,7 +24,8 @@ diff, `--question` a question card (`__ask_question_skip__`), `--ext` an
 agent→client `cursor/update_todos` request; then replies `{stopReason:
 "end_turn"}` (`cancelled` after a `session/cancel`, a JSON-RPC error with
 `--error`). `--block-until PATH` holds the prompt open; `--die` exits
-mid-prompt.
+mid-prompt. Like the real server, stdin EOF does not end the process (a
+SIGTERM does) unless `--exit-on-eof`.
 
 Every inbound message is appended to `--log PATH` as `{"t", "msg"}`, every
 outbound one as `{"t", "sent"}`; answers to our own requests also as
@@ -34,6 +35,7 @@ out.jsonl when the prompt arrived.
 import json
 import os
 import queue
+import signal
 import sys
 import threading
 import time
@@ -64,6 +66,7 @@ UNKNOWN_SESSION = "--unknown-session" in ARGS
 SIGNED_OUT = "--signed-out" in ARGS
 CHECK_ECHO = _flag("--check-echo")
 DUMP_ENV = _flag("--dump-env")
+EXIT_ON_EOF = "--exit-on-eof" in ARGS
 MODEL = _flag("--current-model", "auto")
 MODELS = ["auto", "composer-2", "gpt-5.5", "claude-4.6-sonnet"]
 COMMANDS = [{"name": "copy-request-id", "description": "Copy the last request ID"}]
@@ -162,9 +165,12 @@ def _serve(msg):
                      "authMethods": [{"id": "cursor_login", "name": "Cursor Login"}]})
     elif method == "session/new":
         if SIGNED_OUT:
-            _error(rid, -32000, "Authentication required. Please run 'cursor-agent "
-                                "login' first, then call authenticate() with methodId "
-                                "'cursor_login'.")
+            # The observed reply (2026.11.19-f005e9d), detail under `data`.
+            _send({"jsonrpc": "2.0", "id": rid, "error": {
+                "code": -32000, "message": "Authentication required",
+                "data": {"message": "Authentication required. Please run 'agent login' "
+                                    "first, then call authenticate() with methodId "
+                                    "'cursor_login'."}}})
             return
         SESSION_ID = str(uuid.uuid4())
         _reply(rid, dict(_state(), sessionId=SESSION_ID))
@@ -222,7 +228,10 @@ def _reader():
     _eof.set()
     with _answered:
         _answered.notify_all()
-    _prompts.put(None)
+    # Like the real server (observed): stdin EOF does NOT end the process —
+    # only a signal does. `--exit-on-eof` restores the polite behaviour.
+    if EXIT_ON_EOF:
+        _prompts.put(None)
 
 
 def _await(ids):
@@ -337,7 +346,15 @@ def _prompt(rid, params):
                 _cancel.clear()
 
 
+def _on_sigterm(*_):
+    # Logged so a test can tell the polite stop (SIGTERM) from a SIGKILL,
+    # which no handler sees.
+    _log({"sigterm": True})
+    os._exit(143)
+
+
 def main():
+    signal.signal(signal.SIGTERM, _on_sigterm)
     if DUMP_ENV:
         with open(DUMP_ENV, "w", encoding="utf-8") as fh:
             json.dump(dict(os.environ), fh)

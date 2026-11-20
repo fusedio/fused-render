@@ -108,14 +108,15 @@ CURSOR = Backend(
         terminal_mirror=False,
         mid_turn_messages=False,
     ),
-    # The CLI's own wording: "Authentication required. Please run
-    # 'cursor-agent login' first…" (authRequired on session/new), "Not
+    # The CLI's own wording: "Authentication required. Please run 'agent
+    # login' first…" (authRequired on session/new, observed: the CLI names
+    # its `agent` alias whichever name it was run by), "Not
     # logged in" (`status`), "The provided API key is invalid." (an API key
     # in CURSOR_API_KEY that the backend refused).
     account_error_markers=(
         "authentication required", "not logged in", "not signed in",
         "api key is invalid", "unauthenticated", "unauthorized",
-        "login required", "cursor-agent login",
+        "login required", "agent login",
     ),
     limit_error_markers=(
         "rate limit", "usage limit", "quota", "too many requests", "429",

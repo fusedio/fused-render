@@ -140,7 +140,7 @@ const OPENCODE_NAMED: [TroubleKind, RegExp][] = [
 // `limit_error_markers` in fused_render/agent_backends/cursor.py. `429` is
 // matched as a whole number here, as Codex's is.
 const CURSOR_NAMED: [TroubleKind, RegExp][] = [
-  ["login", /authentication required|not logged in|not signed in|api key is invalid|unauthenticated|unauthorized|login required|cursor-agent login/i],
+  ["login", /authentication required|not logged in|not signed in|api key is invalid|unauthenticated|unauthorized|login required|agent login/i],
   ["limit", /rate limit|usage limit|quota|too many requests|\b429\b|resource_exhausted/i],
   ["notfound", /cursor-agent (?:cli )?not found/i],
 ];

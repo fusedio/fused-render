@@ -357,7 +357,7 @@ _ACCOUNT_ERROR_MARKERS = {
                  "provider not found", "model not found", "not signed in"),
     "cursor": ("authentication required", "not logged in", "not signed in",
                "api key is invalid", "unauthenticated", "unauthorized",
-               "login required", "cursor-agent login"),
+               "login required", "agent login"),
 }
 _LIMIT_ERROR_MARKERS = {
     # Claude's are the two this function matched before a second backend
