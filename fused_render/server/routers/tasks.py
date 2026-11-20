@@ -9741,6 +9741,10 @@ def api_queue_admit(body: dict = Body(...),
     if refusal is not None:
         return refusal
     key = project_queue.queue_key(resolved)
+    if not key:
+        # A folder with no queue (a specialist's home): nothing to claim and nothing to wait behind. Without this
+        # the claim below refuses the empty key and the message is stored as if the folder were busy.
+        return {"run": True}
     # The store, read once, and ONLY where this send has something to be behind:
     # a brand-new chat's first message names neither a session nor a leader and
     # pays nothing for either question.

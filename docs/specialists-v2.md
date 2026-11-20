@@ -143,7 +143,8 @@ Close and Discard became Send back and Close. Tools handed to a task went from f
 
 Kept: the chat that remembers, with Clear and the folded earlier chat; guidance reaching tasks by folder or by the
 task's own judgement; notes from any task; a breakout beside a task with both working; the update applied by
-default; messaging an owner through connected services with approval; the experimental switch, off by default.
+default; messaging an owner through connected services (approval follows the session's permission mode since the
+"not constrained" decision above); the experimental switch, off by default.
 
 ## Known trade-offs
 
@@ -152,5 +153,6 @@ default; messaging an owner through connected services with approval; the experi
 - No overnight reports to owners; the specialist offers to message someone during a live chat.
 - The task's judgement replaces the stuck counter, so it may offer a breakout less often.
 - No reopening a closed breakout from the task.
-- Every send to a connected service asks.
+- A send to a connected service follows the session's permission mode, so in Auto it goes out without a card, and
+  an unattended learning run can send too (the "not constrained" decision above).
 - Given up: clicking one memory line to see the note it came from, and a "Reverted" mark on an undone change.

@@ -120,3 +120,12 @@ def test_the_session_door_needs_the_token(client, monkeypatch):
     assert req(client, "POST", f"/api/specialists/{s.id}/specialist_services/tool", body)[0] == 403
     st, _ = req(client, "POST", f"/api/specialists/{s.id}/specialist_services/tool", dict(body, token=token))
     assert st == 200 and calls == [(s.id, "specialist_services", "slack_post", {"text": "hi"})]
+
+
+def test_a_send_in_a_home_is_never_queued(client, monkeypatch):
+    """With the project queue on, a home has no queue: the send runs instead of being stored behind nothing."""
+    from fused_render import project_queue
+
+    monkeypatch.setattr(project_queue, "enabled", lambda: True)
+    s = make_specialist()
+    assert req(client, "POST", "/api/tasks/queue/admit", {"project": s.home, "message": "hi"}) == (200, {"run": True})

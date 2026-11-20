@@ -119,7 +119,8 @@ export async function cloneBot(id: string | undefined = getState().sel || undefi
 /** Export transcript: the thread as Markdown, downloaded. Defaults to the selected bot. */
 export async function exportBot(b: Bot | undefined = cur()): Promise<void> {
   if (!b) return;
-  const r = await act(() => (b.specialist ? specialistApi.exportChat(b.id) : api.exportTranscript(b.id)), true);
+  // A specialist with no chat yet answers "There is no chat to export yet."; say so instead of doing nothing.
+  const r = await act(() => (b.specialist ? specialistApi.exportChat(b.id) : api.exportTranscript(b.id)), !b.specialist);
   if (!r?.text) return;
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([r.text], { type: "text/markdown" })); a.download = r.name; a.click();

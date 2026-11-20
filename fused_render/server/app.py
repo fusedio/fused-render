@@ -1410,7 +1410,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             return
         from fused_render.specialists import scheduler, seed
 
-        await asyncio.to_thread(seed.seed)
+        try:
+            await asyncio.to_thread(seed.seed)
+        except Exception:  # noqa: BLE001 — the shipped specialists are a convenience; the server still starts
+            logger.exception("could not create the shipped specialists")
         scheduler.start()
 
     @on_shutdown_always

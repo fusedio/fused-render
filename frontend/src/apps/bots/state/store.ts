@@ -550,7 +550,8 @@ async function specialistBots(): Promise<Bot[]> {
   if (!specialistsEnabledNow()) { specAt = 0; return []; }
   if (Date.now() - specAt < SPECIALISTS_MS) return specRows;
   specAt = Date.now();
-  specRows = await listSpecialists().then((r) => r.map(asBot), () => []);
+  // A failed refresh keeps the rows it had: emptying them would also throw the user out of an open specialist chat.
+  specRows = await listSpecialists().then((r) => r.map(asBot), () => specRows);
   return specRows;
 }
 /** A specialist action, then a poll that reads the specialists again. */

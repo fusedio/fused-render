@@ -11,7 +11,7 @@
 // DEFAULT OFF: "not read yet" and "off" are the same answer, so nothing new is
 // ever drawn before the server has said the flag is on.
 import { useEffect, useState } from "react";
-import { getPrefsShared } from "@platform/lib/api";
+import { getPrefsShared, onPrefsWrittenElsewhere } from "@platform/lib/api";
 
 let enabled = false;
 let reading: Promise<void> | null = null;
@@ -24,8 +24,14 @@ function set(next: boolean) {
   for (const listener of [...listeners]) listener(next);
 }
 
+let following = false;
 /** The first answer (or the one published since): what `specialistsEnabledNow` reads once it settles. */
 export function readSpecialistsFlag(): Promise<void> {
+  if (!following) {
+    // The toggle flipped in another window lands like a publish here (as favourites-flag.ts does).
+    following = true;
+    onPrefsWrittenElsewhere((p) => { if (p.specialists !== undefined) publishSpecialistsEnabled(p.specialists.enabled === true); });
+  }
   if (reading) return reading;
   const departed = generation;
   reading = getPrefsShared()

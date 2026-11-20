@@ -92,6 +92,17 @@ def _sanitize_repo(home: str) -> None:
         os.remove(attrs)
 
 
+def _ready(home: str) -> bool:
+    """Whether the app may run git in the home: it is a repository of its own (never an enclosing one's work
+    tree), with its config cleaned first. For the calls outside `commit` that can run a configured command (a
+    checkout's smudge filter, a status's clean filter)."""
+    if not available() or not os.path.isdir(os.path.join(home, ".git")):
+        return False
+    with _lock(home):
+        _sanitize_repo(home)
+    return True
+
+
 def commit(home: str, message: str, only: Sequence[str] = (".",)) -> None:
     """Commit what changed in the home under `only` (paths relative to it). Never raises."""
     if not available() or not os.path.isdir(os.path.join(home, ".git")):
@@ -114,7 +125,7 @@ def commit_edits(home: str) -> None:
     turn's label. A newer one is the user's hand edit."""
     from fused_render.claude_agent import agent_module
 
-    if not available() or next(agent_module()._live_runs_in(home, idle=True), None) is not None:
+    if next(agent_module()._live_runs_in(home, idle=True), None) is not None or not _ready(home):
         return
     dirty = _git(home, "status", "--porcelain", "-z", "--untracked-files=all", "--", *KNOWLEDGE).stdout.split("\0")
     edited = max((os.path.getmtime(os.path.join(home, ln[3:])) for ln in dirty
@@ -130,11 +141,12 @@ def commit_edits(home: str) -> None:
 
 
 def restore(home: str) -> None:
-    """Memory and skills back to the last commit (a failed update's edits)."""
-    if available():
-        for path in KNOWLEDGE:  # one at a time: a path HEAD lacks fails the whole checkout
+    """Memory, its archive and skills back to the last commit (a failed update's edits)."""
+    if _ready(home):
+        paths = (*KNOWLEDGE, "memory-archive.md")
+        for path in paths:  # one at a time: a path HEAD lacks fails the whole checkout
             _git(home, "checkout", "HEAD", "--", path)
-        _git(home, "clean", "-fdq", "--", *KNOWLEDGE)
+        _git(home, "clean", "-fdq", "--", *paths)
 
 
 def turn_ended(target: str, session_id: str) -> bool:
@@ -221,9 +233,9 @@ def learned(home: str, sha: str) -> dict:
 def diff(home: str, sha: str) -> str | None:
     """That commit's hunks over memory and skills (no file headers), or None for anything that is not one of the
     home's commits."""
-    if not re.fullmatch(r"[0-9a-f]{7,40}", sha or "") or not available():
+    if not re.fullmatch(r"[0-9a-f]{7,40}", sha or "") or not _ready(home):
         return None
-    res = _git(home, "show", "--format=", "--no-color", "--no-ext-diff", sha, "--", *KNOWLEDGE)
+    res = _git(home, "show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv", sha, "--", *KNOWLEDGE)
     if res.returncode:
         return None
     out, hunk = [], False

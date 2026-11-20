@@ -124,6 +124,19 @@ def test_restore_drops_a_failed_update_s_edits(transcript):
     s = make_specialist()
     _edit(s.home, "memory.md", "Half done.\n")
     _edit(s.home, ".claude/skills/new/SKILL.md", "x")
+    _edit(s.home, "memory-archive.md", "A line it retired.\n")
     history.restore(s.home)
     assert open(os.path.join(s.home, "memory.md")).read() == ""
     assert not os.path.exists(os.path.join(s.home, ".claude", "skills", "new"))
+    assert open(os.path.join(s.home, "memory-archive.md")).read() == ""
+
+
+def test_git_stays_out_of_a_home_that_is_not_a_repository(tmp_path):
+    """A home whose own `.git` is missing may sit inside another repository: nothing there is checked out or cleaned."""
+    outer = tmp_path / "outer"
+    home = outer / "home"
+    home.mkdir(parents=True)
+    _git(str(outer), "init", "-q")
+    (home / "memory.md").write_text("Untracked in the outer repository.\n")
+    history.restore(str(home))
+    assert (home / "memory.md").exists() and history.diff(str(home), "abcdef1") is None

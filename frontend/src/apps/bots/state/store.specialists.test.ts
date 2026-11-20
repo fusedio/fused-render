@@ -12,11 +12,13 @@ const { publishSpecialistsEnabled, resetSpecialistsFlagForTests } = await import
 
 const realFetch = globalThis.fetch;
 const calls: string[] = [];
+let failList = false;
 const spec = { id: "canvas", name: "Canvas", about: "Canvases", folder: "", face: null, home: "/w/specialists/canvas", working: false, last: { text: "Noted.", at: 50 }, new: true };
 const bots = { ts: 1, usage: null, imessage: null, bots: [{ id: "b1", name: "Helper", status: "idle", seq: 1, news_seq: 1, seen_seq: 1, events: [] }] };
 (globalThis as { fetch: unknown }).fetch = (url: string | URL, init?: RequestInit) => {
   const u = String(url);
   calls.push(`${init?.method || "GET"} ${u}`);
+  if (failList && u.startsWith("/api/specialists") && !init?.method) return Promise.resolve(new Response("{}", { status: 500 }));
   const body = u.startsWith("/api/specialists") && !init?.method ? [spec] : u.startsWith("/api/bots?") ? bots : { ok: true };
   return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
 };
@@ -52,6 +54,15 @@ describe("specialist rows", () => {
     await new Promise((r) => setTimeout(r, 0));
     // Neither the bots backend's open nor the specialist's seen: its dot is cleared by its Learning tab.
     expect(calls.some((c) => c.startsWith("POST /api/bots/canvas") || c.endsWith("/seen"))).toBe(false);
+  });
+
+  test("a failed refresh keeps the rows, and the open specialist stays selected", async () => {
+    const { actSpecialist } = await import("./store");
+    failList = true;
+    await actSpecialist(() => Promise.resolve());  // drops the row cache, then polls
+    failList = false;
+    expect(getState().bots.map((b) => b.id)).toEqual(["b1", "canvas"]);
+    expect(getState().sel).toBe("canvas");
   });
 
   test("the menu: Settings…, Export transcript, Delete…", () => {
