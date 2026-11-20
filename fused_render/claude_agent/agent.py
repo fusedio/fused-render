@@ -1688,9 +1688,9 @@ def _canvas_node_prompt(file: str) -> str:
     name = os.path.basename(file)
     folder = os.path.dirname(file)
     return _system_prompt(file) + (
-        f" {name} is one node of a Fused workbench canvas: the user selected "
-        f"it in the live canvas, which is on screen beside this chat in a "
-        f"cross-origin frame you cannot read. The canvas folder is {folder}: "
+        f" {name} is one node of a Fused workbench canvas: the user has it "
+        f"on screen beside this chat, selected in the live canvas or open as "
+        f"its own file, in a frame you cannot read. The canvas folder is {folder}: "
         "its canvas.toml defines the nodes and edges, and every node's code "
         "is the file named after it — a change that needs a canvas.toml entry "
         "(a rename, a new node) belongs in the same change set. Edits from "
@@ -4788,16 +4788,26 @@ def _canvas_shot_inbox(state: str) -> dict:
     canvas-shot requests waiting on ITS canvas, from any run — so the page
     answers whichever surface holds the chat.
 
-    `state` is JSON `{env, name, page_id, visible, focused, frame_up, error}`.
-    The heartbeat (`<pages>/<env>/<name>/<page_id>.json`) is what the
+    `state` is JSON `{env, name, page_id, visible, focused, frame_up, error,
+    node?}`. The heartbeat (`<pages>/<env>/<name>/<page_id>.json`) is what the
     permission server reads to know a page is open (fast refusal, the
     open-canvas ask). Rows already answered, or claimed by another page
-    within CANVAS_CLAIM_TTL, are left out."""
+    within CANVAS_CLAIM_TTL, are left out.
+
+    A NODE PAGE (`node`: a node's name) is the file view showing ONE node of
+    the canvas through its node template (SPEC §53.8), not the canvas. It can
+    picture that node and nothing else, so it is listed only the requests for
+    it (`what: "udf"`, `udf` its node), and its heartbeat says which node it
+    shows: the permission server counts it as an open page for those requests
+    alone, and still asks to open the canvas for the rest."""
     page = _json_obj(state)
     key = _canvas_page_of(page)
     if key is None:
         return {"error": "bad canvas page", "rows": []}
     env, name, page_id = key
+    node = page.get("node")
+    if node is not None and (not isinstance(node, str) or not _CANVAS_NAME_RE.match(node)):
+        return {"error": "bad canvas page", "rows": []}
     root = _canvas_pages_dir()
     beats = os.path.join(root, env, name)
     try:
@@ -4809,7 +4819,8 @@ def _canvas_shot_inbox(state: str) -> dict:
                        "visible": bool(page.get("visible")),
                        "focused": bool(page.get("focused")),
                        "frame_up": bool(page.get("frame_up")),
-                       "error": str(page.get("error") or "")[:300]}, fh)
+                       "error": str(page.get("error") or "")[:300],
+                       **({"node": node} if node else {})}, fh)
         os.replace(tmp, os.path.join(beats, page_id + ".json"))
         for old in os.listdir(beats):  # pages long gone
             path = os.path.join(beats, old)
@@ -4832,6 +4843,8 @@ def _canvas_shot_inbox(state: str) -> dict:
             continue
         if not isinstance(req, dict) or (req.get("env"), req.get("name")) != (env, name):
             continue
+        if node and (req.get("what") != "udf" or req.get("udf") != node):
+            continue  # a node page pictures its own node only
         run_id, request_id = str(req.get("run_id") or ""), str(req.get("request_id") or "")
         if _bad_id(run_id) or _bad_id(request_id):
             continue
@@ -5522,8 +5535,11 @@ def _canvas_shot_note(file: str) -> str:
         "folders, move nodes or change the layout, call it once with "
         "`what: \"canvas\"` and fix anything missing, misplaced or "
         "overlapping before you say the layout is done. It needs the canvas "
-        "open in Fused Render (the user is asked to open it when it is not): "
-        "if the result says to continue without a screenshot, do not call it "
+        "open in Fused Render, or, for one node's output, that node's file "
+        "open in the file view (the user is asked to open the canvas when "
+        "neither is): on a node's own chat ask for `what: \"udf\"`, which "
+        "is taken from whichever of the two is on screen. "
+        "If the result says to continue without a screenshot, do not call it "
         "again this turn. Any other failure means the picture could not be "
         "taken this time: say so and go on; never ask the user to reload or "
         "refresh the canvas, the page keeps itself current. Its note says "

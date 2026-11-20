@@ -31,6 +31,9 @@ TIER_ONE_TEMPLATES = (
     "annotate",
     "api",
     "bundle",
+    "canvas_note",
+    "canvas_udf",
+    "canvas_widget",
     "code",
     "docs",
     "duckdb",
@@ -86,7 +89,7 @@ SELF_TOGGLING_TEMPLATES = ("autocad_viewer", "excel", "tableau")
 # too, so retheming it belongs with that pass; sciviz.mjs injects no CSS at all —
 # its one hit is a canvas `fillStyle` for a hover highlight, which the (naive by
 # design) parser cannot tell from a rule body.
-TOKENIZED_SHARED_ASSETS = ("folder-picker.js", "graph-canvas.js")
+TOKENIZED_SHARED_ASSETS = ("canvas-node.js", "folder-picker.js", "graph-canvas.js")
 UNMIGRATED_SHARED_ASSETS = ("ro-badge.js", "sciviz.mjs")
 
 # The selectors folder-picker.js uses for its OWN dark/light palette pair. It

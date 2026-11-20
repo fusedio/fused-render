@@ -147,10 +147,13 @@ export interface TemplateEntry {
   /** A native template (PT-6 amendment): the shell draws it, there is no
    *  page to frame. Set by the server on the stat entry. */
   native?: boolean;
+  /** A canvas node template's entry (SPEC §53.2): offered only on its gate's
+   *  explicit yes, and never under a git snapshot (lib/mode-visibility). */
+  node?: boolean;
   /** The file's DEFAULT CANDIDATE although it is conditional (SPEC PT-8's one
-   *  exception): set by the server on the `_node` sentinel entry of a path
-   *  shaped like a canvas node file, with Canvases on. The default only on
-   *  the gate's explicit yes (lib/mode-visibility `defaultMode`). */
+   *  exception): set by the server on a `node` entry of a path shaped like a
+   *  canvas node file, with Canvases on. The default only on the gate's
+   *  explicit yes (lib/mode-visibility `defaultMode`). */
   prefer?: boolean;
 }
 
