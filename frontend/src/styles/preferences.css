@@ -1639,6 +1639,11 @@
 }
 
 
+/* No blurb under the title: the title keeps the gap the blurb did. */
+.settings-head-row:last-child {
+  margin-bottom: 16px;
+}
+
 .settings-head p {
   margin: 0 0 20px;
   color: var(--fg-muted);
@@ -1710,6 +1715,45 @@
 .settings-row-label .settings-badge-beta {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* The ⓘ beside a row's label: its description, on hover or press
+   (SettingRow's SettingHelp). Muted at rest so twenty of them do not shout,
+   the accent under the pointer or focus so it reads as a thing to press. */
+.settings-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: -2px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, background-color 0.12s ease;
+}
+
+.settings-help svg {
+  width: 14px;
+  height: 14px;
+}
+
+.settings-help:hover,
+.settings-help:focus-visible,
+.settings-help[data-popup-open] {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.12);
+  outline: none;
+}
+
+.settings-help-pop {
+  width: auto;
+  max-width: 340px;
+  font-size: 12.5px;
+  line-height: 1.45;
 }
 
 .settings-row-desc,

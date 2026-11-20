@@ -37,7 +37,7 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import { PointerRow } from "./settings/ai";
-import { rowId, SettingsViewContext } from "./settings/SettingRow";
+import { rowId, SettingHelp, SettingsViewContext } from "./settings/SettingRow";
 
 // The contract and its helpers, re-exported for the callers (and the test)
 // that reached them here before they moved to platform/lib/connect.ts.
@@ -61,7 +61,6 @@ export default function Connections() {
 
   return (
     <section className="settings-section" aria-label="Services" id={rowId("connections")} data-setting="connections">
-      <h3 className="settings-section-title">Services</h3>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!rows && !error && <SkeletonLines rows={3} label="Loading connections" />}
       {rows && rows.length === 0 && (
@@ -232,6 +231,16 @@ function ProviderCard({
           <div className="settings-row-label">
             <ConnectIcon provider={p} />
             <span>{p.name}</span>
+            {/* What the service sees and where its token lives, behind the ⓘ
+                like every Preferences row's help (2026-11-20). */}
+            {(p.privacy || st.store === "file") && (
+              <SettingHelp
+                label={p.name}
+                text={[p.privacy, st.store === "file" ? "Stored in a private file in your Fused folder (no keychain on this OS)." : ""]
+                  .filter(Boolean)
+                  .join(" ")}
+              />
+            )}
           </div>
           <div className="settings-row-status">{status}</div>
         </div>
@@ -245,10 +254,6 @@ function ProviderCard({
             <KeyForm auth={keyAuth} busy={busy} onSave={(value) => login({ kind: "api-key", value })} />
           )}
           {error && <ErrorBanner>{error}</ErrorBanner>}
-          {p.privacy && <p className="settings-row-desc">{p.privacy}</p>}
-          {st.store === "file" && (
-            <p className="settings-row-desc">Stored in a private file in your Fused folder (no keychain on this OS)</p>
-          )}
           {others.length > 0 && (
             // Open from the start when the card has no button of its own:
             // what is under it (a BYO client id) is then the only way in.

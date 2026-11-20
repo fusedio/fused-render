@@ -54,7 +54,9 @@ import { Input } from "@platform/shadcn/ui/input";
 import {
   groupOf,
   navSections,
+  parentOff,
   resolveGroup,
+  searchableSettings,
   sectionsOf,
   visibleGroups,
   visibleSettings,
@@ -102,7 +104,8 @@ function Section({
   prefs,
   onChange,
 }: {
-  title: string;
+  /** null: the group's only section, whose heading would repeat the group's title. */
+  title: string | null;
   entries: readonly SettingEntry[];
   prefs: Prefs;
   onChange: (p: Prefs) => void;
@@ -117,8 +120,8 @@ function Section({
     </div>
   );
   return (
-    <section className="settings-section" aria-label={title}>
-      <h3 className="settings-section-title">{title}</h3>
+    <section className="settings-section" aria-label={title ?? undefined}>
+      {title && <h3 className="settings-section-title">{title}</h3>}
       {card}
     </section>
   );
@@ -193,9 +196,16 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     const base: SettingEntry[] = visibleSettings({ prefs, mac: isMac, claudeConfig });
     return [...base, ...claudeRows];
   }, [prefs, claudeConfig, claudeRows]);
+  // What search looks through: every row, plus the child rows a group leaves
+  // out while their parent is off.
+  const searchable = useMemo(() => {
+    if (!prefs || claudeConfig === null) return [];
+    const base: SettingEntry[] = searchableSettings({ prefs, mac: isMac, claudeConfig });
+    return [...base, ...claudeRows];
+  }, [prefs, claudeConfig, claudeRows]);
   const groups = useMemo(() => visibleGroups(entries), [entries]);
   const sections = useMemo(() => navSections(groups), [groups]);
-  const byId = (id: string) => entries.find((e) => e.id === id);
+  const byId = (id: string) => searchable.find((e) => e.id === id);
 
   // Scroll a jumped-to row into view, light it briefly, then let it go.
   useEffect(() => {
@@ -237,14 +247,18 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const deep = byId(target ?? "");
   const current: GroupId = deep ? deep.group : resolveGroup(tab, groups);
 
-  const hits = useMemo(() => searchSettings(entries, tokens), [entries, tokens]);
+  const hits = useMemo(() => searchSettings(searchable, tokens), [searchable, tokens]);
   const view: SettingsView = {
     tokens: searching ? tokens : null,
     flashId: flash,
     prefs: prefs ?? undefined,
     jump: (id) => {
-      const group = byId(id)?.group;
-      if (group) showGroup(group, id);
+      const row = byId(id);
+      if (!row) return;
+      // A child its group does not draw yet: light its parent instead, the
+      // switch that brings it back.
+      const target = parentOff(row, prefs) && row.parent ? row.parent.id : id;
+      showGroup(row.group, target);
     },
   };
 
@@ -260,7 +274,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     : groupOf(current).label;
   const blurb = searching
     ? hits.length
-      ? "Change them right here, or follow the path above one to see it in its group."
+      ? null
       : "Try another word — dark, hotkey, token, wifi, queue, model."
     : groupOf(current).blurb;
 
@@ -284,7 +298,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                   setQuery("");
                 }
               }}
-              placeholder={`Search ${entries.length} settings`}
+              placeholder={`Search ${searchable.length} settings`}
               aria-label="Search settings"
               className="settings-search-input"
               autoComplete="off"
@@ -350,7 +364,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                   )}
                 </h2>
               </div>
-              <p>{blurb}</p>
+              {blurb && <p>{blurb}</p>}
             </div>
             <SettingsViewContext.Provider value={view}>
               <IndexStateProvider>
@@ -370,8 +384,14 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                     // the server lists, not rows the registry knows.
                     current === "connections"
                     ? <Connections />
-                    : sectionsOf(entries, current).map((s) => (
-                        <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
+                    : sectionsOf(entries, current).map((s, _i, all) => (
+                        <Section
+                          key={s.section}
+                          title={all.length > 1 ? s.section : null}
+                          entries={s.entries}
+                          prefs={prefs}
+                          onChange={setPrefs}
+                        />
                       ))}
               </IndexStateProvider>
             </SettingsViewContext.Provider>
