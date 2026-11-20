@@ -6,19 +6,21 @@
      runs the UDF and serialises what it returned — a table as a
      self-contained page, an HTML string as itself, a raster as a PNG. This
      page asks for exactly that, with the user's own sign-in and the file as
-     it stands on disk (POST /api/canvases/node/run), so the canvas need not
-     be shared and an edit shows before it is pushed. No workbench is
+     it stands on disk (fused.workbench.udf, SPEC §54), so the canvas need
+     not be shared and an edit shows before it is pushed. No workbench is
      framed and no canvas is hydrated.
 
      What this page does:
        - asks the server what the file is (shared/canvas-node.js);
-       - runs it, and shows the answer: a page in a frame, an image, text,
-         or the error with its line and the run's output;
+       - shows the last answer fused-render saved for this file at once,
+         then runs it and shows the fresh answer: a page in a frame, an
+         image, text, or the error with its line and the run's output;
        - runs it again when the file changes on disk (unless "Auto-run" is
          off), or on Run;
-       - asks first, by the workbench's own rules, before a run that is a
-         batch job, starts batch work or maps, and before taking a very
-         large result (the server decides which runs those are);
+       - a batch job, batch work or a map is asked about first by the
+         runtime (the workbench's own rules), and so is a very large result;
+         on open, with a saved answer on screen, such a UDF is not asked
+         about: it waits for Run;
        - keeps the canvas's sync engine running, so edits to the folder are
          pushed as they are made.
 
@@ -91,19 +93,6 @@
     padding: 24px; text-align: center; color: var(--fg-muted); background: var(--bg);
   }
   .message .error { color: var(--error); white-space: pre-wrap; max-width: 640px; }
-  /* A question before a run (a batch job, a large result): over the stage,
-     the last result still readable behind it. */
-  .ask {
-    position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center;
-    padding: 24px; background: var(--scrim);
-  }
-  .ask-card {
-    width: 100%; max-width: 420px; padding: 18px 20px; border-radius: 10px;
-    background: var(--panel); border: 1px solid var(--line);
-  }
-  .ask-title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
-  .ask-body { color: var(--fg-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
   .log { flex: none; max-height: 35%; overflow: auto; border-top: 1px solid var(--line); background: var(--code); }
   .log summary { padding: 4px 12px; cursor: pointer; color: var(--fg-muted); font-size: 12px; }
   /* A run in flight: a moving bar under the strip. The last result stays as
@@ -143,16 +132,6 @@
     <pre id="log-text"></pre>
   </details>
   <div class="message" id="message">Loading…</div>
-  <div class="ask" id="ask" hidden role="dialog" aria-modal="true" aria-labelledby="ask-title">
-    <div class="ask-card">
-      <div class="ask-title" id="ask-title"></div>
-      <div class="ask-body" id="ask-body"></div>
-      <div class="ask-actions">
-        <button type="button" id="ask-no"></button>
-        <button type="button" class="primary" id="ask-yes"></button>
-      </div>
-    </div>
-  </div>
 </div>
 <script>
   // The page re-runs the file itself; a reload would drop the last result.
@@ -168,13 +147,12 @@
   const result = $("result");
   const message = $("message");
   let node = null;
+  let udf = null;           // fused.workbench.udf handle on FILE
   let running = false;
   let queued = false;       // a change landed during a run: run once more after
-  let asking = false;       // a question is up: its answer decides what runs
-  let largeOk = false;      // "Continue anyway" was said once: kept while the page is open
   let rerunTimer = null;
   let runTicker = null;
-  let objectUrl = null;
+  let shownFrom = null;     // what the result on screen is: "saved" | "fresh" | null
 
   function el(tag, value, cls) {
     const out = document.createElement(tag);
@@ -207,22 +185,19 @@
     $("log-text").textContent = parts.join("\n");
     $("log").hidden = parts.length === 0;
   }
-  function clearResult() {
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
-    objectUrl = null;
-    result.replaceChildren();
-  }
-  function bytesOf(b64) {
-    const bin = atob(b64);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
   function humanBytes(n) {
     const units = ["B", "KB", "MB", "GB"];
     let i = 0;
     while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
     return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+  }
+  function ago(date) {
+    if (!date) return "";
+    const s = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+    if (s < 60) return "just now";
+    if (s < 3600) return Math.round(s / 60) + " min ago";
+    if (s < 86400) return Math.round(s / 3600) + " h ago";
+    return Math.round(s / 86400) + " d ago";
   }
 
   // Fused's page for a table is an ag-Grid in a `<div id="myGrid">` that is
@@ -236,52 +211,62 @@
     return "<" + "style>" + sizing + "</" + "style>" + html;
   }
 
-  function showAnswer(answer) {
-    clearResult();
-    setLog(answer.stdout, answer.stderr);
-    if (!answer.ok) {
-      const head = typeof answer.line === "number" ? "Error on line " + answer.line : "Error";
-      result.append(el("div", head, "error-head"), el("pre", answer.error || "the run failed", "error"));
-      // An error's output is why one is reading it.
-      $("log").open = true;
-      setStatus("Failed", true);
-      return;
-    }
-    const bytes = bytesOf(answer.body_b64 || "");
-    const type = (answer.content_type || "").split(";")[0].trim().toLowerCase();
-    if (bytes.length === 0) {
-      result.append(el("pre", "This UDF returned nothing."));
+  function showError(err) {
+    result.replaceChildren();
+    setLog(err.stdout, err.stderr);
+    const head = typeof err.line === "number" ? "Error on line " + err.line : "Error";
+    result.append(el("div", head, "error-head"), el("pre", err.message || "the run failed", "error"));
+    // An error's output is why one is reading it.
+    $("log").open = true;
+    shownFrom = null;
+    setStatus("Failed", true);
+  }
+
+  // One result (fused.workbench.udf's Result) onto the stage. Its bytes are
+  // at `answer.url`; HTML there is sandboxed by the server too.
+  async function showAnswer(answer) {
+    const type = (answer.contentType || "").split(";")[0].trim().toLowerCase();
+    const nodes = [];
+    if (answer.size === 0) {
+      nodes.push(el("pre", "This UDF returned nothing."));
     } else if (type === "text/html") {
       // Fused's own page for the result (a table viewer, or the UDF's HTML).
       // Its scripts run, in a frame with no access to this origin.
       const frame = document.createElement("iframe");
       frame.title = "Result of " + node.title;
       frame.setAttribute("sandbox", "allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads");
-      frame.srcdoc = sizedTablePage(new TextDecoder().decode(bytes));
-      result.append(frame);
+      frame.srcdoc = sizedTablePage(await answer.text());
+      nodes.push(frame);
     } else if (type.startsWith("image/")) {
-      objectUrl = URL.createObjectURL(new Blob([bytes], { type }));
       const img = document.createElement("img");
       img.alt = "Result of " + node.title;
-      img.src = objectUrl;
-      result.append(img);
+      img.src = answer.url;
+      nodes.push(img);
     } else if (type === "application/json" || type.startsWith("text/")) {
-      let shown = new TextDecoder().decode(bytes);
+      let shown = await answer.text();
       if (type === "application/json") {
         try { shown = JSON.stringify(JSON.parse(shown), null, 2); } catch (_) { /* as sent */ }
       }
-      result.append(el("pre", shown));
+      nodes.push(el("pre", shown));
     } else {
-      result.append(el("pre", "This result (" + (type || "unknown type") + ", " + humanBytes(bytes.length) +
+      nodes.push(el("pre", "This result (" + (type || "unknown type") + ", " + humanBytes(answer.size) +
         ") has no preview here. Open the node in its canvas to see it."));
     }
+    result.replaceChildren(...nodes);
+    message.hidden = true;
+    setLog(answer.stdout, answer.stderr);
+    shownFrom = answer.source === "saved" ? "saved" : "fresh";
+    if (answer.source === "saved") {
+      setStatus("Saved · " + ago(answer.savedAt));
+      return;
+    }
     const took = typeof answer.seconds === "number" ? answer.seconds.toFixed(1) + " s" : "";
-    setStatus([answer.cached ? "Cached" : "", took].filter(Boolean).join(" · "));
+    setStatus([answer.source === "fused-cache" ? "Cached" : "", took].filter(Boolean).join(" · "));
   }
 
   // What a run in flight looks like: the bar, the button saying so, and the
   // strip counting the seconds — and, over a result already on screen, that
-  // it is the previous one until the new one replaces it.
+  // it is the previous (or saved) one until the new one replaces it.
   function setRunning(on) {
     clearInterval(runTicker);
     $("progress").hidden = !on;
@@ -289,123 +274,78 @@
     $("run").textContent = on ? "Running…" : "Run";
     if (!on) return;
     const startedAt = Date.now();
-    const stale = result.hasChildNodes();
     const tick = () => {
       const secs = Math.floor((Date.now() - startedAt) / 1000);
-      setStatus("Running… " + secs + " s" + (stale ? " · previous result shown" : ""));
+      const behind = shownFrom === "saved" ? " · saved result shown"
+        : shownFrom === "fresh" ? " · previous result shown" : "";
+      setStatus("Running… " + secs + " s" + behind);
     };
     tick();
     runTicker = setInterval(tick, 1000);
   }
 
-  // A question over the stage. Resolves true for the right-hand button,
-  // false for the left one or Escape. One at a time.
-  function ask(title, body, no, yes) {
-    asking = true;
-    $("ask-title").textContent = title;
-    $("ask-body").textContent = body;
-    $("ask-no").textContent = no;
-    $("ask-yes").textContent = yes;
-    $("ask").hidden = false;
-    $("ask-yes").focus();
-    return new Promise((resolve) => {
-      const done = (value) => {
-        $("ask").hidden = true;
-        $("ask-no").onclick = $("ask-yes").onclick = null;
-        document.removeEventListener("keydown", onKey, true);
-        asking = false;
-        resolve(value);
-      };
-      const onKey = (event) => { if (event.key === "Escape") done(false); };
-      $("ask-no").onclick = () => done(false);
-      $("ask-yes").onclick = () => done(true);
-      document.addEventListener("keydown", onKey, true);
-    });
-  }
-  // A long name is cut in its middle, so both ends still read.
-  function shortName(name, max) {
-    if (name.length <= max) return name;
-    const keep = max - 1;
-    return name.slice(0, Math.ceil(keep / 2)) + "…" + name.slice(name.length - Math.floor(keep / 2));
-  }
   // What the stage says when there is no result to leave on it.
   function idle(text) {
     if (!result.hasChildNodes()) showMessage((host) => host.append(el("div", text)));
   }
 
-  // THE GATES (SPEC §53.5 NU-6, NU-7), the hosted workbench's own. The
-  // server decides which runs are asked about; this page only asks.
-  //   - A batch job, batch work started inside, a map: never run without a
-  //     yes. Asked on open, on a save and on Run alike, every time: nothing
-  //     is remembered. A no leaves the UDF paused with the reason.
-  //   - A result past the auto-load size: asked once; "Continue anyway"
-  //     holds while the page is open. The run it starts is asked about
-  //     again when it is one of the first kind.
+  // One run (SPEC §53.5, §54). The runtime asks the user before a batch job,
+  // batch work or a map, and before a very large result. `opts.onOpen`: the
+  // run that opening the page starts; with a saved answer on screen, a UDF
+  // the workbench never runs on its own is not asked about then (`confirm:
+  // false`) — it waits for Run.
   async function run(opts) {
     opts = opts || {};
-    if (!node || asking) return;
+    if (!node || !udf) return;
     if (running) {
       queued = true;
       return;
     }
     running = true;
     queued = false;
-    setRunning(true);
-    let next = null;
-    try {
-      const answer = await CanvasNode.run(FILE, {
-        confirmed: opts.confirmed === true,
-        allow_large: largeOk,
+    const handle = udf.run(undefined, { confirm: opts.onOpen ? false : undefined });
+    if (opts.onOpen) {
+      handle.saved.then((saved) => {
+        // The fresh answer may already be on screen; a saved one never
+        // replaces it.
+        if (saved && running && shownFrom === null) void showAnswer(saved);
       });
-      if (answer.needs_confirmation) {
-        next = async () => {
-          setStatus(answer.reason || "Waiting for confirmation");
-          const yes = await ask(answer.title || "Confirm execution",
-            'Do you want to run "' + shortName(node.title, 35) + '"?', "Cancel", "Run");
-          if (yes) return run({ confirmed: true });
-          idle((answer.reason || "This UDF is not run automatically") + ". Press Run to run it.");
-        };
-      } else if (answer.too_large) {
-        setLog(answer.stdout, answer.stderr);
-        next = async () => {
-          setStatus("Large result");
-          const yes = await ask("Large data warning",
-            "Loading data for UDF '" + node.title + "' (" + humanBytes(answer.size) +
-            ") might be slow or unstable. Would you like to continue loading this data?",
-            "Don't load", "Continue anyway");
-          if (yes) {
-            largeOk = true;
-            return run();
-          }
-          setStatus("Not loaded");
-          idle("The result (" + humanBytes(answer.size) + ") was not loaded.");
-        };
-      } else {
-        message.hidden = true;
-        showAnswer(answer);
-      }
+    }
+    setRunning(true);
+    try {
+      await showAnswer(await handle);
     } catch (error) {
-      // The run never happened (not signed in, no CLI, a timeout): nothing
-      // of the last result is thrown away for it.
-      setStatus(error.message, true);
-      if (!result.hasChildNodes()) {
-        showMessage((host) => {
-          host.append(el("div", "Could not run " + node.title + ": " + error.message, "error"));
-        });
+      if (error.code === "udf_error") {
+        showError(error);
+      } else if (error.code === "declined") {
+        if (opts.onOpen && !result.hasChildNodes()) {
+          // Nothing saved to show: ask now, as a save or Run would.
+          queued = true;
+        } else {
+          setStatus(error.reason || "Not run");
+          idle((error.reason || "This UDF was not run") + ". Press Run to run it.");
+        }
+      } else {
+        // The run never happened or never arrived (signed out, a timeout):
+        // nothing of the last result is thrown away for it.
+        setStatus(error.message, true);
+        if (!result.hasChildNodes()) {
+          showMessage((host) => {
+            host.append(el("div", "Could not run " + node.title + ": " + error.message, "error"));
+          });
+        }
       }
     } finally {
       running = false;
       setRunning(false);
+      if (shownFrom === "saved") {
+        // The run ended without a fresh answer: the strip says again what
+        // is on screen.
+        const s = $("status").textContent;
+        if (!s || s.startsWith("Running")) setStatus("Saved result");
+      }
     }
-    if (next) {
-      // A save during the request asked for one more run; the question's
-      // answer is that run.
-      queued = false;
-      message.hidden = result.hasChildNodes();
-      await next();
-    } else if (queued) {
-      void run();
-    }
+    if (queued) void run();
   }
 
   async function boot() {
@@ -426,6 +366,7 @@
     }
     $("title").textContent = node.title;
     $("canvas").textContent = node.name;
+    udf = fused.workbench.udf({ file: FILE });
     $("open").addEventListener("click", () => CanvasNode.openCanvas(node));
     $("run").addEventListener("click", () => void run());
     const autorun = $("autorun");
@@ -475,7 +416,7 @@
       return;
     }
     showMessage((host) => host.append(el("div", "Running " + node.title + "…")));
-    await run();
+    await run({ onOpen: true });
   }
 
   void boot();

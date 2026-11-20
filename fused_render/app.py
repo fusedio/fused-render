@@ -500,6 +500,9 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         canvas_mirror.refuse_new_runs()
         warm_run.refuse_new()
         contrib_ai.refuse_children()
+        from fused_render.udf import runner as udf_runner
+
+        udf_runner.refuse_new()
 
     def engines():
         from fused_render.server import engine_host
@@ -573,6 +576,13 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
 
         contrib_ai.stop_children()
 
+    def udf_workers():
+        # The warm per-environment UDF workers (`fused.workbench.udf()`,
+        # udf/runner.py): stdin closed, then killed after a short wait.
+        from fused_render.udf import runner as udf_runner
+
+        udf_runner.shutdown()
+
     def discovery():
         from fused_render.server.app import remove_server_json
 
@@ -588,6 +598,7 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
                        ("bots", bots), ("canvas-sync", canvas_sync),
                        ("canvas-mirror", canvas_mirror),
                        ("contrib-claude", contrib_claude),
+                       ("udf-workers", udf_workers),
                        ("discovery", discovery)):
         def _run(step=step, name=name):
             try:
