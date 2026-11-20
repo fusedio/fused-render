@@ -234,8 +234,11 @@ agent.py:      _HOST_FILES["cursor"] = cursor_host.py; _SELF_MINTED_ID_BACKENDS 
 - **D17** a sixth Preferences toggle `cursor_enabled` (default off); the PUT
   rule becomes "at least one of the six on".
 - **D18** label **"Cursor"**, product name "Cursor CLI"; notice row
-  `"Handled by Cursor · model <id>"`. Mark = a pointer-arrow glyph of our own,
-  never Cursor's logo.
+  `"Handled by Cursor · model <id>"`. Mark = **Cursor's own mark** (the cube)
+  + word (owner, 2026-11-20: "use cursor's icon" — the Codex exception again,
+  reversing the first draft's pointer-arrow glyph of our own). Path data from
+  simple-icons 16.38.0 (CC0), filled with `currentColor` in a 24-unit box, in
+  `AgentMark.tsx`.
 - **D19** every child runs with `NO_OPEN_BROWSER=1` (setdefault; the CLI's
   own switch), except the Sign-in child, which needs the browser.
   `CURSOR_API_KEY` passes through.
