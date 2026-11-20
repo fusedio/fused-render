@@ -261,7 +261,7 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
 /* An expert (docs/experts.md): SUPER's badge on the page's accent. */
 .bots-page .bot .name .expert { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); vertical-align: 1px; letter-spacing: .04em; }
-/* A specialist (docs/specialists-v2.md): the same badge on a neutral fill; on the selected row, whose own fill that is, the hover fill. */
+/* A specialist (docs/specialists.md): the same badge on a neutral fill; on the selected row, whose own fill that is, the hover fill. */
 .bots-page .bot .name .specialist { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--bots-shell-selected); color: var(--text); vertical-align: 1px; letter-spacing: .04em; }
 .bots-page .bot.sel .name .specialist { background: var(--raised); }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */

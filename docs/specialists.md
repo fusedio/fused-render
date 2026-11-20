@@ -2,8 +2,8 @@
 
 Written 2026-11-19 from the code as built (`fused_render/specialists/`, the specialist parts of
 `fused_render/claude_agent/agent.py` and `permission_server.py`, `frontend/src/apps/bots/components/Specialist*.tsx`).
-Where this page and the code disagree, the code wins; fix the page. Why it is built this way, and what was cut, is
-in `docs/specialists-v2.md`.
+Where this page and the code disagree, the code wins; fix the page. Why it is kept apart from Expert bots is §13;
+what was left out on purpose is §14.
 
 ## 1. What a specialist is
 
@@ -457,7 +457,7 @@ The two kinds solve nearly the same problem and are kept apart on purpose, to co
 | Learning from tasks | Reads a task minutes after it consulted | A task that named it, each breakout and its own chat get an inbox pointer; a background learning run reads their transcripts |
 | Takes effect | Minutes later | Next learning run (daily when something waits, or Learn now); its own chat at once |
 | Task that never named it | Teaches nothing | Teaches nothing; any Claude task can send it a note |
-| Memory format | Fact per line with count and date | Plain sentences (charter guidance only) |
+| Memory format | Fact per line with count and date | The same, kept by instruction only |
 | Trace | Changes: a row per session with diff | Learning tab: what waits, and per run what it read, said and changed |
 | Undo | Edit the memory file | Tell it in its chat, or edit `memory.md` |
 | Messaging people | No | Connected services, under the session's permission mode |
@@ -473,8 +473,9 @@ The two kinds solve nearly the same problem and are kept apart on purpose, to co
 - Learning runs by itself at most once a day. A rule stated inside a task waits for it; telling the specialist in
   its own chat, or Learn now, is the quick path.
 - A breakout may edit memory and skills; its turn is committed like a chat turn. Nothing enforces that memory stays
-  plain sentences: that is prompt text.
-- No limit on the inbox or on `memory.md`, and no compaction. A learning run reads transcripts as they are, so a
+  one counted fact per line: that is prompt text.
+- No enforced limit on the inbox or on `memory.md`, and no compaction by the app: the rule of about 200 lines is
+  prompt text. A learning run reads transcripts as they are, so a
   long task costs a reader more (it is told to search, not read whole).
 - No export, clone or import of a specialist; no editing skills from the pane (ask the specialist).
 - Only Claude runs a specialist, and only Claude tasks get its tools; plain breakouts get none.

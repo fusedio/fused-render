@@ -196,7 +196,7 @@ def queue_key(project: str) -> str:
     """
     if not isinstance(project, str) or not project or not os.path.isabs(project):
         return ""
-    # A specialist's home has no queue: its main chat and breakouts run side by side (docs/specialists-v2.md).
+    # A specialist's home has no queue: its main chat and breakouts run side by side (docs/specialists.md).
     if sp_paths.flag_on_and_inside(project):
         return ""
     cached = _KEY_CACHE.get(project)

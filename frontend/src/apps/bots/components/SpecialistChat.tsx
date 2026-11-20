@@ -1,4 +1,4 @@
-// A specialist's chat (docs/specialists-v2.md): the task chat (ChatMount) on its home, every start keyed
+// A specialist's chat (docs/specialists.md): the task chat (ChatMount) on its home, every start keyed
 // `<id>:main` so the server knows it is this specialist's main chat. Clear (the header's, or `/clear`) folds the
 // current session away and remounts with none. Earlier chats sit above it as a cleared bot thread shows them
 // (Thread.tsx ClearMark): a "Context cleared" rule with "Show earlier conversation", which opens them read-only.

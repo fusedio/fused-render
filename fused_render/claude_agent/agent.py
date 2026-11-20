@@ -2816,7 +2816,7 @@ def _expert_stamped(run_dir: str) -> bool:
     return isinstance(env, dict) and bool(env.get("FUSED_RENDER_EXPERT_ORIGIN"))
 
 
-# Specialists (docs/specialists-v2.md). A task run gets the three task tools
+# Specialists (docs/specialists.md). A task run gets the three task tools
 # when `_start` recorded `specialists.on` in its run dir; a specialist's own
 # chat gets the launch spec `_start` wrote as `specialist.json`. Without
 # either file every argv is byte-identical to a build without specialists.

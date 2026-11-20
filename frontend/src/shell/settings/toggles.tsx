@@ -87,7 +87,7 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Specialists (docs/specialists-v2.md): their Bots rows, the task tools and the
+// Specialists (docs/specialists.md): their Bots rows, the task tools and the
 // breakout's "With". Published so an open page shows or drops them at once.
 export function SpecialistsControl({ prefs, onChange }: PrefControlProps) {
   return (

@@ -1,4 +1,4 @@
-// The three specialist task tools as plain words (docs/specialists-v2.md), for
+// The three specialist task tools as plain words (docs/specialists.md), for
 // the tool row and the status line: "Used the Canvas specialist", never
 // "fused render: specialist pull".
 const TOOL_RE = /^mcp__fused[_-]render__specialist_(pull|note|breakout)$/;

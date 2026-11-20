@@ -200,7 +200,7 @@ export interface Bot {
   folders?: string[];
   /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": no browser, one
    *  memory file it keeps itself, tapped by task sessions (docs/experts.md); "specialist": a row the page makes from
-   *  /api/specialists (docs/specialists-v2.md), not a bot the bots backend knows; absent for an ordinary bot. */
+   *  /api/specialists (docs/specialists.md), not a bot the bots backend knows; absent for an ordinary bot. */
   kind?: "bot" | "super" | "expert" | "specialist";
   /** Expert only: its settings (experts.store.manifest). */
   expert?: ExpertManifest | null;

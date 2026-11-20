@@ -111,7 +111,7 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
     ONLY when true, so a fake `_start` without the kwarg keeps working.
 
     `specialist` is a specialist start key (`"<id>:update"`, the daily
-    update; docs/specialists-v2.md), forwarded only when set, likewise.
+    update; docs/specialists.md), forwarded only when set, likewise.
 
     `session_id` rides through because a scheduled message may target an
     EXISTING conversation ("" is a fresh one, which is all the apps API ever

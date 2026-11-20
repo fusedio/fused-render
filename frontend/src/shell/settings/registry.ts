@@ -565,7 +565,7 @@ const ENTRIES = [
     description: "Bots that keep one memory file about one subject — Canvas Reference and Data Expert ship with the app — and that your Claude, Codex and Copilot tasks can consult. Turning this off hides them and stops their learning; their memory is kept for when you turn it back on.",
     keywords: "expert experts memory canvas reference data expert bot learn ask",
   },
-  // SPECIALISTS (docs/specialists-v2.md): a kind of bot on the Bots page, and
+  // SPECIALISTS (docs/specialists.md): a kind of bot on the Bots page, and
   // the task tools and the breakout's "With". Off by default; off, nothing of
   // it exists. Beside Expert bots: the two solve the same problem two ways.
   {

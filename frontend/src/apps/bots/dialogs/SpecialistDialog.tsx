@@ -1,4 +1,4 @@
-// A specialist's one form (docs/specialists-v2.md), for "+ New bot" › Specialist and for its Settings…: the face,
+// A specialist's one form (docs/specialists.md), for "+ New bot" › Specialist and for its Settings…: the face,
 // the name, what it is an expert on, and an optional folder it helps in by itself. The New bot form's shell and
 // layout (CreateBot.tsx). Save closes only when the server took it; a refusal (a name taken) shows in the banner.
 import { useMemo, useRef, useState } from "react";

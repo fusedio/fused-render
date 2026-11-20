@@ -1,4 +1,4 @@
-// Specialists (docs/specialists-v2.md): the shared row shape and the list, in
+// Specialists (docs/specialists.md): the shared row shape and the list, in
 // platform because the Bots page and the task chat both read them and neither
 // may import the other.
 import { useEffect, useState } from "react";

@@ -1,5 +1,5 @@
 // The `specialists` experimental flag (`specialists_enabled`, shell/prefs.py;
-// docs/specialists-v2.md), in platform so the Bots page, the shell and the
+// docs/specialists.md), in platform so the Bots page, the shell and the
 // chat's breakout "With" read one answer.
 //
 // The same module-level cache + subscribe shape as canvases-flag.ts: one read

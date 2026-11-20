@@ -1393,7 +1393,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001 — never worth failing startup
             logger.warning("could not start the experts scheduler", exc_info=True)
 
-    # Specialists (fused_render/specialists/, docs/specialists-v2.md): `/api/specialists*`, every route the
+    # Specialists (fused_render/specialists/, docs/specialists.md): `/api/specialists*`, every route the
     # unknown-path 404 while the flag is off. The tools router goes first: its literal `/tools/*` paths must win
     # over the `/{id}` routes.
     from fused_render.specialists import flag as sp_flag

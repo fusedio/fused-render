@@ -163,7 +163,7 @@ EXPECTED_STARTUP = [
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",
     "_startup_experts",
-    # Added 2026-11-18: specialists (docs/specialists-v2.md): seed + update timer, only with the flag on.
+    # Added 2026-11-18: specialists (docs/specialists.md): seed + update timer, only with the flag on.
     "_startup_specialists",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and

@@ -534,7 +534,7 @@ export const closeMenu = (): void => { if (S.ui.menu) { commit({ ui: { ...S.ui, 
 export const setBuildsChip = (patch: Partial<BuildsChip>): void => commit({ buildsChip: { ...S.buildsChip, ...patch } });
 
 // ------------------------------------------------------------------ specialists ----
-// The page lists specialists (docs/specialists-v2.md) as rows of their own kind: read from /api/specialists at most
+// The page lists specialists (docs/specialists.md) as rows of their own kind: read from /api/specialists at most
 // every SPECIALISTS_MS and right after a specialist action, never off the page or on the phone. The bots backend
 // does not know them. With the switch off nothing is asked; the first poll waits for the switch, so a fresh load of
 // /bots/<specialist> finds its row.

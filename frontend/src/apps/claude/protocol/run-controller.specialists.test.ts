@@ -1,4 +1,4 @@
-// SPECIALISTS (docs/specialists-v2.md): `extraStartParams` rides on every
+// SPECIALISTS (docs/specialists.md): `extraStartParams` rides on every
 // start and send of a specialist session, and a chat without it is unchanged.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
