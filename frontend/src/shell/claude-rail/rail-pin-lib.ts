@@ -197,7 +197,8 @@ export function outsideCloses(mode: CardMode, where: PressWhere): boolean {
 }
 
 /** The data attribute every rail door carries, for the classifier's "own
- *  door" (ClaudeRail): `tasks`, `bots`, `git`, `plus`. */
+ *  door" (ClaudeRail): `tasks`, `bots`, `git`, `plus`, `mode` (a mode door,
+ *  which also says its mode: `data-rail-mode`). */
 export const RAIL_DOOR_ATTR = "data-rail-door";
 export function doorSelector(door: string): string {
   return `[${RAIL_DOOR_ATTR}="${door}"]`;
@@ -237,16 +238,18 @@ export function pinnedTaskLands(o: { inList: boolean }): "ring" | "close" {
 
 /** WHAT A PINNED WINDOW A SHOWS, as the window's mark spells it
  *  (platform/lib/last-chat `aPinned`): a task's card, the + New task card
- *  (a draft's ring is the same card), or the Tasks / Bots / Git card. */
-export type APin = { kind: "task"; key: string } | { kind: "plus" | "tasks" | "bots" | "git" };
+ *  (a draft's ring is the same card), the Tasks / Bots / Git card, or one
+ *  mode's card (`mode:<mode>`, mode-peek-store `modeKey`). */
+export type APin = { kind: "task"; key: string } | { kind: "plus" | "tasks" | "bots" | "git" } | { kind: "mode"; mode: string };
 
 export function aPinWord(p: APin): string {
-  return p.kind === "task" ? "task:" + p.key : p.kind;
+  return p.kind === "task" ? "task:" + p.key : p.kind === "mode" ? "mode:" + p.mode : p.kind;
 }
 
 export function readAPin(word: string | null): APin | null {
   if (!word) return null;
   if (word.startsWith("task:")) return word.length > 5 ? { kind: "task", key: word.slice(5) } : null;
+  if (word.startsWith("mode:")) return word.length > 5 ? { kind: "mode", mode: word.slice(5) } : null;
   return word === "plus" || word === "tasks" || word === "bots" || word === "git" ? { kind: word } : null;
 }
 

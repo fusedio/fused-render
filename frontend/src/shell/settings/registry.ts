@@ -506,6 +506,19 @@ const ENTRIES = [
       on: (prefs) => prefs.canvas_rail_peek?.enabled === true && prefs.task_favourites?.enabled === true,
     },
   },
+  // A FILE'S OTHER MODES AS DOORS ON THE RAIL (shell/claude-rail
+  // rail-mode-doors-flag; owner, 2026-11-20): the rail's doors, so a child of
+  // the rail preview.
+  {
+    id: "rail-mode-doors",
+    group: "features",
+    section: "Chats & rail",
+    label: "File views on the rail",
+    description: "On a file, its other views (Code, Reader and so on) show as icons on the rail above Git. Hover one to preview the file that way in a floating card; click to keep it open, Open switches the page to that view.",
+    keywords: "mode view preview code reader rail door icon file template switch hover card git",
+    child: true,
+    parent: { id: "canvases-rail-peek", on: (prefs) => prefs.canvas_rail_peek?.enabled === true },
+  },
   // ONE HEADER FOR EVERY TASK VIEW (shell/TaskHead, task-head-flag). After the
   // rail preview's two children, not between them: a row set there read as
   // the parent of "Favourite chats".

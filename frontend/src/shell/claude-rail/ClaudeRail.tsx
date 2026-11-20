@@ -467,6 +467,28 @@ import {
   registerGitDoor,
   useGitCard,
 } from "./git-peek-store";
+import {
+  MODE_DOOR,
+  closeModeCard,
+  closeModeCards,
+  forgetModeCardRail,
+  modeCardStore,
+  modeCards,
+  modeDoorAction,
+  modeDoorSelector,
+  modeKey,
+  modeOfKey,
+  modePeekId,
+  publishRailModes,
+  setModeCardRail,
+  useModeCards,
+  type RailModeDoor,
+} from "./mode-peek-store";
+import { useRailModeDoorsAnswer } from "./rail-mode-doors-flag";
+import type { DoorCardState } from "./door-card-store";
+
+/** No mode doors (a stable empty list). */
+const NO_MODE_DOORS: RailModeDoor[] = [];
 
 /** THE RAIL'S WIDTH, SAID TO THE DOCUMENT (owner, 2026-11-05: "move the
  *  notification modal to the right a little bit so it doesn't cover the mini
@@ -730,6 +752,7 @@ export function ClaudeRail({
   place,
   newTask,
   git,
+  fileModes,
   activeSessionId,
   onOpen,
   onOpenChat,
@@ -758,6 +781,23 @@ export function ClaudeRail({
    *  With the rail flag (owner, 2026-11-10) the section is one Git door
    *  under the rings whose window A card (GitPeek) holds all of it. */
   git?: { path: string; onOpenGit?: () => void };
+  /** THE FILE'S OTHER MODES (owner, 2026-11-20: "above the Git icon add all
+   *  the mode icons except the active one, in the same order; on hover we
+   *  show preview window A"): one door per entry, above the Git door, each
+   *  with its own window A card (ModePeek, mode-peek-store) that draws the
+   *  file in that mode — an item of its own, as the Git door is. `doors` is the page's mode menu less the active
+   *  entry; `src` the frame for a mode; `onOpen` the menu's own switch.
+   *  Only with the rail flag and the doors' own switch
+   *  (`rail_mode_doors_enabled`), and only a file page hands it. */
+  fileModes?: {
+    path: string;
+    doors: RailModeDoor[];
+    src: (mode: string) => string;
+    onOpen: (mode: string) => void;
+    /** Whatever else `src` reads (the page's git snapshot): a change of it
+     *  is said again, so a card that is up redraws its frame's address. */
+    rev?: string;
+  };
   /** The session the page's URL names, drawn as the current row. */
   activeSessionId: string | null;
   /** Open the pane as it is. */
@@ -1367,6 +1407,35 @@ export function ClaudeRail({
           : null,
     );
   }, [gitRepo, gitReading, gitDoor, railGit.checking, railGit.checked, railGit.check]);
+  // THE MODE DOORS' FACTS, for the shell's mode cards (mode-peek-store, by
+  // this rail) — in the layout phase for the Git door's reason. Said again
+  // only when the file or its list of modes changes; the page's two
+  // functions are read through a ref (they are new on every render).
+  const fileModesRef = useRef(fileModes);
+  fileModesRef.current = fileModes;
+  // Behind their own switch (`rail_mode_doors_enabled`, rail-mode-doors-flag):
+  // off, no door is drawn and nothing is published, so no card stands.
+  const modeDoorsAnswer = useRailModeDoorsAnswer();
+  const modeDoorsOn = modeDoorsAnswer === true;
+  const modeDoors = navDoors && modeDoorsOn && fileModes ? fileModes.doors : NO_MODE_DOORS;
+  const modeSig =
+    modeDoors.length > 0 ? [fileModes?.path, fileModes?.rev ?? "", ...modeDoors.map((d) => d.mode)].join("\n") : "";
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    if (!el) return;
+    const now = fileModesRef.current;
+    publishRailModes(
+      el,
+      modeSig && now
+        ? {
+            path: now.path,
+            doors: now.doors,
+            src: (mode) => fileModesRef.current?.src(mode) ?? "",
+            onOpen: (mode) => fileModesRef.current?.onOpen(mode),
+          }
+        : null,
+    );
+  }, [modeSig]);
   useLayoutEffect(() => {
     const el = railRef.current;
     return el
@@ -1375,6 +1444,8 @@ export function ClaudeRail({
           // The Git card this rail opened: a preview goes, a pinned one
           // follows to the top rail (git-peek-store `forgetGitCardRail`).
           forgetGitCardRail(el);
+          publishRailModes(el, null);
+          forgetModeCardRail(el);
         }
       : undefined;
   }, []);
@@ -2031,19 +2102,30 @@ export function ClaudeRail({
   // …AND THE GIT CARD'S (2026-11-10): the Git door's window A card (GitPeek,
   // git-peek-store), the Bots card's twin in every rule below.
   const gitCard = useGitCard();
+  // …AND THE MODE CARDS' (2026-11-20): each mode door's own window A card
+  // (ModePeek, mode-peek-store) is the Git card's twin in every rule below —
+  // read together, since the doors come and go with the file.
+  const modeCardsNow = useModeCards();
+  const anyModeCard = (f: (c: DoorCardState) => boolean): boolean => navDoors && modeCardsNow.modes.some((m) => f(modeCardsNow.of(m)));
+  const modeUpAny = anyModeCard((c) => c.up);
+  const modePinnedAny = anyModeCard((c) => c.up && c.pinned);
+  // …one that a hover's preview would stand over (FREE PINS: a held card is
+  // the section's pin, and silences nothing).
+  const modeNonPinPinned = anyModeCard((c) => c.up && c.pinned && !(freePins && c.held));
   const pinnedUp = pinned && peekKey !== null;
   const botPinnedUp = botPinned && botKey !== null;
   const popPinnedUp = !!card?.pop && !!card.pinned;
   const tasksHeldUp = navDoors && tasksCard.up && tasksCard.pinned;
   const botsHeldUp = navDoors && botsCard.up && botsCard.pinned;
   const gitHeldUp = navDoors && gitCard.up && gitCard.pinned;
+  const modeHeldUp = modePinnedAny;
   // …AND, WITH THE PIN (rail-pin-lib `frameBlurCloses`), A TEMP FAVOURITE'S
   // CARD: a press into the frame is outside it; a pinned one ignores it.
   const favPinnedKey = useFavPinned();
   const favTempKey = pinModel && openFavKey !== null && favPinnedKey !== openFavKey ? openFavKey : null;
-  const anyPinned = pinnedUp || botPinnedUp || popPinnedUp || tasksHeldUp || botsHeldUp || gitHeldUp || favTempKey !== null;
-  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp, git: gitHeldUp, fav: favTempKey });
-  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp, git: gitHeldUp, fav: favTempKey };
+  const anyPinned = pinnedUp || botPinnedUp || popPinnedUp || tasksHeldUp || botsHeldUp || gitHeldUp || modeHeldUp || favTempKey !== null;
+  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp, git: gitHeldUp, mode: modeHeldUp, fav: favTempKey });
+  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp, git: gitHeldUp, mode: modeHeldUp, fav: favTempKey };
   const shutPopRef = useRef<() => boolean>(() => false);
   const pinnedRef = useRef(onCardPinned);
   pinnedRef.current = onCardPinned;
@@ -2064,6 +2146,8 @@ export function ClaudeRail({
         if (pinnedNow.current.tasks && !(keep && tasksCardStore.state().held) && !document.getElementById(TASKS_PEEK_ID)?.contains(a)) closeTasksCard();
         if (pinnedNow.current.bots && !(keep && botsCardStore.state().held) && !document.getElementById(BOTS_PEEK_ID)?.contains(a)) closeBotsCard();
         if (pinnedNow.current.git && !(keep && gitCardStore.state().held) && !document.getElementById(GIT_PEEK_ID)?.contains(a)) closeGitCard();
+        if (pinnedNow.current.mode)
+          closeModeCards((m, c) => !c.pinned || (keep && c.held) || !!document.getElementById(modePeekId(m))?.contains(a));
         if (pinnedNow.current.pop && !(keep && cardRef.current?.held) && !document.querySelector(".modal-popover")?.contains(a)) shutPopRef.current();
         const fav = pinnedNow.current.fav;
         if (fav && favOpen() === fav && favPinned() !== fav && !document.getElementById(FAV_PEEK_ID)?.contains(a)) clearFavOpen(fav);
@@ -2369,7 +2453,7 @@ export function ClaudeRail({
   useEffect(() => {
     if (aRestored.current || !pinModel || !navDoors || !shown) return;
     const pin = readAPin(aPinned());
-    if (!pin || intent.current !== null || cardRef.current || tasksCard.up || botsCard.up || gitCard.up) {
+    if (!pin || intent.current !== null || cardRef.current || tasksCard.up || botsCard.up || gitCard.up || modeUpAny) {
       aRestored.current = true;
       return;
     }
@@ -2388,6 +2472,15 @@ export function ClaudeRail({
     } else if (pin.kind === "plus") {
       aRestored.current = true;
       openPlusPinnedRef.current();
+    } else if (pin.kind === "mode") {
+      // A mode's card comes back where this page has that mode's door; no
+      // such door, and the orphan rule below lets the mark go.
+      if (!modeDoors.some((d) => d.mode === pin.mode) || !modeCardsNow.of(pin.mode).ready) return;
+      aRestored.current = true;
+      const store = modeCardStore(pin.mode);
+      setModeCardRail(pin.mode, railRef.current);
+      store.intent().press(store.key);
+      store.setHeld(true);
     } else {
       const door =
         pin.kind === "tasks"
@@ -2402,7 +2495,7 @@ export function ClaudeRail({
       door.intent().press(door.key);
       door.store.setHeld(true);
     }
-  }, [pinModel, navDoors, shown, rows, baseSeats, intent, tasksCard, botsCard, gitCard]);
+  }, [pinModel, navDoors, shown, rows, baseSeats, intent, tasksCard, botsCard, gitCard, modeCardsNow, modeDoors]);
   // FREE PINS — A PIN GOES WITH ITS RING (owner, 2026-11-19: "when we have a
   // task ring item or git that isn't in next view in rail we should close it
   // even if pinned" — the rule above, "we just close the window if it is not
@@ -2427,10 +2520,17 @@ export function ClaudeRail({
   const pinRingGone = pinKeyA !== null && !seats.some((x) => x.pulse.key === pinKeyA);
   // The Git door is there once the repo answered (`undefined`: not yet).
   const gitDoorKnown = !navDoors || !gitOn || !git?.path || railGit.repo !== undefined;
+  const pinModeA = modeOfKey(pinDoorA);
   const pinDoorGone =
     pinDoorA === "git"
       ? gitDoorKnown && gitRepo === null
-      : pinDoorA === "bots"
+      : pinModeA !== null
+        ? // A mode's card: its door is that mode's, on a file page that has
+          // it — judged once the doors' own switch has answered (a first
+          // load reads it as off until then, and a saved pin must not go
+          // for that; CodeRabbit on #2396).
+          (!navDoors || modeDoorsAnswer !== null) && !modeDoors.some((d) => d.mode === pinModeA)
+        : pinDoorA === "bots"
         ? !(botsOffered && navDoors)
         : pinDoorA !== null && !navDoors;
   useLayoutEffect(() => {
@@ -2450,6 +2550,7 @@ export function ClaudeRail({
     if (door === "tasks") closeTasksCard();
     else if (door === "bots") closeBotsCard();
     else if (door === "git") closeGitCard();
+    else if (modeOfKey(door) !== null) closeModeCard(modeOfKey(door) as string);
     else if (door === aPinWord({ kind: "plus" })) setCardCloseSignal((n) => n + 1);
     // A card that is not mounted on this page has no hold to drop: the mark
     // goes by hand.
@@ -2486,6 +2587,10 @@ export function ClaudeRail({
   };
   const yieldGit = (): void => {
     if (!(freePinsRef.current && gitCardStore.state().held)) closeGitCard();
+  };
+  // …every mode card but `except` (the one that just came).
+  const yieldMode = (except?: string): void => {
+    closeModeCards((m, c) => m === except || (freePinsRef.current && c.held));
   };
   const popSeq = card?.pop ? card.seq : null;
   useEffect(() => {
@@ -2542,10 +2647,21 @@ export function ClaudeRail({
   const gitSeq = navDoors && gitCard.up ? gitCard.seq : null;
   const gitUpRef = useRef(false);
   gitUpRef.current = gitSeq !== null;
+  // …AND THE MODE CARDS (2026-11-20), door cards like the three: each puts
+  // the others down — another mode's card included — and the list's card
+  // and the + popover put them all down.
+  const modeSeqKey = navDoors
+    ? modeCardsNow.modes
+        .filter((m) => modeCardsNow.of(m).up)
+        .map((m) => m + ":" + modeCardsNow.of(m).seq)
+        .join("|")
+    : "";
+  const modeSeqSeen = useRef(new Map<string, number>()).current;
   useEffect(() => {
     if (tasksSeq === null) return;
     yieldBots();
     yieldGit();
+    yieldMode();
     if (cardRef.current?.pop && !popIsPin()) {
       const busyPop = popBusy(railRef.current);
       if (busyPop) {
@@ -2562,6 +2678,7 @@ export function ClaudeRail({
     if (botsSeq === null) return;
     yieldTasks();
     yieldGit();
+    yieldMode();
     if (cardRef.current?.pop && !popIsPin()) {
       const busyPop = popBusy(railRef.current);
       if (busyPop) {
@@ -2578,6 +2695,7 @@ export function ClaudeRail({
     if (gitSeq === null) return;
     yieldTasks();
     yieldBots();
+    yieldMode();
     if (cardRef.current?.pop && !popIsPin()) {
       const busyPop = popBusy(railRef.current);
       if (busyPop) {
@@ -2590,6 +2708,35 @@ export function ClaudeRail({
     intent.dismiss();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gitSeq]);
+  useEffect(() => {
+    // WHICH CAME: a card up on an opening this rail has not seen yet.
+    const came: string[] = [];
+    const cards = modeCards();
+    for (const m of cards.modes) {
+      const c = cards.of(m);
+      if (navDoors && c.up) {
+        if (modeSeqSeen.get(m) !== c.seq) came.push(m);
+        modeSeqSeen.set(m, c.seq);
+      } else modeSeqSeen.delete(m);
+    }
+    for (const m of came) {
+      yieldTasks();
+      yieldBots();
+      yieldGit();
+      yieldMode(m);
+      if (cardRef.current?.pop && !popIsPin()) {
+        const busyPop = popBusy(railRef.current);
+        if (busyPop) {
+          closeModeCard(m);
+          continue;
+        }
+        setCardCloseSignal((n) => n + 1);
+      }
+      setHeld(false);
+      intent.dismiss();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeSeqKey]);
   // …up OR still a hover's pending read (CodeRabbit on #2189: the pointer
   // resting on the Tasks door while the + pins by keyboard): `dismiss` is a
   // no-op on a card that is not up, and cancels the open that was coming.
@@ -2610,6 +2757,7 @@ export function ClaudeRail({
       yieldTasks();
       yieldBots();
       yieldGit();
+      yieldMode();
     }
   }, [peekKey, popSeq]);
   // FREE PINS — ONE PIN PER SECTION (rail-slots-lib "PINNING A NON-PIN
@@ -2620,14 +2768,16 @@ export function ClaudeRail({
   const tasksHeldNow = tasksCard.up && tasksCard.held;
   const botsHeldNow = botsCard.up && botsCard.held;
   const gitHeldNow = gitCard.up && gitCard.held;
+  const modeHeldKey = modeCardsNow.modes.filter((m) => modeCardsNow.of(m).up && modeCardsNow.of(m).held).join("|");
   useEffect(() => {
     if (!freePins) return;
     const word = aPinned();
     if (tasksHeldNow && word !== "tasks") closeTasksCard();
     if (botsHeldNow && word !== "bots") closeBotsCard();
     if (gitHeldNow && word !== "git") closeGitCard();
+    closeModeCards((m, c) => !c.held || word === modeKey(m));
     if (popHeld && word !== aPinWord({ kind: "plus" })) setCardCloseSignal((n) => n + 1);
-  }, [freePins, aWord, tasksHeldNow, botsHeldNow, gitHeldNow, popHeld]);
+  }, [freePins, aWord, tasksHeldNow, botsHeldNow, gitHeldNow, modeHeldKey, popHeld]);
   // …AND THE SWITCH TURNED ON OVER A CARD HELD THE OLD WAY (the list's, the
   // bot's): its mark is a pinned task's or bot's now, and the shell's pinned
   // window draws it — this rail's card, the non-pin, lets go, or the chat
@@ -2673,15 +2823,16 @@ export function ClaudeRail({
   const tasksPinnedUp = navDoors && tasksCard.up && tasksCard.pinned;
   const botsPinnedUp = navDoors && botsCard.up && botsCard.pinned;
   const gitPinnedUp = navDoors && gitCard.up && gitCard.pinned;
+  const modePinnedUp = modePinnedAny;
   const listPinnedUp = pinned && peekKey !== null;
   useEffect(() => {
-    if (tasksPinnedUp || botsPinnedUp || gitPinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
-  }, [tasksPinnedUp, botsPinnedUp, gitPinnedUp, listPinnedUp]);
+    if (tasksPinnedUp || botsPinnedUp || gitPinnedUp || modePinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
+  }, [tasksPinnedUp, botsPinnedUp, gitPinnedUp, modePinnedUp, listPinnedUp]);
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned + popover or Tasks card, as
   // it closes the pinned list card (its rule above; owner, 2026-11-08: the
   // gaps between window A's cards closed). Inside either, Escape is its own.
   useEffect(() => {
-    if (!popPinnedUp && !tasksPinnedUp && !botsPinnedUp && !gitPinnedUp) return;
+    if (!popPinnedUp && !tasksPinnedUp && !botsPinnedUp && !gitPinnedUp && !modePinnedUp) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       // WITH THE PIN, Escape has one rule and each card rules it itself: a
@@ -2693,11 +2844,12 @@ export function ClaudeRail({
       if (tasksPinnedUp) closeTasksCard();
       if (botsPinnedUp) closeBotsCard();
       if (gitPinnedUp) closeGitCard();
+      if (modePinnedUp) closeModeCards((_m, c) => !c.pinned);
       if (popPinnedUp) shutPop();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [popPinnedUp, tasksPinnedUp, botsPinnedUp, gitPinnedUp, shutPop]);
+  }, [popPinnedUp, tasksPinnedUp, botsPinnedUp, gitPinnedUp, modePinnedUp, shutPop]);
   // A TEMP CARD'S OUTSIDE PRESS (rail-pin-lib `pressVerdict`, RailPin
   // `useTempOutside`; owner, 2026-11-16): one press outside closes it. The
   // card, its bridge, what it opened and its own door are not outside — and
@@ -2725,6 +2877,18 @@ export function ClaudeRail({
     cardSelectors: ["#" + GIT_PEEK_ID],
     ownSelectors: [doorSelector("git")],
     close: () => closeGitCard(),
+  });
+  // …the one mode card a click made (at most one non-pinned card is up).
+  const tempMode = modeCardsNow.modes.find((m) => doorTemp(modeCardsNow.of(m))) ?? null;
+  const noPress = useRef<PressFlag>({ inside: false }).current;
+  useTempOutside({
+    active: tempMode !== null,
+    flag: tempMode !== null ? modeCardStore(tempMode).press : noPress,
+    cardSelectors: tempMode !== null ? ["#" + modePeekId(tempMode)] : [],
+    ownSelectors: tempMode !== null ? [modeDoorSelector(tempMode)] : [],
+    close: () => {
+      if (tempMode !== null) closeModeCard(tempMode);
+    },
   });
   // The + popover (the + or a draft's ring): the chassis' own outside press
   // stands down for any card a click made (Modal `popover.pinned`); this one
@@ -2815,6 +2979,7 @@ export function ClaudeRail({
       (tasksCard.up && tasksCard.pinned) ||
       (botsCard.up && botsCard.pinned) ||
       (gitCard.up && gitCard.pinned) ||
+      modePinnedAny ||
       openFavKey !== null ||
       (botPinned && botKey !== null));
   const aHovers = () =>
@@ -2827,6 +2992,7 @@ export function ClaudeRail({
       tasksPinned: tasksCard.up && tasksCard.pinned && !(freePins && tasksCard.held),
       botsPinned: botsCard.up && botsCard.pinned && !(freePins && botsCard.held),
       gitPinned: gitCard.up && gitCard.pinned && !(freePins && gitCard.held),
+      modePinned: modeNonPinPinned,
       modalCard: !!card && !card.pop,
     });
   // A hover on the + previews only where its press opens the popover card,
@@ -2927,7 +3093,8 @@ export function ClaudeRail({
       !!cardRef.current?.held ||
       tasksCardStore.state().held ||
       botsCardStore.state().held ||
-      gitCardStore.state().held);
+      gitCardStore.state().held ||
+      modeCards().modes.some((m) => modeCards().of(m).held));
   // A POPOVER DOOR'S CLICK WITH THE PIN (rail-pin-lib `ringClick`; the + and a
   // draft's ring): the door of an open card does nothing — a door opens, it
   // is not a toggle, and no double-click pins (owner, 2026-11-17) —, anything
@@ -3441,6 +3608,45 @@ export function ClaudeRail({
       if (e.detail === 0) cardFocusSoon(GIT_PEEK_ID, focusGitCard);
     }
   };
+  // THE MODE DOORS OPEN THEIR MODE'S CARD (ModePeek; owner, 2026-11-20), the
+  // Git door's rules to the letter, a door and a card per mode: a hover
+  // previews, a press pins, a press while pinned closes. A button, not a
+  // link: with no card to show (none mounted, no room) the press is the
+  // page's own switch to that mode (mode-peek-store `modeDoorAction`).
+  const modeDoorEls = useRef(new Map<string, HTMLButtonElement>()).current;
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    if (!(navDoors && shown && el)) return;
+    const offs = modeDoors.flatMap((d) => {
+      const door = modeDoorEls.get(d.mode);
+      return door ? [modeCardStore(d.mode).registerDoor(el, door)] : [];
+    });
+    return () => {
+      for (const off of offs) off();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navDoors, shown, modeSig]);
+  const pressModeDoor = (e: ReactMouseEvent<HTMLButtonElement>, mode: string) => {
+    const store = modeCardStore(mode);
+    const c = store.state();
+    const act = modeDoorAction({ ready: c.ready, pinned: c.up && c.pinned });
+    hideHint();
+    if (act === "open") fileModesRef.current?.onOpen(mode);
+    // With the pin the door toggles a temp card, ignores a held one (the Tasks door).
+    else if (pinModelRef.current && act === "close" && c.held) return;
+    else if (pinModelRef.current && act === "pin" && windowAPinned()) {
+      // A click that opens it in a pinned window A: the pin is the window's.
+      setModeCardRail(mode, railRef.current);
+      store.intent().press(store.key);
+      store.setHeld(true);
+    } else if (act === "close") store.close();
+    else {
+      // This rail opens it (an explorer split's two rails, two files).
+      setModeCardRail(mode, railRef.current);
+      store.intent().press(store.key);
+      if (e.detail === 0) cardFocusSoon(store.id, () => store.focusCard());
+    }
+  };
   const gitDots = gitRepo ? gitDoorDots({ checking: railGit.checking, checked: railGit.checked, repo: gitRepo }) : null;
   const gitLabel = gitRepo
     ? [
@@ -3572,7 +3778,8 @@ export function ClaudeRail({
                   (!!card?.pop && !!card.pinned && !(freePins && !!card.held)) ||
                   (tasksCard.up && tasksCard.pinned && !(freePins && tasksCard.held)) ||
                   (botsCard.up && botsCard.pinned && !(freePins && botsCard.held)) ||
-                  (gitCard.up && gitCard.pinned && !(freePins && gitCard.held)),
+                  (gitCard.up && gitCard.pinned && !(freePins && gitCard.held)) ||
+                  modeNonPinPinned,
                 sectionSize: foot ? favs.length : baseSeats.length,
               });
               // The rings' own captions step aside for the card: a hover
@@ -4508,13 +4715,67 @@ export function ClaudeRail({
             ))}
           </div>
         )}
+        {navDoors && modeDoors.length > 0 && (
+          // THE MODE DOORS (owner, 2026-11-20): the file's other modes, in
+          // the mode menu's order, above the Git door and in its group —
+          // past the one hairline that parts the page's doors from the
+          // rings (drawn here; the Git door below then draws none).
+          <>
+            <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
+            <div className="claude-rail-nav claude-rail-mode-doors">
+              {modeDoors.map((d) => {
+                const c = modeCardsNow.of(d.mode);
+                const up = navDoors && c.up;
+                const store = modeCardStore(d.mode);
+                return (
+                  <button
+                    key={d.mode}
+                    ref={(el) => {
+                      if (el) modeDoorEls.set(d.mode, el);
+                      else modeDoorEls.delete(d.mode);
+                    }}
+                    type="button"
+                    data-rail-door={MODE_DOOR}
+                    data-rail-mode={d.mode}
+                    className={"sidebar-rail-btn claude-rail-item" + doorOpen(up, c.pinned)}
+                    {...doorHint(d.title, c.ready && (up || aHovers()))}
+                    aria-label={d.title}
+                    {...(c.ready ? { "aria-haspopup": "dialog" as const, "aria-expanded": up, "aria-controls": store.id } : {})}
+                    onClick={(e) => pressModeDoor(e, d.mode)}
+                    onPointerEnter={(e) => {
+                      if (e.pointerType !== "touch" && !dragging(e) && c.ready && aHovers()) {
+                        setModeCardRail(d.mode, railRef.current);
+                        store.intent().enterRing(store.key, "pointer");
+                      }
+                    }}
+                    onPointerLeave={() => store.intent().leaveRing("pointer")}
+                    onKeyDown={(e) => {
+                      // Escape lets a PREVIEW go (the Git door's rule).
+                      if (e.key === "Escape" && up && !(pinModel ? c.held : c.pinned)) {
+                        e.preventDefault();
+                        store.close(true);
+                      }
+                    }}
+                  >
+                    <span className="claude-rail-mode-glyph" aria-hidden="true">
+                      {d.icon}
+                    </span>
+                    {pinMark(up && c.held)}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
         {navDoors && gitRepo && (
           // THE GIT DOOR (owner, 2026-11-10): under the rings, past a hairline
           // always drawn while it stands (it parts Git from the nav doors when
           // there are no rings), one seat — the Git card's door (GitPeek),
           // wearing the push / pull dots (git-dock-lib `gitDoorDots`).
+          // Under the mode doors it is in their group: their hairline is the
+          // group's, and it draws none of its own.
           <>
-            <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
+            {modeDoors.length === 0 && <span className="sidebar-rail-sep is-tight" aria-hidden="true" />}
             <div className="claude-rail-nav claude-rail-git-door">
               <button
                 ref={gitDoorRef}

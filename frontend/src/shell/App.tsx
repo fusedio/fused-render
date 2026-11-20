@@ -69,6 +69,7 @@ import { TasksPeek } from "@shell/claude-rail/TasksPeek";
 import { PlusCardHost } from "@shell/claude-rail/PlusCardHost";
 import { BotsPeek } from "@shell/claude-rail/BotsPeek";
 import { GitPeek } from "@shell/claude-rail/GitPeek";
+import { ModePeek } from "@shell/claude-rail/ModePeek";
 import { BotCardHost, BotCardHostSlotY } from "@shell/claude-rail/BotCardHost";
 import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
@@ -1406,6 +1407,10 @@ export default function App({ config }: { config: Config }) {
           window A's too, mounted once here for the same reason (owner,
           2026-11-10: Git moved off the status bar onto the rail). */}
       {!IS_EMBED && <GitPeek />}
+      {/* The mode card off the rail's mode doors (shell/claude-rail ModePeek):
+          window A's too, mounted once here for the same reason (owner,
+          2026-11-20: a file's other modes as doors above Git). */}
+      {!IS_EMBED && <ModePeek />}
       {/* The pinned bot's card (shell/claude-rail BotCardHost): window B's
           other card, mounted once here for the favourite's reason — a page's
           view switch remounts its rail, and a card that lived there

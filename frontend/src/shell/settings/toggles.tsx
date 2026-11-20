@@ -13,6 +13,7 @@ import {
   putTaskFavouritesEnabled,
   putTaskHeadUnifiedEnabled,
   putRailFreePinsEnabled,
+  putRailModeDoorsEnabled,
   putTaskIconsEnabled,
   putExpertsEnabled,
   putGitAutoSyncEnabled,
@@ -33,6 +34,7 @@ import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishTaskHeadUnified } from "../task-head-flag";
 import { publishRailFreePins } from "../claude-rail/rail-free-pins-flag";
+import { publishRailModeDoors } from "../claude-rail/rail-mode-doors-flag";
 import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { publishFavouritesParent, publishTaskFavourites } from "@platform/lib/favourites-flag";
 import { publishTaskIcons } from "@platform/lib/task-icons-flag";
@@ -352,6 +354,21 @@ export function RailFreePinsControl({ prefs, onChange }: PrefControlProps) {
       checked={on}
       put={putRailFreePinsEnabled}
       after={(next) => publishRailFreePins(next.rail_free_pins)}
+      onChange={onChange}
+    />
+  );
+}
+
+// A FILE'S OTHER MODES AS DOORS ON THE RAIL (owner, 2026-11-20): a child of
+// the rail preview — the doors are the rail's nav doors'.
+export function RailModeDoorsControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.rail_mode_doors?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="rail-mode-doors"
+      checked={on}
+      put={putRailModeDoorsEnabled}
+      after={(next) => publishRailModeDoors(next.rail_mode_doors)}
       onChange={onChange}
     />
   );

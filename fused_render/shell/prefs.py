@@ -567,6 +567,16 @@ def rail_free_pins_enabled() -> bool:
     return read_prefs().get("rail_free_pins_enabled") is True
 
 
+def rail_mode_doors_enabled() -> bool:
+    """Whether a file page's Claude rail shows the file's other modes (the
+    top-right mode menu's entries, the active one left out) as doors above
+    Git, each previewing the file in that mode in a rail card. Only read with
+    `canvas_rail_peek_enabled` on (the rail's doors). Default off. Same idiom
+    as `canvas_rail_peek_enabled`: only a stored `true` is on.
+    """
+    return read_prefs().get("rail_mode_doors_enabled") is True
+
+
 def task_icons_enabled() -> bool:
     """Whether a task can wear a GLYPH in place of its status ring (owner,
     2026-11-10, experiment): one of 299 line drawings, chosen from the
@@ -1319,6 +1329,9 @@ def _prefs_response() -> dict:
         "task_head_unified": {"enabled": task_head_unified_enabled()},
         # Free pins on the Claude rail (`rail_free_pins_enabled`; off by default).
         "rail_free_pins": {"enabled": rail_free_pins_enabled()},
+        # A file's other modes as doors on the rail (`rail_mode_doors_enabled`;
+        # off by default).
+        "rail_mode_doors": {"enabled": rail_mode_doors_enabled()},
         # Task icons in place of the status ring (`task_icons_enabled`; off).
         "task_icons": {"enabled": task_icons_enabled()},
         # Expert bots (`experts_enabled`; off — hidden, never deleted).
@@ -1719,6 +1732,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["rail_free_pins_enabled"] = value
             changed = True
+        if "rail_mode_doors_enabled" in body:
+            value = body.get("rail_mode_doors_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'rail_mode_doors_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["rail_mode_doors_enabled"] = value
+            changed = True
         if "task_icons_enabled" in body:
             value = body.get("task_icons_enabled")
             if not isinstance(value, bool):
@@ -2052,6 +2072,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
                           "'task_head_unified_enabled', "
                           "'rail_free_pins_enabled', "
+                          "'rail_mode_doors_enabled', "
                           "'task_icons_enabled', 'experts_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
