@@ -12850,8 +12850,12 @@ milliseconds.
   returns a run: `run.saved` (a Result or null, at once), `run.result` (the
   fresh Result; awaiting the run is the same), `run.onLog(fn)` (`{stdout,
   stderr}` when the output arrives), `run.cancel()`. `format`: `auto`
-  (default), `html`, `png`, `json` (the value: a table as row objects,
-  WKB geometry as WKT), `parquet` (a table's Parquet bytes). `cache`:
+  (default), `view` (the value as a page draws it, no page of Fused's
+  around it: a table as `application/vnd.fused-render.table+json`
+  `{columns, rows, total}` with at most 20,000 rows, an HTML string as
+  HTML, text as text, a raster as Fused's PNG, anything else as JSON),
+  `html`, `png`, `json` (the value: a table as row objects, WKB geometry as
+  WKT), `parquet` (a table's Parquet bytes). `cache`:
   `auto` (saved copy, then a fresh run), `prefer-saved` (a saved copy ends
   the run), `fresh` (no saved copy; Fused is asked not to answer from its
   cache).
