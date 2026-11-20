@@ -119,6 +119,7 @@ import {
   isAiModelsPath,
 } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
+import { useSpecialistsFlagKnown } from "@platform/lib/specialists-flag";
 
 // The boot-time "send a fresh install to the wizard" decision is made once
 // per page load (App's render below), not on every re-render — a user who
@@ -721,11 +722,16 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", "/home");
   }
-  // The server runs no bots on Windows: a bookmarked /bots URL goes Home rather
-  // than to a page whose every call answers 503.
+  // The server runs no bots on Windows, but the Bots page still opens there for
+  // the specialists (task sessions, not bots: docs/specialists.md; the page
+  // leaves its `/api/bots*` parts out, apps/bots `useBotsMissing`). So a
+  // bookmarked /bots URL goes Home only once the specialists flag is KNOWN off
+  // — not on the first render, before the prefs read has answered.
   const botsOn = botsAvailable(config);
+  const specialistsKnown = useSpecialistsFlagKnown();
+  const botsPageOn = botsOn || specialistsKnown !== false;
   const terminalOn = terminalAvailable(config);
-  if (!botsOn && isBotsPath(location.pathname)) {
+  if (!botsPageOn && isBotsPath(location.pathname)) {
     history.replaceState(null, "", "/home");
   }
   // A fresh install's first load lands on the setup wizard instead (its own
@@ -822,7 +828,7 @@ export default function App({ config }: { config: Config }) {
   // Preferences pages are sub-paths (apps/bots/routes.ts), asked through the
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
-  const isBots = isBotsPath(pathname) && botsOn;
+  const isBots = isBotsPath(pathname) && botsPageOn;
   // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
   // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
   // branch below, deliberately unredirected.

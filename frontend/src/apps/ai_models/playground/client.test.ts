@@ -124,7 +124,13 @@ async function watch(script: (string | Error)[], signal = new AbortController().
   const realSetTimeout = globalThis.setTimeout;
   let at = 0;
   const seen: string[] = [];
-  (globalThis as { fetch: unknown }).fetch = async () => {
+  // ONLY THE POLL READS THE SCRIPT. bun runs every file in one process, so a
+  // poller another file leaked also calls this global `fetch`; answering it
+  // from the script spent the watch's entries (a "running" eaten made nine
+  // failures ten) and failed whichever case was unlucky. Anything else is
+  // refused without advancing the script.
+  (globalThis as { fetch: unknown }).fetch = async (url: unknown) => {
+    if (!String(url).startsWith("/api/jobs")) throw new Error("not the job poll: " + String(url));
     const step = script[Math.min(at++, script.length - 1)];
     if (step instanceof Error) throw step;
     return {
@@ -135,7 +141,10 @@ async function watch(script: (string | Error)[], signal = new AbortController().
       }),
     };
   };
-  (globalThis as { setTimeout: unknown }).setTimeout = (fn: () => void) => realSetTimeout(fn, 0);
+  // Only the poll's own 1 s sleep is skipped; any other timer keeps its delay,
+  // so a leaked loop elsewhere is not turned into a spin while this runs.
+  (globalThis as { setTimeout: unknown }).setTimeout = (fn: () => void, ms?: number, ...rest: unknown[]) =>
+    realSetTimeout(fn, ms === 1000 ? 0 : ms, ...rest);
   try {
     return { outcome: await watchJob("j1", signal, (job) => seen.push(job.state)), seen, at };
   } finally {

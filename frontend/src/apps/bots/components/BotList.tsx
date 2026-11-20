@@ -2,6 +2,7 @@
 // search, the list (pinned → waiting-unread → your last message), the hidden group, and the Builds / Apps footer.
 // Rows that change slot glide (FLIP, lib/layout glideRows); new rows fade in. Right-click hands off to the menu.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useBotsMissing } from "@platform/lib/bots-available";
 import { isLanHost } from "@platform/lib/host";
 import type { Bot, BotEvent } from "../lib/api";
 import { activeHandoff, lastBotMsg, lastTs, previewLine, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
@@ -135,19 +136,22 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
   const { shown, hidden, query } = listRows(S, q);
 
   const u = S.usage, chip = S.buildsChip;
+  // No bots on this server (Windows): the list is the specialists alone, so the bots' own doors — the usage meter,
+  // Browsers, Builds, Apps, all `/api/bots*` — are left out, and + makes a specialist (Dialogs).
+  const botsOff = useBotsMissing();
   return (
     <section className="bots">
       <header>
         <h1>Bots</h1>
-        <button id="usage" onClick={onOpenUsage}
+        {botsOff ? null : <button id="usage" onClick={onOpenUsage}
           title={u ? `${u.hour} in the last hour · ${u.errors} failed · click for details` : "Model calls made today · click for details"}>
           {u ? `${u.today} call${u.today === 1 ? "" : "s"} today` : "…"}
-        </button>
+        </button>}
         {/* The Browsers dialog reads /api/bots/browsers and /profiles: the Mac's, a 404 on the LAN door. */}
-        {isLanHost() ? null : <button id="browsers" className="ptog" title="Browsers · the logins your bots share" onClick={onOpenBrowsers}>
+        {isLanHost() || botsOff ? null : <button id="browsers" className="ptog" title="Browsers · the logins your bots share" onClick={onOpenBrowsers}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" /></svg>
         </button>}
-        <button id="add" title="New bot" onClick={onAddBot}>
+        <button id="add" title={botsOff ? "New specialist" : "New bot"} onClick={onAddBot}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         </button>
         <button id="lcol" className="ptog" title="Collapse or expand the bot list" onClick={toggleLeft}>
@@ -162,7 +166,9 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
       </label>
       <div className="listwrap">
       <div className="botlist" id="botlist" ref={listRef} onScroll={syncBar}>
-        {!S.bots.length ? <div className="empty">No bots yet.<br />Add one and give it a task.</div> : (<>
+        {!S.bots.length ? (botsOff
+          ? <div className="empty">No specialists yet.<br />Add one with + and teach it a subject.</div>
+          : <div className="empty">No bots yet.<br />Add one and give it a task.</div>) : (<>
           {shown.map((b) => <Row key={b.id} b={b} S={S} onContextMenu={onContextMenu} />)}
           {!shown.length && query ? <div className="empty">No bot matches.</div> : null}
           {hidden.length ? <div className="group" id="hiddentoggle" onClick={() => setShowHidden(!S.showHidden)}>{S.showHidden ? "▾" : "▸"} Hidden ({hidden.length})</div> : null}
@@ -173,7 +179,7 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
       </div>
       <footer className="botfoot">
         {/* Builds and Apps are the Mac's pages (a tasks iframe, /api/bot-apps); the LAN door 404s them (lan.py). */}
-        {isLanHost() ? null : <>
+        {isLanHost() || botsOff ? null : <>
         <button id="builds" className={`ptog${chip.live ? " live" : ""}${chip.warn ? " warn" : ""}${chip.fresh ? " fresh" : ""}`} title={chip.title}
           style={chip.hidden ? { display: "none" } : undefined} onClick={onOpenBuilds}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m3 17 2 2 4-4" /><path d="m3 7 2 2 4-4" /><path d="M13 6h8" /><path d="M13 12h8" /><path d="M13 18h8" /></svg>
