@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<!-- The canvas WIDGET template (SPEC §53.3): one widget (`<node>.json`) or
+     HTML node (`<node>.html`) of a cloned canvas, drawn live by the hosted
+     workbench's NODE PAGE in a frame:
+
+       <base>/embed/node/<canvas>/<node>?fused_embed_auth=1&fused_embed_v=3
+
+     That page is the share page's sibling: it loads the saved canvas once,
+     by name, with the bearer this page hands it, mounts only this node, and
+     runs only the UDFs the node reads. It is not the workbench, and no sync
+     engine is started for it.
+
+     What this page does:
+       - asks the server what the file is (shared/canvas-node.js);
+       - frames the node page and answers its token requests;
+       - sends the file's text as it stands on disk, and again on every
+         change, so an edit shows before it is pushed;
+       - keeps the canvas's sync engine running, so edits to the folder are
+         pushed as they are made, and tells the frame after each push: what
+         the node reads from OTHER nodes is the canvas as Fused has it
+         saved, and the frame then loads that again.
+
+     The frame writes nothing back. This page must not import fused_render
+     (SPEC PY-15). -->
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Canvas widget</title>
+<script src="/template-shared/canvas-node.js"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #131417; --panel: #1a1c20; --fg: #e8eaed; --fg-muted: #9aa0a6;
+    --line: #2a2d33; --accent: #f5a623; --on-accent: #1a1300; --error: #ff6b6b;
+    --ok: #57c08a; --hover: #24272d;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff; --panel: #f6f7f9; --fg: #1f2023; --fg-muted: #61656c;
+    --line: #dfe2e7; --accent: #b86e00; --on-accent: #ffffff; --error: #c62828;
+    --ok: #1e7d4f; --hover: #eceef1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg); background: var(--bg); overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .strip {
+    flex: none; display: flex; align-items: center; gap: 10px;
+    min-height: 36px; padding: 0 12px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  /* Narrow panes: the buttons keep their words on one line, the title keeps
+     a readable minimum, and the status lines are what gives way. */
+  .strip .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 72px; }
+  .strip button, .strip label { flex: none; white-space: nowrap; }
+  .strip .kind, .strip .canvas { flex: none; }
+  .strip .status { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .strip .kind, .strip .canvas, .strip .status, .strip .sync { color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
+  .strip .sync { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .strip .status.error, .strip .sync.error { color: var(--error); }
+  .strip .status.ok { color: var(--ok); }
+  .strip .spacer { flex: 1; }
+  button {
+    font: inherit; color: var(--fg); background: transparent;
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
+  }
+  button:hover { background: var(--hover); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .stage { position: relative; flex: 1; min-height: 0; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
+  .message {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px;
+    padding: 24px; text-align: center; color: var(--fg-muted); background: var(--bg);
+  }
+  .message .error { color: var(--error); white-space: pre-wrap; max-width: 640px; }
+  .message .actions { display: flex; gap: 8px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="strip" id="strip" hidden>
+  <span class="title" id="title"></span>
+  <span class="kind" id="kind"></span>
+  <span class="canvas" id="canvas"></span>
+  <span class="spacer"></span>
+  <span class="status" id="status"></span>
+  <span class="sync" id="sync"></span>
+  <button type="button" id="reload" title="Load the saved canvas again">Reload</button>
+  <button type="button" id="open">Open in canvas</button>
+</div>
+<div class="stage">
+  <iframe id="frame" hidden allow="clipboard-read; clipboard-write" referrerpolicy="origin"></iframe>
+  <div class="message" id="message">Loading…</div>
+</div>
+<script>
+  // This page pushes the file's text itself; a reload would rebuild the
+  // frame (and re-run its UDFs) on every keystroke saved.
+  fused.autoReload(false);
+
+  const FILE = fused.params.get("_file");
+  // How long the frame may take, once loaded, to say it is the node page
+  // before this page concludes the deployment has none (an older workbench answers 404, which
+  // a cross-origin frame cannot be asked about).
+  const NODE_READY_WAIT_MS = 10000;
+  // …and how long the frame's document may take to load before that.
+  const FRAME_LOAD_WAIT_MS = 30000;
+  const SOURCE_RECHECK_MS = 1500;
+  const KIND_LABEL = { widget: "Widget", html: "HTML" };
+  const STATUS_TEXT = { loading: "Loading…", ready: "", missing: "Not in the saved canvas", error: "Could not load" };
+
+  const $ = (id) => document.getElementById(id);
+  const frame = $("frame");
+  const message = $("message");
+
+  let node = null;          // GET /api/canvases/node's answer
+  let wb = null;            // CanvasNode.workbench's answer
+  let pageReady = false;    // the frame said it is the node page
+  let readyTimer = null;
+  let lastSent = null;      // the text last posted, so a no-op save posts nothing
+  let sourceSeq = 0;        // the newest read (or frame): an older read posts nothing
+  let pendingPush = null;   // a push that landed before the frame was ready
+
+  function showMessage(build) {
+    message.replaceChildren();
+    build(message);
+    message.hidden = false;
+  }
+  function text(tag, value, cls) {
+    const el = document.createElement(tag);
+    el.textContent = value;
+    if (cls) el.className = cls;
+    return el;
+  }
+  function button(label, onClick, primary) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.textContent = label;
+    if (primary) el.className = "primary";
+    el.addEventListener("click", onClick);
+    return el;
+  }
+  function actions(...buttons) {
+    const row = document.createElement("div");
+    row.className = "actions";
+    row.append(...buttons);
+    return row;
+  }
+  function fail(what, error) {
+    showMessage((el) => {
+      el.append(text("div", what + ": " + (error && error.message ? error.message : String(error)), "error"));
+      const row = [button("Try again", () => location.reload(), true)];
+      if (node) row.push(button("Open in canvas", () => CanvasNode.openCanvas(node)));
+      el.append(actions(...row));
+    });
+  }
+  function setStatus(value, tone) {
+    const el = $("status");
+    el.textContent = value || "";
+    el.className = "status" + (tone ? " " + tone : "");
+  }
+
+  // The canvas's sync engine runs while this page is open (shared/
+  // canvas-node.js, NT-7), so edits to the folder are pushed as they are made.
+  function setSync(value, tone) {
+    const el = $("sync");
+    el.textContent = value || "";
+    el.className = "sync" + (tone ? " " + tone : "");
+  }
+
+  function post(payload) {
+    const win = frame.contentWindow;
+    if (!win || !wb) return false;
+    // Exact targetOrigin, never "*": the token rides this channel.
+    win.postMessage(payload, wb.origin);
+    return true;
+  }
+
+  async function sendToken() {
+    try {
+      const accessToken = await CanvasNode.token(node.env);
+      // `caps: []`: the node page writes nothing, so it is offered no channel.
+      post({ type: "fused-embed-auth-token", accessToken, caps: [], publicOrigin: wb.publicOrigin });
+      if ($("status").classList.contains("error")) setStatus("");
+    } catch (error) {
+      setStatus("Could not sign the workbench in: " + error.message, "error");
+    }
+  }
+
+  async function sendSource(force) {
+    if (!pageReady) return;
+    // Reads can finish out of order (a burst of saves, a Reload between):
+    // only the newest one's text is posted.
+    const seq = ++sourceSeq;
+    let source;
+    try {
+      source = await fused.readFile(FILE);
+    } catch (_) {
+      if (seq !== sourceSeq) return;
+      // Deleted or unreadable: the node goes back to the saved canvas.
+      lastSent = null;
+      post({ type: "fused-embed-node-source", node: node.node, kind: node.kind, text: null });
+      return;
+    }
+    if (seq !== sourceSeq || (!force && source === lastSent)) return;
+    lastSent = source;
+    post({ type: "fused-embed-node-source", node: node.node, kind: node.kind, text: source });
+  }
+
+  window.addEventListener("message", (event) => {
+    if (!wb || event.origin !== wb.origin || event.source !== frame.contentWindow) return;
+    const data = event.data;
+    if (!data || typeof data.type !== "string") return;
+    if (data.type === "fused-embed-auth-ready" || data.type === "fused-embed-auth-refresh") {
+      void sendToken();
+    } else if (data.type === "fused-embed-node-ready" && data.node === node.node) {
+      pageReady = true;
+      clearTimeout(readyTimer);
+      // Also for a page that answered after the wait gave up on it.
+      frame.hidden = false;
+      message.hidden = true;
+      // A fresh document holds no text yet, whatever was sent to the last one.
+      void sendSource(true);
+      // The canvas was pushed while this page was loading (the engine's
+      // first push lands then): it may have read the canvas before it.
+      if (pendingPush !== null) {
+        post({ type: "fused-embed-pushed", push_seq: pendingPush });
+        pendingPush = null;
+      }
+      // A save that landed while the file watch was still coming up made no
+      // event: look once more (nothing is posted when the text is the same).
+      setTimeout(() => void sendSource(false), SOURCE_RECHECK_MS);
+    } else if (data.type === "fused-embed-node-state" && data.node === node.node) {
+      const status = typeof data.status === "string" ? data.status : "";
+      const detail = status === "error" && typeof data.message === "string" ? ": " + data.message : "";
+      setStatus((STATUS_TEXT[status] || "") + detail, status === "error" ? "error" : "");
+    }
+  });
+
+  function loadFrame() {
+    pageReady = false;
+    lastSent = null;
+    sourceSeq++;
+    pendingPush = null;
+    setStatus(STATUS_TEXT.loading);
+    showMessage((el) => el.append(text("div", "Loading " + node.title + "…")));
+    // The wait for the page to say it is there runs from the frame's LOAD (a
+    // slow network is not a missing page), with a longer one from here in
+    // case the frame never loads at all.
+    armReadyWait(FRAME_LOAD_WAIT_MS);
+    frame.hidden = false;
+    frame.title = "Workbench: " + node.title;
+    frame.src = wb.base + "/embed/node/" + encodeURIComponent(node.name) + "/" +
+      encodeURIComponent(node.node) + "?fused_embed_auth=1&fused_embed_v=3";
+  }
+
+  function armReadyWait(ms) {
+    clearTimeout(readyTimer);
+    readyTimer = setTimeout(() => {
+      if (pageReady) return;
+      frame.hidden = true;
+      setStatus("");
+      showMessage((el) => {
+        el.append(text("div", "This environment's workbench cannot show a single node here yet."));
+        el.append(actions(button("Open in canvas", () => CanvasNode.openCanvas(node), true)));
+      });
+    }, ms);
+  }
+  frame.addEventListener("load", () => {
+    if (wb && !pageReady && !frame.hidden) armReadyWait(NODE_READY_WAIT_MS);
+  });
+
+  async function boot() {
+    if (!FILE) {
+      showMessage((el) => el.append(text("div", "No file to show.")));
+      return;
+    }
+    try {
+      node = await CanvasNode.info(FILE);
+    } catch (error) {
+      fail("Could not read this node", error);
+      return;
+    }
+    if (!node || !node.enabled || !node.node) {
+      node = null;
+      showMessage((el) => el.append(text("div", "This file is not a node of a canvas you work on.")));
+      return;
+    }
+    $("title").textContent = node.title;
+    $("kind").textContent = KIND_LABEL[node.kind] || node.kind;
+    $("canvas").textContent = node.name;
+    $("open").addEventListener("click", () => CanvasNode.openCanvas(node));
+    $("reload").addEventListener("click", () => { if (wb) loadFrame(); });
+    $("strip").hidden = false;
+    if (!node.signed_in) {
+      showMessage((el) => {
+        el.append(text("div", "Sign in to Fused to show " + node.title + " live."));
+        el.append(actions(button("Open Canvases to sign in", () => CanvasNode.openCanvases(), true)));
+      });
+      return;
+    }
+    try {
+      wb = await CanvasNode.workbench(node.env);
+    } catch (error) {
+      fail("Could not reach the workbench", error);
+      return;
+    }
+    loadFrame();
+    CanvasNode.sync(node, {
+      status: setSync,
+      // The saved canvas moved (this node, or one it reads): the frame loads
+      // it again, in place.
+      pushed: (seq) => {
+        if (pageReady) post({ type: "fused-embed-pushed", push_seq: seq });
+        else pendingPush = seq;
+      },
+    });
+    // Another writer's save (the Code mode, an agent): the frame gets the new
+    // text, with no reload of either page.
+    // (This page watches its own file only.)
+    fused.onFileChanged(() => void sendSource(false));
+  }
+
+  void boot();
+</script>
+</body>
+</html>

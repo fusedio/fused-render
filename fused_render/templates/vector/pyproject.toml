@@ -27,6 +27,7 @@ dependencies = [
     "pyarrow",
     "numpy",
     "pandas",
+    "truststore",
 ]
 
 # Not a distribution — this folder is a set of scripts, not something to build

@@ -79,12 +79,16 @@ def test_builtin_html_default_is_render_sentinel():
     assert error is None
     # No timeline mode and no `git`: both were folded into the folder-only `git`
     # view (GT-2), whose commit list is scoped to whatever path it was opened on.
-    # `_node` (the canvas node view, SPEC §53.3 NV-1) sits right after the
-    # default on every node-file key; it is a conditional sentinel.
+    # A canvas node template (SPEC §53.2 NT-1) sits right after the default on
+    # every node-file key: a gated folder, marked `node`.
     assert [e["mode"] for e in entries] == [
-        "_render", "_node", "code", "claude", "reader"]
+        "_render", "canvas_widget", "code", "claude", "reader"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
-    assert entries[1] == {"mode": "_node", "path": None, "icon": None, "conditional": True}
+    widget = os.path.join(server.TEMPLATES_DIR, "canvas_widget")
+    assert entries[1] == {"mode": "canvas_widget",
+                          "path": os.path.join(widget, "template.html"),
+                          "icon": os.path.join(widget, "icon.svg"),
+                          "conditional": True, "node": True}
     entries = [entries[0], *entries[2:]]
     # entries[i]["path"] is a plain os.path.join of TEMPLATES_DIR (native
     # separators — this internal field is never run through the app's
@@ -247,7 +251,7 @@ def test_reader_is_the_last_mode_on_text_keys():
     # on every key, and it takes the slot AHEAD of reader rather than after it —
     # reader keeps the last seat wherever it is offered.
     cases = {
-        "/x/notes.md": ["markdown", "_node", "code", "claude", "reader"],
+        "/x/notes.md": ["markdown", "canvas_note", "code", "claude", "reader"],
         "/x/data.csv": ["duckdb", "excel", "code", "claude", "reader"],
         "/x/paper.pdf": ["pdf", "pdf_studio", "claude", "reader"],
         "/x/log.txt": ["code", "claude", "reader"],

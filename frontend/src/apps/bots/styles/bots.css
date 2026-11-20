@@ -36,21 +36,22 @@
 div.bots-page { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; }
 div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   font-size: 13px; line-height: 1.45; color: var(--text); background: var(--bg); -webkit-font-smoothing: antialiased; }
-.bots-page button { background: var(--raised); color: var(--text); border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 300; }
-.bots-page button:hover { background: var(--hover); }
-.bots-page button:disabled { opacity: .4; cursor: default; }
+/* The page's element defaults stop at a specialist's task chat (.chat-root, components/SpecialistChat.tsx), which styles its own. */
+.bots-page button:where(:not(.chat-root *)) { background: var(--raised); color: var(--text); border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 300; }
+.bots-page button:where(:not(.chat-root *)):hover { background: var(--hover); }
+.bots-page button:where(:not(.chat-root *)):disabled { opacity: .4; cursor: default; }
 .bots-page button.primary { background: var(--accent); color: var(--accent-ink); font-weight: 400; }
 .bots-page button.primary:hover { filter: brightness(1.06); }
 .bots-page button.primary:disabled { background: var(--raised); color: var(--muted); opacity: 1; }
 .bots-page button.primary:disabled:hover { filter: none; }
 .bots-page button.danger:hover { background: var(--err); color: #fff; }
-.bots-page input, .bots-page textarea { font: inherit; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 8px 12px; }
+.bots-page input:where(:not(.chat-root *)), .bots-page textarea:where(:not(.chat-root *)) { font: inherit; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 8px 12px; }
 /* Strokes, rings and highlighted text take --accent-text (olive in light, lime in dark; Akshil 2026-10-08): the
    lime --accent is a FILL colour and reads as nothing against white. */
-.bots-page input:focus, .bots-page textarea:focus { outline: none; border-color: var(--accent-text); }
-.bots-page :focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
-.bots-page input:focus-visible, .bots-page textarea:focus-visible { outline: none; }
-.bots-page b, .bots-page strong, .bots-page h1, .bots-page h2, .bots-page h3, .bots-page h4, .bots-page h5, .bots-page h6 { font-weight: 400; }  /* nothing on the page goes heavier than 500; browser-default bold reads too heavy */
+.bots-page input:where(:not(.chat-root *)):focus, .bots-page textarea:where(:not(.chat-root *)):focus { outline: none; border-color: var(--accent-text); }
+.bots-page :where(:not(.chat-root *)):focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+.bots-page input:where(:not(.chat-root *)):focus-visible, .bots-page textarea:where(:not(.chat-root *)):focus-visible { outline: none; }
+.bots-page :is(b, strong, h1, h2, h3, h4, h5, h6):where(:not(.chat-root *)) { font-weight: 400; }  /* nothing on the page goes heavier than 500; browser-default bold reads too heavy */
 .bots-page ::-webkit-scrollbar { width: 8px; height: 8px; } .bots-page ::-webkit-scrollbar-thumb { background: var(--raised); border-radius: 8px; } .bots-page ::-webkit-scrollbar-track { background: transparent; }
 .bots-page .muted { color: var(--muted); }
 .bots-page .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -185,8 +186,8 @@ div.bots-page:not(.rcol) #rcol { display: none; }
 
 /* ---- left: bot list ---- */
 .bots-page .bots { background: var(--panel); display: flex; flex-direction: column; min-height: 0; container-type: inline-size; }
-.bots-page .bots header, .bots-page .chat header, .bots-page .preview > header { display: flex; gap: 8px; align-items: center; padding: 10px 14px; min-height: 56px; }
-.bots-page .chat header, .bots-page .preview > header { border-bottom: 1px solid var(--line); }
+.bots-page .bots header, .bots-page .chat > header, .bots-page .preview > header { display: flex; gap: 8px; align-items: center; padding: 10px 14px; min-height: 56px; }
+.bots-page .chat > header, .bots-page .preview > header { border-bottom: 1px solid var(--line); }
 .bots-page .bots header h1 { font-size: 0; margin: 0; flex: 1; }  /* label kept for a11y; the panel reads as a list, not a titled pane */
 .bots-page .bots header button { width: 32px; height: 32px; padding: 0; flex: none; }
 /* The header must never overflow the sidebar (it can be dragged to 180px): the usage pill gives way first, then hides. */
@@ -260,6 +261,9 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
 /* An expert (docs/experts.md): SUPER's badge on the page's accent. */
 .bots-page .bot .name .expert { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); vertical-align: 1px; letter-spacing: .04em; }
+/* A specialist (docs/specialists.md): the same badge on a neutral fill; on the selected row, whose own fill that is, the hover fill. */
+.bots-page .bot .name .specialist { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--bots-shell-selected); color: var(--text); vertical-align: 1px; letter-spacing: .04em; }
+.bots-page .bot.sel .name .specialist { background: var(--raised); }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */
 .bots-page .bot .name .rt.warn, .bots-page .bot .sub .warn, .bots-page .r .s .warn { color: var(--err); }
 .bots-page .r .s .msg { display: block; color: var(--text); opacity: .85; white-space: pre-wrap; margin-top: 2px; }
@@ -287,7 +291,7 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 
 /* ---- middle: chat. Bot bubbles hang left (capped by .msg max-width); the composer and your bubbles run full width. ---- */
 .bots-page .chat { display: flex; flex-direction: column; min-height: 0; background: var(--bg); --chatgut: 24px; }
-.bots-page .chat header { padding: 10px 20px; gap: 4px; }
+.bots-page .chat > header { padding: 10px 20px; gap: 4px; }
 .bots-page .chat header .av { margin-right: 6px; }
 .bots-page .chat header .title { flex: 1; min-width: 0; }
 .bots-page .chat header .title b { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -452,6 +456,8 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .thread .cleared .lbl::before, .bots-page .thread .cleared .lbl::after { content: ""; flex: 1; height: 1px; background: var(--raised); }
 .bots-page .thread .cleared button { padding: 2px 10px; font-size: 11px; border-radius: 999px; background: var(--inset); color: var(--text); }
 .bots-page .thread .cleared button:hover { background: var(--hover); }
+/* A specialist's earlier chats (SpecialistChat.tsx): above its task chat, which takes the rest of the column. */
+.bots-page .thread.earlier { flex: none; max-height: 45%; padding-bottom: 0; }
 .bots-page .ptog:disabled { opacity: .45; cursor: default; background: var(--bg); }
 /* Hover actions beside a message: reply (quotes it above the composer) and react (emoji picker). */
 .bots-page .msg.user, .bots-page .msg.thought, .bots-page .msg.done { position: relative; }
@@ -988,9 +994,9 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { flex-direction: column; 
 [data-theme="light"] .bots-dialog { background: #ffffff; color: #1b1d21; }
 
 /* shadcn roots in OpenBot's look: pill buttons (12px / 300), 10px fields, 20px dialog cards, the frosted menu. */
-.bots-page button[data-slot] { border-radius: 999px; font-size: 12px; font-weight: 300; }
-.bots-page input[data-slot], .bots-page textarea[data-slot] { font: inherit; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; box-shadow: none; }
-.bots-page input[data-slot]:focus, .bots-page textarea[data-slot]:focus { outline: none; border-color: var(--accent-text); box-shadow: none; }
+.bots-page button[data-slot]:where(:not(.chat-root *)) { border-radius: 999px; font-size: 12px; font-weight: 300; }
+.bots-page input[data-slot]:where(:not(.chat-root *)), .bots-page textarea[data-slot]:where(:not(.chat-root *)) { font: inherit; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; box-shadow: none; }
+.bots-page input[data-slot]:where(:not(.chat-root *)):focus, .bots-page textarea[data-slot]:where(:not(.chat-root *)):focus { outline: none; border-color: var(--accent-text); box-shadow: none; }
 .bots-page [data-slot="select-trigger"] { background: var(--inset); color: var(--text); border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; font-size: 12px; font-weight: 300; box-shadow: none; }
 .bots-page [data-slot="select-trigger"]:hover { background: var(--inset); }
 .bots-page [data-slot="checkbox"] { accent-color: var(--accent-text); border-color: var(--muted); }
@@ -1034,3 +1040,5 @@ div.bots-page.bots-portal-host { position: fixed; top: 0; left: 0; width: 0; hei
 .bots-page.bots-peek { flex: 1 1 auto; min-height: 0; }
 .bots-page.bots-peek .chat { flex: 1 1 auto; min-height: 0; --chatgut: 12px; }
 .bots-page.bots-peek > .empty { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: 16px; color: var(--muted); text-align: center; }
+/* A specialist's task chat (SpecialistChat.tsx) sits on the thread's ground, not the task chat's lighter panel. */
+.bots-page .chat-root :is(.c-chat, .c-anntools) { background: var(--bg); }

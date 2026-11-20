@@ -137,13 +137,13 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   // Preview, ListingPreviewPane and Open With so every surface offers the
   // same mode set for the same path. The default (and the trigger's
   // fallback) is `defaultMode`'s: the first UNCONDITIONAL entry (CT-12),
-  // except a node file's preferred `udf` (PT-8), which is the default even
+  // except a node file's preferred node template (PT-8), which is the default even
   // while its verdict is out.
   const paneParams = new URLSearchParams(splitAtLayout(query)[0]);
   const activeMode = paneParams.get("_mode");
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
   // A pane can carry the shell's `_snapshot` (enterPanel hands the page's
-  // params to its panes): the node view is live, so its menu never offers it
+  // params to its panes): a canvas node template is live, so its menu never offers one
   // under a snapshot — the same rule as the pane's own Preview.
   const snapshotRaw = paneParams.get("_snapshot");
   const visible = visibleModes(

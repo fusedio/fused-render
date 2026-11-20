@@ -2975,6 +2975,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 effort: curEffort(),
                 permission_mode: opts.permission || curPermission(),
                 ...(bk ? { breakout: bk } : {}),
+                ...(deps.extraStartParams ?? {}),
                 // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR
                 // #1194): proof this send is the one already counted, so the
                 // server gate only looks rather than claiming a second time.
@@ -3014,6 +3015,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
               session_id: sessionId,
               ...(forkAt ? { fork_at: forkAt } : {}),
               ...(bk ? { breakout: bk } : {}),
+              ...(deps.extraStartParams ?? {}),
               backend: curBackend(),
               model: curModel(),
               effort: curEffort(),
@@ -3291,6 +3293,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           effort: curEffort(),
           permission_mode: opts.permission || curPermission(),
           ...(deps.breakout ? { breakout: "resume" } : {}),
+          ...(deps.extraStartParams ?? {}),
           // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
           // proof this send is the one already counted, so the server gate
           // only looks rather than claiming a second time.
@@ -3315,6 +3318,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             message: outgoing,
             session_id: sessionId,
             ...(deps.breakout ? { breakout: "resume" } : {}),
+            ...(deps.extraStartParams ?? {}),
             backend: curBackend(),
             model: curModel(),
             effort: curEffort(),

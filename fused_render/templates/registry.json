@@ -43,7 +43,7 @@
   ],
   ".json": [
     "tree",
-    "_node",
+    "canvas_widget",
     "code",
     "duckdb",
     "claude",
@@ -140,7 +140,7 @@
   ],
   ".md": [
     "markdown",
-    "_node",
+    "canvas_note",
     "code",
     "claude",
     "reader"
@@ -267,7 +267,7 @@
   ],
   ".py": [
     "code",
-    "_node",
+    "canvas_udf",
     "api",
     "claude",
     "reader"
@@ -406,7 +406,7 @@
   ],
   ".html": [
     "_render",
-    "_node",
+    "canvas_widget",
     "code",
     "claude",
     "reader"

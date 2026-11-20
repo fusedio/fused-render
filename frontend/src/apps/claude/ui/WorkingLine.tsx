@@ -12,6 +12,7 @@ import { cn } from "@platform/lib/utils";
 
 import type { RunStatus, Working } from "../protocol/controller-api";
 import { explicitModelLabel, isAgentTool, taskVerb } from "../protocol/tasks";
+import { isSpecialistTool, specialistToolLabel } from "../specialists/tool-labels";
 import type { Activity, RetryInfo, TaskRecord } from "../protocol/types";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { useAgent } from "./agent-context";
@@ -99,7 +100,10 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
       // MCP tools arrive as mcp__server__tool — the last segment is the name a
       // person would recognize; the raw id is nobody's vocabulary.
       default:
-        return "Using " + String(t.name).split("__").pop()?.replace(/_/g, " ");
+        return (
+          specialistToolLabel(t.name, t.detail, false) ??
+          "Using " + String(t.name).split("__").pop()?.replace(/_/g, " ")
+        );
     }
   }
   // Every phase below is the model itself at work; the task registry names a
@@ -129,7 +133,7 @@ function isSetupHook(hook: string | undefined): boolean {
 export function activityDetail(stats: VerbStats): string {
   const act = stats.activity;
   if (isSetupHook(act?.hook)) return "";
-  if (stats.phase === "tooling" && act?.tool?.detail) return act.tool.detail;
+  if (stats.phase === "tooling" && act?.tool?.detail && !isSpecialistTool(act.tool.name)) return act.tool.detail;
   return "";
 }
 

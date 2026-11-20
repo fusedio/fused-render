@@ -45,6 +45,7 @@ from pydantic import BaseModel
 
 from fused_render import _platform, agent_oneshot
 from fused_render import claude_health, session_liveness, tasks_store
+from fused_render.specialists import paths as sp_paths
 from fused_render.agent_backends import roots
 from fused_render.shell import storage
 from fused_render._view_url_codec import canonical_fs_path
@@ -111,7 +112,7 @@ def api_claude_sessions():
             continue
         for jsonl_path in glob.glob(os.path.join(root, "*", "*.jsonl")):
             cwd = _session_cwd(jsonl_path)
-            if not cwd or not os.path.isdir(cwd):
+            if not cwd or not os.path.isdir(cwd) or sp_paths.flag_on_and_inside(cwd):
                 continue
             try:
                 mtime = os.path.getmtime(jsonl_path)
@@ -224,7 +225,7 @@ def api_home_claude_sessions(limit: int = HOME_SESSION_LIMIT):
         # Mark before the probe: repeated sessions for a stale folder cannot
         # become valid during this one request and should not repeat the syscall.
         seen.add(cwd)
-        if not os.path.isdir(cwd):
+        if not os.path.isdir(cwd) or sp_paths.flag_on_and_inside(cwd):
             continue
         folders.append({
             "path": canonical_fs_path(cwd),

@@ -97,12 +97,13 @@ describe("isAwaitingFile — the Files tab's right-pane loading gate (finding 2)
 });
 
 describe("contentTemplates", () => {
-  it("drops the `_node` node view: the shell draws it, and this pane only frames pages", () => {
+  it("drops a native template (the shell draws it), keeps a canvas node template (a page like any other)", () => {
     const list: TemplateEntry[] = [
       { mode: "_render", path: null, icon: null },
-      { mode: "_node", path: null, icon: null, conditional: true, prefer: true },
+      { mode: "claude", path: "/t/claude/native", icon: null, native: true },
+      { mode: "canvas_udf", path: "/t/canvas_udf/template.html", icon: null, conditional: true, node: true },
       { mode: "code", path: "/t/code/template.html", icon: null },
     ];
-    expect(contentTemplates(list).map((t) => t.mode)).toEqual(["_render", "code"]);
+    expect(contentTemplates(list).map((t) => t.mode)).toEqual(["_render", "canvas_udf", "code"]);
   });
 });

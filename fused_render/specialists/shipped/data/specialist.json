@@ -1,0 +1,6 @@
+{
+  "name": "Data",
+  "about": "The datasets you can reach (today the fused-asset S3 bucket): what exists, how each is laid out, its columns, size and coverage, and how to read it",
+  "face": {"shape": "drop", "color": "#2f7ae5", "icon": ""},
+  "expert": "data-expert"
+}
