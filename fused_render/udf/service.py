@@ -68,12 +68,12 @@ class RunError(Exception):
 
 class Target:
     """What to run, resolved: where (`env`), what `fused.load` gets
-    (`source`, `collection`) and what identifies it for the run key."""
+    (`load_as`, `collection`) and what identifies it for the run key."""
 
     def __init__(self, env: str, source: str, collection: str | None, ident: list,
                  file_sha: str | None = None):
         self.env = env
-        self.source = source
+        self.load_as = source
         self.collection = collection
         self.ident = ident
         self.file_sha = file_sha
@@ -192,7 +192,7 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
             for listener in list(flight.listeners):
                 listener({"type": "started", "kind": event.get("kind")})
 
-    request = {"op": "run", "id": token, "source": target.source,
+    request = {"op": "run", "id": token, "source": target.load_as,
                "collection": target.collection, "params": params, "format": fmt,
                "cache": cache != "fresh", "confirmed": confirmed, "out": body_path}
     task = asyncio.ensure_future(runner.run(target.env, request, on_event))
@@ -242,7 +242,7 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
         # The file changed while it ran: the answer is for code that is no
         # longer on disk, so it is not filed under the new file's key.
         try:
-            if _sha_of_file(target.source) != target.file_sha:
+            if _sha_of_file(target.load_as) != target.file_sha:
                 keep_key = None
         except OSError:
             keep_key = None
@@ -353,7 +353,7 @@ async def schema(msg: dict, send: Send) -> None:
         if not canvases._logged_in(target.env):
             raise RunError("signed_out", "not signed in to Fused — sign in first")
         request = {"op": "schema", "id": "s" + secrets.token_hex(8),
-                   "source": target.source, "collection": target.collection}
+                   "source": target.load_as, "collection": target.collection}
         try:
             final = await asyncio.wait_for(runner.run(target.env, request), SCHEMA_TIMEOUT_S)
         except asyncio.TimeoutError as exc:

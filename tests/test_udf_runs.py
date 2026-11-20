@@ -211,7 +211,7 @@ def test_store_refuses_tokens_that_are_not_its_own(base):
 
 def test_a_node_file_runs_in_its_canvas_and_environment(clone):
     target = service.resolve({"file": str(clone / "udf_1.py")})
-    assert (target.env, target.collection, target.source) == (ENV, "demo", str(clone / "udf_1.py"))
+    assert (target.env, target.collection, target.load_as) == (ENV, "demo", str(clone / "udf_1.py"))
     assert target.file_sha
 
 
@@ -244,7 +244,7 @@ def test_bad_references(base, ref):
 
 def test_a_saved_udf_by_name(base):
     target = service.resolve({"canvas": "demo", "name": "udf_1", "env": "prod"})
-    assert (target.env, target.collection, target.source) == ("prod", "demo", "udf_1")
+    assert (target.env, target.collection, target.load_as) == ("prod", "demo", "udf_1")
     assert target.file_sha is None
 
 
