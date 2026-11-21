@@ -142,9 +142,10 @@ def _fs_write(body: dict, x_fused: str | None):
     # Preserve the target's permission bits across an overwrite.
     mode = stat_mod.S_IMODE(os.stat(path).st_mode) if exists else None
 
-    # Atomic write: land the bytes in a temp file in the same directory,
-    # fsync, then os.replace onto the target so a reader never sees a
-    # half-written file (and a crash leaves the original intact).
+    # Write into a sibling temporary file so readers never see partial content.
+    # For create-only writes, an existence check alone is insufficient: another
+    # writer may create the destination before publication. Linking exclusively
+    # refuses that race, whereas os.replace would silently destroy their file.
     fd, tmp = tempfile.mkstemp(dir=parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -153,13 +154,29 @@ def _fs_write(body: dict, x_fused: str | None):
             os.fsync(f.fileno())
         if mode is not None:
             os.chmod(tmp, mode)
-        os.replace(tmp, path)
+        if create:
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                return JSONResponse({"error": "conflict"}, status_code=409)
+            # The destination is committed. Failure to remove its temporary
+            # alias must not turn a successful save into an apparent failure.
+            try:
+                os.unlink(tmp)
+            except OSError:
+                logger.warning("could not remove temporary write alias %s", tmp, exc_info=True)
+        else:
+            os.replace(tmp, path)
     except OSError as e:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
         return _error(f"cannot write {path}: {e}", status=400)
+    finally:
+        # On conflict/error the temp file is still present. Successful
+        # os.replace/os.unlink already removed the name.
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                logger.warning("could not remove temporary write file %s", tmp, exc_info=True)
 
     return {**_stat_payload(path, False), "created": created}
 
