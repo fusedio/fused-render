@@ -506,6 +506,9 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.udf import runner as udf_runner
 
         udf_runner.refuse_new()
+        from fused_render.sql import runner as sql_runner
+
+        sql_runner.refuse_new()
 
     def engines():
         from fused_render.server import engine_host
@@ -586,6 +589,13 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
 
         udf_runner.shutdown()
 
+    def sql_engine():
+        # The local SQL engine's worker (sql/runner.py): stdin closed, killed
+        # after a short wait, its directory removed.
+        from fused_render.sql import runner as sql_runner
+
+        sql_runner.shutdown()
+
     def discovery():
         from fused_render.server.app import remove_server_json
 
@@ -602,6 +612,7 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
                        ("canvas-mirror", canvas_mirror),
                        ("contrib-claude", contrib_claude),
                        ("udf-workers", udf_workers),
+                       ("sql-engine", sql_engine),
                        ("discovery", discovery)):
         def _run(step=step, name=name):
             try:
