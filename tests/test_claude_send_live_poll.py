@@ -172,7 +172,9 @@ def test_the_clis_turn_preamble_does_not_lift_the_echo_blank(agent, run_dir):
     poll = agent._poll("run")
     assert poll["done"] is False
     assert poll["text"] == "Turn one answer."
-    assert poll["turn_breaks"] == [{"segments": 1, "text": len("Turn one answer.")}]
+    assert poll["turn_breaks"] == [
+        {"segments": 1, "text": len("Turn one answer."),
+         "user": {"text": "second message", "uuid": ""}}]
     with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(_text_row("Turn two answer.")) + "\n")
     poll = agent._poll("run")
@@ -226,7 +228,9 @@ def test_an_echo_landing_between_the_rows_read_and_the_tail_scan_keeps_the_turn_
     poll = agent._poll("run")
     assert poll["done"] is False
     assert poll["text"] == "Turn one answer."
-    assert poll["turn_breaks"] == [{"segments": 1, "text": len("Turn one answer.")}]
+    assert poll["turn_breaks"] == [
+        {"segments": 1, "text": len("Turn one answer."),
+         "user": {"text": "second message", "uuid": ""}}]
     assert not (run_dir / "pending_echo").exists()
 
 
@@ -258,7 +262,9 @@ def test_a_whole_turn_landing_in_the_tail_is_not_finalised_from_the_old_window(
     poll = agent._poll("run")
     assert poll["done"] is True
     assert poll["text"] == "Turn one answer.Turn two answer."
-    assert poll["turn_breaks"] == [{"segments": 1, "text": len("Turn one answer.")}]
+    assert poll["turn_breaks"] == [
+        {"segments": 1, "text": len("Turn one answer."),
+         "user": {"text": "second message", "uuid": ""}}]
 
 
 def test_a_repeated_message_landing_in_the_tail_is_not_matched_to_its_older_echo(
