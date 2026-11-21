@@ -407,26 +407,49 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "a 4B's speed, though its 15GB of weights want a 24GB "
                     "machine or more.",
         },
-        # Coding model (SPEC AI-28b). Qwen3-Coder-30B-A3B is a MoE — 30B of
-        # code knowledge answering at about a 3B's speed — and the only
-        # code-tuned row here; every other row is a generalist that merely
-        # also codes. 4-bit, 17.2GB
-        # whole-snapshot Hub byte sum on 2026-10-04, ungated; model_type
-        # `qwen3_moe`, which mlx-lm ships. Not loaded here (no Mac in the
-        # build) — someone on a 32GB Mac should load it once.
+        # Inkling 2 Mini (Thinking Machines, 2026-11-20), Apache-2.0: the
+        # coding row (SPEC AI-28b), replacing `mlx-community/Qwen3-Coder-30B-
+        # A3B-Instruct-4bit` (17.2GB). A 26.2B mixture of experts with ~3.4B
+        # active per token whose middle 12 of 24 layers run three times per
+        # token (a "looped" transformer, `model_type` `inkling2_loop`); the
+        # vendor's agentic-coding numbers lead every open model under 100B
+        # (SWE-bench Verified 79.2%), and it scores 20 on Artificial
+        # Analysis' Intelligence Index v5, level with the Qwen3.8 27B below.
+        #
+        # **The publisher's own repo, not an MLX conversion.** It ships at its
+        # trained precision — NVFP4 experts, MXFP8 in the last layers, plus a
+        # sidecar `hf_quant_config.json` mapping each expert projection — and
+        # mlx-vlm reads that natively. `mlx-community/Inkling-2-Mini-4bit`
+        # was built for an unmerged mlx-lm PR and is barely smaller (17.3GB),
+        # so it buys nothing. `quant_method` is `modelopt`, which
+        # `formats.unloadable_quant` passes. 20.19GB Hub byte sum
+        # (2026-11-21), ungated; the 0.64GB `mtp.safetensors` (a speculative-
+        # decoding drafter this runner does not use) is in that figure.
+        #
+        # **Needs the interim mlx-vlm wheel** `mlx_text/pyproject.toml` pins
+        # (`0.8.1.dev20261120`: v0.8.0 + upstream #2778): no PyPI release
+        # can load `inkling2_loop` yet. Its reply markup is not `<think>`
+        # tags but Inkling's own message channels, which
+        # `worker_base.InklingMarkup` rewrites, and tool calls are their own
+        # family (`toolcalls`' `inkling`). **Not loaded here** (no Mac in the
+        # build): the template, the markup and the wheel's imports were
+        # checked off-Mac; someone on a 32GB Mac should load it once.
         {
-            "id": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
-            "useCases": ["coding"],
-            "params": "30B (~3B active)",
-            "quantization": "MLX 4-bit",
-            "label": "Qwen3-Coder 30B-A3B (MLX 4-bit)",
-            "nickname": "Qwen3 Coder",
-            "size_gb": 17.2,
+            "id": "thinkingmachines/Inkling-2-Mini",
+            "useCases": ["coding", "reasoning", "writing"],
+            "params": "26B (~3.4B active)",
+            # Not a recognised `fit.QUANT_BYTES_PER_PARAM` key on purpose:
+            # the mix of 4-bit and 8-bit tensors has no one bytes-per-param
+            # figure, so the fit estimate falls back to `size_gb`.
+            "quantization": "NVFP4 (native)",
+            "label": "Inkling 2 Mini (NVFP4)",
+            "nickname": "Inkling 2",
+            "size_gb": 20.2,
             "context": 32768,
-            "tool_family": "qwen",
+            "tool_family": "inkling",
             "tools": True,
-            "note": "The code-tuned model: writes, explains and fixes code at "
-                    "about a 3B's speed, but its 17GB of weights want a 32GB "
+            "note": "Built for coding agents: 26B of knowledge at about a "
+                    "3B's speed, but its 20GB of weights want a 32GB "
                     "machine.",
         },
         # LAST, and the only entry here that is not a 16GB-machine model. It

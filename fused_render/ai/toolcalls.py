@@ -34,6 +34,11 @@ the model id's name prefix; the catalog's `tool_family` field overrides):
   parses as none of these is released as text.
 * `lfm` — `<|tool_call_start|>[{"name": …, "arguments": {…}}]<|tool_call_end|>`
   (a JSON list or object), or LFM2's Python-style `[name(k=v, …)]`.
+* `inkling` — Inkling 2's `<|content_invoke_tool_json|>{"name": …, "args": {…}}
+  <|end_message|>`, one call per message. The worker has already dropped the
+  message header around it (`worker_base.InklingMarkup`), so only the body
+  and its end marker reach this parser; `args` is Inkling's spelling of
+  `arguments`.
 
 `arguments` is a dict when the shape gave one and a string otherwise
 (LFM's bare positional call, say) — the gateway JSON-encodes a dict and
@@ -50,7 +55,7 @@ import ast
 import json
 import re
 
-FAMILIES = ("qwen", "hermes", "llama3", "gemma", "lfm")
+FAMILIES = ("qwen", "hermes", "llama3", "gemma", "lfm", "inkling")
 
 _PREFIXES = (
     ("qwen", "qwen"),
@@ -62,6 +67,7 @@ _PREFIXES = (
     ("meta-llama", "llama3"),
     ("gemma", "gemma"),
     ("lfm", "lfm"),
+    ("inkling", "inkling"),
 )
 
 
@@ -203,6 +209,18 @@ def _decode_lfm(text: str) -> list[dict] | None:
     return _decode_json_text(text) or _calls_from_python(text)
 
 
+def _decode_inkling(text: str) -> list[dict] | None:
+    """`{"name", "args"}` -> a call; anything `_decode_json_text` reads too."""
+    try:
+        value = json.loads(text.strip())
+    except ValueError:
+        return _decode_json_text(text)
+    if isinstance(value, dict) and "args" in value and "arguments" not in value:
+        value = {**{k: v for k, v in value.items() if k != "args"},
+                 "arguments": value["args"]}
+    return _calls_from_json(value)
+
+
 def _json_complete(text: str) -> bool:
     """Does `text` (after whitespace) hold at least one complete JSON value
     and nothing but whitespace/separators after the last one?"""
@@ -235,6 +253,7 @@ _SHAPES: dict[str, list[tuple[str, tuple[str, ...] | None, object]]] = {
         ("<start_function_call>", ("<end_function_call>",), _decode_gemma),
     ],
     "lfm": [("<|tool_call_start|>", ("<|tool_call_end|>",), _decode_lfm)],
+    "inkling": [("<|content_invoke_tool_json|>", ("<|end_message|>",), _decode_inkling)],
 }
 #: Terminators the end-less (`None`) shapes also stop at when the model
 #: writes them; stripped from the call body, never emitted as text.

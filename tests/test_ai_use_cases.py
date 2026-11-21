@@ -8,7 +8,7 @@ from fused_render.ai import catalog, registry
 from fused_render.ai.runners import formats
 
 TEXT_LISTS = ("mlx-text", "llamacpp-text")
-CODER_MLX = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+CODER_MLX = "thinkingmachines/Inkling-2-Mini"
 CODER_GGUF = "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
 
 
@@ -20,10 +20,12 @@ def test_every_curated_text_entry_declares_known_use_cases(code):
         assert set(cases) <= set(registry.USE_CASES), entry["id"]
 
 
-def test_qwen3_coder_is_tagged_coding_on_both_engines():
+def test_each_engine_has_a_coding_row():
+    # MLX's is Inkling 2 Mini (a generalist that leads on coding, so `coding`
+    # comes FIRST and picks its section); GGUF's is still Qwen3-Coder.
     mlx = {e["id"]: e for e in catalog.SUGGESTIONS["mlx-text"]}
     gguf = {e["id"]: e for e in catalog.SUGGESTIONS["llamacpp-text"]}
-    assert mlx[CODER_MLX]["useCases"] == ["coding"]
+    assert mlx[CODER_MLX]["useCases"][0] == "coding"
     assert gguf[CODER_GGUF]["useCases"] == ["coding"]
 
 

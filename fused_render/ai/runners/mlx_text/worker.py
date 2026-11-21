@@ -435,7 +435,7 @@ except ValueError:
 
 
 def _messages_to_prompt(processor, messages, prompt, enable_thinking=None,
-                        tools=None):
+                        tools=None, markup=None):
     """The model's own chat template, never a hand-rolled one.
 
     `tools` (a list of OpenAI function schemas, or None) goes to
@@ -506,7 +506,17 @@ def _messages_to_prompt(processor, messages, prompt, enable_thinking=None,
     template = getattr(processor, "apply_chat_template", None)
     if template and getattr(processor, "chat_template", None):
         kwargs = {}
-        if enable_thinking is not None:
+        if markup == "inkling":
+            # Inkling 2's template has no `enable_thinking`: depth is its
+            # `reasoning_effort` (default "high", 0.9), and the model card
+            # says even "none" does not switch reasoning off entirely. Only
+            # an explicit OFF is mapped; ON keeps the default. Its template
+            # also refuses tool-call arguments as a JSON string, which is how
+            # the gateway forwards them.
+            if enable_thinking is False:
+                kwargs["reasoning_effort"] = "none"
+            messages = worker_base.tool_call_args_as_objects(messages)
+        elif enable_thinking is not None:
             kwargs["enable_thinking"] = enable_thinking
         if tools:
             kwargs["tools"] = tools
@@ -571,11 +581,28 @@ def _unreadable_image(path):
     return None
 
 
-def _text_writer(write, prompt):
+def _text_writer(write, prompt, markup=None):
     """`worker_base.TextWriter` where the base has it; the plain `write` for
     a base that predates it (a test's stub module)."""
     writer = getattr(worker_base, "TextWriter", None)
-    return writer(write, prompt) if writer is not None else write
+    if writer is None:
+        return write
+    if markup:
+        return writer(write, prompt, markup=markup)
+    return writer(write, prompt)
+
+
+def _chat_markup(processor):
+    """Which reply markup this model's chat template teaches (`"inkling"` or
+    None), read from the processor's template or its wrapped tokenizer's.
+    None for a base without `chat_markup` (a test's stub module)."""
+    reader = getattr(worker_base, "chat_markup", None)
+    if reader is None:
+        return None
+    template = getattr(processor, "chat_template", None)
+    if not isinstance(template, str):
+        template = getattr(getattr(processor, "tokenizer", None), "chat_template", None)
+    return reader(template)
 
 
 def _generation_options(body):
@@ -628,6 +655,9 @@ def generate(body, write):
     # body with a 400. `tools` reaches the TEXT template path only — mlx-vlm's
     # own image-aware `apply_chat_template` below takes no such keyword.
     options = _generation_options(body)
+    # Inkling 2 writes its own message markup instead of `<think>` tags;
+    # `worker_base.TextWriter` rewrites it when told (`chat_markup`).
+    markup = _chat_markup(processor)
 
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     # A list of absolute paths (`server/ai.py`'s `_images_problem` validates the
@@ -749,11 +779,11 @@ def generate(body, write):
     else:
         text = _messages_to_prompt(processor, messages, body.get("prompt") or "",
                                    enable_thinking=enable_thinking,
-                                   tools=options["tools"])
+                                   tools=options["tools"], markup=markup)
     # The think split happens HERE, once, where the rendered prompt is known
     # (`worker_base.TextWriter`, docs/LOCAL_MODEL_GATEWAY.md §3): every row
     # below goes through it, the stop-string hold-back's included.
-    write = _text_writer(write, text)
+    write = _text_writer(write, text, markup)
     max_tokens = options["max_tokens"] or 1024
     if _N_CTX:
         max_tokens = min(max_tokens, _N_CTX)

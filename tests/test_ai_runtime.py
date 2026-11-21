@@ -2445,7 +2445,8 @@ def test_every_suggestion_list_offers_between_two_and_five_models():
     hide behind a well-stocked one.
     """
     # SIX, not five, for the two TEXT lists only (SPEC AI-28b): the use-case
-    # sections need a code-tuned row (Qwen3-Coder-30B-A3B) and no existing row
+    # sections need a coding row (Qwen3-Coder-30B-A3B on GGUF, Inkling 2 Mini
+    # on MLX since November 2026) and no existing row
     # was worth cutting for it. SEVEN since the October 2026 refresh, which
     # added the two mixture-of-experts rows (Gemma 4 26B-A4B, LFM2.5 24B-A2B)
     # and retired only one row per list (DECISIONS.md, "Catalog refresh,
@@ -2552,10 +2553,13 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch, tm
     # The namespace set is a PROXY for "these are MLX conversions", and it
     # grows: `prism-ml/` is here for the Bonsai row, because no
     # `mlx-community/` conversion of it exists, and `LiquidAI/` for the LFM2.5
-    # 24B-A2B row, which Liquid publishes itself. What the assertion is really
-    # pinning is the Linux half above — that the two lists are disjoint — so
-    # a new publisher belongs here rather than being a reason to weaken it.
-    assert all(m["id"].startswith(("mlx-community/", "prism-ml/", "LiquidAI/"))
+    # 24B-A2B row, which Liquid publishes itself, and `thinkingmachines/` for
+    # Inkling 2 Mini, whose own NVFP4 checkpoint mlx-vlm reads natively. What
+    # the assertion is really pinning is the Linux half above — that the two
+    # lists are disjoint — so a new publisher belongs here rather than being a
+    # reason to weaken it.
+    assert all(m["id"].startswith(("mlx-community/", "prism-ml/", "LiquidAI/",
+                                   "thinkingmachines/"))
                for m in text["models"])
 
 
@@ -13383,8 +13387,8 @@ def _text_row(client, monkeypatch):
 def test_text_entries_carry_use_cases(client, hub, monkeypatch):
     models = _text_row(client, monkeypatch)["models"]
     assert models and all(isinstance(m["useCases"], list) and m["useCases"] for m in models)
-    coder = next(m for m in models if m["id"] == "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit")
-    assert coder["useCases"] == ["coding"]
+    coder = next(m for m in models if m["id"] == "thinkingmachines/Inkling-2-Mini")
+    assert coder["useCases"][0] == "coding"
 
 
 def test_a_cached_text_repo_gets_a_heuristic_use_case(client, hub, monkeypatch):

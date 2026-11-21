@@ -43,17 +43,23 @@
 #                   MLX half comes from mlx's own allocator (see `memory()`),
 #                   exactly `mlx_text/pyproject.toml`'s reasoning.
 #
-# mlx-vlm comes from PyPI as a wheel at `>=0.7.9,<0.8`, the floor `mlx_text`
-# carries too. This folder used to pin a GitHub source archive with
-# `allow_build = true` because `embedding_gemma2` was not in a release yet;
-# 0.7.9 ships it, so the archive and the setuptools build it forced are gone.
+# mlx-vlm comes from the same interim wheel `mlx_text` pins, by the same URL —
+# see `mlx_text/pyproject.toml` for why (Inkling 2 Mini is not in a PyPI
+# release yet) and for when to go back to PyPI. Both runners have to move
+# together: they are one mlx-vlm in two venvs, and a version skew between them
+# is a second set of behaviours to reason about. `embedding_gemma2` has shipped
+# since 0.7.9, so this folder needs nothing from the interim build itself.
+# (This folder once pinned a GitHub source archive with `allow_build = true`
+# for that model; a prebuilt wheel needs no build step, which is why the
+# interim pin is a wheel URL and not an archive.)
 [project]
 name = "fused-render-runner-mlx-embed"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "mlx-embeddings>=0.1,<0.2",
-    "mlx-vlm>=0.7.9,<0.8",
+    # Exact, from the URL in `[tool.uv.sources]` (see above).
+    "mlx-vlm==0.8.1.dev20261120",
     # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
     "pillow>=12.3,<13",
     # HEIC/HEIF and AVIF, which plain Pillow cannot open. iPhones have shot
@@ -67,3 +73,6 @@ dependencies = [
 # Not a distribution — a folder of scripts, not something to build and install.
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+mlx-vlm = { url = "https://github.com/vasu2001/mlx-vlm/releases/download/v0.8.1.dev20261120/mlx_vlm-0.8.1.dev20261120-py3-none-any.whl" }

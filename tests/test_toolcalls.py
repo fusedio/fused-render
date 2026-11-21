@@ -41,6 +41,7 @@ def text(events):
     ("mlx-community/gemma-4-26B-A4B-it-4bit", "gemma"),
     ("LFM2.5-1.2B-Instruct-Q4_K_M.gguf", "lfm"),
     ("LiquidAI/LFM2.5-24B-A2B-MLX-4bit", "lfm"),
+    ("thinkingmachines/Inkling-2-Mini", "inkling"),
     ("someone/mystery-model", "hermes"),
     ("", "hermes"),
 ])
@@ -239,4 +240,22 @@ def test_empty_feed_is_a_no_op():
     parser = StreamParser("qwen")
     assert parser.feed("") == []
     assert parser.finish() == []
+
+
+# ------------------------------------------------------------ inkling
+
+INKLING = ('Looking it up.<|content_invoke_tool_json|>{"name":"get_weather",'
+           '"args":{"city":"Paris"}}<|end_message|>')
+
+
+@pytest.mark.parametrize("size", [len(INKLING), 1, 3, 9])
+def test_inkling_calls_read_args_as_arguments(size):
+    events = run("inkling", split_every(INKLING, size))
+    assert calls(events) == [{"name": "get_weather", "arguments": {"city": "Paris"}}]
+    assert text(events) == "Looking it up."
+
+
+def test_an_unfinished_inkling_call_is_released_as_text():
+    events = run("inkling", ['<|content_invoke_tool_json|>{"name":"f","ar'])
+    assert calls(events) == []
 

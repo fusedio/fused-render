@@ -3696,6 +3696,87 @@ def test_think_splitter_separates_deliberation_from_the_answer():
     assert sp.feed("<thinking>x</thinking>y") + sp.finish() == [("reasoning", "x"), ("text", "y")]
 
 
+INKLING_REPLY = (
+    "<|message_model|><|content_thinking|>Check the weather.<|end_message|>"
+    "<|message_model|><|content_text|>Looking it up.<|end_message|>"
+    "<|message_model|>get_weather<|content_invoke_tool_json|>"
+    '{"name":"get_weather","args":{"city":"Paris"}}<|end_message|>'
+    "<|content_model_end_sampling|>")
+
+
+def _inkling_rows(chunks):
+    from fused_render.ai.runners.worker_base import TextWriter
+    rows = []
+    w = TextWriter(rows.append, "", markup="inkling")
+    for chunk in chunks:
+        w({"type": "chunk", "text": chunk})
+    w({"type": "done", "ok": True})
+    merged = []
+    for row in rows:
+        if (merged and row["type"] == "chunk" and merged[-1]["type"] == "chunk"
+                and merged[-1].get("channel") == row.get("channel")):
+            merged[-1] = {**merged[-1], "text": merged[-1]["text"] + row["text"]}
+        else:
+            merged.append(row)
+    return merged
+
+
+@pytest.mark.parametrize("size", [len(INKLING_REPLY), 1, 2, 3, 5, 7, 13])
+def test_inkling_markup_becomes_reasoning_text_and_a_tool_block(size):
+    """Inkling 2 writes message channels, not `<think>` tags: the thinking
+    channel goes out as reasoning, the text channel as bare answer, the
+    tool call keeps the body and end marker `toolcalls`' `inkling` family
+    reads, and headers (with the tool name they carry) and the EOS token
+    vanish — however the stream is chunked."""
+    chunks = [INKLING_REPLY[i:i + size] for i in range(0, len(INKLING_REPLY), size)]
+    assert _inkling_rows(chunks) == [
+        {"type": "chunk", "text": "Check the weather.", "channel": "reasoning"},
+        {"type": "chunk", "text": "Looking it up.<|content_invoke_tool_json|>"
+                                  '{"name":"get_weather","args":{"city":"Paris"}}'
+                                  "<|end_message|>"},
+        {"type": "done", "ok": True},
+    ]
+
+
+def test_inkling_markup_leaves_unknown_and_unfinished_markers_as_text():
+    from fused_render.ai.runners.worker_base import InklingMarkup
+    m = InklingMarkup()
+    assert m.feed("a <|b|> c") + m.finish() == "a <|b|> c"
+    m = InklingMarkup()
+    assert m.feed("x <|content_te") == "x "        # held: may be a marker
+    assert m.finish() == "<|content_te"            # never completed: text
+    # A thinking message cut off by the next header still closes.
+    m = InklingMarkup()
+    out = m.feed("<|message_model|><|content_thinking|>hm<|message_model|><|content_text|>ok")
+    assert out + m.finish() == "<think>hm</think>ok"
+
+
+def test_chat_markup_is_read_off_the_template():
+    from fused_render.ai.runners.worker_base import chat_markup
+    assert chat_markup('{{- "<|content_invoke_tool_json|>" -}}') == "inkling"
+    assert chat_markup("{{ '<|im_start|>' }}") is None
+    assert chat_markup(None) is None
+
+
+def test_tool_call_arguments_become_objects_without_touching_the_input():
+    from fused_render.ai.runners.worker_base import tool_call_args_as_objects
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "f", "arguments": '{"a": 1}'}},
+            {"id": "2", "type": "function", "function": {"name": "g", "arguments": "not json"}},
+            {"id": "3", "type": "function", "function": {"name": "h", "arguments": "[1]"}},
+            {"id": "4", "type": "function", "function": {"name": "k", "arguments": ""}},
+        ]},
+    ]
+    before = json.dumps(msgs)
+    out = tool_call_args_as_objects(msgs)
+    assert json.dumps(msgs) == before
+    assert out[0] is msgs[0]
+    assert [c["function"]["arguments"] for c in out[1]["tool_calls"]] == [
+        {"a": 1}, "not json", "[1]", {}]
+
+
 def test_text_writer_splits_once_at_the_worker_and_flushes_on_done():
     from fused_render.ai.runners.worker_base import TextWriter, open_think
     assert open_think("<|im_start|>assistant\n<think>\n") is True

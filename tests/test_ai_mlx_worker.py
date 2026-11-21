@@ -387,6 +387,53 @@ def test_explicit_thinking_false_passes_the_kwarg(worker):
     assert processor.calls == [{"enable_thinking": False}]
 
 
+def _inkling_worker(worker, monkeypatch):
+    from fused_render.ai.runners import worker_base as real_base
+    monkeypatch.setattr(worker.worker_base, "chat_markup", real_base.chat_markup,
+                        raising=False)
+    monkeypatch.setattr(worker.worker_base, "tool_call_args_as_objects",
+                        real_base.tool_call_args_as_objects, raising=False)
+    return worker
+
+
+class _InklingProcessor(_ProcessorWithTemplate):
+    chat_template = None  # mlx-vlm processors may keep it on the tokenizer
+
+    def __init__(self):
+        super().__init__()
+        self.tokenizer = types.SimpleNamespace(
+            chat_template='{{- "<|content_invoke_tool_json|>" -}}')
+        self.messages = None
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.messages = messages
+        return super().apply_chat_template(messages, **kwargs)
+
+
+def test_inkling_markup_is_read_off_the_wrapped_tokenizers_template(worker, monkeypatch):
+    _inkling_worker(worker, monkeypatch)
+    assert worker._chat_markup(_InklingProcessor()) == "inkling"
+    assert worker._chat_markup(_ProcessorWithTemplate()) is None
+
+
+def test_inkling_maps_thinking_off_to_its_effort_and_parses_tool_arguments(worker, monkeypatch):
+    """Inkling 2's template has no `enable_thinking` (its knob is
+    `reasoning_effort`) and refuses tool-call arguments as a JSON string,
+    which is how the gateway forwards them."""
+    _inkling_worker(worker, monkeypatch)
+    processor = _InklingProcessor()
+    processor.chat_template = "{{ x }}"  # `_messages_to_prompt` needs one set
+    msgs = [{"role": "user", "content": "hi"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "1", "type": "function",
+                 "function": {"name": "f", "arguments": '{"a": 1}'}}]}]
+    worker._messages_to_prompt(processor, msgs, "", enable_thinking=False, markup="inkling")
+    worker._messages_to_prompt(processor, msgs, "", enable_thinking=True, markup="inkling")
+    assert processor.calls == [{"reasoning_effort": "none"}, {}]
+    assert processor.messages[1]["tool_calls"][0]["function"]["arguments"] == {"a": 1}
+    assert msgs[1]["tool_calls"][0]["function"]["arguments"] == '{"a": 1}'
+
+
 def test_a_template_that_rejects_the_kwarg_is_retried_without_it(worker):
     """The retry hazard `_messages_to_prompt`'s docstring documents: a
     tokenizer whose `apply_chat_template` raises `TypeError` on an
