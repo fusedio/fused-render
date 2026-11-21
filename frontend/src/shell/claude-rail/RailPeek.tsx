@@ -219,6 +219,8 @@ import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "
 import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
 import { useRailFreePins } from "./rail-free-pins-flag";
 import { placeColumn } from "./rail-slots-lib";
+import { useRailExpand } from "./rail-expand-flag";
+import { watchRailWidth } from "./rail-width-watch";
 
 /** Where a card's dragged size is kept in the ui-layout document: the
  *  rail's pinned card, or the favourite's (RailPeekProps `resizeKey`). */
@@ -667,6 +669,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // Resolved once per rail element, not per placement: `rowOf` reads computed
   // style, and `place` runs on every scroll of the rail's list.
   const row = useMemo(() => rowOf(railEl), [railEl]);
+  // THE EXPANDABLE RAIL (rail-width-watch): its edge moves with no window
+  // resize and no row reshaping — the card follows it too.
+  const followRailWidth = useRailExpand();
   const place = (key: string): Box | null => {
     // FLOATING: at the window's position (read live — a drag moves it between
     // renders), at the card's size, inside the viewport; never "no room".
@@ -1005,13 +1010,15 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     railEl.addEventListener("scroll", re, true);
     const ro = row && typeof ResizeObserver !== "undefined" ? new ResizeObserver(re) : null;
     if (row && ro) ro.observe(row);
+    const unwatch = followRailWidth ? watchRailWidth(railEl, re) : null;
     return () => {
       window.removeEventListener("resize", re);
       railEl.removeEventListener("scroll", re, true);
       ro?.disconnect();
+      unwatch?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shownKey, railEl]);
+  }, [shownKey, railEl, followRailWidth]);
   useEffect(() => {
     if (!shownKey || resizing) return;
     const next = place(shownKey);

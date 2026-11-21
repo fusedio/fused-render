@@ -591,7 +591,7 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   min-width: min(380px, calc(100% - 320px));
 }
 .canvas-workspace-pane:has(~ .claude-rail:not([hidden])) {
-  min-width: min(380px, calc(100% - 320px - 48px));
+  min-width: min(380px, calc(100% - 320px - var(--claude-rail-w, 48px)));
 }
 
 /* THE SCRIM OVER THE WORKBENCH WHILE A PICTURE IS TAKEN (CanvasWorkspace,

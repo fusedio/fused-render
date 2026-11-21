@@ -519,6 +519,18 @@ const ENTRIES = [
     child: true,
     parent: { id: "canvases-rail-peek", on: (prefs) => prefs.canvas_rail_peek?.enabled === true },
   },
+  // THE EXPANDABLE RAIL (shell/claude-rail rail-expand-flag): the rail's own
+  // control, so a child of the rail preview like the mode doors.
+  {
+    id: "rail-expand",
+    group: "features",
+    section: "Chats & rail",
+    label: "Expandable rail",
+    description: "Adds a button at the top of the rail that widens it, so each item shows its icon and its title. Drag the rail's inner edge to resize it.",
+    keywords: "rail expand widen wide width resize titles labels icon sidebar collapse drag",
+    child: true,
+    parent: { id: "canvases-rail-peek", on: (prefs) => prefs.canvas_rail_peek?.enabled === true },
+  },
   // ONE HEADER FOR EVERY TASK VIEW (shell/TaskHead, task-head-flag). After the
   // rail preview's two children, not between them: a row set there read as
   // the parent of "Favourite chats".
