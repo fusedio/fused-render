@@ -37,6 +37,7 @@ import {
   placeColumn,
   pushedPins,
   pushedPos,
+  PUSH_MIN_HEIGHT,
   sectionPinned,
   serialisePinBox,
   slotClick,
@@ -103,12 +104,55 @@ describe("a non-pin pushes a pin", () => {
     const home = { left: 992, top: 60 + 640 + PUSH_GAP };
     expect(pushedPos(home, { width: 400, height: 100 }, [dock])).toBe(home);
   });
+  it("UP FIRST: a pin covered from below steps up clear of it, whole", () => {
+    const foot = box(1012, 600, 380, 300);
+    const home = { left: 1000, top: 300 };
+    expect(pushedPos(home, { width: 380, height: 400 }, [foot])).toEqual({ left: 1000, top: 600 - PUSH_GAP - 400 });
+  });
+  it("…one too tall to clear it goes to the top and is drawn shorter", () => {
+    const foot = box(1012, 500, 380, 400);
+    const home = { left: 1000, top: 100 };
+    expect(pushedPos(home, { width: 380, height: 700 }, [foot])).toEqual({ left: 1000, top: 8, height: 500 - PUSH_GAP - 8 });
+    // A pin already above the floor stays at its own top.
+    expect(pushedPos({ left: 1000, top: 0 }, { width: 380, height: 700 }, [foot])).toEqual({ left: 1000, top: 0, height: 500 - PUSH_GAP });
+  });
+  it("…and under the floor height it goes LEFT, whole", () => {
+    const foot = box(1012, 200, 380, 700);
+    const home = { left: 1000, top: 100 };
+    expect(PUSH_MIN_HEIGHT).toBe(240);
+    expect(pushedPos(home, { width: 380, height: 700 }, [foot])).toEqual({ left: 1012 - PUSH_GAP - 380, top: 100 });
+  });
+  it("room above, but the top non-pin stands in it: LEFT from where the step up put it — not left and down", () => {
+    const top = box(972, 60, 420, 300);
+    const foot = box(1012, 500, 380, 400);
+    const home = { left: 1000, top: 380 };
+    expect(pushedPos(home, { width: 380, height: 300 }, [top, foot])).toEqual({ left: 972 - PUSH_GAP - 380, top: 500 - PUSH_GAP - 300 });
+  });
+  it("…a tall one too: left at the top, its own height again", () => {
+    const top = box(972, 60, 420, 300);
+    const foot = box(1012, 500, 380, 400);
+    const home = { left: 1000, top: 380 };
+    expect(pushedPos(home, { width: 380, height: 520 }, [top, foot])).toEqual({ left: 972 - PUSH_GAP - 380, top: 8 });
+  });
+  it("under BOTH non-pins at home: the same answer as one after the other", () => {
+    const top = box(972, 8, 420, 480);
+    const foot = box(1012, 500, 380, 400);
+    // Mid-height, lying under the top window's foot and the foot window's top.
+    expect(pushedPos({ left: 1000, top: 400 }, { width: 380, height: 300 }, [top, foot])).toEqual({ left: 972 - PUSH_GAP - 380, top: 500 - PUSH_GAP - 300 });
+    // Tall: to the top, its own height.
+    expect(pushedPos({ left: 1000, top: 120 }, { width: 380, height: 900 }, [top, foot])).toEqual({ left: 972 - PUSH_GAP - 380, top: 8 });
+  });
+  it("covered by the top non-pin alone, it goes left at its own top", () => {
+    const top = box(972, 60, 420, 300);
+    const home = { left: 1000, top: 200 };
+    expect(pushedPos(home, { width: 380, height: 300 }, [top])).toEqual({ left: 972 - PUSH_GAP - 380, top: 200 });
+  });
   it("clears both sections' non-pins, the wider one included", () => {
     const a = box(972, 60, 420, 300);
     const b = box(800, 380, 592, 400);
     const home = { left: 1000, top: 100 };
-    // Left of A it would still lie over B (taller than A's foot): left of B too.
-    expect(pushedPos(home, size, [a, b])).toEqual({ left: 800 - PUSH_GAP - 400, top: 100 });
+    // Up from B puts it at the top, under A: left of A it would still lie over B, so left of B too.
+    expect(pushedPos(home, size, [a, b])).toEqual({ left: 800 - PUSH_GAP - 400, top: 8 });
   });
   it("with no room to clear it, goes as far left as it can: part of it shows", () => {
     const narrow = box(300, 60, 420, 640);
@@ -146,6 +190,7 @@ describe("both pins at once", () => {
     const top = at(700, 60, 420, 500);
     const low = at(860, 562, 420, 380);
     const got = pushedPins({ a: low, b: top }, [foot]);
+    // Up would land it on the top pin: no way up, so left.
     expect(got.a).toEqual({ left: 1012 - PUSH_GAP - 420, top: 562 });
     expect(got.b).toBe(top.pos);
   });
@@ -194,15 +239,27 @@ describe("the push, over 4000 random layouts", () => {
         { pin: a, at: got.a! },
         ...(b ? [{ pin: b, at: got.b! }] : []),
       ];
-      const boxOf = (p: typeof a, at: { left: number; top: number }) => ({ left: at.left, top: at.top, width: p.size.width, height: p.size.height });
+      const boxOf = (p: typeof a, at: { left: number; top: number; height?: number }) => ({
+        left: at.left,
+        top: at.top,
+        width: p.size.width,
+        height: at.height ?? p.size.height,
+      });
       for (const [n, { pin, at }] of pins.entries()) {
         const home = boxOf(pin, pin.pos);
         const now = boxOf(pin, at);
         const other = pins[1 - n];
         const moved = at !== pin.pos;
-        // Only `left` ever changes, and only leftwards.
-        expect([where, at.top]).toEqual([where, pin.pos.top]);
-        expect([where, at.left <= pin.pos.left]).toEqual([where, true]);
+        // Never down, never right; cut short only in its own column, never
+        // under the floor height.
+        expect([where, at.top <= pin.pos.top, at.left <= pin.pos.left]).toEqual([where, true, true]);
+        if (at.height !== undefined) {
+          expect([where, at.left]).toEqual([where, pin.pos.left]);
+          expect([where, now.height < pin.size.height && now.height >= Math.min(pin.size.height, PUSH_MIN_HEIGHT)]).toEqual([where, true]);
+        }
+        // A step up alone never lands it on the other pin, unless the reader had laid them so.
+        if (moved && at.left === pin.pos.left && other && !cover(home, boxOf(other.pin, other.pin.pos)))
+          expect([where, cover(now, boxOf(other.pin, other.at))]).toEqual([where, false]);
         const underDock = docks.some((d) => cover(home, d));
         const underMovedPin =
           !!other && other.at !== other.pin.pos && !cover(home, boxOf(other.pin, other.pin.pos)) && cover(home, boxOf(other.pin, other.at));
@@ -354,7 +411,7 @@ describe("the position store, free pins on", () => {
     freezeFromDock("a");
     // Frozen exactly where it stood — not pushed left of the box it had.
     expect(windowPos("a")).toEqual({ left: 972, top: 60 });
-    // The other section's non-pin still pushes what it covers.
+    // The other section's non-pin still pushes what it covers — left: a step up would land it on window A's pin.
     commitWindowBox("b", box(1000, 700, 380, 200));
     expect(windowPos("b")).toEqual({ left: 1012 - PUSH_GAP - 380, top: 700 });
   });
@@ -369,6 +426,26 @@ describe("the position store, free pins on", () => {
     expect(windowSize("a")).toEqual({ width: 420, height: 640 });
     publishPusher("a", "list", null);
     expect(windowPos("a")).toBe(home);
+  });
+  it("a pin cut short keeps its own size in its mark: the non-pin goes, and it is whole at home", () => {
+    commitWindowBox("a", box(972, 60, 420, 800));
+    const home = windowPos("a");
+    publishPusher("b", "fav", box(1012, 440, 380, 480));
+    expect(windowSize("a")).toEqual({ width: 420, height: 440 - PUSH_GAP - 8 });
+    // The list's non-pin opens at the top too: left from where it was pushed up to — and whole again.
+    publishPusher("a", "list", box(972, 60, 420, 300));
+    expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 420, top: 8 });
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
+    publishPusher("a", "list", null);
+    publishPusher("b", "fav", null);
+    expect(windowPos("a")).toBe(home);
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
+  });
+  it("a cut pin's drag ends at its own size, not the cut one", () => {
+    commitWindowBox("a", box(972, 60, 420, 800));
+    publishPusher("b", "fav", box(1012, 440, 380, 480));
+    commitWindowPos("a", { left: 40, top: 70 });
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
   });
   it("a drag is never pushed, and where it ends is home — the size rides on", () => {
     commitWindowBox("a", box(972, 60, 420, 640));
@@ -390,17 +467,37 @@ describe("the position store, free pins on", () => {
     expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 400, top: 80 });
   });
   it("pinning freezes the whole picture: a pin this card pushed aside stays where it is drawn", () => {
-    // Window A's pin, tall, by the rail; window B's non-pin opens over its foot and pushes it.
+    // Window A's pin, tall, by the rail; window B's non-pin opens over its foot: the pin goes up, cut short.
     commitWindowBox("a", box(972, 60, 420, 800));
     publishWindowBox("b", "fav", box(1012, 440, 380, 480));
     publishPusher("b", "fav", box(1012, 440, 380, 480));
-    const pushed = { left: 1012 - PUSH_GAP - 420, top: 60 };
-    expect(windowPos("a")).toEqual(pushed);
-    // The favourite is pinned: it stops pushing — and window A's pin does NOT slide back under it.
+    const cut = 440 - PUSH_GAP - 8;
+    expect(windowPos("a")).toEqual({ left: 972, top: 8, height: cut });
+    // Drawn at the cut height; the same object while nothing changes.
+    expect(windowSize("a")).toEqual({ width: 420, height: cut });
+    expect(windowSize("a")).toBe(windowSize("a"));
+    // The favourite is pinned: it stops pushing — and window A's pin does NOT grow back under it.
     freezeFromDock("b");
-    expect(windowPos("a")).toEqual(pushed);
-    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
+    expect(windowPos("a")).toEqual({ left: 972, top: 8 });
+    expect(windowSize("a")).toEqual({ width: 420, height: cut });
     expect(windowPos("b")).toEqual({ left: 1012, top: 440 });
+  });
+  it("…with both non-pins up, what is frozen is the box drawn — not the one this card alone would give", () => {
+    commitWindowBox("a", box(972, 60, 420, 800));
+    publishWindowBox("b", "fav", box(1012, 440, 380, 480));
+    publishPusher("b", "fav", box(1012, 440, 380, 480));
+    publishPusher("a", "list", box(972, 60, 420, 300));
+    // The top window blocks the step up: left, whole.
+    const drawn = { left: 972 - PUSH_GAP - 420, top: 8 };
+    expect(windowPos("a")).toEqual(drawn);
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
+    freezeFromDock("b");
+    expect(windowPos("a")).toEqual(drawn);
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
+    // The list window goes too: the pin stays where it was drawn, whole.
+    publishPusher("a", "list", null);
+    expect(windowPos("a")).toEqual(drawn);
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
   });
   it("…but a pin pushed by its OWN section's non-pin still goes home when that closes", () => {
     commitWindowBox("b", box(1012, 440, 380, 480));
