@@ -134,6 +134,15 @@ describe("a non-pin pushes a pin", () => {
     const home = { left: 1000, top: 380 };
     expect(pushedPos(home, { width: 380, height: 520 }, [top, foot])).toEqual({ left: 972 - PUSH_GAP - 380, top: 8 });
   });
+  it("a WIDER foot window: it shifts only past the top one, and stays as tall as the room above the foot one", () => {
+    const top = box(1032, 8, 360, 560);
+    const foot = box(872, 600, 520, 590);
+    const home = { left: 1000, top: 100 };
+    // Up from the foot window: top 8, cut to 584. Left past the top window only — still over the foot one's column.
+    expect(pushedPos(home, { width: 380, height: 900 }, [top, foot])).toEqual({ left: 1032 - PUSH_GAP - 380, top: 8, height: 600 - PUSH_GAP - 8 });
+    // One standing clear above the foot window is under the top one alone: left at its own top, whole.
+    expect(pushedPos({ left: 1000, top: 300 }, { width: 380, height: 300 }, [top, foot])).toEqual({ left: 1032 - PUSH_GAP - 380, top: 300 });
+  });
   it("under BOTH non-pins at home: the same answer as one after the other", () => {
     const top = box(972, 8, 420, 480);
     const foot = box(1012, 500, 380, 400);
@@ -151,8 +160,8 @@ describe("a non-pin pushes a pin", () => {
     const a = box(972, 60, 420, 300);
     const b = box(800, 380, 592, 400);
     const home = { left: 1000, top: 100 };
-    // Up from B puts it at the top, under A: left of A it would still lie over B, so left of B too.
-    expect(pushedPos(home, size, [a, b])).toEqual({ left: 800 - PUSH_GAP - 400, top: 8 });
+    // Up from B puts it at the top, cut, under A: left of A is enough — it stands above B there.
+    expect(pushedPos(home, size, [a, b])).toEqual({ left: 972 - PUSH_GAP - 400, top: 8, height: 380 - PUSH_GAP - 8 });
   });
   it("with no room to clear it, goes as far left as it can: part of it shows", () => {
     const narrow = box(300, 60, 420, 640);
@@ -254,7 +263,6 @@ describe("the push, over 4000 random layouts", () => {
         // under the floor height.
         expect([where, at.top <= pin.pos.top, at.left <= pin.pos.left]).toEqual([where, true, true]);
         if (at.height !== undefined) {
-          expect([where, at.left]).toEqual([where, pin.pos.left]);
           expect([where, now.height < pin.size.height && now.height >= Math.min(pin.size.height, PUSH_MIN_HEIGHT)]).toEqual([where, true]);
         }
         // A step up alone never lands it on the other pin, unless the reader had laid them so.

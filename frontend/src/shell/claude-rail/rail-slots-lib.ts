@@ -254,6 +254,11 @@ export function pushedPos(
   // with the top one opened too: "it shifts left + down"): it is then pushed
   // left from where the step up put it, at its own height again.
   let leftTop = home.top;
+  // …and at the height the step up left it: it then clears only what stands
+  // in the step's way, not the foot window it already stands above (owner,
+  // 2026-11-21: "it should only shift how much space was needed by window
+  // a").
+  let leftHeight = size.height;
   if (height >= Math.min(size.height, PUSH_MIN_HEIGHT)) {
     const up: Box = { left: home.left, top, width: size.width, height };
     const blocked = docks.some((d) => overlaps(up, d));
@@ -262,12 +267,14 @@ export function pushedPos(
       if (height < size.height) at.height = Math.round(height);
       return at;
     }
-    if (blocked) leftTop = Math.round(top);
+    if (blocked) {
+      leftTop = Math.round(top);
+      leftHeight = height;
+    }
   }
-  // LEFT, at its own height.
   let left = home.left;
   for (let i = 0; i <= docks.length; i++) {
-    const at = { left, top: leftTop, width: size.width, height: size.height };
+    const at = { left, top: leftTop, width: size.width, height: leftHeight };
     const hit = docks.find((d) => overlaps(at, d));
     if (!hit) break;
     left = hit.left - gap - size.width;
@@ -276,7 +283,19 @@ export function pushedPos(
       break;
     }
   }
-  return left === home.left && leftTop === home.top ? home : { left: Math.round(left), top: leftTop };
+  left = Math.round(left);
+  // WHERE IT LANDS IT IS AS TALL AS THE ROOM LETS IT BE, up to its own height
+  // ("if it shifts all the way and … there is space below then it can
+  // expand"): down to the first non-pin under it in that column.
+  let room = size.height;
+  for (const d of docks) {
+    if (d.left < left + size.width && left < d.left + d.width && d.top >= leftTop + leftHeight) room = Math.min(room, d.top - gap - leftTop);
+  }
+  const drawn = Math.max(leftHeight, Math.round(room));
+  if (left === home.left && leftTop === home.top && drawn === size.height) return home;
+  const at: PushedPos = { left, top: leftTop };
+  if (drawn < size.height) at.height = drawn;
+  return at;
 }
 
 /** A pin as the solver reads it: where it stands and how big it is. */
