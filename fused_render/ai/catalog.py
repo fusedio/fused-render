@@ -146,8 +146,10 @@ from fused_render.ai import registry
 #: **The two TEXT lists are the exception: six since SPEC AI-28b (the coding
 #: row), seven since the October 2026 refresh**, which added two mixture-of-
 #: experts rows per runner (Gemma 4 26B-A4B and LFM2.5 24B-A2B) against one
-#: retirement each. A deliberate loosening, recorded in DECISIONS.md; the
-#: ceiling test pins it.
+#: retirement each, **and eight on `mlx-text` since Inkling 2 Mini (D1499)**,
+#: kept beside Qwen3-Coder rather than replacing it while it is new. A
+#: deliberate loosening each time, recorded in DECISIONS.md; the ceiling test
+#: pins it.
 #:
 #: **The bounds are a budget, not a target.** Filling a list to five with rows
 #: that differ only in size is worse than a list of three where every row
@@ -407,22 +409,57 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "a 4B's speed, though its 15GB of weights want a 24GB "
                     "machine or more.",
         },
-        # Inkling 2 Mini (Thinking Machines, 2026-11-20), Apache-2.0: the
-        # coding row (SPEC AI-28b), replacing `mlx-community/Qwen3-Coder-30B-
-        # A3B-Instruct-4bit` (17.2GB). A 26.2B mixture of experts with ~3.4B
+        # Coding model (SPEC AI-28b). Qwen3-Coder-30B-A3B is a MoE — 30B of
+        # code knowledge answering at about a 3B's speed — and the only
+        # code-tuned row here; every other row is a generalist that merely
+        # also codes. 4-bit, 17.2GB
+        # whole-snapshot Hub byte sum on 2026-10-04, ungated; model_type
+        # `qwen3_moe`, which mlx-lm ships. Not loaded here (no Mac in the
+        # build) — someone on a 32GB Mac should load it once.
+        {
+            "id": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+            "useCases": ["coding"],
+            "params": "30B (~3B active)",
+            "quantization": "MLX 4-bit",
+            "label": "Qwen3-Coder 30B-A3B (MLX 4-bit)",
+            "nickname": "Qwen3 Coder",
+            "size_gb": 17.2,
+            "context": 32768,
+            "tool_family": "qwen",
+            "tools": True,
+            "note": "The code-tuned model: writes, explains and fixes code at "
+                    "about a 3B's speed, but its 17GB of weights want a 32GB "
+                    "machine.",
+        },
+        # Inkling 2 Mini (Thinking Machines, 2026-11-20), Apache-2.0: a second
+        # coding row (SPEC AI-28b) beside Qwen3-Coder, kept both while Inkling
+        # is new (the list's eighth row, D1499). A 26.2B mixture of experts with ~3.4B
         # active per token whose middle 12 of 24 layers run three times per
         # token (a "looped" transformer, `model_type` `inkling2_loop`); the
         # vendor's agentic-coding numbers lead every open model under 100B
         # (SWE-bench Verified 79.2%), and it scores 20 on Artificial
         # Analysis' Intelligence Index v5, level with the Qwen3.8 27B below.
         #
-        # **The publisher's own repo, not an MLX conversion.** It ships at its
-        # trained precision — NVFP4 experts, MXFP8 in the last layers, plus a
-        # sidecar `hf_quant_config.json` mapping each expert projection — and
-        # mlx-vlm reads that natively. `mlx-community/Inkling-2-Mini-4bit`
-        # was built for an unmerged mlx-lm PR and is barely smaller (17.3GB),
-        # so it buys nothing. `quant_method` is `modelopt`, which
-        # `formats.unloadable_quant` passes. 20.19GB Hub byte sum
+        # **The publisher's own repo, which is NOT an MLX-format checkpoint,
+        # and that is deliberate.** It is a transformers/ModelOpt export at its
+        # trained precision (NVFP4 experts, MXFP8 in the last four layers, a
+        # sidecar `hf_quant_config.json` mapping each expert projection, and
+        # `model.llm.*` tensor names); mlx-vlm's `inkling2` sanitizer renames
+        # and splits those at load and keeps the NVFP4/MXFP8 weights as they
+        # are, so nothing is requantized. **No community MLX conversion loads
+        # on the mlx-vlm this runner pins** — checked 2026-11-21 by running
+        # `mlx_vlm.utils.load_model` on each repo's real tensor names and
+        # shapes (read from the safetensors headers): the mlx-lm PR #2086
+        # layout (`mlx-community/Inkling-2-Mini-4bit`, `pipenetwork/…`,
+        # `InterpreticAI/…`, `araysuter/…`) and oMLX's oQ quants
+        # (`mlx-community/Inkling-2-Mini-oQ4e-mtp`, 16.9GB) fail on unknown
+        # parameters, and so do the two mlx-vlm-layout ones
+        # (`nativ-community/Inkling-2-Mini-nvfp4`,
+        # `netprojects/Inkling-2-Mini-MLX-4-8bit`), each of which ships its own
+        # patched mlx-vlm with extra loop "message gate" tensors. This repo
+        # loads, 1271 tensors, 19.53GB resident (the MTP drafter is dropped).
+        # `quant_method` is `modelopt`, which `formats.unloadable_quant`
+        # passes. 20.19GB Hub byte sum
         # (2026-11-21), ungated; the 0.64GB `mtp.safetensors` (a speculative-
         # decoding drafter this runner does not use) is in that figure.
         #
@@ -448,9 +485,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "context": 32768,
             "tool_family": "inkling",
             "tools": True,
-            "note": "Built for coding agents: 26B of knowledge at about a "
-                    "3B's speed, but its 20GB of weights want a 32GB "
-                    "machine.",
+            "note": "Newer than Qwen3-Coder and ahead of it on agentic-coding "
+                    "benchmarks, at about a 3B's speed — but its 20GB of "
+                    "weights want a 32GB machine.",
         },
         # LAST, and the only entry here that is not a 16GB-machine model. It
         # lands at the bottom on size alone now, which happens to agree with
