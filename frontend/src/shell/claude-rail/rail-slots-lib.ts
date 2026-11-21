@@ -243,22 +243,31 @@ export function pushedPos(
   // pushes; the gap is how far clear the pushed pin then stands.
   const hits = docks.filter((d) => overlaps(own, d));
   if (hits.length === 0) return home;
-  // UP: its foot no lower than the highest window that covers it.
-  const foot = Math.min(...hits.map((d) => d.top)) - gap;
+  // UP: its foot above the LOWEST window that covers it — the one at the
+  // rail's foot. One standing higher is then in the way of the step, and
+  // sends it left from there (below).
+  const foot = Math.max(...hits.map((d) => d.top)) - gap;
   const top = Math.max(Math.min(floor, home.top), Math.min(home.top, foot - size.height));
   const height = Math.min(size.height, foot - top);
+  // LEFT keeps its own top — unless there IS room above and only another
+  // non-pin stands in it (owner, 2026-11-20, of a pin under the foot window
+  // with the top one opened too: "it shifts left + down"): it is then pushed
+  // left from where the step up put it, at its own height again.
+  let leftTop = home.top;
   if (height >= Math.min(size.height, PUSH_MIN_HEIGHT)) {
     const up: Box = { left: home.left, top, width: size.width, height };
-    if (!docks.some((d) => overlaps(up, d)) && !keepOff.some((d) => overlaps(up, d))) {
+    const blocked = docks.some((d) => overlaps(up, d));
+    if (!blocked && !keepOff.some((d) => overlaps(up, d))) {
       const at: PushedPos = { left: home.left, top: Math.round(top) };
       if (height < size.height) at.height = Math.round(height);
       return at;
     }
+    if (blocked) leftTop = Math.round(top);
   }
   // LEFT, at its own height.
   let left = home.left;
   for (let i = 0; i <= docks.length; i++) {
-    const at = { left, top: home.top, width: size.width, height: size.height };
+    const at = { left, top: leftTop, width: size.width, height: size.height };
     const hit = docks.find((d) => overlaps(at, d));
     if (!hit) break;
     left = hit.left - gap - size.width;
@@ -267,7 +276,7 @@ export function pushedPos(
       break;
     }
   }
-  return left === home.left ? home : { left: Math.round(left), top: home.top };
+  return left === home.left && leftTop === home.top ? home : { left: Math.round(left), top: leftTop };
 }
 
 /** A pin as the solver reads it: where it stands and how big it is. */

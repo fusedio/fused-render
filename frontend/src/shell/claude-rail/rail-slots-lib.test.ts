@@ -122,18 +122,37 @@ describe("a non-pin pushes a pin", () => {
     expect(PUSH_MIN_HEIGHT).toBe(240);
     expect(pushedPos(home, { width: 380, height: 700 }, [foot])).toEqual({ left: 1012 - PUSH_GAP - 380, top: 100 });
   });
-  it("with a second non-pin above there is no way up: LEFT, whole", () => {
+  it("room above, but the top non-pin stands in it: LEFT from where the step up put it — not left and down", () => {
     const top = box(972, 60, 420, 300);
     const foot = box(1012, 500, 380, 400);
     const home = { left: 1000, top: 380 };
-    expect(pushedPos(home, { width: 380, height: 300 }, [top, foot])).toEqual({ left: 1012 - PUSH_GAP - 380, top: 380 });
+    expect(pushedPos(home, { width: 380, height: 300 }, [top, foot])).toEqual({ left: 972 - PUSH_GAP - 380, top: 500 - PUSH_GAP - 300 });
+  });
+  it("…a tall one too: left at the top, its own height again", () => {
+    const top = box(972, 60, 420, 300);
+    const foot = box(1012, 500, 380, 400);
+    const home = { left: 1000, top: 380 };
+    expect(pushedPos(home, { width: 380, height: 520 }, [top, foot])).toEqual({ left: 972 - PUSH_GAP - 380, top: 8 });
+  });
+  it("under BOTH non-pins at home: the same answer as one after the other", () => {
+    const top = box(972, 8, 420, 480);
+    const foot = box(1012, 500, 380, 400);
+    // Mid-height, lying under the top window's foot and the foot window's top.
+    expect(pushedPos({ left: 1000, top: 400 }, { width: 380, height: 300 }, [top, foot])).toEqual({ left: 972 - PUSH_GAP - 380, top: 500 - PUSH_GAP - 300 });
+    // Tall: to the top, its own height.
+    expect(pushedPos({ left: 1000, top: 120 }, { width: 380, height: 900 }, [top, foot])).toEqual({ left: 972 - PUSH_GAP - 380, top: 8 });
+  });
+  it("covered by the top non-pin alone, it goes left at its own top", () => {
+    const top = box(972, 60, 420, 300);
+    const home = { left: 1000, top: 200 };
+    expect(pushedPos(home, { width: 380, height: 300 }, [top])).toEqual({ left: 972 - PUSH_GAP - 380, top: 200 });
   });
   it("clears both sections' non-pins, the wider one included", () => {
     const a = box(972, 60, 420, 300);
     const b = box(800, 380, 592, 400);
     const home = { left: 1000, top: 100 };
-    // Left of A it would still lie over B (taller than A's foot): left of B too.
-    expect(pushedPos(home, size, [a, b])).toEqual({ left: 800 - PUSH_GAP - 400, top: 100 });
+    // Up from B puts it at the top, under A: left of A it would still lie over B, so left of B too.
+    expect(pushedPos(home, size, [a, b])).toEqual({ left: 800 - PUSH_GAP - 400, top: 8 });
   });
   it("with no room to clear it, goes as far left as it can: part of it shows", () => {
     const narrow = box(300, 60, 420, 640);
@@ -231,16 +250,16 @@ describe("the push, over 4000 random layouts", () => {
         const now = boxOf(pin, at);
         const other = pins[1 - n];
         const moved = at !== pin.pos;
-        // UP in its own column (never taller, never under the floor height) or
-        // LEFT at its own top and height — never both, never down or right.
-        const up = at.top !== pin.pos.top || at.height !== undefined;
-        if (up) {
-          expect([where, at.left, at.top <= pin.pos.top]).toEqual([where, pin.pos.left, true]);
-          expect([where, now.height <= pin.size.height && now.height >= Math.min(pin.size.height, PUSH_MIN_HEIGHT)]).toEqual([where, true]);
-          expect([where, docks.some((d) => cover(now, d))]).toEqual([where, false]);
-          // …and never onto the other pin, unless the reader had laid them so.
-          if (other && !cover(home, boxOf(other.pin, other.pin.pos))) expect([where, cover(now, boxOf(other.pin, other.at))]).toEqual([where, false]);
-        } else expect([where, at.left <= pin.pos.left]).toEqual([where, true]);
+        // Never down, never right; cut short only in its own column, never
+        // under the floor height.
+        expect([where, at.top <= pin.pos.top, at.left <= pin.pos.left]).toEqual([where, true, true]);
+        if (at.height !== undefined) {
+          expect([where, at.left]).toEqual([where, pin.pos.left]);
+          expect([where, now.height < pin.size.height && now.height >= Math.min(pin.size.height, PUSH_MIN_HEIGHT)]).toEqual([where, true]);
+        }
+        // A step up alone never lands it on the other pin, unless the reader had laid them so.
+        if (moved && at.left === pin.pos.left && other && !cover(home, boxOf(other.pin, other.pin.pos)))
+          expect([where, cover(now, boxOf(other.pin, other.at))]).toEqual([where, false]);
         const underDock = docks.some((d) => cover(home, d));
         const underMovedPin =
           !!other && other.at !== other.pin.pos && !cover(home, boxOf(other.pin, other.pin.pos)) && cover(home, boxOf(other.pin, other.at));
@@ -413,9 +432,9 @@ describe("the position store, free pins on", () => {
     const home = windowPos("a");
     publishPusher("b", "fav", box(1012, 440, 380, 480));
     expect(windowSize("a")).toEqual({ width: 420, height: 440 - PUSH_GAP - 8 });
-    // The list's non-pin opens at the top too: no room above, so left — and whole again.
+    // The list's non-pin opens at the top too: left from where it was pushed up to — and whole again.
     publishPusher("a", "list", box(972, 60, 420, 300));
-    expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 420, top: 60 });
+    expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 420, top: 8 });
     expect(windowSize("a")).toEqual({ width: 420, height: 800 });
     publishPusher("a", "list", null);
     publishPusher("b", "fav", null);
