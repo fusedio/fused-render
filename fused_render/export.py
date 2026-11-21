@@ -479,14 +479,13 @@ def _discover_modules(
     page** — hosted entrypoints run flattened at the project root, so imports resolve from
     the root regardless of the importer's own subdirectory. A name that resolves to no
     local file (stdlib / third-party / a subpackage) is silently left alone. A module
-    already shipped as an asset (``asset_keys`` — assets land at the same real path, so the
-    import already resolves) is skipped so it is bundled once. Returns ``(resources,
-    warnings)``; excluding a module a bundled entrypoint imports is honored but warned (the
-    import will fail when hosted)."""
+    already shipped as an asset (``asset_keys``) still has its imports scanned, but does not
+    need a second copy as a resource. Returns ``(resources, warnings)``; excluding a module a
+    bundled entrypoint imports is honored but warned (the import will fail when hosted)."""
     drop = {_asset_key(p) for p in exclude} | set(exclude)
     resources: list[Resource] = []
     warnings: list[str] = []
-    seen_keys = set(asset_keys)
+    seen_keys: set[str] = set()
     scanned: set[str] = set()
     queue = [os.path.join(page_dir, e.path) for e in entrypoints]
     while queue:
@@ -514,7 +513,8 @@ def _discover_modules(
                     "import will fail on the hosted page"
                 )
                 continue
-            resources.append(Resource(key=key, file=f"{_PAYLOAD_DIR}/{key}"))
+            if key not in asset_keys:
+                resources.append(Resource(key=key, file=f"{_PAYLOAD_DIR}/{key}"))
             queue.append(cand)
     return resources, warnings
 
