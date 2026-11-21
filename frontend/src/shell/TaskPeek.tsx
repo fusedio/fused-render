@@ -1278,6 +1278,7 @@ export function TaskPeek({
         }
         style={{ width: layout.open ? layout.width : heldWidth.current }}
         aria-hidden={layout.open ? undefined : true}
+        data-task-window=""
         role="complementary"
         aria-label={task ? `${shortTaskId(task.task_id)} ${title}` : "Task"}
       >
