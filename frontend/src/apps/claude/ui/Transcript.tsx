@@ -59,6 +59,8 @@ import {
   setChatSeen,
 } from "./chatSeen";
 import { JumpButton } from "./JumpButton";
+import { MSG_LAND_PX, jumpMode, type JumpMode } from "./jumpTarget";
+import { animateScroll } from "./scrollAnim";
 import { openCardRows } from "./WaitingBar";
 import "../styles/transcript.css";
 
@@ -1044,7 +1046,7 @@ export const Transcript = memo(function Transcript({
     followTail.current = false;
   }, []));
 
-  const [jumpState, setJumpState] = useState<{ atEnd: boolean; n: number }>({ atEnd: true, n: 0 });
+  const [jumpState, setJumpState] = useState<{ mode: JumpMode; n: number }>({ mode: "none", n: 0 });
   // SETTLED = the reply to your last message is finished: not running, nothing
   // streaming, and not a restored chat whose live run is still being looked
   // for (`adoptingRun` reads `idle` for a live run in that gap).
@@ -1063,6 +1065,10 @@ export const Transcript = memo(function Transcript({
     if (!wrap.clientHeight) return;
     const view = wrap.getBoundingClientRect();
     const atEnd = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight <= END_GAP_PX;
+    // Your last message (a line still waiting to be sent included): the
+    // button turns toward it (jumpTarget.ts).
+    const mine = lastMine(logEl);
+    const mode = jumpMode(mine ? mine.getBoundingClientRect().top - view.top : null, wrap);
     const total = newsBefore(turns);
     if (u.opened) {
       if (atEnd) {
@@ -1097,7 +1103,7 @@ export const Transcript = memo(function Transcript({
       }
     }
     const n = u.opened ? Math.max(0, total - Math.max(u.base, u.viewed)) : 0;
-    setJumpState((s) => (s.atEnd === atEnd && s.n === n ? s : { atEnd, n }));
+    setJumpState((s) => (s.mode === mode && s.n === n ? s : { mode, n }));
   }, []);
   // Coalesced to one measure a frame: a streaming reply commits every frame.
   const jumpFrame = useRef(0);
@@ -1134,16 +1140,50 @@ export const Transcript = memo(function Transcript({
       jumpFrame.current = 0;
     };
   }, [scheduleJump]);
-  const onJump = useCallback(() => {
+  // ONE JUMP AT A TIME: a second click (or a double-click) takes over from
+  // wherever the first one has got to.
+  const jumpAnim = useRef<(() => void) | null>(null);
+  useEffect(() => () => jumpAnim.current?.(), []);
+  const onJump = useCallback((to: "msg" | "end") => {
     const wrap = port.current;
     if (!wrap) return;
+    jumpAnim.current?.();
     clearGesture.current?.();
-    // A jump, not a glide (bots ToBottom): a smooth scroll over a long log is
-    // still in flight when the next frame streams in. Landing re-arms the
-    // follow, so the reply goes on streaming in front of you.
-    followTail.current = true;
-    unread.current.viewed = newsBefore(jumpLive.current.turns);
-    wrap.scrollTop = wrap.scrollHeight;
+    const max = () => wrap.scrollHeight - wrap.clientHeight;
+    // The follow stays OFF while the scroll runs: on, every frame of it would
+    // read as "pinned and not at the tail" and the settle would snap it there.
+    followTail.current = false;
+    if (to === "end") {
+      jumpAnim.current = animateScroll(wrap, max, (landed) => {
+        jumpAnim.current = null;
+        if (!landed) return; // the reader took over mid-way
+        // Landed: the follow re-arms (bots ToBottom), so a reply goes on
+        // streaming in front of you, and everything above is behind you.
+        clearGesture.current?.();
+        followTail.current = true;
+        unread.current.viewed = newsBefore(jumpLive.current.turns);
+        wrap.scrollTop = wrap.scrollHeight;
+        scheduleJump();
+      });
+      scheduleJump();
+      return;
+    }
+    const el = log.current ? lastMine(log.current) : null;
+    if (!el) return;
+    // Your message's top, just under the port's top — read every frame, so a
+    // picture loading above it does not throw the landing off.
+    const dest = () => {
+      const top = el.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop;
+      return Math.max(0, Math.min(top - MSG_LAND_PX, max()));
+    };
+    flareEl(el, typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+    jumpAnim.current = animateScroll(wrap, dest, (landed) => {
+      jumpAnim.current = null;
+      // A message near the end cannot reach the top: the landing IS the end,
+      // and a reply that starts streaming there must be followed.
+      if (landed && wrap.scrollTop >= max() - END_GAP_PX) followTail.current = true;
+      scheduleJump();
+    });
     scheduleJump();
   }, [scheduleJump]);
 
@@ -1266,11 +1306,38 @@ export const Transcript = memo(function Transcript({
         )}
       </div>
       {state.historyLoading || !settled ? null : (
-        <JumpButton atEnd={jumpState.atEnd} newCount={jumpState.n} onJump={onJump} />
+        <JumpButton mode={jumpState.mode} newCount={jumpState.n} onJump={onJump} />
       )}
     </div>
   );
 });
+
+/** Your last message in the log, a line still waiting to be sent included
+ *  (`.c-waiting-turn` is a `.turn.user` too); the "Interrupted by you" line is
+ *  drawn as a note and is not one. */
+function lastMine(logEl: HTMLElement): HTMLElement | null {
+  const all = logEl.querySelectorAll<HTMLElement>(".turn.user");
+  return all.length ? all[all.length - 1] : null;
+}
+
+/** The landing's flare on the message jumped to (`.is-anchored`'s halo), on the
+ *  Web Animations API rather than a class: the row is React's, and a re-render
+ *  mid-flare would strip a class it did not set. */
+function flareEl(el: HTMLElement, still: boolean): void {
+  if (typeof el.animate !== "function") return;
+  const target = (el.querySelector(".bubble") as HTMLElement | null) ?? el;
+  const accent =
+    (typeof getComputedStyle === "function" ? getComputedStyle(target).getPropertyValue("--c-accent").trim() : "") ||
+    "#d97757";
+  const ring = `0 0 0 3px color-mix(in srgb, ${accent} 45%, transparent)`;
+  const none = "0 0 0 3px transparent";
+  target.animate(
+    still
+      ? [{ boxShadow: ring }, { boxShadow: ring }, { boxShadow: none }]
+      : [{ boxShadow: none }, { boxShadow: ring, offset: 0.15 }, { boxShadow: ring, offset: 0.55 }, { boxShadow: none }],
+    { duration: ANCHOR_FLARE_MS, easing: "ease-out" },
+  );
+}
 
 /** One turn's parked cards: which segment each sits AFTER, plus the ones with
  *  nowhere better to go. */
