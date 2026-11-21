@@ -142,6 +142,9 @@ EXPECTED_STARTUP = [
     "_startup_queue_manager",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
+    # The local SQL engine's directories left by dead servers (sql/runner.py
+    # `sweep`, SPEC §55), removed on a daemon thread; lean too.
+    "_startup_sweep_sql_engine_dirs",
     # Event-loop lag gauge + pool/lane snapshots for the Monitor dashboard.
     "_startup_loop_lag",
     "_startup_resource_trail",
@@ -184,6 +187,8 @@ EXPECTED_SHUTDOWN = [
     "_startup_shutdown_ai",
     # The warm UDF workers (`fused.workbench.udf()`, udf/runner.py, SPEC §54).
     "_shutdown_udf_workers",
+    # The local SQL engine's worker (sql/runner.py, SPEC §55).
+    "_shutdown_sql_engine",
     "_shutdown_server_json",
     "_shutdown_loop_lag",
     "_shutdown_resource_trail",
@@ -240,6 +245,8 @@ EXPECTED_STARTUP_LEAN = [
     # hands over promptly if every live process is parked on it from startup.
     "_startup_queue_manager",
     "_startup_tasks_watch",
+    # Removing a dead server's SQL engine directory is not a warm-up.
+    "_startup_sweep_sql_engine_dirs",
 ]
 
 #: The shutdown handlers registered even in `lean` — anything that can start
@@ -253,6 +260,7 @@ EXPECTED_STARTUP_LEAN = [
 EXPECTED_SHUTDOWN_LEAN = [
     "_startup_shutdown_ai",
     "_shutdown_udf_workers",
+    "_shutdown_sql_engine",
     "_shutdown_captures",
     "_shutdown_ai_workers",
     # Every canvas sync manager stopped and its clone's writer lock released —
