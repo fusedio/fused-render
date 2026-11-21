@@ -3045,6 +3045,17 @@
   width: 16px;
   height: 16px;
 }
+/* ↑ (Akshil 2026-11-21): the same box before the log, sticky to the port's
+   top edge, so it sits just under the head. */
+.chat-root .chat-jump.is-top {
+  top: 0;
+  bottom: auto;
+}
+.chat-root .chat-jump.is-top .chat-jump-btn {
+  top: 12px;
+  bottom: auto;
+  animation-name: chat-jump-in-top;
+}
 .chat-root .chat-jump-btn:focus-visible {
   outline: 2px solid var(--c-accent);
   outline-offset: 2px;
@@ -3055,6 +3066,12 @@
     transform: translateY(6px);
   }
 }
+@keyframes chat-jump-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .chat-root .chat-jump-btn {
     animation: none;
@@ -3062,8 +3079,8 @@
 }
 
 /* ── the NEW rule (the bots thread's `.new`, in the chat's own accent) ──── */
-/* Above the first reply that landed since you last sat at the end of this
-   conversation; placed on open and kept until another conversation opens. */
+/* Above the message of yours that the first unseen reply answers (or the
+   reply, when it came on its own); placed on open, kept until you leave. */
 .chat-root .chat-newrule {
   display: flex;
   align-items: center;

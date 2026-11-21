@@ -96,6 +96,29 @@ export function firstNewIndex(turns: readonly Turn[], mark: string | null | unde
   return -1;
 }
 
+/**
+ * Where a catch-up lands for the reply at `first` (Akshil 2026-11-21: "new
+ * should be above my message, not above my response"): the message of yours
+ * it answers, so the question is read before the answer. Steps back over
+ * notes and the like; a reply in between (one that came on its own after a
+ * reply you had seen) keeps it on the reply. -1 for -1.
+ */
+export function newRuleIndex(turns: readonly Turn[], first: number): number {
+  if (first < 0) return -1;
+  for (let j = first - 1; j >= 0; j--) {
+    if (isMine(turns[j])) return j;
+    if (isNews(turns[j])) break;
+  }
+  return first;
+}
+
+/** The index of the `ord`-th reply (1-based), or -1. */
+export function newsIndex(turns: readonly Turn[], ord: number): number {
+  let n = 0;
+  for (let i = 0; i < turns.length; i++) if (isNews(turns[i]) && ++n === ord) return i;
+  return -1;
+}
+
 /** How many replies the log holds before index `end` (all of them by default).
  *  The pill counts in REPLIES, not turn indices: a history re-read at run end
  *  swaps the live turns for the transcript's (dropping live-only notes, adding

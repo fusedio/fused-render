@@ -8,6 +8,8 @@ import {
   seenMarkOf,
   setChatSeen,
   newsBefore,
+  newsIndex,
+  newRuleIndex,
 } from "./chatSeen";
 
 const u = (uuid?: string): Turn => ({ role: "user", key: "u" + (uuid ?? Math.random()), text: "hi", ...(uuid ? { uuid } : {}) }) as Turn;
@@ -52,6 +54,26 @@ describe("the NEW rule's place", () => {
     const restored = [u("x1"), a("y1"), interrupt(), u("x2"), a("y2")];
     expect(firstNewIndex(liveLog, "1:1:1")).toBe(3);
     expect(firstNewIndex(restored, "1:1:1")).toBe(4);
+  });
+});
+
+describe("the NEW rule sits above your message", () => {
+  test("the message the first new reply answers, notes stepped over", () => {
+    const turns = [u(), a(), u(), note(), a(), a()];
+    expect(newRuleIndex(turns, 4)).toBe(2);
+  });
+  test("a reply that came on its own after a seen reply: on the reply", () => {
+    expect(newRuleIndex([u(), a(), a()], 2)).toBe(2);
+  });
+  test("a not-sent line is not yours; no rule stays no rule", () => {
+    expect(newRuleIndex([u(), a(), pending(), a()], 3)).toBe(3);
+    expect(newRuleIndex([a()], 0)).toBe(0);
+    expect(newRuleIndex([u(), a()], -1)).toBe(-1);
+  });
+  test("the n-th reply's index", () => {
+    const turns = [u(), a(), u(), note(), a()];
+    expect(newsIndex(turns, 2)).toBe(4);
+    expect(newsIndex(turns, 3)).toBe(-1);
   });
 });
 
