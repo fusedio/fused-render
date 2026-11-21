@@ -398,7 +398,7 @@ function byClass(r: ReturnType<typeof create>, cls: string) {
   );
 }
 
-test("a HOSTED chat shows the strip — landing included — because the host has a target", async () => {
+test("a HOSTED chat shows the seats — landing included — because the host has a target", async () => {
   // The bug: `stripShown` read `!chatOnly`, a question about OUR layout, so the
   // sidebar lost the whole row on both views while the app sat on screen in the
   // middle column with its mark on it.
@@ -406,7 +406,8 @@ test("a HOSTED chat shows the strip — landing included — because the host ha
   await settle(20);
   // The landing, not the transcript: nothing has been sent.
   expect(byClass(r, "c-home").length).toBe(1);
-  expect(byClass(r, "c-anntools").length).toBe(1);
+  // The seats ride the shared head (TaskHead `seats`), the strip's row gone.
+  expect(byClass(r, "c-task-head").length).toBe(1);
   expect(byClass(r, "c-anncta").length).toBe(1);
   const seats = byClass(r, "c-anncta")[0].findAllByType("button");
   expect(seats.length).toBe(3);
@@ -422,7 +423,7 @@ test("a HOSTED chat shows the strip — landing included — because the host ha
   expect(seats[2].props.disabled).toBe(false);
 });
 
-test("the strip ROW stands even with nothing to photograph — it carries the ⋮", async () => {
+test("the head stands even with nothing to photograph — it carries the ⋮", async () => {
   // T's `#anntools` is static markup and holds `← Chats` and `#kebab` as well as
   // the three seats, so a folder listing keeps the row and loses only the
   // buttons (T:526 `body.nopane #kebab { margin-left: auto }` is that state).
@@ -431,7 +432,7 @@ test("the strip ROW stands even with nothing to photograph — it carries the �
   // re-stack (2026-09-10).
   const { r } = await mountChat({ annotateTarget: () => null });
   await settle(20);
-  expect(byClass(r, "c-anntools").length).toBe(1);
+  expect(byClass(r, "c-task-head").length).toBe(1);
   expect(byClass(r, "c-anncta").length).toBe(0);
   expect(byClass(r, "c-kebab").length).toBe(1);
 });
@@ -713,7 +714,7 @@ test("no Breakout button in the bar: the kebab carries the item in the merged he
 
   const strip = await mountChat({ onBreakout, initialSessionId: "sess-abc12345" });
   await settle(20);
-  expect(byClass(strip.r, "c-anntools").length).toBe(1);
+  expect(byClass(strip.r, "c-task-head").length).toBe(1);
   expect(byClass(strip.r, "c-breakout").length).toBe(0);
   expect(kebabOf(strip.r).props.breakout).toBeDefined();
 });

@@ -1,10 +1,8 @@
 // Whether a file page's rail shows the file's other modes as doors above Git
 // (ClaudeRail `fileModes`, mode-peek-store, ModePeek) — the
-// `rail_mode_doors_enabled` preference (shell/prefs.py), default OFF. The
-// doors are the rail's nav doors', so the switch is only ever read with the
-// rail flag on (`canvas_rail_peek_enabled`; ClaudeRail `navDoors`).
+// `rail_mode_doors_enabled` preference (shell/prefs.py), default OFF.
 //
-// The shape of `./rail-peek-flag.ts`: the shared prefs GET, a generation
+// The shared prefs GET, a generation
 // guard so a publish beats a slower in-flight read, `null` meaning "not asked
 // yet" (rendered as off, the flag's own default), and the last answer
 // remembered across a reload so the doors do not pop in a moment after the
@@ -32,7 +30,7 @@ function memoWrite(v: boolean): void {
 
 let answer: boolean | null = memoRead();
 let reading: Promise<void> | null = null;
-/** A failed read is retried while a reader is mounted (rail-peek-flag). */
+/** A failed read is retried while a reader is mounted. */
 const RETRY_MS = 15_000;
 let retry: ReturnType<typeof setTimeout> | null = null;
 let generation = 0;

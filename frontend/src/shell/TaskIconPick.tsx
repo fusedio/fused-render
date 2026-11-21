@@ -18,8 +18,7 @@
 // wear the ring; a new star gives its icon back (server-side). With the
 // experiment off, or on a task with no number yet (nothing to stamp the
 // pick on — the server refuses it with a 409, swallowed below), the children
-// render as they are: nothing to press, no extra box. The favourites switch
-// is not asked: a picked face is the user's own, not the star's.
+// render as they are: nothing to press, no extra box.
 //
 // THE PICKER OUTLIVES A RENAME: its filter box takes the keyboard, the
 // title input's blur SAVES the rename and ends the edit — the open picker
@@ -37,7 +36,6 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 import { createPortal } from "react-dom";
 import { setTaskIcon, type HttpError, type Task } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useTaskIcons } from "@platform/lib/task-icons-flag";
 import IconPicker, { type IconPickerSet } from "@platform/ui/IconPicker";
 import { TASK_ICON_NAMES, TASK_ICON_SPRITE, taskFaceShown } from "./task-icons";
@@ -64,7 +62,7 @@ export function TaskIconPick({
   onOpenChange,
   children,
 }: {
-  task: Pick<Task, "key" | "task_id" | "icon_slot" | "icon_picked">;
+  task: Pick<Task, "key" | "task_id" | "icon_slot">;
   /** True while the title input stands (the press must not blur it). */
   editing?: boolean;
   /** The older gate: a button only during a rename (flag-off heads). */
@@ -83,7 +81,6 @@ export function TaskIconPick({
   children: ReactNode;
 }) {
   const iconsOn = useTaskIcons();
-  const favsOn = useTaskFavourites();
   // Where the picker opened, AND FOR WHICH TASK: a head that swaps to another
   // chat under an open picker (the rail card's next ring, the side peek's
   // next row) must not hand the next pick to the newcomer.
@@ -136,7 +133,7 @@ export function TaskIconPick({
   const has = iconsOn && !!task.task_id;
   // …and Remove only while a face is drawn (StatusIcon's own rule): a ring
   // has nothing to remove.
-  const worn = taskFaceShown(task.icon_slot, task.icon_picked, iconsOn, favsOn);
+  const worn = taskFaceShown(task.icon_slot, iconsOn);
   // THE BUTTON WENT AWAY UNDER AN OPEN PICKER (the experiment switched off):
   // the picker goes with it for good — left set, `anchor` kept the host's
   // Archive seat hidden and brought the picker back, unasked, the moment the

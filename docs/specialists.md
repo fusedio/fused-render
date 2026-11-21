@@ -399,14 +399,14 @@ tab was last opened; opening the chat does not clear it). Pin, hide, mark as rea
 503), but specialists are task sessions, not bots, so the Bots page still opens while the flag is on and lists them
 alone. `platform/lib/bots-available.ts` `useBotsMissing` / `readBotsMissing` (only an explicit `bots_available:
 false`; a failed config read counts as bots being there) drive it:
-- The sidebar keeps its Bots row with the flag on (`GlobalSidebar.tsx`), with no pulse poll. A `/bots` URL goes Home
-  only once the flag is known off (`specialists-flag.ts` `useSpecialistsFlagKnown`; `shell/App.tsx`).
+- No pulse poll (`GlobalSidebar.tsx`). A `/bots` URL goes Home only once the flag is known off (`specialists-flag.ts`
+  `useSpecialistsFlagKnown`; `shell/App.tsx`).
 - The poll (`store.ts` `pollOnce`) never asks `/api/bots`, and a bare `/bots` lands on a specialist. The builds feed
   does not start (`apps/bots/App.tsx`).
 - The list (`BotList.tsx`) drops the usage meter, Browsers, Builds and Apps. **+** is "New specialist", and opens
   `SpecialistDialog.tsx` directly (`Dialogs.tsx`), with no preset chooser to step back to.
-- The Claude rail's Bots door, bot cards and pinned bots stay off. With the rail flag (`canvas_rail_peek_enabled`)
-  on, which moves the sidebar's Bots row to the rail, Windows therefore has no way into the page.
+- The Claude rail's Bots door, bot cards and pinned bots stay off. The sidebar has no Bots row (the rail carries it),
+  so Windows has no way into the page.
 
 - **+ New bot** (`PresetPicker.tsx`) shows a Specialist card while the flag is on; it opens `SpecialistDialog.tsx`:
   face, Name, "What it is an expert on", "Folder (optional)" ("A task working in this folder gets its guidance by

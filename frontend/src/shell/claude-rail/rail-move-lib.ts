@@ -1,6 +1,5 @@
 // A PINNED RAIL WINDOW MOVES (owner, 2026-11-17; design.md "Move a pinned rail
-// window"). Behind the unified-head switch (`task_head_unified_enabled`): the
-// pin only exists with it on, and only a pinned window moves.
+// window"). Only a pinned window moves.
 //
 // A pinned window (A: the list's chat card, the Tasks / Bots / Git cards, the
 // + New task card; B: the favourite's card, the bot's card) can be dragged by

@@ -964,11 +964,8 @@ test("the stylesheet trades a slot's occupants on hover — the window's in a ra
 
 test("the status icon opens the icon picker outside a rename — a favourite's face AND any task's plain ring", async () => {
   const icons = await import("@platform/lib/task-icons-flag");
-  const favs = await import("@platform/lib/favourites-flag");
   act(() => {
     icons.publishTaskIcons({ enabled: true });
-    favs.publishTaskFavourites({ enabled: true });
-    favs.publishFavouritesParent({ enabled: true });
   });
   try {
     const fav = render(head({ task: task({ starred: true, icon_slot: 3 } as Partial<Task>) }));
@@ -994,7 +991,6 @@ test("the status icon opens the icon picker outside a rename — a favourite's f
     expect(byClass(render(head()), "task-icon-pick")).toHaveLength(0);
   } finally {
     icons.resetTaskIconsFlagForTests();
-    favs.resetTaskFavouritesFlagForTests();
   }
 });
 

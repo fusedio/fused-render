@@ -252,8 +252,8 @@ export function useFavOpen(): string | null {
   return useSyncExternalStore(subscribeFavOpen, favOpen, favOpen);
 }
 
-// THE OPEN FAVOURITE'S PIN (claude-rail rail-pin-lib; owner, 2026-11-16,
-// behind the unified-head switch): which favourite's card the reader PINNED
+// THE OPEN FAVOURITE'S PIN (claude-rail rail-pin-lib; owner, 2026-11-16):
+// which favourite's card the reader PINNED
 // in this window (the pin icon, a double-click on its ring) — the open card is
 // pinned while this names the open key, TEMP otherwise. sessionStorage
 // `fused-render:fav-pinned`, so a reload brings back only a pinned card

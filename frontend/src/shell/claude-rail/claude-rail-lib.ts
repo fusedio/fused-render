@@ -192,23 +192,13 @@ export interface RailHere {
  *  the page already stands on — the same folder or file (`pageRoot`, the
  *  page's `placeRoot`), the same canvas with that node (or, for the whole
  *  canvas, no node) already selected. RailPeek draws that chip as plain
- *  text: no fill, no link, no `Open …` title.
- *
- *  FAVOURITES OFF (`favsOn` false, favourites-flag): never null — the chip is
- *  the link it was before favourites, byte for byte: a plain door everywhere
- *  (a folder or file chip on its own page still opens it), `current` only on
- *  this canvas's chip whose node (or no node) is already the selection, with
- *  main's `On …` title. */
+ *  text: no fill, no link, no `Open …` title. */
 export interface ChipDoor {
   href: string;
   /** The navigation hint for a folder (router `navigateUrl` `isDir`). */
   isDir?: boolean;
   title: string;
   select?: { udfName: string | null };
-  /** Favourites off only: this canvas's chip, its node (or no node) already
-   *  the selection — a link marked `aria-disabled` whose press does nothing
-   *  (as before favourites). */
-  current?: boolean;
 }
 
 export function chipDoor(
@@ -216,12 +206,7 @@ export function chipDoor(
   at: RailPlace,
   here: Pick<RailHere, "env" | "name" | "file"> | null,
   pageRoot: string | null = null,
-  favsOn = true,
-): ChipDoor | null {
-  // Favourites off: the page's own place is still a plain door — the chip as
-  // it was before them (only the selected canvas chip is `current`, below).
-  const nowhere = (door: ChipDoor): ChipDoor | null => (favsOn ? null : door);
-  if (at.kind === "canvas") {
+): ChipDoor | null {  if (at.kind === "canvas") {
     const file = scope.kind === "node" ? scope.file : undefined;
     // A node's link asks for the node (`focus=node`): a page URL naming a
     // node shows its chat only (2026-11-06), and a modified press opening
@@ -231,28 +216,23 @@ export function chipDoor(
     if (!here || here.env !== at.env || here.name !== at.name) {
       // The whole canvas, named on its own page with no way to select in
       // place: nowhere to go.
-      return scope.kind === "whole" && pageRoot === placeRoot(at) ? nowhere({ href, title }) : { href, title };
+      return scope.kind === "whole" && pageRoot === placeRoot(at) ? null : { href, title };
     }
     const udfName = scope.kind === "node" ? scope.name : null;
     const now = here.file ? nodeName(here.file) : null;
-    // Already the selection: nothing to do (favourites off: the disabled
-    // link it was, with its `On …` title).
-    if (udfName === now) {
-      if (favsOn) return null;
-      const on = udfName ? `On ${udfName}, selected` : `On the canvas ${at.name}`;
-      return { href, title: on, select: { udfName }, current: true };
-    }
+    // Already the selection: nothing to do.
+    if (udfName === now) return null;
     return { href, title, select: { udfName } };
   }
   if (scope.kind === "file") {
     const door = { href: urlForFsPath(scope.file), title: `Open ${scope.file}` };
-    return `file:${scope.file}` === pageRoot ? nowhere(door) : door;
+    return `file:${scope.file}` === pageRoot ? null : door;
   }
   const door: ChipDoor =
     at.kind === "file"
       ? { href: urlForFsPath(at.file), title: `Open ${at.file}` }
       : { href: urlForFsPath(trimSlash(at.dir)), isDir: true, title: `Open ${trimSlash(at.dir)}` };
-  return placeRoot(at) === pageRoot ? nowhere(door) : door;
+  return placeRoot(at) === pageRoot ? null : door;
 }
 
 /** THE PLACE TAGS (shell/claude-rail PlaceTags; owner, 2026-11-06: "2 tags
@@ -639,41 +619,6 @@ export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<strin
   return [...blocked, ...starred].map((pulse) => ({ pulse, row: full.get(pulse.key) ?? null }));
 }
 
-/** THE LIST WITHOUT ITS FAVOURITES (owner, 2026-11-04: "when I fav one task,
- *  let's not show it in the list above, let's not have duplicate entries"):
- *  with the favourites on, a starred chat's ONE ring is in the favourites
- *  section (`favSeats`), so the place's list leaves it out — the same
- *  `starred` word `favSeats` reads, off the same pulse rows, so a chat is in
- *  exactly one of the two. Off, the list is untouched (a starred ring is a
- *  ring like any other). Returns the same array when nothing is starred. */
-export function listSeats(seats: RailRow[], _favsOn: boolean): RailRow[] {
-  // THE TWO SECTIONS ARE INDEPENDENT (owner, 2026-11-05, reversing the
-  // 2026-11-04 rule: "normal tasks and fav tasks don't influence each other
-  // in any way … the item also stays in the normal tasks section"): the
-  // list is the place's chats, starred or blocked or not; a favourite's
-  // ring stands in both sections, each with its own window and marks.
-  return seats;
-}
-
-/** THE LIST STOOD ASIDE FOR THE PANE'S HOME from 2026-11-05 (owner then:
- *  "when in new chat we don't show the normal tasks in the sidebar rail")
- *  until 2026-11-06 — see below. */
-export function listHidden(_o: { paneOpen: boolean; favsOn: boolean; paneHome: boolean }): boolean {
-  // NEVER, since 2026-11-06 (owner: "no matter if we see Recent chats or
-  // not, all chats should be shown below the + — in all views except a
-  // selected node, the same number of chats whether a chat is open or the
-  // pane is on its Recent page"). The input is kept for the callers.
-  return false;
-}
-
-/** WHERE THE + STANDS (owner, 2026-11-05: "plus icon should only be in
- *  explorer, app and canvas view — for other views we don't show it"): on a
- *  page's own rail, never on the shell's fallback (home, Bots, Tasks, …).
- *  Favourites off there is no fallback at all, so nothing changes. */
-export function plusShown(o: { favouritesOnly: boolean }): boolean {
-  return !o.favouritesOnly;
-}
-
 /** HOW MANY RINGS THE LIST SHOWS AT ONCE (owner, 2026-11-05: "max 10 tasks
  *  visible and it is scrollable"): the list's box is at most this many
  *  seats tall; past it the list scrolls (claude-rail.css `.is-scroll`). */
@@ -749,20 +694,18 @@ export function holdBotOrder<B extends { id: string }>(
 /** WHERE A PINNED BOT'S RING GOES (ClaudeRail `ringOf` for bots; owner,
  *  2026-11-05: "a small overlay that just displays the chat exchange of the
  *  bot, the same as the task floating box"): its CARD (BotPeek — a hover
- *  previews, a press pins, as the list's rings do), unless the card is off
- *  (`canvas_rail_peek_enabled`), the row left no room for one (RailPeek's
- *  `onNoRoom` rule), or the reader is ON THE BOTS PAGE already — the page
+ *  previews, a press pins, as the list's rings do), unless the row left no
+ *  room for one (RailPeek's `onNoRoom` rule), or the reader is ON THE BOTS PAGE already — the page
  *  shows the bot itself, and a second mount of its thread beside the page's
  *  own would be two threads on one store; there the ring is the page's door,
  *  as it was. The door is the bot's page (`/bots/<id>`) in every case the
  *  card is not. */
-export function botRingRoute(o: { peekOn: boolean; noRoom: boolean }): "door" | "card" {
+export function botRingRoute(o: { noRoom: boolean }): "door" | "card" {
   // ON THE BOTS PAGE TOO (owner, 2026-11-06: "in the Bots page we should
   // change the view only when we click Open; clicking a bot should open the
   // window, and Open then opens that bot" — the favourites' rule): the ring
-  // is a door only with the card off or no room for one.
-  if (!o.peekOn || o.noRoom) return "door";
-  return "card";
+  // is a door only with no room for a card.
+  return o.noRoom ? "door" : "card";
 }
 
 /** THE BOT CARD'S STATUS WORDS (BotPeek's head): the Bots page's own
@@ -799,16 +742,12 @@ export function activeRing(keys: readonly string[], wants: readonly (string | nu
 
 /** WHAT ONE RING WEARS, AND WHETHER IT OPENS THE RAIL'S HOVER CARD
  *  (ClaudeRail `ringOf`), pure so the per-section rules are provable:
- *   - `.active` (the URL's session) and `.is-last` (the section's last
- *     press) only on the section's ONE active ring (`activeRing`) while the
- *     favourites are on; off, every mark as before (flag-off parity);
  *   - `.is-open` on the favourites' ring whose card is open in this window,
  *     which then wears no `.is-last` beside it;
  *   - `.peeked` while the rail's card shows the ring's chat — a hover's
  *     wash, transient — but the PERSISTENT washes never on a favourite: a
  *     favourite's press opens the favourite's own card and never pins this
- *     rail's (`is-pinned`), and the held accent is the favourites-off rail's
- *     alone (`is-held`). A press INSIDE the rail's card over a favourite's
+ *     rail's (`is-pinned`). A press INSIDE the rail's card over a favourite's
  *     ring may still hold that card (typing in it); its ring keeps
  *     `.peeked` only;
  *   - WHILE ANY FAVOURITE'S CARD IS OPEN, NO FAVOURITE RING OPENS A HOVER CARD
@@ -830,27 +769,14 @@ export interface RingMarkInput {
   key: string;
   /** In the favourites section. */
   foot: boolean;
-  favsOn: boolean;
-  peekOn: boolean;
   /** The chat the rail's card shows, and whether a press pinned it. */
   peekKey: string | null;
   pinned: boolean;
-  /** The favourites-off pin's hold. */
-  held: boolean;
   /** This window's open favourite as the rail counts it (`railOpenFav`). */
   openFavKey: string | null;
-  /** The ring's session is the one the page's URL names. */
-  sessionHere: boolean;
-  /** The ring is its section's last press. */
-  isLast: boolean;
-  activeList: string | null;
-  activeFav: string | null;
   /** The favourite whose HOVER card (window B) is up: its ring wears the
    *  hover wash (`.peeked`). */
   favHoverKey?: string | null;
-  /** A favourite's ring whose chat the pane or the Tasks peek already shows
-   *  (rail-peek-lib `favRingRoute` is not "card"): caption only. */
-  chatElsewhere?: boolean;
   /** WINDOW B IS HELD BY A BOT'S CARD (ClaudeRail `botPinned`; owner,
    *  2026-11-06: "treat fav bots and fav tasks as one window"): a
    *  favourite's ring hovers nothing meanwhile — its caption, as beside an
@@ -860,10 +786,6 @@ export interface RingMarkInput {
    *  (ClaudeRail `aHovers`): a list ring's hover shows no card then, so its
    *  caption is its title (Bugbot on #2201; the rule of #2194 kept). */
   windowAHeld?: boolean;
-  /** How many rings the section holds (owner, 2026-11-06: "if it is only
-   *  one item, that would be the last selected item, so no need to show
-   *  that"): favourites on, a section of ONE wears no `.is-last`. */
-  sectionSize?: number;
 }
 
 export function ringMarks(o: RingMarkInput): {
@@ -872,124 +794,44 @@ export function ringMarks(o: RingMarkInput): {
   favRing: boolean;
   titleOnly: boolean;
 } {
-  const peeked = o.peekOn && (o.foot ? o.favHoverKey === o.key : o.peekKey === o.key);
+  const peeked = o.foot ? o.favHoverKey === o.key : o.peekKey === o.key;
   // THE SECTIONS DO NOT SEE EACH OTHER (owner, 2026-11-05): the open
   // favourite's ring is the one in the FAVOURITES section; a list ring on
   // the same chat is a list ring, whatever window B shows.
-  const favRing = o.foot && o.favsOn && o.openFavKey === o.key;
-  const one = o.favsOn;
-  const fav = o.foot;
+  const favRing = o.foot && o.openFavKey === o.key;
   const classes: string[] = [];
   // ONLY AN OPEN WINDOW LIGHTS A RING (owner, 2026-11-09: "let's not show
   // last selected state, only show active state when the window is open, so
-  // we know this ring made it open"): with the card on (`peekOn`) neither
-  // the URL's session (`.active`) nor the last press (`.is-last`) marks a
-  // ring — only `.peeked` / `.is-pinned` / `.is-open`, which last exactly as
-  // long as the ring's card stands. Off, the marks of before.
-  const marksPast = !o.peekOn;
-  if (marksPast && o.sessionHere && (!one || (!o.foot && o.activeList === o.key))) classes.push("active");
+  // we know this ring made it open"): neither the URL's session nor the last
+  // press marks a ring — only `.peeked` / `.is-pinned` / `.is-open`, which
+  // last exactly as long as the ring's card stands.
   if (peeked) classes.push("peeked");
   if (peeked && o.pinned && !o.foot && !favRing) classes.push("is-pinned");
-  if (peeked && o.held && !o.favsOn) classes.push("is-held");
   if (o.foot) classes.push("is-fav");
   if (o.foot && o.openFavKey === o.key) classes.push("is-open");
-  if (
-    marksPast &&
-    o.isLast &&
-    !(one && o.sectionSize === 1) &&
-    (!one || (o.foot ? o.activeFav === o.key && o.openFavKey !== o.key : o.activeList === o.key))
-  )
-    classes.push("is-last");
   // While ANY favourite's card is open — or a bot's card holds window B
-  // (`botHeld`) — every favourite-section ring (and the just-starred one
-  // still in the list) shows its caption only.
-  const silenced = (o.openFavKey !== null || !!o.botHeld) && o.favsOn && fav;
+  // (`botHeld`) — every favourite-section ring shows its caption only.
+  const silenced = (o.openFavKey !== null || !!o.botHeld) && o.foot;
   // Every ring hovers whatever the pane shows (owner, 2026-11-08: a task's
-  // ring is the same ring beside the open pane; until then a list ring was
-  // caption-only there, its press the pane's): the chat may stand in the
-  // pane and in the card at once (owner, 2026-11-05). `chatElsewhere` is
-  // kept on the input for callers that still pass it and is no longer read.
-  const hovers = o.peekOn && !silenced;
+  // ring is the same ring beside the open pane): the chat may stand in the
+  // pane and in the card at once (owner, 2026-11-05).
+  const hovers = !silenced;
   // The caption alone: the ring's hover shows no card — another LIST ring
   // while the list's card is pinned (a favourite's ring is window B's and is
   // never held back by it), the open favourite's ring, a silenced one.
-  const pinnedElsewhere =
-    !o.foot && o.peekOn && ((o.pinned && o.peekKey !== null && o.peekKey !== o.key) || !!o.windowAHeld);
-  const titleOnly = pinnedElsewhere || favRing || (o.peekOn && !hovers);
+  const pinnedElsewhere = !o.foot && ((o.pinned && o.peekKey !== null && o.peekKey !== o.key) || !!o.windowAHeld);
+  const titleOnly = pinnedElsewhere || favRing || !hovers;
   return { classes, hovers, favRing, titleOnly };
-}
-
-/** WHETHER THE RAIL STANDS (ClaudeRail; owner, 2026-11-05: "we show the rail
- *  no matter what now … on every page … even if the sidebar is expanded or
- *  not. The only reason we don't show the rail is if there are no tasks in
- *  favourites AND no items to be shown in the rail").
- *   - THE PANE SHUT: always — the rail is the pane's way back in (its panel
- *     glyph, its pull), so an empty one still stands; a shut pane with no
- *     rail would leave no door.
- *   - THE PANE OPEN, favourites on (`always`): only with something to draw —
- *     a chat in the list (`list`, the place's — and the node's — chats, before
- *     the clip) or a favourite (`favs`).
- *   - THE PANE OPEN, favourites off: never — the rail of 2026-11-04, which
- *     stood only while the pane was shut.
- *   - THE SHELL'S FALLBACK (`favouritesOnly`, `fallbackRailUp`): while
- *     favourites are on — the + alone with no favourite (owner, 2026-11-05:
- *     "even in home or bots let's have a + button"), the favourites below it. */
-export function railShown(o: {
-  list: number;
-  favs: number;
-  paneOpen: boolean;
-  always: boolean;
-  /** The shell's fallback rail (`fallbackRailUp`): its favourites, blocked
-   *  chats and pinned bots — no + (`plusShown`). It stands for any of the
-   *  three (owner, 2026-11-05, final word: "blocked chats trigger open of
-   *  the rail in all views"). */
-  favouritesOnly?: boolean;
-  /** Blocked chats drawn at the head of the favourites (`favSeats`). */
-  blocked?: number;
-  /** Pinned bots drawn under the favourites (`pinnedBots`). */
-  bots?: number;
-}): boolean {
-  const foot = o.favs + (o.blocked ?? 0) + (o.bots ?? 0);
-  if (o.favouritesOnly) return o.always && foot > 0;
-  if (!o.paneOpen) return true;
-  if (!o.always) return false;
-  return o.list > 0 || foot > 0;
-}
-
-/** THE RAIL REMEMBERED ACROSS A RELOAD (ClaudeRail; owner, 2026-11-05:
- *  "when I reload the sidebar pops up a little late"): whether a rail stood
- *  last, kept in localStorage (2026-11-09). On mount a rail that stood
- *  stands again at once — its column, before its rings — for `RAIL_WARM_MS`
- *  at most, by when the pulse and the bots have answered; if they say there
- *  is nothing to draw, it goes then. */
-export const RAIL_WARM_MS = 3000;
-const RAIL_KEY = "fused-render:rail-up";
-export function railRemembered(): boolean {
-  try {
-    return localStorage.getItem(RAIL_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-export function rememberRail(up: boolean): void {
-  try {
-    localStorage.setItem(RAIL_KEY, up ? "1" : "0");
-  } catch {
-    /* no storage: nothing remembered */
-  }
 }
 
 /** THE SHELL'S FALLBACK RAIL (shell/claude-rail/FallbackRail; owner,
  *  2026-11-05: "pages without a page-level rail must show the rail when
- *  there are fav tasks"): mounted while favourites are on and NO page rail
- *  is mounted (fav-peek-store `registerPageRail` — one count, so a page rail
- *  and the fallback never stand together). Whether it then shows is
- *  `railShown`'s `favouritesOnly` (a favourite to draw). */
-export function fallbackRailUp(o: { favsOn: boolean; pageRails: number; navDoors?: boolean }): boolean {
-  // `navDoors` (owner, 2026-11-07; the rail flag `canvas_rail_peek_enabled`):
-  // the rail carries Tasks, the + and Bots on every page, so the fallback
-  // stands wherever no page rail does, favourites or not.
-  return (o.favsOn || o.navDoors === true) && o.pageRails === 0;
+ *  there are fav tasks"): mounted while NO page rail is mounted
+ *  (fav-peek-store `registerPageRail` — one count, so a page rail and the
+ *  fallback never stand together). The rail carries Tasks, the + and Bots on
+ *  every page (owner, 2026-11-07), so it stands wherever no page rail does. */
+export function fallbackRailUp(o: { pageRails: number }): boolean {
+  return o.pageRails === 0;
 }
 
 /** WHAT THE + DOES (ClaudeRail; owner, 2026-11-05): beside the OPEN pane
@@ -1007,19 +849,13 @@ export function plusDoor(_o: { paneOpen: boolean; favsOn: boolean; paneHome: boo
  *  2026-11-08: "the behaviour of all the tasks is the same: click a task, the
  *  window opens — we remove the link between a task click and the expanded
  *  sidebar; the only link is Open"): the card pins (`"card"`) where the hover
- *  card is on and has room — beside the OPEN pane as much as shut; the pane
+ *  card has room — beside the OPEN pane as much as shut; the pane
  *  changes only by the card's Open door — else the chat's door (`"door"`).
  *  The pane press of 2026-11-05 (`"pane"`: the chat opening in the pane, no
  *  card) is retired. A favourite's ring is not asked: its press opens the
  *  favourite's card whatever the pane does. */
-export function ringPress(o: {
-  paneOpen: boolean;
-  favsOn: boolean;
-  peekOn: boolean;
-  noRoom: boolean;
-}): "card" | "door" {
-  if (o.peekOn && !o.noRoom) return "card";
-  return "door";
+export function ringPress(o: { noRoom: boolean }): "card" | "door" {
+  return o.noRoom ? "door" : "card";
 }
 
 /** THE PANE COLLAPSING RESTORES NOTHING OF WINDOW A (owner, 2026-11-06:

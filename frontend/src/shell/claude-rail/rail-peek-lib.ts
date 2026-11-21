@@ -1,6 +1,5 @@
 // THE RAIL'S PREVIEW CARD, the parts that need no DOM (RailPeek.tsx draws it;
-// ClaudeRail.tsx wires the rings). Behind `canvas_rail_peek_enabled`
-// (rail-peek-flag.ts).
+// ClaudeRail.tsx wires the rings).
 //
 // Three rulings live here so they can be proved without a browser:
 //
@@ -836,16 +835,15 @@ export function railOnStarred(
  *  (the draft flushed, one composer per draft), then `open` (the per-window
  *  open key, sessionStorage: it survives the hop), told whether the press
  *  was the keyboard's (the favourite's card then takes the focus on arrival,
- *  as a ring's keyboard press does). Anything else (favourites off, a list
- *  chat, a favourite with no session) just goes. */
+ *  as a ring's keyboard press does). Anything else (a list chat, a
+ *  favourite with no session) just goes. */
 export function railOnChipLeave(
-  favsOn: () => boolean,
   liveFav: (key: string) => boolean,
   letGo: (key: string) => void,
   open: (key: string, keyboard: boolean) => void,
 ): (key: string, keyboard?: boolean) => void {
   return (key, keyboard = false) => {
-    if (!favsOn() || !liveFav(key)) return;
+    if (!liveFav(key)) return;
     letGo(key);
     open(key, keyboard);
   };

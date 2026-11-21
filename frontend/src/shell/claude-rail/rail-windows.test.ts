@@ -99,16 +99,9 @@ describe("window B hover (FavouritePeek hover mode)", () => {
 
 describe("tooltip-only rules per window", () => {
   const base: Omit<RingMarkInput, "key" | "foot"> = {
-    favsOn: true,
-    peekOn: true,
     peekKey: null,
     pinned: false,
-    held: false,
     openFavKey: null,
-    sessionHere: false,
-    isLast: false,
-    activeList: null,
-    activeFav: null,
   };
   it("B open: favourite rings are tooltip-only, list rings still hover (A)", () => {
     expect(ringMarks({ ...base, key: "g", foot: true, openFavKey: "f" }).hovers).toBe(false);
