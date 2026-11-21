@@ -9,9 +9,22 @@
 // computer knows a phone is trying and failing.
 import { useEffect, useState } from "react";
 import qrcode from "qrcode-generator";
-import { getLanDevices, getLanPairToken, getPrefs, putLanEnabled, revokeAllLanDevices, revokeLanDevice, type LanDevice, type LanWarning } from "@platform/lib/api";
+import {
+  getLanDevices,
+  getLanPairToken,
+  getPrefs,
+  putLanEnabled,
+  putLanRemote,
+  revokeAllLanDevices,
+  revokeLanDevice,
+  setLanDeviceRemote,
+  type LanDevice,
+  type LanWarning,
+} from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import { Switch } from "@platform/shadcn/ui/switch";
 import { RowSwitch, SettingRow, type PrefControlProps } from "./SettingRow";
 
 /** How long a code may sit on screen with no pairing before the checklist
@@ -96,6 +109,17 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
     }
   };
 
+  const setAway = async (id: string, remote: boolean) => {
+    setError(null);
+    try {
+      const { devices: next } = await setLanDeviceRemote(id, remote);
+      setDevices(next);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const awayOn = enabled && !!lan?.remote_enabled;
+
   const warnings = (enabled && lan?.warnings) || [];
 
   return (
@@ -115,7 +139,7 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
       control={<RowSwitch id="lan" checked={pending ?? enabled} disabled={busy} onChange={(v) => void toggle(v)} />}
     >
       {pairable && <LanPairing url={lan!.url!} deviceCount={devices.length} warnings={warnings} />}
-      {pairable && <LanDevices devices={devices} onRevoke={revoke} />}
+      {pairable && <LanDevices devices={devices} onRevoke={revoke} away={awayOn} onAway={setAway} />}
       {enabled && !running && <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>}
       {/* Up while a piece of it is off (no address): that must not hide
           behind a working QR. */}
@@ -246,7 +270,19 @@ function agoLabel(ts: number): string {
 /** A phone seen within this window is getting through right now. */
 const REACHABLE_WITHIN_S = 15 * 60;
 
-function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id: string | null) => void }) {
+const VIA_LABEL: Record<string, string> = { lan: "on Wi-Fi", tailscale: "via Tailscale", relay: "via relay" };
+
+function LanDevices({
+  devices,
+  onRevoke,
+  away,
+  onAway,
+}: {
+  devices: LanDevice[];
+  onRevoke: (id: string | null) => void;
+  away: boolean;
+  onAway: (id: string, remote: boolean) => void;
+}) {
   if (!devices.length) return <p className="settings-row-desc">No paired phones yet.</p>;
   return (
     <div className="lan-devices">
@@ -263,9 +299,22 @@ function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id
             <li key={d.id}>
               <span className="lan-device-name">{d.name}</span>
               <span className="deploy-muted">
-                {reachable ? `reachable, seen ${agoLabel(d.last_seen)}` : `last seen ${agoLabel(d.last_seen)}`} · paired{" "}
+                {reachable ? `reachable, seen ${agoLabel(d.last_seen)}` : `last seen ${agoLabel(d.last_seen)}`}
+                {d.last_via && d.last_via !== "lan" ? ` ${VIA_LABEL[d.last_via] ?? ""}` : ""} · paired{" "}
                 {agoLabel(d.paired_at)}
               </span>
+              {away && (
+                // Per phone: limit one to the Wi-Fi while the others roam.
+                <label className="lan-device-away" title="Let this phone in away from the Wi-Fi">
+                  <Switch
+                    className="settings-switch"
+                    checked={d.remote !== false}
+                    onCheckedChange={(v) => onAway(d.id, !!v)}
+                    aria-label={`Away access for ${d.name}`}
+                  />
+                  Away
+                </label>
+              )}
               <Button variant="outline" size="sm" onClick={() => onRevoke(d.id)}>
                 Revoke
               </Button>
@@ -274,5 +323,109 @@ function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id
         })}
       </ul>
     </div>
+  );
+}
+
+// Away access (tunnel/, docs/REMOTE_ACCESS.md): a child of Phone access. On,
+// paired phones reach this computer off the Wi-Fi through the relay (the
+// computer dials out; the relay passes the phone's pinned TLS through blind)
+// and, when the computer is on a tailnet, over Tailscale. The relay setting
+// is `host[:port][#sha256]` — what the relay prints at startup.
+export function LanRemoteControl({ prefs, onChange }: PrefControlProps) {
+  const lan = prefs.lan;
+  const enabled = !!lan?.remote_enabled;
+  const remote = lan?.remote;
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState(lan?.relay_setting ?? "");
+  const stored = lan?.relay_setting ?? "";
+  useEffect(() => setDraft(stored), [stored]);
+
+  const put = async (body: { lan_remote_enabled?: boolean; lan_relay?: string }) => {
+    setError(null);
+    try {
+      onChange(await putLanRemote(body));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const toggle = async (want: boolean) => {
+    setPending(want);
+    await put({ lan_remote_enabled: want });
+    setPending(null);
+  };
+
+  // The agent connects a moment after the switch: follow it until it settles.
+  const relay = remote?.relay;
+  const settling = enabled && !!relay && !relay.connected && !relay.error;
+  useEffect(() => {
+    if (!settling) return;
+    let alive = true;
+    const id = window.setInterval(async () => {
+      try {
+        const next = await getPrefs();
+        if (alive) onChange(next);
+      } catch {
+        /* the next tick retries */
+      }
+    }, 1500);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [settling, onChange]);
+
+  const ts = remote?.tailscale;
+  const status = !enabled
+    ? undefined
+    : relay?.connected
+      ? `Reachable from anywhere through the relay as ${relay.host}${ts?.host ? `, and on Tailscale as ${ts.host}` : ""}.`
+      : ts?.host
+        ? `Reachable on your Tailscale network as ${ts.host}.`
+        : relay
+          ? "Connecting to the relay…"
+          : "No relay set and no Tailscale network found — add a relay below.";
+
+  return (
+    <SettingRow
+      id="lan-remote"
+      status={status}
+      control={<RowSwitch id="lan-remote" checked={pending ?? enabled} disabled={pending !== null} onChange={(v) => void toggle(v)} />}
+    >
+      {enabled && (
+        <div className="lan-remote">
+          <form
+            className="lan-remote-relay"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void put({ lan_relay: draft.trim() });
+            }}
+          >
+            <label htmlFor="lan-relay-input">Relay</label>
+            <Input
+              id="lan-relay-input"
+              value={remote?.relay_from_env ? (remote.relay_setting ?? "") : draft}
+              disabled={!!remote?.relay_from_env}
+              title={remote?.relay_from_env ? "Set by FUSED_RENDER_RELAY" : undefined}
+              placeholder="relay.example.com:8443"
+              spellCheck={false}
+              autoCapitalize="off"
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <Button type="submit" variant="outline" size="sm" disabled={!!remote?.relay_from_env || draft.trim() === stored}>
+              Save
+            </Button>
+          </form>
+          <p className="settings-row-desc">
+            Phones pair on the Wi-Fi first (scan the code above); after that they connect from anywhere. Traffic stays
+            encrypted end to end with this computer's own certificate — the relay sees only which computer a phone is
+            asking for. A self-hosted relay prints the exact setting to paste here when it starts.
+          </p>
+          {relay?.error && <ErrorBanner>{`Relay: ${relay.error}`}</ErrorBanner>}
+          {remote?.error && <ErrorBanner>{remote.error}</ErrorBanner>}
+        </div>
+      )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
   );
 }

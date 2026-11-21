@@ -2169,6 +2169,34 @@
   flex: 1;
   font-size: 12px;
 }
+.lan-device-away {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+/* Away access: the relay field under its switch. */
+.lan-remote {
+  margin-top: 10px;
+}
+.lan-remote-relay {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 34rem;
+  margin-bottom: 8px;
+}
+.lan-remote-relay label {
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.lan-remote-relay input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
 
 .registry-source {
   display: inline-block;

@@ -53,7 +53,7 @@ import {
   RebuildIndexControl,
   SkippedFoldersControl,
 } from "./indexing";
-import { LanControl } from "./lan";
+import { LanControl, LanRemoteControl } from "./lan";
 import { ConnectionsPointer } from "../Connections";
 import { ClaudeCliMissing } from "./claude";
 import { FusedAccountControl, HuggingFaceControl, WorkbenchEnvControl } from "./accounts";
@@ -116,6 +116,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   reader: ReaderControl,
   "chromium-windows": ChromiumWindowsControl,
   lan: LanControl,
+  "lan-remote": LanRemoteControl,
   connections: ConnectionsPointer,
   "fused-account": FusedAccountControl,
   "workbench-env": WorkbenchEnvControl,

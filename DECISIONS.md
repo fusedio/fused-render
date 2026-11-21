@@ -8145,3 +8145,15 @@ A user redid a canvas's folders through Claude; the five old folders stayed on s
 - **Never `allow-always`.** Cursor persists that answer into the user's GLOBAL allowlist (`~/.cursor/cli-config.json`). "Always approve" is the card's `allow-once` plus a host-side allow for the same call for the rest of the host process.
 - **The appended prompt rides the first prompt.** ACP's `session/new` takes no instructions and the only prompt files Cursor reads live in the user's folder, which fused never writes; the prompt goes ahead of the user's words on each host process's first `session/prompt`, wrapped in `<fused_render_context>`, and is stripped off a replayed prompt before the backfill compares texts.
 - **Rejected.** `cursor-agent -p --output-format stream-json` per turn for sessions (no permission round trip, a respawn per message). Writing `AGENTS.md`/`.cursor/rules` into the user's project. Spawning with `--force` for `auto` (team admins can restrict it, and it cannot be switched live). Offering Cursor on `/api/ai` (no flag limits a one-shot's MCP roster).
+
+## D1499: Away access: the phone listener through a blind SNI relay or Tailscale; pairing stays on the Wi-Fi (2026-11-21, away-access)
+
+- **What.** A second switch under Phone access ("Also reachable away from this Wi-Fi", `lan_remote_enabled`, off by default). Paired phones reach the SAME listener (`lan.py`) off the Wi-Fi by a relay (`tunnel/`: the computer dials out, the relay routes the phone's TLS by SNI to it and splices bytes) or the computer's tailnet. Design and threat model: docs/REMOTE_ACCESS.md.
+- **The relay never terminates TLS.** The phone keeps pinning the computer's own certificate (`lan_tls.py`); the relay sees host ids, addresses and sizes, never content. No new crypto on the phone, WebSockets work, and a compromised relay is no worse than a stranger on the Wi-Fi.
+- **Self-certifying names.** `<host-id>` = hash of the computer's Ed25519 key; the relay hands it out only against a signature over its domain and a fresh nonce. No accounts.
+- **Classified by transport.** `_via`: the agent's loopback legs (by source port) are `relay`, Tailscale source ranges are `tailscale`. A relayed request's client becomes the phone's address — never loopback. Headers are never read for this.
+- **Pairing needs the Wi-Fi.** `/pair` away is refused without spending the code: a leaked QR cannot pair a stranger from the internet.
+- **Per-phone Away switch** (`remote` on the device record; on by default) and `last_via` in the list.
+- **Rejected.** Cloudflare Tunnel / ngrok (TLS ends at a third party: t3code's model). A Noise channel inside a WebSocket relay (OpenMausBot's model): end to end too, but new crypto, a multiplexer and a native proxy on the phone, for what SNI pass-through gives with the TLS we already pin. Remote pairing.
+- **Not decided.** A Fused-run relay and its `DEFAULT_RELAY`; relay-side admission of paired phones only.
+

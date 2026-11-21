@@ -7,7 +7,9 @@
 //     lists (`_fusedrender._tcp`, never advertised by anyone) reporting the
 //     policy-denied DNS error within a few hundred milliseconds. The browse
 //     is also what triggers the system prompt the first time.
-//   - The phone is not on Wi-Fi (cellular, airplane mode).
+//   - The phone is not on Wi-Fi (cellular, airplane mode) — and, when the
+//     computer has away access on, its relay and tailnet did not answer
+//     either (docs/REMOTE_ACCESS.md).
 //   - Permission fine, Wi-Fi fine, but nobody answers: a different or
 //     isolated network (guest Wi-Fi), the computer asleep, its firewall.
 //     Before saying so, the phone's own /24 is probed for the pinned
@@ -46,27 +48,45 @@ enum Reachability {
 
     static func diagnose(_ server: Server) async -> LanState {
         let path = await currentPath()
-        guard path.status == .satisfied,
-              path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet) else {
-            return .noWifi
-        }
-        if await localNetworkDenied(timeout: 1.5) { return .localNetworkDenied }
+        let online = path.status == .satisfied
+        let onLocal = online && (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet))
         var denied = false
-        // The stored port on every host first; the computer's fallback ports
-        // only after that (it moves off 1889 only when something else holds
-        // it at the time it starts).
-        for port in server.candidatePorts {
-            for host in server.candidateHosts {
-                switch await reach(host: host, port: port, fingerprint: server.fingerprint, timeout: 3) {
-                case .reached:
-                    return .ok(host: host, port: port)
-                case .denied:
-                    denied = true
-                case .failed:
-                    continue
+        if onLocal {
+            if await localNetworkDenied(timeout: 1.5) {
+                denied = true
+            } else {
+                // The stored port on every host first; the computer's
+                // fallback ports only after that (it moves off 1889 only when
+                // something else holds it at the time it starts).
+                for port in server.candidatePorts {
+                    for host in server.candidateHosts {
+                        switch await reach(host: host, port: port, fingerprint: server.fingerprint, timeout: 3) {
+                        case .reached:
+                            return .ok(host: host, port: port)
+                        case .denied:
+                            denied = true
+                        case .failed:
+                            continue
+                        }
+                    }
                 }
             }
         }
+        // AWAY ROUTES (docs/REMOTE_ACCESS.md): the tailnet, then the relay —
+        // on cellular, on someone else's Wi-Fi, or when Local Network access
+        // is off (the relay is an internet host and needs no such permission).
+        // The same pinned certificate decides, so a route never trusts more
+        // than the Wi-Fi does. Tried before the subnet scan: one request each,
+        // where the scan is hundreds.
+        if online {
+            for endpoint in server.awayEndpoints {
+                if await reach(host: endpoint.host, port: endpoint.port, fingerprint: server.fingerprint,
+                               timeout: 6) == .reached {
+                    return .ok(host: endpoint.host, port: endpoint.port)
+                }
+            }
+        }
+        guard onLocal else { return .noWifi }
         // Some iOS versions fail the connection with "no route to host" at
         // once, before the browser reports anything.
         if denied { return .localNetworkDenied }

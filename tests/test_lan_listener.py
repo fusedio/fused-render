@@ -166,7 +166,8 @@ def test_status_carries_warnings_and_never_raises(home, monkeypatch):
     monkeypatch.setattr(lan._controller, "_thread", None)
     status = lan.status()
     assert status["running"] is False and status["warnings"] == [] and status["fingerprint"] is None
-    assert set(status) == {"running", "url", "hostname", "ip", "port", "error", "fingerprint", "devices", "warnings"}
+    assert set(status) == {"running", "url", "hostname", "ip", "port", "error", "fingerprint", "devices", "warnings",
+                           "remote"}
 
 
 # ---- the doctor --------------------------------------------------------------------
