@@ -60,6 +60,7 @@ import {
 } from "./chatSeen";
 import { JumpButton } from "./JumpButton";
 import { MSG_LAND_PX, jumpMode, type JumpMode } from "./jumpTarget";
+import { animateScroll } from "./scrollAnim";
 import { openCardRows } from "./WaitingBar";
 import "../styles/transcript.css";
 
@@ -1139,43 +1140,50 @@ export const Transcript = memo(function Transcript({
       jumpFrame.current = 0;
     };
   }, [scheduleJump]);
+  // ONE JUMP AT A TIME: a second click (or a double-click) takes over from
+  // wherever the first one has got to.
+  const jumpAnim = useRef<(() => void) | null>(null);
+  useEffect(() => () => jumpAnim.current?.(), []);
   const onJump = useCallback((to: "msg" | "end") => {
     const wrap = port.current;
     if (!wrap) return;
+    jumpAnim.current?.();
     clearGesture.current?.();
+    const max = () => wrap.scrollHeight - wrap.clientHeight;
+    // The follow stays OFF while the scroll runs: on, every frame of it would
+    // read as "pinned and not at the tail" and the settle would snap it there.
+    followTail.current = false;
     if (to === "end") {
-      // A jump, not a glide (bots ToBottom): a smooth scroll over a long log is
-      // still in flight when the next frame streams in. Landing re-arms the
-      // follow, so the reply goes on streaming in front of you.
-      followTail.current = true;
-      unread.current.viewed = newsBefore(jumpLive.current.turns);
-      wrap.scrollTop = wrap.scrollHeight;
+      jumpAnim.current = animateScroll(wrap, max, (landed) => {
+        jumpAnim.current = null;
+        if (!landed) return; // the reader took over mid-way
+        // Landed: the follow re-arms (bots ToBottom), so a reply goes on
+        // streaming in front of you, and everything above is behind you.
+        clearGesture.current?.();
+        followTail.current = true;
+        unread.current.viewed = newsBefore(jumpLive.current.turns);
+        wrap.scrollTop = wrap.scrollHeight;
+        scheduleJump();
+      });
       scheduleJump();
       return;
     }
     const el = log.current ? lastMine(log.current) : null;
     if (!el) return;
-    // Reading your message is not following the tail: a reply still streaming
-    // under it must not pull you back down.
-    followTail.current = false;
-    const top = el.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop;
-    const dest = Math.max(0, Math.min(top - MSG_LAND_PX, wrap.scrollHeight - wrap.clientHeight));
-    const still =
-      typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!still && typeof wrap.scrollTo === "function") {
-      // A long way off, cut to one port short of it and glide the rest: the
-      // motion says which way you went, and a glide over thousands of pixels
-      // is still in flight a second later.
-      const near = wrap.clientHeight;
-      if (Math.abs(dest - wrap.scrollTop) > near * 2) {
-        wrap.scrollTo({ top: dest + (dest > wrap.scrollTop ? -near : near), behavior: "instant" });
-      }
-      wrap.scrollTo({ top: dest, behavior: "smooth" });
-    } else wrap.scrollTop = dest;
-    // A message near the end cannot reach the top: the landing IS the end, and
-    // a reply that starts streaming there must be followed.
-    if (dest >= wrap.scrollHeight - wrap.clientHeight - END_GAP_PX) followTail.current = true;
-    flareEl(el, still);
+    // Your message's top, just under the port's top — read every frame, so a
+    // picture loading above it does not throw the landing off.
+    const dest = () => {
+      const top = el.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop;
+      return Math.max(0, Math.min(top - MSG_LAND_PX, max()));
+    };
+    flareEl(el, typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+    jumpAnim.current = animateScroll(wrap, dest, (landed) => {
+      jumpAnim.current = null;
+      // A message near the end cannot reach the top: the landing IS the end,
+      // and a reply that starts streaming there must be followed.
+      if (landed && wrap.scrollTop >= max() - END_GAP_PX) followTail.current = true;
+      scheduleJump();
+    });
     scheduleJump();
   }, [scheduleJump]);
 
