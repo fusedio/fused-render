@@ -2,10 +2,9 @@
 // own, then the position store's half — the frozen box, the push and the way
 // back, and which card a magnet reaches for.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } from "@shell/task-head-flag";
 import { setAPinned, setFavPinned } from "@platform/lib/last-chat";
 import { botsPulseAnswered, botsRowsNow, publishBots, resetBotsPulseForTests } from "@platform/lib/botsPulse";
-import { resetRailFreePinsFlagForTests, setRailFreePinsForTests, railFreePinsNow } from "./rail-free-pins-flag";
+import { resetRailFreePinsFlagForTests, setRailFreePinsForTests } from "./rail-free-pins-flag";
 import {
   commitWindowBox,
   commitWindowPos,
@@ -304,7 +303,6 @@ describe("the position store, free pins on", () => {
   beforeEach(() => {
     resetRailMoveForTests();
     resetRailSlotsForTests();
-    publishTaskHeadUnified({ enabled: true });
     setRailFreePinsForTests(true);
     setAPinned("task:k1");
     setFavPinned(null);
@@ -317,14 +315,8 @@ describe("the position store, free pins on", () => {
     await new Promise((r) => setTimeout(r, 0));
     resetRailMoveForTests();
     resetRailFreePinsFlagForTests();
-    resetTaskHeadUnifiedFlagForTests();
   });
 
-  it("is only on with the unified head's switch", () => {
-    expect(railFreePinsNow()).toBe(true);
-    publishTaskHeadUnified({ enabled: false });
-    expect(railFreePinsNow()).toBe(false);
-  });
   it("the pin's press freezes the non-pin card's box: position and size", () => {
     publishWindowBox("a", "list", box(972, 60, 420, 640));
     expect(freezeFromDock("a")).toBe(true);
@@ -436,14 +428,6 @@ describe("the position store, free pins on", () => {
     publishWindowBox("a", "pin", box(992, 80, 400, 500), true);
     expect(heard).toBe(1);
     off();
-  });
-  it("turning the unified head off is heard too: the store re-reads", () => {
-    commitWindowBox("a", box(972, 60, 420, 640));
-    publishPusher("a", "list", box(972, 60, 420, 640));
-    expect(windowPos("a")).toEqual({ left: 972 - PUSH_GAP - 420, top: 60 });
-    publishTaskHeadUnified({ enabled: false });
-    expect(windowPos("a")).toEqual({ left: 972, top: 60 });
-    expect(windowSize("a")).toBeNull();
   });
   it("off, nothing is pushed and no size is read", () => {
     commitWindowBox("a", box(972, 60, 420, 640));

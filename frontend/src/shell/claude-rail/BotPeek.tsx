@@ -7,8 +7,7 @@
 // ring opens this card the way a list ring opens the rail's card (RailPeek):
 // a hover previews it, a press pins it (ClaudeRail's `botIntent`, the same
 // PeekIntent machine), × / Escape / an outside press close it, and the
-// head's Open is the door to the bot's page. Behind `canvas_rail_peek_enabled`
-// like the rail's card; the pinned bots stand only with the favourites on.
+// head's Open is the door to the bot's page.
 //
 // WHAT IT IS: the bot's chat itself — apps/bots `BotChat`: the Bots page's
 // thread and composer for one bot, fed without the page — in the card the
@@ -65,7 +64,6 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
 import type { BotPulseRow } from "@platform/lib/botsPulse";
 import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import { ChatChunkBoundary } from "@apps/claude/ChatMount";
@@ -181,16 +179,15 @@ export interface BotPeekProps {
   onNoRoom: () => void;
   /** The Open door: the bot's page. */
   onOpen: (href: string) => void;
-  /** HELD (a press pinned it, favourites on): only its × or Open let go. */
+  /** HELD by its pin: only the pin or Open let go. */
   held: boolean;
   onHeld: (held: boolean) => void;
   /** PINNED by a press (PeekIntent), not a passing hover. */
   pinned: boolean;
-  /** HOVER / TEMP / PIN (rail-pin-lib; the unified-head switch on): the
-   *  head's pin icon, its first button (no × with it) — `pinned` the card's pin, `onToggle` its
-   *  press. Given, Escape closes a hover and a temp card; only a pinned one
-   *  ignores it. Absent: the card as it was. */
-  pinCtl?: { pinned: boolean; onToggle: () => void } | null;
+  /** HOVER / TEMP / PIN (rail-pin-lib): the head's pin icon, its first
+   *  button (no × with it) — `pinned` the card's pin, `onToggle` its press.
+   *  Escape closes a hover and a temp card; only a pinned one ignores it. */
+  pinCtl: { pinned: boolean; onToggle: () => void };
   /** THIS CARD IS THE PINNED WINDOW'S OWN (free pins, rail-slots-lib; the
    *  shell's pinned-bot host): it floats, frozen, and takes no part in the
    *  non-pin window B's bookkeeping (`publishFavBox`). */
@@ -214,7 +211,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     held,
     onHeld,
     pinned,
-    pinCtl = null,
+    pinCtl,
     pinSlot = false,
   },
   ref,
@@ -222,7 +219,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const cardRef = useRef<HTMLDivElement | null>(null);
   // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box the
   // window's mark holds; not pinned, it pushes the pins it would cover.
-  const freePins = useRailFreePins() && !!pinCtl;
+  const freePins = useRailFreePins();
   const freePinsRef = useRef(false);
   freePinsRef.current = freePins;
   // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): this card is
@@ -230,8 +227,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   // FLOATS at the window's position — kept through a swap to a favourite.
   const move = useCardMove({
     win: "b",
-    on: !!pinCtl,
-    movable: !!pinCtl?.pinned,
+    movable: pinCtl.pinned,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: shown?.id ?? null,
   });
@@ -264,7 +260,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   // ONE SIZE, hovered or pinned, the favourite card's (header).
   // …and no half-window ceiling once PINNED (owner, 2026-11-17: "remove the
   // restrictions of height only from pin window"; RailPeek's `wishFor`).
-  const wish = () => favCardWish(FAV_SIZE, storedPeekSize(), pinCtl?.pinned ? Infinity : window.innerHeight);
+  const wish = () => favCardWish(FAV_SIZE, storedPeekSize(), pinCtl.pinned ? Infinity : window.innerHeight);
   const railLeft = useRef(0);
   const row = useMemo(() => rowOf(railEl), [railEl]);
   // WHERE IT STANDS (header): the rail is the anchor — with `align:
@@ -315,14 +311,14 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     // the height never passes half the window (RailPeek, the favourite's).
     // Floating: the viewport's bottom.
     const floor = !floating && railEl ? railEl.getBoundingClientRect().bottom : undefined;
-    const cap = pinCtl?.pinned ? undefined : favMaxHeight(window.innerHeight);
+    const cap = pinCtl.pinned ? undefined : favMaxHeight(window.innerHeight);
     // THE EDGE MAGNET (rail-move-lib `snapResize`; RailPeek's rule), with
     // the pin: on the axes window A holds still on (`dockedBAxes`), against
     // its card as it stood at the press, read once.
-    const otherBox = pinCtl ? magnetBox("a", floating) : null;
+    const otherBox = magnetBox("a", floating);
     // FREE PINS: a docked card's neighbour is window A's non-pin, which never
     // floats.
-    const magnet = pinCtl ? dockedBAxes({ floating, aFloats: !freePins && windowPos("a") !== null, mine: box, other: otherBox }) : null;
+    const magnet = dockedBAxes({ floating, aFloats: !freePins && windowPos("a") !== null, mine: box, other: otherBox });
     dragStart.current = {
       x: e.clientX,
       y: e.clientY,
@@ -465,7 +461,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     [],
   );
   // Its live box for window A's head drag (rail-move-store `windowBox`).
-  useWindowBox("b", !!pinCtl && visible ? box : null, freePins && move.floating);
+  useWindowBox("b", visible ? box : null, freePins && move.floating);
   // A clicked-open non-pin pushes the pins it covers (rail-slots-lib).
   usePusher("b", freePins && visible && !move.floating && pinned ? box : null);
   const dragKey = useRef<string | null>(null);
@@ -609,7 +605,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const heldRef = useRef(held);
   // …and with the pin (`pinCtl`) only a PINNED card: temp closes as a hover
   // does (owner, 2026-11-16: "a consistent behaviour").
-  heldRef.current = pinCtl ? pinCtl.pinned : held;
+  heldRef.current = pinCtl.pinned;
   // ESCAPE closes an unheld card: on the head, and in the chat's own thread
   // and composer once they have let it through (the composer prevents the
   // default when Escape was its own — a reply quote dropped, the command
@@ -692,21 +688,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
             <div className="claude-rail-peek-head">
               <div className="claude-rail-peek-row">
                 {/* With the pin: no × (a click outside closes a temp card). */}
-                {!pinCtl && (
-                  <button
-                    type="button"
-                    className="claude-rail-peek-btn claude-rail-peek-close"
-                    aria-label="Close the preview"
-                    data-hint="Close the preview"
-                    onClick={() => {
-                      onHeld(false);
-                      onDismiss();
-                    }}
-                  >
-                    <X size={14} aria-hidden="true" />
-                  </button>
-                )}
-                {pinCtl && <RailPinButton variant="legacy" pinned={pinCtl.pinned} onToggle={pinCtl.onToggle} />}
+                <RailPinButton variant="legacy" pinned={pinCtl.pinned} onToggle={pinCtl.onToggle} />
                 <span className="claude-rail-peek-botface" aria-hidden="true">
                   <Face b={subject} />
                 </span>

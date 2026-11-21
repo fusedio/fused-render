@@ -263,7 +263,6 @@ import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
 import { CHAT_PARAMS, placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { railPullAt } from "./rail-pull";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
   healWanted,
   mergeLogEvents,
@@ -682,10 +681,6 @@ export default function CanvasWorkspace({
   // workbench's edge chips, or `side=off` on the URL. Hiding it leaves the selection alone: the canvas goes on
   // selecting, and the pane opens on whatever node is selected by then.
   const [sideOpen, setSideOpen] = useState<boolean>(() => sideOpenFromUrl());
-  // THE RAIL BESIDE THE OPEN PANE (ClaudeRail `paneOpen`; owner,
-  // 2026-11-05): with favourites on the rail stands whether the pane is open
-  // or shut; off, only while it is shut, as before.
-  const railAlways = useTaskFavourites();
   // Bumped when the node pane must REBOOT on a session for the node already
   // shown (a Recent row's hop onto the selected node, below): the frame's src
   // is otherwise frozen per node and tab (`nodeBootSrc`).
@@ -3717,11 +3712,11 @@ export default function CanvasWorkspace({
         </div>
           </div>
         )}
-        {(!sideOpen || railAlways) && (
+        {(
           // The pane shut: the rail takes its edge (ClaudeRail.tsx) — the way
           // back in, plus Claude's state on this canvas, which is what the
-          // pane was showing. With favourites on it stands past the OPEN pane
-          // too, at the row's right edge (`paneOpen`).
+          // pane was showing. It stands past the OPEN pane too, at the row's
+          // right edge (`paneOpen`).
           <ClaudeRail
             paneOpen={sideOpen}
             place={railPlace}

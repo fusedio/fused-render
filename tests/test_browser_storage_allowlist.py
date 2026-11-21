@@ -32,7 +32,6 @@ ALLOWED = {
     "platform/lib/bots-available.ts": "cache",     # last "server offers Bots" answer, re-read on boot
     "platform/lib/botsPulse.ts": "cache",          # pinned bot rows until the next poll lands
     "platform/lib/claude-defaults.ts": "signal",
-    "platform/lib/favourites-flag.ts": "cache",    # flag pair's last prefs answer, re-read
     "platform/lib/last-chat.ts": "tab",            # last chat picked, per window (sessionStorage)
     "platform/lib/peek-session.ts": "tab",         # chats mounted in this window's panes (sessionStorage)
     "platform/lib/pending-claude-ask.ts": "tab",
@@ -53,12 +52,9 @@ ALLOWED = {
     "shell/TaskWorkspace.tsx": "display",           # group collapse state (per viewer)
     "shell/TerminalDrawer.tsx": "cache",            # pty ids re-checked against GET /api/terminal
     "shell/UpdateCard.tsx": "tab",
-    "shell/claude-rail/claude-rail-lib.ts": "cache",  # rail stood last; dropped if the pulse says empty
-    "shell/claude-rail/rail-peek-flag.ts": "cache",   # flag's last prefs answer, re-read
     "shell/claude-rail/rail-free-pins-flag.ts": "cache",  # flag's last prefs answer, re-read
     "shell/claude-rail/rail-mode-doors-flag.ts": "cache",  # flag's last prefs answer, re-read
     "shell/notifications-seen-store.ts": "import",
-    "shell/task-head-flag.ts": "cache",             # flag's last prefs answer, re-read
     "shell/task-peek-store.ts": "display",          # peek width + per-tab autocollapse marker
     "shell/tasks-lib.ts": "display",                # Tasks "Sort by" choice (per viewer)
     "shell/tasksPulse.ts": "signal",                # chat-activity listener (+ seen import)

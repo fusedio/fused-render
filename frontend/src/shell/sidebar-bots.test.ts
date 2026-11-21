@@ -23,6 +23,9 @@ import { botsAvailable } from "@platform/lib/api";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
+// THE BOTS DOOR IS THE CLAUDE RAIL'S (owner, 2026-11-07): the sidebar has no
+// Bots row; the rail's door wears the dot the row did.
+const RAIL = readFileSync(join(SHELL, "claude-rail/ClaudeRail.tsx"), "utf8");
 const STORE = readFileSync(join(SHELL, "../platform/lib/botsPulse.ts"), "utf8");
 const BOTS_STORE = readFileSync(join(SHELL, "../apps/bots/state/store.ts"), "utf8");
 const BOTS_APP = readFileSync(join(SHELL, "../apps/bots/App.tsx"), "utf8");
@@ -102,26 +105,17 @@ describe("the words", () => {
 });
 
 describe("wiring", () => {
-  it("the Bots row wears the Tasks row's dot, words and chip — the same classes", () => {
-    const row = SIDEBAR.slice(SIDEBAR.indexOf("const botsPulse = useBotsPulse(botsOn)"), SIDEBAR.indexOf("const menuEntries"));
+  it("the rail's Bots door wears the Tasks door's dot — the same classes", () => {
+    const at = RAIL.indexOf("const botsDot =");
+    const dot = RAIL.slice(at, RAIL.indexOf(";", at));
     // One dot, red over yellow over green — the Tasks precedence.
-    expect(row.indexOf('"sidebar-rail-dot is-attention"')).toBeLessThan(row.indexOf('"sidebar-rail-dot is-running"'));
-    expect(row.indexOf('"sidebar-rail-dot is-running"')).toBeLessThan(row.indexOf('"sidebar-rail-dot is-unread"'));
-    // Waiting words replace running words; the chip is the shared count chip.
-    expect(row).toContain('"sidebar-running is-attention"');
-    expect(row).toContain("botsWaitingLabel(botsPulse.waiting)");
-    expect(row).toContain("botsRunningLabel(botsPulse.running)");
-    expect(row).toContain('"sidebar-count-chip"');
+    expect(dot.indexOf('"is-attention"')).toBeLessThan(dot.indexOf('"is-running"'));
+    expect(dot.indexOf('"is-running"')).toBeLessThan(dot.indexOf('"is-unread"'));
     // Nothing is gated on being on /bots: the dot clears when the BOT is opened,
     // not when the page is (Akshil, 2026-10-21).
-    expect(row).toContain("botsPulse.unread > 0 ?");
-    expect(row).not.toContain("botsActive ?");
-  });
-
-  it("both widths show it: the rail badge + tooltip, the expanded extra + trailing", () => {
-    expect(SIDEBAR).toContain("label: botsTip ? `Bots — ${botsTip}` : \"Bots\"");
-    expect(SIDEBAR).toContain("badge: botsDot,");
-    expect(SIDEBAR).toMatch(/id="bots-link"[\s\S]*?extra=\{botsDot\}[\s\S]*?trailing=\{botsTrailing\}[\s\S]*?title=\{botsTip\}/);
+    expect(dot).toContain("botsPulse.unread > 0 ?");
+    expect(dot).not.toContain("botsHere");
+    expect(RAIL).toContain("{botsDot && <span className={`sidebar-rail-dot ${botsDot}`}");
   });
 
   it("one poll, two readers: the Bots page feeds the store and the store stands down", () => {
@@ -168,13 +162,10 @@ describe("Bots are hidden where the server runs none (Windows)", () => {
     expect(botsAvailable(null)).toBe(true);
   });
 
-  it("the sidebar drops the poll always, and the row and rail item unless Specialists are on", () => {
-    expect(SIDEBAR).toContain("useBotsPulse(botsOn)");
-    // `botsRow` = Bots or Specialists here, and not moved to the Claude rail (rail flag). With Specialists on and no
-    // bots (Windows) the row stays: the page lists the specialists alone.
-    expect(SIDEBAR).toContain("const botsRow = (botsOn || specialistsOn) && !railNav;");
-    expect(SIDEBAR).toContain("{botsRow && (");
-    expect(SIDEBAR).toMatch(/\.\.\.\(botsRow\s*\?\s*\[\s*\{\s*key: "bots"/);
+  it("the sidebar drops the poll there, and has no Bots row or rail item (the Claude rail carries the door)", () => {
+    expect(SIDEBAR).toContain("useBotsPulse(botsAvailable(config))");
+    expect(SIDEBAR).not.toContain('id="bots-link"');
+    expect(SIDEBAR).not.toContain('key: "bots"');
   });
 
   it("the route redirects Home and the page never mounts — once Specialists are KNOWN off", () => {
