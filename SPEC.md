@@ -13009,7 +13009,10 @@ known extensions off; then `allowed_directories=[files/, tmp/, https://]` →
 outside `files/` must be unreadable or the worker reports `ready ok:false`
 and exits. Refused afterwards: local paths outside `files/`/`tmp/` (read,
 write, ATTACH, EXPORT, glob), `http://`, `s3://`, `file://`, GDAL `/vsi…`,
-loading extension files, changing any option. Open: `https://` (httpfs),
+loading extension files, changing any option (so no `SET` of an engine
+option works; `SET VARIABLE` does). Open: `https://` to any host (httpfs),
+and where such a host redirects to: httpfs follows a redirect to an
+`http://` address and DuckDB has no option to stop it;
 all of `files/` to every session, CPU and memory (engine defaults).
 
 ### 55.5 Worker and lifecycle

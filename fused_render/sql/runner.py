@@ -243,13 +243,22 @@ def _open_lock(path: str):
     handle, or None when another holder has it."""
     from fused_render import _platform
 
-    handle = open(path, "a+")  # noqa: SIM115 — held for the owner's lifetime
-    try:
-        if _platform.flock(handle, blocking=False):
-            return handle
-    except OSError:
-        pass
-    handle.close()
+    # A sweep can take and remove this file between an owner's open and its
+    # lock; the owner would then hold a file no longer at `path`, and the next
+    # sweep would see a directory without a lock. So a lock only counts while
+    # the locked file is still the one at `path`; otherwise open it again.
+    for _ in range(8):
+        handle = open(path, "a+")  # noqa: SIM115 — held for the owner's lifetime
+        try:
+            if not _platform.flock(handle, blocking=False):
+                handle.close()
+                return None
+            held, there = os.fstat(handle.fileno()), os.stat(path)
+            if (held.st_dev, held.st_ino) == (there.st_dev, there.st_ino):
+                return handle
+        except OSError:
+            pass
+        handle.close()
     return None
 
 
