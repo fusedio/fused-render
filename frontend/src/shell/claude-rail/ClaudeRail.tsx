@@ -1400,13 +1400,28 @@ export function ClaudeRail({
             checking: railGit.checking,
             checked: railGit.checked,
             check: railGit.check,
+            syncing: railGit.syncing,
+            syncNote: railGit.syncNote,
+            syncDone: railGit.syncDone,
+            sync: railGit.sync,
             ...(gitDoor ? { onOpenGit: () => openGitRef.current?.() } : {}),
           }
         : gitReading
           ? "reading"
           : null,
     );
-  }, [gitRepo, gitReading, gitDoor, railGit.checking, railGit.checked, railGit.check]);
+  }, [
+    gitRepo,
+    gitReading,
+    gitDoor,
+    railGit.checking,
+    railGit.checked,
+    railGit.check,
+    railGit.syncing,
+    railGit.syncNote,
+    railGit.syncDone,
+    railGit.sync,
+  ]);
   // THE MODE DOORS' FACTS, for the shell's mode cards (mode-peek-store, by
   // this rail) — in the layout phase for the Git door's reason. Said again
   // only when the file or its list of modes changes; the page's two

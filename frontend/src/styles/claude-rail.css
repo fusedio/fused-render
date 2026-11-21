@@ -2118,8 +2118,8 @@ a.claude-rail-peek-scope:focus-visible {
   flex: none;
   color: var(--fg-muted);
 }
-/* ↑n / ↓n beside the branch: how far it stands from the default branch;
-   then what a push / pull would move, in the door's dot hues. */
+/* ↑n / ↓n beside the branch: how far it stands from the default branch.
+   Information only — what a push / pull would move is `.git-panel-sync`. */
 .git-panel-tag {
   display: inline-flex;
   align-items: center;
@@ -2132,14 +2132,6 @@ a.claude-rail-peek-scope:focus-visible {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-.git-panel-tag.is-push {
-  background: color-mix(in srgb, var(--status-background) 16%, transparent);
-  color: var(--status-background);
-}
-.git-panel-tag.is-pull {
-  background: color-mix(in srgb, var(--status-done) 16%, transparent);
-  color: var(--status-done);
 }
 .git-panel-tools {
   display: flex;
@@ -2162,6 +2154,52 @@ a.claude-rail-peek-scope:focus-visible {
 .git-panel-check:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+/* The Git view's primary sync button (template.html `.btn.primary` +
+   `.count`): filled in the ink, its count in a pill of the page's colour. */
+.git-panel-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 26px;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid var(--fg);
+  border-radius: 6px;
+  background: var(--fg);
+  color: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.git-panel-sync:hover:not([aria-disabled="true"]) {
+  background: var(--fg-muted);
+  border-color: var(--fg-muted);
+}
+.git-panel-sync:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.git-panel-sync[aria-disabled="true"] {
+  cursor: default;
+  background: rgba(var(--tint), 0.08);
+  border-color: var(--border);
+  color: var(--fg-muted);
+}
+.git-panel-sync-count {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.git-panel-sync[aria-disabled="true"] .git-panel-sync-count {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg-muted);
 }
 .git-panel-warn {
   font-size: 11px;
