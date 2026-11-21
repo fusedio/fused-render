@@ -2303,6 +2303,10 @@ export interface UiLayoutDoc {
   /** The chat text zoom, 1 = 100 % (platform/lib/chat-zoom.ts): one factor for
    *  every chat, always one of `CHAT_TEXT_SCALES` (ui-layout.ts). */
   chatTextScale?: number;
+  /** The task chat's "seen" mark (apps/claude/ui/chatSeen.ts): session id →
+   *  where the reader last sat at the end of it (`k:d:r`, a log position). Oldest
+   *  first; capped at `CHAT_SEEN_MAX` (ui-layout.ts). */
+  chatSeen?: Record<string, string>;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {

@@ -534,7 +534,7 @@ export const Turn = memo(function Turn({
       {/* The run was stopped by the user: a note beside the conversation, not
           part of the reply (T:13718-13734, runEnding's "Stopped."). */}
       {turn.stopped ? (
-        <div className="turn note">
+        <div className="turn note is-stop-note">
           <span className="eye" aria-hidden="true">
             ⏹
           </span>
