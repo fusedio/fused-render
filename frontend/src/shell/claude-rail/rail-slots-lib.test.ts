@@ -482,6 +482,23 @@ describe("the position store, free pins on", () => {
     expect(windowSize("a")).toEqual({ width: 420, height: cut });
     expect(windowPos("b")).toEqual({ left: 1012, top: 440 });
   });
+  it("…with both non-pins up, what is frozen is the box drawn — not the one this card alone would give", () => {
+    commitWindowBox("a", box(972, 60, 420, 800));
+    publishWindowBox("b", "fav", box(1012, 440, 380, 480));
+    publishPusher("b", "fav", box(1012, 440, 380, 480));
+    publishPusher("a", "list", box(972, 60, 420, 300));
+    // The top window blocks the step up: left, whole.
+    const drawn = { left: 972 - PUSH_GAP - 420, top: 8 };
+    expect(windowPos("a")).toEqual(drawn);
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
+    freezeFromDock("b");
+    expect(windowPos("a")).toEqual(drawn);
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
+    // The list window goes too: the pin stays where it was drawn, whole.
+    publishPusher("a", "list", null);
+    expect(windowPos("a")).toEqual(drawn);
+    expect(windowSize("a")).toEqual({ width: 420, height: 800 });
+  });
   it("…but a pin pushed by its OWN section's non-pin still goes home when that closes", () => {
     commitWindowBox("b", box(1012, 440, 380, 480));
     publishPusher("b", "fav", box(1012, 440, 380, 480));

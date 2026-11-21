@@ -184,12 +184,19 @@ export function freezeFromDock(win: RailWindow): boolean {
   const pushed = pinAt(other);
   if (pushed) {
     const mine = [...pushers.values()].filter((p) => p.win === win).map((p) => p.box);
-    const drawn = pushedPos(pushed.pos, pushed.size, mine);
-    if (drawn !== pushed.pos) {
-      // Its cut height too: the picture stays as it is drawn.
-      const kept = stored(other)?.size ?? null;
-      const at = { left: drawn.left, top: drawn.top };
-      setWindowPosMark(other, kept ? serialisePinBox({ ...at, width: kept.width, height: drawn.height ?? kept.height }) : serialisePos(at));
+    // What is frozen is what is DRAWN — the joint answer, every non-pin and
+    // the other pin counted (`pushedFor`) — and only if this card is one of
+    // the things pushing it: this card's docks alone could give an up/cut
+    // box the reader never saw (a step up the other non-pin blocks).
+    const mark = stored(other);
+    if (mark && pushedPos(pushed.pos, pushed.size, mine) !== pushed.pos) {
+      const drawn = pushedFor(other, mark);
+      if (drawn !== mark.pos) {
+        // Its cut height too: the picture stays as it is drawn.
+        const kept = mark.size ?? null;
+        const at = { left: drawn.left, top: drawn.top };
+        setWindowPosMark(other, kept ? serialisePinBox({ ...at, width: kept.width, height: drawn.height ?? kept.height }) : serialisePos(at));
+      }
     }
   }
   // THE CARD BEING PINNED STOPS PUSHING, NOW (owner, 2026-11-18: "when i click
