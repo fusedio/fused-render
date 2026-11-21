@@ -949,10 +949,10 @@ test("the stylesheet trades a slot's occupants on hover — the window's in a ra
   // IN A RAIL WINDOW THE ARCHIVE WAITS FOR THE HEAD ITSELF (2026-11-16): the
   // pointer elsewhere on the card (`.is-hot`, not `:hover`) keeps the number.
   expect(css).toContain(
-    ".task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) { opacity: 0;",
+    ".task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) { opacity: 0;",
   );
   expect(css).toContain(
-    ".task-head.task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a { opacity: 1;",
+    ".task-head.task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a { opacity: 1;",
   );
   // Where there is no hover, the acts stand.
   expect(css).toContain("@media (hover: none) {");

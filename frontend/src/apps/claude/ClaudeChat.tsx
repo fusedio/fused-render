@@ -6226,6 +6226,10 @@ function ChatBody(props: ChatBodyProps) {
       <div
         className={"c-chat" + (dropping ? " dropping" : "")}
         ref={columnRef}
+        // The chat column is the head's window: the pointer anywhere on it
+        // shows the head's star and Open (TaskHead `is-hot`), whatever the
+        // layout was when the head mounted.
+        data-task-window=""
         // DRAG AND DROP ON THE WHOLE COLUMN rather than on the textarea: a
         // target the size of a one-line input is a target people miss, and
         // everything in this column is part of the same message (T:11745-11751).
