@@ -35,6 +35,9 @@ router = APIRouter()
 VERSION = 1
 SIDEBAR_MIN_W = 180
 SIDEBAR_MAX_W = 400
+# The right rail's expanded width (frontend platform/lib/railstate.ts).
+RAIL_MIN_W = 180
+RAIL_MAX_W = 400
 MAX_VIEW_STATE = 500
 MAX_PATH = 4096
 MAX_QUERY = 512
@@ -49,7 +52,7 @@ RAIL_CARD_KEYS = ("canvasRailPeek", "canvasRailFav")
 CHAT_TEXT_SCALES = (0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2)
 # Keys an OLDER bundle's whole-document PUT never names: carried forward from
 # the stored document rather than dropped (see put_ui_layout).
-CARRIED_KEYS = (*RAIL_CARD_KEYS, "chatTextScale", "chatSeen")
+CARRIED_KEYS = (*RAIL_CARD_KEYS, "chatTextScale", "chatSeen", "rail")
 # The task chat's "seen" mark (apps/claude/ui/chatSeen.ts): session id → where
 # the reader last sat at the end of it (`k:d:r`, a position in the log). The bots'
 # `seen_seq`, for task chats: where the NEW rule goes on the next open.
@@ -114,6 +117,12 @@ def _clean(doc) -> dict:
         _check(_is_int(sb.get("width")) and SIDEBAR_MIN_W <= sb["width"] <= SIDEBAR_MAX_W)
         _check(isinstance(sb.get("collapsed"), bool))
         out["sidebar"] = {"width": sb["width"], "collapsed": sb["collapsed"]}
+    if "rail" in doc:
+        rl = doc["rail"]
+        _check(isinstance(rl, dict))
+        _check(_is_int(rl.get("width")) and RAIL_MIN_W <= rl["width"] <= RAIL_MAX_W)
+        _check(isinstance(rl.get("expanded"), bool))
+        out["rail"] = {"width": rl["width"], "expanded": rl["expanded"]}
     for key in ("bookmarksCollapsed", "currentAppsCollapsed", "canvasesCollapsed"):
         if key in doc:
             _check(isinstance(doc[key], bool))
@@ -209,8 +218,8 @@ def put_ui_layout(layout=Body(default=None), x_fused: str | None = Header(defaul
         return JSONResponse({"error": "invalid layout"}, status_code=400)
     # A document from an OLDER bundle (another window, the desktop app before
     # its relaunch) says nothing of `canvasRailPeek` / `canvasRailFav` /
-    # `chatTextScale`; the whole-document PUT must not drop the value a newer
-    # one saved (CodeRabbit on #2062).
+    # `chatTextScale` / `rail`; the whole-document PUT must not drop the value
+    # a newer one saved (CodeRabbit on #2062).
     missing = [key for key in CARRIED_KEYS if key not in clean]
     if missing:
         stored = read_layout()

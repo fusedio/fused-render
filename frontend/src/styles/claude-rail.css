@@ -2208,3 +2208,116 @@ button.git-commit:focus-visible {
   font-size: 12px;
   color: var(--fg-muted);
 }
+
+/* THE EXPANDABLE RAIL (ClaudeRail `expandOn`, `rail_expand_enabled`; owner,
+   2026-11-21): the left sidebar's expand / collapse, on the right rail.
+   Collapsed it is the 48px rail above, plus its button. Expanded (`.is-expanded`,
+   its width inline from platform/lib/railstate) it is the same rail, wider,
+   each seat a row: the icon in its 28px box at the row's left, then the
+   title. Nothing else changes — every wash, mark, dot and hint is the one
+   above, drawn on a wider box.
+
+   THE BUTTON: the left sidebar's own expand button (SidebarFrame
+   `.sidebar-rail-btn`), first on the rail; under it the hairline the left
+   sidebar draws under its button, 8px each side (`.sidebar-rail-items`'
+   top border there; the rail's own column has no gap, so the margin is the
+   whole 8px). */
+.claude-rail .sidebar-rail-sep.is-tight.claude-rail-expand-sep {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+/* THE WIDTH GLIDES, as the left sidebar's does (sidebar.css `#sidebar`) —
+   expanding, and collapsing through the tuck (ClaudeRail `tucking`: the rows
+   stay while the rail narrows) — but never under its own drag. Reduced
+   motion: the blanket rule (reduced-motion.css) makes it a snap. */
+.claude-rail.is-expanded {
+  transition:
+    flex-basis var(--dur-panel) var(--ease-out),
+    width var(--dur-panel) var(--ease-out);
+}
+.claude-rail.is-expanded.is-resizing {
+  transition: none;
+}
+/* …and while that drag is held (<html>, ClaudeRail `edgeDrag`): the cursor
+   stays the seam's, nothing selects, and the windows standing against the
+   rail follow its edge frame by frame instead of gliding after it (their
+   own glides: `.claude-rail-peek.is-on` above, schedule.css's dialog). */
+html.claude-rail-resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+html.claude-rail-resizing :is(.claude-rail-peek, .claude-rail-peek .claude-rail-peek-card, .modal-popover .modal-dialog) {
+  transition: none;
+}
+/* THE BUTTON MOVES WITH THE ICONS (owner, 2026-11-21: "top left of the
+   section rather than top right, it should move"): expanded it stands at the
+   rail's top-left, in the rows' own icon column (the 9.5px the rows keep
+   from the edge), where Search's glyph stands under it. */
+.claude-rail.is-expanded > .claude-rail-expand {
+  align-self: flex-start;
+  margin-left: 9.5px;
+}
+/* THE ROWS. Each seat as wide as the rail less the 9.5px the 48px rail left
+   each side of its 28px seats — so the wash box (`::after`, 2px past the
+   seat, 9px to the sides) keeps today's geometry, and is still the row's hit
+   area and hover target. */
+.claude-rail.is-expanded :is(.claude-rail-nav, .claude-rail-chats, .claude-rail-favs, .claude-rail-bots) {
+  align-self: stretch;
+  align-items: stretch;
+}
+.claude-rail.is-expanded .claude-rail-nav > .sidebar-rail-btn,
+.claude-rail.is-expanded .claude-rail-seat {
+  margin: 0 9.5px;
+}
+.claude-rail.is-expanded :is(.claude-rail-nav, .claude-rail-seat) > .sidebar-rail-btn {
+  width: auto;
+  min-width: 0;
+  justify-content: flex-start;
+  /* The title's left edge where the left sidebar's row text stands (44px in
+     from the panel's edge, sidebar.css `.sidebar-item`). */
+  gap: 6px;
+  font: inherit;
+}
+.claude-rail.is-expanded .claude-rail-seat > .sidebar-rail-btn {
+  flex: 1 1 auto;
+}
+/* The icon's own 28px box: the glyph centred as in the 28px seat, and the
+   box the dots (`.sidebar-rail-dot`, `.is-second`, the bot's corner dot) and
+   the pin mark (`.claude-rail-pinmark`) are placed against — on the icon, as
+   before, not at the row's far end. */
+.claude-rail-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+}
+/* The title: the left sidebar's row type (sidebar.css `.sidebar-item`),
+   one line, cut with "…"; fading in as the expanded rows do there
+   (`sidebar-content-in`). */
+.claude-rail-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 13.5px;
+  color: var(--fg);
+  animation: sidebar-content-in var(--dur-panel) var(--ease-out);
+}
+/* The hairlines stretch to the rows. */
+.claude-rail.is-expanded .sidebar-rail-sep {
+  align-self: stretch;
+  width: auto;
+  margin-left: 9.5px;
+  margin-right: 9.5px;
+}
+.claude-rail.is-expanded .claude-rail-node-sep {
+  align-self: stretch;
+  width: auto;
+  margin: 2px 9.5px;
+}

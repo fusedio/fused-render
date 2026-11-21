@@ -1639,6 +1639,10 @@ export interface Prefs {
   // left out, above Git, each previewing the file that way in a rail card.
   // Read only with the rail flag on. Optional: absent (older server) reads as off.
   rail_mode_doors?: { enabled: boolean };
+  // The expandable Claude rail (`rail_expand_enabled`, shell/prefs.py; off by
+  // default): a button at its top widens it to icon + title. Optional: absent
+  // (older server) reads as off.
+  rail_expand?: { enabled: boolean };
   // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
   // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
   // its status ring. Optional: absent (older server) reads as off.
@@ -2239,6 +2243,10 @@ export function putRailFreePinsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { rail_free_pins_enabled: enabled });
 }
 
+export function putRailExpandEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { rail_expand_enabled: enabled });
+}
+
 export function putRailModeDoorsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { rail_mode_doors_enabled: enabled });
 }
@@ -2280,6 +2288,8 @@ export function putPinnedTasks(keys: string[]): Promise<Prefs> {
 export interface UiLayoutDoc {
   v: 1;
   sidebar?: { width: number; collapsed: boolean };
+  /** The right rail's width and expanded flag (platform/lib/railstate.ts). */
+  rail?: { width: number; expanded: boolean };
   bookmarksCollapsed?: boolean;
   currentAppsCollapsed?: boolean;
   /** The sidebar's Canvases section fold (the desk's canvas half). */

@@ -56,6 +56,7 @@ ALLOWED = {
     "shell/claude-rail/claude-rail-lib.ts": "cache",  # rail stood last; dropped if the pulse says empty
     "shell/claude-rail/rail-peek-flag.ts": "cache",   # flag's last prefs answer, re-read
     "shell/claude-rail/rail-free-pins-flag.ts": "cache",  # flag's last prefs answer, re-read
+    "shell/claude-rail/rail-expand-flag.ts": "cache",  # flag's last prefs answer, re-read
     "shell/claude-rail/rail-mode-doors-flag.ts": "cache",  # flag's last prefs answer, re-read
     "shell/notifications-seen-store.ts": "import",
     "shell/task-head-flag.ts": "cache",             # flag's last prefs answer, re-read

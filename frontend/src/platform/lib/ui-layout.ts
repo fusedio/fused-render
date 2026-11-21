@@ -63,6 +63,10 @@ export type { UiLayoutDoc };
 export const SIDEBAR_WIDTH_MIN = 180;
 export const SIDEBAR_WIDTH_MAX = 400;
 export const SIDEBAR_WIDTH_DEFAULT = 232;
+// The right rail's expanded width (shell/ui_layout.py RAIL_MIN_W / RAIL_MAX_W).
+export const RAIL_WIDTH_MIN = 180;
+export const RAIL_WIDTH_MAX = 400;
+export const RAIL_WIDTH_DEFAULT = 200;
 const VIEWSTATE_MAX_ENTRIES = 500;
 const VIEWSTATE_MAX_KEY = 4096;
 const VIEWSTATE_MAX_VALUE = 512;
@@ -123,6 +127,13 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
     out.sidebar = {
       width: clampInt(sb.width, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX),
       collapsed: sb.collapsed === true,
+    };
+  }
+  const rl = src.rail;
+  if (isObj(rl) && isNum(rl.width)) {
+    out.rail = {
+      width: clampInt(rl.width, RAIL_WIDTH_MIN, RAIL_WIDTH_MAX),
+      expanded: rl.expanded === true,
     };
   }
   if (typeof src.bookmarksCollapsed === "boolean") out.bookmarksCollapsed = src.bookmarksCollapsed;
@@ -208,6 +219,7 @@ const withSide = (d: UiLayoutDoc, s: NonNullable<UiLayoutDoc["explorerSide"]>): 
  * Shape-only parsing; `sanitizeUiLayout` and the owning store's read path do
  * the rest. The owners, for whoever greps an old key:
  *   sidebar                 platform/lib/sidebarstate.ts
+ *   (rail                   platform/lib/railstate.ts — new field, no legacy key)
  *   bookmarks-collapsed     platform/ui/sidebar/sidebar-accordion.ts (was BookmarksSection.tsx)
  *   current-apps-collapsed  platform/ui/sidebar/sidebar-accordion.ts (was CurrentAppsSection.tsx)
  *   explorer-side-*         apps/explorer/lib/side-{hidden-,}store.ts, platform/lib/side-maximized-store.ts

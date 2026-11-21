@@ -91,7 +91,7 @@ describe("the registry", () => {
 describe("visibility", () => {
   test("child rows are hidden until their parent is on", () => {
     const ids = (prefs: Partial<Prefs>) => visibleSettings(ctx({}, prefs)).map((e) => e.id as string);
-    const children = ["tasks-favourites", "tasks-icons", "rail-mode-doors", "rail-free-pins", "call-params", "call-retention"];
+    const children = ["tasks-favourites", "tasks-icons", "rail-mode-doors", "rail-expand", "rail-free-pins", "call-params", "call-retention"];
     for (const c of children) expect(ids({})).not.toContain(c);
     const on = ids({
       canvas_rail_peek: { enabled: true },

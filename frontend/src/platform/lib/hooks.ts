@@ -22,6 +22,7 @@ import {
   subscribeSidebarState,
   type SidebarState,
 } from "@platform/lib/sidebarstate";
+import { getRailState, subscribeRailState, type RailState } from "@platform/lib/railstate";
 
 export function useEventCounter(events: readonly string[]): number {
   const [n, setN] = useState(0);
@@ -279,6 +280,11 @@ export function useFavicon(href: string | null): void {
 // dragged width, shared so every owner of the frame agrees on the layout.
 export function useSidebarState(): SidebarState {
   return useSyncExternalStore(subscribeSidebarState, getSidebarState, getSidebarState);
+}
+
+// Live right-rail state (platform/lib/railstate) — expanded flag and width.
+export function useRailState(): RailState {
+  return useSyncExternalStore(subscribeRailState, getRailState, getRailState);
 }
 
 // Whether Back / Forward have anywhere to go (platform/lib/nav-history). Not

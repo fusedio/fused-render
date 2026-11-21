@@ -13,6 +13,7 @@ import {
   putTaskFavouritesEnabled,
   putTaskHeadUnifiedEnabled,
   putRailFreePinsEnabled,
+  putRailExpandEnabled,
   putRailModeDoorsEnabled,
   putTaskIconsEnabled,
   putExpertsEnabled,
@@ -34,6 +35,7 @@ import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishTaskHeadUnified } from "../task-head-flag";
 import { publishRailFreePins } from "../claude-rail/rail-free-pins-flag";
+import { publishRailExpand } from "../claude-rail/rail-expand-flag";
 import { publishRailModeDoors } from "../claude-rail/rail-mode-doors-flag";
 import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { publishFavouritesParent, publishTaskFavourites } from "@platform/lib/favourites-flag";
@@ -369,6 +371,20 @@ export function RailModeDoorsControl({ prefs, onChange }: PrefControlProps) {
       checked={on}
       put={putRailModeDoorsEnabled}
       after={(next) => publishRailModeDoors(next.rail_mode_doors)}
+      onChange={onChange}
+    />
+  );
+}
+
+// THE EXPANDABLE RAIL: a child of the rail preview, like the mode doors.
+export function RailExpandControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.rail_expand?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="rail-expand"
+      checked={on}
+      put={putRailExpandEnabled}
+      after={(next) => publishRailExpand(next.rail_expand)}
       onChange={onChange}
     />
   );
