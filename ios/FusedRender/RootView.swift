@@ -404,8 +404,14 @@ struct ReachabilityBanner: View {
         case .localNetworkDenied:
             return "Fused Render needs Local Network access to reach your computer. It is turned off for this app."
         case .noWifi:
+            if !server.awayEndpoints.isEmpty {
+                return "Can't reach \(server.name) from here. It may be asleep or offline, or away access may be off in its Preferences → Phone access. On the same Wi-Fi it connects directly."
+            }
             return "Connect this phone to the same Wi-Fi as your computer."
         case .unreachable:
+            if !server.awayEndpoints.isEmpty {
+                return "Can't reach \(server.name) on this Wi-Fi or through its relay. If the computer is asleep, wake it; away access must be on in its Preferences → Phone access."
+            }
             return "Can't reach \(server.name) on this Wi-Fi. Make sure both are on the same network — guest and hotel networks often keep devices from seeing each other. If the computer is asleep, wake it."
         }
     }

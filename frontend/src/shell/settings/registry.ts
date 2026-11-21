@@ -623,6 +623,19 @@ const ENTRIES = [
     description: "Only devices you pair with the code get in. A paired device can open and run your apps and read or change their files; nothing else on this computer is reachable.",
     keywords: "lan wifi phone iphone network qr pair mobile local devices revoke",
   },
+  // AWAY ACCESS (docs/REMOTE_ACCESS.md): the same listener, reached off the
+  // Wi-Fi through a blind relay or the computer's tailnet. Pairing still
+  // happens on the Wi-Fi.
+  {
+    id: "lan-remote",
+    group: "lan",
+    section: "Local network",
+    label: "Also reachable away from this Wi-Fi",
+    description: "Paired phones can open your apps from anywhere while this computer is on, through an encrypted relay or your Tailscale network. The relay only passes along encrypted traffic: it cannot read it, and it cannot pair new phones — pairing still needs the same Wi-Fi.",
+    keywords: "remote away internet anywhere tunnel relay tailscale cellular outside travel",
+    child: true,
+    parent: { id: "lan", on: (prefs) => prefs.lan?.enabled === true },
+  },
 
 
   // ── Connections ──────────────────────────────────────────────────────────

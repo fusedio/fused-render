@@ -8,6 +8,12 @@
 import Combine
 import Foundation
 
+extension Notification.Name {
+    /// Posted by ManifestSync with `fingerprint`, `relay` ("host:port" or
+    /// absent) and `tailnet` (a name or absent) from `/api/lan/routes`.
+    static let fusedRoutesLearned = Notification.Name("io.fused.render.routesLearned")
+}
+
 struct Server: Identifiable, Codable, Equatable, Hashable {
     // One computer = one certificate. Its name and address are how we reach
     // it, not who it is: both can change under us (a rename, a new DHCP
@@ -29,21 +35,54 @@ struct Server: Identifiable, Codable, Equatable, Hashable {
     /// last address the computer actually answered on: where to look when the
     /// name does not resolve.
     var lastIP: String?
+    /// AWAY ROUTES (docs/REMOTE_ACCESS.md): how to reach the computer off its
+    /// Wi-Fi. `relayHost` is `<host-id>.<relay domain>` — a blind relay that
+    /// passes this same pinned TLS session through — on `relayPort`;
+    /// `tailnetHost` is the computer's Tailscale name, on the listener's own
+    /// port. From the pairing code (`r=`, `ts=`) and refreshed from
+    /// `/api/lan/routes` while connected. The fingerprint stays the only
+    /// trust: every route must present the same certificate.
+    var relayHost: String?
+    var relayPort: Int?
+    var tailnetHost: String?
 
     var id: String { fingerprint }
 
     var baseURL: URL { url(host: host) }
 
-    /// The base URL through `host` — the name, or the fallback address — on
-    /// `port`, the stored one unless the computer was found on another
-    /// (the listener falls back when 1889 is taken; PORT_CANDIDATES in lan.py).
+    /// The base URL through `host` — the name, the fallback address, or an
+    /// away route — on `port`: the stored one unless the computer was found on
+    /// another (the listener falls back when 1889 is taken; PORT_CANDIDATES in
+    /// lan.py), and the relay's own port for the relay name.
     func url(host: String, port: Int? = nil) -> URL {
         var c = URLComponents()
         c.scheme = "https"
         c.host = host
-        c.port = port ?? self.port
+        c.port = port ?? defaultPort(for: host)
         c.path = "/"
         return c.url!
+    }
+
+    /// The port `host` is reached on when nothing else says: the relay's for
+    /// the relay name, the listener's for everything else.
+    func defaultPort(for host: String) -> Int {
+        if let relay = relayHost, relay.lowercased() == host.lowercased() { return relayPort ?? 443 }
+        return port
+    }
+
+    /// The away routes, in the order to try them: the tailnet (direct, no
+    /// third party), then the relay.
+    var awayEndpoints: [(host: String, port: Int)] {
+        var out: [(host: String, port: Int)] = []
+        if let ts = tailnetHost, !ts.isEmpty { out.append((ts, port)) }
+        if let relay = relayHost, !relay.isEmpty { out.append((relay, relayPort ?? 443)) }
+        return out
+    }
+
+    /// Is `host` one of the away routes (not the Wi-Fi)?
+    func isAway(_ host: String) -> Bool {
+        let wanted = host.lowercased()
+        return awayEndpoints.contains { $0.host.lowercased() == wanted }
     }
 
     /// The ports the listener may be on: the stored one first, then the
@@ -69,19 +108,46 @@ struct Server: Identifiable, Codable, Equatable, Hashable {
 
     /// Is `host` one of the ways this computer is reached? Case-insensitive:
     /// WebKit reports hosts lowercased, and a local name may carry capitals.
+    /// The away routes count: the certificate check (TLSTrust) is what
+    /// decides it is really this computer, on every route alike.
     func reaches(_ host: String) -> Bool {
         let wanted = host.lowercased()
-        return candidateHosts.contains { $0.lowercased() == wanted }
+        return candidateHosts.contains { $0.lowercased() == wanted } || isAway(host)
     }
 
-    enum CodingKeys: String, CodingKey { case name, host, port, fingerprint, lastIP }
+    enum CodingKeys: String, CodingKey {
+        case name, host, port, fingerprint, lastIP, relayHost, relayPort, tailnetHost
+    }
 
-    init(name: String, host: String, port: Int, fingerprint: String, lastIP: String? = nil) {
+    init(name: String, host: String, port: Int, fingerprint: String, lastIP: String? = nil,
+         relayHost: String? = nil, relayPort: Int? = nil, tailnetHost: String? = nil) {
         self.name = name
         self.host = host
         self.port = port
         self.fingerprint = fingerprint
         self.lastIP = lastIP
+        self.relayHost = relayHost
+        self.relayPort = relayPort
+        self.tailnetHost = tailnetHost
+    }
+
+    /// `host:port` from a pairing code's `r=` (or the routes list), checked
+    /// to be a plain DNS name: it becomes a URL host the webview loads.
+    static func parseEndpoint(_ text: String?) -> (host: String, port: Int)? {
+        guard let text, !text.isEmpty else { return nil }
+        var host = text
+        var port = 443
+        if let colon = text.lastIndex(of: ":") {
+            guard let p = Int(text[text.index(after: colon)...]), (1...65535).contains(p) else { return nil }
+            host = String(text[..<colon])
+            port = p
+        }
+        return isPlainHostName(host) ? (host.lowercased(), port) : nil
+    }
+
+    static func isPlainHostName(_ host: String) -> Bool {
+        !host.isEmpty && host.count <= 253
+            && host.allSatisfy { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "." || $0 == "-" }
     }
 
     static func displayName(for host: String) -> String {
@@ -111,10 +177,24 @@ final class AppModel: ObservableObject {
     /// /pair there: a token is only spent when the server receives it.
     private var pendingToken: String?
 
+    private var routesObserver: NSObjectProtocol?
+
     init() {
         known = Self.loadKnown()
         // A phone that paired before goes straight back in.
         if let last = known.first { current = last }
+        // ManifestSync reads /api/lan/routes off the main actor and posts
+        // what it learned; the record is updated here.
+        routesObserver = NotificationCenter.default.addObserver(
+            forName: .fusedRoutesLearned, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let info = note.userInfo, let fp = info["fingerprint"] as? String else { return }
+            let relay = Server.parseEndpoint(info["relay"] as? String)
+            let tailnet = info["tailnet"] as? String
+            MainActor.assumeIsolated {
+                self?.noteRoutes(fingerprint: fp, relay: relay, tailnet: tailnet)
+            }
+        }
     }
 
     /// Open a computer this phone paired with before. The record carries the
@@ -161,9 +241,16 @@ final class AppModel: ObservableObject {
         }
         let port = comps.port ?? 443
         let ip = items.first(where: { $0.name == "ip" })?.value.flatMap { $0.isEmpty ? nil : $0 }
+        // Away routes, when the computer has away access on. Pairing itself
+        // still goes to the Wi-Fi host: the computer refuses /pair elsewhere.
+        let relay = Server.parseEndpoint(items.first(where: { $0.name == "r" })?.value)
+        let tailnet = items.first(where: { $0.name == "ts" })?.value.flatMap {
+            Server.isPlainHostName($0) ? $0.lowercased() : nil
+        }
         pairProblem = nil
         let server = Server(name: Server.displayName(for: host), host: host, port: port,
-                            fingerprint: fingerprint, lastIP: ip)
+                            fingerprint: fingerprint, lastIP: ip,
+                            relayHost: relay?.host, relayPort: relay?.port, tailnetHost: tailnet)
         unconfirmed = server
         pendingToken = token
         pendingPairURL = Self.pairURL(server, host: host, port: port, token: token)
@@ -206,6 +293,10 @@ final class AppModel: ObservableObject {
     /// and the port the listener is actually on.
     func noteReached(_ server: Server, host: String, port: Int? = nil, resolvedIP: String? = nil) {
         guard let i = known.firstIndex(of: server) else { return }
+        // An away route's port is the relay's (or the tailnet's), and its
+        // address is not a Wi-Fi fallback: nothing about it belongs in the
+        // Wi-Fi fields.
+        if known[i].isAway(host) { return }
         var changed = false
         if let port, port != known[i].port {
             known[i].port = port
@@ -217,6 +308,21 @@ final class AppModel: ObservableObject {
             changed = true
         }
         if changed, current == server { current = known[i] }
+    }
+
+    /// The computer's current routes (`/api/lan/routes`, read over a pinned
+    /// session by ManifestSync): keep the away routes it names. An empty
+    /// list of away routes clears them — the computer turned away access off.
+    func noteRoutes(fingerprint: String, relay: (host: String, port: Int)?, tailnet: String?) {
+        guard let i = known.firstIndex(where: { $0.fingerprint == fingerprint }) else { return }
+        let before = known[i]
+        known[i].relayHost = relay?.host
+        known[i].relayPort = relay?.port
+        known[i].tailnetHost = tailnet
+        if known[i].relayHost != before.relayHost || known[i].relayPort != before.relayPort
+            || known[i].tailnetHost != before.tailnetHost, current == known[i] {
+            current = known[i]
+        }
     }
 
     /// A widget or quick action: `fusedrender://open?host&…` naming an app
@@ -282,11 +388,15 @@ final class AppModel: ObservableObject {
         // Records from the private-CA era carry no fingerprint and cannot be
         // used (the computer no longer presents that CA): drop them, the
         // phone pairs again with one scan.
-        struct Loose: Decodable { let name: String; let host: String; let port: Int; let fingerprint: String?; let lastIP: String? }
+        struct Loose: Decodable {
+            let name: String; let host: String; let port: Int; let fingerprint: String?; let lastIP: String?
+            let relayHost: String?; let relayPort: Int?; let tailnetHost: String?
+        }
         guard let rows = try? JSONDecoder().decode([Loose].self, from: data) else { return [] }
         return rows.compactMap { r in
             guard let fp = r.fingerprint else { return nil }
-            return Server(name: r.name, host: r.host, port: r.port, fingerprint: fp, lastIP: r.lastIP)
+            return Server(name: r.name, host: r.host, port: r.port, fingerprint: fp, lastIP: r.lastIP,
+                          relayHost: r.relayHost, relayPort: r.relayPort, tailnetHost: r.tailnetHost)
         }
     }
 

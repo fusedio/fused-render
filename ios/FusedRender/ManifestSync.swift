@@ -31,6 +31,37 @@ enum ManifestSync {
         Task { await run(server: server, host: host, port: port, generation: gen) }
     }
 
+    /// The computer's routes (`/api/lan/routes`): the away routes it has now
+    /// (relay, tailnet), so a phone that paired before away access was on — or
+    /// whose relay moved — learns them while it is connected, without a new
+    /// scan. Same pinned session and cookie as the manifest; the answer only
+    /// ever names hosts, and every host is still checked against the pin.
+    private static func refreshRoutes(server: Server, base: URL, cookieHeader: String,
+                                      session: PinnedSession) async {
+        struct Route: Decodable { let kind: String; let host: String; let port: Int? }
+        struct Routes: Decodable { let routes: [Route]; let fingerprint: String? }
+        var req = URLRequest(url: base.appendingPathComponent("api/lan/routes"))
+        req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (data, response) = try? await session.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let payload = try? JSONDecoder().decode(Routes.self, from: data),
+              payload.fingerprint?.lowercased() == server.fingerprint.lowercased() else {
+            return  // an older computer (no such route), or offline: keep what we have
+        }
+        var info: [String: Any] = ["fingerprint": server.fingerprint]
+        if let relay = payload.routes.first(where: { $0.kind == "relay" }) {
+            info["relay"] = "\(relay.host):\(relay.port ?? 443)"
+        }
+        if let ts = payload.routes.first(where: { $0.kind == "tailscale" }) {
+            info["tailnet"] = ts.host
+        }
+        await MainActor.run {
+            NotificationCenter.default.post(name: .fusedRoutesLearned, object: nil, userInfo: info)
+        }
+    }
+
     private static func run(server: Server, host: String, port: Int, generation gen: Int) async {
         guard let cookieHeader = PairingSecret.cookieHeader(for: server) else {
             log.info("manifest refresh skipped (no pairing secret yet)")
@@ -38,6 +69,7 @@ enum ManifestSync {
         }
         let pinned = PinnedSession(fingerprint: server.fingerprint)
         let base = server.url(host: host, port: port)
+        await refreshRoutes(server: server, base: base, cookieHeader: cookieHeader, session: pinned)
         var req = URLRequest(url: base.appendingPathComponent("api/lan/apps"))
         req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
