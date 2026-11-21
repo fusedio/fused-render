@@ -415,7 +415,11 @@ def test_the_capability_is_polled_like_the_annotate_target(source):
     # MutationObserver held on someone else's document for the life of the session
     # is not worth the one cheap read it would replace.
     assert "const REV_TARGET_POLL_MS = 750;" in source
-    assert 'window.addEventListener("focus", () => pollRevTarget());' in source
+    focus = source[source.index('window.addEventListener("focus", () => {'):]
+    focus = focus[:focus.index("\n});")]
+    assert "pollRevTarget();" in focus
+    # …and a view stuck on a killed read reads again (never while one is out).
+    assert "if (readFailed && !readInFlight) draw(true);" in focus
     assert "setInterval(() => pollRevTarget(), REV_TARGET_POLL_MS);" in source
     # A capability that GOES takes the preview with it, and says so to the shell.
     poll = source[source.index("function pollRevTarget()"):]
