@@ -9986,7 +9986,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   any other text model (Hub search rows, cached repos). `describe_catalog` and
   the Hub search row expose `useCases: string[]` (`[]` off text generation).
   `Qwen3-Coder-30B-A3B` is a plain curated row tagged `coding` on `mlx-text`
-  and `llamacpp-text` (the curated text lists may hold six rows). Frontend:
+  and `llamacpp-text`; `mlx-text` also carries `Inkling-2-Mini`, tagged
+  `coding` first (the curated text lists may hold six rows; see D1499 for
+  `mlx-text`'s eighth). Frontend:
   `apps/ai_models/lib/useCases.ts` holds the ids, labels and order, `useCaseOf`
   (a row's first known use case, else writing) and `groupByUseCase`; the Models
   text pane and the Playground sidebar draw one section per use case (Writing &
