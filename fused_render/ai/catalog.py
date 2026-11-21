@@ -146,8 +146,10 @@ from fused_render.ai import registry
 #: **The two TEXT lists are the exception: six since SPEC AI-28b (the coding
 #: row), seven since the October 2026 refresh**, which added two mixture-of-
 #: experts rows per runner (Gemma 4 26B-A4B and LFM2.5 24B-A2B) against one
-#: retirement each. A deliberate loosening, recorded in DECISIONS.md; the
-#: ceiling test pins it.
+#: retirement each, **and eight on `mlx-text` since Inkling 2 Mini (D1499)**,
+#: kept beside Qwen3-Coder rather than replacing it while it is new. A
+#: deliberate loosening each time, recorded in DECISIONS.md; the ceiling test
+#: pins it.
 #:
 #: **The bounds are a budget, not a target.** Filling a list to five with rows
 #: that differ only in size is worse than a list of three where every row
@@ -428,6 +430,64 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "The code-tuned model: writes, explains and fixes code at "
                     "about a 3B's speed, but its 17GB of weights want a 32GB "
                     "machine.",
+        },
+        # Inkling 2 Mini (Thinking Machines, 2026-11-20), Apache-2.0: a second
+        # coding row (SPEC AI-28b) beside Qwen3-Coder, kept both while Inkling
+        # is new (the list's eighth row, D1499). A 26.2B mixture of experts with ~3.4B
+        # active per token whose middle 12 of 24 layers run three times per
+        # token (a "looped" transformer, `model_type` `inkling2_loop`); the
+        # vendor's agentic-coding numbers lead every open model under 100B
+        # (SWE-bench Verified 79.2%), and it scores 20 on Artificial
+        # Analysis' Intelligence Index v5, level with the Qwen3.8 27B below.
+        #
+        # **The publisher's own repo, which is NOT an MLX-format checkpoint,
+        # and that is deliberate.** It is a transformers/ModelOpt export at its
+        # trained precision (NVFP4 experts, MXFP8 in the last four layers, a
+        # sidecar `hf_quant_config.json` mapping each expert projection, and
+        # `model.llm.*` tensor names); mlx-vlm's `inkling2` sanitizer renames
+        # and splits those at load and keeps the NVFP4/MXFP8 weights as they
+        # are, so nothing is requantized. **No community MLX conversion loads
+        # on the mlx-vlm this runner pins** — checked 2026-11-21 by running
+        # `mlx_vlm.utils.load_model` on each repo's real tensor names and
+        # shapes (read from the safetensors headers): the mlx-lm PR #2086
+        # layout (`mlx-community/Inkling-2-Mini-4bit`, `pipenetwork/…`,
+        # `InterpreticAI/…`, `araysuter/…`) and oMLX's oQ quants
+        # (`mlx-community/Inkling-2-Mini-oQ4e-mtp`, 16.9GB) fail on unknown
+        # parameters, and so do the two mlx-vlm-layout ones
+        # (`nativ-community/Inkling-2-Mini-nvfp4`,
+        # `netprojects/Inkling-2-Mini-MLX-4-8bit`), each of which ships its own
+        # patched mlx-vlm with extra loop "message gate" tensors. This repo
+        # loads, 1271 tensors, 19.53GB resident (the MTP drafter is dropped).
+        # `quant_method` is `modelopt`, which `formats.unloadable_quant`
+        # passes. 20.19GB Hub byte sum
+        # (2026-11-21), ungated; the 0.64GB `mtp.safetensors` (a speculative-
+        # decoding drafter this runner does not use) is in that figure.
+        #
+        # **Needs the interim mlx-vlm wheel** `mlx_text/pyproject.toml` pins
+        # (`0.8.1.dev20261120`: v0.8.0 + upstream #2778): no PyPI release
+        # can load `inkling2_loop` yet. Its reply markup is not `<think>`
+        # tags but Inkling's own message channels, which
+        # `worker_base.InklingMarkup` rewrites, and tool calls are their own
+        # family (`toolcalls`' `inkling`). **Not loaded here** (no Mac in the
+        # build): the template, the markup and the wheel's imports were
+        # checked off-Mac; someone on a 32GB Mac should load it once.
+        {
+            "id": "thinkingmachines/Inkling-2-Mini",
+            "useCases": ["coding", "reasoning", "writing"],
+            "params": "26B (~3.4B active)",
+            # Not a recognised `fit.QUANT_BYTES_PER_PARAM` key on purpose:
+            # the mix of 4-bit and 8-bit tensors has no one bytes-per-param
+            # figure, so the fit estimate falls back to `size_gb`.
+            "quantization": "NVFP4 (native)",
+            "label": "Inkling 2 Mini (NVFP4)",
+            "nickname": "Inkling 2",
+            "size_gb": 20.2,
+            "context": 32768,
+            "tool_family": "inkling",
+            "tools": True,
+            "note": "Newer than Qwen3-Coder and ahead of it on agentic-coding "
+                    "benchmarks, at about a 3B's speed — but its 20GB of "
+                    "weights want a 32GB machine.",
         },
         # LAST, and the only entry here that is not a 16GB-machine model. It
         # lands at the bottom on size alone now, which happens to agree with

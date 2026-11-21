@@ -445,6 +445,145 @@ class ThinkSplitter:
             out.append(("reasoning" if self.reasoning else "text", text))
 
 
+#: Inkling 2's chat markup (Thinking Machines; `tokenizer_config.json`'s own
+#: `response_template` is the grammar this follows). A reply is a run of
+#: messages, each `<|message_model|>[name]<|content_KIND|>body<|end_message|>`,
+#: ending on `<|content_model_end_sampling|>` (the EOS). No `<think>` tags: the
+#: deliberation is the `content_thinking` kind, the answer `content_text`, and
+#: a tool call `content_invoke_tool_json` with a `{"name", "args"}` body (the
+#: `name` slot of its header repeats the tool's name).
+INKLING_TOOL_OPEN = "<|content_invoke_tool_json|>"
+INKLING_END = "<|end_message|>"
+_INKLING_HEADERS = frozenset({"<|message_model|>", "<|message_user|>",
+                              "<|message_system|>", "<|message_tool|>"})
+_INKLING_TEXT = frozenset({"<|content_text|>", "<|content_tool_error|>",
+                           "<|content_invoke_tool_text|>"})
+_INKLING_DROP = frozenset({"<|content_model_end_sampling|>", "<|endoftext|>",
+                           "<|begin_of_text|>", "<|content_xml|>"})
+_INKLING_LONGEST = max(len(t) for t in (*_INKLING_HEADERS, *_INKLING_TEXT,
+                                        *_INKLING_DROP, INKLING_TOOL_OPEN,
+                                        INKLING_END, "<|content_thinking|>"))
+
+
+def chat_markup(template) -> str | None:
+    """`"inkling"` when a chat template writes Inkling 2's markup, else None.
+
+    Read off the TEMPLATE, not the repo id: the markup is what the model was
+    trained to emit, and a fine-tune or re-upload under any name keeps it."""
+    if isinstance(template, str) and INKLING_TOOL_OPEN in template:
+        return "inkling"
+    return None
+
+
+class InklingMarkup:
+    """Rewrite Inkling 2's message markup, as it streams, into the
+    conventions the rest of this file already reads: deliberation inside
+    `<think>`…`</think>` (so `ThinkSplitter` sends it to the reasoning
+    channel), the answer as bare text, and a tool call kept as
+    `<|content_invoke_tool_json|>{…}<|end_message|>` for `toolcalls`'
+    `inkling` family to parse. Headers (and the name a header carries) and
+    the end-of-sampling token are dropped. A marker split across chunks is
+    held until it completes; a `<|` that turns out not to be one of these
+    markers is text."""
+
+    def __init__(self):
+        self._buffer = ""
+        self._kind = "text"
+        self._header = False
+
+    def feed(self, text: str) -> str:
+        self._buffer += text or ""
+        out: list[str] = []
+        while self._buffer:
+            i = self._buffer.find("<|")
+            if i < 0:
+                # A trailing `<` may be the first half of `<|`: hold it.
+                keep = 1 if self._buffer.endswith("<") else 0
+                self._text(out, self._buffer[:len(self._buffer) - keep])
+                self._buffer = self._buffer[len(self._buffer) - keep:]
+                break
+            self._text(out, self._buffer[:i])
+            self._buffer = self._buffer[i:]
+            j = self._buffer.find("|>", 2)
+            if j < 0:
+                if len(self._buffer) < _INKLING_LONGEST:
+                    break  # maybe the front of a marker: wait for more
+                self._text(out, "<|")
+                self._buffer = self._buffer[2:]
+                continue
+            token = self._buffer[:j + 2]
+            if self._marker(out, token):
+                self._buffer = self._buffer[j + 2:]
+            else:
+                self._text(out, "<|")
+                self._buffer = self._buffer[2:]
+        return "".join(out)
+
+    def finish(self) -> str:
+        out: list[str] = []
+        self._text(out, self._buffer)
+        self._buffer = ""
+        return "".join(out)
+
+    def _text(self, out: list, text: str) -> None:
+        if text and not self._header:
+            out.append(text)
+
+    def _marker(self, out: list, token: str) -> bool:
+        if token in _INKLING_HEADERS:
+            if self._kind == "thinking":
+                out.append("</think>")  # a new message ends an unclosed one
+            self._kind, self._header = "text", True
+        elif token == "<|content_thinking|>":
+            self._kind, self._header = "thinking", False
+            out.append("<think>")
+        elif token in _INKLING_TEXT:
+            self._kind, self._header = "text", False
+        elif token == INKLING_TOOL_OPEN:
+            self._kind, self._header = "tool", False
+            out.append(token)
+        elif token == INKLING_END:
+            if self._kind == "thinking":
+                out.append("</think>")
+            elif self._kind == "tool":
+                out.append(token)
+            self._kind, self._header = "text", False
+        elif token in _INKLING_DROP:
+            pass
+        else:
+            return False
+        return True
+
+
+def tool_call_args_as_objects(messages):
+    """`messages` with every assistant `tool_calls[].function.arguments` that
+    is a JSON-object STRING (OpenAI's wire shape, which the gateway forwards
+    verbatim) parsed into the dict it encodes. Inkling 2's template refuses a
+    string there ("canonicalize upstream"), so its multi-turn tool use dies
+    at render without this. Anything else is passed through untouched, and
+    the input is never mutated."""
+    out = []
+    for msg in messages or []:
+        calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+        if not isinstance(calls, list):
+            out.append(msg)
+            continue
+        fixed = []
+        for call in calls:
+            fn = call.get("function") if isinstance(call, dict) else None
+            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if isinstance(args, str):
+                try:
+                    parsed = json.loads(args) if args.strip() else {}
+                except ValueError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    call = {**call, "function": {**fn, "arguments": parsed}}
+            fixed.append(call)
+        out.append({**msg, "tool_calls": fixed})
+    return out
+
+
 class TextWriter:
     """The worker's `write`, with the think split applied ONCE, here, in the
     one process that knows the rendered prompt (docs/LOCAL_MODEL_GATEWAY.md
@@ -453,16 +592,26 @@ class TextWriter:
     tags never reach the wire, and no reader downstream (the gateway, the
     Playground, `fused.ai`) scans text for them. Every other row (`done`,
     errors) flushes what the splitter still holds first, then passes
-    through unchanged."""
+    through unchanged.
 
-    def __init__(self, write, prompt: str = "", *, open=None):
+    `markup="inkling"` (see `chat_markup`) first rewrites Inkling 2's message
+    markup into `<think>` tags and bare text (`InklingMarkup`), so the same
+    split applies to a model that never writes a `<think>` tag."""
+
+    def __init__(self, write, prompt: str = "", *, open=None, markup=None):
         self._write = write
         self._split = ThinkSplitter(open=open_think(prompt) if open is None else bool(open))
+        self._markup = InklingMarkup() if markup == "inkling" else None
 
     def __call__(self, event: dict) -> None:
         if isinstance(event, dict) and event.get("type") == "chunk":
-            self._emit(self._split.feed(str(event.get("text") or "")))
+            text = str(event.get("text") or "")
+            if self._markup is not None:
+                text = self._markup.feed(text)
+            self._emit(self._split.feed(text))
             return
+        if self._markup is not None:
+            self._emit(self._split.feed(self._markup.finish()))
         self._emit(self._split.finish())
         self._write(event)
 

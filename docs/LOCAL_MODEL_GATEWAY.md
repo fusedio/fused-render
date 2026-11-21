@@ -52,7 +52,7 @@ envelope. LAN (`lan.py`) does not allow-list `/v1`.
 - **Tools**: `tools` are passed to the worker verbatim; the worker renders
   them through the model's own chat template. The reply text is run through
   `ai/toolcalls.py`, a family-keyed parser (`qwen`, `hermes`, `llama3`,
-  `gemma`, `lfm`) that is streaming-safe: text outside a call marker is
+  `gemma`, `lfm`, `inkling`) that is streaming-safe: text outside a call marker is
   emitted as `delta.content`, a complete call is emitted as
   `delta.tool_calls[{index, id, type:"function", function{name, arguments}}]`
   and the final `finish_reason` becomes `tool_calls`. The family comes from
@@ -92,7 +92,11 @@ in the result (`text` is the answer alone), `fused.ai`'s stream yields
 answer chunks only, and the Playground renders `thinking` directly
 (`splitThink` remains for a reply that carries tags in its text: a
 hand-written `<thinking>` prompt on the Claude tier). Deliberation never
-reaches the tool-call parser.
+reaches the tool-call parser. A model that writes no `<think>` tags at all —
+Inkling 2, whose replies are `<|message_model|><|content_KIND|>…<|end_message|>`
+channels — is told apart by its chat template (`worker_base.chat_markup`), and
+`TextWriter(markup="inkling")` first rewrites those channels into the same
+tags (`InklingMarkup`), keeping only a tool call's body for the parser.
 
 - `runners/llama_text.py`: `_N_CTX` becomes the load option (env
   `FUSED_AI_N_CTX` from the supervisor, default 8192); the Jinja render gets

@@ -31,6 +31,29 @@
 # incomplete; only a chat proves it. Naming it here is cheaper than tracing
 # that failure a second time.
 #
+# **`mlx-vlm` is installed from an INTERIM WHEEL, not from PyPI, for now.**
+# Inkling 2 Mini (`model_type: inkling2_loop`) landed upstream in #2778 on
+# 2026-11-20, after the last release (0.8.0, 2026-11-16), so no PyPI release
+# can load it. `vasu2001/mlx-vlm`'s `fused/inkling2-mini` branch is upstream's
+# v0.8.0 tag plus that one commit (cherry-picked as-is; the Inkling model files
+# are byte-identical to upstream's), versioned `0.8.1.dev20261120` so it never
+# poses as a real release, and its GitHub release carries the pure-Python
+# wheel `[tool.uv.sources]` below points at. A wheel URL and not a git source
+# because uv would need `git` on the user's machine to build from one, and the
+# env installer runs `--no-build`. `mlx_embed` pins the identical URL so both
+# MLX runners stay on one mlx-vlm. **Revert both to a PyPI range
+# (`>=0.8.1,<0.9`) once upstream publishes a release containing #2778** —
+# re-probe the imports listed below against it first.
+#
+# The 0.7.9 -> 0.8 move this implies was probed off-Mac, on Linux's CPU build
+# of mlx: every import and keyword `worker.py` uses still exists in 0.8
+# (`load(path, lazy=)`, `utils.get_model_and_args`/`load_config`,
+# `stream_generate(image=, max_tokens=, sampler=, prompt_cache_state=)`,
+# `sample_utils.make_sampler(temp=, top_p=)`,
+# `prompt_utils.apply_chat_template(num_images=, enable_thinking=)`,
+# `PromptCacheState`, `apc.media_safe_prefix_min`). No model was LOADED on
+# it — that needs Apple Silicon.
+#
 # `mlx-vlm` carries a CEILING for the reason `mflux_image/pyproject.toml` states
 # at length: no lockfile is committed beside these manifests and `uv sync` runs
 # bare, so an unbounded line re-resolves from PyPI on every new venv key — which
@@ -51,7 +74,9 @@ name = "fused-render-runner-mlx-text"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "mlx-vlm>=0.7.9,<0.8",
+    # Exact, and from the URL in `[tool.uv.sources]` — see the interim-wheel
+    # note above.
+    "mlx-vlm==0.8.1.dev20261120",
     # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
     "pillow>=12.3,<13",
     "jinja2",
@@ -62,3 +87,6 @@ dependencies = [
 # Not a distribution — a folder of scripts, not something to build and install.
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+mlx-vlm = { url = "https://github.com/vasu2001/mlx-vlm/releases/download/v0.8.1.dev20261120/mlx_vlm-0.8.1.dev20261120-py3-none-any.whl" }

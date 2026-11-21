@@ -9,6 +9,7 @@ from fused_render.ai.runners import formats
 
 TEXT_LISTS = ("mlx-text", "llamacpp-text")
 CODER_MLX = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+INKLING_MLX = "thinkingmachines/Inkling-2-Mini"
 CODER_GGUF = "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
 
 
@@ -25,6 +26,12 @@ def test_qwen3_coder_is_tagged_coding_on_both_engines():
     gguf = {e["id"]: e for e in catalog.SUGGESTIONS["llamacpp-text"]}
     assert mlx[CODER_MLX]["useCases"] == ["coding"]
     assert gguf[CODER_GGUF]["useCases"] == ["coding"]
+
+
+def test_inkling_sits_in_the_coding_section_beside_qwen3_coder():
+    # A generalist that leads on coding: `coding` FIRST picks its section.
+    mlx = {e["id"]: e for e in catalog.SUGGESTIONS["mlx-text"]}
+    assert mlx[INKLING_MLX]["useCases"][0] == "coding"
 
 
 def test_qwen3_coder_gguf_has_a_recipe_naming_the_real_repo():
