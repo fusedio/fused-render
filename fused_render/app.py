@@ -297,6 +297,9 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     if _agent_registry.is_enabled("opencode"):
         from fused_render import opencode_health
         opencode_health.warm_in_background()
+    if _agent_registry.is_enabled("cursor"):
+        from fused_render import cursor_health
+        cursor_health.warm_in_background()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.
@@ -500,6 +503,9 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         canvas_mirror.refuse_new_runs()
         warm_run.refuse_new()
         contrib_ai.refuse_children()
+        from fused_render.udf import runner as udf_runner
+
+        udf_runner.refuse_new()
 
     def engines():
         from fused_render.server import engine_host
@@ -573,6 +579,13 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
 
         contrib_ai.stop_children()
 
+    def udf_workers():
+        # The warm per-environment UDF workers (`fused.workbench.udf()`,
+        # udf/runner.py): stdin closed, then killed after a short wait.
+        from fused_render.udf import runner as udf_runner
+
+        udf_runner.shutdown()
+
     def discovery():
         from fused_render.server.app import remove_server_json
 
@@ -588,6 +601,7 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
                        ("bots", bots), ("canvas-sync", canvas_sync),
                        ("canvas-mirror", canvas_mirror),
                        ("contrib-claude", contrib_claude),
+                       ("udf-workers", udf_workers),
                        ("discovery", discovery)):
         def _run(step=step, name=name):
             try:

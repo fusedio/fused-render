@@ -484,50 +484,6 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   animation: canvases-refreshing-spin 0.9s linear infinite;
 }
 
-/* New-canvas inline form (replaces the head actions while open). The error
-   line hangs BELOW the row out of flow: it comes and goes per keystroke, and
-   in-flow it would grow the head and nudge the title and search box on every
-   character. The head instead opens a gap under itself ONCE, while the form
-   is up, so the line never lands on the subtitle paragraph. */
-.canvases-head.is-creating {
-  margin-bottom: 28px;
-}
-
-.canvases-new-form {
-  position: relative;
-}
-
-.canvases-new-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.canvases-new-name {
-  width: 220px;
-}
-
-.canvases-new-name[aria-invalid="true"],
-.canvases-new-name[aria-invalid="true"]:focus {
-  border-color: var(--error);
-}
-
-/* Anchored to the form's right edge and growing LEFT, one line: rule text
-   fits in the form's width, a long create-call message stretches toward the
-   title and is clipped at the end (full text in the title tooltip). */
-.canvases-new-error {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  max-width: min(640px, 70vw);
-  font-size: 12px;
-  line-height: 1.3;
-  color: var(--error);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .canvases-empty {
   color: var(--fg-muted);
   padding: 32px 0;
@@ -701,7 +657,8 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   }
 }
 
-/* Rename canvas dialog (apps/canvases/RenameCanvasDialog.tsx). */
+/* Rename canvas dialog (apps/canvases/RenameCanvasDialog.tsx); the New canvas
+   dialog (NewCanvasDialog.tsx) shares its error and note lines. */
 .canvas-rename-error {
   margin: 6px 0 0;
   font-size: 12px;
@@ -716,210 +673,33 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
   color: var(--fg-muted);
 }
 
-/* ---- The canvas node view (apps/canvases/NodeView.tsx, SPEC §53.3) -------- */
-/* One node of a cloned canvas, live in the hosted workbench, in the explorer's
-   content pane or a layout pane. A column: the header
-   strip (NV-8), then the frame or the notice in its place. Palette tokens
-   only, so both themes paint it. */
-.node-view {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-  color: var(--fg);
-}
-
-.node-view-head {
-  flex: none;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-alt);
-  /* The strip answers to its own width (a layout pane can be narrow), not
-     the window's. */
-  container-type: inline-size;
-  container-name: node-view-head;
-}
-
-.node-view-strip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  min-height: 36px;
-  padding: 4px 12px 0;
-  font-size: 12px;
-}
-
-.node-view-substrip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-  min-width: 0;
-  padding: 0 12px 6px;
-  color: var(--fg-muted);
-  font-size: 11px;
-}
-
-.node-view-kind {
-  flex: none;
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--fg-muted);
-  font-size: 10px;
-  line-height: 16px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-/* The title takes the room and is the last thing to ellipsise. */
-.node-view-title {
-  flex: 1 1 auto;
-  min-width: 48px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* New canvas dialog (apps/canvases/NewCanvasDialog.tsx). */
+.canvas-new-label {
+  display: block;
+  margin: 0 0 6px;
   font-size: 13px;
   font-weight: 600;
 }
 
-.node-view-canvas {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.node-view-env {
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.node-view-status,
-.node-view-sync {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
-
-.node-view-status {
-  flex: none;
-}
-
-.node-view-sync {
-  flex: 1 1 140px;
-}
-
-.node-view-sync-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.node-view-small-btn {
-  flex: none;
-  padding: 1px 10px;
-  font-size: 12px;
-}
-
-/* Narrow: the badges go before the title has to give anything up. */
-@container node-view-head (max-width: 460px) {
-  .node-view-kind {
-    display: none;
-  }
-}
-@container node-view-head (max-width: 360px) {
-  .node-view-env {
-    display: none;
-  }
-}
-
-/* The node's error under the strip: one line, the whole text on a click. */
-.node-view-error-line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
+.canvas-new-input {
   width: 100%;
-  margin: 0;
-  padding: 4px 10px 6px;
-  border: 0;
-  border-top: 1px solid var(--border);
-  background: rgba(var(--error-rgb), 0.08);
-  color: var(--fg);
-  font: inherit;
+}
+
+.canvas-new-input[aria-invalid="true"],
+.canvas-new-input[aria-invalid="true"]:focus {
+  border-color: var(--error);
+}
+
+/* Where the canvas goes: the env and the clone folder, as a quiet aside. */
+.canvas-new-where {
+  margin: 12px 0 0;
   font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-button.node-view-error-line .node-view-error-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-button.node-view-error-line.is-open .node-view-error-text {
-  max-height: 40vh;
-  overflow: auto;
-  white-space: pre-wrap;
+  line-height: 1.45;
+  color: var(--fg-muted);
   overflow-wrap: anywhere;
 }
 
-.node-view-error-lineno {
-  flex: none;
-  color: var(--error);
-  font-weight: 600;
-}
-
-.node-view-error-text {
-  color: var(--error);
-}
-
-.node-view-stage {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-}
-
-.node-view-frame {
-  flex: 1 1 auto;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: var(--bg);
-}
-
-.node-view-message {
-  padding: 16px;
-  display: grid;
-  gap: 10px;
-  justify-items: start;
-  align-content: start;
-  font-size: 13px;
-}
-
-.node-view-message p {
-  margin: 0;
-}
-
-.node-view-overlay {
-  position: absolute;
-  inset: 0;
-  background: var(--bg);
-}
-
-.node-view-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+.canvas-new-where b,
+.canvas-new-where code {
+  color: var(--fg);
 }

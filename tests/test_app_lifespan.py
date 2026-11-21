@@ -163,6 +163,8 @@ EXPECTED_STARTUP = [
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",
     "_startup_experts",
+    # Added 2026-11-18: specialists (docs/specialists.md): seed + update timer, only with the flag on.
+    "_startup_specialists",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and
     # every extension but the built-in `.fused` refused to share.
@@ -180,6 +182,8 @@ EXPECTED_STARTUP = [
 EXPECTED_SHUTDOWN = [
     "_shutdown_background_apps_resurrection",
     "_startup_shutdown_ai",
+    # The warm UDF workers (`fused.workbench.udf()`, udf/runner.py, SPEC §54).
+    "_shutdown_udf_workers",
     "_shutdown_server_json",
     "_shutdown_loop_lag",
     "_shutdown_resource_trail",
@@ -201,6 +205,8 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_terminal_sessions",
     # Added 2026-10-06: every loaded bot's task and Chrome (bots/registry.py).
     "_shutdown_bots",
+    # Added 2026-11-18: the specialists' update timer, a no-op unless it was started.
+    "_shutdown_specialists",
     "_shutdown_index_watch",
 ]
 
@@ -246,6 +252,7 @@ EXPECTED_STARTUP_LEAN = [
 #: `@on_startup` PREWARM is lean-skipped, not the session object itself.
 EXPECTED_SHUTDOWN_LEAN = [
     "_startup_shutdown_ai",
+    "_shutdown_udf_workers",
     "_shutdown_captures",
     "_shutdown_ai_workers",
     # Every canvas sync manager stopped and its clone's writer lock released —
@@ -259,6 +266,8 @@ EXPECTED_SHUTDOWN_LEAN = [
     "_shutdown_terminal_sessions",
     # A request can start a bot's Chrome in a lean app too.
     "_shutdown_bots",
+    # The prefs switch can start the specialists' update timer in a lean app too.
+    "_shutdown_specialists",
 ]
 
 

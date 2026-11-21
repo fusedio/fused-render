@@ -108,6 +108,14 @@ def test_a_vrt_is_refused_and_odd_parquet_columns_still_render(tmp_path):
     assert "H3" not in plain["error"]
 
 
+@pytest.mark.integration
+def test_https_streams_on_an_interpreter_without_ca_files(monkeypatch):
+    monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent")
+    monkeypatch.setenv("SSL_CERT_DIR", "/nonexistent")
+    (out,) = _read("https://fused-asset.s3.amazonaws.com/bbox/dc_20km/0.parquet")
+    assert "error" not in out and out["count"] == 1
+
+
 def test_counts_skip_nonspatial_tables_and_an_exact_cap_is_not_truncated(files):
     gpkg, six = _read(files / "m.gpkg", files / "six.geojson")
     assert gpkg["layers"] == ["roads"]

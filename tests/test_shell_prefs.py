@@ -764,9 +764,9 @@ def test_registry_view_lists_builtin_bindings(tmp_path, monkeypatch):
     by_key = {e["key"]: e for e in body["entries"]}
     html = by_key[".html"]
     # Pin the contract, not the whole shipped list: rendered-first default.
-    # `udf` (the canvas node view, SPEC §53.3 NV-1) rides second: it is
-    # conditional, so the default stays the rendered page.
-    assert _names(html)[:3] == ["_render", "_node", "code"]
+    # `canvas_widget` (a canvas node template, SPEC §53.2 NT-1) rides second:
+    # it is conditional, so the default stays the rendered page.
+    assert _names(html)[:3] == ["_render", "canvas_widget", "code"]
     assert html["resolvedSource"] == "core"
     assert html["overridesCore"] is False
     assert html["keyKind"] == "simple"
@@ -802,7 +802,7 @@ def test_registry_view_shows_user_bindings_and_overrides(tmp_path, monkeypatch):
     assert html["overridesCore"] is True
     assert _names(html) == ["code"]
     assert html["userValue"] == ["code"]
-    assert html["coreTemplates"][:3] == ["_render", "_node", "code"]  # what a reset restores
+    assert html["coreTemplates"][:3] == ["_render", "canvas_widget", "code"]  # what a reset restores
 
     xyz = by_key[".xyz"]
     assert xyz["resolvedSource"] == "user"
@@ -1756,6 +1756,25 @@ def test_rail_free_pins_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypa
     (home / "prefs.json").write_text(json.dumps({"rail_free_pins_enabled": 1}),
                                      encoding="utf-8")
     assert prefs_mod.rail_free_pins_enabled() is False
+
+
+def test_rail_mode_doors_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """The rail's mode-doors flag: same opt-in idiom."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["rail_mode_doors"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"rail_mode_doors_enabled": True},
+                      headers=FUSED).json()
+    assert body["rail_mode_doors"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["rail_mode_doors_enabled"] is True
+    assert prefs_mod.rail_mode_doors_enabled() is True
+    bad = client.put("/api/prefs", json={"rail_mode_doors_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "rail_mode_doors_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"rail_mode_doors_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.rail_mode_doors_enabled() is False
 
 
 def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):

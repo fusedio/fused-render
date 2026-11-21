@@ -20,6 +20,7 @@ import {
   CODEX_INSTALL_COMMAND,
   GEMINI_INSTALL_COMMAND,
   OPENCODE_INSTALL_COMMAND,
+  CURSOR_INSTALL_COMMAND,
   isClaudeTrouble,
   troubleHelpUrl,
   troubleInstructions,
@@ -66,6 +67,28 @@ const SAID: Record<string, { title: string; explain: string }> = {
 // beside "Install Codex" named the wrong agent in the one line the user reads
 // first (CodeRabbit on the Codex PR). `raw` is shared — it names nobody.
 const SAID_BY_AGENT: Record<string, Record<string, { title: string; explain: string }>> = {
+  cursor: {
+    notfound: {
+      title: "The app can't find Cursor CLI",
+      explain:
+        "Fused Render uses Cursor's CLI (`cursor-agent`) on this computer for " +
+        "this task, and it could not find it. Either it was never installed, " +
+        "or it is somewhere the app cannot see.",
+    },
+    login: {
+      title: "Cursor CLI isn't signed in",
+      explain:
+        "Cursor's CLI is installed but not signed in to your Cursor account " +
+        "yet, so nothing can run. Sign in from Preferences → Coding agents " +
+        "(it opens the browser), once.",
+    },
+    limit: {
+      title: "Your Cursor usage limit was reached",
+      explain:
+        "Nothing is broken — your Cursor plan includes a set amount of use " +
+        "and it is spent for now. The message below says when it resets.",
+    },
+  },
   opencode: {
     notfound: {
       title: "The app can't find OpenCode",
@@ -237,7 +260,7 @@ export function TroubleCard({
    *  Picks the classifier's subject and the brief's steps, and the install
    *  line: Claude's, Codex's own (docs/CODEX_BACKEND.md D10), Gemini's own
    *  (docs/GEMINI_BACKEND.md D10), OpenCode's own (docs/OPENCODE_BACKEND.md
-   *  D10), none on a Copilot card. */
+   *  D10), Cursor's own (docs/CURSOR_BACKEND.md D10), none on a Copilot card. */
   backend?: string;
   /** Whether the card prints `error` in its own verbatim box. A caller whose
    *  surface already shows the same text right above passes false: the report
@@ -261,9 +284,11 @@ export function TroubleCard({
       ? { name: "Gemini CLI", command: GEMINI_INSTALL_COMMAND }
       : backend === "opencode"
         ? { name: "OpenCode", command: OPENCODE_INSTALL_COMMAND }
-        : backend === "copilot"
-          ? null
-          : { name: "Claude Code", command: isWindows ? CLAUDE_INSTALL_COMMAND_WINDOWS : CLAUDE_INSTALL_COMMAND };
+        : backend === "cursor"
+          ? { name: "Cursor CLI", command: CURSOR_INSTALL_COMMAND }
+          : backend === "copilot"
+            ? null
+            : { name: "Claude Code", command: isWindows ? CLAUDE_INSTALL_COMMAND_WINDOWS : CLAUDE_INSTALL_COMMAND };
   // The brief behind the second copy button is written for THIS agent
   // (`troubleInstructions`), so the button names that agent — a Codex card
   // labelling its brief "Claude Code instructions" hands the wrong agent's
@@ -271,7 +296,8 @@ export function TroubleCard({
   const agentName = backend === "codex" ? "Codex"
     : backend === "gemini" ? "Gemini"
       : backend === "opencode" ? "OpenCode"
-        : backend === "copilot" ? "Copilot" : "Claude Code";
+        : backend === "cursor" ? "Cursor"
+          : backend === "copilot" ? "Copilot" : "Claude Code";
   const copyBriefLabel = `Copy ${agentName} instructions`;
 
   if (compact) {

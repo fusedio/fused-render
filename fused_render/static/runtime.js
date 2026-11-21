@@ -535,6 +535,41 @@
  *         const r = await fused.connect.call("notion", "search", { query: "roadmap" });
  *         show(r.isError ? "Notion said: " + r.text : r.text);
  *     LOCAL ONLY — a hosted page has no server to hold the sign-in.
+ *   fused.workbench.udf(ref, opts?) -> a handle on one Fused UDF (SPEC §54),
+ *     run in Fused with the user's `fused login`, which stays in the server.
+ *     ref: {file: "/abs/node.py"} (a canvas node file runs in its canvas and
+ *       environment; any other .py needs {file, env}), {canvas, name, env?},
+ *       or "<canvas>/<udf name>". opts.env: "prod" | "unstable" | "custom".
+ *     handle.run(params?, {format, cache, confirm, signal}) -> run
+ *       format: "auto" (Fused's png for a raster, html for the rest; the
+ *         default) | "view" (the value as a page draws it: a table as
+ *         application/vnd.fused-render.table+json {columns, rows, total},
+ *         an HTML string as html, text as text, a raster as png, the rest
+ *         as json) | "html" | "png" | "json" (the value: a table as row
+ *         objects, geometry as WKT) | "parquet" (a table's Parquet bytes).
+ *       cache: "auto" (default: the saved copy at once, then a fresh run) |
+ *         "prefer-saved" (a saved copy ends the run) | "fresh" (no saved
+ *         copy, and Fused is asked not to answer from its cache).
+ *       confirm: false — a batch/map UDF is declined instead of asked about.
+ *       run.saved -> Promise<Result|null>: fused-render's saved copy (last
+ *         good answer for the same file contents, params, format and login).
+ *       run.result -> Promise<Result>: the fresh answer. `await run` is the same.
+ *       run.onLog(fn) — fn({stdout, stderr}) when the run's output arrives.
+ *       run.cancel()
+ *     Result: {url, contentType, size, hash (the bytes' sha256), source
+ *       ("saved" | "fused-cache" | "fresh"), savedAt, seconds, fusedCached,
+ *       stdout, stderr,
+ *       arrayBuffer(), blob(), text(), json()}. `url` serves the bytes (an
+ *       <img src>, a fetch); HTML there runs sandboxed, never as this app.
+ *     handle.schema() -> Promise<the UDF's parameters (an OpenAPI operation)>
+ *     The runtime asks the user itself before a batch job / batch work / map
+ *     UDF runs, and before taking a result over 50 MB; the page cannot
+ *     answer for them. Rejections carry `.code`: bad_ref, bad_env,
+ *     env_locked, signed_out, unavailable, udf_error (with .line, .stdout,
+ *     .stderr), declined, too_large, timeout, cancelled, preview, failed.
+ *         const udf = fused.workbench.udf("my_canvas/load_points", { env: "prod" });
+ *         const rows = await (await udf.run({ limit: 100 }, { format: "json" })).json();
+ *     LOCAL ONLY, like fused.connect.
  *   fused.params.get(key) / getAll() / onChange(cb) -> unsubscribe
  *   fused.params.set(key, value, opts?)   opts: { history: "replace", default: d }
  *                                         value === null REMOVES the key
@@ -7631,6 +7666,368 @@
   const s3 = { sign: s3Sign };
   // fused-s3:end
 
+  // --------------------------------------------------------- fused.workbench
+  //
+  // fused.workbench.udf(ref) -> a handle on one Fused UDF; .run() runs it in
+  // Fused with the user's `fused login` (SPEC §54). The server holds the
+  // login and runs through a warm SDK worker per environment; the page never
+  // sees a token. Runs ride one socket per page (/api/udf/ws) so a long run
+  // never holds one of WebKit's six HTTP connections; a result's bytes are a
+  // plain URL (GET /api/udf/results/<token>).
+  //
+  // The two questions a run can raise are asked HERE, in the runtime's own
+  // dialog, never left to the page: a batch job / batch work / map UDF
+  // (the hosted workbench's rule — nothing runs without the user's yes), and
+  // a result over LARGE_RESULT_BYTES. `{confirm: false}` declines the first
+  // without asking (a page that must not interrupt, e.g. on open).
+  //
+  // fused-workbench:start
+  const UDF_LARGE_RESULT_BYTES = 50 * 1024 * 1024;
+  let udfSock = null;
+  let udfSeq = 0;
+
+  function udfError(code, message, extra) {
+    const err = new Error(message || code);
+    err.code = code;
+    if (extra) {
+      for (const k of Object.keys(extra)) {
+        if (!(k in err) && k !== "type" && k !== "id") err[k] = extra[k];
+      }
+    }
+    return err;
+  }
+
+  function openUdfSocket() {
+    if (udfSock && udfSock.ws.readyState <= 1) return udfSock;
+    const s = { ws: null, handlers: new Map(), ready: null };
+    const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
+    s.ws = new WebSocket(proto + window.location.host + "/api/udf/ws");
+    s.ready = new Promise((resolve, reject) => {
+      s.ws.onopen = () => resolve(true);
+      s.ws.onerror = () => reject(udfError("unavailable", "could not reach fused-render to run the UDF"));
+    });
+    s.ready.catch(() => {});
+    s.ws.onmessage = (ev) => {
+      let data;
+      try {
+        data = JSON.parse(ev.data);
+      } catch (e) {
+        return;
+      }
+      const h = data && s.handlers.get(String(data.id));
+      if (h) h(data);
+    };
+    s.ws.onclose = () => {
+      if (udfSock === s) udfSock = null;
+      for (const h of s.handlers.values()) {
+        h({ type: "error", code: "unavailable", error: "the connection to fused-render closed" });
+      }
+      s.handlers.clear();
+    };
+    udfSock = s;
+    return s;
+  }
+
+  // Send one request; `onFrame` hears every frame for it until it returns
+  // true (the request is over).
+  function udfRequest(msg, onFrame) {
+    const id = "u" + ++udfSeq + "-" + Math.random().toString(36).slice(2, 8);
+    let s;
+    try {
+      s = openUdfSocket();
+    } catch (e) {
+      onFrame({ type: "error", code: "unavailable", error: "could not reach fused-render to run the UDF" });
+      return { id, cancel() {} };
+    }
+    s.handlers.set(id, (frame) => {
+      if (onFrame(frame)) s.handlers.delete(id);
+    });
+    // Cancelled before the socket opened: the request is never sent.
+    let sent = false;
+    let dropped = false;
+    s.ready.then(
+      () => {
+        if (dropped) return;
+        s.ws.send(JSON.stringify(Object.assign({}, msg, { id })));
+        sent = true;
+      },
+      (err) => {
+        const h = s.handlers.get(id);
+        if (h) h({ type: "error", code: err.code || "unavailable", error: err.message });
+      }
+    );
+    return {
+      id,
+      cancel() {
+        if (!s.handlers.has(id)) return;
+        if (!sent) {
+          dropped = true;
+          s.handlers.delete(id);
+          return;
+        }
+        try {
+          if (s.ws.readyState === 1) s.ws.send(JSON.stringify({ op: "cancel", id }));
+        } catch (e) {
+          /* the socket is gone; the close handler answers */
+        }
+      },
+    };
+  }
+
+  // The runtime's own question over the page: a shadow root, so no page CSS
+  // reaches it. Resolves true for the right-hand button.
+  function udfAsk(title, body, no, yes) {
+    return new Promise((resolve) => {
+      const host = document.createElement("div");
+      host.style.cssText = "position:fixed;inset:0;z-index:2147483646;";
+      const root = host.attachShadow({ mode: "closed" });
+      root.innerHTML =
+        "<style>" +
+        ".back{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;" +
+        "font:13px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}" +
+        ".box{background:#fff;color:#1d1f23;border-radius:10px;padding:18px 20px;max-width:420px;width:calc(100% - 48px);" +
+        "box-shadow:0 12px 40px rgba(0,0,0,.35)}" +
+        "@media (prefers-color-scheme: dark){.box{background:#24262b;color:#e8eaed}}" +
+        "h2{font-size:14px;margin:0 0 8px}p{margin:0 0 16px;white-space:pre-wrap}" +
+        ".row{display:flex;gap:8px;justify-content:flex-end}" +
+        "button{font:inherit;padding:6px 14px;border-radius:6px;border:1px solid rgba(128,128,128,.4);background:transparent;color:inherit;cursor:pointer}" +
+        "button.yes{background:#2b59c3;border-color:#2b59c3;color:#fff}" +
+        "button:focus-visible{outline:2px solid #7d9cff;outline-offset:2px}" +
+        "</style>" +
+        '<div class="back"><div class="box" role="dialog" aria-modal="true">' +
+        '<h2></h2><p></p><div class="row"><button class="no"></button><button class="yes"></button></div></div></div>';
+      root.querySelector("h2").textContent = title;
+      root.querySelector("p").textContent = body;
+      root.querySelector(".no").textContent = no;
+      root.querySelector(".yes").textContent = yes;
+      const done = (value) => {
+        document.removeEventListener("keydown", onKey, true);
+        host.remove();
+        resolve(value);
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          done(false);
+        }
+      };
+      root.querySelector(".no").onclick = () => done(false);
+      root.querySelector(".yes").onclick = () => done(true);
+      document.addEventListener("keydown", onKey, true);
+      (document.body || document.documentElement).appendChild(host);
+      root.querySelector(".yes").focus();
+    });
+  }
+
+  function udfHumanBytes(n) {
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024;
+      i++;
+    }
+    return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+  }
+
+  // What a page gets for a result: the facts, and the bytes on demand.
+  function udfResult(r) {
+    const fetchBody = () =>
+      fetch(r.url).then((res) => {
+        if (!res.ok) throw udfError("expired", "this result is no longer available (HTTP " + res.status + ")");
+        return res;
+      });
+    return {
+      url: r.url,
+      contentType: r.content_type || "",
+      size: r.size || 0,
+      source: r.source,
+      savedAt: typeof r.saved_at === "number" ? new Date(r.saved_at * 1000) : null,
+      seconds: typeof r.seconds === "number" ? r.seconds : null,
+      fusedCached: !!r.fused_cached,
+      hash: r.hash || null,
+      stdout: r.stdout || "",
+      stderr: r.stderr || "",
+      arrayBuffer: () => fetchBody().then((res) => res.arrayBuffer()),
+      blob: () => fetchBody().then((res) => res.blob()),
+      text: () => fetchBody().then((res) => res.text()),
+      json: () => fetchBody().then((res) => res.json()),
+    };
+  }
+
+  function normalizeUdfRef(ref, opts) {
+    opts = opts || {};
+    if (typeof ref === "string") {
+      const cut = ref.indexOf("/");
+      if (cut <= 0 || cut === ref.length - 1) {
+        throw new TypeError('fused.workbench.udf: a string reference is "<canvas>/<udf name>"');
+      }
+      return { canvas: ref.slice(0, cut), name: ref.slice(cut + 1), env: opts.env || null };
+    }
+    if (ref && typeof ref === "object") {
+      if (typeof ref.file === "string") return { file: ref.file, env: ref.env || opts.env || null };
+      if (typeof ref.canvas === "string" && typeof ref.name === "string") {
+        return { canvas: ref.canvas, name: ref.name, env: ref.env || opts.env || null };
+      }
+    }
+    throw new TypeError("fused.workbench.udf: give {file}, {canvas, name} or \"<canvas>/<udf name>\"");
+  }
+
+  function udfRun(ref, params, opts) {
+    opts = opts || {};
+    const logListeners = [];
+    let settleSaved;
+    const saved = new Promise((resolve) => (settleSaved = resolve));
+    let current = null;
+    let cancelled = false;
+    let resolveResult, rejectResult;
+    const result = new Promise((res, rej) => {
+      resolveResult = res;
+      rejectResult = rej;
+    });
+    result.catch(() => {});
+    const emitLog = (r) => {
+      if (!r || (!r.stdout && !r.stderr)) return;
+      for (const fn of logListeners) {
+        try {
+          fn({ stdout: r.stdout || "", stderr: r.stderr || "" });
+        } catch (e) {
+          /* a listener's error is its own */
+        }
+      }
+    };
+    const fail = (err) => {
+      settleSaved(null);
+      rejectResult(err);
+    };
+
+    const start = () => {
+      if (IS_THUMBNAIL) {
+        fail(udfError("preview",
+          "fused.workbench.udf: refused — this page is rendering as a preview thumbnail, " +
+          "and a page must not run a UDF just by being displayed"));
+      } else {
+        const send = (confirmed) => {
+          if (cancelled) return;
+          current = udfRequest(
+            {
+              op: "run",
+              ref,
+              params: params || {},
+              format: opts.format || "auto",
+              cache: opts.cache || "auto",
+              confirmed: confirmed === true,
+            },
+            (frame) => {
+              // A cancelled run has already rejected: nothing after it is
+              // shown or asked about.
+              if (cancelled) return true;
+              if (frame.type === "saved") {
+                settleSaved(udfResult(frame.result));
+                return false;
+              }
+              if (frame.type === "started") return false;
+              if (frame.type === "done") {
+                settleSaved(null);
+                emitLog(frame.result);
+                const r = frame.result;
+                if (r.source !== "saved" && r.size > UDF_LARGE_RESULT_BYTES) {
+                  udfAsk(
+                    "Large data warning",
+                    "Loading data for this UDF (" + udfHumanBytes(r.size) +
+                      ") might be slow or unstable. Would you like to continue loading this data?",
+                    "Don't load",
+                    "Continue anyway"
+                  ).then((yes) => {
+                    if (yes) resolveResult(udfResult(r));
+                    else fail(udfError("declined", "the result (" + udfHumanBytes(r.size) + ") was not loaded",
+                      { size: r.size }));
+                  });
+                } else {
+                  resolveResult(udfResult(r));
+                }
+                return true;
+              }
+              if (frame.type === "error") {
+                if (frame.code === "needs_confirmation" && !confirmed && !cancelled) {
+                  if (opts.confirm === false) {
+                    fail(udfError("declined", frame.reason || frame.error, frame));
+                    return true;
+                  }
+                  udfAsk(frame.title || "Confirm execution",
+                    "Do you want to run this UDF?\n" + (frame.reason || ""), "Cancel", "Run").then((yes) => {
+                    if (yes && !cancelled) send(true);
+                    else fail(udfError("declined", frame.reason || "the run was not confirmed", frame));
+                  });
+                  return true;
+                }
+                emitLog(frame);
+                fail(udfError(frame.code || "failed", frame.error, frame));
+                return true;
+              }
+              return false;
+            }
+          );
+        };
+        if (opts.signal) {
+          if (opts.signal.aborted) {
+            handle.cancel();
+            return;
+          }
+          opts.signal.addEventListener("abort", () => handle.cancel(), { once: true });
+        }
+        send(false);
+      }
+    };
+
+    const handle = {
+      saved,
+      result,
+      onLog(fn) {
+        if (typeof fn === "function") logListeners.push(fn);
+        return handle;
+      },
+      cancel() {
+        if (cancelled) return;
+        cancelled = true;
+        if (current) current.cancel();
+        fail(udfError("cancelled", "the run was cancelled"));
+      },
+      then: (a, b) => result.then(a, b),
+      catch: (b) => result.catch(b),
+      finally: (f) => result.finally(f),
+    };
+    start();
+    return handle;
+  }
+
+  function udfSchema(ref) {
+    return new Promise((resolve, reject) => {
+      udfRequest({ op: "schema", ref }, (frame) => {
+        if (frame.type === "schema") {
+          resolve(frame.schema);
+          return true;
+        }
+        if (frame.type === "error") {
+          reject(udfError(frame.code || "failed", frame.error, frame));
+          return true;
+        }
+        return false;
+      });
+    });
+  }
+
+  function workbenchUdf(ref, opts) {
+    const norm = normalizeUdfRef(ref, opts);
+    return {
+      ref: norm,
+      run: (params, runOpts) => udfRun(norm, params, runOpts),
+      schema: () => udfSchema(norm),
+    };
+  }
+
+  const workbench = { udf: workbenchUdf };
+  // fused-workbench:end
+
   // ----------------------------------------------------------- fused.capture
   //
   // Native screen / microphone / still capture (SPEC §45). Named `capture` and
@@ -8294,6 +8691,7 @@
     bots,
     connect,
     s3,
+    workbench,
     trackJob,
     watchJob,
     autoReload,

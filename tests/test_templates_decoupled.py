@@ -41,6 +41,21 @@ ALLOWED = {
     # this site does not depend on the package being reachable.
     os.path.join("reader", "condition.py"):
         "in-server-only prefs read, with a stdlib fallback (not a mount fact)",
+    # The canvas node templates' gates (SPEC §53.2 NT-2) ask one question — is
+    # this file a node of a cloned canvas, of the kind this template draws? —
+    # and the answer is the sync engine's: `canvases.node_template_gate` over
+    # `canvas_node_file`, the rule GET /api/canvases/node (which each
+    # template's page then calls) also answers with, built on
+    # `canvas_snapshot.node_files` (which file IS a node's source). A stdlib
+    # copy in each folder would be three more definitions of that rule, free
+    # to drift from the route. A condition.py only ever runs in-process
+    # (server._run_condition), and were the package ever unreachable the gate
+    # denies (fail closed): the mode is not offered, nothing reads wrong.
+    **{
+        os.path.join(name, "condition.py"):
+            "in-server-only: the canvas sync engine's own node-file rule, fail closed"
+        for name in ("canvas_widget", "canvas_note", "canvas_udf")
+    },
 }
 
 

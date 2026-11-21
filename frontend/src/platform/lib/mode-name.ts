@@ -9,9 +9,6 @@
 const SENTINEL_NAMES: Record<string, string> = {
   _render: "Preview",
   _listing: "Listing",
-  // The canvas node view (SPEC §53.3): the mode is the NODE, whatever its
-  // kind (a UDF, a widget, an HTML node, a note).
-  _node: "Node",
 };
 
 // Registry keys whose conventional casing a generic capitalize would destroy.
@@ -26,6 +23,12 @@ const NICE_NAMES: Record<string, string> = {
   sql: "SQL",
   pdf: "PDF",
   mcp: "MCP",
+  // The canvas node templates (SPEC §53.2): named for what the node IS. The
+  // file's other modes sit beside them in the same menu ("Code", "Markdown"),
+  // so the folder's `canvas_` prefix would say nothing a reader needs there.
+  canvas_widget: "Widget",
+  canvas_note: "Note",
+  canvas_udf: "UDF",
 };
 
 export function modeTitle(mode: string): string {

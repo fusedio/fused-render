@@ -30,6 +30,7 @@ def _doc():
         "canvasRailPeek": {"width": 520, "height": 720},
         "canvasRailFav": {"width": 400, "height": 480},
         "chatTextScale": 1.25,
+        "chatSeen": {"sess-1": "uuid-1"},
     }
 
 
@@ -56,6 +57,7 @@ def test_put_roundtrips_and_drops_unknown_keys(tmp_path, monkeypatch):
         "canvasRailPeek": doc["canvasRailPeek"],
         "canvasRailFav": doc["canvasRailFav"],
         "chatTextScale": doc["chatTextScale"],
+        "chatSeen": doc["chatSeen"],
     }
 
 
@@ -117,6 +119,11 @@ def test_put_invalid_is_400(tmp_path, monkeypatch):
         {**base, "chatTextScale": "1.25"},
         {**base, "chatTextScale": True},
         {**base, "chatTextScale": None},
+        {**base, "chatSeen": ["sess-1"]},
+        {**base, "chatSeen": {"sess-1": 3}},
+        {**base, "chatSeen": {"sess-1": ""}},
+        {**base, "chatSeen": {"s" * 129: "u"}},
+        {**base, "chatSeen": {f"s{i}": "u" for i in range(301)}},
     ]
     for doc in bad:
         assert client.put("/api/ui-layout", json=doc, headers=FUSED).status_code == 400, doc

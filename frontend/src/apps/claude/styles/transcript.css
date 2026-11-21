@@ -2924,3 +2924,165 @@
 .chat-root.chat-peek .turn.user .bubble {
   max-width: max(40%, min(82%, calc(100% - 108px)));
 }
+
+/* A specialist's `show` card (ui/ViewCard.tsx): one row in the shape of the
+   Bots thread's app card. Collapsed it holds no frame; Open raises the overlay. */
+.chat-root .c-viewcard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(42rem, 100%);
+  margin: 8px 0;
+  padding: 9px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  background: var(--c-surface);
+  font-size: calc(13px * var(--c-zoom, 1));
+}
+.chat-root .c-viewcard-ico {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  color: var(--c-dim);
+}
+.chat-root .c-viewcard-txt {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+.chat-root .c-viewcard-txt b,
+.chat-root .c-viewcard-txt small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-root .c-viewcard-txt b {
+  font-weight: 500;
+}
+.chat-root .c-viewcard-txt small {
+  color: var(--c-dim);
+  font-size: calc(11px * var(--c-zoom, 1));
+}
+.chat-root .c-viewcard-open {
+  flex: none;
+  padding: 4px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: calc(12px * var(--c-zoom, 1));
+  cursor: pointer;
+}
+.chat-root .c-viewcard-open:hover {
+  border-color: var(--c-accent);
+  color: var(--c-accent);
+}
+
+/* ── the jump button (the bots `#tobottom`, ui/JumpButton.tsx) ─────────── */
+/* A zero-height box after the log, sticky to the port's bottom edge: it floats
+   over the transcript wherever the reader is, with no positioned wrapper around
+   the scrollport (whose scroll rules read it as THE scroller). */
+.chat-root .chat-jump {
+  position: sticky;
+  bottom: 0;
+  height: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+.chat-root .chat-jump-btn {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  translate: -50% 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 29px;
+  height: 29px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--c-card-bg);
+  color: var(--c-fg);
+  box-shadow: 0 0 0 1px var(--c-border), 0 4px 14px var(--c-shadow);
+  cursor: pointer;
+  pointer-events: auto;
+  animation: chat-jump-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chat-root .chat-jump-btn.is-shown {
+  display: inline-flex;
+}
+.chat-root .chat-jump-btn:hover {
+  background: var(--c-surface-2);
+}
+.chat-root .chat-jump-btn svg {
+  width: 14px;
+  height: 14px;
+}
+/* Unread below you: the arrow grows into an accent "N new messages" pill. */
+.chat-root .chat-jump-btn.is-new {
+  width: auto;
+  padding: 0 12px;
+  gap: 8px;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
+  box-shadow: 0 4px 14px var(--c-shadow);
+  font-size: calc(12px * var(--c-zoom, 1));
+  white-space: nowrap;
+}
+.chat-root .chat-jump-btn.is-new:hover {
+  background: color-mix(in srgb, var(--c-accent) 88%, #000);
+}
+.chat-root .chat-jump-btn.is-new svg {
+  width: 16px;
+  height: 16px;
+}
+.chat-root .chat-jump-btn:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+@keyframes chat-jump-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .chat-jump-btn {
+    animation: none;
+  }
+}
+
+/* ── the NEW rule (the bots thread's `.new`, in the chat's own accent) ──── */
+/* Above the first reply that landed since you last sat at the end of this
+   conversation; placed on open and kept until another conversation opens. */
+.chat-root .chat-newrule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: -6px 0 14px;
+  padding: 4px 0;
+  color: var(--c-accent-text);
+  font-size: calc(10px * var(--c-zoom, 1));
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.chat-root .chat-newrule::before,
+.chat-root .chat-newrule::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--c-accent-text);
+  opacity: 0.55;
+}

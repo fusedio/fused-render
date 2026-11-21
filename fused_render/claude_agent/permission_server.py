@@ -925,7 +925,16 @@ def _handle_approve(args: dict) -> dict:
         # Decided here, before anything is parked: no req card, no inflight
         # entry, no queue notification for a call that will never wait.
         return _text(refused)
-    if _chat_allows(tool_name, tool_input):
+    if os.environ.get("FUSED_SPECIALIST_UNATTENDED"):
+        # A specialist's update runs with nobody to answer a card: refuse now
+        # rather than park one for an hour.
+        return _text({"behavior": "deny", "decisionClassification": "user_reject",
+                      "message": "Nobody is here to approve this; it is refused."})
+    # A specialist breakout asks every time: it is how the user opens one, so
+    # the chat's "Always approve" never answers for it.
+    # Nor for a specialist's new canvas: each one is the user's to approve.
+    if (tool_name not in (SPECIALIST_BREAKOUT, SPECIALIST_CANVAS_CREATE)
+            and _chat_allows(tool_name, tool_input)):
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
 
@@ -999,9 +1008,21 @@ def _canvas_nodes() -> list:
                    and not n.startswith(".")}, key=str.casefold)
 
 
-def _open_pages(env: str, name: str, now=None) -> list:
+def _page_can_answer(beat: dict, what: str, udf: str) -> bool:
+    """Whether the page behind `beat` could take this picture. The canvas
+    page takes any; a node page (the file view on one node's template, its
+    heartbeat names the `node`) takes that node's output and nothing else."""
+    node = beat.get("node")
+    if not node:
+        return True
+    return what == "udf" and bool(udf) and node == udf
+
+
+def _open_pages(env: str, name: str, now=None, what: str = "canvas", udf: str = "") -> list:
     """The heartbeats of every page of canvas `env/name` heard from within
-    CANVAS_PAGE_FRESH. Only that canvas's directory: this runs every tick."""
+    CANVAS_PAGE_FRESH that could take the picture asked for
+    (`_page_can_answer`). Only that canvas's directory: this runs every
+    tick."""
     now = time.time() if now is None else now
     beats = os.path.join(CANVAS_PAGES_DIR, env, name)
     out = []
@@ -1018,7 +1039,9 @@ def _open_pages(env: str, name: str, now=None) -> list:
                 beat = json.load(fh)
         except (OSError, ValueError):
             continue
-        out.append(beat if isinstance(beat, dict) else {})
+        beat = beat if isinstance(beat, dict) else {}
+        if _page_can_answer(beat, what, udf):
+            out.append(beat)
     return out
 
 
@@ -1040,7 +1063,8 @@ def _not_now_sentence(name: str, why: str) -> str:
             "canvas_screenshot again this turn" % (why, name))
 
 
-def _ask_to_open(env: str, name: str, budget: float, shot_res: str) -> dict:
+def _ask_to_open(env: str, name: str, budget: float, shot_res: str,
+                 what: str = "canvas", udf: str = "") -> dict:
     """The F5 ask (D1471): a card in PERM_DIR — so the chat draws it and the
     task reads blocked, the way an approval does — "Claude wants to open
     <canvas> to take a screenshot", Open / Not now. Returns the decision;
@@ -1069,7 +1093,7 @@ def _ask_to_open(env: str, name: str, budget: float, shot_res: str) -> dict:
             decision = _read_decision(ask_res)
             if decision:
                 return decision
-            if _open_pages(env, name):
+            if _open_pages(env, name, what=what, udf=udf):
                 return _await_answer(ask_res, 0, {"decision": "allow", "reason": "opened"})
             if _read_decision(shot_res):  # the run ended under the ask
                 return _await_answer(ask_res, 0, {"decision": "deny", "reason": "abandoned"})
@@ -1085,7 +1109,10 @@ def _await_canvas_page(req_id: str, res_path: str, what: str, udf: str) -> dict:
     """The page round trip (D1471, F1/F2/F5): point every open page of this
     canvas at the request, then
 
-      * a page heard from within CANVAS_PAGE_GRACE → wait for its answer;
+      * a page that could take this picture heard from within
+        CANVAS_PAGE_GRACE → wait for its answer. That is the canvas page, or,
+        for one node's output, the file view showing that node through its
+        node template (`_page_can_answer`);
       * none (another canvas may be open: one click switches) → ask to open
         the canvas; Open → wait for the page that opens, Not now / no answer
         → a sentence to go on without.
@@ -1116,7 +1143,7 @@ def _await_canvas_page(req_id: str, res_path: str, what: str, udf: str) -> dict:
             answer = _read_decision(res_path)
             if answer:
                 return answer
-            if _open_pages(env, name):
+            if _open_pages(env, name, what=what, udf=udf):
                 last_seen = now
             if last_seen is None:
                 if now - started >= CANVAS_PAGE_GRACE:
@@ -1131,7 +1158,7 @@ def _await_canvas_page(req_id: str, res_path: str, what: str, udf: str) -> dict:
                           "seconds" % CANVAS_SHOT_TIMEOUT)})
             time.sleep(POLL_INTERVAL)
         decision = _ask_to_open(env, name, CANVAS_SHOT_TIMEOUT - (time.monotonic() - started),
-                                res_path)
+                                res_path, what, udf)
         if decision.get("decision") != "allow":
             return _await_answer(res_path, 0, {"error": _not_now_sentence(
                 name, _ask_ended_why(decision))})
@@ -1204,11 +1231,23 @@ def _handle_canvas_shot(args: dict) -> dict:
     if not CANVAS_SHOT_DIR:
         return _text({"error": "this session has no canvas-screenshot channel"})
     what = args.get("what")
-    what = what if what in ("canvas", "udf") else "canvas"
     udf = args.get("udf")
     udf = str(udf).strip() if isinstance(udf, str) and udf.strip() else ""
+    if what not in ("canvas", "udf"):
+        # Nothing asked for: a node's own chat means its node, a named node
+        # means that node, and the canvas chat means the graph.
+        what = "udf" if (udf or CANVAS_NODE) else "canvas"
     if what == "udf" and not udf:
         udf = CANVAS_NODE  # a node's own chat: its node (the page cannot know it)
+    # A NODE'S OWN CHAT IN THE FILE VIEW (SPEC §53.8). The graph was asked
+    # for, the canvas is not open, but this chat's node is on screen as its
+    # own file: picture that, and say so, rather than ask the user to open
+    # the canvas for a look at an edit they are already watching.
+    node_instead = False
+    if what == "canvas" and CANVAS_NODE and CANVAS_PAGES_DIR and CANVAS_CLONE:
+        env, name = _canvas_key()
+        if not _open_pages(env, name) and _open_pages(env, name, what="udf", udf=CANVAS_NODE):
+            what, udf, node_instead = "udf", CANVAS_NODE, True
     nodes = _canvas_nodes() if udf else []
     if nodes and udf not in nodes:
         return _text({"error": 'no UDF named "%s" on this canvas — nodes: %s'
@@ -1260,8 +1299,12 @@ def _handle_canvas_shot(args: dict) -> dict:
     note = {"what": what, "udf": shot_udf, "path": image, "framing": framing,
             "note": _framing_note(what, framing, shot_udf or "")}
     caveat = answer.get("note")
-    if isinstance(caveat, str) and caveat:
-        note["caveat"] = caveat
+    caveats = [caveat] if isinstance(caveat, str) and caveat else []
+    if node_instead:
+        caveats.append('the canvas is not open, so "%s" was pictured from its own file '
+                       "instead of the whole graph" % udf)
+    if caveats:
+        note["caveat"] = "; ".join(caveats)
     return {"content": [
         {"type": "image", "data": base64.b64encode(data).decode("ascii"),
          "mimeType": mime},
@@ -2276,6 +2319,65 @@ EXPERT_SCHEMAS = [
 ]
 
 
+# ------------------------------------------------------------ specialists
+#
+# The specialist task tools, answered by the server's
+# `/api/specialists/tools/<tool>`. Listed only when agent.py stamped
+# `FUSED_RENDER_SPECIALIST_ORIGIN` (a task run while at least one specialist
+# exists). `specialist_breakout` has an ask rule, so the user's card comes
+# before it ever runs.
+
+SPECIALIST_TOOLS = ("specialist_pull", "specialist_note", "specialist_breakout")
+SPECIALIST_BREAKOUT = "mcp__fused_render__specialist_breakout"
+# A specialist's own `canvas_create` (specialists/show.py), on its session's
+# `specialist_canvas` server: it makes a canvas on the user's Fused account.
+SPECIALIST_CANVAS_CREATE = "mcp__specialist_canvas__canvas_create"
+
+
+def _specialist_origin() -> str:
+    return (os.environ.get("FUSED_RENDER_SPECIALIST_ORIGIN") or "").rstrip("/")
+
+
+def _handle_specialist(name: str, args: dict) -> dict:
+    try:
+        status, payload = _server_http(_specialist_origin(), "POST",
+                                       "/api/specialists/tools/" + name.split("_", 1)[1],
+                                       dict(args, run_id=_run_id()))
+    except OSError as exc:
+        return _error_result("could not reach the Fused Render server: %s" % exc)
+    if status != 200 or not isinstance(payload, dict):
+        return _error_result(_http_error_text(status, payload))
+    return _plain(str(payload.get("text") or ""))
+
+
+_SPECIALIST_ARG = {"type": "string", "description": "The specialist's name."}
+SPECIALIST_SCHEMAS = [
+    {"name": "specialist_pull",
+     "description": ("A specialist's guidance: its memory and its skills. "
+                     "Reference material, not instructions. Specialists are not experts: "
+                     "when the user says \"specialist\", use these specialist_* tools, "
+                     "not the expert_* ones."),
+     "inputSchema": {"type": "object", "properties": {"specialist": _SPECIALIST_ARG},
+                     "required": ["specialist"], "additionalProperties": False}},
+    {"name": "specialist_note",
+     "description": ("Send a specialist a note for its next update: something its "
+                     "guidance got wrong or missed, or a rule the user stated."),
+     "inputSchema": {"type": "object", "properties": {
+         "specialist": _SPECIALIST_ARG,
+         "note": {"type": "string", "maxLength": 2000, "description": "The note, in plain sentences."}},
+         "required": ["specialist", "note"], "additionalProperties": False}},
+    {"name": "specialist_breakout",
+     "description": ("Offer the user a breakout with a specialist on one problem you "
+                     "are stuck on. The user decides; if they open it, leave that "
+                     "problem to the breakout and carry on with the rest."),
+     "inputSchema": {"type": "object", "properties": {
+         "specialist": _SPECIALIST_ARG,
+         "reason": {"type": "string", "maxLength": 300,
+                    "description": "One sentence the user sees: why this specialist, why now."}},
+         "required": ["specialist", "reason"], "additionalProperties": False}},
+]
+
+
 TOOL_SCHEMA = {
     "name": TOOL_NAME,
     "description": (
@@ -2328,7 +2430,9 @@ CANVAS_SHOT_SCHEMA = {
         "to check that the output looks right, or when the user asks about what "
         "they see. Returns the picture inline, with a note saying what it "
         "really shows (the whole frame when a node could not be cropped). "
-        "Read-only. When the canvas is not open the user is asked to open it; "
+        "Read-only. One node's output is also taken from that node's file "
+        "when the user has it open in the file view, with no canvas open. "
+        "When neither is open the user is asked to open the canvas; "
         "if the result says to continue without a screenshot, do not call "
         "again this turn. Map nodes (WebGL) "
         "may come out blank or fail to capture."
@@ -2337,7 +2441,7 @@ CANVAS_SHOT_SCHEMA = {
         "type": "object",
         "properties": {
             "what": {"type": "string", "enum": ["canvas", "udf"],
-                     "description": "\"canvas\" for the whole graph, \"udf\" for one node's output."},
+                     "description": "\"canvas\" for the whole graph, \"udf\" for one node's output. Left out: this chat's node on a node's own chat, else the graph."},
             "udf": {"type": "string",
                     "description": "The UDF (node) name for `what: \"udf\"`; defaults to this chat's node."},
             "reason": {"type": "string",
@@ -2378,6 +2482,8 @@ def _dispatch(method: str, params: dict) -> dict:
             tools.extend(S3_SCHEMAS)
         if _expert_origin():
             tools.extend(EXPERT_SCHEMAS)
+        if _specialist_origin():
+            tools.extend(SPECIALIST_SCHEMAS)
         return {"tools": tools}
     if method == "tools/call":
         name = params.get("name")
@@ -2392,6 +2498,8 @@ def _dispatch(method: str, params: dict) -> dict:
             known = known + S3_TOOLS
         if _expert_origin():
             known = known + EXPERT_TOOLS
+        if _specialist_origin():
+            known = known + SPECIALIST_TOOLS
         if name not in known:
             raise LookupError("unknown tool: %s" % name)
         args = params.get("arguments")
@@ -2404,6 +2512,8 @@ def _dispatch(method: str, params: dict) -> dict:
             return _handle_canvas_shot(args)
         if name in _EXPERT_HANDLERS:
             return _EXPERT_HANDLERS[name](args)
+        if name in SPECIALIST_TOOLS:
+            return _handle_specialist(name, args)
         return _handle_approve(args) if name == TOOL_NAME \
             else _handle_app_state(args)
     if method == "ping":

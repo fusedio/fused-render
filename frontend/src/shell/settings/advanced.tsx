@@ -3,7 +3,9 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   askIndex,
   buildDiagnostics,
+  clearUdfSaved,
   fetchDiagnosticsPlan,
+  fetchUdfSavedStats,
   fetchServerHealth,
   putCallsEnabled,
   putCallsParamsMode,
@@ -13,6 +15,7 @@ import {
   type CallsParamsMode,
   type DiagnosticsPlan,
   type DiagnosticsResult,
+  type UdfSavedStats,
 } from "@platform/lib/api";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
 import { copyToClipboard } from "@platform/lib/clipboard";
@@ -90,7 +93,6 @@ export function CallParamsControl({ prefs, onChange }: PrefControlProps) {
   return (
     <SettingRow
       id="call-params"
-      off={!calls.effective_enabled}
       control={
         <SettingSelect
           id="call-params"
@@ -100,7 +102,7 @@ export function CallParamsControl({ prefs, onChange }: PrefControlProps) {
             { key: "keys", label: "Names only" },
             { key: "off", label: "Record nothing" },
           ]}
-          disabled={busy || !calls.effective_enabled}
+          disabled={busy}
           onChange={(v) => void run(() => putCallsParamsMode(v as CallsParamsMode))}
         />
       }
@@ -152,7 +154,6 @@ export function CallRetentionControl({ prefs, onChange }: PrefControlProps) {
   return (
     <SettingRow
       id="call-retention"
-      off={!calls.effective_enabled}
       status={
         locked ? (
           <>
@@ -172,7 +173,7 @@ export function CallRetentionControl({ prefs, onChange }: PrefControlProps) {
             { key: "90", label: "90 days" },
             { key: "0", label: "Until the size cap" },
           ]}
-          disabled={busy || !calls.effective_enabled || locked}
+          disabled={busy || locked}
           onChange={(v) => void run(() => putCallsRetentionDays(Number(v)))}
         />
       }
@@ -377,6 +378,73 @@ async function startDiagnostics(opts: { since_s?: number; system_log: boolean })
   } catch (e) {
     setDiagRun({ busy: false, error: (e as Error).message });
   }
+}
+
+// fused-render's saved UDF results (SPEC §54.3): what they take on disk, and
+// one button that deletes them all. The next open of each UDF runs it fresh.
+export function UdfSavedControl() {
+  const [stats, setStats] = useState<UdfSavedStats | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [cleared, setCleared] = useState<UdfSavedStats | null>(null);
+  const [unmeasured, setUnmeasured] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    fetchUdfSavedStats()
+      .then((s) => alive && setStats(s))
+      // Size unknown: say so, and leave Clear usable.
+      .catch(() => alive && setUnmeasured(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const clear = () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    clearUdfSaved()
+      .then((r) => {
+        setCleared(r.cleared);
+        setStats({ entries: 0, bytes: 0 });
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const empty = stats !== null && stats.entries === 0;
+  // Clear waits for the measurement, so a late read cannot bring back the
+  // count it just cleared.
+  const measuring = stats === null && !unmeasured;
+  return (
+    <SettingRow
+      id="udf-saved"
+      status={
+        busy
+          ? "Clearing…"
+          : stats
+            ? `${stats.entries} ${stats.entries === 1 ? "result" : "results"} · ${formatBytes(stats.bytes)}`
+            : unmeasured
+              ? "Size unknown"
+              : "Measuring…"
+      }
+      control={
+        <Button variant="outline" size="sm" disabled={busy || empty || measuring} onClick={clear}>
+          {busy ? "Clearing…" : "Clear"}
+        </Button>
+      }
+    >
+      {cleared && !error && (
+        <div className="settings-actions">
+          <span className="settings-row-desc">
+            Cleared {cleared.entries} {cleared.entries === 1 ? "result" : "results"} ({formatBytes(cleared.bytes)}).
+          </span>
+        </div>
+      )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
+  );
 }
 
 export function DiagnosticsControl() {

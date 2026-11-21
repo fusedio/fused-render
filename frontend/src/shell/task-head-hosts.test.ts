@@ -293,3 +293,12 @@ test("a rail window's two lines are evenly spaced: 10px in every band (2026-11-1
   // Not keyed off the pin: pinning must not move the chat under the head.
   expect(head).not.toMatch(/:has\(\.rail-pin-btn\.is-pinned\)[^{]*\{[^}]*min-height/);
 });
+
+test("a two-line panel host names its own window, so the pane-wide hover never rides on layout geometry (2026-11-21)", () => {
+  // TaskHead's `is-hot` trigger falls back to "the first ancestor twice the
+  // head's height" when no host says; measured at mount, that box can be the
+  // head's own wrapper while a panel is still loading — and the pane's star
+  // and Open then never show under the pointer.
+  expect(read("TaskPeek.tsx")).toContain('data-task-window=""');
+  expect(read("../apps/claude/ClaudeChat.tsx")).toContain('data-task-window=""');
+});

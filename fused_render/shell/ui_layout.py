@@ -49,7 +49,12 @@ RAIL_CARD_KEYS = ("canvasRailPeek", "canvasRailFav")
 CHAT_TEXT_SCALES = (0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2)
 # Keys an OLDER bundle's whole-document PUT never names: carried forward from
 # the stored document rather than dropped (see put_ui_layout).
-CARRIED_KEYS = (*RAIL_CARD_KEYS, "chatTextScale")
+CARRIED_KEYS = (*RAIL_CARD_KEYS, "chatTextScale", "chatSeen")
+# The task chat's "seen" mark (apps/claude/ui/chatSeen.ts): session id → where
+# the reader last sat at the end of it (`k:d:r`, a position in the log). The bots'
+# `seen_seq`, for task chats: where the NEW rule goes on the next open.
+MAX_CHAT_SEEN = 300
+MAX_CHAT_ID = 128
 _IDENT_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 
@@ -162,6 +167,13 @@ def _clean(doc) -> dict:
             _check(_is_int(v) and RAIL_PEEK_MIN <= v <= RAIL_PEEK_MAX)
             size[key] = v
         out[card] = size
+    if "chatSeen" in doc:
+        cs = doc["chatSeen"]
+        _check(isinstance(cs, dict) and len(cs) <= MAX_CHAT_SEEN)
+        for k, v in cs.items():
+            _check(isinstance(k, str) and 0 < len(k) <= MAX_CHAT_ID)
+            _check(isinstance(v, str) and 0 < len(v) <= MAX_CHAT_ID)
+        out["chatSeen"] = dict(cs)
     if "chatTextScale" in doc:
         v = doc["chatTextScale"]
         _check(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v))

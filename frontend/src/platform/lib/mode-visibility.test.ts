@@ -12,7 +12,7 @@ import {
   defaultMode,
   effectiveActive,
   isModeVisible,
-  isNodeViewEntry,
+  isNodeEntry,
   modesUnderSnapshot,
 } from "@platform/lib/mode-visibility";
 
@@ -270,11 +270,18 @@ describe("effectiveActive", () => {
   });
 });
 
-// THE CANVAS NODE VIEW (the `_node` sentinel, SPEC §53.3 NV-3, PT-8's `prefer` exception).
-describe("the node view needs an explicit yes", () => {
+// THE CANVAS NODE TEMPLATES (`node` entries, SPEC §53.2 NT-3, PT-8's `prefer` exception).
+describe("a canvas node template needs an explicit yes", () => {
   const code = t("code");
-  // As stat ships it on any `.py`: the `_node` sentinel, gated.
-  const udf: TemplateEntry = { mode: "_node", path: null, icon: null, conditional: true };
+  // As stat ships it on any `.py`: the built-in `canvas_udf` folder, gated
+  // and marked a node template.
+  const udf: TemplateEntry = {
+    mode: "canvas_udf",
+    path: "/core/canvas_udf/template.html",
+    icon: null,
+    conditional: true,
+    node: true,
+  };
   // …and on a path shaped like a canvas node file, with Canvases on.
   const preferred: TemplateEntry = { ...udf, prefer: true };
 
@@ -282,19 +289,20 @@ describe("the node view needs an explicit yes", () => {
     expect(isModeVisible(udf, null)).toBe(false);
     expect(isModePending(udf, null)).toBe(false);
     expect(isModeVisible(udf, {})).toBe(false);
-    expect(isModeVisible(udf, { _node: false })).toBe(false);
-    expect(isModeVisible(udf, { _node: true })).toBe(true);
+    expect(isModeVisible(udf, { canvas_udf: false })).toBe(false);
+    expect(isModeVisible(udf, { canvas_udf: true })).toBe(true);
     // Offered on a yes, but never the default: no `prefer`, PT-8 as ever.
-    expect(defaultMode(visibleModes([code, udf], { _node: true }))?.mode).toBe("code");
+    expect(defaultMode(visibleModes([code, udf], { canvas_udf: true }))?.mode).toBe("code");
   });
 
-  it("not the sentinel (a folder named `udf`): the ordinary rules, and `prefer` means nothing", () => {
-    const plain: TemplateEntry = { ...preferred, mode: "udf", path: "/u/udf/template.html" };
-    expect(isNodeViewEntry(plain)).toBe(false);
+  it("not marked `node` (a user folder of the same name): the ordinary rules, and `prefer` means nothing", () => {
+    const plain: TemplateEntry = { ...preferred, node: undefined, path: "/u/canvas_udf/template.html" };
+    expect(isNodeEntry(udf)).toBe(true);
+    expect(isNodeEntry(plain)).toBe(false);
     expect(isModeVisible(plain, {})).toBe(true);
     expect(isModePending(plain, null)).toBe(true);
     expect(defaultMode(visibleModes([code, plain], null))?.mode).toBe("code");
-    expect(defaultMode(visibleModes([code, plain], { udf: true }))?.mode).toBe("code");
+    expect(defaultMode(visibleModes([code, plain], { canvas_udf: true }))?.mode).toBe("code");
     // Nor any other gated entry that says `prefer`.
     const other: TemplateEntry = { ...t("app", true), prefer: true };
     expect(defaultMode(visibleModes([code, other], { app: true }))?.mode).toBe("code");
@@ -305,69 +313,69 @@ describe("defaultMode with a preferred entry", () => {
   const code = t("code");
   const claudeGated = t("claude", true);
   const preferred: TemplateEntry = {
-    mode: "_node",
-    path: null,
+    mode: "canvas_udf",
+    path: "/core/canvas_udf/template.html",
     icon: null,
     conditional: true,
+    node: true,
     prefer: true,
   };
   const list = [code, preferred, claudeGated];
   const dflt = (v: Record<string, boolean> | null) => defaultMode(visibleModes(list, v));
 
-  it("pending: it is the default candidate, listed and pending", () => {
-    expect(names(visibleModes(list, null))).toEqual(["code", "_node", "claude"]);
-    expect(isModePending(preferred, null)).toBe(true);
-    expect(dflt(null)?.mode).toBe("_node");
+  it("the path check is enough: the default at once, never pending", () => {
+    expect(names(visibleModes(list, null))).toEqual(["code", "canvas_udf", "claude"]);
+    expect(isModePending(preferred, null)).toBe(false);
+    expect(dflt(null)?.mode).toBe("canvas_udf");
   });
 
-  it("the gate says yes: the default, settled", () => {
-    expect(isModePending(preferred, { _node: true })).toBe(false);
-    expect(dflt({ _node: true, claude: true })?.mode).toBe("_node");
-  });
-
-  it("a no, a missing verdict or a failed call ({}): the ordinary default, no node view", () => {
-    const cases: Record<string, boolean>[] = [{ _node: false, claude: true }, { claude: true }, {}];
+  it("the gate's verdict changes nothing: a yes, a no, a missing verdict or a failed call", () => {
+    const cases: Record<string, boolean>[] = [
+      { canvas_udf: true, claude: true }, { canvas_udf: false, claude: true }, { claude: true }, {},
+    ];
     for (const v of cases) {
-      expect(dflt(v)?.mode).toBe("code");
-      expect(names(visibleModes(list, v))).not.toContain("_node");
+      expect(isModePending(preferred, v)).toBe(false);
+      expect(dflt(v)?.mode).toBe("canvas_udf");
+      expect(names(visibleModes(list, v))).toContain("canvas_udf");
     }
   });
 
   it("an explicit `_mode` still wins; an unknown one lands on the candidate", () => {
     expect(effectiveActive(visibleModes(list, null), "code")?.mode).toBe("code");
-    expect(effectiveActive(visibleModes(list, { _node: true }), "nope")?.mode).toBe("_node");
-    expect(effectiveActive(visibleModes(list, {}), "_node")?.mode).toBe("code");
+    expect(effectiveActive(visibleModes(list, { canvas_udf: true }), "nope")?.mode).toBe("canvas_udf");
+    expect(effectiveActive(visibleModes(list, {}), "canvas_udf")?.mode).toBe("canvas_udf");
   });
 
   it("is a content mode, never a companion", () => {
-    expect(isSidebarMode("_node")).toBe(false);
-    expect(names(partitionModes(visibleModes(list, { _node: true, claude: true })).sidebar)).toEqual(["claude"]);
+    expect(isSidebarMode("canvas_udf")).toBe(false);
+    expect(names(partitionModes(visibleModes(list, { canvas_udf: true, claude: true })).sidebar)).toEqual(["claude"]);
     expect(SIDEBAR_MODES).toEqual(["claude", "git"]);
   });
 });
 
-// SPEC §53.3: the node view is live; a git snapshot preview never offers it.
+// SPEC §53.2: a node template is live; a git snapshot preview never offers one.
 describe("modesUnderSnapshot", () => {
   const code = t("code");
   const udf: TemplateEntry = {
-    mode: "_node",
-    path: null,
+    mode: "canvas_udf",
+    path: "/core/canvas_udf/template.html",
     icon: null,
     conditional: true,
+    node: true,
     prefer: true,
   };
-  it("drops the node view under a snapshot, so the default falls to a mode that honours it", () => {
+  it("drops a node template under a snapshot, so the default falls to a mode that honours it", () => {
     const under = modesUnderSnapshot([udf, code], "abc123");
     expect(under.map((e) => e.mode)).toEqual(["code"]);
-    expect(defaultMode(visibleModes(under, { _node: true }))?.mode).toBe("code");
-    expect(effectiveActive(visibleModes(under, { _node: true }), "_node")?.mode).toBe("code");
+    expect(defaultMode(visibleModes(under, { canvas_udf: true }))?.mode).toBe("code");
+    expect(effectiveActive(visibleModes(under, { canvas_udf: true }), "canvas_udf")?.mode).toBe("code");
   });
   it("keeps every mode when there is no snapshot", () => {
     expect(modesUnderSnapshot([udf, code], null)).toEqual([udf, code]);
     expect(modesUnderSnapshot([udf, code], "")).toEqual([udf, code]);
   });
-  it("keeps a template folder named `udf` (an ordinary framed template, not the node view)", () => {
-    const framed: TemplateEntry = { mode: "udf", path: "/u/udf/template.html", icon: null, conditional: false };
-    expect(modesUnderSnapshot([framed, code], "abc123").map((e) => e.mode)).toEqual(["udf", "code"]);
+  it("keeps a user folder of the same name (an ordinary template, not marked `node`)", () => {
+    const framed: TemplateEntry = { mode: "canvas_udf", path: "/u/canvas_udf/template.html", icon: null, conditional: true };
+    expect(modesUnderSnapshot([framed, code], "abc123").map((e) => e.mode)).toEqual(["canvas_udf", "code"]);
   });
 });

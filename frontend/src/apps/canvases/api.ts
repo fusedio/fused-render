@@ -291,10 +291,6 @@ export const newFrameId = (): string => {
 
 const fq = (frame?: string) => (frame ? `&frame=${encodeURIComponent(frame)}` : "");
 const fb = (frame?: string) => (frame ? { frame } : {});
-// A node view's frame names its node on its cuts and acks (SPEC 53.1 FP-9):
-// the server then refuses anything that frame posts about another node.
-const sq = (scope?: string) => (scope ? `&frame_scope=${encodeURIComponent(scope)}` : "");
-const sb = (scope?: string) => (scope ? { frame_scope: scope } : {});
 
 export interface CanvasEntry {
   name: string;
@@ -527,8 +523,8 @@ export interface CanvasDelta {
 /** Embed v3: diff(disk, what the frame holds), for `fused-embed-delta`.
  *  `full` asks for the whole state (the frame just hydrated). Throws with
  *  `.status` 409 while a sync leg holds the clone. */
-export const getDelta = (env: WorkbenchEnv, name: string, full: boolean, frame?: string, scope?: string) =>
-  getJson<CanvasDelta>(`/api/canvases/delta?${q(env, name)}&full=${full ? 1 : 0}${fq(frame)}${sq(scope)}`);
+export const getDelta = (env: WorkbenchEnv, name: string, full: boolean, frame?: string) =>
+  getJson<CanvasDelta>(`/api/canvases/delta?${q(env, name)}&full=${full ? 1 : 0}${fq(frame)}`);
 
 /** The frame applied (`ok`) or refused a delta: the host's picture of the
  *  frame moves to that revision, or is dropped so the next delta is full. */
@@ -540,13 +536,11 @@ export const ackDelta = (
   reason?: string,
   skipped?: string[],
   frame?: string,
-  scope?: string,
 ) =>
   postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", {
     name,
     env,
     ...fb(frame),
-    ...sb(scope),
     rev,
     ok,
     // The frame's own words for a refusal ("not hydrated yet" during boot),
@@ -677,35 +671,6 @@ export const syncEventsUrl = (env: WorkbenchEnv, name: string, frame?: string) =
  *  push's errors; attach the chat iframe with the returned run_id. */
 export const fixWithClaude = (env: WorkbenchEnv, name: string) =>
   postJson<{ ok: boolean; run_id: string }>("/api/canvases/fix", { name, env });
-
-/** What the node view (SPEC §53.3) starts from, for a file path: the
- *  server resolves the canvas and the node, so the page parses no paths.
- *  `{enabled: false}` while Canvases is off; `node: null` for a file that is
- *  not a node of a `user/` canvas folder. */
-export type NodeKind = "udf" | "widget" | "html" | "note";
-export type CanvasNodeInfo =
-  | { enabled: false }
-  | { enabled: true; node: null }
-  | {
-      enabled: true;
-      env: WorkbenchEnv;
-      name: string;
-      node: string;
-      kind: NodeKind;
-      file: string;
-      /** The row's title (the node's name when it has none). */
-      title: string;
-      /** A clone this process may sync. */
-      live: boolean;
-      /** A reference copy (mirror, or an adoption not yet pulled). */
-      reference: boolean;
-      signed_in: boolean;
-      /** The whoami handle, when the server already holds one. */
-      handle?: string;
-    };
-
-export const getCanvasNode = (path: string) =>
-  getJson<CanvasNodeInfo>(`/api/canvases/node?path=${encodeURIComponent(path)}`);
 
 /** The token for `env`'s workbench — the CANVAS's env, so a custom canvas
  *  gets its own deployment's login, never the hosted one. */

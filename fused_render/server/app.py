@@ -57,6 +57,7 @@ from fused_render.server.routers.copilot_health import router as copilot_health_
 from fused_render.server.routers.codex_health import router as codex_health_router
 from fused_render.server.routers.gemini_health import router as gemini_health_router
 from fused_render.server.routers.opencode_health import router as opencode_health_router
+from fused_render.server.routers.cursor_health import router as cursor_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.marketplace import router as marketplace_router
 from fused_render.server.routers.github import router as github_router
@@ -752,6 +753,15 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _startup_shutdown_ai():
         await shutdown_ai_session(app)
 
+    # The warm UDF workers (fused_render/udf/runner.py): started by the first
+    # `fused.workbench.udf()` run in an environment, lean or not, so stopped
+    # regardless too. A no-op when none was started.
+    @on_shutdown_always
+    async def _shutdown_udf_workers():
+        from fused_render.udf import runner as udf_runner
+
+        await asyncio.to_thread(udf_runner.shutdown)
+
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
     # nothing has used it for the configured window (default 5 min, 0 = off).
     # No startup hook for it — `supervisor._start_resident` calls
@@ -1187,6 +1197,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # ...and OpenCode's (routers/opencode_health.py): /api/opencode/{health,
     # health/refresh, install, login, login/cancel, link-path}, same rules.
     app.include_router(opencode_health_router)
+    # ...and Cursor's (routers/cursor_health.py): /api/cursor/{health,
+    # health/refresh, install, login, login/cancel, link-path}, same rules.
+    app.include_router(cursor_health_router)
     # The agent catalog (routers/agent_backends.py): which agents exist, which
     # are on, and each one's models/efforts/modes/caps — the one list every
     # picker reads (docs/COPILOT_BACKEND.md D11). Read-only, no auth guard.
@@ -1268,6 +1281,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
     app.include_router(canvases_router)
+    # Fused UDF runs for pages (`fused.workbench.udf()`, SPEC §54): the
+    # /api/udf/ws run socket and the result bytes, over the warm per-env SDK
+    # workers of fused_render/udf/.
+    from fused_render.server.routers.udf import router as udf_router
+
+    app.include_router(udf_router)
     # Remote (S3) locations: an `s3://bucket/key` address is an explorer
     # location. `routers/remote.py` stats, lists and downloads an object into
     # the local cache (remote_access.py is the one seam that knows how a
@@ -1392,6 +1411,35 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             experts_scheduler.start()
         except Exception:  # noqa: BLE001 — never worth failing startup
             logger.warning("could not start the experts scheduler", exc_info=True)
+
+    # Specialists (fused_render/specialists/, docs/specialists.md): `/api/specialists*`, every route the
+    # unknown-path 404 while the flag is off. The tools router goes first: its literal `/tools/*` paths must win
+    # over the `/{id}` routes.
+    from fused_render.specialists import flag as sp_flag
+    from fused_render.specialists import routes as sp_routes
+    from fused_render.specialists import tools as sp_tools
+
+    app.include_router(sp_tools.router)
+    app.include_router(sp_routes.router)
+    app.middleware("http")(sp_flag.off_middleware)
+
+    @on_startup
+    async def _startup_specialists():
+        if not sp_flag.on():
+            return
+        from fused_render.specialists import scheduler, seed
+
+        try:
+            await asyncio.to_thread(seed.seed)
+        except Exception:  # noqa: BLE001 — the shipped specialists are a convenience; the server still starts
+            logger.exception("could not create the shipped specialists")
+        scheduler.start()
+
+    @on_shutdown_always
+    async def _shutdown_specialists():
+        from fused_render.specialists import scheduler
+
+        scheduler.stop()
 
     # Share an app as a public link (share_app.py): the .fused export handed
     # to the user's Fused account as a one-node canvas, through the same

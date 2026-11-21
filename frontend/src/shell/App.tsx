@@ -36,8 +36,6 @@ import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
 // sidebar's sign-in probe imports it); the barrel would pull the sub-app in.
 import { ENV_NAMES, canvasNameFromPath } from "@apps/canvases/api";
-import { registerNativeView } from "@platform/ui/NativeView";
-import { NODE_MODE } from "@platform/lib/mode-visibility";
 import {
   appIconUrl,
   getAppIcon,
@@ -71,6 +69,7 @@ import { TasksPeek } from "@shell/claude-rail/TasksPeek";
 import { PlusCardHost } from "@shell/claude-rail/PlusCardHost";
 import { BotsPeek } from "@shell/claude-rail/BotsPeek";
 import { GitPeek } from "@shell/claude-rail/GitPeek";
+import { ModePeek } from "@shell/claude-rail/ModePeek";
 import { BotCardHost, BotCardHostSlotY } from "@shell/claude-rail/BotCardHost";
 import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
@@ -121,6 +120,7 @@ import {
   isAiModelsPath,
 } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
+import { useSpecialistsFlagKnown } from "@platform/lib/specialists-flag";
 
 // The boot-time "send a fresh install to the wizard" decision is made once
 // per page load (App's render below), not on every re-render — a user who
@@ -182,11 +182,6 @@ const Canvases = lazy(() =>
 const CanvasWorkspace = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
 );
-// …and the canvas NODE VIEW, the `_node` sentinel mode (SPEC §53.3/§53.4): the
-// explorer's preview may not import apps/canvases, so it mounts whatever the
-// shell registered for the mode (platform/ui/NativeView). Same chunk as the
-// two routes above, loaded on the first node file shown.
-registerNativeView(NODE_MODE, () => import("@apps/canvases").then((m) => ({ default: m.NodeView })));
 // Bots (ported from FusedBot): browser bots, each driving its own Chrome
 // window. The page carries its own scoped stylesheet in the lazy chunk.
 const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
@@ -728,11 +723,16 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", "/home");
   }
-  // The server runs no bots on Windows: a bookmarked /bots URL goes Home rather
-  // than to a page whose every call answers 503.
+  // The server runs no bots on Windows, but the Bots page still opens there for
+  // the specialists (task sessions, not bots: docs/specialists.md; the page
+  // leaves its `/api/bots*` parts out, apps/bots `useBotsMissing`). So a
+  // bookmarked /bots URL goes Home only once the specialists flag is KNOWN off
+  // — not on the first render, before the prefs read has answered.
   const botsOn = botsAvailable(config);
+  const specialistsKnown = useSpecialistsFlagKnown();
+  const botsPageOn = botsOn || specialistsKnown !== false;
   const terminalOn = terminalAvailable(config);
-  if (!botsOn && isBotsPath(location.pathname)) {
+  if (!botsPageOn && isBotsPath(location.pathname)) {
     history.replaceState(null, "", "/home");
   }
   // A fresh install's first load lands on the setup wizard instead (its own
@@ -829,7 +829,7 @@ export default function App({ config }: { config: Config }) {
   // Preferences pages are sub-paths (apps/bots/routes.ts), asked through the
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
-  const isBots = isBotsPath(pathname) && botsOn;
+  const isBots = isBotsPath(pathname) && botsPageOn;
   // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
   // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
   // branch below, deliberately unredirected.
@@ -1407,6 +1407,10 @@ export default function App({ config }: { config: Config }) {
           window A's too, mounted once here for the same reason (owner,
           2026-11-10: Git moved off the status bar onto the rail). */}
       {!IS_EMBED && <GitPeek />}
+      {/* The mode card off the rail's mode doors (shell/claude-rail ModePeek):
+          window A's too, mounted once here for the same reason (owner,
+          2026-11-20: a file's other modes as doors above Git). */}
+      {!IS_EMBED && <ModePeek />}
       {/* The pinned bot's card (shell/claude-rail BotCardHost): window B's
           other card, mounted once here for the favourite's reason — a page's
           view switch remounts its rail, and a card that lived there

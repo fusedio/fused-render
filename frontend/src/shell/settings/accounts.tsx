@@ -254,30 +254,15 @@ export function WorkbenchEnvControl() {
     <SettingRow
       id="workbench-env"
       status={
+        // Only what needs saying: a pin. The per-environment canvas counts
+        // and folders were dropped (2026-11-20).
         !status ? (
           error ? undefined : "Checking…"
-        ) : (
+        ) : status.locked ? (
           <>
-            {status.locked && (
-              <div>
-                Pinned to <b>{current}</b> by <code>FUSED_RENDER_WORKBENCH_ENV</code>.
-              </div>
-            )}
-            {WORKBENCH_ENVS.map((e) => {
-              const info = status.envs?.[e];
-              if (!info) return null;
-              const n = info.cloned_count;
-              return (
-                <div key={e}>
-                  {`${ENV_NAMES[e].label}: ${n} ${n === 1 ? "canvas" : "canvases"} cloned under ${info.canvases_dir}`}
-                  {/* The one env whose workbench is not fixed: say where
-                      settings.toml points it right now. */}
-                  {e === "custom" && ` (workbench: ${info.base_url})`}
-                </div>
-              );
-            })}
+            Pinned to <b>{current}</b> by <code>FUSED_RENDER_WORKBENCH_ENV</code>.
           </>
-        )
+        ) : undefined
       }
       control={
         !status ? undefined : (

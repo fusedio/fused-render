@@ -147,10 +147,13 @@ export interface TemplateEntry {
   /** A native template (PT-6 amendment): the shell draws it, there is no
    *  page to frame. Set by the server on the stat entry. */
   native?: boolean;
+  /** A canvas node template's entry (SPEC §53.2): offered only on its gate's
+   *  explicit yes, and never under a git snapshot (lib/mode-visibility). */
+  node?: boolean;
   /** The file's DEFAULT CANDIDATE although it is conditional (SPEC PT-8's one
-   *  exception): set by the server on the `_node` sentinel entry of a path
-   *  shaped like a canvas node file, with Canvases on. The default only on
-   *  the gate's explicit yes (lib/mode-visibility `defaultMode`). */
+   *  exception): set by the server on a `node` entry of a path shaped like a
+   *  canvas node file, with Canvases on. The default only on the gate's
+   *  explicit yes (lib/mode-visibility `defaultMode`). */
   prefer?: boolean;
 }
 
@@ -346,6 +349,21 @@ export function fetchDiagnosticsPlan(sinceS?: number): Promise<DiagnosticsPlan> 
   return getJson<DiagnosticsPlan>(`/api/diagnostics/plan${q}`);
 }
 
+/** fused-render's saved UDF results on disk (SPEC §54.3). */
+export interface UdfSavedStats {
+  entries: number;
+  bytes: number;
+}
+
+export function fetchUdfSavedStats(): Promise<UdfSavedStats> {
+  return getJson<UdfSavedStats>("/api/udf/saved");
+}
+
+/** Deletes every saved UDF result; the next open of each UDF runs it fresh. */
+export function clearUdfSaved(): Promise<{ cleared: UdfSavedStats }> {
+  return mutateJson<{ cleared: UdfSavedStats }>("DELETE", "/api/udf/saved");
+}
+
 export interface DiagnosticsOptions {
   /** Absolute epoch seconds; omitted = server default window. */
   since_s?: number;
@@ -523,7 +541,10 @@ export interface ClaudeHealth {
       the CLI cached one. The OPENCODE snapshot (`/api/opencode/health`,
       docs/OPENCODE_BACKEND.md D10) says "local" (the default model is a
       `fused/…` local row — no account at all) or "providers" (at least one
-      provider OpenCode reports as connected). */
+      provider OpenCode reports as connected). The CURSOR snapshot
+      (`/api/cursor/health`, docs/CURSOR_BACKEND.md D10) says "cursor" (a
+      stored `cursor-agent login`, with its email and team as `org`) or
+      "api_key" (`CURSOR_API_KEY`). */
   account: {
     method: string | null;
     email: string | null;
@@ -673,8 +694,9 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 // -- The same doors, PER AGENT (docs/COPILOT_BACKEND.md D10) ----------------
 //
 // `/api/copilot/*`, `/api/codex/*` (docs/CODEX_BACKEND.md D10),
-// `/api/gemini/*` (docs/GEMINI_BACKEND.md D10) and `/api/opencode/*`
-// (docs/OPENCODE_BACKEND.md D10) — `health,
+// `/api/gemini/*` (docs/GEMINI_BACKEND.md D10), `/api/opencode/*`
+// (docs/OPENCODE_BACKEND.md D10) and `/api/cursor/*` (docs/CURSOR_BACKEND.md
+// D10) — `health,
 // health/refresh, install, login, login/cancel, link-path` — answer the same
 // bodies as the Claude ones above, so one set of functions keyed on the
 // backend id serves every agent — `useAgentSetup(backend)` in claude-setup.ts
@@ -683,7 +705,7 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 // contract) and is not generalised.
 
 /** Each agent's route segment; an id not here (or none) is Claude's. */
-const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex", gemini: "gemini", opencode: "opencode" };
+const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex", gemini: "gemini", opencode: "opencode", cursor: "cursor" };
 
 function agentRoute(backend: string, tail: string): string {
   return `/api/${AGENT_ROUTES[backend] ?? "claude"}/${tail}`;
@@ -755,7 +777,7 @@ export interface AgentCaps {
 
 export interface AgentBackendRow {
   id: string;
-  /** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" — the word every surface names the agent by. */
+  /** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" / "Cursor" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
   /** `reasoning: false` marks a model its CLI takes no effort for (the spawn
@@ -1586,6 +1608,9 @@ export interface Prefs {
   // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
   // default). Optional like `queue`: absent reads as off.
   breakout?: { enabled: boolean };
+  // Specialists (`specialists_enabled`, shell/prefs.py; docs/specialists.md).
+  // Experimental, off by default. Optional like `breakout`: absent reads as off.
+  specialists?: { enabled: boolean };
   // The slow in-canvas screenshot fallback on a Mac
   // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
   // Optional: absent (older server) reads as off.
@@ -1609,6 +1634,11 @@ export interface Prefs {
   // leaves the rail's column to a second, non-pinned window. Read only with
   // the unified head on. Optional: absent (older server) reads as off.
   rail_free_pins?: { enabled: boolean };
+  // A file's other modes as doors on the Claude rail (`rail_mode_doors_enabled`,
+  // shell/prefs.py; off by default): the mode menu's entries, the active one
+  // left out, above Git, each previewing the file that way in a rail card.
+  // Read only with the rail flag on. Optional: absent (older server) reads as off.
+  rail_mode_doors?: { enabled: boolean };
   // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
   // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
   // its status ring. Optional: absent (older server) reads as off.
@@ -1744,12 +1774,13 @@ export interface Prefs {
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled` /
-  // `gemini_enabled` / `opencode_enabled` (default off, docs/CODEX_BACKEND.md D17,
-  // docs/GEMINI_BACKEND.md D17, docs/OPENCODE_BACKEND.md D17), and the one
+  // `gemini_enabled` / `opencode_enabled` / `cursor_enabled` (default off,
+  // docs/CODEX_BACKEND.md D17, docs/GEMINI_BACKEND.md D17,
+  // docs/OPENCODE_BACKEND.md D17, docs/CURSOR_BACKEND.md D17), and the one
   // new chats and tasks open on. The server refuses a PUT that would turn
   // the last one off (400 "turn on another agent first"). OPTIONAL: an older
   // server answers without it, and the reader treats absence as Claude only.
-  agents?: { claude: boolean; copilot: boolean; codex: boolean; gemini?: boolean; opencode?: boolean; default: string };
+  agents?: { claude: boolean; copilot: boolean; codex: boolean; gemini?: boolean; opencode?: boolean; cursor?: boolean; default: string };
 }
 
 export type ChromiumEngineState = "unsupported" | "missing" | "ready";
@@ -2184,6 +2215,10 @@ export function putBreakoutEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { breakout_enabled: enabled });
 }
 
+export function putSpecialistsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { specialists_enabled: enabled });
+}
+
 export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvas_shot_slow_fallback_enabled: enabled });
 }
@@ -2202,6 +2237,10 @@ export function putTaskHeadUnifiedEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putRailFreePinsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { rail_free_pins_enabled: enabled });
+}
+
+export function putRailModeDoorsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { rail_mode_doors_enabled: enabled });
 }
 
 export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {
@@ -2264,6 +2303,10 @@ export interface UiLayoutDoc {
   /** The chat text zoom, 1 = 100 % (platform/lib/chat-zoom.ts): one factor for
    *  every chat, always one of `CHAT_TEXT_SCALES` (ui-layout.ts). */
   chatTextScale?: number;
+  /** The task chat's "seen" mark (apps/claude/ui/chatSeen.ts): session id →
+   *  where the reader last sat at the end of it (`k:d:r`, a log position). Oldest
+   *  first; capped at `CHAT_SEEN_MAX` (ui-layout.ts). */
+  chatSeen?: Record<string, string>;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
@@ -3795,7 +3838,7 @@ export function createApp(
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
-  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "gemini" | "opencode" | "" for the
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor" | "" for the
   // catalog's default (docs/COPILOT_BACKEND.md D17).
   backend: string = "",
 ): Promise<NewAppResult> {
@@ -4074,7 +4117,7 @@ export interface Task {
    */
   model: string;
   effort: string;
-  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex" | "gemini" | "opencode"
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor"
    *  (docs/COPILOT_BACKEND.md D2), chosen at the first turn and immutable. Optional: an older server
    *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
   backend?: string;
@@ -6743,6 +6786,9 @@ export interface RailGitRepo {
    *  move (the rail Git door's dots). Null with no upstream or a detached
    *  HEAD; absent from an older server. */
   upstream?: { ahead: number; behind: number } | null;
+  /** A copy of someone else's app (contrib §17.8): the Git pane routes its
+   *  push / pull, so the rail card offers neither. Absent from an older server. */
+  guarded?: boolean;
   commits: GitCommit[];
 }
 
@@ -6763,6 +6809,31 @@ export function getRailGit(path: string, limit?: number): Promise<RailGit> {
  *  (no remote, unreachable, another check holding the slot, still running). */
 export function postRailGitCheck(path: string, limit?: number): Promise<RailGit & { checked: boolean }> {
   return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", limit === undefined ? { path } : { path, limit });
+}
+
+export type RailGitSyncOp = "push" | "pull";
+
+/** The Git view's own push / pull (templates/git/ops.py), as its answer. */
+export interface RailGitSyncResult {
+  ok: boolean;
+  op?: RailGitSyncOp;
+  detail?: string;
+  reason?: string;
+  message?: string;
+}
+
+/** The rail Git card's Send / Get latest: the pane's op, then the fresh counts.
+ *  A refusal is `result.ok === false` with its sentence, not a thrown error. */
+export function postRailGitSync(
+  path: string,
+  op: RailGitSyncOp,
+  limit?: number,
+): Promise<RailGit & { result: RailGitSyncResult }> {
+  return mutateJson<RailGit & { result: RailGitSyncResult }>(
+    "POST",
+    "/api/git/rail/sync",
+    limit === undefined ? { path, op } : { path, op, limit },
+  );
 }
 
 export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {

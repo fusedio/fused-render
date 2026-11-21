@@ -89,7 +89,9 @@ def api_config(
         "native_dir_picker": dirpicker.available(),
         # Whether the Bots feature exists here. The server never runs bots on
         # Windows (server/app.py: no election, `/api/bots/*` answers 503), so the
-        # shell hides the sidebar entry, the page and the pulse poll off this.
+        # shell drops the pulse poll off this, and the sidebar entry and the page
+        # too unless Specialists are on: those are task sessions, not bots
+        # (docs/specialists.md), and the page then lists them alone.
         "bots_available": not _platform.IS_WINDOWS,
         # Whether THIS process has the launcher panel (the ⌥Space search over
         # the apps; fused_render/launcher_panel.py) to show on request: the

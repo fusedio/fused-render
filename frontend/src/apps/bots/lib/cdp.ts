@@ -16,6 +16,7 @@ import { flushSync } from "react-dom";
 import { askConfirm } from "../dialogs/ask";
 import { act, cur, getState, onHandover, poll, select, setFast, showBanner } from "../state/store";
 import { api, type Bot } from "./api";
+import { noBrowser } from "./derive";
 import { CAST, furlTarget, pageUrl, showUrl, type FrameMeta } from "./live";
 
 export const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
@@ -186,7 +187,7 @@ export function focusCtl(): void {
 /** `focus: false` (a hand-over landing while the composer holds unsent text) opens Stage without taking the keyboard. */
 export function openFull({ focus = true }: { focus?: boolean } = {}): void {
   // An expert has no browser: nothing to show, nothing to wake.
-  const b = cur(); if (!b || b.kind === "expert") return;
+  const b = cur(); if (!b || noBrowser(b)) return;
   flushSync(() => setFast(true));  // #full must be showing before anything in it can take focus
   const shot = $<HTMLImageElement>("shot"), fshot = $<HTMLImageElement>("fshot");
   if (fshot) { const s = shot?.getAttribute("src"); if (s) fshot.src = s; else fshot.removeAttribute("src"); }
@@ -203,7 +204,7 @@ export function openFull({ focus = true }: { focus?: boolean } = {}): void {
 onHandover((o) => openFull(o), () => { setFast(false); linkClose(); });
 /** The bot menu's "Open live view" (selects the bot first when the menu belongs to another one). */
 export function openLive(id?: string): void {
-  if (id && getState().bots.find((x) => x.id === id)?.kind === "expert") return;
+  if (id && noBrowser(getState().bots.find((x) => x.id === id))) return;
   if (id && id !== getState().sel) select(id);
   openFull();
 }

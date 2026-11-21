@@ -176,38 +176,24 @@ def test_sync_state_answers_for_the_frame_named_and_for_the_worst_off_otherwise(
     assert m.sync_state(frame="nobody")["legs"]["disk_to_embed"]["state"] == "error"
 
 
-def test_a_scoped_frame_reads_everything_and_writes_only_its_node(m, harness):
+def test_a_frame_scope_is_not_a_thing(m, harness):
+    """The per-node record scope went with the node view: a call that still
+    names one is an ordinary call on that frame, whose record writes any
+    node like every other frame's."""
     q = "/api/canvases/delta?env=unstable&name=alpha&full=1&frame=N&frame_scope=a"
     cut = harness.client.get(q).json()
     assert cut["full"] is True and {o.get("name") for o in cut["ops"]} >= {"a", "b"}, cut
-    assert m._frames["N"].scope == "a"
-    post = {"env": ENV, "name": "alpha", "frame": "N"}
-    res = harness.client.post("/api/canvases/snapshot", headers=GUARD,
-                              json={**post, "gen": 1, "seq": 1, "body": _body(["a"])})
-    assert res.status_code == 400 and res.json()["code"] == "scoped", res.text
-    res = harness.client.post("/api/canvases/snapshot", headers=GUARD, json={
-        **post, "gen": 1, "seq": 2, "rename": {"from": "a", "to": "z"}})
-    assert res.status_code == 400 and res.json()["code"] == "scoped", res.text
-    body = {**post, "base_hash": canvas_snapshot.body_hash("b1\n"), "text": "b2\n",
+    assert not hasattr(m._frames["N"], "scope")
+    body = {"env": ENV, "name": "alpha", "frame": "N",
+            "base_hash": canvas_snapshot.body_hash("b1\n"), "text": "b2\n",
             "node": "b", "file": "b.py"}
     res = harness.client.post("/api/canvases/body", headers=GUARD, json=body)
-    assert res.status_code == 400 and res.json()["code"] == "scoped", res.text
-    assert (harness.clones / "alpha" / "b.py").read_text() == "b1\n"
-    assert (harness.clones / "alpha" / "a.py").read_text() == "a1\n"
-    body = {**post, "base_hash": canvas_snapshot.body_hash("a1\n"), "text": "a2\n",
-            "node": "a", "file": "a.py"}
-    res = harness.client.post("/api/canvases/body", headers=GUARD, json=body)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    # The scope is the record's for good: no later call widens or moves it.
-    res = harness.client.get(q.replace("frame_scope=a", "frame_scope=b"))
-    assert res.status_code == 400 and res.json()["code"] == "scoped", res.text
-    assert m._frames["N"].scope == "a"
+    assert (harness.clones / "alpha" / "b.py").read_text() == "b2\n"
 
 
 @pytest.mark.parametrize("query", [
     "frame=has%20space", "frame=" + "x" * 65, "frame=a/b",
-    "frame_scope=a",                      # a scope needs a named frame
-    "frame=N&frame_scope=..%2Fx",
 ])
 def test_a_malformed_frame_is_a_400(m, harness, query):
     res = harness.client.get(f"/api/canvases/delta?env=unstable&name=alpha&{query}")

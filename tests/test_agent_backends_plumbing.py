@@ -175,7 +175,9 @@ def test_every_root_list_names_five_roots_in_backends_order(
     helpers a module with a patchable Claude constant builds through, and
     the modules' own doors. `codex_dir()`, `gemini_dir()` and
     `opencode_dir()` hang off the UNNESTED home, as `copilot_dir()` does."""
-    assert roots.BACKENDS == ("claude", "copilot", "codex", "gemini", "opencode")
+    assert roots.BACKENDS == ("claude", "copilot", "codex", "gemini", "opencode", "cursor")
+    assert roots.cursor_dir() == str(home / "cursor")
+    assert roots.base_dir("cursor") == str(home / "cursor")
     assert roots.opencode_dir() == str(home / "opencode")
     assert roots.base_dir("opencode") == str(home / "opencode")
     assert roots.projects_dir("opencode") == str(home / "opencode" / "projects")
@@ -194,25 +196,29 @@ def test_every_root_list_names_five_roots_in_backends_order(
         ("copilot", str(home / "copilot" / "projects")),
         ("codex", str(home / "codex" / "projects")),
         ("gemini", str(home / "gemini" / "projects")),
-        ("opencode", str(home / "opencode" / "projects"))]
+        ("opencode", str(home / "opencode" / "projects")),
+        ("cursor", str(home / "cursor" / "projects"))]
     assert roots.registry_roots() == [
         ("claude", os.path.join(claude, "sessions")),
         ("copilot", str(home / "copilot" / "sessions")),
         ("codex", str(home / "codex" / "sessions")),
         ("gemini", str(home / "gemini" / "sessions")),
-        ("opencode", str(home / "opencode" / "sessions"))]
+        ("opencode", str(home / "opencode" / "sessions")),
+        ("cursor", str(home / "cursor" / "sessions"))]
     assert roots.projects_roots("/c/projects") == [
         ("claude", "/c/projects"),
         ("copilot", str(home / "copilot" / "projects")),
         ("codex", str(home / "codex" / "projects")),
         ("gemini", str(home / "gemini" / "projects")),
-        ("opencode", str(home / "opencode" / "projects"))]
+        ("opencode", str(home / "opencode" / "projects")),
+        ("cursor", str(home / "cursor" / "projects"))]
     assert roots.sessions_roots("/c/sessions") == [
         ("claude", "/c/sessions"),
         ("copilot", str(home / "copilot" / "sessions")),
         ("codex", str(home / "codex" / "sessions")),
         ("gemini", str(home / "gemini" / "sessions")),
-        ("opencode", str(home / "opencode" / "sessions"))]
+        ("opencode", str(home / "opencode" / "sessions")),
+        ("cursor", str(home / "cursor" / "sessions"))]
     # The routers' and the store's doors carry the patched Claude root first.
     assert [b for b, _ in sessions_mod.projects_roots()] == list(roots.BACKENDS)
     assert sessions_mod.projects_roots()[0][1] == str(claude_projects)
@@ -564,7 +570,7 @@ def test_the_last_enabled_agent_cannot_be_switched_off(client):
                    json={"claude_enabled": False, "copilot_enabled": True})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": True,
-                                  "codex": False, "gemini": False, "opencode": False,
+                                  "codex": False, "gemini": False, "opencode": False, "cursor": False,
                                   "default": "copilot"}
     assert prefs_mod.read_prefs()["default_backend"] == "copilot"
     assert registry.enabled_ids() == ["copilot"]
@@ -580,7 +586,7 @@ def test_default_backend_is_repointed_in_the_same_write(client):
     r = client.put("/api/prefs", headers=FUSED, json={"copilot_enabled": False})
     assert r.status_code == 200
     assert r.json()["agents"] == {"claude": True, "copilot": False,
-                                  "codex": False, "gemini": False, "opencode": False,
+                                  "codex": False, "gemini": False, "opencode": False, "cursor": False,
                                   "default": "claude"}
     assert prefs_mod.read_prefs()["default_backend"] == "claude"
     r = client.put("/api/prefs", headers=FUSED, json={"default_backend": "nope"})
@@ -589,7 +595,7 @@ def test_default_backend_is_repointed_in_the_same_write(client):
     assert r.status_code == 400
     body = client.get("/api/prefs").json()
     assert body["agents"] == {"claude": True, "copilot": False, "codex": False,
-                              "gemini": False, "opencode": False, "default": "claude"}
+                              "gemini": False, "opencode": False, "cursor": False, "default": "claude"}
 
 
 def test_codex_is_off_until_stored_on_and_takes_part_in_the_rule(client):
@@ -608,13 +614,13 @@ def test_codex_is_off_until_stored_on_and_takes_part_in_the_rule(client):
                    json={"codex_enabled": True, "copilot_enabled": True})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": True, "copilot": True,
-                                  "codex": True, "gemini": False, "opencode": False,
+                                  "codex": True, "gemini": False, "opencode": False, "cursor": False,
                                   "default": "claude"}
     r = client.put("/api/prefs", headers=FUSED,
                    json={"claude_enabled": False, "copilot_enabled": False})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": False,
-                                  "codex": True, "gemini": False, "opencode": False,
+                                  "codex": True, "gemini": False, "opencode": False, "cursor": False,
                                   "default": "codex"}
     assert prefs_mod.read_prefs()["default_backend"] == "codex"
     assert registry.enabled_ids() == ["codex"]
@@ -671,11 +677,11 @@ def test_gemini_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     r = client.put("/api/prefs", headers=FUSED, json={"gemini_enabled": True})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": True, "copilot": False, "codex": False,
-                                  "gemini": True, "opencode": False, "default": "claude"}
+                                  "gemini": True, "opencode": False, "cursor": False, "default": "claude"}
     r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": False})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": False, "codex": False,
-                                  "gemini": True, "opencode": False, "default": "gemini"}
+                                  "gemini": True, "opencode": False, "cursor": False, "default": "gemini"}
     assert registry.enabled_ids() == ["gemini"]
     assert registry.default_id() == "gemini"
     # All four off is refused whole.
@@ -698,7 +704,7 @@ def test_opencode_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     assert prefs_mod.opencode_enabled() is False
     assert prefs_mod.AGENT_BACKEND_KEYS["opencode"] == "opencode_enabled"
     assert prefs_mod.VALID_DEFAULT_BACKENDS == registry.ORDER
-    assert registry.ORDER[-1] == "opencode"
+    assert registry.ORDER[-2] == "opencode"
     body = client.get("/api/prefs").json()
     assert body["agents"]["opencode"] is False
     r = client.put("/api/prefs", headers=FUSED, json={"opencode_enabled": "yes"})
@@ -706,11 +712,11 @@ def test_opencode_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     r = client.put("/api/prefs", headers=FUSED, json={"opencode_enabled": True})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": True, "copilot": False, "codex": False,
-                                  "gemini": False, "opencode": True, "default": "claude"}
+                                  "gemini": False, "opencode": True, "cursor": False, "default": "claude"}
     r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": False})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": False, "codex": False,
-                                  "gemini": False, "opencode": True, "default": "opencode"}
+                                  "gemini": False, "opencode": True, "cursor": False, "default": "opencode"}
     assert registry.enabled_ids() == ["opencode"]
     assert registry.default_id() == "opencode"
     # All five off is refused whole.
@@ -725,6 +731,39 @@ def test_opencode_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     assert r.json()["agents"]["default"] == "opencode"
     r = client.put("/api/prefs", headers=FUSED, json={"opencode_enabled": False})
     assert r.json()["agents"]["default"] == "gemini"
+
+
+def test_cursor_is_off_until_stored_on_and_takes_part_in_the_rule(client):
+    """docs/CURSOR_BACKEND.md D17: a sixth switch, off by default; the PUT
+    rule is "at least one of the SIX on", judged on the merged record."""
+    assert prefs_mod.cursor_enabled() is False
+    assert prefs_mod.AGENT_BACKEND_KEYS["cursor"] == "cursor_enabled"
+    assert prefs_mod.VALID_DEFAULT_BACKENDS == registry.ORDER
+    assert registry.ORDER[-1] == "cursor"
+    body = client.get("/api/prefs").json()
+    assert body["agents"]["cursor"] is False
+    r = client.put("/api/prefs", headers=FUSED, json={"cursor_enabled": "yes"})
+    assert r.status_code == 400
+    r = client.put("/api/prefs", headers=FUSED, json={"cursor_enabled": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"] == {"claude": True, "copilot": False, "codex": False,
+                                  "gemini": False, "opencode": False, "cursor": True,
+                                  "default": "claude"}
+    r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"]["default"] == "cursor"
+    assert registry.enabled_ids() == ["cursor"]
+    # All six off is refused whole.
+    r = client.put("/api/prefs", headers=FUSED, json={"cursor_enabled": False})
+    assert r.status_code == 400
+    assert r.json()["error"] == "turn on another agent first"
+    # OpenCode on beside it: it comes first in ORDER, so the default
+    # re-points there once Cursor goes off.
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"opencode_enabled": True, "default_backend": "cursor"})
+    assert r.json()["agents"]["default"] == "cursor"
+    r = client.put("/api/prefs", headers=FUSED, json={"cursor_enabled": False})
+    assert r.json()["agents"]["default"] == "opencode"
 
 
 def test_fused_ai_never_reads_the_default_agent(monkeypatch):
@@ -747,17 +786,19 @@ def test_the_catalog_endpoint_serves_the_registry(client, monkeypatch):
                         lambda: {"ok": True, "fingerprint": "x"})
     monkeypatch.setattr(claude_health, "summary",
                         lambda: pytest.fail("the catalog must not probe"))
-    from fused_render import codex_health, copilot_health, gemini_health, opencode_health
+    from fused_render import codex_health, copilot_health, cursor_health, gemini_health, opencode_health
     # A disabled agent's health is read from its cache too, never probed.
     monkeypatch.setattr(copilot_health, "cached", lambda: None)
     monkeypatch.setattr(codex_health, "cached", lambda: None)
     monkeypatch.setattr(gemini_health, "cached", lambda: None)
     monkeypatch.setattr(opencode_health, "cached", lambda: None)
     monkeypatch.setattr(opencode_health, "cached_models", lambda: None)
+    monkeypatch.setattr(cursor_health, "cached", lambda: None)
+    monkeypatch.setattr(cursor_health, "cached_models", lambda: None)
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude"]
     assert [b["id"] for b in body["all"]] == ["claude", "copilot", "codex", "gemini",
-                                              "opencode"]
+                                              "opencode", "cursor"]
     assert [b["id"] for b in body["all"]] == list(registry.ORDER)
     assert body["default"] == "claude"
     claude = body["all"][0]
@@ -804,6 +845,20 @@ def test_the_catalog_endpoint_serves_the_registry(client, monkeypatch):
     # The mode is the injected config's `permission` block, fixed at spawn (D5).
     assert opencode["caps"]["live_mode_switch"] is False
     assert opencode["health"] is None
+    cursor = body["all"][5]
+    assert cursor["enabled"] is False
+    assert cursor["label"] == "Cursor"
+    assert cursor["default_model"] == "auto"
+    assert cursor["modes"] == ["prompt", "acceptEdits", "auto"]
+    # No effort control (docs/CURSOR_BACKEND.md D7); one seeded model, the
+    # account's list comes from the CLI (D11a).
+    assert cursor["efforts"] == []
+    assert [m["id"] for m in cursor["models"]] == ["auto"]
+    assert cursor["caps"]["plan_mode"] is False
+    # Model: `session/set_model`; mode: the host's own card policy (D5).
+    assert cursor["caps"]["live_model_switch"] is True
+    assert cursor["caps"]["live_mode_switch"] is True
+    assert cursor["health"] is None
     _enable_copilot()
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude", "copilot"]

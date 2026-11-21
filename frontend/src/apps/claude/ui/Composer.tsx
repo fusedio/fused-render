@@ -378,6 +378,8 @@ export interface ComposerCardProps {
   /** The landing card's kind-dependent placeholder (`homePlaceholderFor`,
    *  T:5392). Unset keeps the markup's own kind-free wording. */
   placeholder?: string;
+  /** No "Schedule this as a task" seat (a specialist's chat). */
+  noSchedule?: boolean;
   /**
    * Follow-ups the CLI never delivered, handed BACK to the box they were typed
    * in (`still_queued`, T:15911). `seq` is what re-delivers the same text (two
@@ -625,6 +627,7 @@ export function ComposerCard({
   navLockedReason,
   autoFocus,
   placeholder,
+  noSchedule = false,
   restore,
   boxRef: hostBoxRef,
   submitRef,
@@ -2722,7 +2725,7 @@ export function ComposerCard({
           {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two
               are the ways this draft leaves the box — now, or as a task
               (T:4174-4183). The landing card's copy is never blocked. */}
-          <SchedButton
+          {noSchedule ? null : <SchedButton
             file={file}
             sessionId={sessionId}
             draft={draft}
@@ -2773,7 +2776,7 @@ export function ComposerCard({
             // place.
             episode={readEpisode}
             onHopChange={setHopping}
-          />
+          />}
           <button
             className="c-send"
             type="submit"

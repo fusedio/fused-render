@@ -224,7 +224,7 @@ def test_sync_start_refuses_a_reference_copy_and_takes_no_lock(harness):
     _canvas_folder(harness.clones / "alpha", "mirror")
     res = harness.client.post("/api/canvases/sync/start",
                               json={"env": ENV, "name": "alpha"}, headers=GUARD)
-    assert res.status_code == 409 and "not cloned yet" in res.json()["error"]
+    assert res.status_code == 409 and "not cloned yet (its folder is a reference copy)" in res.json()["error"]
     assert (ENV, "alpha") not in canvases_mod._syncs
     assert not (harness.root / ".sync" / "alpha.lock").exists()
     # Nothing was written into the reference copy either.

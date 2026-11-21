@@ -68,6 +68,9 @@ export interface DoorCardStore {
   state(): DoorCardState;
   /** The card as it stands, re-rendering on every change. */
   useCard(): DoorCardState;
+  /** Hear every change of the card's state, outside React (mode-peek-store:
+   *  one card per mode door, read together by the rail). */
+  subscribe(fn: () => void): () => void;
   /** A card mounted (while the rail flag is on): counted until the answer
    *  runs, once. */
   registerCard(): () => void;
@@ -162,6 +165,7 @@ export function createDoorCardStore(key: string, id: string, pinWord?: string): 
       intent?.dismiss(returningFocus);
     },
     state: getState,
+    subscribe,
     useCard() {
       return useSyncExternalStore(subscribe, getState, getState);
     },

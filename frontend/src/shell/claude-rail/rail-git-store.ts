@@ -17,7 +17,7 @@
 // (DoorCard) — it must not close on a rail that simply has not answered yet.
 // The card goes once the answer is "no repository".
 import { useSyncExternalStore } from "react";
-import type { RailGitRepo } from "@platform/lib/api";
+import type { RailGitRepo, RailGitSyncOp } from "@platform/lib/api";
 
 export interface RailGitDoor {
   repo: RailGitRepo;
@@ -25,6 +25,14 @@ export interface RailGitDoor {
   /** The last check reached the remote (null until one has run). */
   checked: boolean | null;
   check: () => void;
+  /** The push / pull in flight, or null. */
+  syncing?: RailGitSyncOp | null;
+  /** The last push / pull's refusal, in the Git view's words. */
+  syncNote?: string | null;
+  /** The last push / pull's success, in the Git view's words. */
+  syncDone?: string | null;
+  /** Absent: the card offers no Send / Get latest. */
+  sync?: (op: RailGitSyncOp) => void;
   /** The page's Git panel, where it has one (explorer pages, the app page). */
   onOpenGit?: () => void;
 }

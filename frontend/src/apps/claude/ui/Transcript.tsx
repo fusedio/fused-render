@@ -22,6 +22,7 @@
 //     that only takes up room once it loads — so a ResizeObserver answers all
 //     of them with the one flag.
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -48,6 +49,18 @@ import { pickPlan, type TurnPick } from "./TurnPick";
 import { turnWorkedWords } from "./run-when";
 import { stampTitle } from "./stamp";
 import { WorkingLine } from "./WorkingLine";
+import {
+  END_GAP_PX,
+  firstNewIndex,
+  getChatSeen,
+  isNews,
+  newsBefore,
+  seenMarkOf,
+  setChatSeen,
+} from "./chatSeen";
+import { JumpButton } from "./JumpButton";
+import { MSG_LAND_PX, jumpMode, type JumpMode } from "./jumpTarget";
+import { animateScroll } from "./scrollAnim";
 import { openCardRows } from "./WaitingBar";
 import "../styles/transcript.css";
 
@@ -312,9 +325,19 @@ export const Transcript = memo(function Transcript({
     };
     // The keyboard scrolls the port only when focus is in it and not in a
     // field; a key that moves the view is a gesture like any other.
+    // AND ON <body>: clicking the log's text does not focus it (it is not
+    // focusable), so the keys land on <body> while the browser still scrolls
+    // the port the reader last pressed in. Listening on the port alone missed
+    // every one of those, and the follow pulled a PageUp straight back to the
+    // tail. So a key on <body> counts when the last press was inside the port.
+    let pressedInside = false;
+    const onDocPointerDown = (e: PointerEvent) => {
+      pressedInside = typeof Node !== "undefined" && e.target instanceof Node && wrap.contains(e.target);
+    };
     const onKeyDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+
       const dir = KEY_DIR[e.key];
       if (dir) gesture(dir, GESTURE_MS);
     };
@@ -395,7 +418,16 @@ export const Transcript = memo(function Transcript({
     wrap.addEventListener("touchmove", onTouchMove, { passive: true });
     wrap.addEventListener("touchend", onTouchEnd, { passive: true });
     wrap.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    const kdoc = typeof document === "undefined" ? null : document;
+    // Keys on <body> after a press in the log (above); keys inside the port
+    // reach the port's own listener.
+    const onBodyKeyDown = (e: KeyboardEvent) => {
+      const t = e.target;
+      if (pressedInside && (!t || t === kdoc?.body || t === kdoc?.documentElement)) onKeyDown(e);
+    };
     wrap.addEventListener("keydown", onKeyDown);
+    kdoc?.addEventListener("keydown", onBodyKeyDown, true);
+    kdoc?.addEventListener("pointerdown", onDocPointerDown, true);
     wrap.addEventListener("pointerdown", onPointerDown);
     const doc = typeof document === "undefined" ? null : document;
     doc?.addEventListener("pointerup", onPointerUp, true);
@@ -428,6 +460,8 @@ export const Transcript = memo(function Transcript({
       wrap.removeEventListener("touchend", onTouchEnd);
       wrap.removeEventListener("touchcancel", onTouchEnd);
       wrap.removeEventListener("keydown", onKeyDown);
+      kdoc?.removeEventListener("keydown", onBodyKeyDown, true);
+      kdoc?.removeEventListener("pointerdown", onDocPointerDown, true);
       wrap.removeEventListener("pointerdown", onPointerDown);
       doc?.removeEventListener("pointerup", onPointerUp, true);
       doc?.removeEventListener("pointercancel", onPointerUp, true);
@@ -876,7 +910,40 @@ export const Transcript = memo(function Transcript({
   // re-attaches without a session id, and the `sending` bail beside it) then
   // replayed its whole transcript with no pass left to fold it. An empty log has
   // nothing to decide anyway.
+  // ── THE JUMP BUTTON AND THE NEW RULE (the bots thread's, ui/chatSeen.ts) ──
+  //
+  // SEEN is written while the reader sits at the end with the chat on screen;
+  // the NEW rule is the seen mark AS OF OPENING this conversation, set only when
+  // a reply is already past it, and it stays put until another conversation
+  // opens; the pill counts replies past the opening baseline that never came
+  // into view. All three reset with `transcriptGen`, the same event the fold
+  // map hangs on: this component is not remounted between conversations.
+  const unread = useRef({ gen: -1, opened: false, mark: null as string | null, base: 0, viewed: 0 });
+  const ur = unread.current;
+  if (ur.gen !== state.transcriptGen) {
+    ur.gen = state.transcriptGen;
+    ur.opened = false;
+    ur.mark = null;
+    ur.base = 0;
+    ur.viewed = 0;
+  }
+  // Decided in render, once the transcript has landed (the fold seed's own
+  // gate, so the seed below can keep the unseen replies open),
+  // so the frame that first paints the log already carries the rule — and
+  // BEFORE the measure below can mark this open as seen.
+  if (!ur.opened && !state.historyLoading && state.turns.length > 0) {
+    ur.opened = true;
+    const seen = getChatSeen(state.sessionId);
+    const first = firstNewIndex(state.turns, seen);
+    ur.mark = first >= 0 ? seen : null;
+    // The pill counts past what you had seen (in replies): up to the rule, or everything.
+    ur.base = first >= 0 ? newsBefore(state.turns, first) : newsBefore(state.turns);
+  }
+  const newAt = ur.mark ? firstNewIndex(state.turns, ur.mark) : -1;
+  // …AND THE SEED NEVER FOLDS WHAT YOU HAVE NOT SEEN (bots `foldStretches`):
+  // every reply under the NEW rule lands open.
   const opening = !seeded.current && !state.historyLoading && state.turns.length > 0;
+  const unseenFrom = opening && newAt >= 0 ? new Set(state.turns.slice(newAt).map((t) => t.key)) : null;
   // …AND NOTHING IS WRITTEN WHILE IT WAITS. A turn on screen during the restore
   // is not "a turn that arrived live" — treating it as one marked the whole
   // cached wall open before the seed ever ran, and the seed then skipped every
@@ -917,7 +984,8 @@ export const Transcript = memo(function Transcript({
     // the reader was watching. Inside it, the wall folds behind the newest —
     // and a turn blocked on a permission card is open too, because an
     // unanswered card is the one thing on screen to do.
-    const open = !opening || !!t.streaming || t.key === lastAssistant || id === blockedFold;
+    const open =
+      !opening || !!t.streaming || t.key === lastAssistant || id === blockedFold || !!unseenFrom?.has(t.key);
     folds.current.set(id, open ? "default-open" : "default-closed");
   }
   if (opening) seeded.current = true;
@@ -978,6 +1046,147 @@ export const Transcript = memo(function Transcript({
     followTail.current = false;
   }, []));
 
+  const [jumpState, setJumpState] = useState<{ mode: JumpMode; n: number }>({ mode: "none", n: 0 });
+  // SETTLED = the reply to your last message is finished: not running, nothing
+  // streaming, and not a restored chat whose live run is still being looked
+  // for (`adoptingRun` reads `idle` for a live run in that gap).
+  const settledNow =
+    state.status === "idle" && !state.adoptingRun && !state.turns.some((t) => (t as { streaming?: boolean }).streaming);
+  const jumpLive = useRef({ turns: state.turns, sessionId: state.sessionId, settled: settledNow, forking: !!state.fork });
+  jumpLive.current = { turns: state.turns, sessionId: state.sessionId, settled: settledNow, forking: !!state.fork };
+  const measureJump = useCallback(() => {
+    const wrap = port.current;
+    const logEl = log.current;
+    const u = unread.current;
+    if (!wrap || !logEl) return;
+    const { turns, sessionId, settled: done, forking } = jumpLive.current;
+    // Hidden (a rail card that is not open, a display:none tab): nothing is
+    // on screen, so nothing is seen and there is nothing to point at.
+    if (!wrap.clientHeight) return;
+    const view = wrap.getBoundingClientRect();
+    const atEnd = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight <= END_GAP_PX;
+    // Your last message (a line still waiting to be sent included): the
+    // button turns toward it (jumpTarget.ts).
+    const mine = lastMine(logEl);
+    const mode = jumpMode(mine ? mine.getBoundingClientRect().top - view.top : null, wrap);
+    const total = newsBefore(turns);
+    if (u.opened) {
+      if (atEnd) {
+        // At the end everything above is behind you: a reply taller than the
+        // port never shows 40% of itself (bots `updateToBottom`).
+        u.viewed = total;
+        // Not mid-fork: the log is cut at the fork point under the ORIGINAL
+        // session's id until the new one is minted, and a mark written from it
+        // would put NEW above replies already read there.
+        if (!forking && (typeof document === "undefined" || !document.hidden)) {
+          setChatSeen(sessionId, seenMarkOf(turns, done));
+        }
+      } else if (total > Math.max(u.viewed, u.base)) {
+        // "Viewed" = 40% of a reply (or of the port, for a tall one) has been
+        // on screen. Walk the turn roots from the newest down to the high-water.
+        // A stopped reply draws its "Stopped." note as a sibling root: not a turn.
+        const els = Array.from(logEl.children).filter(
+          (el) => el.classList.contains("turn") && !el.classList.contains("is-stop-note"),
+        ) as HTMLElement[];
+        let ord = total;
+        for (let i = Math.min(turns.length, els.length) - 1; i >= 0; i--) {
+          if (!isNews(turns[i])) continue;
+          if (ord <= Math.max(u.viewed, u.base)) break;
+          const box = els[i].getBoundingClientRect();
+          const need = Math.min(box.height, view.height) * 0.4;
+          if (Math.min(box.bottom, view.bottom) - Math.max(box.top, view.top) >= need) {
+            u.viewed = ord;
+            break;
+          }
+          ord--;
+        }
+      }
+    }
+    const n = u.opened ? Math.max(0, total - Math.max(u.base, u.viewed)) : 0;
+    setJumpState((s) => (s.mode === mode && s.n === n ? s : { mode, n }));
+  }, []);
+  // Coalesced to one measure a frame: a streaming reply commits every frame.
+  const jumpFrame = useRef(0);
+  const scheduleJump = useCallback(() => {
+    if (jumpFrame.current) return;
+    if (typeof requestAnimationFrame === "undefined") {
+      measureJump();
+      return;
+    }
+    jumpFrame.current = requestAnimationFrame(() => {
+      jumpFrame.current = 0;
+      measureJump();
+    });
+  }, [measureJump]);
+  useLayoutEffect(() => {
+    scheduleJump();
+  });
+  useEffect(() => {
+    const wrap = port.current;
+    if (!wrap) return;
+    wrap.addEventListener("scroll", scheduleJump, { passive: true });
+    const doc = typeof document === "undefined" ? null : document;
+    doc?.addEventListener("visibilitychange", scheduleJump);
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleJump);
+    ro?.observe(wrap);
+    // …and the log: a picture or a chip growing moves your message without a
+    // scroll event when nothing re-pins the port.
+    if (log.current) ro?.observe(log.current);
+    return () => {
+      wrap.removeEventListener("scroll", scheduleJump);
+      doc?.removeEventListener("visibilitychange", scheduleJump);
+      ro?.disconnect();
+      if (jumpFrame.current && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(jumpFrame.current);
+      jumpFrame.current = 0;
+    };
+  }, [scheduleJump]);
+  // ONE JUMP AT A TIME: a second click (or a double-click) takes over from
+  // wherever the first one has got to.
+  const jumpAnim = useRef<(() => void) | null>(null);
+  useEffect(() => () => jumpAnim.current?.(), []);
+  const onJump = useCallback((to: "msg" | "end") => {
+    const wrap = port.current;
+    if (!wrap) return;
+    jumpAnim.current?.();
+    clearGesture.current?.();
+    const max = () => wrap.scrollHeight - wrap.clientHeight;
+    // The follow stays OFF while the scroll runs: on, every frame of it would
+    // read as "pinned and not at the tail" and the settle would snap it there.
+    followTail.current = false;
+    if (to === "end") {
+      jumpAnim.current = animateScroll(wrap, max, (landed) => {
+        jumpAnim.current = null;
+        if (!landed) return; // the reader took over mid-way
+        // Landed: the follow re-arms (bots ToBottom), so a reply goes on
+        // streaming in front of you, and everything above is behind you.
+        clearGesture.current?.();
+        followTail.current = true;
+        unread.current.viewed = newsBefore(jumpLive.current.turns);
+        wrap.scrollTop = wrap.scrollHeight;
+        scheduleJump();
+      });
+      scheduleJump();
+      return;
+    }
+    const el = log.current ? lastMine(log.current) : null;
+    if (!el) return;
+    // Your message's top, just under the port's top — read every frame, so a
+    // picture loading above it does not throw the landing off.
+    const dest = () => {
+      const top = el.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop;
+      return Math.max(0, Math.min(top - MSG_LAND_PX, max()));
+    };
+    flareEl(el, typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+    jumpAnim.current = animateScroll(wrap, dest, (landed) => {
+      jumpAnim.current = null;
+      // A message near the end cannot reach the top: the landing IS the end,
+      // and a reply that starts streaming there must be followed.
+      if (landed && wrap.scrollTop >= max() - END_GAP_PX) followTail.current = true;
+      scheduleJump();
+    });
+    scheduleJump();
+  }, [scheduleJump]);
+
   // BREAKOUT PICK MODE: every turn of an exchange shares one pick; the prompt
   // turn carries the check. An exchange still streaming or pending is locked.
   const pickFor = useMemo(() => (pick ? pickPlan(state.turns, pick.keys, pick.onToggle) : new Map<string, TurnPick>()), [pick, state.turns]);
@@ -989,7 +1198,7 @@ export const Transcript = memo(function Transcript({
           <HistorySkeleton />
         ) : (
           <>
-            {state.turns.map((turn) => {
+            {state.turns.map((turn, ti) => {
               const plan = parked.get(turn.key);
               // A `<CardStack/>` for one position, by id: the same list, the
               // same three card kinds, restricted to the rows that belong here.
@@ -1008,8 +1217,16 @@ export const Transcript = memo(function Transcript({
                 ? new Map(Array.from(plan.after, ([i, ids]) => [i, stack(ids)]))
                 : null;
               return (
+                // A FRAGMENT WITH A FIXED SLOT for the NEW rule: the rule is
+                // `null` everywhere else, so it coming or going never shifts
+                // the Turn inside and never remounts it.
+                <Fragment key={turn.key}>
+                {ti === newAt ? (
+                  <div className="chat-newrule" role="separator" aria-label="New messages">
+                    New
+                  </div>
+                ) : null}
                 <Turn
-                  key={turn.key}
                   turn={turn}
                   anchored={turn.role === "user" && !!flare && turn.uuid === flare}
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
@@ -1041,6 +1258,7 @@ export const Transcript = memo(function Transcript({
                       their own to sit under, so they go at the turn's tail. */}
                   {plan?.tail.length ? stack(plan.tail) : null}
                 </Turn>
+                </Fragment>
               );
             })}
             {/* THE ROW AND THE CARD, both (#27). T appends a red row per failure
@@ -1087,9 +1305,39 @@ export const Transcript = memo(function Transcript({
           </>
         )}
       </div>
+      {state.historyLoading || !settled ? null : (
+        <JumpButton mode={jumpState.mode} newCount={jumpState.n} onJump={onJump} />
+      )}
     </div>
   );
 });
+
+/** Your last message in the log, a line still waiting to be sent included
+ *  (`.c-waiting-turn` is a `.turn.user` too); the "Interrupted by you" line is
+ *  drawn as a note and is not one. */
+function lastMine(logEl: HTMLElement): HTMLElement | null {
+  const all = logEl.querySelectorAll<HTMLElement>(".turn.user");
+  return all.length ? all[all.length - 1] : null;
+}
+
+/** The landing's flare on the message jumped to (`.is-anchored`'s halo), on the
+ *  Web Animations API rather than a class: the row is React's, and a re-render
+ *  mid-flare would strip a class it did not set. */
+function flareEl(el: HTMLElement, still: boolean): void {
+  if (typeof el.animate !== "function") return;
+  const target = (el.querySelector(".bubble") as HTMLElement | null) ?? el;
+  const accent =
+    (typeof getComputedStyle === "function" ? getComputedStyle(target).getPropertyValue("--c-accent").trim() : "") ||
+    "#d97757";
+  const ring = `0 0 0 3px color-mix(in srgb, ${accent} 45%, transparent)`;
+  const none = "0 0 0 3px transparent";
+  target.animate(
+    still
+      ? [{ boxShadow: ring }, { boxShadow: ring }, { boxShadow: none }]
+      : [{ boxShadow: none }, { boxShadow: ring, offset: 0.15 }, { boxShadow: ring, offset: 0.55 }, { boxShadow: none }],
+    { duration: ANCHOR_FLARE_MS, easing: "ease-out" },
+  );
+}
 
 /** One turn's parked cards: which segment each sits AFTER, plus the ones with
  *  nowhere better to go. */

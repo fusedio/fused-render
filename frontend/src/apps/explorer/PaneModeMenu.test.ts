@@ -7,22 +7,23 @@ import PaneModeMenu, { paneModeChoice } from "./PaneModeMenu";
 import { ModeMenu } from "./BarMenu";
 
 const code: TemplateEntry = { mode: "code", path: "/tpl/code/template.html", icon: null, conditional: false };
-// A node file's preferred node view, as stat ships it (SPEC PT-8).
+// A node file's preferred node template, as stat ships it (SPEC PT-8).
 const udf: TemplateEntry = {
-  mode: "_node",
-  path: null,
+  mode: "canvas_udf",
+  path: "/tpl/canvas_udf/template.html",
   icon: null,
   conditional: true,
+  node: true,
   prefer: true,
 };
 
 describe("paneModeChoice", () => {
-  test("while the preferred udf is pending: labelled Code, but udf is what is selected", () => {
+  test("before any verdict, the preferred udf is labelled and selected (the path check decides)", () => {
     const c = paneModeChoice([udf, code], null, null);
-    expect(c.active.mode).toBe("code");
+    expect(c.active.mode).toBe("canvas_udf");
     // So picking Code is a change, and writes ?_mode=code.
-    expect(c.selected.mode).toBe("_node");
-    expect(c.defaultEntry.mode).toBe("_node");
+    expect(c.selected.mode).toBe("canvas_udf");
+    expect(c.defaultEntry.mode).toBe("canvas_udf");
   });
 
   test("an explicit _mode=code while pending is selected and labelled", () => {
@@ -32,9 +33,9 @@ describe("paneModeChoice", () => {
   });
 
   test("once the verdict is in, label and selection agree", () => {
-    const c = paneModeChoice([udf, code], { _node: true }, null);
-    expect(c.active.mode).toBe("_node");
-    expect(c.selected.mode).toBe("_node");
+    const c = paneModeChoice([udf, code], { canvas_udf: true }, null);
+    expect(c.active.mode).toBe("canvas_udf");
+    expect(c.selected.mode).toBe("canvas_udf");
   });
 });
 
@@ -81,11 +82,11 @@ describe("PaneModeMenu (bar)", () => {
     globalThis.fetch = realFetch;
   });
 
-  test("Code picked while the preferred udf is pending pins ?_mode=code", async () => {
+  test("Code picked before the verdict pins ?_mode=code", async () => {
     const nav: string[] = [];
     const r = await mountBar("/x/canvas/prod/user/demo/udf_1.py", "", nav);
     const menu = r.root.findByType(ModeMenu);
-    expect(menu.props.active).toBe("code");
+    expect(menu.props.active).toBe("canvas_udf");
     await act(async () => {
       menu.props.onSelect("code");
     });
@@ -110,13 +111,13 @@ describe("PaneModeMenu (bar)", () => {
     r.unmount();
   });
 
-  test("a pane under a git snapshot never offers the node view", async () => {
+  test("a pane under a git snapshot never offers a node template", async () => {
     const raw: TemplateEntry = { mode: "raw", path: "/tpl/raw/template.html", icon: null, conditional: false };
     statTemplates = [udf, code, raw];
-    verdicts = { _node: true };
+    verdicts = { canvas_udf: true };
     const live = await mountBar("/x/canvas/prod/user/demo/udf_2.py", "", []);
     expect(live.root.findByType(ModeMenu).props.entries.map((e: { mode: string }) => e.mode)).toEqual([
-      "_node",
+      "canvas_udf",
       "code",
       "raw",
     ]);

@@ -1391,7 +1391,7 @@ def in_reference_copy(path: str) -> bool:
     return False
 
 
-# THE NODE VIEW'S GATE (SPEC §53.3 NV-2): which node of which clone a file
+# THE NODE TEMPLATES' GATE (SPEC §53.2 NT-2): which node of which clone a file
 # is, by the four node-source suffixes. The kind is what the file's suffix
 # makes the node in the workbench; a canvas.toml row carries no kind of its
 # own (only folders are typed), so "the row's kind matches the file" is: the
@@ -1409,8 +1409,8 @@ def node_file_shape(path) -> tuple[str, str, str, str, str] | None:
     with `_`), directly in a `user/<canvas>` folder of a canvases root — else
     None. The path alone decides: no syscall on it, canvas.toml unread
     (`clone_dir_for` resolves only the fixed roots). `canvas_node_file`'s
-    first step, and all that stat asks before it marks the `_node` entry as the
-    default candidate (SPEC PT-8, `prefer`). Never raises."""
+    first step, and all that stat asks before it marks a node template's entry
+    as the default candidate (SPEC PT-8, `prefer`). Never raises."""
     try:
         path = str(path or "")
         if not path or not os.path.isabs(path):
@@ -1422,8 +1422,8 @@ def node_file_shape(path) -> tuple[str, str, str, str, str] | None:
         if (kind is None or not stem or base.startswith(".")
                 or base in canvas_snapshot.IGNORED_BASENAMES
                 or (ext == ".py" and stem.startswith("_"))
-                # The frame scope (FP-9) and the embed key a node by this
-                # alphabet; a name outside it cannot be one node view's.
+                # The workbench keys a node by this alphabet; a name
+                # outside it is no node the node templates could show.
                 or not _NAME_RE.fullmatch(stem)):
             return None
         found = clone_dir_for(path)
@@ -1442,16 +1442,17 @@ def node_file_shape(path) -> tuple[str, str, str, str, str] | None:
 
 
 def canvas_node_file(path) -> dict | None:
-    """`{env, name, node, kind, file, title, clone_dir}` when `path` is a node's
+    """`{env, name, node, kind, file, title, clone_dir, row}` when `path` is a node's
     source file at the root of a `user/<canvas>` folder (a clone or a
     reference copy there, D1476), else None. Cheapest first: the path's
     shape and suffix (`node_file_shape`, no syscall), then the folder's
     canvas.toml (one stat, one read of at most NODE_TOML_MAX_BYTES), then
     one listdir for the suffix rule. `team/` and `public/` never pass
-    (`clone_dir_for`). Never raises. Shared by the `_node` sentinel's gate
-    (`server.templates._node_view_gate`) and GET /api/canvases/node, so the mode and the view agree
-    on what a node is. The `canvases_enabled` preference is the CALLER's
-    question."""
+    (`clone_dir_for`). Never raises. Shared by the node templates' gates
+    (`templates/canvas_{widget,note,udf}/condition.py`, through
+    `node_template_gate`) and GET /api/canvases/node, so the mode and the
+    page agree on what a node is. `row` is the node's canvas.toml row. The
+    `canvases_enabled` preference is the CALLER's question."""
     try:
         shape = node_file_shape(path)
         if shape is None:
@@ -1475,9 +1476,41 @@ def canvas_node_file(path) -> dict | None:
         title = row.get("title")
         return {"env": env, "name": name, "node": stem, "kind": kind, "file": base,
                 "title": title.strip() if isinstance(title, str) and title.strip() else stem,
-                "clone_dir": clone_dir}
+                "clone_dir": clone_dir, "row": row}
     except Exception:  # noqa: BLE001 — a gate that cannot decide says no (CT-12)
         return None
+
+
+def node_template_gate(path, kinds) -> bool:
+    """The canvas node templates' gate (SPEC §53.2 NT-2): True only when the
+    `canvases_enabled` preference is on and `path` is a node file
+    (`canvas_node_file`) of one of `kinds`. Cheapest first: the preference is
+    one read of prefs.json, which is all a file pays while Canvases is off.
+    Never raises: a gate that cannot decide denies (fail closed)."""
+    try:
+        from fused_render.shell import prefs
+
+        if not prefs.canvases_enabled():
+            return False
+        info = canvas_node_file(path)
+        return info is not None and info["kind"] in kinds
+    except Exception:  # noqa: BLE001 — a broken gate must hide, never raise
+        return False
+
+
+# What a node's page draws the node WITH, read off its canvas.toml row: the
+# keys the workbench styles a note or a widget by. Anything else in the row
+# (position, size, order) is the canvas's, not one node's page's.
+NODE_STYLE_KEYS = ("textBoxColor", "textBoxGradient", "textBoxScaleFactor",
+                   "textBoxAlignment", "widgetBackgroundColor")
+
+
+def _node_style(row) -> dict:
+    """The `NODE_STYLE_KEYS` a row carries, JSON-plain values only."""
+    if not isinstance(row, dict):
+        return {}
+    return {k: row[k] for k in NODE_STYLE_KEYS
+            if isinstance(row.get(k), (str, int, float, bool))}
 
 
 def _cached_handle(env: str) -> str | None:
@@ -1493,17 +1526,17 @@ def _cached_handle(env: str) -> str | None:
 
 @router.get("/api/canvases/node")
 def api_canvases_node(path: str = ""):
-    """What the node view (SPEC §53.3) needs to start, so the page parses no
-    paths: `{enabled}` alone while the `canvases_enabled` preference is off;
-    `{enabled, node: null}` for a path that is not a node file (the `udf`
-    gate's own rule, `canvas_node_file`); else `{enabled, env, name, node,
-    kind, file, title, live, reference, signed_in, handle?}` (`title`: the
-    row's, else the node's name) — `live`: the folder is
-    a clone this process may sync (`_is_live_clone`); `reference`: it is a
-    reference copy (the view clones, adopting it in place, before starting
-    the sync); `signed_in`: `env`'s `fused login` store exists; `handle`: the
-    whoami answer when one is already cached (no CLI run here). A cheap
-    local read: no X-Fused guard, nothing written."""
+    """What a canvas node template's page (SPEC §53.2) needs to start, so the
+    page parses no paths: `{enabled}` alone while the `canvases_enabled`
+    preference is off; `{enabled, node: null}` for a path that is not a node
+    file (the gates' own rule, `canvas_node_file`); else `{enabled, env,
+    name, node, kind, file, title, style, live, reference, signed_in,
+    handle?}` (`title`: the row's, else the node's name; `style`: the row's
+    `NODE_STYLE_KEYS`) — `live`: the folder is a clone this process may sync
+    (`_is_live_clone`); `reference`: it is a reference copy; `signed_in`:
+    `env`'s `fused login` store exists; `handle`: the whoami answer when one
+    is already cached (no CLI run here). A cheap local read: no X-Fused
+    guard, nothing written."""
     from fused_render.shell import prefs
 
     if not prefs.canvases_enabled():
@@ -1522,6 +1555,7 @@ def api_canvases_node(path: str = ""):
         "kind": info["kind"],
         "file": info["file"],
         "title": info["title"],
+        "style": _node_style(info["row"]),
         "live": _is_live_clone(env, name),
         "reference": canvas_marker.is_reference(info["clone_dir"]),
         "signed_in": _logged_in(env),
@@ -3249,7 +3283,7 @@ def forget_file_sessions(files: list[str], *, backup=None, log=None) -> dict:
 
 
 # PER-FRAME PICTURES (SPEC 53.1). Several frames can show one canvas: the
-# workspace, another window of it, a node view. Each page mints an id for its
+# workspace, another window of it. Each page mints an id for its
 # frame and names it on every embed call (`frame`); the manager keeps one
 # `_FrameState` per id. A call that names none is the record "", which always
 # exists, so a page from before this keeps its one picture.
@@ -3268,21 +3302,14 @@ class _TooManyFrames(Exception):
     pass
 
 
-class _FrameScoped(Exception):
-    """A write from a frame whose record is scoped to one node (FP-9)."""
-
-
 class _FrameState:
     """What the host knows of ONE embedded frame: the picture it is believed
     to hold and the bookkeeping of both legs with it. Everything here is read
     and written under the manager's `_op_lock`, except the reads `sync_state`
     and `_push` make, which tolerate a value one step old."""
 
-    def __init__(self, frame: str, scope: str | None = None):
+    def __init__(self, frame: str):
         self.id = frame
-        # The one node this frame may write (a node view), or None: the
-        # whole canvas. Set when the record is made and never changed.
-        self.scope = scope
         self.last_call = time.time()
         # Whether this frame has spoken (a snapshot, a body, an ack): until
         # then nothing is owed to it (`sync_state`).
@@ -6214,13 +6241,11 @@ class _SyncManager:
 
     # -- the per-frame records (SPEC 53.1) -----------------------------------
 
-    def _frame(self, frame: str = "", scope: str | None = None) -> _FrameState:
+    def _frame(self, frame: str = "") -> _FrameState:
         """The record for `frame`, made on first use (no view: its first cut
         is a full state). Under _op_lock. Records whose page is gone are
         dropped here, on the way in: no events socket names them and they
-        have made no call for FRAME_DROP_S. A record's scope is fixed when it
-        is made; a later call naming another is refused, so a node view's
-        record can never be widened by what a frame sends."""
+        have made no call for FRAME_DROP_S."""
         now = time.time()
         key = _sync_key(self.env, self.name)
         with _FRAME_SOCKETS_LOCK:
@@ -6238,9 +6263,7 @@ class _SyncManager:
                     raise _TooManyFrames(
                         f"{MAX_FRAMES} frames already show this canvas")
                 self._drop_frame(idle[0][1])
-            fr = self._frames[frame] = _FrameState(frame, scope)
-        elif scope is not None and scope != fr.scope:
-            raise _FrameScoped("this frame's record is scoped to another node")
+            fr = self._frames[frame] = _FrameState(frame)
         fr.last_call = now
         return fr
 
@@ -6725,7 +6748,7 @@ class _SyncManager:
             return False
         return bool(canvas_snapshot.diff_views(disk, fr.embed_view, pending=self._owed_files()))
 
-    def cut_delta(self, full: bool, frame: str = "", scope: str | None = None) -> dict:
+    def cut_delta(self, full: bool, frame: str = "") -> dict:
         """diff(disk, embed_view) for the page to post to the frame. Under
         _op_lock, so a snapshot write never lands between the toml read and
         the file reads. Returns `{rev, base_rev, ops, full}`; `{rev, held}`
@@ -6745,7 +6768,7 @@ class _SyncManager:
         move and drops the answer when it has no frame (boot, a reload), so
         only a frame's own ack or snapshot is evidence that one is there —
         otherwise disk_to_embed would read "pending" with nobody to ack."""
-        fr = self._frame(frame, scope)
+        fr = self._frame(frame)
         self._note_disk()
         rev = self.disk_rev
         try:
@@ -6860,8 +6883,7 @@ class _SyncManager:
         return {"rev": rev, "held": reason}
 
     def ack_delta(self, rev: int, ok: bool, reason: str | None = None,
-                  skipped: Iterable[str] = (), frame: str = "",
-                  scope: str | None = None) -> dict:
+                  skipped: Iterable[str] = (), frame: str = "") -> dict:
         """The frame applied (or refused) the delta cut at `rev`. `reason` is
         the page's word for a refusal; one that only means "nobody could take
         it yet" (no frame on the page, a frame not hydrated) resets the view
@@ -6869,7 +6891,7 @@ class _SyncManager:
         frame's hello brings a full state that settles it. Nor does such a
         refusal mark a frame as seen: until the hello, there is no frame able
         to ack, and disk_to_embed must not read "pending" over a boot."""
-        fr = self._frame(frame, scope)
+        fr = self._frame(frame)
         view = fr.delta_views.pop(rev, None)
         carried = fr.delta_names.pop(rev, set())
         was_full = fr.delta_names.pop(-rev, None) is not None
@@ -7017,8 +7039,6 @@ class _SyncManager:
         that changed canvas.toml is a local edit like any other, and the next
         scan arming the debounce is exactly how it reaches the server."""
         fr = self._frame(frame)
-        if fr.scope is not None:
-            raise _FrameScoped("this frame shows one node and sends no snapshots")
         stale = self._embed_enter(fr, gen, seq)
         if stale is not None:
             return stale
@@ -7207,8 +7227,6 @@ class _SyncManager:
         no delta). Returns the ack the page relays to the frame.
         """
         fr = self._frame(frame)
-        if fr.scope is not None and fr.scope != node:
-            raise _FrameScoped(f"this frame shows {fr.scope!r} and writes no other node")
         stem, dot, ext = file.rpartition(".")
         if not dot or stem != node or "/" in file or file.startswith(".") \
                 or ("." + ext) not in canvas_snapshot.BODY_SUFFIXES:
@@ -7326,8 +7344,6 @@ class _SyncManager:
         renamed too, so the snapshot that follows is diffed against the new
         name rather than read as delete + add."""
         fr = self._frame(frame)
-        if fr.scope is not None:
-            raise _FrameScoped("this frame shows one node and renames nothing")
         stale = self._embed_enter(fr, gen, seq)
         if stale is not None:
             return stale
@@ -8286,7 +8302,13 @@ def _sync_start_response(env: str, name: str):
     # A reference copy at `user/<name>` (marker `mirror`) is not a clone: no
     # manager, no watcher, no push of its content over the user's canvas.
     if not _is_live_clone(env, name):
-        return _error(f"canvas {name!r} is not cloned yet (no canvas.toml)", 409)
+        # Say which: "no canvas.toml" for a folder that holds one sent people
+        # looking in the wrong place.
+        why = {canvas_marker.STATE_MISSING: "no folder",
+               canvas_marker.STATE_MIRROR: "its folder is a reference copy",
+               canvas_marker.STATE_ADOPTING: "its folder is a reference copy whose pull has not landed",
+               }.get(canvas_marker.folder_state(_canvas_dir(env, name)), "no canvas.toml")
+        return _error(f"canvas {name!r} is not cloned yet ({why})", 409)
     # The writer lock FIRST: a refused start must not touch a folder another
     # process owns (the seeding below writes into it).
     try:
@@ -8661,28 +8683,19 @@ def api_canvases_sync_force_quit_owner(body: dict = Body(...), x_fused: str | No
     return {"ok": True, "freed": freed, "pid": pid, "signalled": True}
 
 
-def _frame_of(value, scope=None) -> tuple[str, str | None, JSONResponse | None]:
-    """The `frame` (and `frame_scope`) of an embed call (SPEC 53.1 FP-1, FP-9):
-    (frame id, scope, error). Absent is the "" record, the one frame of a page
-    that names none."""
+def _frame_of(value) -> tuple[str, JSONResponse | None]:
+    """The `frame` of an embed call (SPEC 53.1 FP-1): (frame id, error).
+    Absent is the "" record, the one frame of a page that names none."""
     if value is None or value == "":
-        frame = ""
-    elif isinstance(value, str) and _FRAME_ID_RE.fullmatch(value):
-        frame = value
-    else:
-        return "", None, _error("'frame' must be 1-64 letters, digits, '_' or '-'")
-    if scope is None or scope == "":
-        return frame, None, None
-    if not frame or not isinstance(scope, str) or not _NAME_RE.fullmatch(scope):
-        return "", None, _error("'frame_scope' must be a node name, on a named frame")
-    return frame, scope, None
+        return "", None
+    if isinstance(value, str) and _FRAME_ID_RE.fullmatch(value):
+        return value, None
+    return "", _error("'frame' must be 1-64 letters, digits, '_' or '-'")
 
 
 def _frame_refused(exc: Exception) -> JSONResponse:
-    if isinstance(exc, _TooManyFrames):
-        return JSONResponse({"ok": False, "code": "too_many_frames", "error": str(exc)},
-                            status_code=409)
-    return JSONResponse({"ok": False, "code": "scoped", "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": False, "code": "too_many_frames", "error": str(exc)},
+                        status_code=409)
 
 
 @router.post("/api/canvases/snapshot")
@@ -8711,7 +8724,7 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    frame, _scope, bad = _frame_of(body.get("frame"))
+    frame, bad = _frame_of(body.get("frame"))
     if bad is not None:
         return bad
     gen, seq, snapshot = body.get("gen"), body.get("seq"), body.get("body")
@@ -8762,7 +8775,7 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
                     rename.get("file_from"), rename.get("file_to"), frame=frame)
             else:
                 ack = manager.apply_snapshot(gen, seq, snapshot, frame=frame)
-        except (_FrameScoped, _TooManyFrames) as exc:
+        except _TooManyFrames as exc:
             manager.log_event("embed_to_disk", "snapshot refused", ok=False,
                               detail=f"{what} {gen}/{seq}: {exc}")
             return _frame_refused(exc)
@@ -8831,7 +8844,7 @@ def api_canvases_body(body: dict = Body(...), x_fused: str | None = Header(defau
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    frame, _scope, bad = _frame_of(body.get("frame"))
+    frame, bad = _frame_of(body.get("frame"))
     if bad is not None:
         return bad
     node, file = body.get("node"), body.get("file")
@@ -8857,7 +8870,7 @@ def api_canvases_body(body: dict = Body(...), x_fused: str | None = Header(defau
                 return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
         try:
             ack = manager.apply_body(node, file, base_hash, text, frame=frame)
-        except (_FrameScoped, _TooManyFrames) as exc:
+        except _TooManyFrames as exc:
             manager.log_event("embed_to_disk", "body refused", ok=False,
                               detail=f"{file}: {exc}")
             return _frame_refused(exc)
@@ -8899,21 +8912,20 @@ def _snapshot_ack_detail(what: str, gen: int, seq: int, ack: dict) -> str:
 
 @router.get("/api/canvases/delta")
 def api_canvases_delta(name: str = "", env: str = "", full: str = "",
-                       frame: str = "", frame_scope: str = ""):
+                       frame: str = ""):
     """The delta that takes the embed from what it holds to what disk holds
     (embed v3, canvas_snapshot.py's delta section). The workspace page asks
     when the events socket (or its sync/state fallback poll) shows `disk_rev`
     advanced, and with `full=1` when
     the frame says hello after hydrating; it posts the answer to the frame as
     `fused-embed-delta` and relays the ack to /api/canvases/delta/ack.
-    `frame` names the page's frame (the delta is against ITS picture);
-    `frame_scope` makes a new record a node view's."""
+    `frame` names the page's frame (the delta is against ITS picture)."""
     if not _NAME_RE.fullmatch(name or ""):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     env, bad = _require_env(env)
     if bad is not None:
         return bad
-    frame, scope, bad = _frame_of(frame, frame_scope)
+    frame, bad = _frame_of(frame)
     if bad is not None:
         return bad
     manager = _sync_manager(env, name, create=False)
@@ -8926,8 +8938,8 @@ def api_canvases_delta(name: str = "", env: str = "", full: str = "",
                           detail=f"the clone stayed locked past {SNAPSHOT_LOCK_WAIT_S:g}s")
         return _busy("a sync operation is in flight for this canvas; try again in a moment")
     try:
-        return JSONResponse(manager.cut_delta(full == "1", frame=frame, scope=scope))
-    except (_FrameScoped, _TooManyFrames) as exc:
+        return JSONResponse(manager.cut_delta(full == "1", frame=frame))
+    except _TooManyFrames as exc:
         return _frame_refused(exc)
     finally:
         manager._op_lock.release()
@@ -8946,7 +8958,7 @@ def api_canvases_delta_ack(body: dict = Body(...), x_fused: str | None = Header(
         return bad
     if not isinstance(rev, int):
         return _error("'rev' must be an integer")
-    frame, scope, bad = _frame_of(body.get("frame"), body.get("frame_scope"))
+    frame, bad = _frame_of(body.get("frame"))
     if bad is not None:
         return bad
     manager = _sync_manager(env, name, create=False)
@@ -8960,8 +8972,8 @@ def api_canvases_delta_ack(body: dict = Body(...), x_fused: str | None = Header(
                 rev, bool(ok), reason=reason if isinstance(reason, str) else None,
                 skipped=([n for n in skipped if isinstance(n, str)]
                          if isinstance(skipped, list) else ()),
-                frame=frame, scope=scope))
-        except (_FrameScoped, _TooManyFrames) as exc:
+                frame=frame))
+        except _TooManyFrames as exc:
             return _frame_refused(exc)
 
 
@@ -9505,7 +9517,7 @@ def api_canvases_sync_state(name: str = "", env: str = "", files: str = "",
     env, bad = _require_env(env)
     if bad is not None:
         return bad
-    frame, _scope, bad = _frame_of(frame)
+    frame, bad = _frame_of(frame)
     if bad is not None:
         return bad
     return _state_for(env, name, files=files in ("1", "true"), frame=frame or None)

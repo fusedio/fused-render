@@ -23,16 +23,21 @@ const repo = (branch: string): RailGitRepo => ({
 });
 
 /** Every git read waits until the test answers it, in order. */
-let pending: { url: string; method: string; answer: (body: unknown) => void }[] = [];
+let pending: { url: string; method: string; answer: (body: unknown) => void; reject: () => void }[] = [];
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   pending = [];
   resetCache();
   (globalThis as { fetch: unknown }).fetch = (url: string, init?: { method?: string }) =>
     // Only the git reads are the test's; the tasks pulse waits forever.
-    new Promise<Response>((res) => {
+    new Promise<Response>((res, rej) => {
       if (!String(url).includes("/api/git/rail")) return;
-      pending.push({ url: String(url), method: init?.method ?? "GET", answer: (b) => res(new Response(JSON.stringify(b), { status: 200 })) });
+      pending.push({
+        url: String(url),
+        method: init?.method ?? "GET",
+        answer: (b) => res(new Response(JSON.stringify(b), { status: 200 })),
+        reject: () => rej(new Error("connection lost")),
+      });
     });
 });
 afterEach(() => {
@@ -107,6 +112,90 @@ describe("useRailGit across a path change", () => {
     await answer(pending.length - 1, { ok: true, repo: repo("b") });
     expect(seen!.repo?.branch).toBe("b");
     act(() => r.unmount());
+  });
+});
+
+describe("useRailGit sync (the card's Send / Get latest)", () => {
+  test("posts the op, holds `syncing`, lands the fresh counts; a refusal is the note", async () => {
+    await act(async () => {
+      create(<Probe path="/r/a" />);
+    });
+    await answer(0, { ok: true, repo: repo("a") });
+    await act(async () => {
+      seen!.sync("push");
+    });
+    expect(seen!.syncing).toBe("push");
+    expect(pending[1]!.url).toContain("/api/git/rail/sync");
+    expect(pending[1]!.method).toBe("POST");
+    // A second press while one is out does nothing.
+    await act(async () => {
+      seen!.sync("pull");
+    });
+    expect(pending).toHaveLength(2);
+    await answer(1, { ok: true, repo: repo("sent"), result: { ok: true, op: "push" } });
+    expect(seen!.syncing).toBeNull();
+    expect(seen!.repo?.branch).toBe("sent");
+    expect(seen!.syncNote).toBeNull();
+    await act(async () => {
+      seen!.sync("pull");
+    });
+    await answer(2, { ok: true, repo: repo("sent"), result: { ok: false, reason: "not-fast-forward", message: "diverged" } });
+    expect(seen!.syncNote).toBe("diverged");
+    // A later read whose counts moved (fixed in a terminal) takes the note away.
+    await act(async () => {
+      seen!.reload();
+    });
+    await answer(3, { ok: true, repo: { ...repo("sent"), upstream: { ahead: 0, behind: 0 } } });
+    expect(seen!.syncNote).toBeNull();
+  });
+
+  test("a lost answer says so and re-reads, so a push that landed shows as landed", async () => {
+    await act(async () => {
+      create(<Probe path="/r/a" />);
+    });
+    await answer(0, { ok: true, repo: { ...repo("a"), upstream: { ahead: 2, behind: 0 } } });
+    await act(async () => {
+      seen!.sync("push");
+    });
+    await act(async () => {
+      pending[1]!.reject();
+      await new Promise((res) => setTimeout(res, 0));
+    });
+    expect(seen!.syncing).toBeNull();
+    expect(seen!.syncNote).toBe("The push did not finish.");
+    expect(pending[2]!.method).toBe("GET");
+    await answer(2, { ok: true, repo: { ...repo("a"), upstream: { ahead: 0, behind: 0 } } });
+    expect(seen!.repo?.upstream).toEqual({ ahead: 0, behind: 0 });
+    expect(seen!.syncNote).toBeNull();
+  });
+
+  test("no sync while a check is out; a path change drops a sync that is out", async () => {
+    let r!: ReactTestRenderer;
+    await act(async () => {
+      r = create(<Probe path="/r/a" />);
+    });
+    await answer(0, { ok: true, repo: repo("a") });
+    await act(async () => {
+      seen!.check();
+    });
+    await act(async () => {
+      seen!.sync("push");
+    });
+    expect(pending.map((p) => p.url.includes("/sync"))).toEqual([false, false]);
+    await answer(1, { ok: true, repo: repo("a"), checked: true });
+    await act(async () => {
+      seen!.sync("push");
+    });
+    expect(seen!.syncing).toBe("push");
+    await act(async () => {
+      r.update(<Probe path="/r/b" />);
+    });
+    expect(seen!.syncing).toBeNull();
+    await answer(3, { ok: true, repo: repo("b") });
+    // The old path's late answer neither lands nor says anything.
+    await answer(2, { ok: true, repo: repo("late"), result: { ok: false, message: "nope" } });
+    expect(seen!.repo?.branch).toBe("b");
+    expect(seen!.syncNote).toBeNull();
   });
 });
 

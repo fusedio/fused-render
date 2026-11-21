@@ -897,3 +897,149 @@ def test_the_open_ask_does_not_hand_the_folder_to_another_task(agent, run_dir, p
     finally:
         httpd.shutdown()
     assert events == []
+
+
+# ------------------------------------------- a NODE PAGE answers (SPEC §53.8)
+#
+# The file view showing one node through its node template is a page that can
+# picture that node, and nothing else.
+
+def _node_beat(agent, page_id, node, name="demo"):
+    return agent.main(action="canvas_shot_inbox",
+                      state=_page(page_id, name=name, visible=True, focused=True,
+                                  frame_up=True, node=node))["rows"]
+
+
+def _answer_node_shot(agent, page_id, node, pending, framing="node"):
+    """Poll as the node page until its row shows, claim it, answer it."""
+    deadline = time.monotonic() + 5
+    rows = []
+    while not rows and time.monotonic() < deadline:
+        rows = _node_beat(agent, page_id, node)
+        time.sleep(0.1)
+    assert rows, "the node page was listed no request"
+    assert (rows[0]["what"], rows[0]["udf"]) == ("udf", node)
+    assert agent.main(action="canvas_shot_claim", run_id="run", request_id=rows[0]["id"],
+                      state=json.dumps({"page_id": page_id}))["claimed"]
+    image = os.path.join(agent.SHOTS, "node.png")
+    with open(image, "wb") as fh:
+        fh.write(PNG)
+    agent.main(action="canvas_shot", run_id="run", request_id=rows[0]["id"],
+               state=json.dumps({"image": image, "mime": "image/png", "udf": node,
+                                 "framing": framing}))
+    return json.loads(pending.result(10)["result"]["content"][1]["text"])
+
+
+def test_a_node_page_answers_for_its_node_with_no_canvas_open(agent, run_dir, pages_env):
+    """The user is on udf_2.py in the file view; the chat asks for udf_2's
+    output. No canvas page is open and nobody is asked to open one."""
+    server = pages_env()
+    _node_beat(agent, "file", "udf_2")
+    pending = server.send_async("tools/call", {
+        "name": "canvas_screenshot", "arguments": {"what": "udf", "udf": "udf_2"}})
+    note = _answer_node_shot(agent, "file", "udf_2", pending)
+    assert note["what"] == "udf" and note["udf"] == "udf_2"
+    assert "caveat" not in note
+    assert os.listdir(run_dir / "perm") == []          # no open-canvas ask
+    # The heartbeat says which node the page shows.
+    with open(os.path.join(agent._canvas_pages_dir(), "unstable", "demo", "file.json"),
+              encoding="utf-8") as fh:
+        assert json.load(fh)["node"] == "udf_2"
+
+
+def test_a_node_page_is_not_listed_the_graph_or_another_node(agent, run_dir, pages_env):
+    for request_id, what, udf in (("g", "canvas", ""), ("o", "udf", "udf_1"), ("m", "udf", "udf_2")):
+        _parked(run_dir, request_id)
+        inbox = os.path.join(agent._canvas_pages_dir(), "inbox")
+        os.makedirs(inbox, exist_ok=True)
+        with open(os.path.join(inbox, request_id + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"run_id": "run", "request_id": request_id, "env": "unstable",
+                       "name": "demo", "what": what, "udf": udf,
+                       "created_at": time.time()}, fh)
+    agent.RUNS = str(run_dir.parent)
+    assert [r["id"] for r in _node_beat(agent, "file", "udf_2")] == ["m"]
+    # The canvas page is still listed all three.
+    rows = agent.main(action="canvas_shot_inbox", state=_page("canvas"))["rows"]
+    assert sorted(r["id"] for r in rows) == ["g", "m", "o"]
+
+
+def test_a_node_page_does_not_count_as_the_canvas_being_open(agent, run_dir, pages_env):
+    """Asked for the graph from the canvas chat, with only a node's file
+    open: the user is still asked to open the canvas, and a node page turning
+    up does not end that ask."""
+    server = pages_env()
+    _node_beat(agent, "file", "udf_2")
+    pending = server.send_async("tools/call", {
+        "name": "canvas_screenshot", "arguments": {"what": "canvas"}})
+    ask = _ask(run_dir)
+    assert ask["tool"] == agent.CANVAS_OPEN_TOOL
+    _node_beat(agent, "file", "udf_2")
+    time.sleep(0.5)
+    assert not os.path.exists(run_dir / "perm" / (ask["id"] + ".res.json"))
+    agent.main(action="decide", run_id="run", request_id=ask["id"], decision="deny")
+    err = json.loads(pending.result(10)["result"]["content"][0]["text"])["error"]
+    assert "continue without a screenshot" in err
+
+
+def test_another_nodes_page_does_not_answer(agent, run_dir, pages_env):
+    server = pages_env()
+    _node_beat(agent, "file", "udf_1")
+    pending = server.send_async("tools/call", {
+        "name": "canvas_screenshot", "arguments": {"what": "udf", "udf": "udf_2"}})
+    ask = _ask(run_dir)                       # udf_1's page cannot picture udf_2
+    assert _node_beat(agent, "file", "udf_1") == []
+    agent.main(action="decide", run_id="run", request_id=ask["id"], decision="deny")
+    pending.result(10)
+
+
+def test_a_node_chat_with_nothing_asked_means_its_node(agent, run_dir, pages_env):
+    """On a node's own chat a bare call is that node's output, and it is
+    taken from the node's file when that is what is on screen."""
+    server = pages_env(FUSED_RENDER_CANVAS_NODE="udf_2")
+    _node_beat(agent, "file", "udf_2")
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    note = _answer_node_shot(agent, "file", "udf_2", pending)
+    assert note["what"] == "udf" and note["udf"] == "udf_2" and "caveat" not in note
+    assert os.listdir(run_dir / "perm") == []
+
+
+def test_a_node_chat_asking_for_the_graph_gets_its_node_when_only_its_file_is_open(
+        agent, run_dir, pages_env):
+    """The user's case: Claude edits the node, then asks for the canvas. The
+    canvas is not open but the node is on screen as its own file: that is
+    pictured, with a caveat saying so, and nobody is asked to open anything."""
+    server = pages_env(FUSED_RENDER_CANVAS_NODE="udf_2")
+    _node_beat(agent, "file", "udf_2")
+    pending = server.send_async("tools/call", {
+        "name": "canvas_screenshot", "arguments": {"what": "canvas"}})
+    note = _answer_node_shot(agent, "file", "udf_2", pending)
+    assert note["what"] == "udf" and note["udf"] == "udf_2"
+    assert "canvas is not open" in note["caveat"] and "udf_2" in note["caveat"]
+    assert os.listdir(run_dir / "perm") == []
+
+
+def test_a_node_chat_asking_for_the_graph_gets_the_graph_when_the_canvas_is_open(
+        agent, run_dir, pages_env):
+    server = pages_env(FUSED_RENDER_CANVAS_NODE="udf_2")
+    _node_beat(agent, "file", "udf_2")
+    _beat(agent, "canvas")
+    pending = server.send_async("tools/call", {
+        "name": "canvas_screenshot", "arguments": {"what": "canvas"}})
+    deadline = time.monotonic() + 5
+    rows = []
+    while not rows and time.monotonic() < deadline:
+        _beat(agent, "canvas")
+        rows = agent.main(action="canvas_shot_inbox", state=_page("canvas"))["rows"]
+        time.sleep(0.1)
+    assert rows and rows[0]["what"] == "canvas"
+    assert _node_beat(agent, "file", "udf_2") == []   # not the node page's to take
+    agent.main(action="canvas_shot", run_id="run", request_id=rows[0]["id"],
+               state=json.dumps({"error": "x", "refusal": True}))
+    pending.result(10)
+
+
+def test_a_bad_node_name_on_a_heartbeat_is_refused(agent):
+    out = agent.main(action="canvas_shot_inbox", state=_page("p", node="../x"))
+    assert out == {"error": "bad canvas page", "rows": []}
+    out = agent.main(action="canvas_shot_inbox", state=_page("p", node=7))
+    assert out == {"error": "bad canvas page", "rows": []}

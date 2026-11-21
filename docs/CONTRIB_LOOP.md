@@ -1810,7 +1810,7 @@ lookup is the count. The public listing page records one `views` event when
 served.
 
 **S3 is the canvas's database.** `S3_PREFIX =
-s3://fused-users/fused/vasu/fused-render-marketplace/` (overridable by the
+s3://<bucket>/<prefix>/fused-render-marketplace/` (overridable by the
 `MARKETPLACE_S3_PREFIX` env var / Fused secret). GitHub stays the source of
 truth; S3 keeps what was read, what was built, and the stats. Every write is
 best-effort (`fused.api.upload`, logged on failure): no row ever waits on,

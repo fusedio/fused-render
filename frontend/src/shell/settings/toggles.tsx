@@ -13,6 +13,7 @@ import {
   putTaskFavouritesEnabled,
   putTaskHeadUnifiedEnabled,
   putRailFreePinsEnabled,
+  putRailModeDoorsEnabled,
   putTaskIconsEnabled,
   putExpertsEnabled,
   putGitAutoSyncEnabled,
@@ -23,6 +24,7 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putChatRecapEnabled,
   putBreakoutEnabled,
+  putSpecialistsEnabled,
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
@@ -32,12 +34,14 @@ import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishTaskHeadUnified } from "../task-head-flag";
 import { publishRailFreePins } from "../claude-rail/rail-free-pins-flag";
+import { publishRailModeDoors } from "../claude-rail/rail-mode-doors-flag";
 import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { publishFavouritesParent, publishTaskFavourites } from "@platform/lib/favourites-flag";
 import { publishTaskIcons } from "@platform/lib/task-icons-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
+import { publishSpecialistsEnabled } from "@platform/lib/specialists-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
@@ -80,6 +84,20 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.breakout?.enabled === true}
       put={putBreakoutEnabled}
       after={(next) => publishBreakoutEnabled(next.breakout?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// Specialists (docs/specialists.md): their Bots rows, the task tools and the
+// breakout's "With". Published so an open page shows or drops them at once.
+export function SpecialistsControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="specialists"
+      checked={prefs.specialists?.enabled === true}
+      put={putSpecialistsEnabled}
+      after={(next) => publishSpecialistsEnabled(next.specialists?.enabled === true)}
       onChange={onChange}
     />
   );
@@ -289,11 +307,6 @@ export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
         publishCanvasRailPeek(next.canvas_rail_peek);
         publishFavouritesParent(next.canvas_rail_peek);
       }}
-      status={
-        on
-          ? "On — hovering a chat on the rail opens it as a card you can use; a click keeps it open."
-          : "Off — hovering shows the chat's one-line caption; clicking opens it in the panel."
-      }
       onChange={onChange}
     />
   );
@@ -306,22 +319,12 @@ export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
 // still shown so the stored answer stays visible.
 export function TaskFavouritesControl({ prefs, onChange }: PrefControlProps) {
   const on = prefs.task_favourites?.enabled === true;
-  const parentOn = prefs.canvas_rail_peek?.enabled === true;
   return (
     <PrefToggleRow
       id="tasks-favourites"
       checked={on}
       put={putTaskFavouritesEnabled}
       after={(next) => publishTaskFavourites(next.task_favourites)}
-      disabled={!parentOn}
-      off={!parentOn}
-      status={
-        !parentOn
-          ? "Needs Preview chats from the collapsed Claude rail."
-          : on
-            ? "On — a star on the preview card keeps a chat in a Favourites section at the rail's foot, its own card open beside it on every page."
-            : "Off — no star, no Favourites section."
-      }
       onChange={onChange}
     />
   );
@@ -335,11 +338,6 @@ export function TaskHeadUnifiedControl({ prefs, onChange }: PrefControlProps) {
       checked={on}
       put={putTaskHeadUnifiedEnabled}
       after={(next) => publishTaskHeadUnified(next.task_head_unified)}
-      status={
-        on
-          ? "On — every task view shows the same header: close or back, prev/next, status, star, number, title, Open and ⋮."
-          : "Off — each view keeps its own header."
-      }
       onChange={onChange}
     />
   );
@@ -350,22 +348,27 @@ export function TaskHeadUnifiedControl({ prefs, onChange }: PrefControlProps) {
 // (the favourites row's idiom above), the stored answer still shown.
 export function RailFreePinsControl({ prefs, onChange }: PrefControlProps) {
   const on = prefs.rail_free_pins?.enabled === true;
-  const parentOn = prefs.task_head_unified?.enabled === true;
   return (
     <PrefToggleRow
       id="rail-free-pins"
       checked={on}
       put={putRailFreePinsEnabled}
       after={(next) => publishRailFreePins(next.rail_free_pins)}
-      disabled={!parentOn}
-      off={!parentOn}
-      status={
-        !parentOn
-          ? "Needs Unified task header."
-          : on
-            ? "On — a pin freezes its window where it stands; other chats open in a second window beside the rail."
-            : "Off — a pinned window swaps what it shows, as before."
-      }
+      onChange={onChange}
+    />
+  );
+}
+
+// A FILE'S OTHER MODES AS DOORS ON THE RAIL (owner, 2026-11-20): a child of
+// the rail preview — the doors are the rail's nav doors'.
+export function RailModeDoorsControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.rail_mode_doors?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="rail-mode-doors"
+      checked={on}
+      put={putRailModeDoorsEnabled}
+      after={(next) => publishRailModeDoors(next.rail_mode_doors)}
       onChange={onChange}
     />
   );
@@ -383,11 +386,6 @@ export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
       checked={on}
       put={putTaskIconsEnabled}
       after={(next) => publishTaskIcons(next.task_icons)}
-      status={
-        on
-          ? "On — a favourite wears its own small picture in place of the status ring, in the ring's colour; click it while editing the title to choose another."
-          : "Off — the plain status ring."
-      }
       onChange={onChange}
     />
   );
@@ -403,11 +401,6 @@ export function ExpertsControl({ prefs, onChange }: PrefControlProps) {
       id="experts"
       checked={on}
       put={putExpertsEnabled}
-      status={
-        on
-          ? "On — expert bots are listed on the Bots page and task sessions can consult them."
-          : "Off — expert bots are hidden. Their memory is kept and comes back when you turn this on."
-      }
       onChange={onChange}
     />
   );

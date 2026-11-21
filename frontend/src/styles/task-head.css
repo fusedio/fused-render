@@ -970,11 +970,11 @@
    the head — either row of it — or the keyboard is on the button. (Stacked
    selectors: these have to outrank the swap rules above.) */
 @media (hover: hover) {
-  .task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) {
+  .task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) {
     opacity: 0;
     pointer-events: none;
   }
-  .task-head.task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a {
+  .task-head.task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a {
     opacity: 1;
     pointer-events: auto;
   }

@@ -1942,6 +1942,73 @@ a.claude-rail-peek-scope:focus-visible {
   margin-top: 2px;
 }
 
+/* THE MODE DOORS (ClaudeRail; owner, 2026-11-20): the file's other modes,
+   one nav-door seat each, above the Git door and in its group. The glyph is
+   the mode menu's own (`.mode-icon-mask`), at the nav doors' size. */
+.claude-rail-mode-doors {
+  width: 100%;
+}
+.claude-rail-mode-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.claude-rail-mode-glyph > *,
+.claude-rail-mode-icon > * {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+/* THE MODE CARD (shell/claude-rail ModePeek): the file in that mode — an
+   embed frame filling the card under its head — in window A's chassis off a
+   mode door, the Git card's twin (DoorCard), one per mode. A class, not an
+   id (there are several): one step above the rail's own card where it is a
+   non-pin, and under the two-class rules above (`.is-front`, `.is-free-pin`)
+   which outrank it as they should. */
+.claude-rail-mode-peek {
+  z-index: 46;
+}
+.claude-rail-mode-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.claude-rail-mode-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-muted);
+}
+.claude-rail-mode-icon > * {
+  width: 14px;
+  height: 14px;
+}
+.claude-rail-mode-body {
+  position: relative;
+  overflow: hidden;
+}
+.claude-rail-mode-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.claude-rail-mode-body.is-loaded .claude-rail-mode-frame {
+  opacity: 1;
+}
+/* A grip's drag crosses the frame: it must not take the pointer. */
+.claude-rail-mode-peek.is-resizing .claude-rail-mode-frame {
+  pointer-events: none;
+}
+
 /* THE GIT CARD (shell/claude-rail GitPeek; owner, 2026-11-10): the status
    bar's old Git panel (shell/GitPanelBody) in window A's chassis off the
    rail's Git door — the Bots card's twin (DoorCard), one step above the
@@ -1992,8 +2059,8 @@ a.claude-rail-peek-scope:focus-visible {
   flex: none;
   color: var(--fg-muted);
 }
-/* ↑n / ↓n beside the branch: how far it stands from the default branch;
-   then what a push / pull would move, in the door's dot hues. */
+/* ↑n / ↓n beside the branch: how far it stands from the default branch.
+   Information only — what a push / pull would move is `.git-panel-sync`. */
 .git-panel-tag {
   display: inline-flex;
   align-items: center;
@@ -2006,14 +2073,6 @@ a.claude-rail-peek-scope:focus-visible {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-.git-panel-tag.is-push {
-  background: color-mix(in srgb, var(--status-background) 16%, transparent);
-  color: var(--status-background);
-}
-.git-panel-tag.is-pull {
-  background: color-mix(in srgb, var(--status-done) 16%, transparent);
-  color: var(--status-done);
 }
 .git-panel-tools {
   display: flex;
@@ -2036,6 +2095,52 @@ a.claude-rail-peek-scope:focus-visible {
 .git-panel-check:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+/* The Git view's primary sync button (template.html `.btn.primary` +
+   `.count`): filled in the ink, its count in a pill of the page's colour. */
+.git-panel-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 26px;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid var(--fg);
+  border-radius: 6px;
+  background: var(--fg);
+  color: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.git-panel-sync:hover:not([aria-disabled="true"]) {
+  background: var(--fg-muted);
+  border-color: var(--fg-muted);
+}
+.git-panel-sync:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.git-panel-sync[aria-disabled="true"] {
+  cursor: default;
+  background: rgba(var(--tint), 0.08);
+  border-color: var(--border);
+  color: var(--fg-muted);
+}
+.git-panel-sync-count {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.git-panel-sync[aria-disabled="true"] .git-panel-sync-count {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg-muted);
 }
 .git-panel-warn {
   font-size: 11px;

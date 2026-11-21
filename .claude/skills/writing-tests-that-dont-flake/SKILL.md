@@ -1,6 +1,6 @@
 ---
 name: writing-tests-that-dont-flake
-description: Use when writing, changing or reviewing any test under tests/ — especially one that waits on a thread, subprocess, file, server or timer, measures elapsed time, signals a pid, or calls a subprocess's entry point (main/serve) in-process — and when a test passes locally but fails intermittently in CI or an xdist worker crashes ("node down: Not properly terminated"). Lists the race patterns that have actually flaked main, the fix for each, and how to prove a fix under load.
+description: Use when writing, changing or reviewing any test under tests/ or any frontend `bun test` file — especially one that waits on a thread, subprocess, file, server or timer, measures elapsed time, signals a pid, or calls a subprocess's entry point (main/serve) in-process — and when a test passes locally but fails intermittently in CI or an xdist worker crashes ("node down: Not properly terminated"), or a bun test passes alone but fails in the full run (or the reverse). Lists the race patterns that have actually flaked main, the fix for each, and how to prove a fix under load.
 ---
 
 # Writing Tests That Don't Flake
@@ -97,6 +97,27 @@ terminated`, no traceback, a different "crashed" test every time).
   process, a signal aimed at the test process or its group raises and fails
   the test by name, and `os._exit` / a fatal SIGTERM or SIGHUP print a stack.
   If that guard fires, fix the test; don't loosen the guard.
+
+### 10. Frontend (`bun test`): a file owns nothing it did not set up
+CI runs `bun test --parallel` (implies `--isolate`: fresh globals and module
+registry per file). A bare `bun test` runs every file in ONE process, and
+that is where these came from (Nov 2026, each "passed alone"):
+- **Count only the request you assert on.** A `fetch` stub that counts or
+  scripts *every* call is also answering pollers other code left running and
+  once-per-process memo reads (`/api/agent-backends`). Match the URL; refuse
+  and don't count anything else. (`feature-flag`, `useTaskId`, playground
+  `watch()`.)
+- **Reset module memos and single-flight slots you depend on** with the
+  module's `reset…ForTests()` (add one if missing): `shotsDir`, the bots
+  store's `pollBusy`.
+- **`mock.module` the whole module, overriding one export:**
+  `({ ...await import(path), navigate })`. A partial mock only links when an
+  earlier file already loaded the real one.
+- **Don't zero every `setTimeout`** to skip one sleep; match the delay you
+  mean, or a leaked loop elsewhere becomes a spin.
+- Check a suspect with `bun test --isolate path/to/file.test.ts` (and
+  `--parallel --randomize` for the suite). Passing only in the shared run is
+  a bug in that test.
 
 ### Never "fix" a flake by
 - `skip`/`xfail`/quarantine, or rerun-until-green.

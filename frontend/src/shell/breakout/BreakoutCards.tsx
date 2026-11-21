@@ -205,11 +205,13 @@ export function Card({
         setError("Couldn't write a handoff. Try again");
         return;
       }
-      void sendBackBreakout(card.id, buildHandoffDraft(slice)).then((ok) => {
+      // A specialist breakout can act (a message sent with the user's approval): the task must know who wrote this.
+      const byline = card.specialist ? `From the ${card.specialist.name} specialist's breakout (it can act as well as research):\n\n` : "";
+      void sendBackBreakout(card.id, byline + buildHandoffDraft(slice)).then((ok) => {
         if (!ok) setError("Could not hand the summary back. The card stays open.");
       });
     },
-    [card.id],
+    [card.id, card.specialist],
   );
   const onState = useCallback(
     (s: BreakoutState) => {
@@ -242,7 +244,7 @@ export function Card({
     setError("");
     pend.current = { from: state.current.turns.length, saw: false };
     setWriting(true);
-    state.current.send(HANDOFF_PROMPT);
+    state.current.send(card.specialist ? HANDOFF_PROMPT + " Say plainly what you did here yourself, such as a message you sent." : HANDOFF_PROMPT);
   };
   const cancelWriting = () => {
     pend.current = null;
@@ -255,7 +257,7 @@ export function Card({
       index={index}
       label="Breakout"
       title="Breakout"
-      note="research only"
+      note={card.specialist ? `with the ${card.specialist.name} specialist` : "research only"}
       actions={
         <>
           {writing ? (
@@ -281,8 +283,9 @@ export function Card({
     >
       <div className="claude-rail-peek-chat is-shown">
         <Mount
-          file={card.cwd || card.file}
+          file={card.specialist?.home || card.cwd || card.file}
           breakout
+          {...(card.specialist ? { extraParams: { specialist: `${card.specialist.id}:breakout` }, permission: "auto" } : {})}
           backend="claude"
           breakoutContext={card.context}
           {...(card.prompt ? { breakoutPrompt: card.prompt, onBreakoutPromptSent: () => consumeBreakoutPrompt(card.id) } : {})}

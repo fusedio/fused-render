@@ -72,6 +72,9 @@ const TASKS_IDENT = /^[a-z0-9_-]{1,32}$/;
 // client clamps harder on read (rail-peek-lib PEEK_MIN_*, the row's room).
 const RAIL_PEEK_MIN = 120;
 const RAIL_PEEK_MAX = 10000;
+/** The task chat's seen marks: shell/ui_layout.py MAX_CHAT_SEEN / MAX_CHAT_ID. */
+export const CHAT_SEEN_MAX = 300;
+const CHAT_ID_MAX = 128;
 
 /** The chat text zoom's steps (⌘+ / ⌘− / ⌘0 in a chat, platform/lib/chat-zoom.ts),
  *  1 = 100 %. shell/ui_layout.py snaps to the same list. */
@@ -171,6 +174,11 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
     }
   }
   if (isNum(src.chatTextScale)) out.chatTextScale = snapChatTextScale(src.chatTextScale);
+  if (isObj(src.chatSeen)) {
+    const ok = (v: unknown): v is string => typeof v === "string" && v !== "" && v.length <= CHAT_ID_MAX;
+    const entries = Object.entries(src.chatSeen).filter(([k, v]) => ok(k) && ok(v)) as [string, string][];
+    if (entries.length) out.chatSeen = Object.fromEntries(entries.slice(-CHAT_SEEN_MAX));
+  }
   return out;
 }
 

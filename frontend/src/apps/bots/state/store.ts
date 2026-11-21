@@ -9,12 +9,15 @@
 // with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
 import { isLanHost } from "@platform/lib/host";
-import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
+import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type Face, type ImessageState, type SlowCall, type StatusReply, type UsageSummary, ApiError } from "../lib/api";
+import { readBotsMissing } from "@platform/lib/bots-available";
+import { listSpecialists, type Specialist } from "@platform/lib/specialists";
+import { readSpecialistsFlag, specialistsEnabledNow } from "@platform/lib/specialists-flag";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
 import { landingBot } from "../lib/landing";
 import { botHasUnread } from "@platform/lib/botsPulse";
 import { getPrefsShared, putBotsPref } from "@platform/lib/api";
-import { lastUserTs, sentByYou } from "../lib/derive";
+import { lastUserTs, noBrowser, sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
 import { botsMounted } from "../lib/root";
@@ -243,7 +246,7 @@ let autoOpened: string | null = null;
 export const needsYou = (b: Bot | undefined): boolean => !!b && !!b.control && b.control_by === "bot";
 /** ...and Stage can show it: the task has not ended and the browser is not popped out (nothing to stream). The same
  *  checks that close an auto-opened Stage, so a remount never flashes one open for a poll. */
-const stageable = (b: Bot | undefined): boolean => needsYou(b) && b!.kind !== "expert" && b!.status !== "idle" && b!.status !== "error" && !b!.browser?.headed;
+const stageable = (b: Bot | undefined): boolean => needsYou(b) && !noBrowser(b) && b!.status !== "idle" && b!.status !== "error" && !b!.browser?.headed;
 /** Open Stage for the selected bot `id` unless it is already open or the pref is off; with a dialog / menu up, later
  *  (closeDialog / closeMenu). Unsent composer text keeps its focus: the page does not take the keyboard then. */
 function requestStage(id: string): void {
@@ -313,7 +316,8 @@ function pushSeen(id: string, seq: number): void {
   });
 }
 export function markSeen(id: string | null | undefined, seq: number): void {
-  if (!id || S.seen[id] >= seq) return;
+  // A specialist's read mark is its own (its Learning tab); the bots backend does not know it.
+  if (!id || S.seen[id] >= seq || botById(id)?.specialist) return;
   pushSeen(id, seq);
   commit({ seen: { ...S.seen, [id]: seq } });
   // The sidebar's chip counts this bot until it hears the mark moved; the next poll is up to 3 s away (CodeRabbit, #1796).
@@ -328,7 +332,7 @@ function publishPulse(): void {
   // these rows while this page is the feeder (CodeRabbit, #2136).
   // …and the page's own recency (BotList `recency`: your last message, else when it was made), so the rail's pinned
   // bots sort as this list does while the page feeds them (owner, 2026-11-09: the foot's order disagreed with the page).
-  publishBots(S.bots.map((b) => ({
+  publishBots(S.bots.filter((b) => !b.specialist).map((b) => ({
     id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden, pinned: b.pinned,
     name: b.name, face: b.face, last_user_ts: lastUserTs(eventsOf(b.id)) || b.last_user_ts || 0, created: b.created,
   })));
@@ -426,6 +430,8 @@ const OPEN_RETRY_MS = 3_000;
  *  OPEN_RETRY_MS so linking Claude later, or a measure landing, still starts it. The server rate-limits the measure
  *  itself (one a minute) and finishes a recent open on its own once it lands, so asking often is cheap and a fallback. */
 function sendOpen(id: string): void {
+  // A specialist's dot is its learning, cleared by its Learning tab (SpecialistPane), not by opening the chat.
+  if (botById(id)?.specialist) return;
   if (openedOnce.has(id) || (openRetryAt[id] || 0) > Date.now()) return;
   openedOnce.add(id);
   void act(() => api.open(id), true).then((r) => {
@@ -452,7 +458,7 @@ function applySel(id: string | null): void {
   // A bot waiting for you in its browser opens Stage the moment you pick it.
   if (b && stageable(b)) requestStage(b.id);
   // An expert has no browser: a Stage left open for the previous bot closes rather than show it nothing.
-  else if (S.fast && b?.kind === "expert") closeStage();
+  else if (S.fast && noBrowser(b)) closeStage();
 }
 
 /** `replace`: the store's own fallback pick (see writeUrl); a user gesture pushes. `sel` is committed BEFORE the
@@ -528,12 +534,49 @@ export const closeMenu = (): void => { if (S.ui.menu) { commit({ ui: { ...S.ui, 
 /** builds/ owns the numbers; the list footer renders them. */
 export const setBuildsChip = (patch: Partial<BuildsChip>): void => commit({ buildsChip: { ...S.buildsChip, ...patch } });
 
+// ------------------------------------------------------------------ specialists ----
+// The page lists specialists (docs/specialists.md) as rows of their own kind: read from /api/specialists at most
+// every SPECIALISTS_MS and right after a specialist action, never off the page or on the phone. The bots backend
+// does not know them. With the switch off nothing is asked; the first poll waits for the switch, so a fresh load of
+// /bots/<specialist> finds its row.
+const SPECIALISTS_MS = 10_000;
+let specRows: Bot[] = [], specAt = 0;
+const asBot = (s: Specialist): Bot => ({
+  id: s.id, name: s.name, kind: "specialist", specialist: s, status: s.working ? "running" : "idle", seq: 0, events: [],
+  model: "", effort: "", face: s.face as Face | null, created: s.last?.at || 0,
+});
+async function specialistBots(): Promise<Bot[]> {
+  if (isLanHost()) return [];
+  await readSpecialistsFlag();
+  if (!specialistsEnabledNow()) { specAt = 0; return []; }
+  if (Date.now() - specAt < SPECIALISTS_MS) return specRows;
+  specAt = Date.now();
+  // A failed refresh keeps the rows it had: emptying them would also throw the user out of an open specialist chat.
+  specRows = await listSpecialists().then((r) => r.map(asBot), () => specRows);
+  return specRows;
+}
+/** A specialist action, then a poll that reads the specialists again. */
+export function actSpecialist<T>(call: () => Promise<T>): Promise<T | undefined> {
+  return act(() => call().then((r) => { specAt = 0; return r; }));
+}
+
 // ------------------------------------------------------------------ poll ----
+/** The status a server without bots would give (Windows; `readBotsMissing`): no rows, nothing else. */
+const NO_BOTS: StatusReply = { bots: [], ts: 0, usage: null, imessage: null };
+
 // One poll in flight at a time; one requested meanwhile runs after it settles, so callers never see pre-action state.
 let pollBusy: Promise<void> | null = null;
 export function poll(): Promise<void> {
   if (pollBusy) return pollBusy.then(poll);
-  return (pollBusy = pollOnce().finally(() => { pollBusy = null; }));
+  const p: Promise<void> = pollOnce().finally(() => { if (pollBusy === p) pollBusy = null; });
+  return (pollBusy = p);
+}
+
+/** Test-only: forget the poll in flight. bun runs every file in one process, and a poll another file started against
+ *  a `fetch` stub that never answers (the rail's bot card feeds this store) would otherwise be what every later act()
+ *  waits on. The forgotten poll's `finally` cannot clear a newer one: it nulls only its own slot. */
+export function resetPollForTests(): void {
+  pollBusy = null;
 }
 
 export async function pollOnce(): Promise<void> {
@@ -545,7 +588,17 @@ export async function pollOnce(): Promise<void> {
   // ran mounted.
   const page = botsMounted();
   try {
-    const r = await api.status({ cursors: S.cursors, shot_for: page ? S.sel || "" : "", fast: page && S.fast });
+    // No bots on this server (Windows): the page lists the specialists alone, and `/api/bots` (a 503 there) is
+    // never asked — its failure would also take the specialists' rows down with it. Off the page this poll is the
+    // rail's bot card's, which only stands where the server has bots (useBotsAvailable), so nothing is read there.
+    const botsOff = page && await readBotsMissing();
+    const [r, spec] = await Promise.all([
+      botsOff ? NO_BOTS : api.status({ cursors: S.cursors, shot_for: page ? S.sel || "" : "", fast: page && S.fast }),
+      page ? specialistBots() : [],
+    ]);
+    // What landing picks from: the bots, or with none on this server the specialists (on a Mac a specialist is never
+    // landed on by itself, as before).
+    const landRows = botsOff ? spec : r.bots;
     batch(() => {
       hideBanner();
       const first = !S.bots.length;
@@ -578,7 +631,7 @@ export async function pollOnce(): Promise<void> {
       // Nothing moved (and no bot left): keep the reference.
       if (seenSame && Object.keys(seen).length === Object.keys(S.seen).length) seen = S.seen;
       commit({
-        bots: r.bots, events, cursors, seen, polled: true,
+        bots: [...r.bots, ...spec], events, cursors, seen, polled: true,
         ...(r.usage ? { usage: r.usage } : {}), ...(r.imessage ? { imessage: r.imessage } : {}),
       });
       // The sidebar's Bots entry: while this page polls, it is the one source, and the rail moves on the same tick
@@ -631,8 +684,8 @@ export async function pollOnce(): Promise<void> {
       }
       // Nothing selected yet: a bot waiting on you, else one with news, else Super Bot (seeded on first run,
       // registry.seed_super) — the chat a new user should land in (lib/landing.ts).
-      if (!S.sel && r.bots.length && !document.hidden) landOnBare();
-      if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null, { replace: true });
+      if (!S.sel && landRows.length && !document.hidden) landOnBare();
+      if (S.sel && !S.bots.some((b) => b.id === S.sel)) select(landRows[0]?.id || null, { replace: true });
       // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
       // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
       // Not from the phone's list page: the chat on screen there is none (D1468).
@@ -755,6 +808,7 @@ export function startStore(): () => void {
     document.removeEventListener("visibilitychange", onVisible);
     if (S.ui.dialog || S.ui.menu) commit({ ui: { dialog: null, menu: null } });  // a route change closes them
     pendingStage = null; if (S.fast) closeStage();  // Stage does not outlive the route (and a queued auto-open must not fire into it)
+    commit({ bots: S.bots.filter((b) => !b.specialist) });  // the rail's bot card lists bots only
     window.removeEventListener("popstate", syncFromUrl);
     window.removeEventListener("fused:navigate", syncFromUrl);
     window.removeEventListener("fused:urlchange", syncFromUrl);

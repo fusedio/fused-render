@@ -400,7 +400,9 @@ export function TaskHead({
   const [hot, setHot] = useState(false);
   useEffect(() => {
     // (A test's stand-in node has no tree to walk and no events to hear.)
-    if (!isWindow) return;
+    // A two-line panel (the expanded sidebar) takes the same trigger: the
+    // pointer anywhere on the pane shows its star and its door.
+    if (!isWindow && !twoLine) return;
     if (!headEl || typeof headEl.closest !== "function" || typeof headEl.addEventListener !== "function") return;
     // The host's `data-task-window`, or the nearest box that holds MORE than
     // the head — a wrapper that is only the head's own line (the rail card's
@@ -459,7 +461,7 @@ export function TaskHead({
       win.removeEventListener("focusout", focusOff);
       setHot(false);
     };
-  }, [headEl, isWindow]);
+  }, [headEl, isWindow, twoLine]);
   // THE TITLE MOVES ROWS HERE, which remounts it: a rename half-typed when
   // the ladder crosses the stack rung loses its draft (an accepted edge case).
   // ONLY A RAIL WINDOW STACKS ON ITS OWN (Akshil, 2026-11-16: "2nd line thing

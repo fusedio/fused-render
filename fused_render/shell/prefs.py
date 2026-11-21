@@ -81,6 +81,7 @@ locally like shell/bookmarks.py's guard is.
 import logging
 import os
 import re
+import sys
 import threading
 import time
 
@@ -496,11 +497,21 @@ def chat_recap_enabled() -> bool:
     return read_prefs().get("chat_recap_enabled") is not False
 
 
+def specialists_enabled() -> bool:
+    """Whether Specialists are on (default off — experimental). Env `FUSED_RENDER_SPECIALISTS` "1"/"0" wins
+    both ways; else only a stored `true` is on. Off, no Bots rows, no routes, no task tools, no timers."""
+    env = os.environ.get("FUSED_RENDER_SPECIALISTS")
+    if env in ("1", "0"):
+        return env == "1"
+    return read_prefs().get("specialists_enabled") is True
+
+
 def breakout_enabled() -> bool:
     """Whether Breakout (research-only side chats seeded from selected messages)
     is available (default off — opt-in beta). Off, no Breakout buttons render
-    and the agent refuses `breakout` starts. Only a stored `true` is on."""
-    return read_prefs().get("breakout_enabled") is True
+    and the agent refuses `breakout` starts. Only a stored `true` is on, or
+    Specialists on (a specialist's breakout is the plain one)."""
+    return specialists_enabled() or read_prefs().get("breakout_enabled") is True
 
 
 def canvas_shot_slow_fallback_enabled() -> bool:
@@ -554,6 +565,16 @@ def rail_free_pins_enabled() -> bool:
     Same idiom as `canvas_rail_peek_enabled`: only a stored `true` is on.
     """
     return read_prefs().get("rail_free_pins_enabled") is True
+
+
+def rail_mode_doors_enabled() -> bool:
+    """Whether a file page's Claude rail shows the file's other modes (the
+    top-right mode menu's entries, the active one left out) as doors above
+    Git, each previewing the file in that mode in a rail card. Only read with
+    `canvas_rail_peek_enabled` on (the rail's doors). Default off. Same idiom
+    as `canvas_rail_peek_enabled`: only a stored `true` is on.
+    """
+    return read_prefs().get("rail_mode_doors_enabled") is True
 
 
 def task_icons_enabled() -> bool:
@@ -675,24 +696,24 @@ def lan_enabled() -> bool:
     return read_prefs().get("lan_enabled") is True
 
 
-#: The five agent switches (D17, docs/COPILOT_BACKEND.md; the third from
+#: The six agent switches (D17, docs/COPILOT_BACKEND.md; the third from
 #: docs/CODEX_BACKEND.md, the fourth from docs/GEMINI_BACKEND.md, the fifth
-#: from docs/OPENCODE_BACKEND.md). Claude Code is on unless a stored `false`
-#: turns it off; Copilot, Codex, Gemini and OpenCode are off unless a stored
-#: `true` turns them on. Asymmetric defaults on purpose — "Claude by default"
-#: is the owner's rule — and `put_prefs` refuses the write that would clear
-#: all five.
+#: from docs/OPENCODE_BACKEND.md, the sixth from docs/CURSOR_BACKEND.md).
+#: Claude Code is on unless a stored `false` turns it off; Copilot, Codex,
+#: Gemini, OpenCode and Cursor are off unless a stored `true` turns them on.
+#: Asymmetric defaults on purpose — "Claude by default" is the owner's rule —
+#: and `put_prefs` refuses the write that would clear all six.
 #: `VALID_DEFAULT_BACKENDS` is in `registry.ORDER`: the PUT's default re-point
 #: walks it and takes the first agent that is on.
 AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled",
                       "codex": "codex_enabled", "gemini": "gemini_enabled",
-                      "opencode": "opencode_enabled"}
-VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex", "gemini", "opencode")
+                      "opencode": "opencode_enabled", "cursor": "cursor_enabled"}
+VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex", "gemini", "opencode", "cursor")
 
 
 def backend_enabled(backend: str) -> bool:
     """Whether `backend` ("claude" | "copilot" | "codex" | "gemini" |
-    "opencode") may start
+    "opencode" | "cursor") may start
     chats and tasks. Unknown backend reads as off. See
     `agent_backends.registry.enabled_ids` for the never-empty guarantee this
     feeds."""
@@ -725,6 +746,10 @@ def opencode_enabled() -> bool:
     return backend_enabled("opencode")
 
 
+def cursor_enabled() -> bool:
+    return backend_enabled("cursor")
+
+
 def default_backend() -> str:
     """The agent new chats and tasks start from, as stored — `"claude"` when
     unset or junk. Whether it is ENABLED is the registry's question
@@ -735,7 +760,7 @@ def default_backend() -> str:
 
 def _agents_state() -> dict:
     """`{"claude": bool, "copilot": bool, "codex": bool, "gemini": bool,
-    "opencode": bool, "default": id}` for `GET /api/prefs`. Imported lazily: the registry reads
+    "opencode": bool, "cursor": bool, "default": id}` for `GET /api/prefs`. Imported lazily: the registry reads
     this module for the switches. The REGISTRY's answer, not the raw switches:
     a hand-edited prefs.json that turns every switch off reads as Claude on
     there, and this page must agree."""
@@ -746,6 +771,7 @@ def _agents_state() -> dict:
             "codex": registry.is_enabled("codex"),
             "gemini": registry.is_enabled("gemini"),
             "opencode": registry.is_enabled("opencode"),
+            "cursor": registry.is_enabled("cursor"),
             "default": registry.default_id()}
 
 
@@ -1286,6 +1312,8 @@ def _prefs_response() -> dict:
         "chat_recap": {"enabled": chat_recap_enabled()},
         # Breakout side chats (opt-in beta, `breakout_enabled`).
         "breakout": {"enabled": breakout_enabled()},
+        # Specialists (experimental, `specialists_enabled`; env can force it).
+        "specialists": {"enabled": specialists_enabled()},
         # The slow in-canvas screenshot fallback on a Mac
         # (`canvas_shot_slow_fallback_enabled`; off by default).
         "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
@@ -1301,6 +1329,9 @@ def _prefs_response() -> dict:
         "task_head_unified": {"enabled": task_head_unified_enabled()},
         # Free pins on the Claude rail (`rail_free_pins_enabled`; off by default).
         "rail_free_pins": {"enabled": rail_free_pins_enabled()},
+        # A file's other modes as doors on the rail (`rail_mode_doors_enabled`;
+        # off by default).
+        "rail_mode_doors": {"enabled": rail_mode_doors_enabled()},
         # Task icons in place of the status ring (`task_icons_enabled`; off).
         "task_icons": {"enabled": task_icons_enabled()},
         # Expert bots (`experts_enabled`; off — hidden, never deleted).
@@ -1320,9 +1351,10 @@ def _prefs_response() -> dict:
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
         "lan": {"enabled": lan_enabled(), **_lan_status()},
-        # The five agent switches and the agent new chats/tasks start from
+        # The six agent switches and the agent new chats/tasks start from
         # (docs/COPILOT_BACKEND.md D17, docs/CODEX_BACKEND.md D17,
-        # docs/GEMINI_BACKEND.md D17, docs/OPENCODE_BACKEND.md D17). `default`
+        # docs/GEMINI_BACKEND.md D17, docs/OPENCODE_BACKEND.md D17,
+        # docs/CURSOR_BACKEND.md D17). `default`
         # is the EFFECTIVE one — the stored choice re-pointed to an enabled
         # agent by the registry — so the page never shows a default that is
         # switched off.
@@ -1505,6 +1537,21 @@ def _forced_by(env_name: str, override) -> str | None:
     return os.environ.get(env_name) if override is not None else None
 
 
+def _specialists_switched() -> None:
+    """On (the env can hold it on whatever was stored): seed the shipped specialists and start the daily update;
+    off: stop it. Best-effort: never fails the preference write."""
+    try:
+        if specialists_enabled():
+            from fused_render.specialists import scheduler, seed
+
+            seed.seed()
+            scheduler.start()
+        elif "fused_render.specialists.scheduler" in sys.modules:
+            sys.modules["fused_render.specialists.scheduler"].stop()
+    except Exception:  # noqa: BLE001
+        logger.exception("specialists: switching on/off failed")
+
+
 @router.get("/api/prefs")
 def get_prefs():
     return _prefs_response()
@@ -1643,6 +1690,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["breakout_enabled"] = value
             changed = True
+        if "specialists_enabled" in body:
+            value = body.get("specialists_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'specialists_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["specialists_enabled"] = value
+            changed = True
         if "canvas_shot_slow_fallback_enabled" in body:
             value = body.get("canvas_shot_slow_fallback_enabled")
             if not isinstance(value, bool):
@@ -1677,6 +1731,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'rail_free_pins_enabled' must be a boolean"},
                                     status_code=400)
             prefs["rail_free_pins_enabled"] = value
+            changed = True
+        if "rail_mode_doors_enabled" in body:
+            value = body.get("rail_mode_doors_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'rail_mode_doors_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["rail_mode_doors_enabled"] = value
             changed = True
         if "task_icons_enabled" in body:
             value = body.get("task_icons_enabled")
@@ -1955,12 +2016,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             changed = launcher_changed = True
         agent_keys = tuple(AGENT_BACKEND_KEYS[b] for b in VALID_DEFAULT_BACKENDS)
         if any(k in body for k in (*agent_keys, "default_backend")):
-            # THE SIX AGENT KEYS TOGETHER (D17, invariant 11): five switches
+            # THE SEVEN AGENT KEYS TOGETHER (D17, invariant 11): six switches
             # and the default. Each is applied onto the merged record first
             # and the RESULT is judged, so one PUT that turns Claude off and
-            # Codex on in the same body is fine, and so is one that turns four
-            # off while the fifth stays on, while one that would leave all
-            # five off is refused whole — there is no "no agent" state.
+            # Codex on in the same body is fine, and so is one that turns five
+            # off while the sixth stays on, while one that would leave all
+            # six off is refused whole — there is no "no agent" state.
             # `default_backend` naming an agent that ends up off is re-pointed
             # to the first one that is on (in `VALID_DEFAULT_BACKENDS` order,
             # which is `registry.ORDER`), in the same write, so a reader never
@@ -1986,7 +2047,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                   "copilot": prefs.get("copilot_enabled") is True,
                   "codex": prefs.get("codex_enabled") is True,
                   "gemini": prefs.get("gemini_enabled") is True,
-                  "opencode": prefs.get("opencode_enabled") is True}
+                  "opencode": prefs.get("opencode_enabled") is True,
+                  "cursor": prefs.get("cursor_enabled") is True}
             if not any(on.values()):
                 return JSONResponse(
                     {"error": "turn on another agent first"}, status_code=400)
@@ -2005,11 +2067,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
-                          "'chat_recap_enabled', 'breakout_enabled', "
+                          "'chat_recap_enabled', 'breakout_enabled', 'specialists_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
                           "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
                           "'task_head_unified_enabled', "
                           "'rail_free_pins_enabled', "
+                          "'rail_mode_doors_enabled', "
                           "'task_icons_enabled', 'experts_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
@@ -2017,7 +2080,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'tasks_view_tabs', 'pinned_tasks', "
                           "'lan_enabled', 'canvases_embed_proxy', "
                           "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
-                          "'gemini_enabled', 'opencode_enabled', "
+                          "'gemini_enabled', 'opencode_enabled', 'cursor_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
                           "'warm_run_enabled', "
                           "'index_low_impact_enabled', "
@@ -2030,6 +2093,11 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 status_code=400,
             )
         _store(prefs)
+    if isinstance(body.get("specialists_enabled"), bool):
+        # AFTER the write, like `lan_enabled`.
+        _specialists_switched()
+    elif body.get("canvases_enabled") is True:
+        _specialists_switched()  # the shipped specialists wait for Canvases too (specialists/seed.py)
     if body.get("canvases_embed_proxy") is False:
         # AFTER the write, like `lan_enabled`: stop the listener now rather
         # than at the next status read. Turning it ON is left to status,
