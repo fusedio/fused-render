@@ -11,7 +11,8 @@
 /** How long a jump takes, in ms. */
 export const JUMP_MS = 100;
 
-const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
+/** Ease in and out (cubic): starts soft, ends soft. */
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
 /**
  * Scroll `el` to `target()` over `ms`. Instant when motion is reduced or
@@ -51,7 +52,7 @@ export function animateScroll(
     frame = 0;
     if (over) return;
     const t = Math.min(1, (now() - start) / ms);
-    el.scrollTop = from + (target() - from) * easeOut(t);
+    el.scrollTop = from + (target() - from) * easeInOut(t);
     if (t < 1) frame = requestAnimationFrame(step);
     else finish(true);
   };

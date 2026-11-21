@@ -36,14 +36,17 @@ function port() {
 }
 
 describe("the jump scroll", () => {
-  test(`eases to the target inside ${JUMP_MS}ms and lands exactly`, () => {
+  test(`eases in and out to the target inside ${JUMP_MS}ms and lands exactly`, () => {
     const el = port();
     let landed = null as boolean | null;
     animateScroll(el as unknown as HTMLElement, () => 1000, (l) => (landed = l));
     tick(16);
-    expect(el.scrollTop).toBeGreaterThan(0);
-    expect(el.scrollTop).toBeLessThan(1000);
-    tick(50);
+    const first = el.scrollTop;
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThan(50); // a soft start
+    tick(34);
+    expect(el.scrollTop).toBeCloseTo(500, -1); // half way at half time
+    tick(16);
     tick(50);
     expect(el.scrollTop).toBe(1000);
     expect(landed).toBe(true);
