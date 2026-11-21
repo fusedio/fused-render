@@ -142,3 +142,100 @@ def test_upstream_counts_what_a_push_or_pull_would_move(repo, tmp_path):
     # Detached: no upstream.
     _git("checkout", "-q", "--detach", cwd=repo["root"])
     assert gr.rail_status(str(repo["root"]))["repo"]["upstream"] is None
+
+
+def _tracked_clone(repo, tmp_path):
+    """`repo` pushed to a bare origin it tracks, plus a second clone that
+    commits to that origin (what another machine would do)."""
+    bare = tmp_path / "origin.git"
+    bare.mkdir()
+    _git("init", "-q", "--bare", "-b", "main", cwd=bare)
+    _git("remote", "add", "origin", str(bare), cwd=repo["root"])
+    _git("push", "-q", "-u", "origin", "main", cwd=repo["root"])
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(bare), str(other)], check=True,
+                   capture_output=True)
+    return bare, other
+
+
+def test_sync_push_sends_the_branch_and_answers_the_fresh_counts(repo, tmp_path):
+    bare, _ = _tracked_clone(repo, tmp_path)
+    (repo["app_dir"] / "index.html").write_text("<html>v5</html>", encoding="utf-8")
+    _commit(repo["root"], "v5")
+    assert gr.rail_status(str(repo["app_dir"]))["repo"]["upstream"] == {"ahead": 1, "behind": 0}
+    out = gr.rail_sync(str(repo["app_dir"]), "push")
+    assert out["result"]["ok"] is True and out["result"]["op"] == "push"
+    assert out["repo"]["upstream"] == {"ahead": 0, "behind": 0}
+    assert _git("rev-parse", "main", cwd=bare).stdout == \
+        _git("rev-parse", "HEAD", cwd=repo["root"]).stdout
+
+
+def test_sync_pull_fast_forwards_onto_the_remote(repo, tmp_path):
+    _, other = _tracked_clone(repo, tmp_path)
+    (other / "other.txt").write_text("from elsewhere\n", encoding="utf-8")
+    _commit(other, "remote work")
+    _git("push", "-q", "origin", "main", cwd=other)
+    _git("fetch", "-q", "origin", cwd=repo["root"])
+    out = gr.rail_sync(str(repo["app_dir"]), "pull")
+    assert out["result"]["ok"] is True and out["result"]["op"] == "pull"
+    assert out["repo"]["upstream"] == {"ahead": 0, "behind": 0}
+    assert (repo["root"] / "other.txt").read_text(encoding="utf-8") == "from elsewhere\n"
+
+
+def test_sync_refusal_is_a_sentence_not_an_error(repo):
+    # No remote: ops.py refuses in words; the card shows them.
+    out = gr.rail_sync(str(repo["app_dir"]), "push")
+    assert out["ok"] is True
+    assert out["result"]["ok"] is False and out["result"]["message"]
+    assert out["repo"]["branch"] == "main"
+
+
+def test_sync_a_crashed_runner_is_a_sentence_too(repo):
+    def killed(path, params, timeout):
+        return {"ok": False, "error": {"type": "RuntimeError",
+                                       "message": "Runner exited with code -9"}}
+    out = gr.rail_sync(str(repo["app_dir"]), "push", _run=killed)
+    assert out["result"] == {"ok": False, "reason": "failed",
+                             "message": "Runner exited with code -9"}
+
+
+def test_sync_only_push_or_pull(repo):
+    with pytest.raises(gs._Refused) as exc:
+        gr.rail_sync(str(repo["app_dir"]), "reset")
+    assert exc.value.status == 400
+
+
+def test_sync_route_needs_x_fused_and_an_absolute_path(repo, tmp_path):
+    from fastapi.testclient import TestClient
+    from fused_render.server import create_app
+
+    (tmp_path / "Fused").mkdir(exist_ok=True)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = {"path": str(repo["app_dir"]), "op": "push"}
+    assert client.post("/api/git/rail/sync", json=body).status_code == 403
+    r = client.post("/api/git/rail/sync", json={"path": "myapp", "op": "push"},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 400
+    r = client.post("/api/git/rail/sync", json={**body, "op": "reset"},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 400
+
+
+def test_sync_outside_a_repo_is_no_repo_and_runs_nothing(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    def never(*_a, **_k):
+        raise AssertionError("ops.py must not run outside a repository")
+    out = gr.rail_sync(str(plain), "push", _run=never)
+    assert out["repo"] is None
+    assert out["result"]["ok"] is False and out["result"]["reason"] == "not-a-repo"
+
+
+def test_a_copy_of_someone_elses_app_is_guarded(repo, tmp_path):
+    bare, _ = _tracked_clone(repo, tmp_path)
+    assert gr.rail_status(str(repo["app_dir"]))["repo"]["guarded"] is False
+    # contrib §16.0 P2: the push guard on origin marks a copy that follows
+    # its author — the card then offers no Send / Get latest.
+    _git("config", "remote.origin.pushurl", "no-push://fused", cwd=repo["root"])
+    assert gr.rail_status(str(repo["app_dir"]))["repo"]["guarded"] is True

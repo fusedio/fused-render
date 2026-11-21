@@ -33,6 +33,8 @@ folder): the rail then draws no Git section at all. Otherwise:
                   (``@{u}``): what a push / pull would move — the rail Git
                   door's push and pull dots (owner, 2026-11-10). Null with no
                   upstream (an unpublished branch) or a detached HEAD
+  guarded         a copy of someone else's app (contrib §17.8): its push and
+                  pull are routed by the Git pane, so the card offers neither
   commits         ``git log -n<limit>`` scoped to the path (git_snapshot
                   ``_run_log``); ``limit`` defaults to 3 (the flag-off rail's
                   three seats), clamped to 1..100 — the Git door's card asks
@@ -51,11 +53,22 @@ from fastapi import APIRouter, Header
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from fused_render import executor
 from fused_render import git_upstream as gu
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers import git_snapshot as gs
 
 router = APIRouter()
+
+# The Git view's own write half (templates/git/ops.py): the card's Send / Get
+# latest run exactly what the pane's do — its guards (a copy that follows its
+# author, ff-only, detached HEAD) and its sentences — in a subprocess, the way
+# every page `.py` runs (ops.py edits `sys.path` on import, so never in here).
+OPS_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), "templates", "git", "ops.py")
+SYNC_OPS = ("push", "pull")
+# A push runs the user's hooks and talks to the remote: longer than a read.
+SYNC_TIMEOUT = 90.0
 
 # The flag-off rail has room for three seats under the branch
 # (claude-rail.css); the Git door's card asks for more, up to the cap.
@@ -82,6 +95,21 @@ def _upstream_counts(root: str) -> dict | None:
 
 def _has_remote(root: str) -> bool:
     return gu._ok(gu._run_safe(root, "remote", "get-url", "origin"))
+
+
+def _guard_run(root: str, *args: str) -> tuple[int, bytes]:
+    """contrib_guard's injected runner: `(returncode, stdout)`."""
+    result = gu._run_safe(root, *args)
+    return (0 if gu._ok(result) else 1), (result[1] if result else b"")
+
+
+def _guarded(root: str) -> bool:
+    """A copy of someone else's app (contrib §17.8): its push / pull are not
+    the plain ones — the pane routes them (Bring in, the app page), so the
+    card offers neither. Config reads only; no network."""
+    from fused_render.contrib import replay
+
+    return replay._guard_module().guarded_who(root, _guard_run) is not None
 
 
 def _folder_of(path: str) -> str:
@@ -115,6 +143,7 @@ def rail_status(path: str, *, ask: bool = False, limit: int | None = None) -> di
             "ahead": ahead,
             "behind": behind,
             "upstream": _upstream_counts(root) if head else None,
+            "guarded": has_remote and _guarded(root),
             "commits": commits[:n],
         },
     }
@@ -140,8 +169,41 @@ def rail_check(path: str, limit: int | None = None) -> dict:
     return status
 
 
+def rail_sync(path: str, op: str, limit: int | None = None, *, _run=None) -> dict:
+    """The card's Send (``push``) / Get latest (``pull``): ops.py's own op for
+    ``path``, then the status as it stands. ``result`` is ops.py's answer
+    trimmed to ``{ok, op, detail, reason, message}`` — a refusal is a sentence
+    the card shows, never an HTTP error."""
+    if op not in SYNC_OPS:
+        raise gs._Refused("op must be push or pull", status=400)
+    if not path or not os.path.isabs(path):
+        raise gs._Refused("path must be absolute", status=400)
+    if gs._repo_root(_folder_of(path)) is None:
+        return {"ok": True, "repo": None,
+                "result": {"ok": False, "reason": "not-a-repo",
+                           "message": "This folder is not in a git repository."}}
+    run = (_run or executor.run_python)(OPS_PY, {"file": path, "op": op},
+                                        timeout=SYNC_TIMEOUT)
+    if run.get("ok") and isinstance(run.get("result"), dict):
+        answer = run["result"]
+    else:
+        err = run.get("error") or {}
+        answer = {"ok": False, "reason": "failed",
+                  "message": err.get("message") or "git did not finish."}
+    status = rail_status(path, limit=limit)
+    status["result"] = {k: answer[k] for k in ("ok", "op", "detail", "reason", "message")
+                        if k in answer}
+    return status
+
+
 class _CheckBody(BaseModel):
     path: str
+    limit: int | None = None
+
+
+class _SyncBody(BaseModel):
+    path: str
+    op: str
     limit: int | None = None
 
 
@@ -159,5 +221,15 @@ async def api_git_rail_check(body: _CheckBody, x_fused: str | None = Header(defa
         return error
     try:
         return await run_in_threadpool(rail_check, body.path, body.limit)
+    except gs._Refused as e:
+        return _error(e.message, status=e.status)
+
+
+@router.post("/api/git/rail/sync")
+async def api_git_rail_sync(body: _SyncBody, x_fused: str | None = Header(default=None)):
+    if (error := _require_fused(x_fused)) is not None:
+        return error
+    try:
+        return await run_in_threadpool(rail_sync, body.path, body.op, body.limit)
     except gs._Refused as e:
         return _error(e.message, status=e.status)

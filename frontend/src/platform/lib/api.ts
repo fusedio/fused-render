@@ -6782,6 +6782,9 @@ export interface RailGitRepo {
    *  move (the rail Git door's dots). Null with no upstream or a detached
    *  HEAD; absent from an older server. */
   upstream?: { ahead: number; behind: number } | null;
+  /** A copy of someone else's app (contrib §17.8): the Git pane routes its
+   *  push / pull, so the rail card offers neither. Absent from an older server. */
+  guarded?: boolean;
   commits: GitCommit[];
 }
 
@@ -6802,6 +6805,31 @@ export function getRailGit(path: string, limit?: number): Promise<RailGit> {
  *  (no remote, unreachable, another check holding the slot, still running). */
 export function postRailGitCheck(path: string, limit?: number): Promise<RailGit & { checked: boolean }> {
   return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", limit === undefined ? { path } : { path, limit });
+}
+
+export type RailGitSyncOp = "push" | "pull";
+
+/** The Git view's own push / pull (templates/git/ops.py), as its answer. */
+export interface RailGitSyncResult {
+  ok: boolean;
+  op?: RailGitSyncOp;
+  detail?: string;
+  reason?: string;
+  message?: string;
+}
+
+/** The rail Git card's Send / Get latest: the pane's op, then the fresh counts.
+ *  A refusal is `result.ok === false` with its sentence, not a thrown error. */
+export function postRailGitSync(
+  path: string,
+  op: RailGitSyncOp,
+  limit?: number,
+): Promise<RailGit & { result: RailGitSyncResult }> {
+  return mutateJson<RailGit & { result: RailGitSyncResult }>(
+    "POST",
+    "/api/git/rail/sync",
+    limit === undefined ? { path, op } : { path, op, limit },
+  );
 }
 
 export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {

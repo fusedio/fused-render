@@ -1237,6 +1237,7 @@
   .empty .glyph { color: var(--ink-3); }
   .empty h2 { margin: 12px 0 6px; font-size: 15px; font-weight: 700; }
   .empty p { margin: 0 auto; max-width: 46ch; color: var(--ink-2); font-size: 12px; }
+  .empty .retry { margin-top: 14px; }
 
   /* ================= skeleton =================
      Laid out at the real thing's dimensions, so nothing jumps when data lands. */
@@ -1393,6 +1394,23 @@ let drawn = null;
  * refresh, and a result that outlived its action would be a lie. */
 let busy = null;
 let flash = null;
+/* True while the view stands on "git could not read this repository" because
+ * the reader's PROCESS died (a thrown runPython, not a refusal payload). That
+ * is almost always transient — on a Mac deep in swap the system SIGKILLs the
+ * runner ("Runner exited with code -9") while the same repo reads fine a
+ * moment later — so the state must never be a dead end: a window focus or the
+ * empty state's Try again reads it again. */
+let readFailed = false;
+/* The `seq` of the read (with its retries) that is out, or 0: a focus must
+ * not start another — on the memory-starved machine that killed the first
+ * one, a pile-up is the harm. A token, not a flag, so a superseded read that
+ * returns early can never leave it set. */
+let readInFlight = 0;
+/* Automatic re-reads after a KILLED read, before the failure is shown. Only a
+ * killed or crashed runner: a timeout already waited its full ceiling, and
+ * repeating it would leave a stale view up for minutes. */
+const READ_RETRY_MS = [600, 1800];
+const KILLED_RUNNER = /exited with code|SIGKILL|was killed/;
 
 /* ------------------------------------------------------- publish-to-GitHub
  *
@@ -4146,10 +4164,30 @@ function renderRefusal(payload) {
     "git-failed": "git could not read this repository",
     "bad-op": "Unsupported request",
   };
-  show(el("div", null,
-    emptyState(titles[payload.reason] || "Nothing to show",
-               payload.message || "There is no git history for this path.")));
+  const box = emptyState(titles[payload.reason] || "Nothing to show",
+                         payload.message || "There is no git history for this path.");
+  if (payload.retry) {
+    const again = el("button", { className: "btn retry", type: "button" }, "Try again");
+    again.addEventListener("click", () => {
+      if (readInFlight) return;
+      again.disabled = true;
+      draw(true);
+    });
+    box.append(again);
+  }
+  show(el("div", null, box));
   announce(titles[payload.reason] || "No git history");
+}
+
+/* A killed runner says so in the engine's words ("Runner exited with code -9");
+   say what it means instead, and keep the raw line for whoever debugs it. */
+function readFailure(message) {
+  const text = String(message || "");
+  if (/code -9\b|SIGKILL|was killed/.test(text)) {
+    return "The reader was stopped before it finished — usually the Mac running "
+      + "low on memory. (" + text + ")";
+  }
+  return text || "The reader stopped without an answer.";
 }
 
 /* The pending confirmation, if any — a modal (see `confirmModal`) mounted once
@@ -4879,31 +4917,51 @@ async function draw(force) {
   if (!data) {
     let payload;
     let stashPayload;
+    /* A thrown read is the reader's PROCESS dying, not git refusing (that is a
+       payload): re-read a couple of times before saying so — see `readFailed`. */
+    readInFlight = mine;
     try {
-      /* Two reads, one round of latency: the overview is the view, and the
-         stash list is a section of it.
-         Concurrently, so they MUST be on different channels — see `chan`. Run
-         on the default channel this deadlocks: the second call supersedes the
-         first, the first then hangs forever by design, and `Promise.all` waits
-         on it for the life of the page. */
-      [payload, stashPayload] = await Promise.all([
-        /* The overview carries the log as well as the status, so the Commits
-           section costs no extra round trip. The window GROWS (`limit`) rather
-           than pages — `page: 0` always — which is what keeps the rows already
-           on screen in place when "load more" widens it. */
-        fused.runPython(READER, { file, op: "overview",
-                                  limit: String(PAGE_SIZE * pages), page: "0" },
-                        chan("overview")),
-        fused.runPython(READER, { file, op: "stashes" }, chan("stashes")),
-      ]);
-    } catch (err) {
-      /* A crash in the reader is still an empty state here, not the red
-         traceback overlay: the overlay is a debugging affordance for a view's
-         own bug, and "this folder has no git" is not one. */
-      renderRefusal({ reason: "git-failed", message: err.message });
-      return;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          /* Two reads, one round of latency: the overview is the view, and the
+             stash list is a section of it.
+             Concurrently, so they MUST be on different channels — see `chan`. Run
+             on the default channel this deadlocks: the second call supersedes the
+             first, the first then hangs forever by design, and `Promise.all` waits
+             on it for the life of the page. */
+          [payload, stashPayload] = await Promise.all([
+            /* The overview carries the log as well as the status, so the Commits
+               section costs no extra round trip. The window GROWS (`limit`) rather
+               than pages — `page: 0` always — which is what keeps the rows already
+               on screen in place when "load more" widens it. */
+            fused.runPython(READER, { file, op: "overview",
+                                      limit: String(PAGE_SIZE * pages), page: "0" },
+                            chan("overview")),
+            fused.runPython(READER, { file, op: "stashes" }, chan("stashes")),
+          ]);
+          break;
+        } catch (err) {
+          if (mine !== seq) return;
+          if (attempt < READ_RETRY_MS.length && KILLED_RUNNER.test(String(err && err.message))) {
+            await new Promise((done) => setTimeout(done, READ_RETRY_MS[attempt]));
+            if (mine !== seq) return;
+            continue;
+          }
+          /* A crash in the reader is still an empty state here, not the red
+             traceback overlay: the overlay is a debugging affordance for a view's
+             own bug, and "this folder has no git" is not one. */
+          snapshot = null;
+          readFailed = true;
+          renderRefusal({ reason: "git-failed", message: readFailure(err.message),
+                          retry: true });
+          return;
+        }
+      }
+    } finally {
+      if (readInFlight === mine) readInFlight = 0;
     }
     if (mine !== seq) return;
+    readFailed = false;
     if (!payload.ok) {
       snapshot = null;
       renderRefusal(payload);
@@ -4971,7 +5029,11 @@ hopSnapshot();
    (its mode switcher moves it; a listing removes it). Same discipline as the
    claude template's annotate target, and for the same reason. */
 canPreview = !!revMarkedFrame() && hasAppFolder;
-window.addEventListener("focus", () => pollRevTarget());
+window.addEventListener("focus", () => {
+  pollRevTarget();
+  /* Coming back to a view that could not read the repo reads it again. */
+  if (readFailed && !readInFlight) draw(true);
+});
 setInterval(() => pollRevTarget(), REV_TARGET_POLL_MS);
 /* Kicked off here, once, alongside the plain initial assignment above:
    `hasAppFolder` starts `false`, so this fires the async probe that flips
