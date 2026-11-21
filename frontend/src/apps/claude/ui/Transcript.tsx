@@ -61,7 +61,7 @@ import {
   setChatSeen,
 } from "./chatSeen";
 import { JumpButton } from "./JumpButton";
-import { MSG_LAND_PX, atEnd, downShown, sideOf, upShown } from "./jumpTarget";
+import { MSG_LAND_PX, atEnd, downShown, downToMsg, landingSide, sideOf, upShown } from "./jumpTarget";
 import { animateScroll } from "./scrollAnim";
 import { openCardRows } from "./WaitingBar";
 import "../styles/transcript.css";
@@ -1076,8 +1076,10 @@ export const Transcript = memo(function Transcript({
     // Your last message (a line still waiting to be sent included): ↑ goes
     // back to its top (jumpTarget.ts).
     const mine = lastMine(logEl);
-    const up = upShown(mine ? mine.getBoundingClientRect().top - view.top : null);
+    const mineTop = mine ? mine.getBoundingClientRect().top - view.top : null;
+    const up = upShown(mineTop);
     const down = downShown(wrap);
+    const downMsg = downToMsg(mineTop, wrap);
     const total = newsBefore(turns);
     const els = turnEls(logEl);
     if (u.opened) {
@@ -1113,6 +1115,7 @@ export const Transcript = memo(function Transcript({
       const b = el?.getBoundingClientRect();
       return b ? sideOf(b.top - view.top, b.bottom - view.top, view.height) : null;
     };
+    const topOf = (el: Element | null) => (el ? el.getBoundingClientRect().top - view.top : 0);
     let upN = 0;
     let downN = 0;
     const targets: { up: JumpTarget | null; down: JumpTarget | null } = { up: null, down: null };
@@ -1130,6 +1133,9 @@ export const Transcript = memo(function Transcript({
           t = at;
           side = box(els[at] ?? null);
         }
+        // Still partly on screen (a tall reply after a scrollbar drag): the
+        // pill points where the click lands, so ↓ never scrolls up.
+        if (side === "on") side = landingSide(topOf(targetEl(logEl, els, t)));
         if (side === "above") {
           upN = n;
           targets.up = t;
@@ -1155,7 +1161,9 @@ export const Transcript = memo(function Transcript({
     }
     jumpTargets.current = targets;
     setJumpState((s) =>
-      s.up === up && s.down === down && s.upN === upN && s.downN === downN ? s : { up, down, upN, downN },
+      s.up === up && s.down === down && s.downMsg === downMsg && s.upN === upN && s.downN === downN
+        ? s
+        : { up, down, downMsg, upN, downN },
     );
   }, []);
   // Coalesced to one measure a frame: a streaming reply commits every frame.
@@ -1256,8 +1264,11 @@ export const Transcript = memo(function Transcript({
     scheduleJump();
   }, [scheduleJump]);
 
-  const onJumpUp = useCallback(() => onJump(jumpTargets.current.up && jumpState.upN ? "new-up" : "msg"), [onJump, jumpState.upN]);
-  const onJumpDown = useCallback(() => onJump(jumpTargets.current.down && jumpState.downN ? "new-down" : "end"), [onJump, jumpState.downN]);
+  const onJumpUp = useCallback(() => onJump(jumpTargets.current.up !== null && jumpState.upN ? "new-up" : "msg"), [onJump, jumpState.upN]);
+  const onJumpDown = useCallback(
+    () => onJump(jumpTargets.current.down !== null && jumpState.downN ? "new-down" : jumpState.downMsg ? "msg" : "end"),
+    [onJump, jumpState.downN, jumpState.downMsg],
+  );
 
   // BREAKOUT PICK MODE: every turn of an exchange shares one pick; the prompt
   // turn carries the check. An exchange still streaming or pending is locked.
@@ -1381,7 +1392,7 @@ export const Transcript = memo(function Transcript({
         )}
       </div>
       {state.historyLoading || !settled ? null : (
-        <JumpButton dir="down" shown={jumpState.down} newCount={jumpState.downN} onJump={onJumpDown} />
+        <JumpButton dir="down" shown={jumpState.down} toMsg={jumpState.downMsg} newCount={jumpState.downN} onJump={onJumpDown} />
       )}
     </div>
   );
@@ -1391,11 +1402,13 @@ export const Transcript = memo(function Transcript({
 interface JumpState {
   up: boolean;
   down: boolean;
+  /** ↓ goes to your last message (it is below you), not the end. */
+  downMsg: boolean;
   /** Unread replies whose landing is above / below you (> 0 = that side's pill). */
   upN: number;
   downN: number;
 }
-const NO_JUMP: JumpState = { up: false, down: false, upN: 0, downN: 0 };
+const NO_JUMP: JumpState = { up: false, down: false, downMsg: false, upN: 0, downN: 0 };
 /** A pill's landing: the NEW rule, or a turn by index. */
 type JumpTarget = "rule" | number;
 
