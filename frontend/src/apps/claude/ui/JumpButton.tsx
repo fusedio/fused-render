@@ -1,20 +1,23 @@
-// The task chat's jump button: the bots `#tobottom` (apps/bots/components/
+// The task chat's jump buttons: the bots `#tobottom` (apps/bots/components/
 // ToBottom.tsx) — a round arrow, growing into an accent "N new messages" pill
-// while unread replies sit below you — turned toward your last message
-// (jumpTarget.ts): down to it from above, down to the end once you are on it,
-// back up to it from the reply under it. The pill always goes to the end.
+// while unread replies sit on its side — in two fixed directions
+// (jumpTarget.ts): ↑ at the top to your last message, ↓ at the bottom to your
+// last message while it is below you, else the end. The pill goes to the NEW
+// rule instead.
 //
-// Sticky at the bottom of the scrollport (a zero-height box after the log), so
-// it floats over the transcript without a positioned wrapper around the port.
+// Sticky to the scrollport's top or bottom edge (a zero-height box before or
+// after the log), so it floats over the transcript without a positioned
+// wrapper around the port.
 import { memo } from "react";
 
-import { jumpTo, type JumpMode } from "./jumpTarget";
-
 export interface JumpButtonProps {
-  mode: JumpMode;
-  /** Unread replies below you. */
+  dir: "up" | "down";
+  shown: boolean;
+  /** ↓ only: it goes to your last message (below you), not the end. */
+  toMsg?: boolean;
+  /** Unread replies on this side (> 0 = the pill). */
   newCount: number;
-  onJump: (to: "msg" | "end") => void;
+  onJump: () => void;
 }
 
 const DOWN = (
@@ -30,22 +33,25 @@ const UP = (
   </>
 );
 
-export const JumpButton = memo(function JumpButton({ mode, newCount, onJump }: JumpButtonProps) {
+export const JumpButton = memo(function JumpButton({ dir, shown, toMsg = false, newCount, onJump }: JumpButtonProps) {
   const fresh = newCount > 0;
-  const show = fresh || mode !== "none";
-  const to = jumpTo(mode, newCount);
-  const up = !fresh && mode === "up-msg";
-  const label = to === "msg" ? "Jump to your last message" : "Jump to the latest message";
+  const show = fresh || shown;
+  const up = dir === "up";
+  const label = fresh
+    ? "Jump to the new messages"
+    : up || toMsg
+      ? "Jump to your last message"
+      : "Jump to the latest message";
   return (
-    <div className="chat-jump" aria-hidden={show ? undefined : true}>
+    <div className={"chat-jump" + (up ? " is-top" : "")} aria-hidden={show ? undefined : true}>
       <button
         type="button"
         className={"chat-jump-btn" + (fresh ? " is-new" : "") + (show ? " is-shown" : "") + (up ? " is-up" : "")}
-        data-to={to}
+        data-to={fresh ? "new" : up || toMsg ? "msg" : "end"}
         tabIndex={show ? 0 : -1}
         title={label}
         aria-label={label}
-        onClick={() => onJump(to)}
+        onClick={onJump}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           {up ? UP : DOWN}
