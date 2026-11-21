@@ -1221,7 +1221,7 @@ export default function CanvasWorkspace({
             ...s.legs.disk_to_server,
             state: "error",
             reason:
-              "requests.exceptions.ConnectionError: HTTPSConnectionPool(host='deere.fused.io', port=443): Max retries exceeded with url: /server/v1/collection/by-id/52e05ec7-b4e1-42bb-a71d-6f34235c4434/import-toml (Caused by ReadTimeoutError(\"HTTPSConnectionPool(host='deere.fused.io', port=443): Read timed out. (read timeout=5)\"))",
+              "requests.exceptions.ConnectionError: HTTPSConnectionPool(host='example.fused.io', port=443): Max retries exceeded with url: /server/v1/collection/by-id/00000000-0000-0000-0000-000000000000/import-toml (Caused by ReadTimeoutError(\"HTTPSConnectionPool(host='example.fused.io', port=443): Read timed out. (read timeout=5)\"))",
           },
         },
         error_detail: Array.from({ length: 24 }, (_, i) => `  File "/Applications/Fused Render.app/Contents/Resources/lib/python3.12/urllib3/connection.py", line ${600 + i}, in getresponse`),
